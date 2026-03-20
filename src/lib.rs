@@ -9,6 +9,7 @@ pub mod kan;
 pub mod resonance;
 pub mod reality;
 pub mod repominer;
+pub mod world;
 
 pub use types::*;
 pub use mesh::*;
@@ -21,3 +22,4 @@ pub use kan::*;
 pub use resonance::*;
 pub use reality::*;
 pub use repominer::*;
+pub use world::*;
