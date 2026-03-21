@@ -13,3 +13,4 @@ pub mod evolution;
 pub mod reality;
 pub mod repominer;
 pub mod mesh;
+pub mod periodic_table;

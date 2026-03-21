@@ -1,160 +1,152 @@
 use bevy::prelude::*;
 use crate::engine::SovereignEngine;
-use crate::world::{VoxelType, VoxelWorldResource};
+
+const SCALE: i32 = 1000;
+const IRON_LATTICE: i32 = 286;
+const IRON_BOND: i32 = 248;
+
+#[derive(Clone, Copy, Default)]
+pub struct SubPart {
+    pub x: i32, pub y: i32, pub z: i32,
+    pub vx: i32, pub vy: i32, pub vz: i32,
+    pub phase: i8,
+}
 
 #[derive(Component)]
-pub struct Racer {
+pub struct Atom {
     pub name: String,
+    pub ix: i32, pub iy: i32, pub iz: i32, 
+    pub vx: i32, pub vy: i32, pub vz: i32,
+    pub valence_electrons: Vec<SubPart>,
+    pub is_locked: bool,
+}
+
+#[derive(Component)]
+pub struct ScientistIA {
     pub engine: SovereignEngine,
-    pub is_dead: bool,
-    pub distance: f32,
-    pub amplitude: f32, 
-    pub phase: f32,     
-    pub pain_memories: Vec<PainSynapse>,
-    pub prev_pos: Vec3,
-    pub fuel: f32,
-    pub total_laps: usize,
-    pub stagnation: f32,
+    pub universe_id: usize,
+    pub center: Vec3,
+    pub sync_bit: i8,
+    pub integrity: i32,
+    pub discovery_hardness: f32,
+    pub discovery_conductive: f32,
+    pub discovery_purity: f32,
 }
 
-pub struct PainSynapse {
-    pub position: Vec3,
-    pub pain_phase: f32, 
-    pub intensity: f32,
+#[derive(Component)]
+pub struct MainCamera {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub dist: f32,
 }
 
-pub struct RacerPlugin;
+pub struct AtomPlugin;
 
-impl Plugin for RacerPlugin {
+impl Plugin for AtomPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (update_racers, camera_system));
+        app.add_systems(Update, (iron_bar_synthesis, main_camera_system));
     }
 }
 
-fn update_racers(
-    mut query: Query<(Entity, &mut Racer, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
-    world_res: Res<VoxelWorldResource>,
-    dev: Res<crate::evolution::DevSettings>,
-    time: Res<Time>,
+fn iron_bar_synthesis(
+    mut scientists: Query<&mut ScientistIA>,
+    mut atoms: Query<(Entity, &mut Atom, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut gizmos: Gizmos,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let dt = time.delta_secs().min(0.02);
-    let world = &world_res.0;
+    let Ok(mut scientist) = scientists.get_single_mut() else { return };
+    
+    let mut sensory = [0i8; 128];
+    sensory[0] = (scientist.integrity / 10).clamp(0, 127) as i8;
+    let intent = scientist.engine.get_intent(&sensory);
+    scientist.sync_bit = (intent[0] % 127) as i8;
 
-    // Coletar posições de todos os pilotos vivos para interação de enxame
-    let particle_positions: Vec<(Entity, Vec3)> = query.iter()
-        .filter(|(_, r, _, _)| !r.is_dead)
-        .map(|(e, _, t, _)| (e, t.translation))
+    let atom_data: Vec<(Entity, i32, i32, i32, i8, bool)> = atoms.iter()
+        .map(|(e, a, _, _)| (e, a.ix, a.iy, a.iz, a.valence_electrons[0].phase, a.is_locked))
         .collect();
 
-    for (entity, mut racer, mut transform, mat_handle) in query.iter_mut() {
-        if racer.is_dead { continue; }
+    let mut total_sync = 0;
 
-        let pos = transform.translation;
-        let flow = world.get_flow_at(pos.x, pos.z);
-        let track_phase = flow.y.atan2(flow.x);
-
-        // --- 1. VISÃO DINÂMICA + RADAR DE ENXAME ---
-        let vision_range = 25.0 + racer.amplitude * 1.8;
-        let mut sensory_wave = vec![0i8; 128];
-        let num_rays = 21;
-        let mut max_harmony_dist = 0.0;
-        let mut harmony_angle = 0.0;
-
-        for i in 0..num_rays {
-            let angle_offset = (i as f32 / (num_rays - 1) as f32 - 0.5) * 2.8; 
-            let d = world.raycast(pos.x, pos.z, racer.phase + angle_offset, vision_range);
-            let energy = (vision_range / d.max(1.0)).powi(2);
-            sensory_wave[i] = (energy * 0.2).clamp(0.0, 127.0) as i8;
-            if d > max_harmony_dist { max_harmony_dist = d; harmony_angle = angle_offset; }
+    for (entity, mut atom, mut transform, mat_handle) in atoms.iter_mut() {
+        if atom.is_locked {
+            if let Some(mat) = materials.get_mut(&mat_handle.0) {
+                mat.base_color = Color::srgb(0.5, 0.5, 0.6);
+                mat.emissive = LinearRgba::from(mat.base_color) * 30.0;
+            }
+            continue;
         }
 
-        // INTERAÇÃO ENTRE PARTÍCULAS (REPULSÃO QUÂNTICA)
-        let mut repulsion_vec = Vec2::ZERO;
-        for (other_entity, other_pos) in &particle_positions {
-            if entity == *other_entity { continue; }
-            let dist = pos.distance(*other_pos);
-            if dist < 8.0 {
-                // Força de Repulsão Inversa
-                let diff = (pos - *other_pos).xz().normalize_or_zero();
-                let push = (8.0 / dist.max(1.0)).powi(2);
-                repulsion_vec += diff * push;
-                
-                // Injetar "Dor de Proximidade" no Canal 50 do cérebro
-                sensory_wave[50] = (push * 10.0).clamp(0.0, 127.0) as i8;
+        let mut fx = 0i32; let mut fy = 0i32; let mut fz = 0i32;
+        let mut local_bonds = 0;
+
+        let target_x = (atom.ix / IRON_LATTICE) * IRON_LATTICE;
+        let target_y = (atom.iy / IRON_LATTICE) * IRON_LATTICE;
+        let target_z = (atom.iz / IRON_LATTICE) * IRON_LATTICE;
+        
+        fx += (target_x.clamp(-1200, 1200) - atom.ix) * 2;
+        fy += (target_y.clamp(-300, 300) - atom.iy) * 4;
+        fz += (target_z.clamp(-300, 300) - atom.iz) * 4;
+
+        for (other_e, ox, oy, oz, o_phase, _) in &atom_data {
+            if entity == *other_e { continue; }
+            let dx = ox - atom.ix;
+            let dy = oy - atom.iy;
+            let dz = oz - atom.iz;
+            let dist_sq = (dx*dx + dy*dy + dz*dz) / SCALE;
+
+            if dist_sq < 1200 {
+                if (atom.valence_electrons[0].phase as i32 - *o_phase as i32).abs() < 3 {
+                    let error = dist_sq - (IRON_BOND * IRON_BOND / SCALE);
+                    fx += dx * error / 1500;
+                    fy += dy * error / 1500;
+                    fz += dz * error / 1500;
+                    local_bonds += 1;
+                    if entity.index() < other_e.index() {
+                        let p2 = Vec3::new(*ox as f32 / 10.0, *oy as f32 / 10.0, *oz as f32 / 10.0);
+                        gizmos.line(transform.translation, p2, Color::srgba(0.0, 1.0, 1.0, 0.4));
+                    }
+                }
             }
         }
 
-        // --- 2. EXECUÇÃO ---
-        let sync_err = (track_phase - racer.phase).sin();
-        let alignment = (racer.phase - track_phase).cos();
-        sensory_wave[41] = (sync_err * 127.0) as i8;
-        sensory_wave[42] = (harmony_angle * 100.0).clamp(-127.0, 127.0) as i8;
-        sensory_wave[43] = (alignment * 127.0) as i8;
+        atom.vx = (atom.vx + fx) - (atom.vx >> 3);
+        atom.vy = (atom.vy + fy) - (atom.vy >> 3);
+        atom.vz = (atom.vz + fz) - (atom.vz >> 3);
+        atom.ix += atom.vx / 10;
+        atom.iy += atom.vy / 10;
+        atom.iz += atom.vz / 10;
 
-        racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
-        let intent = racer.engine.instinct_layer.forward(&sensory_wave);
-        let pedal_intent = (intent[0] + 0.5).clamp(0.0, 1.0);
-        let steer_intent = intent[1].clamp(-1.0, 1.0);
+        if local_bonds >= 6 && atom.vx.abs() < 3 { atom.is_locked = true; }
 
-        // --- 3. MOVIMENTAÇÃO POR ONDAS E REPULSÃO ---
-        let target_amp = pedal_intent * dev.wave_amplitude;
-        racer.amplitude = racer.amplitude + (target_amp - racer.amplitude) * 2.0 * dt;
-        
-        let flow_pull = sync_err * dev.flow_influence;
-        racer.phase = racer.phase + (steer_intent * 6.0 + flow_pull) * dt;
-
-        let mut wave_vector = Vec2::new(racer.phase.cos(), racer.phase.sin()) * racer.amplitude;
-        // Aplicar a Repulsão Quântica das outras partículas
-        wave_vector += repulsion_vec * 5.0;
-
-        transform.translation += Vec3::new(wave_vector.x, 0.0, wave_vector.y) * dt;
-        transform.rotation = Quat::from_rotation_y(-racer.phase);
-
-        racer.distance += (wave_vector * dt).length();
-        racer.prev_pos = transform.translation;
-
-        // --- 4. ELIMINAÇÃO ---
-        let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
-        if voxel == VoxelType::Wall || voxel == VoxelType::Grass || (racer.engine.current_time > 2.0 && alignment < 0.0) {
-            racer.is_dead = true;
-            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
-        }
-        
-        if racer.amplitude < 10.0 && racer.engine.current_time > 4.0 { 
-            racer.stagnation += dt;
-            if racer.stagnation > 1.0 { racer.is_dead = true; }
-        } else { racer.stagnation = 0.0; }
-
-        racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
-        if racer.fuel <= 0.0 { racer.is_dead = true; }
-        
-        let lap_line_x = world.start_pos.x;
-        if racer.prev_pos.x < lap_line_x && transform.translation.x >= lap_line_x && racer.distance > 400.0 {
-            racer.total_laps += 1; racer.distance = 0.0;
-            if racer.total_laps % 3 == 0 { racer.fuel = 1.0; }
-        }
+        transform.translation = Vec3::new(atom.ix as f32 / 10.0, atom.iy as f32 / 10.0, atom.iz as f32 / 10.0);
+        gizmos.sphere(transform.translation, 5.0, Color::srgb(1.0, 0.2, 0.1));
+        total_sync += local_bonds;
     }
+
+    scientist.integrity = (total_sync / 10).min(1000);
+    scientist.discovery_hardness = (scientist.integrity as f32 / 1000.0) * 211.0;
+    scientist.discovery_conductive = (scientist.integrity as f32 / 1000.0) * 0.9;
+    scientist.discovery_purity = scientist.integrity as f32 / 1000.0;
 }
 
-fn camera_system(
-    mut query: Query<&mut Transform, With<Camera3d>>,
-    racer_query: Query<(Entity, &Racer, &Transform), Without<Camera3d>>,
-    race_settings: Res<crate::evolution::RaceSettings>,
+fn main_camera_system(
+    mut query: Query<(&mut Transform, &mut MainCamera)>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut motion: EventReader<bevy::input::mouse::MouseMotion>,
+    mut scroll: EventReader<bevy::input::mouse::MouseWheel>,
 ) {
-    let mut target = race_settings.selected_racer;
-    if target.is_none() {
-        if let Some((e, _, _)) = racer_query.iter().filter(|(_, r, _)| !r.is_dead).max_by(|a, b| a.1.distance.partial_cmp(&b.1.distance).unwrap()) {
-            target = Some(e);
-        }
+    let Ok((mut transform, mut cam)) = query.get_single_mut() else { return };
+    let mut delta = Vec2::ZERO;
+    for ev in motion.read() { delta += ev.delta; }
+    let scroll_y = scroll.read().map(|ev| ev.y).sum::<f32>();
+
+    if mouse.pressed(MouseButton::Right) {
+        cam.yaw -= delta.x * 0.005;
+        cam.pitch = (cam.pitch - delta.y * 0.005).clamp(-1.5, 1.5);
     }
-    if let Some(e) = target {
-        if let Ok((_, _, t)) = racer_query.get(e) {
-            if let Ok(mut cam_t) = query.get_single_mut() {
-                let goal = t.translation + Vec3::new(-90.0, 110.0, -90.0);
-                cam_t.translation = cam_t.translation.lerp(goal, 0.04);
-                cam_t.look_at(t.translation, Vec3::Y);
-            }
-        }
-    }
+    cam.dist = (cam.dist - scroll_y * 40.0).clamp(50.0, 3000.0);
+
+    let rot = Quat::from_rotation_y(cam.yaw) * Quat::from_rotation_x(cam.pitch);
+    transform.translation = rot * Vec3::Z * cam.dist;
+    transform.look_at(Vec3::ZERO, Vec3::Y);
 }

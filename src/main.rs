@@ -1,86 +1,70 @@
 use bevy::prelude::*;
-use universe::world::{VoxelWorld, VoxelWorldResource};
-use universe::simulation::RacerPlugin;
-use universe::ui::{UiPlugin, LeaderboardUI};
-use universe::evolution::{EvolutionPlugin, RaceSettings, DevSettings, spawn_swarm};
+use bevy::core_pipeline::bloom::Bloom;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+
+pub mod simulation;
+pub mod ui;
+pub mod evolution;
+pub mod engine;
+pub mod metabolism;
+pub mod layers;
+pub mod cfc;
+pub mod kan;
+pub mod resonance;
+pub mod memory;
+pub mod types;
+pub mod reality;
+pub mod repominer;
+pub mod mesh;
+pub mod periodic_table;
+pub mod world; 
+
+use simulation::{AtomPlugin, MainCamera};
+use ui::UiPlugin;
+use evolution::{EvolutionPlugin, RaceSettings, DevSettings, ElementMaterials};
 
 fn main() {
-    let initial_seed = 42;
-    let mut app = App::new();
-    
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window { title: "IARA v2101 - Sovereign Dev Engine".into(), ..default() }),
-        ..default()
-    }))
-    .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.1)))
-    .insert_resource(RaceSettings {
-        generation: 1,
-        seed: initial_seed,
-        best_weights: None,
-        best_scale: 1.0,
-        selected_racer: None,
-        world_entities: Vec::new(),
-        should_reset: false,
-    })
-    .insert_resource(DevSettings::default())
-    .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed)))
-    .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin))
-    .add_systems(Startup, (setup_scene, setup_hud_container))
-    .run();
-}
-
-fn setup_hud_container(mut commands: Commands) {
-    commands.spawn((
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window { title: "IARA v2101 - IRON FORGE".into(), ..default() }),
             ..default()
-        },
-        LeaderboardUI,
-    ));
+        }))
+        .insert_resource(ClearColor(Color::srgb(0.0, 0.0, 0.01)))
+        .insert_resource(RaceSettings {
+            generation: 1,
+            best_weights: None,
+            best_scale: 1.0,
+            best_recipe: String::from("Sincronizando Valência..."),
+            best_fitness: 0.0,
+            should_reset: false,
+            fossils: Vec::new(),
+        })
+        .insert_resource(DevSettings { time_scale: 1.0, ..default() })
+        .insert_resource(world::VoxelWorldResource(world::VoxelWorld::new(42)))
+        .add_plugins((AtomPlugin, UiPlugin, EvolutionPlugin))
+        .add_systems(Startup, setup_scene)
+        .run();
 }
 
 fn setup_scene(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut commands: Commands, 
+    race: Res<RaceSettings>, 
+    dev: Res<DevSettings>, 
+    mut meshes: ResMut<Assets<Mesh>>, 
     mut materials: ResMut<Assets<StandardMaterial>>,
-    race: Res<RaceSettings>,
-    dev: Res<DevSettings>,
-    world_res: Res<VoxelWorldResource>,
+    mut el_materials: ResMut<ElementMaterials>,
+    world_res: Res<world::VoxelWorldResource>,
 ) {
+    commands.insert_resource(AmbientLight { brightness: 1000.0, color: Color::WHITE, ..default() });
+
+    // Câmera Única Cinematográfica
     commands.spawn((
-        DirectionalLight { 
-            illuminance: 25000.0, 
-            shadows_enabled: true, 
-            color: Color::srgb(1.0, 0.98, 0.95),
-            ..default() 
-        },
-        Transform::from_xyz(150.0, 450.0, 150.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Camera3d::default(),
+        Camera { hdr: true, ..default() },
+        Tonemapping::TonyMcMapface,
+        Bloom::default(),
+        MainCamera { yaw: 0.0, pitch: 0.5, dist: 600.0 },
     ));
     
-    commands.insert_resource(AmbientLight { brightness: 1200.0, color: Color::srgb(0.9, 0.95, 1.0), ..default() });
-
-    let world = &world_res.0;
-    let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
-    
-    let _road_e = commands.spawn((
-        Mesh3d(meshes.add(r_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })),
-    )).id();
-
-    let _grass_e = commands.spawn((
-        Mesh3d(meshes.add(g_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })),
-    )).id();
-    
-    let _wall_e = commands.spawn((
-        Mesh3d(meshes.add(w_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })),
-    )).id();
-
-    // spawn_swarm agora exige &DevSettings
-    spawn_swarm(&mut commands, &mut meshes, &mut materials, &race, world, &dev);
-
-    // ADICIONAR CÂMERA (CORREÇÃO DA TELA PRETA)
-    commands.spawn(Camera3d::default());
+    evolution::spawn_multiverse(&mut commands, &mut meshes, &mut materials, &mut el_materials, &race, &dev, &world_res.0);
 }
