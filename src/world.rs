@@ -19,20 +19,19 @@ pub struct VoxelWorld {
 
 impl VoxelWorld {
     pub fn new(_seed: u64) -> Self {
-        let size = 120;
-        let cell_size = 2.5;
+        let size = 160; 
+        let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
         let mut flow = vec![Vec2::ZERO; size * size];
         
-        // CIRCUITO FIXO E ESTÁVEL (O QUE FUNCIONAVA)
         let waypoints = vec![
-            Vec2::new(10.0, 10.0), Vec2::new(80.0, 10.0),
-            Vec2::new(90.0, 40.0), Vec2::new(60.0, 60.0),
-            Vec2::new(20.0, 80.0), Vec2::new(10.0, 40.0),
-            Vec2::new(10.0, 10.0),
+            Vec2::new(20.0, 20.0), Vec2::new(140.0, 20.0), 
+            Vec2::new(140.0, 60.0), Vec2::new(100.0, 100.0), 
+            Vec2::new(100.0, 140.0), Vec2::new(60.0, 140.0), 
+            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
         ];
 
-        let track_width = 10.0;
+        let track_width = 18.0; 
         for y in 0..size {
             for x in 0..size {
                 let pos = Vec2::new(x as f32, y as f32);
@@ -50,15 +49,15 @@ impl VoxelWorld {
                 let idx = y * size + x;
                 flow[idx] = best_dir;
                 grid[idx] = if min_dist < track_width / 2.0 { VoxelType::Road }
-                            else if min_dist < (track_width / 2.0) + 1.0 { VoxelType::Wall }
+                            else if min_dist < (track_width / 2.0) + 1.5 { VoxelType::Wall }
                             else { VoxelType::Grass };
             }
         }
 
         Self { 
             size, grid, flow, cell_size,
-            start_pos: Vec3::new(10.0 * cell_size, 0.5, 10.0 * cell_size),
-            lap_distance: 400.0,
+            start_pos: Vec3::new(80.0 * cell_size, 0.5, 20.0 * cell_size),
+            lap_distance: 800.0,
         }
     }
 
@@ -78,10 +77,12 @@ impl VoxelWorld {
         } else { Vec2::ZERO }
     }
 
-    pub fn generate_mesh(&self) -> (Mesh, Mesh) {
+    pub fn generate_mesh(&self) -> (Mesh, Mesh, Mesh) {
         let mut road_pos = Vec::new();
         let mut road_colors = Vec::new();
         let mut road_indices = Vec::new();
+        let mut grass_pos = Vec::new();
+        let mut grass_indices = Vec::new();
         let mut wall_pos = Vec::new();
         let mut wall_indices = Vec::new();
 
@@ -91,36 +92,25 @@ impl VoxelWorld {
                 let px = x as f32 * self.cell_size;
                 let pz = y as f32 * self.cell_size;
 
-                if v == VoxelType::Road || v == VoxelType::Grass {
-                    // Estrada com efeito de "Profundidade Quântica"
-                    let color = if v == VoxelType::Road { 
-                        [0.02, 0.02, 0.05, 1.0] // Azul Profundo
-                    } else { 
-                        [0.01, 0.01, 0.02, 1.0] // Quase Preto
-                    };
-                    
+                if v == VoxelType::Road {
+                    let is_start_line = (px - self.start_pos.x).abs() < self.cell_size && (pz - self.start_pos.z).abs() < 25.0;
                     let b = road_pos.len() as u32;
-                    road_pos.extend_from_slice(&[
-                        [px, 0.0, pz], 
-                        [px+self.cell_size, 0.0, pz], 
-                        [px, 0.0, pz+self.cell_size], 
-                        [px+self.cell_size, 0.0, pz+self.cell_size]
-                    ]);
+                    road_pos.extend_from_slice(&[[px, 0.01, pz], [px+self.cell_size, 0.01, pz], [px, 0.01, pz+self.cell_size], [px+self.cell_size, 0.01, pz+self.cell_size]]);
+                    let color = if is_start_line { [1.0, 1.0, 1.0, 1.0] } else { [0.12, 0.12, 0.15, 1.0] };
                     road_colors.extend_from_slice(&[color; 4]);
                     road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
-
-                    // Adicionar "Bordas de Energia" se for Road adjacente a Wall ou Grass
-                    if v == VoxelType::Road {
-                        // (Lógica simplificada para bordas neon)
-                    }
+                } else if v == VoxelType::Grass {
+                    let b = grass_pos.len() as u32;
+                    grass_pos.extend_from_slice(&[[px, 0.0, pz], [px+self.cell_size, 0.0, pz], [px, 0.0, pz+self.cell_size], [px+self.cell_size, 0.0, pz+self.cell_size]]);
+                    grass_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Wall {
                     let b = wall_pos.len() as u32;
-                    let h = 2.5; // Muros de energia mais baixos e elegantes
+                    let h = 1.0;
                     wall_pos.extend_from_slice(&[
-                        [px, 0.0, pz], 
-                        [px+self.cell_size, 0.0, pz], 
-                        [px, h, pz], 
-                        [px+self.cell_size, h, pz]
+                        [px + self.cell_size * 0.4, 0.0, pz + self.cell_size * 0.4], 
+                        [px + self.cell_size * 0.6, 0.0, pz + self.cell_size * 0.6], 
+                        [px + self.cell_size * 0.4, h, pz + self.cell_size * 0.4], 
+                        [px + self.cell_size * 0.6, h, pz + self.cell_size * 0.6]
                     ]);
                     wall_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 }
@@ -132,20 +122,28 @@ impl VoxelWorld {
         r_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, road_colors);
         r_mesh.insert_indices(Indices::U32(road_indices));
 
+        let mut g_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        g_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, grass_pos);
+        g_mesh.insert_indices(Indices::U32(grass_indices));
+
         let mut w_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
         w_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, wall_pos);
         w_mesh.insert_indices(Indices::U32(wall_indices));
 
-        (r_mesh, w_mesh)
+        (r_mesh, g_mesh, w_mesh)
     }
 
+    /// VISÃO ULTRA-PRECISA (0.5m)
     pub fn raycast(&self, wx: f32, wz: f32, angle: f32, max_dist: f32) -> f32 {
         let mut d = 0.0;
         while d < max_dist {
             let px = wx + angle.cos() * d;
             let pz = wz + angle.sin() * d;
-            if self.get_voxel_at(px, pz) == VoxelType::Wall { return d; }
-            d += 1.5;
+            let voxel = self.get_voxel_at(px, pz);
+            if voxel == VoxelType::Wall || voxel == VoxelType::Grass { 
+                return d; 
+            }
+            d += 0.5; // Precisão cirúrgica para sentir as bordas
         }
         max_dist
     }

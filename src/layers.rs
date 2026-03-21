@@ -64,4 +64,8 @@ impl BitLinear {
             self.weights[i] = scaled.round().clamp(-1.0, 1.0) as i8;
         }
     }
+
+    pub fn set_scale(&mut self, scale: f32) {
+        self.weight_scale = scale;
+    }
 }
