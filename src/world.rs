@@ -1,78 +1,164 @@
-/// IARA v2101 - Sovereign World: The F1 Resonance Circuit
-/// Based on Codex v2101: Darwinismo Matemático e Geometria de Splines
+use bevy::prelude::*;
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
 
-use std::f32::consts::PI;
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum VoxelType { Grass = 0, Road = 1, Wall = 2 }
 
-pub struct RaceTrack {
-    /// Points defining the center of the track (Racing Line)
-    pub path: Vec<(f32, f32)>,
-    pub width: f32,
-    /// KAN Barriers along the track edges or inside curves
-    pub barriers: Vec<(f32, f32, f32)>, 
+#[derive(Resource, Default)]
+pub struct VoxelWorldResource(pub VoxelWorld);
+
+pub struct VoxelWorld {
+    pub size: usize,
+    pub grid: Vec<VoxelType>,
+    pub flow: Vec<Vec2>,
+    pub cell_size: f32,
+    pub start_pos: Vec3,
+    pub lap_distance: f32,
 }
 
-impl RaceTrack {
-    pub fn new() -> Self {
-        // Criando um circuito estilo Interlagos/F1 (Formato de 'L' ou Ferradura)
-        let path = vec![
-            (0.0, 0.0),   // Largada
-            (20.0, 0.0),  // Reta inicial
-            (30.0, 5.0),  // Curva larga 1
-            (35.0, 15.0), // Curva fechada (Hairpin)
-            (25.0, 20.0), // Reta oposta
-            (10.0, 15.0), // Curva larga 2
-            (0.0, 10.0),  // S do Senna
-            (0.0, 0.0),   // Fechamento (Loop)
+impl VoxelWorld {
+    pub fn new(_seed: u64) -> Self {
+        let size = 120;
+        let cell_size = 2.5;
+        let mut grid = vec![VoxelType::Grass; size * size];
+        let mut flow = vec![Vec2::ZERO; size * size];
+        
+        // CIRCUITO FIXO E ESTÁVEL (O QUE FUNCIONAVA)
+        let waypoints = vec![
+            Vec2::new(10.0, 10.0), Vec2::new(80.0, 10.0),
+            Vec2::new(90.0, 40.0), Vec2::new(60.0, 60.0),
+            Vec2::new(20.0, 80.0), Vec2::new(10.0, 40.0),
+            Vec2::new(10.0, 10.0),
         ];
 
-        let mut barriers = Vec::new();
-        // Adicionar barreiras KAN nas "zebras" das curvas para forçar precisão
-        barriers.push((32.0, 5.0, 2.0));  // Curva 1
-        barriers.push((37.0, 15.0, 1.5)); // Apex do Hairpin
-        barriers.push((5.0, 12.0, 2.0));  // S do Senna
+        let track_width = 10.0;
+        for y in 0..size {
+            for x in 0..size {
+                let pos = Vec2::new(x as f32, y as f32);
+                let mut min_dist = f32::MAX;
+                let mut best_dir = Vec2::ZERO;
 
-        Self {
-            path,
-            width: 6.0,
-            barriers,
+                for i in 0..waypoints.len() - 1 {
+                    let d = dist_to_segment(pos, waypoints[i], waypoints[i+1]);
+                    if d < min_dist { 
+                        min_dist = d; 
+                        best_dir = (waypoints[i+1] - waypoints[i]).normalize_or_zero();
+                    }
+                }
+
+                let idx = y * size + x;
+                flow[idx] = best_dir;
+                grid[idx] = if min_dist < track_width / 2.0 { VoxelType::Road }
+                            else if min_dist < (track_width / 2.0) + 1.0 { VoxelType::Wall }
+                            else { VoxelType::Grass };
+            }
+        }
+
+        Self { 
+            size, grid, flow, cell_size,
+            start_pos: Vec3::new(10.0 * cell_size, 0.5, 10.0 * cell_size),
+            lap_distance: 400.0,
         }
     }
 
-    /// Retorna a ressonância baseada na distância até o ponto mais próximo do path
-    pub fn get_resonance_at(&self, x: f32, y: f32) -> (f32, f32) {
-        let mut min_dist = f32::MAX;
-        let mut closest_idx = 0;
+    pub fn get_voxel_at(&self, wx: f32, wz: f32) -> VoxelType {
+        let x = (wx / self.cell_size).round() as i32;
+        let y = (wz / self.cell_size).round() as i32;
+        if x >= 0 && x < self.size as i32 && y >= 0 && y < self.size as i32 {
+            self.grid[y as usize * self.size + x as usize]
+        } else { VoxelType::Wall }
+    }
 
-        // Encontrar o segmento mais próximo
-        for i in 0..self.path.len() {
-            let p = self.path[i];
-            let dist = ((p.0 - x).powi(2) + (p.1 - y).powi(2)).sqrt();
-            if dist < min_dist {
-                min_dist = dist;
-                closest_idx = i;
+    pub fn get_flow_at(&self, wx: f32, wz: f32) -> Vec2 {
+        let x = (wx / self.cell_size).round() as i32;
+        let y = (wz / self.cell_size).round() as i32;
+        if x >= 0 && x < self.size as i32 && y >= 0 && y < self.size as i32 {
+            self.flow[y as usize * self.size + x as usize]
+        } else { Vec2::ZERO }
+    }
+
+    pub fn generate_mesh(&self) -> (Mesh, Mesh) {
+        let mut road_pos = Vec::new();
+        let mut road_colors = Vec::new();
+        let mut road_indices = Vec::new();
+        let mut wall_pos = Vec::new();
+        let mut wall_indices = Vec::new();
+
+        for y in 0..self.size {
+            for x in 0..self.size {
+                let v = self.grid[y * self.size + x];
+                let px = x as f32 * self.cell_size;
+                let pz = y as f32 * self.cell_size;
+
+                if v == VoxelType::Road || v == VoxelType::Grass {
+                    // Estrada com efeito de "Profundidade Quântica"
+                    let color = if v == VoxelType::Road { 
+                        [0.02, 0.02, 0.05, 1.0] // Azul Profundo
+                    } else { 
+                        [0.01, 0.01, 0.02, 1.0] // Quase Preto
+                    };
+                    
+                    let b = road_pos.len() as u32;
+                    road_pos.extend_from_slice(&[
+                        [px, 0.0, pz], 
+                        [px+self.cell_size, 0.0, pz], 
+                        [px, 0.0, pz+self.cell_size], 
+                        [px+self.cell_size, 0.0, pz+self.cell_size]
+                    ]);
+                    road_colors.extend_from_slice(&[color; 4]);
+                    road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
+
+                    // Adicionar "Bordas de Energia" se for Road adjacente a Wall ou Grass
+                    if v == VoxelType::Road {
+                        // (Lógica simplificada para bordas neon)
+                    }
+                } else if v == VoxelType::Wall {
+                    let b = wall_pos.len() as u32;
+                    let h = 2.5; // Muros de energia mais baixos e elegantes
+                    wall_pos.extend_from_slice(&[
+                        [px, 0.0, pz], 
+                        [px+self.cell_size, 0.0, pz], 
+                        [px, h, pz], 
+                        [px+self.cell_size, h, pz]
+                    ]);
+                    wall_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
+                }
             }
         }
 
-        // Direção ideal: Tangente ao próximo ponto do path
-        let next_idx = (closest_idx + 1) % self.path.len();
-        let target = self.path[next_idx];
-        let angle_to_target = (target.1 - y).atan2(target.0 - x);
+        let mut r_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        r_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, road_pos);
+        r_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, road_colors);
+        r_mesh.insert_indices(Indices::U32(road_indices));
 
-        // Penalidade por sair da largura da pista
-        let off_track = (min_dist / (self.width / 2.0)).powi(2);
-        
-        // Barreiras KAN
-        let mut repulsion = 0.0;
-        let mut phase_shift = 0.0;
-        for b in &self.barriers {
-            let dist = ((b.0 - x).powi(2) + (b.1 - y).powi(2)).sqrt();
-            if dist < b.2 * 2.0 {
-                let intensity = 1.0 - (dist / (b.2 * 2.0));
-                repulsion += intensity;
-                phase_shift += intensity * PI;
-            }
+        let mut w_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        w_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, wall_pos);
+        w_mesh.insert_indices(Indices::U32(wall_indices));
+
+        (r_mesh, w_mesh)
+    }
+
+    pub fn raycast(&self, wx: f32, wz: f32, angle: f32, max_dist: f32) -> f32 {
+        let mut d = 0.0;
+        while d < max_dist {
+            let px = wx + angle.cos() * d;
+            let pz = wz + angle.sin() * d;
+            if self.get_voxel_at(px, pz) == VoxelType::Wall { return d; }
+            d += 1.5;
         }
+        max_dist
+    }
+}
 
-        (angle_to_target + phase_shift, (1.0 - off_track) - repulsion)
+fn dist_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+impl Default for VoxelWorld {
+    fn default() -> Self {
+        Self { size: 0, grid: Vec::new(), flow: Vec::new(), cell_size: 0.0, start_pos: Vec3::ZERO, lap_distance: 0.0 }
     }
 }

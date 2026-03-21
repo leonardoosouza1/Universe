@@ -37,7 +37,6 @@ impl Metabolism {
     }
 
     fn trigger_sleep(&mut self) {
-        println!("[CBF] - Critical Fatigue Detected. Entering Night Dojo (Sleep).");
         self.is_sleeping = true;
     }
 
@@ -49,9 +48,9 @@ impl Metabolism {
 
             if self.adenosine <= 0.1 {
                 self.is_sleeping = false;
-                println!("[CBF] - Homeostasis Reached. Waking Up.");
             }
-        } else {
+        }
+ else {
             // Natural slow recovery if not fully stressed
             if self.adenosine > 0.0 {
                 self.adenosine -= 0.001 * delta_t;

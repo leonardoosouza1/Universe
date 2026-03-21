@@ -30,12 +30,8 @@ impl RepoMiner {
     }
 
     fn trigger_hunt(&mut self) {
-        println!("[REPOMINER] - Hunger Trigger Activated. Searching internet for new physical datasets...");
-        // Simulation of data acquisition (Kaggle/GitHub heist)
         let dataset_name = format!("Dataset_Physics_{}", self.knowledge_base.len());
         self.knowledge_base.push(dataset_name.clone());
-        
-        println!("[REPOMINER] - Ingested: {}. Resetting hunger.", dataset_name);
         self.hunger_level = 0.0; // Satiated
     }
 

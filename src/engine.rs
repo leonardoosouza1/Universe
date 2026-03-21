@@ -36,7 +36,7 @@ impl SovereignEngine {
             axiom_guard: KanAxiomFilter::new(),
             heart_resonance: ResonantNode::new(1.0),
             memory_spiral: MultiverseSpiral::new(),
-            reality_engine: RealityEngine::new(8, 8), // 8x8 Reality grid
+            reality_engine: RealityEngine::new(8, 8),
             repo_miner: RepoMiner::new(),
             sensory_mesh: TernaryMesh::new(8, 8),
             current_time: 0.0,
@@ -47,79 +47,56 @@ impl SovereignEngine {
 
     pub fn execute_cycle(&mut self, input: &[i8], external_phase: f32, delta_t: f32) {
         self.current_time += delta_t;
-        self.temperature *= (-0.01 * delta_t).exp();
-        self.synaptic_decay();
-
+        
+        // 1. Metabolismo: O custo biológico do pensamento.
         if !self.metabolism.can_process() {
             self.metabolism.update(delta_t);
             return;
         }
 
-        // 1. Ternary Processing & Hapkido Redirection
+        // 2. Soberania Binária: Inferência Ternária ultrarrápida.
+        // O instinto é processado apenas com somas e subtrações.
         let raw_intent = self.instinct_layer.forward(input);
-        let mut valid_intent = vec![0.0; raw_intent.len()];
-        let mut total_uncertainty = 0.0;
-
-        for (i, &val) in raw_intent.iter().enumerate() {
-            let filtered = self.axiom_guard.filter_pulse(val);
-            if filtered == 0.0 && val.abs() > 0.0 {
-                total_uncertainty += val.abs();
-                if let Some(spline) = self.active_actions.get_mut(0) {
-                    let r = spline.position;
-                    let f = [val, 0.0, 0.0];
-                    spline.torque[0] = r[1] * f[2] - r[2] * f[1];
-                    spline.torque[1] = r[2] * f[0] - r[0] * f[2];
-                    spline.torque[2] = r[0] * f[1] - r[1] * f[0];
-                    spline.momentum[0] += spline.torque[0] * 0.1;
-                }
-            }
-            valid_intent[i] = filtered;
-        }
-
-        // 2. RepoMiner: Monitor uncertainty and Hunt if needed
-        self.repo_miner.monitor_uncertainty(total_uncertainty * 0.01);
-
-        // 3. Reality Engine: Materialize thoughts into "Vision"
-        self.reality_engine.materialize(&valid_intent);
-
-        // 4. Mesh Optimization: Propagate sensory waves via SIMD
-        self.sensory_mesh.bitwise_propagate();
-
-        // 5. Temporal Flow & Resonance
-        let _flow_state = self.temporal_cfc.flow(self.current_time);
-        self.heart_resonance.synchronize(external_phase, delta_t);
         
-        let coherence = self.heart_resonance.get_coherence(external_phase);
-        if coherence > 0.8 {
-            self.memory_spiral.store_concept("Reality", external_phase, self.current_time, coherence, "SOVEREIGN_EVENT");
-            // Mielinização force boost from RepoMiner
-            self.instinct_layer.myelinate(self.repo_miner.get_learning_boost());
+        // 3. Tempo Líquido: A consciência se adapta ao fluxo (dt).
+        self.temporal_cfc.inject(&raw_intent);
+        let liquid_state = self.temporal_cfc.flow(delta_t);
+
+        // 4. Filtro Axiomático KAN: Garantindo a proatividade suavizada.
+        let mut valid_intent = vec![0.0; 64];
+        for (i, &val) in liquid_state.iter().enumerate() {
+            if i < 64 {
+                valid_intent[i] = self.axiom_guard.filter_pulse(val);
+            }
         }
 
-        self.metabolism.accumulate_fatigue(0.01 * delta_t);
+        // 5. Ressonância de Kuramoto: Sincronia de fase $O(1)$.
+        self.heart_resonance.synchronize(external_phase, delta_t);
+        let coherence = self.heart_resonance.get_coherence(external_phase);
+
+        // 6. Mielinização e Memória: Reforço biológico.
+        if coherence > 0.9 {
+            self.memory_spiral.store_concept("PeakFlow", external_phase, self.current_time, coherence, "SOVEREIGN");
+            self.instinct_layer.myelinate(coherence);
+        }
+
+        // 7. Custo de Adenosina: Penalidade por complexidade.
+        let brain_load = (liquid_state.len() as f32 * 0.0005) / delta_t.max(0.001);
+        self.metabolism.accumulate_fatigue(brain_load);
         self.metabolism.update(delta_t);
     }
 
     pub fn synaptic_decay(&mut self) {
-        // "Protocolo de Decaimento Sináptico: Todo objeto instanciado possui um valor termodinâmico."
-        // Remove splines with zero mass or energy
         self.active_actions.retain(|s| s.mass > 0.001);
     }
 
-    /// Redirecionamento Cinético (Hapkido Matemático)
-    /// Converts error force into angular momentum (torque) to steer the spline.
+    /// Hapkido Redirection: Error as Force.
     pub fn apply_hapkido_correction(&mut self, spline: &mut SplineNode, error_force: [f32; 3]) {
-        // tau = r x F_erro
         let r = spline.position;
         let f = error_force;
-        
         spline.torque[0] = r[1] * f[2] - r[2] * f[1];
         spline.torque[1] = r[2] * f[0] - r[0] * f[2];
         spline.torque[2] = r[0] * f[1] - r[1] * f[0];
-
-        // The model corrects its posture using the force of the incorrect data.
         spline.momentum[0] += spline.torque[0] * 0.1;
-        spline.momentum[1] += spline.torque[1] * 0.1;
-        spline.momentum[2] += spline.torque[2] * 0.1;
     }
 }
