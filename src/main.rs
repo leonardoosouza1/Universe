@@ -26,16 +26,16 @@ use evolution::{EvolutionPlugin, RaceSettings, DevSettings, ElementMaterials};
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "IARA v2101 - IRON FORGE".into(), ..default() }),
+            primary_window: Some(Window { title: "IARA v2101 - IRON STRESS LAB".into(), ..default() }),
             ..default()
         }))
-        .insert_resource(ClearColor(Color::srgb(0.0, 0.0, 0.01)))
+        .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.05)))
         .insert_resource(RaceSettings {
             generation: 1,
             best_weights: None,
-            best_scale: 1.0,
-            best_recipe: String::from("Sincronizando Valência..."),
-            best_fitness: 0.0,
+            best_scale: 1000,
+            best_recipe: String::from("Pure Integer Forge Active..."),
+            best_fitness: 0,
             should_reset: false,
             fossils: Vec::new(),
         })
@@ -55,15 +55,34 @@ fn setup_scene(
     mut el_materials: ResMut<ElementMaterials>,
     world_res: Res<world::VoxelWorldResource>,
 ) {
-    commands.insert_resource(AmbientLight { brightness: 1000.0, color: Color::WHITE, ..default() });
+    // ILUMINAÇÃO MASSIVA (FIM DO PRETO)
+    commands.insert_resource(AmbientLight { brightness: 500.0, color: Color::WHITE, ..default() });
+    
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 5000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(500.0, 500.0, 500.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 
-    // Câmera Única Cinematográfica
+    commands.spawn((
+        PointLight {
+            intensity: 1000000.0,
+            range: 2000.0,
+            color: Color::srgb(1.0, 1.0, 0.8),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 200.0, 0.0),
+    ));
+
     commands.spawn((
         Camera3d::default(),
         Camera { hdr: true, ..default() },
         Tonemapping::TonyMcMapface,
         Bloom::default(),
-        MainCamera { yaw: 0.0, pitch: 0.5, dist: 600.0 },
+        MainCamera { yaw: 0.5, pitch: 0.2, dist: 800.0 },
     ));
     
     evolution::spawn_multiverse(&mut commands, &mut meshes, &mut materials, &mut el_materials, &race, &dev, &world_res.0);

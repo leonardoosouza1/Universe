@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use crate::simulation::{Atom, ScientistIA, SubPart};
 use crate::world::{VoxelWorld, VoxelWorldResource};
-use crate::periodic_table::get_element_by_name;
+use crate::resonance::ResonantNode;
+use crate::periodic_table::{get_element_by_name, PERIODIC_TABLE};
 use rand::prelude::*;
 
 #[derive(Resource, Default)]
@@ -13,9 +14,9 @@ pub struct ElementMaterials {
 pub struct RaceSettings {
     pub generation: usize,
     pub best_weights: Option<Vec<i8>>,
-    pub best_scale: f32,
+    pub best_scale: i32,
     pub best_recipe: String,
-    pub best_fitness: f32,
+    pub best_fitness: i32,
     pub should_reset: bool,
     pub fossils: Vec<AtomFossil>,
 }
@@ -23,8 +24,7 @@ pub struct RaceSettings {
 #[derive(Clone)]
 pub struct AtomFossil {
     pub name: String,
-    pub position: Vec3,
-    pub phase: f32,
+    pub ix: i32, pub iy: i32, pub iz: i32,
 }
 
 #[derive(Resource)]
@@ -59,9 +59,8 @@ pub fn spawn_multiverse(
     _world: &VoxelWorld,
 ) {
     let mut rng = rand::rng();
-    let core_mesh = meshes.add(Sphere::new(4.0));
+    let core_mesh = meshes.add(Sphere::new(2.0));
 
-    // UM ÚNICO CIENTISTA
     let mut engine = crate::engine::SovereignEngine::new();
     if let Some(ref best) = race.best_weights {
         engine.instinct_layer.weights = best.clone();
@@ -70,34 +69,45 @@ pub fn spawn_multiverse(
 
     commands.spawn(ScientistIA {
         engine,
-        universe_id: 0,
         sync_bit: 0,
-        integrity: 0,
-        center: Vec3::ZERO,
-        discovery_hardness: 0.0,
-        discovery_conductive: 0.0,
-        discovery_purity: 0.0,
+        tunnel_stability: 0,
+        vortex_expansion: 400,
+        brain_resonator: ResonantNode::new(1.0),
     });
 
-    // 300 ÁTOMOS DE FERRO NO CENTRO
-    for _ in 0..300 {
-        let ix = rng.random_range(-1000..1000);
-        let iy = rng.random_range(-400..400);
-        let iz = rng.random_range(-400..400);
+    // SPAWN DE MATERIAIS: Carbono e Prata para testar condutividade e malha
+    let elements_to_spawn = ["Carbon", "Silver"];
+    
+    for i in 0..150 {
+        let el_name = elements_to_spawn[i % 2];
+        let el = get_element_by_name(el_name);
+        
+        let ix = rng.random_range(-150..150) as f32;
+        let iy = rng.random_range(-150..150) as f32;
+        let iz = rng.random_range(-150..150) as f32;
 
-        let mut valence = Vec::new();
-        valence.push(SubPart { phase: rng.random_range(0..127), ..default() });
+        let mut electrons = Vec::new();
+        for _ in 0..el.valence_electrons {
+            electrons.push(SubPart {
+                rel_pos: Vec3::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)).normalize() * (el.radius / 10.0),
+                velocity: Vec3::ZERO,
+                phase: rng.random_range(0.0..6.28),
+            });
+        }
 
         commands.spawn((
             Atom { 
-                name: "Iron".to_string(),
-                ix, iy, iz,
-                vx: 0, vy: 0, vz: 0,
-                valence_electrons: valence,
-                is_locked: false,
+                element: el.name.to_string(),
+                mass: el.mass,
+                charge: el.valence_electrons as f32, // Simplificação: carga efetiva
+                radius: el.radius,
+                electronegativity: el.electronegativity,
+                velocity: Vec3::ZERO,
+                electrons,
+                energy_level: if el.name == "Silver" { 1.0 } else { 0.0 },
             },
             Mesh3d(core_mesh.clone()), MeshMaterial3d(materials.add(StandardMaterial::default())),
-            Transform::from_translation(Vec3::ZERO),
+            Transform::from_translation(Vec3::new(ix, iy, iz)),
         ));
     }
 }

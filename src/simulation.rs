@@ -1,36 +1,39 @@
 use bevy::prelude::*;
 use crate::engine::SovereignEngine;
+use crate::world::{VoxelWorld, VoxelWorldResource};
+use crate::resonance::ResonantNode;
+use crate::periodic_table::{get_element_by_name};
 
-const SCALE: i32 = 1000;
-const IRON_LATTICE: i32 = 286;
-const IRON_BOND: i32 = 248;
+const SCALE: f32 = 10.0;
+const COULOMB_K: f32 = 500.0;
+const PAULI_K: f32 = 2000.0;
 
 #[derive(Clone, Copy, Default)]
 pub struct SubPart {
-    pub x: i32, pub y: i32, pub z: i32,
-    pub vx: i32, pub vy: i32, pub vz: i32,
-    pub phase: i8,
+    pub rel_pos: Vec3,
+    pub velocity: Vec3,
+    pub phase: f32,
 }
 
 #[derive(Component)]
 pub struct Atom {
-    pub name: String,
-    pub ix: i32, pub iy: i32, pub iz: i32, 
-    pub vx: i32, pub vy: i32, pub vz: i32,
-    pub valence_electrons: Vec<SubPart>,
-    pub is_locked: bool,
+    pub element: String,
+    pub mass: f32,
+    pub charge: f32, // Carga do Núcleo
+    pub radius: f32,
+    pub electronegativity: f32,
+    pub velocity: Vec3,
+    pub electrons: Vec<SubPart>,
+    pub energy_level: f32, // Condução de energia
 }
 
 #[derive(Component)]
 pub struct ScientistIA {
     pub engine: SovereignEngine,
-    pub universe_id: usize,
-    pub center: Vec3,
     pub sync_bit: i8,
-    pub integrity: i32,
-    pub discovery_hardness: f32,
-    pub discovery_conductive: f32,
-    pub discovery_purity: f32,
+    pub tunnel_stability: i32,
+    pub vortex_expansion: i32,
+    pub brain_resonator: ResonantNode,
 }
 
 #[derive(Component)]
@@ -44,89 +47,101 @@ pub struct AtomPlugin;
 
 impl Plugin for AtomPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (iron_bar_synthesis, main_camera_system));
+        app.add_systems(Update, (atomic_physics_system, main_camera_system));
     }
 }
 
-fn iron_bar_synthesis(
+fn atomic_physics_system(
     mut scientists: Query<&mut ScientistIA>,
     mut atoms: Query<(Entity, &mut Atom, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
     mut gizmos: Gizmos,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
 ) {
-    let Ok(mut scientist) = scientists.get_single_mut() else { return };
-    
-    let mut sensory = [0i8; 128];
-    sensory[0] = (scientist.integrity / 10).clamp(0, 127) as i8;
-    let intent = scientist.engine.get_intent(&sensory);
-    scientist.sync_bit = (intent[0] % 127) as i8;
+    let Ok(mut scientist) = scientists.single_mut() else { return };
+    let dt = time.delta_secs().min(0.02); // Estabilidade física
 
-    let atom_data: Vec<(Entity, i32, i32, i32, i8, bool)> = atoms.iter()
-        .map(|(e, a, _, _)| (e, a.ix, a.iy, a.iz, a.valence_electrons[0].phase, a.is_locked))
+    let mut atom_positions: Vec<(Entity, Vec3, f32, f32, String)> = atoms.iter()
+        .map(|(e, a, t, _)| (e, t.translation, a.charge, a.radius, a.element.clone()))
         .collect();
 
-    let mut total_sync = 0;
+    let mut total_stability = 0;
 
     for (entity, mut atom, mut transform, mat_handle) in atoms.iter_mut() {
-        if atom.is_locked {
-            if let Some(mat) = materials.get_mut(&mat_handle.0) {
-                mat.base_color = Color::srgb(0.5, 0.5, 0.6);
-                mat.emissive = LinearRgba::from(mat.base_color) * 30.0;
-            }
-            continue;
-        }
+        let mut force = Vec3::ZERO;
+        let pos = transform.translation;
 
-        let mut fx = 0i32; let mut fy = 0i32; let mut fz = 0i32;
-        let mut local_bonds = 0;
-
-        let target_x = (atom.ix / IRON_LATTICE) * IRON_LATTICE;
-        let target_y = (atom.iy / IRON_LATTICE) * IRON_LATTICE;
-        let target_z = (atom.iz / IRON_LATTICE) * IRON_LATTICE;
-        
-        fx += (target_x.clamp(-1200, 1200) - atom.ix) * 2;
-        fy += (target_y.clamp(-300, 300) - atom.iy) * 4;
-        fz += (target_z.clamp(-300, 300) - atom.iz) * 4;
-
-        for (other_e, ox, oy, oz, o_phase, _) in &atom_data {
+        // 1. INTERAÇÃO INTER-ATÔMICA (Ligações e Repulsão)
+        for (other_e, other_pos, other_charge, other_radius, other_el) in &atom_positions {
             if entity == *other_e { continue; }
-            let dx = ox - atom.ix;
-            let dy = oy - atom.iy;
-            let dz = oz - atom.iz;
-            let dist_sq = (dx*dx + dy*dy + dz*dz) / SCALE;
 
-            if dist_sq < 1200 {
-                if (atom.valence_electrons[0].phase as i32 - *o_phase as i32).abs() < 3 {
-                    let error = dist_sq - (IRON_BOND * IRON_BOND / SCALE);
-                    fx += dx * error / 1500;
-                    fy += dy * error / 1500;
-                    fz += dz * error / 1500;
-                    local_bonds += 1;
-                    if entity.index() < other_e.index() {
-                        let p2 = Vec3::new(*ox as f32 / 10.0, *oy as f32 / 10.0, *oz as f32 / 10.0);
-                        gizmos.line(transform.translation, p2, Color::srgba(0.0, 1.0, 1.0, 0.4));
-                    }
+            let dir = *other_pos - pos;
+            let dist = dir.length();
+            if dist < 0.1 { continue; }
+            let unit_dir = dir.normalize();
+
+            // Coulomb (Atração/Repulsão de longo alcance)
+            let f_coulomb = (atom.charge * other_charge * COULOMB_K) / (dist * dist);
+            force -= unit_dir * f_coulomb;
+
+            // Repulsão de Pauli / Van der Waals (Curto alcance)
+            let min_dist = (atom.radius + other_radius) / 50.0;
+            if dist < min_dist {
+                let overlap = min_dist - dist;
+                force -= unit_dir * overlap * PAULI_K;
+            }
+
+            // CONDUÇÃO DE ENERGIA (Especialmente Prata/Silver)
+            if (atom.element == "Silver" || other_el == "Silver") && dist < min_dist * 1.5 {
+                // Transferência de energia (frequência/fase) entre condutores
+                if atom.energy_level > 0.1 {
+                    gizmos.line(pos, *other_pos, Color::srgba(0.8, 0.9, 1.0, 0.3));
                 }
             }
         }
 
-        atom.vx = (atom.vx + fx) - (atom.vx >> 3);
-        atom.vy = (atom.vy + fy) - (atom.vy >> 3);
-        atom.vz = (atom.vz + fz) - (atom.vz >> 3);
-        atom.ix += atom.vx / 10;
-        atom.iy += atom.vy / 10;
-        atom.iz += atom.vz / 10;
+        // 2. DINÂMICA DOS ELÉTRONS (SubParts orbitais)
+        let num_electrons = atom.electrons.len();
+        for i in 0..num_electrons {
+            let electron = &mut atom.electrons[i];
+            
+            // Força Central (Núcleo puxa elétron)
+            let dist_to_core = electron.rel_pos.length();
+            let pull = (atom.charge * 100.0) / (dist_to_core.max(1.0).powi(2));
+            let dir_to_core = -electron.rel_pos.normalize_or_zero();
+            
+            // Força Centrífuga Simulada (Órbita)
+            let orbit_axis = Vec3::Y;
+            let tangent = electron.rel_pos.cross(orbit_axis).normalize_or_zero();
+            
+            electron.velocity += (dir_to_core * pull + tangent * 2.0) * dt;
+            electron.rel_pos += electron.velocity * dt;
+            
+            // Manter na "nuvem" eletrônica baseada no raio atômico
+            let target_r = atom.radius / 10.0;
+            if electron.rel_pos.length() > target_r * 1.5 {
+                electron.rel_pos = electron.rel_pos.normalize() * target_r;
+            }
 
-        if local_bonds >= 6 && atom.vx.abs() < 3 { atom.is_locked = true; }
+            // Renderizar Elétrons como pequenos gizmos
+            gizmos.sphere(pos + electron.rel_pos, 0.5, Color::srgb(0.0, 1.0, 1.0));
+        }
 
-        transform.translation = Vec3::new(atom.ix as f32 / 10.0, atom.iy as f32 / 10.0, atom.iz as f32 / 10.0);
-        gizmos.sphere(transform.translation, 5.0, Color::srgb(1.0, 0.2, 0.1));
-        total_sync += local_bonds;
+        // 3. MOVIMENTO DO NÚCLEO
+        let accel = force / atom.mass;
+        atom.velocity = (atom.velocity + accel * dt) * 0.95; // Amortecimento
+        transform.translation += atom.velocity * dt;
+
+        // 4. ATUALIZAÇÃO VISUAL
+        if let Some(mat) = materials.get_mut(&mat_handle.0) {
+            let el_data = get_element_by_name(&atom.element);
+            mat.base_color = el_data.color;
+            mat.emissive = LinearRgba::from(el_data.color) * (1.0 + atom.energy_level);
+        }
     }
-
-    scientist.integrity = (total_sync / 10).min(1000);
-    scientist.discovery_hardness = (scientist.integrity as f32 / 1000.0) * 211.0;
-    scientist.discovery_conductive = (scientist.integrity as f32 / 1000.0) * 0.9;
-    scientist.discovery_purity = scientist.integrity as f32 / 1000.0;
+    
+    // O Cientista monitora a "Estabilidade da Malha"
+    scientist.tunnel_stability = (total_stability / 10).min(1000);
 }
 
 fn main_camera_system(
@@ -135,7 +150,7 @@ fn main_camera_system(
     mut motion: EventReader<bevy::input::mouse::MouseMotion>,
     mut scroll: EventReader<bevy::input::mouse::MouseWheel>,
 ) {
-    let Ok((mut transform, mut cam)) = query.get_single_mut() else { return };
+    let Ok((mut transform, mut cam)) = query.single_mut() else { return };
     let mut delta = Vec2::ZERO;
     for ev in motion.read() { delta += ev.delta; }
     let scroll_y = scroll.read().map(|ev| ev.y).sum::<f32>();
@@ -144,9 +159,9 @@ fn main_camera_system(
         cam.yaw -= delta.x * 0.005;
         cam.pitch = (cam.pitch - delta.y * 0.005).clamp(-1.5, 1.5);
     }
-    cam.dist = (cam.dist - scroll_y * 40.0).clamp(50.0, 3000.0);
+    cam.dist = (cam.dist - scroll_y * 60.0).clamp(100.0, 5000.0);
 
     let rot = Quat::from_rotation_y(cam.yaw) * Quat::from_rotation_x(cam.pitch);
-    transform.translation = rot * Vec3::Z * cam.dist;
+    transform.translation = rot * Vec3::new(0.0, 200.0, cam.dist);
     transform.look_at(Vec3::ZERO, Vec3::Y);
 }
