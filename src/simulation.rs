@@ -32,7 +32,7 @@ impl Plugin for RacerPlugin {
 }
 
 fn update_racers(
-    mut query: Query<(&mut Racer, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut query: Query<(Entity, &mut Racer, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
     world_res: Res<VoxelWorldResource>,
     dev: Res<crate::evolution::DevSettings>,
     time: Res<Time>,
@@ -41,14 +41,20 @@ fn update_racers(
     let dt = time.delta_secs().min(0.02);
     let world = &world_res.0;
 
-    for (mut racer, mut transform, mat_handle) in query.iter_mut() {
+    // Coletar posições de todos os pilotos vivos para interação de enxame
+    let particle_positions: Vec<(Entity, Vec3)> = query.iter()
+        .filter(|(_, r, _, _)| !r.is_dead)
+        .map(|(e, _, t, _)| (e, t.translation))
+        .collect();
+
+    for (entity, mut racer, mut transform, mat_handle) in query.iter_mut() {
         if racer.is_dead { continue; }
 
         let pos = transform.translation;
         let flow = world.get_flow_at(pos.x, pos.z);
         let track_phase = flow.y.atan2(flow.x);
 
-        // --- 1. VISÃO DINÂMICA (HUMAN-LIKE) ---
+        // --- 1. VISÃO DINÂMICA + RADAR DE ENXAME ---
         let vision_range = 25.0 + racer.amplitude * 1.8;
         let mut sensory_wave = vec![0i8; 128];
         let num_rays = 21;
@@ -63,37 +69,52 @@ fn update_racers(
             if d > max_harmony_dist { max_harmony_dist = d; harmony_angle = angle_offset; }
         }
 
-        // --- 2. CANAIS DE INSTINTO (AMPLIFICADOS) ---
-        // Canal 42: O "Chamado da Pista" (Ângulo do maior vão) - SINAL FORTE
-        sensory_wave[42] = (harmony_angle * 100.0).clamp(-127.0, 127.0) as i8;
-        
-        // Canal 43: Bússola de Alinhamento (Estou no sentido certo?)
+        // INTERAÇÃO ENTRE PARTÍCULAS (REPULSÃO QUÂNTICA)
+        let mut repulsion_vec = Vec2::ZERO;
+        for (other_entity, other_pos) in &particle_positions {
+            if entity == *other_entity { continue; }
+            let dist = pos.distance(*other_pos);
+            if dist < 8.0 {
+                // Força de Repulsão Inversa
+                let diff = (pos - *other_pos).xz().normalize_or_zero();
+                let push = (8.0 / dist.max(1.0)).powi(2);
+                repulsion_vec += diff * push;
+                
+                // Injetar "Dor de Proximidade" no Canal 50 do cérebro
+                sensory_wave[50] = (push * 10.0).clamp(0.0, 127.0) as i8;
+            }
+        }
+
+        // --- 2. EXECUÇÃO ---
+        let sync_err = (track_phase - racer.phase).sin();
         let alignment = (racer.phase - track_phase).cos();
+        sensory_wave[41] = (sync_err * 127.0) as i8;
+        sensory_wave[42] = (harmony_angle * 100.0).clamp(-127.0, 127.0) as i8;
         sensory_wave[43] = (alignment * 127.0) as i8;
 
-        // --- 3. EXECUÇÃO SOBERANA ---
         racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
         let intent = racer.engine.instinct_layer.forward(&sensory_wave);
-        
         let pedal_intent = (intent[0] + 0.5).clamp(0.0, 1.0);
         let steer_intent = intent[1].clamp(-1.0, 1.0);
 
-        // --- 4. MOVIMENTAÇÃO POR ONDAS ---
+        // --- 3. MOVIMENTAÇÃO POR ONDAS E REPULSÃO ---
         let target_amp = pedal_intent * dev.wave_amplitude;
         racer.amplitude = racer.amplitude + (target_amp - racer.amplitude) * 2.0 * dt;
         
-        // O volante agora responde com mais força ao instinto neural (4.5 -> 6.0)
-        let flow_pull = (track_phase - racer.phase).sin() * dev.flow_influence;
+        let flow_pull = sync_err * dev.flow_influence;
         racer.phase = racer.phase + (steer_intent * 6.0 + flow_pull) * dt;
 
-        let wave_vector = Vec3::new(racer.phase.cos(), 0.0, racer.phase.sin()) * racer.amplitude;
-        transform.translation += wave_vector * dt;
+        let mut wave_vector = Vec2::new(racer.phase.cos(), racer.phase.sin()) * racer.amplitude;
+        // Aplicar a Repulsão Quântica das outras partículas
+        wave_vector += repulsion_vec * 5.0;
+
+        transform.translation += Vec3::new(wave_vector.x, 0.0, wave_vector.y) * dt;
         transform.rotation = Quat::from_rotation_y(-racer.phase);
 
         racer.distance += (wave_vector * dt).length();
         racer.prev_pos = transform.translation;
 
-        // --- 5. DOR E TRAUMA ---
+        // --- 4. ELIMINAÇÃO ---
         let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
         if voxel == VoxelType::Wall || voxel == VoxelType::Grass || (racer.engine.current_time > 2.0 && alignment < 0.0) {
             racer.is_dead = true;
@@ -108,7 +129,6 @@ fn update_racers(
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
         if racer.fuel <= 0.0 { racer.is_dead = true; }
         
-        // Contagem de Voltas
         let lap_line_x = world.start_pos.x;
         if racer.prev_pos.x < lap_line_x && transform.translation.x >= lap_line_x && racer.distance > 400.0 {
             racer.total_laps += 1; racer.distance = 0.0;

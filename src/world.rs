@@ -19,19 +19,22 @@ pub struct VoxelWorld {
 
 impl VoxelWorld {
     pub fn new(_seed: u64) -> Self {
-        let size = 160; 
+        let size = 200; // Mapa maior para a complexidade
         let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
         let mut flow = vec![Vec2::ZERO; size * size];
         
+        // --- O CIRCUITO QUANTUM SERPENTINE (DIFÍCIL) ---
         let waypoints = vec![
-            Vec2::new(20.0, 20.0), Vec2::new(140.0, 20.0), 
-            Vec2::new(140.0, 60.0), Vec2::new(100.0, 100.0), 
-            Vec2::new(100.0, 140.0), Vec2::new(60.0, 140.0), 
-            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
+            Vec2::new(20.0, 20.0),   Vec2::new(160.0, 20.0),  // Reta de Largada
+            Vec2::new(180.0, 60.0),  Vec2::new(140.0, 80.0),  // Curva 1 (Fechando)
+            Vec2::new(160.0, 120.0), Vec2::new(100.0, 100.0), // Curva 2 (Gancho)
+            Vec2::new(80.0, 160.0),  Vec2::new(40.0, 140.0),  // O "S" de Alta
+            Vec2::new(60.0, 80.0),   Vec2::new(20.0, 60.0),   // Curva Técnica
+            Vec2::new(20.0, 20.0),                            // Volta ao Início
         ];
 
-        let track_width = 18.0; 
+        let track_width = 16.0; 
         for y in 0..size {
             for x in 0..size {
                 let pos = Vec2::new(x as f32, y as f32);
@@ -48,16 +51,22 @@ impl VoxelWorld {
 
                 let idx = y * size + x;
                 flow[idx] = best_dir;
-                grid[idx] = if min_dist < track_width / 2.0 { VoxelType::Road }
-                            else if min_dist < (track_width / 2.0) + 1.5 { VoxelType::Wall }
+                
+                // Variabilidade de largura (Simulando uma pista orgânica)
+                let width_mod = (pos.x * 0.05).sin() * 2.0;
+                let current_width = track_width + width_mod;
+
+                grid[idx] = if min_dist < current_width / 2.0 { VoxelType::Road }
+                            else if min_dist < (current_width / 2.0) + 1.2 { VoxelType::Wall }
                             else { VoxelType::Grass };
             }
         }
 
         Self { 
             size, grid, flow, cell_size,
-            start_pos: Vec3::new(80.0 * cell_size, 0.5, 20.0 * cell_size),
-            lap_distance: 800.0,
+            // Largada posicionada na reta principal
+            start_pos: Vec3::new(90.0 * cell_size, 0.5, 20.0 * cell_size),
+            lap_distance: 1200.0,
         }
     }
 
@@ -105,7 +114,7 @@ impl VoxelWorld {
                     grass_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Wall {
                     let b = wall_pos.len() as u32;
-                    let h = 1.0;
+                    let h = 0.8;
                     wall_pos.extend_from_slice(&[
                         [px + self.cell_size * 0.4, 0.0, pz + self.cell_size * 0.4], 
                         [px + self.cell_size * 0.6, 0.0, pz + self.cell_size * 0.6], 
@@ -133,17 +142,14 @@ impl VoxelWorld {
         (r_mesh, g_mesh, w_mesh)
     }
 
-    /// VISÃO ULTRA-PRECISA (0.5m)
     pub fn raycast(&self, wx: f32, wz: f32, angle: f32, max_dist: f32) -> f32 {
         let mut d = 0.0;
         while d < max_dist {
             let px = wx + angle.cos() * d;
             let pz = wz + angle.sin() * d;
             let voxel = self.get_voxel_at(px, pz);
-            if voxel == VoxelType::Wall || voxel == VoxelType::Grass { 
-                return d; 
-            }
-            d += 0.5; // Precisão cirúrgica para sentir as bordas
+            if voxel == VoxelType::Wall || voxel == VoxelType::Grass { return d; }
+            d += 0.5; 
         }
         max_dist
     }
