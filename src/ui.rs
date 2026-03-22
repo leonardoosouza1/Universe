@@ -34,18 +34,22 @@ fn update_hud(
     race: Res<RaceSettings>,
     dev: Res<DevSettings>,
 ) {
-    let Ok((ui_entity, children)) = query.get_single() else { return; };
+    let Ok((ui_entity, children)) = query.single() else { return; };
     if let Some(children) = children {
         for child in children.iter() {
-            if let Some(e) = commands.get_entity(*child) {
-                e.despawn_recursive();
+            if let Ok(mut e) = commands.get_entity(child) {
+                e.despawn();
             }
         }
     }
 
 
     let mut sorted: Vec<(Entity, &Racer)> = racer_query.iter().collect();
-    sorted.sort_by(|a, b| b.1.distance.partial_cmp(&a.1.distance).unwrap());
+    sorted.sort_by(|a, b| {
+        let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
+        let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
+        score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     commands.entity(ui_entity).with_children(|p| {
         // --- PAINEL DEV (ESQUERDA) ---
@@ -120,9 +124,13 @@ fn update_hud(
         });
 
         // --- TELEMETRY (ESQUERDA INFERIOR) ---
-        if let Some(selected) = race.selected_racer {
-            if let Ok((_, r)) = racer_query.get(selected) {
-                p.spawn(Node {
+        // Se o usuário não clicou em ninguém, espiona o Líder (1º colocado)
+        let selected = race.selected_racer.unwrap_or_else(|| {
+            sorted.first().map(|(e, _)| *e).unwrap_or(Entity::PLACEHOLDER)
+        });
+        
+        if let Ok((_, r)) = racer_query.get(selected) {
+            p.spawn(Node {
                     position_type: PositionType::Absolute,
                     bottom: Val::Px(10.0),
                     left: Val::Px(10.0),
@@ -168,26 +176,21 @@ fn update_hud(
                         // Linha 1: Horizonte (Muros), Linha 0: Chão (Asfalto/Grama)
                         for row in (0..2).rev() { 
                             retina_col.spawn(Node { width: Val::Percent(100.0), height: Val::Percent(50.0), flex_direction: FlexDirection::Row, ..default() }).with_children(|retina_row| {
-                                for eye in 0..2 {
-                                    for x in 0..16 {
-                                        let i = (eye * 32) + (row * 16) + x;
-                                        let brightness = ((r.visual_cortex[i] as f32 + 128.0) / 255.0).clamp(0.0, 1.0);
-                                        let color = Color::srgb(brightness, brightness, brightness);
-                                        let margin = if x == 15 && eye == 0 { UiRect::right(Val::Px(6.0)) } else { UiRect::default() };
-                                        retina_row.spawn(Node {
-                                            width: Val::Percent(100.0 / 32.0),
-                                            height: Val::Percent(100.0),
-                                            margin,
-                                            ..default()
-                                        }).insert(BackgroundColor(color));
-                                    }
+                                for x in 0..32 {
+                                    let i = (row * 32) + x;
+                                    let brightness = ((r.visual_cortex[i] as f32 + 128.0) / 255.0).clamp(0.0, 1.0);
+                                    let color = Color::srgb(brightness, brightness, brightness);
+                                    retina_row.spawn(Node {
+                                        width: Val::Percent(100.0 / 32.0),
+                                        height: Val::Percent(100.0),
+                                        ..default()
+                                    }).insert(BackgroundColor(color));
                                 }
                             });
                         }
                     });
                 });
             }
-        }
     });
 }
 

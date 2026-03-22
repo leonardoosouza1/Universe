@@ -54,7 +54,6 @@ pub fn spawn_swarm(
     dev: &DevSettings,
 ) {
     let mut rng = rand::rng();
-    let chassis = meshes.add(Cuboid::new(3.0, 0.4, 1.2)); 
     let wing = meshes.add(Cuboid::new(0.6, 0.8, 2.0)); 
     let cockpit = meshes.add(Sphere::new(0.4));
     let names = ["Senna", "Hamilton", "Prost", "Schumi", "Alonso", "Vettel", "Max", "Lauda", "Leclerc", "Norris"];
@@ -130,8 +129,8 @@ pub fn spawn_swarm(
             p.spawn((
                 SpotLight {
                     color: Color::WHITE,
-                    intensity: 1_000_000.0,
-                    range: 40.0,
+                    intensity: 150_000.0, // Luz alta para alcance prolongado (150m)
+                    range: 150.0,
                     radius: 0.0,
                     shadows_enabled: false,
                     inner_angle: 0.8,
@@ -166,7 +165,11 @@ fn evolution_pipeline(
             let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {}", race.generation, reason);
             
             let mut sorted: Vec<_> = query.iter().collect();
-            sorted.sort_by(|a, b| b.1.distance.partial_cmp(&a.1.distance).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| {
+                let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
+                let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
+                score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            });
             for (i, (_, r)) in sorted.iter().enumerate() {
                 let status = if r.is_dead { "M" } else { "V" };
                 let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | MaxLap: {} | Último Freio Analógico: {:.2}%", 
@@ -174,7 +177,15 @@ fn evolution_pipeline(
             }
         }
 
-        let best_racer = if let Some((_, w)) = winner { Some(w) } else { query.iter().max_by(|a, b| a.1.distance.partial_cmp(&b.1.distance).unwrap()).map(|(_, r)| r) };
+        let best_racer = if let Some((_, w)) = winner { 
+            Some(w) 
+        } else { 
+            query.iter().max_by(|a, b| {
+                let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
+                let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
+                score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+            }).map(|(_, r)| r) 
+        };
         if let Some(best) = best_racer {
             let weights = best.engine.instinct_layer.weights.clone();
             let scale = best.engine.instinct_layer.weight_scale;
@@ -185,8 +196,8 @@ fn evolution_pipeline(
                 let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>()); 
             }
         }
-        for e in &race.world_entities { if let Some(e_cmd) = commands.get_entity(*e) { e_cmd.despawn_recursive(); } }
-        for (e, _) in query.iter() { commands.entity(e).despawn_recursive(); }
+        for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
+        for (e, _) in query.iter() { commands.entity(e).despawn(); }
         race.generation += 1; race.should_reset = false; race.selected_racer = None;
         let world = VoxelWorld::new(race.seed);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();

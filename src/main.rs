@@ -60,7 +60,8 @@ fn setup_scene(
         Transform::from_xyz(150.0, 450.0, 150.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     
-    commands.insert_resource(AmbientLight { brightness: 1200.0, color: Color::srgb(0.9, 0.95, 1.0), ..default() });
+    // Diminuindo a luz ambiente para simulação noturna severa (Deixa os espasmos mortais do freio e faróis puros visíveis)
+    commands.insert_resource(AmbientLight { brightness: 25.0, color: Color::srgb(0.8, 0.85, 1.0), ..default() });
 
     let world = &world_res.0;
     let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();

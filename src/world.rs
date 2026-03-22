@@ -159,68 +159,113 @@ impl VoxelWorld {
         }
         max_dist
     }
-    /// RETINA COMPUTACIONAL BIOLÓGICA (Visão Bifocal Estereoscópica: 16x2 por Olho)
+    /// LÍDAR ÓPTICO (Visão Cíclope Linear HD com Raycast DDA: 32x2 pixels abrangendo 100 Graus Uniformes)
     pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3) -> [i8; 64] {
         let mut pixels = [-128; 64];
-        let fov = 135.0_f32.to_radians();
-        
-        let left_eye_pos = pos - right * 0.4;
-        let right_eye_pos = pos + right * 0.4;
+        let fov = 100.0_f32.to_radians();
+        let eye_pos = pos + Vec3::Y * 0.4;
+        let cell = self.cell_size;
 
-        for eye in 0..2 {
-            let eye_pos = if eye == 0 { left_eye_pos } else { right_eye_pos };
-            let offset = eye * 32;
-
-            for row in 0..2 { // Row 0 = Chão (Pitch -0.04 ≈ 10 metros), Row 1 = Horizonte (Pitch 0.0)
-                let pitch = if row == 0 { -0.04_f32 } else { 0.0_f32 };
-                let dir_y = pitch.sin();
-                let cos_pitch = pitch.cos();
+        for row in 0..2 { // Row 0 = Chão (Pitch -0.04), Row 1 = Horizonte (Pitch 0.0)
+            let pitch = if row == 0 { -0.04_f32 } else { 0.0_f32 };
+            let dir_y = pitch.sin();
+            let cos_pitch = pitch.cos();
+            
+            for i in 0..32 {
+                let index = (row * 32) + i;
+                let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
                 
-                for i in 0..16 {
-                    let normalized_i = (i as f32 / 15.0) * 2.0 - 1.0;
-                    let foveated_i = normalized_i.powi(3); // Maior densidade central
-                    let yaw_angle = foveated_i * (fov / 2.0);
-                    
-                    let dir_x = (forward.x * yaw_angle.cos() + right.x * yaw_angle.sin()) * cos_pitch;
-                    let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
-                    
-                    let mut d = 0.0;
-                    let mut hit_voxel = VoxelType::Road;
-                    let mut hit_dist = 40.0; // Alcance máximo absoluto: 40 metros
-                    let mut normal_shade = 1.0;
-                    
-                    while d < 40.0 {
-                        let px = eye_pos.x + dir_x * d;
-                        let py = eye_pos.y + dir_y * d;
-                        let pz = eye_pos.z + dir_z * d;
-                        
-                        if py <= 0.0 {
-                            hit_voxel = self.get_voxel_at(px, pz);
-                            hit_dist = d;
-                            normal_shade = 0.6; // Tangencial
-                            break;
-                        }
-                        
-                        let voxel = self.get_voxel_at(px, pz);
-                        if voxel == VoxelType::Wall && py <= 1.0 { 
-                            hit_voxel = VoxelType::Wall;
-                            hit_dist = d;
-                            normal_shade = 1.0; 
-                            break;
-                        }
-                        d += 0.5; 
+                // Distribuição Mapeada de forma 100% Linear. Precisão impecável em curvas.
+                let yaw_angle = normalized_i * (fov / 2.0);
+                
+                let dir_x = (forward.x * yaw_angle.cos() + right.x * yaw_angle.sin()) * cos_pitch;
+                let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
+                
+                let mut hit_voxel = VoxelType::Road;
+                let mut hit_dist = 150.0;
+                let mut normal_shade = 1.0;
+                
+                let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
+                
+                // Implementação do Algoritmo DDA (Digital Differential Analyzer) - Precisão Metafísica O(1)
+                let ray_start = Vec2::new(eye_pos.x / cell, eye_pos.z / cell);
+                let ray_dir = Vec2::new(dir_x, dir_z).normalize_or_zero();
+                
+                let mut map_x = ray_start.x.floor() as i32;
+                let mut map_y = ray_start.y.floor() as i32;
+                
+                let delta_dist_x = if ray_dir.x.abs() < 1e-5 { 1e30 } else { (1.0 / ray_dir.x).abs() };
+                let delta_dist_y = if ray_dir.y.abs() < 1e-5 { 1e30 } else { (1.0 / ray_dir.y).abs() };
+                
+                let step_x: i32; let step_y: i32;
+                let mut side_dist_x: f32; let mut side_dist_y: f32;
+                
+                if ray_dir.x < 0.0 {
+                    step_x = -1; side_dist_x = (ray_start.x - map_x as f32) * delta_dist_x;
+                } else {
+                    step_x = 1; side_dist_x = ((map_x as f32 + 1.0) - ray_start.x) * delta_dist_x;
+                }
+                
+                if ray_dir.y < 0.0 {
+                    step_y = -1; side_dist_y = (ray_start.y - map_y as f32) * delta_dist_y;
+                } else {
+                    step_y = 1; side_dist_y = ((map_y as f32 + 1.0) - ray_start.y) * delta_dist_y;
+                }
+                
+                let mut hit = false;
+                let mut side = 0; // 0 = hit X wall, 1 = hit Z wall
+                let mut current_dist = 0.0;
+                
+                // Limite de alcance ~150 metros (75 blocos de 2m)
+                for _ in 0..75 {
+                    if side_dist_x < side_dist_y {
+                        side_dist_x += delta_dist_x; map_x += step_x; side = 0;
+                    } else {
+                        side_dist_y += delta_dist_y; map_y += step_y; side = 1;
                     }
                     
-                    let albedo = match hit_voxel {
-                        VoxelType::Wall => 255.0, // Branco Brilhante
-                        VoxelType::Road => 110.0, // Cinza Asfalto
-                        VoxelType::Grass => 30.0, // Preto/Escuro Grama
-                    };
-                    
-                    let shade = (albedo * normal_shade) / (1.0 + (hit_dist * 0.06).powi(2));
-                    let pixel_idx = offset + (row * 16) + i;
-                    pixels[pixel_idx] = (shade.clamp(0.0, 255.0) as i32 - 128) as i8;
+                    let voxel = self.get_voxel_at((map_x as f32) * cell, (map_y as f32) * cell);
+                    if voxel == VoxelType::Wall {
+                        hit_voxel = voxel; hit = true; break;
+                    }
                 }
+                
+                if hit {
+                    if side == 0 { current_dist = (map_x as f32 - ray_start.x + (1 - step_x) as f32 / 2.0) / ray_dir.x; } 
+                    else { current_dist = (map_y as f32 - ray_start.y + (1 - step_y) as f32 / 2.0) / ray_dir.y; }
+                    current_dist *= cell; // Converte DDA Distance de volta para metros reais
+                    
+                    if dir_y < -0.001 && current_dist > dist_to_ground {
+                        // O raio bateu no chão ANTES de atingir a parede lateral DDA
+                        hit_dist = dist_to_ground;
+                        let hit_px = eye_pos.x + dir_x * hit_dist;
+                        let hit_pz = eye_pos.z + dir_z * hit_dist;
+                        hit_voxel = self.get_voxel_at(hit_px, hit_pz);
+                        normal_shade = 0.8;
+                    } else {
+                        hit_dist = current_dist;
+                        let nx = if side == 0 { -step_x as f32 } else { 0.0 };
+                        let nz = if side == 1 { -step_y as f32 } else { 0.0 };
+                        let mut normal = Vec2::new(nx, nz);
+                        let dot = normal.dot(-ray_dir).clamp(0.0, 1.0);
+                        normal_shade = 0.3 + dot * 0.7; // Reflexo de Snell realístico
+                    }
+                } else if dir_y < -0.001 && dist_to_ground <= 150.0 {
+                    // Sem paredes, mas bateu no chão
+                    hit_dist = dist_to_ground;
+                    let hit_px = eye_pos.x + dir_x * hit_dist;
+                    let hit_pz = eye_pos.z + dir_z * hit_dist;
+                    hit_voxel = self.get_voxel_at(hit_px, hit_pz);
+                    normal_shade = 0.8;
+                }
+                
+                let depth_fade = (hit_dist / 150.0).clamp(0.0, 1.0);
+                let (base_val, _) = match hit_voxel {
+                    VoxelType::Wall => (0.9, 0.0), VoxelType::Road => (0.1, 0.0), VoxelType::Grass => (0.0, 0.0),
+                };
+                
+                let pixel_val = base_val * normal_shade * (1.0 - depth_fade);
+                pixels[index] = (pixel_val * 255.0 - 128.0).clamp(-128.0, 127.0) as i8;
             }
         }
         pixels

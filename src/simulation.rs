@@ -54,6 +54,7 @@ fn skidmark_cleanup_system(
 fn update_racers(
     mut commands: Commands,
     mut query: Query<(
+        Entity,
         &mut Racer, 
         &mut Transform, 
         &mut MeshMaterial3d<StandardMaterial>,
@@ -67,11 +68,22 @@ fn update_racers(
     mut meshes: ResMut<Assets<Mesh>>,
     mut race: ResMut<crate::evolution::RaceSettings>,
     mut skidmark_cache: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
+    mut gizmos: Gizmos,
 ) {
     let dt = time.delta_secs().min(0.02);
     let world = &world_res.0;
 
-    for (mut racer, mut transform, mat_handle, mut opt_engine, mut opt_body) in query.iter_mut() {
+    let mut best_score = -10000.0;
+    let mut current_best = race.selected_racer.unwrap_or(Entity::PLACEHOLDER);
+    for (e, r, _, _, _, _) in query.iter() {
+        let score = if r.distance <= 0.0 { r.distance * 100.0 } else { r.distance.powi(2) / r.engine.current_time.max(0.1) };
+        if score > best_score {
+            best_score = score;
+            current_best = e;
+        }
+    }
+
+    for (entity, mut racer, mut transform, mat_handle, mut opt_engine, mut opt_body) in query.iter_mut() {
         if racer.is_dead { 
             if let Some(engine_comp) = opt_engine.as_mut() { engine_comp.throttle = 0.0; }
             if let Some(body) = opt_body.as_mut() { body.velocity *= 0.8; body.angular_velocity *= 0.8; }
@@ -155,9 +167,16 @@ fn update_racers(
         racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 6.0).min(1.0); // ~166ms tempo de girar volante
         racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 10.0).min(1.0); // ~100ms delay pastilha de freio
 
-        let physical_throttle = racer.memory[0];
+        let mut physical_throttle = racer.memory[0];
         let physical_steer = racer.memory[1];
         let physical_brake = racer.memory[2];
+
+        // --- SISTEMA BOS (Brake Override System / Smart Pedal) ---
+        // Na vida real e no simulador, se os dois pedais são pressionados, a injeção eletrônica
+        // corta o acelerador para evitar que o motor brigue com as pastilhas de freio.
+        if physical_brake > 0.05 {
+            physical_throttle = 0.0;
+        }
 
         // --- 4. ENGINE E FÍSICA (NOVO) ---
         let flow_pull = (track_phase - racer.phase).sin() * dev.flow_influence;
@@ -175,7 +194,10 @@ fn update_racers(
             // Distância verdadeira: Projeção da velocidade na direção da pista (Flow)
             let flow_3d = Vec3::new(flow.x, 0.0, flow.y).normalize_or_zero();
             let track_velocity = body.velocity.dot(flow_3d);
-            racer.distance += track_velocity * dt;
+            
+            // Punição de Fitness por Zigzag: Subtrai a velocidade lateral desperdiçada do score de distância
+            let lateral_velocity = body.velocity.cross(flow_3d).length();
+            racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
         } else {
             // Fallback kinematic
             let target_amp = pedal_intent * dev.wave_amplitude;
@@ -195,10 +217,10 @@ fn update_racers(
         if voxel == VoxelType::Wall {
             if let Some(ref mut body) = opt_body {
                 let speed_kmh = body.velocity.length() * 3.6;
-                let dano = (speed_kmh.powi(2) * 0.005).max(0.1); 
-                racer.hp -= dano; // Dano Escala Exponencialmente
+                let dano = (speed_kmh.powi(2) * 0.005).max(10.0); // Mínimo de 10 HP por hit (Anti Wall-Hugging)
+                racer.hp -= dano; 
                 
-                body.velocity *= -0.3; // Ricochete Elástico Punitivo
+                body.velocity = body.velocity.normalize_or_zero() * -4.0; // Ricochete absoluto: zera inércia e joga 4m/s p/ trás
                 transform.translation = racer.prev_pos; 
                 
                 if racer.hp <= 0.0 {
@@ -225,6 +247,24 @@ fn update_racers(
             racer.total_laps += 1; racer.distance = 0.0;
             if racer.total_laps % 3 == 0 { racer.fuel = 1.0; }
         }
+        
+        // --- 6. ESPIONAGEM NEURAL (GIZMOS DO CAMPO DE VISÃO) ---
+        if race.selected_racer.is_some() && race.selected_racer.unwrap() == entity || 
+           (race.selected_racer.is_none() && current_best == entity) {
+            
+            let fov = 100.0_f32.to_radians();
+            let forward = *transform.right(); // +X local
+            let eye_pos = transform.translation + Vec3::Y * 0.4;
+            
+            // Renderiza 32 fios da retina em formato Wave 3D
+            for i in 0..32 {
+                let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
+                let yaw_angle = normalized_i * (fov / 2.0);
+                let ray_dir = Quat::from_axis_angle(*transform.up(), yaw_angle) * forward;
+                
+                gizmos.line(eye_pos, eye_pos + ray_dir * 150.0, Color::srgba(0.0, 1.0, 0.0, 0.15));
+            }
+        }
     }
 }
 
@@ -248,7 +288,7 @@ fn camera_system(
         race.is_free_cam = !race.is_free_cam;
     }
 
-    if let Ok(mut cam_t) = query.get_single_mut() {
+    if let Ok(mut cam_t) = query.single_mut() {
         if race.is_free_cam {
             let mut move_dir = Vec3::ZERO;
             let forward = cam_t.forward().as_vec3();

@@ -81,7 +81,6 @@ fn reset_forces(mut query: Query<&mut PhysicsBody>) {
 
 fn suspension_system(
     mut query: Query<(&mut SuspensionComponent, &mut PhysicsBody, &Transform)>,
-    world_res: Res<VoxelWorldResource>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
