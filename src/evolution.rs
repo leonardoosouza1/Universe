@@ -118,9 +118,9 @@ pub fn spawn_swarm(
         commands.entity(racer_entity).insert(
             Racer { 
                 name: format!("{}-{}", names[i % names.len()], rng.random_range(10..99)),
-                engine, is_dead: false, distance: 0.0, amplitude: 0.0, phase: start_angle,
-                pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, total_laps: 0,
-                memory: [0.0; 3], visual_cortex: [0; 64],
+                engine, is_dead: false, distance: 0.0,                    phase: 0.0, amplitude: 0.0,
+                    pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
+                    memory: [0.0; 3], visual_cortex: [0; 64],
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

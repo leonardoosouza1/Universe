@@ -116,24 +116,36 @@ fn powertrain_system(
         let speed = body.velocity.length();
         let speed_kmh = speed * 3.6;
         
-        let gear_ratio = if speed_kmh < 70.0 { 15.0 } // Arrancada violenta
-                         else if speed_kmh < 130.0 { 9.0 }
-                         else if speed_kmh < 200.0 { 6.0 }
-                         else { 4.5 };
+        // --- VIRTUAL GEARBOX (Transmissão Mecânica) ---
+        let gears = [15.0, 10.0, 7.5, 5.5, 4.2, 3.5];
+        let mut current_gear = 5;
+        let shift_points = [60.0, 110.0, 160.0, 220.0, 280.0];
+        for (i, &sp) in shift_points.iter().enumerate() {
+            if speed_kmh < sp { current_gear = i; break; }
+        }
+        let gear_ratio = gears[current_gear];
                          
-        // Simulação matemática de giro de motor pela marcha atual
+        // RPM Dinâmico
         engine.current_rpm = (speed * gear_ratio * 12.0).clamp(800.0, engine.max_rpm);
         let rpm_ratio = engine.current_rpm / engine.max_rpm;
         
-        // Achatamento da curva de torque com menos gap (torque mínimo 60%)
+        // Curva de Torque Realística
         let torque_multiplier = 1.0 - (rpm_ratio - 0.6).powi(2) * 2.0;
         let torque = engine.max_torque * torque_multiplier.clamp(0.6, 1.0) * engine.throttle * gear_ratio;  
         
-        // Neural network assumes +X is forward (phase=0), and +Z is right (phase=PI/2)
         let forward_dir = transform.right().as_vec3();
         let tractive_force = forward_dir * torque;
-        
         body.forces += tractive_force;
+        
+        // --- AERODINÂMICA (ARRASTO E DOWNFORCE) ---
+        // Vento frontal como parede: F_d = v^2 * Cd * 1.5
+        let drag_force = speed * speed * chassis.drag_coefficient * 1.5; 
+        let aero_drag = -body.velocity.normalize_or_zero() * drag_force;
+        body.forces += aero_drag;
+        
+        // Carga Vertical (Peso Estático + Downforce)
+        let downforce = speed * speed * chassis.drag_coefficient * 2.0; // Aerofólio empurrando pra baixo
+        let normal_load = chassis.mass * 9.81 + downforce; // O peso dinâmico do carro
         
         let lateral_dir = transform.back().as_vec3();
         let lateral_vel = body.velocity.dot(lateral_dir);
@@ -142,9 +154,10 @@ fn powertrain_system(
         let voxel = world_res.0.get_voxel_at(transform.translation.x, transform.translation.z);
         let grip_multiplier = if voxel == crate::world::VoxelType::Grass { 0.4 } else { 1.0 };
         
-        let p_b = 12.0;   // Muito mais rígido para pegar grip em ângulos baixos
+        let p_b = 12.0;   // Rigidez da borracha
         let p_c = 1.9;
-        let p_d = 50000.0 * grip_multiplier; // Grip imenso para parecer "grudado no chão"
+        // P_d = Max Grip. Agora dependente do peso efetivo (Pneus grudam mais em alta velocidade pela gravidade+downforce)
+        let p_d = normal_load * 1.5 * grip_multiplier; 
         
         let lateral_force_mag = p_d * (p_c * (p_b * slip_angle).atan()).sin();
         

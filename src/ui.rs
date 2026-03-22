@@ -134,8 +134,12 @@ fn update_hud(
                 .with_children(|panel| {
                     panel.spawn((Text::new(format!("CÓRTEX CLONE: {}", r.name)), TextFont { font_size: 16.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 0.8))));
                     
-                    // Arrays de Pedais
-                    let pedals = [("THROTTLE (Aceleração)", r.memory[0], Color::srgb(0.0, 1.0, 0.0)), ("BRAKE (Freio)", r.memory[2], Color::srgb(1.0, 0.0, 0.0))];
+                    // Arrays de Vida e Pedais
+                    let pedals = [
+                        ("HP (Integridade Estrutural)", (r.hp / 100.0).clamp(0.0, 1.0), Color::srgb(0.0, 0.6, 1.0)),
+                        ("THROTTLE (Aceleração)", r.memory[0], Color::srgb(0.0, 1.0, 0.0)), 
+                        ("BRAKE (Freio)", r.memory[2], Color::srgb(1.0, 0.0, 0.0))
+                    ];
                     for (label, val, col) in pedals {
                         panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(14.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|bar| {
                             bar.spawn((Text::new(label), TextFont { font_size: 11.0, ..default() })).insert(Node { width: Val::Px(140.0), ..default() });

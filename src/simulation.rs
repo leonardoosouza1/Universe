@@ -7,12 +7,13 @@ pub struct Racer {
     pub name: String,
     pub engine: SovereignEngine,
     pub is_dead: bool,
-    pub distance: f32,
     pub amplitude: f32, 
     pub phase: f32,     
     pub pain_memories: Vec<PainSynapse>,
     pub prev_pos: Vec3,
+    pub distance: f32, // Distância viajada no circuito
     pub fuel: f32,
+    pub hp: f32, // Health Points (Dano Colisão)
     pub total_laps: usize,
     pub stagnation: f32,
     pub memory: [f32; 3], // [throttle, steer, brake]
@@ -162,7 +163,7 @@ fn update_racers(
         let flow_pull = (track_phase - racer.phase).sin() * dev.flow_influence;
         let steering_speed = physical_steer * 2.5 + flow_pull; // Volante agora segue a Inércia (Cadência)
 
-        if let (Some(mut engine_comp), Some(mut body)) = (opt_engine, opt_body) {
+        if let (Some(engine_comp), Some(body)) = (&mut opt_engine, &mut opt_body) {
             engine_comp.throttle = physical_throttle;
             engine_comp.brake = physical_brake;
             body.angular_velocity.y = steering_speed;
@@ -188,14 +189,29 @@ fn update_racers(
 
         racer.prev_pos = transform.translation;
 
-        // --- 5. DOR E TRAUMA ---
+        // --- 5. DOR E TRAUMA (Dano Letal por Energia Cinética) ---
         let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
-        if voxel == VoxelType::Wall || voxel == VoxelType::Grass || (racer.engine.current_time > 2.0 && alignment < 0.0) {
-            racer.is_dead = true;
-            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+        
+        if voxel == VoxelType::Wall {
+            if let Some(ref mut body) = opt_body {
+                let speed_kmh = body.velocity.length() * 3.6;
+                let dano = (speed_kmh.powi(2) * 0.005).max(0.1); 
+                racer.hp -= dano; // Dano Escala Exponencialmente
+                
+                body.velocity *= -0.3; // Ricochete Elástico Punitivo
+                transform.translation = racer.prev_pos; 
+                
+                if racer.hp <= 0.0 {
+                    racer.is_dead = true;
+                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                } else {
+                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::srgb(1.0, (racer.hp/100.0).clamp(0.0, 1.0), (racer.hp/100.0).clamp(0.0, 1.0)); } // Fica avermelhado
+                }
+            }
         }
         
-        if racer.amplitude < 3.0 && racer.engine.current_time > 8.0 { 
+        // Ficar travado na grama, contramão ou parado gera anóxia letal (Stagnation)
+        if (racer.amplitude < 3.0 && racer.engine.current_time > 8.0) || (racer.engine.current_time > 2.0 && alignment < 0.0) { 
             racer.stagnation += dt;
             if racer.stagnation > 1.0 { racer.is_dead = true; }
         } else { racer.stagnation = 0.0; }
