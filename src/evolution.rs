@@ -154,7 +154,7 @@ fn evolution_pipeline(
                 let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>()); 
             }
         }
-        for e in &race.world_entities { commands.entity(*e).despawn_recursive(); }
+        for e in &race.world_entities { if let Some(e_cmd) = commands.get_entity(*e) { e_cmd.despawn_recursive(); } }
         for (e, _) in query.iter() { commands.entity(e).despawn_recursive(); }
         race.generation += 1; race.should_reset = false; race.selected_racer = None;
         let world = VoxelWorld::new(race.seed);
