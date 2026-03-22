@@ -193,9 +193,16 @@ fn evolution_pipeline(
             for (i, (_, r, engine_comp)) in sorted.iter().enumerate() {
                 let status = if r.is_dead { "M" } else { "V" };
                 let speed_kmh = r.amplitude * 3.6;
-                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | EngPwr: {:.0}% | Pneu: {:.0}°C | Grama: {:.1}s | Vel: {:.0}km/h | Marcha: {} | Freio: {:.0}%", 
+                let gear_label = match engine_comp.current_gear {
+                    0 => "R".to_string(),
+                    1 => "N".to_string(),
+                    g => (g - 1).to_string(),
+                };
+                // Estresse é o canal 125, mas não guardamos no Racer. 
+                // Por enquanto vamos focar no que temos: Pneus e Marchas.
+                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | EngPwr: {:.0}% | Pneu: {:.1}°C | Grama: {:.1}s | Vel: {:.0}km/h | Marcha: {} | Freio: {:.0}%", 
                     i+1, status, r.name, r.distance, r.engine_power * 100.0, 
-                    r.tire_temp * 100.0, r.grass_time, speed_kmh, engine_comp.current_gear, r.memory[2] * 100.0);
+                    r.tire_temp * 100.0, r.grass_time, speed_kmh, gear_label, r.memory[2] * 100.0);
             }
         }
 

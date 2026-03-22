@@ -124,7 +124,8 @@ fn powertrain_and_tire_system(
         let forward_vel = body.velocity.dot(forward_dir); // Pode ser NEGATIVO (ré)
         let lateral_vel = body.velocity.dot(lateral_dir);
         
-        let gears = [12.0, 8.0, 6.0, 4.5, 3.5, 2.8];
+        // Gears: [0=Reverse, 1=Neutral, 2=1st, 3=2nd, 4=3rd, 5=4th, 6=5th]
+        let gears = [-10.0, 0.0, 12.0, 8.0, 6.0, 4.5, 3.5];
         
         // ========================================================
         // === A) MOTOR DE ARRANQUE MANUAL (STRICT STALL) ========
@@ -134,19 +135,18 @@ fn powertrain_and_tire_system(
         //   2. Segurar o acelerador > 50% por 1.0 segundo
         // Se tentar dar partida em marcha alta com carro parado, o motor afoga de novo.
         if engine.is_stalled {
-            if engine.current_gear <= 1 && engine.throttle > 0.5 {
+            // Partida permitida apenas em Ré (0), Neutro (1) ou 1ª (2)
+            if engine.current_gear <= 2 && engine.throttle > 0.5 {
                 engine.starter_timer += dt;
                 if engine.starter_timer >= 1.0 {
-                    // Motor de arranque conseguiu! Vira o motor.
                     engine.is_stalled = false;
                     engine.starter_timer = 0.0;
-                    engine.current_rpm = 800.0; // Volta pra lenta
+                    engine.current_rpm = 800.0;
                 }
             } else {
-                engine.starter_timer = 0.0; // Resetou: soltou o acelerador ou marcha errada
+                engine.starter_timer = 0.0;
             }
-            // Motor morto: sem torque, sem freio motor. Apenas arrasto e resistência.
-            // Pula direto pras forças passivas.
+            // Motor parado não gera torque nem freio motor
         }
         
         // ========================================================
@@ -180,8 +180,8 @@ fn powertrain_and_tire_system(
         let mut raw_rpm = forward_vel.abs() * gear_ratio * 30.0;
         
         let mut clutch_slip = false;
-        // Auto-embreagem em marchas baixas e baixa velocidade
-        if engine.current_gear <= 1 && forward_vel.abs() < 5.0 {
+        // Neutro (1) ou Auto-embreagem em Ré (0) ou 1ª (2) com baixa velocidade
+        if engine.current_gear == 1 || (engine.current_gear <= 2 && forward_vel.abs() < 5.0) {
             clutch_slip = true;
             raw_rpm = 800.0 + (engine.throttle * 2500.0);
         }

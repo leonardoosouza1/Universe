@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>IARA LAB: AGI Monitoring</title>
+    <style>
+        body { background: #050505; color: #00ffcc; font-family: 'Courier New', monospace; margin: 0; overflow: hidden; }
+        #lab-container { display: grid; grid-template-columns: 350px 1fr 350px; grid-template-rows: 1fr 200px; height: 100vh; gap: 10px; padding: 10px; box-sizing: border-box; }
+        .panel { background: rgba(0, 255, 204, 0.05); border: 1px solid #00ffcc; padding: 15px; position: relative; overflow-y: auto; }
+        .panel h2 { font-size: 14px; margin-top: 0; border-bottom: 1px solid #00ffcc; padding-bottom: 5px; color: #fff; }
+        #vision-stream { width: 100%; border: 1px solid #333; }
+        #log-flow { font-size: 11px; }
+        .log-entry { margin-bottom: 5px; border-left: 2px solid #00ffcc; padding-left: 5px; }
+        #neuron-map { display: grid; grid-template-columns: repeat(32, 1fr); gap: 2px; }
+        .neuron { width: 100%; aspect-ratio: 1; background: #111; border-radius: 50%; }
+        .active { background: #00ffcc; box-shadow: 0 0 5px #00ffcc; }
+        .inactive { background: #ff0055; box-shadow: 0 0 5px #ff0055; }
+        .dna-bit { display: inline-block; width: 8px; height: 8px; margin: 1px; }
+    </style>
+</head>
+<body>
+    <div id="lab-container">
+        <!-- Esquerda: Telemetria Cerebral -->
+        <div class="panel">
+            <h2>BRAIN METABOLISM</h2>
+            <div id="metabolism-data">
+                ENERGY: <span id="energy-val">0.0</span><br>
+                FATIGUE: <span id="fatigue-val">0.0</span><br>
+                COHERENCE: <span id="coherence-val">0.0</span>
+            </div>
+            <h2 style="margin-top:20px">NEURON ACTIVITY (128 Channels)</h2>
+            <div id="neuron-map"></div>
+        </div>
+
+        <!-- Centro: Visão e Navegação -->
+        <div class="panel">
+            <h2>DIGITAL FOVEA (EYE)</h2>
+            <img id="vision-stream" src="" alt="Visão da IARA">
+            <h2 style="margin-top:20px">THOUGHT LOG</h2>
+            <div id="log-flow"></div>
+        </div>
+
+        <!-- Direita: DNA e Sinapses -->
+        <div class="panel">
+            <h2>DNA BITS (-1, 0, 1)</h2>
+            <div id="dna-grid"></div>
+        </div>
+
+        <!-- Inferior: Painel de Controle -->
+        <div class="panel" style="grid-column: span 3;">
+            <h2>SOVEREIGN CONTROL CONSOLE</h2>
+            <div id="console-output">System initialized. Awaiting bit-metabolism...</div>
+        </div>
+    </div>
+
+    <script>
+        const ws = new WebSocket('ws://localhost:3000/ws');
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            // Atualizar Metabolismo
+            document.getElementById('energy-val').innerText = data.energy.toFixed(4);
+            document.getElementById('fatigue-val').innerText = data.fatigue.toFixed(4);
+            document.getElementById('coherence-val').innerText = data.coherence.toFixed(4);
+
+            // Atualizar Visão
+            if (data.screenshot) {
+                document.getElementById('vision-stream').src = 'data:image/png;base64,' + data.screenshot;
+            }
+
+            // Atualizar Neurônios
+            const map = document.getElementById('neuron-map');
+            map.innerHTML = '';
+            data.sensory_wave.forEach(v => {
+                const n = document.createElement('div');
+                n.className = 'neuron ' + (v > 0 ? 'active' : (v < 0 ? 'inactive' : ''));
+                map.appendChild(n);
+            });
+
+            // Adicionar Logs
+            if (data.log) {
+                const flow = document.getElementById('log-flow');
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.innerText = `[${new Date().toLocaleTimeString()}] ${data.log}`;
+                flow.prepend(entry);
+            }
+        };
+    </script>
+</body>
+</html>

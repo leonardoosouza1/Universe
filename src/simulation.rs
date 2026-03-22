@@ -73,7 +73,7 @@ fn update_racers(
     time: Res<Time>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut race: ResMut<crate::evolution::RaceSettings>,
+    race: Res<crate::evolution::RaceSettings>,
     mut skidmark_cache: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
     mut gizmos: Gizmos,
 ) {
@@ -145,7 +145,44 @@ fn update_racers(
         
         // Percepção de Dor Mecânica (HP), Tensão no Motor (RPM) e Marcha Atual
         sensory_wave[67] = ((racer.hp / 100.0) * 127.0).clamp(-128.0, 127.0) as i8;
-        if let Some(ref engine) = opt_engine {
+        // --- DETERMINAR RANK PARA ESTRESSE COMPETITIVO ---
+        let mut sorted_racers: Vec<(Entity, f32)> = racer_positions.iter().map(|&(e, p, _)| (e, p.x)).collect();
+        sorted_racers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let my_rank = sorted_racers.iter().position(|&(e, _)| e == entity).unwrap_or(0);
+        let is_leader = my_rank == 0;
+
+        // Canal 125: Estresse Competitivo (0 se líder, 127 se atrás de alguém próximo, 64 se meio do pelotão)
+        let mut comp_stress = 0;
+        if !is_leader {
+            comp_stress = 64;
+            for &(other_e, other_pos, _) in &racer_positions {
+                if other_e == entity { continue; }
+                let to_other = other_pos - pos;
+                if to_other.length() < 20.0 && to_other.normalize_or_zero().dot(forward) > 0.3 {
+                    comp_stress = 127; // "Tira ele da frente!"
+                    break;
+                }
+            }
+        }
+        sensory_wave[125] = comp_stress as i8;
+
+        // Canal 124: Dor de Centrífuga (Anti-Giro)
+        // Se estiver girando muito (>1.5 rad/s) e com pouca velocidade (<2.0 m/s), DOR MÁXIMA.
+        let is_spinning = if let Some(body) = &opt_body { body.angular_velocity.y.abs() > 1.5 && speed < 2.0 } else { false };
+        sensory_wave[124] = if is_spinning { -128 } else { 0 };
+
+        // --- AGITAÇÃO SENSORIO-REFERENCIAL (RUÍDO DE ESTRESSE) ---
+        // Injeta ruído exploratório nos sensores quando está estressado para sair de estados presos
+        if comp_stress > 0 {
+            let noise_amplitude = (comp_stress as f32 / 127.0) * 5.0;
+            for i in 0..64 {
+                let noise = (rand::random::<f32>() - 0.5) * noise_amplitude;
+                sensory_wave[i] = (sensory_wave[i] as f32 + noise).clamp(-128.0, 127.0) as i8;
+            }
+        }
+
+        // --- CANAIS ORIGINAIS ---
+        if let Some(engine) = &opt_engine {
             let rpm_ratio = engine.current_rpm / engine.max_rpm;
             sensory_wave[68] = (rpm_ratio * 127.0).clamp(0.0, 127.0) as i8;
             sensory_wave[69] = (engine.current_gear as i8 * 20).clamp(0, 127);
@@ -205,7 +242,7 @@ fn update_racers(
             mark_t.rotation *= Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
             mark_t.scale = Vec3::new(mark_length, 0.4, 1.0);
             
-            let e = commands.spawn((Mesh3d(mark_mesh.clone()), MeshMaterial3d(mark_mat.clone()), mark_t, Skidmark { timer: 5.0 })).id();
+            let _e = commands.spawn((Mesh3d(mark_mesh.clone()), MeshMaterial3d(mark_mat.clone()), mark_t, Skidmark { timer: 5.0 })).id();
             // Not adding to world_entities because they decay on their own and 
             // cleaning them up explicitly could block the CPU unnecessarily during reset.
         }
@@ -250,14 +287,14 @@ fn update_racers(
         // --- PENALIDADES MECÂNICAS (Dano por Mau Uso dos Atuadores) ---
         if pedal_intent > 0.1 && brake_intent > 0.1 {
             let overlap = pedal_intent * brake_intent;
-            // Reduzido o dano de overlap para não explodir instantaneamente
-            racer.hp -= overlap * dt * 15.0; 
+            // Reduzido o dano de overlap para 5.0/s (antes 15.0)
+            racer.hp -= overlap * dt * 5.0; 
         }
         
         // --- OVER-REV PENALTY (Estouro de Giro / Superaquecimento) ---
         if let Some(ref eng) = opt_engine {
-            if eng.current_rpm > eng.max_rpm * 0.95 { // Abaixado para 95% para não deixarem de castigo no limite final
-                racer.hp -= dt * 10.0; // Diminuído de 40.0 para dar tempo para a IA aprender a trocar de marcha
+            if eng.current_rpm > eng.max_rpm * 0.95 {
+                racer.hp -= dt * 5.0; // Reduzido de 10.0 para dar mais tempo de aprendizado
             }
         }
 
@@ -310,9 +347,9 @@ fn update_racers(
             // A IA precisa aprender a sequência de partida (reduzir pra marcha 0/1 + segurar acelerador).
             // Drena HP lentamente (bateria do starter) como pressão evolutiva para reiniciar rápido.
             if engine_comp.is_stalled {
-                racer.hp -= 5.0 * dt; // Dreno de bateria: ~20s até morrer
-                // Sinal neural forte: "SEU MOTOR ESTÁ MORTO!"
-                sensory_wave[126] = -128; // Canal dedicado: DOR MÁXIMA de stall
+                racer.hp -= 1.0 * dt; // Bateria drena lentamente: ~100s até morrer
+                // Sinal neural de Stall: "ALGO ESTÁ ERRADO"
+                sensory_wave[126] = -128; 
             }
             
             body.angular_velocity.y = steering_speed;
@@ -373,8 +410,8 @@ fn update_racers(
             }
         }
         
-        // Stagnation: Ficar parado, lento ou em contramão
-        if (racer.amplitude < 3.0 && racer.engine.current_time > 8.0) || (racer.engine.current_time > 2.0 && alignment < 0.0) { 
+        // Stagnation: Ficar parado ou em contramão. Aumentado para 20s/12s para aprender partida.
+        if (racer.amplitude < 3.0 && racer.engine.current_time > 20.0) || (racer.engine.current_time > 12.0 && alignment < 0.0) { 
             racer.stagnation += dt;
             if racer.stagnation > 1.0 { racer.is_dead = true; }
         } else { racer.stagnation = 0.0; }
