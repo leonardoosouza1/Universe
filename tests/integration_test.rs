@@ -31,7 +31,7 @@ fn test_bitlinear_inference() {
     
     // Mock weights: [1, -1, 0, 1,   -1, 1, 1, 0]
     let full_weights = vec![1.0, -1.0, 0.0, 1.0,  -1.0, 1.0, 1.0, 0.0];
-    layer.quantize_weights(&full_weights);
+    layer.quantize(&full_weights);
     
     // Input activations (8-bit int proxy): [10, 20, 30, 40]
     let input = vec![10, 20, 30, 40];

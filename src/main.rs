@@ -3,6 +3,7 @@ use universe::world::{VoxelWorld, VoxelWorldResource};
 use universe::simulation::RacerPlugin;
 use universe::ui::{UiPlugin, LeaderboardUI};
 use universe::evolution::{EvolutionPlugin, RaceSettings, DevSettings, spawn_swarm};
+use universe::environment::EnvironmentalState;
 
 fn main() {
     let initial_seed = 42;
@@ -26,6 +27,7 @@ fn main() {
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed)))
+    .insert_resource(EnvironmentalState::default())
     .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin))
     .add_systems(Startup, (setup_scene, setup_hud_container))
     .run();

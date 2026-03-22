@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use crate::engine::SovereignEngine;
 use crate::world::{VoxelType, VoxelWorldResource};
+use crate::environment::EnvironmentalState;
 
 #[derive(Component)]
 pub struct Racer {
@@ -11,13 +12,18 @@ pub struct Racer {
     pub phase: f32,     
     pub pain_memories: Vec<PainSynapse>,
     pub prev_pos: Vec3,
-    pub distance: f32, // Distância viajada no circuito
+    pub distance: f32,
     pub fuel: f32,
-    pub hp: f32, // Health Points (Dano Colisão)
+    pub hp: f32,
     pub total_laps: usize,
     pub stagnation: f32,
     pub memory: [f32; 3], // [throttle, steer, brake]
-    pub visual_cortex: [i8; 64], // Buffer bruto da retina para a Interface
+    pub visual_cortex: [i8; 64],
+    // --- NOVOS CAMPOS (Sovereign Drive Evolution) ---
+    pub tire_temp: f32,       // Carga térmica dos pneus 0.0-1.0
+    pub engine_power: f32,    // Degradação mecânica 0.1-1.0 (1.0 = full)
+    pub grass_time: f32,      // Tempo acumulado na grama (penalidade fitness)
+    pub aquaplaning_timer: f32, // Timer de aquaplanagem (0.5s de perda de controle)
 }
 
 pub struct PainSynapse {
@@ -62,6 +68,7 @@ fn update_racers(
         Option<&mut crate::physics::PhysicsBody>
     )>,
     world_res: Res<VoxelWorldResource>,
+    env: Res<EnvironmentalState>,
     dev: Res<crate::evolution::DevSettings>,
     time: Res<Time>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -73,13 +80,19 @@ fn update_racers(
     let dt = time.delta_secs().min(0.02);
     let world = &world_res.0;
 
+    // --- PRÉ-CÁLCULO (Primeiro passo read-only sobre a mesma query) ---
     let mut best_score = -10000.0;
     let mut current_best = race.selected_racer.unwrap_or(Entity::PLACEHOLDER);
-    for (e, r, _, _, _, _) in query.iter() {
+    let mut racer_positions: Vec<(Entity, Vec3, Vec3)> = Vec::new();
+
+    for (e, r, t, _, _, _) in query.iter() {
         let score = if r.distance <= 0.0 { r.distance * 100.0 } else { r.distance.powi(2) / r.engine.current_time.max(0.1) };
         if score > best_score {
             best_score = score;
             current_best = e;
+        }
+        if !r.is_dead {
+            racer_positions.push((e, t.translation, t.right().as_vec3()));
         }
     }
 
@@ -94,20 +107,27 @@ fn update_racers(
         let flow = world.get_flow_at(pos.x, pos.z);
         let track_phase = flow.y.atan2(flow.x);
 
-        // --- 1. VISÃO DINÂMICA (HUMAN-LIKE) ---
-        let vision_range = 25.0 + racer.amplitude * 1.8;
+        // --- 1. VISÃO DINÂMICA (COM CICLO DIA/NOITE) ---
+        let vision_range = env.vision_range() + racer.amplitude * 1.8;
         let mut sensory_wave = vec![0i8; 128];
-        let num_rays = 21;
-        let mut max_harmony_dist = 0.0;
-        let mut harmony_angle = 0.0;
 
         // --- VISÃO BIOLÓGICA ESTEREOSCÓPICA (Fóvea Dupla) ---
-        let forward = transform.right().as_vec3(); // O Local +X do nosso chassi é Front
-        let right = transform.back().as_vec3(); // O Local -Z é Right
+        let forward = transform.right().as_vec3();
+        let right = transform.back().as_vec3();
         
         let retina_binocular = world.render_binocular_retina(pos + Vec3::new(0.0, 0.4, 0.0), forward, right);
         for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
-        racer.visual_cortex = retina_binocular; // Espelha a retina gravada para análise na UI
+        racer.visual_cortex = retina_binocular;
+
+        // --- RUÍDO NOTURNO: Incerteza sensorial à noite ---
+        if env.is_night() {
+            use rand::prelude::*;
+            let mut rng = rand::rng();
+            for i in 0..64 {
+                let noise = rng.random_range(-15i8..15i8);
+                sensory_wave[i] = sensory_wave[i].saturating_add(noise);
+            }
+        }
 
         // --- 2. CANAIS DE INSTINTO E TELEMETRIA (Sensoriometria) ---
         let alignment = (racer.phase - track_phase).cos();
@@ -129,9 +149,43 @@ fn update_racers(
         if let Some(ref engine) = opt_engine {
             let rpm_ratio = engine.current_rpm / engine.max_rpm;
             sensory_wave[68] = (rpm_ratio * 127.0).clamp(0.0, 127.0) as i8;
-            sensory_wave[69] = (engine.current_gear as i8 * 20).clamp(0, 127); // Marcha mapeada
+            sensory_wave[69] = (engine.current_gear as i8 * 20).clamp(0, 127);
         }
 
+        // --- NOVOS SENSORES DE TELEMETRIA (PROPRIOCEPÇÃO) ---
+        // Canal 70: Carga Térmica dos Pneus (0-127 = 0%-100%)
+        sensory_wave[70] = (racer.tire_temp * 127.0).clamp(0.0, 127.0) as i8;
+        
+        // Canal 71: Downforce Sensor (D = 0.5 * ρ * v² * Cl * A)
+        let downforce_normalized = (0.5 * 1.225 * speed * speed * 0.18 * 3.0 * 2.0) / 15000.0; // Normalizado ~15kN max
+        sensory_wave[71] = (downforce_normalized * 127.0).clamp(0.0, 127.0) as i8;
+        
+        // Canal 72: Drafting/Slipstream (127 se piloto à frente dentro de 10m)
+        let mut in_draft = false;
+        for &(other_e, other_pos, _other_fwd) in &racer_positions {
+            if other_e == entity { continue; }
+            let to_other = other_pos - pos;
+            let dist = to_other.length();
+            let dot_forward = to_other.normalize_or_zero().dot(forward);
+            if dist < 10.0 && dot_forward > 0.5 {
+                in_draft = true;
+                break;
+            }
+        }
+        sensory_wave[72] = if in_draft { 127 } else { 0 };
+        
+        // Canal 73: Dor de Grama (Neural Pain constante quando na grama)
+        let voxel_current = world.get_voxel_at(pos.x, pos.z);
+        sensory_wave[73] = if voxel_current == VoxelType::Grass { -128 } else { 0 };
+        
+        // Canal 74: Peso do Volante (Steering Weight - Caster Dinâmico)
+        let steer_limit = 1.0 / (1.0 + speed * 0.02);
+        sensory_wave[74] = (steer_limit * 127.0).clamp(0.0, 127.0) as i8;
+        
+        // Canal 75: Clima / Wetness
+        sensory_wave[75] = (env.weather_wetness * 127.0).clamp(0.0, 127.0) as i8;
+
+        // --- SKIDMARKS DE DRIFT ---
         if is_drifting {
             let (mark_mesh, mark_mat) = skidmark_cache.get_or_insert_with(|| {
                 (
@@ -145,7 +199,7 @@ fn update_racers(
                 )
             });
 
-            let mark_length = (speed * 0.06).max(0.5); // Stretches enough to cover the 1/20s gap
+            let mark_length = (speed * 0.06).max(0.5);
             let mut mark_t = *transform;
             mark_t.translation = pos - mark_t.right().as_vec3() * 0.9;
             mark_t.translation.y = 0.51;
@@ -170,55 +224,77 @@ fn update_racers(
         let brake_intent = intent[2].clamp(0.0, 1.0);
 
         // --- INÉRCIA DE ATUADOR (ANTI-FLICKING DE CADÊNCIA BIOLÓGICA) ---
-        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 8.0).min(1.0); // ~125ms delay motor
-        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 6.0).min(1.0); // ~166ms tempo de girar volante
-        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 10.0).min(1.0); // ~100ms delay pastilha de freio
+        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 8.0).min(1.0);
+        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 6.0).min(1.0);
+        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 10.0).min(1.0);
 
         let mut physical_throttle = racer.memory[0];
         let physical_steer = racer.memory[1];
         let physical_brake = racer.memory[2];
 
         // --- SISTEMA BOS (Brake Override System / Smart Pedal) ---
-        // Na vida real e no simulador, se os dois pedais são pressionados, a injeção eletrônica
-        // corta o acelerador para evitar que o motor brigue com as pastilhas de freio.
         if physical_brake > 0.05 {
             physical_throttle = 0.0;
         }
 
+        // --- DANO PROGRESSIVO MECÂNICO: engine_power degrada com HP ---
+        physical_throttle *= racer.engine_power;
+
         // --- PENALIDADES MECÂNICAS (Dano por Mau Uso dos Atuadores) ---
-        // 1. Motor Forçado (Overlap): Frear e acelerar ao mesmo tempo derrete a embreagem/motor
         if pedal_intent > 0.1 && brake_intent > 0.1 {
             let overlap = pedal_intent * brake_intent;
-            racer.hp -= overlap * dt * 75.0; // Dano alto e rápido (Até 75 HP/segundo)
+            racer.hp -= overlap * dt * 75.0;
         }
         
-        // 2. Fadiga do Freio (Brake Wear): Encostar no freio gasta pressão pneumática e esquenta a pastilha
-        // Garante que eles não fiquem 'pisando no freio para sempre'.
         if brake_intent > 0.01 {
-            racer.hp -= brake_intent * dt * 6.0; // Custa 6 HP por segundo de freio acionado
+            racer.hp -= brake_intent * dt * 6.0;
         }
 
-        // Morte por Falha Mecânica (Motor Fundiu / Freio Derreteu)
-        if racer.hp <= 0.0 && !racer.is_dead {
+        // --- MODELO TÉRMICO DOS PNEUS ---
+        // Aquece com slip (drift) e frenagem; esfria com o tempo (baseado na temperatura ambiente)
+        if let Some(ref body) = opt_body {
+            let lateral_dir = transform.back().as_vec3();
+            let lateral_vel = body.velocity.dot(lateral_dir).abs();
+            let heat_from_slip = lateral_vel * speed * 0.0001; // Slip gera calor
+            let heat_from_brake = brake_intent * speed * 0.0005; // Frenagem gera calor
+            let cooling_rate = 0.02 * (1.0 + (env.asphalt_temp - 35.0).abs() * 0.01); // Esfriamento (mais lento se asfalto quente)
+            racer.tire_temp = (racer.tire_temp + (heat_from_slip + heat_from_brake - cooling_rate) * dt).clamp(0.0, 1.0);
+        }
+
+        // --- GRAMA: Penalidade de Tempo ("DOR" Neural Constante) ---
+        if voxel_current == VoxelType::Grass {
+            racer.grass_time += dt;
+        }
+
+        // --- DINÂMICA DE CASTER (STEERING WEIGHT DEPENDENTE DA VELOCIDADE) ---
+        // Steer_limit = MaxSteer / (1.0 + speed * 0.02)
+        // Impede virar 90° a 200km/h, forçando suavidade de F1
+        let dynamic_steer_limit = 1.0 / (1.0 + speed * 0.02);
+
+        // engine_power degrada com HP (Dano Progressivo)
+        racer.engine_power = (racer.hp / 100.0).clamp(0.1, 1.0);
+
+        // Morte por falha mecânica CATASTRÓFICA (HP <= -50, não mais HP <= 0)
+        if racer.hp <= -50.0 && !racer.is_dead {
             racer.is_dead = true;
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
         } else if !racer.is_dead {
-            // Demonstra o desgaste e superaquecimento ficando avermelhado
+            // Cor reflete estado mecânico: vermelho = danificado, ciano normal
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) { 
-                mat.base_color = Color::srgb(1.0, (racer.hp/100.0).clamp(0.0, 1.0), (racer.hp/100.0).clamp(0.0, 1.0)); 
+                let health_ratio = (racer.hp / 100.0).clamp(0.0, 1.0);
+                mat.base_color = Color::srgb(1.0, health_ratio, health_ratio); 
             }
         }
 
-        // --- 4. ENGINE E FÍSICA (NOVO) ---
+        // --- 4. ENGINE E FÍSICA ---
         let flow_pull = (track_phase - racer.phase).sin() * dev.flow_influence;
-        let steering_speed = physical_steer * 2.5 + flow_pull; // Volante agora segue a Inércia (Cadência)
+        let steering_speed = (physical_steer * dynamic_steer_limit) * 2.5 + flow_pull;
 
         if let (Some(engine_comp), Some(body)) = (&mut opt_engine, &mut opt_body) {
             engine_comp.throttle = physical_throttle;
             engine_comp.brake = physical_brake;
             body.angular_velocity.y = steering_speed;
             
-            // Re-read phase and amplitude from physical translation/velocity
             racer.amplitude = body.velocity.length();
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0; 
             
@@ -226,9 +302,15 @@ fn update_racers(
             let flow_3d = Vec3::new(flow.x, 0.0, flow.y).normalize_or_zero();
             let track_velocity = body.velocity.dot(flow_3d);
             
-            // Punição de Fitness por Zigzag: Subtrai a velocidade lateral desperdiçada do score de distância
+            // Punição de Fitness por Zigzag + Penalidade de Grama
             let lateral_velocity = body.velocity.cross(flow_3d).length();
             racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
+
+            // === DRAFTING: Redução de arrasto 30% se atrás de outro carro ===
+            if in_draft {
+                let drag_reduction = body.velocity.normalize_or_zero() * body.velocity.length_squared() * 0.18 * 0.3;
+                body.forces += drag_reduction;
+            }
         } else {
             // Fallback kinematic
             let target_amp = pedal_intent * dev.wave_amplitude;
@@ -242,28 +324,34 @@ fn update_racers(
 
         racer.prev_pos = transform.translation;
 
-        // --- 5. DOR E TRAUMA (Dano Letal por Energia Cinética) ---
+        // --- 5. DOR E TRAUMA (Dano Progressivo por Energia Cinética) ---
         let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
         
         if voxel == VoxelType::Wall {
             if let Some(ref mut body) = opt_body {
                 let speed_kmh = body.velocity.length() * 3.6;
-                let dano = (speed_kmh.powi(2) * 0.005).max(10.0); // Mínimo de 10 HP por hit (Anti Wall-Hugging)
+                let dano = (speed_kmh.powi(2) * 0.005).max(10.0);
                 racer.hp -= dano; 
                 
-                body.velocity = body.velocity.normalize_or_zero() * -4.0; // Ricochete absoluto: zera inércia e joga 4m/s p/ trás
+                body.velocity = body.velocity.normalize_or_zero() * -4.0;
                 transform.translation = racer.prev_pos; 
                 
-                if racer.hp <= 0.0 {
+                // DANO PROGRESSIVO: engine_power cai, mas racer NÃO morre imediatamente
+                racer.engine_power = (racer.hp / 100.0).clamp(0.1, 1.0);
+                
+                if racer.hp <= -50.0 {
                     racer.is_dead = true;
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 } else {
-                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::srgb(1.0, (racer.hp/100.0).clamp(0.0, 1.0), (racer.hp/100.0).clamp(0.0, 1.0)); } // Fica avermelhado
+                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { 
+                        let health_ratio = (racer.hp / 100.0).clamp(0.0, 1.0);
+                        mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
+                    }
                 }
             }
         }
         
-        // Ficar travado na grama, contramão ou parado gera anóxia letal (Stagnation)
+        // Stagnation: Ficar parado, lento ou em contramão
         if (racer.amplitude < 3.0 && racer.engine.current_time > 8.0) || (racer.engine.current_time > 2.0 && alignment < 0.0) { 
             racer.stagnation += dt;
             if racer.stagnation > 1.0 { racer.is_dead = true; }
@@ -284,16 +372,15 @@ fn update_racers(
            (race.selected_racer.is_none() && current_best == entity) {
             
             let fov = 100.0_f32.to_radians();
-            let forward = *transform.right(); // +X local
+            let forward = *transform.right();
             let eye_pos = transform.translation + Vec3::Y * 0.4;
             
-            // Renderiza 32 fios da retina em formato Wave 3D
             for i in 0..32 {
                 let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
                 let yaw_angle = normalized_i * (fov / 2.0);
                 let ray_dir = Quat::from_axis_angle(*transform.up(), yaw_angle) * forward;
                 
-                gizmos.line(eye_pos, eye_pos + ray_dir * 150.0, Color::srgba(0.0, 1.0, 0.0, 0.15));
+                gizmos.line(eye_pos, eye_pos + ray_dir * vision_range * 6.0, Color::srgba(0.0, 1.0, 0.0, 0.15));
             }
         }
     }

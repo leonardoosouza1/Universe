@@ -15,3 +15,4 @@ pub mod repominer;
 pub mod mesh;
 pub mod physics;
 pub mod prefabs;
+pub mod environment;

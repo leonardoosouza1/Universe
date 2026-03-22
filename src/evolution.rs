@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use crate::simulation::Racer;
 use crate::world::{VoxelWorld, VoxelWorldResource};
+use crate::environment::EnvironmentalState;
 use rand::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -117,9 +118,10 @@ pub fn spawn_swarm(
         commands.entity(racer_entity).insert(
             Racer { 
                 name: format!("{}-{}", names[i % names.len()], rng.random_range(10..99)),
-                engine, is_dead: false, distance: 0.0,                    phase: 0.0, amplitude: 0.0,
-                    pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
-                    memory: [0.0; 3], visual_cortex: [0; 64],
+                engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
+                pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
+                memory: [0.0; 3], visual_cortex: [0; 64],
+                tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, aquaplaning_timer: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
@@ -149,20 +151,26 @@ fn evolution_pipeline(
     mut race: ResMut<RaceSettings>,
     dev: Res<DevSettings>,
     mut world_res: ResMut<VoxelWorldResource>,
+    mut env: ResMut<EnvironmentalState>,
     query: Query<(Entity, &Racer)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
 ) {
+    // Tick do timer ambiental
+    env.tick(time.delta_secs());
     if query.is_empty() { return; }
     let winner = query.iter().find(|(_, r)| r.total_laps >= 5);
     let all_dead = query.iter().all(|(_, r)| r.is_dead);
 
     if winner.is_some() || all_dead || race.should_reset {
-        // --- RELATÓRIO DO GÊNESIS (FASE 3) ---
+        // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("race_reports.md") {
             use std::io::Write;
             let reason = if winner.is_some() { "Vencedor Encontrado" } else if all_dead { "Extinção (Colisão)" } else { "Tempo Esgotado" };
-            let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {}", race.generation, reason);
+            let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {} | Duração: {:.1}s", race.generation, reason, env.generation_time);
+            let _ = writeln!(file, "**Ambiente:** Asfalto {:.0}°C | Chuva: {:.0}% | Vento: ({:.1}, {:.1}) m/s | Hora: {:.1}h | μ_base: 1.3 × grip_env: {:.2}", 
+                env.asphalt_temp, env.weather_wetness * 100.0, env.wind.x, env.wind.z, env.time_of_day, env.combined_grip_factor());
             
             let mut sorted: Vec<_> = query.iter().collect();
             sorted.sort_by(|a, b| {
@@ -172,8 +180,10 @@ fn evolution_pipeline(
             });
             for (i, (_, r)) in sorted.iter().enumerate() {
                 let status = if r.is_dead { "M" } else { "V" };
-                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | MaxLap: {} | Último Freio Analógico: {:.2}%", 
-                    i+1, status, r.name, r.distance, r.total_laps, r.memory[2] * 100.0);
+                let speed_kmh = r.amplitude * 3.6;
+                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | Laps: {} | HP: {:.0} | EngPwr: {:.0}% | Pneu: {:.0}°C | Grama: {:.1}s | Vel: {:.0}km/h | Freio: {:.0}%", 
+                    i+1, status, r.name, r.distance, r.total_laps, r.hp, r.engine_power * 100.0, 
+                    r.tire_temp * 100.0, r.grass_time, speed_kmh, r.memory[2] * 100.0);
             }
         }
 
@@ -205,6 +215,8 @@ fn evolution_pipeline(
         let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })))).id();
         let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })))).id();
         race.world_entities = vec![road_e, grass_e, wall_e];
+        // Randomiza condições ambientais (mild para as primeiras 5 gerações = bootstrap)
+        env.randomize(race.generation <= 5);
         spawn_swarm(&mut commands, &mut meshes, &mut materials, &race, &world, &dev);
         world_res.0 = world;
     }

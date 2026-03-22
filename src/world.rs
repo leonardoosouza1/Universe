@@ -214,7 +214,6 @@ impl VoxelWorld {
                 
                 let mut hit = false;
                 let mut side = 0; // 0 = hit X wall, 1 = hit Z wall
-                let mut current_dist = 0.0;
                 
                 // Limite de alcance ~150 metros (75 blocos de 2m)
                 for _ in 0..75 {
@@ -231,9 +230,8 @@ impl VoxelWorld {
                 }
                 
                 if hit {
-                    if side == 0 { current_dist = (map_x as f32 - ray_start.x + (1 - step_x) as f32 / 2.0) / ray_dir.x; } 
-                    else { current_dist = (map_y as f32 - ray_start.y + (1 - step_y) as f32 / 2.0) / ray_dir.y; }
-                    current_dist *= cell; // Converte DDA Distance de volta para metros reais
+                    let current_dist = (if side == 0 { (map_x as f32 - ray_start.x + (1 - step_x) as f32 / 2.0) / ray_dir.x } 
+                    else { (map_y as f32 - ray_start.y + (1 - step_y) as f32 / 2.0) / ray_dir.y }) * cell;
                     
                     if dir_y < -0.001 && current_dist > dist_to_ground {
                         // O raio bateu no chão ANTES de atingir a parede lateral DDA
@@ -246,7 +244,7 @@ impl VoxelWorld {
                         hit_dist = current_dist;
                         let nx = if side == 0 { -step_x as f32 } else { 0.0 };
                         let nz = if side == 1 { -step_y as f32 } else { 0.0 };
-                        let mut normal = Vec2::new(nx, nz);
+                        let normal = Vec2::new(nx, nz);
                         let dot = normal.dot(-ray_dir).clamp(0.0, 1.0);
                         normal_shade = 0.3 + dot * 0.7; // Reflexo de Snell realístico
                     }
