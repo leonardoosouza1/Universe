@@ -45,6 +45,9 @@ fn update_hud(
 
     let mut sorted: Vec<(Entity, &Racer, &crate::physics::EngineComponent)> = racer_query.iter().collect();
     sorted.sort_by(|a, b| {
+        if a.1.is_dead != b.1.is_dead {
+            return if a.1.is_dead { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less };
+        }
         let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
         let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
         score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)

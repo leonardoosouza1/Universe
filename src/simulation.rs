@@ -108,7 +108,6 @@ fn update_racers(
         let track_phase = flow.y.atan2(flow.x);
 
         // --- 1. VISÃO DINÂMICA (COM CICLO DIA/NOITE) ---
-        let vision_range = env.vision_range() + racer.amplitude * 1.8;
         let mut sensory_wave = vec![0i8; 128];
 
         // --- VISÃO BIOLÓGICA ESTEREOSCÓPICA (Fóvea Dupla) ---
@@ -259,8 +258,8 @@ fn update_racers(
         
         // --- OVER-REV PENALTY (Estouro de Giro / Superaquecimento) ---
         if let Some(ref eng) = opt_engine {
-            if eng.current_rpm > eng.max_rpm * 0.98 {
-                racer.hp -= dt * 25.0; // Perde 25 HP por segundo batendo no limitador!
+            if eng.current_rpm > eng.max_rpm * 0.95 { // Abaixado para 95% para não deixarem de castigo no limite final
+                racer.hp -= dt * 40.0; // Perde 40 HP por segundo batendo/passando da faixa vermelha
             }
         }
 
@@ -285,11 +284,11 @@ fn update_racers(
         // Impede virar 90° a 200km/h, forçando suavidade de F1
         let dynamic_steer_limit = 1.0 / (1.0 + speed * 0.02);
 
-        // engine_power degrada com HP (Dano Progressivo)
-        racer.engine_power = (racer.hp / 100.0).clamp(0.1, 1.0);
+        // engine_power degrada com HP (Dano Progressivo). Se zerar o HP, o motor morre (0.0 de power)
+        racer.engine_power = (racer.hp / 100.0).clamp(0.0, 1.0);
 
-        // Morte por falha mecânica CATASTRÓFICA (HP <= -50, não mais HP <= 0)
-        if racer.hp <= -50.0 && !racer.is_dead {
+        // Morte por falha mecânica CATASTRÓFICA (HP <= 0.0)
+        if racer.hp <= 0.0 && !racer.is_dead {
             racer.is_dead = true;
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
         } else if !racer.is_dead {
@@ -358,9 +357,9 @@ fn update_racers(
                 transform.translation = racer.prev_pos; 
                 
                 // DANO PROGRESSIVO: engine_power cai, mas racer NÃO morre imediatamente
-                racer.engine_power = (racer.hp / 100.0).clamp(0.1, 1.0);
+                racer.engine_power = (racer.hp / 100.0).clamp(0.0, 1.0);
                 
-                if racer.hp <= -50.0 {
+                if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 } else {
@@ -400,8 +399,8 @@ fn update_racers(
                 let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
                 let yaw_angle = normalized_i * (fov / 2.0);
                 let ray_dir = Quat::from_axis_angle(*transform.up(), yaw_angle) * forward;
-                
-                gizmos.line(eye_pos, eye_pos + ray_dir * vision_range * 6.0, Color::srgba(0.0, 1.0, 0.0, 0.15));
+                // 150.0 metros é o limite físico real (hit_dist) do LiDAR no world.rs
+                gizmos.line(eye_pos, eye_pos + ray_dir * 150.0, Color::srgba(0.0, 1.0, 0.0, 0.15));
             }
         }
     }
