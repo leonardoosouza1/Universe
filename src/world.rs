@@ -82,6 +82,7 @@ impl VoxelWorld {
         let mut road_colors = Vec::new();
         let mut road_indices = Vec::new();
         let mut grass_pos = Vec::new();
+        let mut grass_colors = Vec::new();
         let mut grass_indices = Vec::new();
         let mut wall_pos = Vec::new();
         let mut wall_indices = Vec::new();
@@ -96,12 +97,22 @@ impl VoxelWorld {
                     let is_start_line = (px - self.start_pos.x).abs() < self.cell_size && (pz - self.start_pos.z).abs() < 25.0;
                     let b = road_pos.len() as u32;
                     road_pos.extend_from_slice(&[[px, 0.01, pz], [px+self.cell_size, 0.01, pz], [px, 0.01, pz+self.cell_size], [px+self.cell_size, 0.01, pz+self.cell_size]]);
-                    let color = if is_start_line { [1.0, 1.0, 1.0, 1.0] } else { [0.12, 0.12, 0.15, 1.0] };
+                    
+                    let is_light = ((x / 2) + (y / 2)) % 2 == 0;
+                    let color = if is_start_line { [1.0, 1.0, 1.0, 1.0] } 
+                                else if is_light { [0.22, 0.22, 0.25, 1.0] } 
+                                else { [0.15, 0.15, 0.18, 1.0] };
+                    
                     road_colors.extend_from_slice(&[color; 4]);
                     road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Grass {
                     let b = grass_pos.len() as u32;
                     grass_pos.extend_from_slice(&[[px, 0.0, pz], [px+self.cell_size, 0.0, pz], [px, 0.0, pz+self.cell_size], [px+self.cell_size, 0.0, pz+self.cell_size]]);
+                    
+                    let is_light = ((x / 3) + (y / 3)) % 2 == 0;
+                    let color = if is_light { [0.15, 0.35, 0.15, 1.0] } else { [0.10, 0.28, 0.10, 1.0] };
+                    grass_colors.extend_from_slice(&[color; 4]);
+                    
                     grass_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Wall {
                     let b = wall_pos.len() as u32;
@@ -124,6 +135,7 @@ impl VoxelWorld {
 
         let mut g_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
         g_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, grass_pos);
+        g_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, grass_colors);
         g_mesh.insert_indices(Indices::U32(grass_indices));
 
         let mut w_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());

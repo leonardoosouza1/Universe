@@ -21,10 +21,12 @@ fn main() {
         selected_racer: None,
         world_entities: Vec::new(),
         should_reset: false,
+        camera_distance: 150.0,
+        is_free_cam: false,
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed)))
-    .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin))
+    .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin))
     .add_systems(Startup, (setup_scene, setup_hud_container))
     .run();
 }

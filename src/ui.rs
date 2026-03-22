@@ -34,12 +34,15 @@ fn update_hud(
     race: Res<RaceSettings>,
     dev: Res<DevSettings>,
 ) {
-    let (ui_entity, children) = query.single().unwrap();
+    let Ok((ui_entity, children)) = query.get_single() else { return; };
     if let Some(children) = children {
         for child in children.iter() {
-            commands.entity(child).despawn();
+            if let Some(e) = commands.get_entity(*child) {
+                e.despawn_recursive();
+            }
         }
     }
+
 
     let mut sorted: Vec<(Entity, &Racer)> = racer_query.iter().collect();
     sorted.sort_by(|a, b| b.1.distance.partial_cmp(&a.1.distance).unwrap());
@@ -125,7 +128,10 @@ fn handle_ui_interactions(
 ) {
     for (interaction, racer_btn, dev_btn) in &query {
         if *interaction == Interaction::Pressed {
-            if let Some(r_btn) = racer_btn { race.selected_racer = Some(r_btn.racer_entity); }
+            if let Some(r_btn) = racer_btn { 
+                race.selected_racer = Some(r_btn.racer_entity); 
+                race.is_free_cam = false;
+            }
             if let Some(d_btn) = dev_btn {
                 match d_btn.action {
                     DevAction::ResetGen => race.should_reset = true,

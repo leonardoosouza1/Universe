@@ -14,6 +14,8 @@ pub struct RaceSettings {
     pub selected_racer: Option<Entity>,
     pub world_entities: Vec<Entity>,
     pub should_reset: bool,
+    pub camera_distance: f32,
+    pub is_free_cam: bool,
 }
 
 #[derive(Resource)]
@@ -106,15 +108,21 @@ pub fn spawn_swarm(
             - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 8.0)
             + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
 
-        commands.spawn((
+        let mut racer_entity = crate::prefabs::spawn_chassis_argo(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone());
+        if i % 3 == 1 {
+            racer_entity = crate::prefabs::spawn_chassis_sandero(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone());
+        } else if i % 3 == 2 {
+            racer_entity = crate::prefabs::spawn_chassis_ka(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone());
+        }
+
+        commands.entity(racer_entity).insert(
             Racer { 
                 name: format!("{}-{}", names[i % names.len()], rng.random_range(10..99)),
                 engine, is_dead: false, distance: 0.0, amplitude: 0.0, phase: start_angle,
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, total_laps: 0,
-            },
-            Mesh3d(chassis.clone()), MeshMaterial3d(racer_mat.clone()),
-            Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)),
-        )).with_children(|p| {
+                memory: [0.0; 3],
+            }
+        ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
             p.spawn((Mesh3d(cockpit.clone()), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::WHITE, emissive: LinearRgba::WHITE * 2.0, ..default() })), Transform::from_xyz(0.5, 0.3, 0.0)));
         });
@@ -146,8 +154,8 @@ fn evolution_pipeline(
                 let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>()); 
             }
         }
-        for e in &race.world_entities { commands.entity(*e).despawn(); }
-        for (e, _) in query.iter() { commands.entity(e).despawn(); }
+        for e in &race.world_entities { commands.entity(*e).despawn_recursive(); }
+        for (e, _) in query.iter() { commands.entity(e).despawn_recursive(); }
         race.generation += 1; race.should_reset = false; race.selected_racer = None;
         let world = VoxelWorld::new(race.seed);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
