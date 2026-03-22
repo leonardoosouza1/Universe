@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use crate::simulation::{Atom, ScientistIA, SubPart};
 use crate::world::{VoxelWorld, VoxelWorldResource};
 use crate::resonance::ResonantNode;
-use crate::periodic_table::{get_element_by_name, PERIODIC_TABLE};
+use crate::periodic_table::{get_element_by_name};
 use rand::prelude::*;
 
 #[derive(Resource, Default)]
@@ -45,8 +45,21 @@ pub struct EvolutionPlugin;
 impl Plugin for EvolutionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ElementMaterials>();
+        app.add_systems(Startup, initial_spawn);
         app.add_systems(Update, evolution_pipeline);
     }
+}
+
+fn initial_spawn(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut el_materials: ResMut<ElementMaterials>,
+    race: Res<RaceSettings>,
+    dev: Res<DevSettings>,
+    world_res: Res<VoxelWorldResource>,
+) {
+    spawn_multiverse(&mut commands, &mut meshes, &mut materials, &mut el_materials, &race, &dev, &world_res.0);
 }
 
 pub fn spawn_multiverse(
@@ -59,39 +72,49 @@ pub fn spawn_multiverse(
     _world: &VoxelWorld,
 ) {
     let mut rng = rand::rng();
-    let core_mesh = meshes.add(Sphere::new(2.0));
+    let core_mesh = meshes.add(Sphere::new(2.5));
 
-    let mut engine = crate::engine::SovereignEngine::new();
-    if let Some(ref best) = race.best_weights {
-        engine.instinct_layer.weights = best.clone();
-        engine.instinct_layer.mutate(0.05);
+    // SPAWN DE 50 MODELOS (AGENTES)
+    for _ in 0..50 {
+        let mut engine = crate::engine::SovereignEngine::new();
+        if let Some(ref best) = race.best_weights {
+            engine.instinct_layer.weights = best.clone();
+            engine.instinct_layer.mutate(0.05);
+        }
+
+        commands.spawn(ScientistIA {
+            engine,
+            sync_bit: 0,
+            tunnel_stability: 0,
+            temperature: 20.0, // Começa quente para fundir
+            brain_resonator: ResonantNode::new(1.0),
+            target_atom: None,
+        });
     }
 
-    commands.spawn(ScientistIA {
-        engine,
-        sync_bit: 0,
-        tunnel_stability: 0,
-        vortex_expansion: 400,
-        brain_resonator: ResonantNode::new(1.0),
-    });
-
-    // SPAWN DE MATERIAIS: Carbono e Prata para testar condutividade e malha
-    let elements_to_spawn = ["Carbon", "Silver"];
+    // SPAWN DE ÁTOMOS DE CARBONO (GRAFENO)
+    // Spawning em um plano 2D para facilitar a formação da folha
+    let el = get_element_by_name("Carbon");
     
-    for i in 0..150 {
-        let el_name = elements_to_spawn[i % 2];
-        let el = get_element_by_name(el_name);
-        
-        let ix = rng.random_range(-150..150) as f32;
-        let iy = rng.random_range(-150..150) as f32;
-        let iz = rng.random_range(-150..150) as f32;
+    for _ in 0..150 {
+        let pos = Vec3::new(
+            rng.random_range(-80.0..80.0),
+            rng.random_range(-5.0..5.0), // Quase plano
+            rng.random_range(-80.0..80.0)
+        );
 
         let mut electrons = Vec::new();
-        for _ in 0..el.valence_electrons {
+        for _ in 0..3 { // sp2 tem 3 elétrons de valência principais na folha
+            let orbit_axis = Vec3::new(
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0)
+            ).normalize_or_zero();
+
             electrons.push(SubPart {
                 rel_pos: Vec3::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)).normalize() * (el.radius / 10.0),
                 velocity: Vec3::ZERO,
-                phase: rng.random_range(0.0..6.28),
+                orbit_axis,
             });
         }
 
@@ -99,15 +122,14 @@ pub fn spawn_multiverse(
             Atom { 
                 element: el.name.to_string(),
                 mass: el.mass,
-                charge: el.valence_electrons as f32, // Simplificação: carga efetiva
+                charge: el.atomic_number as f32,
                 radius: el.radius,
-                electronegativity: el.electronegativity,
+                valence: 3, // sp2 hibridização para Grafeno
                 velocity: Vec3::ZERO,
                 electrons,
-                energy_level: if el.name == "Silver" { 1.0 } else { 0.0 },
             },
             Mesh3d(core_mesh.clone()), MeshMaterial3d(materials.add(StandardMaterial::default())),
-            Transform::from_translation(Vec3::new(ix, iy, iz)),
+            Transform::from_translation(pos),
         ));
     }
 }

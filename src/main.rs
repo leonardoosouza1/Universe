@@ -26,15 +26,18 @@ use evolution::{EvolutionPlugin, RaceSettings, DevSettings, ElementMaterials};
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "IARA v2101 - IRON STRESS LAB".into(), ..default() }),
+            primary_window: Some(Window { 
+                title: "IARA v2101 - QUANTUM MATERIALS FORGE".into(), 
+                ..default() 
+            }),
             ..default()
         }))
-        .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.05)))
+        .insert_resource(ClearColor(Color::srgb(0.005, 0.005, 0.01))) // Fundo ultra escuro para contraste
         .insert_resource(RaceSettings {
             generation: 1,
             best_weights: None,
             best_scale: 1000,
-            best_recipe: String::from("Pure Integer Forge Active..."),
+            best_recipe: String::from("Synthesizing Carbon-Silver Lattice..."),
             best_fitness: 0,
             should_reset: false,
             fossils: Vec::new(),
@@ -48,33 +51,29 @@ fn main() {
 
 fn setup_scene(
     mut commands: Commands, 
-    race: Res<RaceSettings>, 
-    dev: Res<DevSettings>, 
-    mut meshes: ResMut<Assets<Mesh>>, 
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut el_materials: ResMut<ElementMaterials>,
-    world_res: Res<world::VoxelWorldResource>,
+    _race: Res<RaceSettings>, 
+    _dev: Res<DevSettings>, 
+    mut _meshes: ResMut<Assets<Mesh>>, 
+    mut _materials: ResMut<Assets<StandardMaterial>>,
+    mut _el_materials: ResMut<ElementMaterials>,
+    _world_res: Res<world::VoxelWorldResource>,
 ) {
-    // ILUMINAÇÃO MASSIVA (FIM DO PRETO)
-    commands.insert_resource(AmbientLight { brightness: 500.0, color: Color::WHITE, ..default() });
+    // ILUMINAÇÃO CINEMATOGRÁFICA
+    commands.insert_resource(AmbientLight { 
+        brightness: 50.0, // Reduzido para não queimar as cores
+        color: Color::srgb(0.5, 0.7, 1.0), 
+        ..default() 
+    });
     
+    // Luz de Borda (Rim Light) para os átomos
     commands.spawn((
         DirectionalLight {
-            illuminance: 5000.0,
+            illuminance: 2500.0,
             shadows_enabled: true,
+            color: Color::srgb(1.0, 0.9, 0.8),
             ..default()
         },
-        Transform::from_xyz(500.0, 500.0, 500.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    commands.spawn((
-        PointLight {
-            intensity: 1000000.0,
-            range: 2000.0,
-            color: Color::srgb(1.0, 1.0, 0.8),
-            ..default()
-        },
-        Transform::from_xyz(0.0, 200.0, 0.0),
+        Transform::from_xyz(200.0, 500.0, 200.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
     commands.spawn((
@@ -82,8 +81,8 @@ fn setup_scene(
         Camera { hdr: true, ..default() },
         Tonemapping::TonyMcMapface,
         Bloom::default(),
-        MainCamera { yaw: 0.5, pitch: 0.2, dist: 800.0 },
+        MainCamera { yaw: 0.5, pitch: 0.2, dist: 600.0 },
     ));
     
-    evolution::spawn_multiverse(&mut commands, &mut meshes, &mut materials, &mut el_materials, &race, &dev, &world_res.0);
+    // O spawn do multiverso agora é chamado pelo EvolutionPlugin
 }
