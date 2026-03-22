@@ -31,6 +31,8 @@ pub struct EngineComponent {
     pub max_rpm: f32,
     pub throttle: f32,
     pub brake: f32,
+    pub current_gear: usize,
+    pub shift_timer: f32,
 }
 
 #[derive(Component, PartialEq, Clone, Copy)]
@@ -115,14 +117,26 @@ fn powertrain_system(
         let speed = body.velocity.length();
         let speed_kmh = speed * 3.6;
         
-        // --- VIRTUAL GEARBOX (Transmissão Mecânica) ---
+        // --- TRANSMISSÃO AUTOMÁTICA COM DELAY MECÂNICO ---
         let gears = [15.0, 10.0, 7.5, 5.5, 4.2, 3.5];
-        let mut current_gear = 5;
         let shift_points = [60.0, 110.0, 160.0, 220.0, 280.0];
+        
+        let mut target_gear = engine.current_gear;
         for (i, &sp) in shift_points.iter().enumerate() {
-            if speed_kmh < sp { current_gear = i; break; }
+            if speed_kmh < sp { target_gear = i; break; }
+            if i == shift_points.len() - 1 { target_gear = 5; } // Ultima marcha
         }
-        let gear_ratio = gears[current_gear];
+        
+        if target_gear != engine.current_gear && engine.shift_timer <= 0.0 {
+            engine.current_gear = target_gear;
+            engine.shift_timer = 0.3; // 300ms de desengate (Embreagem)
+        }
+        
+        if engine.shift_timer > 0.0 {
+            engine.shift_timer -= dt;
+        }
+
+        let gear_ratio = gears[engine.current_gear];
                          
         // RPM Dinâmico
         engine.current_rpm = (speed * gear_ratio * 12.0).clamp(800.0, engine.max_rpm);
@@ -130,7 +144,10 @@ fn powertrain_system(
         
         // Curva de Torque Realística
         let torque_multiplier = 1.0 - (rpm_ratio - 0.6).powi(2) * 2.0;
-        let torque = engine.max_torque * torque_multiplier.clamp(0.6, 1.0) * engine.throttle * gear_ratio;  
+        
+        // Corte de Potência (Embreagem)
+        let clutch_engagement = if engine.shift_timer > 0.0 { 0.0 } else { 1.0 };
+        let torque = engine.max_torque * torque_multiplier.clamp(0.6, 1.0) * engine.throttle * gear_ratio * clutch_engagement;  
         
         let forward_dir = transform.right().as_vec3();
         let tractive_force = forward_dir * torque;

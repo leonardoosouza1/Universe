@@ -27,6 +27,8 @@ pub fn spawn_chassis_argo(
             max_rpm: 6500.0,
             throttle: 0.0,
             brake: 0.0,
+            current_gear: 0,
+            shift_timer: 0.0,
         },
         TireComponent::default(),
         SuspensionComponent {

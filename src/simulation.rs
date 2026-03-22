@@ -109,20 +109,27 @@ fn update_racers(
         for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
         racer.visual_cortex = retina_binocular; // Espelha a retina gravada para análise na UI
 
-        // --- 2. CANAIS DE INSTINTO E TELEMETRIA ---
-        // (A harmony_angle era alimentada pelo raio primitivo que foi desativado, mantemos os demais sensores intactos)
+        // --- 2. CANAIS DE INSTINTO E TELEMETRIA (Sensoriometria) ---
         let alignment = (racer.phase - track_phase).cos();
-        sensory_wave[43] = (alignment * 127.0) as i8;
+        sensory_wave[64] = (alignment * 127.0) as i8;
 
         let speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
-        sensory_wave[45] = (speed * 2.0).clamp(0.0, 127.0) as i8; 
+        sensory_wave[65] = (speed * 2.0).clamp(0.0, 127.0) as i8; 
         
         let mut is_drifting = false;
         if let Some(ref body) = opt_body {
             let lateral_dir = transform.back().as_vec3();
             let lateral_vel = body.velocity.dot(lateral_dir);
-            sensory_wave[46] = (lateral_vel * 10.0).clamp(-127.0, 127.0) as i8;
+            sensory_wave[66] = (lateral_vel * 10.0).clamp(-127.0, 127.0) as i8;
             if lateral_vel.abs() > 4.0 && speed > 5.0 && pos.y < 1.0 { is_drifting = true; }
+        }
+        
+        // Percepção de Dor Mecânica (HP), Tensão no Motor (RPM) e Marcha Atual
+        sensory_wave[67] = ((racer.hp / 100.0) * 127.0).clamp(-128.0, 127.0) as i8;
+        if let Some(ref engine) = opt_engine {
+            let rpm_ratio = engine.current_rpm / engine.max_rpm;
+            sensory_wave[68] = (rpm_ratio * 127.0).clamp(0.0, 127.0) as i8;
+            sensory_wave[69] = (engine.current_gear as i8 * 20).clamp(0, 127); // Marcha mapeada
         }
 
         if is_drifting {
@@ -176,6 +183,30 @@ fn update_racers(
         // corta o acelerador para evitar que o motor brigue com as pastilhas de freio.
         if physical_brake > 0.05 {
             physical_throttle = 0.0;
+        }
+
+        // --- PENALIDADES MECÂNICAS (Dano por Mau Uso dos Atuadores) ---
+        // 1. Motor Forçado (Overlap): Frear e acelerar ao mesmo tempo derrete a embreagem/motor
+        if pedal_intent > 0.1 && brake_intent > 0.1 {
+            let overlap = pedal_intent * brake_intent;
+            racer.hp -= overlap * dt * 75.0; // Dano alto e rápido (Até 75 HP/segundo)
+        }
+        
+        // 2. Fadiga do Freio (Brake Wear): Encostar no freio gasta pressão pneumática e esquenta a pastilha
+        // Garante que eles não fiquem 'pisando no freio para sempre'.
+        if brake_intent > 0.01 {
+            racer.hp -= brake_intent * dt * 6.0; // Custa 6 HP por segundo de freio acionado
+        }
+
+        // Morte por Falha Mecânica (Motor Fundiu / Freio Derreteu)
+        if racer.hp <= 0.0 && !racer.is_dead {
+            racer.is_dead = true;
+            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+        } else if !racer.is_dead {
+            // Demonstra o desgaste e superaquecimento ficando avermelhado
+            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { 
+                mat.base_color = Color::srgb(1.0, (racer.hp/100.0).clamp(0.0, 1.0), (racer.hp/100.0).clamp(0.0, 1.0)); 
+            }
         }
 
         // --- 4. ENGINE E FÍSICA (NOVO) ---
