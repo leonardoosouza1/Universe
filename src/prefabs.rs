@@ -18,11 +18,11 @@ pub fn spawn_chassis_argo(
             drivetrain: DrivetrainType::FWD,
             mass: 1100.0,
             com_offset: Vec3::new(0.0, -0.2, 0.5), // Front heavy
-            drag_coefficient: 0.35,
+            drag_coefficient: 0.18, // Aerodinâmica de superesportivo
             wheel_base: 2.5,
         },
         EngineComponent {
-            max_torque: 250.0, // Realistic street car torque (Newton-meters)
+            max_torque: 450.0, // Torque agressivo real (0-100 mais rápido)
             current_rpm: 800.0,
             max_rpm: 6500.0,
             throttle: 0.0,
@@ -51,7 +51,7 @@ pub fn spawn_chassis_sandero(
             drivetrain: DrivetrainType::FWD,
             mass: 1050.0,
             com_offset: Vec3::new(0.0, -0.1, 0.4),
-            drag_coefficient: 0.38,
+            drag_coefficient: 0.19,
             wheel_base: 2.6,
     });
     e
@@ -68,7 +68,7 @@ pub fn spawn_chassis_ka(
             drivetrain: DrivetrainType::FWD,
             mass: 980.0,
             com_offset: Vec3::new(0.0, -0.3, 0.6),
-            drag_coefficient: 0.40,
+            drag_coefficient: 0.20,
             wheel_base: 2.4,
     });
     e

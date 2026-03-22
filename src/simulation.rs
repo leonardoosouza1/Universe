@@ -24,11 +24,28 @@ pub struct PainSynapse {
     pub intensity: f32,
 }
 
+#[derive(Component)]
+pub struct Skidmark {
+    pub timer: f32,
+}
+
 pub struct RacerPlugin;
 
 impl Plugin for RacerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (update_racers, camera_system));
+        app.add_systems(Update, (update_racers, camera_system, skidmark_cleanup_system));
+    }
+}
+
+fn skidmark_cleanup_system(
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut Skidmark)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut skid) in query.iter_mut() {
+        skid.timer -= dt;
+        if skid.timer <= 0.0 { commands.entity(e).despawn(); }
     }
 }
 
@@ -47,6 +64,7 @@ fn update_racers(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut race: ResMut<crate::evolution::RaceSettings>,
+    mut skidmark_cache: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
 ) {
     let dt = time.delta_secs().min(0.02);
     let world = &world_res.0;
@@ -94,22 +112,27 @@ fn update_racers(
         }
 
         if is_drifting {
-            if (racer.engine.current_time * 20.0).fract() < dt * 20.0 {
-                let mark_length = (speed * 0.06).max(0.5); // Stretches enough to cover the 1/20s gap
-                let mark_mesh = meshes.add(Rectangle::new(mark_length, 0.4));
-                let mark_mat = materials.add(StandardMaterial {
-                    base_color: Color::srgba(0.0, 0.0, 0.0, 0.7),
-                    alpha_mode: AlphaMode::Blend,
-                    unlit: true,
-                    ..default()
-                });
-                let mut mark_t = *transform;
-                mark_t.translation = pos - mark_t.right().as_vec3() * 0.9;
-                mark_t.translation.y = 0.51;
-                mark_t.rotation *= Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-                let e = commands.spawn((Mesh3d(mark_mesh), MeshMaterial3d(mark_mat), mark_t)).id();
-                race.world_entities.push(e);
-            }
+            let (mark_mesh, mark_mat) = skidmark_cache.get_or_insert_with(|| {
+                (
+                    meshes.add(Rectangle::new(1.0, 1.0)),
+                    materials.add(StandardMaterial {
+                        base_color: Color::srgba(0.0, 0.0, 0.0, 0.7),
+                        alpha_mode: AlphaMode::Blend,
+                        unlit: true,
+                        ..default()
+                    })
+                )
+            });
+
+            let mark_length = (speed * 0.06).max(0.5); // Stretches enough to cover the 1/20s gap
+            let mut mark_t = *transform;
+            mark_t.translation = pos - mark_t.right().as_vec3() * 0.9;
+            mark_t.translation.y = 0.51;
+            mark_t.rotation *= Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            mark_t.scale = Vec3::new(mark_length, 0.4, 1.0);
+            
+            let e = commands.spawn((Mesh3d(mark_mesh.clone()), MeshMaterial3d(mark_mat.clone()), mark_t, Skidmark { timer: 5.0 })).id();
+            race.world_entities.push(e);
         }
 
         // Memória temporal

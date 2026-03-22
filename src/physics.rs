@@ -113,17 +113,21 @@ fn powertrain_system(
 ) {
     let dt = time.delta_secs().max(0.001);
     for (mut engine, mut body, transform, chassis) in query.iter_mut() {
-        let rpm_ratio = engine.current_rpm / engine.max_rpm;
-        let torque_multiplier = 1.0 - (rpm_ratio - 0.5).powi(2) * 4.0;
-        
         let speed = body.velocity.length();
         let speed_kmh = speed * 3.6;
-        let gear_ratio = if speed_kmh < 40.0 { 12.0 } 
-                         else if speed_kmh < 80.0 { 8.0 }
-                         else if speed_kmh < 130.0 { 5.0 }
-                         else { 3.5 };
+        
+        let gear_ratio = if speed_kmh < 70.0 { 15.0 } // Arrancada violenta
+                         else if speed_kmh < 130.0 { 9.0 }
+                         else if speed_kmh < 200.0 { 6.0 }
+                         else { 4.5 };
                          
-        let torque = engine.max_torque * torque_multiplier.clamp(0.1, 1.0) * engine.throttle * gear_ratio;  
+        // Simulação matemática de giro de motor pela marcha atual
+        engine.current_rpm = (speed * gear_ratio * 12.0).clamp(800.0, engine.max_rpm);
+        let rpm_ratio = engine.current_rpm / engine.max_rpm;
+        
+        // Achatamento da curva de torque com menos gap (torque mínimo 60%)
+        let torque_multiplier = 1.0 - (rpm_ratio - 0.6).powi(2) * 2.0;
+        let torque = engine.max_torque * torque_multiplier.clamp(0.6, 1.0) * engine.throttle * gear_ratio;  
         
         // Neural network assumes +X is forward (phase=0), and +Z is right (phase=PI/2)
         let forward_dir = transform.right().as_vec3();
@@ -159,7 +163,6 @@ fn powertrain_system(
             let brake_force = -body.velocity.normalize_or_zero() * applied_brake;
             body.forces += brake_force;
         }
-        engine.current_rpm = (body.velocity.length() * 50.0).clamp(800.0, engine.max_rpm);
     }
 }
 
