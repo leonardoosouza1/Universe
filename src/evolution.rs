@@ -152,7 +152,7 @@ fn evolution_pipeline(
     dev: Res<DevSettings>,
     mut world_res: ResMut<VoxelWorldResource>,
     mut env: ResMut<EnvironmentalState>,
-    query: Query<(Entity, &Racer)>,
+    query: Query<(Entity, &Racer, &crate::physics::EngineComponent)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
@@ -160,8 +160,8 @@ fn evolution_pipeline(
     // Tick do timer ambiental
     env.tick(time.delta_secs());
     if query.is_empty() { return; }
-    let winner = query.iter().find(|(_, r)| r.total_laps >= 5);
-    let all_dead = query.iter().all(|(_, r)| r.is_dead);
+    let winner = query.iter().find(|(_, r, _)| r.total_laps >= 5);
+    let all_dead = query.iter().all(|(_, r, _)| r.is_dead);
 
     if winner.is_some() || all_dead || race.should_reset {
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
@@ -178,23 +178,23 @@ fn evolution_pipeline(
                 let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
                 score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
             });
-            for (i, (_, r)) in sorted.iter().enumerate() {
+            for (i, (_, r, engine_comp)) in sorted.iter().enumerate() {
                 let status = if r.is_dead { "M" } else { "V" };
                 let speed_kmh = r.amplitude * 3.6;
-                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | Laps: {} | HP: {:.0} | EngPwr: {:.0}% | Pneu: {:.0}°C | Grama: {:.1}s | Vel: {:.0}km/h | Freio: {:.0}%", 
-                    i+1, status, r.name, r.distance, r.total_laps, r.hp, r.engine_power * 100.0, 
-                    r.tire_temp * 100.0, r.grass_time, speed_kmh, r.memory[2] * 100.0);
+                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | EngPwr: {:.0}% | Pneu: {:.0}°C | Grama: {:.1}s | Vel: {:.0}km/h | Marcha: {} | Freio: {:.0}%", 
+                    i+1, status, r.name, r.distance, r.engine_power * 100.0, 
+                    r.tire_temp * 100.0, r.grass_time, speed_kmh, engine_comp.current_gear, r.memory[2] * 100.0);
             }
         }
 
-        let best_racer = if let Some((_, w)) = winner { 
+        let best_racer = if let Some((_, w, _)) = winner { 
             Some(w) 
         } else { 
             query.iter().max_by(|a, b| {
                 let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
                 let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
                 score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
-            }).map(|(_, r)| r) 
+            }).map(|(_, r, _)| r) 
         };
         if let Some(best) = best_racer {
             let weights = best.engine.instinct_layer.weights.clone();
@@ -207,7 +207,7 @@ fn evolution_pipeline(
             }
         }
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
-        for (e, _) in query.iter() { commands.entity(e).despawn(); }
+        for (e, _, _) in query.iter() { commands.entity(e).despawn(); }
         race.generation += 1; race.should_reset = false; race.selected_racer = None;
         let world = VoxelWorld::new(race.seed);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();

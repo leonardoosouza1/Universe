@@ -30,7 +30,7 @@ impl Plugin for UiPlugin {
 fn update_hud(
     mut commands: Commands,
     query: Query<(Entity, Option<&Children>), With<LeaderboardUI>>,
-    racer_query: Query<(Entity, &Racer)>,
+    racer_query: Query<(Entity, &Racer, &crate::physics::EngineComponent)>,
     race: Res<RaceSettings>,
     dev: Res<DevSettings>,
 ) {
@@ -43,8 +43,7 @@ fn update_hud(
         }
     }
 
-
-    let mut sorted: Vec<(Entity, &Racer)> = racer_query.iter().collect();
+    let mut sorted: Vec<(Entity, &Racer, &crate::physics::EngineComponent)> = racer_query.iter().collect();
     sorted.sort_by(|a, b| {
         let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
         let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
@@ -108,7 +107,7 @@ fn update_hud(
             flex_direction: FlexDirection::Column,
             ..default()
         }).with_children(|list| {
-            for (i, (entity, r)) in sorted.iter().take(10).enumerate() {
+            for (i, (entity, r, _)) in sorted.iter().take(10).enumerate() {
                 let color = if r.is_dead { Color::srgb(0.4, 0.4, 0.4) } else { Color::WHITE };
                 list.spawn((
                     Button,
@@ -126,10 +125,10 @@ fn update_hud(
         // --- TELEMETRY (ESQUERDA INFERIOR) ---
         // Se o usuário não clicou em ninguém, espiona o Líder (1º colocado)
         let selected = race.selected_racer.unwrap_or_else(|| {
-            sorted.first().map(|(e, _)| *e).unwrap_or(Entity::PLACEHOLDER)
+            sorted.first().map(|(e, _, _)| *e).unwrap_or(Entity::PLACEHOLDER)
         });
         
-        if let Ok((_, r)) = racer_query.get(selected) {
+        if let Ok((_, r, eng_comp)) = racer_query.get(selected) {
             p.spawn(Node {
                     position_type: PositionType::Absolute,
                     bottom: Val::Px(10.0),
@@ -142,6 +141,25 @@ fn update_hud(
                 .with_children(|panel| {
                     panel.spawn((Text::new(format!("CÓRTEX CLONE: {}", r.name)), TextFont { font_size: 16.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 0.8))));
                     
+                    // --- NOVOS DADOS NUMÉRICOS (TELEMETRIA VEICULAR) ---
+                    panel.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, margin: UiRect::vertical(Val::Px(4.0)), ..default() })
+                        .with_children(|stats_row| {
+                            let speed = r.amplitude * 3.6;
+                            let tire_color = if r.tire_temp < 0.3 { Color::srgb(0.0, 0.5, 1.0) } else if r.tire_temp > 0.7 { Color::srgb(1.0, 0.0, 0.0) } else { Color::srgb(0.0, 1.0, 0.0) };
+                            
+                            stats_row.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|col1| {
+                                col1.spawn((Text::new(format!("VEL: {:.0} km/h", speed)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
+                                col1.spawn((Text::new(format!("MARCHA: {}", eng_comp.current_gear)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
+                                col1.spawn((Text::new(format!("RPM: {:.0}", eng_comp.current_rpm)), TextFont { font_size: 14.0, ..default() }, TextColor(if eng_comp.current_rpm > eng_comp.max_rpm * 0.9 { Color::srgb(1.0, 0.0, 0.0) } else { Color::WHITE })));
+                            });
+                            
+                            stats_row.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|col2| {
+                                col2.spawn((Text::new(format!("PNEU: {:.0}°C", r.tire_temp * 100.0)), TextFont { font_size: 14.0, ..default() }, TextColor(tire_color)));
+                                col2.spawn((Text::new(format!("MTR PWR: {:.0}%", r.engine_power * 100.0)), TextFont { font_size: 14.0, ..default() }, TextColor(if r.engine_power < 0.5 { Color::srgb(1.0, 0.5, 0.0) } else { Color::WHITE })));
+                                col2.spawn((Text::new(format!("GRAMA: {:.1}s", r.grass_time)), TextFont { font_size: 14.0, ..default() }, TextColor(if r.grass_time > 0.0 { Color::srgb(1.0, 0.0, 0.0) } else { Color::WHITE })));
+                            });
+                        });
+                        
                     // Arrays de Vida e Pedais
                     let pedals = [
                         ("HP (Integridade Estrutural)", (r.hp / 100.0).clamp(0.0, 1.0), Color::srgb(0.0, 0.6, 1.0)),

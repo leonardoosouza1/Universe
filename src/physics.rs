@@ -35,6 +35,8 @@ pub struct EngineComponent {
     pub brake: f32,
     pub current_gear: usize,
     pub shift_timer: f32,
+    pub manual_shift_req: i8, // -1 (down), 0 (none), 1 (up)
+    pub is_stalled: bool,
 }
 
 #[derive(Component, PartialEq, Clone, Copy)]
@@ -115,22 +117,24 @@ fn powertrain_and_tire_system(
     let dt = time.delta_secs().max(0.001);
     for (mut engine, mut body, transform, chassis) in query.iter_mut() {
         let speed = body.velocity.length();
-        let speed_kmh = speed * 3.6;
+        let gears = [12.0, 8.0, 6.0, 4.5, 3.5, 2.8]; // Relações reais de marcha multiplicadas pelo diferencial
         
-        // --- TRANSMISSÃO AUTOMÁTICA COM DELAY MECÂNICO ---
-        let gears = [15.0, 10.0, 7.5, 5.5, 4.2, 3.5];
-        let shift_points = [60.0, 110.0, 160.0, 220.0, 280.0];
-        
-        let mut target_gear = engine.current_gear;
-        for (i, &sp) in shift_points.iter().enumerate() {
-            if speed_kmh < sp { target_gear = i; break; }
-            if i == shift_points.len() - 1 { target_gear = 5; }
+        // --- TRANSMISSÃO MANUAL CONTROLADA PELA IA ---
+        if engine.shift_timer <= 0.0 {
+            if engine.manual_shift_req == 1 && engine.current_gear < 5 {
+                engine.current_gear += 1;
+                engine.shift_timer = 0.3; // 300ms de desengate
+            } else if engine.manual_shift_req == -1 && engine.current_gear > 0 {
+                // Previne redução que explodiria o motor
+                let next_ratio = gears[engine.current_gear - 1];
+                let expected_rpm = speed * next_ratio * 30.0;
+                if expected_rpm < engine.max_rpm + 200.0 { // Margem de segurança de esticar marcha
+                    engine.current_gear -= 1;
+                    engine.shift_timer = 0.3;
+                }
+            }
         }
-        
-        if target_gear != engine.current_gear && engine.shift_timer <= 0.0 {
-            engine.current_gear = target_gear;
-            engine.shift_timer = 0.3;
-        }
+        engine.manual_shift_req = 0; // Reseta pedido
         
         if engine.shift_timer > 0.0 {
             engine.shift_timer -= dt;
@@ -138,16 +142,40 @@ fn powertrain_and_tire_system(
 
         let gear_ratio = gears[engine.current_gear];
                          
-        // RPM Dinâmico
-        engine.current_rpm = (speed * gear_ratio * 12.0).clamp(800.0, engine.max_rpm);
+        // RPM Dinâmico (constante 30.0 simula o raio do pneu e conversão m/s -> RPM)
+        let mut raw_rpm = speed * gear_ratio * 30.0;
+        
+        let mut clutch_slip = false;
+        // Auto-embreagem (Anti-Stall) atua sempre em baixa velocidade nas marchas 0 e 1
+        if engine.current_gear <= 1 && speed < 5.0 {
+            clutch_slip = true;
+            raw_rpm = 800.0 + (engine.throttle * 2500.0);
+        }
+
+        if engine.shift_timer > 0.0 {
+            raw_rpm = 800.0; // Cai pra lenta com embreagem pressionada
+        } else if !clutch_slip && raw_rpm < 550.0 {
+            engine.is_stalled = true; // Motor afogado! 
+        }
+
+        engine.current_rpm = if engine.is_stalled { 0.0 } else { raw_rpm.clamp(800.0, engine.max_rpm + 250.0) };
         let rpm_ratio = engine.current_rpm / engine.max_rpm;
         
         // Curva de Torque Realística
-        let torque_multiplier = 1.0 - (rpm_ratio - 0.6).powi(2) * 2.0;
+        let mut torque_multiplier = 1.0 - (rpm_ratio - 0.6).powi(2) * 2.0;
+        if engine.is_stalled {
+            torque_multiplier = 0.0;
+        } else if rpm_ratio > 1.0 { // REV LIMITER: Corta a injeção (zero torque)
+            torque_multiplier = 0.0;
+        } else if rpm_ratio < 0.2 { // Torque muito fraco em baixo RPM (bogs down)
+            torque_multiplier *= rpm_ratio / 0.2;
+        }
+        torque_multiplier = torque_multiplier.clamp(0.0, 1.0);
         
         // Corte de Potência (Embreagem)
         let clutch_engagement = if engine.shift_timer > 0.0 { 0.0 } else { 1.0 };
-        let drive_torque = engine.max_torque * torque_multiplier.clamp(0.6, 1.0) * engine.throttle * gear_ratio * clutch_engagement;  
+        // F_pneu = T_motor * Relacao * (1 / Raio_Pneu) -> fator 3.0 simula o raio
+        let drive_torque = engine.max_torque * torque_multiplier * engine.throttle * gear_ratio * clutch_engagement * 3.0;  
         
         let forward_dir = transform.right().as_vec3();
         let lateral_dir = transform.back().as_vec3();

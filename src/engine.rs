@@ -22,6 +22,7 @@ pub struct SovereignEngine {
     pub current_time: f32,
     pub active_actions: Vec<SplineNode>,
     pub temperature: f32,
+    pub final_intent: Vec<f32>,
 }
 
 impl SovereignEngine {
@@ -39,6 +40,7 @@ impl SovereignEngine {
             current_time: 0.0,
             active_actions: Vec::new(),
             temperature: 1.0,
+            final_intent: vec![0.0; 64],
         }
     }
 
@@ -74,6 +76,7 @@ impl SovereignEngine {
                 final_intent[i] = filtered * (0.5 + coherence);
             }
         }
+        self.final_intent = final_intent;
 
         // 5. Mielinização: Se houve alta coerência em alta velocidade, o aprendizado é gravado
         if coherence > 0.95 {

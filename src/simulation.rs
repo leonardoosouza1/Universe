@@ -222,6 +222,13 @@ fn update_racers(
         let pedal_intent = (intent[0] + 0.5).clamp(0.0, 1.0);
         let steer_intent = intent[1].clamp(-1.0, 1.0);
         let brake_intent = intent[2].clamp(0.0, 1.0);
+        
+        // Atuadores Booleanos (Marcha) usando Filtro KAN do SovereignEngine
+        let shift_up_intent = racer.engine.final_intent[3];
+        let shift_down_intent = racer.engine.final_intent[4];
+        let mut shift_req = 0;
+        if shift_up_intent > 0.5 { shift_req = 1; }
+        else if shift_down_intent > 0.5 { shift_req = -1; }
 
         // --- INÉRCIA DE ATUADOR (ANTI-FLICKING DE CADÊNCIA BIOLÓGICA) ---
         racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 8.0).min(1.0);
@@ -248,6 +255,13 @@ fn update_racers(
         
         if brake_intent > 0.01 {
             racer.hp -= brake_intent * dt * 6.0;
+        }
+        
+        // --- OVER-REV PENALTY (Estouro de Giro / Superaquecimento) ---
+        if let Some(ref eng) = opt_engine {
+            if eng.current_rpm > eng.max_rpm * 0.98 {
+                racer.hp -= dt * 25.0; // Perde 25 HP por segundo batendo no limitador!
+            }
         }
 
         // --- MODELO TÉRMICO DOS PNEUS ---
@@ -293,6 +307,13 @@ fn update_racers(
         if let (Some(engine_comp), Some(body)) = (&mut opt_engine, &mut opt_body) {
             engine_comp.throttle = physical_throttle;
             engine_comp.brake = physical_brake;
+            engine_comp.manual_shift_req = shift_req;
+            
+            if engine_comp.is_stalled {
+                racer.hp = -100.0;
+                racer.is_dead = true;
+            }
+            
             body.angular_velocity.y = steering_speed;
             
             racer.amplitude = body.velocity.length();

@@ -29,6 +29,8 @@ pub fn spawn_chassis_argo(
             brake: 0.0,
             current_gear: 0,
             shift_timer: 0.0,
+            manual_shift_req: 0,
+            is_stalled: false,
         },
         TireComponent::default(),
         SuspensionComponent {
