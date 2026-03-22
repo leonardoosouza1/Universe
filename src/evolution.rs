@@ -108,12 +108,13 @@ pub fn spawn_swarm(
             - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 8.0)
             + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
 
-        let mut racer_entity = crate::prefabs::spawn_chassis_argo(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone());
-        if i % 3 == 1 {
-            racer_entity = crate::prefabs::spawn_chassis_sandero(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone());
-        } else if i % 3 == 2 {
-            racer_entity = crate::prefabs::spawn_chassis_ka(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone());
-        }
+        let racer_entity = if i % 3 == 0 {
+            crate::prefabs::spawn_chassis_argo(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone())
+        } else if i % 3 == 1 {
+            crate::prefabs::spawn_chassis_sandero(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone())
+        } else {
+            crate::prefabs::spawn_chassis_ka(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone())
+        };
 
         commands.entity(racer_entity).insert(
             Racer { 
@@ -174,8 +175,19 @@ fn evolution_pipeline(
             
             let mut sorted: Vec<_> = query.iter().collect();
             sorted.sort_by(|a, b| {
-                let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
-                let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
+                let calc_score = |r: &Racer| -> f32 {
+                    if r.distance <= 0.0 { 
+                        r.distance * 100.0 
+                    } else {
+                        // Recompensa velocidade, mas penaliza severamente ficar na grama e perder vida (HP)
+                        let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
+                        let hp_penalty = (100.0 - r.hp) * 10.0; // Perder 100 HP = -1000 pontos
+                        let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
+                        base - hp_penalty - death_penalty - (r.grass_time * 50.0)
+                    }
+                };
+                let score_a = calc_score(a.1);
+                let score_b = calc_score(b.1);
                 score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
             });
             for (i, (_, r, engine_comp)) in sorted.iter().enumerate() {
@@ -191,8 +203,18 @@ fn evolution_pipeline(
             Some(w) 
         } else { 
             query.iter().max_by(|a, b| {
-                let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
-                let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
+                let calc_score = |r: &Racer| -> f32 {
+                    if r.distance <= 0.0 { 
+                        r.distance * 100.0 
+                    } else {
+                        let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
+                        let hp_penalty = (100.0 - r.hp) * 10.0;
+                        let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
+                        base - hp_penalty - death_penalty - (r.grass_time * 50.0)
+                    }
+                };
+                let score_a = calc_score(a.1);
+                let score_b = calc_score(b.1);
                 score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
             }).map(|(_, r, _)| r) 
         };

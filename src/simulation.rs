@@ -185,7 +185,7 @@ fn update_racers(
         sensory_wave[75] = (env.weather_wetness * 127.0).clamp(0.0, 127.0) as i8;
 
         // --- SKIDMARKS DE DRIFT ---
-        if is_drifting {
+        if is_drifting && rand::random::<f32>() < 0.15 { // rate limit to ~10 FPS
             let (mark_mesh, mark_mat) = skidmark_cache.get_or_insert_with(|| {
                 (
                     meshes.add(Rectangle::new(1.0, 1.0)),
@@ -206,7 +206,8 @@ fn update_racers(
             mark_t.scale = Vec3::new(mark_length, 0.4, 1.0);
             
             let e = commands.spawn((Mesh3d(mark_mesh.clone()), MeshMaterial3d(mark_mat.clone()), mark_t, Skidmark { timer: 5.0 })).id();
-            race.world_entities.push(e);
+            // Not adding to world_entities because they decay on their own and 
+            // cleaning them up explicitly could block the CPU unnecessarily during reset.
         }
 
         // Memória temporal
@@ -249,17 +250,14 @@ fn update_racers(
         // --- PENALIDADES MECÂNICAS (Dano por Mau Uso dos Atuadores) ---
         if pedal_intent > 0.1 && brake_intent > 0.1 {
             let overlap = pedal_intent * brake_intent;
-            racer.hp -= overlap * dt * 75.0;
-        }
-        
-        if brake_intent > 0.01 {
-            racer.hp -= brake_intent * dt * 6.0;
+            // Reduzido o dano de overlap para não explodir instantaneamente
+            racer.hp -= overlap * dt * 15.0; 
         }
         
         // --- OVER-REV PENALTY (Estouro de Giro / Superaquecimento) ---
         if let Some(ref eng) = opt_engine {
             if eng.current_rpm > eng.max_rpm * 0.95 { // Abaixado para 95% para não deixarem de castigo no limite final
-                racer.hp -= dt * 40.0; // Perde 40 HP por segundo batendo/passando da faixa vermelha
+                racer.hp -= dt * 10.0; // Diminuído de 40.0 para dar tempo para a IA aprender a trocar de marcha
             }
         }
 
