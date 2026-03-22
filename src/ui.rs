@@ -157,20 +157,28 @@ fn update_hud(
                     });
 
                     // Retina Visual
-                    panel.spawn((Text::new("NERVO ÓPTICO (Left Eye  ||  Right Eye)"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::WHITE)))
+                    panel.spawn((Text::new("CÓRTEX (L | R) Muro Sup | Chão Inf"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::WHITE)))
                          .insert(Node { margin: UiRect::top(Val::Px(12.0)), ..default() });
                          
-                    panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(24.0), flex_direction: FlexDirection::Row, margin: UiRect::top(Val::Px(4.0)), ..default() }).with_children(|retina_row| {
-                        for i in 0..64 {
-                            let brightness = ((r.visual_cortex[i] as f32 + 128.0) / 255.0).clamp(0.0, 1.0);
-                            let color = Color::srgb(brightness, brightness, brightness);
-                            let margin = if i == 31 { UiRect::right(Val::Px(6.0)) } else { UiRect::default() };
-                            retina_row.spawn(Node {
-                                width: Val::Percent(100.0 / 64.0),
-                                height: Val::Percent(100.0),
-                                margin,
-                                ..default()
-                            }).insert(BackgroundColor(color));
+                    panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(30.0), flex_direction: FlexDirection::Column, margin: UiRect::top(Val::Px(4.0)), ..default() }).with_children(|retina_col| {
+                        // Linha 1: Horizonte (Muros), Linha 0: Chão (Asfalto/Grama)
+                        for row in (0..2).rev() { 
+                            retina_col.spawn(Node { width: Val::Percent(100.0), height: Val::Percent(50.0), flex_direction: FlexDirection::Row, ..default() }).with_children(|retina_row| {
+                                for eye in 0..2 {
+                                    for x in 0..16 {
+                                        let i = (eye * 32) + (row * 16) + x;
+                                        let brightness = ((r.visual_cortex[i] as f32 + 128.0) / 255.0).clamp(0.0, 1.0);
+                                        let color = Color::srgb(brightness, brightness, brightness);
+                                        let margin = if x == 15 && eye == 0 { UiRect::right(Val::Px(6.0)) } else { UiRect::default() };
+                                        retina_row.spawn(Node {
+                                            width: Val::Percent(100.0 / 32.0),
+                                            height: Val::Percent(100.0),
+                                            margin,
+                                            ..default()
+                                        }).insert(BackgroundColor(color));
+                                    }
+                                }
+                            });
                         }
                     });
                 });

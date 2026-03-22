@@ -149,15 +149,22 @@ fn update_racers(
         let steer_intent = intent[1].clamp(-1.0, 1.0);
         let brake_intent = intent[2].clamp(0.0, 1.0);
 
-        racer.memory = [pedal_intent, steer_intent, brake_intent];
+        // --- INÉRCIA DE ATUADOR (ANTI-FLICKING DE CADÊNCIA BIOLÓGICA) ---
+        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 8.0).min(1.0); // ~125ms delay motor
+        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 6.0).min(1.0); // ~166ms tempo de girar volante
+        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 10.0).min(1.0); // ~100ms delay pastilha de freio
+
+        let physical_throttle = racer.memory[0];
+        let physical_steer = racer.memory[1];
+        let physical_brake = racer.memory[2];
 
         // --- 4. ENGINE E FÍSICA (NOVO) ---
         let flow_pull = (track_phase - racer.phase).sin() * dev.flow_influence;
-        // Physical steering (Yaw rotation speed)
-        let steering_speed = steer_intent * 2.5 + flow_pull; // Diminuído de 6.0 para 2.5 para evitar "zerinhos" (spin-outs) instantâneos
+        let steering_speed = physical_steer * 2.5 + flow_pull; // Volante agora segue a Inércia (Cadência)
 
         if let (Some(mut engine_comp), Some(mut body)) = (opt_engine, opt_body) {
-            engine_comp.throttle = pedal_intent;
+            engine_comp.throttle = physical_throttle;
+            engine_comp.brake = physical_brake;
             body.angular_velocity.y = steering_speed;
             
             // Re-read phase and amplitude from physical translation/velocity

@@ -159,6 +159,21 @@ fn evolution_pipeline(
     let all_dead = query.iter().all(|(_, r)| r.is_dead);
 
     if winner.is_some() || all_dead || race.should_reset {
+        // --- RELATÓRIO DO GÊNESIS (FASE 3) ---
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("race_reports.md") {
+            use std::io::Write;
+            let reason = if winner.is_some() { "Vencedor Encontrado" } else if all_dead { "Extinção (Colisão)" } else { "Tempo Esgotado" };
+            let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {}", race.generation, reason);
+            
+            let mut sorted: Vec<_> = query.iter().collect();
+            sorted.sort_by(|a, b| b.1.distance.partial_cmp(&a.1.distance).unwrap_or(std::cmp::Ordering::Equal));
+            for (i, (_, r)) in sorted.iter().enumerate() {
+                let status = if r.is_dead { "M" } else { "V" };
+                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | MaxLap: {} | Último Freio Analógico: {:.2}%", 
+                    i+1, status, r.name, r.distance, r.total_laps, r.memory[2] * 100.0);
+            }
+        }
+
         let best_racer = if let Some((_, w)) = winner { Some(w) } else { query.iter().max_by(|a, b| a.1.distance.partial_cmp(&b.1.distance).unwrap()).map(|(_, r)| r) };
         if let Some(best) = best_racer {
             let weights = best.engine.instinct_layer.weights.clone();
