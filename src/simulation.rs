@@ -16,6 +16,7 @@ pub struct Racer {
     pub total_laps: usize,
     pub stagnation: f32,
     pub memory: [f32; 3], // [throttle, steer, brake]
+    pub visual_cortex: [i8; 64], // Buffer bruto da retina para a Interface
 }
 
 pub struct PainSynapse {
@@ -87,16 +88,16 @@ fn update_racers(
         let mut max_harmony_dist = 0.0;
         let mut harmony_angle = 0.0;
 
-        for i in 0..num_rays {
-            let angle_offset = (i as f32 / (num_rays - 1) as f32 - 0.5) * 2.8; 
-            let d = world.raycast(pos.x, pos.z, racer.phase + angle_offset, vision_range);
-            let energy = (vision_range / d.max(1.0)).powi(2);
-            sensory_wave[i] = (energy * 0.2).clamp(0.0, 127.0) as i8;
-            if d > max_harmony_dist { max_harmony_dist = d; harmony_angle = angle_offset; }
-        }
+        // --- VISÃO BIOLÓGICA ESTEREOSCÓPICA (Fóvea Dupla) ---
+        let forward = transform.right().as_vec3(); // O Local +X do nosso chassi é Front
+        let right = transform.back().as_vec3(); // O Local -Z é Right
+        
+        let retina_binocular = world.render_binocular_retina(pos + Vec3::new(0.0, 0.4, 0.0), forward, right);
+        for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
+        racer.visual_cortex = retina_binocular; // Espelha a retina gravada para análise na UI
 
         // --- 2. CANAIS DE INSTINTO E TELEMETRIA ---
-        sensory_wave[42] = (harmony_angle * 100.0).clamp(-127.0, 127.0) as i8;
+        // (A harmony_angle era alimentada pelo raio primitivo que foi desativado, mantemos os demais sensores intactos)
         let alignment = (racer.phase - track_phase).cos();
         sensory_wave[43] = (alignment * 127.0) as i8;
 
@@ -163,7 +164,10 @@ fn update_racers(
             racer.amplitude = body.velocity.length();
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0; 
             
-            racer.distance += racer.amplitude * dt;
+            // Distância verdadeira: Projeção da velocidade na direção da pista (Flow)
+            let flow_3d = Vec3::new(flow.x, 0.0, flow.y).normalize_or_zero();
+            let track_velocity = body.velocity.dot(flow_3d);
+            racer.distance += track_velocity * dt;
         } else {
             // Fallback kinematic
             let target_amp = pedal_intent * dev.wave_amplitude;

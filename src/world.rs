@@ -155,9 +155,80 @@ impl VoxelWorld {
             if voxel == VoxelType::Wall || voxel == VoxelType::Grass { 
                 return d; 
             }
-            d += 0.5; // Precisão cirúrgica para sentir as bordas
+            d += 0.5;
         }
         max_dist
+    }
+    /// RETINA COMPUTACIONAL BIOLÓGICA (Visão Binocular Foveada)
+    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3) -> [i8; 64] {
+        let mut pixels = [-128; 64];
+        let fov = 135.0_f32.to_radians();
+        let pitch = -0.05_f32; // Inclinado para o asfalto
+        
+        let dir_y = pitch.sin();
+        let cos_pitch = pitch.cos();
+        
+        // Separação Biológica dos Olhos (Distância Interpupilar simulada de 0.8m)
+        let left_eye_pos = pos - right * 0.4;
+        let right_eye_pos = pos + right * 0.4;
+
+        for eye in 0..2 {
+            let eye_pos = if eye == 0 { left_eye_pos } else { right_eye_pos };
+            let offset = eye * 32;
+
+            for i in 0..32 {
+                // Distribuição Foveada Cúbica (-1 a 1)
+                let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
+                let foveated_i = normalized_i.powi(3); // Alta densidade no centro, esparso nas bordas
+                let yaw_angle = foveated_i * (fov / 2.0);
+                
+                let dir_x = (forward.x * yaw_angle.cos() + right.x * yaw_angle.sin()) * cos_pitch;
+                let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
+                
+                let mut d = 0.0;
+                let mut hit_voxel = VoxelType::Road;
+                let mut hit_dist = 40.0;
+                let mut normal_shade = 1.0;
+                
+                while d < 40.0 {
+                    let px = eye_pos.x + dir_x * d;
+                    let py = eye_pos.y + dir_y * d;
+                    let pz = eye_pos.z + dir_z * d;
+                    
+                    if py <= 0.0 {
+                        hit_voxel = self.get_voxel_at(px, pz);
+                        hit_dist = d;
+                        normal_shade = 0.6; 
+                        break;
+                    }
+                    
+                    let voxel = self.get_voxel_at(px, pz);
+                    if voxel == VoxelType::Wall && py <= 1.0 { 
+                        hit_voxel = VoxelType::Wall;
+                        hit_dist = d;
+                        normal_shade = 1.0; 
+                        break;
+                    }
+                    if voxel == VoxelType::Grass && py <= 0.1 {
+                         hit_voxel = VoxelType::Grass;
+                         hit_dist = d;
+                         normal_shade = 0.4;
+                         break;
+                    }
+                    d += 0.4; 
+                }
+                
+                let albedo = match hit_voxel {
+                    VoxelType::Wall => 255.0,
+                    VoxelType::Road => 110.0,
+                    VoxelType::Grass => 30.0,
+                };
+                
+                let shade = (albedo * normal_shade) / (1.0 + (hit_dist * 0.06).powi(2));
+                pixels[offset + i] = (shade.clamp(0.0, 255.0) as i32 - 128) as i8;
+            }
+        }
+        pixels
     }
 }
 

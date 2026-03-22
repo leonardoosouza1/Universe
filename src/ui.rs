@@ -118,6 +118,64 @@ fn update_hud(
                 });
             }
         });
+
+        // --- TELEMETRY (ESQUERDA INFERIOR) ---
+        if let Some(selected) = race.selected_racer {
+            if let Ok((_, r)) = racer_query.get(selected) {
+                p.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(10.0),
+                    left: Val::Px(10.0),
+                    width: Val::Px(350.0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(Val::Px(15.0)),
+                    ..default()
+                }).insert(BackgroundColor(Color::srgba(0.05, 0.08, 0.12, 0.95)))
+                .with_children(|panel| {
+                    panel.spawn((Text::new(format!("CÓRTEX CLONE: {}", r.name)), TextFont { font_size: 16.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 0.8))));
+                    
+                    // Arrays de Pedais
+                    let pedals = [("THROTTLE (Aceleração)", r.memory[0], Color::srgb(0.0, 1.0, 0.0)), ("BRAKE (Freio)", r.memory[2], Color::srgb(1.0, 0.0, 0.0))];
+                    for (label, val, col) in pedals {
+                        panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(14.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|bar| {
+                            bar.spawn((Text::new(label), TextFont { font_size: 11.0, ..default() })).insert(Node { width: Val::Px(140.0), ..default() });
+                            bar.spawn(Node { width: Val::Percent(val * 100.0), height: Val::Percent(100.0), ..default() }).insert(BackgroundColor(col));
+                        });
+                    }
+                    
+                    // Volante (Steer)
+                    panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(14.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|bar| {
+                        bar.spawn((Text::new("STEERING (Volante)"), TextFont { font_size: 11.0, ..default() })).insert(Node { width: Val::Px(140.0), ..default() });
+                        let steer_val = (r.memory[1] + 1.0) / 2.0; // -1 to 1 => 0 to 1
+                        bar.spawn(Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }).insert(BackgroundColor(Color::srgb(0.2, 0.2, 0.2))).with_children(|bg| {
+                            bg.spawn(Node { 
+                                width: Val::Px(4.0), height: Val::Percent(100.0), 
+                                left: Val::Percent(steer_val * 100.0), position_type: PositionType::Absolute,
+                                ..default() 
+                            }).insert(BackgroundColor(Color::WHITE));
+                        });
+                    });
+
+                    // Retina Visual
+                    panel.spawn((Text::new("NERVO ÓPTICO (Left Eye  ||  Right Eye)"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::WHITE)))
+                         .insert(Node { margin: UiRect::top(Val::Px(12.0)), ..default() });
+                         
+                    panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(24.0), flex_direction: FlexDirection::Row, margin: UiRect::top(Val::Px(4.0)), ..default() }).with_children(|retina_row| {
+                        for i in 0..64 {
+                            let brightness = ((r.visual_cortex[i] as f32 + 128.0) / 255.0).clamp(0.0, 1.0);
+                            let color = Color::srgb(brightness, brightness, brightness);
+                            let margin = if i == 31 { UiRect::right(Val::Px(6.0)) } else { UiRect::default() };
+                            retina_row.spawn(Node {
+                                width: Val::Percent(100.0 / 64.0),
+                                height: Val::Percent(100.0),
+                                margin,
+                                ..default()
+                            }).insert(BackgroundColor(color));
+                        }
+                    });
+                });
+            }
+        }
     });
 }
 

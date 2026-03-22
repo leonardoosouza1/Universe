@@ -120,11 +120,27 @@ pub fn spawn_swarm(
                 name: format!("{}-{}", names[i % names.len()], rng.random_range(10..99)),
                 engine, is_dead: false, distance: 0.0, amplitude: 0.0, phase: start_angle,
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, total_laps: 0,
-                memory: [0.0; 3],
+                memory: [0.0; 3], visual_cortex: [0; 64],
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
             p.spawn((Mesh3d(cockpit.clone()), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::WHITE, emissive: LinearRgba::WHITE * 2.0, ..default() })), Transform::from_xyz(0.5, 0.3, 0.0)));
+            
+            // FAROL DO CAMPO VISUAL (FOV de 135 graus, alcance 40 metros igual à Retina KAN)
+            p.spawn((
+                SpotLight {
+                    color: Color::WHITE,
+                    intensity: 1_000_000.0,
+                    range: 40.0,
+                    radius: 0.0,
+                    shadows_enabled: false,
+                    inner_angle: 0.8,
+                    outer_angle: 1.178, // (135 graus) / 2 em radianos
+                    ..default()
+                },
+                Transform::from_xyz(1.5, 0.5, 0.0) // No nariz do carro
+                    .with_rotation(Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2).mul_quat(Quat::from_rotation_x(-0.05))) // Vira pra frente (-Z -> +X)
+            ));
         });
     }
 }
