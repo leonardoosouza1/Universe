@@ -306,9 +306,13 @@ fn update_racers(
             engine_comp.brake = physical_brake;
             engine_comp.manual_shift_req = shift_req;
             
+            // Motor afogado: NÃO mata instantaneamente!
+            // A IA precisa aprender a sequência de partida (reduzir pra marcha 0/1 + segurar acelerador).
+            // Drena HP lentamente (bateria do starter) como pressão evolutiva para reiniciar rápido.
             if engine_comp.is_stalled {
-                racer.hp = -100.0;
-                racer.is_dead = true;
+                racer.hp -= 5.0 * dt; // Dreno de bateria: ~20s até morrer
+                // Sinal neural forte: "SEU MOTOR ESTÁ MORTO!"
+                sensory_wave[126] = -128; // Canal dedicado: DOR MÁXIMA de stall
             }
             
             body.angular_velocity.y = steering_speed;

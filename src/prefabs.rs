@@ -17,12 +17,13 @@ pub fn spawn_chassis_argo(
         VehicleChassis {
             drivetrain: DrivetrainType::FWD,
             mass: 1100.0,
-            com_offset: Vec3::new(0.0, -0.2, 0.5), // Front heavy
-            drag_coefficient: 0.18, // Aerodinâmica de superesportivo
+            com_offset: Vec3::new(0.0, -0.2, 0.5),
+            drag_coefficient: 0.18,
             wheel_base: 2.5,
+            cg_height: 0.45, // Centro de gravidade baixo (hatchback esportivo)
         },
         EngineComponent {
-            max_torque: 450.0, // Torque agressivo real (0-100 mais rápido)
+            max_torque: 450.0,
             current_rpm: 800.0,
             max_rpm: 6500.0,
             throttle: 0.0,
@@ -31,6 +32,7 @@ pub fn spawn_chassis_argo(
             shift_timer: 0.0,
             manual_shift_req: 0,
             is_stalled: false,
+            starter_timer: 0.0,
         },
         TireComponent::default(),
         SuspensionComponent {
@@ -57,6 +59,7 @@ pub fn spawn_chassis_sandero(
             com_offset: Vec3::new(0.0, -0.1, 0.4),
             drag_coefficient: 0.19,
             wheel_base: 2.6,
+            cg_height: 0.50,
     });
     e
 }
@@ -74,6 +77,7 @@ pub fn spawn_chassis_ka(
             com_offset: Vec3::new(0.0, -0.3, 0.6),
             drag_coefficient: 0.20,
             wheel_base: 2.4,
+            cg_height: 0.48,
     });
     e
 }
