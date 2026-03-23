@@ -30,7 +30,7 @@ impl Plugin for UiPlugin {
 fn update_hud(
     mut commands: Commands,
     query: Query<(Entity, Option<&Children>), With<LeaderboardUI>>,
-    racer_query: Query<(Entity, &Racer, &crate::physics::EngineComponent)>,
+    racer_query: Query<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody, &Transform)>,
     race: Res<RaceSettings>,
     dev: Res<DevSettings>,
 ) {
@@ -43,14 +43,15 @@ fn update_hud(
         }
     }
 
-    let mut sorted: Vec<(Entity, &Racer, &crate::physics::EngineComponent)> = racer_query.iter().collect();
+    let mut sorted: Vec<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody, &Transform)> = racer_query.iter().collect();
     sorted.sort_by(|a, b| {
         if a.1.is_dead != b.1.is_dead {
             return if a.1.is_dead { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less };
         }
-        let score_a = if a.1.distance <= 0.0 { a.1.distance * 100.0 } else { a.1.distance.powi(2) / a.1.engine.current_time.max(0.1) };
-        let score_b = if b.1.distance <= 0.0 { b.1.distance * 100.0 } else { b.1.distance.powi(2) / b.1.engine.current_time.max(0.1) };
-        score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+        if a.1.total_laps != b.1.total_laps {
+            return b.1.total_laps.cmp(&a.1.total_laps);
+        }
+        b.1.distance.partial_cmp(&a.1.distance).unwrap_or(std::cmp::Ordering::Equal)
     });
 
     commands.entity(ui_entity).with_children(|p| {
@@ -110,7 +111,7 @@ fn update_hud(
             flex_direction: FlexDirection::Column,
             ..default()
         }).with_children(|list| {
-            for (i, (entity, r, _)) in sorted.iter().take(10).enumerate() {
+            for (i, (entity, r, _, _, _)) in sorted.iter().take(10).enumerate() {
                 let color = if r.is_dead { Color::srgb(0.4, 0.4, 0.4) } else { Color::WHITE };
                 list.spawn((
                     Button,
@@ -128,10 +129,10 @@ fn update_hud(
         // --- TELEMETRY (ESQUERDA INFERIOR) ---
         // Se o usuário não clicou em ninguém, espiona o Líder (1º colocado)
         let selected = race.selected_racer.unwrap_or_else(|| {
-            sorted.first().map(|(e, _, _)| *e).unwrap_or(Entity::PLACEHOLDER)
+            sorted.first().map(|(e, _, _, _, _)| *e).unwrap_or(Entity::PLACEHOLDER)
         });
         
-        if let Ok((_, r, eng_comp)) = racer_query.get(selected) {
+        if let Ok((_, r, eng_comp, body, transform)) = racer_query.get(selected) {
             p.spawn(Node {
                     position_type: PositionType::Absolute,
                     bottom: Val::Px(10.0),
@@ -142,7 +143,7 @@ fn update_hud(
                     ..default()
                 }).insert(BackgroundColor(Color::srgba(0.05, 0.08, 0.12, 0.95)))
                 .with_children(|panel| {
-                    panel.spawn((Text::new(format!("CÓRTEX CLONE: {}", r.name)), TextFont { font_size: 16.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 0.8))));
+                    panel.spawn((Text::new(format!("CÓRTEX CLONE: {} [{}]", r.name, r.car_model)), TextFont { font_size: 16.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 0.8))));
                     
                     // --- NOVOS DADOS NUMÉRICOS (TELEMETRIA VEICULAR) ---
                     panel.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, margin: UiRect::vertical(Val::Px(4.0)), ..default() })
@@ -151,9 +152,20 @@ fn update_hud(
                             let tire_color = if r.tire_temp < 0.3 { Color::srgb(0.0, 0.5, 1.0) } else if r.tire_temp > 0.7 { Color::srgb(1.0, 0.0, 0.0) } else { Color::srgb(0.0, 1.0, 0.0) };
                             
                             stats_row.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|col1| {
+                                let gear_label = match eng_comp.current_gear {
+                                    0 => "R",
+                                    1 => "N",
+                                    2 => "1",
+                                    3 => "2",
+                                    4 => "3",
+                                    5 => "4",
+                                    6 => "5",
+                                    _ => "?",
+                                };
                                 col1.spawn((Text::new(format!("VEL: {:.0} km/h", speed)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
-                                col1.spawn((Text::new(format!("MARCHA: {}", eng_comp.current_gear)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
+                                col1.spawn((Text::new(format!("MARCHA: {}", gear_label)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
                                 col1.spawn((Text::new(format!("RPM: {:.0}", eng_comp.current_rpm)), TextFont { font_size: 14.0, ..default() }, TextColor(if eng_comp.current_rpm > eng_comp.max_rpm * 0.9 { Color::srgb(1.0, 0.0, 0.0) } else { Color::WHITE })));
+                                col1.spawn((Text::new(format!("TRQ: {:.0} Nm", eng_comp.max_torque * eng_comp.throttle)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
                             });
                             
                             stats_row.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|col2| {
@@ -176,16 +188,42 @@ fn update_hud(
                         });
                     }
                     
-                    // Volante (Steer)
-                    panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(14.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|bar| {
-                        bar.spawn((Text::new("STEERING (Volante)"), TextFont { font_size: 11.0, ..default() })).insert(Node { width: Val::Px(140.0), ..default() });
+                    // Volante (Steer) - Maior e mais claro
+                    panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(20.0), margin: UiRect::vertical(Val::Px(5.0)), align_items: AlignItems::Center, ..default() }).with_children(|bar| {
+                        bar.spawn((Text::new("VOLANTE"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::srgb(0.9, 0.9, 0.9)))).insert(Node { width: Val::Px(140.0), ..default() });
                         let steer_val = (r.memory[1] + 1.0) / 2.0; // -1 to 1 => 0 to 1
-                        bar.spawn(Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }).insert(BackgroundColor(Color::srgb(0.2, 0.2, 0.2))).with_children(|bg| {
+                        bar.spawn(Node { width: Val::Percent(100.0), height: Val::Px(12.0), border: UiRect::all(Val::Px(1.0)), ..default() }).insert(BorderColor(Color::srgb(0.3, 0.3, 0.3))).insert(BackgroundColor(Color::srgb(0.1, 0.1, 0.1))).with_children(|bg| {
+                            // Centro do volante
+                            bg.spawn(Node { width: Val::Px(2.0), height: Val::Percent(100.0), left: Val::Percent(50.0), position_type: PositionType::Absolute, ..default() }).insert(BackgroundColor(Color::srgb(0.5, 0.5, 0.5)));
+                            // Posição atual
                             bg.spawn(Node { 
-                                width: Val::Px(4.0), height: Val::Percent(100.0), 
-                                left: Val::Percent(steer_val * 100.0), position_type: PositionType::Absolute,
+                                width: Val::Px(6.0), height: Val::Percent(100.0), 
+                                left: Val::Percent(steer_val * 98.0), position_type: PositionType::Absolute,
                                 ..default() 
-                            }).insert(BackgroundColor(Color::WHITE));
+                            }).insert(BackgroundColor(Color::srgb(0.0, 1.0, 0.8)));
+                        });
+                    });
+
+                    // SLIP ANGLE (Heading vs Velocity)
+                    let forward_dir = transform.right().as_vec3();
+                    let lateral_dir = transform.back().as_vec3();
+                    let forward_vel = body.velocity.dot(forward_dir);
+                    let lateral_vel = body.velocity.dot(lateral_dir);
+                    let slip_deg = if forward_vel.abs() > 0.5 { lateral_vel.atan2(forward_vel.abs()).to_degrees() } else { 0.0 };
+                    
+                    panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(20.0), margin: UiRect::bottom(Val::Px(5.0)), align_items: AlignItems::Center, ..default() }).with_children(|bar| {
+                        bar.spawn((Text::new(format!("SLIP ANGLE [{:+.1}°]", slip_deg)), TextFont { font_size: 12.0, ..default() }, TextColor(Color::srgb(0.9, 0.9, 0.9)))).insert(Node { width: Val::Px(140.0), ..default() });
+                        let slip_val = (slip_deg / 45.0).clamp(-1.0, 1.0); // max show 45 deg 
+                        let slip_norm = (slip_val + 1.0) / 2.0;
+                        let slip_color = if slip_deg.abs() > 15.0 { Color::srgb(1.0, 0.2, 0.2) } else if slip_deg.abs() > 5.0 { Color::srgb(1.0, 0.8, 0.0) } else { Color::srgb(0.2, 0.8, 0.2) };
+                        
+                        bar.spawn(Node { width: Val::Percent(100.0), height: Val::Px(8.0), ..default() }).insert(BackgroundColor(Color::srgb(0.1, 0.1, 0.1))).with_children(|bg| {
+                            bg.spawn(Node { width: Val::Px(2.0), height: Val::Percent(100.0), left: Val::Percent(50.0), position_type: PositionType::Absolute, ..default() }).insert(BackgroundColor(Color::srgb(0.5, 0.5, 0.5)));
+                            bg.spawn(Node { 
+                                width: Val::Px(6.0), height: Val::Percent(100.0), 
+                                left: Val::Percent(slip_norm * 98.0), position_type: PositionType::Absolute,
+                                ..default() 
+                            }).insert(BackgroundColor(slip_color));
                         });
                     });
 

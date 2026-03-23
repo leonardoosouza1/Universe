@@ -176,25 +176,24 @@ fn powertrain_and_tire_system(
         // ========================================================
         // === RPM DINÂMICO + CÁLCULO DE TORQUE ===================
         // ========================================================
-        // RPM é calculado pela velocidade das rodas motrizes (forward_vel pode ser negativo!)
-        // === CLUTCH PROGRESSIVO (evita oscilação 0→20→0) ===
-        // Em vez de binário ON/OFF a 5 m/s, faz blend suave entre 2-8 m/s
-        let clutch_blend = if engine.current_gear <= 1 {
-            0.0 // Neutro/Ré: totalmente desacoplado
-        } else if engine.current_gear == 2 && engine.throttle > 0.1 {
-            // 1ª marcha com gas: engagement progressivo
-            // 0.0 = totalmente slip (free-rev), 1.0 = totalmente engrenado
-            ((forward_vel.abs() - 2.0) / 6.0).clamp(0.0, 1.0)
+        let gear_ratio_abs = gear_ratio.abs();
+        let free_rev_rpm = 800.0 + engine.throttle * (engine.max_rpm - 800.0);
+        let wheel_rpm = forward_vel.abs() * gear_ratio_abs * 30.0;
+
+        // Auto-clutch estilo Assetto Corsa: previne que o motor afogue (stall)
+        let mut clutch_blend = if engine.current_gear == 1 {
+            0.0 // Neutro: totalmente desacoplado
         } else {
-            1.0 // Marchas superiores: totalmente engrenado
+            1.0 // Marchas/Ré: totalmente engrenado
         };
-        
-        // RPM: blend entre free-rev e wheel-driven
-        let free_rev_rpm = 800.0 + (engine.throttle * 2500.0);
-        let wheel_rpm = forward_vel.abs() * gear_ratio * 30.0;
+
+        if engine.current_gear != 1 && wheel_rpm < 1500.0 {
+            clutch_blend = (wheel_rpm / 1500.0).clamp(0.0, 1.0);
+        }
+
         let mut raw_rpm = free_rev_rpm * (1.0 - clutch_blend) + wheel_rpm * clutch_blend;
         
-        // Stall: só possível quando clutch totalmente engrenado e RPM baixo
+        // Stall: só possível quando clutch totalmente engrenado e RPM cai muito
         let clutch_slip = clutch_blend < 0.95;
 
         if engine.shift_timer > 0.0 {
@@ -297,7 +296,7 @@ fn powertrain_and_tire_system(
         let env_grip = env.combined_grip_factor();
         let total_grip = terrain_grip * env_grip;
         
-        let mu_base = 1.3; // Pneu racing slick em asfalto seco
+        let mu_base = 1.6; // Pneu GT3 slick em asfalto seco
         let mu = mu_base * total_grip;
         
         // ========================================================
@@ -335,7 +334,7 @@ fn powertrain_and_tire_system(
         if !engine.is_stalled {
             let engine_force = drive_torque;
             let tire_traction_limit = f_long_final.abs().min(mu * drive_wheel_load);
-            let actual_traction = engine_force.min(tire_traction_limit);
+            let actual_traction = engine_force.clamp(-tire_traction_limit, tire_traction_limit);
             body.forces += forward_dir * actual_traction;
         }
         
@@ -353,7 +352,8 @@ fn powertrain_and_tire_system(
         // mais o carro tende a sobre-esterçar (power oversteer).
         if !engine.is_stalled && engine.throttle > 0.1 && lateral_vel.abs() > 0.5 {
             let steering_input = lateral_vel.signum(); // Direção da curva
-            let lsd_yaw = engine.throttle * slip_ratio.abs() * steering_input * 0.2;
+            // LSD ajustado para 0.05 em vez de 0.2 para carros potentes rodarem menos (evitar donuts excessivos)
+            let lsd_yaw = engine.throttle * slip_ratio.abs() * steering_input * 0.05;
             body.torques += Vec3::Y * lsd_yaw * chassis.mass;
         }
         
@@ -396,6 +396,7 @@ fn integration_system(
         // Yaw
         transform.rotate_y(body.angular_velocity.y * dt);
         transform.rotation = transform.rotation.normalize(); // Evita drift de quaternion
-        body.angular_velocity *= 0.90;
+        // Aumentando o atrito angular dinâmico para evitar girar infinitamente
+        body.angular_velocity *= 0.85;
     }
 }

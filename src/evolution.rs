@@ -58,6 +58,7 @@ pub fn spawn_swarm(
     let wing = meshes.add(Cuboid::new(0.6, 0.8, 2.0)); 
     let cockpit = meshes.add(Sphere::new(0.4));
     let names = ["Senna", "Hamilton", "Prost", "Schumi", "Alonso", "Vettel", "Max", "Lauda", "Leclerc", "Norris"];
+    let car_models = ["Porsche 911 GT3", "Ferrari 296 GT3", "McLaren 720S GT3", "Aston Martin Vantage", "Audi R8 LMS"];
 
     let start_flow = world.get_flow_at(world.start_pos.x, world.start_pos.z);
     let start_angle = start_flow.y.atan2(start_flow.x);
@@ -108,17 +109,18 @@ pub fn spawn_swarm(
             - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 8.0)
             + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
 
-        let racer_entity = if i % 3 == 0 {
-            crate::prefabs::spawn_chassis_argo(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone())
-        } else if i % 3 == 1 {
-            crate::prefabs::spawn_chassis_sandero(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone())
-        } else {
-            crate::prefabs::spawn_chassis_ka(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone())
+        let (racer_entity, car_model) = match i % 5 {
+            0 => (crate::prefabs::spawn_porsche_911_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[0]),
+            1 => (crate::prefabs::spawn_ferrari_296_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[1]),
+            2 => (crate::prefabs::spawn_mclaren_720s_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[2]),
+            3 => (crate::prefabs::spawn_aston_vantage_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[3]),
+            _ => (crate::prefabs::spawn_audi_r8_lms_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[4]),
         };
 
         commands.entity(racer_entity).insert(
             Racer { 
                 name: format!("{}-{}", names[i % names.len()], rng.random_range(10..99)),
+                car_model: car_model.to_string(),
                 engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; 64],
@@ -182,12 +184,12 @@ fn evolution_pipeline(
                     let grass_penalty = r.grass_time * 50.0;
                     let penalties = hp_penalty + death_penalty + grass_penalty;
                     
-                    if r.distance <= 0.0 { 
-                        (r.distance * 100.0) - penalties
+                    if r.distance < 15.0 { 
+                        return (r.distance * 10.0) - penalties - 5000.0; // Hard cutoff para extirpar parasitas imóveis
                     } else {
                         // Recompensa velocidade, mas penaliza severamente ficar na grama e perder vida (HP)
                         let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
-                        base - penalties
+                        return base - penalties;
                     }
                 };
                 let score_a = calc_score(a.1);
@@ -220,11 +222,11 @@ fn evolution_pipeline(
                     let grass_penalty = r.grass_time * 50.0;
                     let penalties = hp_penalty + death_penalty + grass_penalty;
                     
-                    if r.distance <= 0.0 { 
-                        (r.distance * 100.0) - penalties
+                    if r.distance < 15.0 { 
+                        return (r.distance * 10.0) - penalties - 5000.0;
                     } else {
                         let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
-                        base - penalties
+                        return base - penalties;
                     }
                 };
                 let score_a = calc_score(a.1);
@@ -242,6 +244,13 @@ fn evolution_pipeline(
                 let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>()); 
             }
         }
+        
+        // Limpar o peso do MVP legado (HARD RESET DE PESOS CORROMPIDOS)
+        if race.should_reset {
+            race.best_weights = None;
+            let _ = std::fs::remove_file("CHAMPION.dna");
+        }
+        
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
         for (e, _, _) in query.iter() { commands.entity(e).despawn(); }
         race.generation += 1; race.should_reset = false; race.selected_racer = None;

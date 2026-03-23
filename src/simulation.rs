@@ -6,6 +6,7 @@ use crate::environment::EnvironmentalState;
 #[derive(Component)]
 pub struct Racer {
     pub name: String,
+    pub car_model: String,
     pub engine: SovereignEngine,
     pub is_dead: bool,
     pub amplitude: f32, 
@@ -295,16 +296,22 @@ fn update_racers(
         let mut shift_req = 0;
         
         if let Some(ref eng) = opt_engine {
+            // A embreagem está patinando se velocidade da roda for baixa comparado ao giro
+            let wheel_idx = eng.current_gear;
+            let wheel_ratio = if wheel_idx <= 1 { 0.0 } else { 12.0 - ((wheel_idx - 2) as f32 * 2.0) };
+            let wheel_rpm = speed * wheel_ratio.max(3.0) * 30.0;
+            let is_clutch_engaged = wheel_rpm > 1200.0 && eng.current_gear >= 2;
+
             // Auto-clutch: Sai de Neutro/Ré para 1ª SEMPRE quando parado
             if eng.current_gear <= 1 {
                 shift_req = 1;
             }
-            // Auto-upshift: Sobe marcha quando RPM > 80% do max
-            else if eng.current_rpm > eng.max_rpm * 0.80 && eng.current_gear < 6 {
+            // Auto-upshift: Sobe marcha ONLY se a embreagem estiver colada (is_clutch_engaged) para não pular marchas patinando!
+            else if is_clutch_engaged && eng.current_rpm > eng.max_rpm * 0.85 && eng.current_gear < 6 {
                 shift_req = 1;
             }
-            // Auto-downshift: Desce marcha quando RPM < 25% do max (evita afogar)
-            else if eng.current_rpm < eng.max_rpm * 0.25 && eng.current_gear > 2 && speed > 1.0 {
+            // Auto-downshift: Desce marcha quando RPM < 30% do max (evita afogar) e velocidade permite
+            else if is_clutch_engaged && eng.current_rpm < eng.max_rpm * 0.30 && eng.current_gear > 2 && speed > 2.0 {
                 shift_req = -1;
             }
             // IA pode sobrepor com shift manual (edge-triggered)
@@ -329,17 +336,25 @@ fn update_racers(
         // BOS removido — o sistema de penalidades já pune sobreposição
         // A camada simbólica garante que brake só ativa com intenção explícita
 
-        // --- DANO PROGRESSIVO MECÂNICO: engine_power degrada com HP ---
+        // --- DANO PROGRESSIVO MECÂNICO E TERMODINÂMICA DE ESTRESSE ---
         physical_throttle *= racer.engine_power;
 
         // Overlap penalty removida: a camada simbólica já impede brake+throttle simultâneo
-        // (brake só ativa com intent forte > 0.7, e survival throttle é baseline)
         
-        // --- OVER-REV PENALTY (Estouro de Giro / Superaquecimento) ---
+        // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
         if let Some(ref eng) = opt_engine {
             if eng.current_rpm > eng.max_rpm * 0.95 {
-                racer.hp -= dt * 5.0; // Reduzido de 10.0 para dar mais tempo de aprendizado
+                racer.hp -= dt * 10.0; // Redline thermal stress
             }
+            // Punir se ficar parado acelerando no vazio (queimando embreagem/fritando pneu parado)
+            if speed < 2.0 && eng.current_rpm > eng.max_rpm * 0.5 {
+                racer.hp -= dt * 25.0; // Fritando embreagem: dano MASSIVO pra forçar o carro a andar
+            }
+        }
+        
+        // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR ---
+        if racer.engine.current_time > 3.0 && speed < 3.0 {
+            racer.hp -= dt * 15.0; // "Dor termodinâmica e tédio": perde vida RÁPIDO se ficar parado nos primeiros segundos
         }
 
         // --- MODELO TÉRMICO DOS PNEUS ---

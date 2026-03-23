@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-// REMOVIDO BEVY: O Santuário AGI é puro Rust e soberano.
 use crate::metabolism::Metabolism;
 use crate::layers::BitLinear;
 use crate::cfc::CfCCell;
@@ -29,7 +28,7 @@ pub struct SovereignEngine {
 
 impl SovereignEngine {
     pub fn new_scaled(input_size: usize, hidden_size: usize, output_size: usize) -> Self {
-        println!("[ENGINE] Allocating Sovereign Brain: {} inputs, {} outputs", input_size, output_size);
+        println!("[ENGINE] Allocating Hyper-Brain: {} inputs, {} hidden", input_size, hidden_size);
         
         Self {
             metabolism: Metabolism::new(),
@@ -38,9 +37,9 @@ impl SovereignEngine {
             axiom_guard: KanAxiomFilter::new(),
             heart_resonance: ResonantNode::new(1.0),
             memory_spiral: MultiverseSpiral::new(),
-            reality_engine: RealityEngine::new(32, 32),
+            reality_engine: RealityEngine::new(64, 64),
             repo_miner: RepoMiner::new(),
-            sensory_mesh: TernaryMesh::new(32, 32),
+            sensory_mesh: TernaryMesh::new(64, 64),
             current_time: 0.0,
             active_actions: Vec::new(),
             temperature: 1.0,
@@ -48,11 +47,17 @@ impl SovereignEngine {
     }
 
     pub fn new() -> Self {
-        Self::new_scaled(512, 256, 128)
+        Self::new_scaled(2048, 512, 64)
     }
 
     pub fn execute_cycle(&mut self, sensory_wave: &[i8], target_phase: f32, delta_t: f32) {
         self.current_time += delta_t;
+        
+        // Estresse Metabólico Dinâmico
+        // Se a intensidade da onda sensorial for alta, o cansaço aumenta
+        let energy_intensity: f32 = sensory_wave.iter().map(|&x| (x as f32).abs()).sum::<f32>() / sensory_wave.len() as f32;
+        let stress_factor = 1.0 + (energy_intensity / 127.0);
+
         if !self.metabolism.can_process() {
             self.metabolism.update(delta_t);
             return;
@@ -68,7 +73,8 @@ impl SovereignEngine {
             self.instinct_layer.myelinate(coherence);
         }
 
-        self.metabolism.accumulate_fatigue(0.001 / delta_t.max(0.001));
+        // Aplicar estresse ao metabolismo
+        self.metabolism.accumulate_fatigue((0.001 * stress_factor) / delta_t.max(0.001));
         self.metabolism.update(delta_t);
     }
 }
