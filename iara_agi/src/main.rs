@@ -19,6 +19,10 @@ use serde::Serialize;
 use std::collections::{VecDeque, HashSet};
 use lazy_static::lazy_static;
 use tokio::io::AsyncReadExt;
+use rand::Rng; // Necessário para a caça
+
+#[macro_use]
+extern crate lazy_static;
 
 #[derive(Serialize, Clone)]
 struct LabState {
@@ -63,6 +67,29 @@ fn is_relevant(link: &str) -> bool {
     keywords.iter().any(|&k| link_lower.contains(k))
 }
 
+// CAÇA GLOBAL: Traz novos links se a fila morrer
+async fn global_hunt(queue: Arc<Mutex<VecDeque<String>>>) {
+    let themes = ["AGI neural architecture", "Quantum computing future", "Biological cybernetics", "Artificial General Intelligence", "SpaceX", "Tesla"];
+    let theme = themes[rand::thread_rng().gen_range(0..themes.len())];
+    println!("[HUNT] Active mission: hunting for '{}'", theme);
+    
+    let output = tokio::process::Command::new("./yt-dlp")
+        .arg(format!("ytsearch15:{}", theme))
+        .arg("--get-id")
+        .arg("--flat-playlist")
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        let ids = String::from_utf8_lossy(&out.stdout);
+        let mut q = queue.lock().unwrap();
+        for id in ids.lines() {
+            if !id.is_empty() { q.push_back(format!("https://www.youtube.com/watch?v={}", id)); }
+        }
+        q.push_back("https://en.wikipedia.org/wiki/Special:Random".to_string());
+    }
+}
+
 async fn digest_video_stream(url: String, engine_ptr: Arc<Mutex<SovereignEngine>>) {
     let cmd = format!("./yt-dlp -f ba --ffmpeg-location ./ffmpeg -o - \"{}\" | ./ffmpeg -i pipe:0 -f s16le -ac 1 -ar 16000 pipe:1 -loglevel quiet", url);
     let mut child = match tokio::process::Command::new("sh").arg("-c").arg(cmd).stdout(std::process::Stdio::piped()).spawn() {
@@ -86,22 +113,26 @@ async fn digest_video_stream(url: String, engine_ptr: Arc<Mutex<SovereignEngine>
 }
 
 async fn extract_web_data(url: String) -> (String, Vec<String>) {
-    let client = reqwest::Client::builder().user_agent("SovereignAGI/8.0-Stable").timeout(Duration::from_secs(5)).build().unwrap();
-    if let Ok(res) = client.get(&url).send().await {
-        if let Ok(html) = res.text().await {
-            let document = scraper::Html::parse_document(&html);
-            let text = document.select(&scraper::Selector::parse("p, h1, h2").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
-            let links = document.select(&scraper::Selector::parse("a[href^='http']").unwrap())
-                .filter_map(|e| e.value().attr("href")).filter(|l| is_relevant(l)).map(|l| l.to_string()).collect();
-            return (text, links);
-        }
+    let client = reqwest::Client::builder().user_agent("SovereignAGI/9.0-Hunter").timeout(Duration::from_secs(8)).build().unwrap();
+    match client.get(&url).send().await {
+        Ok(res) => {
+            if let Ok(html) = res.text().await {
+                let document = scraper::Html::parse_document(&html);
+                let text = document.select(&scraper::Selector::parse("p, h1, h2").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
+                let links = document.select(&scraper::Selector::parse("a[href^='http']").unwrap())
+                    .filter_map(|e| e.value().attr("href")).filter(|l| is_relevant(l)).map(|l| l.to_string()).collect();
+                println!("[CORE] Success extracting: {} ({} bytes)", url, text.len());
+                return (text, links);
+            }
+        },
+        Err(e) => println!("[CORE] Error extracting {}: {}", url, e),
     }
     ("".to_string(), Vec::new())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("--- IARA AGI: ULTRA-STABLE SWARM ---");
+    println!("--- IARA AGI: PREDATOR SWARM MODE ---");
     let app = Router::new().fallback_service(ServeDir::new("public")).route("/ws", get(ws_handler));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
@@ -114,7 +145,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         queue: Arc::new(Mutex::new(VecDeque::new())),
         visited: Arc::new(Mutex::new(HashSet::new())),
     });
-    core.queue.lock().unwrap().push_back("https://en.wikipedia.org/wiki/Complexity_theory".to_string());
+    
+    // Início imediato
+    core.queue.lock().unwrap().push_back("https://en.wikipedia.org/wiki/Artificial_general_intelligence".to_string());
 
     for worker_id in 0..20 {
         let core_ptr = Arc::clone(&core);
@@ -142,12 +175,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if is_yt {
                         digest_video_stream(url, Arc::clone(&core_ptr.engine)).await;
-                    } else if content.len() > 200 {
+                    } else if content.len() > 100 {
                         {
                             let mut q = core_ptr.queue.lock().unwrap();
                             let v = core_ptr.visited.lock().unwrap();
-                            if q.len() < 800 {
-                                for link in links.into_iter().take(5) {
+                            if q.len() < 1000 {
+                                for link in links.into_iter().take(10) {
                                     if !v.contains(&link) { q.push_back(link); }
                                 }
                             }
@@ -166,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         state.queue_size = core_ptr.queue.lock().unwrap().len();
                                         state.text_stream = String::from_utf8_lossy(chunk).chars().take(150).collect();
                                         state.log = format!("SWARM ACTIVE | Mining: {}", url);
-                                        state.mode = "CLEAN_TEXT".to_string();
+                                        state.mode = "PREDATOR_TEXT".to_string();
                                         state.active_workers = 20;
                                     }
                                 }
@@ -174,6 +207,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 } else {
+                    // SE A FILA ACABAR, DISPARA CAÇA GLOBAL IMEDIATAMENTE
+                    global_hunt(Arc::clone(&core_ptr.queue)).await;
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
             }
