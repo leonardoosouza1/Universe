@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2100 - Multiverse Spiral & Semantic Gravity
 /// Based on Codex Part 2 & 5
 

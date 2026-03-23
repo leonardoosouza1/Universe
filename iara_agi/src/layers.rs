@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - SOVEREIGN BIT-LINEAR (BitNet 1.58-bit)
 /// "The End of MatMul": 100% Science, Zero Legacy.
 

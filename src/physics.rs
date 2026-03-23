@@ -69,7 +69,7 @@ pub struct PhysicsPlugin;
 
 impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (
+        app.add_systems(FixedUpdate, (
             reset_forces,
             suspension_system,
             powertrain_and_tire_system,
@@ -177,14 +177,25 @@ fn powertrain_and_tire_system(
         // === RPM DINÂMICO + CÁLCULO DE TORQUE ===================
         // ========================================================
         // RPM é calculado pela velocidade das rodas motrizes (forward_vel pode ser negativo!)
-        let mut raw_rpm = forward_vel.abs() * gear_ratio * 30.0;
+        // === CLUTCH PROGRESSIVO (evita oscilação 0→20→0) ===
+        // Em vez de binário ON/OFF a 5 m/s, faz blend suave entre 2-8 m/s
+        let clutch_blend = if engine.current_gear <= 1 {
+            0.0 // Neutro/Ré: totalmente desacoplado
+        } else if engine.current_gear == 2 && engine.throttle > 0.1 {
+            // 1ª marcha com gas: engagement progressivo
+            // 0.0 = totalmente slip (free-rev), 1.0 = totalmente engrenado
+            ((forward_vel.abs() - 2.0) / 6.0).clamp(0.0, 1.0)
+        } else {
+            1.0 // Marchas superiores: totalmente engrenado
+        };
         
-        let mut clutch_slip = false;
-        // Neutro (1) ou Auto-embreagem em Ré (0) ou 1ª (2) com baixa velocidade
-        if engine.current_gear == 1 || (engine.current_gear <= 2 && forward_vel.abs() < 5.0) {
-            clutch_slip = true;
-            raw_rpm = 800.0 + (engine.throttle * 2500.0);
-        }
+        // RPM: blend entre free-rev e wheel-driven
+        let free_rev_rpm = 800.0 + (engine.throttle * 2500.0);
+        let wheel_rpm = forward_vel.abs() * gear_ratio * 30.0;
+        let mut raw_rpm = free_rev_rpm * (1.0 - clutch_blend) + wheel_rpm * clutch_blend;
+        
+        // Stall: só possível quando clutch totalmente engrenado e RPM baixo
+        let clutch_slip = clutch_blend < 0.95;
 
         if engine.shift_timer > 0.0 {
             raw_rpm = 800.0; // Embreagem pressionada durante troca
@@ -210,9 +221,8 @@ fn powertrain_and_tire_system(
             }
             torque_multiplier = torque_multiplier.clamp(0.0, 1.0);
             
-            let clutch_engagement = if engine.shift_timer > 0.0 || clutch_slip { 
-                if clutch_slip { (forward_vel.abs() / 5.0).clamp(0.0, 1.0) } else { 0.0 }
-            } else { 1.0 };
+            // Clutch engagement usa o blend progressivo
+            let clutch_engagement = if engine.shift_timer > 0.0 { 0.0 } else { clutch_blend.max(0.15) };
             
             drive_torque = engine.max_torque * torque_multiplier * engine.throttle * gear_ratio * clutch_engagement * 3.0;
         }
@@ -311,7 +321,7 @@ fn powertrain_and_tire_system(
         let f_lat_raw = (base_normal_load * mu) * (1.9 * (12.0 * slip_angle).atan()).sin();
         
         // === CÍRCULO DE KAMM: sqrt(F_long² + F_lat²) <= μ * N ===
-        let max_total_force = mu * drive_wheel_load;
+        let max_total_force = mu * base_normal_load;
         let combined_raw = (f_long_raw * f_long_raw + f_lat_raw * f_lat_raw).sqrt();
         
         let (f_long_final, f_lat_final) = if combined_raw > max_total_force && combined_raw > 0.001 {
@@ -324,7 +334,7 @@ fn powertrain_and_tire_system(
         // === TRAÇÃO: Motor -> Pneu -> Solo ===
         if !engine.is_stalled {
             let engine_force = drive_torque;
-            let tire_traction_limit = f_long_final.abs();
+            let tire_traction_limit = f_long_final.abs().min(mu * drive_wheel_load);
             let actual_traction = engine_force.min(tire_traction_limit);
             body.forces += forward_dir * actual_traction;
         }
@@ -343,7 +353,7 @@ fn powertrain_and_tire_system(
         // mais o carro tende a sobre-esterçar (power oversteer).
         if !engine.is_stalled && engine.throttle > 0.1 && lateral_vel.abs() > 0.5 {
             let steering_input = lateral_vel.signum(); // Direção da curva
-            let lsd_yaw = engine.throttle * slip_ratio.abs() * steering_input * 0.8;
+            let lsd_yaw = engine.throttle * slip_ratio.abs() * steering_input * 0.2;
             body.torques += Vec3::Y * lsd_yaw * chassis.mass;
         }
         
@@ -385,6 +395,7 @@ fn integration_system(
         
         // Yaw
         transform.rotate_y(body.angular_velocity.y * dt);
+        transform.rotation = transform.rotation.normalize(); // Evita drift de quaternion
         body.angular_velocity *= 0.90;
     }
 }

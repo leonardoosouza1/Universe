@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - Reality Engine (SACI-VISION-ACTUATOR)
 /// Based on Codex Part 5 & 6: Materialization
 

@@ -53,38 +53,33 @@ impl SovereignEngine {
             return;
         }
 
-        // 1. Percepção Ternária: O "Instinto de Frequência"
-        let intent_amplitudes = self.instinct_layer.forward(sensory_wave);
+        // 1. Percepção Ternária: BitLinear → Saída Direta (SEM filtros atenuantes)
+        let raw_output = self.instinct_layer.forward(sensory_wave);
         
-        // 2. Ressonância de Kuramoto: Sincronizar com o "Atrator de Vitória"
-        // A fase interna do piloto tenta se alinhar com a fase da linha de chegada (target_phase)
-        self.heart_resonance.synchronize(target_phase, delta_t);
-        let coherence = self.heart_resonance.get_coherence(target_phase);
-
-        // 3. Tempo Líquido (CfC): Integrar as intenções no fluxo contínuo
-        self.temporal_cfc.inject(&intent_amplitudes);
-        let liquid_flow = self.temporal_cfc.flow(delta_t);
-
-        // 4. Filtro KAN (A Barreira Sensorial):
-        // Se a coerência for baixa (piloto perdido), o KAN "aperta" a saída
-        let mut final_intent = vec![0.0; 64];
-        for (i, &amp) in liquid_flow.iter().enumerate() {
+        // Pipeline direto: BitLinear output → final_intent
+        // Normaliza para range [-1, 1] usando tanh suave
+        let mut final_intent = [0.0f32; 64];
+        for (i, &val) in raw_output.iter().enumerate() {
             if i < 64 {
-                // O KAN sente a energia e aplica a suavização baseada em axiomas
-                let filtered = self.axiom_guard.filter_pulse(amp);
-                // Amplificação por Coerência: Se o piloto está "focado", o sinal é mais forte
-                final_intent[i] = filtered * (0.5 + coherence);
+                final_intent[i] = val.tanh(); // Suaviza sem matar o sinal
             }
         }
-        self.final_intent = final_intent;
+        self.final_intent = final_intent.to_vec();
 
-        // 5. Mielinização: Se houve alta coerência em alta velocidade, o aprendizado é gravado
+        // 2. Sistemas auxiliares (memória/aprendizado — NÃO filtram saída motora)
+        self.heart_resonance.synchronize(target_phase, delta_t);
+        let coherence = self.heart_resonance.get_coherence(target_phase);
+        
+        self.temporal_cfc.inject(&raw_output);
+        let _ = self.temporal_cfc.flow(delta_t);
+
+        // 3. Mielinização: alta coerência em alta velocidade grava aprendizado
         if coherence > 0.95 {
             self.instinct_layer.myelinate(coherence);
             self.memory_spiral.store_concept("FlowState", target_phase, self.current_time, coherence, "SOVEREIGN");
         }
 
-        // 6. Custo Metabólico: Pensar em frequências exige Adenosina
+        // 4. Custo Metabólico
         self.metabolism.accumulate_fatigue(0.002 / delta_t.max(0.001));
         self.metabolism.update(delta_t);
     }

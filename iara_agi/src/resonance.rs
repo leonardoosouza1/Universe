@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - Harmonic Resonance (Kuramoto Model)
 /// Based on Codex v2101 - Module V
 

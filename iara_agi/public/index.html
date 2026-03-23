@@ -2,89 +2,320 @@
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <title>IARA LAB: AGI Monitoring</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IARA // SOVEREIGN COMMAND</title>
     <style>
-        body { background: #050505; color: #00ffcc; font-family: 'Courier New', monospace; margin: 0; overflow: hidden; }
-        #lab-container { display: grid; grid-template-columns: 350px 1fr 350px; grid-template-rows: 1fr 200px; height: 100vh; gap: 10px; padding: 10px; box-sizing: border-box; }
-        .panel { background: rgba(0, 255, 204, 0.05); border: 1px solid #00ffcc; padding: 15px; position: relative; overflow-y: auto; }
-        .panel h2 { font-size: 14px; margin-top: 0; border-bottom: 1px solid #00ffcc; padding-bottom: 5px; color: #fff; }
-        #vision-stream { width: 100%; border: 1px solid #333; }
-        #log-flow { font-size: 11px; }
-        .log-entry { margin-bottom: 5px; border-left: 2px solid #00ffcc; padding-left: 5px; }
-        #neuron-map { display: grid; grid-template-columns: repeat(32, 1fr); gap: 2px; }
-        .neuron { width: 100%; aspect-ratio: 1; background: #111; border-radius: 50%; }
-        .active { background: #00ffcc; box-shadow: 0 0 5px #00ffcc; }
-        .inactive { background: #ff0055; box-shadow: 0 0 5px #ff0055; }
-        .dna-bit { display: inline-block; width: 8px; height: 8px; margin: 1px; }
+        :root {
+            --bg-deep: #05070a;
+            --panel-bg: #0a0f14;
+            --accent: #00f2ff;
+            --accent-dim: rgba(0, 242, 255, 0.2);
+            --danger: #ff0055;
+            --text-main: #a0adba;
+            --border: #1a222d;
+        }
+
+        body {
+            background: var(--bg-deep);
+            color: var(--text-main);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* HEADER */
+        header {
+            height: 50px;
+            background: var(--panel-bg);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            justify-content: space-between;
+            letter-spacing: 2px;
+            font-weight: 800;
+            font-size: 14px;
+            color: var(--accent);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent);
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 10px;
+            box-shadow: 0 0 10px var(--accent);
+        }
+
+        /* MAIN LAYOUT */
+        main {
+            display: grid;
+            grid-template-columns: 320px 1fr 380px;
+            gap: 15px;
+            padding: 15px;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .module {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .module-header {
+            background: var(--border);
+            color: #fff;
+            padding: 8px 12px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* METRICS */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            padding: 15px;
+        }
+
+        .stat-card {
+            border-left: 2px solid var(--accent);
+            padding-left: 10px;
+        }
+
+        .stat-label { font-size: 9px; color: #566573; text-transform: uppercase; }
+        .stat-value { font-size: 18px; font-weight: bold; color: #fff; }
+
+        /* NEURON CHART */
+        #neuron-chart {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 4px;
+            padding: 15px;
+            align-content: start;
+        }
+
+        .neuron-bar {
+            height: 100px;
+            background: #0d141a;
+            position: relative;
+            border-radius: 2px;
+        }
+
+        .neuron-fill {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            background: var(--accent);
+            transition: height 0.1s ease;
+        }
+
+        /* VISION AREA */
+        .vision-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 10px;
+            flex: 1;
+        }
+
+        #external-vision {
+            width: 100%;
+            border-radius: 4px;
+            background: #000;
+            border: 1px solid var(--border);
+        }
+
+        #perception-wave {
+            width: 100%;
+            height: 120px;
+            background: #000;
+            border: 1px solid var(--border);
+        }
+
+        /* DNA MATRIX */
+        #dna-matrix {
+            display: grid;
+            grid-template-columns: repeat(32, 1fr);
+            gap: 2px;
+            padding: 10px;
+            overflow-y: auto;
+        }
+
+        .dna-bit {
+            aspect-ratio: 1;
+            background: #111;
+            border-radius: 1px;
+        }
+
+        .bit-pos { background: var(--accent); box-shadow: 0 0 4px var(--accent-dim); }
+        .bit-neg { background: var(--danger); box-shadow: 0 0 4px rgba(255, 0, 85, 0.2); }
+
+        /* FOOTER LOG */
+        footer {
+            height: 150px;
+            margin: 0 15px 15px 15px;
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 12px;
+            padding: 10px;
+            overflow-y: auto;
+            color: #6272a4;
+        }
+
+        .log-line { margin-bottom: 4px; border-bottom: 1px solid #111; padding-bottom: 2px; }
+        .log-tag { color: var(--accent); font-weight: bold; margin-right: 10px; }
     </style>
 </head>
 <body>
-    <div id="lab-container">
-        <!-- Esquerda: Telemetria Cerebral -->
-        <div class="panel">
-            <h2>BRAIN METABOLISM</h2>
-            <div id="metabolism-data">
-                ENERGY: <span id="energy-val">0.0</span><br>
-                FATIGUE: <span id="fatigue-val">0.0</span><br>
-                COHERENCE: <span id="coherence-val">0.0</span>
+    <header>
+        <div><span class="status-dot"></span>IARA // SOVEREIGN_AGI_COMMAND</div>
+        <div id="ad-warning" style="display:none; color: #ff0055; font-weight:bold; margin-left: 20px;">[!] AD INTERFERENCE DETECTED</div>
+        <div id="conn-info">CONNECTED: 127.0.0.1:3000</div>
+    </header>
+
+    <main>
+        <!-- LEFT: BRAIN BIOMETRICS -->
+        <section class="module">
+            <div class="module-header">
+                <span>Metabolism & Neural Flux</span>
+                <span>v2.1.01</span>
             </div>
-            <h2 style="margin-top:20px">NEURON ACTIVITY (128 Channels)</h2>
-            <div id="neuron-map"></div>
-        </div>
+            <div class="metrics-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Cache Stress</div>
+                    <div class="stat-value" id="val-energy">0.00</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Adenosine</div>
+                    <div class="stat-value" id="val-fatigue">0.00</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Coherence</div>
+                    <div class="stat-value" id="val-coherence">0.00</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Visual Delta</div>
+                    <div class="stat-value" id="val-delta">0.00</div>
+                </div>
+            </div>
+            <div class="module-header">Instinct Outputs (Active)</div>
+            <div id="neuron-chart"></div>
+        </section>
 
-        <!-- Centro: Visão e Navegação -->
-        <div class="panel">
-            <h2>DIGITAL FOVEA (EYE)</h2>
-            <img id="vision-stream" src="" alt="Visão da IARA">
-            <h2 style="margin-top:20px">THOUGHT LOG</h2>
-            <div id="log-flow"></div>
-        </div>
+        <!-- CENTER: OBSERVATION DECK -->
+        <section class="module">
+            <div class="module-header">Digital Eye Stream</div>
+            <div class="vision-container">
+                <img id="external-vision" src="/placeholder.png" alt="Vision">
+                <div class="module-header" style="background:transparent; padding: 5px 0">Internal Perception Wave</div>
+                <canvas id="perception-wave"></canvas>
+            </div>
+        </section>
 
-        <!-- Direita: DNA e Sinapses -->
-        <div class="panel">
-            <h2>DNA BITS (-1, 0, 1)</h2>
-            <div id="dna-grid"></div>
-        </div>
+        <!-- RIGHT: DNA ARCHITECTURE -->
+        <section class="module">
+            <div class="module-header">DNA Bitstream (Weights Sample)</div>
+            <div id="dna-matrix"></div>
+        </section>
+    </main>
 
-        <!-- Inferior: Painel de Controle -->
-        <div class="panel" style="grid-column: span 3;">
-            <h2>SOVEREIGN CONTROL CONSOLE</h2>
-            <div id="console-output">System initialized. Awaiting bit-metabolism...</div>
-        </div>
-    </div>
+    <footer id="console-log">
+        <div class="log-line"><span class="log-tag">[SYSTEM]</span> Initializing IARA laboratory environments...</div>
+    </footer>
 
     <script>
-        const ws = new WebSocket('ws://localhost:3000/ws');
-        
+        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+        const logContainer = document.getElementById('console-log');
+        const dnaMatrix = document.getElementById('dna-matrix');
+        const neuronChart = document.getElementById('neuron-chart');
+        const waveCanvas = document.getElementById('perception-wave');
+        const waveCtx = waveCanvas.getContext('2d');
+
+        // Setup DNA Matrix (1024 dots)
+        for(let i=0; i<1024; i++) {
+            const div = document.createElement('div');
+            div.className = 'dna-bit';
+            div.id = `dna-${i}`;
+            dnaMatrix.appendChild(div);
+        }
+
+        // Setup Neuron Bars (64 bars)
+        for(let i=0; i<64; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'neuron-bar';
+            bar.innerHTML = `<div class="neuron-fill" id="nb-${i}" style="height: 0%"></div>`;
+            neuronChart.appendChild(bar);
+        }
+
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            
-            // Atualizar Metabolismo
-            document.getElementById('energy-val').innerText = data.energy.toFixed(4);
-            document.getElementById('fatigue-val').innerText = data.fatigue.toFixed(4);
-            document.getElementById('coherence-val').innerText = data.coherence.toFixed(4);
 
-            // Atualizar Visão
+            // 1. Telemetria
+            document.getElementById('val-energy').innerText = data.energy.toFixed(3);
+            document.getElementById('val-fatigue').innerText = data.fatigue.toFixed(3);
+            document.getElementById('val-coherence').innerText = data.coherence.toFixed(3);
+            document.getElementById('val-delta').innerText = data.delta.toFixed(3);
+
+            // Ad Warning
+            document.getElementById('ad-warning').style.display = data.is_ad ? 'block' : 'none';
+            document.body.style.borderColor = data.is_ad ? '#ff0055' : '#00f2ff';
+
+
+            // Update External Vision
             if (data.screenshot) {
-                document.getElementById('vision-stream').src = 'data:image/png;base64,' + data.screenshot;
+                document.getElementById('external-vision').src = `data:image/png;base64,${data.screenshot}`;
             }
 
-            // Atualizar Neurônios
-            const map = document.getElementById('neuron-map');
-            map.innerHTML = '';
-            data.sensory_wave.forEach(v => {
-                const n = document.createElement('div');
-                n.className = 'neuron ' + (v > 0 ? 'active' : (v < 0 ? 'inactive' : ''));
-                map.appendChild(n);
+            // Update Neuron Bars
+            data.neuron_outputs.forEach((v, i) => {
+                const fill = document.getElementById(`nb-${i}`);
+                if (fill) fill.style.height = `${(v + 1.0) * 50}%`;
             });
 
-            // Adicionar Logs
+            // Update DNA Matrix
+            data.dna_sample.forEach((v, i) => {
+                const bit = document.getElementById(`dna-${i}`);
+                if (bit) {
+                    bit.className = 'dna-bit ' + (v > 0 ? 'bit-pos' : (v < 0 ? 'bit-neg' : ''));
+                }
+            });
+
+            // Update Perception Wave
+            waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+            waveCtx.strokeStyle = '#00f2ff';
+            waveCtx.lineWidth = 2;
+            waveCtx.beginPath();
+            const sliceWidth = waveCanvas.width / data.sensory_wave.length;
+            let x = 0;
+            data.sensory_wave.forEach((v, i) => {
+                const y = (v + 128) / 255 * waveCanvas.height;
+                if (i === 0) waveCtx.moveTo(x, y); else waveCtx.lineTo(x, y);
+                x += sliceWidth;
+            });
+            waveCtx.stroke();
+
+            // Update Logs
             if (data.log) {
-                const flow = document.getElementById('log-flow');
-                const entry = document.createElement('div');
-                entry.className = 'log-entry';
-                entry.innerText = `[${new Date().toLocaleTimeString()}] ${data.log}`;
-                flow.prepend(entry);
+                const line = document.createElement('div');
+                line.className = 'log-line';
+                line.innerHTML = `<span class="log-tag">[${new Date().toLocaleTimeString()}]</span> ${data.log}`;
+                logContainer.prepend(line);
+                if (logContainer.childNodes.length > 100) logContainer.removeChild(logContainer.lastChild);
             }
         };
     </script>

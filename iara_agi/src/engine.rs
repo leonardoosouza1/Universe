@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+// REMOVIDO BEVY: O Santuário AGI é puro Rust e soberano.
 use crate::metabolism::Metabolism;
 use crate::layers::BitLinear;
 use crate::cfc::CfCCell;
@@ -22,70 +25,50 @@ pub struct SovereignEngine {
     pub current_time: f32,
     pub active_actions: Vec<SplineNode>,
     pub temperature: f32,
-    pub final_intent: Vec<f32>,
 }
 
 impl SovereignEngine {
-    pub fn new() -> Self {
+    pub fn new_scaled(input_size: usize, hidden_size: usize, output_size: usize) -> Self {
+        println!("[ENGINE] Allocating Sovereign Brain: {} inputs, {} outputs", input_size, output_size);
+        
         Self {
             metabolism: Metabolism::new(),
-            instinct_layer: BitLinear::new(128, 64),
-            temporal_cfc: CfCCell::new(64),
+            instinct_layer: BitLinear::new(input_size, hidden_size),
+            temporal_cfc: CfCCell::new(hidden_size),
             axiom_guard: KanAxiomFilter::new(),
             heart_resonance: ResonantNode::new(1.0),
             memory_spiral: MultiverseSpiral::new(),
-            reality_engine: RealityEngine::new(8, 8),
+            reality_engine: RealityEngine::new(32, 32),
             repo_miner: RepoMiner::new(),
-            sensory_mesh: TernaryMesh::new(8, 8),
+            sensory_mesh: TernaryMesh::new(32, 32),
             current_time: 0.0,
             active_actions: Vec::new(),
             temperature: 1.0,
-            final_intent: vec![0.0; 64],
         }
     }
 
-    /// Execução por Ondas e Ressonância (Codex v2101)
+    pub fn new() -> Self {
+        Self::new_scaled(512, 256, 128)
+    }
+
     pub fn execute_cycle(&mut self, sensory_wave: &[i8], target_phase: f32, delta_t: f32) {
         self.current_time += delta_t;
-        
         if !self.metabolism.can_process() {
             self.metabolism.update(delta_t);
             return;
         }
 
-        // 1. Percepção Ternária: O "Instinto de Frequência"
         let intent_amplitudes = self.instinct_layer.forward(sensory_wave);
-        
-        // 2. Ressonância de Kuramoto: Sincronizar com o "Atrator de Vitória"
-        // A fase interna do piloto tenta se alinhar com a fase da linha de chegada (target_phase)
         self.heart_resonance.synchronize(target_phase, delta_t);
         let coherence = self.heart_resonance.get_coherence(target_phase);
-
-        // 3. Tempo Líquido (CfC): Integrar as intenções no fluxo contínuo
         self.temporal_cfc.inject(&intent_amplitudes);
-        let liquid_flow = self.temporal_cfc.flow(delta_t);
+        let _liquid_flow = self.temporal_cfc.flow(delta_t);
 
-        // 4. Filtro KAN (A Barreira Sensorial):
-        // Se a coerência for baixa (piloto perdido), o KAN "aperta" a saída
-        let mut final_intent = vec![0.0; 64];
-        for (i, &amp) in liquid_flow.iter().enumerate() {
-            if i < 64 {
-                // O KAN sente a energia e aplica a suavização baseada em axiomas
-                let filtered = self.axiom_guard.filter_pulse(amp);
-                // Amplificação por Coerência: Se o piloto está "focado", o sinal é mais forte
-                final_intent[i] = filtered * (0.5 + coherence);
-            }
-        }
-        self.final_intent = final_intent;
-
-        // 5. Mielinização: Se houve alta coerência em alta velocidade, o aprendizado é gravado
         if coherence > 0.95 {
             self.instinct_layer.myelinate(coherence);
-            self.memory_spiral.store_concept("FlowState", target_phase, self.current_time, coherence, "SOVEREIGN");
         }
 
-        // 6. Custo Metabólico: Pensar em frequências exige Adenosina
-        self.metabolism.accumulate_fatigue(0.002 / delta_t.max(0.001));
+        self.metabolism.accumulate_fatigue(0.001 / delta_t.max(0.001));
         self.metabolism.update(delta_t);
     }
 }

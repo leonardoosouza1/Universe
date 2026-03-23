@@ -30,7 +30,7 @@ pub struct DevSettings {
 impl Default for DevSettings {
     fn default() -> Self {
         Self {
-            mutation_rate: 0.12,
+            mutation_rate: 0.15,
             pain_sensitivity: 1.0,
             wave_amplitude: 70.0,
             flow_influence: 0.5,
@@ -87,7 +87,7 @@ pub fn spawn_swarm(
         } else {
             // --- PRIMING GENÉTICO (A CONSCIÊNCIA INICIAL) ---
             let mut weights = vec![0.0f32; 128 * 64];
-            for w in weights.iter_mut() { *w = rng.random_range(-0.1..0.1); }
+            for w in weights.iter_mut() { *w = rng.random_range(-1.0..1.0); }
             
             // Axioma 1: Seguir o Vão Livre (Input 42 -> Steer Output 1)
             weights[1 * 128 + 42] = 1.0; 
@@ -121,7 +121,7 @@ pub fn spawn_swarm(
                 name: format!("{}-{}", names[i % names.len()], rng.random_range(10..99)),
                 engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
-                memory: [0.0; 3], visual_cortex: [0; 64],
+                memory: [0.0; 5], visual_cortex: [0; 64],
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, aquaplaning_timer: 0.0,
             }
         ).with_children(|p| {
@@ -158,8 +158,9 @@ fn evolution_pipeline(
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
 ) {
-    // Tick do timer ambiental
-    env.tick(time.delta_secs());
+    // Tick do timer ambiental (Sincronizado com os mesmos clamps do simulador físico)
+    let dt = time.delta_secs().min(0.02);
+    env.tick(dt);
     if query.is_empty() { return; }
     let winner = query.iter().find(|(_, r, _)| r.total_laps >= 5);
     let all_dead = query.iter().all(|(_, r, _)| r.is_dead);
@@ -176,14 +177,17 @@ fn evolution_pipeline(
             let mut sorted: Vec<_> = query.iter().collect();
             sorted.sort_by(|a, b| {
                 let calc_score = |r: &Racer| -> f32 {
+                    let hp_penalty = (100.0 - r.hp) * 10.0; // Perder 100 HP = -1000 pontos
+                    let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
+                    let grass_penalty = r.grass_time * 50.0;
+                    let penalties = hp_penalty + death_penalty + grass_penalty;
+                    
                     if r.distance <= 0.0 { 
-                        r.distance * 100.0 
+                        (r.distance * 100.0) - penalties
                     } else {
                         // Recompensa velocidade, mas penaliza severamente ficar na grama e perder vida (HP)
                         let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
-                        let hp_penalty = (100.0 - r.hp) * 10.0; // Perder 100 HP = -1000 pontos
-                        let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
-                        base - hp_penalty - death_penalty - (r.grass_time * 50.0)
+                        base - penalties
                     }
                 };
                 let score_a = calc_score(a.1);
@@ -211,13 +215,16 @@ fn evolution_pipeline(
         } else { 
             query.iter().max_by(|a, b| {
                 let calc_score = |r: &Racer| -> f32 {
+                    let hp_penalty = (100.0 - r.hp) * 10.0;
+                    let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
+                    let grass_penalty = r.grass_time * 50.0;
+                    let penalties = hp_penalty + death_penalty + grass_penalty;
+                    
                     if r.distance <= 0.0 { 
-                        r.distance * 100.0 
+                        (r.distance * 100.0) - penalties
                     } else {
                         let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
-                        let hp_penalty = (100.0 - r.hp) * 10.0;
-                        let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
-                        base - hp_penalty - death_penalty - (r.grass_time * 50.0)
+                        base - penalties
                     }
                 };
                 let score_a = calc_score(a.1);

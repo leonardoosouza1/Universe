@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - CfC (Closed-form Continuous-time) Cell
 /// Based on Codex v2101 - Liquid Neural Networks for Temporal Flow
 

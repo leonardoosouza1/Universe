@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - RepoMiner (Autonomous Data Ingestion)
 /// Based on Codex Part 2 & 5: Hunger Trigger
 

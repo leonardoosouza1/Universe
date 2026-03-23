@@ -17,7 +17,7 @@ pub struct Racer {
     pub hp: f32,
     pub total_laps: usize,
     pub stagnation: f32,
-    pub memory: [f32; 3], // [throttle, steer, brake]
+    pub memory: [f32; 5], // [throttle, steer, brake, prev_shift_up, prev_shift_down]
     pub visual_cortex: [i8; 64],
     // --- NOVOS CAMPOS (Sovereign Drive Evolution) ---
     pub tire_temp: f32,       // Carga térmica dos pneus 0.0-1.0
@@ -70,10 +70,10 @@ fn update_racers(
     world_res: Res<VoxelWorldResource>,
     env: Res<EnvironmentalState>,
     dev: Res<crate::evolution::DevSettings>,
-    time: Res<Time>,
+    race: Res<crate::evolution::RaceSettings>,
+    mut time: ResMut<Time<Virtual>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    race: Res<crate::evolution::RaceSettings>,
     mut skidmark_cache: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
     mut gizmos: Gizmos,
 ) {
@@ -99,7 +99,11 @@ fn update_racers(
     for (entity, mut racer, mut transform, mat_handle, mut opt_engine, mut opt_body) in query.iter_mut() {
         if racer.is_dead { 
             if let Some(engine_comp) = opt_engine.as_mut() { engine_comp.throttle = 0.0; }
-            if let Some(body) = opt_body.as_mut() { body.velocity *= 0.8; body.angular_velocity *= 0.8; }
+            if let Some(body) = opt_body.as_mut() { 
+                body.velocity *= 0.95_f32.powf(dt * 60.0); // Atrito forte: para em ~2s
+                body.angular_velocity *= 0.9_f32.powf(dt * 60.0);
+                if body.velocity.length() < 0.5 { body.velocity = Vec3::ZERO; }
+            }
             continue; 
         }
 
@@ -108,7 +112,7 @@ fn update_racers(
         let track_phase = flow.y.atan2(flow.x);
 
         // --- 1. VISÃO DINÂMICA (COM CICLO DIA/NOITE) ---
-        let mut sensory_wave = vec![0i8; 128];
+        let mut sensory_wave = [0i8; 128]; // Stack alloc (sem heap)
 
         // --- VISÃO BIOLÓGICA ESTEREOSCÓPICA (Fóvea Dupla) ---
         let forward = transform.right().as_vec3();
@@ -254,42 +258,82 @@ fn update_racers(
 
         // --- 3. EXECUÇÃO SOBERANA ---
         racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
-        let intent = racer.engine.instinct_layer.forward(&sensory_wave);
         
-        let pedal_intent = (intent[0] + 0.5).clamp(0.0, 1.0);
+        // Usar final_intent estabilizado pelo CfC e KAN em vez de pesos crus (Evita ZigZag)
+        let intent = &racer.engine.final_intent;
+        
+        // ================================================================
+        // === CAMADA SIMBÓLICA: REFLEXOS DE SOBREVIVÊNCIA ================
+        // ================================================================
+        // A rede neural tem pesos aleatórios. Sem um "instinto base" de se
+        // mover, ela nunca bootstrapeia. O Reflexo Simbólico garante que:
+        //   1) O carro SEMPRE tenta andar para frente (throttle mínimo)
+        //   2) Freio só ativa com intenção EXPLÍCITA positiva (>0.5)
+        //   3) A IA modula INTENSIDADE e DIREÇÃO, não decide SE move
+        //
+        // A evolução seleciona quem modula MELHOR, não quem descobre que
+        // precisa apertar o acelerador.
+        // ================================================================
+        
+        // Throttle neural: a IA modula entre 0.4 (mínimo reflexivo) e 1.0
+        let neural_throttle = intent[0].clamp(-1.0, 1.0);
+        let survival_throttle = 0.4; // Reflexo: sempre quer andar
+        let pedal_intent = (survival_throttle + neural_throttle * 0.6).clamp(0.1, 1.0);
+        
+        // Steer: 100% controlado pela IA (sem reflexo de direção)
         let steer_intent = intent[1].clamp(-1.0, 1.0);
-        let brake_intent = intent[2].clamp(0.0, 1.0);
         
-        // Atuadores Booleanos (Marcha) usando Filtro KAN do SovereignEngine
+        // Brake: APENAS quando a IA explicitamente quer (output alto > 0.7)
+        // BOS (Brake Override System): Se acelerando forte, freio é IGNORADO
+        // Isso impede que redes neurais aleatórias travem o carro com gas+freio simultâneos
+        let raw_brake = if intent[2] > 0.7 { ((intent[2] - 0.7) * 3.33).clamp(0.0, 1.0) } else { 0.0 };
+        let brake_intent = if pedal_intent > 0.5 { 0.0 } else { raw_brake }; // BOS ativo
+        
+        // Marchas: Auto-shift inteligente baseado em RPM e velocidade
         let shift_up_intent = racer.engine.final_intent[3];
         let shift_down_intent = racer.engine.final_intent[4];
         let mut shift_req = 0;
-        if shift_up_intent > 0.5 { shift_req = 1; }
-        else if shift_down_intent > 0.5 { shift_req = -1; }
+        
+        if let Some(ref eng) = opt_engine {
+            // Auto-clutch: Sai de Neutro/Ré para 1ª SEMPRE quando parado
+            if eng.current_gear <= 1 {
+                shift_req = 1;
+            }
+            // Auto-upshift: Sobe marcha quando RPM > 80% do max
+            else if eng.current_rpm > eng.max_rpm * 0.80 && eng.current_gear < 6 {
+                shift_req = 1;
+            }
+            // Auto-downshift: Desce marcha quando RPM < 25% do max (evita afogar)
+            else if eng.current_rpm < eng.max_rpm * 0.25 && eng.current_gear > 2 && speed > 1.0 {
+                shift_req = -1;
+            }
+            // IA pode sobrepor com shift manual (edge-triggered)
+            else {
+                if shift_up_intent > 0.5 && racer.memory[3] <= 0.5 { shift_req = 1; }
+                else if shift_down_intent > 0.5 && racer.memory[4] <= 0.5 { shift_req = -1; }
+            }
+        }
+        
+        racer.memory[3] = shift_up_intent;
+        racer.memory[4] = shift_down_intent;
 
-        // --- INÉRCIA DE ATUADOR (ANTI-FLICKING DE CADÊNCIA BIOLÓGICA) ---
-        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 8.0).min(1.0);
-        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 6.0).min(1.0);
-        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 10.0).min(1.0);
+        // --- INÉRCIA DE ATUADOR (Curva mais suave para evitar flicking) ---
+        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 5.0).min(1.0);
+        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 4.0).min(1.0);
+        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 6.0).min(1.0);
 
         let mut physical_throttle = racer.memory[0];
         let physical_steer = racer.memory[1];
         let physical_brake = racer.memory[2];
 
-        // --- SISTEMA BOS (Brake Override System / Smart Pedal) ---
-        if physical_brake > 0.05 {
-            physical_throttle = 0.0;
-        }
+        // BOS removido — o sistema de penalidades já pune sobreposição
+        // A camada simbólica garante que brake só ativa com intenção explícita
 
         // --- DANO PROGRESSIVO MECÂNICO: engine_power degrada com HP ---
         physical_throttle *= racer.engine_power;
 
-        // --- PENALIDADES MECÂNICAS (Dano por Mau Uso dos Atuadores) ---
-        if pedal_intent > 0.1 && brake_intent > 0.1 {
-            let overlap = pedal_intent * brake_intent;
-            // Reduzido o dano de overlap para 5.0/s (antes 15.0)
-            racer.hp -= overlap * dt * 5.0; 
-        }
+        // Overlap penalty removida: a camada simbólica já impede brake+throttle simultâneo
+        // (brake só ativa com intent forte > 0.7, e survival throttle é baseline)
         
         // --- OVER-REV PENALTY (Estouro de Giro / Superaquecimento) ---
         if let Some(ref eng) = opt_engine {
@@ -348,11 +392,19 @@ fn update_racers(
             // Drena HP lentamente (bateria do starter) como pressão evolutiva para reiniciar rápido.
             if engine_comp.is_stalled {
                 racer.hp -= 1.0 * dt; // Bateria drena lentamente: ~100s até morrer
-                // Sinal neural de Stall: "ALGO ESTÁ ERRADO"
-                sensory_wave[126] = -128; 
             }
             
-            body.angular_velocity.y = steering_speed;
+            // Limitador físico de esterço: O chassi não pode virar mais rápido do que
+            // o pneu consegue puxar lateralmente (força centrípeta).
+            // A_c = v * w => w_max = A_c_max / v
+            let mu_approx = 1.3 * env.combined_grip_factor(); 
+            let max_lat_accel = mu_approx * 9.81 * 1.5; // Margem extra de 50% pro LSD/Slip
+            let max_omega = max_lat_accel / speed.max(1.0);
+            let clamped_steer_speed = steering_speed.clamp(-max_omega, max_omega);
+            
+            // Evita o bug de girar no lugar (Spinning in place) limitando esterço pela velocidade
+            let steer_engagement = (speed / 3.0).clamp(0.0, 1.0);
+            body.angular_velocity.y = clamped_steer_speed * steer_engagement;
             
             racer.amplitude = body.velocity.length();
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0; 
@@ -411,10 +463,14 @@ fn update_racers(
         }
         
         // Stagnation: Ficar parado ou em contramão. Aumentado para 20s/12s para aprender partida.
+        let alignment = (racer.phase - track_phase).cos();
         if (racer.amplitude < 3.0 && racer.engine.current_time > 20.0) || (racer.engine.current_time > 12.0 && alignment < 0.0) { 
             racer.stagnation += dt;
             if racer.stagnation > 1.0 { racer.is_dead = true; }
-        } else { racer.stagnation = 0.0; }
+        } else { 
+            // Decaimento lento em vez de reset instantâneo para evitar que "tremidas" resetem o timer
+            racer.stagnation = (racer.stagnation - dt).max(0.0); 
+        }
 
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
         if racer.fuel <= 0.0 { racer.is_dead = true; }
@@ -443,6 +499,9 @@ fn update_racers(
             }
         }
     }
+
+    // Aceleração do Tempo para Treino Rápido (2x — balanceia velocidade vs FPS)
+    time.set_relative_speed(2.0);
 }
 
 fn camera_system(

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - Axiomatic KAN (Kolmogorov-Arnold) Filter
 /// Based on Codex v2101 - Science of Spline-based Inference
 

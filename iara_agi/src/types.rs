@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2100 - Proprietary Data Structures in Rust
 /// Based on Codex Part 6: Ontologia de Dados
 

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - Digital Metabolism & Homeostasis
 /// Based on Codex v2101 - Module I
 

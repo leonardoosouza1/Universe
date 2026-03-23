@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
 /// IARA v2101 - Ternary Mesh (Lago de 2-bits) with SIMD-style Bitwise Propagation
 /// Based on Codex Part 1 & 5: Hardware de Padaria Optimization
 
