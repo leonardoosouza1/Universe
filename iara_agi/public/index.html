@@ -141,7 +141,7 @@
 </head>
 <body>
     <header>
-        <div><span class="status-dot"></span>IARA // SOVEREIGN_COMMAND</div>
+        <div><span class="status-dot"></span>IARA // SOVEREIGN_COMMAND <span id="val-status" style="margin-left: 20px; color: #ffcc00; font-size: 12px; border: 1px solid #ffcc00; padding: 2px 10px; border-radius: 10px;">IDLE</span></div>
         <div id="ad-warning" style="display:none; color: var(--danger)">[!] AD INTERFERENCE</div>
         <div id="conn-info">CONNECTED: 3000</div>
     </header>
@@ -184,9 +184,26 @@
 
     <footer id="console-log"></footer>
 
+    <!-- NOVO: Painel de Comando Interativo -->
+    <section class="module" style="height: 100px; margin: 0 10px 10px 10px; flex: none;">
+        <div class="module-header">Sovereign Command Interface</div>
+        <div style="display: flex; padding: 10px; gap: 10px;">
+            <input type="text" id="prompt-input" placeholder="Enter a seed thought or question..." style="flex: 1; background: #000; border: 1px solid var(--border); color: var(--accent); padding: 8px; font-family: monospace;">
+            <button onclick="sendPrompt()" style="background: var(--accent); border: none; color: #000; padding: 0 20px; font-weight: bold; cursor: pointer;">EXECUTE INFERENCE</button>
+        </div>
+    </section>
+
     <script>
         const ws = new WebSocket(`ws://${window.location.host}/ws`);
         const logBox = document.getElementById('console-log');
+        
+        function sendPrompt() {
+            const input = document.getElementById('prompt-input');
+            if (input.value) {
+                ws.send(JSON.stringify({ action: "PROMPT", data: input.value }));
+                input.value = '';
+            }
+        }
         const dnaMatrix = document.getElementById('dna-matrix');
         const neuronChart = document.getElementById('neuron-chart');
         const waveCanvas = document.getElementById('perception-wave');
@@ -197,15 +214,16 @@
 
             document.getElementById('val-energy').innerText = data.energy.toFixed(3);
             document.getElementById('val-fatigue').innerText = data.fatigue.toFixed(3);
+            document.getElementById('val-status').innerText = data.status || "IDLE";
             document.getElementById('val-queue').innerText = data.queue_size || 0;
             document.getElementById('val-visited').innerText = data.visited_count || 0;
             document.getElementById('val-mode').innerText = data.mode || "IDLE";
             document.getElementById('val-mode').style.color = data.mode === "VIDEO" ? "#ff0055" : "#00f2ff";
             document.getElementById('val-workers').innerText = data.active_workers || 0;
             
-            if (data.text_stream) {
+            if (data.thought) {
                 const streamDiv = document.getElementById('text-stream');
-                streamDiv.innerText = data.text_stream;
+                streamDiv.innerText = data.thought;
                 streamDiv.scrollTop = streamDiv.scrollHeight;
             }
 

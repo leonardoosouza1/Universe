@@ -1,35 +1,35 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-/// IARA v2101 - CfC (Closed-form Continuous-time) Cell
-/// Based on Codex v2101 - Liquid Neural Networks for Temporal Flow
+use serde::{Serialize, Deserialize};
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CfCCell {
-    pub hidden_size: usize,
     pub state: Vec<f32>,
+    pub hidden_size: usize,
 }
 
 impl CfCCell {
     pub fn new(hidden_size: usize) -> Self {
         Self {
-            hidden_size,
             state: vec![0.0; hidden_size],
+            hidden_size,
         }
     }
 
-    /// Liquid Flow: O tempo (dt) é um parâmetro de entrada direto.
-    /// x(t) = sigmoid(-f(t)) * g + (1 - sigmoid(-f(t))) * h
-    pub fn flow(&mut self, dt: f32) -> Vec<f32> {
-        for s in self.state.iter_mut() {
-            // Decaimento contínuo: A memória "derrete" se o tempo passar e nada ocorrer.
-            let decay = (-0.5 * dt).exp();
-            *s *= decay;
+    pub fn inject(&mut self, inputs: &[f32]) {
+        for (i, &val) in inputs.iter().enumerate() {
+            if i < self.state.len() {
+                // Integração Temporal: o estado atual é influenciado pelo novo pulso
+                self.state[i] = self.state[i] * 0.5 + val * 0.5;
+            }
+        }
+    }
+
+    pub fn flow(&mut self, delta_t: f32) -> Vec<f32> {
+        for val in self.state.iter_mut() {
+            // Decaimento Líquido: a informação "escorre" no tempo
+            *val *= (-delta_t * 0.1).exp();
         }
         self.state.clone()
-    }
-
-    pub fn inject(&mut self, input: &[f32]) {
-        for (s, &i) in self.state.iter_mut().zip(input.iter()) {
-            *s = (*s + i).clamp(-2.0, 2.0);
-        }
     }
 }

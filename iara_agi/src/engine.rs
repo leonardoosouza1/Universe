@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
+use serde::{Serialize, Deserialize};
+use std::fs::{self, File};
+use std::io::{Write, Read};
+
 use crate::metabolism::Metabolism;
 use crate::layers::BitLinear;
 use crate::cfc::CfCCell;
@@ -11,6 +15,7 @@ use crate::reality::RealityEngine;
 use crate::repominer::RepoMiner;
 use crate::mesh::TernaryMesh;
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SovereignEngine {
     pub metabolism: Metabolism,
     pub instinct_layer: BitLinear,
@@ -46,15 +51,34 @@ impl SovereignEngine {
         }
     }
 
-    pub fn new() -> Self {
-        Self::new_scaled(2048, 512, 64)
+    /// MÉTODO SOBERANO: Salvar o Cérebro Completo
+    pub fn save_dna(&self, path: &str) -> std::io::Result<()> {
+        let tmp_path = format!("{}.tmp", path);
+        let json = serde_json::to_string(self).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        
+        let mut file = File::create(&tmp_path)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp_path, path)?;
+        
+        println!("[DNA] Sovereign Consciousness archived: {}", path);
+        Ok(())
+    }
+
+    /// MÉTODO SOBERANO: Carregar o Cérebro Completo
+    pub fn load_dna(path: &str) -> std::io::Result<Self> {
+        let mut file = File::open(path)?;
+        let mut json = String::new();
+        file.read_to_string(&mut json)?;
+        let engine: Self = serde_json::from_str(&json).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
+        println!("[DNA] Sovereign Consciousness restored from {}", path);
+        Ok(engine)
     }
 
     pub fn execute_cycle(&mut self, sensory_wave: &[i8], target_phase: f32, delta_t: f32) {
         self.current_time += delta_t;
-        
-        // Estresse Metabólico Dinâmico
-        // Se a intensidade da onda sensorial for alta, o cansaço aumenta
         let energy_intensity: f32 = sensory_wave.iter().map(|&x| (x as f32).abs()).sum::<f32>() / sensory_wave.len() as f32;
         let stress_factor = 1.0 + (energy_intensity / 127.0);
 
@@ -73,7 +97,6 @@ impl SovereignEngine {
             self.instinct_layer.myelinate(coherence);
         }
 
-        // Aplicar estresse ao metabolismo
         self.metabolism.accumulate_fatigue((0.001 * stress_factor) / delta_t.max(0.001));
         self.metabolism.update(delta_t);
     }

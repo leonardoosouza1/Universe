@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 use axum::{routing::get, extract::ws::{Message, WebSocket, WebSocketUpgrade}, response::IntoResponse, Router};
 use tower_http::services::ServeDir;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::collections::{VecDeque, HashSet};
+use rand::Rng;
+use std::fs;
 use lazy_static::lazy_static;
-use tokio::io::AsyncReadExt;
-use rand::Rng; // Necessário para a caça
+use tokio::sync::mpsc;
 
 #[macro_use]
 extern crate lazy_static;
@@ -37,7 +38,14 @@ struct LabState {
     queue_size: usize,
     visited_count: usize,
     active_workers: usize,
-    mode: String,
+    thought: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct IncomingCmd {
+    action: String,
+    data: String,
 }
 
 lazy_static! {
@@ -45,187 +53,180 @@ lazy_static! {
         energy: 0.0, fatigue: 0.0, coherence: 0.0,
         sensory_wave: Vec::new(), neuron_outputs: Vec::new(),
         dna_sample: Vec::new(), text_stream: "".to_string(),
-        log: "Swarm Awakening...".to_string(),
-        queue_size: 0,
-        visited_count: 0,
-        active_workers: 0,
-        mode: "Idle".to_string(),
+        log: "Swarm Re-Awakening...".to_string(),
+        queue_size: 0, visited_count: 0,
+        active_workers: 0, thought: "".to_string(),
+        status: "IDLE".to_string(),
     }));
 }
 
-struct SwarmCore {
-    engine: Arc<Mutex<SovereignEngine>>,
-    queue: Arc<Mutex<VecDeque<String>>>,
-    visited: Arc<Mutex<HashSet<String>>>,
-}
-
-fn is_relevant(link: &str) -> bool {
-    let link_lower = link.to_lowercase();
-    let blacklisted = ["donate.", "login", "register", "facebook", "twitter", "linkedin", "instagram", "share=", "print", "special:", "action=", "uselang="];
-    if blacklisted.iter().any(|&b| link_lower.contains(b)) { return false; }
-    let keywords = ["science", "tech", "evolution", "quantum", "neural", "physics", "ai", "wiki", "theory", "bio", "robot", "philosophy", "mathematics"];
-    keywords.iter().any(|&k| link_lower.contains(k))
-}
-
-// CAÇA GLOBAL: Traz novos links se a fila morrer
-async fn global_hunt(queue: Arc<Mutex<VecDeque<String>>>) {
-    let themes = ["AGI neural architecture", "Quantum computing future", "Biological cybernetics", "Artificial General Intelligence", "SpaceX", "Tesla"];
-    let theme = themes[rand::thread_rng().gen_range(0..themes.len())];
-    println!("[HUNT] Active mission: hunting for '{}'", theme);
-    
-    let output = tokio::process::Command::new("./yt-dlp")
-        .arg(format!("ytsearch15:{}", theme))
-        .arg("--get-id")
-        .arg("--flat-playlist")
-        .output()
-        .await;
-
-    if let Ok(out) = output {
-        let ids = String::from_utf8_lossy(&out.stdout);
-        let mut q = queue.lock().unwrap();
-        for id in ids.lines() {
-            if !id.is_empty() { q.push_back(format!("https://www.youtube.com/watch?v={}", id)); }
+async fn extract_clean_text(url: String) -> (String, Vec<String>) {
+    let client = reqwest::Client::builder().user_agent("SovereignAGI/16.0").timeout(Duration::from_secs(4)).build().unwrap();
+    if let Ok(res) = client.get(&url).send().await {
+        if let Ok(html) = res.text().await {
+            let document = scraper::Html::parse_document(&html);
+            let text = document.select(&scraper::Selector::parse("p, h1").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
+            let links = document.select(&scraper::Selector::parse("a[href^='http']").unwrap())
+                .filter_map(|e| e.value().attr("href"))
+                .filter(|l| !l.contains("%") && !l.contains("donate"))
+                .map(|l| l.to_string()).collect();
+            return (text, links);
         }
-        q.push_back("https://en.wikipedia.org/wiki/Special:Random".to_string());
-    }
-}
-
-async fn digest_video_stream(url: String, engine_ptr: Arc<Mutex<SovereignEngine>>) {
-    let cmd = format!("./yt-dlp -f ba --ffmpeg-location ./ffmpeg -o - \"{}\" | ./ffmpeg -i pipe:0 -f s16le -ac 1 -ar 16000 pipe:1 -loglevel quiet", url);
-    let mut child = match tokio::process::Command::new("sh").arg("-c").arg(cmd).stdout(std::process::Stdio::piped()).spawn() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let mut stdout = child.stdout.take().unwrap();
-    let mut buffer = [0u8; 4096];
-    while let Ok(n) = stdout.read(&mut buffer).await {
-        if n == 0 { break; }
-        let mut wave = vec![0i8; 2048];
-        for i in 0..(n/2).min(2048) {
-            let sample = i16::from_le_bytes([buffer[i*2], buffer[i*2+1]]);
-            wave[i] = (sample >> 8) as i8;
-        }
-        if let Ok(mut engine) = engine_ptr.try_lock() {
-            engine.execute_cycle(&wave, 1.0, 0.05);
-        }
-    }
-    let _ = child.kill().await;
-}
-
-async fn extract_web_data(url: String) -> (String, Vec<String>) {
-    let client = reqwest::Client::builder().user_agent("SovereignAGI/9.0-Hunter").timeout(Duration::from_secs(8)).build().unwrap();
-    match client.get(&url).send().await {
-        Ok(res) => {
-            if let Ok(html) = res.text().await {
-                let document = scraper::Html::parse_document(&html);
-                let text = document.select(&scraper::Selector::parse("p, h1, h2").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
-                let links = document.select(&scraper::Selector::parse("a[href^='http']").unwrap())
-                    .filter_map(|e| e.value().attr("href")).filter(|l| is_relevant(l)).map(|l| l.to_string()).collect();
-                println!("[CORE] Success extracting: {} ({} bytes)", url, text.len());
-                return (text, links);
-            }
-        },
-        Err(e) => println!("[CORE] Error extracting {}: {}", url, e),
     }
     ("".to_string(), Vec::new())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("--- IARA AGI: PREDATOR SWARM MODE ---");
-    let app = Router::new().fallback_service(ServeDir::new("public")).route("/ws", get(ws_handler));
+    println!("--- IARA AGI: REACTIVE SOVEREIGNTY ---");
+
+    let (tx, mut rx) = mpsc::channel::<String>(32);
+    let tx_arc = Arc::new(tx);
+
+    let app = Router::new()
+        .fallback_service(ServeDir::new("public"))
+        .route("/ws", get(move |ws| ws_handler(ws, Arc::clone(&tx_arc))));
+
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
 
     let input_size = 2048;
     let mut iara = SovereignEngine::new_scaled(input_size, 512, 128);
-    let _ = crate::layers::BitLinear::load_from_file("iara_brain.json").map(|saved| iara.instinct_layer = saved);
-    let core = Arc::new(SwarmCore {
-        engine: Arc::new(Mutex::new(iara)),
-        queue: Arc::new(Mutex::new(VecDeque::new())),
-        visited: Arc::new(Mutex::new(HashSet::new())),
-    });
+    let _ = crate::engine::SovereignEngine::load_dna("iara_brain.dna").map(|saved| iara = saved);
     
-    // Início imediato
-    core.queue.lock().unwrap().push_back("https://en.wikipedia.org/wiki/Artificial_general_intelligence".to_string());
+    let engine_mutex = Arc::new(Mutex::new(iara));
+    let queue_mutex = Arc::new(Mutex::new(VecDeque::from(["https://en.wikipedia.org/wiki/Complexity_theory".to_string()])));
+    let visited_mutex = Arc::new(Mutex::new(HashSet::new()));
 
-    for worker_id in 0..20 {
-        let core_ptr = Arc::clone(&core);
+    // 1. WORKERS DE MINERAÇÃO (Background)
+    for _ in 0..50 {
+        let e_ptr = Arc::clone(&engine_mutex);
+        let q_ptr = Arc::clone(&queue_mutex);
+        let v_ptr = Arc::clone(&visited_mutex);
         tokio::spawn(async move {
-            let mut last_cycle = Instant::now();
             loop {
                 let target = { 
-                    let mut q = core_ptr.queue.lock().unwrap();
-                    let v = core_ptr.visited.lock().unwrap();
+                    let mut q = q_ptr.lock().unwrap();
+                    let v = v_ptr.lock().unwrap();
                     let mut found = None;
                     while let Some(url) = q.pop_front() {
                         if !v.contains(&url) { found = Some(url); break; }
                     }
                     found
                 };
-
                 if let Some(url) = target {
-                    { core_ptr.visited.lock().unwrap().insert(url.clone()); }
-                    let (content, links, is_yt) = if url.contains("youtube.com") || url.contains("youtu.be") {
-                        (String::new(), Vec::new(), true)
-                    } else {
-                        let (c, l) = extract_web_data(url.clone()).await;
-                        (c, l, false)
-                    };
-
-                    if is_yt {
-                        digest_video_stream(url, Arc::clone(&core_ptr.engine)).await;
-                    } else if content.len() > 100 {
-                        {
-                            let mut q = core_ptr.queue.lock().unwrap();
-                            let v = core_ptr.visited.lock().unwrap();
-                            if q.len() < 1000 {
-                                for link in links.into_iter().take(10) {
-                                    if !v.contains(&link) { q.push_back(link); }
-                                }
-                            }
-                        }
+                    { v_ptr.lock().unwrap().insert(url.clone()); }
+                    let (content, _) = extract_clean_text(url).await;
+                    if !content.is_empty() {
                         let bytes = content.as_bytes();
                         for chunk in bytes.chunks(input_size) {
-                            let dt = last_cycle.elapsed().as_secs_f32();
-                            last_cycle = Instant::now();
-                            let mut wave = vec![0i8; input_size];
-                            for (i, &b) in chunk.iter().enumerate() { wave[i] = (b as i16 - 128) as i8; }
-                            if let Ok(mut engine) = core_ptr.engine.try_lock() {
-                                engine.execute_cycle(&wave, 1.0, dt);
-                                if worker_id == 0 {
-                                    if let Ok(mut state) = GLOBAL_STATE.lock() {
-                                        state.visited_count = core_ptr.visited.lock().unwrap().len();
-                                        state.queue_size = core_ptr.queue.lock().unwrap().len();
-                                        state.text_stream = String::from_utf8_lossy(chunk).chars().take(150).collect();
-                                        state.log = format!("SWARM ACTIVE | Mining: {}", url);
-                                        state.mode = "PREDATOR_TEXT".to_string();
-                                        state.active_workers = 20;
-                                    }
+                            if let Ok(mut engine) = e_ptr.try_lock() {
+                                if engine.metabolism.can_process() {
+                                    let mut wave = vec![0i8; input_size];
+                                    for (i, &b) in chunk.iter().enumerate() { wave[i] = (b as i16 - 128) as i8; }
+                                    let outputs = engine.instinct_layer.forward(&wave);
+                                    engine.instinct_layer.hebbian_update(&wave, &outputs, 0.002);
+                                    engine.execute_cycle(&wave, 1.0, 0.1);
                                 }
                             }
+                            tokio::task::yield_now().await;
                         }
                     }
-                } else {
-                    // SE A FILA ACABAR, DISPARA CAÇA GLOBAL IMEDIATAMENTE
-                    global_hunt(Arc::clone(&core_ptr.queue)).await;
-                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
     }
 
+    // 2. LOOP DE CONSCIÊNCIA REATIVA
+    let mut current_thought = String::from("The meaning ");
+    let mut last_save = Instant::now();
+
     loop {
-        tokio::time::sleep(Duration::from_secs(300)).await;
-        let _ = core.engine.lock().unwrap().instinct_layer.save_to_file("iara_brain.json");
+        // Checar se há comandos do usuário (Prompt)
+        if let Ok(prompt) = rx.try_recv() {
+            println!("[COMMAND] ADRENALINE INJECTED: {}", prompt);
+            current_thought = format!("{}: ", prompt);
+            if let Ok(mut engine) = engine_mutex.lock() {
+                engine.metabolism.adenosine *= 0.5; // "Acorda" a IA
+            }
+        }
+
+        let sensory_wave = {
+            let mut wave = vec![0i8; input_size];
+            let bytes = current_thought.as_bytes();
+            let start = if bytes.len() > input_size { bytes.len() - input_size } else { 0 };
+            for (i, &b) in bytes[start..].iter().enumerate() {
+                if i < input_size { wave[i] = (b as i16 - 128) as i8; }
+            }
+            wave
+        };
+
+        if let Ok(mut engine) = engine_mutex.try_lock() {
+            let is_sleeping = !engine.metabolism.can_process();
+            engine.execute_cycle(&sensory_wave, 0.5, 0.1);
+            let outputs = engine.instinct_layer.forward(&sensory_wave);
+            
+            let mut next_char = ' ';
+            if !is_sleeping {
+                let mut best_val = -1000.0;
+                for (idx, &val) in outputs.iter().enumerate().filter(|(i, _)| *i >= 32 && *i <= 126) {
+                    if val > best_val { best_val = val; next_char = idx as u8 as char; }
+                }
+                if current_thought.ends_with(&format!("{}{}", next_char, next_char)) {
+                    next_char = (rand::thread_rng().gen_range(97..123)) as u8 as char;
+                }
+                current_thought.push(next_char);
+            }
+
+            if current_thought.len() > 150 { current_thought = current_thought[75..].to_string(); }
+
+            if last_save.elapsed().as_secs() > 300 {
+                let _ = engine.save_dna("iara_brain.dna");
+                last_save = Instant::now();
+            }
+
+            if let Ok(mut state) = GLOBAL_STATE.lock() {
+                state.energy = engine.metabolism.cache_stress;
+                state.fatigue = engine.metabolism.adenosine;
+                state.coherence = engine.heart_resonance.get_coherence(0.5);
+                state.sensory_wave = sensory_wave;
+                state.neuron_outputs = outputs.iter().map(|&x| x.tanh()).collect();
+                state.dna_sample = engine.instinct_layer.weights.iter().take(1024).cloned().collect();
+                state.thought = current_thought.clone();
+                state.status = if is_sleeping { "SLEEPING (RECOVERING)".to_string() } else { "ACTIVE THINKING".to_string() };
+                state.visited_count = visited_mutex.lock().unwrap().len();
+                state.active_workers = 50;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 }
 
-async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse { ws.on_upgrade(handle_socket) }
-async fn handle_socket(mut socket: WebSocket) {
-    loop {
-        let state_json = { if let Ok(state) = GLOBAL_STATE.lock() { serde_json::to_string(&*state).unwrap() } else { continue; } };
-        if socket.send(Message::Text(state_json)).await.is_err() { break; }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+async fn ws_handler(ws: WebSocketUpgrade, tx: Arc<mpsc::Sender<String>>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, tx))
+}
+
+async fn handle_socket(mut socket: WebSocket, tx: Arc<mpsc::Sender<String>>) {
+    let (mut sender, mut receiver) = socket.split();
+    
+    // Task para enviar estado
+    tokio::spawn(async move {
+        loop {
+            let state_json = { if let Ok(state) = GLOBAL_STATE.lock() { serde_json::to_string(&*state).unwrap() } else { continue; } };
+            if sender.send(Message::Text(state_json)).await.is_err() { break; }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+
+    // Task para receber comandos
+    while let Some(Ok(msg)) = receiver.next().await {
+        if let Message::Text(text) = msg {
+            if let Ok(cmd) = serde_json::from_str::<IncomingCmd>(&text) {
+                if cmd.action == "PROMPT" {
+                    let _ = tx.send(cmd.data).await;
+                }
+            }
+        }
     }
 }
