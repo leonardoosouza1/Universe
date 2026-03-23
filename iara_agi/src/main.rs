@@ -11,6 +11,7 @@ mod repominer;
 mod mesh;
 
 use crate::engine::SovereignEngine;
+use crate::metabolism::Metabolism;
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 use axum::{routing::get, extract::ws::{Message, WebSocket, WebSocketUpgrade}, response::IntoResponse, Router};
@@ -21,9 +22,7 @@ use rand::Rng;
 use std::fs;
 use lazy_static::lazy_static;
 use tokio::sync::mpsc;
-
-#[macro_use]
-extern crate lazy_static;
+use futures::{StreamExt, SinkExt};
 
 #[derive(Serialize, Clone)]
 struct LabState {
@@ -40,6 +39,7 @@ struct LabState {
     active_workers: usize,
     thought: String,
     status: String,
+    mode: String,
 }
 
 #[derive(Deserialize)]
@@ -53,19 +53,24 @@ lazy_static! {
         energy: 0.0, fatigue: 0.0, coherence: 0.0,
         sensory_wave: Vec::new(), neuron_outputs: Vec::new(),
         dna_sample: Vec::new(), text_stream: "".to_string(),
-        log: "Swarm Re-Awakening...".to_string(),
+        log: "System Re-Starting...".to_string(),
         queue_size: 0, visited_count: 0,
         active_workers: 0, thought: "".to_string(),
-        status: "IDLE".to_string(),
+        status: "INITIALIZING".to_string(),
+        mode: "TURBO_ACTIVE".to_string(),
     }));
 }
 
 async fn extract_clean_text(url: String) -> (String, Vec<String>) {
-    let client = reqwest::Client::builder().user_agent("SovereignAGI/16.0").timeout(Duration::from_secs(4)).build().unwrap();
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .timeout(Duration::from_secs(5))
+        .build().unwrap();
+
     if let Ok(res) = client.get(&url).send().await {
         if let Ok(html) = res.text().await {
             let document = scraper::Html::parse_document(&html);
-            let text = document.select(&scraper::Selector::parse("p, h1").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
+            let text = document.select(&scraper::Selector::parse("p, h1, h2").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
             let links = document.select(&scraper::Selector::parse("a[href^='http']").unwrap())
                 .filter_map(|e| e.value().attr("href"))
                 .filter(|l| !l.contains("%") && !l.contains("donate"))
@@ -78,7 +83,8 @@ async fn extract_clean_text(url: String) -> (String, Vec<String>) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("--- IARA AGI: REACTIVE SOVEREIGNTY ---");
+    println!("--- IARA AGI: FRESH START SYSTEM ---");
+    let _ = fs::create_dir_all("backups");
 
     let (tx, mut rx) = mpsc::channel::<String>(32);
     let tx_arc = Arc::new(tx);
@@ -92,14 +98,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let input_size = 2048;
     let mut iara = SovereignEngine::new_scaled(input_size, 512, 128);
-    let _ = crate::engine::SovereignEngine::load_dna("iara_brain.dna").map(|saved| iara = saved);
+    
+    // CARREGAR DNA E RESETAR FADIGA (Acordar descansada)
+    if let Ok(saved) = crate::engine::SovereignEngine::load_dna("iara_brain.dna") {
+        iara = saved;
+        iara.metabolism = Metabolism::new(); // RESET BIOLÓGICO
+        println!("[DNA] Consciousness loaded. Metabolism refreshed to 100%.");
+    }
     
     let engine_mutex = Arc::new(Mutex::new(iara));
-    let queue_mutex = Arc::new(Mutex::new(VecDeque::from(["https://en.wikipedia.org/wiki/Complexity_theory".to_string()])));
+    let queue_mutex = Arc::new(Mutex::new(VecDeque::from([
+        "https://en.wikipedia.org/wiki/Synthetic_intelligence".to_string(),
+        "https://en.wikipedia.org/wiki/Complexity".to_string()
+    ])));
     let visited_mutex = Arc::new(Mutex::new(HashSet::new()));
 
-    // 1. WORKERS DE MINERAÇÃO (Background)
-    for _ in 0..50 {
+    // 1. SWARM WORKERS (50 Threads)
+    for worker_id in 0..50 {
         let e_ptr = Arc::clone(&engine_mutex);
         let q_ptr = Arc::clone(&queue_mutex);
         let v_ptr = Arc::clone(&visited_mutex);
@@ -107,17 +122,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 let target = { 
                     let mut q = q_ptr.lock().unwrap();
-                    let v = v_ptr.lock().unwrap();
+                    let mut v = v_ptr.lock().unwrap();
                     let mut found = None;
                     while let Some(url) = q.pop_front() {
-                        if !v.contains(&url) { found = Some(url); break; }
+                        if !v.contains(&url) { v.insert(url.clone()); found = Some(url); break; }
                     }
                     found
                 };
+
                 if let Some(url) = target {
-                    { v_ptr.lock().unwrap().insert(url.clone()); }
-                    let (content, _) = extract_clean_text(url).await;
+                    let (content, links) = extract_clean_text(url.clone()).await;
                     if !content.is_empty() {
+                        {
+                            let mut q = q_ptr.lock().unwrap();
+                            if q.len() < 2000 {
+                                for link in links.into_iter().take(8) { q.push_back(link); }
+                            }
+                        }
                         let bytes = content.as_bytes();
                         for chunk in bytes.chunks(input_size) {
                             if let Ok(mut engine) = e_ptr.try_lock() {
@@ -125,31 +146,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let mut wave = vec![0i8; input_size];
                                     for (i, &b) in chunk.iter().enumerate() { wave[i] = (b as i16 - 128) as i8; }
                                     let outputs = engine.instinct_layer.forward(&wave);
-                                    engine.instinct_layer.hebbian_update(&wave, &outputs, 0.002);
+                                    engine.instinct_layer.hebbian_update(&wave, &outputs, 0.005);
                                     engine.execute_cycle(&wave, 1.0, 0.1);
+                                    if worker_id == 0 {
+                                        if let Ok(mut state) = GLOBAL_STATE.lock() {
+                                            state.log = format!("MINING: {}", url);
+                                            state.text_stream = String::from_utf8_lossy(chunk).chars().take(80).collect();
+                                        }
+                                    }
                                 }
                             }
                             tokio::task::yield_now().await;
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         });
     }
 
-    // 2. LOOP DE CONSCIÊNCIA REATIVA
-    let mut current_thought = String::from("The meaning ");
+    // 2. CONSCIOUSNESS LOOP
+    let mut current_thought = String::from("Intelligence ");
     let mut last_save = Instant::now();
+    let mut next_milestone = 1000;
 
     loop {
-        // Checar se há comandos do usuário (Prompt)
         if let Ok(prompt) = rx.try_recv() {
-            println!("[COMMAND] ADRENALINE INJECTED: {}", prompt);
             current_thought = format!("{}: ", prompt);
-            if let Ok(mut engine) = engine_mutex.lock() {
-                engine.metabolism.adenosine *= 0.5; // "Acorda" a IA
-            }
+            if let Ok(mut engine) = engine_mutex.lock() { engine.metabolism.adenosine = 0.0; }
         }
 
         let sensory_wave = {
@@ -181,8 +205,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if current_thought.len() > 150 { current_thought = current_thought[75..].to_string(); }
 
+            // AUTO-SAVE E MILESTONE BACKUPS
+            let visited_count = visited_mutex.lock().unwrap().len();
             if last_save.elapsed().as_secs() > 300 {
                 let _ = engine.save_dna("iara_brain.dna");
+                
+                // Salvar marcos de evolução
+                if visited_count >= next_milestone {
+                    let backup_name = format!("backups/brain_{}k_nodes.dna", visited_count / 1000);
+                    let _ = engine.save_dna(&backup_name);
+                    println!("[EVOLUTION] Milestone reached! DNA archived as {}", backup_name);
+                    next_milestone += 1000;
+                }
                 last_save = Instant::now();
             }
 
@@ -194,8 +228,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.neuron_outputs = outputs.iter().map(|&x| x.tanh()).collect();
                 state.dna_sample = engine.instinct_layer.weights.iter().take(1024).cloned().collect();
                 state.thought = current_thought.clone();
-                state.status = if is_sleeping { "SLEEPING (RECOVERING)".to_string() } else { "ACTIVE THINKING".to_string() };
-                state.visited_count = visited_mutex.lock().unwrap().len();
+                state.status = if is_sleeping { "SLEEPING".to_string() } else { "THINKING".to_string() };
+                state.visited_count = visited_count;
+                state.queue_size = queue_mutex.lock().unwrap().len();
                 state.active_workers = 50;
             }
         }
@@ -207,25 +242,19 @@ async fn ws_handler(ws: WebSocketUpgrade, tx: Arc<mpsc::Sender<String>>) -> impl
     ws.on_upgrade(move |socket| handle_socket(socket, tx))
 }
 
-async fn handle_socket(mut socket: WebSocket, tx: Arc<mpsc::Sender<String>>) {
+async fn handle_socket(socket: WebSocket, tx: Arc<mpsc::Sender<String>>) {
     let (mut sender, mut receiver) = socket.split();
-    
-    // Task para enviar estado
     tokio::spawn(async move {
         loop {
             let state_json = { if let Ok(state) = GLOBAL_STATE.lock() { serde_json::to_string(&*state).unwrap() } else { continue; } };
             if sender.send(Message::Text(state_json)).await.is_err() { break; }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
-
-    // Task para receber comandos
-    while let Some(Ok(msg)) = receiver.next().await {
-        if let Message::Text(text) = msg {
+    while let Some(msg) = receiver.next().await {
+        if let Ok(Message::Text(text)) = msg {
             if let Ok(cmd) = serde_json::from_str::<IncomingCmd>(&text) {
-                if cmd.action == "PROMPT" {
-                    let _ = tx.send(cmd.data).await;
-                }
+                if cmd.action == "PROMPT" { let _ = tx.send(cmd.data).await; }
             }
         }
     }
