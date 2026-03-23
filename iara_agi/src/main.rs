@@ -11,19 +11,13 @@ mod repominer;
 mod mesh;
 
 use crate::engine::SovereignEngine;
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::page::ScreenshotParams;
-use futures::StreamExt;
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 use axum::{routing::get, extract::ws::{Message, WebSocket, WebSocketUpgrade}, response::IntoResponse, Router};
 use tower_http::services::ServeDir;
 use serde::Serialize;
-use base64::{Engine as _, engine::general_purpose};
-use image::{io::Reader as ImageReader, GenericImageView};
-use std::io::Cursor;
-use sysinfo::System;
 use std::env;
+use rand::Rng;
 
 #[derive(Serialize, Clone)]
 struct LabState {
@@ -33,174 +27,132 @@ struct LabState {
     sensory_wave: Vec<i8>,
     neuron_outputs: Vec<f32>,
     dna_sample: Vec<i8>,
-    screenshot: Option<String>,
+    text_stream: String, // O que ela está "lendo" agora
     log: String,
     vision_res: usize,
-    is_ad: bool,
-    delta: f32,
 }
 
 lazy_static::lazy_static! {
     static ref GLOBAL_STATE: Arc<Mutex<LabState>> = Arc::new(Mutex::new(LabState {
         energy: 0.0, fatigue: 0.0, coherence: 0.0,
         sensory_wave: Vec::new(), neuron_outputs: Vec::new(),
-        dna_sample: vec![0; 1024], screenshot: None,
-        log: "Activating Hyper-Perception...".to_string(),
+        dna_sample: Vec::new(), text_stream: "".to_string(),
+        log: "System Awakening...".to_string(),
         vision_res: 0,
-        is_ad: false,
-        delta: 0.0,
     }));
+}
+
+// Extrator de Dados de Alta Velocidade
+async fn extract_information(url: &str) -> String {
+    if url.contains("youtube.com") || url.contains("youtu.be") {
+        println!("[EXTRACTOR] Utilizing yt-dlp for deep extraction...");
+        let output = tokio::process::Command::new("./yt-dlp")
+            .arg("--dump-json")
+            .arg(url)
+            .output()
+            .await;
+            
+        if let Ok(out) = output {
+            if let Ok(json_str) = String::from_utf8(out.stdout) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                    let title = val["title"].as_str().unwrap_or("Unknown Title");
+                    let desc = val["description"].as_str().unwrap_or("");
+                    let tags = val["tags"].as_array().map(|t| t.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                    return format!("YOUTUBE NODE\nTITLE: {}\nTAGS: {}\nDESCRIPTION: {}", title, tags, desc);
+                }
+            }
+        }
+        "Failed to extract Youtube Data. Anti-bot measures active?".to_string()
+    } else {
+        println!("[EXTRACTOR] Utilizing reqwest for surface extraction...");
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) SovereignAGI/1.0")
+            .build().unwrap();
+            
+        if let Ok(res) = client.get(url).send().await {
+            if let Ok(html) = res.text().await {
+                let document = scraper::Html::parse_document(&html);
+                let selector = scraper::Selector::parse("p, h1, h2, h3, li, span").unwrap();
+                let mut text = String::new();
+                for element in document.select(&selector) {
+                    let t = element.text().collect::<Vec<_>>().join(" ");
+                    if !t.trim().is_empty() && t.len() > 10 {
+                        text.push_str(&t);
+                        text.push('\n');
+                    }
+                }
+                return text;
+            }
+        }
+        "Failed to extract HTML Data".to_string()
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    let target_url = if args.len() > 1 { &args[1] } else { "https://www.youtube.com" };
+    let target_url = if args.len() > 1 { args[1].clone() } else { "https://en.wikipedia.org/wiki/Artificial_general_intelligence".to_string() };
 
-    println!("--- IARA LAB: HYPER-PERCEPTION MODE (RGB MATRIX) ---");
+    println!("--- IARA LAB: DATA PREDATOR MODE ---");
+    println!("[NAV] Target locked: {}", target_url);
 
-    let mut sys = System::new_all();
-    sys.refresh_memory();
-    let total_ram_gb = sys.total_memory() / 1024 / 1024 / 1024;
-    
-    // Configuração Ultra: 64x32 Grid = 2048 Inputs
-    let (cols, rows) = (64, 32);
-    let input_size = cols * rows;
-    let hidden_size = if total_ram_gb > 16 { 2048 } else { 1024 };
+    let input_size = 2048; 
+    let hidden_size = 512;
     let output_size = 128;
 
     let app = Router::new().fallback_service(ServeDir::new("public")).route("/ws", get(ws_handler));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
 
-    let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-    let (browser, mut handler) = Browser::launch(BrowserConfig::builder()
-        .no_sandbox()
-        .window_size(1920, 1080)
-        .arg(format!("--user-agent={}", user_agent))
-        .build()?).await?;
-
-    tokio::spawn(async move {
-        while let Some(h) = handler.next().await { if h.is_err() { break; } }
-    });
-
-    let page = browser.new_page(target_url).await?;
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
     let mut iara = SovereignEngine::new_scaled(input_size, hidden_size, output_size);
+    let mut rng = rand::thread_rng();
+    for w in iara.instinct_layer.weights.iter_mut() { *w = rng.gen_range(-1..2); }
+
+    println!("[CORE] Hunting for data...");
+    let raw_text = extract_information(&target_url).await;
+    let text_bytes = raw_text.as_bytes();
+    let total_bytes = text_bytes.len();
+    
+    println!("[CORE] Extracted {} bytes of semantic data. Digestion starting...", total_bytes);
+
+    let mut byte_cursor = 0;
     let mut last_cycle = Instant::now();
-    let mut prev_luma_grid = vec![0u8; input_size];
 
     loop {
-        let start = Instant::now();
-        let current_url = page.url().await.ok().flatten().unwrap_or_default();
-
-        // A) Captura de Screenshot (Para o Canal Vermelho/Movimento)
-        let mut b64_vision = None;
-        let mut current_luma_grid = vec![0u8; input_size];
-        
-        if let Ok(Ok(bytes)) = tokio::time::timeout(Duration::from_millis(1000), page.screenshot(ScreenshotParams::builder().full_page(false).build())).await {
-            b64_vision = Some(general_purpose::STANDARD.encode(&bytes));
-            if let Ok(img) = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?.decode() {
-                let scaled = img.thumbnail(cols as u32, rows as u32);
-                for (i, (_x, _y, pixel)) in scaled.pixels().enumerate() {
-                    if i < input_size {
-                        current_luma_grid[i] = (pixel[0] as f32 * 0.299 + pixel[1] as f32 * 0.587 + pixel[2] as f32 * 0.114) as u8;
-                    }
-                }
-            }
-        }
-
-        // B) SEMANTIC DOM SENSING (Para os Canais Verde e Azul)
-        let mut sensory_wave = vec![0i8; input_size];
-        
-        let dom_script = format!("
-            (() => {{
-                const cols = {}; const rows = {};
-                const cellW = window.innerWidth / cols;
-                const cellH = window.innerHeight / rows;
-                let grid = new Array(cols * rows).fill(0);
-                
-                const elements = document.querySelectorAll('video, a, button, [role=\"button\"], .ytd-thumbnail');
-                elements.forEach(el => {{
-                    const r = el.getBoundingClientRect();
-                    if (r.width === 0 || r.top > window.innerHeight) return;
-                    
-                    let energy = 50; // Link default
-                    if (el.tagName === 'VIDEO') energy = 127;
-                    else if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') energy = 100;
-
-                    let sX = Math.max(0, Math.floor(r.left / cellW));
-                    let eX = Math.min(cols - 1, Math.floor(r.right / cellW));
-                    let sY = Math.max(0, Math.floor(r.top / cellH));
-                    let eY = Math.min(rows - 1, Math.floor(r.bottom / cellH));
-
-                    for (let y = sY; y <= eY; y++) {{
-                        for (let x = sX; x <= eX; x++) {{
-                            const idx = y * cols + x;
-                            if (energy > grid[idx]) grid[idx] = energy;
-                        }}
-                    }}
-                }});
-                return grid;
-            }})()
-        ", cols, rows);
-
-        let semantic_grid = match tokio::time::timeout(Duration::from_millis(500), page.evaluate(dom_script)).await {
-            Ok(Ok(val)) => val.into_value::<Vec<i8>>().unwrap_or_else(|_| vec![0; input_size]),
-            _ => vec![0; input_size]
-        };
-
-        // C) FUSÃO DE CONSCIÊNCIA (RGB Mapping)
-        for i in 0..input_size {
-            // Vermelho (Movimento): Diferença de Luma
-            let motion = (current_luma_grid[i] as i16 - prev_luma_grid[i] as i16).abs() as i8;
-            // Verde (Semântica): Grid do DOM
-            let semantic = semantic_grid[i];
-            
-            // Combinamos os dois na onda sensorial:
-            // A IARA sente o movimento como um pulso positivo e a estrutura como a base da onda
-            sensory_wave[i] = (semantic as i16 + motion as i16 - 64).clamp(-127, 127) as i8;
-        }
-        prev_luma_grid = current_luma_grid;
-
-        // D) Brain Processing
+        let _start = Instant::now();
         let dt = last_cycle.elapsed().as_secs_f32();
         last_cycle = Instant::now();
-        iara.execute_cycle(&sensory_wave, 1.0, dt);
-        
-        let neuron_outputs = iara.instinct_layer.forward(&sensory_wave);
-        let dna_sample = iara.instinct_layer.weights.iter().take(1024).cloned().collect();
 
-        // E) STABILITY & RECOVERY
-        let visual_delta: f32 = sensory_wave.iter().map(|&x| (x as f32).abs()).sum::<f32>() / input_size as f32;
-        
-        let mut action_log = "Hyper-Processing...".to_string();
-        let mut is_ad = false;
+        // A) Mapeamento Semântico: Converte blocos de texto em "Energia"
+        let mut sensory_wave = vec![0i8; input_size];
+        let chunk_size = input_size;
+        let current_chunk;
 
-        let script = "
-            (() => {
-                const skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
-                if (skipBtn) { skipBtn.click(); return { msg: 'ACTION: NEURAL BYPASS (AD)', isAd: true }; }
-                
-                const video = document.querySelector('video');
-                if (video && video.paused && !document.querySelector('.ad-showing')) {
-                    video.play().catch(() => video.muted = true);
-                    return { msg: 'STABILITY: RE-PLAYING REALITY', isAd: false };
-                }
-                
-                return { msg: 'STATUS: ABSORBING HYPER-DATA', isAd: document.querySelector('.ad-showing') !== null };
-            })()
-        ";
-
-        if let Ok(val) = page.evaluate(script).await {
-            if let Some(obj) = val.value() {
-                action_log = obj.get("msg").and_then(|v| v.as_str()).unwrap_or("...").to_string();
-                is_ad = obj.get("isAd").and_then(|v| v.as_bool()).unwrap_or(false);
+        if byte_cursor < total_bytes {
+            let end = (byte_cursor + chunk_size).min(total_bytes);
+            let slice = &text_bytes[byte_cursor..end];
+            current_chunk = String::from_utf8_lossy(slice).to_string();
+            
+            for (i, &b) in slice.iter().enumerate() {
+                // Mapeia ASCII (0-255) para onda (-127 a 127)
+                sensory_wave[i] = (b as i16 - 128) as i8;
             }
+            byte_cursor += chunk_size / 4; // Avança a janela de leitura gradualmente
+        } else {
+            current_chunk = "DATA ASSIMILATED. AWAITING NEW DIRECTIVES.".to_string();
+            byte_cursor = 0; // Loop para demonstração, em modo real ela buscaria novo link
         }
 
-        // F) Sync
+        // B) Brain Processing
+        iara.execute_cycle(&sensory_wave, 1.0, dt);
+        
+        let raw_outputs = iara.instinct_layer.forward(&sensory_wave);
+        let neuron_outputs: Vec<f32> = raw_outputs.iter().map(|&x| x.tanh()).collect();
+        let dna_sample: Vec<i8> = iara.instinct_layer.weights.iter().take(1024).cloned().collect();
+
+        // C) Dashboard Sync
+        let action_log = format!("Digesting Bytes: {} / {}", byte_cursor.min(total_bytes), total_bytes);
+
         {
             if let Ok(mut state) = GLOBAL_STATE.lock() {
                 state.energy = iara.metabolism.cache_stress;
@@ -209,15 +161,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.sensory_wave = sensory_wave;
                 state.neuron_outputs = neuron_outputs;
                 state.dna_sample = dna_sample;
-                if let Some(vision) = b64_vision { state.screenshot = Some(vision); }
-                state.log = format!("{} | URL: {}", action_log, current_url);
-                state.is_ad = is_ad;
-                state.delta = visual_delta;
-                state.vision_res = cols;
+                state.text_stream = current_chunk;
+                state.log = format!("{} | URL: {}", action_log, target_url);
+                state.vision_res = 64;
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await; // 10Hz digest speed
     }
 }
 
@@ -226,6 +176,6 @@ async fn handle_socket(mut socket: WebSocket) {
     loop {
         let state_json = { if let Ok(state) = GLOBAL_STATE.lock() { serde_json::to_string(&*state).unwrap() } else { continue; } };
         if socket.send(Message::Text(state_json)).await.is_err() { break; }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

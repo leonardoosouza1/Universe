@@ -12,6 +12,8 @@ pub struct VoxelWorld {
     pub size: usize,
     pub grid: Vec<VoxelType>,
     pub flow: Vec<Vec2>,
+    pub height_map: Vec<f32>,   // Elevação do terreno (metros)
+    pub banking: Vec<f32>,      // Inclinação lateral (radianos)
     pub cell_size: f32,
     pub start_pos: Vec3,
     pub lap_distance: f32,
@@ -23,6 +25,8 @@ impl VoxelWorld {
         let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
         let mut flow = vec![Vec2::ZERO; size * size];
+        let mut height_map = vec![0.0f32; size * size];
+        let mut banking = vec![0.0f32; size * size];
         
         let waypoints = vec![
             Vec2::new(20.0, 20.0), Vec2::new(140.0, 20.0), 
@@ -37,12 +41,14 @@ impl VoxelWorld {
                 let pos = Vec2::new(x as f32, y as f32);
                 let mut min_dist = f32::MAX;
                 let mut best_dir = Vec2::ZERO;
+                let mut best_seg_idx = 0usize;
 
                 for i in 0..waypoints.len() - 1 {
                     let d = dist_to_segment(pos, waypoints[i], waypoints[i+1]);
                     if d < min_dist { 
                         min_dist = d; 
                         best_dir = (waypoints[i+1] - waypoints[i]).normalize_or_zero();
+                        best_seg_idx = i;
                     }
                 }
 
@@ -51,11 +57,25 @@ impl VoxelWorld {
                 grid[idx] = if min_dist < track_width / 2.0 { VoxelType::Road }
                             else if min_dist < (track_width / 2.0) + 1.5 { VoxelType::Wall }
                             else { VoxelType::Grass };
+                
+                // Elevação: ondulações suaves baseadas na posição + segmento
+                let elev_base = ((x as f32 * 0.03).sin() * 1.5 + (y as f32 * 0.02).cos() * 2.0) * 0.5;
+                height_map[idx] = if grid[idx] == VoxelType::Road || grid[idx] == VoxelType::Wall {
+                    elev_base
+                } else {
+                    elev_base - 0.1 // Grama ligeiramente mais baixa
+                };
+                
+                // Banking: inclinação em curvas (segmentos 2,3,5,6 são curvas)
+                if grid[idx] == VoxelType::Road && (best_seg_idx == 2 || best_seg_idx == 3 || best_seg_idx == 5 || best_seg_idx == 6) {
+                    let norm_dist = min_dist / (track_width / 2.0); // 0=centro, 1=borda
+                    banking[idx] = 0.12 * (1.0 - norm_dist); // ~7° de banking no centro das curvas
+                }
             }
         }
 
         Self { 
-            size, grid, flow, cell_size,
+            size, grid, flow, height_map, banking, cell_size,
             start_pos: Vec3::new(80.0 * cell_size, 0.5, 20.0 * cell_size),
             lap_distance: 800.0,
         }
@@ -77,6 +97,40 @@ impl VoxelWorld {
         } else { Vec2::ZERO }
     }
 
+    /// Retorna a altura do terreno em coordenadas mundo (com interpolação bilinear)
+    pub fn get_height_at(&self, wx: f32, wz: f32) -> f32 {
+        let fx = wx / self.cell_size;
+        let fz = wz / self.cell_size;
+        let x0 = fx.floor() as i32;
+        let z0 = fz.floor() as i32;
+        let tx = fx - x0 as f32;
+        let tz = fz - z0 as f32;
+        
+        let h = |x: i32, z: i32| -> f32 {
+            if x >= 0 && x < self.size as i32 && z >= 0 && z < self.size as i32 {
+                self.height_map[z as usize * self.size + x as usize]
+            } else { 0.0 }
+        };
+        
+        let h00 = h(x0, z0); let h10 = h(x0 + 1, z0);
+        let h01 = h(x0, z0 + 1); let h11 = h(x0 + 1, z0 + 1);
+        
+        let top = h00 * (1.0 - tx) + h10 * tx;
+        let bot = h01 * (1.0 - tx) + h11 * tx;
+        top * (1.0 - tz) + bot * tz
+    }
+
+    /// Retorna a normal da superfície (para banking/inclinação)
+    pub fn get_surface_normal(&self, wx: f32, wz: f32) -> Vec3 {
+        let step = self.cell_size;
+        let hc = self.get_height_at(wx, wz);
+        let hx = self.get_height_at(wx + step, wz);
+        let hz = self.get_height_at(wx, wz + step);
+        let dx = Vec3::new(step, hx - hc, 0.0);
+        let dz = Vec3::new(0.0, hz - hc, step);
+        dz.cross(dx).normalize_or_zero()
+    }
+
     pub fn generate_mesh(&self) -> (Mesh, Mesh, Mesh) {
         let mut road_pos = Vec::new();
         let mut road_colors = Vec::new();
@@ -92,11 +146,15 @@ impl VoxelWorld {
                 let v = self.grid[y * self.size + x];
                 let px = x as f32 * self.cell_size;
                 let pz = y as f32 * self.cell_size;
+                let py = self.height_map[y * self.size + x];
 
                 if v == VoxelType::Road {
                     let is_start_line = (px - self.start_pos.x).abs() < self.cell_size && (pz - self.start_pos.z).abs() < 25.0;
                     let b = road_pos.len() as u32;
-                    road_pos.extend_from_slice(&[[px, 0.01, pz], [px+self.cell_size, 0.01, pz], [px, 0.01, pz+self.cell_size], [px+self.cell_size, 0.01, pz+self.cell_size]]);
+                    road_pos.extend_from_slice(&[
+                        [px, py + 0.01, pz], [px+self.cell_size, py + 0.01, pz], 
+                        [px, py + 0.01, pz+self.cell_size], [px+self.cell_size, py + 0.01, pz+self.cell_size]
+                    ]);
                     
                     let is_light = ((x / 2) + (y / 2)) % 2 == 0;
                     let color = if is_start_line { [1.0, 1.0, 1.0, 1.0] } 
@@ -107,7 +165,10 @@ impl VoxelWorld {
                     road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Grass {
                     let b = grass_pos.len() as u32;
-                    grass_pos.extend_from_slice(&[[px, 0.0, pz], [px+self.cell_size, 0.0, pz], [px, 0.0, pz+self.cell_size], [px+self.cell_size, 0.0, pz+self.cell_size]]);
+                    grass_pos.extend_from_slice(&[
+                        [px, py, pz], [px+self.cell_size, py, pz], 
+                        [px, py, pz+self.cell_size], [px+self.cell_size, py, pz+self.cell_size]
+                    ]);
                     
                     let is_light = ((x / 3) + (y / 3)) % 2 == 0;
                     let color = if is_light { [0.15, 0.35, 0.15, 1.0] } else { [0.10, 0.28, 0.10, 1.0] };
@@ -278,6 +339,6 @@ fn dist_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 
 impl Default for VoxelWorld {
     fn default() -> Self {
-        Self { size: 0, grid: Vec::new(), flow: Vec::new(), cell_size: 0.0, start_pos: Vec3::ZERO, lap_distance: 0.0 }
+        Self { size: 0, grid: Vec::new(), flow: Vec::new(), height_map: Vec::new(), banking: Vec::new(), cell_size: 0.0, start_pos: Vec3::ZERO, lap_distance: 0.0 }
     }
 }

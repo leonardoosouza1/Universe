@@ -22,6 +22,8 @@ fn main() {
         selected_racer: None,
         world_entities: Vec::new(),
         should_reset: false,
+        hard_reset: false,
+        show_confirm_modal: false,
         camera_distance: 150.0,
         is_free_cam: false,
     })

@@ -87,7 +87,13 @@ fn update_racers(
     let mut racer_positions: Vec<(Entity, Vec3, Vec3)> = Vec::new();
 
     for (e, r, t, _, _, _) in query.iter() {
-        let score = if r.distance <= 0.0 { r.distance * 100.0 } else { r.distance.powi(2) / r.engine.current_time.max(0.1) };
+        let score = if r.distance < 15.0 { 
+            r.distance * 10.0 - 10000.0 
+        } else { 
+            let avg_speed = r.distance / r.engine.current_time.max(0.1);
+            let lap_bonus = r.total_laps as f32 * 10000.0;
+            lap_bonus + (r.distance * 100.0) + (avg_speed * 50.0) + (r.hp * 2.0)
+        };
         if score > best_score {
             best_score = score;
             current_best = e;
@@ -138,7 +144,10 @@ fn update_racers(
         sensory_wave[64] = (alignment * 127.0) as i8;
 
         let speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
-        sensory_wave[65] = (speed * 2.0).clamp(0.0, 127.0) as i8; 
+        let avg_tire_temp = if let Some(ref body) = opt_body {
+            body.wheels.iter().map(|w| w.tire_temp).sum::<f32>() / 4.0
+        } else { 0.3 };
+        sensory_wave[65] = (speed * 2.0).clamp(0.0, 127.0) as i8;
         
         let mut is_drifting = false;
         if let Some(ref body) = opt_body {
@@ -195,7 +204,7 @@ fn update_racers(
 
         // --- NOVOS SENSORES DE TELEMETRIA (PROPRIOCEPÇÃO) ---
         // Canal 70: Carga Térmica dos Pneus (0-127 = 0%-100%)
-        sensory_wave[70] = (racer.tire_temp * 127.0).clamp(0.0, 127.0) as i8;
+        sensory_wave[70] = (avg_tire_temp * 127.0).clamp(0.0, 127.0) as i8;
         
         // Canal 71: Downforce Sensor (D = 0.5 * ρ * v² * Cl * A)
         let downforce_normalized = (0.5 * 1.225 * speed * speed * 0.18 * 3.0 * 2.0) / 15000.0; // Normalizado ~15kN max
@@ -225,6 +234,15 @@ fn update_racers(
         
         // Canal 75: Clima / Wetness
         sensory_wave[75] = (env.weather_wetness * 127.0).clamp(0.0, 127.0) as i8;
+
+        // --- NOVOS SENSORES DE PROXIMIDADE LATERAL (TRACK OFFSET 2.0) ---
+        // Permite "sentir" a margem da pista mesmo sem olhar.
+        let left_angle = racer.phase + std::f32::consts::FRAC_PI_2;
+        let right_angle = racer.phase - std::f32::consts::FRAC_PI_2;
+        let dist_l = world.raycast(pos.x, pos.z, left_angle, 15.0);
+        let dist_r = world.raycast(pos.x, pos.z, right_angle, 15.0);
+        sensory_wave[76] = ((dist_l / 15.0) * 127.0) as i8;
+        sensory_wave[77] = ((dist_r / 15.0) * 127.0) as i8;
 
         // --- SKIDMARKS DE DRIFT ---
         if is_drifting && rand::random::<f32>() < 0.15 { // rate limit to ~10 FPS
@@ -276,19 +294,17 @@ fn update_racers(
         // precisa apertar o acelerador.
         // ================================================================
         
-        // Throttle neural: a IA modula entre 0.4 (mínimo reflexivo) e 1.0
+        // Throttle neural
         let neural_throttle = intent[0].clamp(-1.0, 1.0);
-        let survival_throttle = 0.4; // Reflexo: sempre quer andar
-        let pedal_intent = (survival_throttle + neural_throttle * 0.6).clamp(0.1, 1.0);
+        let survival_throttle = 0.3; // Reflexo: sempre quer andar
+        let pedal_intent = (survival_throttle + neural_throttle * 0.7).clamp(0.0, 1.0);
         
-        // Steer: 100% controlado pela IA (sem reflexo de direção)
         let steer_intent = intent[1].clamp(-1.0, 1.0);
         
-        // Brake: APENAS quando a IA explicitamente quer (output alto > 0.7)
-        // BOS (Brake Override System): Se acelerando forte, freio é IGNORADO
-        // Isso impede que redes neurais aleatórias travem o carro com gas+freio simultâneos
-        let raw_brake = if intent[2] > 0.7 { ((intent[2] - 0.7) * 3.33).clamp(0.0, 1.0) } else { 0.0 };
-        let brake_intent = if pedal_intent > 0.5 { 0.0 } else { raw_brake }; // BOS ativo
+        // BOS (Brake Override System) Estrito: Acelerador anula totalmente o freio em baixa velocidade
+        // Se a IA acelerar (pedal_intent > 0.1), é IMPOSSÍVEL apertar o freio, garantindo a largada.
+        let raw_brake = if intent[2] > 0.5 { ((intent[2] - 0.5) * 2.0).clamp(0.0, 1.0) } else { 0.0 };
+        let brake_intent = if pedal_intent > 0.1 || speed < 2.0 { 0.0 } else { raw_brake };
         
         // Marchas: Auto-shift inteligente baseado em RPM e velocidade
         let shift_up_intent = racer.engine.final_intent[3];
@@ -306,31 +322,40 @@ fn update_racers(
             if eng.current_gear <= 1 {
                 shift_req = 1;
             }
-            // Auto-upshift: Sobe marcha ONLY se a embreagem estiver colada (is_clutch_engaged) para não pular marchas patinando!
+            // Guardian Anti-Stall: Se parado mas numa marcha alta (2ª, 3ª), CAI DE MARCHA IMEDIATAMENTE!
+            // Impede a IA de matar o motor por ficar em marchas longas sem andar.
+            else if eng.current_gear > 2 && speed < 3.0 {
+                shift_req = -1;
+            }
+            // Auto-upshift: Sobe marcha ONLY se a embreagem estiver colada
             else if is_clutch_engaged && eng.current_rpm > eng.max_rpm * 0.85 && eng.current_gear < 6 {
                 shift_req = 1;
             }
-            // Auto-downshift: Desce marcha quando RPM < 30% do max (evita afogar) e velocidade permite
-            else if is_clutch_engaged && eng.current_rpm < eng.max_rpm * 0.30 && eng.current_gear > 2 && speed > 2.0 {
+            // Auto-downshift: Desce marcha em RPM crítico
+            else if is_clutch_engaged && eng.current_rpm < eng.max_rpm * 0.30 && eng.current_gear > 2 && speed > 3.0 {
                 shift_req = -1;
             }
-            // IA pode sobrepor com shift manual (edge-triggered)
-            else {
-                if shift_up_intent > 0.5 && racer.memory[3] <= 0.5 { shift_req = 1; }
-                else if shift_down_intent > 0.5 && racer.memory[4] <= 0.5 { shift_req = -1; }
+            // IA pode sobrepor com shift manual APENAS em velocidade colada (is_clutch_engaged)
+            else if is_clutch_engaged {
+                if shift_up_intent > 0.5 && racer.memory[3] <= 0.5 && eng.current_gear < 6 { shift_req = 1; }
+                else if shift_down_intent > 0.5 && racer.memory[4] <= 0.5 && eng.current_gear > 2 { shift_req = -1; }
             }
         }
         
         racer.memory[3] = shift_up_intent;
         racer.memory[4] = shift_down_intent;
 
-        // --- INÉRCIA DE ATUADOR (Curva mais suave para evitar flicking) ---
-        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 5.0).min(1.0);
-        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 4.0).min(1.0);
-        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 6.0).min(1.0);
+        // --- INÉRCIA DE ATUADOR (Dobrada para Pilotos Profissionais) ---
+        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 10.0).min(1.0);
+        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 8.0).min(1.0);
+        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 12.0).min(1.0);
 
         let mut physical_throttle = racer.memory[0];
-        let physical_steer = racer.memory[1];
+        
+        // Garantir largada reta: Trava o volante suavemente nos primeiros 1.0s
+        let steer_start_blend = (racer.engine.current_time / 1.0).clamp(0.0, 1.0);
+        let physical_steer = racer.memory[1] * steer_start_blend;
+        
         let physical_brake = racer.memory[2];
 
         // BOS removido — o sistema de penalidades já pune sobreposição
@@ -344,28 +369,23 @@ fn update_racers(
         // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
         if let Some(ref eng) = opt_engine {
             if eng.current_rpm > eng.max_rpm * 0.95 {
-                racer.hp -= dt * 10.0; // Redline thermal stress
+                racer.hp -= dt * 5.0; // Redline thermal stress
             }
-            // Punir se ficar parado acelerando no vazio (queimando embreagem/fritando pneu parado)
-            if speed < 2.0 && eng.current_rpm > eng.max_rpm * 0.5 {
-                racer.hp -= dt * 25.0; // Fritando embreagem: dano MASSIVO pra forçar o carro a andar
+            // Punir levemente ficar parado fritando no vazio
+            if speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
+                racer.hp -= dt * 5.0; // Burnout: dano para forçar o carro a soltar pra frente
             }
         }
         
         // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR ---
-        if racer.engine.current_time > 3.0 && speed < 3.0 {
-            racer.hp -= dt * 15.0; // "Dor termodinâmica e tédio": perde vida RÁPIDO se ficar parado nos primeiros segundos
+        if racer.engine.current_time > 5.0 && speed < 1.0 {
+            racer.hp -= dt * 10.0; // "Dor termodinâmica e tédio": perde vida se ficar totalmente estagnado
         }
 
-        // --- MODELO TÉRMICO DOS PNEUS ---
-        // Aquece com slip (drift) e frenagem; esfria com o tempo (baseado na temperatura ambiente)
+        // --- MODELO TÉRMICO DOS PNEUS (agora per-wheel em physics.rs) ---
+        // Ler a média das rodas para a telemetria do Racer
         if let Some(ref body) = opt_body {
-            let lateral_dir = transform.back().as_vec3();
-            let lateral_vel = body.velocity.dot(lateral_dir).abs();
-            let heat_from_slip = lateral_vel * speed * 0.0001; // Slip gera calor
-            let heat_from_brake = brake_intent * speed * 0.0005; // Frenagem gera calor
-            let cooling_rate = 0.02 * (1.0 + (env.asphalt_temp - 35.0).abs() * 0.01); // Esfriamento (mais lento se asfalto quente)
-            racer.tire_temp = (racer.tire_temp + (heat_from_slip + heat_from_brake - cooling_rate) * dt).clamp(0.0, 1.0);
+            racer.tire_temp = body.wheels.iter().map(|w| w.tire_temp).sum::<f32>() / 4.0;
         }
 
         // --- GRAMA: Penalidade de Tempo ("DOR" Neural Constante) ---
@@ -400,6 +420,8 @@ fn update_racers(
         if let (Some(engine_comp), Some(body)) = (&mut opt_engine, &mut opt_body) {
             engine_comp.throttle = physical_throttle;
             engine_comp.brake = physical_brake;
+            // Limita o ângulo real da roda traseira dependendo da velocidade
+            engine_comp.steer = physical_steer * dynamic_steer_limit;
             engine_comp.manual_shift_req = shift_req;
             
             // Motor afogado: NÃO mata instantaneamente!
@@ -409,17 +431,9 @@ fn update_racers(
                 racer.hp -= 1.0 * dt; // Bateria drena lentamente: ~100s até morrer
             }
             
-            // Limitador físico de esterço: O chassi não pode virar mais rápido do que
-            // o pneu consegue puxar lateralmente (força centrípeta).
-            // A_c = v * w => w_max = A_c_max / v
-            let mu_approx = 1.3 * env.combined_grip_factor(); 
-            let max_lat_accel = mu_approx * 9.81 * 1.5; // Margem extra de 50% pro LSD/Slip
-            let max_omega = max_lat_accel / speed.max(1.0);
-            let clamped_steer_speed = steering_speed.clamp(-max_omega, max_omega);
-            
-            // Evita o bug de girar no lugar (Spinning in place) limitando esterço pela velocidade
-            let steer_engagement = (speed / 3.0).clamp(0.0, 1.0);
-            body.angular_velocity.y = clamped_steer_speed * steer_engagement;
+            // YAW FÍSICO ATIVADO!
+            // A rotação do carro agora é dominada inteiramente pelas forças dos pneus em physics.rs.
+            // A IA vira a roda da frente -> gera força lateral no pneu -> gera torque -> vira o chassi.
             
             racer.amplitude = body.velocity.length();
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0; 
@@ -431,6 +445,17 @@ fn update_racers(
             // Punição de Fitness por Zigzag + Penalidade de Grama
             let lateral_velocity = body.velocity.cross(flow_3d).length();
             racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
+
+            // Punição Severa por Andar na Contramão
+            if racer.distance < -5.0 {
+                // Dor extrema e morte rápida se andar pra trás
+                racer.hp -= 100.0 * dt; 
+            }
+            
+            // Punição por fazer "zerinho" (Spinning in place donuts)
+            if body.angular_velocity.y.abs() > 1.5 && track_velocity.abs() < 5.0 {
+                racer.hp -= 30.0 * dt; // Se ficar girando mais que 1.5 rad/s parado, morre em ~3s
+            }
 
             // === DRAFTING: Redução de arrasto 30% se atrás de outro carro ===
             if in_draft {
@@ -454,15 +479,13 @@ fn update_racers(
         let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
         
         if voxel == VoxelType::Wall {
-            if let Some(ref mut body) = opt_body {
+            // Colisão física com impulso já é tratada em physics.rs (collision_system)
+            // Aqui só aplicamos dano + efeitos visuais
+            if let Some(ref body) = opt_body {
                 let speed_kmh = body.velocity.length() * 3.6;
-                let dano = (speed_kmh.powi(2) * 0.005).max(10.0);
+                let dano = (speed_kmh.powi(2) * 0.003).max(5.0);
                 racer.hp -= dano; 
                 
-                body.velocity = body.velocity.normalize_or_zero() * -4.0;
-                transform.translation = racer.prev_pos; 
-                
-                // DANO PROGRESSIVO: engine_power cai, mas racer NÃO morre imediatamente
                 racer.engine_power = (racer.hp / 100.0).clamp(0.0, 1.0);
                 
                 if racer.hp <= 0.0 {

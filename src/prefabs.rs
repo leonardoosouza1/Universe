@@ -17,26 +17,40 @@ pub fn spawn_porsche_911_gt3(
         VehicleChassis {
             drivetrain: DrivetrainType::RWD,
             mass: 1250.0,
-            com_offset: Vec3::new(0.0, -0.3, -0.2), // Engine is in the rear
-            drag_coefficient: 0.35, // High downforce = high drag
+            com_offset: Vec3::new(0.0, -0.3, -0.2),
+            drag_coefficient: 0.35,
             wheel_base: 2.507,
-            cg_height: 0.40, 
+            cg_height: 0.40,
+            track_width: 1.55,
+            lsd_lock_ratio: 0.6,       // Porsche tem LSD agressivo
+            brake_torque_max: 3800.0,
         },
         EngineComponent {
             max_torque: 500.0,
             current_rpm: 800.0,
-            max_rpm: 9250.0, // High revving flat-6
+            max_rpm: 9250.0,
             throttle: 0.0,
             brake: 0.0,
-            current_gear: 2, 
+            steer: 0.0,
+            current_drive_torque: 0.0,
+            current_gear: 2,
             shift_timer: 0.0,
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
+            flywheel_inertia: 0.12,     // Flat-6 leve
+            engine_temp: 60.0,
+            oil_temp: 50.0,
         },
-        TireComponent::default(),
+        TireComponent {
+            mu_peak: 1.6,
+            cornering_stiffness: 55000.0,
+            wheel_radius: 0.33,
+            wheel_inertia: 1.5,
+            optimal_temp: 0.5,
+        },
         SuspensionComponent {
-            stiffness: 80000.0, // Race stiffness
+            stiffness: 80000.0,
             damping: 6000.0,
             rest_length: 0.4,
             max_travel: 0.8,
@@ -56,21 +70,29 @@ pub fn spawn_ferrari_296_gt3(
     commands.entity(e).insert(VehicleChassis {
             drivetrain: DrivetrainType::RWD,
             mass: 1250.0,
-            com_offset: Vec3::new(0.0, -0.35, 0.1), // Mid engine
+            com_offset: Vec3::new(0.0, -0.35, 0.1),
             drag_coefficient: 0.38,
             wheel_base: 2.660,
             cg_height: 0.38,
+            track_width: 1.58,
+            lsd_lock_ratio: 0.5,
+            brake_torque_max: 4000.0,
     }).insert(EngineComponent {
-            max_torque: 710.0, // Turbo V6
+            max_torque: 710.0,
             current_rpm: 800.0,
             max_rpm: 8000.0,
             throttle: 0.0,
             brake: 0.0,
-            current_gear: 2, 
+            steer: 0.0,
+            current_drive_torque: 0.0,
+            current_gear: 2,
             shift_timer: 0.0,
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
+            flywheel_inertia: 0.15,     // Turbo V6 mais pesado
+            engine_temp: 60.0,
+            oil_temp: 50.0,
     });
     e
 }
@@ -88,18 +110,26 @@ pub fn spawn_mclaren_720s_gt3(
             com_offset: Vec3::new(0.0, -0.4, 0.15),
             drag_coefficient: 0.36,
             wheel_base: 2.696,
-            cg_height: 0.35, // Very low CG
+            cg_height: 0.35,
+            track_width: 1.60,
+            lsd_lock_ratio: 0.45,
+            brake_torque_max: 3600.0,
     }).insert(EngineComponent {
             max_torque: 700.0,
             current_rpm: 800.0,
             max_rpm: 7500.0,
             throttle: 0.0,
             brake: 0.0,
-            current_gear: 2, 
+            steer: 0.0,
+            current_drive_torque: 0.0,
+            current_gear: 2,
             shift_timer: 0.0,
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
+            flywheel_inertia: 0.14,
+            engine_temp: 60.0,
+            oil_temp: 50.0,
     });
     e
 }
@@ -114,21 +144,29 @@ pub fn spawn_aston_vantage_gt3(
     commands.entity(e).insert(VehicleChassis {
             drivetrain: DrivetrainType::RWD,
             mass: 1285.0,
-            com_offset: Vec3::new(0.0, -0.3, 0.4), // Front mid engine
+            com_offset: Vec3::new(0.0, -0.3, 0.4),
             drag_coefficient: 0.37,
             wheel_base: 2.704,
             cg_height: 0.42,
+            track_width: 1.56,
+            lsd_lock_ratio: 0.55,
+            brake_torque_max: 3500.0,
     }).insert(EngineComponent {
-            max_torque: 700.0, // Twin turbo V8
+            max_torque: 700.0,
             current_rpm: 800.0,
             max_rpm: 7200.0,
             throttle: 0.0,
             brake: 0.0,
-            current_gear: 2, 
+            steer: 0.0,
+            current_drive_torque: 0.0,
+            current_gear: 2,
             shift_timer: 0.0,
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
+            flywheel_inertia: 0.16,     // V8 pesado
+            engine_temp: 60.0,
+            oil_temp: 50.0,
     });
     e
 }
@@ -143,21 +181,29 @@ pub fn spawn_audi_r8_lms_gt3(
     commands.entity(e).insert(VehicleChassis {
             drivetrain: DrivetrainType::RWD,
             mass: 1235.0,
-            com_offset: Vec3::new(0.0, -0.35, 0.2), // Mid engine
+            com_offset: Vec3::new(0.0, -0.35, 0.2),
             drag_coefficient: 0.39,
             wheel_base: 2.650,
-            cg_height: 0.39, 
+            cg_height: 0.39,
+            track_width: 1.57,
+            lsd_lock_ratio: 0.4,
+            brake_torque_max: 3700.0,
     }).insert(EngineComponent {
-            max_torque: 550.0, // N/A V10
+            max_torque: 550.0,
             current_rpm: 800.0,
             max_rpm: 8500.0,
             throttle: 0.0,
             brake: 0.0,
-            current_gear: 2, 
+            steer: 0.0,
+            current_drive_torque: 0.0,
+            current_gear: 2,
             shift_timer: 0.0,
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
+            flywheel_inertia: 0.18,     // V10 pesado
+            engine_temp: 60.0,
+            oil_temp: 50.0,
     });
     e
 }

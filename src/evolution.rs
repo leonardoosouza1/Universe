@@ -15,6 +15,8 @@ pub struct RaceSettings {
     pub selected_racer: Option<Entity>,
     pub world_entities: Vec<Entity>,
     pub should_reset: bool,
+    pub hard_reset: bool,
+    pub show_confirm_modal: bool,
     pub camera_distance: f32,
     pub is_free_cam: bool,
 }
@@ -90,12 +92,12 @@ pub fn spawn_swarm(
             let mut weights = vec![0.0f32; 128 * 64];
             for w in weights.iter_mut() { *w = rng.random_range(-1.0..1.0); }
             
-            // Axioma 1: Seguir o Vão Livre (Input 42 -> Steer Output 1)
-            weights[1 * 128 + 42] = 1.0; 
-            // Axioma 2: Manter Alinhamento (Input 43 -> Steer Output 1)
-            weights[1 * 128 + 43] = 0.8;
-            // Axioma 3: Acelerar se estiver alinhado (Input 43 -> Pedal Output 0)
-            weights[0 * 128 + 43] = 0.5;
+            // Axioma 1: Seguir o Vão Livre (Input 32 (centro da visão) -> Steer Output 1)
+            weights[1 * 128 + 32] = 1.0; 
+            // Axioma 2: Manter Alinhamento (Input 64 -> Steer Output 1)
+            weights[1 * 128 + 64] = 0.8;
+            // Axioma 3: Acelerar se estiver alinhado (Input 64 -> Pedal Output 0)
+            weights[0 * 128 + 64] = 0.5;
 
             engine.instinct_layer.quantize(&weights);
         }
@@ -109,12 +111,16 @@ pub fn spawn_swarm(
             - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 8.0)
             + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
 
+        // As meshes GT3 originais apontam nativamente para +X (Right).
+        // Se a pista flui em +X (start_angle = 0), a rotação é 0.
+        // from_rotation_y(-start_angle) alinha o nariz (+X) perfeitamente com o vetor de fluxo.
+        let spawn_rot = Quat::from_rotation_y(-start_angle);
         let (racer_entity, car_model) = match i % 5 {
-            0 => (crate::prefabs::spawn_porsche_911_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[0]),
-            1 => (crate::prefabs::spawn_ferrari_296_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[1]),
-            2 => (crate::prefabs::spawn_mclaren_720s_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[2]),
-            3 => (crate::prefabs::spawn_aston_vantage_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[3]),
-            _ => (crate::prefabs::spawn_audi_r8_lms_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(Quat::from_rotation_y(-start_angle)), &mut *meshes, racer_mat.clone()), car_models[4]),
+            0 => (crate::prefabs::spawn_porsche_911_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[0]),
+            1 => (crate::prefabs::spawn_ferrari_296_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[1]),
+            2 => (crate::prefabs::spawn_mclaren_720s_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[2]),
+            3 => (crate::prefabs::spawn_aston_vantage_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[3]),
+            _ => (crate::prefabs::spawn_audi_r8_lms_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[4]),
         };
 
         commands.entity(racer_entity).insert(
@@ -155,7 +161,7 @@ fn evolution_pipeline(
     dev: Res<DevSettings>,
     mut world_res: ResMut<VoxelWorldResource>,
     mut env: ResMut<EnvironmentalState>,
-    query: Query<(Entity, &Racer, &crate::physics::EngineComponent)>,
+    query: Query<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
@@ -164,8 +170,8 @@ fn evolution_pipeline(
     let dt = time.delta_secs().min(0.02);
     env.tick(dt);
     if query.is_empty() { return; }
-    let winner = query.iter().find(|(_, r, _)| r.total_laps >= 5);
-    let all_dead = query.iter().all(|(_, r, _)| r.is_dead);
+    let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 5);
+    let all_dead = query.iter().all(|(_, r, _, _)| r.is_dead);
 
     if winner.is_some() || all_dead || race.should_reset {
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
@@ -196,7 +202,7 @@ fn evolution_pipeline(
                 let score_b = calc_score(b.1);
                 score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
             });
-            for (i, (_, r, engine_comp)) in sorted.iter().enumerate() {
+            for (i, (_, r, engine_comp, phys_body)) in sorted.iter().enumerate() {
                 let status = if r.is_dead { "M" } else { "V" };
                 let speed_kmh = r.amplitude * 3.6;
                 let gear_label = match engine_comp.current_gear {
@@ -204,15 +210,20 @@ fn evolution_pipeline(
                     1 => "N".to_string(),
                     g => (g - 1).to_string(),
                 };
-                // Estresse é o canal 125, mas não guardamos no Racer. 
-                // Por enquanto vamos focar no que temos: Pneus e Marchas.
-                let _ = writeln!(file, "{:02}. [{}] **{}** | Dist: {:.1}m | EngPwr: {:.0}% | Pneu: {:.1}°C | Grama: {:.1}s | Vel: {:.0}km/h | Marcha: {} | Freio: {:.0}%", 
+                let yaw_rate = phys_body.angular_velocity.y;
+                let rl_omega = phys_body.wheels[2].angular_velocity;
+                let rr_omega = phys_body.wheels[3].angular_velocity;
+                let rl_slip = phys_body.wheels[2].slip_ratio;
+                let rr_slip = phys_body.wheels[3].slip_ratio;
+                let _ = writeln!(file, "{:02}. [{}] **{}** | D:{:.1}m | P:{:.0}% | V:{:.0}km/h | G:{} | RPM:{:.0} | YAW:{:.2}r/s | ω_RL:{:.1} ω_RR:{:.1} | SR_RL:{:.2} SR_RR:{:.2} | Thr:{:.0}% Brk:{:.0}% Trq:{:.0}Nm", 
                     i+1, status, r.name, r.distance, r.engine_power * 100.0, 
-                    r.tire_temp * 100.0, r.grass_time, speed_kmh, gear_label, r.memory[2] * 100.0);
+                    speed_kmh, gear_label, engine_comp.current_rpm, yaw_rate,
+                    rl_omega, rr_omega, rl_slip, rr_slip,
+                    engine_comp.throttle * 100.0, engine_comp.brake * 100.0, engine_comp.current_drive_torque);
             }
         }
 
-        let best_racer = if let Some((_, w, _)) = winner { 
+        let best_racer = if let Some((_, w, _, _)) = winner { 
             Some(w) 
         } else { 
             query.iter().max_by(|a, b| {
@@ -223,16 +234,24 @@ fn evolution_pipeline(
                     let penalties = hp_penalty + death_penalty + grass_penalty;
                     
                     if r.distance < 15.0 { 
-                        return (r.distance * 10.0) - penalties - 5000.0;
+                        return (r.distance * 10.0) - penalties - 10000.0; // Punição letal para quem não sai do lugar
                     } else {
-                        let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
-                        return base - penalties;
+                        // PROFESSIONAL RACING SCORE V3:
+                        // Prioriza: 1. Laps (Vitória automática) > 2. Distância > 3. Velocidade Média > 4. Vida
+                        let avg_speed = r.distance / r.engine.current_time.max(0.1);
+                        let lap_bonus = r.total_laps as f32 * 10000.0;
+                        let base = lap_bonus + (r.distance * 100.0) + (avg_speed * 50.0) + (r.hp * 2.0);
+                        
+                        // Penalidade de Estagnação (Luta contra o relaxamento)
+                        let stagnation_penalty = if r.distance < 50.0 && r.engine.current_time > 10.0 { 5000.0 } else { 0.0 };
+                        
+                        return base - penalties - stagnation_penalty;
                     }
                 };
                 let score_a = calc_score(a.1);
                 let score_b = calc_score(b.1);
                 score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
-            }).map(|(_, r, _)| r) 
+            }).map(|(_, r, _, _)| r) 
         };
         if let Some(best) = best_racer {
             let weights = best.engine.instinct_layer.weights.clone();
@@ -246,14 +265,14 @@ fn evolution_pipeline(
         }
         
         // Limpar o peso do MVP legado (HARD RESET DE PESOS CORROMPIDOS)
-        if race.should_reset {
+        if race.hard_reset {
             race.best_weights = None;
             let _ = std::fs::remove_file("CHAMPION.dna");
         }
         
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
-        for (e, _, _) in query.iter() { commands.entity(e).despawn(); }
-        race.generation += 1; race.should_reset = false; race.selected_racer = None;
+        for (e, _, _, _) in query.iter() { commands.entity(e).despawn(); }
+        race.generation += 1; race.should_reset = false; race.hard_reset = false; race.selected_racer = None;
         let world = VoxelWorld::new(race.seed);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
         let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })))).id();

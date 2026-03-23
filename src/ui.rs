@@ -13,7 +13,10 @@ pub struct DevButton { pub action: DevAction }
 
 #[derive(Clone, Copy)]
 pub enum DevAction {
-    ResetGen,
+    ResetKeepBest,
+    HardResetPrompt,
+    HardResetConfirm,
+    HardResetCancel,
     MutUp, MutDown,
     AmpUp, AmpDown,
     FlowUp, FlowDown,
@@ -70,13 +73,22 @@ fn update_hud(
             dev_panel.spawn((Text::new("IARA DEV CTRL"), TextFont { font_size: 18.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 1.0))));
             dev_panel.spawn((Text::new(format!("GEN: {}", race.generation)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
             
-            // Botão Reset
-            dev_panel.spawn((
-                Button,
-                Node { width: Val::Px(180.0), height: Val::Px(30.0), margin: UiRect::vertical(Val::Px(5.0)), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
-                BackgroundColor(Color::srgb(0.7, 0.1, 0.1)),
-                DevButton { action: DevAction::ResetGen },
-            )).with_children(|b| { b.spawn((Text::new("HARD RESET GEN"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE))); });
+            // Botões Reset
+            dev_panel.spawn(Node { margin: UiRect::vertical(Val::Px(5.0)), flex_direction: FlexDirection::Column, ..default() }).with_children(|reset_box| {
+                reset_box.spawn((
+                    Button,
+                    Node { width: Val::Px(180.0), height: Val::Px(30.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::bottom(Val::Px(2.0)), ..default() },
+                    BackgroundColor(Color::srgb(0.2, 0.4, 0.8)),
+                    DevButton { action: DevAction::ResetKeepBest },
+                )).with_children(|b| { b.spawn((Text::new("RESET (KEEP BEST)"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE))); });
+
+                reset_box.spawn((
+                    Button,
+                    Node { width: Val::Px(180.0), height: Val::Px(30.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
+                    BackgroundColor(Color::srgb(0.7, 0.1, 0.1)),
+                    DevButton { action: DevAction::HardResetPrompt },
+                )).with_children(|b| { b.spawn((Text::new("HARD RESET (WIPE)"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE))); });
+            });
 
             // Controles de Parâmetros
             let params = [
@@ -250,6 +262,36 @@ fn update_hud(
                     });
                 });
             }
+            
+        // --- MODAL DE CONFIRMAÇÃO ---
+        if race.show_confirm_modal {
+            p.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0), height: Val::Percent(100.0),
+                    justify_content: JustifyContent::Center, align_items: AlignItems::Center,
+                    ..default()
+                },
+                ZIndex(100),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.9))
+            )).with_children(|modal| {
+                modal.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(Val::Px(30.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                }).insert(BorderColor(Color::srgb(0.8, 0.2, 0.2))).insert(BackgroundColor(Color::srgb(0.1, 0.1, 0.15))).with_children(|box_ui| {
+                    box_ui.spawn((Text::new("⚠️ CUIDADO: HARD RESET GENÉTICO ⚠️"), TextFont { font_size: 20.0, ..default() }, TextColor(Color::srgb(1.0, 0.3, 0.3))));
+                    box_ui.spawn((Text::new("Isso vai DELETAR o arquivo CHAMPION.dna do seu HD\ne todos os pilotos vão perder sua experiência passada.\nVocê tem certeza?"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))).insert(Node { margin: UiRect::vertical(Val::Px(15.0)), ..default() });
+                    box_ui.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceEvenly, margin: UiRect::top(Val::Px(20.0)), ..default() }).with_children(|row| {
+                        row.spawn((Button, Node { width: Val::Px(160.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(Color::srgb(0.7, 0.1, 0.1)), DevButton { action: DevAction::HardResetConfirm }))
+                            .with_children(|btn| { btn.spawn((Text::new("SIM, DELETAR TUDO"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))); });
+                        row.spawn((Button, Node { width: Val::Px(140.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(Color::srgb(0.3, 0.4, 0.3)), DevButton { action: DevAction::HardResetCancel }))
+                            .with_children(|btn| { btn.spawn((Text::new("CANCELAR"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))); });
+                    });
+                });
+            });
+        }
     });
 }
 
@@ -266,7 +308,10 @@ fn handle_ui_interactions(
             }
             if let Some(d_btn) = dev_btn {
                 match d_btn.action {
-                    DevAction::ResetGen => race.should_reset = true,
+                    DevAction::ResetKeepBest => race.should_reset = true,
+                    DevAction::HardResetPrompt => race.show_confirm_modal = true,
+                    DevAction::HardResetConfirm => { race.hard_reset = true; race.should_reset = true; race.show_confirm_modal = false; },
+                    DevAction::HardResetCancel => race.show_confirm_modal = false,
                     DevAction::MutUp => dev.mutation_rate = (dev.mutation_rate + 0.05).min(1.0),
                     DevAction::MutDown => dev.mutation_rate = (dev.mutation_rate - 0.05).max(0.0),
                     DevAction::AmpUp => dev.wave_amplitude += 5.0,
