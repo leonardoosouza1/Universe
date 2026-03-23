@@ -152,10 +152,20 @@
             <div class="metrics-grid">
                 <div class="stat-card"><div class="stat-label">Energy</div><div class="stat-value" id="val-energy">0.0</div></div>
                 <div class="stat-card"><div class="stat-label">Fatigue</div><div class="stat-value" id="val-fatigue">0.0</div></div>
-                <div class="stat-card"><div class="stat-label">Coherence</div><div class="stat-value" id="val-coherence">0.0</div></div>
-                <div class="stat-card"><div class="stat-label">Delta</div><div class="stat-value" id="val-delta">0.0</div></div>
-            </div>
-            <div class="module-header">Instinct Outputs</div>
+                <div class="stat-card"><div class="stat-label">Queue</div><div class="stat-value" id="val-queue">0</div></div>
+                <div class="stat-card">
+                    <div class="stat-label">Visited</div>
+                    <div class="stat-value" id="val-visited">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Ingestion Mode</div>
+                    <div class="stat-value" id="val-mode" style="color:var(--accent)">IDLE</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Workers</div>
+                    <div class="stat-value" id="val-workers" style="color:#ffcc00">0</div>
+                </div>
+                </div>            <div class="module-header">Instinct Outputs</div>
             <div id="neuron-chart"></div>
         </section>
 
@@ -187,7 +197,11 @@
 
             document.getElementById('val-energy').innerText = data.energy.toFixed(3);
             document.getElementById('val-fatigue').innerText = data.fatigue.toFixed(3);
-            document.getElementById('val-coherence').innerText = data.coherence.toFixed(3);
+            document.getElementById('val-queue').innerText = data.queue_size || 0;
+            document.getElementById('val-visited').innerText = data.visited_count || 0;
+            document.getElementById('val-mode').innerText = data.mode || "IDLE";
+            document.getElementById('val-mode').style.color = data.mode === "VIDEO" ? "#ff0055" : "#00f2ff";
+            document.getElementById('val-workers').innerText = data.active_workers || 0;
             
             if (data.text_stream) {
                 const streamDiv = document.getElementById('text-stream');

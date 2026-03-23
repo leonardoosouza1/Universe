@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use axum::{routing::get, extract::ws::{Message, WebSocket, WebSocketUpgrade}, response::IntoResponse, Router};
 use tower_http::services::ServeDir;
 use serde::Serialize;
-use std::env;
-use rand::Rng;
+use std::collections::{VecDeque, HashSet};
+use lazy_static::lazy_static;
+use tokio::io::AsyncReadExt;
 
 #[derive(Serialize, Clone)]
 struct LabState {
@@ -27,147 +28,161 @@ struct LabState {
     sensory_wave: Vec<i8>,
     neuron_outputs: Vec<f32>,
     dna_sample: Vec<i8>,
-    text_stream: String, // O que ela está "lendo" agora
+    text_stream: String,
     log: String,
-    vision_res: usize,
+    queue_size: usize,
+    visited_count: usize,
+    active_workers: usize,
+    mode: String,
 }
 
-lazy_static::lazy_static! {
+lazy_static! {
     static ref GLOBAL_STATE: Arc<Mutex<LabState>> = Arc::new(Mutex::new(LabState {
         energy: 0.0, fatigue: 0.0, coherence: 0.0,
         sensory_wave: Vec::new(), neuron_outputs: Vec::new(),
         dna_sample: Vec::new(), text_stream: "".to_string(),
-        log: "System Awakening...".to_string(),
-        vision_res: 0,
+        log: "Swarm Awakening...".to_string(),
+        queue_size: 0,
+        visited_count: 0,
+        active_workers: 0,
+        mode: "Idle".to_string(),
     }));
 }
 
-// Extrator de Dados de Alta Velocidade
-async fn extract_information(url: &str) -> String {
-    if url.contains("youtube.com") || url.contains("youtu.be") {
-        println!("[EXTRACTOR] Utilizing yt-dlp for deep extraction...");
-        let output = tokio::process::Command::new("./yt-dlp")
-            .arg("--dump-json")
-            .arg(url)
-            .output()
-            .await;
-            
-        if let Ok(out) = output {
-            if let Ok(json_str) = String::from_utf8(out.stdout) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    let title = val["title"].as_str().unwrap_or("Unknown Title");
-                    let desc = val["description"].as_str().unwrap_or("");
-                    let tags = val["tags"].as_array().map(|t| t.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-                    return format!("YOUTUBE NODE\nTITLE: {}\nTAGS: {}\nDESCRIPTION: {}", title, tags, desc);
-                }
-            }
+struct SwarmCore {
+    engine: Arc<Mutex<SovereignEngine>>,
+    queue: Arc<Mutex<VecDeque<String>>>,
+    visited: Arc<Mutex<HashSet<String>>>,
+}
+
+fn is_relevant(link: &str) -> bool {
+    let link_lower = link.to_lowercase();
+    let blacklisted = ["donate.", "login", "register", "facebook", "twitter", "linkedin", "instagram", "share=", "print", "special:", "action=", "uselang="];
+    if blacklisted.iter().any(|&b| link_lower.contains(b)) { return false; }
+    let keywords = ["science", "tech", "evolution", "quantum", "neural", "physics", "ai", "wiki", "theory", "bio", "robot", "philosophy", "mathematics"];
+    keywords.iter().any(|&k| link_lower.contains(k))
+}
+
+async fn digest_video_stream(url: String, engine_ptr: Arc<Mutex<SovereignEngine>>) {
+    let cmd = format!("./yt-dlp -f ba --ffmpeg-location ./ffmpeg -o - \"{}\" | ./ffmpeg -i pipe:0 -f s16le -ac 1 -ar 16000 pipe:1 -loglevel quiet", url);
+    let mut child = match tokio::process::Command::new("sh").arg("-c").arg(cmd).stdout(std::process::Stdio::piped()).spawn() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut stdout = child.stdout.take().unwrap();
+    let mut buffer = [0u8; 4096];
+    while let Ok(n) = stdout.read(&mut buffer).await {
+        if n == 0 { break; }
+        let mut wave = vec![0i8; 2048];
+        for i in 0..(n/2).min(2048) {
+            let sample = i16::from_le_bytes([buffer[i*2], buffer[i*2+1]]);
+            wave[i] = (sample >> 8) as i8;
         }
-        "Failed to extract Youtube Data. Anti-bot measures active?".to_string()
-    } else {
-        println!("[EXTRACTOR] Utilizing reqwest for surface extraction...");
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) SovereignAGI/1.0")
-            .build().unwrap();
-            
-        if let Ok(res) = client.get(url).send().await {
-            if let Ok(html) = res.text().await {
-                let document = scraper::Html::parse_document(&html);
-                let selector = scraper::Selector::parse("p, h1, h2, h3, li, span").unwrap();
-                let mut text = String::new();
-                for element in document.select(&selector) {
-                    let t = element.text().collect::<Vec<_>>().join(" ");
-                    if !t.trim().is_empty() && t.len() > 10 {
-                        text.push_str(&t);
-                        text.push('\n');
-                    }
-                }
-                return text;
-            }
+        if let Ok(mut engine) = engine_ptr.try_lock() {
+            engine.execute_cycle(&wave, 1.0, 0.05);
         }
-        "Failed to extract HTML Data".to_string()
     }
+    let _ = child.kill().await;
+}
+
+async fn extract_web_data(url: String) -> (String, Vec<String>) {
+    let client = reqwest::Client::builder().user_agent("SovereignAGI/8.0-Stable").timeout(Duration::from_secs(5)).build().unwrap();
+    if let Ok(res) = client.get(&url).send().await {
+        if let Ok(html) = res.text().await {
+            let document = scraper::Html::parse_document(&html);
+            let text = document.select(&scraper::Selector::parse("p, h1, h2").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
+            let links = document.select(&scraper::Selector::parse("a[href^='http']").unwrap())
+                .filter_map(|e| e.value().attr("href")).filter(|l| is_relevant(l)).map(|l| l.to_string()).collect();
+            return (text, links);
+        }
+    }
+    ("".to_string(), Vec::new())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let target_url = if args.len() > 1 { args[1].clone() } else { "https://en.wikipedia.org/wiki/Artificial_general_intelligence".to_string() };
-
-    println!("--- IARA LAB: DATA PREDATOR MODE ---");
-    println!("[NAV] Target locked: {}", target_url);
-
-    let input_size = 2048; 
-    let hidden_size = 512;
-    let output_size = 128;
-
+    println!("--- IARA AGI: ULTRA-STABLE SWARM ---");
     let app = Router::new().fallback_service(ServeDir::new("public")).route("/ws", get(ws_handler));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
 
-    let mut iara = SovereignEngine::new_scaled(input_size, hidden_size, output_size);
-    let mut rng = rand::thread_rng();
-    for w in iara.instinct_layer.weights.iter_mut() { *w = rng.gen_range(-1..2); }
+    let input_size = 2048;
+    let mut iara = SovereignEngine::new_scaled(input_size, 512, 128);
+    let _ = crate::layers::BitLinear::load_from_file("iara_brain.json").map(|saved| iara.instinct_layer = saved);
+    let core = Arc::new(SwarmCore {
+        engine: Arc::new(Mutex::new(iara)),
+        queue: Arc::new(Mutex::new(VecDeque::new())),
+        visited: Arc::new(Mutex::new(HashSet::new())),
+    });
+    core.queue.lock().unwrap().push_back("https://en.wikipedia.org/wiki/Complexity_theory".to_string());
 
-    println!("[CORE] Hunting for data...");
-    let raw_text = extract_information(&target_url).await;
-    let text_bytes = raw_text.as_bytes();
-    let total_bytes = text_bytes.len();
-    
-    println!("[CORE] Extracted {} bytes of semantic data. Digestion starting...", total_bytes);
+    for worker_id in 0..20 {
+        let core_ptr = Arc::clone(&core);
+        tokio::spawn(async move {
+            let mut last_cycle = Instant::now();
+            loop {
+                let target = { 
+                    let mut q = core_ptr.queue.lock().unwrap();
+                    let v = core_ptr.visited.lock().unwrap();
+                    let mut found = None;
+                    while let Some(url) = q.pop_front() {
+                        if !v.contains(&url) { found = Some(url); break; }
+                    }
+                    found
+                };
 
-    let mut byte_cursor = 0;
-    let mut last_cycle = Instant::now();
+                if let Some(url) = target {
+                    { core_ptr.visited.lock().unwrap().insert(url.clone()); }
+                    let (content, links, is_yt) = if url.contains("youtube.com") || url.contains("youtu.be") {
+                        (String::new(), Vec::new(), true)
+                    } else {
+                        let (c, l) = extract_web_data(url.clone()).await;
+                        (c, l, false)
+                    };
+
+                    if is_yt {
+                        digest_video_stream(url, Arc::clone(&core_ptr.engine)).await;
+                    } else if content.len() > 200 {
+                        {
+                            let mut q = core_ptr.queue.lock().unwrap();
+                            let v = core_ptr.visited.lock().unwrap();
+                            if q.len() < 800 {
+                                for link in links.into_iter().take(5) {
+                                    if !v.contains(&link) { q.push_back(link); }
+                                }
+                            }
+                        }
+                        let bytes = content.as_bytes();
+                        for chunk in bytes.chunks(input_size) {
+                            let dt = last_cycle.elapsed().as_secs_f32();
+                            last_cycle = Instant::now();
+                            let mut wave = vec![0i8; input_size];
+                            for (i, &b) in chunk.iter().enumerate() { wave[i] = (b as i16 - 128) as i8; }
+                            if let Ok(mut engine) = core_ptr.engine.try_lock() {
+                                engine.execute_cycle(&wave, 1.0, dt);
+                                if worker_id == 0 {
+                                    if let Ok(mut state) = GLOBAL_STATE.lock() {
+                                        state.visited_count = core_ptr.visited.lock().unwrap().len();
+                                        state.queue_size = core_ptr.queue.lock().unwrap().len();
+                                        state.text_stream = String::from_utf8_lossy(chunk).chars().take(150).collect();
+                                        state.log = format!("SWARM ACTIVE | Mining: {}", url);
+                                        state.mode = "CLEAN_TEXT".to_string();
+                                        state.active_workers = 20;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+            }
+        });
+    }
 
     loop {
-        let _start = Instant::now();
-        let dt = last_cycle.elapsed().as_secs_f32();
-        last_cycle = Instant::now();
-
-        // A) Mapeamento Semântico: Converte blocos de texto em "Energia"
-        let mut sensory_wave = vec![0i8; input_size];
-        let chunk_size = input_size;
-        let current_chunk;
-
-        if byte_cursor < total_bytes {
-            let end = (byte_cursor + chunk_size).min(total_bytes);
-            let slice = &text_bytes[byte_cursor..end];
-            current_chunk = String::from_utf8_lossy(slice).to_string();
-            
-            for (i, &b) in slice.iter().enumerate() {
-                // Mapeia ASCII (0-255) para onda (-127 a 127)
-                sensory_wave[i] = (b as i16 - 128) as i8;
-            }
-            byte_cursor += chunk_size / 4; // Avança a janela de leitura gradualmente
-        } else {
-            current_chunk = "DATA ASSIMILATED. AWAITING NEW DIRECTIVES.".to_string();
-            byte_cursor = 0; // Loop para demonstração, em modo real ela buscaria novo link
-        }
-
-        // B) Brain Processing
-        iara.execute_cycle(&sensory_wave, 1.0, dt);
-        
-        let raw_outputs = iara.instinct_layer.forward(&sensory_wave);
-        let neuron_outputs: Vec<f32> = raw_outputs.iter().map(|&x| x.tanh()).collect();
-        let dna_sample: Vec<i8> = iara.instinct_layer.weights.iter().take(1024).cloned().collect();
-
-        // C) Dashboard Sync
-        let action_log = format!("Digesting Bytes: {} / {}", byte_cursor.min(total_bytes), total_bytes);
-
-        {
-            if let Ok(mut state) = GLOBAL_STATE.lock() {
-                state.energy = iara.metabolism.cache_stress;
-                state.fatigue = iara.metabolism.adenosine;
-                state.coherence = iara.heart_resonance.get_coherence(1.0);
-                state.sensory_wave = sensory_wave;
-                state.neuron_outputs = neuron_outputs;
-                state.dna_sample = dna_sample;
-                state.text_stream = current_chunk;
-                state.log = format!("{} | URL: {}", action_log, target_url);
-                state.vision_res = 64;
-            }
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await; // 10Hz digest speed
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        let _ = core.engine.lock().unwrap().instinct_layer.save_to_file("iara_brain.json");
     }
 }
 
@@ -176,6 +191,6 @@ async fn handle_socket(mut socket: WebSocket) {
     loop {
         let state_json = { if let Ok(state) = GLOBAL_STATE.lock() { serde_json::to_string(&*state).unwrap() } else { continue; } };
         if socket.send(Message::Text(state_json)).await.is_err() { break; }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

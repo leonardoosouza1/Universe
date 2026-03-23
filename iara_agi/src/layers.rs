@@ -3,16 +3,35 @@
 /// IARA v2101 - SOVEREIGN BIT-LINEAR (BitNet 1.58-bit)
 /// "The End of MatMul": 100% Science, Zero Legacy.
 
+use serde::{Serialize, Deserialize};
+use std::fs::File;
+use std::io::{Write, Read};
+
+#[derive(Serialize, Deserialize)]
 pub struct BitLinear {
-    /// Ternary Weights: {-1, 0, 1} stored in i8 for memory efficiency.
     pub weights: Vec<i8>,
-    /// Gamma Scale: Single float for dequantization per layer (minimal cost).
     pub weight_scale: f32,
     pub input_dim: usize,
     pub output_dim: usize,
 }
 
 impl BitLinear {
+    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+        let json = serde_json::to_string(self).unwrap();
+        let mut file = File::create(path)?;
+        file.write_all(json.as_bytes())?;
+        println!("[DNA] Sovereign Brain saved to {}", path);
+        Ok(())
+    }
+
+    pub fn load_from_file(path: &str) -> std::io::Result<Self> {
+        let mut file = File::open(path)?;
+        let mut json = String::new();
+        file.read_to_string(&mut json)?;
+        let brain: Self = serde_json::from_str(&json).unwrap();
+        println!("[DNA] Sovereign Brain loaded from {}", path);
+        Ok(brain)
+    }
     pub fn new(input_dim: usize, output_dim: usize) -> Self {
         Self {
             weights: vec![0; input_dim * output_dim],
