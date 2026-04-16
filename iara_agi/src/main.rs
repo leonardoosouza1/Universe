@@ -26,54 +26,45 @@ use futures::{StreamExt, SinkExt};
 
 #[derive(Serialize, Clone)]
 struct LabState {
-    energy: f32,
-    fatigue: f32,
-    coherence: f32,
-    sensory_wave: Vec<i8>,
-    neuron_outputs: Vec<f32>,
-    dna_sample: Vec<i8>,
-    text_stream: String,
-    log: String,
-    queue_size: usize,
-    visited_count: usize,
-    active_workers: usize,
-    thought: String,
-    status: String,
-    mode: String,
+    energy: f32, fatigue: f32, coherence: f32,
+    sensory_wave: Vec<i8>, neuron_outputs: Vec<f32>,
+    dna_sample: Vec<i8>, text_stream: String,
+    log: String, queue_size: usize, visited_count: usize,
+    active_workers: usize, thought: String, status: String, mode: String,
 }
 
 #[derive(Deserialize)]
-struct IncomingCmd {
-    action: String,
-    data: String,
-}
+struct IncomingCmd { action: String, data: String }
 
 lazy_static! {
     static ref GLOBAL_STATE: Arc<Mutex<LabState>> = Arc::new(Mutex::new(LabState {
         energy: 0.0, fatigue: 0.0, coherence: 0.0,
         sensory_wave: Vec::new(), neuron_outputs: Vec::new(),
         dna_sample: Vec::new(), text_stream: "".to_string(),
-        log: "System Re-Starting...".to_string(),
+        log: "Bilingual Focus Awakening...".to_string(),
         queue_size: 0, visited_count: 0,
         active_workers: 0, thought: "".to_string(),
-        status: "INITIALIZING".to_string(),
+        status: "IDLE".to_string(),
         mode: "TURBO_ACTIVE".to_string(),
     }));
 }
 
-async fn extract_clean_text(url: String) -> (String, Vec<String>) {
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .timeout(Duration::from_secs(5))
-        .build().unwrap();
+// FILTRO FLEXÍVEL: Permite acentos e links reais da Wikipedia
+fn is_safe_url(url: &str) -> bool {
+    let u = url.to_lowercase();
+    (u.contains("en.wikipedia.org") || u.contains("pt.wikipedia.org")) 
+    && !u.contains("special:") && !u.contains("action=") && !u.contains("redlink=")
+}
 
+async fn extract_clean_text(url: String) -> (String, Vec<String>) {
+    let client = reqwest::Client::builder().user_agent("Mozilla/5.0").timeout(Duration::from_secs(4)).build().unwrap();
     if let Ok(res) = client.get(&url).send().await {
         if let Ok(html) = res.text().await {
             let document = scraper::Html::parse_document(&html);
-            let text = document.select(&scraper::Selector::parse("p, h1, h2").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
+            let text = document.select(&scraper::Selector::parse("p, h1").unwrap()).map(|e| e.text().collect::<String>()).collect::<Vec<_>>().join(" ");
             let links = document.select(&scraper::Selector::parse("a[href^='http']").unwrap())
                 .filter_map(|e| e.value().attr("href"))
-                .filter(|l| !l.contains("%") && !l.contains("donate"))
+                .filter(|l| is_safe_url(l))
                 .map(|l| l.to_string()).collect();
             return (text, links);
         }
@@ -83,37 +74,44 @@ async fn extract_clean_text(url: String) -> (String, Vec<String>) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("--- IARA AGI: FRESH START SYSTEM ---");
+    println!("--- IARA AGI: INFINITE FLOW MODE ---");
     let _ = fs::create_dir_all("backups");
 
     let (tx, mut rx) = mpsc::channel::<String>(32);
     let tx_arc = Arc::new(tx);
-
-    let app = Router::new()
-        .fallback_service(ServeDir::new("public"))
-        .route("/ws", get(move |ws| ws_handler(ws, Arc::clone(&tx_arc))));
-
+    let app = Router::new().fallback_service(ServeDir::new("public")).route("/ws", get(move |ws| ws_handler(ws, Arc::clone(&tx_arc))));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
 
     let input_size = 2048;
     let mut iara = SovereignEngine::new_scaled(input_size, 512, 128);
-    
-    // CARREGAR DNA E RESETAR FADIGA (Acordar descansada)
-    if let Ok(saved) = crate::engine::SovereignEngine::load_dna("iara_brain.dna") {
-        iara = saved;
-        iara.metabolism = Metabolism::new(); // RESET BIOLÓGICO
-        println!("[DNA] Consciousness loaded. Metabolism refreshed to 100%.");
-    }
+    let _ = crate::engine::SovereignEngine::load_dna("iara_brain.dna").map(|saved| { iara = saved; iara.metabolism = Metabolism::new(); });
     
     let engine_mutex = Arc::new(Mutex::new(iara));
     let queue_mutex = Arc::new(Mutex::new(VecDeque::from([
-        "https://en.wikipedia.org/wiki/Synthetic_intelligence".to_string(),
-        "https://en.wikipedia.org/wiki/Complexity".to_string()
+        "https://en.wikipedia.org/wiki/Consciousness".to_string(),
+        "https://pt.wikipedia.org/wiki/Cérebro".to_string()
     ])));
     let visited_mutex = Arc::new(Mutex::new(HashSet::new()));
 
-    // 1. SWARM WORKERS (50 Threads)
+    // 1. WORKER PROFESSOR (Hiper-Alfabetização)
+    let e_primer = Arc::clone(&engine_mutex);
+    tokio::spawn(async move {
+        let words = vec!["the", "o", "a", "que", "to", "of", "and", "da", "do", "in", "that", "is", "it", "for", "para", "com", "não"];
+        loop {
+            for word in &words {
+                let mut wave = vec![0i8; input_size];
+                for (i, &b) in word.as_bytes().iter().enumerate() { if i < input_size { wave[i] = (b as i16 - 128) as i8; } }
+                if let Ok(mut engine) = e_primer.try_lock() {
+                    let outputs = engine.instinct_layer.forward(&wave);
+                    engine.instinct_layer.hebbian_update(&wave, &outputs, 0.1); 
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    });
+
+    // 2. ENXAME TURBO (Auto-Seed)
     for worker_id in 0..50 {
         let e_ptr = Arc::clone(&engine_mutex);
         let q_ptr = Arc::clone(&queue_mutex);
@@ -123,6 +121,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let target = { 
                     let mut q = q_ptr.lock().unwrap();
                     let mut v = v_ptr.lock().unwrap();
+                    if q.is_empty() { 
+                        q.push_back("https://en.wikipedia.org/wiki/Special:Random".to_string());
+                        q.push_back("https://pt.wikipedia.org/wiki/Especial:Aleat%C3%B3ria".to_string());
+                    }
                     let mut found = None;
                     while let Some(url) = q.pop_front() {
                         if !v.contains(&url) { v.insert(url.clone()); found = Some(url); break; }
@@ -133,12 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(url) = target {
                     let (content, links) = extract_clean_text(url.clone()).await;
                     if !content.is_empty() {
-                        {
-                            let mut q = q_ptr.lock().unwrap();
-                            if q.len() < 2000 {
-                                for link in links.into_iter().take(8) { q.push_back(link); }
-                            }
-                        }
+                        { let mut q = q_ptr.lock().unwrap(); if q.len() < 2000 { for link in links.into_iter().take(10) { q.push_back(link); } } }
                         let bytes = content.as_bytes();
                         for chunk in bytes.chunks(input_size) {
                             if let Ok(mut engine) = e_ptr.try_lock() {
@@ -147,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     for (i, &b) in chunk.iter().enumerate() { wave[i] = (b as i16 - 128) as i8; }
                                     let outputs = engine.instinct_layer.forward(&wave);
                                     engine.instinct_layer.hebbian_update(&wave, &outputs, 0.005);
+                                    engine.metabolism.accumulate_fatigue(0.01); 
                                     engine.execute_cycle(&wave, 1.0, 0.1);
                                     if worker_id == 0 {
                                         if let Ok(mut state) = GLOBAL_STATE.lock() {
@@ -160,15 +158,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
     }
 
-    // 2. CONSCIOUSNESS LOOP
+    // 3. LOOP DE CONSCIÊNCIA (Anti-Obsessão)
     let mut current_thought = String::from("Intelligence ");
     let mut last_save = Instant::now();
-    let mut next_milestone = 1000;
 
     loop {
         if let Ok(prompt) = rx.try_recv() {
@@ -176,17 +173,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(mut engine) = engine_mutex.lock() { engine.metabolism.adenosine = 0.0; }
         }
 
-        let sensory_wave = {
-            let mut wave = vec![0i8; input_size];
-            let bytes = current_thought.as_bytes();
-            let start = if bytes.len() > input_size { bytes.len() - input_size } else { 0 };
-            for (i, &b) in bytes[start..].iter().enumerate() {
-                if i < input_size { wave[i] = (b as i16 - 128) as i8; }
-            }
-            wave
-        };
-
         if let Ok(mut engine) = engine_mutex.try_lock() {
+            let sensory_wave = {
+                let mut wave = vec![0i8; input_size];
+                let bytes = current_thought.as_bytes();
+                let start = if bytes.len() > input_size { bytes.len() - input_size } else { 0 };
+                for (i, &b) in bytes[start..].iter().enumerate() { if i < input_size { wave[i] = (b as i16 - 128) as i8; } }
+                wave
+            };
+
             let is_sleeping = !engine.metabolism.can_process();
             engine.execute_cycle(&sensory_wave, 0.5, 0.1);
             let outputs = engine.instinct_layer.forward(&sensory_wave);
@@ -195,28 +190,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !is_sleeping {
                 let mut best_val = -1000.0;
                 for (idx, &val) in outputs.iter().enumerate().filter(|(i, _)| *i >= 32 && *i <= 126) {
-                    if val > best_val { best_val = val; next_char = idx as u8 as char; }
+                    // BIAS DE CLAREZA: Letras (0.4) e Espaço (0.5)
+                    let bonus = if (idx >= 65 && idx <= 90) || (idx >= 97 && idx <= 122) { 0.4 } 
+                                else if idx == 32 { 0.5 } else { 0.0 };
+                    
+                    if val + bonus > best_val { best_val = val + bonus; next_char = idx as u8 as char; }
                 }
-                if current_thought.ends_with(&format!("{}{}", next_char, next_char)) {
-                    next_char = (rand::thread_rng().gen_range(97..123)) as u8 as char;
+                
+                // Quebra de Padrão: Se a letra já apareceu nos últimos 3 caracteres, força um espaço ou aleatória
+                let last_chars = if current_thought.len() > 3 { &current_thought[current_thought.len()-3..] } else { "" };
+                if last_chars.contains(next_char) && next_char != ' ' {
+                    next_char = if rand::thread_rng().gen_bool(0.7) { ' ' } else { (rand::thread_rng().gen_range(97..123)) as u8 as char };
                 }
                 current_thought.push(next_char);
             }
 
             if current_thought.len() > 150 { current_thought = current_thought[75..].to_string(); }
 
-            // AUTO-SAVE E MILESTONE BACKUPS
-            let visited_count = visited_mutex.lock().unwrap().len();
             if last_save.elapsed().as_secs() > 300 {
                 let _ = engine.save_dna("iara_brain.dna");
-                
-                // Salvar marcos de evolução
-                if visited_count >= next_milestone {
-                    let backup_name = format!("backups/brain_{}k_nodes.dna", visited_count / 1000);
-                    let _ = engine.save_dna(&backup_name);
-                    println!("[EVOLUTION] Milestone reached! DNA archived as {}", backup_name);
-                    next_milestone += 1000;
-                }
                 last_save = Instant::now();
             }
 
@@ -228,10 +220,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.neuron_outputs = outputs.iter().map(|&x| x.tanh()).collect();
                 state.dna_sample = engine.instinct_layer.weights.iter().take(1024).cloned().collect();
                 state.thought = current_thought.clone();
-                state.status = if is_sleeping { "SLEEPING".to_string() } else { "THINKING".to_string() };
-                state.visited_count = visited_count;
+                state.status = if is_sleeping { "RECOVERING".to_string() } else { "THINKING".to_string() };
+                state.mode = "TURBO_LINGUISTIC".to_string();
+                state.visited_count = visited_mutex.lock().unwrap().len();
                 state.queue_size = queue_mutex.lock().unwrap().len();
-                state.active_workers = 50;
+                state.active_workers = 51;
             }
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
