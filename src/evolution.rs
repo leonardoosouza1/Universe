@@ -94,12 +94,35 @@ pub fn spawn_swarm(
             let mut weights = vec![0.0f32; 128 * 64];
             for w in weights.iter_mut() { *w = rng.random_range(-1.0..1.0); }
             
-            // Axioma 1: Seguir o Vão Livre (Input 32 (centro da visão) -> Steer Output 1)
-            weights[1 * 128 + 32] = 1.0; 
-            // Axioma 2: Manter Alinhamento (Input 64 -> Steer Output 1)
-            weights[1 * 128 + 64] = 0.8;
-            // Axioma 3: Acelerar se estiver alinhado (Input 64 -> Pedal Output 0)
-            weights[0 * 128 + 64] = 0.5;
+            // --- AXIOMATA DE SOBREVIVÊNCIA (magnitudes grandes p/ sobreviver quantize ternária) ---
+
+            // A1: Wall à esquerda (indices 0..5 horizon, 32..37 ground) → vira à DIREITA
+            // Pixel alto = wall perto. Peso positivo → steer positivo. (Confirmar sinal em sim.)
+            for i in 0..6 {
+                weights[1 * 128 + i] = 5.0;         // horizon left-edge
+                weights[1 * 128 + (32 + i)] = 5.0;  // ground left-edge
+            }
+
+            // A2: Wall à direita (indices 26..31 horizon, 58..63 ground) → vira à ESQUERDA
+            for i in 26..32 {
+                weights[1 * 128 + i] = -5.0;
+                weights[1 * 128 + (32 + i)] = -5.0;
+            }
+
+            // A3: Alinhamento com fluxo da pista (canal 64) → acelera
+            weights[0 * 128 + 64] = 5.0;
+
+            // A4: Se alinhado E pista livre (centro retina 15 e 47, pixel BAIXO = estrada longe/livre),
+            // acelera mais. Peso NEGATIVO porque pixel alto = parede.
+            weights[0 * 128 + 15] = -3.0;
+            weights[0 * 128 + 47] = -3.0;
+
+            // A5: HP baixo (canal 67, valor baixo) → freio. Peso negativo em brake→ quando hp baixo (sinal baixo) → brake output sobe.
+            // Inverso: pain-of-grass (canal 73, valor -128 na grama) → throttle negativo (peso negativo em throttle)
+            weights[0 * 128 + 73] = -3.0;  // na grama, peso * -128 = positivo grande? Não: weights[0]*input = input ternário. Ver abaixo.
+
+            // A6: Comp-stress alto (canal 125) → throttle (ataca quem está na frente)
+            weights[0 * 128 + 125] = 3.0;
 
             engine.instinct_layer.quantize(&weights);
         }
@@ -132,7 +155,7 @@ pub fn spawn_swarm(
                 engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; 64],
-                tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, aquaplaning_timer: 0.0,
+                tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
@@ -155,6 +178,21 @@ pub fn spawn_swarm(
             ));
         });
     }
+}
+
+fn calc_fitness(r: &Racer) -> f32 {
+    let hp_penalty = (100.0 - r.hp) * 5.0;        // was *10, softened
+    let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
+    let grass_penalty = r.grass_time * 50.0;
+    let wall_penalty = r.wall_time * 100.0;       // NEW: penalize wall-riding
+    let penalties = hp_penalty + death_penalty + grass_penalty + wall_penalty;
+
+    let avg_speed = r.distance / r.engine.current_time.max(0.1);
+    let lap_bonus = r.total_laps as f32 * 10000.0;
+
+    // NO cliff — score scales monotonically with distance.
+    // Movement always wins over stagnation.
+    lap_bonus + (r.distance * 100.0) + (avg_speed * 50.0) + (r.hp * 2.0) - penalties
 }
 
 fn evolution_pipeline(
@@ -187,22 +225,8 @@ fn evolution_pipeline(
             
             let mut sorted: Vec<_> = query.iter().collect();
             sorted.sort_by(|a, b| {
-                let calc_score = |r: &Racer| -> f32 {
-                    let hp_penalty = (100.0 - r.hp) * 10.0; // Perder 100 HP = -1000 pontos
-                    let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
-                    let grass_penalty = r.grass_time * 50.0;
-                    let penalties = hp_penalty + death_penalty + grass_penalty;
-                    
-                    if r.distance < 15.0 { 
-                        return (r.distance * 10.0) - penalties - 5000.0; // Hard cutoff para extirpar parasitas imóveis
-                    } else {
-                        // Recompensa velocidade, mas penaliza severamente ficar na grama e perder vida (HP)
-                        let base = r.distance.powi(2) / r.engine.current_time.max(0.1);
-                        return base - penalties;
-                    }
-                };
-                let score_a = calc_score(a.1);
-                let score_b = calc_score(b.1);
+                let score_a = calc_fitness(a.1);
+                let score_b = calc_fitness(b.1);
                 score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
             });
             for (i, (_, r, engine_comp, phys_body)) in sorted.iter().enumerate() {
@@ -230,31 +254,10 @@ fn evolution_pipeline(
             Some(w) 
         } else { 
             query.iter().max_by(|a, b| {
-                let calc_score = |r: &Racer| -> f32 {
-                    let hp_penalty = (100.0 - r.hp) * 10.0;
-                    let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
-                    let grass_penalty = r.grass_time * 50.0;
-                    let penalties = hp_penalty + death_penalty + grass_penalty;
-                    
-                    if r.distance < 15.0 { 
-                        return (r.distance * 10.0) - penalties - 10000.0; // Punição letal para quem não sai do lugar
-                    } else {
-                        // PROFESSIONAL RACING SCORE V3:
-                        // Prioriza: 1. Laps (Vitória automática) > 2. Distância > 3. Velocidade Média > 4. Vida
-                        let avg_speed = r.distance / r.engine.current_time.max(0.1);
-                        let lap_bonus = r.total_laps as f32 * 10000.0;
-                        let base = lap_bonus + (r.distance * 100.0) + (avg_speed * 50.0) + (r.hp * 2.0);
-                        
-                        // Penalidade de Estagnação (Luta contra o relaxamento)
-                        let stagnation_penalty = if r.distance < 50.0 && r.engine.current_time > 10.0 { 5000.0 } else { 0.0 };
-                        
-                        return base - penalties - stagnation_penalty;
-                    }
-                };
-                let score_a = calc_score(a.1);
-                let score_b = calc_score(b.1);
+                let score_a = calc_fitness(a.1);
+                let score_b = calc_fitness(b.1);
                 score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
-            }).map(|(_, r, _, _)| r) 
+            }).map(|(_, r, _, _)| r)
         };
         if let Some(best) = best_racer {
             let weights = best.engine.instinct_layer.weights.clone();

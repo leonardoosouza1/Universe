@@ -24,7 +24,7 @@ impl BitLinear {
     /// No float multiplications during accumulation.
     pub fn forward(&self, input: &[i8]) -> Vec<f32> {
         let mut output = vec![0.0; self.output_dim];
-        let norm_factor = 1.0 / (self.input_dim as f32).sqrt();
+        let norm_factor = 1.0 / ((self.input_dim as f32).sqrt() * 128.0);
 
         for out_idx in 0..self.output_dim {
             let mut accumulator: i32 = 0;

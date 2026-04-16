@@ -24,6 +24,7 @@ pub struct Racer {
     pub tire_temp: f32,       // Carga térmica dos pneus 0.0-1.0
     pub engine_power: f32,    // Degradação mecânica 0.1-1.0 (1.0 = full)
     pub grass_time: f32,      // Tempo acumulado na grama (penalidade fitness)
+    pub wall_time: f32,        // Tempo acumulado raspando parede (penalidade fitness)
     pub aquaplaning_timer: f32, // Timer de aquaplanagem (0.5s de perda de controle)
 }
 
@@ -72,7 +73,7 @@ fn update_racers(
     env: Res<EnvironmentalState>,
     dev: Res<crate::evolution::DevSettings>,
     race: Res<crate::evolution::RaceSettings>,
-    mut time: ResMut<Time<Virtual>>,
+    time: Res<Time<Virtual>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut skidmark_cache: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
@@ -367,19 +368,23 @@ fn update_racers(
         // Overlap penalty removida: a camada simbólica já impede brake+throttle simultâneo
         
         // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
+        // Bootstrap grace: primeiros 10s sem penalidades duras — IA precisa de tempo
+        // para o priming genético se expressar antes de ser culpada.
+        let in_grace = racer.engine.current_time <= 10.0;
         if let Some(ref eng) = opt_engine {
             if eng.current_rpm > eng.max_rpm * 0.95 {
-                racer.hp -= dt * 5.0; // Redline thermal stress
+                racer.hp -= dt * 5.0; // Redline sempre pune — é sinal claro, não estagnação
             }
-            // Punir levemente ficar parado fritando no vazio
-            if speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
-                racer.hp -= dt * 5.0; // Burnout: dano para forçar o carro a soltar pra frente
+            // Burnout: reduzido e só fora do grace
+            if !in_grace && speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
+                racer.hp -= dt * 2.0; // era 5.0
             }
         }
-        
+
         // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR ---
-        if racer.engine.current_time > 5.0 && speed < 1.0 {
-            racer.hp -= dt * 10.0; // "Dor termodinâmica e tédio": perde vida se ficar totalmente estagnado
+        // Só ativa após grace. Drena mais devagar (era 10.0, agora 5.0).
+        if !in_grace && speed < 1.0 {
+            racer.hp -= dt * 5.0;
         }
 
         // --- MODELO TÉRMICO DOS PNEUS (agora per-wheel em physics.rs) ---
@@ -479,6 +484,7 @@ fn update_racers(
         let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
         
         if voxel == VoxelType::Wall {
+            racer.wall_time += dt;  // acumula para a fitness penalizar wall-riding
             // Colisão física com impulso já é tratada em physics.rs (collision_system)
             // Aqui só aplicamos dano + efeitos visuais
             if let Some(ref body) = opt_body {
@@ -538,8 +544,6 @@ fn update_racers(
         }
     }
 
-    // Aceleração do Tempo para Treino Rápido (2x — balanceia velocidade vs FPS)
-    time.set_relative_speed(2.0);
 }
 
 fn camera_system(

@@ -61,7 +61,7 @@ impl SovereignEngine {
         let mut final_intent = [0.0f32; 64];
         for (i, &val) in raw_output.iter().enumerate() {
             if i < 64 {
-                final_intent[i] = val.tanh(); // Suaviza sem matar o sinal
+                final_intent[i] = (val * 0.5).tanh(); // Suaviza sem matar o sinal
             }
         }
         self.final_intent = final_intent.to_vec();

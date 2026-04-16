@@ -668,6 +668,15 @@ fn collision_system(
 
                     body.velocity += penetration_dir * (impulse / chassis.mass);
 
+                    // Tangential friction: wall-scraping costs speed (discourage wall-riding strategy)
+                    let tangential_vel = body.velocity - penetration_dir * body.velocity.dot(penetration_dir);
+                    body.velocity -= tangential_vel * 0.25; // 25% speed loss per contact frame along the wall
+
+                    // Glancing yaw: wall pushes nose away (realistic bounce + helps AI unstick)
+                    // Cross product of penetration_dir (wall normal-ish) with forward gives yaw sign
+                    let yaw_kick = forward.cross(penetration_dir).y;
+                    body.angular_velocity.y += yaw_kick * vel_into_wall * 0.05;
+
                     // Empurrar para fora da parede
                     transform.translation -= penetration_dir * 0.5;
                 }
