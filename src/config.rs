@@ -44,6 +44,8 @@ pub struct UniverseConfig {
     pub tracks: Vec<TrackProfile>,
     pub selected_track_index: usize,
     pub swarm_count: usize,
+    /// Multiplicador de velocidade de simulação (1.0 = tempo real, 10.0 = 10x mais rápido)
+    pub time_scale: f32,
 }
 
 impl Default for UniverseConfig {
@@ -65,7 +67,8 @@ impl Default for UniverseConfig {
                 }
             ],
             selected_track_index: 0,
-            swarm_count: 40,
+            swarm_count: 50,
+            time_scale: 3.0,
         }
     }
 }

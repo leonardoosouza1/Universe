@@ -43,8 +43,8 @@ fn main() {
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))
     .insert_resource(EnvironmentalState::default())
     .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin, MenuPlugin))
-    .add_systems(Startup, setup_main_camera)
-    .add_systems(OnEnter(AppState::Simulation), (setup_scene, setup_hud_container))
+    .add_systems(Startup, (setup_main_camera, apply_time_scale))
+    .add_systems(OnEnter(AppState::Simulation), (setup_scene, setup_hud_container, apply_time_scale))
     .add_systems(OnExit(AppState::Simulation), cleanup_simulation)
     .run();
 }
@@ -64,6 +64,13 @@ fn cleanup_simulation(
 
 fn setup_main_camera(mut commands: Commands) {
     commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, 100.0, 300.0).looking_at(Vec3::ZERO, Vec3::Y)));
+}
+
+fn apply_time_scale(
+    config: Res<UniverseConfig>,
+    mut time: ResMut<Time<Virtual>>,
+) {
+    time.set_relative_speed(config.time_scale);
 }
 
 fn setup_hud_container(mut commands: Commands) {

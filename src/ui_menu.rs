@@ -15,10 +15,15 @@ pub enum MenuButton {
     TogglePhysics(PhysicsToggle),
     SwarmUp,
     SwarmDown,
+    TimeScaleUp,
+    TimeScaleDown,
 }
 
 #[derive(Component)]
 pub struct SwarmText;
+
+#[derive(Component)]
+pub struct TimeScaleText;
 
 #[derive(Component)]
 pub struct PhysicsToggleIndicator(pub PhysicsToggle);
@@ -163,6 +168,18 @@ fn setup_menu(mut commands: Commands, config: Res<UniverseConfig>) {
                     row.spawn((Button, Node { width: Val::Px(30.0), margin: UiRect::left(Val::Px(10.0)), ..default() }, BackgroundColor(Color::srgb(0.3, 0.3, 0.3)), MenuButton::SwarmDown)).with_children(|b| { b.spawn(Text::new("-")); });
                     row.spawn((Button, Node { width: Val::Px(30.0), margin: UiRect::left(Val::Px(5.0)), ..default() }, BackgroundColor(Color::srgb(0.3, 0.3, 0.3)), MenuButton::SwarmUp)).with_children(|b| { b.spawn(Text::new("+")); });
                 });
+
+                // Training Speed (Time Warp)
+                right.spawn(Node { margin: UiRect::top(Val::Px(10.0)), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() }).with_children(|row| {
+                    row.spawn((
+                        Text::new(format!("⚡ TRAINING SPEED: {:.0}x", config.time_scale)),
+                        TextFont { font_size: 16.0, ..default() },
+                        TextColor(Color::srgb(1.0, 0.9, 0.3)),
+                        TimeScaleText
+                    ));
+                    row.spawn((Button, Node { width: Val::Px(30.0), margin: UiRect::left(Val::Px(10.0)), ..default() }, BackgroundColor(Color::srgb(0.4, 0.3, 0.1)), MenuButton::TimeScaleDown)).with_children(|b| { b.spawn(Text::new("-")); });
+                    row.spawn((Button, Node { width: Val::Px(30.0), margin: UiRect::left(Val::Px(5.0)), ..default() }, BackgroundColor(Color::srgb(0.4, 0.3, 0.1)), MenuButton::TimeScaleUp)).with_children(|b| { b.spawn(Text::new("+")); });
+                });
             });
         });
 
@@ -232,8 +249,10 @@ fn handle_menu_interactions(
                         PhysicsToggle::Wear => p.enable_tire_wear = !p.enable_tire_wear,
                     }
                 }
-                MenuButton::SwarmUp => config.swarm_count = (config.swarm_count + 1).min(100),
+                MenuButton::SwarmUp => config.swarm_count = (config.swarm_count + 1).min(50),
                 MenuButton::SwarmDown => config.swarm_count = (config.swarm_count - 1).max(1),
+                MenuButton::TimeScaleUp => config.time_scale = (config.time_scale + 1.0).min(10.0),
+                MenuButton::TimeScaleDown => config.time_scale = (config.time_scale - 1.0).max(1.0),
             }
         }
     }
@@ -247,12 +266,16 @@ fn cleanup_menu(mut commands: Commands, query: Query<Entity, With<MenuEntity>>) 
 
 fn sync_menu_ui(
     config: Res<UniverseConfig>,
-    mut swarm_text: Query<&mut Text, With<SwarmText>>,
+    mut swarm_text: Query<&mut Text, (With<SwarmText>, Without<TimeScaleText>)>,
+    mut timescale_text: Query<&mut Text, (With<TimeScaleText>, Without<SwarmText>)>,
     mut physics_indicators: Query<(&mut BackgroundColor, &PhysicsToggleIndicator), Without<TrackIndicator>>,
     mut track_indicators: Query<(&mut BackgroundColor, &TrackIndicator), Without<PhysicsToggleIndicator>>,
 ) {
     if let Ok(mut text) = swarm_text.single_mut() {
         text.0 = format!("SWARM SIZE: {}", config.swarm_count);
+    }
+    if let Ok(mut text) = timescale_text.single_mut() {
+        text.0 = format!("⚡ TRAINING SPEED: {:.0}x", config.time_scale);
     }
 
     for (mut bg, indicator) in &mut physics_indicators {

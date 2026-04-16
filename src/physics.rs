@@ -591,13 +591,13 @@ fn powertrain_and_tire_system(
             total_long_force += chassis_f_long * aquaplaning;
             total_lat_force += chassis_f_lat * aquaplaning;
 
-            // TRUE PHYSICS YAW
-            // Torque em Y = Braço perpendicular X Força Orto.
-            // Pela regra da mão direita no Bevy (Y para Cima):
-            // - Força longitudinal (X) na roda da direita (+Z) puxa o nariz para esquerda (+Y)
-            // - Força lateral (Z) na frente (+X) empurra o nariz para direita (-Y)
-            total_yaw_torque += wheel_lat_pos[i] * chassis_f_long * aquaplaning;
-            total_yaw_torque -= wheel_long_pos[i] * chassis_f_lat * aquaplaning;
+            // YAW TORQUE: Lateral force at wheel arm creates yaw rotation
+            // Positive f_lat at the front wheels (positive long_pos) turns the car in the steering direction.
+            // The LSD term is kept very small to avoid destabilizing the car under asymmetric drive torque.
+            total_yaw_torque += chassis_f_lat * wheel_long_pos[i] * aquaplaning;
+            
+            let lsd_speed_gate = (speed / 5.0).clamp(0.0, 1.0);
+            total_yaw_torque += chassis_f_long * wheel_lat_pos[i] * 0.005 * lsd_speed_gate;
             
             // Tire thermal model
             if config.physics.enable_thermal {
@@ -714,6 +714,20 @@ fn integration_system(
         // Linear
         let acceleration = (body.forces + drag_force) / chassis.mass;
         body.velocity += acceleration * dt;
+        
+        // LATERAL SCRUB FRICTION: Sliding sideways burns energy via tire scrub
+        // Decomposes velocity into forward and lateral, then applies heavy friction to lateral component
+        let forward_dir = transform.right().as_vec3(); // Car's forward direction
+        let forward_speed = body.velocity.dot(forward_dir);
+        let lateral_vel = body.velocity - forward_dir * forward_speed;
+        let lateral_speed = lateral_vel.length();
+        if lateral_speed > 0.5 {
+            // Aggressive lateral friction: ~3x stronger than regular drag
+            // This makes sliding sideways feel "grippy" instead of "soapy"
+            let scrub_factor = (1.0 - 3.0 * dt).max(0.85); // Loses ~15% lateral speed per frame minimum
+            body.velocity = forward_dir * forward_speed + lateral_vel * scrub_factor;
+        }
+        
         transform.translation += body.velocity * dt;
 
         // Angular Damping: Damping de yaw escala com a velocidade para matar speed-wobbles em altas velocidades

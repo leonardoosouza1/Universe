@@ -87,7 +87,7 @@ impl VoxelWorld {
 
         Self { 
             size, grid, flow, height_map, banking, cell_size,
-            start_pos: Vec3::new(80.0 * cell_size, 0.5, 20.0 * cell_size),
+            start_pos: Vec3::new(120.0 * cell_size, 0.5, 20.0 * cell_size),
             lap_distance: total_dist,
             waypoints_world,
             waypoint_arcs,

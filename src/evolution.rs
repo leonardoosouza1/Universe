@@ -214,18 +214,33 @@ pub fn spawn_swarm(
 }
 
 fn calc_fitness(r: &Racer) -> f32 {
-    // Recompensa Exponencial por Distância:
-    // Evita que "kamikazes" rápidos vençam de alguém que fez a curva mais devagar.
-    // 30m (bater na 1a parede) -> 30^1.5 = 164.
-    // 60m (fazer a curva) -> 60^1.5 = 464 (Vantagem massiva e inalcançável por suicidas).
-    let lap_bonus = r.total_laps as f32 * 20000.0;
+    // ===================================================
+    // FITNESS = DISTÂNCIA NA PISTA É REI
+    // ===================================================
+    // Quem andou mais longe na pista vence. Ponto final.
+    // Joy serve apenas como desempate entre carros na mesma distância.
     
-    let dist_score = if r.distance > 0.0 { r.distance.powf(1.5) } else { r.distance * 10.0 };
+    let lap_bonus = r.total_laps as f32 * 50000.0;
     
-    let joy = r.joy_integral * 50.0; // Bônus por "Fluidez" (Flow State)
-    let death_penalty = if r.is_dead { 200.0 } else { 0.0 };
+    // Distância é o fator dominante: cada metro vale muito
+    // Exponencial para premiar quem vai LONGE (curvas valem mais que retas)
+    let dist_score = if r.distance > 0.0 { 
+        r.distance * 100.0 + r.distance.powf(1.3) // Linear forte + bônus exponencial
+    } else { 
+        r.distance * 500.0 // Penalidade brutal por andar pra trás
+    };
     
-    lap_bonus + joy + dist_score - death_penalty
+    // Joy é apenas desempate (~1% do peso da distância)
+    let joy = r.joy_integral * 5.0;
+    
+    // Penalidade por morte: proporcional a quão pouco andou (morrer cedo = pior)
+    let death_penalty = if r.is_dead { 
+        (100.0 - r.distance.max(0.0)).max(0.0) * 10.0 // Morrer com 0m = -1000, morrer com 100m = 0
+    } else { 
+        0.0 
+    };
+    
+    lap_bonus + dist_score + joy - death_penalty
 }
 
 fn evolution_pipeline(
