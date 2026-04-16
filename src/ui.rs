@@ -20,13 +20,21 @@ pub enum DevAction {
     MutUp, MutDown,
     AmpUp, AmpDown,
     FlowUp, FlowDown,
+    ReturnToMenu,
 }
 
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (update_hud, handle_ui_interactions));
+        app.add_systems(Update, (update_hud, handle_ui_interactions).run_if(in_state(crate::AppState::Simulation)))
+           .add_systems(OnExit(crate::AppState::Simulation), cleanup_physics_ui);
+    }
+}
+
+fn cleanup_physics_ui(mut commands: Commands, query: Query<Entity, With<LeaderboardUI>>) {
+    for e in &query {
+        commands.entity(e).despawn();
     }
 }
 
@@ -88,6 +96,13 @@ fn update_hud(
                     BackgroundColor(Color::srgb(0.7, 0.1, 0.1)),
                     DevButton { action: DevAction::HardResetPrompt },
                 )).with_children(|b| { b.spawn((Text::new("HARD RESET (WIPE)"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE))); });
+
+                reset_box.spawn((
+                    Button,
+                    Node { width: Val::Px(180.0), height: Val::Px(30.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, margin: UiRect::top(Val::Px(5.0)), ..default() },
+                    BackgroundColor(Color::srgb(0.4, 0.4, 0.4)),
+                    DevButton { action: DevAction::ReturnToMenu },
+                )).with_children(|b| { b.spawn((Text::new("BACK TO MENU"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE))); });
             });
 
             // Controles de Parâmetros
@@ -298,6 +313,7 @@ fn update_hud(
 fn handle_ui_interactions(
     mut race: ResMut<RaceSettings>,
     mut dev: ResMut<DevSettings>,
+    mut next_state: ResMut<NextState<crate::AppState>>,
     query: Query<(&Interaction, Option<&RacerButton>, Option<&DevButton>), (Changed<Interaction>, With<Button>)>,
 ) {
     for (interaction, racer_btn, dev_btn) in &query {
@@ -312,6 +328,7 @@ fn handle_ui_interactions(
                     DevAction::HardResetPrompt => race.show_confirm_modal = true,
                     DevAction::HardResetConfirm => { race.hard_reset = true; race.should_reset = true; race.show_confirm_modal = false; },
                     DevAction::HardResetCancel => race.show_confirm_modal = false,
+                    DevAction::ReturnToMenu => next_state.set(crate::AppState::MainMenu),
                     DevAction::MutUp => dev.mutation_rate = (dev.mutation_rate + 0.05).min(1.0),
                     DevAction::MutDown => dev.mutation_rate = (dev.mutation_rate - 0.05).max(0.0),
                     DevAction::AmpUp => dev.wave_amplitude += 5.0,

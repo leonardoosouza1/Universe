@@ -20,7 +20,7 @@ pub struct VoxelWorld {
 }
 
 impl VoxelWorld {
-    pub fn new(_seed: u64) -> Self {
+    pub fn new(_seed: u64, track_width: f32) -> Self {
         let size = 160; 
         let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
@@ -28,6 +28,7 @@ impl VoxelWorld {
         let mut height_map = vec![0.0f32; size * size];
         let mut banking = vec![0.0f32; size * size];
         
+        // TODO: Usar a seed para randomizar os waypoints se complexity > 0
         let waypoints = vec![
             Vec2::new(20.0, 20.0), Vec2::new(140.0, 20.0), 
             Vec2::new(140.0, 60.0), Vec2::new(100.0, 100.0), 
@@ -35,7 +36,7 @@ impl VoxelWorld {
             Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
         ];
 
-        let track_width = 18.0; 
+        let track_width = track_width; 
         for y in 0..size {
             for x in 0..size {
                 let pos = Vec2::new(x as f32, y as f32);

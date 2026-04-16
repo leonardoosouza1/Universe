@@ -16,3 +16,17 @@ pub mod mesh;
 pub mod physics;
 pub mod prefabs;
 pub mod environment;
+pub mod config;
+pub mod ui_menu;
+
+use bevy::prelude::*;
+
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    MainMenu,
+    Simulation,
+}
+
+#[derive(Component)]
+pub struct SimulationEntity;

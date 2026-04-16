@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use crate::world::VoxelWorldResource;
 use crate::environment::EnvironmentalState;
+use crate::config::UniverseConfig;
 
 // ============================================================
 // === WHEEL STATE: Per-wheel physics (4 wheels per car)     ===
@@ -162,6 +163,7 @@ fn reset_forces(mut query: Query<(&mut PhysicsBody, &VehicleChassis)>) {
 fn suspension_and_load_system(
     mut query: Query<(&SuspensionComponent, &mut PhysicsBody, &VehicleChassis, &Transform)>,
     world_res: Res<VoxelWorldResource>,
+    config: Res<UniverseConfig>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs().max(0.001);
@@ -187,8 +189,7 @@ fn suspension_and_load_system(
         
         let speed = body.velocity.length();
         // GT3 Downforce realístico: Force ~3.0 * v^2 
-        // Em ~200km/h (55m/s), downforce = ~900kg (9000N) extras prendendo o carro no asfalto
-        let aero_downforce = 3.0 * speed.powi(2);
+        let aero_downforce = if config.physics.enable_downforce { 3.0 * speed.powi(2) } else { 0.0 };
         let downforce_per_wheel = aero_downforce * 0.25;
 
         for (i, offset) in wheel_offsets.iter().enumerate() {
@@ -241,6 +242,7 @@ fn powertrain_and_tire_system(
     mut query: Query<(&mut EngineComponent, &mut PhysicsBody, &Transform, &VehicleChassis, &TireComponent)>,
     world_res: Res<VoxelWorldResource>,
     env: Res<EnvironmentalState>,
+    config: Res<UniverseConfig>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs().max(0.001);
@@ -261,7 +263,7 @@ fn powertrain_and_tire_system(
         // ========================================================
         // === A) MOTOR DE ARRANQUE (STALL RECOVERY)             ===
         // ========================================================
-        if engine.is_stalled {
+        if engine.is_stalled && config.physics.enable_stall {
             if engine.current_gear <= 2 && engine.throttle > 0.5 {
                 engine.starter_timer += dt;
                 if engine.starter_timer >= 1.0 {
@@ -337,7 +339,7 @@ fn powertrain_and_tire_system(
             // RPM decai naturalmente pelo flywheel durante a troca
             let rpm_decay = engine.current_rpm * dt / engine.flywheel_inertia.max(0.05);
             raw_rpm = (engine.current_rpm - rpm_decay * 50.0).max(800.0);
-        } else if !clutch_slip && !engine.is_stalled && raw_rpm < 550.0 {
+        } else if config.physics.enable_stall && !clutch_slip && !engine.is_stalled && raw_rpm < 550.0 {
             engine.is_stalled = true;
             engine.starter_timer = 0.0;
         }
@@ -345,7 +347,7 @@ fn powertrain_and_tire_system(
         // ========================================================
         // === D) ENGINE THERMAL MODEL                           ===
         // ========================================================
-        if !engine.is_stalled {
+        if !engine.is_stalled && config.physics.enable_thermal {
             let rpm_ratio = engine.current_rpm / engine.max_rpm;
             // Aquecimento: proporcional a RPM e throttle
             let heat_gen = rpm_ratio * engine.throttle * 15.0 * dt; // °C/s
@@ -359,7 +361,7 @@ fn powertrain_and_tire_system(
         }
 
         // Power reduction from overheating (>105°C starts losing power)
-        let thermal_power = if engine.engine_temp > 105.0 {
+        let thermal_power = if config.physics.enable_thermal && engine.engine_temp > 105.0 {
             (1.0 - (engine.engine_temp - 105.0) / 45.0).clamp(0.1, 1.0)
         } else {
             1.0
@@ -386,9 +388,8 @@ fn powertrain_and_tire_system(
             let clutch_engagement = if engine.shift_timer > 0.0 { 0.0 } else { 1.0 };
 
             // GT3 Traction Control System (TCS)
-            // Lê o slip_ratio da frame passada. Se passar de 15%, a ECU corta motor.
             let mut tcs_cut = 1.0;
-            if chassis.drivetrain == DrivetrainType::RWD {
+            if config.physics.enable_tcs && chassis.drivetrain == DrivetrainType::RWD {
                 let slip_avg = (body.wheels[2].slip_ratio.max(0.0) + body.wheels[3].slip_ratio.max(0.0)) * 0.5;
                 if slip_avg > 0.15 {
                     tcs_cut = 1.0 - ((slip_avg - 0.15) * 5.0).clamp(0.0, 0.9); // Corta até 90% da aceleração
@@ -409,13 +410,13 @@ fn powertrain_and_tire_system(
 
         // Arrasto
         let frontal_area = 2.2;
-        let aero_drag = 0.5 * 1.225 * speed * speed * chassis.drag_coefficient * frontal_area;
+        let aero_drag = if config.physics.enable_aero_drag { 0.5 * 1.225 * speed * speed * chassis.drag_coefficient * frontal_area } else { 0.0 };
         let vel_dir = body.velocity.normalize_or_zero();
         body.forces += -vel_dir * aero_drag;
 
         // Downforce
         let cl = chassis.drag_coefficient * 2.5;
-        let downforce = 0.5 * 1.225 * speed * speed * cl * frontal_area;
+        let downforce = if config.physics.enable_downforce { 0.5 * 1.225 * speed * speed * cl * frontal_area } else { 0.0 };
         body.forces.y -= downforce;
 
         // Rolling resistance
@@ -496,7 +497,7 @@ fn powertrain_and_tire_system(
             let load = w.normal_load.max(10.0);
 
             // Mu ajustado por temperatura do pneu
-            let temp_factor = 1.0 - (w.tire_temp - tire.optimal_temp).abs() * 0.5;
+            let temp_factor = if config.physics.enable_thermal { 1.0 - (w.tire_temp - tire.optimal_temp).abs() * 0.5 } else { 1.0 };
             let mu = tire.mu_peak * terrain_grip * env_grip * temp_factor.clamp(0.7, 1.0);
 
             // Velocidade linear da roda vs velocidade do carro naquele ponto
@@ -562,7 +563,7 @@ fn powertrain_and_tire_system(
             let brake_torque = brake_per_wheel[i]; 
             if brake_torque > 0.0 {
                 let stop_torque = (expected_omega.abs() * tire.wheel_inertia) / dt; // Torque necessário p/ parar a roda
-                let actual_brake_torque = brake_torque.min(stop_torque);
+                let actual_brake_torque = if config.physics.enable_abs { brake_torque.min(stop_torque) } else { brake_torque };
                 
                 if expected_omega > 0.0 {
                     expected_omega -= (actual_brake_torque / tire.wheel_inertia) * dt;
@@ -574,7 +575,7 @@ fn powertrain_and_tire_system(
             let new_omega = expected_omega;
 
             // Aquaplanagem
-            let aquaplaning = if env.is_aquaplaning(speed) { 0.1 } else { 1.0 };
+            let aquaplaning = if config.physics.enable_aquaplaning && env.is_aquaplaning(speed) { 0.1 } else { 1.0 };
 
             // Rotacionar as forças da roda de volta para o referencial do chassi
             let chassis_f_long = f_long_final * cos_s - f_lat_final * sin_s;
@@ -596,16 +597,18 @@ fn powertrain_and_tire_system(
             total_yaw_torque += chassis_f_long * wheel_lat_pos[i] * 0.005 * lsd_speed_gate;
 
             // Tire thermal model
-            let slip_heat = (slip_ratio.abs() + slip_angle.abs()) * load * 0.000002 * dt;
-            let brake_heat = brake_per_wheel[i] * w.angular_velocity.abs() * 0.000001 * dt;
-            let cooling = 0.02 * (1.0 + speed * 0.01) * dt;
+            if config.physics.enable_thermal {
+                let slip_heat = (slip_ratio.abs() + slip_angle.abs()) * load * 0.000002 * dt;
+                let brake_heat = brake_per_wheel[i] * w.angular_velocity.abs() * 0.000001 * dt;
+                let cooling = 0.02 * (1.0 + speed * 0.01) * dt;
+                body.wheels[i].tire_temp = (body.wheels[i].tire_temp + slip_heat + brake_heat - cooling).clamp(0.0, 1.0);
+            }
 
             // Writeback (clone para evitar borrow issue)
             let wheel_mut = &mut body.wheels[i];
             wheel_mut.angular_velocity = new_omega;
             wheel_mut.slip_ratio = slip_ratio;
             wheel_mut.slip_angle = slip_angle;
-            wheel_mut.tire_temp = (wheel_mut.tire_temp + slip_heat + brake_heat - cooling).clamp(0.0, 1.0);
         }
 
         // Aplicar forças acumuladas ao chassi
@@ -685,6 +688,7 @@ fn collision_system(
 // ============================================================
 fn integration_system(
     mut query: Query<(&mut PhysicsBody, &VehicleChassis, &mut Transform)>,
+    config: Res<UniverseConfig>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
@@ -692,7 +696,7 @@ fn integration_system(
 
     for (mut body, chassis, mut transform) in query.iter_mut() {
         let speed = body.velocity.length();
-        let aero_drag = 0.5 * 1.225 * chassis.drag_coefficient * 2.5 * speed.powi(2);
+        let aero_drag = if config.physics.enable_aero_drag { 0.5 * 1.225 * chassis.drag_coefficient * 2.5 * speed.powi(2) } else { 0.0 };
         let drag_force = -body.velocity.normalize_or_zero() * aero_drag;
 
         // Linear

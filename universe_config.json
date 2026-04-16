@@ -1,0 +1,28 @@
+{
+  "physics": {
+    "enable_stall": false,
+    "enable_thermal": false,
+    "enable_aero_drag": false,
+    "enable_downforce": false,
+    "enable_tcs": false,
+    "enable_abs": false,
+    "enable_aquaplaning": false,
+    "enable_tire_wear": false
+  },
+  "tracks": [
+    {
+      "name": "Interlagos Gateway",
+      "seed": 64,
+      "track_width": 36.0,
+      "complexity": 1.0
+    },
+    {
+      "name": "Dubai Oval",
+      "seed": 123,
+      "track_width": 40.0,
+      "complexity": 0.5
+    }
+  ],
+  "selected_track_index": 0,
+  "swarm_count": 31
+}

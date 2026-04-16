@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use crate::simulation::Racer;
 use crate::world::{VoxelWorld, VoxelWorldResource};
 use crate::environment::EnvironmentalState;
+use crate::config::UniverseConfig;
 use rand::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -44,7 +45,7 @@ pub struct EvolutionPlugin;
 
 impl Plugin for EvolutionPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, evolution_pipeline);
+        app.add_systems(Update, evolution_pipeline.run_if(in_state(crate::AppState::Simulation)));
     }
 }
 
@@ -55,6 +56,7 @@ pub fn spawn_swarm(
     race: &RaceSettings,
     world: &VoxelWorld,
     dev: &DevSettings,
+    config: &UniverseConfig,
 ) {
     let mut rng = rand::rng();
     let wing = meshes.add(Cuboid::new(0.6, 0.8, 2.0)); 
@@ -79,7 +81,7 @@ pub fn spawn_swarm(
         }
     }
 
-    for i in 0..40 {
+    for i in 0..config.swarm_count {
         let mut engine = crate::engine::SovereignEngine::new();
         if let Some(ref best) = current_best_w {
             let mutated: Vec<f32> = best.iter().map(|&w| {
@@ -164,6 +166,7 @@ fn evolution_pipeline(
     query: Query<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    config: Res<UniverseConfig>,
     time: Res<Time>,
 ) {
     // Tick do timer ambiental (Sincronizado com os mesmos clamps do simulador físico)
@@ -273,7 +276,7 @@ fn evolution_pipeline(
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
         for (e, _, _, _) in query.iter() { commands.entity(e).despawn(); }
         race.generation += 1; race.should_reset = false; race.hard_reset = false; race.selected_racer = None;
-        let world = VoxelWorld::new(race.seed);
+        let world = VoxelWorld::new(race.seed, config.current_track().track_width);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
         let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })))).id();
         let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })))).id();
@@ -281,7 +284,7 @@ fn evolution_pipeline(
         race.world_entities = vec![road_e, grass_e, wall_e];
         // Randomiza condições ambientais (mild para as primeiras 5 gerações = bootstrap)
         env.randomize(race.generation <= 5);
-        spawn_swarm(&mut commands, &mut meshes, &mut materials, &race, &world, &dev);
+        spawn_swarm(&mut commands, &mut meshes, &mut materials, &race, &world, &dev, &config);
         world_res.0 = world;
     }
 }
