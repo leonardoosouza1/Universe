@@ -37,6 +37,7 @@ fn main() {
         show_confirm_modal: false,
         camera_distance: 150.0,
         is_free_cam: false,
+        death_markers: Vec::new(),
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

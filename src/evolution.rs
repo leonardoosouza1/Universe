@@ -22,6 +22,7 @@ pub struct RaceSettings {
     pub show_confirm_modal: bool,
     pub camera_distance: f32,
     pub is_free_cam: bool,
+    pub death_markers: Vec<Vec3>,
 }
 
 #[derive(Resource)]
@@ -213,14 +214,18 @@ pub fn spawn_swarm(
 }
 
 fn calc_fitness(r: &Racer) -> f32 {
-    // Dopamina integrada é o sinal primário — recompensa por SEGUNDO em flow state.
-    // Grama e parede já foram pagos ao vivo (surface_factor < 1 ou < 0), então
-    // penalidades pós-hoc são leves aqui, só para desempatar.
-    let lap_bonus = r.total_laps as f32 * 10000.0;
-    let joy = r.joy_integral * 100.0;
-    let distance_residual = r.distance * 10.0;       // sinal de backup, mantém "andar" dominando ruído
+    // Recompensa Exponencial por Distância:
+    // Evita que "kamikazes" rápidos vençam de alguém que fez a curva mais devagar.
+    // 30m (bater na 1a parede) -> 30^1.5 = 164.
+    // 60m (fazer a curva) -> 60^1.5 = 464 (Vantagem massiva e inalcançável por suicidas).
+    let lap_bonus = r.total_laps as f32 * 20000.0;
+    
+    let dist_score = if r.distance > 0.0 { r.distance.powf(1.5) } else { r.distance * 10.0 };
+    
+    let joy = r.joy_integral * 50.0; // Bônus por "Fluidez" (Flow State)
     let death_penalty = if r.is_dead { 200.0 } else { 0.0 };
-    lap_bonus + joy + distance_residual - death_penalty
+    
+    lap_bonus + joy + dist_score - death_penalty
 }
 
 fn evolution_pipeline(
@@ -309,7 +314,11 @@ fn evolution_pipeline(
         if race.hard_reset {
             race.best_weights = None;
             race.best_slow_weights = None;
+            race.death_markers.clear();
             let _ = std::fs::remove_file("CHAMPION.dna");
+        }
+        if race.should_reset {
+            race.death_markers.clear();
         }
         
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }

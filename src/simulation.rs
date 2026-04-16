@@ -74,7 +74,7 @@ fn update_racers(
     world_res: Res<VoxelWorldResource>,
     env: Res<EnvironmentalState>,
     dev: Res<crate::evolution::DevSettings>,
-    race: Res<crate::evolution::RaceSettings>,
+    mut race: ResMut<crate::evolution::RaceSettings>,
     time: Res<Time<Virtual>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -83,6 +83,11 @@ fn update_racers(
 ) {
     let dt = time.delta_secs().min(0.02);
     let world = &world_res.0;
+
+    // --- RENDERIZAR MEMÓRIA DE DOR (TÚMULOS) ---
+    for &grave in &race.death_markers {
+        gizmos.sphere(grave, 1.0, Color::srgba(0.8, 0.0, 0.5, 0.5));
+    }
 
     // --- PRÉ-CÁLCULO (Primeiro passo read-only sobre a mesma query) ---
     let mut best_score = -10000.0;
@@ -384,7 +389,7 @@ fn update_racers(
         // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal
         let final_pedal_intent = (pedal_intent - brake_intent).max(0.0);
         
-        // --- SISTEMA DE FUGA DE EMERGÊNCIA (ECAS) ---
+        // --- SISTEMA DE FUGA DE EMERGÊNCIA (ECAS) & STIGMERGY ---
         // Se a parede está perto (< 4m) na lateral, o reflexo físico FORÇA a roda pro lado oposto
         // Feedback visual: desenha setas vermelhas indicando a "repulsa" das paredes
         let mut emerg_steer = 0.0;
@@ -403,6 +408,18 @@ fn update_racers(
             let severity = 1.0 - (p_dist_r / danger_dist);
             emerg_steer += severity * 2.0; // Vira esquerda (positivo) para fugir
             gizmos.arrow(pos + transform.right().as_vec3() * p_dist_r, pos, Color::srgba(1.0, 0.0, 0.0, severity));
+        }
+
+        // Fuga Espectral: Fugir dos "Túmulos" de gerações passadas
+        for &grave in &race.death_markers {
+            let to_grave = grave - pos;
+            let dist_grave = to_grave.length();
+            if dist_grave < 10.0 {
+                let dot_grave = transform.right().as_vec3().dot(to_grave.normalize_or_zero());
+                let severity = 1.0 - (dist_grave / 10.0);
+                if dot_grave > 0.0 { emerg_steer += severity * 1.5; } else { emerg_steer -= severity * 1.5; }
+                gizmos.line(pos, grave, Color::srgba(0.8, 0.0, 0.5, severity));
+            }
         }
 
         let final_steer_intent = (steer_intent + emerg_steer).clamp(-1.0, 1.0);
@@ -513,9 +530,12 @@ fn update_racers(
         // engine_power degrada com HP (Dano Progressivo). Se zerar o HP, o motor morre (0.0 de power)
         racer.engine_power = (racer.hp / 100.0).clamp(0.0, 1.0);
 
-        // Morte por falha mecânica CATASTRÓFICA (HP <= 0.0)
+        // Morte por falha mecânica CATASTRÓFICA (HP <= 0.0) ou tempo esgotado.
         if racer.hp <= 0.0 && !racer.is_dead {
             racer.is_dead = true;
+            // Cria MEMÓRIA DE DOR no mundo para as próximas gerações
+            race.death_markers.push(pos);
+            
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
         } else if !racer.is_dead {
             // Cor reflete estado mecânico: vermelho = danificado, ciano normal
