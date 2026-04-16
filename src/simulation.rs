@@ -384,6 +384,29 @@ fn update_racers(
         // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal
         let final_pedal_intent = (pedal_intent - brake_intent).max(0.0);
         
+        // --- SISTEMA DE FUGA DE EMERGÊNCIA (ECAS) ---
+        // Se a parede está perto (< 4m) na lateral, o reflexo físico FORÇA a roda pro lado oposto
+        // Feedback visual: desenha setas vermelhas indicando a "repulsa" das paredes
+        let mut emerg_steer = 0.0;
+        let left_angle = racer.phase + std::f32::consts::FRAC_PI_2;
+        let right_angle = racer.phase - std::f32::consts::FRAC_PI_2;
+        let danger_dist = 4.0;
+        let p_dist_l = world.raycast(pos.x, pos.z, left_angle, 10.0);
+        let p_dist_r = world.raycast(pos.x, pos.z, right_angle, 10.0);
+        
+        if p_dist_l < danger_dist {
+            let severity = 1.0 - (p_dist_l / danger_dist);
+            emerg_steer -= severity * 2.0; // Vira direita (negativo) para fugir
+            gizmos.arrow(pos - transform.right().as_vec3() * p_dist_l, pos, Color::srgba(1.0, 0.0, 0.0, severity));
+        }
+        if p_dist_r < danger_dist {
+            let severity = 1.0 - (p_dist_r / danger_dist);
+            emerg_steer += severity * 2.0; // Vira esquerda (positivo) para fugir
+            gizmos.arrow(pos + transform.right().as_vec3() * p_dist_r, pos, Color::srgba(1.0, 0.0, 0.0, severity));
+        }
+
+        let final_steer_intent = (steer_intent + emerg_steer).clamp(-1.0, 1.0);
+        
         // Marchas: Auto-shift inteligente baseado em RPM e velocidade
         let shift_up_intent = racer.engine.final_intent[3];
         let shift_down_intent = racer.engine.final_intent[4];
@@ -425,14 +448,15 @@ fn update_racers(
 
         // --- INÉRCIA DE ATUADOR (Dobrada para Pilotos Profissionais) ---
         racer.memory[0] += (final_pedal_intent - racer.memory[0]) * (dt * 10.0).min(1.0);
-        racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 8.0).min(1.0);
+        racer.memory[1] += (final_steer_intent - racer.memory[1]) * (dt * 8.0).min(1.0);
         racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 12.0).min(1.0);
 
         let mut physical_throttle = racer.memory[0];
         
-        // Garantir largada reta: Trava o volante suavemente nos primeiros 1.0s
-        let steer_start_blend = (racer.engine.current_time / 1.0).clamp(0.0, 1.0);
-        let physical_steer = racer.memory[1] * steer_start_blend;
+        // Garantir largada reta: Trava o volante baseado na VELOCIDADE, não no tempo!
+        // Impede o carro de virar as rodas enquanto está parado/arrancando.
+        let steer_speed_blend = (speed / 5.0).clamp(0.0, 1.0);
+        let physical_steer = racer.memory[1] * steer_speed_blend;
         
         let physical_brake = racer.memory[2];
 

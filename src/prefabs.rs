@@ -23,7 +23,7 @@ pub fn spawn_porsche_911_gt3(
             cg_height: 0.40,
             track_width: 1.55,
             lsd_lock_ratio: 0.6,       // Porsche tem LSD agressivo
-            brake_torque_max: 6500.0,
+            brake_torque_max: 15000.0,
         },
         EngineComponent {
             max_torque: 500.0,
@@ -76,7 +76,7 @@ pub fn spawn_ferrari_296_gt3(
             cg_height: 0.38,
             track_width: 1.58,
             lsd_lock_ratio: 0.5,
-            brake_torque_max: 4000.0,
+            brake_torque_max: 15000.0,
     }).insert(EngineComponent {
             max_torque: 710.0,
             current_rpm: 800.0,
@@ -113,7 +113,7 @@ pub fn spawn_mclaren_720s_gt3(
             cg_height: 0.35,
             track_width: 1.60,
             lsd_lock_ratio: 0.45,
-            brake_torque_max: 3600.0,
+            brake_torque_max: 15000.0,
     }).insert(EngineComponent {
             max_torque: 700.0,
             current_rpm: 800.0,
@@ -150,7 +150,7 @@ pub fn spawn_aston_vantage_gt3(
             cg_height: 0.42,
             track_width: 1.56,
             lsd_lock_ratio: 0.55,
-            brake_torque_max: 3500.0,
+            brake_torque_max: 15000.0,
     }).insert(EngineComponent {
             max_torque: 700.0,
             current_rpm: 800.0,
@@ -187,7 +187,7 @@ pub fn spawn_audi_r8_lms_gt3(
             cg_height: 0.39,
             track_width: 1.57,
             lsd_lock_ratio: 0.4,
-            brake_torque_max: 3700.0,
+            brake_torque_max: 15000.0,
     }).insert(EngineComponent {
             max_torque: 550.0,
             current_rpm: 800.0,
