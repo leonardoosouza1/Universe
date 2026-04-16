@@ -248,10 +248,10 @@ fn cleanup_menu(mut commands: Commands, query: Query<Entity, With<MenuEntity>>) 
 fn sync_menu_ui(
     config: Res<UniverseConfig>,
     mut swarm_text: Query<&mut Text, With<SwarmText>>,
-    mut physics_indicators: Query<(&mut BackgroundColor, &PhysicsToggleIndicator)>,
-    mut track_indicators: Query<(&mut BackgroundColor, &TrackIndicator)>,
+    mut physics_indicators: Query<(&mut BackgroundColor, &PhysicsToggleIndicator), Without<TrackIndicator>>,
+    mut track_indicators: Query<(&mut BackgroundColor, &TrackIndicator), Without<PhysicsToggleIndicator>>,
 ) {
-    if let Ok(mut text) = swarm_text.get_single_mut() {
+    if let Ok(mut text) = swarm_text.single_mut() {
         text.0 = format!("SWARM SIZE: {}", config.swarm_count);
     }
 

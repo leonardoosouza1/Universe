@@ -17,6 +17,8 @@ pub struct VoxelWorld {
     pub cell_size: f32,
     pub start_pos: Vec3,
     pub lap_distance: f32,
+    pub waypoints_world: Vec<Vec2>,      // Waypoints já em coordenadas de mundo (x,z)
+    pub waypoint_arcs: Vec<f32>,         // Arco cumulativo por waypoint (arcs[i] = comprimento de wp[0] até wp[i])
 }
 
 impl VoxelWorld {
@@ -75,10 +77,20 @@ impl VoxelWorld {
             }
         }
 
+        let waypoints_world: Vec<Vec2> = waypoints.iter().map(|p| *p * cell_size).collect();
+        let mut waypoint_arcs = vec![0.0];
+        let mut total_dist = 0.0;
+        for i in 0..waypoints_world.len() - 1 {
+            total_dist += waypoints_world[i].distance(waypoints_world[i+1]);
+            waypoint_arcs.push(total_dist);
+        }
+
         Self { 
             size, grid, flow, height_map, banking, cell_size,
             start_pos: Vec3::new(80.0 * cell_size, 0.5, 20.0 * cell_size),
-            lap_distance: 800.0,
+            lap_distance: total_dist,
+            waypoints_world,
+            waypoint_arcs,
         }
     }
 
@@ -340,6 +352,17 @@ fn dist_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 
 impl Default for VoxelWorld {
     fn default() -> Self {
-        Self { size: 0, grid: Vec::new(), flow: Vec::new(), height_map: Vec::new(), banking: Vec::new(), cell_size: 0.0, start_pos: Vec3::ZERO, lap_distance: 0.0 }
+        Self { 
+            size: 0, 
+            grid: Vec::new(), 
+            flow: Vec::new(), 
+            height_map: Vec::new(), 
+            banking: Vec::new(), 
+            cell_size: 0.0, 
+            start_pos: Vec3::ZERO, 
+            lap_distance: 0.0,
+            waypoints_world: Vec::new(),
+            waypoint_arcs: Vec::new(),
+        }
     }
 }

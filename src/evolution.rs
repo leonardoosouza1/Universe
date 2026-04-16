@@ -13,6 +13,8 @@ pub struct RaceSettings {
     pub seed: u64,
     pub best_weights: Option<Vec<i8>>,
     pub best_scale: f32,
+    pub best_slow_weights: Option<Vec<i8>>,
+    pub best_slow_scale: f32,
     pub selected_racer: Option<Entity>,
     pub world_entities: Vec<Entity>,
     pub should_reset: bool,
@@ -69,14 +71,27 @@ pub fn spawn_swarm(
 
     let mut current_best_w = race.best_weights.clone();
     let mut current_best_s = race.best_scale;
+    let mut current_best_slow_w = race.best_slow_weights.clone();
+    let mut current_best_slow_s = race.best_slow_scale;
 
+    // DNA format v2: [fast_scale:4][fast_w:8192][slow_scale:4][slow_w:256] = 8456 bytes
+    // DNA format v1 (legacy): [fast_scale:4][fast_w:8192] = 8196 bytes — slow fica neutro
     if current_best_w.is_none() {
         if let Ok(mut file) = File::open("CHAMPION.dna") {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() && buffer.len() >= 4 {
                 let scale_bytes: [u8; 4] = buffer[0..4].try_into().unwrap_or([0,0,128,63]);
                 current_best_s = f32::from_le_bytes(scale_bytes);
-                current_best_w = Some(buffer[4..].iter().map(|&b| b as i8).collect());
+                let fast_end = 4 + 128 * 64;
+                if buffer.len() >= fast_end {
+                    current_best_w = Some(buffer[4..fast_end].iter().map(|&b| b as i8).collect());
+                    // Slow brain: se DNA v2, carrega; senão, fica None (= priming neutro)
+                    if buffer.len() >= fast_end + 4 + 32 * 8 {
+                        let ss_bytes: [u8; 4] = buffer[fast_end..fast_end + 4].try_into().unwrap_or([0,0,128,63]);
+                        current_best_slow_s = f32::from_le_bytes(ss_bytes);
+                        current_best_slow_w = Some(buffer[fast_end + 4..].iter().map(|&b| b as i8).collect());
+                    }
+                }
             }
         }
     }
@@ -89,6 +104,16 @@ pub fn spawn_swarm(
             }).collect();
             engine.instinct_layer.quantize(&mutated);
             engine.instinct_layer.set_scale(current_best_s);
+
+            // Slow brain: herda se disponível, senão fica neutro (pesos zero)
+            if let Some(ref best_slow) = current_best_slow_w {
+                let mutated_slow: Vec<f32> = best_slow.iter().map(|&w| {
+                    if rng.random_bool(dev.mutation_rate as f64) { rng.random_range(-1.0..1.0) } else { w as f32 }
+                }).collect();
+                engine.slow_brain.layer.quantize(&mutated_slow);
+                engine.slow_brain.layer.set_scale(current_best_slow_s);
+            }
+            // Se sem best_slow: BitLinear::new já inicializa zeros → output neutro (tanh(0)=0 → modulação = 1.0)
         } else {
             // --- PRIMING GENÉTICO (A CONSCIÊNCIA INICIAL) ---
             let mut weights = vec![0.0f32; 128 * 64];
@@ -156,6 +181,7 @@ pub fn spawn_swarm(
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; 64],
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
+                joy_integral: 0.0, joy_streak: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
@@ -181,18 +207,14 @@ pub fn spawn_swarm(
 }
 
 fn calc_fitness(r: &Racer) -> f32 {
-    let hp_penalty = (100.0 - r.hp) * 5.0;        // was *10, softened
-    let death_penalty = if r.is_dead { 500.0 } else { 0.0 };
-    let grass_penalty = r.grass_time * 50.0;
-    let wall_penalty = r.wall_time * 100.0;       // NEW: penalize wall-riding
-    let penalties = hp_penalty + death_penalty + grass_penalty + wall_penalty;
-
-    let avg_speed = r.distance / r.engine.current_time.max(0.1);
+    // Dopamina integrada é o sinal primário — recompensa por SEGUNDO em flow state.
+    // Grama e parede já foram pagos ao vivo (surface_factor < 1 ou < 0), então
+    // penalidades pós-hoc são leves aqui, só para desempatar.
     let lap_bonus = r.total_laps as f32 * 10000.0;
-
-    // NO cliff — score scales monotonically with distance.
-    // Movement always wins over stagnation.
-    lap_bonus + (r.distance * 100.0) + (avg_speed * 50.0) + (r.hp * 2.0) - penalties
+    let joy = r.joy_integral * 100.0;
+    let distance_residual = r.distance * 10.0;       // sinal de backup, mantém "andar" dominando ruído
+    let death_penalty = if r.is_dead { 200.0 } else { 0.0 };
+    lap_bonus + joy + distance_residual - death_penalty
 }
 
 fn evolution_pipeline(
@@ -262,17 +284,25 @@ fn evolution_pipeline(
         if let Some(best) = best_racer {
             let weights = best.engine.instinct_layer.weights.clone();
             let scale = best.engine.instinct_layer.weight_scale;
+            let slow_weights = best.engine.slow_brain.layer.weights.clone();
+            let slow_scale = best.engine.slow_brain.layer.weight_scale;
             race.best_weights = Some(weights.clone());
             race.best_scale = scale;
-            if let Ok(mut file) = File::create("CHAMPION.dna") { 
+            race.best_slow_weights = Some(slow_weights.clone());
+            race.best_slow_scale = slow_scale;
+            // DNA v2: fast + slow concatenados
+            if let Ok(mut file) = File::create("CHAMPION.dna") {
                 let _ = file.write_all(&scale.to_le_bytes());
-                let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>()); 
+                let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
+                let _ = file.write_all(&slow_scale.to_le_bytes());
+                let _ = file.write_all(&slow_weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
             }
         }
         
         // Limpar o peso do MVP legado (HARD RESET DE PESOS CORROMPIDOS)
         if race.hard_reset {
             race.best_weights = None;
+            race.best_slow_weights = None;
             let _ = std::fs::remove_file("CHAMPION.dna");
         }
         

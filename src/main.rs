@@ -28,6 +28,8 @@ fn main() {
         seed: initial_seed,
         best_weights: None,
         best_scale: 1.0,
+        best_slow_weights: None,
+        best_slow_scale: 1.0,
         selected_racer: None,
         world_entities: Vec::new(),
         should_reset: false,

@@ -26,6 +26,8 @@ pub struct Racer {
     pub grass_time: f32,      // Tempo acumulado na grama (penalidade fitness)
     pub wall_time: f32,        // Tempo acumulado raspando parede (penalidade fitness)
     pub aquaplaning_timer: f32, // Timer de aquaplanagem (0.5s de perda de controle)
+    pub joy_integral: f32,    // Dopamina acumulada: Σ(joy_tick * streak_mult * dt) — driver de fitness
+    pub joy_streak: f32,      // Tempo contínuo em flow state (cap 5s); zera em "dor"
 }
 
 pub struct PainSynapse {
@@ -276,9 +278,75 @@ fn update_racers(
         sensory_wave[121] = (racer.memory[1] * 127.0) as i8;
         sensory_wave[122] = (racer.memory[2] * 127.0) as i8;
 
+        // --- SISTEMA DOPAMINÉRGICO (Reward Shaping Contínuo) ---
+        // joy_tick = progresso_alinhado * superfície. Streak compõe flow state.
+        // Evolução seleciona quem MAXIMIZA a integral — grama/parede são PERMITIDAS, só rendem menos/custam.
+        let progress_speed = (speed * alignment.max(0.0) / 30.0).clamp(0.0, 1.0); // 30m/s ≈ 108km/h = pico
+        let surface_factor = match voxel_current {
+            VoxelType::Road => 1.0,
+            VoxelType::Grass => 0.2,
+            VoxelType::Wall => -0.5,
+        };
+        let joy_tick = progress_speed * surface_factor;
+        if joy_tick > 0.5 {
+            racer.joy_streak = (racer.joy_streak + dt).min(5.0);
+        } else {
+            racer.joy_streak = (racer.joy_streak - dt * 2.0).max(0.0); // decai 2x rápido
+        }
+        let dopamine_mult = 1.0 + racer.joy_streak * 0.5; // até 3.5x em 5s de flow
+        racer.joy_integral += joy_tick * dopamine_mult * dt;
+
+        // Canais 126/127: expõe a dopamina como sinal sensorial (meta-cognição evoluível)
+        sensory_wave[126] = (joy_tick * 127.0).clamp(-127.0, 127.0) as i8;
+        sensory_wave[127] = ((racer.joy_streak / 5.0) * 127.0) as i8;
+
         // --- 3. EXECUÇÃO SOBERANA ---
         racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
-        
+
+        // --- CÓRTEX LENTO (System 2) — agrega contexto e emite bias modulador ---
+        // Input 32-dim: estado homeostático + pooled retina + saídas anteriores do fast.
+        // Roda subsampled (1× a cada 32 ticks). Output em `racer.engine.slow_brain.output`.
+        let lap_progress = if world.lap_distance > 0.0 { (racer.distance / world.lap_distance).fract() } else { 0.0 };
+        let mut slow_input = [0i8; 32];
+        slow_input[0]  = sensory_wave[126];                                    // joy_tick
+        slow_input[1]  = sensory_wave[127];                                    // joy_streak
+        slow_input[2]  = ((racer.hp / 100.0) * 127.0).clamp(0.0, 127.0) as i8; // hp
+        slow_input[3]  = (racer.fuel * 127.0).clamp(0.0, 127.0) as i8;          // fuel
+        slow_input[4]  = ((speed / 80.0) * 127.0).clamp(0.0, 127.0) as i8;      // speed / 80m/s
+        slow_input[5]  = (racer.tire_temp * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[6]  = (racer.engine_power * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[7]  = (alignment * 127.0) as i8;
+        slow_input[8]  = (lap_progress * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[9]  = (racer.total_laps as i8 * 25).min(127);
+        slow_input[10] = ((racer.wall_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[11] = ((racer.grass_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[12] = (racer.stagnation * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[13] = if env.is_night() { 127 } else { 0 };
+        // 14..21: retina pooled — 4 regiões no chão (row 0) + 4 no horizonte (row 1)
+        for reg in 0..4 {
+            let mut sum_g: i32 = 0;
+            let mut sum_h: i32 = 0;
+            for j in 0..8 {
+                sum_g += racer.visual_cortex[reg * 8 + j] as i32;
+                sum_h += racer.visual_cortex[32 + reg * 8 + j] as i32;
+            }
+            slow_input[14 + reg] = (sum_g / 8).clamp(-128, 127) as i8;
+            slow_input[18 + reg] = (sum_h / 8).clamp(-128, 127) as i8;
+        }
+        // 22..25: últimas intenções do fast (throttle, steer, brake, shift)
+        slow_input[22] = (racer.memory[0] * 127.0) as i8;
+        slow_input[23] = (racer.memory[1] * 127.0) as i8;
+        slow_input[24] = (racer.memory[2] * 127.0) as i8;
+        slow_input[25] = (racer.engine.final_intent[3] * 127.0) as i8;
+        // 26..28: memória do próprio slow brain (suas saídas anteriores)
+        slow_input[26] = (racer.engine.slow_brain.output[0] * 127.0) as i8;
+        slow_input[27] = (racer.engine.slow_brain.output[1] * 127.0) as i8;
+        slow_input[28] = (racer.engine.slow_brain.output[2] * 127.0) as i8;
+        slow_input[29] = if racer.engine.current_time <= 10.0 { 127 } else { 0 }; // in_grace
+        slow_input[30] = 127; // bias constante (input DC para aprender offset)
+        slow_input[31] = 127;
+        racer.engine.slow_brain.tick(&slow_input);
+
         // Usar final_intent estabilizado pelo CfC e KAN em vez de pesos crus (Evita ZigZag)
         let intent = &racer.engine.final_intent;
         
@@ -298,9 +366,16 @@ fn update_racers(
         // Throttle neural
         let neural_throttle = intent[0].clamp(-1.0, 1.0);
         let survival_throttle = 0.3; // Reflexo: sempre quer andar
-        let pedal_intent = (survival_throttle + neural_throttle * 0.7).clamp(0.0, 1.0);
-        
-        let steer_intent = intent[1].clamp(-1.0, 1.0);
+        let base_pedal = (survival_throttle + neural_throttle * 0.7).clamp(0.0, 1.0);
+
+        // --- MODULAÇÃO DO SLOW BRAIN (System 2 sussurra pro System 1) ---
+        // Inicia neutro (outputs=0 → multiplicadores = 1.0). Evolução descobre uso.
+        let slow = &racer.engine.slow_brain.output;
+        let aggression = slow[0];                             // -1..+1
+        let throttle_cap = (1.0 + slow[1] * 0.3).clamp(0.5, 1.0); // 0.7..1.0
+        let risk_damp = slow[2].max(0.0).min(0.3);            // 0..0.3
+        let pedal_intent = (base_pedal * (1.0 + aggression * 0.5)).clamp(0.0, throttle_cap);
+        let steer_intent = (intent[1].clamp(-1.0, 1.0)) * (1.0 - risk_damp);
         
         // BOS (Brake Override System) Estrito: Acelerador anula totalmente o freio em baixa velocidade
         // Se a IA acelerar (pedal_intent > 0.1), é IMPOSSÍVEL apertar o freio, garantindo a largada.
