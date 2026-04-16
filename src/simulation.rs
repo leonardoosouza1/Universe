@@ -137,12 +137,27 @@ fn update_racers(
         for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
         racer.visual_cortex = retina_binocular;
 
-        // --- RUÍDO NOTURNO: Incerteza sensorial à noite ---
-        if env.is_night() {
-            use rand::prelude::*;
-            let mut rng = rand::rng();
+        // --- CAOS VISUAL (Medo de Obstáculos) ---
+        // O modelo deve procurar o "Preto" (Pista). Ver muito "Branco" (Parede) causa Pânico.
+        let mut visual_stress = 0.0;
+        for i in 0..64 {
+            if sensory_wave[i] > 0 { visual_stress += (sensory_wave[i] as f32) / 127.0; }
+        }
+        visual_stress /= 64.0; // Média de brancura (0.0 a 1.0)
+        
+        // Punição psicológica direta por olhar para paredes
+        racer.joy_integral -= visual_stress * 5.0 * dt; 
+        
+        let panic_level = if visual_stress > 0.2 { (visual_stress - 0.2) * 1.5 } else { 0.0 };
+
+        // --- RUÍDO NOTURNO E PÂNICO: Incerteza sensorial ---
+        use rand::prelude::*;
+        let mut rng = rand::rng();
+        
+        if env.is_night() || panic_level > 0.0 {
+            let magnitude = (15.0 + panic_level * 50.0) as i8;
             for i in 0..64 {
-                let noise = rng.random_range(-15i8..15i8);
+                let noise = rng.random_range(-magnitude..magnitude);
                 sensory_wave[i] = sensory_wave[i].saturating_add(noise);
             }
         }
@@ -463,18 +478,13 @@ fn update_racers(
         racer.memory[3] = shift_up_intent;
         racer.memory[4] = shift_down_intent;
 
-        // --- INÉRCIA DE ATUADOR (Dobrada para Pilotos Profissionais) ---
+        // --- INÉRCIA DE ATUADOR (Direção Hidráulica Rápida) ---
         racer.memory[0] += (final_pedal_intent - racer.memory[0]) * (dt * 10.0).min(1.0);
-        racer.memory[1] += (final_steer_intent - racer.memory[1]) * (dt * 8.0).min(1.0);
-        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 12.0).min(1.0);
+        racer.memory[1] += (final_steer_intent - racer.memory[1]) * (dt * 20.0).min(1.0); // De 8.0 para 20.0 (Quase instantâneo)
+        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 15.0).min(1.0);
 
         let mut physical_throttle = racer.memory[0];
-        
-        // Garantir largada reta: Trava o volante baseado na VELOCIDADE, não no tempo!
-        // Impede o carro de virar as rodas enquanto está parado/arrancando.
-        let steer_speed_blend = (speed / 5.0).clamp(0.0, 1.0);
-        let physical_steer = racer.memory[1] * steer_speed_blend;
-        
+        let physical_steer = racer.memory[1]; // Sem trava de volante! Foco total nas curvas
         let physical_brake = racer.memory[2];
 
         // BOS removido — o sistema de penalidades já pune sobreposição

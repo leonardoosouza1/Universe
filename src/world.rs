@@ -332,12 +332,28 @@ impl VoxelWorld {
                 }
                 
                 let depth_fade = (hit_dist / 150.0).clamp(0.0, 1.0);
-                let (base_val, _) = match hit_voxel {
-                    VoxelType::Wall => (0.9, 0.0), VoxelType::Road => (0.1, 0.0), VoxelType::Grass => (0.0, 0.0),
+                
+                // --- VISÃO ABSOLUTA ---
+                // Para que o modelo NUNCA confunda uma parede longe com a pista perto.
+                let pixel_val = match hit_voxel {
+                    VoxelType::Wall => {
+                        // Parede DEVE gritar "luz" o mais forte possível (perigo)
+                        // Vai de 127 (perto) até 60 (longe) — Sempre Positivo.
+                        127.0 - (depth_fade * 67.0)
+                    },
+                    VoxelType::Grass => {
+                        // Grama é neutra/ruim
+                        // Vai de 40 (perto) a 0 (longe)
+                        40.0 - (depth_fade * 40.0)
+                    },
+                    VoxelType::Road => {
+                        // Pista grita "escuro" (Segurança)
+                        // Vai de -128 (perto) até -80 (longe).
+                        -128.0 + (depth_fade * 48.0)
+                    }
                 };
                 
-                let pixel_val = base_val * normal_shade * (1.0 - depth_fade);
-                pixels[index] = (pixel_val * 255.0 - 128.0).clamp(-128.0, 127.0) as i8;
+                pixels[index] = pixel_val.clamp(-128.0, 127.0) as i8;
             }
         }
         pixels
