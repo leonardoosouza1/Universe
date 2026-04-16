@@ -377,10 +377,12 @@ fn update_racers(
         let pedal_intent = (base_pedal * (1.0 + aggression * 0.5)).clamp(0.0, throttle_cap);
         let steer_intent = (intent[1].clamp(-1.0, 1.0)) * (1.0 - risk_damp);
         
-        // BOS (Brake Override System) Estrito: Acelerador anula totalmente o freio em baixa velocidade
-        // Se a IA acelerar (pedal_intent > 0.1), é IMPOSSÍVEL apertar o freio, garantindo a largada.
-        let raw_brake = if intent[2] > 0.5 { ((intent[2] - 0.5) * 2.0).clamp(0.0, 1.0) } else { 0.0 };
-        let brake_intent = if pedal_intent > 0.1 || speed < 2.0 { 0.0 } else { raw_brake };
+        // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2)
+        let raw_brake = if intent[2] > 0.2 { ((intent[2] - 0.2) * 1.25).clamp(0.0, 1.0) } else { 0.0 };
+        let brake_intent = if speed < 2.0 { 0.0 } else { raw_brake }; 
+        
+        // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal
+        let final_pedal_intent = (pedal_intent - brake_intent).max(0.0);
         
         // Marchas: Auto-shift inteligente baseado em RPM e velocidade
         let shift_up_intent = racer.engine.final_intent[3];
@@ -422,7 +424,7 @@ fn update_racers(
         racer.memory[4] = shift_down_intent;
 
         // --- INÉRCIA DE ATUADOR (Dobrada para Pilotos Profissionais) ---
-        racer.memory[0] += (pedal_intent - racer.memory[0]) * (dt * 10.0).min(1.0);
+        racer.memory[0] += (final_pedal_intent - racer.memory[0]) * (dt * 10.0).min(1.0);
         racer.memory[1] += (steer_intent - racer.memory[1]) * (dt * 8.0).min(1.0);
         racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 12.0).min(1.0);
 
@@ -440,7 +442,13 @@ fn update_racers(
         // --- DANO PROGRESSIVO MECÂNICO E TERMODINÂMICA DE ESTRESSE ---
         physical_throttle *= racer.engine_power;
 
-        // Overlap penalty removida: a camada simbólica já impede brake+throttle simultâneo
+        // Overlap penalty: Se forçar freio e acelerador juntos, estraga o motor/freio!
+        let conflict = final_pedal_intent > 0.4 && brake_intent > 0.4;
+        if conflict {
+            racer.hp -= dt * 30.0; // Dreno agressivo de HP
+            // Feedback visual: Gizmo de esforço/estresse
+            gizmos.sphere(pos + Vec3::new(0.0, 1.5, 0.0), 0.3, Color::srgb(1.0, 0.5, 0.0));
+        }
         
         // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
         // Bootstrap grace: primeiros 10s sem penalidades duras — IA precisa de tempo

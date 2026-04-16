@@ -148,6 +148,13 @@ fn update_hud(
                 .with_children(|btn| {
                     btn.spawn((Text::new(format!("#{:02} {} | LAP:{}", i+1, r.name, r.total_laps)), TextFont { font_size: 13.0, ..default() }, TextColor(color)));
                     btn.spawn((Text::new(format!("{:.1} km/h", r.amplitude * 3.6)), TextFont { font_size: 11.0, ..default() }, TextColor(color)));
+                    // Barras de pedais mini (Acelera verde em cima, Freio vermelho embaixo)
+                    btn.spawn(Node { width: Val::Percent(100.0), height: Val::Px(2.0), margin: UiRect::vertical(Val::Px(1.0)), ..default() }).with_children(|bar_box| {
+                        bar_box.spawn(Node { width: Val::Percent(r.memory[0] * 100.0), height: Val::Percent(100.0), ..default() }).insert(BackgroundColor(Color::srgb(0.0, 0.8, 0.0)));
+                    });
+                    btn.spawn(Node { width: Val::Percent(100.0), height: Val::Px(2.0), margin: UiRect::vertical(Val::Px(1.0)), ..default() }).with_children(|bar_box| {
+                        bar_box.spawn(Node { width: Val::Percent(r.memory[2] * 100.0), height: Val::Percent(100.0), ..default() }).insert(BackgroundColor(Color::srgb(1.0, 0.0, 0.0)));
+                    });
                     btn.spawn((Node { width: Val::Percent(r.fuel * 100.0), height: Val::Px(2.0), ..default() }, BackgroundColor(Color::srgb(0.0, 0.5, 1.0))));
                 });
             }
@@ -209,9 +216,30 @@ fn update_hud(
                         ("BRAKE (Freio)", r.memory[2], Color::srgb(1.0, 0.0, 0.0))
                     ];
                     for (label, val, col) in pedals {
-                        panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(14.0), margin: UiRect::top(Val::Px(6.0)), ..default() }).with_children(|bar| {
-                            bar.spawn((Text::new(label), TextFont { font_size: 11.0, ..default() })).insert(Node { width: Val::Px(140.0), ..default() });
-                            bar.spawn(Node { width: Val::Percent(val * 100.0), height: Val::Percent(100.0), ..default() }).insert(BackgroundColor(col));
+                        panel.spawn(Node { 
+                            width: Val::Percent(100.0), height: Val::Px(14.0), 
+                            margin: UiRect::top(Val::Px(6.0)), 
+                            align_items: AlignItems::Center,
+                            ..default() 
+                        }).with_children(|row| {
+                            row.spawn((Text::new(label), TextFont { font_size: 11.0, ..default() })).insert(Node { width: Val::Px(160.0), ..default() });
+                            // Track (Fundo da barra para visibilidade 0%)
+                            row.spawn((
+                                Node { 
+                                    width: Val::Percent(100.0), height: Val::Percent(80.0), 
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.1)),
+                            )).with_children(|track| {
+                                // Barra de valor colorida
+                                track.spawn((
+                                    Node { 
+                                        width: Val::Percent(val * 100.0), height: Val::Percent(100.0), 
+                                        ..default() 
+                                    },
+                                    BackgroundColor(col),
+                                ));
+                            });
                         });
                     }
                     

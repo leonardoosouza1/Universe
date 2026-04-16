@@ -137,17 +137,23 @@ pub fn spawn_swarm(
             // A3: Alinhamento com fluxo da pista (canal 64) → acelera
             weights[0 * 128 + 64] = 5.0;
 
-            // A4: Se alinhado E pista livre (centro retina 15 e 47, pixel BAIXO = estrada longe/livre),
+            // A4: Se alinhado E pista livre (centro retina 15 e 47, pixel BAIXO = estrada livre),
             // acelera mais. Peso NEGATIVO porque pixel alto = parede.
-            weights[0 * 128 + 15] = -3.0;
-            weights[0 * 128 + 47] = -3.0;
+            weights[0 * 128 + 15] = -5.0; // Aumentado de -3.0
+            weights[0 * 128 + 47] = -5.0;
 
-            // A5: HP baixo (canal 67, valor baixo) → freio. Peso negativo em brake→ quando hp baixo (sinal baixo) → brake output sobe.
-            // Inverso: pain-of-grass (canal 73, valor -128 na grama) → throttle negativo (peso negativo em throttle)
-            weights[0 * 128 + 73] = -3.0;  // na grama, peso * -128 = positivo grande? Não: weights[0]*input = input ternário. Ver abaixo.
+            // A5: HP baixo ou DOR (canais 67 e 73) -> Reduz throttle
+            weights[0 * 128 + 73] = -2.0; 
 
             // A6: Comp-stress alto (canal 125) → throttle (ataca quem está na frente)
             weights[0 * 128 + 125] = 3.0;
+
+            // A7: REFLEXO DE FRENAGEM DE EMERGÊNCIA (Pan-Vision Central)
+            // Mapeia 12 pixels centrais (Horizonte + Chão) para o canal de FREIO (2)
+            for i in 13..19 {
+                weights[2 * 128 + i] = 10.0;        // Ground center
+                weights[2 * 128 + (32 + i)] = 10.0; // Horizon center
+            }
 
             engine.instinct_layer.quantize(&weights);
         }

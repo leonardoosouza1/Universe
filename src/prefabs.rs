@@ -23,7 +23,7 @@ pub fn spawn_porsche_911_gt3(
             cg_height: 0.40,
             track_width: 1.55,
             lsd_lock_ratio: 0.6,       // Porsche tem LSD agressivo
-            brake_torque_max: 3800.0,
+            brake_torque_max: 6500.0,
         },
         EngineComponent {
             max_torque: 500.0,
