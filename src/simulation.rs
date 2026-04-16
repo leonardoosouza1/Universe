@@ -598,6 +598,14 @@ fn update_racers(
             if body.angular_velocity.y.abs() > 1.5 && track_velocity.abs() < 5.0 {
                 racer.hp -= 30.0 * dt; // Se ficar girando mais que 1.5 rad/s parado, morre em ~3s
             }
+            
+            // Punição de Desgaste de Pneu (Destruição Térmica): Evitar Burnouts Livres
+            // Se as rodas estão escorregando loucamente (Slip Ratio enorme) e o carro não avança muito
+            let avg_slip = body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0;
+            if avg_slip > 0.5 && track_velocity.abs() < 15.0 {
+                // "Estourar os Pneus": Drena vida absurdamente rápido se derrapar à toa acelerando a 80% parado
+                racer.hp -= avg_slip * 10.0 * dt; 
+            }
 
             // === DRAFTING: Redução de arrasto 30% se atrás de outro carro ===
             if in_draft {

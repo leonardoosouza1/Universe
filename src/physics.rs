@@ -507,8 +507,14 @@ fn powertrain_and_tire_system(
             let raw_fwd_vel = forward_vel + body.angular_velocity.y * wheel_lat_pos[i];
             let raw_lat_vel = lateral_vel - body.angular_velocity.y * wheel_long_pos[i];
 
-            // Steering angle para rodas dianteiras (0 e 1)
-            let wheel_steer = if i < 2 { engine.steer * 35.0_f32.to_radians() } else { 0.0 };
+            // Speed Sensitive Steering (Assistente de Direção)
+            // Impede que a IA vire a roda 35 graus a 200 km/h (o que causa spin imediato e perda total de controle).
+            let max_steer_deg = if speed < 15.0 { 
+                35.0 
+            } else { 
+                (35.0 - (speed - 15.0) * 0.4).max(12.0) // Suaviza até um mínimo de 12 graus em velocidades monstruosas
+            };
+            let wheel_steer = if i < 2 { engine.steer * max_steer_deg.to_radians() } else { 0.0 };
             let cos_s = wheel_steer.cos();
             let sin_s = wheel_steer.sin();
 
@@ -586,16 +592,13 @@ fn powertrain_and_tire_system(
             total_lat_force += chassis_f_lat * aquaplaning;
 
             // TRUE PHYSICS YAW
-            // BUG CRÍTICO CORRIGIDO (Sinal invertido): O Torque de Guinada (Yaw) ao aplicar uma força lateral F_z
-            // sobre um braço X_arm é calculado na matriz Jacobiana/Cross-Product como Torque_Y = X_arm * (-F_z) - Z_arm * (F_x).
-            // Já que a força que o asfalto faz na f_lat puxa o carro em -Z, e wheel_long_pos é X, 
-            // a contribuição do pneu lateral para parar a rotação é POSITIVA (+ chassis_f_lat * wheel_long_pos).
-            // Com o sinal negativo antigo, a roda TRABALHAVA PRA GIRAR O CARRO como um pião (feedback positivo).
-            total_yaw_torque += chassis_f_lat * wheel_long_pos[i] * aquaplaning;
+            // Torque em Y = Braço perpendicular X Força Orto.
+            // Pela regra da mão direita no Bevy (Y para Cima):
+            // - Força longitudinal (X) na roda da direita (+Z) puxa o nariz para esquerda (+Y)
+            // - Força lateral (Z) na frente (+X) empurra o nariz para direita (-Y)
+            total_yaw_torque += wheel_lat_pos[i] * chassis_f_long * aquaplaning;
+            total_yaw_torque -= wheel_long_pos[i] * chassis_f_lat * aquaplaning;
             
-            let lsd_speed_gate = (speed / 5.0).clamp(0.0, 1.0);
-            total_yaw_torque += chassis_f_long * wheel_lat_pos[i] * 0.005 * lsd_speed_gate;
-
             // Tire thermal model
             if config.physics.enable_thermal {
                 let slip_heat = (slip_ratio.abs() + slip_angle.abs()) * load * 0.000002 * dt;
