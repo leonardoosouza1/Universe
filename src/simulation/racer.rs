@@ -31,6 +31,7 @@ pub struct Racer {
     pub last_waypoint: usize, // Último waypoint alcançado para cura
     pub track_progress: f32,  // Progresso real ao longo da polilinha da pista (arc-length)
     pub grace_ticks: u32,     // Contador de frames desde spawn; imune a time_scale (grace real de ~10s)
+    pub reverse_timer: f32,   // >0 enquanto em manobra de ré de emergência; decrementa com dt
 }
 
 pub struct PainSynapse {

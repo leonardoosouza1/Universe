@@ -347,7 +347,9 @@ pub(super) fn update_racers(
         // bias DC único — dois canais de 127 duplicavam o mesmo sinal e saturavam
         // o acumulador antes mesmo da evolução usar os outros canais.
         slow_input[30] = 127;
-        slow_input[31] = 0;
+        // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >6m).
+        let forward_wall_dist_sensor = world.raycast(pos.x, pos.z, racer.phase, 30.0);
+        slow_input[31] = ((forward_wall_dist_sensor / 6.0).clamp(0.0, 1.0) * 127.0) as i8;
         racer.engine.slow_brain.tick(&slow_input);
 
         // Usar final_intent estabilizado pelo CfC e KAN em vez de pesos crus (Evita ZigZag)
@@ -410,6 +412,47 @@ pub(super) fn update_racers(
             gizmos.arrow(pos + transform.right().as_vec3() * p_dist_r, pos, Color::srgba(1.0, 0.0, 0.0, severity));
         }
 
+        // ================================================================
+        // === SEGURANÇA FRONTAL & RÉ AUTOMÁTICA ==========================
+        // ================================================================
+        // Probe frontal: quão perto está a parede na direção do nariz do carro.
+        // Dois usos:
+        //   1) SAFETY CAP: throttle forward sobe linearmente com a folga à frente.
+        //      Encostado na parede => zero pedal; 6m+ de folga => pedal livre.
+        //      Evita que a IA se encrave acelerando contra concreto.
+        //   2) GATILHO DE RÉ: se muito perto (<2m) e praticamente parado,
+        //      dispara reverse_timer de 1.5s. Durante a ré, shift vai para
+        //      gear 0 e o pedal aplica torque de recuo. Visualmente: seta laranja.
+        const SAFE_DIST: f32 = 6.0;      // folga mínima para throttle pleno
+        const REVERSE_TRIGGER_DIST: f32 = 2.0;
+        const REVERSE_DURATION: f32 = 1.5;
+        const REVERSE_PEDAL: f32 = 0.45;
+
+        let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 30.0);
+        let safety_cap = (forward_wall_dist / SAFE_DIST).clamp(0.0, 1.0);
+
+        // (slow_input[31] já recebeu a mesma distância normalizada mais acima —
+        //  o raycast é barato e manter os dois call-sites evita reordenar o bloco.)
+
+        // Atualiza o timer da ré e checa se precisa disparar uma nova manobra.
+        racer.reverse_timer = (racer.reverse_timer - dt).max(0.0);
+        let stuck_against_wall = forward_wall_dist < REVERSE_TRIGGER_DIST
+            && speed < 1.5
+            && racer.grace_ticks >= 600; // não reverter dentro do grace
+        if stuck_against_wall && racer.reverse_timer <= 0.0 {
+            racer.reverse_timer = REVERSE_DURATION;
+        }
+        let is_reversing = racer.reverse_timer > 0.0;
+
+        if forward_wall_dist < SAFE_DIST {
+            let severity = 1.0 - safety_cap;
+            let front_point = pos + transform.right().as_vec3() * forward_wall_dist;
+            gizmos.arrow(front_point, pos, Color::srgba(1.0, 0.6, 0.0, severity.max(0.2)));
+        }
+        if is_reversing {
+            gizmos.sphere(pos + Vec3::new(0.0, 2.0, 0.0), 0.5, Color::srgb(1.0, 0.4, 0.0));
+        }
+
         // Fuga Espectral (Stigmergia) Removida - Agora a IA aprende pela rede e seleção natural
 
         let final_steer_intent = (steer_intent + emerg_steer).clamp(-1.0, 1.0);
@@ -426,8 +469,12 @@ pub(super) fn update_racers(
             let wheel_rpm = speed * wheel_ratio.max(3.0) * 30.0;
             let is_clutch_engaged = wheel_rpm > 1200.0 && eng.current_gear >= 2;
 
-            // Auto-clutch: Sai de Neutro/Ré para 1ª SEMPRE quando parado
-            if eng.current_gear <= 1 {
+            // Manobra de ré ativa: empurra gear para 0 (Reverse) e segura lá.
+            if is_reversing {
+                if eng.current_gear > 0 { shift_req = -1; }
+            }
+            // Auto-clutch: Sai de Neutro/Ré para 1ª SEMPRE quando parado (desativado na ré)
+            else if eng.current_gear <= 1 {
                 shift_req = 1;
             }
             // Guardian Anti-Stall: Se parado mas numa marcha alta (2ª, 3ª), CAI DE MARCHA IMEDIATAMENTE!
@@ -454,9 +501,17 @@ pub(super) fn update_racers(
         racer.memory[4] = shift_down_intent;
 
         // --- INÉRCIA DE ATUADOR (Direção Hidráulica Rápida) ---
-        racer.memory[0] += (final_pedal_intent - racer.memory[0]) * (dt * 10.0).min(1.0);
+        // Em ré: aplica pedal reverso fixo e solta o freio, sobrescrevendo o intent neural.
+        // Em modo normal: multiplica pelo safety_cap (zero se encostado na parede, 1 se >6m).
+        let pedal_target = if is_reversing {
+            REVERSE_PEDAL
+        } else {
+            final_pedal_intent * safety_cap
+        };
+        let brake_target = if is_reversing { 0.0 } else { brake_intent };
+        racer.memory[0] += (pedal_target - racer.memory[0]) * (dt * 10.0).min(1.0);
         racer.memory[1] += (final_steer_intent - racer.memory[1]) * (dt * 20.0).min(1.0); // De 8.0 para 20.0 (Quase instantâneo)
-        racer.memory[2] += (brake_intent - racer.memory[2]) * (dt * 15.0).min(1.0);
+        racer.memory[2] += (brake_target - racer.memory[2]) * (dt * 15.0).min(1.0);
 
         let mut physical_throttle = racer.memory[0];
         let physical_steer = racer.memory[1]; // Sem trava de volante! Foco total nas curvas
@@ -491,8 +546,8 @@ pub(super) fn update_racers(
         }
 
         // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR ---
-        // Só ativa após grace. Drena mais devagar (era 10.0, agora 5.0).
-        if !in_grace && speed < 1.0 {
+        // Só ativa após grace e fora de manobra de ré (recuar é lento mas legítimo).
+        if !in_grace && !is_reversing && speed < 1.0 {
             racer.hp -= dt * 5.0;
         }
 
@@ -575,9 +630,8 @@ pub(super) fn update_racers(
                 racer.track_progress = lap_prog + (racer.total_laps as f32) * world.lap_distance;
             }
 
-            // Punição Severa por Andar na Contramão
-            if racer.distance < -5.0 {
-                // Dor extrema e morte rápida se andar pra trás
+            // Punição Severa por Andar na Contramão — mas não durante manobra de ré de emergência.
+            if !is_reversing && racer.distance < -5.0 {
                 racer.hp -= 100.0 * dt;
             }
 
