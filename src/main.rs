@@ -38,6 +38,9 @@ fn main() {
         camera_distance: 150.0,
         is_free_cam: false,
         death_markers: Vec::new(),
+        global_best_distance: 0.0,
+        global_best_position: None,
+        champion_distance: 0.0,
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

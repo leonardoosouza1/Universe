@@ -23,6 +23,9 @@ pub struct RaceSettings {
     pub camera_distance: f32,
     pub is_free_cam: bool,
     pub death_markers: Vec<Vec3>,
+    pub global_best_distance: f32,
+    pub global_best_position: Option<Vec3>,
+    pub champion_distance: f32,  // Distância do DNA salvo em CHAMPION.dna (só muda quando DNA é coroado)
 }
 
 #[derive(Resource)]
@@ -100,21 +103,37 @@ pub fn spawn_swarm(
     for i in 0..config.swarm_count {
         let mut engine = crate::engine::SovereignEngine::new();
         if let Some(ref best) = current_best_w {
-            let mutated: Vec<f32> = best.iter().map(|&w| {
-                if rng.random_bool(dev.mutation_rate as f64) { rng.random_range(-1.0..1.0) } else { w as f32 }
-            }).collect();
-            engine.instinct_layer.quantize(&mutated);
-            engine.instinct_layer.set_scale(current_best_s);
-
-            // Slow brain: herda se disponível, senão fica neutro (pesos zero)
-            if let Some(ref best_slow) = current_best_slow_w {
-                let mutated_slow: Vec<f32> = best_slow.iter().map(|&w| {
+            // ELITISMO: Piloto #0 é um CLONE PERFEITO do campeão (0% mutação)
+            // Os restantes são filhos mutantes. Isso garante que o melhor DNA nunca se perde.
+            let is_elite_clone = i == 0;
+            
+            if is_elite_clone {
+                // Clone puro: copia os pesos exatamente como são
+                let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
+                engine.instinct_layer.quantize(&exact);
+                engine.instinct_layer.set_scale(current_best_s);
+                
+                if let Some(ref best_slow) = current_best_slow_w {
+                    let exact_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32).collect();
+                    engine.slow_brain.layer.quantize(&exact_slow);
+                    engine.slow_brain.layer.set_scale(current_best_slow_s);
+                }
+            } else {
+                // Filho mutante: herda DNA com mutações aleatórias
+                let mutated: Vec<f32> = best.iter().map(|&w| {
                     if rng.random_bool(dev.mutation_rate as f64) { rng.random_range(-1.0..1.0) } else { w as f32 }
                 }).collect();
-                engine.slow_brain.layer.quantize(&mutated_slow);
-                engine.slow_brain.layer.set_scale(current_best_slow_s);
+                engine.instinct_layer.quantize(&mutated);
+                engine.instinct_layer.set_scale(current_best_s);
+
+                if let Some(ref best_slow) = current_best_slow_w {
+                    let mutated_slow: Vec<f32> = best_slow.iter().map(|&w| {
+                        if rng.random_bool(dev.mutation_rate as f64) { rng.random_range(-1.0..1.0) } else { w as f32 }
+                    }).collect();
+                    engine.slow_brain.layer.quantize(&mutated_slow);
+                    engine.slow_brain.layer.set_scale(current_best_slow_s);
+                }
             }
-            // Se sem best_slow: BitLinear::new já inicializa zeros → output neutro (tanh(0)=0 → modulação = 1.0)
         } else {
             // --- PRIMING GENÉTICO (A CONSCIÊNCIA INICIAL) ---
             let mut weights = vec![0.0f32; 128 * 64];
@@ -182,7 +201,7 @@ pub fn spawn_swarm(
 
         commands.entity(racer_entity).insert(
             Racer { 
-                name: format!("{}-{}", names[i % names.len()], rng.random_range(10..99)),
+                name: if i == 0 && current_best_w.is_some() { "👑 CHAMPION".to_string() } else { format!("{}-{}", names[i % names.len()], rng.random_range(10..99)) },
                 car_model: car_model.to_string(),
                 engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
@@ -235,12 +254,17 @@ fn calc_fitness(r: &Racer) -> f32 {
     
     // Penalidade por morte: proporcional a quão pouco andou (morrer cedo = pior)
     let death_penalty = if r.is_dead { 
-        (100.0 - r.distance.max(0.0)).max(0.0) * 10.0 // Morrer com 0m = -1000, morrer com 100m = 0
+        (100.0 - r.distance.max(0.0)).max(0.0) * 10.0
     } else { 
         0.0 
     };
     
-    lap_bonus + dist_score + joy - death_penalty
+    // PENALIDADE POR WALL-RIDING: Cada segundo encostado na parede DESTRÓI fitness
+    // Um carro que andou 50m mas raspou 2s na parede: 50*100 - 2*500 = 4000
+    // Um carro que andou 40m sem tocar: 40*100 = 4000 → Empatam!
+    let wall_penalty = r.wall_time * 500.0;
+    
+    lap_bonus + dist_score + joy - death_penalty - wall_penalty
 }
 
 fn evolution_pipeline(
@@ -298,30 +322,48 @@ fn evolution_pipeline(
             }
         }
 
+        // SELEÇÃO POR DISTÂNCIA PURA: quem andou mais longe na pista vence
         let best_racer = if let Some((_, w, _, _)) = winner { 
             Some(w) 
         } else { 
             query.iter().max_by(|a, b| {
-                let score_a = calc_fitness(a.1);
-                let score_b = calc_fitness(b.1);
-                score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+                a.1.distance.partial_cmp(&b.1.distance).unwrap_or(std::cmp::Ordering::Equal)
             }).map(|(_, r, _, _)| r)
         };
         if let Some(best) = best_racer {
-            let weights = best.engine.instinct_layer.weights.clone();
-            let scale = best.engine.instinct_layer.weight_scale;
-            let slow_weights = best.engine.slow_brain.layer.weights.clone();
-            let slow_scale = best.engine.slow_brain.layer.weight_scale;
-            race.best_weights = Some(weights.clone());
-            race.best_scale = scale;
-            race.best_slow_weights = Some(slow_weights.clone());
-            race.best_slow_scale = slow_scale;
-            // DNA v2: fast + slow concatenados
-            if let Ok(mut file) = File::create("CHAMPION.dna") {
-                let _ = file.write_all(&scale.to_le_bytes());
-                let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
-                let _ = file.write_all(&slow_scale.to_le_bytes());
-                let _ = file.write_all(&slow_weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
+            let this_gen_best_dist = best.distance;
+            
+            // ELITISMO REAL: Só coroa se SUPEROU a distância do campeão anterior
+            // champion_distance é separado de global_best_distance (que é visual)
+            let should_crown = this_gen_best_dist > race.champion_distance
+                || race.best_weights.is_none()
+                || winner.is_some();
+
+            if should_crown {
+                race.champion_distance = this_gen_best_dist; // Atualiza o limiar do campeão
+                let weights = best.engine.instinct_layer.weights.clone();
+                let scale = best.engine.instinct_layer.weight_scale;
+                let slow_weights = best.engine.slow_brain.layer.weights.clone();
+                let slow_scale = best.engine.slow_brain.layer.weight_scale;
+                race.best_weights = Some(weights.clone());
+                race.best_scale = scale;
+                race.best_slow_weights = Some(slow_weights.clone());
+                race.best_slow_scale = slow_scale;
+                if let Ok(mut file) = File::create("CHAMPION.dna") {
+                    let _ = file.write_all(&scale.to_le_bytes());
+                    let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
+                    let _ = file.write_all(&slow_scale.to_le_bytes());
+                    let _ = file.write_all(&slow_weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
+                }
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("race_reports.md") {
+                    use std::io::Write;
+                    let _ = writeln!(file, "👑 **NOVO CAMPEÃO COROADO!** Distância: {:.1}m (Gen {}) — Superou {:.1}m anterior", this_gen_best_dist, race.generation, race.champion_distance);
+                }
+            } else {
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("race_reports.md") {
+                    use std::io::Write;
+                    let _ = writeln!(file, "📉 Geração fraca ({:.1}m vs campeão {:.1}m) — DNA PRESERVADO", this_gen_best_dist, race.champion_distance);
+                }
             }
         }
         

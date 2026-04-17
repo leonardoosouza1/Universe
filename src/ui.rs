@@ -80,6 +80,7 @@ fn update_hud(
         )).with_children(|dev_panel| {
             dev_panel.spawn((Text::new("IARA DEV CTRL"), TextFont { font_size: 18.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 1.0))));
             dev_panel.spawn((Text::new(format!("GEN: {}", race.generation)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
+            dev_panel.spawn((Text::new(format!("🏆 RECORDE: {:.1}m", race.global_best_distance)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::srgb(1.0, 0.84, 0.0))));
             
             // Botões Reset
             dev_panel.spawn(Node { margin: UiRect::vertical(Val::Px(5.0)), flex_direction: FlexDirection::Column, ..default() }).with_children(|reset_box| {

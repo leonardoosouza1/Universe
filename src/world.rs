@@ -257,7 +257,6 @@ impl VoxelWorld {
                 
                 let mut hit_voxel = VoxelType::Road;
                 let mut hit_dist = 150.0;
-                let mut normal_shade = 1.0;
                 
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
                 
@@ -313,14 +312,8 @@ impl VoxelWorld {
                         let hit_px = eye_pos.x + dir_x * hit_dist;
                         let hit_pz = eye_pos.z + dir_z * hit_dist;
                         hit_voxel = self.get_voxel_at(hit_px, hit_pz);
-                        normal_shade = 0.8;
                     } else {
                         hit_dist = current_dist;
-                        let nx = if side == 0 { -step_x as f32 } else { 0.0 };
-                        let nz = if side == 1 { -step_y as f32 } else { 0.0 };
-                        let normal = Vec2::new(nx, nz);
-                        let dot = normal.dot(-ray_dir).clamp(0.0, 1.0);
-                        normal_shade = 0.3 + dot * 0.7; // Reflexo de Snell realístico
                     }
                 } else if dir_y < -0.001 && dist_to_ground <= 150.0 {
                     // Sem paredes, mas bateu no chão
@@ -328,7 +321,6 @@ impl VoxelWorld {
                     let hit_px = eye_pos.x + dir_x * hit_dist;
                     let hit_pz = eye_pos.z + dir_z * hit_dist;
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
-                    normal_shade = 0.8;
                 }
                 
                 let depth_fade = (hit_dist / 150.0).clamp(0.0, 1.0);

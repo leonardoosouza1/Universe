@@ -84,9 +84,38 @@ fn update_racers(
     let dt = time.delta_secs().min(0.02);
     let world = &world_res.0;
 
-    // --- RENDERIZAR MEMÓRIA DE DOR (TÚMULOS) ---
-    for &grave in &race.death_markers {
-        gizmos.sphere(grave, 1.0, Color::srgba(0.8, 0.0, 0.5, 0.5));
+    // --- RENDERIZAR MARCO-ZERO (A BANDEIRA DO CAMPEÃO GLOBAL) ---
+    if let Some(flag_pos) = race.global_best_position {
+        // Haste de 15 metros cravada no chão
+        gizmos.line(flag_pos, flag_pos + Vec3::Y * 15.0, Color::srgb(1.0, 0.84, 0.0));
+        // Globo/Bandeira dourada no topo
+        gizmos.sphere(flag_pos + Vec3::Y * 15.0, 2.0, Color::srgb(1.0, 0.84, 0.0));
+        // Anel no chão para visibilidade de longe
+        gizmos.circle(
+            Isometry3d::new(flag_pos, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+            5.0, Color::srgba(1.0, 0.84, 0.0, 0.6),
+        );
+    }
+
+    // --- RENDERIZAR WAYPOINTS/CHECKPOINTS DA PISTA ---
+    let wps = &world.waypoints_world;
+    for i in 0..wps.len() {
+        let wp = Vec3::new(wps[i].x, 0.5, wps[i].y);
+        
+        // Pilar de checkpoint (10m de altura)
+        let pillar_color = if i == 0 { 
+            Color::srgb(0.0, 1.0, 0.3) // Verde = Largada/Chegada
+        } else { 
+            Color::srgba(0.0, 0.7, 1.0, 0.7) // Ciano = checkpoint normal
+        };
+        gizmos.line(wp, wp + Vec3::Y * 10.0, pillar_color);
+        gizmos.sphere(wp + Vec3::Y * 10.0, 1.5, pillar_color);
+        
+        // Linhas conectando os waypoints (tracejado da pista ideal)
+        if i < wps.len() - 1 {
+            let next = Vec3::new(wps[i+1].x, 0.5, wps[i+1].y);
+            gizmos.line(wp + Vec3::Y * 0.3, next + Vec3::Y * 0.3, Color::srgba(0.0, 0.7, 1.0, 0.25));
+        }
     }
 
     // --- PRÉ-CÁLCULO (Primeiro passo read-only sobre a mesma query) ---
@@ -95,6 +124,13 @@ fn update_racers(
     let mut racer_positions: Vec<(Entity, Vec3, Vec3)> = Vec::new();
 
     for (e, r, t, _, _, _) in query.iter() {
+        // Atualiza a Bandeira do Campeão Global se este piloto superou a marca de todos os tempos
+        // Somado com 0.05 para evitar micro-atualizações visuais
+        if r.distance > race.global_best_distance + 0.05 {
+            race.global_best_distance = r.distance;
+            race.global_best_position = Some(t.translation);
+        }
+
         let score = if r.distance < 15.0 { 
             r.distance * 10.0 - 10000.0 
         } else { 
@@ -425,17 +461,7 @@ fn update_racers(
             gizmos.arrow(pos + transform.right().as_vec3() * p_dist_r, pos, Color::srgba(1.0, 0.0, 0.0, severity));
         }
 
-        // Fuga Espectral: Fugir dos "Túmulos" de gerações passadas
-        for &grave in &race.death_markers {
-            let to_grave = grave - pos;
-            let dist_grave = to_grave.length();
-            if dist_grave < 10.0 {
-                let dot_grave = transform.right().as_vec3().dot(to_grave.normalize_or_zero());
-                let severity = 1.0 - (dist_grave / 10.0);
-                if dot_grave > 0.0 { emerg_steer += severity * 1.5; } else { emerg_steer -= severity * 1.5; }
-                gizmos.line(pos, grave, Color::srgba(0.8, 0.0, 0.5, severity));
-            }
-        }
+        // Fuga Espectral (Stigmergia) Removida - Agora a IA aprende pela rede e seleção natural
 
         let final_steer_intent = (steer_intent + emerg_steer).clamp(-1.0, 1.0);
         
@@ -586,7 +612,13 @@ fn update_racers(
             
             // Punição de Fitness por Zigzag + Penalidade de Grama
             let lateral_velocity = body.velocity.cross(flow_3d).length();
-            racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
+            
+            // SÓ ACUMULA DISTÂNCIA SE NÃO ESTÁ NA PAREDE
+            // Isso elimina completamente a estratégia de "ricochete produtivo"
+            let on_wall = world.get_voxel_at(transform.translation.x, transform.translation.z) == VoxelType::Wall;
+            if !on_wall {
+                racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
+            }
 
             // Punição Severa por Andar na Contramão
             if racer.distance < -5.0 {
@@ -629,26 +661,12 @@ fn update_racers(
         let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
         
         if voxel == VoxelType::Wall {
-            racer.wall_time += dt;  // acumula para a fitness penalizar wall-riding
-            // Colisão física com impulso já é tratada em physics.rs (collision_system)
-            // Aqui só aplicamos dano + efeitos visuais
-            if let Some(ref body) = opt_body {
-                let speed_kmh = body.velocity.length() * 3.6;
-                let dano = (speed_kmh.powi(2) * 0.003).max(5.0);
-                racer.hp -= dano; 
-                
-                racer.engine_power = (racer.hp / 100.0).clamp(0.0, 1.0);
-                
-                if racer.hp <= 0.0 {
-                    racer.is_dead = true;
-                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
-                } else {
-                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { 
-                        let health_ratio = (racer.hp / 100.0).clamp(0.0, 1.0);
-                        mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
-                    }
-                }
-            }
+            // PAREDE = MORTE INSTANTÂNEA
+            // Sinal evolutivo mais claro possível: tocou, morreu.
+            // Sem HP, sem ricochet, sem estratégia de "raspar na parede".
+            racer.is_dead = true;
+            racer.hp = 0.0;
+            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
         }
         
         // Stagnation: Ficar parado ou em contramão. Aumentado para 20s/12s para aprender partida.
@@ -696,6 +714,8 @@ fn camera_system(
     racer_query: Query<(Entity, &Racer, &Transform), Without<Camera3d>>,
     mut race: ResMut<crate::evolution::RaceSettings>,
     mut scroll_evr: EventReader<bevy::input::mouse::MouseWheel>,
+    mut motion_evr: EventReader<bevy::input::mouse::MouseMotion>,
+    mouse_btn: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
 ) {
@@ -710,21 +730,50 @@ fn camera_system(
     if keys.just_pressed(KeyCode::KeyC) {
         race.is_free_cam = !race.is_free_cam;
     }
+    
+    // Ler os movimentos do mouse para não acumular
+    let mut mouse_delta = Vec2::ZERO;
+    for ev in motion_evr.read() {
+        if mouse_btn.pressed(MouseButton::Right) {
+            mouse_delta += ev.delta;
+        }
+    }
 
     if let Ok(mut cam_t) = query.single_mut() {
         if race.is_free_cam {
             let mut move_dir = Vec3::ZERO;
             let forward = cam_t.forward().as_vec3();
             let right = cam_t.right().as_vec3();
+            let up = Vec3::Y;
+            
             if keys.pressed(KeyCode::KeyW) { move_dir += forward; }
             if keys.pressed(KeyCode::KeyS) { move_dir -= forward; }
             if keys.pressed(KeyCode::KeyA) { move_dir -= right; }
             if keys.pressed(KeyCode::KeyD) { move_dir += right; }
+            if keys.pressed(KeyCode::KeyE) { move_dir += up; }
+            if keys.pressed(KeyCode::KeyQ) { move_dir -= up; }
             
             if move_dir.length_squared() > 0.0 {
                 let speed = if keys.pressed(KeyCode::ShiftLeft) { 300.0 } else { 100.0 };
                 cam_t.translation += move_dir.normalize() * speed * dt;
             }
+            
+            // Rotação com o Mouse (Segurando Botão Direito)
+            if mouse_delta.length_squared() > 0.0 {
+                let yaw = -mouse_delta.x * 0.003;
+                let pitch = -mouse_delta.y * 0.003;
+                
+                // Rotaciona Yaw (global Y) - usamos rotação ao redor do Y do mundo para não bugar o horizonte
+                cam_t.rotate_axis(Dir3::Y, yaw);
+                // Rotaciona Pitch (local X)
+                cam_t.rotate_local_x(pitch);
+            }
+            
+            // Mantendo fallback para as setas do teclado
+            if keys.pressed(KeyCode::ArrowLeft) { cam_t.rotate_axis(Dir3::Y, 2.0 * dt); }
+            if keys.pressed(KeyCode::ArrowRight) { cam_t.rotate_axis(Dir3::Y, -2.0 * dt); }
+            if keys.pressed(KeyCode::ArrowUp) { cam_t.rotate_local_x(2.0 * dt); }
+            if keys.pressed(KeyCode::ArrowDown) { cam_t.rotate_local_x(-2.0 * dt); }
         } else {
             let mut target = race.selected_racer;
             if target.is_none() {
