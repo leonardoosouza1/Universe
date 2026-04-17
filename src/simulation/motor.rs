@@ -848,12 +848,6 @@ pub(super) fn update_racers(
                 racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
             }
 
-            // TRACK PROGRESS REAL (arc-length na polilinha) — imune a atalhos off-track
-            if !world.waypoints_world.is_empty() {
-                let lap_prog = world.get_track_progress(transform.translation.x, transform.translation.z);
-                racer.track_progress = lap_prog + (racer.total_laps as f32) * world.lap_distance;
-            }
-
             // --- AMOSTRAGEM DE PATH (~4Hz) para desenhar traçado do campeão ---
             racer.path_timer -= dt;
             if racer.path_timer <= 0.0 {
@@ -1013,13 +1007,21 @@ pub(super) fn update_racers(
         }
 
         // Contagem de Voltas — cruzamento da lap_line + validação por arc-length REAL.
-        // Guard previous: `racer.distance > 400.0` (euclidiano) permitia donut acumular 400m falsos.
-        // Novo: exige que track_progress esteja a 95%+ do próximo múltiplo de lap_distance.
+        // racer.track_progress ainda tem o valor do frame anterior aqui (ainda NÃO atualizamos
+        // pelo lap_prog deste frame). No frame do cruzamento, o lap_prog atual deu wrap pra ~0,
+        // mas o frame anterior estava em ~lap_distance — por isso o check usa o valor antigo.
         let lap_line_x = world.start_pos.x;
-        let required_progress = (racer.total_laps as f32 + 1.0) * world.lap_distance * 0.95;
+        let required_progress = (racer.total_laps as f32 + 1.0) * world.lap_distance * 0.90;
         if racer.prev_pos.x < lap_line_x && transform.translation.x >= lap_line_x && racer.track_progress >= required_progress {
             racer.total_laps += 1; racer.distance = 0.0;
             if racer.total_laps % 3 == 0 { racer.fuel = 1.0; }
+        }
+
+        // Comita o novo track_progress DEPOIS da contagem de voltas —
+        // total_laps já pode ter sido incrementado acima, então a fórmula usa o valor atualizado.
+        if !world.waypoints_world.is_empty() {
+            let lap_prog = world.get_track_progress(transform.translation.x, transform.translation.z);
+            racer.track_progress = lap_prog + (racer.total_laps as f32) * world.lap_distance;
         }
 
         // --- 6. ESPIONAGEM NEURAL (GIZMOS DO CAMPO DE VISÃO) ---

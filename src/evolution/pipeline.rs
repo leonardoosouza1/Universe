@@ -55,13 +55,15 @@ pub(super) fn evolution_pipeline(
     env.tick(dt);
     if query.is_empty() { return; }
     let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 5);
-    // REMOVIDO: `all_dead` como condição de fim de geração.
-    // Motivo: carros que NÃO morreram precisam de tempo pra acumular voltas/distância.
-    // Agora a geração só encerra por: vencedor (5 voltas), timeout configurável, reset manual.
-    // Carros mortos permanecem ocultos (Visibility::Hidden) sem custo de física/render.
+    // Geração encerra por QUALQUER dos:
+    //  - winner (5 voltas)
+    //  - all_dead (não adianta esperar ninguém vivo)
+    //  - timeout configurável (carros vivos tiveram tempo de acumular laps)
+    //  - reset manual
+    let all_dead = query.iter().all(|(_, r, _, _)| r.is_dead);
     let timeout_reached = env.generation_time >= config.generation_timeout_s;
 
-    if winner.is_some() || timeout_reached || race.should_reset {
+    if winner.is_some() || all_dead || timeout_reached || race.should_reset {
         // Rank global por fitness — reutilizado pelo pool elite + relatório.
         let mut sorted: Vec<_> = query.iter().collect();
         sorted.sort_by(|a, b| {
@@ -88,7 +90,10 @@ pub(super) fn evolution_pipeline(
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
         if let Some(mut file) = open_report_log() {
             use std::io::Write;
-            let reason = if winner.is_some() { "Vencedor Encontrado" } else if timeout_reached { "Timeout Atingido" } else { "Reset Manual" };
+            let reason = if winner.is_some() { "Vencedor Encontrado" }
+                else if all_dead { "Extinção (Colisão)" }
+                else if timeout_reached { "Timeout Atingido" }
+                else { "Reset Manual" };
             let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {} | Duração: {:.1}s", race.generation, reason, env.generation_time);
             let _ = writeln!(file, "**Ambiente:** Asfalto {:.0}°C | Chuva: {:.0}% | Vento: ({:.1}, {:.1}) m/s | Hora: {:.1}h | μ_base: 1.3 × grip_env: {:.2}",
                 env.asphalt_temp, env.weather_wetness * 100.0, env.wind.x, env.wind.z, env.time_of_day, env.combined_grip_factor());
