@@ -28,6 +28,9 @@ pub struct Racer {
     pub aquaplaning_timer: f32, // Timer de aquaplanagem (0.5s de perda de controle)
     pub joy_integral: f32,    // Dopamina acumulada: Σ(joy_tick * streak_mult * dt) — driver de fitness
     pub joy_streak: f32,      // Tempo contínuo em flow state (cap 5s); zera em "dor"
+    pub wall_hits: u32,       // Contador de impactos na parede (3 strikes = dead)
+    pub wall_cooldown: f32,   // Tempo até registrar novo hit na parede
+    pub last_waypoint: usize, // Último waypoint alcançado para cura
 }
 
 pub struct PainSynapse {
@@ -655,9 +658,7 @@ fn update_racers(
             racer.distance += (wave_vector * dt).length();
         }
 
-        racer.prev_pos = transform.translation;
-
-        // --- 5. DOR E TRAUMA (Dano Progressivo por Energia Cinética) ---
+        racer.wall_cooldown = (racer.wall_cooldown - dt).max(0.0);
         let mut hit_wall = false;
         
         // Verifica colisões usando as mesmas probes físicas para não ser salvo pelo bounce
@@ -665,7 +666,6 @@ fn update_racers(
             hit_wall = true;
         } else {
             // Se o centro está livre, checa os 4 cantos (nariz, traseira, laterais)
-            // Usa aproximação de chassis padrão caso não tenha física (2.0 de roda, 1.0 largura)
             let wb = if let Some(body) = &opt_body { 2.6 } else { 2.6 };
             let tw = if let Some(body) = &opt_body { 1.6 } else { 1.6 }; // chassis track_width approx
             
@@ -688,13 +688,41 @@ fn update_racers(
             }
         }
         
-        if hit_wall {
-            // PAREDE = MORTE INSTANTÂNEA
-            // Sinal evolutivo mais claro possível: tocou, morreu.
-            // Sem HP, sem ricochet, sem estratégia de "raspar na parede".
-            racer.is_dead = true;
-            racer.hp = 0.0;
-            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+        if hit_wall && !racer.is_dead {
+            racer.wall_time += dt;
+            if racer.wall_cooldown == 0.0 {
+                racer.wall_hits += 1;
+                racer.wall_cooldown = 1.0; // 1 segundo imunidade entre batidas
+                racer.hp -= 25.0; // Dano fixo
+            }
+            
+            // 3 strikes e tá fora, ou perdeu HP todo
+            if racer.wall_hits >= 3 || racer.hp <= 0.0 {
+                racer.is_dead = true;
+                racer.hp = 0.0;
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+            } else {
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { 
+                    let health_ratio = (racer.hp / 100.0).clamp(0.0, 1.0);
+                    mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
+                }
+            }
+        }
+        
+        // --- CHECKPOINT RECOVERY ---
+        // A cada 50 metros avançados na pista, conta como um checkpoint alcançado
+        let absolute_dist = racer.distance + (racer.total_laps as f32 * world.lap_distance);
+        let current_wp = (absolute_dist / 50.0).floor() as usize;
+        
+        if current_wp > racer.last_waypoint {
+            racer.last_waypoint = current_wp;
+            // Alcançou um checkpoint: recupera HP e zera strikes da parede!
+            racer.hp = (racer.hp + 25.0).min(100.0);
+            racer.wall_hits = 0;
+            // Feedback visual de cura
+            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { 
+                mat.base_color = Color::srgb(0.5, 1.0, 1.0); // Brilha ciano rapidamente
+            }
         }
         
         // Stagnation: Ficar parado ou em contramão. Aumentado para 20s/12s para aprender partida.
