@@ -141,38 +141,39 @@ pub fn spawn_swarm(
             
             // --- AXIOMATA DE SOBREVIVÊNCIA (magnitudes grandes p/ sobreviver quantize ternária) ---
 
-            // A1: Wall à esquerda (indices 0..5 horizon, 32..37 ground) → vira à DIREITA
-            // Pixel alto = wall perto. Peso positivo → steer positivo. (Confirmar sinal em sim.)
+            // A1: Wall à esquerda (indices 0..5 horizon, 32..37 ground) → vira à DIREITA (positivo)
             for i in 0..6 {
-                weights[1 * 128 + i] = 5.0;         // horizon left-edge
-                weights[1 * 128 + (32 + i)] = 5.0;  // ground left-edge
+                weights[1 * 128 + i] = 15.0;         // Grito de sobrevivência: foge da esquerda
+                weights[1 * 128 + (32 + i)] = 15.0;
             }
 
-            // A2: Wall à direita (indices 26..31 horizon, 58..63 ground) → vira à ESQUERDA
+            // A2: Wall à direita (indices 26..31 horizon, 58..63 ground) → vira à ESQUERDA (negativo)
             for i in 26..32 {
-                weights[1 * 128 + i] = -5.0;
-                weights[1 * 128 + (32 + i)] = -5.0;
+                weights[1 * 128 + i] = -15.0;        // Grito de sobrevivência: foge da direita
+                weights[1 * 128 + (32 + i)] = -15.0;
             }
 
             // A3: Alinhamento com fluxo da pista (canal 64) → acelera
             weights[0 * 128 + 64] = 5.0;
 
-            // A4: Se alinhado E pista livre (centro retina 15 e 47, pixel BAIXO = estrada livre),
-            // acelera mais. Peso NEGATIVO porque pixel alto = parede.
-            weights[0 * 128 + 15] = -5.0; // Aumentado de -3.0
-            weights[0 * 128 + 47] = -5.0;
+            // A4: Se a pista está livre no centro (valores baixos), acelera! Se ver parede no centro, corta o motor.
+            // Pan-Vision Central (10..21 e 42..53)
+            for i in 10..22 {
+                weights[0 * 128 + i] = -8.0;         // Corta aceleração (Throttle = 0) ao ver parede
+                weights[0 * 128 + (32 + i)] = -8.0;
+            }
 
-            // A5: HP baixo ou DOR (canais 67 e 73) -> Reduz throttle
-            weights[0 * 128 + 73] = -2.0; 
+            // A5: HP baixo ou DOR (canais 67 e 73) -> Reduz throttle severamente
+            weights[0 * 128 + 73] = -5.0; 
 
             // A6: Comp-stress alto (canal 125) → throttle (ataca quem está na frente)
             weights[0 * 128 + 125] = 3.0;
 
-            // A7: REFLEXO DE FRENAGEM DE EMERGÊNCIA (Pan-Vision Central)
+            // A7: REFLEXO DE FRENAGEM PÂNICO (Pan-Vision Central)
             // Mapeia 12 pixels centrais (Horizonte + Chão) para o canal de FREIO (2)
-            for i in 13..19 {
-                weights[2 * 128 + i] = 10.0;        // Ground center
-                weights[2 * 128 + (32 + i)] = 10.0; // Horizon center
+            for i in 12..20 {
+                weights[2 * 128 + i] = 20.0;        // Freia com força total se parede na frente
+                weights[2 * 128 + (32 + i)] = 20.0;
             }
 
             engine.instinct_layer.quantize(&weights);
@@ -207,7 +208,7 @@ pub fn spawn_swarm(
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; 64],
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
-                joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0,
+                joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
@@ -240,23 +241,24 @@ fn calc_fitness(r: &Racer) -> f32 {
     // Joy serve apenas como desempate entre carros na mesma distância.
     
     let lap_bonus = r.total_laps as f32 * 50000.0;
-    
-    // Distância é o fator dominante: cada metro vale muito
-    // Exponencial para premiar quem vai LONGE (curvas valem mais que retas)
-    let dist_score = if r.distance > 0.0 { 
-        r.distance * 100.0 + r.distance.powf(1.3) // Linear forte + bônus exponencial
-    } else { 
-        r.distance * 500.0 // Penalidade brutal por andar pra trás
+
+    // Progresso REAL na pista (arc-length na polilinha de waypoints).
+    // Carros que cortam off-track em linha reta não pontuam — só a projeção na pista conta.
+    let prog = r.track_progress;
+    let dist_score = if prog > 0.0 {
+        prog * 100.0 + prog.powf(1.3) // Linear forte + bônus exponencial
+    } else {
+        prog * 500.0 // Penalidade brutal por andar pra trás (quase impossível com arc-length)
     };
     
     // Joy é apenas desempate (~1% do peso da distância)
     let joy = r.joy_integral * 5.0;
     
     // Penalidade por morte: proporcional a quão pouco andou (morrer cedo = pior)
-    let death_penalty = if r.is_dead { 
-        (100.0 - r.distance.max(0.0)).max(0.0) * 10.0
-    } else { 
-        0.0 
+    let death_penalty = if r.is_dead {
+        (100.0 - prog.max(0.0)).max(0.0) * 10.0
+    } else {
+        0.0
     };
     
     // PENALIDADE POR WALL-RIDING: Cada segundo encostado na parede DESTRÓI fitness
@@ -314,20 +316,20 @@ fn evolution_pipeline(
                 let rr_omega = phys_body.wheels[3].angular_velocity;
                 let rl_slip = phys_body.wheels[2].slip_ratio;
                 let rr_slip = phys_body.wheels[3].slip_ratio;
-                let _ = writeln!(file, "{:02}. [{}] **{}** | D:{:.1}m | P:{:.0}% | V:{:.0}km/h | G:{} | RPM:{:.0} | YAW:{:.2}r/s | ω_RL:{:.1} ω_RR:{:.1} | SR_RL:{:.2} SR_RR:{:.2} | Thr:{:.0}% Brk:{:.0}% Trq:{:.0}Nm", 
-                    i+1, status, r.name, r.distance, r.engine_power * 100.0, 
+                let _ = writeln!(file, "{:02}. [{}] **{}** | TP:{:.1}m (D:{:.1}m) | P:{:.0}% | V:{:.0}km/h | G:{} | RPM:{:.0} | YAW:{:.2}r/s | ω_RL:{:.1} ω_RR:{:.1} | SR_RL:{:.2} SR_RR:{:.2} | Thr:{:.0}% Brk:{:.0}% Trq:{:.0}Nm",
+                    i+1, status, r.name, r.track_progress, r.distance, r.engine_power * 100.0,
                     speed_kmh, gear_label, engine_comp.current_rpm, yaw_rate,
                     rl_omega, rr_omega, rl_slip, rr_slip,
                     engine_comp.throttle * 100.0, engine_comp.brake * 100.0, engine_comp.current_drive_torque);
             }
         }
 
-        // SELEÇÃO POR DISTÂNCIA PURA: quem andou mais longe na pista vence
-        let best_racer = if let Some((_, w, _, _)) = winner { 
-            Some(w) 
-        } else { 
+        // SELEÇÃO POR PROGRESSO REAL NA PISTA: quem avançou mais na polilinha vence
+        let best_racer = if let Some((_, w, _, _)) = winner {
+            Some(w)
+        } else {
             query.iter().max_by(|a, b| {
-                a.1.distance.partial_cmp(&b.1.distance).unwrap_or(std::cmp::Ordering::Equal)
+                a.1.track_progress.partial_cmp(&b.1.track_progress).unwrap_or(std::cmp::Ordering::Equal)
             }).map(|(_, r, _, _)| r)
         };
         if let Some(best) = best_racer {

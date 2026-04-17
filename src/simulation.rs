@@ -31,6 +31,7 @@ pub struct Racer {
     pub wall_hits: u32,       // Contador de impactos na parede (3 strikes = dead)
     pub wall_cooldown: f32,   // Tempo até registrar novo hit na parede
     pub last_waypoint: usize, // Último waypoint alcançado para cura
+    pub track_progress: f32,  // Progresso real ao longo da polilinha da pista (arc-length)
 }
 
 pub struct PainSynapse {
@@ -129,17 +130,17 @@ fn update_racers(
     for (e, r, t, _, _, _) in query.iter() {
         // Atualiza a Bandeira do Campeão Global se este piloto superou a marca de todos os tempos
         // Somado com 0.05 para evitar micro-atualizações visuais
-        if r.distance > race.global_best_distance + 0.05 {
-            race.global_best_distance = r.distance;
+        if r.track_progress > race.global_best_distance + 0.05 {
+            race.global_best_distance = r.track_progress;
             race.global_best_position = Some(t.translation);
         }
 
-        let score = if r.distance < 15.0 { 
-            r.distance * 10.0 - 10000.0 
-        } else { 
-            let avg_speed = r.distance / r.engine.current_time.max(0.1);
+        let score = if r.track_progress < 15.0 {
+            r.track_progress * 10.0 - 10000.0
+        } else {
+            let avg_speed = r.track_progress / r.engine.current_time.max(0.1);
             let lap_bonus = r.total_laps as f32 * 10000.0;
-            lap_bonus + (r.distance * 100.0) + (avg_speed * 50.0) + (r.hp * 2.0)
+            lap_bonus + (r.track_progress * 100.0) + (avg_speed * 50.0) + (r.hp * 2.0)
         };
         if score > best_score {
             best_score = score;
@@ -621,6 +622,12 @@ fn update_racers(
             let on_wall = world.get_voxel_at(transform.translation.x, transform.translation.z) == VoxelType::Wall;
             if !on_wall {
                 racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
+            }
+
+            // TRACK PROGRESS REAL (arc-length na polilinha) — imune a atalhos off-track
+            if !world.waypoints_world.is_empty() {
+                let lap_prog = world.get_track_progress(transform.translation.x, transform.translation.z);
+                racer.track_progress = lap_prog + (racer.total_laps as f32) * world.lap_distance;
             }
 
             // Punição Severa por Andar na Contramão
