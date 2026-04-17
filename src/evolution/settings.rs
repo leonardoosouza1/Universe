@@ -27,6 +27,9 @@ pub struct RaceSettings {
     pub last_gen_path: Vec<Vec3>,   // Traçado do melhor da última gen (refresca sempre)
     pub last_gen_net: f32,          // NET do melhor da última gen
     pub last_gen_was_grid: bool,    // true se o melhor nasceu na largada (elegível pra coroar)
+    pub is_validation_gen: bool,    // próxima gen roda env fixo (level 0); só valida DNA sem ruído
+    pub gens_until_validation: u32, // conta até próxima validation (default: cada 3 gens)
+    pub env_level: u8,              // nível curricular aplicado na gen atual (0..=3)
 }
 
 #[derive(Resource)]

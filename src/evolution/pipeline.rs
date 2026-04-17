@@ -9,6 +9,24 @@ use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 use super::spawn::spawn_swarm;
 
+/// Decide nível ambiental da próxima geração.
+/// Muta `gens_until_validation` e `is_validation_gen` de forma pura/testável.
+/// Retorna (level, is_validation_gen_flag).
+pub fn decide_next_env_level(
+    gens_until_validation: &mut u32,
+    champion_distance: f32,
+    lap_distance: f32,
+) -> (u8, bool) {
+    if *gens_until_validation <= 1 {
+        *gens_until_validation = 3;
+        (0, true)
+    } else {
+        *gens_until_validation -= 1;
+        let lvl = EnvironmentalState::level_for_champion(champion_distance, lap_distance);
+        (lvl, false)
+    }
+}
+
 pub(super) fn calc_fitness(r: &Racer) -> f32 {
     // ===================================================
     // FITNESS SIMPLIFICADO — sinal limpo para seleção.
@@ -217,11 +235,14 @@ pub(super) fn evolution_pipeline(
         if let Some(best) = best_racer {
             let this_gen_best_dist = net_prog(best);
 
-            // ELITISMO REAL: Só coroa se SUPEROU o progresso REAL na pista do campeão anterior
-            // champion_distance é separado de global_best_distance (que é visual)
-            let should_crown = this_gen_best_dist > race.champion_distance
+            // COROAÇÃO GATED POR VALIDATION GEN
+            // Só coroa em gens rodadas em env fixo (level 0) — evita lucky-env bias.
+            // Winner com 5 voltas sempre coroa (é prova robusta).
+            // best_weights None = primeiro DNA, coroa sempre pra bootstrap.
+            let is_validation = race.env_level == 0;
+            let should_crown = winner.is_some()
                 || race.best_weights.is_none()
-                || winner.is_some();
+                || (is_validation && this_gen_best_dist > race.champion_distance);
 
             if should_crown {
                 race.champion_distance = this_gen_best_dist; // Atualiza o limiar do campeão
@@ -291,11 +312,62 @@ pub(super) fn evolution_pipeline(
         let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })))).id();
         let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })))).id();
         race.world_entities = vec![road_e, grass_e, wall_e];
-        // Curriculum invertido: condições MILD até o campeão completar ao menos meia volta.
-        // Evita pressão ambiental antes da política básica existir.
-        let mild_mode = race.champion_distance < world_res.0.lap_distance * 0.5;
-        env.randomize(mild_mode);
+        // CURRICULUM LEVEL + VALIDATION GEN (ver decide_next_env_level)
+        let champ_dist = race.champion_distance;
+        let lap_dist = world_res.0.lap_distance;
+        let (next_level, is_val) = decide_next_env_level(
+            &mut race.gens_until_validation,
+            champ_dist,
+            lap_dist,
+        );
+        race.is_validation_gen = is_val;
+        race.env_level = next_level;
+        env.randomize_level(next_level);
         spawn_swarm(&mut commands, &mut meshes, &mut materials, &mut race, &world, &dev, &config);
         world_res.0 = world;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decide_next_env_level;
+
+    #[test]
+    fn validation_cycle_is_every_three_gens() {
+        let mut counter: u32 = 3;
+        let lap = 900.0;
+        // gen 1: counter 3 -> 2, level 1 (champion 0), not validation
+        let (lvl, val) = decide_next_env_level(&mut counter, 0.0, lap);
+        assert_eq!((lvl, val), (1, false));
+        assert_eq!(counter, 2);
+        // gen 2: counter 2 -> 1, not validation
+        let (_, val) = decide_next_env_level(&mut counter, 0.0, lap);
+        assert!(!val);
+        assert_eq!(counter, 1);
+        // gen 3: counter 1 -> triggers validation, reset to 3, level 0
+        let (lvl, val) = decide_next_env_level(&mut counter, 0.0, lap);
+        assert_eq!((lvl, val), (0, true));
+        assert_eq!(counter, 3);
+    }
+
+    #[test]
+    fn validation_level_is_always_zero() {
+        let mut counter: u32 = 1;
+        let (lvl, val) = decide_next_env_level(&mut counter, 2000.0, 900.0);
+        assert_eq!(lvl, 0);
+        assert!(val);
+    }
+
+    #[test]
+    fn non_validation_respects_champion_distance() {
+        let mut counter: u32 = 3;
+        let (lvl, _) = decide_next_env_level(&mut counter, 100.0, 900.0);
+        assert_eq!(lvl, 1); // < 0.5 lap
+        let mut counter: u32 = 3;
+        let (lvl, _) = decide_next_env_level(&mut counter, 700.0, 900.0);
+        assert_eq!(lvl, 2); // 0.5 .. 1.5 laps
+        let mut counter: u32 = 3;
+        let (lvl, _) = decide_next_env_level(&mut counter, 1500.0, 900.0);
+        assert_eq!(lvl, 3);
     }
 }

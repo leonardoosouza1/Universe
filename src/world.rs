@@ -324,7 +324,7 @@ impl VoxelWorld {
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
                 
                 let mut hit_voxel = VoxelType::Road;
-                let mut hit_dist = 150.0;
+                let mut hit_dist = 300.0;
                 
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
                 
@@ -356,8 +356,9 @@ impl VoxelWorld {
                 let mut hit = false;
                 let mut side = 0; // 0 = hit X wall, 1 = hit Z wall
                 
-                // Limite de alcance ~150 metros (75 blocos de 2m)
-                for _ in 0..75 {
+                // Alcance ~300m (100 blocos × 3m cell). Suficiente pro carro antecipar
+                // curvas longas e não "descobrir" a parede só quando está em cima dela.
+                for _ in 0..100 {
                     if side_dist_x < side_dist_y {
                         side_dist_x += delta_dist_x; map_x += step_x; side = 0;
                     } else {
@@ -383,7 +384,7 @@ impl VoxelWorld {
                     } else {
                         hit_dist = current_dist;
                     }
-                } else if dir_y < -0.001 && dist_to_ground <= 150.0 {
+                } else if dir_y < -0.001 && dist_to_ground <= 300.0 {
                     // Sem paredes, mas bateu no chão
                     hit_dist = dist_to_ground;
                     let hit_px = eye_pos.x + dir_x * hit_dist;
@@ -391,24 +392,25 @@ impl VoxelWorld {
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
                 }
                 
-                let depth_fade = (hit_dist / 150.0).clamp(0.0, 1.0);
-                
+                let depth_fade = (hit_dist / 300.0).clamp(0.0, 1.0);
+
                 // --- VISÃO ABSOLUTA ---
                 // Para que o modelo NUNCA confunda uma parede longe com a pista perto.
+                //
+                // TIER 1.3 FIX — log-compress na parede:
+                //   Saturação a 127 em qualquer hit < 300m cegava a rede (Retina_C=127 constante
+                //   = brake perpétuo via A4). Substituímos linear por sqrt(depth_fade/0.5),
+                //   efetivo: range dinâmico 127..40 em 0..150m, saturando em 37 além disso.
+                //   Dá diferenciação de 90 entre "encostando (0m)" e "razoavelmente próxima (75m)".
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
-                        // Parede DEVE gritar "luz" o mais forte possível (perigo)
-                        // Vai de 127 (perto) até 60 (longe) — Sempre Positivo.
-                        127.0 - (depth_fade * 67.0)
+                        let near_fade = (hit_dist / 150.0).clamp(0.0, 1.0);
+                        127.0 - (near_fade.sqrt() * 90.0)
                     },
                     VoxelType::Grass => {
-                        // Grama é neutra/ruim
-                        // Vai de 40 (perto) a 0 (longe)
                         40.0 - (depth_fade * 40.0)
                     },
                     VoxelType::Road => {
-                        // Pista grita "escuro" (Segurança)
-                        // Vai de -128 (perto) até -80 (longe).
                         -128.0 + (depth_fade * 48.0)
                     }
                 };

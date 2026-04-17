@@ -50,6 +50,9 @@ fn main() {
         last_gen_path: Vec::new(),
         last_gen_net: 0.0,
         last_gen_was_grid: false,
+        is_validation_gen: false,
+        gens_until_validation: 3,
+        env_level: 1,
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

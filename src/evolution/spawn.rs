@@ -15,39 +15,35 @@ use super::settings::{RaceSettings, DevSettings};
 fn build_priming_weights() -> Vec<f32> {
     let mut weights = vec![0.0f32; 128 * 64];
 
-    // A1: Wall à esquerda (indices 0..5) → vira à DIREITA (positivo)
+    // IMPORTANTE: a FÓVEA (índices 0..31) agora é SACÁDICA — pixel_i não mapeia
+    // pra um ângulo fixo do carro (gira com gaze_yaw). Priming direcional que assume
+    // "pixel 0 = esquerda" causaria o carro a ser ATRAÍDO pra parede quando a cabeça
+    // vira. SOLUÇÃO: priming direcional só na PERIFÉRICA (32..63, sempre forward-aligned).
+    //
+    // A1: Wall à esquerda (periférica 32..37) → vira à DIREITA (positivo)
     for i in 0..6 {
-        weights[1 * 128 + i] = 15.0;
         weights[1 * 128 + (32 + i)] = 15.0;
     }
-    // A2: Wall à direita (indices 26..31) → vira à ESQUERDA (negativo)
+    // A2: Wall à direita (periférica 58..63) → vira à ESQUERDA (negativo)
     for i in 26..32 {
-        weights[1 * 128 + i] = -15.0;
         weights[1 * 128 + (32 + i)] = -15.0;
     }
     // A3: Alinhamento com fluxo (canal 64) → acelera
     weights[0 * 128 + 64] = 5.0;
-    // A4: Parede no centro → corta throttle forte
+    // A4: Parede no centro (periférica 42..54) → corta throttle forte
     for i in 10..22 {
-        weights[0 * 128 + i] = -10.0;
         weights[0 * 128 + (32 + i)] = -10.0;
     }
-    // A4b/A4c REMOVIDOS: eram simétricos e cancelavam em zero quando parede
-    // centralizada. Substituídos pelo A16 (dark-center tracker, canais 90-93),
-    // que é um sinal UNIFICADO de "siga o escuro" — sem cancelamento possível.
-    // A4d (NOVO): Centro EXATO (14..18) → BRAKE forte, sem steer.
-    // Parede bem em frente significa "freia que eu quero pensar", não "tenta virar".
+    // A4d: Centro EXATO da periférica (46..50) → BRAKE forte, sem steer.
     for i in 14..18 {
-        weights[2 * 128 + i] = 14.0;
         weights[2 * 128 + (32 + i)] = 14.0;
     }
     // A5: Dor de grama (73) → reduz throttle
     weights[0 * 128 + 73] = -5.0;
     // A6: Comp-stress (125) → acelera
     weights[0 * 128 + 125] = 3.0;
-    // A7: Freio pânico estreito (14..18)
+    // A7: Freio pânico estreito (periférica 46..50)
     for i in 14..18 {
-        weights[2 * 128 + i] = 8.0;
         weights[2 * 128 + (32 + i)] = 8.0;
     }
     // A8: Deriva lateral (66) → contra-steer
@@ -103,14 +99,16 @@ fn build_priming_weights() -> Vec<f32> {
     weights[0 * 128 + 94] = -8.0;
     weights[0 * 128 + 95] = -8.0;
 
-    // A18 (NOVO): GAZE TRACKER (canal 98) — fóvea sacádica aponta pro caminho aberto.
+    // A18 (NOVO): GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
     // Valor = ângulo da fóvea normalizado [-127..+127] mapeando [-60°..+60°].
     // Positivo ⇒ pista aberta à direita ⇒ steer DIREITA. Negativo ⇒ LEFT.
-    // É um "ponteiro pro preto" já processado: direção única do setor mais aberto,
-    // suavizada com EMA pra parecer uma cabeça girando, não um tremor.
-    weights[1 * 128 + 98] = 14.0;  // steer direto segue o gaze
-    // Contraste: se gaze aponta MUITO pra lateral (±90%), corta throttle — curva fechada.
-    // Isso vira via quantize (se |gaze|=127, peso *valor explode) mas só bias indireto.
+    // Com MEMÓRIA: se visão fica toda branca (parede), gaze mantém última direção
+    // conhecida — carro continua virando pra onde viu pista pela última vez.
+    // Duplicado 4× (igual A16) pra dominar após quantize ternária: na gen 1 este vira
+    // o maior vetor de steering, rede aleatória não consegue anular.
+    for i in 98..102 {
+        weights[1 * 128 + i] = 14.0;
+    }
 
     weights
 }
@@ -184,6 +182,24 @@ pub fn spawn_swarm(
         }).collect()
     };
 
+    // Helper: BURST MUTATION por canal de entrada.
+    // Layout do fast layer: weights[out * 128 + in], 64 outputs × 128 inputs.
+    // Burst = escolhe um canal de entrada c e substitui TODAS as 64 conexões
+    // (para cada output) por valores aleatórios em [-1, 1]. Quebra neutralidade do BitNet:
+    // mutação pontual em layer ternário tem alta probabilidade de virar 0 após quantize —
+    // burst força variação coerente de um sensor inteiro.
+    let burst_mutate_input_channel = |weights: &mut Vec<f32>, rng: &mut rand::rngs::ThreadRng| {
+        let n_outputs = 64usize;
+        let n_inputs = 128usize;
+        let c = rng.random_range(0..n_inputs);
+        for out in 0..n_outputs {
+            let idx = out * n_inputs + c;
+            if idx < weights.len() {
+                weights[idx] = rng.random_range(-1.0..1.0);
+            }
+        }
+    };
+
     let pool_size = race.elite_pool.len();
 
     for i in 0..config.swarm_count {
@@ -245,9 +261,13 @@ pub fn spawn_swarm(
                 let parent_b = &race.elite_pool[p2];
 
                 let crossed_fast = crossover(&parent_a.fast_weights, &parent_b.fast_weights, &mut rng);
-                let mutated_fast: Vec<f32> = crossed_fast.into_iter().map(|w| {
+                let mut mutated_fast: Vec<f32> = crossed_fast.into_iter().map(|w| {
                     if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w }
                 }).collect();
+                // 20% dos slots crossover sofrem burst por canal de entrada (além da mutação pontual).
+                if rng.random_bool(0.20) {
+                    burst_mutate_input_channel(&mut mutated_fast, &mut rng);
+                }
                 engine.instinct_layer.quantize(&mutated_fast);
                 engine.instinct_layer.set_scale((parent_a.fast_scale + parent_b.fast_scale) * 0.5);
 
@@ -360,6 +380,7 @@ pub fn spawn_swarm(
                 gaze_yaw: 0.0,
                 max_progress: spawn_progress,
                 slow_time: 0.0,
+                race_time: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
