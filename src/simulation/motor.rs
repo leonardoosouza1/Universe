@@ -506,43 +506,25 @@ pub(super) fn update_racers(
         //      dispara reverse_timer de 1.5s. Durante a ré, shift vai para
         //      gear 0 e o pedal aplica torque de recuo. Visualmente: seta laranja.
         const SAFE_DIST: f32 = 6.0;      // folga mínima para throttle pleno
-        const REVERSE_TRIGGER_DIST: f32 = 2.5;
-        const REVERSE_MIN_DURATION: f32 = 3.0;  // tempo mínimo de ré antes de considerar sair
-        const REVERSE_MAX_DURATION: f32 = 5.0;  // cap duro (evita ré infinita)
-        const REVERSE_EXIT_CLEAR: f32 = 4.0;    // precisa afastar 4m pra soltar ré
-        const REVERSE_PEDAL: f32 = 0.5;
-        const POST_REVERSE_LOCKOUT: f32 = 1.5;  // pós-ré: 1.5s de throttle capado
+        const REVERSE_TRIGGER_DIST: f32 = 3.0;   // detecta antes (era 2.5)
+        const REVERSE_MIN_DURATION: f32 = 0.4;   // toque curto (era 3.0)
+        const REVERSE_MAX_DURATION: f32 = 1.5;   // cap duro (era 5.0)
+        const REVERSE_EXIT_CLEAR: f32 = 2.5;     // só precisa afastar 2.5m (era 4.0)
+        const REVERSE_PEDAL: f32 = 0.75;         // >0.5 garante stall recovery
+        const POST_REVERSE_LOCKOUT: f32 = 0.6;   // cooldown curto (era 1.5)
 
         let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 30.0);
         let safety_cap = (forward_wall_dist / SAFE_DIST).clamp(0.0, 1.0);
 
-        // (slow_input[31] já recebeu a mesma distância normalizada mais acima —
-        //  o raycast é barato e manter os dois call-sites evita reordenar o bloco.)
-
-        // Atualiza o timer da ré. reverse_timer agora conta SUBIDO (tempo dentro da ré)
-        // em vez de descendo, para poder gatilhar saída condicional.
-        let was_reversing = racer.reverse_timer > 0.0;
-        if was_reversing {
-            racer.reverse_timer += dt;
-            // Sair da ré só se: afastou o suficiente E passou o mínimo, OU estourou o máximo.
-            let cleared = forward_wall_dist > REVERSE_EXIT_CLEAR && racer.reverse_timer > REVERSE_MIN_DURATION;
-            let timeout = racer.reverse_timer > REVERSE_MAX_DURATION;
-            if cleared || timeout {
-                racer.reverse_timer = 0.0;
-                racer.post_reverse_lockout = POST_REVERSE_LOCKOUT;
-            }
-        } else {
-            let stuck_against_wall = forward_wall_dist < REVERSE_TRIGGER_DIST
-                && speed < 1.5
-                && racer.grace_ticks >= 600;
-            if stuck_against_wall {
-                racer.reverse_timer = 0.01; // >0 liga flag
-            }
-        }
-        let is_reversing = racer.reverse_timer > 0.0;
-
-        // Cooldown pós-ré decai em dt. Enquanto > 0, pedal fica capado em 30%.
-        racer.post_reverse_lockout = (racer.post_reverse_lockout - dt).max(0.0);
+        // --- SISTEMA DE RÉ DESATIVADO ---
+        // Removido: a ré virou muleta (carros ficavam em loop frente/ré).
+        // Agora: bateu = morre. Pressão seletiva máxima contra colisões.
+        // Mantemos as constantes/campos pra facilitar reabilitar no futuro se necessário.
+        let is_reversing = false;
+        let _ = (REVERSE_TRIGGER_DIST, REVERSE_MIN_DURATION, REVERSE_MAX_DURATION,
+                 REVERSE_EXIT_CLEAR, REVERSE_PEDAL, POST_REVERSE_LOCKOUT);
+        racer.reverse_timer = 0.0;
+        racer.post_reverse_lockout = 0.0;
 
         // (canal 89 já foi setado antes do execute_cycle, usando o estado do frame anterior)
 
@@ -557,7 +539,13 @@ pub(super) fn update_racers(
 
         // Fuga Espectral (Stigmergia) Removida - Agora a IA aprende pela rede e seleção natural
 
-        let final_steer_intent = (steer_intent + emerg_steer).clamp(-1.0, 1.0);
+        // Durante ré, força steer = 0 (backup reto) pra evitar rotacionar pra outra parede.
+        // A rede retoma controle quando a ré termina.
+        let final_steer_intent = if is_reversing {
+            0.0
+        } else {
+            (steer_intent + emerg_steer).clamp(-1.0, 1.0)
+        };
 
         // Marchas: Auto-shift inteligente baseado em RPM e velocidade
         let shift_up_intent = racer.engine.final_intent[3];
@@ -627,11 +615,18 @@ pub(super) fn update_racers(
         // A camada simbólica garante que brake só ativa com intenção explícita
 
         // --- DANO PROGRESSIVO MECÂNICO E TERMODINÂMICA DE ESTRESSE ---
-        physical_throttle *= racer.engine_power;
+        // LIMP MODE na ré: não multiplica por engine_power, garantindo torque suficiente
+        // pra descolar da parede mesmo com HP baixo (mantém piso mínimo 0.6x do pedal).
+        if !is_reversing {
+            physical_throttle *= racer.engine_power;
+        } else {
+            physical_throttle *= racer.engine_power.max(0.6);
+        }
 
         // Overlap penalty afrouxado: 30 → 5 HP/s. Permite trail-braking legítimo em curvas.
         // Ainda pune conflict severo, mas não mata em 3s como antes.
-        let conflict = final_pedal_intent > 0.4 && brake_intent > 0.4;
+        // Não aplicar durante ré (pedal real vem de REVERSE_PEDAL, não do neural).
+        let conflict = !is_reversing && final_pedal_intent > 0.4 && brake_intent > 0.4;
         if conflict {
             racer.hp -= dt * 5.0;
             gizmos.sphere(pos + Vec3::new(0.0, 1.5, 0.0), 0.3, Color::srgb(1.0, 0.5, 0.0));
@@ -818,19 +813,26 @@ pub(super) fn update_racers(
 
         if hit_wall && !racer.is_dead {
             racer.wall_time += dt;
-            if racer.wall_cooldown == 0.0 {
-                racer.wall_hits += 1;
-                racer.wall_cooldown = 1.0; // 1 segundo imunidade entre batidas
-                racer.hp -= 25.0; // Dano fixo
-            }
-
-            // 3 strikes e tá fora, ou perdeu HP todo
-            if racer.wall_hits >= 3 || racer.hp <= 0.0 {
+            // BATEU NO MURO = MORREU. Pressão seletiva máxima.
+            // Qualquer contato com parede depois do grace é letal.
+            // Durante o grace (10s), é "contato educacional": HP -50 e empurra mas não mata
+            // (dá chance das gens iniciais explorarem sem apagar todas no primeiro frame).
+            if racer.grace_ticks >= 600 {
                 racer.is_dead = true;
                 racer.hp = 0.0;
+                race.death_markers.push(pos);
                 if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
-            } else {
-                if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
+            } else if racer.wall_cooldown == 0.0 {
+                // Durante grace: dano pesado mas não instantâneo
+                racer.wall_hits += 1;
+                racer.wall_cooldown = 1.0;
+                racer.hp -= 50.0;
+                if racer.hp <= 0.0 {
+                    racer.is_dead = true;
+                    racer.hp = 0.0;
+                    race.death_markers.push(pos);
+                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                } else if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
                     let health_ratio = (racer.hp / 100.0).clamp(0.0, 1.0);
                     mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
                 }

@@ -9,6 +9,73 @@ use super::dna::{EliteDna, load_champion_dna};
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 
+/// Constrói o vetor de pesos do instinct_layer pré-semeado com os axiomas A1–A15.
+/// Usado tanto na geração 0 (sem pool/DNA) quanto periodicamente em gens seguintes
+/// para reinjetar instintos perdidos por deriva genética.
+fn build_priming_weights() -> Vec<f32> {
+    let mut weights = vec![0.0f32; 128 * 64];
+
+    // A1: Wall à esquerda (indices 0..5) → vira à DIREITA (positivo)
+    for i in 0..6 {
+        weights[1 * 128 + i] = 15.0;
+        weights[1 * 128 + (32 + i)] = 15.0;
+    }
+    // A2: Wall à direita (indices 26..31) → vira à ESQUERDA (negativo)
+    for i in 26..32 {
+        weights[1 * 128 + i] = -15.0;
+        weights[1 * 128 + (32 + i)] = -15.0;
+    }
+    // A3: Alinhamento com fluxo (canal 64) → acelera
+    weights[0 * 128 + 64] = 5.0;
+    // A4: Parede no centro → corta throttle suave
+    for i in 10..22 {
+        weights[0 * 128 + i] = -6.0;
+        weights[0 * 128 + (32 + i)] = -6.0;
+    }
+    // A4b: Centro-esquerda (10..16) → steer DIREITA
+    for i in 10..16 {
+        weights[1 * 128 + i] = 12.0;
+        weights[1 * 128 + (32 + i)] = 12.0;
+    }
+    // A4c: Centro-direita (16..22) → steer ESQUERDA
+    for i in 16..22 {
+        weights[1 * 128 + i] = -12.0;
+        weights[1 * 128 + (32 + i)] = -12.0;
+    }
+    // A5: Dor de grama (73) → reduz throttle
+    weights[0 * 128 + 73] = -5.0;
+    // A6: Comp-stress (125) → acelera
+    weights[0 * 128 + 125] = 3.0;
+    // A7: Freio pânico estreito (14..18)
+    for i in 14..18 {
+        weights[2 * 128 + i] = 8.0;
+        weights[2 * 128 + (32 + i)] = 8.0;
+    }
+    // A8: Deriva lateral (66) → contra-steer
+    weights[1 * 128 + 66] = -5.0;
+    // A9: Curvatura antecipada (78/79/80)
+    weights[1 * 128 + 78] = -6.0;
+    weights[1 * 128 + 79] = -10.0;
+    weights[1 * 128 + 80] = -4.0;
+    // A10: Lane offset (81) → centraliza
+    weights[1 * 128 + 81] = 4.0;
+    // A11: Urgência de colisão (82) → freia + corta motor
+    weights[2 * 128 + 82] = 10.0;
+    weights[0 * 128 + 82] = -6.0;
+    // A12: Fluxo óptico (83/84) → steer anti-aproximação
+    weights[1 * 128 + 83] = 5.0;
+    weights[1 * 128 + 84] = -5.0;
+    // A13: Memória de parede (85/86)
+    weights[1 * 128 + 85] = 8.0;
+    weights[1 * 128 + 86] = -8.0;
+    // A14: Slip angle (87) → contra-volante
+    weights[1 * 128 + 87] = 4.0;
+    // A15: Proximidade sustentada (88) → corta throttle
+    weights[0 * 128 + 88] = -7.0;
+
+    weights
+}
+
 pub fn spawn_swarm(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -83,10 +150,14 @@ pub fn spawn_swarm(
     for i in 0..config.swarm_count {
         let mut engine = crate::engine::SovereignEngine::new();
         if pool_size >= 2 {
-            // --- REPRODUÇÃO SEXUAL: Tournament + Crossover + Mutação ---
-            // Primeiros N slots (até 5): clones perfeitos do top-N (elitismo múltiplo).
-            // Restantes: torneio k=3 para escolher 2 pais, crossover uniforme, mutação.
+            // --- REPRODUÇÃO COM INSTINCT REFRESH ---
+            // Slot 0..elite_clones: clones exatos do top-N (elitismo).
+            // Slot elite_clones..elite_clones+refresh_slots: PRIMING PURO com pequena mutação.
+            //   → garante que os axiomas A1–A15 sejam REINJETADOS toda geração,
+            //     impedindo deriva genética de apagar instintos básicos.
+            // Restantes: tournament + crossover + mutação do pool.
             let elite_clones = pool_size.min(5);
+            let refresh_slots = 4; // ~25% do swarm em "fresh blood" com instintos
 
             if i < elite_clones {
                 let elite = &race.elite_pool[i];
@@ -96,6 +167,15 @@ pub fn spawn_swarm(
                 let exact_slow: Vec<f32> = elite.slow_weights.iter().map(|&w| w as f32).collect();
                 engine.slow_brain.layer.quantize(&exact_slow);
                 engine.slow_brain.layer.set_scale(elite.slow_scale);
+            } else if i < elite_clones + refresh_slots {
+                // PRIMING REFRESH: axiomas frescos + ruído leve para diversidade.
+                // Preserva instintos mas ainda permite exploração local.
+                let priming = build_priming_weights();
+                let jittered: Vec<f32> = priming.into_iter().map(|w| {
+                    if rng.random_bool(0.02) { rng.random_range(-1.0..1.0) } else { w }
+                }).collect();
+                engine.instinct_layer.quantize(&jittered);
+                // slow_brain fica zerado (estado neutro, evolução descobre uso)
             } else {
                 let p1 = tournament(&race.elite_pool, &mut rng);
                 let mut p2 = tournament(&race.elite_pool, &mut rng);
@@ -143,103 +223,10 @@ pub fn spawn_swarm(
                 }
             }
         } else {
-            // --- PRIMING GENÉTICO (A CONSCIÊNCIA INICIAL) ---
-            // Mar de ZEROS com axiomas ILUMINADOS.
-            // Antes: ruído uniforme [-1,1] + axiomas — quantize ternária produzia ±1 aleatório
-            // em 99% dos pesos, diluindo os axiomas. Agora axiomas dominam quantize isolados.
-            let mut weights = vec![0.0f32; 128 * 64];
-
-            // --- AXIOMATA DE SOBREVIVÊNCIA (magnitudes grandes p/ sobreviver quantize ternária) ---
-
-            // A1: Wall à esquerda (indices 0..5 horizon, 32..37 ground) → vira à DIREITA (positivo)
-            for i in 0..6 {
-                weights[1 * 128 + i] = 15.0;         // Grito de sobrevivência: foge da esquerda
-                weights[1 * 128 + (32 + i)] = 15.0;
-            }
-
-            // A2: Wall à direita (indices 26..31 horizon, 58..63 ground) → vira à ESQUERDA (negativo)
-            for i in 26..32 {
-                weights[1 * 128 + i] = -15.0;        // Grito de sobrevivência: foge da direita
-                weights[1 * 128 + (32 + i)] = -15.0;
-            }
-
-            // A3: Alinhamento com fluxo da pista (canal 64) → acelera
-            weights[0 * 128 + 64] = 5.0;
-
-            // A4: Parede no centro da retina → corta throttle (mais suave que antes).
-            for i in 10..22 {
-                weights[0 * 128 + i] = -6.0;
-                weights[0 * 128 + (32 + i)] = -6.0;
-            }
-
-            // A4b: Parede no centro-ESQUERDO (10..16) → steer DIREITA (positivo).
-            // Axioma de CURVA: antes de raspar, já começa a virar.
-            for i in 10..16 {
-                weights[1 * 128 + i] = 12.0;
-                weights[1 * 128 + (32 + i)] = 12.0;
-            }
-
-            // A4c: Parede no centro-DIREITO (16..22) → steer ESQUERDA (negativo).
-            for i in 16..22 {
-                weights[1 * 128 + i] = -12.0;
-                weights[1 * 128 + (32 + i)] = -12.0;
-            }
-
-            // A5: HP baixo ou DOR (canais 67 e 73) -> Reduz throttle severamente
-            weights[0 * 128 + 73] = -5.0;
-
-            // A6: Comp-stress alto (canal 125) → throttle (ataca quem está na frente)
-            weights[0 * 128 + 125] = 3.0;
-
-            // A7: FRENAGEM PÂNICO — só no centro ESTREITO (14..18) e magnitude reduzida.
-            // Antes 20.0 em 12..20 travava o carro antes de conseguir virar na curva.
-            for i in 14..18 {
-                weights[2 * 128 + i] = 8.0;
-                weights[2 * 128 + (32 + i)] = 8.0;
-            }
-
-            // A8: Correção de deriva lateral (canal 66 lateral_vel) → steer oposto.
-            // Se derrapa pra direita (+), vira pra esquerda (-) e vice-versa.
-            weights[1 * 128 + 66] = -5.0;
-
-            // A9: ANTECIPAÇÃO DE CURVA (canais 78/79/80 = curvatura a 10m/25m/50m).
-            // Canal positivo = pista curva à ESQUERDA → steer NEGATIVO (esquerda).
-            // 25m (canal 79) é o horizonte de ~1.5s — peso maior (sinal principal).
-            weights[1 * 128 + 78] = -6.0;  // curvatura próxima (10m)
-            weights[1 * 128 + 79] = -10.0; // curvatura ideal (25m) — main driver
-            weights[1 * 128 + 80] = -4.0;  // curvatura distante (50m) — leve pré-ajuste
-
-            // A10: LANE OFFSET (canal 81) → empurra pro centro.
-            // Positivo = encostei à esquerda → steer DIREITA (positivo).
-            weights[1 * 128 + 81] = 4.0;
-
-            // A11: URGÊNCIA DE COLISÃO (canal 82) → freia.
-            // Alto = TTC iminente → freio forte.
-            weights[2 * 128 + 82] = 10.0;
-            // E simultaneamente corta throttle quando urgência alta.
-            weights[0 * 128 + 82] = -6.0;
-
-            // A12: FLUXO ÓPTICO (canais 83/84) → steer anti-aproximação.
-            // Motion forte à esquerda (83+) = coisa se aproximando à esquerda → steer DIREITA.
-            // Simétrico à direita → steer ESQUERDA.
-            weights[1 * 128 + 83] = 5.0;
-            weights[1 * 128 + 84] = -5.0;
-
-            // A13: MEMÓRIA DE PAREDE (EMA canais 85/86).
-            // 85 alto = parede sustentada à ESQUERDA → steer DIREITA (positivo).
-            // 86 alto = parede sustentada à DIREITA → steer ESQUERDA (negativo).
-            weights[1 * 128 + 85] = 8.0;
-            weights[1 * 128 + 86] = -8.0;
-
-            // A14: SLIP ANGLE (canal 87) → contra-steer.
-            // Derrapa pra direita (+) → vira pra direita pra alinhar (contra-volante positivo).
-            // Weight positivo: slip +87 → steer + (segue pro lado do drift, alinhando o chassi).
-            weights[1 * 128 + 87] = 4.0;
-
-            // A15: PROXIMIDADE SUSTENTADA (canal 88) → corta throttle.
-            // Tô raspando há tempo demais: alivia acelerador pra IA recuperar controle.
-            weights[0 * 128 + 88] = -7.0;
-
+            // --- PRIMING GENÉTICO (GERAÇÃO 0, SEM POOL/DNA) ---
+            // Axiomas A1–A15 definidos em build_priming_weights(). Magnitudes grandes
+            // pra sobreviver quantize ternária (bits ±1).
+            let weights = build_priming_weights();
             engine.instinct_layer.quantize(&weights);
         }
 

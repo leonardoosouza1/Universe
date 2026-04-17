@@ -26,10 +26,14 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
     let prog = r.track_progress.max(0.0);
     let lap_bonus = r.total_laps as f32 * 50000.0;
     let joy = r.joy_integral * 1.0;  // Desempate fino
-    let wall_penalty = r.wall_time * 50.0;
+    // Wall penalty 50 → 200: raspar parede agora custa MUITO mais progresso equivalente.
+    // 1s de wall_time = 200pts = 2m de track_progress deletados.
+    let wall_penalty = r.wall_time * 200.0;
+    // Wall hits: cada contato durante grace custa 500pts adicionais (fora do grace morre direto).
+    let hit_penalty = r.wall_hits as f32 * 500.0;
     let death_penalty = if r.is_dead { (100.0 - prog).max(0.0) * 10.0 } else { 0.0 };
 
-    lap_bonus + prog * 100.0 + joy - wall_penalty - death_penalty
+    lap_bonus + prog * 100.0 + joy - wall_penalty - hit_penalty - death_penalty
 }
 
 pub(super) fn evolution_pipeline(
