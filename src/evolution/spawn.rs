@@ -176,16 +176,18 @@ pub fn spawn_swarm(
                 }
             }
         } else if pool_size >= 2 {
-            // --- REPRODUÇÃO COM INSTINCT REFRESH ---
-            // Slot 0: champion (já tratado acima)
-            // Slot 1-2: elite clones (genes da gen passada) — GRID
-            // Slot 3-4: PRIMING FRESH — GRID (garante reflexo pristino na largada)
-            // Slot 5-8: PRIMING FRESH — distributed
-            // Slot 9+: tournament crossover — distributed
-            // Antes: slots 1-4 eram TODOS elite clones → nenhum grid-car tinha reflexo fresco.
-            // Champion degradado + elites degradados = ninguém reagia à parede no start.
-            let elite_clones = pool_size.min(2);
-            let refresh_slots = 6;
+            // --- REPRODUÇÃO DIVERSIFICADA NO GRID (30 slots de largada) ---
+            // Gargalo anterior: só 5 grid spawns × 2 elite clones = 2 DNAs testados
+            // da largada por gen. DNA de 935m ficava na população distribuída sem
+            // nunca ser validado em "start from zero". Agora espalhamos o pool
+            // inteiro pelos 30 slots grid:
+            //   Slot 0:      CHAMPION (já tratado acima)
+            //   Slot 1-10:   top-10 elite clones (cada elite testado no grid)
+            //   Slot 11-20:  PRIMING REFRESH (instintos frescos na largada)
+            //   Slot 21-29:  tournament crossover (filhos diversos no grid)
+            //   Slot 30+:    tournament crossover (distributed, cobertura de pista)
+            let elite_clones = pool_size.min(10);
+            let refresh_slots = 10;
             let elite_range_end = 1 + elite_clones; // [1, 1+elite_clones)
 
             if i >= 1 && i < elite_range_end {
@@ -201,7 +203,7 @@ pub fn spawn_swarm(
                 // Preserva instintos mas ainda permite exploração local.
                 let priming = build_priming_weights();
                 let jittered: Vec<f32> = priming.into_iter().map(|w| {
-                    if rng.random_bool(0.02) { rng.random_range(-1.0..1.0) } else { w }
+                    if rng.random_bool(0.005) { rng.random_range(-1.0..1.0) } else { w }
                 }).collect();
                 engine.instinct_layer.quantize(&jittered);
                 // slow_brain fica zerado (estado neutro, evolução descobre uso)
@@ -263,18 +265,22 @@ pub fn spawn_swarm(
         let racer_mat = materials.add(StandardMaterial { base_color: color, emissive: LinearRgba::from(color) * 4.0, perceptual_roughness: 0.1, metallic: 0.9, ..default() });
 
         // --- SPAWN DISTRIBUÍDO AO LONGO DA PISTA (Andrychowicz et al, 2017) ---
-        // Carros 0..4 (champion + elites) começam na largada — preserva baseline.
-        // Carros 5+ spawnam em pontos espalhados pela pista (25%, 50%, 75%, ...).
+        // Carros 0..29 (champion + 10 elites + 10 priming + 9 crossover) começam na
+        // largada — 30 tentativas independentes do DNA bom, o suficiente pra que pelo
+        // menos um sobreviva à largada e prove skill transferível.
+        // Carros 30+ spawnam em pontos espalhados pela pista (coverage).
         // Fitness usa NET progress (track_progress - spawn_progress), então carros
         // que nasceram na curva e sobreviveram 30m PROVARAM habilidade de curva.
         // Isso quebra o platô deceptivo de "só reta dá fitness alto".
-        const GRID_SPAWNS: usize = 5;
+        const GRID_SPAWNS: usize = 30;
         let (spawn_pos, spawn_rot, spawn_progress) = if i < GRID_SPAWNS {
-            // Grid tradicional na largada
+            // Grid tradicional na largada (grade 2 colunas × 15 fileiras).
+            // Mantém a largura original (~6m) pra caber na pista; ocupa mais profundidade
+            // (15 × 6m = 90m de grid atrás da largada — cabe numa reta de Interlagos).
             let row = i / 2;
             let col = i % 2;
             let p = world.start_pos
-                - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 8.0)
+                - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 6.0)
                 + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
             (p, Quat::from_rotation_y(-start_angle), 0.0)
         } else {

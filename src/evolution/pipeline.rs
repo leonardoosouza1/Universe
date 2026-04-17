@@ -55,9 +55,13 @@ pub(super) fn evolution_pipeline(
     env.tick(dt);
     if query.is_empty() { return; }
     let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 5);
-    let all_dead = query.iter().all(|(_, r, _, _)| r.is_dead);
+    // REMOVIDO: `all_dead` como condição de fim de geração.
+    // Motivo: carros que NÃO morreram precisam de tempo pra acumular voltas/distância.
+    // Agora a geração só encerra por: vencedor (5 voltas), timeout configurável, reset manual.
+    // Carros mortos permanecem ocultos (Visibility::Hidden) sem custo de física/render.
+    let timeout_reached = env.generation_time >= config.generation_timeout_s;
 
-    if winner.is_some() || all_dead || race.should_reset {
+    if winner.is_some() || timeout_reached || race.should_reset {
         // Rank global por fitness — reutilizado pelo pool elite + relatório.
         let mut sorted: Vec<_> = query.iter().collect();
         sorted.sort_by(|a, b| {
@@ -66,9 +70,12 @@ pub(super) fn evolution_pipeline(
             score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // --- POOL ELITE (top-5) para tournament na próxima geração ---
+        // --- POOL ELITE (top-10) para tournament na próxima geração ---
+        // Expandido de 5 → 10: dobra diversidade genética. Gargalo anterior era
+        // que o DNA bom (carros distribuídos a 935m) só estava em 5 slots e
+        // raramente migrava pro grid (5 grid spawns × 2 elite clones = 2 testes/gen).
         race.elite_pool.clear();
-        for (_, r, _, _) in sorted.iter().take(5) {
+        for (_, r, _, _) in sorted.iter().take(10) {
             race.elite_pool.push(EliteDna {
                 fast_weights: r.engine.instinct_layer.weights.clone(),
                 fast_scale: r.engine.instinct_layer.weight_scale,
@@ -81,7 +88,7 @@ pub(super) fn evolution_pipeline(
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
         if let Some(mut file) = open_report_log() {
             use std::io::Write;
-            let reason = if winner.is_some() { "Vencedor Encontrado" } else if all_dead { "Extinção (Colisão)" } else { "Tempo Esgotado" };
+            let reason = if winner.is_some() { "Vencedor Encontrado" } else if timeout_reached { "Timeout Atingido" } else { "Reset Manual" };
             let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {} | Duração: {:.1}s", race.generation, reason, env.generation_time);
             let _ = writeln!(file, "**Ambiente:** Asfalto {:.0}°C | Chuva: {:.0}% | Vento: ({:.1}, {:.1}) m/s | Hora: {:.1}h | μ_base: 1.3 × grip_env: {:.2}",
                 env.asphalt_temp, env.weather_wetness * 100.0, env.wind.x, env.wind.z, env.time_of_day, env.combined_grip_factor());

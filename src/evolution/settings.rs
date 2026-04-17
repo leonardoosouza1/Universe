@@ -40,8 +40,10 @@ pub struct DevSettings {
 impl Default for DevSettings {
     fn default() -> Self {
         Self {
-            mutation_rate: 0.04,   // Era 0.15 (1228 pesos randomizados/gen = destruia aprendizado).
-                                   // Agora ~328/gen no gen 0, decai para ~40/gen após 50 gens.
+            mutation_rate: 0.015,  // v1: 0.15 destruia aprendizado. v2: 0.04 ainda erodia DNA
+                                   // — usuário observou gen 2 com maioria batendo na parede.
+                                   // v3 (agora): 0.015 → ~123 pesos randomizados/gen no gen 1,
+                                   // decai pra ~40/gen após 40 gens. DNA preservado em 98.5%.
             pain_sensitivity: 1.0,
             wave_amplitude: 70.0,
             flow_influence: 0.5,

@@ -46,7 +46,15 @@ pub struct UniverseConfig {
     pub swarm_count: usize,
     /// Multiplicador de velocidade de simulação (1.0 = tempo real, 10.0 = 10x mais rápido)
     pub time_scale: f32,
+    /// Duração máxima de cada geração em segundos de simulação.
+    /// A geração encerra quando: alguém completa 5 voltas, OU este timeout é atingido.
+    /// Carros mortos permanecem na cena (ocultos) mas não encerram a gen — os vivos
+    /// continuam acumulando distância até o tempo acabar.
+    #[serde(default = "default_generation_timeout_s")]
+    pub generation_timeout_s: f32,
 }
+
+fn default_generation_timeout_s() -> f32 { 120.0 }
 
 impl Default for UniverseConfig {
     fn default() -> Self {
@@ -69,6 +77,7 @@ impl Default for UniverseConfig {
             selected_track_index: 0,
             swarm_count: 50,
             time_scale: 3.0,
+            generation_timeout_s: 120.0,
         }
     }
 }
