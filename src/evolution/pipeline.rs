@@ -279,12 +279,11 @@ pub(super) fn evolution_pipeline(
         race.generation += 1; race.should_reset = false; race.hard_reset = false; race.selected_racer = None;
 
         // --- CURRICULUM ADAPTATIVO DE LARGURA ---
-        // Pista começa LARGA (base + 8m) e estreita conforme o campeão completa voltas reais.
-        // champion_laps ≈ champion_distance / lap_distance (usa último world conhecido como ref).
-        // Cada volta completada reduz o bônus em 2m até chegar na base configurada.
+        // Pista começa um pouco mais larga (base + 4m) e estreita rápido com voltas do campeão.
+        // Cada volta completada reduz o bônus em 2m — piso (base) atingido em 2 voltas reais.
         let base_width = config.current_track().track_width;
         let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
-        let width_bonus = (8.0 - champion_laps * 2.0).max(0.0);
+        let width_bonus = (4.0 - champion_laps * 2.0).max(0.0);
         let effective_width = base_width + width_bonus;
         let world = VoxelWorld::new(race.seed, effective_width);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();

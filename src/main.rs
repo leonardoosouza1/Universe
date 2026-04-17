@@ -13,8 +13,8 @@ fn main() {
     let initial_track = config.current_track();
     let initial_seed = initial_track.seed;
     // Gen 1 começa com o MESMO bônus de largura que o pipeline aplica a gen 2+
-    // (champion_distance = 0 → width_bonus = 8m). Evita o salto visual gen 1 → gen 2.
-    let initial_width = initial_track.track_width + 8.0;
+    // (champion_distance = 0 → width_bonus = 4m, novo valor após ajuste do currículo).
+    let initial_width = initial_track.track_width + 4.0;
     
     let mut app = App::new();
     
@@ -108,8 +108,8 @@ fn setup_scene(
     let current_track = config.current_track();
     
     // Atualizar o mundo voxel com a seed do track selecionado
-    // Mesmo bônus de +8m que gen 2+ usa quando champion_distance == 0.
-    let world = VoxelWorld::new(current_track.seed, current_track.track_width + 8.0);
+    // Mesmo bônus de +4m que gen 2+ usa quando champion_distance == 0.
+    let world = VoxelWorld::new(current_track.seed, current_track.track_width + 4.0);
     world_res.0 = world;
     
     // Atualizar RaceSettings
