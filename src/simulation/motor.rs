@@ -335,6 +335,25 @@ pub(super) fn update_racers(
         sensory_wave[76] = ((dist_l / 15.0) * 127.0) as i8;
         sensory_wave[77] = ((dist_r / 15.0) * 127.0) as i8;
 
+        // --- WHISKERS DIAGONAIS (canais 94-97) — visão de canto de L ---
+        // Em curva de 90° fechada a retina vê "aberto" na direção diagonal (corte da parede
+        // externa), mas os raycasts a 90° puro não pegam a parede interna aproximando.
+        // Whiskers a ±30° e ±60° do heading cobrem esse ponto cego. Sinal invertido:
+        // 127 = parede encostando, 0 = 10m+ livre. Range curto (10m) pra sinal forte
+        // sobreviver quantize ternária e disparar reflexo imediato.
+        const WHISKER_RANGE: f32 = 10.0;
+        let ang30 = std::f32::consts::FRAC_PI_6;   // 30°
+        let ang60 = std::f32::consts::FRAC_PI_3;   // 60°
+        let d_fl30 = world.raycast(pos.x, pos.z, racer.phase + ang30, WHISKER_RANGE);
+        let d_fr30 = world.raycast(pos.x, pos.z, racer.phase - ang30, WHISKER_RANGE);
+        let d_fl60 = world.raycast(pos.x, pos.z, racer.phase + ang60, WHISKER_RANGE);
+        let d_fr60 = world.raycast(pos.x, pos.z, racer.phase - ang60, WHISKER_RANGE);
+        let invert = |d: f32| -> i8 { ((1.0 - (d / WHISKER_RANGE).clamp(0.0, 1.0)) * 127.0) as i8  };
+        sensory_wave[94] = invert(d_fl30);
+        sensory_wave[95] = invert(d_fr30);
+        sensory_wave[96] = invert(d_fl60);
+        sensory_wave[97] = invert(d_fr60);
+
         // --- CURVATURA ANTECIPADA (LOOKAHEAD DE PISTA) ---
         // Amostra o flow field à frente a 3 distâncias e mede o desvio angular
         // em relação ao heading atual. Positivo = pista curva à ESQUERDA;
@@ -858,18 +877,17 @@ pub(super) fn update_racers(
             }
 
             // --- ANTI-PLATEAU / ANTI-DONUT ---
-            // Se o carro está vivo e se movendo, mas track_progress NÃO avança,
-            // está fazendo círculos/gaming. Dreno severo de HP após grace.
-            // Regra: a cada 3m de progresso REAL, reseta o timer.
-            // Passar 5s sem ganhar 3m → drena 20HP/s (mata em ~5s de loop).
+            // Passar 10s sem ganhar 3m → drena 10HP/s (morte em ~10s de loop).
+            // Afrouxado pra pistas estreitas: carro precisa de tempo pra manobrar em curva fechada,
+            // e 5s/20HP/s antes matava qualquer um que parasse pra pensar numa L de 90°.
             if racer.track_progress > racer.progress_checkpoint + 3.0 {
                 racer.progress_checkpoint = racer.track_progress;
                 racer.progress_stall = 0.0;
             } else {
                 racer.progress_stall += dt;
             }
-            if !in_grace && !is_reversing && racer.progress_stall > 5.0 {
-                racer.hp -= 20.0 * dt;
+            if !in_grace && !is_reversing && racer.progress_stall > 10.0 {
+                racer.hp -= 10.0 * dt;
             }
 
             // Punição Severa por Andar na Contramão — mas não durante manobra de ré de emergência.
@@ -939,21 +957,22 @@ pub(super) fn update_racers(
 
         if hit_wall && !racer.is_dead {
             racer.wall_time += dt;
-            // BATEU NO MURO = MORREU. Pressão seletiva máxima.
-            // Qualquer contato com parede depois do grace é letal.
-            // Durante o grace (10s), é "contato educacional": HP -50 e empurra mas não mata
-            // (dá chance das gens iniciais explorarem sem apagar todas no primeiro frame).
-            if racer.grace_ticks >= 600 {
+            // PAREDE = DANO PESADO MAS NÃO INSTA-MORTE. -40 HP por toque + 1.5s cooldown.
+            // Com checkpoint (+25 HP a cada 50m), o carro aguenta 2-3 toques enquanto aprende.
+            // PINADO: se wall_time acumulado > 2.0s (sustentado contra parede), morre direto —
+            // senão carros batidos ficariam vivos minutos na parede sem acumular dano suficiente.
+            let pinned = racer.grace_ticks >= 600 && racer.wall_time > 2.0;
+            if pinned {
                 racer.is_dead = true;
                 racer.hp = 0.0;
                 race.death_markers.push(pos);
                 if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 commands.entity(entity).insert(Visibility::Hidden);
             } else if racer.wall_cooldown == 0.0 {
-                // Durante grace: dano pesado mas não instantâneo
                 racer.wall_hits += 1;
-                racer.wall_cooldown = 1.0;
-                racer.hp -= 50.0;
+                racer.wall_cooldown = 1.5;
+                let dmg = if racer.grace_ticks >= 600 { 40.0 } else { 25.0 };
+                racer.hp -= dmg;
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     racer.hp = 0.0;
@@ -965,6 +984,9 @@ pub(super) fn update_racers(
                     mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
                 }
             }
+        } else {
+            // Saiu da parede — wall_time decai lentamente pra permitir "toques" não-pinados.
+            racer.wall_time = (racer.wall_time - dt * 0.3).max(0.0);
         }
 
         // --- CHECKPOINT RECOVERY ---

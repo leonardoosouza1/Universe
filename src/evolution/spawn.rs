@@ -82,6 +82,27 @@ fn build_priming_weights() -> Vec<f32> {
         weights[1 * 128 + i] = 15.0;
     }
 
+    // A17 (NOVO): WHISKERS DIAGONAIS (canais 94-97) — reflexo de curva fechada.
+    //   94 = forward-left 30°  | 95 = forward-right 30°
+    //   96 = forward-left 60°  | 97 = forward-right 60°
+    //  Valor 127 = parede encostando naquele ângulo.
+    //  - Parede diagonal à ESQUERDA (94, 96) → steer DIREITA (positivo) + BRAKE.
+    //  - Parede diagonal à DIREITA  (95, 97) → steer ESQUERDA (negativo) + BRAKE.
+    //  Magnitudes altas (12-18) pra sobreviver quantize e ganhar peso contra A16 quando
+    //  a retina vê "aberto na diagonal" mas a parede está fechando.
+    weights[1 * 128 + 94] = 18.0;   // FL 30° → steer RIGHT forte
+    weights[1 * 128 + 96] = 14.0;   // FL 60° → steer RIGHT moderado
+    weights[1 * 128 + 95] = -18.0;  // FR 30° → steer LEFT forte
+    weights[1 * 128 + 97] = -14.0;  // FR 60° → steer LEFT moderado
+    // BRAKE em qualquer whisker próximo (todos os 4 → saída 2 = brake)
+    weights[2 * 128 + 94] = 10.0;
+    weights[2 * 128 + 95] = 10.0;
+    weights[2 * 128 + 96] = 8.0;
+    weights[2 * 128 + 97] = 8.0;
+    // Corta throttle também (saída 0 = accel)
+    weights[0 * 128 + 94] = -8.0;
+    weights[0 * 128 + 95] = -8.0;
+
     weights
 }
 
