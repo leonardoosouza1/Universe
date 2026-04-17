@@ -123,23 +123,28 @@ fn setup_scene(
     let world = &world_res.0;
     let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
     
-    commands.spawn((
+    // Registra os IDs em race.world_entities para que o evolution_pipeline possa
+    // despawnar estas 3 meshes no fim da geração. Sem isso, cada reset criaria
+    // uma pista NOVA sobreposta à anterior (efeito "duas pistas").
+    let road_e = commands.spawn((
         Mesh3d(meshes.add(r_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })),
         SimulationEntity,
-    ));
+    )).id();
 
-    commands.spawn((
+    let grass_e = commands.spawn((
         Mesh3d(meshes.add(g_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })),
         SimulationEntity,
-    ));
-    
-    commands.spawn((
+    )).id();
+
+    let wall_e = commands.spawn((
         Mesh3d(meshes.add(w_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })),
         SimulationEntity,
-    ));
+    )).id();
+
+    race.world_entities = vec![road_e, grass_e, wall_e];
 
     spawn_swarm(&mut commands, &mut meshes, &mut materials, &mut race, world, &dev, &config);
 }

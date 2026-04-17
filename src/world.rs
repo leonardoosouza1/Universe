@@ -412,14 +412,47 @@ impl Default for VoxelWorld {
         Self { 
             size: 0, 
             grid: Vec::new(), 
-            flow: Vec::new(), 
-            height_map: Vec::new(), 
-            banking: Vec::new(), 
-            cell_size: 0.0, 
-            start_pos: Vec3::ZERO, 
+            flow: Vec::new(),
+            height_map: Vec::new(),
+            banking: Vec::new(),
+            cell_size: 0.0,
+            start_pos: Vec3::ZERO,
             lap_distance: 0.0,
             waypoints_world: Vec::new(),
             waypoint_arcs: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ref_world() -> VoxelWorld {
+        VoxelWorld::new(42, 10.0)
+    }
+
+    #[test]
+    fn track_progress_never_negative() {
+        let w = ref_world();
+        // Progresso em coordenadas arbitrárias, incluindo pontos aleatórios, nunca deve ser < 0.
+        // (Cláusula do bug de wrap: valores atrás da largada devem dar 0, não lap_distance).
+        for &(x, z) in &[(0.0, 0.0), (-500.0, -500.0), (1000.0, 1000.0), (50.0, -100.0)] {
+            assert!(w.get_track_progress(x, z) >= 0.0, "progress < 0 em ({}, {})", x, z);
+        }
+    }
+
+    #[test]
+    fn lap_distance_is_positive() {
+        let w = ref_world();
+        assert!(w.lap_distance > 0.0, "lap_distance deve ser positivo para pista real");
+    }
+
+    #[test]
+    fn track_progress_near_start_is_small() {
+        let w = ref_world();
+        // Na própria largada, progresso deve ser ~0 (até 2m de tolerância pela quantização do grid).
+        let p = w.get_track_progress(w.start_pos.x, w.start_pos.z);
+        assert!(p < 2.0, "progresso na largada = {}, esperado ~0", p);
     }
 }

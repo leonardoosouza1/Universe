@@ -75,3 +75,45 @@ impl BitLinear {
         self.weight_scale = scale;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quantize_collapses_to_ternary() {
+        let mut layer = BitLinear::new(4, 2);
+        let full = vec![2.0, -0.5, 0.1, -2.0,    0.01, 1.5, -1.2, 0.0];
+        layer.quantize(&full);
+        for &w in &layer.weights {
+            assert!(w == -1 || w == 0 || w == 1, "weight {} not ternary", w);
+        }
+        // abs_mean = (2+0.5+0.1+2+0.01+1.5+1.2+0)/8 = 0.9
+        assert!((layer.weight_scale - 0.91375).abs() < 1e-4);
+    }
+
+    #[test]
+    fn forward_identity_single_weight() {
+        // Single-input, single-output: output = input * scale / 127
+        let mut layer = BitLinear::new(1, 1);
+        layer.weights[0] = 1;
+        layer.weight_scale = 1.0;
+        let out = layer.forward(&[127]);
+        assert!((out[0] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn forward_zero_weight_gives_zero() {
+        let layer = BitLinear::new(4, 2);
+        let out = layer.forward(&[127, 127, -127, 50]);
+        assert!(out.iter().all(|&v| v.abs() < 1e-6));
+    }
+
+    #[test]
+    fn myelinate_increases_scale() {
+        let mut layer = BitLinear::new(2, 2);
+        layer.weight_scale = 1.0;
+        layer.myelinate(1.0);
+        assert!(layer.weight_scale > 1.0);
+    }
+}
