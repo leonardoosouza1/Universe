@@ -32,6 +32,12 @@ pub struct Racer {
     pub track_progress: f32,  // Progresso real ao longo da polilinha da pista (arc-length)
     pub grace_ticks: u32,     // Contador de frames desde spawn; imune a time_scale (grace real de ~10s)
     pub reverse_timer: f32,   // >0 enquanto em manobra de ré de emergência; decrementa com dt
+    pub progress_checkpoint: f32, // Último track_progress que marcou avanço real (+3m)
+    pub progress_stall: f32,      // Segundos acumulados SEM ganhar 3m de pista (anti-donut)
+    pub wall_ema_l: f32,          // EMA da distância à parede esquerda (decay ~1s) — sensação persistente
+    pub wall_ema_r: f32,          // EMA da distância à parede direita
+    pub proximity_sustain: f32,   // Segundos contínuos raspando alguma lateral (alerta sustentado)
+    pub post_reverse_lockout: f32, // Cooldown pós-ré com throttle capado (evita "ré-acelera-bate")
 }
 
 pub struct PainSynapse {

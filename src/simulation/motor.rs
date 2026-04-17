@@ -116,6 +116,24 @@ pub(super) fn update_racers(
 
         let retina_binocular = world.render_binocular_retina(pos + Vec3::new(0.0, 0.4, 0.0), forward, right);
         for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
+
+        // --- FLUXO ÓPTICO TEMPORAL (delta entre frames) ---
+        // Mede variação entre retina atual e anterior, por metade. Sinal de "coisa
+        // aproximando". Canais 83 (esquerda) e 84 (direita).
+        let mut motion_left: i32 = 0;
+        let mut motion_right: i32 = 0;
+        for i in 0..16 {
+            motion_left += (retina_binocular[i] as i32 - racer.visual_cortex[i] as i32).abs();
+            motion_left += (retina_binocular[32 + i] as i32 - racer.visual_cortex[32 + i] as i32).abs();
+        }
+        for i in 16..32 {
+            motion_right += (retina_binocular[i] as i32 - racer.visual_cortex[i] as i32).abs();
+            motion_right += (retina_binocular[32 + i] as i32 - racer.visual_cortex[32 + i] as i32).abs();
+        }
+        // 32 pixels × max delta 255 ≈ 8160. Normaliza para [0,127].
+        sensory_wave[83] = ((motion_left / 64).min(127)) as i8;
+        sensory_wave[84] = ((motion_right / 64).min(127)) as i8;
+
         racer.visual_cortex = retina_binocular;
 
         // --- CAOS VISUAL (Medo de Obstáculos) ---
@@ -247,6 +265,70 @@ pub(super) fn update_racers(
         let dist_r = world.raycast(pos.x, pos.z, right_angle, 15.0);
         sensory_wave[76] = ((dist_l / 15.0) * 127.0) as i8;
         sensory_wave[77] = ((dist_r / 15.0) * 127.0) as i8;
+
+        // --- CURVATURA ANTECIPADA (LOOKAHEAD DE PISTA) ---
+        // Amostra o flow field à frente a 3 distâncias e mede o desvio angular
+        // em relação ao heading atual. Positivo = pista curva à ESQUERDA;
+        // negativo = curva à DIREITA. É o "GPS interno" dos próximos ~2s.
+        let forward_2d = Vec2::new(forward.x, forward.z);
+        for (slot, look_dist) in [(78usize, 10.0_f32), (79, 25.0), (80, 50.0)] {
+            let sample = pos + forward * look_dist;
+            let flow_ahead = world.get_flow_at(sample.x, sample.z);
+            // cross-z (2D perp dot): forward × flow_ahead
+            let cross = forward_2d.x * flow_ahead.y - forward_2d.y * flow_ahead.x;
+            sensory_wave[slot] = (cross * 127.0).clamp(-127.0, 127.0) as i8;
+        }
+
+        // Canal 81: LANE OFFSET — assimetria lateral pra posição na pista [-1..+1].
+        // Positivo = mais espaço à direita → estou à ESQUERDA da pista.
+        // Negativo = mais espaço à esquerda → estou à DIREITA da pista.
+        let lane_denom = (dist_l + dist_r).max(0.1);
+        let lane_offset = (dist_r - dist_l) / lane_denom;
+        sensory_wave[81] = (lane_offset * 127.0).clamp(-127.0, 127.0) as i8;
+
+        // Canal 82: URGÊNCIA DE COLISÃO FRONTAL — speed / forward_wall_dist.
+        // Alto = vou bater logo. Combina TTC inverso num único sinal [0..127].
+        let fwd_probe = world.raycast(pos.x, pos.z, racer.phase, 30.0).max(0.5);
+        let ttc_inv = (speed / fwd_probe).clamp(0.0, 10.0); // 10 = ~0.1s de TTC
+        sensory_wave[82] = ((ttc_inv / 10.0) * 127.0) as i8;
+
+        // --- MEMÓRIA SENSORIAL PERSISTENTE ---
+        // EMA (alpha ~0.15/frame @ 60Hz ≈ ~0.5s de meia-vida) suaviza picos de ruído
+        // e mantém sensação de "tem parede perto" mesmo se o raycast momentâneo falhar.
+        let ema_alpha = (dt * 3.0).clamp(0.0, 1.0);
+        racer.wall_ema_l = racer.wall_ema_l * (1.0 - ema_alpha) + dist_l * ema_alpha;
+        racer.wall_ema_r = racer.wall_ema_r * (1.0 - ema_alpha) + dist_r * ema_alpha;
+        // Invertido: 127 = encostado, 0 = 15m+ livre. Canal "alerta" persistente.
+        sensory_wave[85] = (((1.0 - (racer.wall_ema_l / 15.0).clamp(0.0, 1.0)) * 127.0)) as i8;
+        sensory_wave[86] = (((1.0 - (racer.wall_ema_r / 15.0).clamp(0.0, 1.0)) * 127.0)) as i8;
+
+        // Canal 87: SLIP ANGLE — ângulo entre velocity e forward (sinal de drift/aquaplanagem).
+        // Positivo = velocity aponta à direita do heading (drift pra direita).
+        let slip_signal = if let Some(ref body) = opt_body {
+            if body.velocity.length_squared() > 1.0 {
+                let v2d = Vec2::new(body.velocity.x, body.velocity.z).normalize_or_zero();
+                let f2d = forward_2d.normalize_or_zero();
+                // cross-z: f × v
+                f2d.x * v2d.y - f2d.y * v2d.x
+            } else { 0.0 }
+        } else { 0.0 };
+        sensory_wave[87] = (slip_signal * 127.0).clamp(-127.0, 127.0) as i8;
+
+        // Canal 88: PROXIMIDADE SUSTENTADA — acumula tempo raspando qualquer lateral (<3m).
+        // Sinaliza "tô raspando há tempo demais, precisa afastar".
+        let raspando = racer.wall_ema_l < 3.0 || racer.wall_ema_r < 3.0;
+        if raspando {
+            racer.proximity_sustain = (racer.proximity_sustain + dt).min(3.0);
+        } else {
+            racer.proximity_sustain = (racer.proximity_sustain - dt * 0.5).max(0.0);
+        }
+        sensory_wave[88] = ((racer.proximity_sustain / 3.0) * 127.0) as i8;
+
+        // Canal 89: estado de ré/cooldown do frame ANTERIOR. 127 em ré, 64 em cooldown, 0 normal.
+        // (a atualização real do timer acontece mais abaixo, após a rede decidir)
+        sensory_wave[89] = if racer.reverse_timer > 0.0 { 127 }
+                           else if racer.post_reverse_lockout > 0.0 { 64 }
+                           else { 0 };
 
         // --- SKIDMARKS DE DRIFT ---
         if is_drifting && rand::random::<f32>() < 0.15 { // rate limit to ~10 FPS
@@ -424,9 +506,12 @@ pub(super) fn update_racers(
         //      dispara reverse_timer de 1.5s. Durante a ré, shift vai para
         //      gear 0 e o pedal aplica torque de recuo. Visualmente: seta laranja.
         const SAFE_DIST: f32 = 6.0;      // folga mínima para throttle pleno
-        const REVERSE_TRIGGER_DIST: f32 = 2.0;
-        const REVERSE_DURATION: f32 = 1.5;
-        const REVERSE_PEDAL: f32 = 0.45;
+        const REVERSE_TRIGGER_DIST: f32 = 2.5;
+        const REVERSE_MIN_DURATION: f32 = 3.0;  // tempo mínimo de ré antes de considerar sair
+        const REVERSE_MAX_DURATION: f32 = 5.0;  // cap duro (evita ré infinita)
+        const REVERSE_EXIT_CLEAR: f32 = 4.0;    // precisa afastar 4m pra soltar ré
+        const REVERSE_PEDAL: f32 = 0.5;
+        const POST_REVERSE_LOCKOUT: f32 = 1.5;  // pós-ré: 1.5s de throttle capado
 
         let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 30.0);
         let safety_cap = (forward_wall_dist / SAFE_DIST).clamp(0.0, 1.0);
@@ -434,15 +519,32 @@ pub(super) fn update_racers(
         // (slow_input[31] já recebeu a mesma distância normalizada mais acima —
         //  o raycast é barato e manter os dois call-sites evita reordenar o bloco.)
 
-        // Atualiza o timer da ré e checa se precisa disparar uma nova manobra.
-        racer.reverse_timer = (racer.reverse_timer - dt).max(0.0);
-        let stuck_against_wall = forward_wall_dist < REVERSE_TRIGGER_DIST
-            && speed < 1.5
-            && racer.grace_ticks >= 600; // não reverter dentro do grace
-        if stuck_against_wall && racer.reverse_timer <= 0.0 {
-            racer.reverse_timer = REVERSE_DURATION;
+        // Atualiza o timer da ré. reverse_timer agora conta SUBIDO (tempo dentro da ré)
+        // em vez de descendo, para poder gatilhar saída condicional.
+        let was_reversing = racer.reverse_timer > 0.0;
+        if was_reversing {
+            racer.reverse_timer += dt;
+            // Sair da ré só se: afastou o suficiente E passou o mínimo, OU estourou o máximo.
+            let cleared = forward_wall_dist > REVERSE_EXIT_CLEAR && racer.reverse_timer > REVERSE_MIN_DURATION;
+            let timeout = racer.reverse_timer > REVERSE_MAX_DURATION;
+            if cleared || timeout {
+                racer.reverse_timer = 0.0;
+                racer.post_reverse_lockout = POST_REVERSE_LOCKOUT;
+            }
+        } else {
+            let stuck_against_wall = forward_wall_dist < REVERSE_TRIGGER_DIST
+                && speed < 1.5
+                && racer.grace_ticks >= 600;
+            if stuck_against_wall {
+                racer.reverse_timer = 0.01; // >0 liga flag
+            }
         }
         let is_reversing = racer.reverse_timer > 0.0;
+
+        // Cooldown pós-ré decai em dt. Enquanto > 0, pedal fica capado em 30%.
+        racer.post_reverse_lockout = (racer.post_reverse_lockout - dt).max(0.0);
+
+        // (canal 89 já foi setado antes do execute_cycle, usando o estado do frame anterior)
 
         if forward_wall_dist < SAFE_DIST {
             let severity = 1.0 - safety_cap;
@@ -503,8 +605,12 @@ pub(super) fn update_racers(
         // --- INÉRCIA DE ATUADOR (Direção Hidráulica Rápida) ---
         // Em ré: aplica pedal reverso fixo e solta o freio, sobrescrevendo o intent neural.
         // Em modo normal: multiplica pelo safety_cap (zero se encostado na parede, 1 se >6m).
+        // Pedal: durante ré, aplica REVERSE_PEDAL fixo. Em lockout pós-ré, capa em 0.3
+        // (para evitar re-acelerada imediata de volta contra a parede). Normal: safety_cap.
         let pedal_target = if is_reversing {
             REVERSE_PEDAL
+        } else if racer.post_reverse_lockout > 0.0 {
+            (final_pedal_intent * safety_cap).min(0.3)
         } else {
             final_pedal_intent * safety_cap
         };
@@ -628,6 +734,21 @@ pub(super) fn update_racers(
             if !world.waypoints_world.is_empty() {
                 let lap_prog = world.get_track_progress(transform.translation.x, transform.translation.z);
                 racer.track_progress = lap_prog + (racer.total_laps as f32) * world.lap_distance;
+            }
+
+            // --- ANTI-PLATEAU / ANTI-DONUT ---
+            // Se o carro está vivo e se movendo, mas track_progress NÃO avança,
+            // está fazendo círculos/gaming. Dreno severo de HP após grace.
+            // Regra: a cada 3m de progresso REAL, reseta o timer.
+            // Passar 5s sem ganhar 3m → drena 20HP/s (mata em ~5s de loop).
+            if racer.track_progress > racer.progress_checkpoint + 3.0 {
+                racer.progress_checkpoint = racer.track_progress;
+                racer.progress_stall = 0.0;
+            } else {
+                racer.progress_stall += dt;
+            }
+            if !in_grace && !is_reversing && racer.progress_stall > 5.0 {
+                racer.hp -= 20.0 * dt;
             }
 
             // Punição Severa por Andar na Contramão — mas não durante manobra de ré de emergência.

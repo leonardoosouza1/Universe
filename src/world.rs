@@ -285,11 +285,14 @@ impl VoxelWorld {
     /// LÍDAR ÓPTICO (Visão Cíclope Linear HD com Raycast DDA: 32x2 pixels abrangendo 100 Graus Uniformes)
     pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3) -> [i8; 64] {
         let mut pixels = [-128; 64];
-        let fov = 100.0_f32.to_radians();
         let eye_pos = pos + Vec3::Y * 0.4;
         let cell = self.cell_size;
 
-        for row in 0..2 { // Row 0 = Chão (Pitch -0.04), Row 1 = Horizonte (Pitch 0.0)
+        // Retina dual-scale:
+        //   Row 0 = FÓVEA ESTREITA (FOV 50°, pitch -0.04): detalhe alto do que está à frente.
+        //   Row 1 = PERIFÉRICA LARGA (FOV 150°, pitch 0.0): vê curva chegando e paredes laterais.
+        for row in 0..2 {
+            let fov = if row == 0 { 50.0_f32.to_radians() } else { 150.0_f32.to_radians() };
             let pitch = if row == 0 { -0.04_f32 } else { 0.0_f32 };
             let dir_y = pitch.sin();
             let cos_pitch = pitch.cos();

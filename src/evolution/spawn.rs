@@ -166,11 +166,23 @@ pub fn spawn_swarm(
             // A3: Alinhamento com fluxo da pista (canal 64) → acelera
             weights[0 * 128 + 64] = 5.0;
 
-            // A4: Se a pista está livre no centro (valores baixos), acelera! Se ver parede no centro, corta o motor.
-            // Pan-Vision Central (10..21 e 42..53)
+            // A4: Parede no centro da retina → corta throttle (mais suave que antes).
             for i in 10..22 {
-                weights[0 * 128 + i] = -8.0;         // Corta aceleração (Throttle = 0) ao ver parede
-                weights[0 * 128 + (32 + i)] = -8.0;
+                weights[0 * 128 + i] = -6.0;
+                weights[0 * 128 + (32 + i)] = -6.0;
+            }
+
+            // A4b: Parede no centro-ESQUERDO (10..16) → steer DIREITA (positivo).
+            // Axioma de CURVA: antes de raspar, já começa a virar.
+            for i in 10..16 {
+                weights[1 * 128 + i] = 12.0;
+                weights[1 * 128 + (32 + i)] = 12.0;
+            }
+
+            // A4c: Parede no centro-DIREITO (16..22) → steer ESQUERDA (negativo).
+            for i in 16..22 {
+                weights[1 * 128 + i] = -12.0;
+                weights[1 * 128 + (32 + i)] = -12.0;
             }
 
             // A5: HP baixo ou DOR (canais 67 e 73) -> Reduz throttle severamente
@@ -179,12 +191,54 @@ pub fn spawn_swarm(
             // A6: Comp-stress alto (canal 125) → throttle (ataca quem está na frente)
             weights[0 * 128 + 125] = 3.0;
 
-            // A7: REFLEXO DE FRENAGEM PÂNICO (Pan-Vision Central)
-            // Mapeia 12 pixels centrais (Horizonte + Chão) para o canal de FREIO (2)
-            for i in 12..20 {
-                weights[2 * 128 + i] = 20.0;        // Freia com força total se parede na frente
-                weights[2 * 128 + (32 + i)] = 20.0;
+            // A7: FRENAGEM PÂNICO — só no centro ESTREITO (14..18) e magnitude reduzida.
+            // Antes 20.0 em 12..20 travava o carro antes de conseguir virar na curva.
+            for i in 14..18 {
+                weights[2 * 128 + i] = 8.0;
+                weights[2 * 128 + (32 + i)] = 8.0;
             }
+
+            // A8: Correção de deriva lateral (canal 66 lateral_vel) → steer oposto.
+            // Se derrapa pra direita (+), vira pra esquerda (-) e vice-versa.
+            weights[1 * 128 + 66] = -5.0;
+
+            // A9: ANTECIPAÇÃO DE CURVA (canais 78/79/80 = curvatura a 10m/25m/50m).
+            // Canal positivo = pista curva à ESQUERDA → steer NEGATIVO (esquerda).
+            // 25m (canal 79) é o horizonte de ~1.5s — peso maior (sinal principal).
+            weights[1 * 128 + 78] = -6.0;  // curvatura próxima (10m)
+            weights[1 * 128 + 79] = -10.0; // curvatura ideal (25m) — main driver
+            weights[1 * 128 + 80] = -4.0;  // curvatura distante (50m) — leve pré-ajuste
+
+            // A10: LANE OFFSET (canal 81) → empurra pro centro.
+            // Positivo = encostei à esquerda → steer DIREITA (positivo).
+            weights[1 * 128 + 81] = 4.0;
+
+            // A11: URGÊNCIA DE COLISÃO (canal 82) → freia.
+            // Alto = TTC iminente → freio forte.
+            weights[2 * 128 + 82] = 10.0;
+            // E simultaneamente corta throttle quando urgência alta.
+            weights[0 * 128 + 82] = -6.0;
+
+            // A12: FLUXO ÓPTICO (canais 83/84) → steer anti-aproximação.
+            // Motion forte à esquerda (83+) = coisa se aproximando à esquerda → steer DIREITA.
+            // Simétrico à direita → steer ESQUERDA.
+            weights[1 * 128 + 83] = 5.0;
+            weights[1 * 128 + 84] = -5.0;
+
+            // A13: MEMÓRIA DE PAREDE (EMA canais 85/86).
+            // 85 alto = parede sustentada à ESQUERDA → steer DIREITA (positivo).
+            // 86 alto = parede sustentada à DIREITA → steer ESQUERDA (negativo).
+            weights[1 * 128 + 85] = 8.0;
+            weights[1 * 128 + 86] = -8.0;
+
+            // A14: SLIP ANGLE (canal 87) → contra-steer.
+            // Derrapa pra direita (+) → vira pra direita pra alinhar (contra-volante positivo).
+            // Weight positivo: slip +87 → steer + (segue pro lado do drift, alinhando o chassi).
+            weights[1 * 128 + 87] = 4.0;
+
+            // A15: PROXIMIDADE SUSTENTADA (canal 88) → corta throttle.
+            // Tô raspando há tempo demais: alivia acelerador pra IA recuperar controle.
+            weights[0 * 128 + 88] = -7.0;
 
             engine.instinct_layer.quantize(&weights);
         }
@@ -220,6 +274,12 @@ pub fn spawn_swarm(
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
                 joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: 0.0, grace_ticks: 0,
                 reverse_timer: 0.0,
+                progress_checkpoint: 0.0,
+                progress_stall: 0.0,
+                wall_ema_l: 15.0,
+                wall_ema_r: 15.0,
+                proximity_sustain: 0.0,
+                post_reverse_lockout: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
