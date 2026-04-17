@@ -1036,19 +1036,25 @@ pub(super) fn update_racers(
             racer.wall_time = (racer.wall_time - dt * 0.1).max(0.0);
         }
 
-        // --- CHECKPOINT RECOVERY ---
-        // A cada 50 metros avançados NA PISTA (arc-length real), checkpoint alcançado.
-        // Usa track_progress (não euclidiano) — imune a backward-motion quebrar o contador.
-        let current_wp = (racer.track_progress / 50.0).floor().max(0.0) as usize;
+        // --- CHECKPOINT RECOVERY (HEAL GATE) ---
+        // A cada 25m de pista (arc-length real), checkpoint alcançado.
+        // User feedback: carros morriam antes de chegar no próximo marco.
+        //  - Intervalo 50→25m: cura mais frequente, sobrevivem enquanto aprendem.
+        //  - HP boost 25→40: compensa wall hit (60 dmg) em 2 waypoints (antes: 3).
+        //  - Reset completo de estagnação: stagnation/progress_stall/progress_checkpoint.
+        //    Antes só zerava wall_hits — carro ainda morria por progress_stall antigo
+        //    mesmo cruzando waypoint.
+        let current_wp = (racer.track_progress / 25.0).floor().max(0.0) as usize;
 
         if current_wp > racer.last_waypoint {
             racer.last_waypoint = current_wp;
-            // Alcançou um checkpoint: recupera HP e zera strikes da parede!
-            racer.hp = (racer.hp + 25.0).min(100.0);
+            racer.hp = (racer.hp + 40.0).min(100.0);
             racer.wall_hits = 0;
-            // Feedback visual de cura
+            racer.stagnation = 0.0;
+            racer.progress_stall = 0.0;
+            racer.progress_checkpoint = racer.track_progress;
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
-                mat.base_color = Color::srgb(0.5, 1.0, 1.0); // Brilha ciano rapidamente
+                mat.base_color = Color::srgb(0.5, 1.0, 1.0);
             }
         }
 
