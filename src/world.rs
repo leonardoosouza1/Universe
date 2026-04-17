@@ -110,6 +110,54 @@ impl VoxelWorld {
         } else { Vec2::ZERO }
     }
 
+    /// Calcula a distância absoluta na pista a partir da linha de largada
+    pub fn get_track_progress(&self, wx: f32, wz: f32) -> f32 {
+        let pos = Vec2::new(wx, wz);
+        let mut min_dist = f32::MAX;
+        let mut best_progress = 0.0;
+        
+        for i in 0..self.waypoints_world.len() - 1 {
+            let p1 = self.waypoints_world[i];
+            let p2 = self.waypoints_world[i+1];
+            let seg_len = p1.distance(p2);
+            
+            let mut dir = p2 - p1;
+            if seg_len > 0.0 { dir /= seg_len; }
+            
+            let v = pos - p1;
+            let t = v.dot(dir).clamp(0.0, seg_len);
+            
+            let proj = p1 + dir * t;
+            let dist = pos.distance(proj);
+            
+            if dist < min_dist {
+                min_dist = dist;
+                best_progress = self.waypoint_arcs[i] + t;
+            }
+        }
+        
+        // Offset para alinhar o 0.0 com a start_pos física (lap_line)
+        let start_pos_2d = Vec2::new(self.start_pos.x, self.start_pos.z);
+        let mut start_progress = 0.0;
+        let mut min_start_dist = f32::MAX;
+        for i in 0..self.waypoints_world.len() - 1 {
+            let p1 = self.waypoints_world[i];
+            let p2 = self.waypoints_world[i+1];
+            let seg_len = p1.distance(p2);
+            let mut dir = p2 - p1;
+            if seg_len > 0.0 { dir /= seg_len; }
+            let v = start_pos_2d - p1;
+            let t = v.dot(dir).clamp(0.0, seg_len);
+            let proj = p1 + dir * t;
+            let dist = start_pos_2d.distance(proj);
+            if dist < min_start_dist { min_start_dist = dist; start_progress = self.waypoint_arcs[i] + t; }
+        }
+        
+        let mut final_prog = best_progress - start_progress;
+        if final_prog < 0.0 { final_prog += self.lap_distance; } // Wrap pra não ficar negativo
+        final_prog
+    }
+
     /// Retorna a altura do terreno em coordenadas mundo (com interpolação bilinear)
     pub fn get_height_at(&self, wx: f32, wz: f32) -> f32 {
         let fx = wx / self.cell_size;

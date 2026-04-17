@@ -658,9 +658,37 @@ fn update_racers(
         racer.prev_pos = transform.translation;
 
         // --- 5. DOR E TRAUMA (Dano Progressivo por Energia Cinética) ---
-        let voxel = world.get_voxel_at(transform.translation.x, transform.translation.z);
+        let mut hit_wall = false;
         
-        if voxel == VoxelType::Wall {
+        // Verifica colisões usando as mesmas probes físicas para não ser salvo pelo bounce
+        if world.get_voxel_at(transform.translation.x, transform.translation.z) == VoxelType::Wall {
+            hit_wall = true;
+        } else {
+            // Se o centro está livre, checa os 4 cantos (nariz, traseira, laterais)
+            // Usa aproximação de chassis padrão caso não tenha física (2.0 de roda, 1.0 largura)
+            let wb = if let Some(body) = &opt_body { 2.6 } else { 2.6 };
+            let tw = if let Some(body) = &opt_body { 1.6 } else { 1.6 }; // chassis track_width approx
+            
+            let pos = transform.translation;
+            let forward = transform.right().as_vec3();
+            let right = -transform.back().as_vec3();
+            
+            let probe_points = [
+                pos + forward * (wb * 0.5),   // Nariz
+                pos - forward * (wb * 0.5),   // Traseira
+                pos + right * (tw * 0.5),     // Lateral direita
+                pos - right * (tw * 0.5),     // Lateral esquerda
+            ];
+            
+            for p in &probe_points {
+                if world.get_voxel_at(p.x, p.z) == VoxelType::Wall {
+                    hit_wall = true;
+                    break;
+                }
+            }
+        }
+        
+        if hit_wall {
             // PAREDE = MORTE INSTANTÂNEA
             // Sinal evolutivo mais claro possível: tocou, morreu.
             // Sem HP, sem ricochet, sem estratégia de "raspar na parede".
