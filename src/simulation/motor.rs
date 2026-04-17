@@ -1138,21 +1138,24 @@ pub(super) fn update_racers(
             let up = *transform.up();
             let eye_pos = transform.translation + Vec3::Y * 0.4;
 
-            // Retina dual-scale: row 0 = fóvea estreita 50° (sacádica), row 1 = periférica 180° (fixa).
-            // Espelha exatamente o que world.rs::render_binocular_retina() faz.
+            // Retina dual-scale: row 0 = fóvea 50° (sacádica), row 1 = periférica 180° (fixa).
+            // Dados reais do sensor alcançam 300m — gizmo usa comprimento MENOR só pra
+            // visualização (fan de 300m × 50° cobria metade da pista e poluía a tela).
+            //  Fóvea visual: 40m  | Periférica visual: 25m.
             for row in 0..2 {
                 let fov = if row == 0 { 50.0_f32.to_radians() } else { 180.0_f32.to_radians() };
+                let visual_len = if row == 0 { 40.0 } else { 25.0 };
                 let gaze = if row == 0 { racer.gaze_yaw } else { 0.0 };
                 let color = if row == 0 {
-                    Color::srgba(0.0, 1.0, 0.0, 0.22) // fóvea verde (atenção)
+                    Color::srgba(0.0, 1.0, 0.0, 0.22)
                 } else {
-                    Color::srgba(0.2, 0.5, 1.0, 0.08) // periférica azul clara (panorâmica)
+                    Color::srgba(0.2, 0.5, 1.0, 0.12)
                 };
                 for i in 0..32 {
                     let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
                     let yaw_angle = normalized_i * (fov / 2.0) + gaze;
                     let ray_dir = Quat::from_axis_angle(up, yaw_angle) * forward;
-                    gizmos.line(eye_pos, eye_pos + ray_dir * 300.0, color);
+                    gizmos.line(eye_pos, eye_pos + ray_dir * visual_len, color);
                 }
             }
 
