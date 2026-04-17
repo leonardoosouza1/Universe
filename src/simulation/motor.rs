@@ -39,6 +39,46 @@ pub(super) fn update_racers(
         );
     }
 
+    // --- TRAÇADO DO ÚLTIMO CAMPEÃO (magenta, persiste até ser superado) ---
+    if race.champion_path.len() >= 2 {
+        let path = &race.champion_path;
+        let y_off = Vec3::Y * 1.5;
+        for w in path.windows(2) {
+            gizmos.line(w[0] + y_off, w[1] + y_off, Color::srgba(1.0, 0.2, 0.9, 0.9));
+        }
+        if let Some(&start) = path.first() {
+            gizmos.sphere(start + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.84, 0.0)); // 👑 dourado
+            gizmos.line(start, start + Vec3::Y * 12.0, Color::srgb(1.0, 0.84, 0.0));
+        }
+        if let Some(&end) = path.last() {
+            gizmos.sphere(end + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.1, 0.1)); // 🔴 fim
+            gizmos.line(end, end + Vec3::Y * 12.0, Color::srgb(1.0, 0.1, 0.1));
+        }
+    }
+
+    // --- TRAÇADO DO MELHOR DA ÚLTIMA GERAÇÃO ---
+    // 🔵 CIANO = grid-spawn (elegível pra coroação — se for maior que magenta, vira campeão)
+    // 🟠 LARANJA = distributed spawn (NÃO coroa — é só especialista de um trecho)
+    // Assim se a laranja passa a magenta, você sabe que é fake progress.
+    if race.last_gen_path.len() >= 2 {
+        let path = &race.last_gen_path;
+        let y_off = Vec3::Y * 0.6;
+        let (line_col, sphere_col) = if race.last_gen_was_grid {
+            (Color::srgba(0.0, 0.9, 1.0, 0.75), Color::srgb(0.0, 0.9, 1.0))
+        } else {
+            (Color::srgba(1.0, 0.5, 0.0, 0.75), Color::srgb(1.0, 0.5, 0.0))
+        };
+        for w in path.windows(2) {
+            gizmos.line(w[0] + y_off, w[1] + y_off, line_col);
+        }
+        if let Some(&start) = path.first() {
+            gizmos.sphere(start + Vec3::Y * 0.8, 1.0, sphere_col);
+        }
+        if let Some(&end) = path.last() {
+            gizmos.sphere(end + Vec3::Y * 0.8, 1.0, sphere_col);
+        }
+    }
+
     // --- RENDERIZAR WAYPOINTS/CHECKPOINTS DA PISTA ---
     let wps = &world.waypoints_world;
     for i in 0..wps.len() {
@@ -116,6 +156,35 @@ pub(super) fn update_racers(
 
         let retina_binocular = world.render_binocular_retina(pos + Vec3::new(0.0, 0.4, 0.0), forward, right);
         for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
+
+        // --- DARK-CENTER TRACKER (Canais 90-93): "Center the Black" ---
+        // Centro de massa angular dos pixels ESCUROS (pista) na retina.
+        // Positivo = pista vai pra direita → steer RIGHT.
+        // Negativo = pista vai pra esquerda → steer LEFT.
+        //
+        // Duplicado em 4 canais (90..93) para que, após quantize ternária (todos
+        // os pesos não-zero viram ±1), o sinal tenha "voto" equivalente a 4× um
+        // axioma normal. É o jeito de amplificar um único sinal numa rede 1.58-bit.
+        //
+        // Essa foi a crítica do usuário: "os carros não tentam centralizar o preto".
+        // O sinal anterior (ch 81 lane_offset) existia mas só votava ±1 contra 40+
+        // canais concorrentes. Aqui damos força proporcional à sua importância.
+        let mut dark_sum_i: f32 = 0.0;
+        let mut dark_weight: f32 = 0.0;
+        for i in 0..32 {
+            // Fovea + periférica combinadas para robustez.
+            let d_fov = (-retina_binocular[i] as f32).max(0.0);
+            let d_per = (-retina_binocular[32 + i] as f32).max(0.0);
+            let d = d_fov + d_per;
+            dark_sum_i += d * (i as f32 - 15.5);
+            dark_weight += d;
+        }
+        let dark_center_norm = if dark_weight > 1.0 { (dark_sum_i / (dark_weight * 15.5)).clamp(-1.0, 1.0) } else { 0.0 };
+        let dark_center_i8 = (dark_center_norm * 127.0).clamp(-127.0, 127.0) as i8;
+        sensory_wave[90] = dark_center_i8;
+        sensory_wave[91] = dark_center_i8;
+        sensory_wave[92] = dark_center_i8;
+        sensory_wave[93] = dark_center_i8;
 
         // --- FLUXO ÓPTICO TEMPORAL (delta entre frames) ---
         // Mede variação entre retina atual e anterior, por metade. Sinal de "coisa
@@ -611,6 +680,55 @@ pub(super) fn update_racers(
         let physical_steer = racer.memory[1]; // Sem trava de volante! Foco total nas curvas
         let physical_brake = racer.memory[2];
 
+        // --- DIAGNÓSTICO: SNAPSHOT DO CÉREBRO (~2Hz) ---
+        // Captura entradas/saídas e atenuações para dump posterior nos reports.
+        racer.trace_timer -= dt;
+        if racer.trace_timer <= 0.0 && racer.brain_trace.len() < 15 {
+            racer.trace_timer = 0.5;
+            // Top-5 canais mais ativos (|valor|)
+            let sw = &sensory_wave;
+            let mut pairs: Vec<(u8, i8)> = (0..128u8)
+                .map(|i| (i, sw[i as usize]))
+                .collect();
+            pairs.sort_by(|a, b| (b.1 as i16).abs().cmp(&(a.1 as i16).abs()));
+            let mut top5 = [(0u8, 0i8); 5];
+            for (k, p) in pairs.iter().take(5).enumerate() { top5[k] = *p; }
+
+            // Pico dos canais centrais da retina (10..22) — parede bem em frente
+            let retina_center_max = (10..22usize)
+                .chain((32+10)..(32+22))
+                .map(|i| sw[i].unsigned_abs() as i8)
+                .max().unwrap_or(0);
+
+            // dynamic_steer_limit e risk_damp já calculados acima
+            let slow = &racer.engine.slow_brain.output;
+            let snap_risk_damp = slow[2].max(0.0).min(0.3);
+            let snap_steer_limit = 1.0 / (1.0 + speed * 0.02);
+            let snap_phys_steer = physical_steer * snap_steer_limit;
+
+            let engine_time = racer.engine.current_time;
+            let ri_thr = racer.engine.final_intent[0];
+            let ri_str = racer.engine.final_intent[1];
+            let ri_brk = racer.engine.final_intent[2];
+            racer.brain_trace.push(crate::simulation::racer::BrainSnapshot {
+                t: engine_time,
+                speed_kmh: speed * 3.6,
+                wall_prox_l: sw[85],
+                wall_prox_r: sw[86],
+                ttc_inv: sw[82],
+                curv_25: sw[79],
+                retina_center_max,
+                raw_throttle: ri_thr,
+                raw_steer: ri_str,
+                raw_brake: ri_brk,
+                post_damp_steer: final_steer_intent,
+                physical_steer: snap_phys_steer,
+                steer_limit: snap_steer_limit,
+                risk_damp: snap_risk_damp,
+                top_channels: top5,
+            });
+        }
+
         // BOS removido — o sistema de penalidades já pune sobreposição
         // A camada simbólica garante que brake só ativa com intenção explícita
 
@@ -678,6 +796,11 @@ pub(super) fn update_racers(
             race.death_markers.push(pos);
 
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+            // --- HIDE-ON-DEATH: libera a tela com 500 carros ---
+            // Mantemos a entidade (pipeline precisa ler Racer pro fitness/pool),
+            // mas esconde o mesh + filhos. InheritedVisibility propaga pro wing,
+            // cockpit e farol. Custo de render: zero.
+            commands.entity(entity).insert(Visibility::Hidden);
         } else if !racer.is_dead {
             // Cor reflete estado mecânico: vermelho = danificado, ciano normal
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
@@ -729,6 +852,15 @@ pub(super) fn update_racers(
             if !world.waypoints_world.is_empty() {
                 let lap_prog = world.get_track_progress(transform.translation.x, transform.translation.z);
                 racer.track_progress = lap_prog + (racer.total_laps as f32) * world.lap_distance;
+            }
+
+            // --- AMOSTRAGEM DE PATH (~4Hz) para desenhar traçado do campeão ---
+            racer.path_timer -= dt;
+            if racer.path_timer <= 0.0 {
+                racer.path_timer = 0.25;
+                if racer.path.len() < 1500 {
+                    racer.path.push(transform.translation);
+                }
             }
 
             // --- ANTI-PLATEAU / ANTI-DONUT ---
@@ -822,6 +954,7 @@ pub(super) fn update_racers(
                 racer.hp = 0.0;
                 race.death_markers.push(pos);
                 if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                commands.entity(entity).insert(Visibility::Hidden);
             } else if racer.wall_cooldown == 0.0 {
                 // Durante grace: dano pesado mas não instantâneo
                 racer.wall_hits += 1;
@@ -832,6 +965,7 @@ pub(super) fn update_racers(
                     racer.hp = 0.0;
                     race.death_markers.push(pos);
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                    commands.entity(entity).insert(Visibility::Hidden);
                 } else if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
                     let health_ratio = (racer.hp / 100.0).clamp(0.0, 1.0);
                     mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
@@ -855,18 +989,28 @@ pub(super) fn update_racers(
             }
         }
 
-        // Stagnation: Ficar parado ou em contramão. Aumentado para 20s/12s para aprender partida.
+        // Stagnation anti-idle: só mata se VERDADEIRAMENTE parado.
+        // REMOVIDA a checagem `alignment < 0.0` — matava carros que estavam virando
+        // curva fechada (cos da diferença angular fica negativo no meio de um 90°+).
+        // Resultado visível: toda gen morria em 12-15s na primeira curva.
+        // Progresso real (track_progress) já é coberto pelo progress_stall → hp drain.
         let alignment = (racer.phase - track_phase).cos();
-        if (racer.amplitude < 3.0 && racer.engine.current_time > 20.0) || (racer.engine.current_time > 12.0 && alignment < 0.0) {
+        if racer.amplitude < 3.0 && racer.engine.current_time > 25.0 {
             racer.stagnation += dt;
-            if racer.stagnation > 1.0 { racer.is_dead = true; }
+            if racer.stagnation > 1.5 {
+                racer.is_dead = true;
+                commands.entity(entity).insert(Visibility::Hidden);
+            }
         } else {
-            // Decaimento lento em vez de reset instantâneo para evitar que "tremidas" resetem o timer
             racer.stagnation = (racer.stagnation - dt).max(0.0);
         }
+        let _ = alignment; // mantido pra uso futuro (telemetria/curriculum)
 
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
-        if racer.fuel <= 0.0 { racer.is_dead = true; }
+        if racer.fuel <= 0.0 {
+            racer.is_dead = true;
+            commands.entity(entity).insert(Visibility::Hidden);
+        }
 
         // Contagem de Voltas — cruzamento da lap_line + validação por arc-length REAL.
         // Guard previous: `racer.distance > 400.0` (euclidiano) permitia donut acumular 400m falsos.

@@ -27,20 +27,19 @@ fn build_priming_weights() -> Vec<f32> {
     }
     // A3: Alinhamento com fluxo (canal 64) → acelera
     weights[0 * 128 + 64] = 5.0;
-    // A4: Parede no centro → corta throttle suave
+    // A4: Parede no centro → corta throttle forte
     for i in 10..22 {
-        weights[0 * 128 + i] = -6.0;
-        weights[0 * 128 + (32 + i)] = -6.0;
+        weights[0 * 128 + i] = -10.0;
+        weights[0 * 128 + (32 + i)] = -10.0;
     }
-    // A4b: Centro-esquerda (10..16) → steer DIREITA
-    for i in 10..16 {
-        weights[1 * 128 + i] = 12.0;
-        weights[1 * 128 + (32 + i)] = 12.0;
-    }
-    // A4c: Centro-direita (16..22) → steer ESQUERDA
-    for i in 16..22 {
-        weights[1 * 128 + i] = -12.0;
-        weights[1 * 128 + (32 + i)] = -12.0;
+    // A4b/A4c REMOVIDOS: eram simétricos e cancelavam em zero quando parede
+    // centralizada. Substituídos pelo A16 (dark-center tracker, canais 90-93),
+    // que é um sinal UNIFICADO de "siga o escuro" — sem cancelamento possível.
+    // A4d (NOVO): Centro EXATO (14..18) → BRAKE forte, sem steer.
+    // Parede bem em frente significa "freia que eu quero pensar", não "tenta virar".
+    for i in 14..18 {
+        weights[2 * 128 + i] = 14.0;
+        weights[2 * 128 + (32 + i)] = 14.0;
     }
     // A5: Dor de grama (73) → reduz throttle
     weights[0 * 128 + 73] = -5.0;
@@ -72,6 +71,16 @@ fn build_priming_weights() -> Vec<f32> {
     weights[1 * 128 + 87] = 4.0;
     // A15: Proximidade sustentada (88) → corta throttle
     weights[0 * 128 + 88] = -7.0;
+
+    // A16 (NOVO): DARK-CENTER TRACKER (canais 90-93) → SIGA O ESCURO.
+    // Resposta à crítica do usuário: "o carro não tenta centralizar o preto".
+    // Canal = centro de massa angular dos pixels de pista, normalizado [-1..+1].
+    // Positivo ⇒ pista à direita ⇒ steer RIGHT. Negativo ⇒ pista à esquerda ⇒ LEFT.
+    // Duplicado em 4 canais para que, após quantize ternária (todos ±1), este axioma
+    // some 4× o sinal de um axioma normal — vira o maior vetor de steering na rede.
+    for i in 90..94 {
+        weights[1 * 128 + i] = 15.0;
+    }
 
     weights
 }
@@ -149,25 +158,45 @@ pub fn spawn_swarm(
 
     for i in 0..config.swarm_count {
         let mut engine = crate::engine::SovereignEngine::new();
-        if pool_size >= 2 {
-            // --- REPRODUÇÃO COM INSTINCT REFRESH ---
-            // Slot 0..elite_clones: clones exatos do top-N (elitismo).
-            // Slot elite_clones..elite_clones+refresh_slots: PRIMING PURO com pequena mutação.
-            //   → garante que os axiomas A1–A15 sejam REINJETADOS toda geração,
-            //     impedindo deriva genética de apagar instintos básicos.
-            // Restantes: tournament + crossover + mutação do pool.
-            let elite_clones = pool_size.min(5);
-            let refresh_slots = 4; // ~25% do swarm em "fresh blood" com instintos
 
-            if i < elite_clones {
-                let elite = &race.elite_pool[i];
+        // --- HALL OF FAME (CHAMPION FALLBACK) ---
+        // Slot 0: SEMPRE carrega o CHAMPION DNA se existe. Imune à deriva geracional
+        // (até mesmo se o elite_pool inteiro for ruim, o HoF preserva o melhor de todos os tempos).
+        let slot_is_champion = i == 0 && current_best_w.is_some();
+
+        if slot_is_champion {
+            if let Some(ref champion) = current_best_w {
+                let exact: Vec<f32> = champion.iter().map(|&w| w as f32).collect();
+                engine.instinct_layer.quantize(&exact);
+                engine.instinct_layer.set_scale(current_best_s);
+                if let Some(ref champion_slow) = current_best_slow_w {
+                    let exact_slow: Vec<f32> = champion_slow.iter().map(|&w| w as f32).collect();
+                    engine.slow_brain.layer.quantize(&exact_slow);
+                    engine.slow_brain.layer.set_scale(current_best_slow_s);
+                }
+            }
+        } else if pool_size >= 2 {
+            // --- REPRODUÇÃO COM INSTINCT REFRESH ---
+            // Slot 0: champion (já tratado acima)
+            // Slot 1-2: elite clones (genes da gen passada) — GRID
+            // Slot 3-4: PRIMING FRESH — GRID (garante reflexo pristino na largada)
+            // Slot 5-8: PRIMING FRESH — distributed
+            // Slot 9+: tournament crossover — distributed
+            // Antes: slots 1-4 eram TODOS elite clones → nenhum grid-car tinha reflexo fresco.
+            // Champion degradado + elites degradados = ninguém reagia à parede no start.
+            let elite_clones = pool_size.min(2);
+            let refresh_slots = 6;
+            let elite_range_end = 1 + elite_clones; // [1, 1+elite_clones)
+
+            if i >= 1 && i < elite_range_end {
+                let elite = &race.elite_pool[i - 1];
                 let exact: Vec<f32> = elite.fast_weights.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(elite.fast_scale);
                 let exact_slow: Vec<f32> = elite.slow_weights.iter().map(|&w| w as f32).collect();
                 engine.slow_brain.layer.quantize(&exact_slow);
                 engine.slow_brain.layer.set_scale(elite.slow_scale);
-            } else if i < elite_clones + refresh_slots {
+            } else if i < elite_range_end + refresh_slots {
                 // PRIMING REFRESH: axiomas frescos + ruído leve para diversidade.
                 // Preserva instintos mas ainda permite exploração local.
                 let priming = build_priming_weights();
@@ -233,16 +262,36 @@ pub fn spawn_swarm(
         let color = if i == 0 && current_best_w.is_some() { Color::srgb(0.0, 1.0, 0.8) } else { Color::srgb(rng.random::<f32>(), rng.random::<f32>(), rng.random::<f32>()) };
         let racer_mat = materials.add(StandardMaterial { base_color: color, emissive: LinearRgba::from(color) * 4.0, perceptual_roughness: 0.1, metallic: 0.9, ..default() });
 
-        let row = i / 2;
-        let col = i % 2;
-        let spawn_pos = world.start_pos
-            - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 8.0)
-            + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
-
-        // As meshes GT3 originais apontam nativamente para +X (Right).
-        // Se a pista flui em +X (start_angle = 0), a rotação é 0.
-        // from_rotation_y(-start_angle) alinha o nariz (+X) perfeitamente com o vetor de fluxo.
-        let spawn_rot = Quat::from_rotation_y(-start_angle);
+        // --- SPAWN DISTRIBUÍDO AO LONGO DA PISTA (Andrychowicz et al, 2017) ---
+        // Carros 0..4 (champion + elites) começam na largada — preserva baseline.
+        // Carros 5+ spawnam em pontos espalhados pela pista (25%, 50%, 75%, ...).
+        // Fitness usa NET progress (track_progress - spawn_progress), então carros
+        // que nasceram na curva e sobreviveram 30m PROVARAM habilidade de curva.
+        // Isso quebra o platô deceptivo de "só reta dá fitness alto".
+        const GRID_SPAWNS: usize = 5;
+        let (spawn_pos, spawn_rot, spawn_progress) = if i < GRID_SPAWNS {
+            // Grid tradicional na largada
+            let row = i / 2;
+            let col = i % 2;
+            let p = world.start_pos
+                - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 8.0)
+                + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
+            (p, Quat::from_rotation_y(-start_angle), 0.0)
+        } else {
+            // Distribui ao longo dos waypoints. Fração = 25%, 50%, 75%, 87%... em faixa circular.
+            let distributed_idx = (i - GRID_SPAWNS) as f32;
+            let total_distributed = (config.swarm_count - GRID_SPAWNS).max(1) as f32;
+            let fraction = 0.15 + (distributed_idx / total_distributed) * 0.7; // [0.15..0.85]
+            let wp_count = world.waypoints_world.len().max(2);
+            let target_wp = ((fraction * wp_count as f32) as usize).min(wp_count - 2);
+            let wp = world.waypoints_world[target_wp];
+            let wp_next = world.waypoints_world[target_wp + 1];
+            let dir = (wp_next - wp).normalize_or_zero();
+            let p = Vec3::new(wp.x, world.start_pos.y, wp.y);
+            let angle = dir.y.atan2(dir.x);
+            let progress = world.get_track_progress(p.x, p.z);
+            (p, Quat::from_rotation_y(-angle), progress)
+        };
         let (racer_entity, car_model) = match i % 5 {
             0 => (crate::prefabs::spawn_porsche_911_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[0]),
             1 => (crate::prefabs::spawn_ferrari_296_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[1]),
@@ -259,14 +308,19 @@ pub fn spawn_swarm(
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; 64],
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
-                joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: 0.0, grace_ticks: 0,
+                joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: spawn_progress, grace_ticks: 0,
                 reverse_timer: 0.0,
-                progress_checkpoint: 0.0,
+                progress_checkpoint: spawn_progress,
                 progress_stall: 0.0,
                 wall_ema_l: 15.0,
                 wall_ema_r: 15.0,
                 proximity_sustain: 0.0,
                 post_reverse_lockout: 0.0,
+                spawn_progress,
+                path: vec![spawn_pos],
+                path_timer: 0.0,
+                brain_trace: Vec::with_capacity(15),
+                trace_timer: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

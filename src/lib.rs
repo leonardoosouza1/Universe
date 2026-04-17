@@ -18,6 +18,7 @@ pub mod prefabs;
 pub mod environment;
 pub mod config;
 pub mod ui_menu;
+pub mod substrate;
 
 use bevy::prelude::*;
 

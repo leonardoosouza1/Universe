@@ -21,6 +21,12 @@ pub struct RaceSettings {
     pub global_best_position: Option<Vec3>,
     pub champion_distance: f32,  // Distância do DNA salvo em CHAMPION.dna (só muda quando DNA é coroado)
     pub elite_pool: Vec<EliteDna>,  // Top-5 DNAs da última geração (tournament pool)
+    pub champion_path: Vec<Vec3>,   // Traçado do último campeão (spawn → última posição)
+    pub champion_net_dist: f32,     // Distância NET do último campeão (para label do traçado)
+    pub gens_since_crown: u32,      // Gens consecutivas sem coroar — destrava threshold se > N
+    pub last_gen_path: Vec<Vec3>,   // Traçado do melhor da última gen (refresca sempre)
+    pub last_gen_net: f32,          // NET do melhor da última gen
+    pub last_gen_was_grid: bool,    // true se o melhor nasceu na largada (elegível pra coroar)
 }
 
 #[derive(Resource)]

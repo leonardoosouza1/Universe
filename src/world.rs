@@ -19,6 +19,7 @@ pub struct VoxelWorld {
     pub lap_distance: f32,
     pub waypoints_world: Vec<Vec2>,      // Waypoints já em coordenadas de mundo (x,z)
     pub waypoint_arcs: Vec<f32>,         // Arco cumulativo por waypoint (arcs[i] = comprimento de wp[0] até wp[i])
+    pub start_progress: f32,             // Arc-length da start_pos projetada (cacheado em new() — constante)
 }
 
 impl VoxelWorld {
@@ -85,12 +86,33 @@ impl VoxelWorld {
             waypoint_arcs.push(total_dist);
         }
 
-        Self { 
+        let start_pos = Vec3::new(120.0 * cell_size, 0.5, 20.0 * cell_size);
+
+        // Pré-calcula start_progress uma vez — antes era refeito a cada get_track_progress
+        // (500 carros × 60 Hz × 10× time_scale = 300k recálculos/s de uma constante).
+        let start_pos_2d = Vec2::new(start_pos.x, start_pos.z);
+        let mut start_progress = 0.0;
+        let mut min_start_dist = f32::MAX;
+        for i in 0..waypoints_world.len() - 1 {
+            let p1 = waypoints_world[i];
+            let p2 = waypoints_world[i+1];
+            let seg_len = p1.distance(p2);
+            let mut dir = p2 - p1;
+            if seg_len > 0.0 { dir /= seg_len; }
+            let v = start_pos_2d - p1;
+            let t = v.dot(dir).clamp(0.0, seg_len);
+            let proj = p1 + dir * t;
+            let dist = start_pos_2d.distance(proj);
+            if dist < min_start_dist { min_start_dist = dist; start_progress = waypoint_arcs[i] + t; }
+        }
+
+        Self {
             size, grid, flow, height_map, banking, cell_size,
-            start_pos: Vec3::new(120.0 * cell_size, 0.5, 20.0 * cell_size),
+            start_pos,
             lap_distance: total_dist,
             waypoints_world,
             waypoint_arcs,
+            start_progress,
         }
     }
 
@@ -136,27 +158,11 @@ impl VoxelWorld {
             }
         }
         
-        // Offset para alinhar o 0.0 com a start_pos física (lap_line)
-        let start_pos_2d = Vec2::new(self.start_pos.x, self.start_pos.z);
-        let mut start_progress = 0.0;
-        let mut min_start_dist = f32::MAX;
-        for i in 0..self.waypoints_world.len() - 1 {
-            let p1 = self.waypoints_world[i];
-            let p2 = self.waypoints_world[i+1];
-            let seg_len = p1.distance(p2);
-            let mut dir = p2 - p1;
-            if seg_len > 0.0 { dir /= seg_len; }
-            let v = start_pos_2d - p1;
-            let t = v.dot(dir).clamp(0.0, seg_len);
-            let proj = p1 + dir * t;
-            let dist = start_pos_2d.distance(proj);
-            if dist < min_start_dist { min_start_dist = dist; start_progress = self.waypoint_arcs[i] + t; }
-        }
-        
         // Arc-length relativo à linha de largada. NÃO fazemos wrap aqui: contagem de voltas
         // é feita em simulation.rs (cruzamento de lap_line). Se o carro está atrás da largada
         // (spawn grid recuado, ou andou pra trás), retornamos 0 — jamais um valor enorme falso.
-        (best_progress - start_progress).max(0.0)
+        // start_progress agora é campo cacheado (é constante pra um dado mundo).
+        (best_progress - self.start_progress).max(0.0)
     }
 
     /// Retorna a altura do terreno em coordenadas mundo (com interpolação bilinear)
@@ -423,6 +429,7 @@ impl Default for VoxelWorld {
             lap_distance: 0.0,
             waypoints_world: Vec::new(),
             waypoint_arcs: Vec::new(),
+            start_progress: 0.0,
         }
     }
 }

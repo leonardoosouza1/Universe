@@ -98,7 +98,11 @@ impl SovereignEngine {
         }
 
         // 3. Custo Metabólico
-        self.metabolism.accumulate_fatigue(0.002 / delta_t.max(0.001));
+        // FIX CRÍTICO: era `0.002 / delta_t` (cost per tick = 0.12 @ 60Hz). A adenosina
+        // atingia 1.0 em ~130ms → trigger_sleep → brain ignorava sensores por ~18s.
+        // Isso explicava raw_steer congelado nos brain traces: o cérebro estava DORMINDO.
+        // Correto: custo proporcional a delta_t (acumula ~0.002/s = exausto em ~500s).
+        self.metabolism.accumulate_fatigue(0.002 * delta_t);
         self.metabolism.update(delta_t);
     }
 }

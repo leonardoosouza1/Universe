@@ -44,6 +44,12 @@ fn main() {
         global_best_position: None,
         champion_distance: 0.0,
         elite_pool: Vec::new(),
+        champion_path: Vec::new(),
+        champion_net_dist: 0.0,
+        gens_since_crown: 0,
+        last_gen_path: Vec::new(),
+        last_gen_net: 0.0,
+        last_gen_was_grid: false,
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))
