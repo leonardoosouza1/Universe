@@ -333,9 +333,9 @@ fn evolution_pipeline(
             }).map(|(_, r, _, _)| r)
         };
         if let Some(best) = best_racer {
-            let this_gen_best_dist = best.distance;
-            
-            // ELITISMO REAL: Só coroa se SUPEROU a distância do campeão anterior
+            let this_gen_best_dist = best.track_progress;
+
+            // ELITISMO REAL: Só coroa se SUPEROU o progresso REAL na pista do campeão anterior
             // champion_distance é separado de global_best_distance (que é visual)
             let should_crown = this_gen_best_dist > race.champion_distance
                 || race.best_weights.is_none()

@@ -153,9 +153,10 @@ impl VoxelWorld {
             if dist < min_start_dist { min_start_dist = dist; start_progress = self.waypoint_arcs[i] + t; }
         }
         
-        let mut final_prog = best_progress - start_progress;
-        if final_prog < 0.0 { final_prog += self.lap_distance; } // Wrap pra não ficar negativo
-        final_prog
+        // Arc-length relativo à linha de largada. NÃO fazemos wrap aqui: contagem de voltas
+        // é feita em simulation.rs (cruzamento de lap_line). Se o carro está atrás da largada
+        // (spawn grid recuado, ou andou pra trás), retornamos 0 — jamais um valor enorme falso.
+        (best_progress - start_progress).max(0.0)
     }
 
     /// Retorna a altura do terreno em coordenadas mundo (com interpolação bilinear)
