@@ -43,6 +43,12 @@ pub struct Racer {
     pub path_timer: f32,           // Cooldown entre amostras de path
     pub brain_trace: Vec<BrainSnapshot>, // Snapshots periódicos do cérebro (diagnóstico)
     pub trace_timer: f32,          // Cooldown entre snapshots
+    pub gaze_yaw: f32,             // Ângulo da fóvea relativo ao forward (rad). Atualizado por saccade
+                                   // reativo — aponta pro caminho mais aberto detectado pela periférica.
+                                   // Clamp ±π/3. Canal 98 expõe pra rede.
+    pub max_progress: f32,         // track_progress máximo já alcançado — MONOTÔNICO. Imune a oscilação.
+                                   // Base do stagnation check: se max_progress não cresce > 2m em 90 frames, morte.
+    pub slow_time: f32,            // Frames acumulados com velocidade < 3 m/s após grace. > 60 frames → sangria pesada.
 }
 
 /// Frame de diagnóstico do cérebro do racer.

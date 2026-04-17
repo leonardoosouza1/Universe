@@ -103,6 +103,15 @@ fn build_priming_weights() -> Vec<f32> {
     weights[0 * 128 + 94] = -8.0;
     weights[0 * 128 + 95] = -8.0;
 
+    // A18 (NOVO): GAZE TRACKER (canal 98) — fóvea sacádica aponta pro caminho aberto.
+    // Valor = ângulo da fóvea normalizado [-127..+127] mapeando [-60°..+60°].
+    // Positivo ⇒ pista aberta à direita ⇒ steer DIREITA. Negativo ⇒ LEFT.
+    // É um "ponteiro pro preto" já processado: direção única do setor mais aberto,
+    // suavizada com EMA pra parecer uma cabeça girando, não um tremor.
+    weights[1 * 128 + 98] = 14.0;  // steer direto segue o gaze
+    // Contraste: se gaze aponta MUITO pra lateral (±90%), corta throttle — curva fechada.
+    // Isso vira via quantize (se |gaze|=127, peso *valor explode) mas só bias indireto.
+
     weights
 }
 
@@ -348,6 +357,9 @@ pub fn spawn_swarm(
                 path_timer: 0.0,
                 brain_trace: Vec::with_capacity(15),
                 trace_timer: 0.0,
+                gaze_yaw: 0.0,
+                max_progress: spawn_progress,
+                slow_time: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

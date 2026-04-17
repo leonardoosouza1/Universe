@@ -154,8 +154,30 @@ pub(super) fn update_racers(
         let forward = transform.right().as_vec3();
         let right = transform.back().as_vec3();
 
-        let retina_binocular = world.render_binocular_retina(pos + Vec3::new(0.0, 0.4, 0.0), forward, right);
+        // Fóvea aponta pro gaze_yaw do frame anterior. Saccade tem latência ~1 frame (biológico).
+        let retina_binocular = world.render_binocular_retina(pos + Vec3::new(0.0, 0.4, 0.0), forward, right, racer.gaze_yaw);
         for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
+
+        // --- SACCADE REATIVA: fóvea busca o setor periférico mais escuro (pista aberta) ---
+        // Varre os 32 pixels periféricos (índices 32..64) e identifica o de menor valor
+        // (road = -128..-80, grass = 0..40, wall = 60..127). "Mais escuro" = pista mais aberta
+        // naquele ângulo. Calcula o yaw correspondente e suaviza com EMA (~150ms de resposta).
+        let mut darkest_val: i32 = 127;
+        let mut darkest_i: usize = 15; // default: centro
+        for i in 0..32 {
+            let v = retina_binocular[32 + i] as i32;
+            if v < darkest_val { darkest_val = v; darkest_i = i; }
+        }
+        // Mapeia índice → ângulo na periférica (mesmo mapeamento de world.rs: normalized * FOV/2).
+        let per_fov = std::f32::consts::PI; // 180°
+        let target_yaw = ((darkest_i as f32 / 31.0) * 2.0 - 1.0) * (per_fov / 2.0);
+        // Clamp ±60°: além disso a fóvea sai da hemisfera frontal útil.
+        let target_yaw = target_yaw.clamp(-std::f32::consts::FRAC_PI_3, std::f32::consts::FRAC_PI_3);
+        // EMA: 0.15 por frame a 60fps ≈ tau 150ms. Rápido o bastante pra responder curva,
+        // lento o bastante pra parecer "olho girando", não "tremor".
+        racer.gaze_yaw = racer.gaze_yaw + (target_yaw - racer.gaze_yaw) * 0.15;
+        // Canal 98: gaze normalizado. π/3 = ±127.
+        sensory_wave[98] = ((racer.gaze_yaw / std::f32::consts::FRAC_PI_3) * 127.0).clamp(-127.0, 127.0) as i8;
 
         // --- DARK-CENTER TRACKER (Canais 90-93): "Center the Black" ---
         // Centro de massa angular dos pixels ESCUROS (pista) na retina.
@@ -957,11 +979,10 @@ pub(super) fn update_racers(
 
         if hit_wall && !racer.is_dead {
             racer.wall_time += dt;
-            // PAREDE = DANO PESADO MAS NÃO INSTA-MORTE. -40 HP por toque + 1.5s cooldown.
-            // Com checkpoint (+25 HP a cada 50m), o carro aguenta 2-3 toques enquanto aprende.
-            // PINADO: se wall_time acumulado > 2.0s (sustentado contra parede), morre direto —
-            // senão carros batidos ficariam vivos minutos na parede sem acumular dano suficiente.
-            let pinned = racer.grace_ticks >= 600 && racer.wall_time > 2.0;
+            // PAREDE = DANO BRUTAL. -60 HP por toque + 0.6s cooldown (2 toques = morte).
+            // PINADO: wall_time > 1.0s (antes 2.0s) = morte. Cortado pela metade porque
+            // carros ficavam literalmente vivos 1 minuto raspando.
+            let pinned = racer.grace_ticks >= 600 && racer.wall_time > 1.0;
             if pinned {
                 racer.is_dead = true;
                 racer.hp = 0.0;
@@ -970,8 +991,8 @@ pub(super) fn update_racers(
                 commands.entity(entity).insert(Visibility::Hidden);
             } else if racer.wall_cooldown == 0.0 {
                 racer.wall_hits += 1;
-                racer.wall_cooldown = 1.5;
-                let dmg = if racer.grace_ticks >= 600 { 40.0 } else { 25.0 };
+                racer.wall_cooldown = 0.6;
+                let dmg = if racer.grace_ticks >= 600 { 60.0 } else { 35.0 };
                 racer.hp -= dmg;
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
@@ -985,8 +1006,10 @@ pub(super) fn update_racers(
                 }
             }
         } else {
-            // Saiu da parede — wall_time decai lentamente pra permitir "toques" não-pinados.
-            racer.wall_time = (racer.wall_time - dt * 0.3).max(0.0);
+            // Decay AINDA MAIS LENTO: physics pode alternar hit/no-hit por 1-2 frames mesmo
+            // com carro grudado na parede. Se decaísse rápido, pinned nunca acumulava.
+            // dt * 0.1 = precisa de ~10 frames contínuos sem hit pra zerar wall_time.
+            racer.wall_time = (racer.wall_time - dt * 0.1).max(0.0);
         }
 
         // --- CHECKPOINT RECOVERY ---
@@ -1005,22 +1028,57 @@ pub(super) fn update_racers(
             }
         }
 
-        // Stagnation anti-idle: só mata se VERDADEIRAMENTE parado.
-        // REMOVIDA a checagem `alignment < 0.0` — matava carros que estavam virando
-        // curva fechada (cos da diferença angular fica negativo no meio de um 90°+).
-        // Resultado visível: toda gen morria em 12-15s na primeira curva.
-        // Progresso real (track_progress) já é coberto pelo progress_stall → hp drain.
-        let alignment = (racer.phase - track_phase).cos();
-        if racer.amplitude < 3.0 && racer.engine.current_time > 25.0 {
-            racer.stagnation += dt;
-            if racer.stagnation > 1.5 {
+        // === STAGNATION MONOTÔNICA ===
+        // Bug anterior: progress_checkpoint oscilava com o arc-length do carro vibrando
+        // contra a parede, resetava stagnation, e 500 carros ficavam vivos pinados.
+        // AGORA: max_progress SÓ CRESCE, nunca desce. Se não crescer > 2m em 90 frames
+        // (~1.5s reais), morte IMEDIATA. Oscilação não salva mais ninguém.
+        let prev_max = racer.max_progress;
+        racer.max_progress = racer.max_progress.max(racer.track_progress);
+        if racer.grace_ticks >= 600 {
+            if racer.max_progress > prev_max + 0.01 {
+                // Avançou de fato neste frame (monotônico só cresce em avanço real).
+                if racer.max_progress > racer.progress_checkpoint + 2.0 {
+                    racer.progress_checkpoint = racer.max_progress;
+                    racer.stagnation = 0.0;
+                } else {
+                    racer.stagnation += 1.0;
+                }
+            } else {
+                // max_progress parado neste frame = sem avanço real.
+                racer.stagnation += 1.0;
+            }
+            if racer.stagnation > 90.0 {
                 racer.is_dead = true;
+                race.death_markers.push(pos);
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 commands.entity(entity).insert(Visibility::Hidden);
             }
         } else {
-            racer.stagnation = (racer.stagnation - dt).max(0.0);
+            racer.stagnation = 0.0;
+            racer.progress_checkpoint = racer.max_progress;
         }
-        let _ = alignment; // mantido pra uso futuro (telemetria/curriculum)
+
+        // === SPEED BLEED BRUTAL ===
+        // Se pós-grace e velocidade < 3 m/s (~10 km/h), acumula slow_time em FRAMES.
+        // Passando 60 frames (~1s real) em slow_time, sangra -80 HP/s. Carro vivo
+        // encostado na parede dura NO MÁXIMO ~1.5s após o gatilho.
+        let cur_speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
+        if racer.grace_ticks >= 600 && cur_speed < 3.0 {
+            racer.slow_time += 1.0;
+            if racer.slow_time > 60.0 {
+                racer.hp -= 80.0 * dt;
+                if racer.hp <= 0.0 {
+                    racer.is_dead = true;
+                    racer.hp = 0.0;
+                    race.death_markers.push(pos);
+                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                    commands.entity(entity).insert(Visibility::Hidden);
+                }
+            }
+        } else {
+            racer.slow_time = (racer.slow_time - 2.0).max(0.0); // decai rápido quando anda
+        }
 
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
         if racer.fuel <= 0.0 {
@@ -1050,16 +1108,42 @@ pub(super) fn update_racers(
         if race.selected_racer.is_some() && race.selected_racer.unwrap() == entity ||
            (race.selected_racer.is_none() && current_best == entity) {
 
-            let fov = 100.0_f32.to_radians();
             let forward = *transform.right();
+            let up = *transform.up();
             let eye_pos = transform.translation + Vec3::Y * 0.4;
 
-            for i in 0..32 {
-                let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
-                let yaw_angle = normalized_i * (fov / 2.0);
-                let ray_dir = Quat::from_axis_angle(*transform.up(), yaw_angle) * forward;
-                // 150.0 metros é o limite físico real (hit_dist) do LiDAR no world.rs
-                gizmos.line(eye_pos, eye_pos + ray_dir * 150.0, Color::srgba(0.0, 1.0, 0.0, 0.15));
+            // Retina dual-scale: row 0 = fóvea estreita 50° (sacádica), row 1 = periférica 180° (fixa).
+            // Espelha exatamente o que world.rs::render_binocular_retina() faz.
+            for row in 0..2 {
+                let fov = if row == 0 { 50.0_f32.to_radians() } else { 180.0_f32.to_radians() };
+                let gaze = if row == 0 { racer.gaze_yaw } else { 0.0 };
+                let color = if row == 0 {
+                    Color::srgba(0.0, 1.0, 0.0, 0.22) // fóvea verde (atenção)
+                } else {
+                    Color::srgba(0.2, 0.5, 1.0, 0.08) // periférica azul clara (panorâmica)
+                };
+                for i in 0..32 {
+                    let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
+                    let yaw_angle = normalized_i * (fov / 2.0) + gaze;
+                    let ray_dir = Quat::from_axis_angle(up, yaw_angle) * forward;
+                    gizmos.line(eye_pos, eye_pos + ray_dir * 150.0, color);
+                }
+            }
+
+            // Flecha mostrando a direção central do gaze (pra onde a cabeça está olhando).
+            let gaze_dir = Quat::from_axis_angle(up, racer.gaze_yaw) * forward;
+            gizmos.arrow(eye_pos + Vec3::Y * 0.6, eye_pos + Vec3::Y * 0.6 + gaze_dir * 8.0, Color::srgb(0.0, 1.0, 0.3));
+
+            // Whiskers A17 (canais 94-97): ±30° e ±60°, alcance 10m.
+            let whisker_color = Color::srgba(1.0, 0.9, 0.0, 0.9);
+            for &ang in &[
+                std::f32::consts::FRAC_PI_6,
+                -std::f32::consts::FRAC_PI_6,
+                std::f32::consts::FRAC_PI_3,
+                -std::f32::consts::FRAC_PI_3,
+            ] {
+                let dir = Quat::from_axis_angle(up, ang) * forward;
+                gizmos.line(eye_pos, eye_pos + dir * 10.0, whisker_color);
             }
         }
     }

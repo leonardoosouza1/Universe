@@ -289,26 +289,36 @@ impl VoxelWorld {
         max_dist
     }
     /// LÍDAR ÓPTICO (Visão Cíclope Linear HD com Raycast DDA: 32x2 pixels abrangendo 100 Graus Uniformes)
-    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3) -> [i8; 64] {
+    ///
+    /// `gaze_yaw` (rad): offset angular da fóvea relativa ao forward. Simula saccade ocular —
+    /// a fóvea vira pro setor mais escuro detectado pela periférica. Periférica ignora gaze
+    /// (sempre centrada no forward — é o "campo panorâmico" fixo do motorista).
+    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; 64] {
         let mut pixels = [-128; 64];
         let eye_pos = pos + Vec3::Y * 0.4;
         let cell = self.cell_size;
 
         // Retina dual-scale:
-        //   Row 0 = FÓVEA ESTREITA (FOV 50°, pitch -0.04): detalhe alto do que está à frente.
-        //   Row 1 = PERIFÉRICA LARGA (FOV 150°, pitch 0.0): vê curva chegando e paredes laterais.
+        //   Row 0 = FÓVEA ESTREITA (FOV 50°, pitch -0.04, yaw = gaze_yaw): detalhe alto do
+        //           setor pra onde a atenção está apontando. NÃO está fixa no forward —
+        //           acompanha a saccade pra escanear curvas que saem do eixo do carro.
+        //   Row 1 = PERIFÉRICA 180° (pitch 0.0, yaw fixo): vê exatamente ±90° (lateral perpendicular).
+        //     Em curva fechada o carro precisa enxergar a parede DO LADO,
+        //     não só a diagonal-frontal. Com 180°, cada pixel cobre ~5.6° e os da borda
+        //     detectam a parede lateral como fundo escuro quando o caminho faz a curva.
         for row in 0..2 {
-            let fov = if row == 0 { 50.0_f32.to_radians() } else { 150.0_f32.to_radians() };
+            let fov = if row == 0 { 50.0_f32.to_radians() } else { 180.0_f32.to_radians() };
             let pitch = if row == 0 { -0.04_f32 } else { 0.0_f32 };
+            let gaze = if row == 0 { gaze_yaw } else { 0.0 };
             let dir_y = pitch.sin();
             let cos_pitch = pitch.cos();
-            
+
             for i in 0..32 {
                 let index = (row * 32) + i;
                 let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
-                
+
                 // Distribuição Mapeada de forma 100% Linear. Precisão impecável em curvas.
-                let yaw_angle = normalized_i * (fov / 2.0);
+                let yaw_angle = normalized_i * (fov / 2.0) + gaze;
                 
                 let dir_x = (forward.x * yaw_angle.cos() + right.x * yaw_angle.sin()) * cos_pitch;
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
