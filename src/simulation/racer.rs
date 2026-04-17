@@ -47,8 +47,10 @@ pub struct Racer {
                                    // reativo — aponta pro caminho mais aberto detectado pela periférica.
                                    // Clamp ±π/3. Canal 98 expõe pra rede.
     pub max_progress: f32,         // track_progress máximo já alcançado — MONOTÔNICO. Imune a oscilação.
-                                   // Base do stagnation check: se max_progress não cresce > 2m em 90 frames, morte.
-    pub slow_time: f32,            // Frames acumulados com velocidade < 3 m/s após grace. > 60 frames → sangria pesada.
+                                   // Base do stagnation check: sem crescimento > 2m em 1.5s virtuais, morte.
+    pub slow_time: f32,            // SEGUNDOS VIRTUAIS com velocidade < 3 m/s após grace. > 0.5s → sangria pesada.
+    pub race_time: f32,            // SEGUNDOS VIRTUAIS vivos — imune a time_scale. Usado pra grace real
+                                   // (grace_ticks conta frames reais, inadequado quando sim roda a 8x).
 }
 
 /// Frame de diagnóstico do cérebro do racer.

@@ -24,6 +24,9 @@ pub(super) fn update_racers(
     mut gizmos: Gizmos,
 ) {
     let dt = time.delta_secs().min(0.02);
+    // UNCAPPED virtual delta — pra contadores que precisam refletir tempo simulado real
+    // (independente de time_scale). Grace e punições usam isto, não o dt capado.
+    let vdt = time.delta_secs();
     let world = &world_res.0;
 
     // --- RENDERIZAR MARCO-ZERO (A BANDEIRA DO CAMPEÃO GLOBAL) ---
@@ -142,6 +145,9 @@ pub(super) fn update_racers(
 
         // Grace tick-based: imune a time_scale. ~600 frames = 10s reais @ 60Hz.
         racer.grace_ticks = racer.grace_ticks.saturating_add(1);
+        // race_time em SEGUNDOS VIRTUAIS: a 8x time_scale, 1s real = 8s virtuais aqui.
+        // É o relógio que o USUÁRIO vê na tela. Punições de grace usam isto.
+        racer.race_time += vdt;
 
         let pos = transform.translation;
         let flow = world.get_flow_at(pos.x, pos.z);
@@ -158,26 +164,41 @@ pub(super) fn update_racers(
         let retina_binocular = world.render_binocular_retina(pos + Vec3::new(0.0, 0.4, 0.0), forward, right, racer.gaze_yaw);
         for i in 0..64 { sensory_wave[i] = retina_binocular[i]; }
 
-        // --- SACCADE REATIVA: fóvea busca o setor periférico mais escuro (pista aberta) ---
-        // Varre os 32 pixels periféricos (índices 32..64) e identifica o de menor valor
-        // (road = -128..-80, grass = 0..40, wall = 60..127). "Mais escuro" = pista mais aberta
-        // naquele ângulo. Calcula o yaw correspondente e suaviza com EMA (~150ms de resposta).
-        let mut darkest_val: i32 = 127;
-        let mut darkest_i: usize = 15; // default: centro
-        for i in 0..32 {
+        // --- SACCADE COM MEMÓRIA: média ponderada de pixels escuros + hold se cego ---
+        // Usa TODOS os pixels escuros (valor negativo = road) no setor frontal (±60°),
+        // pondera por "quão escuro" e calcula centroide angular. Se NADA está escuro
+        // (tudo parede/grama = visão bloqueada), MANTÉM o gaze anterior — é a memória
+        // de "a pista estava pra direita há pouco, continua indo pra lá pra encontrar".
+        // 180°/32 pixels ≈ 5.625°/pixel. ±60° ⇒ índices 6..26.
+        let per_fov = std::f32::consts::PI;
+        let mut dark_angle_sum: f32 = 0.0;
+        let mut dark_weight_sum: f32 = 0.0;
+        for i in 6..26 {
             let v = retina_binocular[32 + i] as i32;
-            if v < darkest_val { darkest_val = v; darkest_i = i; }
+            if v < 0 {
+                let strength = (-v) as f32; // -128 (perto) → 128 de peso; -80 (longe) → 80
+                let angle = ((i as f32 / 31.0) * 2.0 - 1.0) * (per_fov / 2.0);
+                dark_angle_sum += angle * strength;
+                dark_weight_sum += strength;
+            }
         }
-        // Mapeia índice → ângulo na periférica (mesmo mapeamento de world.rs: normalized * FOV/2).
-        let per_fov = std::f32::consts::PI; // 180°
-        let target_yaw = ((darkest_i as f32 / 31.0) * 2.0 - 1.0) * (per_fov / 2.0);
-        // Clamp ±60°: além disso a fóvea sai da hemisfera frontal útil.
-        let target_yaw = target_yaw.clamp(-std::f32::consts::FRAC_PI_3, std::f32::consts::FRAC_PI_3);
-        // EMA: 0.15 por frame a 60fps ≈ tau 150ms. Rápido o bastante pra responder curva,
-        // lento o bastante pra parecer "olho girando", não "tremor".
-        racer.gaze_yaw = racer.gaze_yaw + (target_yaw - racer.gaze_yaw) * 0.15;
-        // Canal 98: gaze normalizado. π/3 = ±127.
-        sensory_wave[98] = ((racer.gaze_yaw / std::f32::consts::FRAC_PI_3) * 127.0).clamp(-127.0, 127.0) as i8;
+        if dark_weight_sum > 0.0 {
+            // Há pista visível: fóvea persegue o centro de massa com EMA suave.
+            let target_yaw = dark_angle_sum / dark_weight_sum;
+            racer.gaze_yaw += (target_yaw - racer.gaze_yaw) * 0.15;
+        }
+        // else: sem pista visível = visão toda branca. HOLD o gaze_yaw anterior.
+        // Ponteiro mantém última direção conhecida → priming A18 continua votando
+        // "vira pra lá", carro caça o escuro de memória.
+
+        // Canais 98-101: gaze normalizado DUPLICADO 4× (igual A16).
+        // Após quantize ternária, 4× canais = 4× de vote no steer, forte o bastante
+        // pra superar DNA aleatório na gen 1 — priming A18 passa a DOMINAR na largada.
+        let gaze_i8 = ((racer.gaze_yaw / std::f32::consts::FRAC_PI_3) * 127.0).clamp(-127.0, 127.0) as i8;
+        sensory_wave[98] = gaze_i8;
+        sensory_wave[99] = gaze_i8;
+        sensory_wave[100] = gaze_i8;
+        sensory_wave[101] = gaze_i8;
 
         // --- DARK-CENTER TRACKER (Canais 90-93): "Center the Black" ---
         // Centro de massa angular dos pixels ESCUROS (pista) na retina.
@@ -194,10 +215,10 @@ pub(super) fn update_racers(
         let mut dark_sum_i: f32 = 0.0;
         let mut dark_weight: f32 = 0.0;
         for i in 0..32 {
-            // Fovea + periférica combinadas para robustez.
-            let d_fov = (-retina_binocular[i] as f32).max(0.0);
-            let d_per = (-retina_binocular[32 + i] as f32).max(0.0);
-            let d = d_fov + d_per;
+            // APENAS periférica — fóvea é sacádica (gira com gaze), seu index não
+            // corresponde mais a ângulo fixo. Usar a fóvea aqui polui o centro de
+            // massa com viés falso sempre que a cabeça vira.
+            let d = (-retina_binocular[32 + i] as f32).max(0.0);
             dark_sum_i += d * (i as f32 - 15.5);
             dark_weight += d;
         }
@@ -977,22 +998,26 @@ pub(super) fn update_racers(
             }
         }
 
+        // GRACE em frames REAIS — virtual time é caótico nos primeiros frames (FPS
+        // irregular em swarm grande, max_delta do Bevy, etc). 180 frames reais ≈ 3s real
+        // ≈ tempo suficiente pra rede propagar e carro sair da largada em QUALQUER time_scale.
+        let out_of_grace = racer.grace_ticks >= 180;
+
         if hit_wall && !racer.is_dead {
-            racer.wall_time += dt;
-            // PAREDE = DANO BRUTAL. -60 HP por toque + 0.6s cooldown (2 toques = morte).
-            // PINADO: wall_time > 1.0s (antes 2.0s) = morte. Cortado pela metade porque
-            // carros ficavam literalmente vivos 1 minuto raspando.
-            let pinned = racer.grace_ticks >= 600 && racer.wall_time > 1.0;
+            racer.wall_time += dt; // dt capado; wall_time em segundos REAIS (lento, estável).
+            // PINADO: 0.8s REAIS raspando parede = morte.
+            let pinned = out_of_grace && racer.wall_time > 0.8;
             if pinned {
                 racer.is_dead = true;
                 racer.hp = 0.0;
                 race.death_markers.push(pos);
                 if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 commands.entity(entity).insert(Visibility::Hidden);
+                println!("💀 {} PINADO frame {} (wall_time={:.2}s)", racer.name, racer.grace_ticks, racer.wall_time);
             } else if racer.wall_cooldown == 0.0 {
                 racer.wall_hits += 1;
                 racer.wall_cooldown = 0.6;
-                let dmg = if racer.grace_ticks >= 600 { 60.0 } else { 35.0 };
+                let dmg = if out_of_grace { 60.0 } else { 35.0 };
                 racer.hp -= dmg;
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
@@ -1000,15 +1025,14 @@ pub(super) fn update_racers(
                     race.death_markers.push(pos);
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                     commands.entity(entity).insert(Visibility::Hidden);
+                    println!("💀 {} BATIDA frame {} ({} hits)", racer.name, racer.grace_ticks, racer.wall_hits);
                 } else if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
                     let health_ratio = (racer.hp / 100.0).clamp(0.0, 1.0);
                     mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
                 }
             }
         } else {
-            // Decay AINDA MAIS LENTO: physics pode alternar hit/no-hit por 1-2 frames mesmo
-            // com carro grudado na parede. Se decaísse rápido, pinned nunca acumulava.
-            // dt * 0.1 = precisa de ~10 frames contínuos sem hit pra zerar wall_time.
+            // Decay lento: dt * 0.1 = precisa de ~10s reais contínuos sem hit pra zerar.
             racer.wall_time = (racer.wall_time - dt * 0.1).max(0.0);
         }
 
@@ -1028,16 +1052,13 @@ pub(super) fn update_racers(
             }
         }
 
-        // === STAGNATION MONOTÔNICA ===
-        // Bug anterior: progress_checkpoint oscilava com o arc-length do carro vibrando
-        // contra a parede, resetava stagnation, e 500 carros ficavam vivos pinados.
-        // AGORA: max_progress SÓ CRESCE, nunca desce. Se não crescer > 2m em 90 frames
-        // (~1.5s reais), morte IMEDIATA. Oscilação não salva mais ninguém.
+        // === STAGNATION MONOTÔNICA (em FRAMES reais) ===
+        // max_progress SÓ CRESCE. Sem avanço > 2m em 180 frames (≈3s reais), morte.
+        // Frame-based = estável independente de time_scale / FPS / max_delta do Bevy.
         let prev_max = racer.max_progress;
         racer.max_progress = racer.max_progress.max(racer.track_progress);
-        if racer.grace_ticks >= 600 {
+        if out_of_grace {
             if racer.max_progress > prev_max + 0.01 {
-                // Avançou de fato neste frame (monotônico só cresce em avanço real).
                 if racer.max_progress > racer.progress_checkpoint + 2.0 {
                     racer.progress_checkpoint = racer.max_progress;
                     racer.stagnation = 0.0;
@@ -1045,39 +1066,38 @@ pub(super) fn update_racers(
                     racer.stagnation += 1.0;
                 }
             } else {
-                // max_progress parado neste frame = sem avanço real.
                 racer.stagnation += 1.0;
             }
-            if racer.stagnation > 90.0 {
+            if racer.stagnation > 180.0 {
                 racer.is_dead = true;
                 race.death_markers.push(pos);
                 if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 commands.entity(entity).insert(Visibility::Hidden);
+                println!("💀 {} STAGNATION aos frame {} (sem avanço {} frames)", racer.name, racer.grace_ticks, racer.stagnation as u32);
             }
         } else {
             racer.stagnation = 0.0;
             racer.progress_checkpoint = racer.max_progress;
         }
 
-        // === SPEED BLEED BRUTAL ===
-        // Se pós-grace e velocidade < 3 m/s (~10 km/h), acumula slow_time em FRAMES.
-        // Passando 60 frames (~1s real) em slow_time, sangra -80 HP/s. Carro vivo
-        // encostado na parede dura NO MÁXIMO ~1.5s após o gatilho.
+        // === SPEED BLEED (em FRAMES reais) ===
+        // Velocidade < 3 m/s por 120 frames (≈2s reais) → sangra 100 HP/s real. Morto em ~1s real.
         let cur_speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
-        if racer.grace_ticks >= 600 && cur_speed < 3.0 {
+        if out_of_grace && cur_speed < 3.0 {
             racer.slow_time += 1.0;
-            if racer.slow_time > 60.0 {
-                racer.hp -= 80.0 * dt;
+            if racer.slow_time > 120.0 {
+                racer.hp -= 100.0 * dt;
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     racer.hp = 0.0;
                     race.death_markers.push(pos);
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                     commands.entity(entity).insert(Visibility::Hidden);
+                    println!("💀 {} SPEED_BLEED aos frame {} (slow_time={} frames)", racer.name, racer.grace_ticks, racer.slow_time as u32);
                 }
             }
         } else {
-            racer.slow_time = (racer.slow_time - 2.0).max(0.0); // decai rápido quando anda
+            racer.slow_time = (racer.slow_time - 2.0).max(0.0);
         }
 
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
@@ -1126,7 +1146,7 @@ pub(super) fn update_racers(
                     let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
                     let yaw_angle = normalized_i * (fov / 2.0) + gaze;
                     let ray_dir = Quat::from_axis_angle(up, yaw_angle) * forward;
-                    gizmos.line(eye_pos, eye_pos + ray_dir * 150.0, color);
+                    gizmos.line(eye_pos, eye_pos + ray_dir * 300.0, color);
                 }
             }
 
