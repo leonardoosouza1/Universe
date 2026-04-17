@@ -41,6 +41,7 @@ fn main() {
         global_best_distance: 0.0,
         global_best_position: None,
         champion_distance: 0.0,
+        elite_pool: Vec::new(),
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))
@@ -140,5 +141,5 @@ fn setup_scene(
         SimulationEntity,
     ));
 
-    spawn_swarm(&mut commands, &mut meshes, &mut materials, &race, world, &dev, &config);
+    spawn_swarm(&mut commands, &mut meshes, &mut materials, &mut race, world, &dev, &config);
 }

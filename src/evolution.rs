@@ -7,6 +7,140 @@ use rand::prelude::*;
 use std::fs::File;
 use std::io::{Read, Write};
 
+#[derive(Clone)]
+pub struct EliteDna {
+    pub fast_weights: Vec<i8>,
+    pub fast_scale: f32,
+    pub slow_weights: Vec<i8>,
+    pub slow_scale: f32,
+    pub fitness: f32,
+}
+
+// ============================================================================
+// DNA FILE FORMAT v3
+// ----------------------------------------------------------------------------
+// Layout (little-endian, 8478 bytes total):
+//   magic[4]     = b"IARA"
+//   version:u16  = 3
+//   generation:u32
+//   seed:u32
+//   track_width:f32
+//   fitness:f32
+//   fast_scale:f32
+//   fast_weights[8192] (i8 as u8)
+//   slow_scale:f32
+//   slow_weights[256]  (i8 as u8)
+//
+// Backward-compat: legacy v1 (8196B) and v2 (8456B) files are detected by
+// absence of magic bytes and loaded with zeroed metadata.
+// ============================================================================
+pub const DNA_MAGIC: &[u8; 4] = b"IARA";
+pub const DNA_VERSION: u16 = 3;
+pub const DNA_FAST_SIZE: usize = 128 * 64;
+pub const DNA_SLOW_SIZE: usize = 32 * 8;
+pub const DNA_HEADER_SIZE: usize = 4 + 2 + 4 + 4 + 4 + 4;  // 22
+pub const DNA_V3_TOTAL: usize = DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE + 4 + DNA_SLOW_SIZE;  // 8478
+
+pub struct DnaPayload {
+    pub fast_weights: Vec<i8>,
+    pub fast_scale: f32,
+    pub slow_weights: Option<Vec<i8>>,
+    pub slow_scale: f32,
+    pub generation: u32,
+    pub seed: u32,
+    pub track_width: f32,
+    pub fitness: f32,
+    pub version: u16,
+}
+
+pub fn save_champion_dna(
+    path: &str,
+    fast_weights: &[i8],
+    fast_scale: f32,
+    slow_weights: &[i8],
+    slow_scale: f32,
+    generation: u32,
+    seed: u32,
+    track_width: f32,
+    fitness: f32,
+) -> std::io::Result<()> {
+    let mut file = File::create(path)?;
+    file.write_all(DNA_MAGIC)?;
+    file.write_all(&DNA_VERSION.to_le_bytes())?;
+    file.write_all(&generation.to_le_bytes())?;
+    file.write_all(&seed.to_le_bytes())?;
+    file.write_all(&track_width.to_le_bytes())?;
+    file.write_all(&fitness.to_le_bytes())?;
+    file.write_all(&fast_scale.to_le_bytes())?;
+    file.write_all(&fast_weights.iter().map(|&w| w as u8).collect::<Vec<u8>>())?;
+    file.write_all(&slow_scale.to_le_bytes())?;
+    file.write_all(&slow_weights.iter().map(|&w| w as u8).collect::<Vec<u8>>())?;
+    Ok(())
+}
+
+pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
+    let mut file = File::open(path).ok()?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).ok()?;
+
+    // --- v3 with magic ---
+    if buf.len() >= DNA_V3_TOTAL && &buf[0..4] == DNA_MAGIC {
+        let version = u16::from_le_bytes(buf[4..6].try_into().ok()?);
+        let generation = u32::from_le_bytes(buf[6..10].try_into().ok()?);
+        let seed = u32::from_le_bytes(buf[10..14].try_into().ok()?);
+        let track_width = f32::from_le_bytes(buf[14..18].try_into().ok()?);
+        let fitness = f32::from_le_bytes(buf[18..22].try_into().ok()?);
+        let fast_scale = f32::from_le_bytes(buf[22..26].try_into().ok()?);
+        let fast_end = 26 + DNA_FAST_SIZE;
+        let fast_weights: Vec<i8> = buf[26..fast_end].iter().map(|&b| b as i8).collect();
+        let slow_scale = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
+        let slow_weights: Vec<i8> = buf[fast_end + 4..].iter().map(|&b| b as i8).collect();
+        return Some(DnaPayload {
+            fast_weights, fast_scale,
+            slow_weights: Some(slow_weights), slow_scale,
+            generation, seed, track_width, fitness, version,
+        });
+    }
+
+    // --- Legacy v1/v2 (no magic) ---
+    if buf.len() >= 4 + DNA_FAST_SIZE {
+        let fast_scale = f32::from_le_bytes(buf[0..4].try_into().ok()?);
+        let fast_end = 4 + DNA_FAST_SIZE;
+        let fast_weights: Vec<i8> = buf[4..fast_end].iter().map(|&b| b as i8).collect();
+        let (slow_weights, slow_scale, version) = if buf.len() >= fast_end + 4 + DNA_SLOW_SIZE {
+            let ss = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
+            let sw: Vec<i8> = buf[fast_end + 4..].iter().map(|&b| b as i8).collect();
+            (Some(sw), ss, 2u16)
+        } else {
+            (None, 1.0, 1u16)
+        };
+        return Some(DnaPayload {
+            fast_weights, fast_scale,
+            slow_weights, slow_scale,
+            generation: 0, seed: 0, track_width: 0.0, fitness: 0.0, version,
+        });
+    }
+
+    None
+}
+
+// --- Log rotation para race_reports.md ---
+// Arquivo cresce indefinidamente se não rotacionarmos. Política: ao abrir,
+// se >5MB, renomeia para race_reports.1.md (sobrescrevendo backup anterior)
+// e começa um novo. Um único backup é suficiente para debug recente.
+const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const LOG_PATH: &str = "race_reports.md";
+const LOG_BACKUP: &str = "race_reports.1.md";
+
+pub fn open_report_log() -> Option<File> {
+    if let Ok(meta) = std::fs::metadata(LOG_PATH) {
+        if meta.len() > LOG_MAX_BYTES {
+            let _ = std::fs::rename(LOG_PATH, LOG_BACKUP);
+        }
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(LOG_PATH).ok()
+}
+
 #[derive(Resource)]
 pub struct RaceSettings {
     pub generation: usize,
@@ -26,6 +160,7 @@ pub struct RaceSettings {
     pub global_best_distance: f32,
     pub global_best_position: Option<Vec3>,
     pub champion_distance: f32,  // Distância do DNA salvo em CHAMPION.dna (só muda quando DNA é coroado)
+    pub elite_pool: Vec<EliteDna>,  // Top-5 DNAs da última geração (tournament pool)
 }
 
 #[derive(Resource)]
@@ -39,7 +174,8 @@ pub struct DevSettings {
 impl Default for DevSettings {
     fn default() -> Self {
         Self {
-            mutation_rate: 0.15,
+            mutation_rate: 0.04,   // Era 0.15 (1228 pesos randomizados/gen = destruia aprendizado).
+                                   // Agora ~328/gen no gen 0, decai para ~40/gen após 50 gens.
             pain_sensitivity: 1.0,
             wave_amplitude: 70.0,
             flow_influence: 0.5,
@@ -59,7 +195,7 @@ pub fn spawn_swarm(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
-    race: &RaceSettings,
+    race: &mut RaceSettings,
     world: &VoxelWorld,
     dev: &DevSettings,
     config: &UniverseConfig,
@@ -78,57 +214,111 @@ pub fn spawn_swarm(
     let mut current_best_slow_w = race.best_slow_weights.clone();
     let mut current_best_slow_s = race.best_slow_scale;
 
-    // DNA format v2: [fast_scale:4][fast_w:8192][slow_scale:4][slow_w:256] = 8456 bytes
-    // DNA format v1 (legacy): [fast_scale:4][fast_w:8192] = 8196 bytes — slow fica neutro
+    // Mutation rate com decay exponencial por geração: convergência gradual.
+    // Floor em 0.005 mantém exploração residual mesmo após 100+ gerações.
+    let effective_mutation_rate = (dev.mutation_rate * 0.97_f32.powi(race.generation as i32 - 1))
+        .max(0.005) as f64;
+
+    // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     if current_best_w.is_none() {
-        if let Ok(mut file) = File::open("CHAMPION.dna") {
-            let mut buffer = Vec::new();
-            if file.read_to_end(&mut buffer).is_ok() && buffer.len() >= 4 {
-                let scale_bytes: [u8; 4] = buffer[0..4].try_into().unwrap_or([0,0,128,63]);
-                current_best_s = f32::from_le_bytes(scale_bytes);
-                let fast_end = 4 + 128 * 64;
-                if buffer.len() >= fast_end {
-                    current_best_w = Some(buffer[4..fast_end].iter().map(|&b| b as i8).collect());
-                    // Slow brain: se DNA v2, carrega; senão, fica None (= priming neutro)
-                    if buffer.len() >= fast_end + 4 + 32 * 8 {
-                        let ss_bytes: [u8; 4] = buffer[fast_end..fast_end + 4].try_into().unwrap_or([0,0,128,63]);
-                        current_best_slow_s = f32::from_le_bytes(ss_bytes);
-                        current_best_slow_w = Some(buffer[fast_end + 4..].iter().map(|&b| b as i8).collect());
+        if let Some(dna) = load_champion_dna("CHAMPION.dna") {
+            current_best_w = Some(dna.fast_weights);
+            current_best_s = dna.fast_scale;
+            if let Some(sw) = dna.slow_weights {
+                current_best_slow_w = Some(sw);
+                current_best_slow_s = dna.slow_scale;
+            }
+            // Se o DNA foi treinado em outra seed/largura, loga aviso e descarta champion_distance
+            // (senão o carro novo nunca consegue coroar num track diferente).
+            if dna.version >= 3 {
+                let same_track = dna.seed as u64 == race.seed
+                    && (dna.track_width - config.current_track().track_width).abs() < 0.1;
+                if !same_track {
+                    race.champion_distance = 0.0;
+                    if let Some(mut file) = open_report_log() {
+                        let _ = writeln!(file, "⚠️ CHAMPION.dna veio de outra pista (seed {} width {:.1}) — threshold resetado", dna.seed, dna.track_width);
                     }
                 }
             }
         }
     }
 
+    // Helper: tournament k=3 seleciona 1 pai entre k competidores aleatórios do pool.
+    let tournament = |pool: &[EliteDna], rng: &mut rand::rngs::ThreadRng| -> usize {
+        let mut best_idx = rng.random_range(0..pool.len());
+        for _ in 1..3 {
+            let cand = rng.random_range(0..pool.len());
+            if pool[cand].fitness > pool[best_idx].fitness { best_idx = cand; }
+        }
+        best_idx
+    };
+
+    // Helper: uniform crossover (50/50 por gene) entre dois pais.
+    let crossover = |a: &[i8], b: &[i8], rng: &mut rand::rngs::ThreadRng| -> Vec<f32> {
+        a.iter().zip(b.iter()).map(|(&wa, &wb)| {
+            if rng.random_bool(0.5) { wa as f32 } else { wb as f32 }
+        }).collect()
+    };
+
+    let pool_size = race.elite_pool.len();
+
     for i in 0..config.swarm_count {
         let mut engine = crate::engine::SovereignEngine::new();
-        if let Some(ref best) = current_best_w {
-            // ELITISMO: Piloto #0 é um CLONE PERFEITO do campeão (0% mutação)
-            // Os restantes são filhos mutantes. Isso garante que o melhor DNA nunca se perde.
-            let is_elite_clone = i == 0;
-            
-            if is_elite_clone {
-                // Clone puro: copia os pesos exatamente como são
+        if pool_size >= 2 {
+            // --- REPRODUÇÃO SEXUAL: Tournament + Crossover + Mutação ---
+            // Primeiros N slots (até 5): clones perfeitos do top-N (elitismo múltiplo).
+            // Restantes: torneio k=3 para escolher 2 pais, crossover uniforme, mutação.
+            let elite_clones = pool_size.min(5);
+
+            if i < elite_clones {
+                let elite = &race.elite_pool[i];
+                let exact: Vec<f32> = elite.fast_weights.iter().map(|&w| w as f32).collect();
+                engine.instinct_layer.quantize(&exact);
+                engine.instinct_layer.set_scale(elite.fast_scale);
+                let exact_slow: Vec<f32> = elite.slow_weights.iter().map(|&w| w as f32).collect();
+                engine.slow_brain.layer.quantize(&exact_slow);
+                engine.slow_brain.layer.set_scale(elite.slow_scale);
+            } else {
+                let p1 = tournament(&race.elite_pool, &mut rng);
+                let mut p2 = tournament(&race.elite_pool, &mut rng);
+                if p2 == p1 && pool_size > 1 { p2 = (p1 + 1) % pool_size; }
+                let parent_a = &race.elite_pool[p1];
+                let parent_b = &race.elite_pool[p2];
+
+                let crossed_fast = crossover(&parent_a.fast_weights, &parent_b.fast_weights, &mut rng);
+                let mutated_fast: Vec<f32> = crossed_fast.into_iter().map(|w| {
+                    if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w }
+                }).collect();
+                engine.instinct_layer.quantize(&mutated_fast);
+                engine.instinct_layer.set_scale((parent_a.fast_scale + parent_b.fast_scale) * 0.5);
+
+                let crossed_slow = crossover(&parent_a.slow_weights, &parent_b.slow_weights, &mut rng);
+                let mutated_slow: Vec<f32> = crossed_slow.into_iter().map(|w| {
+                    if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w }
+                }).collect();
+                engine.slow_brain.layer.quantize(&mutated_slow);
+                engine.slow_brain.layer.set_scale((parent_a.slow_scale + parent_b.slow_scale) * 0.5);
+            }
+        } else if let Some(ref best) = current_best_w {
+            // --- FALLBACK: DNA de CHAMPION.dna sem pool (primeira geração após boot) ---
+            if i == 0 {
                 let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
-                
                 if let Some(ref best_slow) = current_best_slow_w {
                     let exact_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32).collect();
                     engine.slow_brain.layer.quantize(&exact_slow);
                     engine.slow_brain.layer.set_scale(current_best_slow_s);
                 }
             } else {
-                // Filho mutante: herda DNA com mutações aleatórias
                 let mutated: Vec<f32> = best.iter().map(|&w| {
-                    if rng.random_bool(dev.mutation_rate as f64) { rng.random_range(-1.0..1.0) } else { w as f32 }
+                    if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w as f32 }
                 }).collect();
                 engine.instinct_layer.quantize(&mutated);
                 engine.instinct_layer.set_scale(current_best_s);
-
                 if let Some(ref best_slow) = current_best_slow_w {
                     let mutated_slow: Vec<f32> = best_slow.iter().map(|&w| {
-                        if rng.random_bool(dev.mutation_rate as f64) { rng.random_range(-1.0..1.0) } else { w as f32 }
+                        if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w as f32 }
                     }).collect();
                     engine.slow_brain.layer.quantize(&mutated_slow);
                     engine.slow_brain.layer.set_scale(current_best_slow_s);
@@ -136,9 +326,11 @@ pub fn spawn_swarm(
             }
         } else {
             // --- PRIMING GENÉTICO (A CONSCIÊNCIA INICIAL) ---
+            // Mar de ZEROS com axiomas ILUMINADOS.
+            // Antes: ruído uniforme [-1,1] + axiomas — quantize ternária produzia ±1 aleatório
+            // em 99% dos pesos, diluindo os axiomas. Agora axiomas dominam quantize isolados.
             let mut weights = vec![0.0f32; 128 * 64];
-            for w in weights.iter_mut() { *w = rng.random_range(-1.0..1.0); }
-            
+
             // --- AXIOMATA DE SOBREVIVÊNCIA (magnitudes grandes p/ sobreviver quantize ternária) ---
 
             // A1: Wall à esquerda (indices 0..5 horizon, 32..37 ground) → vira à DIREITA (positivo)
@@ -208,7 +400,7 @@ pub fn spawn_swarm(
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; 64],
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
-                joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: 0.0,
+                joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: 0.0, grace_ticks: 0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
@@ -235,38 +427,25 @@ pub fn spawn_swarm(
 
 fn calc_fitness(r: &Racer) -> f32 {
     // ===================================================
-    // FITNESS = DISTÂNCIA NA PISTA É REI
+    // FITNESS SIMPLIFICADO — sinal limpo para seleção.
     // ===================================================
-    // Quem andou mais longe na pista vence. Ponto final.
-    // Joy serve apenas como desempate entre carros na mesma distância.
-    
-    let lap_bonus = r.total_laps as f32 * 50000.0;
+    // Estrutura:
+    //   base    = progresso NA PISTA (domínio 100× maior que desempates)
+    //   lap     = bônus por voltas completas (50k cada)
+    //   joy     = desempate fino entre carros equidistantes (~1%)
+    //   wall    = regularização suave (não fitness-killer)
+    //   death   = linear em "quão pouco andou antes de morrer"
+    //
+    // Removido: exponencial `prog^1.3` (criava discontinuidade artificial),
+    //           peso de wall 500→50 (wall-riding agora custa, mas não apaga 40m de progresso).
 
-    // Progresso REAL na pista (arc-length na polilinha de waypoints).
-    // Carros que cortam off-track em linha reta não pontuam — só a projeção na pista conta.
-    let prog = r.track_progress;
-    let dist_score = if prog > 0.0 {
-        prog * 100.0 + prog.powf(1.3) // Linear forte + bônus exponencial
-    } else {
-        prog * 500.0 // Penalidade brutal por andar pra trás (quase impossível com arc-length)
-    };
-    
-    // Joy é apenas desempate (~1% do peso da distância)
-    let joy = r.joy_integral * 5.0;
-    
-    // Penalidade por morte: proporcional a quão pouco andou (morrer cedo = pior)
-    let death_penalty = if r.is_dead {
-        (100.0 - prog.max(0.0)).max(0.0) * 10.0
-    } else {
-        0.0
-    };
-    
-    // PENALIDADE POR WALL-RIDING: Cada segundo encostado na parede DESTRÓI fitness
-    // Um carro que andou 50m mas raspou 2s na parede: 50*100 - 2*500 = 4000
-    // Um carro que andou 40m sem tocar: 40*100 = 4000 → Empatam!
-    let wall_penalty = r.wall_time * 500.0;
-    
-    lap_bonus + dist_score + joy - death_penalty - wall_penalty
+    let prog = r.track_progress.max(0.0);
+    let lap_bonus = r.total_laps as f32 * 50000.0;
+    let joy = r.joy_integral * 1.0;  // Desempate fino
+    let wall_penalty = r.wall_time * 50.0;
+    let death_penalty = if r.is_dead { (100.0 - prog).max(0.0) * 10.0 } else { 0.0 };
+
+    lap_bonus + prog * 100.0 + joy - wall_penalty - death_penalty
 }
 
 fn evolution_pipeline(
@@ -289,20 +468,34 @@ fn evolution_pipeline(
     let all_dead = query.iter().all(|(_, r, _, _)| r.is_dead);
 
     if winner.is_some() || all_dead || race.should_reset {
+        // Rank global por fitness — reutilizado pelo pool elite + relatório.
+        let mut sorted: Vec<_> = query.iter().collect();
+        sorted.sort_by(|a, b| {
+            let score_a = calc_fitness(a.1);
+            let score_b = calc_fitness(b.1);
+            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // --- POOL ELITE (top-5) para tournament na próxima geração ---
+        race.elite_pool.clear();
+        for (_, r, _, _) in sorted.iter().take(5) {
+            race.elite_pool.push(EliteDna {
+                fast_weights: r.engine.instinct_layer.weights.clone(),
+                fast_scale: r.engine.instinct_layer.weight_scale,
+                slow_weights: r.engine.slow_brain.layer.weights.clone(),
+                slow_scale: r.engine.slow_brain.layer.weight_scale,
+                fitness: calc_fitness(r),
+            });
+        }
+
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("race_reports.md") {
+        if let Some(mut file) = open_report_log() {
             use std::io::Write;
             let reason = if winner.is_some() { "Vencedor Encontrado" } else if all_dead { "Extinção (Colisão)" } else { "Tempo Esgotado" };
             let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {} | Duração: {:.1}s", race.generation, reason, env.generation_time);
-            let _ = writeln!(file, "**Ambiente:** Asfalto {:.0}°C | Chuva: {:.0}% | Vento: ({:.1}, {:.1}) m/s | Hora: {:.1}h | μ_base: 1.3 × grip_env: {:.2}", 
+            let _ = writeln!(file, "**Ambiente:** Asfalto {:.0}°C | Chuva: {:.0}% | Vento: ({:.1}, {:.1}) m/s | Hora: {:.1}h | μ_base: 1.3 × grip_env: {:.2}",
                 env.asphalt_temp, env.weather_wetness * 100.0, env.wind.x, env.wind.z, env.time_of_day, env.combined_grip_factor());
-            
-            let mut sorted: Vec<_> = query.iter().collect();
-            sorted.sort_by(|a, b| {
-                let score_a = calc_fitness(a.1);
-                let score_b = calc_fitness(b.1);
-                score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
-            });
+
             for (i, (_, r, engine_comp, phys_body)) in sorted.iter().enumerate() {
                 let status = if r.is_dead { "M" } else { "V" };
                 let speed_kmh = r.amplitude * 3.6;
@@ -351,18 +544,21 @@ fn evolution_pipeline(
                 race.best_scale = scale;
                 race.best_slow_weights = Some(slow_weights.clone());
                 race.best_slow_scale = slow_scale;
-                if let Ok(mut file) = File::create("CHAMPION.dna") {
-                    let _ = file.write_all(&scale.to_le_bytes());
-                    let _ = file.write_all(&weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
-                    let _ = file.write_all(&slow_scale.to_le_bytes());
-                    let _ = file.write_all(&slow_weights.iter().map(|&w| w as u8).collect::<Vec<u8>>());
-                }
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("race_reports.md") {
+                let _ = save_champion_dna(
+                    "CHAMPION.dna",
+                    &weights, scale,
+                    &slow_weights, slow_scale,
+                    race.generation as u32,
+                    race.seed as u32,
+                    config.current_track().track_width,
+                    this_gen_best_dist,
+                );
+                if let Some(mut file) = open_report_log() {
                     use std::io::Write;
                     let _ = writeln!(file, "👑 **NOVO CAMPEÃO COROADO!** Distância: {:.1}m (Gen {}) — Superou {:.1}m anterior", this_gen_best_dist, race.generation, race.champion_distance);
                 }
             } else {
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("race_reports.md") {
+                if let Some(mut file) = open_report_log() {
                     use std::io::Write;
                     let _ = writeln!(file, "📉 Geração fraca ({:.1}m vs campeão {:.1}m) — DNA PRESERVADO", this_gen_best_dist, race.champion_distance);
                 }
@@ -383,15 +579,26 @@ fn evolution_pipeline(
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
         for (e, _, _, _) in query.iter() { commands.entity(e).despawn(); }
         race.generation += 1; race.should_reset = false; race.hard_reset = false; race.selected_racer = None;
-        let world = VoxelWorld::new(race.seed, config.current_track().track_width);
+
+        // --- CURRICULUM ADAPTATIVO DE LARGURA ---
+        // Pista começa LARGA (base + 8m) e estreita conforme o campeão completa voltas reais.
+        // champion_laps ≈ champion_distance / lap_distance (usa último world conhecido como ref).
+        // Cada volta completada reduz o bônus em 2m até chegar na base configurada.
+        let base_width = config.current_track().track_width;
+        let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
+        let width_bonus = (8.0 - champion_laps * 2.0).max(0.0);
+        let effective_width = base_width + width_bonus;
+        let world = VoxelWorld::new(race.seed, effective_width);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
         let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })))).id();
         let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })))).id();
         let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })))).id();
         race.world_entities = vec![road_e, grass_e, wall_e];
-        // Randomiza condições ambientais (mild para as primeiras 5 gerações = bootstrap)
-        env.randomize(race.generation <= 5);
-        spawn_swarm(&mut commands, &mut meshes, &mut materials, &race, &world, &dev, &config);
+        // Curriculum invertido: condições MILD até o campeão completar ao menos meia volta.
+        // Evita pressão ambiental antes da política básica existir.
+        let mild_mode = race.champion_distance < world_res.0.lap_distance * 0.5;
+        env.randomize(mild_mode);
+        spawn_swarm(&mut commands, &mut meshes, &mut materials, &mut race, &world, &dev, &config);
         world_res.0 = world;
     }
 }

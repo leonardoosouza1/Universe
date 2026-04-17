@@ -22,9 +22,15 @@ impl BitLinear {
 
     /// Optimized Inference: 100% Addition/Subtraction.
     /// No float multiplications during accumulation.
+    ///
+    /// BitNet 1.58-bit dequantization: y = (W_ternary · x_i8) * beta / Qb,
+    /// where beta = weight_scale (abs-mean of the latent weights) and Qb = 127
+    /// (the i8 activation range). The old norm factor `1/(sqrt(n)*128)` double-dipped
+    /// on the input dim and collapsed the gain, forcing downstream `tanh(y*10)` to
+    /// recover it non-linearly. The correct factor is simply `1/127`.
     pub fn forward(&self, input: &[i8]) -> Vec<f32> {
         let mut output = vec![0.0; self.output_dim];
-        let norm_factor = 1.0 / ((self.input_dim as f32).sqrt() * 128.0);
+        let norm_factor = 1.0 / 127.0;
 
         for out_idx in 0..self.output_dim {
             let mut accumulator: i32 = 0;
