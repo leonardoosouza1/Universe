@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use universe::world::{VoxelWorld, VoxelWorldResource};
 use universe::simulation::RacerPlugin;
 use universe::ui::{UiPlugin, LeaderboardUI};
-use universe::evolution::{EvolutionPlugin, RaceSettings, DevSettings, spawn_swarm};
+use universe::evolution::{EvolutionPlugin, RaceSettings, DevSettings};
 use universe::environment::EnvironmentalState;
 use universe::config::UniverseConfig;
 use universe::ui_menu::MenuPlugin;
@@ -52,6 +52,7 @@ fn main() {
         last_gen_was_grid: false,
         is_validation_gen: false,
         gens_until_validation: 3,
+        pending_spawn: None,
         env_level: 1,
     })
     .insert_resource(DevSettings::default())
@@ -158,5 +159,6 @@ fn setup_scene(
 
     race.world_entities = vec![road_e, grass_e, wall_e];
 
-    spawn_swarm(&mut commands, &mut meshes, &mut materials, &mut race, world, &dev, &config);
+    // Spawn batched — não bloqueia frame inicial. drain_spawn_queue consome progressivamente.
+    race.pending_spawn = Some((0, config.swarm_count));
 }

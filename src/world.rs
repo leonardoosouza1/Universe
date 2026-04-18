@@ -86,7 +86,9 @@ impl VoxelWorld {
             waypoint_arcs.push(total_dist);
         }
 
-        let start_pos = Vec3::new(120.0 * cell_size, 0.5, 20.0 * cell_size);
+        // Start pos movido de (120,20) → (50,20): antes 20 cells (60m) até WP[1] 90°,
+        // agora 90 cells (270m) de runway. A 40m/s = 6.7s pra acelerar e ler a curva.
+        let start_pos = Vec3::new(50.0 * cell_size, 0.5, 20.0 * cell_size);
 
         // Pré-calcula start_progress uma vez — antes era refeito a cada get_track_progress
         // (500 carros × 60 Hz × 10× time_scale = 300k recálculos/s de uma constante).
@@ -104,6 +106,37 @@ impl VoxelWorld {
             let proj = p1 + dir * t;
             let dist = start_pos_2d.distance(proj);
             if dist < min_start_dist { min_start_dist = dist; start_progress = waypoint_arcs[i] + t; }
+        }
+
+        // === DIAGNÓSTICO DE MAPA ===
+        // Impresso 1× no boot. Ajuda identificar problemas de design (curvas cegas,
+        // start mal colocado, waypoints com segmentos absurdos).
+        let n_road = grid.iter().filter(|v| **v == VoxelType::Road).count();
+        let n_wall = grid.iter().filter(|v| **v == VoxelType::Wall).count();
+        let n_grass = grid.iter().filter(|v| **v == VoxelType::Grass).count();
+        println!("🗺  MAP DIAG track_width={:.1}m cell={:.1}m lap={:.1}m", track_width * cell_size * 0.0 + track_width, cell_size, total_dist);
+        println!("   voxels road={} wall={} grass={} road_ratio={:.1}%", n_road, n_wall, n_grass, 100.0 * n_road as f32 / (n_road + n_wall + n_grass) as f32);
+        println!("   start_pos=({:.1}, {:.1}) start_progress={:.1}m / lap {:.1}m ({:.1}%)",
+            start_pos.x, start_pos.z, start_progress, total_dist, 100.0 * start_progress / total_dist);
+        for i in 0..waypoints_world.len() {
+            let (seg_len, turn_deg) = if i == 0 {
+                (0.0, 0.0)
+            } else {
+                let prev = waypoints_world[i - 1];
+                let cur = waypoints_world[i];
+                let sl = prev.distance(cur);
+                let turn = if i + 1 < waypoints_world.len() {
+                    let next = waypoints_world[i + 1];
+                    let a = (cur - prev).normalize_or_zero();
+                    let b = (next - cur).normalize_or_zero();
+                    let cos_t = a.dot(b).clamp(-1.0, 1.0);
+                    cos_t.acos().to_degrees()
+                } else { 0.0 };
+                (sl, turn)
+            };
+            let tag = if turn_deg > 60.0 { "⚠ SHARP" } else if turn_deg > 30.0 { "CURVE" } else { "straight" };
+            println!("   WP[{}] ({:.0},{:.0}) seg_len={:.1}m turn={:.1}° {}",
+                i, waypoints_world[i].x, waypoints_world[i].y, seg_len, turn_deg, tag);
         }
 
         Self {
@@ -298,16 +331,19 @@ impl VoxelWorld {
         let eye_pos = pos + Vec3::Y * 0.4;
         let cell = self.cell_size;
 
-        // Retina dual-scale:
-        //   Row 0 = FÓVEA ESTREITA (FOV 50°, pitch -0.04, yaw = gaze_yaw): detalhe alto do
-        //           setor pra onde a atenção está apontando. NÃO está fixa no forward —
-        //           acompanha a saccade pra escanear curvas que saem do eixo do carro.
-        //   Row 1 = PERIFÉRICA 180° (pitch 0.0, yaw fixo): vê exatamente ±90° (lateral perpendicular).
-        //     Em curva fechada o carro precisa enxergar a parede DO LADO,
-        //     não só a diagonal-frontal. Com 180°, cada pixel cobre ~5.6° e os da borda
-        //     detectam a parede lateral como fundo escuro quando o caminho faz a curva.
+        // Retina unificada 180° dual-scale:
+        //   Row 0 = FÓVEA TAN-WARP 180° (pitch -0.04, yaw = gaze_yaw): cobertura total 180°
+        //           com distribuição NÃO-UNIFORME center-dense (tan warp). ~1.5°/pixel no
+        //           centro (precisão pra curvas fechadas), ~15°/pixel nas bordas (cobertura
+        //           lateral). Resolve o trade-off antigo: antes era 50° linear (cego lateral)
+        //           ou 180° linear (5.6°/px — cego pra curva).
+        //   Row 1 = PERIFÉRICA 180° LINEAR (pitch 0.0, yaw fixo): uniforme, serve de motion
+        //           detector baseline — row 0 warpada comparada com row 1 linear revela
+        //           velocidade angular lateral (útil pra prever curva).
+        const TAN_K: f32 = 1.25_f32; // Warp strength: maior k → centro mais denso
+        let tan_k_val = TAN_K.tan();
         for row in 0..2 {
-            let fov = if row == 0 { 50.0_f32.to_radians() } else { 180.0_f32.to_radians() };
+            let fov_half = 90.0_f32.to_radians(); // Ambas rows agora 180°
             let pitch = if row == 0 { -0.04_f32 } else { 0.0_f32 };
             let gaze = if row == 0 { gaze_yaw } else { 0.0 };
             let dir_y = pitch.sin();
@@ -317,8 +353,13 @@ impl VoxelWorld {
                 let index = (row * 32) + i;
                 let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
 
-                // Distribuição Mapeada de forma 100% Linear. Precisão impecável em curvas.
-                let yaw_angle = normalized_i * (fov / 2.0) + gaze;
+                // Row 0: tan warp center-dense. Row 1: linear uniforme.
+                let yaw_angle = if row == 0 {
+                    let warped = (normalized_i * TAN_K).tan() / tan_k_val;
+                    warped * fov_half + gaze
+                } else {
+                    normalized_i * fov_half
+                };
                 
                 let dir_x = (forward.x * yaw_angle.cos() + right.x * yaw_angle.sin()) * cos_pitch;
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
@@ -404,8 +445,19 @@ impl VoxelWorld {
                 //   Dá diferenciação de 90 entre "encostando (0m)" e "razoavelmente próxima (75m)".
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
-                        let near_fade = (hit_dist / 150.0).clamp(0.0, 1.0);
-                        127.0 - (near_fade.sqrt() * 90.0)
+                        // Dual-scale depth: sqrt perto (0-30m dense resolution — crítico pra
+                        // bater ou não) + linear longe (30-120m — modelo antecipa curvas
+                        // distantes). Antes saturava 50m → cego pra setup de curva longa.
+                        // Agora: 0-30m ocupa 127→55 (gradient ~72 pts), 30-120m ocupa 55→-20
+                        // (gradient ~75 pts). Modelo distingue "curva chegando em 80m" de
+                        // "curva em 30m" — dá tempo de pré-frear.
+                        if hit_dist < 30.0 {
+                            let near = (hit_dist / 30.0).clamp(0.0, 1.0);
+                            127.0 - (near.sqrt() * 72.0)
+                        } else {
+                            let far = ((hit_dist - 30.0) / 90.0).clamp(0.0, 1.0);
+                            55.0 - (far * 75.0)
+                        }
                     },
                     VoxelType::Grass => {
                         40.0 - (depth_fade * 40.0)

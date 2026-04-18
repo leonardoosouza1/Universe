@@ -46,14 +46,27 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
     let prog = (r.track_progress - r.spawn_progress).max(0.0);
     let lap_bonus = r.total_laps as f32 * 50000.0;
     let joy = r.joy_integral * 1.0;  // Desempate fino
+
+    // Proximity bonus: incentiva FECHAR a volta. Quadrático em NET até saturar em 500m.
+    // Carro com 480m (quase 1 volta) ganha 9200 pts extras = gap claro vs 400m (6400) ou
+    // 300m (3600). Satura em 10000 pra não competir com lap_bonus 50k.
+    // Depois de uma volta completa, lap_bonus domina e proximity fica estável.
+    let prox_frac = (prog / 500.0).clamp(0.0, 1.0);
+    let proximity_bonus = prox_frac * prox_frac * 10000.0;
     // Wall penalty 50 → 200: raspar parede agora custa MUITO mais progresso equivalente.
     // 1s de wall_time = 200pts = 2m de track_progress deletados.
     let wall_penalty = r.wall_time * 200.0;
     // Wall hits: cada contato durante grace custa 500pts adicionais (fora do grace morre direto).
     let hit_penalty = r.wall_hits as f32 * 500.0;
-    let death_penalty = if r.is_dead { (100.0 - prog).max(0.0) * 10.0 } else { 0.0 };
+    // Death penalty REWORKED: antes `(100-prog)*10` capava em 1000pts e zerava após 100m
+    // — dying ficava de graça depois. Agora: 2000 flat + 5% do prog (perdeu potencial).
+    // 800m prog + death = 2000 + 400 = 2400pts. 800m prog survived = 0 penalty + SURVIVAL_BONUS.
+    let death_penalty = if r.is_dead { 2000.0 + prog * 0.05 } else { 0.0 };
+    // Survival bonus: sobreviver até final da geração tem valor flat. Quebra incentivo de
+    // "acelera geral + morre" quando progresso é equivalente a quem vai devagar e chega.
+    let survival_bonus = if r.is_dead { 0.0 } else { 3000.0 };
 
-    lap_bonus + prog * 100.0 + joy - wall_penalty - hit_penalty - death_penalty
+    lap_bonus + prog * 100.0 + proximity_bonus + joy + survival_bonus - wall_penalty - hit_penalty - death_penalty
 }
 
 pub(super) fn evolution_pipeline(
@@ -68,8 +81,10 @@ pub(super) fn evolution_pipeline(
     config: Res<UniverseConfig>,
     time: Res<Time>,
 ) {
-    // Tick do timer ambiental (Sincronizado com os mesmos clamps do simulador físico)
-    let dt = time.delta_secs().min(0.02);
+    // Tick do timer ambiental: usa virtual delta cheio (SEM cap). Motor+física agora rodam
+    // em FixedUpdate (substep N× por frame em time_scale alto), env aqui acompanha o tempo
+    // virtual total — generation_timeout em virtual-seconds escala certinho.
+    let dt = time.delta_secs();
     env.tick(dt);
     if query.is_empty() { return; }
     let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 5);
@@ -168,6 +183,25 @@ pub(super) fn evolution_pipeline(
                 nets.first().copied().unwrap_or(0.0), p90(&nets), median(&nets), mean(&nets));
             let _ = writeln!(file, "Fitness — max: {:.0} | p90: {:.0} | median: {:.0} | mean: {:.0}",
                 fits.first().copied().unwrap_or(0.0), p90(&fits), median(&fits), mean(&fits));
+
+            // Lap completion distribution — quantos completaram 1, 2, 3+ voltas
+            let laps_0 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 0).count();
+            let laps_1 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 1).count();
+            let laps_2 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 2).count();
+            let laps_3p = sorted.iter().filter(|(_, r, _, _)| r.total_laps >= 3).count();
+            let _ = writeln!(file, "Laps — 0v: {} | 1v: {} | 2v: {} | 3+v: {}", laps_0, laps_1, laps_2, laps_3p);
+
+            // Death reason breakdown — agrupa HP=0 (batida/bleed), fuel, stagnation.
+            // Racer struct não tem death_reason enum; aproximamos por estado final.
+            let d_hp = sorted.iter().filter(|(_, r, _, _)| r.is_dead && r.hp <= 0.0 && r.fuel > 0.0).count();
+            let d_fuel = sorted.iter().filter(|(_, r, _, _)| r.is_dead && r.fuel <= 0.0).count();
+            let d_alive = sorted.iter().filter(|(_, r, _, _)| r.is_dead && r.hp > 0.0 && r.fuel > 0.0).count();
+            let _ = writeln!(file, "Death reasons — HP=0: {} | Fuel=0: {} | Outros(stagnation): {}", d_hp, d_fuel, d_alive);
+
+            // Console summary compacto pra feedback ao vivo.
+            println!("📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
+                race.generation, laps_0, laps_1, laps_2, laps_3p,
+                nets.first().copied().unwrap_or(0.0), median(&nets), deaths, total);
 
             // --- DIAGNÓSTICO CEREBRAL DO TOP-3 (NET) ---
             // Mostra o histórico dos 3 melhores. Se o volante não responde quando
@@ -323,7 +357,8 @@ pub(super) fn evolution_pipeline(
         race.is_validation_gen = is_val;
         race.env_level = next_level;
         env.randomize_level(next_level);
-        spawn_swarm(&mut commands, &mut meshes, &mut materials, &mut race, &world, &dev, &config);
+        // Spawn batched: agenda jobs, drain_spawn_queue processa em blocos por frame.
+        race.pending_spawn = Some((0, config.swarm_count));
         world_res.0 = world;
     }
 }

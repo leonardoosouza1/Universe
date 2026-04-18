@@ -134,6 +134,9 @@ impl Default for PhysicsBody {
 // ============================================================
 pub struct PhysicsPlugin;
 
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PhysicsSet;
+
 impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(FixedUpdate, (
@@ -142,7 +145,7 @@ impl Plugin for PhysicsPlugin {
             powertrain_and_tire_system,
             collision_system,
             integration_system,
-        ).chain());
+        ).chain().in_set(PhysicsSet));
     }
 }
 

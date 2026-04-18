@@ -9,7 +9,11 @@ pub struct RacerPlugin;
 
 impl Plugin for RacerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (motor::update_racers, camera_system, skidmark_cleanup_system));
+        // Motor → FixedUpdate antes da física: brain e physics sincronizados.
+        // Time_scale agora escala Virtual → Bevy roda N substeps de FixedUpdate por frame
+        // real. Brain tick N× POR frame (antes só 1×), sem tunneling em time_scale alto.
+        app.add_systems(FixedUpdate, motor::update_racers.before(crate::physics::PhysicsSet))
+           .add_systems(Update, (camera_system, skidmark_cleanup_system));
     }
 }
 

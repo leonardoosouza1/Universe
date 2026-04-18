@@ -113,6 +113,8 @@ fn build_priming_weights() -> Vec<f32> {
     weights
 }
 
+/// Spawna carros no índice `[idx_start..idx_end)`. Permite spawn em blocos entre frames
+/// (evita freeze de spawn de 2000 entidades em 1 frame).
 pub fn spawn_swarm(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -121,6 +123,8 @@ pub fn spawn_swarm(
     world: &VoxelWorld,
     dev: &DevSettings,
     config: &UniverseConfig,
+    idx_start: usize,
+    idx_end: usize,
 ) {
     let mut rng = rand::rng();
     let wing = meshes.add(Cuboid::new(0.6, 0.8, 2.0));
@@ -202,7 +206,7 @@ pub fn spawn_swarm(
 
     let pool_size = race.elite_pool.len();
 
-    for i in 0..config.swarm_count {
+    for i in idx_start..idx_end.min(config.swarm_count) {
         let mut engine = crate::engine::SovereignEngine::new();
 
         // --- HALL OF FAME (CHAMPION FALLBACK) ---
@@ -381,6 +385,9 @@ pub fn spawn_swarm(
                 max_progress: spawn_progress,
                 slow_time: 0.0,
                 race_time: 0.0,
+                prev_lap_prog: spawn_progress.rem_euclid(world.lap_distance.max(1.0)),
+                post_lap_grace: 0,
+                post_lap_checkpoint: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

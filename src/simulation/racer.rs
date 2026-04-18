@@ -51,6 +51,13 @@ pub struct Racer {
     pub slow_time: f32,            // SEGUNDOS VIRTUAIS com velocidade < 3 m/s após grace. > 0.5s → sangria pesada.
     pub race_time: f32,            // SEGUNDOS VIRTUAIS vivos — imune a time_scale. Usado pra grace real
                                    // (grace_ticks conta frames reais, inadequado quando sim roda a 8x).
+    pub prev_lap_prog: f32,        // In-lap arc position do frame anterior — usado pra detectar wrap
+                                   // direction-agnostic (prev > 0.85*lap_dist && cur < 0.15*lap_dist).
+    pub post_lap_grace: u32,       // Frames restantes de imunidade a STAGNATION/SPEED_BLEED após lap.
+                                   // Carro que completa volta para no waypoint[0] → max_progress congela →
+                                   // morria por stagnation antes de re-acelerar. Grace dá tempo pra sair.
+    pub post_lap_checkpoint: f32,  // track_progress no instante do último lap. Grace só acaba quando
+                                   // carro avança 25m ALÉM desse checkpoint — garante saída da start line.
 }
 
 /// Frame de diagnóstico do cérebro do racer.

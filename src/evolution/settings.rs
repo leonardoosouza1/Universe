@@ -30,6 +30,10 @@ pub struct RaceSettings {
     pub is_validation_gen: bool,    // próxima gen roda env fixo (level 0); só valida DNA sem ruído
     pub gens_until_validation: u32, // conta até próxima validation (default: cada 3 gens)
     pub env_level: u8,              // nível curricular aplicado na gen atual (0..=3)
+    // Batched spawn: evita freeze ao spawnar N carros de uma vez. Cada gen seta
+    // Some((0, swarm_count)); drain_spawn_queue consome em blocos de SPAWN_BATCH_SIZE
+    // por frame até virar None. Sim continua rodando entre batches — UI fica responsiva.
+    pub pending_spawn: Option<(usize, usize)>,
 }
 
 #[derive(Resource)]

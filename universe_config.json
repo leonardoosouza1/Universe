@@ -13,7 +13,7 @@
     {
       "name": "Interlagos Gateway",
       "seed": 64,
-      "track_width": 8.0,
+      "track_width": 9.0,
       "complexity": 1.0
     },
     {
@@ -24,6 +24,7 @@
     }
   ],
   "selected_track_index": 0,
-  "swarm_count": 60,
-  "time_scale": 10.0
+  "swarm_count": 250,
+  "time_scale": 5.0,
+  "generation_timeout_s": 180.0
 }
