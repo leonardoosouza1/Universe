@@ -8,18 +8,49 @@ use universe::config::UniverseConfig;
 use universe::ui_menu::MenuPlugin;
 use universe::{AppState, SimulationEntity};
 
+#[derive(Resource, Clone, Copy)]
+pub struct HeadlessMode {
+    pub enabled: bool,
+    pub gens_target: u32,
+}
+
 fn main() {
-    let config = UniverseConfig::load_or_create();
+    let mut config = UniverseConfig::load_or_create();
+    let args: Vec<String> = std::env::args().collect();
+    let headless = args.iter().any(|a| a == "--headless");
+    let gens_target: u32 = args.iter().position(|a| a == "--gens")
+        .and_then(|i| args.get(i+1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let swarm_override: Option<usize> = args.iter().position(|a| a == "--swarm")
+        .and_then(|i| args.get(i+1))
+        .and_then(|s| s.parse().ok());
+    let time_scale_override: Option<f32> = args.iter().position(|a| a == "--speed")
+        .and_then(|i| args.get(i+1))
+        .and_then(|s| s.parse().ok());
+    if let Some(n) = swarm_override { config.swarm_count = n; }
+    if let Some(s) = time_scale_override { config.time_scale = s; }
+    if headless { config.time_scale = config.time_scale.max(8.0); }
+
     let initial_track = config.current_track();
     let initial_seed = initial_track.seed;
-    // Gen 1 começa com o MESMO bônus de largura que o pipeline aplica a gen 2+
-    // (champion_distance = 0 → width_bonus = 4m, novo valor após ajuste do currículo).
     let initial_width = initial_track.track_width + 4.0;
-    
+
     let mut app = App::new();
-    
+
+    let window = if headless {
+        Window {
+            title: "IARA v2101 - HEADLESS".into(),
+            visible: false,
+            resolution: (320.0, 240.0).into(),
+            ..default()
+        }
+    } else {
+        Window { title: "IARA v2101 - Sovereign Dev Engine".into(), ..default() }
+    };
+    app.insert_resource(HeadlessMode { enabled: headless, gens_target });
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window { title: "IARA v2101 - Sovereign Dev Engine".into(), ..default() }),
+        primary_window: Some(window),
         ..default()
     }))
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.1)))
@@ -59,10 +90,32 @@ fn main() {
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))
     .insert_resource(EnvironmentalState::default())
     .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin, MenuPlugin))
-    .add_systems(Startup, (setup_main_camera, apply_time_scale))
+    .add_systems(Startup, (setup_main_camera, apply_time_scale, headless_autostart))
     .add_systems(OnEnter(AppState::Simulation), (setup_scene, setup_hud_container, apply_time_scale))
     .add_systems(OnExit(AppState::Simulation), cleanup_simulation)
+    .add_systems(Update, headless_exit_check)
     .run();
+}
+
+fn headless_autostart(hl: Res<HeadlessMode>, mut next_state: ResMut<NextState<AppState>>) {
+    if hl.enabled {
+        println!("🤖 HEADLESS MODE | gens_target={} | swarm={} | speed={}×",
+            hl.gens_target,
+            "?", "?");
+        next_state.set(AppState::Simulation);
+    }
+}
+
+fn headless_exit_check(
+    hl: Res<HeadlessMode>,
+    race: Res<universe::evolution::RaceSettings>,
+    mut exit: EventWriter<bevy::app::AppExit>,
+) {
+    if !hl.enabled { return; }
+    if race.generation as u32 > hl.gens_target {
+        println!("🤖 HEADLESS DONE | {} gens completed. Exiting.", hl.gens_target);
+        exit.write(bevy::app::AppExit::Success);
+    }
 }
 
 fn cleanup_simulation(

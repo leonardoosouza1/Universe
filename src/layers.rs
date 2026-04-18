@@ -57,7 +57,11 @@ impl BitLinear {
     /// In 2026, we don't 'train', we 'myelinate'.
     /// Successful paths reduce resistance (increase weight_scale).
     pub fn myelinate(&mut self, factor: f32) {
-        self.weight_scale *= 1.0 + (factor * 0.005);
+        // Scale cresce aditivamente 0.5%/tick e CAP 10x o scale inicial.
+        // Bug anterior: mul cumulativo 60fps × 300s × 1.005 → 10^37 overflow,
+        // salvo em CHAMPION.dna como fast_scale absurdo. Round-trip confirma
+        // salvamento correto — problema era acumulação sem teto.
+        self.weight_scale = (self.weight_scale * (1.0 + factor * 0.005)).min(10.0);
     }
     
     /// Quantization: Converts latent intent into ternary sovereignty.

@@ -16,14 +16,18 @@ pub fn decide_next_env_level(
     gens_until_validation: &mut u32,
     champion_distance: f32,
     lap_distance: f32,
+    current_level: u8,
 ) -> (u8, bool) {
     if *gens_until_validation <= 1 {
         *gens_until_validation = 3;
         (0, true)
     } else {
         *gens_until_validation -= 1;
-        let lvl = EnvironmentalState::level_for_champion(champion_distance, lap_distance);
-        (lvl, false)
+        let target = EnvironmentalState::level_for_champion(champion_distance, lap_distance);
+        // RAMP GRADUAL: só sobe 1 nível por gen. Salto 1→3 matava toda população
+        // (champion especializado em level 1 não sobrevivia asphalt frio + chuva).
+        let capped = target.min(current_level.saturating_add(1));
+        (capped, false)
     }
 }
 
@@ -105,20 +109,35 @@ pub(super) fn evolution_pipeline(
             score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // --- POOL ELITE (top-10) para tournament na próxima geração ---
-        // Expandido de 5 → 10: dobra diversidade genética. Gargalo anterior era
-        // que o DNA bom (carros distribuídos a 935m) só estava em 5 slots e
-        // raramente migrava pro grid (5 grid spawns × 2 elite clones = 2 testes/gen).
-        race.elite_pool.clear();
+        // --- POOL ELITE PERSISTENTE (Hall of Fame) ---
+        // ANTES: clear + top-10 da gen atual. Gen fraca contaminava pool → cascata
+        // de colapso (620m gen 6 → pool lixo → gen 7 fraca também).
+        // AGORA: merge — só entra se bater pior slot do pool. Gens fracas não apagam
+        // DNA bom de gens anteriores. Champion + top elites ficam guardados.
         for (_, r, _, _) in sorted.iter().take(10) {
-            race.elite_pool.push(EliteDna {
+            let new_fit = calc_fitness(r);
+            let candidate = EliteDna {
                 fast_weights: r.engine.instinct_layer.weights.clone(),
                 fast_scale: r.engine.instinct_layer.weight_scale,
                 slow_weights: r.engine.slow_brain.layer.weights.clone(),
                 slow_scale: r.engine.slow_brain.layer.weight_scale,
-                fitness: calc_fitness(r),
-            });
+                fitness: new_fit,
+            };
+            if race.elite_pool.len() < 10 {
+                race.elite_pool.push(candidate);
+            } else {
+                // Acha pior do pool. Se novo é melhor, substitui.
+                let (worst_idx, worst_fit) = race.elite_pool.iter().enumerate()
+                    .min_by(|a, b| a.1.fitness.partial_cmp(&b.1.fitness).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, e)| (i, e.fitness))
+                    .unwrap_or((0, f32::NEG_INFINITY));
+                if new_fit > worst_fit {
+                    race.elite_pool[worst_idx] = candidate;
+                }
+            }
         }
+        // Re-sort pool desc por fitness (slot 0 = melhor de todos os tempos).
+        race.elite_pool.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
 
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
         if let Some(mut file) = open_report_log() {
@@ -191,12 +210,76 @@ pub(super) fn evolution_pipeline(
             let laps_3p = sorted.iter().filter(|(_, r, _, _)| r.total_laps >= 3).count();
             let _ = writeln!(file, "Laps — 0v: {} | 1v: {} | 2v: {} | 3+v: {}", laps_0, laps_1, laps_2, laps_3p);
 
-            // Death reason breakdown — agrupa HP=0 (batida/bleed), fuel, stagnation.
-            // Racer struct não tem death_reason enum; aproximamos por estado final.
-            let d_hp = sorted.iter().filter(|(_, r, _, _)| r.is_dead && r.hp <= 0.0 && r.fuel > 0.0).count();
-            let d_fuel = sorted.iter().filter(|(_, r, _, _)| r.is_dead && r.fuel <= 0.0).count();
-            let d_alive = sorted.iter().filter(|(_, r, _, _)| r.is_dead && r.hp > 0.0 && r.fuel > 0.0).count();
-            let _ = writeln!(file, "Death reasons — HP=0: {} | Fuel=0: {} | Outros(stagnation): {}", d_hp, d_fuel, d_alive);
+            // Death reason breakdown — categórico via DeathReason enum.
+            let mut d_hp = 0; let mut d_pin = 0; let mut d_bat = 0;
+            let mut d_stag = 0; let mut d_sbld = 0; let mut d_fuel = 0; let mut d_unk = 0;
+            for (_, r, _, _) in sorted.iter() {
+                if !r.is_dead { continue; }
+                match r.death_reason {
+                    Some(crate::simulation::racer::DeathReason::HpZero) => d_hp += 1,
+                    Some(crate::simulation::racer::DeathReason::Pinado) => d_pin += 1,
+                    Some(crate::simulation::racer::DeathReason::Batida) => d_bat += 1,
+                    Some(crate::simulation::racer::DeathReason::Stagnation) => d_stag += 1,
+                    Some(crate::simulation::racer::DeathReason::SpeedBleed) => d_sbld += 1,
+                    Some(crate::simulation::racer::DeathReason::Fuel) => d_fuel += 1,
+                    None => d_unk += 1,
+                }
+            }
+            let _ = writeln!(file, "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} ?:{}",
+                d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_unk);
+
+            // --- DEATH BY ZONE (waypoint segment) ---
+            // Agrupa mortes por segmento da pista. Identifica "curva que mata".
+            let world = &world_res.0;
+            let n_segs = world.waypoints_world.len().saturating_sub(1).max(1);
+            let mut deaths_per_seg = vec![0u32; n_segs];
+            for (_, r, _, _) in sorted.iter() {
+                if r.is_dead {
+                    let seg = world.waypoint_zone(r.death_pos.x, r.death_pos.z).min(n_segs - 1);
+                    deaths_per_seg[seg] += 1;
+                }
+            }
+            let _ = writeln!(file, "\n### 💀 DEATHS POR SEGMENTO (waypoint i → i+1)");
+            for (i, count) in deaths_per_seg.iter().enumerate() {
+                let p1 = world.waypoints_world[i];
+                let p2 = world.waypoints_world[i+1];
+                let bar = "█".repeat((((*count as f32) / (total as f32).max(1.0)) * 30.0) as usize);
+                let _ = writeln!(file, "seg[{}] ({:.0},{:.0})→({:.0},{:.0}): {:3}  {}",
+                    i, p1.x, p1.y, p2.x, p2.y, count, bar);
+            }
+
+            // --- ASCII MAP com death markers + finish positions ---
+            let death_points: Vec<Vec3> = sorted.iter()
+                .filter(|(_, r, _, _)| r.is_dead)
+                .map(|(_, r, _, _)| r.death_pos).collect();
+            let alive_positions: Vec<Vec3> = sorted.iter()
+                .filter(|(_, r, _, _)| !r.is_dead)
+                .take(30)
+                .map(|(_, _, _, body)| {
+                    let _ = body;
+                    Vec3::ZERO
+                }).collect();
+            let map = world.render_ascii_map(100, 40, &death_points, &alive_positions);
+            let _ = writeln!(file, "\n### 🗺️  MAPA (100×40) | `.`=grass `=`=road `#`=wall `0-7`=waypoints `X`=morte");
+            let _ = writeln!(file, "```");
+            let _ = write!(file, "{}", map);
+            let _ = writeln!(file, "```");
+
+            // --- PER-RACER ENHANCED (top + qualquer com lap) ---
+            let with_lap: Vec<_> = sorted.iter().filter(|(_, r, _, _)| r.total_laps > 0).collect();
+            if !with_lap.is_empty() {
+                let _ = writeln!(file, "\n### 🏆 RACERS COM VOLTAS COMPLETADAS (todos)");
+                let _ = writeln!(file, "| Nome | Laps | NET(m) | Peak(km/h) | Walls | Death | Frame | Zone |");
+                let _ = writeln!(file, "|---|---|---|---|---|---|---|---|");
+                for (_, r, _, _) in with_lap.iter() {
+                    let net = (r.track_progress - r.spawn_progress).max(0.0);
+                    let death = r.death_reason.map(|d| d.label()).unwrap_or("VIVO");
+                    let zone = if r.is_dead { world.waypoint_zone(r.death_pos.x, r.death_pos.z) as i32 } else { -1 };
+                    let _ = writeln!(file, "| {} | {} | {:.0} | {:.0} | {} | {} | {} | {} |",
+                        r.name, r.total_laps, net, r.peak_speed * 3.6, r.wall_hits, death, r.death_frame,
+                        if zone < 0 { "-".to_string() } else { zone.to_string() });
+                }
+            }
 
             // Console summary compacto pra feedback ao vivo.
             println!("📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
@@ -274,9 +357,18 @@ pub(super) fn evolution_pipeline(
             // Winner com 5 voltas sempre coroa (é prova robusta).
             // best_weights None = primeiro DNA, coroa sempre pra bootstrap.
             let is_validation = race.env_level == 0;
+            // VALIDATION tolera regressão 15% se DNA for CONSISTENTE (completou ≥1 lap).
+            // Motivo: champion lucky-spec em level 1 (ex: 4082m) nunca mais era batido
+            // após curriculum subir pra level 2+, travando evolução. 15% de folga
+            // permite DNA que fez 3500m+1lap assumir, mantendo pressão seletiva mas
+            // destravando deadlock precoce.
+            let val_threshold = race.champion_distance * 0.85;
+            let val_ok = is_validation
+                && this_gen_best_dist > val_threshold
+                && best.total_laps >= 1;
             let should_crown = winner.is_some()
                 || race.best_weights.is_none()
-                || (is_validation && this_gen_best_dist > race.champion_distance);
+                || val_ok;
 
             if should_crown {
                 race.champion_distance = this_gen_best_dist; // Atualiza o limiar do campeão
@@ -349,10 +441,12 @@ pub(super) fn evolution_pipeline(
         // CURRICULUM LEVEL + VALIDATION GEN (ver decide_next_env_level)
         let champ_dist = race.champion_distance;
         let lap_dist = world_res.0.lap_distance;
+        let current_lvl = race.env_level;
         let (next_level, is_val) = decide_next_env_level(
             &mut race.gens_until_validation,
             champ_dist,
             lap_dist,
+            current_lvl,
         );
         race.is_validation_gen = is_val;
         race.env_level = next_level;
@@ -371,16 +465,13 @@ mod tests {
     fn validation_cycle_is_every_three_gens() {
         let mut counter: u32 = 3;
         let lap = 900.0;
-        // gen 1: counter 3 -> 2, level 1 (champion 0), not validation
-        let (lvl, val) = decide_next_env_level(&mut counter, 0.0, lap);
+        let (lvl, val) = decide_next_env_level(&mut counter, 0.0, lap, 1);
         assert_eq!((lvl, val), (1, false));
         assert_eq!(counter, 2);
-        // gen 2: counter 2 -> 1, not validation
-        let (_, val) = decide_next_env_level(&mut counter, 0.0, lap);
+        let (_, val) = decide_next_env_level(&mut counter, 0.0, lap, 1);
         assert!(!val);
         assert_eq!(counter, 1);
-        // gen 3: counter 1 -> triggers validation, reset to 3, level 0
-        let (lvl, val) = decide_next_env_level(&mut counter, 0.0, lap);
+        let (lvl, val) = decide_next_env_level(&mut counter, 0.0, lap, 1);
         assert_eq!((lvl, val), (0, true));
         assert_eq!(counter, 3);
     }
@@ -388,7 +479,7 @@ mod tests {
     #[test]
     fn validation_level_is_always_zero() {
         let mut counter: u32 = 1;
-        let (lvl, val) = decide_next_env_level(&mut counter, 2000.0, 900.0);
+        let (lvl, val) = decide_next_env_level(&mut counter, 2000.0, 900.0, 3);
         assert_eq!(lvl, 0);
         assert!(val);
     }
@@ -396,13 +487,25 @@ mod tests {
     #[test]
     fn non_validation_respects_champion_distance() {
         let mut counter: u32 = 3;
-        let (lvl, _) = decide_next_env_level(&mut counter, 100.0, 900.0);
-        assert_eq!(lvl, 1); // < 0.5 lap
+        let (lvl, _) = decide_next_env_level(&mut counter, 100.0, 900.0, 1);
+        assert_eq!(lvl, 1);
         let mut counter: u32 = 3;
-        let (lvl, _) = decide_next_env_level(&mut counter, 700.0, 900.0);
-        assert_eq!(lvl, 2); // 0.5 .. 1.5 laps
+        let (lvl, _) = decide_next_env_level(&mut counter, 700.0, 900.0, 1);
+        assert_eq!(lvl, 2);
         let mut counter: u32 = 3;
-        let (lvl, _) = decide_next_env_level(&mut counter, 1500.0, 900.0);
+        let (lvl, _) = decide_next_env_level(&mut counter, 1500.0, 900.0, 2);
+        assert_eq!(lvl, 3);
+    }
+
+    #[test]
+    fn ramp_caps_at_current_plus_one() {
+        // Champion salta pra level 3 mas current=1 → capado em 2
+        let mut counter: u32 = 3;
+        let (lvl, _) = decide_next_env_level(&mut counter, 2000.0, 900.0, 1);
+        assert_eq!(lvl, 2);
+        // current=2 já → level 3 liberado
+        let mut counter: u32 = 3;
+        let (lvl, _) = decide_next_env_level(&mut counter, 2000.0, 900.0, 2);
         assert_eq!(lvl, 3);
     }
 }

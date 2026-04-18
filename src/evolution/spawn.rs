@@ -388,6 +388,10 @@ pub fn spawn_swarm(
                 prev_lap_prog: spawn_progress.rem_euclid(world.lap_distance.max(1.0)),
                 post_lap_grace: 0,
                 post_lap_checkpoint: 0.0,
+                death_reason: None,
+                death_frame: 0,
+                death_pos: Vec3::ZERO,
+                peak_speed: 0.0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

@@ -1,6 +1,29 @@
 use bevy::prelude::*;
 use crate::engine::SovereignEngine;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeathReason {
+    HpZero,       // HP drained outside wall event
+    Pinado,       // Wall-time > 0.8s
+    Batida,       // Wall hit chain → HP 0
+    Stagnation,   // max_progress não cresceu
+    SpeedBleed,   // < 2 m/s + sem progresso → HP drain
+    Fuel,         // fuel <= 0
+}
+
+impl DeathReason {
+    pub fn label(&self) -> &'static str {
+        match self {
+            DeathReason::HpZero => "HP",
+            DeathReason::Pinado => "PINADO",
+            DeathReason::Batida => "BATIDA",
+            DeathReason::Stagnation => "STAG",
+            DeathReason::SpeedBleed => "SBLD",
+            DeathReason::Fuel => "FUEL",
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct Racer {
     pub name: String,
@@ -58,6 +81,10 @@ pub struct Racer {
                                    // morria por stagnation antes de re-acelerar. Grace dá tempo pra sair.
     pub post_lap_checkpoint: f32,  // track_progress no instante do último lap. Grace só acaba quando
                                    // carro avança 25m ALÉM desse checkpoint — garante saída da start line.
+    pub death_reason: Option<DeathReason>, // Motivo causal de morte (autopsia).
+    pub death_frame: u32,                  // grace_ticks no instante da morte (≈ frame real).
+    pub death_pos: Vec3,                   // Posição mundo da morte (zona na pista).
+    pub peak_speed: f32,                   // Velocidade máxima registrada (m/s) pro reporte.
 }
 
 /// Frame de diagnóstico do cérebro do racer.

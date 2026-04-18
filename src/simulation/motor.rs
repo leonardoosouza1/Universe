@@ -985,6 +985,11 @@ pub(super) fn update_racers(
         // Morte por falha mecânica CATASTRÓFICA (HP <= 0.0) ou tempo esgotado.
         if racer.hp <= 0.0 && !racer.is_dead {
             racer.is_dead = true;
+            if racer.death_reason.is_none() {
+                racer.death_reason = Some(crate::simulation::racer::DeathReason::HpZero);
+                racer.death_frame = racer.grace_ticks;
+                racer.death_pos = pos;
+            }
             // Cria MEMÓRIA DE DOR no mundo para as próximas gerações
             race.death_markers.push(pos);
 
@@ -1025,6 +1030,7 @@ pub(super) fn update_racers(
             // A IA vira a roda da frente -> gera força lateral no pneu -> gera torque -> vira o chassi.
 
             racer.amplitude = body.velocity.length();
+            if racer.amplitude > racer.peak_speed { racer.peak_speed = racer.amplitude; }
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0;
 
             // Distância verdadeira: Projeção da velocidade na direção da pista (Flow)
@@ -1080,6 +1086,22 @@ pub(super) fn update_racers(
             if avg_slip > 0.5 && track_velocity.abs() < 15.0 {
                 // "Estourar os Pneus": Drena vida absurdamente rápido se derrapar à toa acelerando a 80% parado
                 racer.hp -= avg_slip * 10.0 * dt;
+            }
+
+            // === DRIFT REWARD (derrapagem limpa) ===
+            // Carro deslizando MAS mantendo velocidade na direção do track = dopamina bônus.
+            // Requer: slip_angle médio alto + forward speed real + throttle engajado + alinhamento ok.
+            // Burnout parado (acima) continua sendo punido — esses dois não se sobrepõem.
+            let avg_slip_angle = body.wheels.iter().map(|w| w.slip_angle.abs()).sum::<f32>() / 4.0;
+            if avg_slip_angle > 0.15 && track_velocity > 10.0 && pedal_intent > 0.3 && alignment > 0.3 {
+                // Escala: drift magnitude × velocidade × alinhamento com pista.
+                // Cap em 0.6 rad (~34°) pra não premiar spins absurdos.
+                let drift_bonus = avg_slip_angle.min(0.6) * track_velocity * alignment * 0.08;
+                racer.joy_integral += drift_bonus * dt;
+                // Fumaça visível: dobra chance de skidmark durante clean drift.
+                if rand::random::<f32>() < 0.25 {
+                    racer.tire_temp = (racer.tire_temp + 0.02 * dt).min(1.0);
+                }
             }
 
             // === DRAFTING: Redução de arrasto 30% se atrás de outro carro ===
@@ -1148,6 +1170,9 @@ pub(super) fn update_racers(
             if pinned {
                 racer.is_dead = true;
                 racer.hp = 0.0;
+                racer.death_reason = Some(crate::simulation::racer::DeathReason::Pinado);
+                racer.death_frame = racer.grace_ticks;
+                racer.death_pos = pos;
                 race.death_markers.push(pos);
                 if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 commands.entity(entity).insert(Visibility::Hidden);
@@ -1171,6 +1196,9 @@ pub(super) fn update_racers(
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     racer.hp = 0.0;
+                    racer.death_reason = Some(crate::simulation::racer::DeathReason::Batida);
+                    racer.death_frame = racer.grace_ticks;
+                    racer.death_pos = pos;
                     race.death_markers.push(pos);
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                     commands.entity(entity).insert(Visibility::Hidden);
@@ -1225,6 +1253,9 @@ pub(super) fn update_racers(
             }
             if racer.stagnation > 240.0 {
                 racer.is_dead = true;
+                racer.death_reason = Some(crate::simulation::racer::DeathReason::Stagnation);
+                racer.death_frame = racer.grace_ticks;
+                racer.death_pos = pos;
                 race.death_markers.push(pos);
                 if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                 commands.entity(entity).insert(Visibility::Hidden);
@@ -1249,6 +1280,9 @@ pub(super) fn update_racers(
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     racer.hp = 0.0;
+                    racer.death_reason = Some(crate::simulation::racer::DeathReason::SpeedBleed);
+                    racer.death_frame = racer.grace_ticks;
+                    racer.death_pos = pos;
                     race.death_markers.push(pos);
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                     commands.entity(entity).insert(Visibility::Hidden);
@@ -1260,8 +1294,11 @@ pub(super) fn update_racers(
         }
 
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
-        if racer.fuel <= 0.0 {
+        if racer.fuel <= 0.0 && !racer.is_dead {
             racer.is_dead = true;
+            racer.death_reason = Some(crate::simulation::racer::DeathReason::Fuel);
+            racer.death_frame = racer.grace_ticks;
+            racer.death_pos = pos;
             commands.entity(entity).insert(Visibility::Hidden);
         }
 
@@ -1326,18 +1363,14 @@ pub(super) fn update_racers(
             let up = *transform.up();
             let eye_pos = transform.translation + Vec3::Y * 0.4;
 
-            // Retina unificada 180° tan-warp (row 0) + 180° linear (row 1).
-            // Verde: fóvea warpada — densa no centro, larga nas bordas (180° total).
-            // Azul: periférica linear — uniforme, referência de motion baseline.
+            // Visualmente: SÓ fóvea verde 180° tan-warp. Periférica + whiskers continuam
+            // alimentando cérebro (canais 32-63 + 94-97) mas gizmo fica limpo.
             let fov_half = 90.0_f32.to_radians();
             const TAN_K: f32 = 1.25_f32;
             let tan_k_val = TAN_K.tan();
             let fovea_len = 60.0;
-            let peri_len = 22.0;
             let fovea_color = Color::srgba(0.0, 1.0, 0.0, 0.22);
-            let peri_color = Color::srgba(0.2, 0.5, 1.0, 0.10);
 
-            // Fóvea 180° tan-warp: 32 raios center-dense.
             for i in 0..32 {
                 let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
                 let warped = (normalized_i * TAN_K).tan() / tan_k_val;
@@ -1345,29 +1378,7 @@ pub(super) fn update_racers(
                 let ray_dir = Quat::from_axis_angle(up, yaw_angle) * forward;
                 gizmos.line(eye_pos, eye_pos + ray_dir * fovea_len, fovea_color);
             }
-            // Periférica 180° linear: 32 raios uniformes.
-            for i in 0..32 {
-                let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
-                let yaw_angle = normalized_i * fov_half;
-                let ray_dir = Quat::from_axis_angle(up, yaw_angle) * forward;
-                gizmos.line(eye_pos, eye_pos + ray_dir * peri_len, peri_color);
-            }
-
-            // Flecha mostrando a direção central do gaze (pra onde a cabeça está olhando).
-            let gaze_dir = Quat::from_axis_angle(up, racer.gaze_yaw) * forward;
-            gizmos.arrow(eye_pos + Vec3::Y * 0.6, eye_pos + Vec3::Y * 0.6 + gaze_dir * 8.0, Color::srgb(0.0, 1.0, 0.3));
-
-            // Whiskers A17 (canais 94-97): ±30° e ±60°, alcance 10m.
-            let whisker_color = Color::srgba(1.0, 0.9, 0.0, 0.9);
-            for &ang in &[
-                std::f32::consts::FRAC_PI_6,
-                -std::f32::consts::FRAC_PI_6,
-                std::f32::consts::FRAC_PI_3,
-                -std::f32::consts::FRAC_PI_3,
-            ] {
-                let dir = Quat::from_axis_angle(up, ang) * forward;
-                gizmos.line(eye_pos, eye_pos + dir * 10.0, whisker_color);
-            }
+            let _ = up;
         }
     }
 

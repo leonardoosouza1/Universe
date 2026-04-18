@@ -149,6 +149,74 @@ impl VoxelWorld {
         }
     }
 
+    /// Renderiza mapa ASCII top-down.
+    /// - `.` grass, `=` road, `#` wall
+    /// - `0..9` waypoints (overlay)
+    /// - `X` death markers (overlay)
+    /// - `o` finish positions de racers vivos (overlay)
+    pub fn render_ascii_map(
+        &self,
+        width: usize,
+        height: usize,
+        deaths: &[Vec3],
+        finish_positions: &[Vec3],
+    ) -> String {
+        let mut buf = vec![vec![b' '; width]; height];
+        let world_size = self.size as f32 * self.cell_size;
+        for r in 0..height {
+            for c in 0..width {
+                let wx = (c as f32 + 0.5) / width as f32 * world_size;
+                let wz = (r as f32 + 0.5) / height as f32 * world_size;
+                buf[r][c] = match self.get_voxel_at(wx, wz) {
+                    VoxelType::Grass => b'.',
+                    VoxelType::Road => b'=',
+                    VoxelType::Wall => b'#',
+                };
+            }
+        }
+        let to_rc = |wx: f32, wz: f32| -> (usize, usize) {
+            let c = ((wx / world_size) * width as f32).clamp(0.0, width as f32 - 1.0) as usize;
+            let r = ((wz / world_size) * height as f32).clamp(0.0, height as f32 - 1.0) as usize;
+            (r, c)
+        };
+        for p in finish_positions.iter() {
+            let (r, c) = to_rc(p.x, p.z);
+            buf[r][c] = b'o';
+        }
+        for p in deaths.iter() {
+            let (r, c) = to_rc(p.x, p.z);
+            buf[r][c] = b'X';
+        }
+        for (i, wp) in self.waypoints_world.iter().take(10).enumerate() {
+            let (r, c) = to_rc(wp.x, wp.y);
+            buf[r][c] = b'0' + (i as u8 % 10);
+        }
+        let mut s = String::new();
+        for row in buf.iter() {
+            s.push_str(std::str::from_utf8(row).unwrap_or(""));
+            s.push('\n');
+        }
+        s
+    }
+
+    /// Waypoint-index (0..N-1) mais próximo de ponto mundo. Agrupa mortes por segmento.
+    pub fn waypoint_zone(&self, wx: f32, wz: f32) -> usize {
+        let pos = Vec2::new(wx, wz);
+        let mut min_dist = f32::MAX;
+        let mut best_seg = 0;
+        for i in 0..self.waypoints_world.len().saturating_sub(1) {
+            let p1 = self.waypoints_world[i];
+            let p2 = self.waypoints_world[i+1];
+            let seg_len = p1.distance(p2).max(0.001);
+            let dir = (p2 - p1) / seg_len;
+            let t = (pos - p1).dot(dir).clamp(0.0, seg_len);
+            let proj = p1 + dir * t;
+            let d = pos.distance(proj);
+            if d < min_dist { min_dist = d; best_seg = i; }
+        }
+        best_seg
+    }
+
     pub fn get_voxel_at(&self, wx: f32, wz: f32) -> VoxelType {
         let x = (wx / self.cell_size).round() as i32;
         let y = (wz / self.cell_size).round() as i32;

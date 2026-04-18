@@ -84,11 +84,17 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
         let seed = u32::from_le_bytes(buf[10..14].try_into().ok()?);
         let track_width = f32::from_le_bytes(buf[14..18].try_into().ok()?);
         let fitness = f32::from_le_bytes(buf[18..22].try_into().ok()?);
-        let fast_scale = f32::from_le_bytes(buf[22..26].try_into().ok()?);
+        let fast_scale_raw = f32::from_le_bytes(buf[22..26].try_into().ok()?);
         let fast_end = 26 + DNA_FAST_SIZE;
         let fast_weights: Vec<i8> = buf[26..fast_end].iter().map(|&b| b as i8).collect();
-        let slow_scale = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
+        let slow_scale_raw = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
         let slow_weights: Vec<i8> = buf[fast_end + 4..].iter().map(|&b| b as i8).collect();
+        // SANITIZAÇÃO: DNAs antigos podem ter scales astronômicos (bug myelinate
+        // sem cap pré-fix). Clamp em [1e-4, 10] — valores fora disso indicam
+        // corrupção runtime, não pesos válidos. Força recalibração na próxima
+        // quantize() via abs_mean dos pesos ternários.
+        let fast_scale = if fast_scale_raw.is_finite() { fast_scale_raw.clamp(1e-4, 10.0) } else { 1.0 };
+        let slow_scale = if slow_scale_raw.is_finite() { slow_scale_raw.clamp(1e-4, 10.0) } else { 1.0 };
         return Some(DnaPayload {
             fast_weights, fast_scale,
             slow_weights: Some(slow_weights), slow_scale,
