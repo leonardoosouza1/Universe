@@ -97,6 +97,8 @@ fn main() {
         fitness_history: std::collections::VecDeque::with_capacity(100),
         axiom_boost_counter: 0,
         current_axiom_strength: 1.0,
+        current_morpho: universe::evolution::dna::MorphoGenes::default(),
+        current_hypernet: universe::evolution::dna::HypernetSeed::default(),
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

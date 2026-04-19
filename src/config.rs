@@ -69,30 +69,44 @@ impl Default for UniverseConfig {
     fn default() -> Self {
         Self {
             physics: PhysicsSettings::default(),
+            // Ordem = progressão curricular (easy → very hard).
+            // track_width: mais largo = mais perdão pra mutantes ruins.
             tracks: vec![
                 TrackProfile {
-                    name: "Interlagos Gateway".to_string(),
+                    name: "Dubai Oval".to_string(),           // EASY
+                    seed: 123,
+                    track_width: 44.0,
+                    complexity: 0.3,
+                },
+                TrackProfile {
+                    name: "Interlagos Gateway".to_string(),   // MEDIUM
                     seed: 64,
                     track_width: 36.0,
                     complexity: 1.0,
                 },
                 TrackProfile {
-                    name: "Dubai Oval".to_string(),
-                    seed: 123,
-                    track_width: 40.0,
-                    complexity: 0.5,
-                },
-                TrackProfile {
-                    name: "Monaco Tight".to_string(),
+                    name: "Monaco Tight".to_string(),         // HARD
                     seed: 256,
                     track_width: 28.0,
                     complexity: 2.0,
                 },
                 TrackProfile {
-                    name: "Silverstone Flow".to_string(),
+                    name: "Silverstone Flow".to_string(),     // VERY HARD
                     seed: 512,
-                    track_width: 34.0,
-                    complexity: 1.3,
+                    track_width: 32.0,
+                    complexity: 1.8,
+                },
+                TrackProfile {
+                    name: "Nurburgring Hills".to_string(),    // EXTREME (rampas)
+                    seed: 768,
+                    track_width: 30.0,
+                    complexity: 2.5,
+                },
+                TrackProfile {
+                    name: "Suzuka Crossing".to_string(),      // INSANE (multi-hairpin)
+                    seed: 1024,
+                    track_width: 26.0,
+                    complexity: 3.0,
                 },
             ],
             selected_track_index: 0,

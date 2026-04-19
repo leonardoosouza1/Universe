@@ -19,6 +19,22 @@ const PROTECTED_ZONE_SIZE: usize = 819;
 /// Constrói o vetor de pesos do instinct_layer pré-semeado com os axiomas A1–A15.
 /// Usado tanto na geração 0 (sem pool/DNA) quanto periodicamente em gens seguintes
 /// para reinjetar instintos perdidos por deriva genética.
+// FIX: slow brain (32→8, 256 pesos) ficava 100% zero por ~125 gens.
+// Priming diagonal: cada output k soma banda de 4 inputs → força sinal > 0
+// e evolução afina a partir de base funcional.
+fn build_slow_priming_weights() -> Vec<f32> {
+    let mut w = vec![0.0f32; 32 * 8];
+    for out in 0..8 {
+        for i in 0..4 {
+            let idx = out * 32 + (out * 4 + i);
+            if idx < w.len() {
+                w[idx] = 1.0;
+            }
+        }
+    }
+    w
+}
+
 fn build_priming_weights() -> Vec<f32> {
     let mut weights = vec![0.0f32; 128 * 64];
 
@@ -257,7 +273,9 @@ pub fn spawn_swarm(
     // Estratégia: só age em canais críticos (mesma lista de antes) em todos os 3 outputs
     // (throttle/steer/brake). Outros canais ficam totalmente livres pra evolução.
     let gen_f = race.generation as f32;
-    let mut axiom_strength = (1.0 - gen_f / 50.0).max(0.0);
+    // FIX: floor 0.15 permanente — antes decaia a 0 no gen 50, organismo perdia guia
+    // ANTES de completar volta, cenário 330m plateau eterno.
+    let mut axiom_strength = (1.0 - gen_f / 50.0).max(0.15);
     if race.axiom_boost_counter > 0 {
         axiom_strength = axiom_strength.max(0.5);
     }
@@ -297,6 +315,9 @@ pub fn spawn_swarm(
     if idx_start == 0 {
         current_best_hypernet.mutate(|| rng.random::<f32>());
     }
+    // Expose for pipeline save (Tier 6.3/6.4 persistência).
+    race.current_morpho = current_best_morpho;
+    race.current_hypernet = current_best_hypernet;
 
     let pool_size = race.elite_pool.len();
 
@@ -383,7 +404,10 @@ pub fn spawn_swarm(
                 // tournament. Sem isso axiomas nunca chegam no campeão (gen 13 mostrou
                 // canal 79 curvatura em 4.7%, era pra estar >30%).
                 engine.instinct_layer.set_scale(1.0);
-                // slow_brain fica zerado (estado neutro, evolução descobre uso)
+                // FIX: slow_brain também recebe priming diagonal pra sair do zero absoluto.
+                let slow_priming = build_slow_priming_weights();
+                engine.slow_brain.layer.quantize(&slow_priming);
+                engine.slow_brain.layer.set_scale(1.0);
             } else {
                 // Tier 4.1 — MATE PREFERENCE.
                 // Seleciona p1 via tournament (top pool). Escolhe p2 ponderando por
@@ -518,6 +542,10 @@ pub fn spawn_swarm(
             let weights = build_priming_weights();
             engine.instinct_layer.quantize(&weights);
             engine.instinct_layer.set_scale(1.0);
+            // FIX: gen 0 sem DNA também prima slow brain.
+            let slow_priming = build_slow_priming_weights();
+            engine.slow_brain.layer.quantize(&slow_priming);
+            engine.slow_brain.layer.set_scale(1.0);
         }
 
         // Tier 4.2: seeda metabolismo do filho com 10% do estado hormonal do(s) parent(s).

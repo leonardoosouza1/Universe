@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use std::collections::VecDeque;
-use super::dna::EliteDna;
+use super::dna::{EliteDna, MorphoGenes, HypernetSeed};
 
 pub const FITNESS_HISTORY_CAP: usize = 100;
 
@@ -46,6 +46,9 @@ pub struct RaceSettings {
     // Atualizado pela spawn.rs a cada gen com a mesma curva de decay: (1.0 - gen/50).max(0),
     // elevado a 0.5 se axiom_boost_counter > 0. Consumido por update_racers após execute_cycle.
     pub current_axiom_strength: f32,
+    // Tier 6.3/6.4 — morpho + hypernet do champion atual, persistidos via save_champion_dna_full.
+    pub current_morpho: MorphoGenes,
+    pub current_hypernet: HypernetSeed,
 }
 
 #[derive(Resource)]

@@ -12,9 +12,27 @@ impl Plugin for RacerPlugin {
         // Motor → FixedUpdate antes da física: brain e physics sincronizados.
         // Time_scale agora escala Virtual → Bevy roda N substeps de FixedUpdate por frame
         // real. Brain tick N× POR frame (antes só 1×), sem tunneling em time_scale alto.
-        app.add_systems(FixedUpdate, motor::update_racers.before(crate::physics::PhysicsSet))
+        // Tier 5.4: tick_npcs_system roda ANTES de update_racers pra racers leem posições
+        // frescas dos obstáculos móveis.
+        app.add_systems(FixedUpdate, (
+                tick_npcs_system.before(motor::update_racers),
+                motor::update_racers.before(crate::physics::PhysicsSet),
+            ))
            .add_systems(Update, (camera_system, skidmark_cleanup_system));
     }
+}
+
+/// Tier 5.4 — Avança todos os NPCs obstáculos um passo de dt por tick fixed.
+/// No-op se `env.npcs` vazio (gate curricular) ou mundo sem waypoints.
+fn tick_npcs_system(
+    mut env: ResMut<crate::environment::EnvironmentalState>,
+    world: Res<crate::world::VoxelWorldResource>,
+    time: Res<Time>,
+) {
+    if env.npcs.is_empty() || world.0.waypoints_world.is_empty() { return; }
+    let dt = time.delta_secs();
+    let wps = world.0.waypoints_world.clone();
+    env.tick_npcs(&wps, dt);
 }
 
 fn skidmark_cleanup_system(

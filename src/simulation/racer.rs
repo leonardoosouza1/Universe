@@ -88,6 +88,8 @@ pub enum DeathReason {
     Stagnation,   // max_progress não cresceu
     SpeedBleed,   // < 2 m/s + sem progresso → HP drain
     Fuel,         // fuel <= 0
+    Hole,         // Caiu em buraco (VoxelType::Hole) → morte instantânea
+    NpcHit,       // Colisão violenta com NPC obstáculo → HP 0
 }
 
 impl DeathReason {
@@ -99,6 +101,8 @@ impl DeathReason {
             DeathReason::Stagnation => "STAG",
             DeathReason::SpeedBleed => "SBLD",
             DeathReason::Fuel => "FUEL",
+            DeathReason::Hole => "HOLE",
+            DeathReason::NpcHit => "NPC",
         }
     }
 }

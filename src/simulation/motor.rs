@@ -718,6 +718,7 @@ pub(super) fn update_racers(
             VoxelType::Road => 1.0,
             VoxelType::Grass => 0.2,
             VoxelType::Wall => -0.5,
+            VoxelType::Hole => -1.0, // Hole é pior que parede — reforça evitar.
         };
         let joy_tick = progress_speed * surface_factor;
         if joy_tick > 0.5 {
@@ -1168,6 +1169,41 @@ pub(super) fn update_racers(
         // --- GRAMA: Penalidade de Tempo ("DOR" Neural Constante) ---
         if voxel_current == VoxelType::Grass {
             racer.grass_time += dt;
+        }
+
+        // --- HOLE: Morte instantânea ---
+        // VoxelType::Hole sob centro do carro → kill. Força a rede a desviar ativamente
+        // de buracos (pixel distinto na retina ~90, enquanto road ~-80 e wall ~127).
+        // Grace window preserva bootstrap: primeiros 180 frames reais sem penalidade.
+        if voxel_current == VoxelType::Hole && !racer.is_dead && racer.grace_ticks >= 180 {
+            racer.is_dead = true;
+            racer.hp = 0.0;
+            racer.death_reason = Some(crate::simulation::racer::DeathReason::Hole);
+            racer.death_frame = racer.grace_ticks;
+            racer.death_pos = pos;
+            race.death_markers.push(pos);
+            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+            commands.entity(entity).insert(Visibility::Hidden);
+            println!("💀 {} HOLE frame {} pos=({:.1},{:.1})", racer.name, racer.grace_ticks, pos.x, pos.z);
+        }
+
+        // --- NPC HIT: Dano pesado, kill se HP zero ---
+        // Cooldown reutilizado do wall_cooldown evita double-dip no mesmo hit.
+        if !racer.is_dead && racer.grace_ticks >= 180 && env.npc_hit(Vec2::new(pos.x, pos.z)) && racer.wall_cooldown == 0.0 {
+            racer.telemetry.hit_npc_count += 1;
+            racer.wall_cooldown = 0.8;
+            racer.hp -= 50.0;
+            if racer.hp <= 0.0 {
+                racer.is_dead = true;
+                racer.hp = 0.0;
+                racer.death_reason = Some(crate::simulation::racer::DeathReason::NpcHit);
+                racer.death_frame = racer.grace_ticks;
+                racer.death_pos = pos;
+                race.death_markers.push(pos);
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                commands.entity(entity).insert(Visibility::Hidden);
+                println!("💀 {} NPC_HIT frame {}", racer.name, racer.grace_ticks);
+            }
         }
 
         // --- DINÂMICA DE CASTER (STEERING WEIGHT DEPENDENTE DA VELOCIDADE) ---

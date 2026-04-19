@@ -3,7 +3,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum VoxelType { Grass = 0, Road = 1, Wall = 2 }
+pub enum VoxelType { Grass = 0, Road = 1, Wall = 2, Hole = 3 }
 
 #[derive(Resource, Default)]
 pub struct VoxelWorldResource(pub VoxelWorld);
@@ -31,13 +31,11 @@ impl VoxelWorld {
         let mut height_map = vec![0.0f32; size * size];
         let mut banking = vec![0.0f32; size * size];
         
-        // TODO: Usar a seed para randomizar os waypoints se complexity > 0
-        let waypoints = vec![
-            Vec2::new(20.0, 20.0), Vec2::new(140.0, 20.0), 
-            Vec2::new(140.0, 60.0), Vec2::new(100.0, 100.0), 
-            Vec2::new(100.0, 140.0), Vec2::new(60.0, 140.0), 
-            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
-        ];
+        // FIX: waypoints únicos por seed — cada pista é literalmente diferente,
+        // progressão easy→very hard com rampas e desafios geométricos.
+        // Seeds batem com TrackProfile em config.rs.
+        let waypoints = track_waypoints_for_seed(_seed);
+        let (height_amp, height_freq) = track_elevation_for_seed(_seed);
 
         let track_width = track_width; 
         for y in 0..size {
@@ -62,8 +60,9 @@ impl VoxelWorld {
                             else if min_dist < (track_width / 2.0) + 1.5 { VoxelType::Wall }
                             else { VoxelType::Grass };
                 
-                // Elevação: ondulações suaves baseadas na posição + segmento
-                let elev_base = ((x as f32 * 0.03).sin() * 1.5 + (y as f32 * 0.02).cos() * 2.0) * 0.5;
+                // Elevação: amplitude/frequência por pista — Nürburgring Hills tem rampas sérias.
+                let elev_base = ((x as f32 * height_freq).sin() * height_amp
+                    + (y as f32 * height_freq * 0.67).cos() * height_amp * 1.3) * 0.5;
                 height_map[idx] = if grid[idx] == VoxelType::Road || grid[idx] == VoxelType::Wall {
                     elev_base
                 } else {
@@ -78,6 +77,19 @@ impl VoxelWorld {
             }
         }
 
+        // Overlay HOLES (VoxelType::Hole) em cells específicas por seed. Só em pistas
+        // HARD+ (256, 512, 768, 1024). Holes matam no contato — força rede a aprender
+        // desvio ativo, não passivo. Só sobrescreve Road (nunca Wall/Grass).
+        for hole_cell in track_holes_for_seed(_seed) {
+            let hx = hole_cell.x.round() as i32;
+            let hy = hole_cell.y.round() as i32;
+            if hx < 0 || hx >= size as i32 || hy < 0 || hy >= size as i32 { continue; }
+            let idx = hy as usize * size + hx as usize;
+            if grid[idx] == VoxelType::Road {
+                grid[idx] = VoxelType::Hole;
+            }
+        }
+
         let waypoints_world: Vec<Vec2> = waypoints.iter().map(|p| *p * cell_size).collect();
         let mut waypoint_arcs = vec![0.0];
         let mut total_dist = 0.0;
@@ -86,9 +98,9 @@ impl VoxelWorld {
             waypoint_arcs.push(total_dist);
         }
 
-        // Start pos movido de (120,20) → (50,20): antes 20 cells (60m) até WP[1] 90°,
-        // agora 90 cells (270m) de runway. A 40m/s = 6.7s pra acelerar e ler a curva.
-        let start_pos = Vec3::new(50.0 * cell_size, 0.5, 20.0 * cell_size);
+        // Start pos por pista — runway suficiente pra ler primeira curva a ~40m/s.
+        let start_pos_cells = track_start_for_seed(_seed);
+        let start_pos = Vec3::new(start_pos_cells.x * cell_size, 0.5, start_pos_cells.y * cell_size);
 
         // Pré-calcula start_progress uma vez — antes era refeito a cada get_track_progress
         // (500 carros × 60 Hz × 10× time_scale = 300k recálculos/s de uma constante).
@@ -114,8 +126,9 @@ impl VoxelWorld {
         let n_road = grid.iter().filter(|v| **v == VoxelType::Road).count();
         let n_wall = grid.iter().filter(|v| **v == VoxelType::Wall).count();
         let n_grass = grid.iter().filter(|v| **v == VoxelType::Grass).count();
+        let n_hole = grid.iter().filter(|v| **v == VoxelType::Hole).count();
         println!("🗺  MAP DIAG track_width={:.1}m cell={:.1}m lap={:.1}m", track_width * cell_size * 0.0 + track_width, cell_size, total_dist);
-        println!("   voxels road={} wall={} grass={} road_ratio={:.1}%", n_road, n_wall, n_grass, 100.0 * n_road as f32 / (n_road + n_wall + n_grass) as f32);
+        println!("   voxels road={} wall={} grass={} hole={} road_ratio={:.1}%", n_road, n_wall, n_grass, n_hole, 100.0 * n_road as f32 / (n_road + n_wall + n_grass + n_hole) as f32);
         println!("   start_pos=({:.1}, {:.1}) start_progress={:.1}m / lap {:.1}m ({:.1}%)",
             start_pos.x, start_pos.z, start_progress, total_dist, 100.0 * start_progress / total_dist);
         for i in 0..waypoints_world.len() {
@@ -171,6 +184,7 @@ impl VoxelWorld {
                     VoxelType::Grass => b'.',
                     VoxelType::Road => b'=',
                     VoxelType::Wall => b'#',
+                    VoxelType::Hole => b'O',
                 };
             }
         }
@@ -348,12 +362,23 @@ impl VoxelWorld {
                     let b = wall_pos.len() as u32;
                     let h = 1.0;
                     wall_pos.extend_from_slice(&[
-                        [px + self.cell_size * 0.4, 0.0, pz + self.cell_size * 0.4], 
-                        [px + self.cell_size * 0.6, 0.0, pz + self.cell_size * 0.6], 
-                        [px + self.cell_size * 0.4, h, pz + self.cell_size * 0.4], 
+                        [px + self.cell_size * 0.4, 0.0, pz + self.cell_size * 0.4],
+                        [px + self.cell_size * 0.6, 0.0, pz + self.cell_size * 0.6],
+                        [px + self.cell_size * 0.4, h, pz + self.cell_size * 0.4],
                         [px + self.cell_size * 0.6, h, pz + self.cell_size * 0.6]
                     ]);
                     wall_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
+                } else if v == VoxelType::Hole {
+                    // Desenha Hole como quad PRETO 0.3m abaixo do road — visualmente
+                    // óbvio pro espectador humano e ainda detectável pela retina (hit_dist
+                    // volta ~90 no canal). Usa road_pos (mesmo material road) com cor preta.
+                    let b = road_pos.len() as u32;
+                    road_pos.extend_from_slice(&[
+                        [px, py - 0.3, pz], [px+self.cell_size, py - 0.3, pz],
+                        [px, py - 0.3, pz+self.cell_size], [px+self.cell_size, py - 0.3, pz+self.cell_size]
+                    ]);
+                    road_colors.extend_from_slice(&[[0.0, 0.0, 0.0, 1.0]; 4]);
+                    road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 }
             }
         }
@@ -382,8 +407,8 @@ impl VoxelWorld {
             let px = wx + angle.cos() * d;
             let pz = wz + angle.sin() * d;
             let voxel = self.get_voxel_at(px, pz);
-            if voxel == VoxelType::Wall || voxel == VoxelType::Grass { 
-                return d; 
+            if voxel == VoxelType::Wall || voxel == VoxelType::Grass || voxel == VoxelType::Hole {
+                return d;
             }
             d += 0.5;
         }
@@ -475,7 +500,7 @@ impl VoxelWorld {
                     }
                     
                     let voxel = self.get_voxel_at((map_x as f32) * cell, (map_y as f32) * cell);
-                    if voxel == VoxelType::Wall {
+                    if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
                         hit_voxel = voxel; hit = true; break;
                     }
                 }
@@ -532,6 +557,13 @@ impl VoxelWorld {
                     },
                     VoxelType::Road => {
                         -128.0 + (depth_fade * 48.0)
+                    },
+                    VoxelType::Hole => {
+                        // Hole = buraco no asfalto. Mata no contato → canal precisa ser
+                        // BEM distinguível de Road/Grass/Wall. Range 90→60 em 0..50m,
+                        // satura em 60 além. Sempre > Grass (40) → rede lê como hazard.
+                        let near = (hit_dist / 50.0).clamp(0.0, 1.0);
+                        90.0 - (near * 30.0)
                     }
                 };
                 
@@ -546,6 +578,141 @@ fn dist_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
     p.distance(a + ab * t)
+}
+
+// ============================================================================
+// TRACK LIBRARY — waypoints por seed (progressão easy → very hard)
+// ----------------------------------------------------------------------------
+// Coordenadas em CELLS (multiplicadas por cell_size=3m no VoxelWorld::new).
+// Grid 160×160 cells = 480×480m. Manter waypoints entre [10, 150] pra buffer.
+// ============================================================================
+pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
+    match seed {
+        // Dubai Oval — EASY: oval largo, curvas suaves <45°, runway longo.
+        123 => vec![
+            Vec2::new(20.0, 20.0),  Vec2::new(120.0, 20.0),
+            Vec2::new(140.0, 40.0), Vec2::new(140.0, 100.0),
+            Vec2::new(120.0, 120.0), Vec2::new(40.0, 120.0),
+            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
+        ],
+        // Interlagos Gateway — MEDIUM: current layout (90° + 2×45°).
+        64 => vec![
+            Vec2::new(20.0, 20.0),  Vec2::new(140.0, 20.0),
+            Vec2::new(140.0, 60.0), Vec2::new(100.0, 100.0),
+            Vec2::new(100.0, 140.0), Vec2::new(60.0, 140.0),
+            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
+        ],
+        // Monaco Tight — HARD: chicane + 90° right + 90° left + hairpin.
+        256 => vec![
+            Vec2::new(20.0, 20.0),  Vec2::new(80.0, 20.0),
+            Vec2::new(90.0, 35.0),  Vec2::new(75.0, 50.0),
+            Vec2::new(140.0, 50.0), Vec2::new(140.0, 90.0),
+            Vec2::new(100.0, 90.0), Vec2::new(100.0, 130.0),
+            Vec2::new(60.0, 130.0), Vec2::new(20.0, 90.0),
+            Vec2::new(20.0, 20.0),
+        ],
+        // Silverstone Flow — VERY HARD: curvas rápidas + hairpin brutal.
+        512 => vec![
+            Vec2::new(20.0, 20.0),  Vec2::new(100.0, 25.0),
+            Vec2::new(140.0, 55.0), Vec2::new(140.0, 90.0),
+            Vec2::new(110.0, 115.0), Vec2::new(80.0, 100.0),
+            Vec2::new(60.0, 130.0), Vec2::new(30.0, 130.0),
+            Vec2::new(15.0, 110.0), Vec2::new(25.0, 80.0),
+            Vec2::new(50.0, 60.0), Vec2::new(20.0, 20.0),
+        ],
+        // Nürburgring Hills — EXTREME: elevação forte + curvas longas.
+        // Seed novo, config adiciona.
+        768 => vec![
+            Vec2::new(20.0, 30.0),  Vec2::new(90.0, 20.0),
+            Vec2::new(140.0, 45.0), Vec2::new(130.0, 85.0),
+            Vec2::new(95.0, 110.0), Vec2::new(130.0, 140.0),
+            Vec2::new(85.0, 145.0), Vec2::new(45.0, 130.0),
+            Vec2::new(20.0, 100.0), Vec2::new(45.0, 70.0),
+            Vec2::new(25.0, 50.0),  Vec2::new(20.0, 30.0),
+        ],
+        // Suzuka Crossing — INSANE: figure-8 approximation com multi-hairpin.
+        1024 => vec![
+            Vec2::new(20.0, 30.0),  Vec2::new(70.0, 30.0),
+            Vec2::new(90.0, 50.0),  Vec2::new(70.0, 70.0),
+            Vec2::new(30.0, 70.0),  Vec2::new(20.0, 90.0),
+            Vec2::new(40.0, 130.0), Vec2::new(90.0, 140.0),
+            Vec2::new(130.0, 120.0), Vec2::new(140.0, 80.0),
+            Vec2::new(120.0, 55.0), Vec2::new(110.0, 30.0),
+            Vec2::new(20.0, 30.0),
+        ],
+        _ => vec![
+            Vec2::new(20.0, 20.0),  Vec2::new(140.0, 20.0),
+            Vec2::new(140.0, 60.0), Vec2::new(100.0, 100.0),
+            Vec2::new(100.0, 140.0), Vec2::new(60.0, 140.0),
+            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
+        ],
+    }
+}
+
+/// (amp, freq) — amplitude em metros, frequência em radianos/cell.
+pub fn track_elevation_for_seed(seed: u64) -> (f32, f32) {
+    match seed {
+        123  => (0.8, 0.02),   // Dubai: quase flat
+        64   => (1.5, 0.03),   // Interlagos: ondulação suave
+        256  => (2.0, 0.04),   // Monaco: street-level bumps
+        512  => (2.5, 0.035),  // Silverstone: ondulações
+        768  => (6.0, 0.025),  // Nürburgring Hills: RAMPAS de verdade
+        1024 => (3.5, 0.05),   // Suzuka: relevo moderado
+        _    => (1.5, 0.03),
+    }
+}
+
+/// Cells (x,y) onde holes (buracos kill-on-touch) ficam sobrepostos ao Road.
+/// Só pistas HARD+ recebem. Layout escolhido pra punir trajetória preguiçosa sem
+/// bloquear a racing line ideal — buraco sempre fora do centro da pista ou em
+/// trechos onde a IA deve já ter aprendido curvar.
+pub fn track_holes_for_seed(seed: u64) -> Vec<Vec2> {
+    match seed {
+        // Dubai / Interlagos — sem buracos (fase de aprendizado).
+        123 | 64 => vec![],
+
+        // Monaco Tight — 2 buracos no apex das curvas internas da chicane.
+        256 => vec![
+            Vec2::new(82.0, 38.0),   // Apex chicane dir
+            Vec2::new(113.0, 93.0),  // Saída curva 4
+        ],
+
+        // Silverstone Flow — 3 buracos em trechos de alta velocidade.
+        512 => vec![
+            Vec2::new(108.0, 33.0),  // Reta 1
+            Vec2::new(135.0, 75.0),  // Curva 3 entrada
+            Vec2::new(30.0, 120.0),  // Hairpin saída
+        ],
+
+        // Nürburgring Hills — 3 buracos em descidas (com rampas já puxando mais).
+        768 => vec![
+            Vec2::new(120.0, 38.0),  // Descida 1
+            Vec2::new(108.0, 120.0), // Vale profundo
+            Vec2::new(40.0, 85.0),   // Contra-subida
+        ],
+
+        // Suzuka Crossing — 4 buracos (insano: trajetória quase obrigatória).
+        1024 => vec![
+            Vec2::new(75.0, 40.0),
+            Vec2::new(35.0, 80.0),
+            Vec2::new(115.0, 125.0),
+            Vec2::new(125.0, 65.0),
+        ],
+
+        _ => vec![],
+    }
+}
+
+pub fn track_start_for_seed(seed: u64) -> Vec2 {
+    match seed {
+        123  => Vec2::new(55.0, 20.0),   // Dubai: runway largo
+        64   => Vec2::new(50.0, 20.0),   // Interlagos
+        256  => Vec2::new(40.0, 20.0),   // Monaco: start curto (pista técnica)
+        512  => Vec2::new(55.0, 22.0),   // Silverstone
+        768  => Vec2::new(55.0, 28.0),   // Nürburgring
+        1024 => Vec2::new(40.0, 30.0),   // Suzuka
+        _    => Vec2::new(50.0, 20.0),
+    }
 }
 
 impl Default for VoxelWorld {

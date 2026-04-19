@@ -4,7 +4,7 @@ use crate::world::{VoxelWorld, VoxelWorldResource};
 use crate::environment::EnvironmentalState;
 use crate::config::UniverseConfig;
 
-use super::dna::{EliteDna, save_champion_dna, apply_catastrophic_scars, decay_scars};
+use super::dna::{EliteDna, save_champion_dna_full, apply_catastrophic_scars, decay_scars};
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 use super::spawn::spawn_swarm;
@@ -395,7 +395,8 @@ pub(super) fn evolution_pipeline(
 
             // Death reason breakdown — categórico via DeathReason enum.
             let mut d_hp = 0; let mut d_pin = 0; let mut d_bat = 0;
-            let mut d_stag = 0; let mut d_sbld = 0; let mut d_fuel = 0; let mut d_unk = 0;
+            let mut d_stag = 0; let mut d_sbld = 0; let mut d_fuel = 0;
+            let mut d_hole = 0; let mut d_npc = 0; let mut d_unk = 0;
             for (_, r, _, _) in sorted.iter() {
                 if !r.is_dead { continue; }
                 match r.death_reason {
@@ -405,11 +406,13 @@ pub(super) fn evolution_pipeline(
                     Some(crate::simulation::racer::DeathReason::Stagnation) => d_stag += 1,
                     Some(crate::simulation::racer::DeathReason::SpeedBleed) => d_sbld += 1,
                     Some(crate::simulation::racer::DeathReason::Fuel) => d_fuel += 1,
+                    Some(crate::simulation::racer::DeathReason::Hole) => d_hole += 1,
+                    Some(crate::simulation::racer::DeathReason::NpcHit) => d_npc += 1,
                     None => d_unk += 1,
                 }
             }
-            let _ = writeln!(file, "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} ?:{}",
-                d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_unk);
+            let _ = writeln!(file, "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} HOLE:{} NPC:{} ?:{}",
+                d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_hole, d_npc, d_unk);
 
             // Tier 4.3 — NICHO-SPLITTING METRICS.
             // Diferencial de pressão: defensive pune wall_time 2×, aggressive premia
@@ -502,9 +505,11 @@ pub(super) fn evolution_pipeline(
             }
 
             // Console summary compacto pra feedback ao vivo.
+            // FIX Bug 2: NET max real (não do top-fitness; rewards múltiplos desacoplam fitness e NET).
+            let net_max_real: f32 = nets.iter().cloned().fold(0.0_f32, f32::max);
             println!("📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
                 race.generation, laps_0, laps_1, laps_2, laps_3p,
-                nets.first().copied().unwrap_or(0.0), median(&nets), deaths, total);
+                net_max_real, median(&nets), deaths, total);
 
             // --- DIAGNÓSTICO CEREBRAL DO TOP-3 (NET) ---
             // Mostra o histórico dos 3 melhores. Se o volante não responde quando
@@ -605,7 +610,8 @@ pub(super) fn evolution_pipeline(
                 race.best_scale = scale;
                 race.best_slow_weights = Some(slow_weights.clone());
                 race.best_slow_scale = slow_scale;
-                let _ = save_champion_dna(
+                // FIX Bug 1: persistir morpho + hypernet do champion (Tier 6.3/6.4 LITE).
+                let _ = save_champion_dna_full(
                     "CHAMPION.dna",
                     &weights, scale,
                     &slow_weights, slow_scale,
@@ -613,6 +619,8 @@ pub(super) fn evolution_pipeline(
                     race.seed as u32,
                     config.current_track().track_width,
                     this_gen_best_dist,
+                    race.current_morpho,
+                    race.current_hypernet,
                 );
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
@@ -735,6 +743,15 @@ pub(super) fn evolution_pipeline(
         // Spawn batched: agenda jobs, drain_spawn_queue processa em blocos por frame.
         race.pending_spawn = Some((0, config.swarm_count));
         world_res.0 = world;
+
+        // Tier 5.4 — NPCs obstáculos móveis spawnam DEPOIS do world rebuild
+        // (precisa de waypoints_world válidos). Gate curricular (gen >= NPC_ACTIVATION_GEN)
+        // está dentro de spawn_npcs. Validation gens limparam npcs via reset_fixed.
+        env.spawn_npcs(&world_res.0.waypoints_world);
+        if !env.npcs.is_empty() {
+            println!("🚧 NPCS gen={} count={} waypoints={}",
+                race.generation, env.npcs.len(), world_res.0.waypoints_world.len());
+        }
     }
 }
 
