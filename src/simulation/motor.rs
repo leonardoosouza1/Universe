@@ -1,9 +1,126 @@
 use bevy::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use crate::world::{VoxelType, VoxelWorldResource};
 use crate::environment::EnvironmentalState;
 use super::racer::{Racer, Skidmark};
+
+// --- Tier 6.5: Time Dilation metrics (process-wide) ---
+// Contam brain firings vs skips acumulados desde boot. Logados 1x/gen
+// em pipeline (acesso via getters). Zero overhead (atomic relaxed).
+pub(crate) static TIME_DILATION_FIRES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TIME_DILATION_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+pub fn time_dilation_metrics() -> (u64, u64) {
+    (
+        TIME_DILATION_FIRES.load(AtomicOrdering::Relaxed),
+        TIME_DILATION_SKIPS.load(AtomicOrdering::Relaxed),
+    )
+}
+
+/// Tier 1.3 — Axiom como prior externo (Ng-Harada-Russell 1999 potential-based shaping).
+///
+/// Política procedural que espelha os 17-18 axiomas de priming usados em
+/// `build_priming_weights()` (spawn.rs). Retorna bias aditivo para cada um dos
+/// 64 outputs do instinct_layer — é somado a `final_intent` após o forward do
+/// brain, escalado por `race.current_axiom_strength` (decay 1.0→0.0 ao longo
+/// de 50 gens). Teorema NHR: bias potencial-based não altera policy ótima,
+/// apenas acelera convergência.
+///
+/// Layout dos outputs (iguais ao priming block):
+///   0 = accel/throttle, 1 = steer (+direita / -esquerda), 2 = brake.
+///
+/// Canais de input consultados:
+///   32..37  = perif. esquerda (A1 wall-left)        42..53 = centro (A4 wall-front)
+///   58..63  = perif. direita  (A2 wall-right)       46..49 = centro exato (A4d/A7 brake)
+///   64      = alinhamento fluxo (A3)                73     = grass pain (A5)
+///   66      = deriva lateral (A8)                   78..80 = curvatura (A9)
+///   81      = lane offset (A10)                     82     = colision urgency (A11)
+///   83,84   = fluxo óptico (A12)                    85,86  = parede memória L/R (A13)
+///   87      = slip angle (A14)                      88     = proximity sustain (A15)
+///   90..93  = dark-center tracker (A16)             94..97 = whiskers diagonais (A17)
+///   98..101 = gaze tracker (A18)
+fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
+    let mut bias = [0.0f32; 64];
+    const WALL_T: i8 = 40;  // ~0.31 normalizado — parede próxima mas não encostada
+
+    // A1: parede esquerda (perif 32..37) → steer direita (+)
+    let wall_l: i32 = (32..38).map(|i| inputs[i] as i32).sum();
+    if wall_l > WALL_T as i32 * 2 {
+        bias[1] += 0.30;
+    }
+    // A2: parede direita (perif 58..63) → steer esquerda (-)
+    let wall_r: i32 = (58..64).map(|i| inputs[i] as i32).sum();
+    if wall_r > WALL_T as i32 * 2 {
+        bias[1] -= 0.30;
+    }
+    // A3: alinhamento com fluxo (64) → acelera
+    bias[0] += (inputs[64] as f32 / 127.0) * 0.15;
+    // A4: parede no centro (perif 42..54) → corta throttle
+    let wall_c: i32 = (42..54).map(|i| inputs[i] as i32).sum();
+    if wall_c > WALL_T as i32 * 4 {
+        bias[0] -= 0.25;
+    }
+    // A4d/A7: centro exato (46..50) → brake forte (parede direto à frente)
+    let wall_front: i32 = (46..50).map(|i| inputs[i] as i32).sum();
+    if wall_front > WALL_T as i32 * 2 {
+        bias[2] += 0.30;
+    }
+    // A5: dor de grama (73) → reduz throttle
+    if inputs[73] > WALL_T {
+        bias[0] -= 0.15;
+    }
+    // A8: deriva lateral (66) → contra-steer
+    bias[1] -= (inputs[66] as f32 / 127.0) * 0.10;
+    // A9: curvatura antecipada (78/79/80)
+    bias[1] -= (inputs[78] as f32 / 127.0) * 0.08;
+    bias[1] -= (inputs[79] as f32 / 127.0) * 0.15;
+    bias[1] -= (inputs[80] as f32 / 127.0) * 0.06;
+    // A10: lane offset (81) — valor positivo = fora da linha → corrige centralizando
+    bias[1] += (inputs[81] as f32 / 127.0) * 0.08;
+    // A11: urgência de colisão (82) → freia + corta motor
+    bias[2] += (inputs[82] as f32 / 127.0) * 0.20;
+    bias[0] -= (inputs[82] as f32 / 127.0) * 0.12;
+    // A12: fluxo óptico L/R (83/84) → steer anti-aproximação
+    bias[1] += (inputs[83] as f32 / 127.0) * 0.08;
+    bias[1] -= (inputs[84] as f32 / 127.0) * 0.08;
+    // A13: parede memória L/R (85/86)
+    bias[1] += (inputs[85] as f32 / 127.0) * 0.12;
+    bias[1] -= (inputs[86] as f32 / 127.0) * 0.12;
+    // A14: slip angle (87) → contra-volante
+    bias[1] += (inputs[87] as f32 / 127.0) * 0.08;
+    // A15: proximidade sustentada (88) → corta throttle
+    if inputs[88] > WALL_T {
+        bias[0] -= 0.12;
+    }
+    // A16: dark-center tracker (90..93) → siga o escuro (centro de pista)
+    let dark_center: i32 = (90..94).map(|i| inputs[i] as i32).sum();
+    bias[1] += (dark_center as f32 / (127.0 * 4.0)) * 0.28;
+    // A17: whiskers diagonais (94..97) — parede perto em diagonal
+    //   94 = FL 30°, 95 = FR 30°, 96 = FL 60°, 97 = FR 60°
+    if inputs[94] > WALL_T {
+        bias[1] += 0.28;                                // FL → steer direita forte
+        bias[2] += 0.18; bias[0] -= 0.16;
+    }
+    if inputs[96] > WALL_T {
+        bias[1] += 0.20;                                // FL larga
+        bias[2] += 0.14;
+    }
+    if inputs[95] > WALL_T {
+        bias[1] -= 0.28;                                // FR → steer esquerda forte
+        bias[2] += 0.18; bias[0] -= 0.16;
+    }
+    if inputs[97] > WALL_T {
+        bias[1] -= 0.20;
+        bias[2] += 0.14;
+    }
+    // A18: gaze tracker (98..101) → fóvea aponta pra onde há pista aberta
+    let gaze: i32 = (98..102).map(|i| inputs[i] as i32).sum();
+    bias[1] += (gaze as f32 / (127.0 * 4.0)) * 0.25;
+
+    bias
+}
 
 pub(super) fn update_racers(
     mut commands: Commands,
@@ -615,8 +732,64 @@ pub(super) fn update_racers(
         sensory_wave[126] = (joy_tick * 127.0).clamp(-127.0, 127.0) as i8;
         sensory_wave[127] = ((racer.joy_streak / 5.0) * 127.0) as i8;
 
+        // --- TIER 3.1: DOPAMINA (Reward Prediction Error) ---
+        // actual_reward ≈ delta_track_progress[m] * 10 - wall_contact_cost.
+        // Proxy para delta: speed * alignment * dt (componente forward de avanço).
+        // wall_contact_cost dispara com superfície de parede (voxel == Wall).
+        let delta_track_progress = (speed * alignment.max(0.0) * dt).max(0.0);
+        let wall_contact_cost = if matches!(voxel_current, VoxelType::Wall) { 5.0 * dt } else { 0.0 };
+        let actual_reward = delta_track_progress * 10.0 - wall_contact_cost;
+        racer.engine.metabolism.update_dopamine(actual_reward);
+
+        // --- TIER 3.2: CORTISOL (medo integral) ---
+        // Integra proximidade da parede mais próxima entre EMA esquerda/direita.
+        // wall_ema_l/r já são distâncias em metros (decay ~1s).
+        let min_wall_distance = racer.wall_ema_l.min(racer.wall_ema_r);
+        racer.engine.metabolism.update_cortisol(min_wall_distance, dt);
+
+        // --- TIER 3.3: CURIOSIDADE (novelty em retina) ---
+        // Mede variância do visual_cortex nos últimos 16 frames. Monotonia → sobe.
+        // visual_cortex já foi atualizado logo acima neste tick (recompute branch)
+        // ou preserva o valor do substep anterior (fallback). Ambos os casos servem
+        // como sinal retiniano válido pro histórico de curiosidade.
+        let retina_snapshot = racer.visual_cortex;
+        racer.engine.metabolism.update_curiosity(&retina_snapshot, dt);
+
         // --- 3. EXECUÇÃO SOBERANA ---
-        racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
+        // Tier 6.5 — Time Dilation sob stress:
+        //   cortisol baixo (<0.5)  → skip_n = 2 (brain fires 30Hz, economia de compute).
+        //   cortisol alto (≥0.5)   → skip_n = 1 (brain fires 60Hz, atenção máxima sob perigo).
+        // Racer preserva engine.final_intent entre ticks → skipped frames reusam última decisão.
+        // Gated atrás de gen ≥ 10 pra não desestabilizar bootstrap evolutivo.
+        racer.brain_tick_counter = racer.brain_tick_counter.wrapping_add(1);
+        let cortisol = racer.engine.metabolism.cortisol;
+        let skip_n: u8 = if race.generation >= 10 && cortisol < 0.5 { 2 } else { 1 };
+        let should_fire = (racer.brain_tick_counter % skip_n) == 0;
+        if should_fire {
+            racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
+            // Tier 1.3 — Axiom como prior externo (potential-based shaping).
+            // Injeta bias procedural no output do brain APÓS o forward. Escala decai
+            // com a geração (race.current_axiom_strength: 1.0 gen 0 → 0.0 gen 50+).
+            // Clamp em [-1, 1] preserva range do tanh já aplicado em final_intent.
+            let ax_strength = race.current_axiom_strength;
+            if ax_strength > 1e-4 {
+                let bias = axiom_policy(&sensory_wave);
+                let n = racer.engine.final_intent.len().min(64);
+                for i in 0..n {
+                    let v = racer.engine.final_intent[i] + bias[i] * ax_strength;
+                    racer.engine.final_intent[i] = v.clamp(-1.0, 1.0);
+                }
+            }
+            // Atualiza last_action com a saída fresca (throttle, steer).
+            let ti = racer.engine.final_intent.get(0).copied().unwrap_or(0.0);
+            let si = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
+            racer.last_action = (ti, si);
+            TIME_DILATION_FIRES.fetch_add(1, AtomicOrdering::Relaxed);
+        } else {
+            // Skipped: engine.final_intent já contém última intent (persiste entre ticks).
+            // Nada a fazer — downstream vai ler os mesmos valores.
+            TIME_DILATION_SKIPS.fetch_add(1, AtomicOrdering::Relaxed);
+        }
 
         // --- CÓRTEX LENTO (System 2) — agrega contexto e emite bias modulador ---
         // Input 32-dim: estado homeostático + pooled retina + saídas anteriores do fast.
@@ -711,7 +884,10 @@ pub(super) fn update_racers(
         let slow = &racer.engine.slow_brain.output;
         let aggression = slow[0];                             // -1..+1
         let throttle_cap = (1.0 + slow[1] * 0.3).clamp(0.5, 1.0); // 0.7..1.0
-        let risk_damp = slow[2].max(0.0).min(0.3);            // 0..0.3
+        // Tier 3.2: cortisol intensifica defensividade — risk_damp amplificado até +30%
+        // (cap final 0.3 se mantém, mas baseline sobe com medo sustentado).
+        let cortisol = racer.engine.metabolism.risk_aversion();
+        let risk_damp = (slow[2].max(0.0) + cortisol * 0.3).min(0.3); // 0..0.3
         // slow[3..5] amplitudes BAIXAS inicialmente — pesos random injetam ruído no steer.
         // Evolução pode amplificar via learning rate (outputs saturam +1/-1 quando útil).
         // Começar pequeno evita sabotar gen 0-3 antes da seleção descobrir a função.
@@ -719,8 +895,12 @@ pub(super) fn update_racers(
         let brake_anticip = slow[4].max(0.0) * 0.20;          // pre-brake (0..0.20)
         let line_hint = slow[5].clamp(-1.0, 1.0) * 0.06;      // apex pick (±0.06)
 
-        let pedal_intent = (base_pedal * (1.0 + aggression * 0.5)).clamp(0.0, throttle_cap);
-        let steer_raw = (intent[1].clamp(-1.0, 1.0)) + steer_bias + line_hint;
+        // Tier 3.2: medo freia (throttle -30% max) e suaviza volante (steer -20% max).
+        let cortisol_throttle_mult = 1.0 - cortisol * 0.3;
+        let cortisol_steer_mult = 1.0 - cortisol * 0.2;
+        let pedal_intent = (base_pedal * (1.0 + aggression * 0.5) * cortisol_throttle_mult)
+            .clamp(0.0, throttle_cap);
+        let steer_raw = ((intent[1].clamp(-1.0, 1.0)) + steer_bias + line_hint) * cortisol_steer_mult;
         let steer_intent = steer_raw.clamp(-1.0, 1.0) * (1.0 - risk_damp);
 
         // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2)
@@ -801,12 +981,28 @@ pub(super) fn update_racers(
 
         // Fuga Espectral (Stigmergia) Removida - Agora a IA aprende pela rede e seleção natural
 
+        // --- TIER 3.3: EXPLORATION NOISE (curiosity > 0.7 && stuck) ---
+        // Quando curiosidade alta E organismo estagnado (>60 frames sem max_progress),
+        // injeta ruído gaussiano no steering pra escapar de local optima.
+        // scale 0.1 * curiosity (cap 0.1). Usa rand::rng() (consistente com motor.rs).
+        let curiosity = racer.engine.metabolism.exploration_drive();
+        let exploration_steer = if curiosity > 0.7 && racer.stagnation > 60.0 && !is_reversing {
+            use rand::prelude::*;
+            let mut rng = rand::rng();
+            // Box-Muller aproximado via soma de 4 uniformes (determinístico-friendly,
+            // evita dep em rand_distr). Média 0, std ≈ 0.58.
+            let u: f32 = (0..4).map(|_| rng.random::<f32>() - 0.5).sum();
+            u * 0.1 * curiosity
+        } else {
+            0.0
+        };
+
         // Durante ré, força steer = 0 (backup reto) pra evitar rotacionar pra outra parede.
         // A rede retoma controle quando a ré termina.
         let final_steer_intent = if is_reversing {
             0.0
         } else {
-            (steer_intent + emerg_steer).clamp(-1.0, 1.0)
+            (steer_intent + emerg_steer + exploration_steer).clamp(-1.0, 1.0)
         };
 
         // Marchas: Auto-shift inteligente baseado em RPM e velocidade
@@ -1032,6 +1228,18 @@ pub(super) fn update_racers(
             racer.amplitude = body.velocity.length();
             if racer.amplitude > racer.peak_speed { racer.peak_speed = racer.amplitude; }
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0;
+
+            // --- TIER 1.1: TELEMETRIA DENSA (reward shaping) ---
+            // Amostra a cada fixed tick (64Hz). voxel==Road só premia exploração útil (anti-novelty-exploit).
+            let tel_on_road = voxel_current == VoxelType::Road;
+            racer.telemetry.record(
+                final_steer_intent,
+                body.velocity.length(),
+                body.angular_velocity.y,
+                tel_on_road,
+                transform.translation.x,
+                transform.translation.z,
+            );
 
             // Distância verdadeira: Projeção da velocidade na direção da pista (Flow)
             let flow_3d = Vec3::new(flow.x, 0.0, flow.y).normalize_or_zero();

@@ -1,5 +1,84 @@
 use bevy::prelude::*;
+use std::collections::{HashSet, VecDeque};
 use crate::engine::SovereignEngine;
+
+/// Tier 1.1 — Reward shaping denso.
+/// Ring buffers (128 amostras ≈ 2s @ 64Hz FixedUpdate) + voxel grid de exploração.
+/// Populado em motor.rs a cada tick, consumido em pipeline::calc_fitness.
+pub const TELEMETRY_CAP: usize = 128;
+pub const TELEMETRY_DT: f32 = 1.0 / 64.0; // FixedUpdate step — usado nas integrais.
+pub const TELEMETRY_VOXEL_SIZE: f32 = 10.0; // célula 10m p/ novelty.
+
+#[derive(Clone)]
+pub struct RacerTelemetry {
+    pub steering_history: VecDeque<f32>,  // steer_intent [-1, 1]
+    pub speed_history: VecDeque<f32>,     // m/s
+    pub on_road_mask: VecDeque<bool>,     // true quando voxel == Road
+    pub yaw_rate_history: VecDeque<f32>,  // rad/s
+    pub visited_voxels: HashSet<(i32, i32)>, // células (cx, cz) visitadas ON-ROAD
+    pub hit_npc_count: u32, // Tier 5.4 — colisões com NPCs obstáculos móveis
+}
+
+impl RacerTelemetry {
+    pub fn new() -> Self {
+        Self {
+            steering_history: VecDeque::with_capacity(TELEMETRY_CAP),
+            speed_history: VecDeque::with_capacity(TELEMETRY_CAP),
+            on_road_mask: VecDeque::with_capacity(TELEMETRY_CAP),
+            yaw_rate_history: VecDeque::with_capacity(TELEMETRY_CAP),
+            visited_voxels: HashSet::new(),
+            hit_npc_count: 0,
+        }
+    }
+
+    fn push_capped<T>(buf: &mut VecDeque<T>, val: T) {
+        if buf.len() == TELEMETRY_CAP { buf.pop_front(); }
+        buf.push_back(val);
+    }
+
+    pub fn record(&mut self, steer: f32, speed: f32, yaw_rate: f32, on_road: bool, pos_x: f32, pos_z: f32) {
+        Self::push_capped(&mut self.steering_history, steer);
+        Self::push_capped(&mut self.speed_history, speed);
+        Self::push_capped(&mut self.yaw_rate_history, yaw_rate);
+        Self::push_capped(&mut self.on_road_mask, on_road);
+        if on_road {
+            let cx = (pos_x / TELEMETRY_VOXEL_SIZE).floor() as i32;
+            let cz = (pos_z / TELEMETRY_VOXEL_SIZE).floor() as i32;
+            self.visited_voxels.insert((cx, cz));
+        }
+    }
+
+    /// Variância populacional do histórico de steering (jitter).
+    pub fn steering_variance(&self) -> f32 {
+        let n = self.steering_history.len();
+        if n < 2 { return 0.0; }
+        let mean: f32 = self.steering_history.iter().sum::<f32>() / n as f32;
+        let var: f32 = self.steering_history.iter()
+            .map(|v| { let d = v - mean; d * d })
+            .sum::<f32>() / n as f32;
+        var
+    }
+
+    /// Σ speed * on_road * DT — distância "útil" percorrida na pista (≈metros on-road).
+    pub fn speed_on_track(&self) -> f32 {
+        self.speed_history.iter()
+            .zip(self.on_road_mask.iter())
+            .map(|(&s, &on)| if on { s * TELEMETRY_DT } else { 0.0 })
+            .sum()
+    }
+
+    /// Σ (1 - |yaw_rate|.min(1)) * DT on-road — premia controle de yaw.
+    pub fn stability_integral(&self) -> f32 {
+        self.yaw_rate_history.iter()
+            .zip(self.on_road_mask.iter())
+            .map(|(rate, on)| if *on { (1.0 - rate.abs().min(1.0)) * TELEMETRY_DT } else { 0.0 })
+            .sum()
+    }
+}
+
+impl Default for RacerTelemetry {
+    fn default() -> Self { Self::new() }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeathReason {
@@ -85,6 +164,32 @@ pub struct Racer {
     pub death_frame: u32,                  // grace_ticks no instante da morte (≈ frame real).
     pub death_pos: Vec3,                   // Posição mundo da morte (zona na pista).
     pub peak_speed: f32,                   // Velocidade máxima registrada (m/s) pro reporte.
+    pub telemetry: RacerTelemetry,         // Tier 1.1: ring buffers densos pra reward shaping.
+    // --- Tier 6.5: Time Dilation sob stress ---
+    /// Contador de ticks pra modular frequência de inferência do cérebro.
+    /// Wraps em u8 (256 ticks ≈ 4s @ 64Hz — mais que suficiente para skip mod).
+    pub brain_tick_counter: u8,
+    /// Última ação (throttle, steer) emitida pelo cérebro. Reusada quando
+    /// skip_n > 1 pra manter comando estável entre inferências (time dilation).
+    /// Nota: engine.final_intent[] já persiste entre ticks por ser membro da SovereignEngine,
+    /// mas mantemos cópia canonical aqui pro contrato documental do Tier 6.5.
+    pub last_action: (f32, f32),
+    // --- Tier 4.3: Nicho-splitting (runtime-only, NOT serialized) ---
+    /// 0 = defensive (penaliza wall_time 2x), 1 = aggressive (premia speed_on_track 1.5x).
+    /// Alternado no spawn (i % 2). Shared-pool: ambos os nichos competem por mesmos elites,
+    /// cross-breed emerge naturalmente. Annotation-only pra lineage introspection.
+    pub niche: u8,
+    // --- Tier 5.1 LITE: Multi-car social perception ---
+    /// Posições relativas (dx, dy) dos 3 rivais mais próximos, normalizadas por
+    /// clamp de 50m → [-1.0, 1.0]. Layout: [dx0, dy0, dx1, dy1, dx2, dy2], ordenados
+    /// do mais próximo pro mais distante. Slots vazios ficam em 0.0.
+    /// Data layer only — populado via `EnvironmentalState::closest_racers` mas ainda
+    /// NÃO wired no motor/sensor sampling (wire-up em follow-up). Canais retina 102-107.
+    pub perceived_rivals: [f32; 6],
+    // --- Tier 6.3 LITE: morphological co-evolution (body params do DNA) ---
+    /// Genes corporais (massa, wheelbase, downforce, grip_mult) carregados do DNA no spawn.
+    /// Por ora apenas ARMAZENADOS — wiring físico em follow-up. Ver `crate::evolution::dna::MorphoGenes`.
+    pub morpho: crate::evolution::dna::MorphoGenes,
 }
 
 /// Frame de diagnóstico do cérebro do racer.

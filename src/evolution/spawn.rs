@@ -5,9 +5,16 @@ use crate::config::UniverseConfig;
 use rand::prelude::*;
 use std::io::Write;
 
-use super::dna::{EliteDna, load_champion_dna};
+use super::dna::{EliteDna, MorphoGenes, HypernetSeed, load_champion_dna};
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
+
+// TIER 4.4 — GENES NEUTROS (ZONA PROTEGIDA).
+// Primeiros 10% dos índices do instinct_fast (128*64 = 8192 pesos → 819) são
+// reservados como "zona neutra/protegida": isentos de mutação E isentos de
+// crossover (sempre copiados do parent_a). Preserva axiomas entre gerações
+// sem precisar de re-injeção permanente (coexiste com apply_axiom_decay).
+const PROTECTED_ZONE_SIZE: usize = 819;
 
 /// Constrói o vetor de pesos do instinct_layer pré-semeado com os axiomas A1–A15.
 /// Usado tanto na geração 0 (sem pool/DNA) quanto periodicamente em gens seguintes
@@ -139,6 +146,10 @@ pub fn spawn_swarm(
     let mut current_best_s = race.best_scale;
     let mut current_best_slow_w = race.best_slow_weights.clone();
     let mut current_best_slow_s = race.best_slow_scale;
+    // Tier 6.3 LITE: morpho do champion DNA (se carregado); default caso contrário.
+    let mut current_best_morpho: MorphoGenes = MorphoGenes::default();
+    // Tier 6.4 LITE: hypernet seed do champion DNA. Default = inactive (zero-cost).
+    let mut current_best_hypernet: HypernetSeed = HypernetSeed::default();
 
     // Mutation rate com decay exponencial por geração: convergência gradual.
     // Floor em 0.005 mantém exploração residual mesmo após 100+ gerações.
@@ -154,6 +165,10 @@ pub fn spawn_swarm(
                 current_best_slow_w = Some(sw);
                 current_best_slow_s = dna.slow_scale;
             }
+            // Tier 6.3 LITE: absorve morpho genes serializados.
+            current_best_morpho = dna.morpho;
+            // Tier 6.4 LITE: absorve hypernet seed (default inactive p/ arquivos antigos).
+            current_best_hypernet = dna.hypernet;
             // Se o DNA foi treinado em outra seed/largura, loga aviso e descarta champion_distance
             // (senão o carro novo nunca consegue coroar num track diferente).
             if dna.version >= 3 {
@@ -179,11 +194,35 @@ pub fn spawn_swarm(
         best_idx
     };
 
-    // Helper: uniform crossover (50/50 por gene) entre dois pais.
-    let crossover = |a: &[i8], b: &[i8], rng: &mut rand::rngs::ThreadRng| -> Vec<f32> {
-        a.iter().zip(b.iter()).map(|(&wa, &wb)| {
-            if rng.random_bool(0.5) { wa as f32 } else { wb as f32 }
-        }).collect()
+    // Helper: BLOCK-WISE crossover (Tier 4.1 — reproducao sexuada).
+    // Troca blocos inteiros entre pais em vez de byte-a-byte. Preserva coerencia
+    // funcional: cada bloco = linha de entrada de um neuronio (fast: 128 inputs →
+    // block_size=128 da a linha inteira; aqui usamos 64 p/ meia-linha, mantendo
+    // granularidade razoavel sem fragmentar demais). Para slow_weights usamos
+    // block_size=32 (metade dos 8 outputs × 32 inputs).
+    let crossover_block = |a: &[i8], b: &[i8], block_size: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<f32> {
+        let n = a.len();
+        let mut child = vec![0.0f32; n];
+        let mut i = 0;
+        while i < n {
+            let end = (i + block_size).min(n);
+            let from = if rng.random_bool(0.5) { a } else { b };
+            for j in i..end { child[j] = from[j] as f32; }
+            i = end;
+        }
+        child
+    };
+
+    // Tier 4.1 — SPECIES SIMILARITY via sign-hamming distance.
+    // Compara pesos ternarios: fraction de posicoes onde ambos os signos batem.
+    // Retorna [0..1]: 1.0 = identicos, 0.5 = random, 0.0 = opostos.
+    let species_similarity = |a: &[i8], b: &[i8]| -> f32 {
+        let n = a.len().min(b.len()).max(1);
+        let mut agree = 0usize;
+        for i in 0..n {
+            if a[i].signum() == b[i].signum() { agree += 1; }
+        }
+        agree as f32 / n as f32
     };
 
     // Helper: BURST MUTATION por canal de entrada.
@@ -192,22 +231,89 @@ pub fn spawn_swarm(
     // (para cada output) por valores aleatórios em [-1, 1]. Quebra neutralidade do BitNet:
     // mutação pontual em layer ternário tem alta probabilidade de virar 0 após quantize —
     // burst força variação coerente de um sensor inteiro.
-    let burst_mutate_input_channel = |weights: &mut Vec<f32>, rng: &mut rand::rngs::ThreadRng| {
+    let burst_mutate_input_channel = |weights: &mut Vec<f32>, scar_mask_union: &[u8], rng: &mut rand::rngs::ThreadRng| {
         let n_outputs = 64usize;
         let n_inputs = 128usize;
         let c = rng.random_range(0..n_inputs);
         for out in 0..n_outputs {
             let idx = out * n_inputs + c;
             if idx < weights.len() {
+                // TIER 4.4: zona protegida isenta de burst mutation também.
+                if idx < PROTECTED_ZONE_SIZE { continue; }
+                // TIER 6.6: respeita scars — não toca em pesos travados.
+                if scar_mask_union.get(idx).copied().unwrap_or(0) > 0 { continue; }
                 weights[idx] = rng.random_range(-1.0..1.0);
             }
         }
     };
 
+    // TIER 1.2 — AXIOM DECAY.
+    // Antes: reinject_axioms forçava pesos priming a cada gen (freezava evolução).
+    // Agora: axiom_strength cai linear de 1.0 (gen 0) até 0.0 (gen 50) — a partir de
+    // gen 50 evolução é totalmente livre. Emergency brake (axiom_boost_counter > 0)
+    // restaura strength mínimo 0.5 se fitness degradar > 50%.
+    //
+    // Blend: new = current * (1 - s) + axiom * s, depois round + clamp ternário.
+    // Estratégia: só age em canais críticos (mesma lista de antes) em todos os 3 outputs
+    // (throttle/steer/brake). Outros canais ficam totalmente livres pra evolução.
+    let gen_f = race.generation as f32;
+    let mut axiom_strength = (1.0 - gen_f / 50.0).max(0.0);
+    if race.axiom_boost_counter > 0 {
+        axiom_strength = axiom_strength.max(0.5);
+    }
+    race.current_axiom_strength = axiom_strength;
+    let apply_axiom_decay = |weights: &mut Vec<f32>| {
+        if axiom_strength < 0.01 {
+            return; // gen 50+ (sem brake) → evolução totalmente livre.
+        }
+        let priming = build_priming_weights();
+        let critical: &[usize] = &[
+            64,                     // alinhamento fluxo
+            79, 80, 82,             // curvatura + ttc
+            85, 86,                 // parede memória L/R
+            90, 91, 92, 93,         // dark-center A16
+            94, 95, 96, 97,         // whiskers A17
+            98, 99, 100, 101,       // gaze A18
+        ];
+        for &ch in critical {
+            for out in 0..3 {
+                let idx = out * 128 + ch;
+                if idx >= weights.len() { continue; }
+                let current = weights[idx];
+                let axiom = priming[idx];
+                if axiom.abs() < 0.01 { continue; } // sem axioma neste slot — deixa evoluir livre.
+                let blended = current * (1.0 - axiom_strength) + axiom * axiom_strength;
+                // Após quantize ternária cada peso vira ±1 ou 0; garante que o sinal
+                // do blend sobreviva via round+clamp pra ternário.
+                weights[idx] = blended.round().clamp(-1.0, 1.0);
+            }
+        }
+    };
+
+    // Tier 6.4 LITE: mutação do hypernet seed 1x por gen (primeiro batch).
+    // 2% chance de flip do active; se ativo, gaussian noise σ=0.05 nos coeffs.
+    // Mutação é runtime-only nesta LITE slice: persistência via .dna requer
+    // follow-up em pipeline.rs (fora do escopo). Zero-cost quando inactive.
+    if idx_start == 0 {
+        current_best_hypernet.mutate(|| rng.random::<f32>());
+    }
+
     let pool_size = race.elite_pool.len();
+
+    // Tier 4.2: acumula sample count de inheritance + soma para log agregado no final.
+    let mut epi_inherited_count: usize = 0;
+    let mut epi_cortisol_sum: f32 = 0.0;
+    let mut epi_dopamine_sum: f32 = 0.0;
+    let mut epi_curiosity_sum: f32 = 0.0;
 
     for i in idx_start..idx_end.min(config.swarm_count) {
         let mut engine = crate::engine::SovereignEngine::new();
+        // Tier 4.2: herança epigenética parcial (10%) — se houver parent(s).
+        // Preenchido nas branches de reprodução; None = organismo de priming/boot.
+        let mut epigenetic_parents: Option<(f32, f32, f32)> = None;
+        // Tier 6.3 LITE: morpho do novo racer. Preenchido nas branches conforme fonte
+        // (champion / elite clone / parents crossover / priming). Mutado e clampado.
+        let mut morpho_this: MorphoGenes = MorphoGenes::default();
 
         // --- HALL OF FAME (CHAMPION FALLBACK) ---
         // Slot 0: SEMPRE carrega o CHAMPION DNA se existe. Imune à deriva geracional
@@ -219,12 +325,22 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = champion.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
+                // Tier 6.4 LITE: se hypernet ativa, sobrescreve primeiros 2048 pesos
+                // com expansão ternária determinística do seed (64 coeffs → 2048 i8).
+                // Inactive → zero-cost (skip). Mantém restante dos pesos intactos.
+                if current_best_hypernet.active {
+                    let expanded = current_best_hypernet.expand();
+                    let n = expanded.len().min(engine.instinct_layer.weights.len());
+                    engine.instinct_layer.weights[..n].copy_from_slice(&expanded[..n]);
+                }
                 if let Some(ref champion_slow) = current_best_slow_w {
                     let exact_slow: Vec<f32> = champion_slow.iter().map(|&w| w as f32).collect();
                     engine.slow_brain.layer.quantize(&exact_slow);
                     engine.slow_brain.layer.set_scale(current_best_slow_s);
                 }
             }
+            // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
+            morpho_this = current_best_morpho;
         } else if pool_size >= 2 {
             // --- REPRODUÇÃO DIVERSIFICADA NO GRID (30 slots de largada) ---
             // Gargalo anterior: só 5 grid spawns × 2 elite clones = 2 DNAs testados
@@ -248,6 +364,11 @@ pub fn spawn_swarm(
                 let exact_slow: Vec<f32> = elite.slow_weights.iter().map(|&w| w as f32).collect();
                 engine.slow_brain.layer.quantize(&exact_slow);
                 engine.slow_brain.layer.set_scale(elite.slow_scale);
+                // Tier 4.2: clone herda 10% do estado hormonal médio do único parent.
+                epigenetic_parents = Some((elite.cortisol_mean, elite.dopamine_mean, elite.curiosity_mean));
+                // Tier 6.3 LITE: clone herda morpho do elite + mutação leve.
+                morpho_this = elite.morpho;
+                morpho_this.mutate(|| rng.random::<f32>());
             } else if i < elite_range_end + refresh_slots {
                 // PRIMING REFRESH: axiomas frescos + ruído leve para diversidade.
                 // Preserva instintos mas ainda permite exploração local.
@@ -256,33 +377,113 @@ pub fn spawn_swarm(
                     if rng.random_bool(0.005) { rng.random_range(-1.0..1.0) } else { w }
                 }).collect();
                 engine.instinct_layer.quantize(&jittered);
+                // FIX: quantize gera scale=abs_mean (~0.055 para priming esparso) →
+                // sinal fica ~0.02 no forward, tanh saturado em ~0.04 → throttle zero.
+                // Força scale=1.0 pra priming ter força competitiva e poder vencer
+                // tournament. Sem isso axiomas nunca chegam no campeão (gen 13 mostrou
+                // canal 79 curvatura em 4.7%, era pra estar >30%).
+                engine.instinct_layer.set_scale(1.0);
                 // slow_brain fica zerado (estado neutro, evolução descobre uso)
             } else {
-                let p1 = tournament(&race.elite_pool, &mut rng);
-                let mut p2 = tournament(&race.elite_pool, &mut rng);
-                if p2 == p1 && pool_size > 1 { p2 = (p1 + 1) % pool_size; }
+                // Tier 4.1 — MATE PREFERENCE.
+                // Seleciona p1 via tournament (top pool). Escolhe p2 ponderando por
+                // similaridade de species:
+                //   similaridade > 0.7 (mesma species): peso 0.7 (especializacao)
+                //   similaridade <= 0.7 (species diferentes): peso 0.3 (diversidade)
+                // Pool efetivo: top-10 do elite_pool (ja ordenado por fitness).
+                let effective_pool = pool_size.min(10);
+                let p1 = tournament(&race.elite_pool[..effective_pool], &mut rng);
+                let parent_a_ref = &race.elite_pool[p1];
+                // Constroi pesos de preferencia sobre os outros candidatos
+                let mut weights_pref: Vec<f32> = Vec::with_capacity(effective_pool);
+                for j in 0..effective_pool {
+                    if j == p1 { weights_pref.push(0.0); continue; }
+                    let sim = species_similarity(&parent_a_ref.fast_weights, &race.elite_pool[j].fast_weights);
+                    let w = if sim > 0.7 { 0.7 } else { 0.3 };
+                    weights_pref.push(w);
+                }
+                let total_w: f32 = weights_pref.iter().sum();
+                let p2 = if total_w > 1e-6 {
+                    let mut target = rng.random_range(0.0..total_w);
+                    let mut pick = 0usize;
+                    for (j, &w) in weights_pref.iter().enumerate() {
+                        target -= w;
+                        if target <= 0.0 { pick = j; break; }
+                        pick = j;
+                    }
+                    pick
+                } else if pool_size > 1 { (p1 + 1) % pool_size } else { p1 };
                 let parent_a = &race.elite_pool[p1];
                 let parent_b = &race.elite_pool[p2];
 
-                let crossed_fast = crossover(&parent_a.fast_weights, &parent_b.fast_weights, &mut rng);
-                let mut mutated_fast: Vec<f32> = crossed_fast.into_iter().map(|w| {
-                    if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w }
+                // Tier 4.1 stats: log da mate preference usada (1x por gen, primeiro slot crossover).
+                if i == elite_range_end + refresh_slots {
+                    let sim = species_similarity(&parent_a.fast_weights, &parent_b.fast_weights);
+                    let kind = if sim > 0.7 { "same-species" } else { "cross-species" };
+                    if let Some(mut file) = open_report_log() {
+                        let _ = writeln!(file, "[MATE] gen {} pool={} p1={} p2={} sim={:.2} ({})",
+                            race.generation, effective_pool, p1, p2, sim, kind);
+                    }
+                }
+
+                let mut crossed_fast = crossover_block(&parent_a.fast_weights, &parent_b.fast_weights, 64, &mut rng);
+                // TIER 4.4 — ZONA PROTEGIDA: primeiros 819 índices (10%) são copiados
+                // direto do parent_a, sem block-alternate. Preserva axiomas ancestrais.
+                for idx in 0..PROTECTED_ZONE_SIZE.min(crossed_fast.len()) {
+                    crossed_fast[idx] = parent_a.fast_weights[idx] as f32;
+                }
+                // TIER 6.6 — WEIGHT SCARS: peso com scar TTL>0 em QUALQUER pai é lockdown pra mutação.
+                // União: se parent_a.scar_mask[i] > 0 OR parent_b.scar_mask[i] > 0 → protege.
+                // O valor herdado no crossover já ficou; mutação é o que skipamos.
+                let scar_a = &parent_a.scar_mask;
+                let scar_b = &parent_b.scar_mask;
+                let mut mutated_fast: Vec<f32> = crossed_fast.into_iter().enumerate().map(|(idx, w)| {
+                    // TIER 4.4: zona protegida isenta de mutação.
+                    if idx < PROTECTED_ZONE_SIZE { return w; }
+                    let scarred = scar_a.get(idx).copied().unwrap_or(0) > 0
+                        || scar_b.get(idx).copied().unwrap_or(0) > 0;
+                    if !scarred && rng.random_bool(effective_mutation_rate) {
+                        rng.random_range(-1.0..1.0)
+                    } else { w }
                 }).collect();
                 // 20% dos slots crossover sofrem burst por canal de entrada (além da mutação pontual).
                 if rng.random_bool(0.20) {
-                    burst_mutate_input_channel(&mut mutated_fast, &mut rng);
+                    // União de scars dos dois pais (mesma lógica da mutação pontual acima).
+                    let scar_union: Vec<u8> = scar_a.iter().zip(scar_b.iter())
+                        .map(|(&a, &b)| a.max(b)).collect();
+                    burst_mutate_input_channel(&mut mutated_fast, &scar_union, &mut rng);
                 }
+                // TIER 1.2: decay axiomático — strength linear 1→0 até gen 50.
+                apply_axiom_decay(&mut mutated_fast);
                 engine.instinct_layer.quantize(&mutated_fast);
                 engine.instinct_layer.set_scale((parent_a.fast_scale + parent_b.fast_scale) * 0.5);
 
-                let crossed_slow = crossover(&parent_a.slow_weights, &parent_b.slow_weights, &mut rng);
+                let crossed_slow = crossover_block(&parent_a.slow_weights, &parent_b.slow_weights, 32, &mut rng);
                 let mutated_slow: Vec<f32> = crossed_slow.into_iter().map(|w| {
                     if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w }
                 }).collect();
                 engine.slow_brain.layer.quantize(&mutated_slow);
                 engine.slow_brain.layer.set_scale((parent_a.slow_scale + parent_b.slow_scale) * 0.5);
+                // Tier 4.2: herança hormonal MÉDIA dos 2 pais (reprodução sexuada).
+                let cort = (parent_a.cortisol_mean + parent_b.cortisol_mean) * 0.5;
+                let dopa = (parent_a.dopamine_mean + parent_b.dopamine_mean) * 0.5;
+                let curi = (parent_a.curiosity_mean + parent_b.curiosity_mean) * 0.5;
+                epigenetic_parents = Some((cort, dopa, curi));
+                // Tier 6.3 LITE: morpho = média dos pais + mutação gaussiana.
+                let pa_m = parent_a.morpho;
+                let pb_m = parent_b.morpho;
+                morpho_this = MorphoGenes {
+                    mass:      (pa_m.mass      + pb_m.mass)      * 0.5,
+                    wheelbase: (pa_m.wheelbase + pb_m.wheelbase) * 0.5,
+                    downforce: (pa_m.downforce + pb_m.downforce) * 0.5,
+                    grip_mult: (pa_m.grip_mult + pb_m.grip_mult) * 0.5,
+                }.sanitized();
+                morpho_this.mutate(|| rng.random::<f32>());
             }
         } else if let Some(ref best) = current_best_w {
+            // Tier 6.3 LITE: fallback sem pool → herda morpho do champion (+ mutação leve se i>0).
+            morpho_this = current_best_morpho;
+            if i != 0 { morpho_this.mutate(|| rng.random::<f32>()); }
             // --- FALLBACK: DNA de CHAMPION.dna sem pool (primeira geração após boot) ---
             if i == 0 {
                 let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
@@ -294,9 +495,12 @@ pub fn spawn_swarm(
                     engine.slow_brain.layer.set_scale(current_best_slow_s);
                 }
             } else {
-                let mutated: Vec<f32> = best.iter().map(|&w| {
+                let mut mutated: Vec<f32> = best.iter().enumerate().map(|(idx, &w)| {
+                    // TIER 4.4: zona protegida isenta de mutação.
+                    if idx < PROTECTED_ZONE_SIZE { return w as f32; }
                     if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w as f32 }
                 }).collect();
+                apply_axiom_decay(&mut mutated);
                 engine.instinct_layer.quantize(&mutated);
                 engine.instinct_layer.set_scale(current_best_s);
                 if let Some(ref best_slow) = current_best_slow_w {
@@ -313,6 +517,17 @@ pub fn spawn_swarm(
             // pra sobreviver quantize ternária (bits ±1).
             let weights = build_priming_weights();
             engine.instinct_layer.quantize(&weights);
+            engine.instinct_layer.set_scale(1.0);
+        }
+
+        // Tier 4.2: seeda metabolismo do filho com 10% do estado hormonal do(s) parent(s).
+        // Cria linhagens com "trauma" (cortisol alto) ou "calma" (cortisol baixo).
+        if let Some((p_cort, p_dopa, p_curi)) = epigenetic_parents {
+            engine.metabolism.seed_epigenetic(p_cort, p_dopa, p_curi);
+            epi_inherited_count += 1;
+            epi_cortisol_sum += p_cort;
+            epi_dopamine_sum += p_dopa;
+            epi_curiosity_sum += p_curi;
         }
 
         let color = if i == 0 && current_best_w.is_some() { Color::srgb(0.0, 1.0, 0.8) } else { Color::srgb(rng.random::<f32>(), rng.random::<f32>(), rng.random::<f32>()) };
@@ -392,6 +607,16 @@ pub fn spawn_swarm(
                 death_frame: 0,
                 death_pos: Vec3::ZERO,
                 peak_speed: 0.0,
+                telemetry: crate::simulation::racer::RacerTelemetry::new(),
+                brain_tick_counter: 0,
+                last_action: (0.0, 0.0),
+                // Tier 4.3: alterna nicho por índice. 50% defensive / 50% aggressive.
+                niche: (i % 2) as u8,
+                // Tier 5.1 LITE: data layer — zerado no spawn; populado via
+                // EnvironmentalState::closest_racers em follow-up (não wired).
+                perceived_rivals: [0.0; 6],
+                // Tier 6.3 LITE: morpho genes herdados/mutados conforme branch de reprodução.
+                morpho: morpho_this.sanitized(),
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));
@@ -413,5 +638,26 @@ pub fn spawn_swarm(
                     .with_rotation(Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2).mul_quat(Quat::from_rotation_x(-0.05))) // Vira pra frente (-Z -> +X)
             ));
         });
+    }
+
+    // Tier 4.4: log da zona protegida (1x por gen, no primeiro batch de spawn).
+    if idx_start == 0 {
+        if let Some(mut file) = open_report_log() {
+            let _ = writeln!(file, "[PROTECTED] gen {} protected zone: {} weights exempt",
+                race.generation, PROTECTED_ZONE_SIZE);
+        }
+    }
+
+    // Tier 4.2: log da herança epigenética média desta geração (ajuda a visualizar
+    // evolução de linhagens "traumatizadas" vs "calmas" vs "exploradoras").
+    if epi_inherited_count > 0 {
+        if let Some(mut file) = open_report_log() {
+            let n = epi_inherited_count as f32;
+            let _ = writeln!(file,
+                "[EPIG] gen {} inheritance n={} parent_mean cort={:.3} dopa={:.3} curi={:.3} (child baseline = 10% desses)",
+                race.generation, epi_inherited_count,
+                epi_cortisol_sum / n, epi_dopamine_sum / n, epi_curiosity_sum / n
+            );
+        }
     }
 }

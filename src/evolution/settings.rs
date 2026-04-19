@@ -1,5 +1,8 @@
 use bevy::prelude::*;
+use std::collections::VecDeque;
 use super::dna::EliteDna;
+
+pub const FITNESS_HISTORY_CAP: usize = 100;
 
 #[derive(Resource)]
 pub struct RaceSettings {
@@ -34,6 +37,15 @@ pub struct RaceSettings {
     // Some((0, swarm_count)); drain_spawn_queue consome em blocos de SPAWN_BATCH_SIZE
     // por frame até virar None. Sim continua rodando entre batches — UI fica responsiva.
     pub pending_spawn: Option<(usize, usize)>,
+    // Tier 1.2 — histórico de fitness média (últimas 100 gens) pra emergency brake.
+    pub fitness_history: VecDeque<f32>,
+    // Tier 1.2 — se > 0, próximas N gens usam axiom_strength mínimo 0.5 (socorro).
+    pub axiom_boost_counter: u32,
+    // Tier 1.3 — Axiom como prior externo (potential-based shaping, Ng-Harada-Russell 1999).
+    // axiom_policy() em motor.rs soma bias aditivo ao output do brain escalado por este valor.
+    // Atualizado pela spawn.rs a cada gen com a mesma curva de decay: (1.0 - gen/50).max(0),
+    // elevado a 0.5 se axiom_boost_counter > 0. Consumido por update_racers após execute_cycle.
+    pub current_axiom_strength: f32,
 }
 
 #[derive(Resource)]
@@ -47,10 +59,10 @@ pub struct DevSettings {
 impl Default for DevSettings {
     fn default() -> Self {
         Self {
-            mutation_rate: 0.015,  // v1: 0.15 destruia aprendizado. v2: 0.04 ainda erodia DNA
-                                   // — usuário observou gen 2 com maioria batendo na parede.
-                                   // v3 (agora): 0.015 → ~123 pesos randomizados/gen no gen 1,
-                                   // decai pra ~40/gen após 40 gens. DNA preservado em 98.5%.
+            mutation_rate: 0.008,  // v4: 0.015 ainda erodia axiomas (gen 49 dna_view mostrou
+                                   // canais 79/82/85-86 apagados). 0.008 = ~65 pesos/gen = 49%
+                                   // menos erosão. Combinado com reinject_axioms preserva
+                                   // sinais críticos indefinidamente.
             pain_sensitivity: 1.0,
             wave_amplitude: 70.0,
             flow_influence: 0.5,

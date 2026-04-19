@@ -4,7 +4,7 @@ use crate::world::{VoxelWorld, VoxelWorldResource};
 use crate::environment::EnvironmentalState;
 use crate::config::UniverseConfig;
 
-use super::dna::{EliteDna, save_champion_dna};
+use super::dna::{EliteDna, save_champion_dna, apply_catastrophic_scars, decay_scars};
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 use super::spawn::spawn_swarm;
@@ -29,6 +29,105 @@ pub fn decide_next_env_level(
         let capped = target.min(current_level.saturating_add(1));
         (capped, false)
     }
+}
+
+// Tier 1.1 — constantes de reward shaping denso.
+// Calibradas pra cada sinal contribuir 1-5% da fitness de um champion típico.
+const K_SMOOTH: f32 = 100.0;   // steering jitter: penalidade até -500
+const K_SPEED: f32 = 0.5;      // speed_on_track: 30 m/s × 120s × 0.5 ≈ 1800 max
+const K_NOVEL: f32 = 50.0;     // sqrt(voxels): sqrt(2000) × 50 ≈ 2236 max
+const K_STAB: f32 = 200.0;     // stability_integral: 0..500 range
+
+// Tier 6.9 — Phi (IIT) proxy como pressão seletiva.
+// Cheap integrated-information approximation from brain_trace snapshots:
+// correlation magnitude between sensory channels and motor outputs, averaged.
+// Higher = retina/probe channels jointly drive actions (integrated architecture).
+// Alvo: 1-3% da fitness de um champion típico (~500-1500 pts).
+const K_PHI: f32 = 300.0;
+const K_AESTH: f32 = 200.0;
+
+fn aesthetic_score(telem: &crate::simulation::racer::RacerTelemetry) -> f32 {
+    let steer: Vec<f32> = telem.steering_history.iter().copied().collect();
+    if steer.len() < 3 { return 0.0; }
+    let mut jerk_sum = 0.0f32;
+    let mut jerk_n = 0usize;
+    for i in 2..steer.len() {
+        let d1 = steer[i] - steer[i - 1];
+        let d0 = steer[i - 1] - steer[i - 2];
+        jerk_sum += (d1 - d0).abs();
+        jerk_n += 1;
+    }
+    let jerk = if jerk_n > 0 { jerk_sum / jerk_n as f32 } else { 0.0 };
+    let speeds: Vec<f32> = telem.speed_history.iter()
+        .zip(telem.on_road_mask.iter())
+        .filter_map(|(&s, &on)| if on { Some(s) } else { None })
+        .collect();
+    let speed_var = if speeds.len() >= 2 {
+        let mean = speeds.iter().sum::<f32>() / speeds.len() as f32;
+        speeds.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / speeds.len() as f32
+    } else { 0.0 };
+    let line_consistency = 1.0 / (1.0 + speed_var);
+    let score = (1.0 / (1.0 + jerk * 10.0)) * 0.5 + line_consistency * 0.5;
+    score.clamp(0.0, 1.0)
+}
+
+/// Compute a cheap integrated-information proxy from brain_trace snapshots.
+///
+/// Uses sensor channels (wall_prox_l/r, ttc_inv, curv_25, retina_center_max) and
+/// action channels (raw_throttle, raw_steer, raw_brake). Metric = mean |Pearson
+/// correlation| across all sensor×action pairs. Returns 0.0 on NaN, zero variance,
+/// or < 4 samples (cov undefined / too noisy).
+///
+/// Note: spec suggested `log(det(cov_joint)/prod(var_marginal))`, but with 5+3
+/// heterogeneous channels and ≤15 samples, correlation-sum is numerically stable
+/// and captures the same "joint coupling beyond per-channel independence" signal.
+fn compute_phi_proxy(r: &Racer) -> f32 {
+    let trace = &r.brain_trace;
+    let n = trace.len();
+    if n < 4 { return 0.0; }
+
+    // Sensor matrix (5 channels), action matrix (3 channels).
+    let mut sensors: [Vec<f32>; 5] = Default::default();
+    let mut actions: [Vec<f32>; 3] = Default::default();
+    for s in trace.iter() {
+        sensors[0].push(s.wall_prox_l as f32);
+        sensors[1].push(s.wall_prox_r as f32);
+        sensors[2].push(s.ttc_inv as f32);
+        sensors[3].push(s.curv_25 as f32);
+        sensors[4].push(s.retina_center_max as f32);
+        actions[0].push(s.raw_throttle);
+        actions[1].push(s.raw_steer);
+        actions[2].push(s.raw_brake);
+    }
+
+    fn mean_var(xs: &[f32]) -> (f32, f32) {
+        let n = xs.len() as f32;
+        let m = xs.iter().sum::<f32>() / n;
+        let v = xs.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / n;
+        (m, v)
+    }
+    fn corr(xs: &[f32], ys: &[f32]) -> f32 {
+        let n = xs.len() as f32;
+        let (mx, vx) = mean_var(xs);
+        let (my, vy) = mean_var(ys);
+        if vx <= 1e-6 || vy <= 1e-6 { return 0.0; }
+        let cov: f32 = xs.iter().zip(ys.iter())
+            .map(|(x, y)| (x - mx) * (y - my)).sum::<f32>() / n;
+        let c = cov / (vx.sqrt() * vy.sqrt());
+        if c.is_nan() || c.is_infinite() { 0.0 } else { c }
+    }
+
+    let mut sum_abs = 0.0f32;
+    let mut pairs = 0u32;
+    for s in sensors.iter() {
+        for a in actions.iter() {
+            sum_abs += corr(s, a).abs();
+            pairs += 1;
+        }
+    }
+    if pairs == 0 { return 0.0; }
+    let phi = sum_abs / pairs as f32;
+    if phi.is_nan() || phi.is_infinite() { 0.0 } else { phi.clamp(0.0, 1.0) }
 }
 
 pub(super) fn calc_fitness(r: &Racer) -> f32 {
@@ -59,7 +158,14 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
     let proximity_bonus = prox_frac * prox_frac * 10000.0;
     // Wall penalty 50 → 200: raspar parede agora custa MUITO mais progresso equivalente.
     // 1s de wall_time = 200pts = 2m de track_progress deletados.
-    let wall_penalty = r.wall_time * 200.0;
+    // Tier 4.3 — Nicho-splitting (simpler version, shared-pool).
+    //   niche == 0 (defensive):  wall_penalty × 2.0  — pune raspar parede forte.
+    //   niche == 1 (aggressive): speed_reward × 1.5  — premia velocidade on-road.
+    // Pool único: ambos competem pelas mesmas vagas elite → cross-breed natural
+    // via tournament/mate-preference. Lineage fica introspectável pelo campo.
+    let wall_mult: f32 = if r.niche == 0 { 2.0 } else { 1.0 };
+    let speed_mult: f32 = if r.niche == 1 { 1.5 } else { 1.0 };
+    let wall_penalty = r.wall_time * 200.0 * wall_mult;
     // Wall hits: cada contato durante grace custa 500pts adicionais (fora do grace morre direto).
     let hit_penalty = r.wall_hits as f32 * 500.0;
     // Death penalty REWORKED: antes `(100-prog)*10` capava em 1000pts e zerava após 100m
@@ -70,7 +176,41 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
     // "acelera geral + morre" quando progresso é equivalente a quem vai devagar e chega.
     let survival_bonus = if r.is_dead { 0.0 } else { 3000.0 };
 
-    lap_bonus + prog * 100.0 + proximity_bonus + joy + survival_bonus - wall_penalty - hit_penalty - death_penalty
+    // --- TIER 1.1: SINAIS DENSOS DE REWARD SHAPING ---
+    // Cada um premia behavior que correlaciona com progresso de longo prazo.
+    // Pisos mantidos baixos pra não dominar lap_bonus (50k) em champions fluentes.
+    //
+    // 1) Smoothness: penaliza jitter de volante (clamp piso -500 — não é prêmio infinito ficar parado).
+    let steering_var = r.telemetry.steering_variance();
+    let smoothness_reward = (-steering_var * K_SMOOTH).max(-500.0);
+    // 2) Speed-on-track: velocidade acumulada ON-ROAD (anti-grass, anti-wall).
+    let speed_reward = r.telemetry.speed_on_track() * K_SPEED * speed_mult;
+    // 3) Novelty: sqrt(voxels únicos on-road). On-road obrigatório = anti circle-exploit.
+    let unique_voxels = r.telemetry.visited_voxels.len();
+    let novelty_bonus = (unique_voxels as f32).sqrt() * K_NOVEL;
+    // 4) Stability: integral de (1 - |yaw_rate|) on-road — premia dirigibilidade controlada.
+    let stability_reward = r.telemetry.stability_integral() * K_STAB;
+
+    // Tier 6.9 — Phi (IIT) proxy: integra sensores×ações na fitness.
+    // Max teórico ~1.0 × 300 = 300pts. Típico 0.2-0.5 → 60-150pts (≈1-3%).
+    let phi_reward = compute_phi_proxy(r) * K_PHI;
+    // Tier 6.7 — Aesthetic judge: baixo jerk + linha consistente.
+    let aesthetic_reward = aesthetic_score(&r.telemetry) * K_AESTH;
+
+    lap_bonus
+        + prog * 100.0
+        + proximity_bonus
+        + joy
+        + survival_bonus
+        + smoothness_reward
+        + speed_reward
+        + novelty_bonus
+        + stability_reward
+        + phi_reward
+        + aesthetic_reward
+        - wall_penalty
+        - hit_penalty
+        - death_penalty
 }
 
 pub(super) fn evolution_pipeline(
@@ -114,14 +254,57 @@ pub(super) fn evolution_pipeline(
         // de colapso (620m gen 6 → pool lixo → gen 7 fraca também).
         // AGORA: merge — só entra se bater pior slot do pool. Gens fracas não apagam
         // DNA bom de gens anteriores. Champion + top elites ficam guardados.
-        for (_, r, _, _) in sorted.iter().take(10) {
+        // --- TIER 6.6: DECAY GLOBAL DE SCARS na borda de geração ---
+        // Antes de injetar novos candidatos, decrementa TTL de todo scar_mask existente.
+        // Scars com TTL 0 ficam livres pra mutação novamente.
+        let mut total_active_scars_before = 0usize;
+        let mut total_active_scars_after = 0usize;
+        for elite in race.elite_pool.iter_mut() {
+            total_active_scars_before += elite.scar_mask.iter().filter(|&&t| t > 0).count();
+            total_active_scars_after += decay_scars(&mut elite.scar_mask);
+        }
+
+        // Se HOUVE qualquer BATIDA neste gen, a linhagem aprende com o trauma:
+        // Scars propagam pros elites top-K (proxy de "paciência evolutiva" — se
+        // o top-N tem parentesco com quem bateu, marcar pesos ativos).
+        // Simples: conta BATIDAs em toda a população.
+        let gen_batidas = sorted.iter().filter(|(_, r, _, _)|
+            matches!(r.death_reason, Some(crate::simulation::racer::DeathReason::Batida))
+        ).count();
+
+        let mut scars_created_this_gen = 0usize;
+        for (rank, (_, r, _, _)) in sorted.iter().take(10).enumerate() {
             let new_fit = calc_fitness(r);
+            let fast_weights: Vec<i8> = r.engine.instinct_layer.weights.clone();
+            let mut scar_mask = vec![0u8; fast_weights.len()];
+            // 1) O próprio top-10 morreu em BATIDA? Marca direto.
+            let own_batida = matches!(
+                r.death_reason,
+                Some(crate::simulation::racer::DeathReason::Batida)
+            );
+            // 2) Houve BATIDA na população e este é top-3 (linhagem dominante)?
+            //    Proxy: população afeta pool inteiro via reprodução compartilhada.
+            let lineage_batida = gen_batidas > 0 && rank < 3;
+            if own_batida || lineage_batida {
+                let seed_bias = fast_weights.iter().map(|&w| w as i64).sum::<i64>() as u64
+                    ^ (race.generation as u64).wrapping_mul(0xA5A5_A5A5)
+                    ^ (rank as u64).wrapping_mul(0x1234_5678);
+                let created = apply_catastrophic_scars(&mut scar_mask, &fast_weights, seed_bias);
+                scars_created_this_gen += created;
+            }
             let candidate = EliteDna {
-                fast_weights: r.engine.instinct_layer.weights.clone(),
+                fast_weights,
                 fast_scale: r.engine.instinct_layer.weight_scale,
                 slow_weights: r.engine.slow_brain.layer.weights.clone(),
                 slow_scale: r.engine.slow_brain.layer.weight_scale,
                 fitness: new_fit,
+                scar_mask,
+                // Tier 4.2: captura estado hormonal médio ao final da vida.
+                cortisol_mean: r.engine.metabolism.mean_cortisol(),
+                dopamine_mean: r.engine.metabolism.mean_dopamine(),
+                curiosity_mean: r.engine.metabolism.mean_curiosity(),
+                // Tier 6.3 LITE: propaga morpho genes do racer vivo pra elite pool.
+                morpho: r.morpho,
             };
             if race.elite_pool.len() < 10 {
                 race.elite_pool.push(candidate);
@@ -227,6 +410,43 @@ pub(super) fn evolution_pipeline(
             }
             let _ = writeln!(file, "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} ?:{}",
                 d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_unk);
+
+            // Tier 4.3 — NICHO-SPLITTING METRICS.
+            // Diferencial de pressão: defensive pune wall_time 2×, aggressive premia
+            // speed_on_track 1.5×. Esperamos divergência estatística: defensive com
+            // wall_time MENOR, aggressive com speed_on_track MAIOR.
+            let mut def_n = 0usize; let mut agg_n = 0usize;
+            let mut def_wall_sum = 0.0f32; let mut agg_wall_sum = 0.0f32;
+            let mut def_speed_sum = 0.0f32; let mut agg_speed_sum = 0.0f32;
+            let mut def_fit_sum = 0.0f32; let mut agg_fit_sum = 0.0f32;
+            for (_, r, _, _) in sorted.iter() {
+                let f = calc_fitness(r);
+                let sp = r.telemetry.speed_on_track();
+                if r.niche == 0 {
+                    def_n += 1; def_wall_sum += r.wall_time; def_speed_sum += sp; def_fit_sum += f;
+                } else {
+                    agg_n += 1; agg_wall_sum += r.wall_time; agg_speed_sum += sp; agg_fit_sum += f;
+                }
+            }
+            let safe = |s: f32, n: usize| -> f32 { if n == 0 { 0.0 } else { s / n as f32 } };
+            let _ = writeln!(file, "Niche — DEF n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0} | AGG n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0}",
+                def_n, safe(def_wall_sum, def_n), safe(def_speed_sum, def_n), safe(def_fit_sum, def_n),
+                agg_n, safe(agg_wall_sum, agg_n), safe(agg_speed_sum, agg_n), safe(agg_fit_sum, agg_n));
+
+            // Tier 6.6 — Weight Scars telemetry.
+            // pool_active_scars é o estado FINAL do pool (pós-decay + pós-inserção).
+            // - total_active_scars_before: scars herdados do início desta gen.
+            // - total_active_scars_after: sobreviveram ao decay (TTL>0 após -1).
+            // - new_this_gen: scars recém-criados por BATIDA (antes de push no pool).
+            // - pool_active: soma final (após merge top-10 e sort).
+            let pool_active_scars: usize = race.elite_pool.iter()
+                .map(|e| e.scar_mask.iter().filter(|&&t| t > 0).count())
+                .sum();
+            let pool_max_ttl: u8 = race.elite_pool.iter()
+                .flat_map(|e| e.scar_mask.iter().copied())
+                .max().unwrap_or(0);
+            let _ = writeln!(file, "Scars — new_this_gen: {} | pool_active: {} | max_ttl: {} (pre_decay: {}, post_decay: {})",
+                scars_created_this_gen, pool_active_scars, pool_max_ttl, total_active_scars_before, total_active_scars_after);
 
             // --- DEATH BY ZONE (waypoint segment) ---
             // Agrupa mortes por segmento da pista. Identifica "curva que mata".
@@ -357,15 +577,16 @@ pub(super) fn evolution_pipeline(
             // Winner com 5 voltas sempre coroa (é prova robusta).
             // best_weights None = primeiro DNA, coroa sempre pra bootstrap.
             let is_validation = race.env_level == 0;
-            // VALIDATION tolera regressão 15% se DNA for CONSISTENTE (completou ≥1 lap).
-            // Motivo: champion lucky-spec em level 1 (ex: 4082m) nunca mais era batido
-            // após curriculum subir pra level 2+, travando evolução. 15% de folga
-            // permite DNA que fez 3500m+1lap assumir, mantendo pressão seletiva mas
-            // destravando deadlock precoce.
-            let val_threshold = race.champion_distance * 0.85;
+            // FIX 3 ELITISMO RÍGIDO: validation só coroa se melhor QUE o champion (não 85%).
+            // Tolerância 0.85 permitia saw-tooth regressivo — cada validation aceitava
+            // DNA 15% pior, acumulando erosão. Agora só substitui se realmente superou.
+            // Decay automático pós-20 gens (linha 329) continua destravando deadlocks.
+            // FIX coroação: removido `total_laps >= 1`. Lap = 1299m; carros
+            // chegam a 1139m NET (87% volta) mas nunca fecham. Threshold trava em
+            // bootstrap 280m apesar de evolução 4x. NET puro > champion_distance
+            // basta — elitism rígido (linha acima) evita regressão.
             let val_ok = is_validation
-                && this_gen_best_dist > val_threshold
-                && best.total_laps >= 1;
+                && this_gen_best_dist > race.champion_distance;
             let should_crown = winner.is_some()
                 || race.best_weights.is_none()
                 || val_ok;
@@ -421,24 +642,47 @@ pub(super) fn evolution_pipeline(
             race.death_markers.clear();
         }
 
+        // --- TIER 1.2: FITNESS HISTORY + EMERGENCY BRAKE ---
+        // Registra mean-fitness da geração que acabou (ring buffer 100 gens).
+        // Emergency brake: se (gen > 30) e mean recente-5 < mean around-30 × 0.5,
+        // ativa boost counter de 10 gens (axiom_strength piso 0.5 pra forçar recuperação).
+        let gen_fitness: f32 = {
+            let n = sorted.len();
+            if n == 0 { 0.0 }
+            else { sorted.iter().map(|(_, r, _, _)| calc_fitness(r)).sum::<f32>() / n as f32 }
+        };
+        if race.fitness_history.len() == super::settings::FITNESS_HISTORY_CAP {
+            race.fitness_history.pop_front();
+        }
+        race.fitness_history.push_back(gen_fitness);
+        if race.axiom_boost_counter > 0 {
+            race.axiom_boost_counter -= 1;
+        }
+        if race.generation > 30 && race.fitness_history.len() >= 30 {
+            let hist_len = race.fitness_history.len();
+            let recent_slice: Vec<f32> = race.fitness_history.iter().rev().take(5).copied().collect();
+            let recent_mean = recent_slice.iter().sum::<f32>() / recent_slice.len() as f32;
+            // "around 30" = janela de 5 gens centrada no offset 30 a partir do fim.
+            let start = hist_len.saturating_sub(32);
+            let end = hist_len.saturating_sub(27).max(start + 1).min(hist_len);
+            let ref_slice = &race.fitness_history.iter().copied().collect::<Vec<f32>>()[start..end];
+            let ref_mean = ref_slice.iter().sum::<f32>() / ref_slice.len().max(1) as f32;
+            if recent_mean < ref_mean * 0.5 && race.axiom_boost_counter == 0 {
+                race.axiom_boost_counter = 10;
+                if let Some(mut file) = open_report_log() {
+                    use std::io::Write;
+                    let _ = writeln!(file, "🚨 EMERGENCY BRAKE: mean_fit recente {:.0} < {:.0} × 0.5 — axiom_strength floor 0.5 por 10 gens",
+                        recent_mean, ref_mean);
+                }
+            }
+        }
+
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
         for (e, _, _, _) in query.iter() { commands.entity(e).despawn(); }
         race.generation += 1; race.should_reset = false; race.hard_reset = false; race.selected_racer = None;
 
-        // --- CURRICULUM ADAPTATIVO DE LARGURA ---
-        // Pista começa um pouco mais larga (base + 4m) e estreita rápido com voltas do campeão.
-        // Cada volta completada reduz o bônus em 2m — piso (base) atingido em 2 voltas reais.
-        let base_width = config.current_track().track_width;
-        let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
-        let width_bonus = (4.0 - champion_laps * 2.0).max(0.0);
-        let effective_width = base_width + width_bonus;
-        let world = VoxelWorld::new(race.seed, effective_width);
-        let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
-        let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })))).id();
-        let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })))).id();
-        let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })))).id();
-        race.world_entities = vec![road_e, grass_e, wall_e];
         // CURRICULUM LEVEL + VALIDATION GEN (ver decide_next_env_level)
+        // Calculado ANTES do world rebuild pra Tier 5.3 pinar validation no track 0.
         let champ_dist = race.champion_distance;
         let lap_dist = world_res.0.lap_distance;
         let current_lvl = race.env_level;
@@ -451,6 +695,43 @@ pub(super) fn evolution_pipeline(
         race.is_validation_gen = is_val;
         race.env_level = next_level;
         env.randomize_level(next_level);
+
+        // --- TIER 5.3 MULTI-TRACK ROTATION ---
+        // Decide qual track a PRÓXIMA geração vai rodar. `race.generation` já foi incrementado
+        // acima. Validation gens pinam em tracks[0] pra comparação honesta de campeão.
+        let next_gen_idx = race.generation as usize;
+        let next_track = config.track_for_gen(next_gen_idx, is_val);
+        let track_changed = config.rotate_tracks && next_track.seed != race.seed;
+        if track_changed {
+            // Campeão salvo foi num track diferente — threshold vira armadilha
+            // (não replica numa pista nova). Decay 0.8 força rebaseline rápido
+            // sem apagar o DNA (best_weights preservado).
+            race.champion_distance *= 0.8;
+        }
+        race.seed = next_track.seed;
+
+        // --- CURRICULUM ADAPTATIVO DE LARGURA ---
+        // Pista começa um pouco mais larga (base + 4m) e estreita rápido com voltas do campeão.
+        // Cada volta completada reduz o bônus em 2m — piso (base) atingido em 2 voltas reais.
+        let base_width = next_track.track_width;
+        let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
+        let width_bonus = (4.0 - champion_laps * 2.0).max(0.0);
+        let effective_width = base_width + width_bonus;
+        if config.rotate_tracks {
+            println!("🔀 TRACK ROTATION gen={} → \"{}\" (seed={}, width={:.1}m, val={})",
+                next_gen_idx, next_track.name, next_track.seed, effective_width, is_val);
+            if let Some(mut file) = open_report_log() {
+                use std::io::Write;
+                let _ = writeln!(file, "🔀 **TRACK**: {} (seed={}, base_width={:.1}m, validation={})",
+                    next_track.name, next_track.seed, base_width, is_val);
+            }
+        }
+        let world = VoxelWorld::new(next_track.seed, effective_width);
+        let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
+        let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })))).id();
+        let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })))).id();
+        let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })))).id();
+        race.world_entities = vec![road_e, grass_e, wall_e];
         // Spawn batched: agenda jobs, drain_spawn_queue processa em blocos por frame.
         race.pending_spawn = Some((0, config.swarm_count));
         world_res.0 = world;

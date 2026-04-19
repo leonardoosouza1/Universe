@@ -32,6 +32,15 @@ fn main() {
     if let Some(s) = time_scale_override { config.time_scale = s; }
     if headless { config.time_scale = config.time_scale.max(8.0); }
 
+    // Tier 5.3: ativa rotação de pistas via CLI (`--rotate`) ou env (UNIVERSE_ROTATE=1).
+    let rotate_flag = args.iter().any(|a| a == "--rotate")
+        || std::env::var("UNIVERSE_ROTATE").ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    if rotate_flag {
+        config.rotate_tracks = true;
+        println!("🔀 MULTI-TRACK ROTATION ENABLED | tracks={} | gens_per_track={}",
+            config.tracks.len(), config.gens_per_track);
+    }
+
     let initial_track = config.current_track();
     let initial_seed = initial_track.seed;
     let initial_width = initial_track.track_width + 4.0;
@@ -85,6 +94,9 @@ fn main() {
         gens_until_validation: 3,
         pending_spawn: None,
         env_level: 1,
+        fitness_history: std::collections::VecDeque::with_capacity(100),
+        axiom_boost_counter: 0,
+        current_axiom_strength: 1.0,
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

@@ -52,9 +52,18 @@ pub struct UniverseConfig {
     /// continuam acumulando distância até o tempo acabar.
     #[serde(default = "default_generation_timeout_s")]
     pub generation_timeout_s: f32,
+    /// Tier 5.3: rotação de pistas por geração. Se false (default), usa sempre
+    /// `selected_track_index`. Se true, alterna entre `tracks` por bloco de
+    /// `gens_per_track` e fixa `tracks[0]` em gens de validação (env_level 0).
+    /// Pode ser ativado via CLI `--rotate` ou env `UNIVERSE_ROTATE=1`.
+    #[serde(default)]
+    pub rotate_tracks: bool,
+    #[serde(default = "default_gens_per_track")]
+    pub gens_per_track: usize,
 }
 
 fn default_generation_timeout_s() -> f32 { 120.0 }
+fn default_gens_per_track() -> usize { 3 }
 
 impl Default for UniverseConfig {
     fn default() -> Self {
@@ -72,12 +81,26 @@ impl Default for UniverseConfig {
                     seed: 123,
                     track_width: 40.0,
                     complexity: 0.5,
-                }
+                },
+                TrackProfile {
+                    name: "Monaco Tight".to_string(),
+                    seed: 256,
+                    track_width: 28.0,
+                    complexity: 2.0,
+                },
+                TrackProfile {
+                    name: "Silverstone Flow".to_string(),
+                    seed: 512,
+                    track_width: 34.0,
+                    complexity: 1.3,
+                },
             ],
             selected_track_index: 0,
             swarm_count: 50,
             time_scale: 3.0,
             generation_timeout_s: 120.0,
+            rotate_tracks: false,
+            gens_per_track: 3,
         }
     }
 }
@@ -105,6 +128,65 @@ impl UniverseConfig {
     }
 
     pub fn current_track(&self) -> &TrackProfile {
-        &self.tracks[self.selected_track_index]
+        &self.tracks[self.selected_track_index.min(self.tracks.len().saturating_sub(1))]
+    }
+
+    /// Tier 5.3: retorna a pista para uma dada geração.
+    /// - `rotate_tracks == false`: sempre `current_track()` (back-compat).
+    /// - `is_validation_gen == true`: pinned em `tracks[0]` (env estável → comparação
+    ///   honesta de campeão entre gens).
+    /// - Caso contrário, rotação por bloco: idx = (gen / gens_per_track) % tracks.len().
+    pub fn track_for_gen(&self, gen_idx: usize, is_validation_gen: bool) -> &TrackProfile {
+        if !self.rotate_tracks || self.tracks.is_empty() {
+            return self.current_track();
+        }
+        if is_validation_gen {
+            return &self.tracks[0];
+        }
+        let per = self.gens_per_track.max(1);
+        let idx = (gen_idx / per) % self.tracks.len();
+        &self.tracks[idx]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with_rotate() -> UniverseConfig {
+        let mut c = UniverseConfig::default();
+        c.rotate_tracks = true;
+        c.gens_per_track = 2;
+        c
+    }
+
+    #[test]
+    fn rotation_cycles_by_block() {
+        let c = cfg_with_rotate();
+        let n = c.tracks.len();
+        // Block size = 2, so gens 0,1 → track 0; gens 2,3 → track 1; ...
+        assert_eq!(c.track_for_gen(0, false).name, c.tracks[0].name);
+        assert_eq!(c.track_for_gen(1, false).name, c.tracks[0].name);
+        assert_eq!(c.track_for_gen(2, false).name, c.tracks[1 % n].name);
+        assert_eq!(c.track_for_gen(3, false).name, c.tracks[1 % n].name);
+        assert_eq!(c.track_for_gen(4, false).name, c.tracks[2 % n].name);
+    }
+
+    #[test]
+    fn validation_gen_pins_track_zero() {
+        let c = cfg_with_rotate();
+        // Em qualquer gen, se é validation, track 0.
+        for g in [0usize, 7, 13, 42] {
+            assert_eq!(c.track_for_gen(g, true).name, c.tracks[0].name);
+        }
+    }
+
+    #[test]
+    fn rotate_false_keeps_current_track() {
+        let c = UniverseConfig::default(); // rotate_tracks = false
+        for g in [0usize, 5, 100] {
+            assert_eq!(c.track_for_gen(g, false).name, c.current_track().name);
+            assert_eq!(c.track_for_gen(g, true).name, c.current_track().name);
+        }
     }
 }
