@@ -3,6 +3,7 @@ name = "universe"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.85.0" # Versão estável em 2026
+default-run = "universe"
 
 [dependencies]
 bevy = { version = "0.16.0", default-features = false, features = [

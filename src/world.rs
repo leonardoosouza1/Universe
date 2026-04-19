@@ -80,13 +80,21 @@ impl VoxelWorld {
         // Overlay HOLES (VoxelType::Hole) em cells específicas por seed. Só em pistas
         // HARD+ (256, 512, 768, 1024). Holes matam no contato — força rede a aprender
         // desvio ativo, não passivo. Só sobrescreve Road (nunca Wall/Grass).
+        // Cada ponto vira bloco 2×2 (6m × 6m) — visível na retina e passível de colisão
+        // pelo chassi (2m × 2.6m). Holes isolados de 1 cell eram skipáveis.
         for hole_cell in track_holes_for_seed(_seed) {
             let hx = hole_cell.x.round() as i32;
             let hy = hole_cell.y.round() as i32;
-            if hx < 0 || hx >= size as i32 || hy < 0 || hy >= size as i32 { continue; }
-            let idx = hy as usize * size + hx as usize;
-            if grid[idx] == VoxelType::Road {
-                grid[idx] = VoxelType::Hole;
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let cx = hx + dx;
+                    let cy = hy + dy;
+                    if cx < 0 || cx >= size as i32 || cy < 0 || cy >= size as i32 { continue; }
+                    let idx = cy as usize * size + cx as usize;
+                    if grid[idx] == VoxelType::Road {
+                        grid[idx] = VoxelType::Hole;
+                    }
+                }
             }
         }
 
@@ -602,42 +610,44 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
             Vec2::new(100.0, 140.0), Vec2::new(60.0, 140.0),
             Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
         ],
-        // Monaco Tight — HARD: chicane + 90° right + 90° left + hairpin.
+        // Monaco Tight — HARD: sequência de hairpins 90° sem reversos geométricos.
+        // Antigo WP[3] fazia swing 135° (NW→E) — U-turn impossível pra rede shallow.
+        // Agora monotonico em sentido horário: S→E→S→W→S→W→N→E.
         256 => vec![
-            Vec2::new(20.0, 20.0),  Vec2::new(80.0, 20.0),
-            Vec2::new(90.0, 35.0),  Vec2::new(75.0, 50.0),
+            Vec2::new(20.0, 20.0),  Vec2::new(110.0, 20.0),
             Vec2::new(140.0, 50.0), Vec2::new(140.0, 90.0),
             Vec2::new(100.0, 90.0), Vec2::new(100.0, 130.0),
             Vec2::new(60.0, 130.0), Vec2::new(20.0, 90.0),
             Vec2::new(20.0, 20.0),
         ],
-        // Silverstone Flow — VERY HARD: curvas rápidas + hairpin brutal.
+        // Silverstone Flow — VERY HARD: curvas rápidas sem zigzag reverso.
+        // Antigo fazia (110,115)→(80,100)→(60,130) U-turn SW→NW→SW. Removido.
         512 => vec![
             Vec2::new(20.0, 20.0),  Vec2::new(100.0, 25.0),
-            Vec2::new(140.0, 55.0), Vec2::new(140.0, 90.0),
-            Vec2::new(110.0, 115.0), Vec2::new(80.0, 100.0),
-            Vec2::new(60.0, 130.0), Vec2::new(30.0, 130.0),
-            Vec2::new(15.0, 110.0), Vec2::new(25.0, 80.0),
-            Vec2::new(50.0, 60.0), Vec2::new(20.0, 20.0),
+            Vec2::new(140.0, 55.0), Vec2::new(140.0, 95.0),
+            Vec2::new(115.0, 120.0), Vec2::new(75.0, 130.0),
+            Vec2::new(35.0, 125.0), Vec2::new(15.0, 95.0),
+            Vec2::new(30.0, 65.0), Vec2::new(55.0, 45.0),
+            Vec2::new(20.0, 20.0),
         ],
-        // Nürburgring Hills — EXTREME: elevação forte + curvas longas.
-        // Seed novo, config adiciona.
+        // Nürburgring Hills — EXTREME: elevação forte, curvas longas, sem U-turns.
+        // Antigo (95,110)→(130,140) fazia reverso SW→SE. Removido.
         768 => vec![
             Vec2::new(20.0, 30.0),  Vec2::new(90.0, 20.0),
-            Vec2::new(140.0, 45.0), Vec2::new(130.0, 85.0),
-            Vec2::new(95.0, 110.0), Vec2::new(130.0, 140.0),
-            Vec2::new(85.0, 145.0), Vec2::new(45.0, 130.0),
-            Vec2::new(20.0, 100.0), Vec2::new(45.0, 70.0),
-            Vec2::new(25.0, 50.0),  Vec2::new(20.0, 30.0),
+            Vec2::new(140.0, 45.0), Vec2::new(140.0, 100.0),
+            Vec2::new(110.0, 130.0), Vec2::new(70.0, 140.0),
+            Vec2::new(30.0, 120.0), Vec2::new(20.0, 70.0),
+            Vec2::new(20.0, 30.0),
         ],
-        // Suzuka Crossing — INSANE: figure-8 approximation com multi-hairpin.
+        // Suzuka Crossing — INSANE: hairpins sucessivos SEM reversos. Antigo (90,50)→(70,70)
+        // fazia SE→SW (U-turn) e (20,90)→(40,130) fazia SW→SE (outro U). Redesigned para
+        // espiral horária com 90°s legítimos mas trajetória sempre forward.
         1024 => vec![
-            Vec2::new(20.0, 30.0),  Vec2::new(70.0, 30.0),
-            Vec2::new(90.0, 50.0),  Vec2::new(70.0, 70.0),
-            Vec2::new(30.0, 70.0),  Vec2::new(20.0, 90.0),
-            Vec2::new(40.0, 130.0), Vec2::new(90.0, 140.0),
-            Vec2::new(130.0, 120.0), Vec2::new(140.0, 80.0),
-            Vec2::new(120.0, 55.0), Vec2::new(110.0, 30.0),
+            Vec2::new(20.0, 30.0),  Vec2::new(80.0, 30.0),
+            Vec2::new(115.0, 55.0), Vec2::new(140.0, 90.0),
+            Vec2::new(140.0, 130.0), Vec2::new(100.0, 145.0),
+            Vec2::new(55.0, 140.0), Vec2::new(20.0, 115.0),
+            Vec2::new(25.0, 75.0), Vec2::new(45.0, 55.0),
             Vec2::new(20.0, 30.0),
         ],
         _ => vec![
@@ -671,32 +681,32 @@ pub fn track_holes_for_seed(seed: u64) -> Vec<Vec2> {
         // Dubai / Interlagos — sem buracos (fase de aprendizado).
         123 | 64 => vec![],
 
-        // Monaco Tight — 2 buracos no apex das curvas internas da chicane.
+        // Monaco Tight — 2 buracos em apex de 90° interno.
         256 => vec![
-            Vec2::new(82.0, 38.0),   // Apex chicane dir
-            Vec2::new(113.0, 93.0),  // Saída curva 4
+            Vec2::new(130.0, 55.0),   // Apex curva 2 (E→S)
+            Vec2::new(98.0, 128.0),   // Apex curva 5 (S→W)
         ],
 
-        // Silverstone Flow — 3 buracos em trechos de alta velocidade.
+        // Silverstone Flow — 3 buracos em trechos rápidos.
         512 => vec![
-            Vec2::new(108.0, 33.0),  // Reta 1
-            Vec2::new(135.0, 75.0),  // Curva 3 entrada
-            Vec2::new(30.0, 120.0),  // Hairpin saída
+            Vec2::new(110.0, 27.0),   // Reta 1
+            Vec2::new(138.0, 85.0),   // Curva longa
+            Vec2::new(32.0, 123.0),   // Saída W→N
         ],
 
-        // Nürburgring Hills — 3 buracos em descidas (com rampas já puxando mais).
+        // Nürburgring Hills — 3 buracos em descidas (rampas amplificam).
         768 => vec![
-            Vec2::new(120.0, 38.0),  // Descida 1
-            Vec2::new(108.0, 120.0), // Vale profundo
-            Vec2::new(40.0, 85.0),   // Contra-subida
+            Vec2::new(130.0, 40.0),   // Descida 1
+            Vec2::new(130.0, 115.0),  // Vale
+            Vec2::new(40.0, 125.0),   // Contra-subida
         ],
 
-        // Suzuka Crossing — 4 buracos (insano: trajetória quase obrigatória).
+        // Suzuka Crossing — 4 buracos (insano: trajetória quase forçada).
         1024 => vec![
-            Vec2::new(75.0, 40.0),
-            Vec2::new(35.0, 80.0),
-            Vec2::new(115.0, 125.0),
-            Vec2::new(125.0, 65.0),
+            Vec2::new(75.0, 30.0),    // Reta inicial
+            Vec2::new(135.0, 80.0),   // Curva descendente
+            Vec2::new(115.0, 138.0),  // Hairpin S
+            Vec2::new(25.0, 95.0),    // Subida W
         ],
 
         _ => vec![],

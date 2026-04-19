@@ -38,37 +38,42 @@ fn build_slow_priming_weights() -> Vec<f32> {
 fn build_priming_weights() -> Vec<f32> {
     let mut weights = vec![0.0f32; 128 * 64];
 
-    // IMPORTANTE: a FÓVEA (índices 0..31) agora é SACÁDICA — pixel_i não mapeia
-    // pra um ângulo fixo do carro (gira com gaze_yaw). Priming direcional que assume
-    // "pixel 0 = esquerda" causaria o carro a ser ATRAÍDO pra parede quando a cabeça
-    // vira. SOLUÇÃO: priming direcional só na PERIFÉRICA (32..63, sempre forward-aligned).
+    // Motor.rs faz POOLING da retina: fóvea 32 px → 8 bins (ch 0..7),
+    // periférica 32 px → 8 bins (ch 8..15). Ch 16..63 ZERADOS pelo motor.
+    // Priming DEVE atacar os bins novos, não os pixels antigos.
     //
-    // A1: Wall à esquerda (periférica 32..37) → vira à DIREITA (positivo)
-    for i in 0..6 {
-        weights[1 * 128 + (32 + i)] = 15.0;
-    }
-    // A2: Wall à direita (periférica 58..63) → vira à ESQUERDA (negativo)
-    for i in 26..32 {
-        weights[1 * 128 + (32 + i)] = -15.0;
-    }
-    // A3: Alinhamento com fluxo (canal 64) → acelera
-    weights[0 * 128 + 64] = 5.0;
-    // A4: Parede no centro (periférica 42..54) → corta throttle forte
-    for i in 10..22 {
-        weights[0 * 128 + (32 + i)] = -10.0;
-    }
-    // A4d: Centro EXATO da periférica (46..50) → BRAKE forte, sem steer.
-    for i in 14..18 {
-        weights[2 * 128 + (32 + i)] = 14.0;
-    }
+    // Periférica bins (uniforme, 4 px cada): 8=px32-35 ... 15=px60-63.
+    // Bins 8-9 = esquerda extremo/lateral. Bins 14-15 = direita. 10-13 = centro.
+    //
+    // A1: Wall à esquerda (perif bin 8, 9) → vira à DIREITA (positivo)
+    weights[1 * 128 + 8] = 18.0;
+    weights[1 * 128 + 9] = 14.0;
+    // A2: Wall à direita (perif bin 14, 15) → vira à ESQUERDA (negativo)
+    weights[1 * 128 + 14] = -14.0;
+    weights[1 * 128 + 15] = -18.0;
+    // A3: Alinhamento com fluxo (canal 64) → acelera (magnitude alta p/ sobrepor pooling sparse)
+    weights[0 * 128 + 64] = 12.0;
+    // A4: Parede no centro periférica (apenas bin 11, 12 = centro exato) → corta throttle LEVE.
+    // Magnitudes baixas: ganho vem da fóvea (A7b). Periférica center sempre
+    // acende leve em pistas estreitas — forte demais = carro trava parado.
+    weights[0 * 128 + 11] = -3.0;
+    weights[0 * 128 + 12] = -3.0;
+    // A4d: BRAKE removido do priming (causa travamento permanente em pistas narrow).
+    // Brake emergente vem dos whiskers (94-97) que só acendem em colisão iminente.
     // A5: Dor de grama (73) → reduz throttle
-    weights[0 * 128 + 73] = -5.0;
+    // Sensor 73 = -128 SE grass, 0 caso contrário. w=+5 × (-128) = sinal negativo p/ throttle = corta. ✓
+    weights[0 * 128 + 73] = 5.0;
     // A6: Comp-stress (125) → acelera
     weights[0 * 128 + 125] = 3.0;
-    // A7: Freio pânico estreito (periférica 46..50)
-    for i in 14..18 {
-        weights[2 * 128 + (32 + i)] = 8.0;
-    }
+    // A7: Freio pânico removido do priming — whiskers (94-97) já acendem BRAKE em proximidade real.
+    // A7b: Fóvea centro (bin 3, 4 = px 13..19 centro). Retina: road=NEGATIVO, wall=POSITIVO.
+    // Road clear (value −128) × weight (−6) = +768 contrib = ACELERA. Wall ahead (value +)
+    // × weight (−) = negativo = corta throttle.
+    weights[0 * 128 + 3] = -8.0;
+    weights[0 * 128 + 4] = -8.0;
+    // A7c REMOVIDO: bins extremos de fóvea SEMPRE veem paredes em pistas narrow (wall 7m lateral
+    // entra em bin 0/7 a 15m à frente). Steer forçado pra um lado → deriva contra wall oposta.
+    // Dark_center (90-93) já guia steering via centroide angular do road.
     // A8: Deriva lateral (66) → contra-steer
     weights[1 * 128 + 66] = -5.0;
     // A9: Curvatura antecipada (78/79/80)
@@ -286,6 +291,8 @@ pub fn spawn_swarm(
         }
         let priming = build_priming_weights();
         let critical: &[usize] = &[
+            0, 3, 4, 7,             // fóvea bins (centro + extremos)
+            8, 9, 10, 11, 12, 13, 14, 15, // periférica bins 8 (pós-pooling)
             64,                     // alinhamento fluxo
             79, 80, 82,             // curvatura + ttc
             85, 86,                 // parede memória L/R

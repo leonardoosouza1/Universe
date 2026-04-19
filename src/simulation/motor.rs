@@ -877,6 +877,13 @@ pub(super) fn update_racers(
         // Removido survival_throttle 0.3 mínimo: tirava pressão seletiva sobre aprender throttle.
         let neural_throttle = intent[0].clamp(-1.0, 1.0);
         let base_pedal = ((neural_throttle + 1.0) * 0.5).clamp(0.0, 1.0); // Remap [-1,1] → [0,1]
+        let _dbg_intent0 = intent[0];
+        let _dbg_intent1 = intent[1];
+        let _dbg_intent2 = intent[2];
+        let _dbg_base_pedal = base_pedal;
+        let _dbg_s64 = sensory_wave[64];
+        let _dbg_s0_15: [i8; 16] = sensory_wave[0..16].try_into().unwrap();
+        let _dbg_s90_101: [i8; 12] = sensory_wave[90..102].try_into().unwrap();
 
         // --- MODULAÇÃO DO SLOW BRAIN (System 2 sussurra pro System 1) ---
         // 8 outputs: aggression, throttle_cap, risk_damp, steer_bias, brake_anticip,
@@ -1069,6 +1076,14 @@ pub(super) fn update_racers(
         let mut physical_throttle = racer.memory[0];
         let physical_steer = racer.memory[1]; // Sem trava de volante! Foco total nas curvas
         let physical_brake = racer.memory[2];
+
+        // TEMP DEBUG: loga primeiro racer a cada 30 ticks
+        let _dbg_gticks = racer.grace_ticks;
+        if _dbg_gticks < 180 && _dbg_gticks % 30 == 0 {
+            eprintln!("[DBG {}] t={} i=[{:.2},{:.2},{:.2}] sp={:.2} s0-15={:?} s90-101={:?}",
+                racer.name, _dbg_gticks, _dbg_intent0, _dbg_intent1, _dbg_intent2,
+                speed, _dbg_s0_15, _dbg_s90_101);
+        }
 
         // --- DIAGNÓSTICO: SNAPSHOT DO CÉREBRO (~2Hz) ---
         // Captura entradas/saídas e atenuações para dump posterior nos reports.
