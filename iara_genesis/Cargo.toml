@@ -1,0 +1,11 @@
+[package]
+name = "iara_genesis"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+description = "Compressão inteligente de DNA — matemática, neurônios e semântica"
+
+# Zero deps pesadas — matemática pura + std
+[dependencies]
+
+[dev-dependencies]
