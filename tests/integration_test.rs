@@ -40,8 +40,8 @@ fn test_bitlinear_inference() {
     
     // Calculation for out[0]: (10*1) + (20*-1) + (30*0) + (40*1) = 10 - 20 + 0 + 40 = 30
     // Result scaled by weight_scale (abs_mean of full_weights = 0.75)
-    // 30 * 0.75 = 22.5
+    // 30 * 0.75 / 127.0 (norm_factor) = 0.17716535
     
-    assert!((output[0] - 22.5).abs() < 1e-5);
+    assert!((output[0] - (22.5 / 127.0)).abs() < 1e-5);
     println!("BitLinear Output: {:?}", output);
 }
