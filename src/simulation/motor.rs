@@ -73,12 +73,20 @@ fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
     }
     // A8: deriva lateral (66) → contra-steer
     bias[1] -= (inputs[66] as f32 / 127.0) * 0.10;
-    // A9: curvatura antecipada (78/79/80)
-    bias[1] -= (inputs[78] as f32 / 127.0) * 0.08;
-    bias[1] -= (inputs[79] as f32 / 127.0) * 0.15;
-    bias[1] -= (inputs[80] as f32 / 127.0) * 0.06;
-    // A10: lane offset (81) — valor positivo = fora da linha → corrige centralizando
-    bias[1] += (inputs[81] as f32 / 127.0) * 0.08;
+    // A9: curvatura antecipada (78/79/80). FIX v3: sinal estava invertido.
+    // cross(forward, flow_ahead) xz-plane: + = curva à DIREITA. Steer + = direita.
+    // v4: boost coeffs 0.08/0.18/0.06 → 0.20/0.40/0.25 pra romper plateau do 1º corner
+    // (330m). Lookahead 10/25/50m cria steering preditivo em vez de reativo.
+    bias[1] += (inputs[78] as f32 / 127.0) * 0.20;
+    bias[1] += (inputs[79] as f32 / 127.0) * 0.32;  // v5: 0.40→0.32 (menos overshoot)
+    bias[1] += (inputs[80] as f32 / 127.0) * 0.25;
+    // v5: pre-brake só em curva SEVERA (threshold) em vez de proporcional sempre.
+    let curv_mag = ((inputs[79] as f32).abs() + (inputs[80] as f32).abs()) / 254.0;
+    bias[0] -= curv_mag * 0.10; // v5: 0.25→0.10 (não mata throttle no ápice)
+    // A10: lane offset (81) — valor positivo = mais espaço à direita ⇒ estou à ESQUERDA ⇒
+    // preciso virar pra DIREITA = steer positivo. Coef boostado 0.08→0.22 (v2) pra virar
+    // o sinal primário de centralização em pistas narrow.
+    bias[1] += (inputs[81] as f32 / 127.0) * 0.22;
     // A11: urgência de colisão (82) → freia + corta motor
     bias[2] += (inputs[82] as f32 / 127.0) * 0.20;
     bias[0] -= (inputs[82] as f32 / 127.0) * 0.12;
@@ -88,8 +96,8 @@ fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
     // A13: parede memória L/R (85/86)
     bias[1] += (inputs[85] as f32 / 127.0) * 0.12;
     bias[1] -= (inputs[86] as f32 / 127.0) * 0.12;
-    // A14: slip angle (87) → contra-volante
-    bias[1] += (inputs[87] as f32 / 127.0) * 0.08;
+    // A14: slip angle (87) → contra-volante. v5: 0.08→0.20 (estabilizar saída de curva).
+    bias[1] += (inputs[87] as f32 / 127.0) * 0.20;
     // A15: proximidade sustentada (88) → corta throttle
     if inputs[88] > WALL_T {
         bias[0] -= 0.12;
@@ -118,6 +126,17 @@ fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
     // A18: gaze tracker (98..101) → fóvea aponta pra onde há pista aberta
     let gaze: i32 = (98..102).map(|i| inputs[i] as i32).sum();
     bias[1] += (gaze as f32 / (127.0 * 4.0)) * 0.25;
+
+    // A19 (v6): ANTI-STALL. NET max 1172m → cars dying SBLD no último trecho.
+    // Quando velocidade baixa E curv baixo E retina sem parede central → commit throttle.
+    // ch 65 = speed*2 clamped (sensory_wave motor.rs:505). Curv mag derivada acima.
+    let speed_norm = inputs[65] as f32 / 127.0;
+    let wall_center_sum: i32 = (44..52).map(|i| (inputs[i] as i32).max(0)).sum();
+    let wall_center_norm = (wall_center_sum as f32 / (127.0 * 8.0)).min(1.0);
+    if speed_norm < 0.40 && curv_mag < 0.20 && wall_center_norm < 0.25 {
+        bias[0] += 0.30;   // throttle push
+        bias[2] -= 0.20;   // reduce brake
+    }
 
     bias
 }
@@ -877,13 +896,6 @@ pub(super) fn update_racers(
         // Removido survival_throttle 0.3 mínimo: tirava pressão seletiva sobre aprender throttle.
         let neural_throttle = intent[0].clamp(-1.0, 1.0);
         let base_pedal = ((neural_throttle + 1.0) * 0.5).clamp(0.0, 1.0); // Remap [-1,1] → [0,1]
-        let _dbg_intent0 = intent[0];
-        let _dbg_intent1 = intent[1];
-        let _dbg_intent2 = intent[2];
-        let _dbg_base_pedal = base_pedal;
-        let _dbg_s64 = sensory_wave[64];
-        let _dbg_s0_15: [i8; 16] = sensory_wave[0..16].try_into().unwrap();
-        let _dbg_s90_101: [i8; 12] = sensory_wave[90..102].try_into().unwrap();
 
         // --- MODULAÇÃO DO SLOW BRAIN (System 2 sussurra pro System 1) ---
         // 8 outputs: aggression, throttle_cap, risk_damp, steer_bias, brake_anticip,
@@ -1076,14 +1088,6 @@ pub(super) fn update_racers(
         let mut physical_throttle = racer.memory[0];
         let physical_steer = racer.memory[1]; // Sem trava de volante! Foco total nas curvas
         let physical_brake = racer.memory[2];
-
-        // TEMP DEBUG: loga primeiro racer a cada 30 ticks
-        let _dbg_gticks = racer.grace_ticks;
-        if _dbg_gticks < 180 && _dbg_gticks % 30 == 0 {
-            eprintln!("[DBG {}] t={} i=[{:.2},{:.2},{:.2}] sp={:.2} s0-15={:?} s90-101={:?}",
-                racer.name, _dbg_gticks, _dbg_intent0, _dbg_intent1, _dbg_intent2,
-                speed, _dbg_s0_15, _dbg_s90_101);
-        }
 
         // --- DIAGNÓSTICO: SNAPSHOT DO CÉREBRO (~2Hz) ---
         // Captura entradas/saídas e atenuações para dump posterior nos reports.
@@ -1501,7 +1505,9 @@ pub(super) fn update_racers(
         racer.max_progress = racer.max_progress.max(racer.track_progress);
         if out_of_grace && !in_post_lap_grace {
             if racer.max_progress > prev_max + 0.01 {
-                if racer.max_progress > racer.progress_checkpoint + 2.0 {
+                // v2: checkpoint 2m→0.5m (stagnation zera com progresso fino, não só chunks grandes).
+                // Carros que vão lentamente mas avançam não morrem por STAG.
+                if racer.max_progress > racer.progress_checkpoint + 0.5 {
                     racer.progress_checkpoint = racer.max_progress;
                     racer.stagnation = 0.0;
                 } else {
@@ -1510,7 +1516,8 @@ pub(super) fn update_racers(
             } else {
                 racer.stagnation += 1.0;
             }
-            if racer.stagnation > 240.0 {
+            // v2: threshold 240→480 frames (~7.5s sim). Mais paciência pra cars em curva lenta.
+            if racer.stagnation > 480.0 {
                 racer.is_dead = true;
                 racer.death_reason = Some(crate::simulation::racer::DeathReason::Stagnation);
                 racer.death_frame = racer.grace_ticks;

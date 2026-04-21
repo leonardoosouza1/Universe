@@ -571,8 +571,10 @@ pub(super) fn evolution_pipeline(
         // Se 20 gens consecutivas não coroam, o campeão salvo provavelmente não é
         // replicável (foi lucky-spec de um trecho). Reduz o threshold 5%/gen após 20
         // gens sem coroação, permitindo que um "campeão pior mas CONSISTENTE" assuma.
-        if race.gens_since_crown >= 20 {
-            race.champion_distance *= 0.95;
+        // v6: 20→40 gens window, 0.95→0.98 decay. NET 1172m viable achievement,
+        // mas decay agressivo apaga campeões raros antes evolução reencontrá-los.
+        if race.gens_since_crown >= 40 {
+            race.champion_distance *= 0.98;
         }
 
         if let Some(best) = best_racer {
@@ -631,7 +633,7 @@ pub(super) fn evolution_pipeline(
                 race.gens_since_crown += 1;
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
-                    let decay_note = if race.gens_since_crown >= 20 { " [THRESHOLD EM DECAY -5%/gen]" } else { "" };
+                    let decay_note = if race.gens_since_crown >= 40 { " [THRESHOLD EM DECAY -2%/gen]" } else { "" };
                     let _ = writeln!(file, "📉 Geração fraca ({:.1}m vs campeão {:.1}m) — DNA PRESERVADO (gens sem coroar: {}){}", this_gen_best_dist, race.champion_distance, race.gens_since_crown, decay_note);
                 }
             }

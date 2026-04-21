@@ -45,12 +45,15 @@ fn build_priming_weights() -> Vec<f32> {
     // Periférica bins (uniforme, 4 px cada): 8=px32-35 ... 15=px60-63.
     // Bins 8-9 = esquerda extremo/lateral. Bins 14-15 = direita. 10-13 = centro.
     //
-    // A1: Wall à esquerda (perif bin 8, 9) → vira à DIREITA (positivo)
-    weights[1 * 128 + 8] = 18.0;
-    weights[1 * 128 + 9] = 14.0;
+    // A1: Wall à esquerda (perif bin 8, 9) → vira à DIREITA (positivo).
+    // Magnitudes ATENUADAS (v2): era ±18/14, causava zig-zag brutal em pista 14m
+    // (perif sempre vê wall 4-7m → priming dominava lane_offset). Agora é reflexo
+    // fino, lane_offset A10 (ch 81) é o sinal primário de centralização.
+    weights[1 * 128 + 8] = 6.0;
+    weights[1 * 128 + 9] = 4.0;
     // A2: Wall à direita (perif bin 14, 15) → vira à ESQUERDA (negativo)
-    weights[1 * 128 + 14] = -14.0;
-    weights[1 * 128 + 15] = -18.0;
+    weights[1 * 128 + 14] = -4.0;
+    weights[1 * 128 + 15] = -6.0;
     // A3: Alinhamento com fluxo (canal 64) → acelera (magnitude alta p/ sobrepor pooling sparse)
     weights[0 * 128 + 64] = 12.0;
     // A4: Parede no centro periférica (apenas bin 11, 12 = centro exato) → corta throttle LEVE.
@@ -76,12 +79,16 @@ fn build_priming_weights() -> Vec<f32> {
     // Dark_center (90-93) já guia steering via centroide angular do road.
     // A8: Deriva lateral (66) → contra-steer
     weights[1 * 128 + 66] = -5.0;
-    // A9: Curvatura antecipada (78/79/80)
-    weights[1 * 128 + 78] = -6.0;
-    weights[1 * 128 + 79] = -10.0;
-    weights[1 * 128 + 80] = -4.0;
-    // A10: Lane offset (81) → centraliza
-    weights[1 * 128 + 81] = 4.0;
+    // A9: Curvatura antecipada (78/79/80).
+    // cross(forward, flow_ahead) em xz-plane: POSITIVO = flow vira à DIREITA.
+    // Steer out 1: positivo = RIGHT. Logo sinal deve ser +, não -. FIX v3.
+    weights[1 * 128 + 78] = 6.0;
+    weights[1 * 128 + 79] = 10.0;
+    weights[1 * 128 + 80] = 4.0;
+    // A10: Lane offset (81) → centraliza. BOOST (v2): 4→12, agora sinal
+    // primário de steering em reta. Lane offset é relativo (centro) e imune
+    // ao ruído de perif "sempre vejo parede".
+    weights[1 * 128 + 81] = 12.0;
     // A11: Urgência de colisão (82) → freia + corta motor
     weights[2 * 128 + 82] = 10.0;
     weights[0 * 128 + 82] = -6.0;
