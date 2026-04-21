@@ -25,7 +25,7 @@ use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-use universe::evolution::dna::{
+use universe::evolution::dna_genesis::{
     load_champion_dna, save_champion_dna, DnaPayload, DNA_FAST_SIZE, DNA_SLOW_SIZE,
 };
 

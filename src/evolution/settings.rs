@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use std::collections::VecDeque;
-use super::dna::{EliteDna, MorphoGenes, HypernetSeed};
+use super::dna_genesis::{EliteDna, MorphoGenes, HypernetSeed};
 
 pub const FITNESS_HISTORY_CAP: usize = 100;
 

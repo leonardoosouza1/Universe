@@ -5,7 +5,7 @@ use crate::config::UniverseConfig;
 use rand::prelude::*;
 use std::io::Write;
 
-use super::dna::{EliteDna, MorphoGenes, HypernetSeed, load_champion_dna};
+use super::dna_genesis::{EliteDna, MorphoGenes, HypernetSeed, load_champion_dna};
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 
@@ -181,8 +181,9 @@ pub fn spawn_swarm(
 
     // Mutation rate com decay exponencial por geração: convergência gradual.
     // Floor em 0.005 mantém exploração residual mesmo após 100+ gerações.
+    // v9: floor 0.005→0.012 pra sustentar exploração após 100+ gens.
     let effective_mutation_rate = (dev.mutation_rate * 0.97_f32.powi(race.generation as i32 - 1))
-        .max(0.005) as f64;
+        .max(0.012) as f64;
 
     // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     if current_best_w.is_none() {
@@ -583,7 +584,7 @@ pub fn spawn_swarm(
         // Fitness usa NET progress (track_progress - spawn_progress), então carros
         // que nasceram na curva e sobreviveram 30m PROVARAM habilidade de curva.
         // Isso quebra o platô deceptivo de "só reta dá fitness alto".
-        const GRID_SPAWNS: usize = 30;
+        const GRID_SPAWNS: usize = 30; // rollback v7 (grid 50 regressed)
         let (spawn_pos, spawn_rot, spawn_progress) = if i < GRID_SPAWNS {
             // Grid tradicional na largada (grade 2 colunas × 15 fileiras).
             // Mantém a largura original (~6m) pra caber na pista; ocupa mais profundidade

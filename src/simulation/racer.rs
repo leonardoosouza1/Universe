@@ -192,8 +192,8 @@ pub struct Racer {
     pub perceived_rivals: [f32; 6],
     // --- Tier 6.3 LITE: morphological co-evolution (body params do DNA) ---
     /// Genes corporais (massa, wheelbase, downforce, grip_mult) carregados do DNA no spawn.
-    /// Por ora apenas ARMAZENADOS — wiring físico em follow-up. Ver `crate::evolution::dna::MorphoGenes`.
-    pub morpho: crate::evolution::dna::MorphoGenes,
+    /// Por ora apenas ARMAZENADOS — wiring físico em follow-up. Ver `crate::evolution::dna_genesis::MorphoGenes`.
+    pub morpho: crate::evolution::dna_genesis::MorphoGenes,
 }
 
 /// Frame de diagnóstico do cérebro do racer.

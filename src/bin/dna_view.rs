@@ -2,7 +2,7 @@
 // Uso: cargo run --release --bin dna_view [CAMINHO.dna]
 // Default: ./CHAMPION.dna
 
-use universe::evolution::dna::{load_champion_dna, DNA_FAST_SIZE, DNA_SLOW_SIZE};
+use universe::evolution::dna_genesis::{load_champion_dna, DNA_FAST_SIZE, DNA_SLOW_SIZE};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -28,6 +28,20 @@ fn main() {
     println!("  fast_scale    : {:.6}", dna.fast_scale);
     println!("  slow_scale    : {:.6}", dna.slow_scale);
     println!();
+
+    if dna.version >= 4 {
+        let sw = dna.slow_weights.as_deref().unwrap_or(&[]);
+        let report = iara_genesis::tlv::compression_report(&dna.fast_weights, sw, dna.generation, dna.fitness);
+        println!("─────────────────────────────────────────────────────────────────");
+        println!("🚀 V4 GENERATIVE COMPRESSION");
+        println!("  codec base    : {}", report.codec_used);
+        println!("  ratio final   : {:.1}:1 ({} bytes originais → {} bytes V4)", report.ratio, report.original_size, report.compressed_size);
+        println!("  fidelid. fast : {:.1}%", report.fast_accuracy * 100.0);
+        println!("  fidelid. slow : {:.1}%", report.slow_accuracy * 100.0);
+        println!("  tree splines  : {} corrections", report.tree_corrections);
+        println!("─────────────────────────────────────────────────────────────────");
+        println!();
+    }
 
     dump_layer("INSTINCT FAST (128 inputs × 64 neurons)", &dna.fast_weights, 128, 64, DNA_FAST_SIZE);
 

@@ -1,12 +1,13 @@
 use bevy::prelude::*;
 
 pub mod dna;
+pub mod dna_genesis;
 pub mod logs;
 pub mod pipeline;
 pub mod settings;
 pub mod spawn;
 
-pub use dna::{
+pub use dna_genesis::{
     EliteDna, DnaPayload,
     DNA_MAGIC, DNA_VERSION, DNA_FAST_SIZE, DNA_SLOW_SIZE, DNA_HEADER_SIZE, DNA_V3_TOTAL,
     save_champion_dna, load_champion_dna,

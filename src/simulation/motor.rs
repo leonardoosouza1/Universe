@@ -127,16 +127,9 @@ fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
     let gaze: i32 = (98..102).map(|i| inputs[i] as i32).sum();
     bias[1] += (gaze as f32 / (127.0 * 4.0)) * 0.25;
 
-    // A19 (v6): ANTI-STALL. NET max 1172m → cars dying SBLD no último trecho.
-    // Quando velocidade baixa E curv baixo E retina sem parede central → commit throttle.
-    // ch 65 = speed*2 clamped (sensory_wave motor.rs:505). Curv mag derivada acima.
-    let speed_norm = inputs[65] as f32 / 127.0;
-    let wall_center_sum: i32 = (44..52).map(|i| (inputs[i] as i32).max(0)).sum();
-    let wall_center_norm = (wall_center_sum as f32 / (127.0 * 8.0)).min(1.0);
-    if speed_norm < 0.40 && curv_mag < 0.20 && wall_center_norm < 0.25 {
-        bias[0] += 0.30;   // throttle push
-        bias[2] -= 0.20;   // reduce brake
-    }
+    // A19 REVERTIDO v6b: testado em 200 gens — champion peak 621m vs v5 736m.
+    // Anti-stall forçava throttle em estados pós-curva que não deveriam acelerar.
+    // Decay window 20→40 e rate 0.95→0.98 MANTIDOS (pipeline.rs).
 
     bias
 }
@@ -920,7 +913,11 @@ pub(super) fn update_racers(
         let cortisol_steer_mult = 1.0 - cortisol * 0.2;
         let pedal_intent = (base_pedal * (1.0 + aggression * 0.5) * cortisol_throttle_mult)
             .clamp(0.0, throttle_cap);
-        let steer_raw = ((intent[1].clamp(-1.0, 1.0)) + steer_bias + line_hint) * cortisol_steer_mult;
+        let steer_raw_unclamped = ((intent[1].clamp(-1.0, 1.0)) + steer_bias + line_hint) * cortisol_steer_mult;
+        // v8: smoothing temporal via prev_steer_mem (memory[1] snapshot).
+        // Combate saturação ±1 winner-take-all alternada frame a frame.
+        let prev_steer_mem = racer.memory[1];
+        let steer_raw = prev_steer_mem * 0.65 + steer_raw_unclamped.clamp(-1.0, 1.0) * 0.35;
         let steer_intent = steer_raw.clamp(-1.0, 1.0) * (1.0 - risk_damp);
 
         // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2)
@@ -1065,6 +1062,9 @@ pub(super) fn update_racers(
             }
         }
 
+        racer.memory[0] = pedal_intent;
+        racer.memory[1] = steer_raw; // v8: RNN state; lido via ch121/slow23
+        racer.memory[2] = brake_intent;
         racer.memory[3] = shift_up_intent;
         racer.memory[4] = shift_down_intent;
 
