@@ -5,7 +5,10 @@ edition = "2024"
 rust-version = "1.85.0"
 description = "Compressão inteligente de DNA — matemática, neurônios e semântica"
 
-# Zero deps pesadas — matemática pura + std
+# Zero deps pesadas — matemática pura + std (exceto conversão neural offline)
 [dependencies]
+faer = "0.19.4"
+half = { version = "2.4.1", features = ["bytemuck"] }
+bytemuck = { version = "1.19.0", features = ["derive"] }
 
 [dev-dependencies]
