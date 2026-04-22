@@ -84,6 +84,7 @@ fn main() {
         global_best_position: None,
         champion_distance: 0.0,
         elite_pool: Vec::new(),
+        elite_clusters: Vec::new(),
         champion_path: Vec::new(),
         champion_net_dist: 0.0,
         gens_since_crown: 0,

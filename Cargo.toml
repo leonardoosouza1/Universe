@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "iara_genesis"]
+
 [package]
 name = "universe"
 version = "0.2.0"
@@ -6,6 +9,7 @@ rust-version = "1.85.0" # Versão estável em 2026
 default-run = "universe"
 
 [dependencies]
+iara_genesis = { path = "iara_genesis" }
 bevy = { version = "0.16.0", default-features = false, features = [
     "bevy_pbr",
     "bevy_render",

@@ -79,6 +79,73 @@ impl SensoryPreFilter {
     }
 }
 
+/// KAN output head — per-output B-spline on raw action logits.
+/// WHY: substitui clamp duro no throttle/steer/brake (que produz zig-zag ±1 saturado)
+/// por curva suave aprendível. Inputs esperados em [-2, 2] (pré-clamp); outputs em [-1, 1].
+pub const KAN_OUT_KNOTS: usize = 12;
+pub const KAN_OUT_DOMAIN: f32 = 2.0; // domínio [-DOMAIN, +DOMAIN]
+
+#[derive(Clone, Debug)]
+pub struct KanOutputHead {
+    /// Ordem: [throttle, steer, brake] × KAN_OUT_KNOTS nós cada.
+    pub knots: [[f32; KAN_OUT_KNOTS]; 3],
+}
+
+impl KanOutputHead {
+    /// Default identity-like: knots linearmente espalhados + sigmoid suave no extremo.
+    pub fn new() -> Self {
+        let mut knots = [[0.0f32; KAN_OUT_KNOTS]; 3];
+        for out in 0..3 {
+            for k in 0..KAN_OUT_KNOTS {
+                // x em [-DOMAIN, +DOMAIN]
+                let t = (k as f32) / ((KAN_OUT_KNOTS - 1) as f32); // [0,1]
+                let x = -KAN_OUT_DOMAIN + t * (2.0 * KAN_OUT_DOMAIN);
+                // sigmoid suave mapeada em [-1, 1]: tanh(x * 0.9) aproxima identidade no meio
+                // e satura gradualmente nos extremos — elimina o "degrau" do clamp(±1).
+                knots[out][k] = (x * 0.9).tanh();
+            }
+        }
+        Self { knots }
+    }
+
+    /// Avalia spline linear-interpolado (B-spline grau 1) no output `out_idx` com input `x`.
+    /// Output sempre em [-1, 1].
+    #[inline]
+    pub fn eval(&self, out_idx: usize, x: f32) -> f32 {
+        let out_idx = out_idx.min(2);
+        // mapeia x em [-DOMAIN, +DOMAIN] pra índice [0, KAN_OUT_KNOTS-1]
+        let xc = x.clamp(-KAN_OUT_DOMAIN, KAN_OUT_DOMAIN);
+        let u = (xc + KAN_OUT_DOMAIN) / (2.0 * KAN_OUT_DOMAIN); // [0,1]
+        let fpos = u * ((KAN_OUT_KNOTS - 1) as f32);
+        let i0 = fpos.floor() as usize;
+        let i1 = (i0 + 1).min(KAN_OUT_KNOTS - 1);
+        let frac = fpos - (i0 as f32);
+        let a = self.knots[out_idx][i0];
+        let b = self.knots[out_idx][i1];
+        (a + (b - a) * frac).clamp(-1.0, 1.0)
+    }
+
+    /// Mutação leve dos knots — chamada pelo spawn.rs quando o filho herda a head.
+    /// `rate` = prob de perturbar cada knot; sigma fixo baixo (0.05) preserva suavidade.
+    pub fn mutate_spline_knots<R: FnMut() -> f32>(&mut self, mut rng01: R, rate: f32) {
+        // v11: sigma 0.05 → 0.025 (metade) pra reduzir drift cumulativo em 200+ gens.
+        let sigma = 0.025f32;
+        for out in 0..3 {
+            for k in 0..KAN_OUT_KNOTS {
+                if rng01() < rate {
+                    // Box-Muller barato via soma de 4 uniformes (std~0.58), escala por sigma.
+                    let u: f32 = (0..4).map(|_| rng01() - 0.5).sum();
+                    self.knots[out][k] = (self.knots[out][k] + u * sigma).clamp(-1.0, 1.0);
+                }
+            }
+        }
+    }
+}
+
+impl Default for KanOutputHead {
+    fn default() -> Self { Self::new() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

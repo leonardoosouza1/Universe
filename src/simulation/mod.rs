@@ -2,8 +2,10 @@ use bevy::prelude::*;
 
 pub mod racer;
 pub mod motor;
+pub mod racing_line;
 
 pub use racer::{Racer, PainSynapse, Skidmark};
+pub use racing_line::RacingLine;
 
 pub struct RacerPlugin;
 

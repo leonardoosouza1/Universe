@@ -24,6 +24,10 @@ pub struct RaceSettings {
     pub global_best_position: Option<Vec3>,
     pub champion_distance: f32,  // Distância do DNA salvo em CHAMPION.dna (só muda quando DNA é coroado)
     pub elite_pool: Vec<EliteDna>,  // Top-5 DNAs da última geração (tournament pool)
+    // Niching: cluster id paralelo a elite_pool (mesmo índice). Populado por
+    // evolution_pipeline após clustering por BehaviorFingerprint (Hamming ≤ 8).
+    // Usado por spawn.rs em tournament para rejeitar pares do mesmo cluster.
+    pub elite_clusters: Vec<usize>,
     pub champion_path: Vec<Vec3>,   // Traçado do último campeão (spawn → última posição)
     pub champion_net_dist: f32,     // Distância NET do último campeão (para label do traçado)
     pub gens_since_crown: u32,      // Gens consecutivas sem coroar — destrava threshold se > N

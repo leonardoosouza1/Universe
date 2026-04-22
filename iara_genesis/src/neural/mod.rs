@@ -5,3 +5,4 @@
 
 pub mod autoencoder;
 pub mod codebook;
+pub mod svd;

@@ -4,8 +4,43 @@ use crate::world::{VoxelWorld, VoxelWorldResource};
 use crate::environment::EnvironmentalState;
 use crate::config::UniverseConfig;
 use crate::SimulationEntity;
+use iara_genesis::codec::semantic::BehaviorFingerprint;
 
 use super::dna_genesis::{EliteDna, save_champion_dna_full, apply_catastrophic_scars, decay_scars};
+
+// Fitness-sharing niching threshold: parents/elites with Hamming distance
+// > NICHE_DISTANCE on their 64-bit BehaviorFingerprint are considered
+// different behavioral clusters. 8/64 = 12.5% disagreement — empirically
+// tight enough to split genuinely different strategies but loose enough to
+// group minor mutations of the same lineage.
+// v14: tentou 10, piorou (tudo 1 cluster). Revertido pra 8.
+pub(super) const NICHE_DISTANCE: u32 = 8;
+
+/// Clusters elites by Hamming distance on BehaviorFingerprint.
+/// Returns (cluster_id_per_elite, cluster_size_per_elite).
+/// Greedy single-pass: elite joins the first existing cluster whose
+/// representative is within NICHE_DISTANCE, otherwise opens a new one.
+pub(super) fn cluster_elites(elites: &[EliteDna]) -> (Vec<usize>, Vec<usize>) {
+    let fps: Vec<BehaviorFingerprint> = elites.iter()
+        .map(|e| BehaviorFingerprint::from_weights(&e.fast_weights))
+        .collect();
+    let mut reps: Vec<BehaviorFingerprint> = Vec::new();
+    let mut ids: Vec<usize> = Vec::with_capacity(elites.len());
+    for fp in fps.iter() {
+        let mut found: Option<usize> = None;
+        for (i, r) in reps.iter().enumerate() {
+            if fp.distance(r) <= NICHE_DISTANCE { found = Some(i); break; }
+        }
+        match found {
+            Some(i) => ids.push(i),
+            None => { reps.push(*fp); ids.push(reps.len() - 1); }
+        }
+    }
+    let mut sizes = vec![0usize; reps.len()];
+    for &id in ids.iter() { sizes[id] += 1; }
+    let per_elite: Vec<usize> = ids.iter().map(|&id| sizes[id]).collect();
+    (ids, per_elite)
+}
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 use super::spawn::spawn_swarm;
@@ -306,6 +341,8 @@ pub(super) fn evolution_pipeline(
                 curiosity_mean: r.engine.metabolism.mean_curiosity(),
                 // Tier 6.3 LITE: propaga morpho genes do racer vivo pra elite pool.
                 morpho: r.morpho,
+                // v11: captura knots do KAN output head pra inheritance entre gens.
+                kan_knots: r.kan_out.knots,
             };
             if race.elite_pool.len() < 10 {
                 race.elite_pool.push(candidate);
@@ -320,8 +357,35 @@ pub(super) fn evolution_pipeline(
                 }
             }
         }
-        // Re-sort pool desc por fitness (slot 0 = melhor de todos os tempos).
-        race.elite_pool.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        // --- FITNESS-SHARING NICHING (behavioral fingerprint) ---
+        // Cluster the merged pool by 64-bit BehaviorFingerprint Hamming distance
+        // (≤ NICHE_DISTANCE = same niche). Divide raw fitness by cluster size before
+        // sorting for elitism: a lone explorer with fitness 10k beats a 3-clone
+        // dominant strategy at 12k each (12k/3 = 4k). Prevents convergence to a
+        // single genotype and preserves alternate strategies for future crossover.
+        let (_pre_ids, pre_sizes) = cluster_elites(&race.elite_pool);
+        let mut order: Vec<usize> = (0..race.elite_pool.len()).collect();
+        order.sort_by(|&i, &j| {
+            let fi = race.elite_pool[i].fitness / pre_sizes[i].max(1) as f32;
+            let fj = race.elite_pool[j].fitness / pre_sizes[j].max(1) as f32;
+            fj.partial_cmp(&fi).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let reordered: Vec<EliteDna> = order.iter().map(|&i| race.elite_pool[i].clone()).collect();
+        race.elite_pool = reordered;
+        // Re-cluster after reorder so cluster ids correspond to the new positions
+        // (spawn.rs reads race.elite_clusters in tournament rejection sampling).
+        let (ids_post, sizes_post) = cluster_elites(&race.elite_pool);
+        race.elite_clusters = ids_post;
+        let cluster_count = sizes_post.iter().copied().max().map(|_| {
+            let mut seen = std::collections::BTreeSet::new();
+            for &c in race.elite_clusters.iter() { seen.insert(c); }
+            seen.len()
+        }).unwrap_or(0);
+        let largest_cluster_size = sizes_post.iter().copied().max().unwrap_or(0);
+        // Telemetry — small one-line stderr log per generation (parallel to the
+        // existing println! GEN summary). Concise so it can be grepped easily.
+        eprintln!("[NICHE] gen={} pool={} clusters={} largest={} thr={}",
+            race.generation, race.elite_pool.len(), cluster_count, largest_cluster_size, NICHE_DISTANCE);
 
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
         if let Some(mut file) = open_report_log() {

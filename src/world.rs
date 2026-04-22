@@ -20,6 +20,9 @@ pub struct VoxelWorld {
     pub waypoints_world: Vec<Vec2>,      // Waypoints já em coordenadas de mundo (x,z)
     pub waypoint_arcs: Vec<f32>,         // Arco cumulativo por waypoint (arcs[i] = comprimento de wp[0] até wp[i])
     pub start_progress: f32,             // Arc-length da start_pos projetada (cacheado em new() — constante)
+    /// Ideal racing line (outside-in-outside, precomputed once per track).
+    /// Used to feed sensor channels 108/109/110 (lateral offset, derivative, lookahead).
+    pub racing_line: crate::simulation::racing_line::RacingLine,
 }
 
 impl VoxelWorld {
@@ -160,6 +163,13 @@ impl VoxelWorld {
                 i, waypoints_world[i].x, waypoints_world[i].y, seg_len, turn_deg, tag);
         }
 
+        // Precompute ideal racing line (outside-in-outside). Built once per
+        // track — this is the teacher signal for channels 108/109/110.
+        let racing_line = crate::simulation::racing_line::RacingLine::from_centerline(
+            &waypoints_world,
+            track_width,
+        );
+
         Self {
             size, grid, flow, height_map, banking, cell_size,
             start_pos,
@@ -167,6 +177,7 @@ impl VoxelWorld {
             waypoints_world,
             waypoint_arcs,
             start_progress,
+            racing_line,
         }
     }
 
@@ -739,6 +750,7 @@ impl Default for VoxelWorld {
             waypoints_world: Vec::new(),
             waypoint_arcs: Vec::new(),
             start_progress: 0.0,
+            racing_line: crate::simulation::racing_line::RacingLine::default(),
         }
     }
 }

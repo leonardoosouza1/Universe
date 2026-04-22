@@ -194,6 +194,9 @@ pub struct Racer {
     /// Genes corporais (massa, wheelbase, downforce, grip_mult) carregados do DNA no spawn.
     /// Por ora apenas ARMAZENADOS — wiring físico em follow-up. Ver `crate::evolution::dna_genesis::MorphoGenes`.
     pub morpho: crate::evolution::dna_genesis::MorphoGenes,
+    // --- KAN output head: spline suave por output (throttle/steer/brake) ---
+    /// WHY: elimina zig-zag ±1 saturado do clamp duro; evoluído via mutate_spline_knots.
+    pub kan_out: crate::kan::KanOutputHead,
 }
 
 /// Frame de diagnóstico do cérebro do racer.

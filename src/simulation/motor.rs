@@ -40,7 +40,7 @@ pub fn time_dilation_metrics() -> (u64, u64) {
 ///   83,84   = fluxo óptico (A12)                    85,86  = parede memória L/R (A13)
 ///   87      = slip angle (A14)                      88     = proximity sustain (A15)
 ///   90..93  = dark-center tracker (A16)             94..97 = whiskers diagonais (A17)
-///   98..101 = gaze tracker (A18)
+///   98..101 = gaze tracker (A18)                  108 = racing-line offset (A21)
 fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
     let mut bias = [0.0f32; 64];
     const WALL_T: i8 = 40;  // ~0.31 normalizado — parede próxima mas não encostada
@@ -131,6 +131,26 @@ fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
     // Anti-stall forçava throttle em estados pós-curva que não deveriam acelerar.
     // Decay window 20→40 e rate 0.95→0.98 MANTIDOS (pipeline.rs).
 
+    // A20: drift commit — slip alto + curvatura alta à frente + velocidade mínima →
+    // compromete com throttle em vez de amarelar. Canais: 87 slip, |79|+|80|/254 curv, 65 speed.
+    let slip_abs = (inputs[87] as f32 / 127.0).abs();
+    let curv_mag_a20 = ((inputs[79] as f32).abs() + (inputs[80] as f32).abs()) / 254.0;
+    let speed_norm = (inputs[65] as f32 / 127.0).abs();
+    if slip_abs > 0.5 && curv_mag_a20 > 0.4 && speed_norm > 0.35 {
+        bias[0] += 0.18;
+        bias[2] -= 0.15;
+    }
+
+    // A21: racing line follow. Canal 108 = lateral offset signed (positivo =
+    // carro à ESQUERDA da linha ideal → precisa steer pra DIREITA pra fechar).
+    // Convenção casa com A10 (canal 81): positivo → bias[1] positivo (steer +right).
+    // Axiom decay (race.current_axiom_strength) é aplicado no call site, então
+    // aqui só semeamos o prior. v13: 0.35→0.20 (HOLE=5181 em v12, overcorrection
+    // pro apex puxava carro pra fora em curva fechada).
+    const CH_LINE: usize = 108;
+    let line_err = inputs[CH_LINE] as f32 / 127.0;
+    bias[1] += line_err * 0.20;
+
     bias
 }
 
@@ -153,6 +173,10 @@ pub(super) fn update_racers(
     mut meshes: ResMut<Assets<Mesh>>,
     mut skidmark_cache: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
     mut retina_tick_counter: Local<u32>,
+    // Cache of previous lateral-offset-from-racing-line per entity so the
+    // derivative channel (109) can be computed without extending Racer
+    // (spawn.rs is frozen by task constraints).
+    mut prev_line_offset: Local<HashMap<Entity, f32>>,
     mut gizmos: Gizmos,
 ) {
     // Rodando em FixedUpdate: dt = Time<Fixed>::delta = 1/64s constante. Bevy já
@@ -647,6 +671,34 @@ pub(super) fn update_racers(
         let lane_offset = (dist_r - dist_l) / lane_denom;
         sensory_wave[81] = (lane_offset * 127.0).clamp(-127.0, 127.0) as i8;
 
+        // --- RACING LINE SENSORS (canais 108/109/110) ---
+        // Teacher signal para a rede aprender a linha ideal (wide-apex-wide).
+        // 108 = lateral offset (m, signed, clamped to ±half_width, then scaled).
+        //       Positivo = carro à ESQUERDA da linha → precisa virar pra DIREITA.
+        // 109 = derivada do offset (offset anterior - atual). Positivo = fechando
+        //       a distância pra linha (bom). Codifica "tô corrigindo na direção certa".
+        // 110 = lookahead offset ~5m à frente na linha ideal. Anticipa turn-in
+        //       quando o offset instantâneo é 0 mas a linha já começou a curvar.
+        let pos2d = Vec2::new(pos.x, pos.z);
+        let fwd2d = Vec2::new(forward.x, forward.z);
+        let line_offset_m = if !world.racing_line.is_empty() {
+            world.racing_line.lateral_offset_from_line(pos2d, fwd2d)
+        } else { 0.0 };
+        let hw = world.racing_line.half_width.max(1.0);
+        let line_off_norm = (line_offset_m / hw).clamp(-1.0, 1.0);
+        sensory_wave[108] = (line_off_norm * 127.0).clamp(-127.0, 127.0) as i8;
+
+        let prev_off = prev_line_offset.get(&entity).copied().unwrap_or(line_offset_m);
+        // "offset anterior - atual": positivo quando o erro diminuiu neste tick.
+        let d_off = (prev_off - line_offset_m) / hw;
+        sensory_wave[109] = (d_off * 127.0 * 8.0).clamp(-127.0, 127.0) as i8; // gain 8x pq delta por tick é pequeno
+        prev_line_offset.insert(entity, line_offset_m);
+
+        let lookahead_m = if !world.racing_line.is_empty() {
+            world.racing_line.lookahead_offset(pos2d, 5.0)
+        } else { 0.0 };
+        sensory_wave[110] = ((lookahead_m / hw).clamp(-1.0, 1.0) * 127.0) as i8;
+
         // Canal 82: URGÊNCIA DE COLISÃO FRONTAL — speed / forward_wall_dist.
         // Alto = vou bater logo. Combina TTC inverso num único sinal [0..127].
         let fwd_probe = world.raycast(pos.x, pos.z, racer.phase, 30.0).max(0.5);
@@ -887,7 +939,9 @@ pub(super) fn update_racers(
 
         // Throttle 100% neural — rede tem que APRENDER a acelerar via priming A3 (flow alignment).
         // Removido survival_throttle 0.3 mínimo: tirava pressão seletiva sobre aprender throttle.
-        let neural_throttle = intent[0].clamp(-1.0, 1.0);
+        // KAN output head: spline suave por canal antes do clamp final — elimina saturação ±1
+        // hard do raw logit ([-2,2] esperado) e dá curva evoluível por carro.
+        let neural_throttle = racer.kan_out.eval(0, intent[0]);
         let base_pedal = ((neural_throttle + 1.0) * 0.5).clamp(0.0, 1.0); // Remap [-1,1] → [0,1]
 
         // --- MODULAÇÃO DO SLOW BRAIN (System 2 sussurra pro System 1) ---
@@ -913,15 +967,20 @@ pub(super) fn update_racers(
         let cortisol_steer_mult = 1.0 - cortisol * 0.2;
         let pedal_intent = (base_pedal * (1.0 + aggression * 0.5) * cortisol_throttle_mult)
             .clamp(0.0, throttle_cap);
-        let steer_raw_unclamped = ((intent[1].clamp(-1.0, 1.0)) + steer_bias + line_hint) * cortisol_steer_mult;
+        // KAN spline no steer raw ANTES do smoothing (v8) — suaviza curva por carro evoluído.
+        let steer_spline = racer.kan_out.eval(1, intent[1]);
+        let steer_raw_unclamped = (steer_spline + steer_bias + line_hint) * cortisol_steer_mult;
         // v8: smoothing temporal via prev_steer_mem (memory[1] snapshot).
         // Combate saturação ±1 winner-take-all alternada frame a frame.
         let prev_steer_mem = racer.memory[1];
-        let steer_raw = prev_steer_mem * 0.65 + steer_raw_unclamped.clamp(-1.0, 1.0) * 0.35;
+        let new_steer = steer_raw_unclamped.clamp(-1.0, 1.0);
+        let steer_raw = prev_steer_mem * 0.65 + new_steer * 0.35;
         let steer_intent = steer_raw.clamp(-1.0, 1.0) * (1.0 - risk_damp);
 
-        // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2)
-        let raw_brake = if intent[2] > 0.2 { ((intent[2] - 0.2) * 1.25).clamp(0.0, 1.0) } else { 0.0 };
+        // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2).
+        // KAN spline no brake raw antes do threshold — mesma razão do throttle/steer.
+        let brake_spline = racer.kan_out.eval(2, intent[2]);
+        let raw_brake = if brake_spline > 0.2 { ((brake_spline - 0.2) * 1.25).clamp(0.0, 1.0) } else { 0.0 };
         let combined_brake = (raw_brake + brake_anticip).clamp(0.0, 1.0);
         let brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
 

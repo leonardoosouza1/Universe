@@ -223,6 +223,24 @@ pub fn spawn_swarm(
         best_idx
     };
 
+    // Cluster-aware tournament p2 picker: runs standard tournament and rejects
+    // any candidate whose niching cluster matches p1's. After 5 failed attempts
+    // the fallback accepts a same-cluster parent (pool may be dominated by one
+    // niche early on — better to reproduce than stall). Cluster ids are parallel
+    // to race.elite_pool; truncated to effective_pool to stay within index range.
+    let pick_p2_diff_cluster = |pool: &[EliteDna], clusters: &[usize], p1: usize, rng: &mut rand::rngs::ThreadRng| -> usize {
+        let c1 = clusters.get(p1).copied().unwrap_or(usize::MAX);
+        for _ in 0..5 {
+            let cand = tournament(pool, rng);
+            if cand == p1 { continue; }
+            let cc = clusters.get(cand).copied().unwrap_or(usize::MAX);
+            if cc != c1 { return cand; }
+        }
+        // Fallback: same-cluster allowed after 5 rejections.
+        let cand = tournament(pool, rng);
+        if cand == p1 && pool.len() > 1 { (p1 + 1) % pool.len() } else { cand }
+    };
+
     // Helper: BLOCK-WISE crossover (Tier 4.1 — reproducao sexuada).
     // Troca blocos inteiros entre pais em vez de byte-a-byte. Preserva coerencia
     // funcional: cada bloco = linha de entrada de um neuronio (fast: 128 inputs →
@@ -286,9 +304,10 @@ pub fn spawn_swarm(
     // Estratégia: só age em canais críticos (mesma lista de antes) em todos os 3 outputs
     // (throttle/steer/brake). Outros canais ficam totalmente livres pra evolução.
     let gen_f = race.generation as f32;
-    // FIX: floor 0.15 permanente — antes decaia a 0 no gen 50, organismo perdia guia
-    // ANTES de completar volta, cenário 330m plateau eterno.
-    let mut axiom_strength = (1.0 - gen_f / 50.0).max(0.15);
+    // v15: floor 0.15 → 0.35. Gen 1 produziu 7 laps (priming ninja), evolução
+    // degrada após gen 50 (axiom 0.15 insuficiente). Floor alto mantém prior
+    // forte sem congelar evolução (65% espaço livre nos pesos).
+    let mut axiom_strength = (1.0 - gen_f / 50.0).max(0.35);
     if race.axiom_boost_counter > 0 {
         axiom_strength = axiom_strength.max(0.5);
     }
@@ -335,6 +354,11 @@ pub fn spawn_swarm(
     race.current_hypernet = current_best_hypernet;
 
     let pool_size = race.elite_pool.len();
+    // Snapshot niching clusters (parallel to elite_pool). Empty until pipeline
+    // populates it on first post-race pass; gen 0 spawn hits this before any
+    // clustering, so default is empty and pick_p2_diff_cluster degrades cleanly
+    // to standard tournament.
+    let elite_clusters: Vec<usize> = race.elite_clusters.clone();
 
     // Tier 4.2: acumula sample count de inheritance + soma para log agregado no final.
     let mut epi_inherited_count: usize = 0;
@@ -432,26 +456,36 @@ pub fn spawn_swarm(
                 // Pool efetivo: top-10 do elite_pool (ja ordenado por fitness).
                 let effective_pool = pool_size.min(10);
                 let p1 = tournament(&race.elite_pool[..effective_pool], &mut rng);
-                let parent_a_ref = &race.elite_pool[p1];
-                // Constroi pesos de preferencia sobre os outros candidatos
-                let mut weights_pref: Vec<f32> = Vec::with_capacity(effective_pool);
-                for j in 0..effective_pool {
-                    if j == p1 { weights_pref.push(0.0); continue; }
-                    let sim = species_similarity(&parent_a_ref.fast_weights, &race.elite_pool[j].fast_weights);
-                    let w = if sim > 0.7 { 0.7 } else { 0.3 };
-                    weights_pref.push(w);
-                }
-                let total_w: f32 = weights_pref.iter().sum();
-                let p2 = if total_w > 1e-6 {
-                    let mut target = rng.random_range(0.0..total_w);
-                    let mut pick = 0usize;
-                    for (j, &w) in weights_pref.iter().enumerate() {
-                        target -= w;
-                        if target <= 0.0 { pick = j; break; }
-                        pick = j;
+                // NICHING: p2 via cluster-aware rejection tournament (different
+                // BehaviorFingerprint cluster from p1, up to 5 attempts, fallback
+                // to same-cluster). If clusters not yet populated (gen 1 boot),
+                // fall back to legacy species-similarity mate preference.
+                let clusters_slice: &[usize] = if elite_clusters.len() >= effective_pool {
+                    &elite_clusters[..effective_pool]
+                } else { &[] };
+                let p2 = if !clusters_slice.is_empty() {
+                    pick_p2_diff_cluster(&race.elite_pool[..effective_pool], clusters_slice, p1, &mut rng)
+                } else {
+                    let parent_a_ref = &race.elite_pool[p1];
+                    let mut weights_pref: Vec<f32> = Vec::with_capacity(effective_pool);
+                    for j in 0..effective_pool {
+                        if j == p1 { weights_pref.push(0.0); continue; }
+                        let sim = species_similarity(&parent_a_ref.fast_weights, &race.elite_pool[j].fast_weights);
+                        let w = if sim > 0.7 { 0.7 } else { 0.3 };
+                        weights_pref.push(w);
                     }
-                    pick
-                } else if pool_size > 1 { (p1 + 1) % pool_size } else { p1 };
+                    let total_w: f32 = weights_pref.iter().sum();
+                    if total_w > 1e-6 {
+                        let mut target = rng.random_range(0.0..total_w);
+                        let mut pick = 0usize;
+                        for (j, &w) in weights_pref.iter().enumerate() {
+                            target -= w;
+                            if target <= 0.0 { pick = j; break; }
+                            pick = j;
+                        }
+                        pick
+                    } else if pool_size > 1 { (p1 + 1) % pool_size } else { p1 }
+                };
                 let parent_a = &race.elite_pool[p1];
                 let parent_b = &race.elite_pool[p2];
 
@@ -660,6 +694,39 @@ pub fn spawn_swarm(
                 perceived_rivals: [0.0; 6],
                 // Tier 6.3 LITE: morpho genes herdados/mutados conforme branch de reprodução.
                 morpho: morpho_this.sanitized(),
+                // v13 KAN output head: 5% injection (v12 10% → HOLE=5181 regression).
+                // Fresh heads untreinadas caíam do track. Mut rate 0.30→0.15.
+                kan_out: {
+                    let mut head = crate::kan::KanOutputHead::new();
+                    if !race.elite_pool.is_empty() {
+                        use rand::prelude::*;
+                        let mut local_rng = rand::rng();
+                        let pool_sz = race.elite_pool.len();
+                        if i == 0 && current_best_w.is_some() {
+                            head.knots = race.elite_pool[0].kan_knots;
+                        } else if local_rng.random::<f32>() < 0.05 {
+                            // INJEÇÃO DIVERSIDADE: 5% fresh head + mut moderada (v13).
+                            head.mutate_spline_knots(|| local_rng.random::<f32>(), 0.15);
+                        } else {
+                            // Blend 2 parents aleatórios + mut leve.
+                            let pa = local_rng.random_range(0..pool_sz);
+                            let pb = local_rng.random_range(0..pool_sz);
+                            let ka = &race.elite_pool[pa].kan_knots;
+                            let kb = &race.elite_pool[pb].kan_knots;
+                            for o in 0..3 {
+                                for k in 0..crate::kan::KAN_OUT_KNOTS {
+                                    head.knots[o][k] = if local_rng.random::<f32>() < 0.5 {
+                                        ka[o][k]
+                                    } else {
+                                        kb[o][k]
+                                    };
+                                }
+                            }
+                            head.mutate_spline_knots(|| local_rng.random::<f32>(), 0.04);
+                        }
+                    }
+                    head
+                },
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

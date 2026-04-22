@@ -146,6 +146,9 @@ pub struct EliteDna {
     pub curiosity_mean: f32,
     // --- Tier 6.3 LITE: morphological co-evolution (serializado em .dna v3.1) ---
     pub morpho: MorphoGenes,
+    /// v11: KAN output head knots (runtime-only, não serializa em .dna).
+    /// 3 outputs × KAN_OUT_KNOTS cada. Preserva spline aprendido entre gens.
+    pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; 3],
 }
 
 /// Marca ~SCAR_FRACTION dos pesos NÃO-ZERO em `fast_weights` com scar TTL.

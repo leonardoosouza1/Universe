@@ -47,3 +47,4 @@ pub mod codec;
 pub mod neural;
 pub mod model;
 pub mod tlv;
+pub mod universal;
