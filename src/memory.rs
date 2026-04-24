@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use crate::types::PotentialWell;
 use crate::layers::BitLinear;
+use crate::float_layers::FloatLinear;
 use crate::metabolism::EpisodicTrace;
 
 pub struct MultiverseSpiral {
@@ -73,7 +74,7 @@ impl MultiverseSpiral {
 ///
 /// Só processa episódios com |reward| > 0.1 (filtro saliência). Retorna o
 /// número de episódios realmente aplicados.
-pub fn consolidate_episodic(slow_brain: &mut BitLinear, episodes: &[EpisodicTrace]) -> usize {
+pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTrace]) -> usize {
     // SlowBrain::new() usa 32 inputs × 8 outputs. Sai silenciosamente se shape
     // for outro (defensivo — nada corrompido).
     if slow_brain.input_dim != 32 || slow_brain.output_dim != 8 {
@@ -121,10 +122,12 @@ pub fn consolidate_episodic(slow_brain: &mut BitLinear, episodes: &[EpisodicTrac
         }
     }
 
-    // Aplica delta aos pesos com clamp ternário {-1, 0, +1}.
+    // Aplica delta f32 aos pesos com clamp [-2, 2]. Scale baixo (0.01) para que
+    // múltiplos episódios não explodam magnitude; FloatLinear tolera valores
+    // contínuos (sem necessidade de saturação ternária).
+    const HEBB_LR: f32 = 0.01;
     for (w, d) in slow_brain.weights.iter_mut().zip(delta.iter()) {
-        let new_w = (*w as i32 + *d).clamp(-1, 1);
-        *w = new_w as i8;
+        *w = (*w + HEBB_LR * (*d as f32)).clamp(-2.0, 2.0);
     }
 
     applied
@@ -141,7 +144,7 @@ pub fn consolidate_episodic(slow_brain: &mut BitLinear, episodes: &[EpisodicTrac
 ///
 /// Retorna o total de aplicações acumuladas ao longo de todas as iterações.
 pub fn dream_rollout(
-    slow_brain: &mut BitLinear,
+    slow_brain: &mut FloatLinear,
     episodes: &[EpisodicTrace],
     iterations: usize,
 ) -> usize {

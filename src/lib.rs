@@ -2,6 +2,7 @@ pub mod engine;
 pub mod world;
 pub mod types;
 pub mod layers;
+pub mod float_layers;
 pub mod kan;
 pub mod resonance;
 pub mod cfc;

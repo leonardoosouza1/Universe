@@ -178,6 +178,9 @@ pub fn spawn_swarm(
     let mut current_best_morpho: MorphoGenes = MorphoGenes::default();
     // Tier 6.4 LITE: hypernet seed do champion DNA. Default = inactive (zero-cost).
     let mut current_best_hypernet: HypernetSeed = HypernetSeed::default();
+    // v3.3: kan_knots herdados do CHAMPION.dna (default = tanh ramp).
+    let mut current_best_kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; 3] =
+        crate::evolution::dna_genesis::default_kan_knots();
 
     // Mutation rate com decay exponencial por geração: convergência gradual.
     // Floor em 0.005 mantém exploração residual mesmo após 100+ gerações.
@@ -198,6 +201,8 @@ pub fn spawn_swarm(
             current_best_morpho = dna.morpho;
             // Tier 6.4 LITE: absorve hypernet seed (default inactive p/ arquivos antigos).
             current_best_hypernet = dna.hypernet;
+            // v3.3: absorve KAN knots (preserva spline aprendido entre runs).
+            current_best_kan_knots = dna.kan_knots;
             // Se o DNA foi treinado em outra seed/largura, loga aviso e descarta champion_distance
             // (senão o carro novo nunca consegue coroar num track diferente).
             if dna.version >= 3 {
@@ -208,6 +213,9 @@ pub fn spawn_swarm(
                     if let Some(mut file) = open_report_log() {
                         let _ = writeln!(file, "⚠️ CHAMPION.dna veio de outra pista (seed {} width {:.1}) — threshold resetado", dna.seed, dna.track_width);
                     }
+                } else if dna.generation > 0 {
+                    // Preserva progresso de axiom_strength decay (evita reset p/ gen=1 após reboot).
+                    race.generation = race.generation.max(dna.generation as _);
                 }
             }
         }
@@ -394,9 +402,10 @@ pub fn spawn_swarm(
                     engine.instinct_layer.weights[..n].copy_from_slice(&expanded[..n]);
                 }
                 if let Some(ref champion_slow) = current_best_slow_w {
-                    let exact_slow: Vec<f32> = champion_slow.iter().map(|&w| w as f32).collect();
-                    engine.slow_brain.layer.quantize(&exact_slow);
-                    engine.slow_brain.layer.set_scale(current_best_slow_s);
+                    // Option 4: i8 DNA → f32 FloatLinear weights (decode factor 63.5).
+                    let exact_slow: Vec<f32> = champion_slow.iter().map(|&w| w as f32 / 63.5).collect();
+                    engine.slow_brain.layer.set_weights(&exact_slow);
+                    let _ = current_best_slow_s;
                 }
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
@@ -421,9 +430,9 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = elite.fast_weights.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(elite.fast_scale);
-                let exact_slow: Vec<f32> = elite.slow_weights.iter().map(|&w| w as f32).collect();
-                engine.slow_brain.layer.quantize(&exact_slow);
-                engine.slow_brain.layer.set_scale(elite.slow_scale);
+                let exact_slow: Vec<f32> = elite.slow_weights.iter().map(|&w| w as f32 / 63.5).collect();
+                engine.slow_brain.layer.set_weights(&exact_slow);
+                let _ = elite.slow_scale;
                 // Tier 4.2: clone herda 10% do estado hormonal médio do único parent.
                 epigenetic_parents = Some((elite.cortisol_mean, elite.dopamine_mean, elite.curiosity_mean));
                 // Tier 6.3 LITE: clone herda morpho do elite + mutação leve.
@@ -444,9 +453,10 @@ pub fn spawn_swarm(
                 // canal 79 curvatura em 4.7%, era pra estar >30%).
                 engine.instinct_layer.set_scale(1.0);
                 // FIX: slow_brain também recebe priming diagonal pra sair do zero absoluto.
-                let slow_priming = build_slow_priming_weights();
-                engine.slow_brain.layer.quantize(&slow_priming);
-                engine.slow_brain.layer.set_scale(1.0);
+                // Option 4: FloatLinear — priming /3.0 porque ternarização saturava em ±1.
+                let slow_priming: Vec<f32> = build_slow_priming_weights()
+                    .into_iter().map(|w| w / 3.0).collect();
+                engine.slow_brain.layer.set_weights(&slow_priming);
             } else {
                 // Tier 4.1 — MATE PREFERENCE.
                 // Seleciona p1 via tournament (top pool). Escolhe p2 ponderando por
@@ -531,12 +541,19 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&mutated_fast);
                 engine.instinct_layer.set_scale((parent_a.fast_scale + parent_b.fast_scale) * 0.5);
 
+                // Option 4: FloatLinear slow — crossover in f32 space (decode /63.5), gaussian σ=0.02.
                 let crossed_slow = crossover_block(&parent_a.slow_weights, &parent_b.slow_weights, 32, &mut rng);
-                let mutated_slow: Vec<f32> = crossed_slow.into_iter().map(|w| {
-                    if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w }
-                }).collect();
-                engine.slow_brain.layer.quantize(&mutated_slow);
-                engine.slow_brain.layer.set_scale((parent_a.slow_scale + parent_b.slow_scale) * 0.5);
+                let mut mutated_slow: Vec<f32> = crossed_slow.into_iter().map(|w| w / 63.5).collect();
+                for w in mutated_slow.iter_mut() {
+                    if rng.random_bool(effective_mutation_rate) {
+                        // Box-Muller gaussian σ=0.02.
+                        let u1 = (rng.random::<f32>()).max(1e-7);
+                        let u2 = rng.random::<f32>();
+                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        *w = (*w + 0.02 * z).clamp(-2.0, 2.0);
+                    }
+                }
+                engine.slow_brain.layer.set_weights(&mutated_slow);
                 // Tier 4.2: herança hormonal MÉDIA dos 2 pais (reprodução sexuada).
                 let cort = (parent_a.cortisol_mean + parent_b.cortisol_mean) * 0.5;
                 let dopa = (parent_a.dopamine_mean + parent_b.dopamine_mean) * 0.5;
@@ -556,16 +573,16 @@ pub fn spawn_swarm(
         } else if let Some(ref best) = current_best_w {
             // Tier 6.3 LITE: fallback sem pool → herda morpho do champion (+ mutação leve se i>0).
             morpho_this = current_best_morpho;
-            if i != 0 { morpho_this.mutate(|| rng.random::<f32>()); }
+            if i >= 3 { morpho_this.mutate(|| rng.random::<f32>()); }
             // --- FALLBACK: DNA de CHAMPION.dna sem pool (primeira geração após boot) ---
-            if i == 0 {
+            // Slots 0,1,2 = clones exatos do champion (3x elitism buffer). Slots 3+ mutam.
+            if i < 3 {
                 let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
                 if let Some(ref best_slow) = current_best_slow_w {
-                    let exact_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32).collect();
-                    engine.slow_brain.layer.quantize(&exact_slow);
-                    engine.slow_brain.layer.set_scale(current_best_slow_s);
+                    let exact_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32 / 63.5).collect();
+                    engine.slow_brain.layer.set_weights(&exact_slow);
                 }
             } else {
                 let mut mutated: Vec<f32> = best.iter().enumerate().map(|(idx, &w)| {
@@ -577,11 +594,17 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&mutated);
                 engine.instinct_layer.set_scale(current_best_s);
                 if let Some(ref best_slow) = current_best_slow_w {
-                    let mutated_slow: Vec<f32> = best_slow.iter().map(|&w| {
-                        if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w as f32 }
-                    }).collect();
-                    engine.slow_brain.layer.quantize(&mutated_slow);
-                    engine.slow_brain.layer.set_scale(current_best_slow_s);
+                    // Option 4: f32 base + gaussian mutation σ=0.02.
+                    let mut mutated_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32 / 63.5).collect();
+                    for w in mutated_slow.iter_mut() {
+                        if rng.random_bool(effective_mutation_rate) {
+                            let u1 = (rng.random::<f32>()).max(1e-7);
+                            let u2 = rng.random::<f32>();
+                            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                            *w = (*w + 0.02 * z).clamp(-2.0, 2.0);
+                        }
+                    }
+                    engine.slow_brain.layer.set_weights(&mutated_slow);
                 }
             }
         } else {
@@ -591,10 +614,10 @@ pub fn spawn_swarm(
             let weights = build_priming_weights();
             engine.instinct_layer.quantize(&weights);
             engine.instinct_layer.set_scale(1.0);
-            // FIX: gen 0 sem DNA também prima slow brain.
-            let slow_priming = build_slow_priming_weights();
-            engine.slow_brain.layer.quantize(&slow_priming);
-            engine.slow_brain.layer.set_scale(1.0);
+            // FIX: gen 0 sem DNA também prima slow brain (Option 4: f32, /3.0 damp).
+            let slow_priming: Vec<f32> = build_slow_priming_weights()
+                .into_iter().map(|w| w / 3.0).collect();
+            engine.slow_brain.layer.set_weights(&slow_priming);
         }
 
         // Tier 4.2: seeda metabolismo do filho com 10% do estado hormonal do(s) parent(s).
@@ -698,7 +721,18 @@ pub fn spawn_swarm(
                 // Fresh heads untreinadas caíam do track. Mut rate 0.30→0.15.
                 kan_out: {
                     let mut head = crate::kan::KanOutputHead::new();
-                    if !race.elite_pool.is_empty() {
+                    // Fallback (pool vazio, CHAMPION.dna carregado): slot 0 usa knots do DNA;
+                    // outros slots herdam + mutação moderada p/ diversidade.
+                    if race.elite_pool.is_empty() {
+                        if current_best_w.is_some() {
+                            head.knots = current_best_kan_knots;
+                            if i >= 3 {
+                                use rand::prelude::*;
+                                let mut local_rng = rand::rng();
+                                head.mutate_spline_knots(|| local_rng.random::<f32>(), 0.15);
+                            }
+                        }
+                    } else {
                         use rand::prelude::*;
                         let mut local_rng = rand::rng();
                         let pool_sz = race.elite_pool.len();

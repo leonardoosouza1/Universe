@@ -969,7 +969,15 @@ pub(super) fn update_racers(
             .clamp(0.0, throttle_cap);
         // KAN spline no steer raw ANTES do smoothing (v8) — suaviza curva por carro evoluído.
         let steer_spline = racer.kan_out.eval(1, intent[1]);
-        let steer_raw_unclamped = (steer_spline + steer_bias + line_hint) * cortisol_steer_mult;
+        // Gain compensation: cérebro fala em "unidades físicas reais" — multiplicamos
+        // pelo inverso de dynamic_steer_limit (cap 2×) ANTES do clamp, p/ que saturação
+        // do neural ±1 corresponda a full-lock verdadeiro em qualquer velocidade.
+        // Ver melhorias/gain-asymmetry.md. OFF por default (invalida scales do champion legado).
+        #[cfg(feature = "gain_comp_steer")]
+        let gain_comp = (1.0 + speed * 0.02).min(2.0);
+        #[cfg(not(feature = "gain_comp_steer"))]
+        let gain_comp = 1.0_f32;
+        let steer_raw_unclamped = (steer_spline + steer_bias + line_hint) * cortisol_steer_mult * gain_comp;
         // v8: smoothing temporal via prev_steer_mem (memory[1] snapshot).
         // Combate saturação ±1 winner-take-all alternada frame a frame.
         let prev_steer_mem = racer.memory[1];
@@ -980,9 +988,34 @@ pub(super) fn update_racers(
         // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2).
         // KAN spline no brake raw antes do threshold — mesma razão do throttle/steer.
         let brake_spline = racer.kan_out.eval(2, intent[2]);
+        // Brake symmetric: remove threshold 0.2 (que tornava brake "caro" vs throttle "grátis").
+        // Ver melhorias/gain-asymmetry.md §Assimetria de throttle → brake.
+        #[cfg(feature = "brake_symmetric")]
+        let raw_brake = ((brake_spline + 1.0) * 0.5).clamp(0.0, 1.0);
+        #[cfg(not(feature = "brake_symmetric"))]
         let raw_brake = if brake_spline > 0.2 { ((brake_spline - 0.2) * 1.25).clamp(0.0, 1.0) } else { 0.0 };
         let combined_brake = (raw_brake + brake_anticip).clamp(0.0, 1.0);
-        let brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
+        let mut brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
+
+        // SENTINEL BRAKE REFLEX — non-learnable hard brake.
+        // Inspirado no Sentinel do SACI: gating físico sobrepõe decisão neural
+        // quando perigo é fisicamente inescapável. Ver melhorias/gain-asymmetry.md.
+        // Disparo restrito: carro ATIVAMENTE acelerando contra parede (pedal>0.4)
+        // em speed alto com TTC curto. Evita amplificar stagnation em cruising.
+        #[cfg(feature = "sentinel_brake")]
+        {
+            const SENTINEL_TTC: f32 = 0.5;
+            const SENTINEL_MIN_SPEED: f32 = 10.0;
+            const SENTINEL_MIN_PEDAL: f32 = 0.4;
+            if speed > SENTINEL_MIN_SPEED && pedal_intent > SENTINEL_MIN_PEDAL {
+                let fwd = world.raycast(pos.x, pos.z, racer.phase, 30.0);
+                let ttc = fwd / speed;
+                if ttc < SENTINEL_TTC {
+                    let severity = (1.0 - ttc / SENTINEL_TTC).clamp(0.0, 1.0);
+                    brake_intent = brake_intent.max(severity);
+                }
+            }
+        }
 
         // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal
         let final_pedal_intent = (pedal_intent - brake_intent).max(0.0);
@@ -1618,7 +1651,22 @@ pub(super) fn update_racers(
             racer.slow_time = (racer.slow_time - 2.0).max(0.0);
         }
 
-        racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004) * dt;
+        // Fuel burn base + quadrático no pedal. Com survival_pressure: curva custa mais.
+        #[cfg(feature = "survival_pressure")]
+        let corner_cost = {
+            let steer_abs = physical_steer.abs();
+            steer_abs * pedal_intent * 0.003
+        };
+        #[cfg(not(feature = "survival_pressure"))]
+        let corner_cost = 0.0_f32;
+        racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004 + corner_cost) * dt;
+
+        // Idle brake penalty: brake forte + parado dreno HP pequeno.
+        // Caçador sem presa não pode hibernar freando.
+        #[cfg(feature = "survival_pressure")]
+        if brake_intent > 0.5 && speed < 3.0 && !is_reversing {
+            racer.hp -= 2.0 * dt;
+        }
         if racer.fuel <= 0.0 && !racer.is_dead {
             racer.is_dead = true;
             racer.death_reason = Some(crate::simulation::racer::DeathReason::Fuel);

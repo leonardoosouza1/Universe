@@ -246,6 +246,48 @@ pub const HYPERNET_MUTATION_FLIP_RATE: f32 = 0.02;
 pub const HYPERNET_SIGMA: f32 = 0.05;
 pub const HYPERNET_TERNARY_THRESH: f32 = 0.3;
 
+// ============================================================================
+// KAN OUTPUT-HEAD SPLINE KNOTS (v3.3 / V4 META tail)
+// ----------------------------------------------------------------------------
+// 3 outputs (throttle/steer/brake) × KAN_OUT_KNOTS f32 cada. Preserva spline
+// aprendido entre gens — antes era re-iniciado a cada load. Serializado como
+// tail do chunk META (V4) ou tail de arquivo (V3 legacy load).
+//
+// Layout: 144 bytes raw little-endian f32s na ordem [out0_k0..out0_kN, out1_..., out2_...].
+// Backward-compat: arquivos sem tail → KanOutputHead::new() default (tanh ramp).
+// ============================================================================
+pub const KAN_KNOTS_OUTS: usize = 3;
+pub const KAN_KNOTS_PER_OUT: usize = crate::kan::KAN_OUT_KNOTS;
+pub const KAN_KNOTS_BYTES: usize = KAN_KNOTS_OUTS * KAN_KNOTS_PER_OUT * 4;
+
+pub fn default_kan_knots() -> [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS] {
+    crate::kan::KanOutputHead::new().knots
+}
+
+pub fn kan_knots_to_bytes(knots: &[[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS]) -> [u8; KAN_KNOTS_BYTES] {
+    let mut out = [0u8; KAN_KNOTS_BYTES];
+    for o in 0..KAN_KNOTS_OUTS {
+        for k in 0..KAN_KNOTS_PER_OUT {
+            let off = (o * KAN_KNOTS_PER_OUT + k) * 4;
+            out[off..off + 4].copy_from_slice(&knots[o][k].to_le_bytes());
+        }
+    }
+    out
+}
+
+pub fn kan_knots_from_bytes(buf: &[u8]) -> Option<[[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS]> {
+    if buf.len() < KAN_KNOTS_BYTES { return None; }
+    let mut knots = [[0.0f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS];
+    for o in 0..KAN_KNOTS_OUTS {
+        for k in 0..KAN_KNOTS_PER_OUT {
+            let off = (o * KAN_KNOTS_PER_OUT + k) * 4;
+            let v = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
+            knots[o][k] = if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 };
+        }
+    }
+    Some(knots)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct HypernetSeed {
     pub coeffs: [f32; HYPERNET_COEFFS],
@@ -333,6 +375,8 @@ pub struct DnaPayload {
     pub morpho: MorphoGenes,
     // --- Tier 6.4 LITE: hypernet seed (inactive default p/ backward-compat) ---
     pub hypernet: HypernetSeed,
+    // --- v3.3 / V4 META tail: KAN output-head knots (preserva spline aprendido) ---
+    pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
 }
 
 pub fn save_champion_dna(
@@ -367,6 +411,7 @@ pub fn save_champion_dna_with_morpho(
     save_champion_dna_full(
         path, fast_weights, fast_scale, slow_weights, slow_scale,
         generation, seed, track_width, fitness, morpho, HypernetSeed::default(),
+        default_kan_knots(),
     )
 }
 
@@ -382,6 +427,7 @@ pub fn save_champion_dna_full(
     fitness: f32,
     morpho: MorphoGenes,
     hypernet: HypernetSeed,
+    kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
 ) -> std::io::Result<()> {
     // 1. Gera o payload compressando os genomas (V4)
     let mut payload = compress_organism(
@@ -401,7 +447,8 @@ pub fn save_champion_dna_full(
     meta_data.extend_from_slice(&slow_scale.to_le_bytes());
     meta_data.extend_from_slice(&morpho.sanitized().to_le_bytes());
     meta_data.extend_from_slice(&hypernet.to_le_bytes());
-    
+    meta_data.extend_from_slice(&kan_knots_to_bytes(&kan_knots));
+
     payload.add_chunk(Chunk::new(*TAG_META_UNIVERSE, meta_data));
 
     // 3. Escreve no disco (Header V4 minimalista)
@@ -453,10 +500,19 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                                 HypernetSeed::default()
                             };
 
+                            // KAN knots (offset 292..436 se existir; default tanh ramp caso contrário)
+                            let knots_start = 32 + HYPERNET_BYTES;
+                            let kan_knots = if meta_buf.len() >= knots_start + KAN_KNOTS_BYTES {
+                                kan_knots_from_bytes(&meta_buf[knots_start..knots_start + KAN_KNOTS_BYTES])
+                                    .unwrap_or_else(default_kan_knots)
+                            } else {
+                                default_kan_knots()
+                            };
+
                             return Some(DnaPayload {
                                 fast_weights, fast_scale,
                                 slow_weights, slow_scale,
-                                generation, seed, track_width, fitness, version, morpho, hypernet,
+                                generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
                             });
                         }
                     }
@@ -503,10 +559,17 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
         } else {
             HypernetSeed::default()
         };
+        let knots_start = hypernet_start + HYPERNET_BYTES;
+        let kan_knots = if buf.len() >= knots_start + KAN_KNOTS_BYTES {
+            kan_knots_from_bytes(&buf[knots_start..knots_start + KAN_KNOTS_BYTES])
+                .unwrap_or_else(default_kan_knots)
+        } else {
+            default_kan_knots()
+        };
         return Some(DnaPayload {
             fast_weights, fast_scale,
             slow_weights: Some(slow_weights), slow_scale,
-            generation, seed, track_width, fitness, version, morpho, hypernet,
+            generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
         });
         }
     }
@@ -529,6 +592,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             generation: 0, seed: 0, track_width: 0.0, fitness: 0.0, version,
             morpho: MorphoGenes::default(),
             hypernet: HypernetSeed::default(),
+            kan_knots: default_kan_knots(),
         });
     }
 
@@ -648,6 +712,51 @@ mod tests {
         let d = MorphoGenes::default();
         assert!((loaded.morpho.mass - d.mass).abs() < 1e-3);
         assert!((loaded.morpho.wheelbase - d.wheelbase).abs() < 1e-5);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn kan_knots_round_trip_v4() {
+        let (fast, slow) = sample_weights(9);
+        let path = std::env::temp_dir().join("iara_test_kan_knots.dna");
+        let path_s = path.to_str().unwrap();
+        let mut knots = default_kan_knots();
+        // Alvo distinguível do default pra confirmar que a escrita preserva valores.
+        for o in 0..3 {
+            for k in 0..crate::kan::KAN_OUT_KNOTS {
+                knots[o][k] = ((o as f32) * 0.3) + ((k as f32) * 0.05) - 0.5;
+            }
+        }
+        save_champion_dna_full(
+            path_s, &fast, 0.5, &slow, 0.25, 10, 20, 14.0, 777.0,
+            MorphoGenes::default(), HypernetSeed::default(), knots,
+        ).unwrap();
+        let loaded = load_champion_dna(path_s).expect("v4 kan round trip");
+        for o in 0..3 {
+            for k in 0..crate::kan::KAN_OUT_KNOTS {
+                assert!((loaded.kan_knots[o][k] - knots[o][k]).abs() < 1e-5,
+                    "knot mismatch at [{}][{}]: {} vs {}", o, k, loaded.kan_knots[o][k], knots[o][k]);
+            }
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_v4_without_knots_loads_with_default() {
+        // V4 salvo com assinatura antiga (sem knots tail) → default_kan_knots().
+        let (fast, slow) = sample_weights(5);
+        let path = std::env::temp_dir().join("iara_test_v4_no_knots.dna");
+        let path_s = path.to_str().unwrap();
+        save_champion_dna_with_morpho(
+            path_s, &fast, 0.1, &slow, 0.2, 1, 2, 10.0, 50.0, MorphoGenes::default(),
+        ).unwrap();
+        let loaded = load_champion_dna(path_s).expect("must load");
+        let def = default_kan_knots();
+        for o in 0..3 {
+            for k in 0..crate::kan::KAN_OUT_KNOTS {
+                assert!((loaded.kan_knots[o][k] - def[o][k]).abs() < 1e-5);
+            }
+        }
         let _ = std::fs::remove_file(path);
     }
 }

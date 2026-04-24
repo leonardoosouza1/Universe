@@ -1,6 +1,15 @@
 /// IARA v2101 - SOVEREIGN BIT-LINEAR (BitNet 1.58-bit)
 /// "The End of MatMul": 100% Science, Zero Legacy.
 
+/// Abstração de forward ternário — permite swap entre backends
+/// (BitLinear atual, BitLinearPacked 2-bit, BitLinearGpu HIPRTC)
+/// sem mexer em `SovereignEngine`. Ver `melhorias/gpu-roadmap.md`.
+pub trait BrainForward {
+    fn forward_i8(&self, input: &[i8]) -> Vec<f32>;
+    fn myelinate(&mut self, factor: f32);
+    fn quantize(&mut self, latent: &[f32]);
+}
+
 pub struct BitLinear {
     /// Ternary Weights: {-1, 0, 1} stored in i8 for memory efficiency.
     pub weights: Vec<i8>,
@@ -77,6 +86,18 @@ impl BitLinear {
 
     pub fn set_scale(&mut self, scale: f32) {
         self.weight_scale = scale;
+    }
+}
+
+impl BrainForward for BitLinear {
+    fn forward_i8(&self, input: &[i8]) -> Vec<f32> {
+        self.forward(input)
+    }
+    fn myelinate(&mut self, factor: f32) {
+        BitLinear::myelinate(self, factor)
+    }
+    fn quantize(&mut self, latent: &[f32]) {
+        BitLinear::quantize(self, latent)
     }
 }
 

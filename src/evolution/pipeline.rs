@@ -331,8 +331,11 @@ pub(super) fn evolution_pipeline(
             let candidate = EliteDna {
                 fast_weights,
                 fast_scale: r.engine.instinct_layer.weight_scale,
-                slow_weights: r.engine.slow_brain.layer.weights.clone(),
-                slow_scale: r.engine.slow_brain.layer.weight_scale,
+                // Option 4: FloatLinear runtime → lossy quantize to i8 for DNA storage.
+                // Clamp range [-2,2] → i8 [-127,127].
+                slow_weights: r.engine.slow_brain.layer.weights.iter()
+                    .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect(),
+                slow_scale: 1.0,
                 fitness: new_fit,
                 scar_mask,
                 // Tier 4.2: captura estado hormonal médio ao final da vida.
@@ -669,8 +672,10 @@ pub(super) fn evolution_pipeline(
                 race.champion_net_dist = this_gen_best_dist;
                 let weights = best.engine.instinct_layer.weights.clone();
                 let scale = best.engine.instinct_layer.weight_scale;
-                let slow_weights = best.engine.slow_brain.layer.weights.clone();
-                let slow_scale = best.engine.slow_brain.layer.weight_scale;
+                // Option 4: FloatLinear → lossy i8 encoding at scale 63.5 for DNA storage.
+                let slow_weights: Vec<i8> = best.engine.slow_brain.layer.weights.iter()
+                    .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect();
+                let slow_scale: f32 = 1.0;
                 race.best_weights = Some(weights.clone());
                 race.best_scale = scale;
                 race.best_slow_weights = Some(slow_weights.clone());
@@ -686,6 +691,7 @@ pub(super) fn evolution_pipeline(
                     this_gen_best_dist,
                     race.current_morpho,
                     race.current_hypernet,
+                    best.kan_out.knots,
                 );
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;

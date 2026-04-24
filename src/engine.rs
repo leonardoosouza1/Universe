@@ -1,5 +1,6 @@
 use crate::metabolism::Metabolism;
 use crate::layers::BitLinear;
+use crate::float_layers::FloatLinear;
 use crate::resonance::ResonantNode;
 use crate::types::SplineNode;
 use crate::cfc::CfCCell;
@@ -30,7 +31,7 @@ pub fn set_global_champion_snapshot(retina_mean: [f32; 64], action: [f32; 2]) {
 ///   2: risk_damp         (-1..+1)  amortece volante em alta velocidade
 ///   3..7: reservado para evolução descobrir uso
 pub struct SlowBrain {
-    pub layer: BitLinear,
+    pub layer: FloatLinear,
     pub output: [f32; 8],        // held entre ticks lentos
     pub tick_counter: u32,
     pub tick_interval: u32,      // roda 1× a cada N ticks
@@ -39,7 +40,7 @@ pub struct SlowBrain {
 impl SlowBrain {
     pub fn new() -> Self {
         Self {
-            layer: BitLinear::new(32, 8),
+            layer: FloatLinear::new(32, 8),
             output: [0.0; 8],
             tick_counter: 0,
             tick_interval: 8,       // roda 1× a cada 8 ticks (~8Hz @ 64Hz) — contexto fresco
