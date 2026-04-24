@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughpu
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use universe::layers::BitLinear;
+use universe::specialist::SpecialistBrain;
 
 fn make_layer(input_dim: usize, output_dim: usize, seed: u64) -> BitLinear {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -64,5 +65,26 @@ fn bench_swarm_tick(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_forward_128x64, bench_forward_32x8, bench_swarm_tick);
+fn bench_specialist(c: &mut Criterion) {
+    let mut brain = SpecialistBrain::new();
+    let mut rng = StdRng::seed_from_u64(0xC0FFEE);
+    for b in [&mut brain.steer, &mut brain.throttle, &mut brain.brake] {
+        for w in b.weights.iter_mut() {
+            *w = rng.random_range(-1i8..=1i8);
+        }
+        b.weight_scale = 0.5;
+    }
+    let input = make_input(128, 0xBEEF);
+    let mut g = c.benchmark_group("bitlinear/specialist_3x32");
+    g.throughput(Throughput::Elements(3 * 32));
+    g.bench_function("forward", |b| {
+        b.iter(|| {
+            let out = brain.forward_specialist(black_box(&input));
+            black_box(out);
+        })
+    });
+    g.finish();
+}
+
+criterion_group!(benches, bench_forward_128x64, bench_forward_32x8, bench_swarm_tick, bench_specialist);
 criterion_main!(benches);

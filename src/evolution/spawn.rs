@@ -89,9 +89,18 @@ fn build_priming_weights() -> Vec<f32> {
     // primário de steering em reta. Lane offset é relativo (centro) e imune
     // ao ruído de perif "sempre vejo parede".
     weights[1 * 128 + 81] = 12.0;
-    // A11: Urgência de colisão (82) → freia + corta motor
-    weights[2 * 128 + 82] = 10.0;
-    weights[0 * 128 + 82] = -6.0;
+    // A11: Urgência de colisão (82) → freia + corta motor.
+    // MAGNITUDE boost (v2): 10→15 brake, -6→-10 throttle.
+    // Match nível A16/A18 (gaze/dark) que usam 4× duplicação.
+    // Ver melhorias/survival-pressure.md §A/B validado — carros perceb TTC mas não freiam.
+    weights[2 * 128 + 82] = 15.0;
+    weights[0 * 128 + 82] = -10.0;
+    // A11b: REFORÇO — replicar em canais vizinhos pra vencer quantize ternária.
+    // Canal 82 é único então duplicamos via peso em outras linhas de output igual.
+    // Isso não duplica input — apenas soma contribuição nas mesmas saídas via vizinhos
+    // 85/86 (memória parede) que já correlacionam com TTC alto:
+    weights[2 * 128 + 85] = 8.0;   // mem-wall-L + brake (já tem steer em A13)
+    weights[2 * 128 + 86] = 8.0;   // mem-wall-R + brake
     // A12: Fluxo óptico (83/84) → steer anti-aproximação
     weights[1 * 128 + 83] = 5.0;
     weights[1 * 128 + 84] = -5.0;
@@ -100,8 +109,11 @@ fn build_priming_weights() -> Vec<f32> {
     weights[1 * 128 + 86] = -8.0;
     // A14: Slip angle (87) → contra-volante
     weights[1 * 128 + 87] = 4.0;
-    // A15: Proximidade sustentada (88) → corta throttle
+    // A15: Proximidade sustentada (88) → corta throttle + FREIA (v2).
+    // Antes só cortava throttle; carro ficava em coast, não freava até bater.
+    // v2: adiciona brake forte — "se tô grudado na parede há tempo, freia E recua intent".
     weights[0 * 128 + 88] = -7.0;
+    weights[2 * 128 + 88] = 8.0;
 
     // A16 (NOVO): DARK-CENTER TRACKER (canais 90-93) → SIGA O ESCURO.
     // Resposta à crítica do usuário: "o carro não tenta centralizar o preto".
@@ -388,7 +400,15 @@ pub fn spawn_swarm(
         // (até mesmo se o elite_pool inteiro for ruim, o HoF preserva o melhor de todos os tempos).
         let slot_is_champion = i == 0 && current_best_w.is_some();
 
-        if slot_is_champion {
+        // SIMPLE ELITISM: slot 0 = champion puro, slots 1..N = champion + mutação.
+        // Zero Hall of Fame, zero priming-refresh, zero tournament. Se algum mutante
+        // bater champion, assume no fim da gen (ver pipeline.rs). Ver melhorias/simple-elitism.md.
+        #[cfg(feature = "simple_elitism")]
+        let simple_mut_slot = !slot_is_champion && current_best_w.is_some();
+        #[cfg(not(feature = "simple_elitism"))]
+        let simple_mut_slot = false;
+
+        if slot_is_champion || simple_mut_slot {
             if let Some(ref champion) = current_best_w {
                 let exact: Vec<f32> = champion.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
@@ -410,6 +430,25 @@ pub fn spawn_swarm(
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
             morpho_this = current_best_morpho;
+
+            // simple_elitism: slot != 0 sofre mutação ternária pontual.
+            // Taxa efetiva 2× a padrão pra cobrir espaço sem crossover/priming.
+            if simple_mut_slot {
+                let rate_boosted = (effective_mutation_rate * 2.0).min(0.25);
+                for w in engine.instinct_layer.weights.iter_mut() {
+                    if rng.random_bool(rate_boosted) {
+                        *w = match rng.random_range(0..3) { 0 => -1, 1 => 0, _ => 1 };
+                    }
+                }
+                // Mutação leve no slow brain também (scale menor porque é float).
+                for w in engine.slow_brain.layer.weights.iter_mut() {
+                    if rng.random_bool(rate_boosted * 0.5) {
+                        *w += (rng.random::<f32>() - 0.5) * 0.3;
+                    }
+                }
+                // Morpho jittered leve — mantém proximidade do champion
+                // (refator sem dep em MorphoGenes::jitter extra).
+            }
         } else if pool_size >= 2 {
             // --- REPRODUÇÃO DIVERSIFICADA NO GRID (30 slots de largada) ---
             // Gargalo anterior: só 5 grid spawns × 2 elite clones = 2 DNAs testados
@@ -641,16 +680,28 @@ pub fn spawn_swarm(
         // Fitness usa NET progress (track_progress - spawn_progress), então carros
         // que nasceram na curva e sobreviveram 30m PROVARAM habilidade de curva.
         // Isso quebra o platô deceptivo de "só reta dá fitness alto".
+        // simple_elitism: TODOS no grid. Sem distributed spawn.
+        // Cada carro é champion+mutação, todos partem do zero = comparação justa.
+        #[cfg(feature = "simple_elitism")]
+        const GRID_SPAWNS: usize = usize::MAX;
+        #[cfg(not(feature = "simple_elitism"))]
         const GRID_SPAWNS: usize = 30; // rollback v7 (grid 50 regressed)
         let (spawn_pos, spawn_rot, spawn_progress) = if i < GRID_SPAWNS {
             // Grid tradicional na largada (grade 2 colunas × 15 fileiras).
             // Mantém a largura original (~6m) pra caber na pista; ocupa mais profundidade
             // (15 × 6m = 90m de grid atrás da largada — cabe numa reta de Interlagos).
-            let row = i / 2;
-            let col = i % 2;
+            // Grid 2 col × N row tradicional, MAS em simple_elitism com swarm=80
+            // usa 4 colunas para não ficar 240m atrás da largada.
+            #[cfg(feature = "simple_elitism")]
+            const GRID_COLS: usize = 4;
+            #[cfg(not(feature = "simple_elitism"))]
+            const GRID_COLS: usize = 2;
+            let row = i / GRID_COLS;
+            let col = i % GRID_COLS;
+            let col_offset = col as f32 - (GRID_COLS as f32 - 1.0) / 2.0;
             let p = world.start_pos
                 - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 6.0)
-                + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * ((col as f32 - 0.5) * 6.0);
+                + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * (col_offset * 3.0);
             (p, Quat::from_rotation_y(-start_angle), 0.0)
         } else {
             // Distribui ao longo dos waypoints. Fração = 25%, 50%, 75%, 87%... em faixa circular.

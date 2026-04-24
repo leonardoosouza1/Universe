@@ -660,9 +660,16 @@ pub(super) fn evolution_pipeline(
             // basta — elitism rígido (linha acima) evita regressão.
             let val_ok = is_validation
                 && this_gen_best_dist > race.champion_distance;
+            // SIMPLE ELITISM: ignora validation-gate. Qualquer gen em que best-racer
+            // bater champion_distance → coroa. Ver melhorias/simple-elitism.md.
+            #[cfg(feature = "simple_elitism")]
+            let simple_ok = this_gen_best_dist > race.champion_distance;
+            #[cfg(not(feature = "simple_elitism"))]
+            let simple_ok = false;
             let should_crown = winner.is_some()
                 || race.best_weights.is_none()
-                || val_ok;
+                || val_ok
+                || simple_ok;
 
             if should_crown {
                 race.champion_distance = this_gen_best_dist; // Atualiza o limiar do campeão

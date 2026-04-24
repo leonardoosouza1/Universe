@@ -988,10 +988,15 @@ pub(super) fn update_racers(
         // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2).
         // KAN spline no brake raw antes do threshold — mesma razão do throttle/steer.
         let brake_spline = racer.kan_out.eval(2, intent[2]);
-        // Brake symmetric: remove threshold 0.2 (que tornava brake "caro" vs throttle "grátis").
+        // Brake symmetric: dead-zone central ±0.05 em vez de threshold assimétrico 0.2.
+        // Permite modulação fina mas evita brake-constante de carros freshborn (spline≈0).
         // Ver melhorias/gain-asymmetry.md §Assimetria de throttle → brake.
         #[cfg(feature = "brake_symmetric")]
-        let raw_brake = ((brake_spline + 1.0) * 0.5).clamp(0.0, 1.0);
+        let raw_brake = {
+            let dead = 0.05_f32;
+            if brake_spline > dead { ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0) }
+            else { 0.0 }
+        };
         #[cfg(not(feature = "brake_symmetric"))]
         let raw_brake = if brake_spline > 0.2 { ((brake_spline - 0.2) * 1.25).clamp(0.0, 1.0) } else { 0.0 };
         let combined_brake = (raw_brake + brake_anticip).clamp(0.0, 1.0);
