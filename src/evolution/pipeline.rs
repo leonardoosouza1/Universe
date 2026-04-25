@@ -687,6 +687,14 @@ pub(super) fn evolution_pipeline(
                 race.best_scale = scale;
                 race.best_slow_weights = Some(slow_weights.clone());
                 race.best_slow_scale = slow_scale;
+                // Trinity: capture champion gate + reflex weights alongside cortex.
+                race.best_gate_weights = Some(best.engine.gate.weights.to_vec());
+                race.best_gate_bias = Some(best.engine.gate.bias.to_vec());
+                let mut reflex_w: Vec<i8> = Vec::new();
+                reflex_w.extend_from_slice(&best.engine.reflex.steer.weights);
+                reflex_w.extend_from_slice(&best.engine.reflex.throttle.weights);
+                reflex_w.extend_from_slice(&best.engine.reflex.brake.weights);
+                race.best_reflex_weights = Some(reflex_w);
                 // FIX Bug 1: persistir morpho + hypernet do champion (Tier 6.3/6.4 LITE).
                 let _ = save_champion_dna_full(
                     "CHAMPION.dna",
@@ -721,6 +729,9 @@ pub(super) fn evolution_pipeline(
         if race.hard_reset {
             race.best_weights = None;
             race.best_slow_weights = None;
+            race.best_gate_weights = None;
+            race.best_gate_bias = None;
+            race.best_reflex_weights = None;
             race.death_markers.clear();
             let _ = std::fs::remove_file("CHAMPION.dna");
         }

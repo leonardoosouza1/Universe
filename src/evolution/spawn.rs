@@ -449,6 +449,53 @@ pub fn spawn_swarm(
                 // Morpho jittered leve — mantém proximidade do champion
                 // (refator sem dep em MorphoGenes::jitter extra).
             }
+
+            // ---- Trinity: copy champion gate + reflex into this engine ----
+            if let Some(ref gw) = race.best_gate_weights {
+                let n = gw.len().min(engine.gate.weights.len());
+                engine.gate.weights[..n].copy_from_slice(&gw[..n]);
+            }
+            if let Some(ref gb) = race.best_gate_bias {
+                let n = gb.len().min(engine.gate.bias.len());
+                engine.gate.bias[..n].copy_from_slice(&gb[..n]);
+            }
+            if let Some(ref rw) = race.best_reflex_weights {
+                // SpecialistBrain has 3 BitLinears: steer (32), throttle (32), brake (32) = 96 i8 weights.
+                let steer_len = engine.reflex.steer.weights.len();
+                let throttle_len = engine.reflex.throttle.weights.len();
+                let brake_len = engine.reflex.brake.weights.len();
+                let total = steer_len + throttle_len + brake_len;
+                if rw.len() >= total {
+                    engine.reflex.steer.weights.copy_from_slice(&rw[0..steer_len]);
+                    engine.reflex.throttle.weights.copy_from_slice(&rw[steer_len..steer_len + throttle_len]);
+                    engine.reflex.brake.weights.copy_from_slice(&rw[steer_len + throttle_len..steer_len + throttle_len + brake_len]);
+                }
+            }
+
+            // ---- Trinity: mutate gate + reflex on simple_mut_slot ----
+            if simple_mut_slot {
+                let rate_boosted = (effective_mutation_rate * 2.0).min(0.25);
+                let rate = (rate_boosted * 0.5) as f64; // half rate vs cortex — gate/reflex more sensitive
+                for w in engine.gate.weights.iter_mut() {
+                    if rng.random_bool(rate) {
+                        *w += (rng.random::<f32>() - 0.5) * 0.2;
+                    }
+                }
+                for b in engine.gate.bias.iter_mut() {
+                    if rng.random_bool(rate) {
+                        *b += (rng.random::<f32>() - 0.5) * 0.1;
+                    }
+                }
+                // Reflex weights are i8 ternary (BitLinear). Mutate by random small ternary perturbation.
+                for layer in [&mut engine.reflex.steer, &mut engine.reflex.throttle, &mut engine.reflex.brake] {
+                    for w in layer.weights.iter_mut() {
+                        if rng.random_bool(rate) {
+                            *w = match rng.random_range(0..3) { 0 => -1, 1 => 0, _ => 1 };
+                        }
+                    }
+                }
+            }
+            // ---- end Trinity ----
         } else if pool_size >= 2 {
             // --- REPRODUÇÃO DIVERSIFICADA NO GRID (30 slots de largada) ---
             // Gargalo anterior: só 5 grid spawns × 2 elite clones = 2 DNAs testados
