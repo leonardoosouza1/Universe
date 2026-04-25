@@ -32,12 +32,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [features]
-default = ["sentinel_brake", "survival_pressure", "simple_elitism"]
+default = ["survival_pressure", "simple_elitism", "trinity_swarm"]
+# Trinity swarm + Tesla-style safety. Cortex+Reflex+Sentinel via MoE Gate.
+# Ver docs/superpowers/specs/2026-04-25-trinity-swarm-safety-design.md
+trinity_swarm = []
 # Elitismo simples: slot 0 = champion puro, resto = champion + mutação.
 # Coroação imediata se qualquer mutante bater champion (ignora validation-gate).
 # Ver melhorias/simple-elitism.md
 simple_elitism = []
-# Hard-brake reflex quando pedal>0.4 e TTC<0.5s. Ver melhorias/gain-asymmetry.md
+# DEPRECATED: absorvido pelo Sentinel Tier 0 FCA. Habilitar só pra A/B regression.
 sentinel_brake = []
 # Compensa dynamic_steer_limit no neural steer (x1/limit cap 2). Ver melhorias/gain-asymmetry.md
 gain_comp_steer = []
