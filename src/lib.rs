@@ -1,4 +1,5 @@
 pub mod safety;
+pub mod chaos;
 pub mod engine;
 pub mod world;
 pub mod types;

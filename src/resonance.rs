@@ -39,3 +39,41 @@ impl ResonantNode {
         (target_phase - self.phase).cos()
     }
 }
+
+/// Kuramoto order parameter: |Σ e^iφ_k| / N. Returns [0, 1].
+/// 1.0 = all in phase. 0.0 = uniformly distributed phases (chaotic).
+pub fn coherence(nodes: &[ResonantNode]) -> f32 {
+    if nodes.is_empty() { return 1.0; }
+    let n = nodes.len() as f32;
+    let (sin_sum, cos_sum) = nodes.iter().fold((0.0_f32, 0.0_f32), |(s, c), node| {
+        (s + node.phase.sin(), c + node.phase.cos())
+    });
+    ((sin_sum * sin_sum + cos_sum * cos_sum).sqrt() / n).min(1.0)
+}
+
+#[cfg(test)]
+mod coherence_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    #[test]
+    fn coherence_full_when_aligned() {
+        let mut nodes: Vec<ResonantNode> = (0..4).map(|_| ResonantNode::new(1.0)).collect();
+        for n in &mut nodes { n.phase = 0.5; }
+        assert!((coherence(&nodes) - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn coherence_zero_when_uniform() {
+        let mut nodes: Vec<ResonantNode> = (0..4).map(|_| ResonantNode::new(1.0)).collect();
+        for (i, n) in nodes.iter_mut().enumerate() {
+            n.phase = (i as f32) * (2.0 * PI / 4.0);
+        }
+        assert!(coherence(&nodes) < 0.05);
+    }
+
+    #[test]
+    fn coherence_empty_returns_one() {
+        assert_eq!(coherence(&[]), 1.0);
+    }
+}
