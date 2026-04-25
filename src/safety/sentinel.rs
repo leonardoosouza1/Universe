@@ -54,6 +54,22 @@ impl Sentinel {
     pub fn evaluate(s: &SafetyState) -> SentinelOutput {
         let mut out = SentinelOutput::default();
 
+        // NaN/Inf hardening — non-finite inputs disable all rules silently otherwise.
+        // ttc_forward is allowed to be INF (sentinel: "clear ahead").
+        if !(s.yaw_rate.is_finite()
+            && s.slip_avg.is_finite()
+            && s.speed_kmh.is_finite()
+            && s.wall_left.is_finite()
+            && s.wall_right.is_finite()
+            && s.stall_timer.is_finite()
+            && s.pinado_timer.is_finite()
+            && s.rain.is_finite()
+            && s.curv25.is_finite()
+            && s.current_thr.is_finite())
+        {
+            return out;
+        }
+
         // ----- Tier 0 HARD vetos (priority: spin > FCA > anti-stall) -----
         if s.yaw_rate.abs() > 3.0 {
             out.flags |= SafetyFlags::SPIN;
@@ -85,7 +101,7 @@ impl Sentinel {
         let mut prop = IntentVec::default();
         if s.yaw_rate.abs() > 1.5 {
             out.flags |= SafetyFlags::ESP;
-            prop.throttle += -0.7; // counter-throttle proposal
+            prop.throttle -= 0.7; // counter-throttle proposal
             prop.brake += 0.3;
         }
         if s.wall_left < 0.5 {
@@ -97,17 +113,17 @@ impl Sentinel {
         }
         if s.pinado_timer > 0.3 && s.speed_kmh < 2.0 {
             out.flags |= SafetyFlags::REVERSE_OUT;
-            prop.throttle += -0.4;
+            prop.throttle -= 0.4;
         }
 
         // ----- Tier 2 SOFT proposals -----
         if s.slip_avg > 0.4 && s.current_thr > 0.5 {
             out.flags |= SafetyFlags::TCS;
-            prop.throttle += -0.4;
+            prop.throttle -= 0.4;
         }
         if s.rain > 0.7 && s.speed_kmh > 40.0 {
             out.flags |= SafetyFlags::AQUA;
-            prop.throttle += -0.3;
+            prop.throttle -= 0.3;
         }
         if s.curv25 > 30.0 && s.speed_kmh > 60.0 {
             out.flags |= SafetyFlags::CORNER_LIM;
@@ -194,5 +210,32 @@ mod tests {
         let out = Sentinel::evaluate(&s);
         assert!(out.flags.contains(SafetyFlags::SPIN));
         assert!(!out.flags.contains(SafetyFlags::FCA));
+    }
+
+    #[test]
+    fn nan_input_disables_safety_silently() {
+        let mut s = base_state();
+        s.yaw_rate = f32::NAN;
+        let out = Sentinel::evaluate(&s);
+        assert!(out.hard_veto.is_none());
+        assert_eq!(out.flags, SafetyFlags::empty());
+    }
+
+    #[test]
+    fn multiple_soft_flags_compose_and_clamp() {
+        // ESP (yaw 2.0) + TCS (slip 0.5, thr 0.8) + AQUA (rain 0.8, speed 50)
+        // Combined throttle delta would be -0.7 + -0.4 + -0.3 = -1.4, must clamp to -1.0.
+        let mut s = base_state();
+        s.yaw_rate = 2.0;
+        s.slip_avg = 0.5;
+        s.current_thr = 0.8;
+        s.rain = 0.8;
+        s.speed_kmh = 50.0;
+        let out = Sentinel::evaluate(&s);
+        assert!(out.flags.contains(SafetyFlags::ESP));
+        assert!(out.flags.contains(SafetyFlags::TCS));
+        assert!(out.flags.contains(SafetyFlags::AQUA));
+        assert_eq!(out.soft_proposal.throttle, -1.0); // clamped
+        assert!(out.hard_veto.is_none());
     }
 }
