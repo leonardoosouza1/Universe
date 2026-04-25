@@ -106,6 +106,17 @@ pub struct SovereignEngine {
     /// Erro de predição = |current - predicted| (L1 médio) alimenta curiosity
     /// como drive intrínseco. RUNTIME-only.
     pub predicted_retina: [f32; 64],
+    // ------------------------------------------------------------------
+    // Trinity (Gate + Reflex + Sentinel) — Task 4 wiring
+    // ------------------------------------------------------------------
+    pub gate: crate::gate::GateBrain,
+    pub reflex: crate::specialist::SpecialistBrain,
+    pub last_chaos: f32,
+    pub hard_veto_count: u32,
+    pub soft_override_count: u32,
+    pub gate_entropy_acc: f32,
+    pub gate_entropy_n: u32,
+    pub oscillators: Vec<crate::resonance::ResonantNode>,
 }
 
 impl SovereignEngine {
@@ -125,7 +136,86 @@ impl SovereignEngine {
             champion_retina_snapshot: None,
             champion_action: None,
             predicted_retina: [0.0; 64],
+            gate: crate::gate::GateBrain::new_uniform(0xDA7E),
+            reflex: crate::specialist::SpecialistBrain::new(),
+            last_chaos: 0.0,
+            hard_veto_count: 0,
+            soft_override_count: 0,
+            gate_entropy_acc: 0.0,
+            gate_entropy_n: 0,
+            oscillators: (0..8).map(|i| {
+                let freq = 0.5 + (i as f32) * (4.0 - 0.5) / 7.0;
+                crate::resonance::ResonantNode::new(freq)
+            }).collect(),
         }
+    }
+
+    /// Trinity output. Returns final [throttle, steer, brake] after Gate blend + Sentinel hard veto.
+    /// Caller is responsible for running `execute_cycle` first to populate cortex `final_intent`.
+    /// Trinity is independent: cortex_intent is supplied by caller (typically from final_intent[0..3]).
+    pub fn decide(
+        &mut self,
+        cortex_intent: [f32; 3],
+        reflex_input: &[i8],
+        safety_state: &crate::safety::SafetyState,
+        chaos_input: &crate::chaos::ChaosInput,
+    ) -> [f32; 3] {
+        use crate::safety::{Sentinel, IntentVec, SafetyFlags};
+
+        let chaos = crate::chaos::score(chaos_input, &self.oscillators);
+        self.last_chaos = chaos.combined;
+
+        let reflex_raw = self.reflex.forward_specialist(reflex_input);
+        let sentinel_out = Sentinel::evaluate(safety_state);
+
+        let gi: [f32; 16] = [
+            chaos.combined,
+            (safety_state.yaw_rate / 3.0).clamp(-1.0, 1.0),
+            safety_state.slip_avg.clamp(0.0, 1.0),
+            (1.0 / (1.0 + safety_state.ttc_forward.max(0.0))).clamp(0.0, 1.0),
+            (safety_state.speed_kmh / 100.0).clamp(0.0, 1.0),
+            chaos_input.retina_temporal_var.clamp(0.0, 1.0),
+            chaos.coherence,
+            (1.0 / (1.0 + safety_state.wall_left.max(0.0))).clamp(0.0, 1.0),
+            (1.0 / (1.0 + safety_state.wall_right.max(0.0))).clamp(0.0, 1.0),
+            if sentinel_out.flags.intersects(
+                SafetyFlags::ESP | SafetyFlags::LANE_KEEP | SafetyFlags::REVERSE_OUT
+            ) { 1.0 } else { 0.0 },
+            if sentinel_out.flags.intersects(
+                SafetyFlags::TCS | SafetyFlags::AQUA | SafetyFlags::CORNER_LIM
+            ) { 1.0 } else { 0.0 },
+            if self.hard_veto_count > 0 { 1.0 } else { 0.0 },
+            0.0, 0.0, 0.0, 0.0,
+        ];
+        let w = self.gate.forward(&gi);
+        self.gate_entropy_acc += crate::gate::GateBrain::entropy(&w);
+        self.gate_entropy_n = self.gate_entropy_n.saturating_add(1);
+
+        let cortex_iv = IntentVec { throttle: cortex_intent[0], steer: cortex_intent[1], brake: cortex_intent[2] };
+        let reflex_iv = IntentVec { throttle: reflex_raw[0], steer: reflex_raw[1], brake: reflex_raw[2] };
+        let sentinel_iv = sentinel_out.soft_proposal;
+
+        let mixed = IntentVec {
+            throttle: w[0]*cortex_iv.throttle + w[1]*reflex_iv.throttle + w[2]*sentinel_iv.throttle,
+            steer:    w[0]*cortex_iv.steer    + w[1]*reflex_iv.steer    + w[2]*sentinel_iv.steer,
+            brake:    w[0]*cortex_iv.brake    + w[1]*reflex_iv.brake    + w[2]*sentinel_iv.brake,
+        };
+
+        let final_iv = if let Some(veto) = sentinel_out.hard_veto {
+            self.hard_veto_count = self.hard_veto_count.saturating_add(1);
+            veto
+        } else {
+            if !sentinel_out.flags.is_empty() {
+                self.soft_override_count = self.soft_override_count.saturating_add(1);
+            }
+            mixed
+        };
+
+        [
+            final_iv.throttle.clamp(-1.0, 1.0),
+            final_iv.steer.clamp(-1.0, 1.0),
+            final_iv.brake.clamp(0.0, 1.0),
+        ]
     }
 
     /// Tier 6.8 — consulta o snapshot do campeão: prefere override local,
