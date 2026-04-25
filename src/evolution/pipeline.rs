@@ -311,6 +311,21 @@ pub(super) fn evolution_pipeline(
         let mut scars_created_this_gen = 0usize;
         for (rank, (_, r, _, _)) in sorted.iter().take(10).enumerate() {
             let new_fit = calc_fitness(r);
+            // ---- Trinity fitness penalties / rewards ----
+            const LN3: f32 = 1.0986123; // ln(3) — max entropy of 3-class softmax
+            let hv = r.engine.hard_veto_count as f32;
+            let so = r.engine.soft_override_count as f32;
+            let avg_entropy = if r.engine.gate_entropy_n > 0 {
+                r.engine.gate_entropy_acc / (r.engine.gate_entropy_n as f32)
+            } else { 0.0 };
+            let entropy_norm = (avg_entropy / LN3).clamp(0.0, 1.0);
+            let chaos_alive_bonus = if r.engine.last_chaos > 0.5 && !r.is_dead { 10.0 } else { 0.0 };
+            let new_fit = new_fit
+                - hv * 5.0
+                - so * 0.3
+                + entropy_norm * 20.0
+                + chaos_alive_bonus;
+            // ---- end Trinity fitness ----
             let fast_weights: Vec<i8> = r.engine.instinct_layer.weights.clone();
             let mut scar_mask = vec![0u8; fast_weights.len()];
             // 1) O próprio top-10 morreu em BATIDA? Marca direto.
