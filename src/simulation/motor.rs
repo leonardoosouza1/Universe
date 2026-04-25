@@ -41,6 +41,16 @@ pub fn time_dilation_metrics() -> (u64, u64) {
 ///   87      = slip angle (A14)                      88     = proximity sustain (A15)
 ///   90..93  = dark-center tracker (A16)             94..97 = whiskers diagonais (A17)
 ///   98..101 = gaze tracker (A18)                  108 = racing-line offset (A21)
+/// Builds a 32-dim i8 input slice for the reflex SpecialistBrain by sampling key sensory channels.
+/// Conservative subset — enough for a simple safety-aware reflex.
+fn slow_input_for_reflex(sensory_wave: &[i8; 128]) -> [i8; 32] {
+    let mut out = [0_i8; 32];
+    for (dst, &src) in out.iter_mut().zip(sensory_wave.iter().take(32)) {
+        *dst = src;
+    }
+    out
+}
+
 fn axiom_policy(inputs: &[i8; 128]) -> [f32; 64] {
     let mut bias = [0.0f32; 64];
     const WALL_T: i8 = 40;  // ~0.31 normalizado — parede próxima mas não encostada
@@ -845,6 +855,61 @@ pub(super) fn update_racers(
                     racer.engine.final_intent[i] = v.clamp(-1.0, 1.0);
                 }
             }
+            // ---- Trinity decide (Gate + Reflex + Sentinel) ----
+            let cortex_intent = [
+                racer.engine.final_intent.get(0).copied().unwrap_or(0.0),
+                racer.engine.final_intent.get(1).copied().unwrap_or(0.0),
+                racer.engine.final_intent.get(2).copied().unwrap_or(0.0),
+            ];
+            let speed_kmh = speed * 3.6;
+            // Wall raycast proxies derived from retina samples (i8 0..127). Larger sum = closer.
+            let wall_l_proxy = {
+                let s: i32 = (32..38).map(|i| sensory_wave[i] as i32).sum();
+                let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
+                (1.0 - norm) * 5.0
+            };
+            let wall_r_proxy = {
+                let s: i32 = (58..64).map(|i| sensory_wave[i] as i32).sum();
+                let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
+                (1.0 - norm) * 5.0
+            };
+            let fwd_obstacle_norm: f32 = {
+                let s: i32 = (10..22).map(|i| sensory_wave[i] as i32).sum();
+                (s as f32 / (12.0 * 127.0)).clamp(0.0, 1.0)
+            };
+            let ttc_forward = if speed > 0.5 {
+                let clear_m = (1.0 - fwd_obstacle_norm) * 30.0;
+                (clear_m / speed).clamp(0.0, 99.0)
+            } else { 99.0 };
+            // yaw_rate: pull from body angular velocity if available (cheap local).
+            let yaw_rate: f32 = if let Some(ref body) = opt_body { body.angular_velocity.y } else { 0.0 };
+            // slip_avg: wheels accessible only in physics block downstream — safe default.
+            let slip_avg: f32 = 0.0;
+            let safety_state = crate::safety::SafetyState {
+                speed_kmh,
+                yaw_rate,
+                slip_avg,
+                ttc_forward,
+                wall_left: wall_l_proxy,
+                wall_right: wall_r_proxy,
+                stall_timer: 0.0,    // wired later (requires Racer field)
+                pinado_timer: 0.0,   // wired later
+                rain: env.weather_wetness,
+                curv25: 0.0,         // wired later from racing_line
+                current_thr: cortex_intent[0],
+            };
+            let chaos_in = crate::chaos::ChaosInput {
+                yaw_rate,
+                slip_avg,
+                retina_temporal_var: 0.0, // wired later from motion_left/motion_right
+            };
+            let reflex_in = slow_input_for_reflex(&sensory_wave);
+            let trinity = racer.engine.decide(cortex_intent, &reflex_in, &safety_state, &chaos_in);
+            // Mutate final_intent so downstream readers see gate-blended values.
+            if let Some(slot) = racer.engine.final_intent.get_mut(0) { *slot = trinity[0]; }
+            if let Some(slot) = racer.engine.final_intent.get_mut(1) { *slot = trinity[1]; }
+            if let Some(slot) = racer.engine.final_intent.get_mut(2) { *slot = trinity[2]; }
+            // ---- end Trinity ----
             // Atualiza last_action com a saída fresca (throttle, steer).
             let ti = racer.engine.final_intent.get(0).copied().unwrap_or(0.0);
             let si = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
