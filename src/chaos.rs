@@ -3,6 +3,15 @@
 
 use crate::resonance::{ResonantNode, coherence};
 
+/// Saturation knee for yaw rate (rad/s). ~115°/s — aggressive cornering.
+const YAW_RATE_KNEE: f32 = 2.0;
+/// Saturation knee for wheel slip (fraction). 0.5 = 50% slip, traction loss.
+const SLIP_KNEE: f32 = 0.5;
+/// Weights summing to 1.0 over physical chaos components.
+const W_YAW: f32 = 0.4;
+const W_SLIP: f32 = 0.4;
+const W_RETINA: f32 = 0.2;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ChaosInput {
     pub yaw_rate: f32,            // rad/s
@@ -19,9 +28,9 @@ pub struct ChaosScore {
 }
 
 pub fn score(input: &ChaosInput, oscillators: &[ResonantNode]) -> ChaosScore {
-    let phys = 0.4 * (input.yaw_rate.abs() / 2.0).tanh()
-             + 0.4 * (input.slip_avg / 0.5).tanh()
-             + 0.2 * input.retina_temporal_var.clamp(0.0, 1.0);
+    let phys = W_YAW * (input.yaw_rate.abs() / YAW_RATE_KNEE).tanh()
+             + W_SLIP * (input.slip_avg / SLIP_KNEE).tanh()
+             + W_RETINA * input.retina_temporal_var.clamp(0.0, 1.0);
     let phys = phys.clamp(0.0, 1.0);
     let coh = coherence(oscillators);
     let neural = 1.0 - coh;
@@ -48,7 +57,8 @@ mod tests {
     #[test]
     fn high_yaw_high_physical_chaos() {
         let mut i = calm_input(); i.yaw_rate = 5.0;
-        let s = score(&i, &[]);
+        let nodes: Vec<ResonantNode> = (0..4).map(|_| ResonantNode::new(1.0)).collect();
+        let s = score(&i, &nodes);
         assert!(s.physical > 0.3);
     }
 

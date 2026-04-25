@@ -42,7 +42,12 @@ impl ResonantNode {
 
 /// Kuramoto order parameter: |Σ e^iφ_k| / N. Returns [0, 1].
 /// 1.0 = all in phase. 0.0 = uniformly distributed phases (chaotic).
+///
+/// Returns `1.0` for empty input (calm baseline). Caller is responsible for
+/// ensuring oscillators are initialized — `debug_assert!` catches misuse in
+/// dev/test, release builds stay lenient.
 pub fn coherence(nodes: &[ResonantNode]) -> f32 {
+    debug_assert!(!nodes.is_empty(), "coherence called on empty oscillator set");
     if nodes.is_empty() { return 1.0; }
     let n = nodes.len() as f32;
     let (sin_sum, cos_sum) = nodes.iter().fold((0.0_f32, 0.0_f32), |(s, c), node| {
@@ -73,6 +78,7 @@ mod coherence_tests {
     }
 
     #[test]
+    #[cfg(not(debug_assertions))]
     fn coherence_empty_returns_one() {
         assert_eq!(coherence(&[]), 1.0);
     }
