@@ -215,6 +215,18 @@ pub fn spawn_swarm(
             current_best_hypernet = dna.hypernet;
             // v3.3: absorve KAN knots (preserva spline aprendido entre runs).
             current_best_kan_knots = dna.kan_knots;
+            // v5: absorve Trinity gate + reflex weights (TRIN chunk). Restaura swarm
+            // aprendido após reboot — sem isso, gate/reflex re-iniciam uniform e
+            // perdem o aprendizado da safety net.
+            if let Some(ref t) = dna.trinity {
+                race.best_gate_weights = Some(t.gate_weights.to_vec());
+                race.best_gate_bias = Some(t.gate_bias.to_vec());
+                let mut rw = Vec::with_capacity(96);
+                rw.extend_from_slice(&t.reflex_steer);
+                rw.extend_from_slice(&t.reflex_throttle);
+                rw.extend_from_slice(&t.reflex_brake);
+                race.best_reflex_weights = Some(rw);
+            }
             // Se o DNA foi treinado em outra seed/largura, loga aviso e descarta champion_distance
             // (senão o carro novo nunca consegue coroar num track diferente).
             if dna.version >= 3 {

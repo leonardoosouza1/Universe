@@ -222,6 +222,50 @@ pub const DNA_V32_TOTAL: usize = DNA_V31_TOTAL + HYPERNET_BYTES; // 8755 (v3.2 w
 
 // TLV TAG para metadados exclusivos do simulador (usado apenas na V4)
 pub const TAG_META_UNIVERSE: &[u8; 4] = b"META";
+// TLV TAG para Trinity weights (gate + reflex). Opcional — DNAs antigos não têm.
+pub const TAG_TRINITY: &[u8; 4] = b"TRIN";
+
+// Trinity payload: gate weights (16*3=48 f32) + gate bias (3 f32) + reflex i8 (32*3=96)
+pub const TRINITY_GATE_FLOATS: usize = 16 * 3 + 3; // 51
+pub const TRINITY_REFLEX_BYTES: usize = 32 * 3;    // 96
+pub const TRINITY_BYTES: usize = TRINITY_GATE_FLOATS * 4 + TRINITY_REFLEX_BYTES; // 300
+
+#[derive(Clone, Debug)]
+pub struct TrinityWeights {
+    pub gate_weights: [f32; 48],
+    pub gate_bias: [f32; 3],
+    pub reflex_steer: [i8; 32],
+    pub reflex_throttle: [i8; 32],
+    pub reflex_brake: [i8; 32],
+}
+
+impl TrinityWeights {
+    pub fn to_bytes(&self) -> [u8; TRINITY_BYTES] {
+        let mut out = [0u8; TRINITY_BYTES];
+        let mut o = 0;
+        for &w in &self.gate_weights { out[o..o+4].copy_from_slice(&w.to_le_bytes()); o += 4; }
+        for &b in &self.gate_bias    { out[o..o+4].copy_from_slice(&b.to_le_bytes()); o += 4; }
+        for &w in &self.reflex_steer    { out[o] = w as u8; o += 1; }
+        for &w in &self.reflex_throttle { out[o] = w as u8; o += 1; }
+        for &w in &self.reflex_brake    { out[o] = w as u8; o += 1; }
+        out
+    }
+    pub fn from_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < TRINITY_BYTES { return None; }
+        let mut gate_weights = [0.0f32; 48];
+        let mut gate_bias = [0.0f32; 3];
+        let mut reflex_steer = [0i8; 32];
+        let mut reflex_throttle = [0i8; 32];
+        let mut reflex_brake = [0i8; 32];
+        let mut o = 0;
+        for w in gate_weights.iter_mut() { *w = f32::from_le_bytes(buf[o..o+4].try_into().ok()?); o += 4; }
+        for b in gate_bias.iter_mut()    { *b = f32::from_le_bytes(buf[o..o+4].try_into().ok()?); o += 4; }
+        for w in reflex_steer.iter_mut()    { *w = buf[o] as i8; o += 1; }
+        for w in reflex_throttle.iter_mut() { *w = buf[o] as i8; o += 1; }
+        for w in reflex_brake.iter_mut()    { *w = buf[o] as i8; o += 1; }
+        Some(Self { gate_weights, gate_bias, reflex_steer, reflex_throttle, reflex_brake })
+    }
+}
 
 
 // ============================================================================
@@ -377,6 +421,8 @@ pub struct DnaPayload {
     pub hypernet: HypernetSeed,
     // --- v3.3 / V4 META tail: KAN output-head knots (preserva spline aprendido) ---
     pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
+    // --- v5 / TLV TRIN chunk: Trinity gate + reflex weights (None se DNA pré-v5) ---
+    pub trinity: Option<TrinityWeights>,
 }
 
 pub fn save_champion_dna(
@@ -429,6 +475,28 @@ pub fn save_champion_dna_full(
     hypernet: HypernetSeed,
     kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
 ) -> std::io::Result<()> {
+    save_champion_dna_v5(
+        path, fast_weights, fast_scale, slow_weights, slow_scale,
+        generation, seed, track_width, fitness, morpho, hypernet, kan_knots, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn save_champion_dna_v5(
+    path: &str,
+    fast_weights: &[i8],
+    fast_scale: f32,
+    slow_weights: &[i8],
+    slow_scale: f32,
+    generation: u32,
+    seed: u32,
+    track_width: f32,
+    fitness: f32,
+    morpho: MorphoGenes,
+    hypernet: HypernetSeed,
+    kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
+    trinity: Option<&TrinityWeights>,
+) -> std::io::Result<()> {
     // 1. Gera o payload compressando os genomas (V4)
     let mut payload = compress_organism(
         fast_weights,
@@ -450,6 +518,11 @@ pub fn save_champion_dna_full(
     meta_data.extend_from_slice(&kan_knots_to_bytes(&kan_knots));
 
     payload.add_chunk(Chunk::new(*TAG_META_UNIVERSE, meta_data));
+
+    // Trinity chunk (opcional) — gate + reflex weights pra restaurar swarm aprendido.
+    if let Some(t) = trinity {
+        payload.add_chunk(Chunk::new(*TAG_TRINITY, t.to_bytes().to_vec()));
+    }
 
     // 3. Escreve no disco (Header V4 minimalista)
     let mut file = File::create(path)?;
@@ -509,10 +582,14 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                                 default_kan_knots()
                             };
 
+                            // Trinity chunk (opcional, ausente em DNAs antigos).
+                            let trinity = payload.find_chunk(TAG_TRINITY)
+                                .and_then(|c| TrinityWeights::from_bytes(&c.data));
                             return Some(DnaPayload {
                                 fast_weights, fast_scale,
                                 slow_weights, slow_scale,
                                 generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
+                                trinity,
                             });
                         }
                     }
@@ -570,6 +647,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             fast_weights, fast_scale,
             slow_weights: Some(slow_weights), slow_scale,
             generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
+            trinity: None,
         });
         }
     }
@@ -593,6 +671,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             morpho: MorphoGenes::default(),
             hypernet: HypernetSeed::default(),
             kan_knots: default_kan_knots(),
+            trinity: None,
         });
     }
 

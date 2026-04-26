@@ -712,8 +712,22 @@ pub(super) fn evolution_pipeline(
                 reflex_w.extend_from_slice(&best.engine.reflex.throttle.weights);
                 reflex_w.extend_from_slice(&best.engine.reflex.brake.weights);
                 race.best_reflex_weights = Some(reflex_w);
-                // FIX Bug 1: persistir morpho + hypernet do champion (Tier 6.3/6.4 LITE).
-                let _ = save_champion_dna_full(
+                // Trinity weights snapshot for DNA save (v5 TRIN chunk).
+                let trinity_save = {
+                    let mut gate_w_arr = [0.0f32; 48];
+                    gate_w_arr.copy_from_slice(&best.engine.gate.weights);
+                    let mut gate_b_arr = [0.0f32; 3];
+                    gate_b_arr.copy_from_slice(&best.engine.gate.bias);
+                    let mut steer_arr = [0i8; 32]; steer_arr.copy_from_slice(&best.engine.reflex.steer.weights);
+                    let mut thr_arr = [0i8; 32]; thr_arr.copy_from_slice(&best.engine.reflex.throttle.weights);
+                    let mut brake_arr = [0i8; 32]; brake_arr.copy_from_slice(&best.engine.reflex.brake.weights);
+                    crate::evolution::dna_genesis::TrinityWeights {
+                        gate_weights: gate_w_arr, gate_bias: gate_b_arr,
+                        reflex_steer: steer_arr, reflex_throttle: thr_arr, reflex_brake: brake_arr,
+                    }
+                };
+                // FIX Bug 1: persistir morpho + hypernet + trinity do champion.
+                let _ = crate::evolution::dna_genesis::save_champion_dna_v5(
                     "CHAMPION.dna",
                     &weights, scale,
                     &slow_weights, slow_scale,
@@ -724,6 +738,7 @@ pub(super) fn evolution_pipeline(
                     race.current_morpho,
                     race.current_hypernet,
                     best.kan_out.knots,
+                    Some(&trinity_save),
                 );
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
