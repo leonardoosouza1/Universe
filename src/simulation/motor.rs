@@ -840,6 +840,30 @@ pub(super) fn update_racers(
         let cortisol = racer.engine.metabolism.cortisol;
         let skip_n: u8 = if race.generation >= 10 && cortisol < 0.5 { 2 } else { 1 };
         let should_fire = (racer.brain_tick_counter % skip_n) == 0;
+
+        // --- ETAPA 2a (partial): curvature lookahead bug fix ---
+        // Ch 78..80 was previously never written (curv25 read garbage 0).
+        // Fill BEFORE brain fires so cortex+axiom_policy+Sentinel see real signal.
+        // Proprioceptive (ch 16..27) reverted: introduced noise into trained net (9001 regression).
+        {
+            // Curvature lookahead — signed angles to flow at 25m and 60m ahead.
+            let curv_at = |ahead_m: f32| -> f32 {
+                let probe = Vec3::new(pos.x, 0.0, pos.z) + forward * ahead_m;
+                let f = world.get_flow_at(probe.x, probe.z);
+                if f.length_squared() > 1e-4 {
+                    let cross_y = forward.x * f.y - forward.z * f.x;
+                    let dot = (forward.x * f.x + forward.z * f.y).clamp(-1.0, 1.0);
+                    cross_y.atan2(dot)
+                } else { 0.0 }
+            };
+            let yn = std::f32::consts::FRAC_PI_2;
+            let c25 = ((curv_at(25.0) / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c60 = ((curv_at(60.0) / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            sensory_wave[78] = c25;
+            sensory_wave[79] = c25;
+            sensory_wave[80] = c60;
+        }
+
         if should_fire {
             racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
             // Tier 1.3 — Axiom como prior externo (potential-based shaping).
@@ -887,7 +911,7 @@ pub(super) fn update_racers(
             let slip_avg: f32 = if let Some(ref body) = opt_body {
                 body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0
             } else { 0.0 };
-            // curv25: from retina curvature channels (78..80). Saturated curve ≈ 1.0; scale to sentinel unit.
+            // curv25 read from sensory_wave[79..80] (filled in proprio block above the brain fire).
             let curv25: f32 = ((sensory_wave[79] as f32).abs() + (sensory_wave[80] as f32).abs()) / 254.0 * 60.0;
             let safety_state = crate::safety::SafetyState {
                 speed_kmh,
