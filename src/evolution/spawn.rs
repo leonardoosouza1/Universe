@@ -203,8 +203,13 @@ pub fn spawn_swarm(
     // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     if current_best_w.is_none() {
         if let Some(dna) = load_champion_dna("CHAMPION.dna") {
-            // Dequantize i8 DNA disk → f32 runtime. Scale 63.5 cobre ±2.0 sem saturar.
-            current_best_w = Some(dna.fast_weights.iter().map(|&w| w as f32 / 63.5).collect());
+            // V6: CEQU chunk (DCT compression) preferido. Reconstruct via inverse DCT.
+            // Fallback: dequantize raw i8 fast_weights se CEQU ausente (DNAs pré-v6).
+            current_best_w = Some(if let Some(ref dct) = dna.cortex_dct {
+                crate::evolution::dna_genesis::cortex_from_dct(dct)
+            } else {
+                dna.fast_weights.iter().map(|&w| w as f32 / 63.5).collect()
+            });
             current_best_s = dna.fast_scale;
             if let Some(sw) = dna.slow_weights {
                 current_best_slow_w = Some(sw);

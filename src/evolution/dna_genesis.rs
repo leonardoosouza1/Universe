@@ -224,6 +224,66 @@ pub const DNA_V32_TOTAL: usize = DNA_V31_TOTAL + HYPERNET_BYTES; // 8755 (v3.2 w
 pub const TAG_META_UNIVERSE: &[u8; 4] = b"META";
 // TLV TAG para Trinity weights (gate + reflex). Opcional — DNAs antigos não têm.
 pub const TAG_TRINITY: &[u8; 4] = b"TRIN";
+// TLV TAG para cortex equation (DCT compression). Opcional — substitui fast_weights raw.
+pub const TAG_CORTEX_EQ: &[u8; 4] = b"CEQU";
+
+/// Cortex DCT compression — 256 coeffs cobrem 8192 weights via inverse DCT-II.
+/// 32× compressão. Lossy mas smooth. Pra DNAs onde fidelidade absoluta não é
+/// crítica (cars treinados convergem mesmo com aproximação).
+pub const CORTEX_DCT_COEFFS: usize = 256;
+pub const CORTEX_FULL_SIZE: usize = 8192;
+pub const CORTEX_DCT_BYTES: usize = CORTEX_DCT_COEFFS * 4; // 1024 bytes
+
+/// Forward DCT-II truncated to K coefficients.
+/// X[k] = (2/N) Σ x[n] cos(π/N (n+0.5) k)
+pub fn cortex_to_dct(weights: &[f32]) -> [f32; CORTEX_DCT_COEFFS] {
+    let n = weights.len().min(CORTEX_FULL_SIZE);
+    let mut out = [0.0_f32; CORTEX_DCT_COEFFS];
+    let n_inv = 1.0 / n as f32;
+    let pi_n = std::f32::consts::PI * n_inv;
+    for k in 0..CORTEX_DCT_COEFFS {
+        let mut acc = 0.0_f32;
+        for i in 0..n {
+            acc += weights[i] * (pi_n * (i as f32 + 0.5) * k as f32).cos();
+        }
+        out[k] = acc * 2.0 * n_inv;
+    }
+    out
+}
+
+/// Inverse DCT-II reconstructing N weights from K coefficients.
+/// x[n] = X[0]/2 + Σ_{k=1..K} X[k] cos(π/N (n+0.5) k)
+pub fn cortex_from_dct(coeffs: &[f32; CORTEX_DCT_COEFFS]) -> Vec<f32> {
+    let n = CORTEX_FULL_SIZE;
+    let mut out = vec![0.0_f32; n];
+    let pi_n = std::f32::consts::PI / n as f32;
+    for i in 0..n {
+        let mut acc = coeffs[0] * 0.5;
+        for k in 1..CORTEX_DCT_COEFFS {
+            acc += coeffs[k] * (pi_n * (i as f32 + 0.5) * k as f32).cos();
+        }
+        out[i] = acc;
+    }
+    out
+}
+
+pub fn dct_coeffs_to_bytes(coeffs: &[f32; CORTEX_DCT_COEFFS]) -> [u8; CORTEX_DCT_BYTES] {
+    let mut out = [0u8; CORTEX_DCT_BYTES];
+    for (i, c) in coeffs.iter().enumerate() {
+        out[i*4..i*4+4].copy_from_slice(&c.to_le_bytes());
+    }
+    out
+}
+
+pub fn dct_coeffs_from_bytes(buf: &[u8]) -> Option<[f32; CORTEX_DCT_COEFFS]> {
+    if buf.len() < CORTEX_DCT_BYTES { return None; }
+    let mut out = [0.0_f32; CORTEX_DCT_COEFFS];
+    for i in 0..CORTEX_DCT_COEFFS {
+        let v = f32::from_le_bytes(buf[i*4..i*4+4].try_into().ok()?);
+        out[i] = if v.is_finite() { v } else { 0.0 };
+    }
+    Some(out)
+}
 
 // Trinity payload: gate weights (16*3=48 f32) + gate bias (3 f32) + reflex i8 (32*3=96)
 pub const TRINITY_GATE_FLOATS: usize = 16 * 3 + 3; // 51
@@ -423,6 +483,9 @@ pub struct DnaPayload {
     pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
     // --- v5 / TLV TRIN chunk: Trinity gate + reflex weights (None se DNA pré-v5) ---
     pub trinity: Option<TrinityWeights>,
+    // --- v6 / TLV CEQU chunk: cortex DCT compression (256 coeffs → 8192 weights).
+    // Quando presente, sobrescreve fast_weights raw. Reconstruction lossy ~32×.
+    pub cortex_dct: Option<[f32; CORTEX_DCT_COEFFS]>,
 }
 
 pub fn save_champion_dna(
@@ -524,6 +587,15 @@ pub fn save_champion_dna_v5(
         payload.add_chunk(Chunk::new(*TAG_TRINITY, t.to_bytes().to_vec()));
     }
 
+    // CEQU chunk (cortex equation): DCT compression. Substitui fast_weights raw
+    // ao carregar — economia ~32× mas lossy. Save sempre emite junto pra rollback.
+    {
+        // Convert i8 fast_weights → f32 → DCT 256 coeffs.
+        let cortex_f32: Vec<f32> = fast_weights.iter().map(|&w| w as f32 / 63.5).collect();
+        let dct = cortex_to_dct(&cortex_f32);
+        payload.add_chunk(Chunk::new(*TAG_CORTEX_EQ, dct_coeffs_to_bytes(&dct).to_vec()));
+    }
+
     // 3. Escreve no disco (Header V4 minimalista)
     let mut file = File::create(path)?;
     file.write_all(DNA_MAGIC)?; // "IARA"
@@ -585,11 +657,15 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                             // Trinity chunk (opcional, ausente em DNAs antigos).
                             let trinity = payload.find_chunk(TAG_TRINITY)
                                 .and_then(|c| TrinityWeights::from_bytes(&c.data));
+                            // CEQU chunk (cortex equation, opcional).
+                            let cortex_dct = payload.find_chunk(TAG_CORTEX_EQ)
+                                .and_then(|c| dct_coeffs_from_bytes(&c.data));
                             return Some(DnaPayload {
                                 fast_weights, fast_scale,
                                 slow_weights, slow_scale,
                                 generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
                                 trinity,
+                                cortex_dct,
                             });
                         }
                     }
@@ -648,6 +724,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             slow_weights: Some(slow_weights), slow_scale,
             generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
             trinity: None,
+            cortex_dct: None,
         });
         }
     }
@@ -672,6 +749,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             hypernet: HypernetSeed::default(),
             kan_knots: default_kan_knots(),
             trinity: None,
+            cortex_dct: None,
         });
     }
 
@@ -682,6 +760,40 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn dct_roundtrip_smooth_signal() {
+        // Smooth f(i) = sin(2πi/N) + 0.5*cos(4πi/N) — should reconstruct accurately.
+        let n = CORTEX_FULL_SIZE;
+        let original: Vec<f32> = (0..n).map(|i| {
+            let t = i as f32 / n as f32;
+            (2.0 * std::f32::consts::PI * t).sin() + 0.5 * (4.0 * std::f32::consts::PI * t).cos()
+        }).collect();
+        let coeffs = cortex_to_dct(&original);
+        let recovered = cortex_from_dct(&coeffs);
+        let max_err = original.iter().zip(recovered.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_err < 0.01, "smooth round-trip max err {} too high", max_err);
+    }
+
+    #[test]
+    fn dct_roundtrip_random_signal_lossy_but_bounded() {
+        // Random weights — 32× compression IS lossy, but RMS should stay reasonable.
+        let n = CORTEX_FULL_SIZE;
+        let mut s = 12345_u64;
+        let original: Vec<f32> = (0..n).map(|_| {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+        }).collect();
+        let coeffs = cortex_to_dct(&original);
+        let recovered = cortex_from_dct(&coeffs);
+        let mse = original.iter().zip(recovered.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>() / n as f32;
+        // Random signal lossy 32× → MSE ~ var × (1 - K/N) = 0.33 × 0.97 ≈ 0.32
+        assert!(mse < 0.4, "random-signal MSE {} unreasonable", mse);
+    }
 
     fn sample_weights(offset: i8) -> (Vec<i8>, Vec<i8>) {
         let fast: Vec<i8> = (0..DNA_FAST_SIZE).map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
