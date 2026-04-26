@@ -47,9 +47,9 @@
       "complexity": 3.0
     }
   ],
-  "selected_track_index": 1,
+  "selected_track_index": 0,
   "swarm_count": 50,
-  "time_scale": 6.0,
+  "time_scale": 4.0,
   "generation_timeout_s": 180.0,
   "rotate_tracks": false,
   "gens_per_track": 3

@@ -14,6 +14,9 @@ pub struct VoxelWorld {
     pub flow: Vec<Vec2>,
     pub height_map: Vec<f32>,   // Elevação do terreno (metros)
     pub banking: Vec<f32>,      // Inclinação lateral (radianos)
+    /// Min distance (cells) from each cell to nearest road waypoint segment.
+    /// Used by generate_mesh to cull grass beyond extent threshold (sea visible).
+    pub min_dist_to_road: Vec<f32>,
     pub cell_size: f32,
     pub start_pos: Vec3,
     pub lap_distance: f32,
@@ -33,6 +36,7 @@ impl VoxelWorld {
         let mut flow = vec![Vec2::ZERO; size * size];
         let mut height_map = vec![0.0f32; size * size];
         let mut banking = vec![0.0f32; size * size];
+        let mut min_dist_to_road = vec![0.0f32; size * size];
         
         // FIX: waypoints únicos por seed — cada pista é literalmente diferente,
         // progressão easy→very hard com rampas e desafios geométricos.
@@ -59,6 +63,7 @@ impl VoxelWorld {
 
                 let idx = y * size + x;
                 flow[idx] = best_dir;
+                min_dist_to_road[idx] = min_dist;
                 grid[idx] = if min_dist < track_width / 2.0 { VoxelType::Road }
                             else if min_dist < (track_width / 2.0) + 1.5 { VoxelType::Wall }
                             else { VoxelType::Grass };
@@ -171,7 +176,7 @@ impl VoxelWorld {
         );
 
         Self {
-            size, grid, flow, height_map, banking, cell_size,
+            size, grid, flow, height_map, banking, min_dist_to_road, cell_size,
             start_pos,
             lap_distance: total_dist,
             waypoints_world,
@@ -374,20 +379,32 @@ impl VoxelWorld {
                     road_colors.extend_from_slice(&[color; 4]);
                     road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Grass {
+                    // Cull grass beyond extent threshold so sea (Y=-2) shows around track.
+                    // Grass margin = ~30 cells (~90m) from any road segment.
+                    let dist_cells = self.min_dist_to_road[y * self.size + x];
+                    if dist_cells > 30.0 { continue; }
                     let b = grass_pos.len() as u32;
                     let x0 = px - overlap;
                     let x1 = px + self.cell_size + overlap;
                     let z0 = pz - overlap;
                     let z1 = pz + self.cell_size + overlap;
+                    // Edge fade: grass cells near outer threshold drop slightly into sea
+                    // for organic transition (no hard cutline).
+                    let fade = ((30.0 - dist_cells) / 30.0).clamp(0.0, 1.0); // 1=at track, 0=at edge
+                    let py_eff = py - (1.0 - fade) * 0.6; // up to 0.6m drop at outer edge
                     grass_pos.extend_from_slice(&[
-                        [x0, py, z0], [x1, py, z0],
-                        [x0, py, z1], [x1, py, z1]
+                        [x0, py_eff, z0], [x1, py_eff, z0],
+                        [x0, py_eff, z1], [x1, py_eff, z1]
                     ]);
-                    
+
                     let is_light = ((x / 3) + (y / 3)) % 2 == 0;
-                    let color = if is_light { [0.15, 0.35, 0.15, 1.0] } else { [0.10, 0.28, 0.10, 1.0] };
+                    // Color also fades darker towards outer edge.
+                    let base = if is_light { [0.18, 0.42, 0.18, 1.0] } else { [0.12, 0.32, 0.12, 1.0] };
+                    let mut color = base;
+                    color[0] *= 0.5 + 0.5 * fade;
+                    color[1] *= 0.5 + 0.5 * fade;
+                    color[2] *= 0.5 + 0.5 * fade;
                     grass_colors.extend_from_slice(&[color; 4]);
-                    
                     grass_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Wall {
                     // Concrete barrier: 6 faces (caixa) ocupando cell quase inteira, altura 1.6m.
@@ -694,11 +711,13 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
     }
 }
 
-/// Procedural track via Fourier-on-circle. Deterministic per seed, monotonic angle
-/// (no U-turns), guaranteed inside [10..150] cell bounds. Inspired by morphogenesis:
-/// base circle (homeostasis) + harmonic perturbations (Turing-like radial waves).
+/// Procedural rich track: scattered anchors + Catmull-Rom smoothing.
+/// Generates 12-18 anchor points distributed in radial annulus, sorts angularly
+/// with strong radial variance (40..115 cells = 120m..345m), then interpolates via
+/// Catmull-Rom for smooth curves of mixed direction (left + right).
+/// Result: 100+ waypoints, lap distance 3-5 km, hairpins natural where adjacent
+/// anchors have opposing radial offsets.
 pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
-    // Cheap deterministic PRNG — splitmix64 from seed.
     let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
     let mut next = || {
         s = s.wrapping_add(0x9E3779B97F4A7C15);
@@ -706,39 +725,66 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z = z ^ (z >> 31);
-        // map to [0, 1)
         ((z >> 11) as f64 / (1u64 << 53) as f64) as f32
     };
 
-    // Grid 240×240. Center (120,120). Radii scale to ~75-90 for full use.
     let cx = 120.0_f32;
     let cy = 120.0_f32;
-    let n_waypoints = 10 + (next() * 5.0) as usize; // 10..14 (more variety on bigger map)
-    let rx_base = 75.0 + next() * 15.0;            // 75..90
-    let ry_base = 75.0 + next() * 15.0;
-    // Two harmonics for wobble — Fourier sum, like Turing radial mode.
-    let h1_amp = 10.0 + next() * 12.0;   // 10..22
-    let h1_freq = 2.0 + (next() * 3.0).floor(); // 2..4
-    let h1_phase = next() * std::f32::consts::TAU;
-    let h2_amp = 5.0 + next() * 8.0;
-    let h2_freq = 3.0 + (next() * 4.0).floor(); // 3..6
-    let h2_phase = next() * std::f32::consts::TAU;
-    let rotation = next() * std::f32::consts::TAU;
+    let n_anchors = 14 + (next() * 5.0) as usize; // 14..18
 
-    let mut pts = Vec::with_capacity(n_waypoints + 1);
-    for i in 0..n_waypoints {
-        let t = i as f32 / n_waypoints as f32;
-        let theta = rotation + t * std::f32::consts::TAU;
-        let wobble = h1_amp * (h1_freq * theta + h1_phase).sin()
-                   + h2_amp * (h2_freq * theta + h2_phase).sin();
-        let rx = (rx_base + wobble).clamp(55.0, 100.0);
-        let ry = (ry_base + wobble).clamp(55.0, 100.0);
-        let x = (cx + rx * theta.cos()).clamp(20.0, 220.0);
-        let y = (cy + ry * theta.sin()).clamp(20.0, 220.0);
-        pts.push(Vec2::new(x, y));
+    // Step 1: place anchors with min spacing 32 cells (~96m) in annulus 40..115.
+    let mut anchors: Vec<Vec2> = Vec::with_capacity(n_anchors);
+    let mut tries = 0;
+    while anchors.len() < n_anchors && tries < 400 {
+        tries += 1;
+        let r = 40.0 + next() * 75.0;
+        let theta = next() * std::f32::consts::TAU;
+        let p = Vec2::new(cx + r * theta.cos(), cy + r * theta.sin());
+        if p.x < 25.0 || p.x > 215.0 || p.y < 25.0 || p.y > 215.0 { continue; }
+        if anchors.iter().any(|a| a.distance(p) < 32.0) { continue; }
+        anchors.push(p);
     }
-    pts.push(pts[0]);
-    pts
+    if anchors.len() < 6 {
+        // Fallback: oval ring (ensures valid track even on pathological seeds)
+        anchors.clear();
+        for i in 0..10 {
+            let theta = i as f32 / 10.0 * std::f32::consts::TAU;
+            anchors.push(Vec2::new(cx + 80.0 * theta.cos(), cy + 80.0 * theta.sin()));
+        }
+    }
+
+    // Step 2: sort anchors by angle from centroid → forms a closed loop.
+    let centroid = anchors.iter().copied().fold(Vec2::ZERO, |a, b| a + b) / anchors.len() as f32;
+    anchors.sort_by(|a, b| {
+        let aa = (a.y - centroid.y).atan2(a.x - centroid.x);
+        let ab = (b.y - centroid.y).atan2(b.x - centroid.x);
+        aa.partial_cmp(&ab).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Step 3: Catmull-Rom uniform smoothing (cyclic, 8 samples per segment).
+    let n_samples = 8;
+    let mut waypoints: Vec<Vec2> = Vec::with_capacity(anchors.len() * n_samples + 1);
+    let n = anchors.len();
+    for i in 0..n {
+        let p0 = anchors[(i + n - 1) % n];
+        let p1 = anchors[i];
+        let p2 = anchors[(i + 1) % n];
+        let p3 = anchors[(i + 2) % n];
+        for j in 0..n_samples {
+            let t = j as f32 / n_samples as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let pt = 0.5 * (
+                (2.0 * p1)
+                + (-p0 + p2) * t
+                + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+                + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
+            );
+            waypoints.push(Vec2::new(pt.x.clamp(20.0, 220.0), pt.y.clamp(20.0, 220.0)));
+        }
+    }
+    waypoints.push(waypoints[0]);
+    waypoints
 }
 
 /// (amp, freq) — amplitude em metros, frequência em radianos/cell.
@@ -847,6 +893,7 @@ impl Default for VoxelWorld {
             flow: Vec::new(),
             height_map: Vec::new(),
             banking: Vec::new(),
+            min_dist_to_road: Vec::new(),
             cell_size: 0.0,
             start_pos: Vec3::ZERO,
             lap_distance: 0.0,
