@@ -378,15 +378,31 @@ impl VoxelWorld {
                     
                     grass_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Wall {
+                    // Concrete barrier: 6 faces (caixa) ocupando cell quase inteira, altura 1.6m.
                     let b = wall_pos.len() as u32;
-                    let h = 1.0;
+                    let h = 1.6_f32;
+                    let inset = 0.05_f32;
+                    let x0 = px + inset;
+                    let x1 = px + self.cell_size - inset;
+                    let z0 = pz + inset;
+                    let z1 = pz + self.cell_size - inset;
+                    let y0 = py;
+                    let y1 = py + h;
+                    // 8 vértices do cubo
                     wall_pos.extend_from_slice(&[
-                        [px + self.cell_size * 0.4, 0.0, pz + self.cell_size * 0.4],
-                        [px + self.cell_size * 0.6, 0.0, pz + self.cell_size * 0.6],
-                        [px + self.cell_size * 0.4, h, pz + self.cell_size * 0.4],
-                        [px + self.cell_size * 0.6, h, pz + self.cell_size * 0.6]
+                        [x0, y0, z0], [x1, y0, z0], [x0, y0, z1], [x1, y0, z1],
+                        [x0, y1, z0], [x1, y1, z0], [x0, y1, z1], [x1, y1, z1],
                     ]);
-                    wall_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
+                    // 12 triangles (6 faces × 2 tris)
+                    let f = |a, b, c| [a, b, c];
+                    wall_indices.extend_from_slice(&[
+                        f(b+0, b+2, b+1), f(b+1, b+2, b+3), // bottom
+                        f(b+4, b+5, b+6), f(b+5, b+7, b+6), // top
+                        f(b+0, b+1, b+4), f(b+1, b+5, b+4), // -z
+                        f(b+2, b+6, b+3), f(b+3, b+6, b+7), // +z
+                        f(b+0, b+4, b+2), f(b+2, b+4, b+6), // -x
+                        f(b+1, b+3, b+5), f(b+3, b+7, b+5), // +x
+                    ].iter().flat_map(|tri| tri.iter().copied()).collect::<Vec<u32>>());
                 } else if v == VoxelType::Hole {
                     // Desenha Hole como quad PRETO 0.3m abaixo do road — visualmente
                     // óbvio pro espectador humano e ainda detectável pela retina (hit_dist

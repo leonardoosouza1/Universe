@@ -78,7 +78,7 @@ fn main() {
         primary_window: Some(window),
         ..default()
     }))
-    .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.1)))
+    .insert_resource(ClearColor(Color::srgb(0.42, 0.65, 0.88))) // céu azul claro
     .init_state::<AppState>()
     .insert_resource(config)
     .insert_resource(RaceSettings {
@@ -208,17 +208,21 @@ fn setup_scene(
     race.generation = 1;
 
     commands.spawn((
-        DirectionalLight { 
-            illuminance: 25000.0, 
-            shadows_enabled: true, 
-            color: Color::srgb(1.0, 0.98, 0.95),
-            ..default() 
+        DirectionalLight {
+            illuminance: 40000.0,
+            shadows_enabled: true,
+            color: Color::srgb(1.0, 0.96, 0.88), // sol levemente dourado
+            ..default()
         },
-        Transform::from_xyz(150.0, 450.0, 150.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(360.0, 600.0, 240.0).looking_at(Vec3::new(360.0, 0.0, 360.0), Vec3::Y),
         SimulationEntity,
     ));
-    
-    commands.insert_resource(AmbientLight { brightness: 25.0, color: Color::srgb(0.8, 0.85, 1.0), ..default() });
+
+    commands.insert_resource(AmbientLight {
+        brightness: 180.0,
+        color: Color::srgb(0.65, 0.78, 0.95), // azul céu indireto
+        ..default()
+    });
 
     let world = &world_res.0;
     let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
@@ -228,19 +232,36 @@ fn setup_scene(
     // uma pista NOVA sobreposta à anterior (efeito "duas pistas").
     let road_e = commands.spawn((
         Mesh3d(meshes.add(r_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.13, 0.13, 0.15),
+            perceptual_roughness: 0.65,
+            metallic: 0.05,
+            reflectance: 0.4,
+            ..default()
+        })),
         SimulationEntity,
     )).id();
 
     let grass_e = commands.spawn((
         Mesh3d(meshes.add(g_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.18, 0.42, 0.18),
+            perceptual_roughness: 0.95,
+            metallic: 0.0,
+            ..default()
+        })),
         SimulationEntity,
     )).id();
 
     let wall_e = commands.spawn((
         Mesh3d(meshes.add(w_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.92, 0.93, 0.95), // concreto branco F1
+            perceptual_roughness: 0.55,
+            metallic: 0.0,
+            reflectance: 0.3,
+            ..default()
+        })),
         SimulationEntity,
     )).id();
 
