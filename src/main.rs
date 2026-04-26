@@ -170,22 +170,35 @@ fn setup_main_camera(mut commands: Commands) {
     use bevy::core_pipeline::bloom::Bloom;
     use bevy::core_pipeline::tonemapping::Tonemapping;
     use bevy::core_pipeline::motion_blur::MotionBlur;
+    use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel,
+                    VolumetricFog, ScreenSpaceReflections};
     use bevy_atmosphere::prelude::AtmosphereCamera;
+
     commands.spawn((
         Camera3d::default(),
         Camera {
-            hdr: true, // necessário pra bloom + tonemap ACES
+            hdr: true, // bloom + tonemap chain
             ..default()
         },
-        Msaa::Sample4,
+        Msaa::Off, // SSAO requires MSAA off; AA via fxaa/taa instead
         Tonemapping::AcesFitted,
-        Bloom::NATURAL, // glow nas luzes (sol, janelas, carros emissive)
+        Bloom::NATURAL,
         MotionBlur {
             shutter_angle: 0.5,
             samples: 2,
             ..default()
         },
-        AtmosphereCamera::default(), // skybox procedural Hosek-Wilkie
+        ScreenSpaceAmbientOcclusion {
+            quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+            ..default()
+        },
+        ScreenSpaceReflections::default(),
+        VolumetricFog {
+            ambient_intensity: 0.05,
+            jitter: 0.5,
+            ..default()
+        },
+        AtmosphereCamera::default(),
         Transform::from_xyz(0.0, 100.0, 300.0).looking_at(Vec3::ZERO, Vec3::Y),
         bevy::pbr::DistanceFog {
             color: Color::srgb(0.55, 0.72, 0.88),
@@ -237,9 +250,10 @@ fn setup_scene(
         DirectionalLight {
             illuminance: 40000.0,
             shadows_enabled: true,
-            color: Color::srgb(1.0, 0.96, 0.88), // sol levemente dourado
+            color: Color::srgb(1.0, 0.96, 0.88),
             ..default()
         },
+        bevy::pbr::VolumetricLight, // god rays do sol via VolumetricFog
         Transform::from_xyz(360.0, 600.0, 240.0).looking_at(Vec3::new(360.0, 0.0, 360.0), Vec3::Y),
         SimulationEntity,
     ));
