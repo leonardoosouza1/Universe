@@ -124,6 +124,7 @@ fn main() {
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))
     .insert_resource(EnvironmentalState::default())
     .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin, MenuPlugin))
+    .add_plugins(bevy_atmosphere::plugin::AtmospherePlugin)
     .add_systems(Startup, (setup_main_camera, apply_time_scale, headless_autostart))
     .add_systems(OnEnter(AppState::Simulation), (setup_scene, setup_hud_container, apply_time_scale))
     .add_systems(OnExit(AppState::Simulation), cleanup_simulation)
@@ -166,9 +167,25 @@ fn cleanup_simulation(
 }
 
 fn setup_main_camera(mut commands: Commands) {
+    use bevy::core_pipeline::bloom::Bloom;
+    use bevy::core_pipeline::tonemapping::Tonemapping;
+    use bevy::core_pipeline::motion_blur::MotionBlur;
+    use bevy_atmosphere::prelude::AtmosphereCamera;
     commands.spawn((
         Camera3d::default(),
+        Camera {
+            hdr: true, // necessário pra bloom + tonemap ACES
+            ..default()
+        },
         Msaa::Sample4,
+        Tonemapping::AcesFitted,
+        Bloom::NATURAL, // glow nas luzes (sol, janelas, carros emissive)
+        MotionBlur {
+            shutter_angle: 0.5,
+            samples: 2,
+            ..default()
+        },
+        AtmosphereCamera::default(), // skybox procedural Hosek-Wilkie
         Transform::from_xyz(0.0, 100.0, 300.0).looking_at(Vec3::ZERO, Vec3::Y),
         bevy::pbr::DistanceFog {
             color: Color::srgb(0.55, 0.72, 0.88),
