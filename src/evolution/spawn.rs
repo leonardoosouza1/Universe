@@ -203,7 +203,8 @@ pub fn spawn_swarm(
     // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     if current_best_w.is_none() {
         if let Some(dna) = load_champion_dna("CHAMPION.dna") {
-            current_best_w = Some(dna.fast_weights);
+            // Dequantize i8 DNA disk → f32 runtime (cortex agora f32).
+            current_best_w = Some(dna.fast_weights.iter().map(|&w| w as f32 / 127.0).collect());
             current_best_s = dna.fast_scale;
             if let Some(sw) = dna.slow_weights {
                 current_best_slow_w = Some(sw);
@@ -281,27 +282,27 @@ pub fn spawn_swarm(
     // block_size=128 da a linha inteira; aqui usamos 64 p/ meia-linha, mantendo
     // granularidade razoavel sem fragmentar demais). Para slow_weights usamos
     // block_size=32 (metade dos 8 outputs × 32 inputs).
-    let crossover_block = |a: &[i8], b: &[i8], block_size: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<f32> {
+    let crossover_block = |a: &[f32], b: &[f32], block_size: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<f32> {
         let n = a.len();
         let mut child = vec![0.0f32; n];
         let mut i = 0;
         while i < n {
             let end = (i + block_size).min(n);
             let from = if rng.random_bool(0.5) { a } else { b };
-            for j in i..end { child[j] = from[j] as f32; }
+            for j in i..end { child[j] = from[j]; }
             i = end;
         }
         child
     };
 
-    // Tier 4.1 — SPECIES SIMILARITY via sign-hamming distance.
-    // Compara pesos ternarios: fraction de posicoes onde ambos os signos batem.
-    // Retorna [0..1]: 1.0 = identicos, 0.5 = random, 0.0 = opostos.
-    let species_similarity = |a: &[i8], b: &[i8]| -> f32 {
+    // SPECIES SIMILARITY (f32 weights): fraction de posições onde signos batem.
+    let species_similarity = |a: &[f32], b: &[f32]| -> f32 {
         let n = a.len().min(b.len()).max(1);
         let mut agree = 0usize;
         for i in 0..n {
-            if a[i].signum() == b[i].signum() { agree += 1; }
+            let sa = a[i].signum();
+            let sb = b[i].signum();
+            if sa == sb || (sa == 0.0 && sb == 0.0) { agree += 1; }
         }
         agree as f32 / n as f32
     };
@@ -424,16 +425,14 @@ pub fn spawn_swarm(
 
         if slot_is_champion || simple_mut_slot {
             if let Some(ref champion) = current_best_w {
-                let exact: Vec<f32> = champion.iter().map(|&w| w as f32).collect();
-                engine.instinct_layer.quantize(&exact);
+                // champion já é Vec<f32> agora (cortex f32 runtime).
+                engine.instinct_layer.quantize(champion);
                 engine.instinct_layer.set_scale(current_best_s);
-                // Tier 6.4 LITE: se hypernet ativa, sobrescreve primeiros 2048 pesos
-                // com expansão ternária determinística do seed (64 coeffs → 2048 i8).
-                // Inactive → zero-cost (skip). Mantém restante dos pesos intactos.
+                // Hypernet expand returns Vec<i8> ternary; convert to f32 small magnitude.
                 if current_best_hypernet.active {
                     let expanded = current_best_hypernet.expand();
                     let n = expanded.len().min(engine.instinct_layer.weights.len());
-                    engine.instinct_layer.weights[..n].copy_from_slice(&expanded[..n]);
+                    for i in 0..n { engine.instinct_layer.weights[i] = expanded[i] as f32 / 127.0; }
                 }
                 if let Some(ref champion_slow) = current_best_slow_w {
                     // Option 4: i8 DNA → f32 FloatLinear weights (decode factor 63.5).
@@ -445,13 +444,18 @@ pub fn spawn_swarm(
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
             morpho_this = current_best_morpho;
 
-            // simple_elitism: slot != 0 sofre mutação ternária pontual.
-            // Taxa efetiva 2× a padrão pra cobrir espaço sem crossover/priming.
+            // simple_elitism: slot != 0 sofre mutação gaussiana suave (f32 runtime).
+            // Box-Muller σ=0.05 — pequenos ajustes em vez de flips disruptivos.
             if simple_mut_slot {
                 let rate_boosted = (effective_mutation_rate * 2.0).min(0.25);
                 for w in engine.instinct_layer.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
-                        *w = match rng.random_range(0..3) { 0 => -1, 1 => 0, _ => 1 };
+                        let u1 = (rng.random::<f32>()).max(1e-7);
+                        let u2 = rng.random::<f32>();
+                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        // σ=0.12 — cortex f32 com 8192 pesos precisa step maior pra convergir
+                        // em poucas gens. Reduzir depois quando rede estabilizar.
+                        *w = (*w + 0.12 * z).clamp(-2.0, 2.0);
                     }
                 }
                 // Mutação leve no slow brain também (scale menor porque é float).
@@ -646,8 +650,10 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&mutated_fast);
                 engine.instinct_layer.set_scale((parent_a.fast_scale + parent_b.fast_scale) * 0.5);
 
-                // Option 4: FloatLinear slow — crossover in f32 space (decode /63.5), gaussian σ=0.02.
-                let crossed_slow = crossover_block(&parent_a.slow_weights, &parent_b.slow_weights, 32, &mut rng);
+                // slow_weights are i8 (slow_brain still ternary). Convert to f32 for crossover.
+                let pa_slow_f: Vec<f32> = parent_a.slow_weights.iter().map(|&w| w as f32).collect();
+                let pb_slow_f: Vec<f32> = parent_b.slow_weights.iter().map(|&w| w as f32).collect();
+                let crossed_slow = crossover_block(&pa_slow_f, &pb_slow_f, 32, &mut rng);
                 let mut mutated_slow: Vec<f32> = crossed_slow.into_iter().map(|w| w / 63.5).collect();
                 for w in mutated_slow.iter_mut() {
                     if rng.random_bool(effective_mutation_rate) {
@@ -753,11 +759,10 @@ pub fn spawn_swarm(
         #[cfg(not(feature = "simple_elitism"))]
         const GRID_SPAWNS: usize = 30; // rollback v7 (grid 50 regressed)
         let (spawn_pos, spawn_rot, spawn_progress) = if i < GRID_SPAWNS {
-            // Grid tradicional na largada (grade 2 colunas × 15 fileiras).
-            // Mantém a largura original (~6m) pra caber na pista; ocupa mais profundidade
-            // (15 × 6m = 90m de grid atrás da largada — cabe numa reta de Interlagos).
-            // Grid 2 col × N row tradicional, MAS em simple_elitism com swarm=80
-            // usa 4 colunas para não ficar 240m atrás da largada.
+            // Grid spawn ao longo dos waypoints (segue a pista). Cada row recua 6m
+            // em arco da pista, lateral spread por col mantém dentro do road width.
+            // Antes: avançava reto da start_pos → curvas Catmull-Rom punham carros
+            // fora da pista. Agora: pega waypoint segment N atrás e posiciona lá.
             #[cfg(feature = "simple_elitism")]
             const GRID_COLS: usize = 4;
             #[cfg(not(feature = "simple_elitism"))]
@@ -765,10 +770,37 @@ pub fn spawn_swarm(
             let row = i / GRID_COLS;
             let col = i % GRID_COLS;
             let col_offset = col as f32 - (GRID_COLS as f32 - 1.0) / 2.0;
-            let p = world.start_pos
-                - Vec3::new(start_angle.cos(), 0.0, start_angle.sin()) * (row as f32 * 6.0)
-                + Vec3::new(-start_angle.sin(), 0.0, start_angle.cos()) * (col_offset * 3.0);
-            (p, Quat::from_rotation_y(-start_angle), 0.0)
+            let back_dist = row as f32 * 6.0; // metros pra trás ao longo da pista
+
+            // Localiza waypoint do segmento da start_pos.
+            let n_wp = world.waypoints_world.len();
+            let start_progress = world.start_progress;
+            let lap = world.lap_distance.max(1.0);
+            // Progresso alvo (atrás da start, com wrap).
+            let target_progress = (start_progress - back_dist + lap) % lap;
+            // Acha segmento que cobre target_progress via waypoint_arcs.
+            let mut seg = 0usize;
+            for k in 0..n_wp.saturating_sub(1) {
+                if world.waypoint_arcs[k] <= target_progress
+                   && target_progress < *world.waypoint_arcs.get(k+1).unwrap_or(&lap) {
+                    seg = k;
+                    break;
+                }
+            }
+            let wp_a = world.waypoints_world[seg];
+            let wp_b = world.waypoints_world[(seg + 1).min(n_wp - 1)];
+            let seg_arc_a = world.waypoint_arcs[seg];
+            let seg_arc_b = *world.waypoint_arcs.get(seg+1).unwrap_or(&lap);
+            let t = if seg_arc_b > seg_arc_a {
+                ((target_progress - seg_arc_a) / (seg_arc_b - seg_arc_a)).clamp(0.0, 1.0)
+            } else { 0.0 };
+            let center_2d = wp_a + (wp_b - wp_a) * t;
+            let dir_2d = (wp_b - wp_a).normalize_or_zero();
+            let perp_2d = Vec2::new(-dir_2d.y, dir_2d.x);
+            let pos_2d = center_2d + perp_2d * (col_offset * 3.0);
+            let p = Vec3::new(pos_2d.x, world.start_pos.y, pos_2d.y);
+            let angle = dir_2d.y.atan2(dir_2d.x);
+            (p, Quat::from_rotation_y(-angle), target_progress)
         } else {
             // Distribui ao longo dos waypoints. Fração = 25%, 50%, 75%, 87%... em faixa circular.
             let distributed_idx = (i - GRID_SPAWNS) as f32;

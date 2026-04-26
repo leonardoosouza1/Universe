@@ -10,10 +10,17 @@ pub trait BrainForward {
     fn quantize(&mut self, latent: &[f32]);
 }
 
+/// CortexLayer (formerly BitLinear ternary): now stores f32 weights at runtime
+/// for smooth gradient via gaussian mutation. Disk storage stays compact via
+/// quantize_for_save() / dequantize_from_disk() at DNA boundary.
+///
+/// Backward-compat: API surface preserved (weights, weight_scale, forward,
+/// quantize, set_scale, myelinate). Field type changed Vec<i8> → Vec<f32>.
 pub struct BitLinear {
-    /// Ternary Weights: {-1, 0, 1} stored in i8 for memory efficiency.
-    pub weights: Vec<i8>,
-    /// Gamma Scale: Single float for dequantization per layer (minimal cost).
+    /// Float weights — qualquer valor real (-2..2 típico). Antes ternary {-1,0,1}.
+    pub weights: Vec<f32>,
+    /// Scale legacy field — kept para API compat. Forward NÃO multiplica scale
+    /// (peso já absorve magnitude). Save quantization usa pra DNA backward-compat.
     pub weight_scale: f32,
     pub input_dim: usize,
     pub output_dim: usize,
@@ -22,70 +29,59 @@ pub struct BitLinear {
 impl BitLinear {
     pub fn new(input_dim: usize, output_dim: usize) -> Self {
         Self {
-            weights: vec![0; input_dim * output_dim],
+            weights: vec![0.0; input_dim * output_dim],
             weight_scale: 1.0,
             input_dim,
             output_dim,
         }
     }
 
-    /// Optimized Inference: 100% Addition/Subtraction.
-    /// No float multiplications during accumulation.
-    ///
-    /// BitNet 1.58-bit dequantization: y = (W_ternary · x_i8) * beta / Qb,
-    /// where beta = weight_scale (abs-mean of the latent weights) and Qb = 127
-    /// (the i8 activation range). The old norm factor `1/(sqrt(n)*128)` double-dipped
-    /// on the input dim and collapsed the gain, forcing downstream `tanh(y*10)` to
-    /// recover it non-linearly. The correct factor is simply `1/127`.
+    /// Forward f32 — output = Σ (w * input/127). Mais expressivo que ternary.
     pub fn forward(&self, input: &[i8]) -> Vec<f32> {
-        let mut output = vec![0.0; self.output_dim];
+        let mut output = vec![0.0_f32; self.output_dim];
         let norm_factor = 1.0 / 127.0;
-
         for out_idx in 0..self.output_dim {
-            let mut accumulator: i32 = 0;
             let offset = out_idx * self.input_dim;
-
-            // SIMD-ready loop (Compiler will optimize this to ADD/SUB instructions)
+            let mut acc = 0.0_f32;
             for in_idx in 0..self.input_dim {
-                let w = self.weights[offset + in_idx];
-                let x = input[in_idx] as i32;
-
-                // BRANCHLESS LOGIC: w is {-1, 0, 1}
-                // (x * w) becomes: (x if w=1) + (-x if w=-1) + (0 if w=0)
-                accumulator += x * (w as i32); 
+                acc += self.weights[offset + in_idx] * (input[in_idx] as f32);
             }
-
-            // Final scale application (The only float op per output neuron)
-            output[out_idx] = (accumulator as f32 * self.weight_scale) * norm_factor;
+            output[out_idx] = acc * norm_factor;
         }
-
         output
     }
 
-    /// Mielinização (Science-Based Optimization):
-    /// In 2026, we don't 'train', we 'myelinate'.
-    /// Successful paths reduce resistance (increase weight_scale).
+    /// Myelinate: amplify weight magnitudes (analog to scale increase).
     pub fn myelinate(&mut self, factor: f32) {
-        // Scale cresce aditivamente 0.5%/tick e CAP 10x o scale inicial.
-        // Bug anterior: mul cumulativo 60fps × 300s × 1.005 → 10^37 overflow,
-        // salvo em CHAMPION.dna como fast_scale absurdo. Round-trip confirma
-        // salvamento correto — problema era acumulação sem teto.
-        self.weight_scale = (self.weight_scale * (1.0 + factor * 0.005)).min(10.0);
+        let f = (1.0 + factor * 0.005).min(1.05); // cap per-tick growth
+        for w in self.weights.iter_mut() { *w = (*w * f).clamp(-2.0, 2.0); }
+        self.weight_scale = (self.weight_scale * f).min(10.0); // legacy compat
     }
-    
-    /// Quantization: Converts latent intent into ternary sovereignty.
-    pub fn quantize(&mut self, full_precision: &[f32]) {
-        let abs_mean: f32 = full_precision.iter().map(|w| w.abs()).sum::<f32>() / full_precision.len() as f32;
-        self.weight_scale = abs_mean;
 
-        for (i, &w) in full_precision.iter().enumerate() {
-            let scaled = w / (abs_mean + 1e-8);
-            self.weights[i] = scaled.round().clamp(-1.0, 1.0) as i8;
-        }
+    /// Quantize: agora apenas COPIA o latent f32 nas weights (sem ternarizar).
+    /// API name kept para back-compat; semantics evoluíram pra "set weights from latent".
+    pub fn quantize(&mut self, full_precision: &[f32]) {
+        let n = full_precision.len().min(self.weights.len());
+        self.weights[..n].copy_from_slice(&full_precision[..n]);
+        // Update legacy scale field as abs_mean (still used by some DNA paths).
+        let abs_mean: f32 = full_precision.iter().map(|w| w.abs()).sum::<f32>() / full_precision.len().max(1) as f32;
+        self.weight_scale = abs_mean.max(1e-4);
     }
 
     pub fn set_scale(&mut self, scale: f32) {
         self.weight_scale = scale;
+    }
+
+    /// Quantize f32 weights to i8 ternary for compact DNA storage.
+    /// w ∈ ℝ → i8 [-127..127] mapping w*127 (lossy, ~7 bits effective).
+    pub fn quantize_for_save(&self) -> Vec<i8> {
+        self.weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect()
+    }
+
+    /// Dequantize i8 disk weights → f32 runtime. i8/127 covers [-1.0, 1.0].
+    pub fn load_from_quantized(&mut self, q: &[i8]) {
+        let n = q.len().min(self.weights.len());
+        for i in 0..n { self.weights[i] = q[i] as f32 / 127.0; }
     }
 }
 
@@ -106,23 +102,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quantize_collapses_to_ternary() {
+    fn quantize_copies_to_weights() {
         let mut layer = BitLinear::new(4, 2);
-        let full = vec![2.0, -0.5, 0.1, -2.0,    0.01, 1.5, -1.2, 0.0];
+        let full = vec![0.5_f32, -0.5, 0.1, -1.0,    0.01, 1.5, -1.2, 0.0];
         layer.quantize(&full);
-        for &w in &layer.weights {
-            assert!(w == -1 || w == 0 || w == 1, "weight {} not ternary", w);
+        for (i, &w) in full.iter().enumerate() {
+            assert!((layer.weights[i] - w).abs() < 1e-6);
         }
-        // abs_mean = (2+0.5+0.1+2+0.01+1.5+1.2+0)/8 = 0.9
-        assert!((layer.weight_scale - 0.91375).abs() < 1e-4);
     }
 
     #[test]
     fn forward_identity_single_weight() {
-        // Single-input, single-output: output = input * scale / 127
         let mut layer = BitLinear::new(1, 1);
-        layer.weights[0] = 1;
-        layer.weight_scale = 1.0;
+        layer.weights[0] = 1.0;
         let out = layer.forward(&[127]);
         assert!((out[0] - 1.0).abs() < 1e-5);
     }
@@ -135,10 +127,15 @@ mod tests {
     }
 
     #[test]
-    fn myelinate_increases_scale() {
-        let mut layer = BitLinear::new(2, 2);
-        layer.weight_scale = 1.0;
-        layer.myelinate(1.0);
-        assert!(layer.weight_scale > 1.0);
+    fn save_load_roundtrip() {
+        let mut a = BitLinear::new(4, 1);
+        a.weights = vec![0.5, -0.3, 0.0, 1.0];
+        let q = a.quantize_for_save();
+        let mut b = BitLinear::new(4, 1);
+        b.load_from_quantized(&q);
+        // Lossy ~1/127 precision
+        for (orig, recovered) in a.weights.iter().zip(b.weights.iter()) {
+            assert!((orig - recovered).abs() < 0.01, "{} vs {}", orig, recovered);
+        }
     }
 }

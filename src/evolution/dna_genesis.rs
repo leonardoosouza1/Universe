@@ -130,7 +130,7 @@ impl MorphoGenes {
 
 #[derive(Clone)]
 pub struct EliteDna {
-    pub fast_weights: Vec<i8>,
+    pub fast_weights: Vec<f32>, // f32 runtime; quantize só ao salvar DNA
     pub fast_scale: f32,
     pub slow_weights: Vec<i8>,
     pub slow_scale: f32,

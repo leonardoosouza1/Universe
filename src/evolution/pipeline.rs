@@ -22,7 +22,10 @@ pub(super) const NICHE_DISTANCE: u32 = 8;
 /// representative is within NICHE_DISTANCE, otherwise opens a new one.
 pub(super) fn cluster_elites(elites: &[EliteDna]) -> (Vec<usize>, Vec<usize>) {
     let fps: Vec<BehaviorFingerprint> = elites.iter()
-        .map(|e| BehaviorFingerprint::from_weights(&e.fast_weights))
+        .map(|e| {
+            let q: Vec<i8> = e.fast_weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
+            BehaviorFingerprint::from_weights(&q)
+        })
         .collect();
     let mut reps: Vec<BehaviorFingerprint> = Vec::new();
     let mut ids: Vec<usize> = Vec::with_capacity(elites.len());
@@ -328,7 +331,7 @@ pub(super) fn evolution_pipeline(
                 + entropy_norm * 20.0
                 + chaos_alive_bonus;
             // ---- end Trinity fitness ----
-            let fast_weights: Vec<i8> = r.engine.instinct_layer.weights.clone();
+            let fast_weights: Vec<f32> = r.engine.instinct_layer.weights.clone();
             let mut scar_mask = vec![0u8; fast_weights.len()];
             // 1) O próprio top-10 morreu em BATIDA? Marca direto.
             let own_batida = matches!(
@@ -339,10 +342,11 @@ pub(super) fn evolution_pipeline(
             //    Proxy: população afeta pool inteiro via reprodução compartilhada.
             let lineage_batida = gen_batidas > 0 && rank < 3;
             if own_batida || lineage_batida {
-                let seed_bias = fast_weights.iter().map(|&w| w as i64).sum::<i64>() as u64
+                let q: Vec<i8> = fast_weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
+                let seed_bias = q.iter().map(|&w| w as i64).sum::<i64>() as u64
                     ^ (race.generation as u64).wrapping_mul(0xA5A5_A5A5)
                     ^ (rank as u64).wrapping_mul(0x1234_5678);
-                let created = apply_catastrophic_scars(&mut scar_mask, &fast_weights, seed_bias);
+                let created = apply_catastrophic_scars(&mut scar_mask, &q, seed_bias);
                 scars_created_this_gen += created;
             }
             let candidate = EliteDna {
@@ -733,9 +737,11 @@ pub(super) fn evolution_pipeline(
                     }
                 };
                 // FIX Bug 1: persistir morpho + hypernet + trinity do champion.
+                // Cortex agora f32 runtime — quantize pra i8 no save (compressão DNA preservada).
+                let weights_q: Vec<i8> = weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
                 let _ = crate::evolution::dna_genesis::save_champion_dna_v5(
                     "CHAMPION.dna",
-                    &weights, scale,
+                    &weights_q, scale,
                     &slow_weights, slow_scale,
                     race.generation as u32,
                     race.seed as u32,

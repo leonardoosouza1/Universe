@@ -8,7 +8,7 @@ pub const FITNESS_HISTORY_CAP: usize = 100;
 pub struct RaceSettings {
     pub generation: usize,
     pub seed: u64,
-    pub best_weights: Option<Vec<i8>>,
+    pub best_weights: Option<Vec<f32>>,
     pub best_scale: f32,
     pub best_slow_weights: Option<Vec<i8>>,
     pub best_slow_scale: f32,
