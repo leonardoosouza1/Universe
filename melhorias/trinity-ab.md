@@ -129,6 +129,36 @@ Battery: 5 random seeds × 3 gens, swarm=50, speed=16x.
 3. Streaming chunk-based (4×4 cell chunks) pra map 1024×1024 sem custo render.
 4. Curriculum: easy procedural → harder procedural (ramp wobble amplitude).
 
+---
+
+## Battery v2 (2026-04-26): 5 seeds × 5 gens — BREAKTHROUGH
+
+| Seed | Best champion | Best median | Min deaths/gen |
+|---|---|---|---|
+| 7777 | 5333m | 1430m (gen 4) | 23/50 |
+| 4242 | 5234m | 1402m (gen 4) | 28/50 |
+| 1337 | 5605m | 1121m (gen 4) | 29/50 |
+| 9001 | 5463m | 1283m (gen 4) | 31/50 |
+| 5555 | 5389m | **4240m** (gen 4) | **14/50** |
+
+**Cap atingido**: 5605m ≈ 5 voltas × 1067m (race-finish terminator).
+
+**Curva de aprendizado** (média seeds):
+- gen 1: champion 535m, median 380m, 50/50 mortos
+- gen 2: champion 3447m, median 421m, 49/50
+- gen 3: champion 2402m, median 683m, 49/50 (ruído aqui)
+- gen 4: champion **5404m**, median **1895m**, 25/50 mortos
+- gen 5: champion 5234m, median 1070m, 38/50 (mortes voltam — swarm satura?)
+
+**Vs baseline**:
+- Champion: 703m → 5605m (**8×**)
+- Median: 282m (1 gen single-shot) → 4240m (gen 4 5555) (**15×**)
+- Sobrevivência: 0% → 72% (gen 4 5555: 36/50 vivos)
+
+**Conclusão**: hardcoded tracks eram cap dominante. Trinity já tinha capacidade pra completar 5 voltas — pista limitava. Procedural unlocked full learning curve em 4 gens.
+
+**Hipótese gen 5 retração**: sem holes reintroduzidos, evolução talvez cai em mínimo local "ir até cap então parar". Curriculum/holes talvez sejam necessários pra empurrar além do cap.
+
 ## Trade-offs aceitáveis
 
 | Ganho | Custo |
