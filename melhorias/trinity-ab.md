@@ -71,6 +71,35 @@ Headless `--gens 8 --swarm 80 --speed 16`, fresh champion (CHAMPION.dna removed 
 
 **Lição**: anti-stall HARD veto sem gate de obstáculo era armadilha. Carro lento em curva = reverse = STAGNATION. Fix obrigatório: só fire reverse quando há razão física (parede/TTC).
 
+---
+
+## A/B v3 (2026-04-26): slip_avg + curv25 wired
+
+`slip_avg` lido direto de `body.wheels[].slip_ratio+slip_angle` (lag 1-tick). `curv25` derivado dos canais 79/80 da retina × 60 (saturated curve ≈ 60).
+
+Ativa Tier 1+2 soft proposals que estavam dormentes: **TCS** (slip>0.4 + thr>0.5), **ESP** (yaw_rate>1.5 já estava ativo), **CornerLim** (curv25>30 + speed>60kmh).
+
+| Gen | NET max | median |
+|---|---|---|
+| 1 | 234 | 0 |
+| 2 | 694 | 0 |
+| 3 | 299 | **282** |
+| 4 | 593 | 0 |
+| 5 | 708 | 0 |
+| 6 | 598 | 0 |
+| 7 | 716 | 0 |
+| 8 | 703 | 0 |
+
+**Marco**: gen 3 com **median=282m** — primeira vez em todos os A/Bs que mediana sai de zero. Swarm inteiro progride, não só top-N.
+
+| Métrica | v2 | v3 |
+|---|---|---|
+| Champion gen 8 | 719m | 703m |
+| Gens >700m | 5/8 | 3/8 |
+| Mediana >0 | 0/8 | 1/8 |
+
+Trade: TCS/CornerLim adicionam oscilação no topo (variância sobe), mas swarm mediano destrava. Próximo: tunar threshold TCS (0.4 talvez agressivo) ou attacar mediana-zero direto.
+
 ## Trade-offs aceitáveis
 
 | Ganho | Custo |

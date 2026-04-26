@@ -883,8 +883,12 @@ pub(super) fn update_racers(
             } else { 99.0 };
             // yaw_rate: pull from body angular velocity if available (cheap local).
             let yaw_rate: f32 = if let Some(ref body) = opt_body { body.angular_velocity.y } else { 0.0 };
-            // slip_avg: wheels accessible only in physics block downstream — safe default.
-            let slip_avg: f32 = 0.0;
+            // slip_avg: read directly from wheel state (1-tick lag from physics, fine).
+            let slip_avg: f32 = if let Some(ref body) = opt_body {
+                body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0
+            } else { 0.0 };
+            // curv25: from retina curvature channels (78..80). Saturated curve ≈ 1.0; scale to sentinel unit.
+            let curv25: f32 = ((sensory_wave[79] as f32).abs() + (sensory_wave[80] as f32).abs()) / 254.0 * 60.0;
             let safety_state = crate::safety::SafetyState {
                 speed_kmh,
                 yaw_rate,
@@ -897,7 +901,7 @@ pub(super) fn update_racers(
                 // wall_time already in real seconds; gate on near-stop so it reads "pinned vs scraping".
                 pinado_timer: if speed_kmh < 8.0 { racer.wall_time } else { 0.0 },
                 rain: env.weather_wetness,
-                curv25: 0.0,         // wired later from racing_line
+                curv25,
                 current_thr: cortex_intent[0],
             };
             let chaos_in = crate::chaos::ChaosInput {
