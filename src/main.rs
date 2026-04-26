@@ -28,8 +28,24 @@ fn main() {
     let time_scale_override: Option<f32> = args.iter().position(|a| a == "--speed")
         .and_then(|i| args.get(i+1))
         .and_then(|s| s.parse().ok());
+    let seed_override: Option<u64> = args.iter().position(|a| a == "--seed")
+        .and_then(|i| args.get(i+1))
+        .and_then(|s| s.parse().ok());
     if let Some(n) = swarm_override { config.swarm_count = n; }
     if let Some(s) = time_scale_override { config.time_scale = s; }
+    if let Some(seed) = seed_override {
+        // Inject a synthetic procedural track at index 0 so all downstream code (rotate
+        // off, current_track) uses the requested seed unchanged. Width matches default.
+        config.tracks.insert(0, universe::config::TrackProfile {
+            name: format!("Procedural-{seed}"),
+            seed,
+            track_width: 44.0,
+            complexity: 0.5,
+        });
+        config.selected_track_index = 0;
+        config.rotate_tracks = false;
+        println!("🌱 SEED OVERRIDE | seed={} (procedural track)", seed);
+    }
     if headless { config.time_scale = config.time_scale.max(8.0); }
 
     // Tier 5.3: ativa rotação de pistas via CLI (`--rotate`) ou env (UNIVERSE_ROTATE=1).

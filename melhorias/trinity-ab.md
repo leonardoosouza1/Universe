@@ -100,6 +100,35 @@ Ativa Tier 1+2 soft proposals que estavam dormentes: **TCS** (slip>0.4 + thr>0.5
 
 Trade: TCS/CornerLim adicionam oscilação no topo (variância sobe), mas swarm mediano destrava. Próximo: tunar threshold TCS (0.4 talvez agressivo) ou attacar mediana-zero direto.
 
+---
+
+## Battery v1 (2026-04-26): procedural tracks + multi-seed
+
+Procedural waypoint generator: Fourier-on-circle (base oval + 2 harmonic radial wobbles, splitmix64 seed). Determinístico, monotônico, sem U-turns. Inspirado em morfogênese (círculo + Turing radial mode). Sem holes hostis (procedural skip).
+
+Battery: 5 random seeds × 3 gens, swarm=50, speed=16x.
+
+| Seed | Champion (best gen) | Best median |
+|---|---|---|
+| 7777 | 868m | 386m |
+| 4242 | 1318m | 647m |
+| 1337 | 2242m | 349m |
+| 9001 | **2337m** | 445m |
+| 5555 | 1518m | 440m |
+
+**Resultados vs v3 baseline (Interlagos hardcoded)**:
+- Champion top: 703m → **2337m** (3.3×)
+- Mediana >0: 1/8 gens → **14/15 gens** (5/5 seeds estáveis)
+- Seed 5555 gen 1: median=440=champion 440 — swarm inteiro empatado no top.
+
+**Conclusão**: pista hardcoded com holes + curvas 90° era bottleneck dominante. Trinity já tinha capacidade pra ~2km mas pista cortava. Com layout procedural (mais largo, curvas suaves, sem buracos), swarm explode pra >2km consistente.
+
+**Próximos passos**:
+1. Adicionar holes procedurais (Poisson disk) pra reintroduzir dificuldade gradual sem matar swarm.
+2. Reaction-difusão (Turing) pra grass/road texture variável.
+3. Streaming chunk-based (4×4 cell chunks) pra map 1024×1024 sem custo render.
+4. Curriculum: easy procedural → harder procedural (ramp wobble amplitude).
+
 ## Trade-offs aceitáveis
 
 | Ganho | Custo |
