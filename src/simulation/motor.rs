@@ -892,8 +892,10 @@ pub(super) fn update_racers(
                 ttc_forward,
                 wall_left: wall_l_proxy,
                 wall_right: wall_r_proxy,
-                stall_timer: 0.0,    // wired later (requires Racer field)
-                pinado_timer: 0.0,   // wired later
+                // slow_time increments 1.0/tick @ ~64Hz when speed<2m/s; convert to real seconds.
+                stall_timer: racer.slow_time / 64.0,
+                // wall_time already in real seconds; gate on near-stop so it reads "pinned vs scraping".
+                pinado_timer: if speed_kmh < 8.0 { racer.wall_time } else { 0.0 },
                 rain: env.weather_wetness,
                 curv25: 0.0,         // wired later from racing_line
                 current_thr: cortex_intent[0],

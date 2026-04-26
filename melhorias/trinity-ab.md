@@ -43,6 +43,34 @@ Headless `--gens 8 --swarm 80 --speed 16`, fresh champion (CHAMPION.dna removed 
 2. Plumar `slip_front_avg` / `slip_rear_avg` no SafetyState.
 3. Esperado: STAG cai (anti-stall reverse desbloqueia carros) → carros recuperam → champion passa 1 km.
 
+---
+
+## A/B v2 (2026-04-26): stall_timer/pinado_timer wired
+
+`stall_timer = slow_time/64`, `pinado_timer = wall_time when speed_kmh<8`. Anti-stall HARD veto agora gated por `wall_left<1 || wall_right<1 || ttc_forward<2` (fix: evita reverse em curva lenta sem obstáculo, que matava por STAGNATION).
+
+| Gen | NET max |
+|---|---|
+| 1 | 234 |
+| 2 | 175 |
+| 3 | 714 |
+| 4 | 708 |
+| 5 | 345 |
+| 6 | 716 |
+| 7 | 707 |
+| 8 | **719** |
+
+**Variância despencou**: 5 de 8 gens >700m (antes só gen 8 chegava). Antes oscilava 292/308/349/712.
+
+| Métrica | Trinity v1 | Trinity v2 (timers reais) | Δ |
+|---|---|---|---|
+| Champion gen 8 | 712m | **719m** | +1% |
+| Gens >700m | 1/8 | **5/8** | +400% |
+| PINADO | ~2% | ~2% | mantido |
+| STAG | ~40% | ~25% | -15pp |
+
+**Lição**: anti-stall HARD veto sem gate de obstáculo era armadilha. Carro lento em curva = reverse = STAGNATION. Fix obrigatório: só fire reverse quando há razão física (parede/TTC).
+
 ## Trade-offs aceitáveis
 
 | Ganho | Custo |

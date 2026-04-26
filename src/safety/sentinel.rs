@@ -85,7 +85,7 @@ impl Sentinel {
             out.hard_veto = Some(IntentVec { throttle: 0.0, brake: 1.0, steer: 0.0 });
             return out;
         }
-        if s.stall_timer > 0.3 && s.speed_kmh < 2.0 {
+        if s.stall_timer > 0.3 && s.speed_kmh < 2.0 && (s.wall_left < 1.0 || s.wall_right < 1.0 || s.ttc_forward < 2.0) {
             out.flags |= SafetyFlags::ANTI_STALL;
             // sign chosen by which wall is closer (escape away from it)
             let escape_steer = if s.wall_left < s.wall_right { 0.5 } else { -0.5 };
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn anti_stall_triggers_after_300ms() {
         let mut s = base_state();
-        s.speed_kmh = 1.0; s.stall_timer = 0.4;
+        s.speed_kmh = 1.0; s.stall_timer = 0.4; s.wall_left = 0.5;
         let out = Sentinel::evaluate(&s);
         assert!(out.flags.contains(SafetyFlags::ANTI_STALL));
         let v = out.hard_veto.expect("hard veto required");
