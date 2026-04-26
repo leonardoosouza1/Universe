@@ -379,31 +379,36 @@ impl VoxelWorld {
                     road_colors.extend_from_slice(&[color; 4]);
                     road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Grass {
-                    // Cull grass beyond extent threshold so sea (Y=-2) shows around track.
-                    // Grass margin = ~30 cells (~90m) from any road segment.
-                    let dist_cells = self.min_dist_to_road[y * self.size + x];
-                    if dist_cells > 30.0 { continue; }
+                    // Grass cobre TODA grid (sem buracos no interior do circuito).
+                    // Borda: cells nas extremidades do grid descem suavemente pra sea
+                    // (Y=-2) criando ilha em vez de papel cortado. Centro grid = (cx,cy).
+                    let half = self.size as f32 * 0.5;
+                    let dx = x as f32 - half;
+                    let dy = y as f32 - half;
+                    let radial = (dx * dx + dy * dy).sqrt();
+                    // Grid 240. Center fade-free até radial=90 cells. Borda 90..120 desce.
+                    let edge_t = ((radial - 90.0) / 30.0).clamp(0.0, 1.0); // 0=center, 1=edge
+                    let py_eff = py - edge_t * edge_t * 3.0; // até 3m abaixo na borda
                     let b = grass_pos.len() as u32;
                     let x0 = px - overlap;
                     let x1 = px + self.cell_size + overlap;
                     let z0 = pz - overlap;
                     let z1 = pz + self.cell_size + overlap;
-                    // Edge fade: grass cells near outer threshold drop slightly into sea
-                    // for organic transition (no hard cutline).
-                    let fade = ((30.0 - dist_cells) / 30.0).clamp(0.0, 1.0); // 1=at track, 0=at edge
-                    let py_eff = py - (1.0 - fade) * 0.6; // up to 0.6m drop at outer edge
                     grass_pos.extend_from_slice(&[
                         [x0, py_eff, z0], [x1, py_eff, z0],
                         [x0, py_eff, z1], [x1, py_eff, z1]
                     ]);
 
                     let is_light = ((x / 3) + (y / 3)) % 2 == 0;
-                    // Color also fades darker towards outer edge.
                     let base = if is_light { [0.18, 0.42, 0.18, 1.0] } else { [0.12, 0.32, 0.12, 1.0] };
-                    let mut color = base;
-                    color[0] *= 0.5 + 0.5 * fade;
-                    color[1] *= 0.5 + 0.5 * fade;
-                    color[2] *= 0.5 + 0.5 * fade;
+                    // Edge color: escurece + leve azulado próximo à sea pra blend.
+                    let darken = 1.0 - 0.5 * edge_t;
+                    let color = [
+                        base[0] * darken,
+                        base[1] * darken,
+                        base[2] * darken + edge_t * 0.10,
+                        1.0,
+                    ];
                     grass_colors.extend_from_slice(&[color; 4]);
                     grass_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Wall {
