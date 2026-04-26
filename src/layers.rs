@@ -51,11 +51,14 @@ impl BitLinear {
         output
     }
 
-    /// Myelinate: amplify weight magnitudes (analog to scale increase).
+    /// Myelinate: no-op em f32 runtime. Antes ternary cortex precisava boost de
+    /// scale pra contrabalançar quantização. Agora pesos são contínuos —
+    /// multiplicar tudo cumulativamente satura em ±2 e mata o cérebro
+    /// (forward vira "porta": output constante = mesma decisão sempre).
+    /// weight_scale field mantida por API compat mas só atualiza pra log.
     pub fn myelinate(&mut self, factor: f32) {
-        let f = (1.0 + factor * 0.005).min(1.05); // cap per-tick growth
-        for w in self.weights.iter_mut() { *w = (*w * f).clamp(-2.0, 2.0); }
-        self.weight_scale = (self.weight_scale * f).min(10.0); // legacy compat
+        let f = (1.0 + factor * 0.005).min(1.05);
+        self.weight_scale = (self.weight_scale * f).min(10.0); // legacy log only
     }
 
     /// Quantize: agora apenas COPIA o latent f32 nas weights (sem ternarizar).

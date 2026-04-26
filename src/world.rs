@@ -371,10 +371,28 @@ impl VoxelWorld {
                         [x0, py + 0.02, z1], [x1, py + 0.02, z1]
                     ]);
 
+                    // Asfalto coloring: faixa branca lateral + curb red/white na borda
+                    // de curva forte (banking>0). Centro escuro xadrez sutil.
+                    let dist_road = self.min_dist_to_road[y * self.size + x];
+                    let banking_here = self.banking[y * self.size + x];
+                    let is_lane_edge = dist_road > 5.5 && dist_road < 6.5; // ~6 cells = borda visual
+                    let is_curb = banking_here > 0.05 && dist_road > 6.5;  // só em curva
+                    let dash_phase = ((x + y) / 4) % 2 == 0; // tracejado
                     let is_light = ((x / 2) + (y / 2)) % 2 == 0;
-                    let color = if is_start_line { [1.0, 1.0, 1.0, 1.0] }
-                                else if is_light { [0.22, 0.22, 0.25, 1.0] }
-                                else { [0.15, 0.15, 0.18, 1.0] };
+                    let color = if is_start_line {
+                        [1.0, 1.0, 1.0, 1.0]
+                    } else if is_curb {
+                        // curb red/white alternado
+                        if (x / 2) % 2 == 0 { [0.85, 0.10, 0.10, 1.0] } else { [0.95, 0.95, 0.95, 1.0] }
+                    } else if is_lane_edge {
+                        [0.85, 0.85, 0.85, 1.0] // faixa branca contínua
+                    } else if dist_road < 0.8 && dash_phase {
+                        [0.78, 0.78, 0.78, 1.0] // linha central tracejada
+                    } else if is_light {
+                        [0.22, 0.22, 0.25, 1.0]
+                    } else {
+                        [0.15, 0.15, 0.18, 1.0]
+                    };
 
                     road_colors.extend_from_slice(&[color; 4]);
                     road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
