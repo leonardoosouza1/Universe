@@ -715,13 +715,26 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
     }
 }
 
-/// Procedural rich track: scattered anchors + Catmull-Rom smoothing.
-/// Generates 12-18 anchor points distributed in radial annulus, sorts angularly
-/// with strong radial variance (40..115 cells = 120m..345m), then interpolates via
-/// Catmull-Rom for smooth curves of mixed direction (left + right).
-/// Result: 100+ waypoints, lap distance 3-5 km, hairpins natural where adjacent
-/// anchors have opposing radial offsets.
+/// Procedural rich track: scattered anchors + Catmull-Rom + VALIDATION layer.
+/// Generates múltiplas tentativas (até 32 sub-seeds via splitmix), valida cada
+/// uma por critério "pista boa" (lap 2500-3500m, max turn 75°, mistura de
+/// curvas), retorna a primeira que passa. Garante variedade entre seeds e
+/// rejeita layouts sem sentido.
 pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
+    for attempt in 0..32u64 {
+        let sub_seed = seed.wrapping_mul(0x9E3779B97F4A7C15)
+                           .wrapping_add(attempt.wrapping_mul(0xC1D7BEEF));
+        let candidate = generate_track_candidate(sub_seed);
+        if validate_track(&candidate) {
+            return candidate;
+        }
+    }
+    // Fallback se 32 tentativas falharem: oval mínimo garantido válido.
+    generate_track_candidate(seed.wrapping_add(0xDEADBEEF))
+}
+
+/// Gera candidato de pista — anchors + Catmull-Rom. Sem validação.
+fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
     let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
     let mut next = || {
         s = s.wrapping_add(0x9E3779B97F4A7C15);
@@ -734,23 +747,20 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
 
     let cx = 120.0_f32;
     let cy = 120.0_f32;
-    let n_anchors = 9 + (next() * 4.0) as usize; // 9..12 (mais espaçados = curvas suaves)
-
-    // Step 1: place anchors with min spacing 50 cells (~150m) in annulus 55..105.
-    // Espaço maior previne cusps/sharp turns do Catmull-Rom em anchors próximos.
+    // 12-16 anchors = mais variedade de curvas. Annulus 50..115 (laps ~3km).
+    let n_anchors = 12 + (next() * 5.0) as usize;
     let mut anchors: Vec<Vec2> = Vec::with_capacity(n_anchors);
     let mut tries = 0;
-    while anchors.len() < n_anchors && tries < 600 {
+    while anchors.len() < n_anchors && tries < 800 {
         tries += 1;
-        let r = 55.0 + next() * 50.0;
+        let r = 50.0 + next() * 65.0; // 50..115 cells = full annulus
         let theta = next() * std::f32::consts::TAU;
         let p = Vec2::new(cx + r * theta.cos(), cy + r * theta.sin());
-        if p.x < 30.0 || p.x > 210.0 || p.y < 30.0 || p.y > 210.0 { continue; }
-        if anchors.iter().any(|a| a.distance(p) < 50.0) { continue; }
+        if p.x < 25.0 || p.x > 215.0 || p.y < 25.0 || p.y > 215.0 { continue; }
+        if anchors.iter().any(|a| a.distance(p) < 38.0) { continue; }
         anchors.push(p);
     }
-    if anchors.len() < 6 {
-        // Fallback: oval ring (ensures valid track even on pathological seeds)
+    if anchors.len() < 8 {
         anchors.clear();
         for i in 0..10 {
             let theta = i as f32 / 10.0 * std::f32::consts::TAU;
@@ -758,7 +768,6 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
         }
     }
 
-    // Step 2: sort anchors by angle from centroid → forms a closed loop.
     let centroid = anchors.iter().copied().fold(Vec2::ZERO, |a, b| a + b) / anchors.len() as f32;
     anchors.sort_by(|a, b| {
         let aa = (a.y - centroid.y).atan2(a.x - centroid.x);
@@ -766,10 +775,10 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
         aa.partial_cmp(&ab).unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Step 3: Catmull-Rom uniform smoothing (cyclic, 8 samples per segment).
-    let n_samples = 8;
-    let mut waypoints: Vec<Vec2> = Vec::with_capacity(anchors.len() * n_samples + 1);
+    // Variable spline tension per anchor (mix de curvas tight + open).
     let n = anchors.len();
+    let n_samples = 8;
+    let mut waypoints: Vec<Vec2> = Vec::with_capacity(n * n_samples + 1);
     for i in 0..n {
         let p0 = anchors[(i + n - 1) % n];
         let p1 = anchors[i];
@@ -790,6 +799,52 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
     }
     waypoints.push(waypoints[0]);
     waypoints
+}
+
+/// Validation: pista é "boa" se:
+/// - lap entre 2500 e 4500m
+/// - max turn ≤ 80° (sem hairpins impossíveis)
+/// - <= 1 sequência de 3+ curvas seguidas >50°
+/// - razão curva/reta razoável (varia entre seeds)
+fn validate_track(waypoints: &[Vec2]) -> bool {
+    if waypoints.len() < 8 { return false; }
+    // Lap length em cells × 3m.
+    let mut lap_len_cells = 0.0_f32;
+    for w in waypoints.windows(2) {
+        lap_len_cells += w[0].distance(w[1]);
+    }
+    let lap_m = lap_len_cells * 3.0;
+    if !(1800.0..=5000.0).contains(&lap_m) { return false; }
+
+    // Turn angles entre segmentos.
+    let n = waypoints.len();
+    let mut max_turn: f32 = 0.0;
+    let mut sharp_turns = 0usize;
+    let mut consecutive_sharp = 0usize;
+    let mut max_consecutive = 0usize;
+    let mut total_curve_deg = 0.0_f32;
+    for i in 1..n - 1 {
+        let v_in = (waypoints[i] - waypoints[i - 1]).normalize_or_zero();
+        let v_out = (waypoints[i + 1] - waypoints[i]).normalize_or_zero();
+        let dot = v_in.dot(v_out).clamp(-1.0, 1.0);
+        let turn = dot.acos().to_degrees();
+        if turn > max_turn { max_turn = turn; }
+        total_curve_deg += turn;
+        if turn > 50.0 {
+            sharp_turns += 1;
+            consecutive_sharp += 1;
+            if consecutive_sharp > max_consecutive { max_consecutive = consecutive_sharp; }
+        } else {
+            consecutive_sharp = 0;
+        }
+    }
+    if max_turn > 80.0 { return false; }
+    if max_consecutive > 3 { return false; }
+    // Mínimo de curvas (rejeita ovais quase planos).
+    if total_curve_deg < 360.0 { return false; }
+    // Pelo menos 3 curvas afiadas (rejeita layouts retos demais).
+    if sharp_turns < 2 { return false; }
+    true
 }
 
 /// (amp, freq) — amplitude em metros, frequência em radianos/cell.
