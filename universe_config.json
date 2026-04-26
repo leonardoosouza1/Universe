@@ -57,11 +57,17 @@
       "seed": 11744851938691727820,
       "track_width": 18.0,
       "complexity": 1.0
+    },
+    {
+      "name": "New Circuit 9",
+      "seed": 13001612601819077154,
+      "track_width": 18.0,
+      "complexity": 1.0
     }
   ],
-  "selected_track_index": 1,
+  "selected_track_index": 0,
   "swarm_count": 50,
-  "time_scale": 3.0,
+  "time_scale": 2.0,
   "generation_timeout_s": 180.0,
   "rotate_tracks": false,
   "gens_per_track": 3

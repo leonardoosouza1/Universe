@@ -75,16 +75,16 @@ impl BitLinear {
         self.weight_scale = scale;
     }
 
-    /// Quantize f32 weights to i8 ternary for compact DNA storage.
-    /// w ∈ ℝ → i8 [-127..127] mapping w*127 (lossy, ~7 bits effective).
+    /// Quantize f32 weights to i8 for DNA disk. Scale 63.5 cobre range [-2.0, 2.0]
+    /// (clamp do mutation) sem saturar. Antes 127 saturava metade do range.
     pub fn quantize_for_save(&self) -> Vec<i8> {
-        self.weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect()
+        self.weights.iter().map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect()
     }
 
-    /// Dequantize i8 disk weights → f32 runtime. i8/127 covers [-1.0, 1.0].
+    /// Dequantize i8 disk weights → f32 runtime. i8/63.5 covers [-2.0, 2.0].
     pub fn load_from_quantized(&mut self, q: &[i8]) {
         let n = q.len().min(self.weights.len());
-        for i in 0..n { self.weights[i] = q[i] as f32 / 127.0; }
+        for i in 0..n { self.weights[i] = q[i] as f32 / 63.5; }
     }
 }
 

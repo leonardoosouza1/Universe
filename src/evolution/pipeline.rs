@@ -737,8 +737,9 @@ pub(super) fn evolution_pipeline(
                     }
                 };
                 // FIX Bug 1: persistir morpho + hypernet + trinity do champion.
-                // Cortex agora f32 runtime — quantize pra i8 no save (compressão DNA preservada).
-                let weights_q: Vec<i8> = weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
+                // Cortex f32 runtime — quantize pra i8 no save com scale 63.5
+                // (cobre range ±2.0 do mutation clamp sem saturar).
+                let weights_q: Vec<i8> = weights.iter().map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
                 let _ = crate::evolution::dna_genesis::save_champion_dna_v5(
                     "CHAMPION.dna",
                     &weights_q, scale,
