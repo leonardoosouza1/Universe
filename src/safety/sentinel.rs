@@ -125,7 +125,7 @@ impl Sentinel {
             out.flags |= SafetyFlags::AQUA;
             prop.throttle -= 0.3;
         }
-        if s.curv25 > 30.0 && s.speed_kmh > 60.0 {
+        if s.curv25 > 25.0 && s.speed_kmh > 55.0 {
             out.flags |= SafetyFlags::CORNER_LIM;
             prop.brake += 0.3;
         }

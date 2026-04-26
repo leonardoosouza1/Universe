@@ -527,7 +527,7 @@ impl VoxelWorld {
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
                 
                 let mut hit_voxel = VoxelType::Road;
-                let mut hit_dist = 300.0;
+                let mut hit_dist = 400.0;
                 
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
                 
@@ -559,9 +559,9 @@ impl VoxelWorld {
                 let mut hit = false;
                 let mut side = 0; // 0 = hit X wall, 1 = hit Z wall
                 
-                // Alcance ~300m (100 blocos × 3m cell). Suficiente pro carro antecipar
-                // curvas longas e não "descobrir" a parede só quando está em cima dela.
-                for _ in 0..100 {
+                // Alcance ~400m (134 blocos × 3m cell). Profundidade aumentada — modelo
+                // antecipa curvas longas em retas largas a 80m/s antes (era 300m).
+                for _ in 0..134 {
                     if side_dist_x < side_dist_y {
                         side_dist_x += delta_dist_x; map_x += step_x; side = 0;
                     } else {
@@ -587,7 +587,7 @@ impl VoxelWorld {
                     } else {
                         hit_dist = current_dist;
                     }
-                } else if dir_y < -0.001 && dist_to_ground <= 300.0 {
+                } else if dir_y < -0.001 && dist_to_ground <= 400.0 {
                     // Sem paredes, mas bateu no chão
                     hit_dist = dist_to_ground;
                     let hit_px = eye_pos.x + dir_x * hit_dist;
@@ -595,7 +595,7 @@ impl VoxelWorld {
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
                 }
                 
-                let depth_fade = (hit_dist / 300.0).clamp(0.0, 1.0);
+                let depth_fade = (hit_dist / 400.0).clamp(0.0, 1.0);
 
                 // --- VISÃO ABSOLUTA ---
                 // Para que o modelo NUNCA confunda uma parede longe com a pista perto.
@@ -607,18 +607,17 @@ impl VoxelWorld {
                 //   Dá diferenciação de 90 entre "encostando (0m)" e "razoavelmente próxima (75m)".
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
-                        // Dual-scale depth: sqrt perto (0-30m dense resolution — crítico pra
-                        // bater ou não) + linear longe (30-120m — modelo antecipa curvas
-                        // distantes). Antes saturava 50m → cego pra setup de curva longa.
-                        // Agora: 0-30m ocupa 127→55 (gradient ~72 pts), 30-120m ocupa 55→-20
-                        // (gradient ~75 pts). Modelo distingue "curva chegando em 80m" de
-                        // "curva em 30m" — dá tempo de pré-frear.
+                        // Triple-scale depth: sqrt perto (0-30m crítico) + linear médio
+                        // (30-120m antecipa curva) + tail longe (120-200m setup pré-curva).
                         if hit_dist < 30.0 {
                             let near = (hit_dist / 30.0).clamp(0.0, 1.0);
-                            127.0 - (near.sqrt() * 72.0)
+                            127.0 - (near.sqrt() * 72.0) // 127→55
+                        } else if hit_dist < 120.0 {
+                            let mid = ((hit_dist - 30.0) / 90.0).clamp(0.0, 1.0);
+                            55.0 - (mid * 60.0) // 55→-5
                         } else {
-                            let far = ((hit_dist - 30.0) / 90.0).clamp(0.0, 1.0);
-                            55.0 - (far * 75.0)
+                            let far = ((hit_dist - 120.0) / 80.0).clamp(0.0, 1.0);
+                            -5.0 - (far * 25.0) // -5→-30
                         }
                     },
                     VoxelType::Grass => {

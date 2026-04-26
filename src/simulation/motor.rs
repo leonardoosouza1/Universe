@@ -844,12 +844,27 @@ pub(super) fn update_racers(
         let skip_n: u8 = if race.generation >= 10 && cortisol < 0.5 { 2 } else { 1 };
         let should_fire = (racer.brain_tick_counter % skip_n) == 0;
 
-        // --- ETAPA 2a (partial): curvature lookahead bug fix ---
-        // Ch 78..80 was previously never written (curv25 read garbage 0).
-        // Fill BEFORE brain fires so cortex+axiom_policy+Sentinel see real signal.
-        // Proprioceptive (ch 16..27) reverted: introduced noise into trained net (9001 regression).
+        // --- ETAPA PERCEPTION v2: full upgrade (with retrain) ---
+        // Added channels (treinado do zero):
+        //   16..19 = yaw_rate × 4 (peso ternário)
+        //   20..23 = pitch_rate × 4
+        //   24..27 = roll_rate × 4
+        //   28..31 = pre_brake_signal × 4 (speed × |curv|)
+        //   78     = curv25_signed (cortex + axiom)
+        //   79     = curv25_signed (Sentinel + axiom — duplicado)
+        //   80     = curv60_signed (lookahead)
         {
-            // Curvature lookahead — signed angles to flow at 25m and 60m ahead.
+            let yaw = if let Some(ref body) = opt_body { body.angular_velocity.y } else { 0.0 };
+            let pitch_r = if let Some(ref body) = opt_body { body.angular_velocity.x } else { 0.0 };
+            let roll = if let Some(ref body) = opt_body { body.angular_velocity.z } else { 0.0 };
+            let yaw_i8   = ((yaw     / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
+            let pitch_i8 = ((pitch_r / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
+            let roll_i8  = ((roll    / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
+            for i in 16..20 { sensory_wave[i] = yaw_i8; }
+            for i in 20..24 { sensory_wave[i] = pitch_i8; }
+            for i in 24..28 { sensory_wave[i] = roll_i8; }
+
+            // Curvature lookahead — signed angles.
             let curv_at = |ahead_m: f32| -> f32 {
                 let probe = Vec3::new(pos.x, 0.0, pos.z) + forward * ahead_m;
                 let f = world.get_flow_at(probe.x, probe.z);
@@ -860,11 +875,20 @@ pub(super) fn update_racers(
                 } else { 0.0 }
             };
             let yn = std::f32::consts::FRAC_PI_2;
-            let c25 = ((curv_at(25.0) / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            let c60 = ((curv_at(60.0) / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            sensory_wave[78] = c25; // dup curv25 (peso ternário extra)
+            let c25_signed = curv_at(25.0);
+            let c60_signed = curv_at(60.0);
+            let c25 = ((c25_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c60 = ((c60_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            sensory_wave[78] = c25;
             sensory_wave[79] = c25;
             sensory_wave[80] = c60;
+
+            // Pre-brake signal: speed_norm × |curv_max| × 127. Sempre positivo (magnitude).
+            // Quanto maior, mais perigo de overshoot. Modelo aprende a frear cedo.
+            let speed_norm = (speed / 80.0).clamp(0.0, 1.0);
+            let curv_abs_max = (c25_signed.abs() / yn).max(c60_signed.abs() / yn).clamp(0.0, 1.0);
+            let pre_brake = (speed_norm * curv_abs_max * 127.0).clamp(0.0, 127.0) as i8;
+            for i in 28..32 { sensory_wave[i] = pre_brake; }
         }
 
         if should_fire {
