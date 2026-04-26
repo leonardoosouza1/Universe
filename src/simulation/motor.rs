@@ -250,24 +250,22 @@ pub(super) fn update_racers(
     }
 
     // --- RENDERIZAR WAYPOINTS/CHECKPOINTS DA PISTA ---
+    // Decima: pista procedural tem 100+ waypoints (Catmull-Rom). Mostrar todos
+    // = 100+ pilares atravessando paredes (gizmos drawn on top). Mostrar só 1 em
+    // cada 8 (densidade dos anchors originais) e altura reduzida pra 3m.
     let wps = &world.waypoints_world;
-    for i in 0..wps.len() {
+    let stride = (wps.len() / 18).max(1); // ~14-18 pilares
+    for i in (0..wps.len()).step_by(stride) {
         let wp = Vec3::new(wps[i].x, 0.5, wps[i].y);
 
-        // Pilar de checkpoint (10m de altura)
+        // Pilar de checkpoint (3m de altura, fino).
         let pillar_color = if i == 0 {
             Color::srgb(0.0, 1.0, 0.3) // Verde = Largada/Chegada
         } else {
-            Color::srgba(0.0, 0.7, 1.0, 0.7) // Ciano = checkpoint normal
+            Color::srgba(0.0, 0.7, 1.0, 0.5) // Ciano sutil
         };
-        gizmos.line(wp, wp + Vec3::Y * 10.0, pillar_color);
-        gizmos.sphere(wp + Vec3::Y * 10.0, 1.5, pillar_color);
-
-        // Linhas conectando os waypoints (tracejado da pista ideal)
-        if i < wps.len() - 1 {
-            let next = Vec3::new(wps[i+1].x, 0.5, wps[i+1].y);
-            gizmos.line(wp + Vec3::Y * 0.3, next + Vec3::Y * 0.3, Color::srgba(0.0, 0.7, 1.0, 0.25));
-        }
+        gizmos.line(wp, wp + Vec3::Y * 3.0, pillar_color);
+        gizmos.sphere(wp + Vec3::Y * 3.5, 0.8, pillar_color);
     }
 
     // --- PRÉ-CÁLCULO (Primeiro passo read-only sobre a mesma query) ---
