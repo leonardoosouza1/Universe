@@ -159,6 +159,31 @@ Battery: 5 random seeds × 3 gens, swarm=50, speed=16x.
 
 **Hipótese gen 5 retração**: sem holes reintroduzidos, evolução talvez cai em mínimo local "ir até cap então parar". Curriculum/holes talvez sejam necessários pra empurrar além do cap.
 
+---
+
+## Battery v3 (2026-04-26): procedural holes ativos
+
+`procedural_holes(seed)`: 1-2 holes em apex das curvas mais agressivas (70% do segmento prev→cur). Splitmix64 deterministic.
+
+| Seed | Champion | Best median |
+|---|---|---|
+| 7777 | 5333m | 1295m |
+| 9001 | 5460m | 1283m |
+| 5555 | 5389m | 1078m |
+| 4242 | 5234m | 891m |
+| 1337 | 5605m | 696m |
+
+**Comparison**:
+| Métrica | sem holes | com 1-2 holes |
+|---|---|---|
+| 5/5 reach cap | gen 4 | gen 4-5 |
+| Best median | 4240m | 1295m |
+| Gens-to-cap | 4 | 4-5 |
+
+**Conclusão**: holes restauram desafio sem quebrar progressão. Evolução leva 1 gen extra em média. Mediana cai (esperado: holes matam carros médios) mas ainda 700-1300m (>2× baseline 282m). Robustness validada.
+
+Sweet spot: K=1-2 holes/track. K=2-3 quebrava 5555 (regressão pra 2035m).
+
 ## Trade-offs aceitáveis
 
 | Ganho | Custo |

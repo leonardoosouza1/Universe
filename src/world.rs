@@ -763,8 +763,35 @@ pub fn track_holes_for_seed(seed: u64) -> Vec<Vec2> {
             Vec2::new(25.0, 95.0),    // Subida W
         ],
 
-        _ => vec![],
+        _ => procedural_holes(seed),
     }
+}
+
+/// Procedural hazards: K holes near apex of waypoint curves, deterministic per seed.
+/// Inspired by water finding obstacles — placed at trajectory-critical points
+/// (apex of sharpest curves, ~70% from segment start).
+pub fn procedural_holes(seed: u64) -> Vec<Vec2> {
+    let waypoints = procedural_waypoints(seed);
+    if waypoints.len() < 4 { return vec![]; }
+    // Score each waypoint by turn angle; place hole near sharpest few apexes.
+    let mut scored: Vec<(usize, f32)> = Vec::new();
+    for i in 1..waypoints.len() - 1 {
+        let v_in = (waypoints[i] - waypoints[i-1]).normalize_or_zero();
+        let v_out = (waypoints[i+1] - waypoints[i]).normalize_or_zero();
+        let dot = v_in.dot(v_out).clamp(-1.0, 1.0);
+        let turn = dot.acos(); // 0=straight, π=u-turn
+        scored.push((i, turn));
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Seed-deterministic count: 1 or 2 holes (conservative — must not break learning curve).
+    let n_holes = 1 + ((seed.wrapping_mul(0xA1B2C3D4) >> 32) as usize & 1);
+    scored.iter().take(n_holes).map(|(i, _)| {
+        // Position at 70% from prev → current (apex zone offset toward inside of curve).
+        let prev = waypoints[i.saturating_sub(1)];
+        let cur = waypoints[*i];
+        prev + (cur - prev) * 0.7
+    }).collect()
 }
 
 pub fn track_start_for_seed(seed: u64) -> Vec2 {
