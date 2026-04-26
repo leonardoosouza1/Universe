@@ -72,8 +72,16 @@ impl Default for UniverseConfig {
             // Ordem = progressão curricular (easy → very hard).
             // track_width: mais largo = mais perdão pra mutantes ruins.
             tracks: vec![
+                // Default = procedural seed 9001. Matches DNA training seeds — UI mode loads
+                // CHAMPION.dna trained on this layout instead of mismatching with hardcoded.
                 TrackProfile {
-                    name: "Dubai Oval".to_string(),           // EASY
+                    name: "Procedural Sigma".to_string(),     // EASY procedural
+                    seed: 9001,
+                    track_width: 44.0,
+                    complexity: 0.3,
+                },
+                TrackProfile {
+                    name: "Dubai Oval".to_string(),           // EASY hardcoded
                     seed: 123,
                     track_width: 44.0,
                     complexity: 0.3,

@@ -166,7 +166,16 @@ fn cleanup_simulation(
 }
 
 fn setup_main_camera(mut commands: Commands) {
-    commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, 100.0, 300.0).looking_at(Vec3::ZERO, Vec3::Y)));
+    commands.spawn((
+        Camera3d::default(),
+        Msaa::Sample4,
+        Transform::from_xyz(0.0, 100.0, 300.0).looking_at(Vec3::ZERO, Vec3::Y),
+        bevy::pbr::DistanceFog {
+            color: Color::srgb(0.55, 0.72, 0.88),
+            falloff: bevy::pbr::FogFalloff::Linear { start: 600.0, end: 2500.0 },
+            ..default()
+        },
+    ));
 }
 
 fn apply_time_scale(
@@ -265,7 +274,12 @@ fn setup_scene(
         SimulationEntity,
     )).id();
 
-    race.world_entities = vec![road_e, grass_e, wall_e];
+    let mut world_entities = vec![road_e, grass_e, wall_e];
+    // Atmospheric horizon: sea plane, mountain ring, sun. Decorative only —
+    // sits far beyond the 720m voxel grid, never collides with cars.
+    let scenery_entities = universe::scenery::spawn_scenery(&mut commands, &mut meshes, &mut materials);
+    world_entities.extend(scenery_entities);
+    race.world_entities = world_entities;
 
     // Spawn batched — não bloqueia frame inicial. drain_spawn_queue consome progressivamente.
     race.pending_spawn = Some((0, config.swarm_count));

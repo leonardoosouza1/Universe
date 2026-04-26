@@ -859,7 +859,7 @@ pub(super) fn update_racers(
             let yn = std::f32::consts::FRAC_PI_2;
             let c25 = ((curv_at(25.0) / yn).clamp(-1.0, 1.0) * 127.0) as i8;
             let c60 = ((curv_at(60.0) / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            sensory_wave[78] = c25;
+            sensory_wave[78] = c25; // dup curv25 (peso ternário extra)
             sensory_wave[79] = c25;
             sensory_wave[80] = c60;
         }

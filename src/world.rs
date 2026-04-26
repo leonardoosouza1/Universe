@@ -343,6 +343,10 @@ impl VoxelWorld {
         let mut wall_pos = Vec::new();
         let mut wall_indices = Vec::new();
 
+        // Overlap: expand grass/road quads by 0.05 cell (~15cm) to hide sub-pixel
+        // seams at distance. Adjacent quads overlap; tearing/Z-fighting cracks vanish.
+        let overlap = 0.05 * self.cell_size;
+
         for y in 0..self.size {
             for x in 0..self.size {
                 let v = self.grid[y * self.size + x];
@@ -353,23 +357,31 @@ impl VoxelWorld {
                 if v == VoxelType::Road {
                     let is_start_line = (px - self.start_pos.x).abs() < self.cell_size && (pz - self.start_pos.z).abs() < 25.0;
                     let b = road_pos.len() as u32;
+                    let x0 = px - overlap;
+                    let x1 = px + self.cell_size + overlap;
+                    let z0 = pz - overlap;
+                    let z1 = pz + self.cell_size + overlap;
                     road_pos.extend_from_slice(&[
-                        [px, py + 0.01, pz], [px+self.cell_size, py + 0.01, pz], 
-                        [px, py + 0.01, pz+self.cell_size], [px+self.cell_size, py + 0.01, pz+self.cell_size]
+                        [x0, py + 0.02, z0], [x1, py + 0.02, z0],
+                        [x0, py + 0.02, z1], [x1, py + 0.02, z1]
                     ]);
-                    
+
                     let is_light = ((x / 2) + (y / 2)) % 2 == 0;
-                    let color = if is_start_line { [1.0, 1.0, 1.0, 1.0] } 
-                                else if is_light { [0.22, 0.22, 0.25, 1.0] } 
+                    let color = if is_start_line { [1.0, 1.0, 1.0, 1.0] }
+                                else if is_light { [0.22, 0.22, 0.25, 1.0] }
                                 else { [0.15, 0.15, 0.18, 1.0] };
-                    
+
                     road_colors.extend_from_slice(&[color; 4]);
                     road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
                 } else if v == VoxelType::Grass {
                     let b = grass_pos.len() as u32;
+                    let x0 = px - overlap;
+                    let x1 = px + self.cell_size + overlap;
+                    let z0 = pz - overlap;
+                    let z1 = pz + self.cell_size + overlap;
                     grass_pos.extend_from_slice(&[
-                        [px, py, pz], [px+self.cell_size, py, pz], 
-                        [px, py, pz+self.cell_size], [px+self.cell_size, py, pz+self.cell_size]
+                        [x0, py, z0], [x1, py, z0],
+                        [x0, py, z1], [x1, py, z1]
                     ]);
                     
                     let is_light = ((x / 3) + (y / 3)) % 2 == 0;
@@ -624,58 +636,59 @@ fn dist_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
     match seed {
         // Dubai Oval — EASY: oval largo, curvas suaves <45°, runway longo.
+        // Coords shifted +40 cells (x,y) para centrar em grid 240×240.
         123 => vec![
-            Vec2::new(20.0, 20.0),  Vec2::new(120.0, 20.0),
-            Vec2::new(140.0, 40.0), Vec2::new(140.0, 100.0),
-            Vec2::new(120.0, 120.0), Vec2::new(40.0, 120.0),
-            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
+            Vec2::new(60.0, 60.0),  Vec2::new(160.0, 60.0),
+            Vec2::new(180.0, 80.0), Vec2::new(180.0, 140.0),
+            Vec2::new(160.0, 160.0), Vec2::new(80.0, 160.0),
+            Vec2::new(60.0, 140.0), Vec2::new(60.0, 60.0),
         ],
         // Interlagos Gateway — MEDIUM: current layout (90° + 2×45°).
         64 => vec![
-            Vec2::new(20.0, 20.0),  Vec2::new(140.0, 20.0),
-            Vec2::new(140.0, 60.0), Vec2::new(100.0, 100.0),
-            Vec2::new(100.0, 140.0), Vec2::new(60.0, 140.0),
-            Vec2::new(20.0, 100.0), Vec2::new(20.0, 20.0),
+            Vec2::new(60.0, 60.0),  Vec2::new(180.0, 60.0),
+            Vec2::new(180.0, 100.0), Vec2::new(140.0, 140.0),
+            Vec2::new(140.0, 180.0), Vec2::new(100.0, 180.0),
+            Vec2::new(60.0, 140.0), Vec2::new(60.0, 60.0),
         ],
         // Monaco Tight — HARD: sequência de hairpins 90° sem reversos geométricos.
         // Antigo WP[3] fazia swing 135° (NW→E) — U-turn impossível pra rede shallow.
         // Agora monotonico em sentido horário: S→E→S→W→S→W→N→E.
         256 => vec![
-            Vec2::new(20.0, 20.0),  Vec2::new(110.0, 20.0),
-            Vec2::new(140.0, 50.0), Vec2::new(140.0, 90.0),
-            Vec2::new(100.0, 90.0), Vec2::new(100.0, 130.0),
-            Vec2::new(60.0, 130.0), Vec2::new(20.0, 90.0),
-            Vec2::new(20.0, 20.0),
+            Vec2::new(60.0, 60.0),  Vec2::new(150.0, 60.0),
+            Vec2::new(180.0, 90.0), Vec2::new(180.0, 130.0),
+            Vec2::new(140.0, 130.0), Vec2::new(140.0, 170.0),
+            Vec2::new(100.0, 170.0), Vec2::new(60.0, 130.0),
+            Vec2::new(60.0, 60.0),
         ],
         // Silverstone Flow — VERY HARD: curvas rápidas sem zigzag reverso.
         // Antigo fazia (110,115)→(80,100)→(60,130) U-turn SW→NW→SW. Removido.
         512 => vec![
-            Vec2::new(20.0, 20.0),  Vec2::new(100.0, 25.0),
-            Vec2::new(140.0, 55.0), Vec2::new(140.0, 95.0),
-            Vec2::new(115.0, 120.0), Vec2::new(75.0, 130.0),
-            Vec2::new(35.0, 125.0), Vec2::new(15.0, 95.0),
-            Vec2::new(30.0, 65.0), Vec2::new(55.0, 45.0),
-            Vec2::new(20.0, 20.0),
+            Vec2::new(60.0, 60.0),  Vec2::new(140.0, 65.0),
+            Vec2::new(180.0, 95.0), Vec2::new(180.0, 135.0),
+            Vec2::new(155.0, 160.0), Vec2::new(115.0, 170.0),
+            Vec2::new(75.0, 165.0), Vec2::new(55.0, 135.0),
+            Vec2::new(70.0, 105.0), Vec2::new(95.0, 85.0),
+            Vec2::new(60.0, 60.0),
         ],
         // Nürburgring Hills — EXTREME: elevação forte, curvas longas, sem U-turns.
         // Antigo (95,110)→(130,140) fazia reverso SW→SE. Removido.
         768 => vec![
-            Vec2::new(20.0, 30.0),  Vec2::new(90.0, 20.0),
-            Vec2::new(140.0, 45.0), Vec2::new(140.0, 100.0),
-            Vec2::new(110.0, 130.0), Vec2::new(70.0, 140.0),
-            Vec2::new(30.0, 120.0), Vec2::new(20.0, 70.0),
-            Vec2::new(20.0, 30.0),
+            Vec2::new(60.0, 70.0),  Vec2::new(130.0, 60.0),
+            Vec2::new(180.0, 85.0), Vec2::new(180.0, 140.0),
+            Vec2::new(150.0, 170.0), Vec2::new(110.0, 180.0),
+            Vec2::new(70.0, 160.0), Vec2::new(60.0, 110.0),
+            Vec2::new(60.0, 70.0),
         ],
         // Suzuka Crossing — INSANE: hairpins sucessivos SEM reversos. Antigo (90,50)→(70,70)
         // fazia SE→SW (U-turn) e (20,90)→(40,130) fazia SW→SE (outro U). Redesigned para
         // espiral horária com 90°s legítimos mas trajetória sempre forward.
         1024 => vec![
-            Vec2::new(20.0, 30.0),  Vec2::new(80.0, 30.0),
-            Vec2::new(115.0, 55.0), Vec2::new(140.0, 90.0),
-            Vec2::new(140.0, 130.0), Vec2::new(100.0, 145.0),
-            Vec2::new(55.0, 140.0), Vec2::new(20.0, 115.0),
-            Vec2::new(25.0, 75.0), Vec2::new(45.0, 55.0),
-            Vec2::new(20.0, 30.0),
+            Vec2::new(60.0, 70.0),  Vec2::new(120.0, 70.0),
+            Vec2::new(155.0, 95.0), Vec2::new(180.0, 130.0),
+            Vec2::new(180.0, 170.0), Vec2::new(140.0, 185.0),
+            Vec2::new(95.0, 180.0), Vec2::new(60.0, 155.0),
+            Vec2::new(65.0, 115.0), Vec2::new(85.0, 95.0),
+            Vec2::new(60.0, 70.0),
         ],
         _ => procedural_waypoints(seed),
     }
@@ -751,31 +764,32 @@ pub fn track_holes_for_seed(seed: u64) -> Vec<Vec2> {
         123 | 64 => vec![],
 
         // Monaco Tight — 2 buracos em apex de 90° interno.
+        // Coords shifted +40 cells (x,y) para grid 240×240.
         256 => vec![
-            Vec2::new(130.0, 55.0),   // Apex curva 2 (E→S)
-            Vec2::new(98.0, 128.0),   // Apex curva 5 (S→W)
+            Vec2::new(170.0, 95.0),   // Apex curva 2 (E→S)
+            Vec2::new(138.0, 168.0),  // Apex curva 5 (S→W)
         ],
 
         // Silverstone Flow — 3 buracos em trechos rápidos.
         512 => vec![
-            Vec2::new(110.0, 27.0),   // Reta 1
-            Vec2::new(138.0, 85.0),   // Curva longa
-            Vec2::new(32.0, 123.0),   // Saída W→N
+            Vec2::new(150.0, 67.0),   // Reta 1
+            Vec2::new(178.0, 125.0),  // Curva longa
+            Vec2::new(72.0, 163.0),   // Saída W→N
         ],
 
         // Nürburgring Hills — 3 buracos em descidas (rampas amplificam).
         768 => vec![
-            Vec2::new(130.0, 40.0),   // Descida 1
-            Vec2::new(130.0, 115.0),  // Vale
-            Vec2::new(40.0, 125.0),   // Contra-subida
+            Vec2::new(170.0, 80.0),   // Descida 1
+            Vec2::new(170.0, 155.0),  // Vale
+            Vec2::new(80.0, 165.0),   // Contra-subida
         ],
 
         // Suzuka Crossing — 4 buracos (insano: trajetória quase forçada).
         1024 => vec![
-            Vec2::new(75.0, 30.0),    // Reta inicial
-            Vec2::new(135.0, 80.0),   // Curva descendente
-            Vec2::new(115.0, 138.0),  // Hairpin S
-            Vec2::new(25.0, 95.0),    // Subida W
+            Vec2::new(115.0, 70.0),   // Reta inicial
+            Vec2::new(175.0, 120.0),  // Curva descendente
+            Vec2::new(155.0, 178.0),  // Hairpin S
+            Vec2::new(65.0, 135.0),   // Subida W
         ],
 
         _ => procedural_holes(seed),
@@ -811,12 +825,12 @@ pub fn procedural_holes(seed: u64) -> Vec<Vec2> {
 
 pub fn track_start_for_seed(seed: u64) -> Vec2 {
     match seed {
-        123  => Vec2::new(55.0, 20.0),   // Dubai: runway largo
-        64   => Vec2::new(50.0, 20.0),   // Interlagos
-        256  => Vec2::new(40.0, 20.0),   // Monaco: start curto (pista técnica)
-        512  => Vec2::new(55.0, 22.0),   // Silverstone
-        768  => Vec2::new(55.0, 28.0),   // Nürburgring
-        1024 => Vec2::new(40.0, 30.0),   // Suzuka
+        123  => Vec2::new(95.0, 60.0),   // Dubai: runway largo
+        64   => Vec2::new(90.0, 60.0),   // Interlagos
+        256  => Vec2::new(80.0, 60.0),   // Monaco: start curto (pista técnica)
+        512  => Vec2::new(95.0, 62.0),   // Silverstone
+        768  => Vec2::new(95.0, 68.0),   // Nürburgring
+        1024 => Vec2::new(80.0, 70.0),   // Suzuka
         // Procedural: spawn at midpoint between waypoint[0] and waypoint[1] (forward into track).
         _    => {
             let wp = procedural_waypoints(seed);
