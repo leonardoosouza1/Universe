@@ -735,18 +735,19 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
 
     let cx = 120.0_f32;
     let cy = 120.0_f32;
-    let n_anchors = 14 + (next() * 5.0) as usize; // 14..18
+    let n_anchors = 9 + (next() * 4.0) as usize; // 9..12 (mais espaçados = curvas suaves)
 
-    // Step 1: place anchors with min spacing 32 cells (~96m) in annulus 40..115.
+    // Step 1: place anchors with min spacing 50 cells (~150m) in annulus 55..105.
+    // Espaço maior previne cusps/sharp turns do Catmull-Rom em anchors próximos.
     let mut anchors: Vec<Vec2> = Vec::with_capacity(n_anchors);
     let mut tries = 0;
-    while anchors.len() < n_anchors && tries < 400 {
+    while anchors.len() < n_anchors && tries < 600 {
         tries += 1;
-        let r = 40.0 + next() * 75.0;
+        let r = 55.0 + next() * 50.0;
         let theta = next() * std::f32::consts::TAU;
         let p = Vec2::new(cx + r * theta.cos(), cy + r * theta.sin());
-        if p.x < 25.0 || p.x > 215.0 || p.y < 25.0 || p.y > 215.0 { continue; }
-        if anchors.iter().any(|a| a.distance(p) < 32.0) { continue; }
+        if p.x < 30.0 || p.x > 210.0 || p.y < 30.0 || p.y > 210.0 { continue; }
+        if anchors.iter().any(|a| a.distance(p) < 50.0) { continue; }
         anchors.push(p);
     }
     if anchors.len() < 6 {

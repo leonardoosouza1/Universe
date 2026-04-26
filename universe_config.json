@@ -45,9 +45,27 @@
       "seed": 1024,
       "track_width": 14.0,
       "complexity": 3.0
+    },
+    {
+      "name": "New Circuit 7",
+      "seed": 15957647487064217248,
+      "track_width": 18.0,
+      "complexity": 1.0
+    },
+    {
+      "name": "New Circuit 8",
+      "seed": 15822609453446893061,
+      "track_width": 18.0,
+      "complexity": 1.0
+    },
+    {
+      "name": "New Circuit 9",
+      "seed": 3467024607964256750,
+      "track_width": 18.0,
+      "complexity": 1.0
     }
   ],
-  "selected_track_index": 2,
+  "selected_track_index": 8,
   "swarm_count": 50,
   "time_scale": 3.0,
   "generation_timeout_s": 180.0,

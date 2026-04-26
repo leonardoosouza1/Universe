@@ -310,6 +310,11 @@ fn setup_scene(
     // sits far beyond the 720m voxel grid, never collides with cars.
     let scenery_entities = universe::scenery::spawn_scenery(&mut commands, &mut meshes, &mut materials);
     world_entities.extend(scenery_entities);
+    // Streetlights ao longo da pista + buildings INSIDE the track loop interior (cidade).
+    let track_dec = universe::scenery::spawn_track_decorations(
+        &mut commands, &mut meshes, &mut materials, &world_res.0
+    );
+    world_entities.extend(track_dec);
     race.world_entities = world_entities;
 
     // Spawn batched — não bloqueia frame inicial. drain_spawn_queue consome progressivamente.

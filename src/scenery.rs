@@ -164,3 +164,129 @@ pub fn spawn_scenery(
 
     entities
 }
+
+/// Streetlights along track + buildings INSIDE the track loop interior.
+/// Reads voxel world's waypoints and min_dist_to_road to place city decorations
+/// only where they don't interfere with the racing surface.
+pub fn spawn_track_decorations(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    world: &crate::world::VoxelWorld,
+) -> Vec<Entity> {
+    let mut entities: Vec<Entity> = Vec::new();
+    if world.waypoints_world.is_empty() { return entities; }
+
+    // ---- Streetlights along track (every 8th waypoint, alternating sides) ----
+    let lamp_post_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.18, 0.18, 0.20),
+        perceptual_roughness: 0.4,
+        metallic: 0.7,
+        ..default()
+    });
+    let lamp_glow_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.85, 0.55),
+        emissive: LinearRgba::new(8.0, 6.0, 2.5, 1.0).into(),
+        unlit: true,
+        ..default()
+    });
+    let post_mesh = meshes.add(Cuboid::new(0.4, 8.0, 0.4));
+    let lamp_mesh = meshes.add(Sphere::new(0.6));
+    let wps = &world.waypoints_world;
+    let stride = 8usize;
+    for i in (0..wps.len()-1).step_by(stride) {
+        let p = wps[i];
+        let p_next = wps[(i + 1).min(wps.len() - 1)];
+        let dir = (p_next - p).normalize_or_zero();
+        let perp = Vec2::new(-dir.y, dir.x);
+        let side = if (i / stride) % 2 == 0 { 1.0 } else { -1.0 };
+        let lamp_pos_2d = p + perp * (world.cell_size * 12.0) * side; // ~36m off-center
+        let lamp_pos = Vec3::new(lamp_pos_2d.x, 4.0, lamp_pos_2d.y);
+        let post_e = commands.spawn((
+            Mesh3d(post_mesh.clone()),
+            MeshMaterial3d(lamp_post_mat.clone()),
+            Transform::from_translation(lamp_pos),
+            SimulationEntity,
+        )).id();
+        entities.push(post_e);
+        let lamp_e = commands.spawn((
+            Mesh3d(lamp_mesh.clone()),
+            MeshMaterial3d(lamp_glow_mat.clone()),
+            Transform::from_xyz(lamp_pos.x, 8.0, lamp_pos.z),
+            PointLight {
+                color: Color::srgb(1.0, 0.88, 0.6),
+                intensity: 80_000.0,
+                range: 25.0,
+                shadows_enabled: false,
+                ..default()
+            },
+            SimulationEntity,
+        )).id();
+        entities.push(lamp_e);
+    }
+
+    // ---- Interior buildings: spawn inside the track loop where there's grass ----
+    // Strategy: sample random cells in grid; keep only those with grass voxel AND
+    // dist >= 25 cells from road (well inside loop interior or far from track).
+    let mut bld_rng = make_rng(0xCAFE_BEEF_u64 ^ wps.len() as u64);
+    let mut placed = 0;
+    let target = 60;
+    let mut tries = 0;
+    while placed < target && tries < 2000 {
+        tries += 1;
+        let cx_cell = (bld_rng() * world.size as f32) as usize;
+        let cy_cell = (bld_rng() * world.size as f32) as usize;
+        if cx_cell >= world.size || cy_cell >= world.size { continue; }
+        let idx = cy_cell * world.size + cx_cell;
+        if world.grid[idx] != crate::world::VoxelType::Grass { continue; }
+        let d = world.min_dist_to_road[idx];
+        if d < 25.0 { continue; } // muito perto da pista — não bloqueia
+        // Building dims
+        let bw = 8.0 + bld_rng() * 12.0;
+        let bd = 8.0 + bld_rng() * 12.0;
+        let bh = 15.0 + bld_rng() * 60.0;
+        let bx = cx_cell as f32 * world.cell_size + world.cell_size * 0.5;
+        let bz = cy_cell as f32 * world.cell_size + world.cell_size * 0.5;
+        let cv = bld_rng();
+        let color = if cv < 0.33 {
+            Color::srgb(0.50, 0.52, 0.55)
+        } else if cv < 0.66 {
+            Color::srgb(0.60, 0.55, 0.48)
+        } else {
+            Color::srgb(0.38, 0.44, 0.52)
+        };
+        let mat = materials.add(StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.55,
+            metallic: 0.2,
+            reflectance: 0.45,
+            ..default()
+        });
+        let e = commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(bw, bh, bd))),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(bx, bh * 0.5, bz),
+            SimulationEntity,
+        )).id();
+        entities.push(e);
+        // Janelas iluminadas em prédios altos
+        if bh > 50.0 && bld_rng() < 0.5 {
+            let win_mat = materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.92, 0.65),
+                emissive: LinearRgba::new(3.0, 2.4, 1.2, 1.0).into(),
+                unlit: true,
+                ..default()
+            });
+            let we = commands.spawn((
+                Mesh3d(meshes.add(Cuboid::new(bw * 0.7, 3.0, bd * 0.7))),
+                MeshMaterial3d(win_mat),
+                Transform::from_xyz(bx, bh - 8.0, bz),
+                SimulationEntity,
+            )).id();
+            entities.push(we);
+        }
+        placed += 1;
+    }
+
+    entities
+}
