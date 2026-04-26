@@ -14,7 +14,7 @@ pub struct RaceSettings {
     pub best_slow_scale: f32,
     pub best_gate_weights: Option<Vec<f32>>,
     pub best_gate_bias: Option<Vec<f32>>,
-    pub best_reflex_weights: Option<Vec<i8>>,
+    pub best_reflex_weights: Option<Vec<f32>>, // f32 runtime; quantize só ao salvar TRIN no DNA
     pub selected_racer: Option<Entity>,
     pub world_entities: Vec<Entity>,
     pub should_reset: bool,

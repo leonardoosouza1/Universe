@@ -221,10 +221,12 @@ pub fn spawn_swarm(
             if let Some(ref t) = dna.trinity {
                 race.best_gate_weights = Some(t.gate_weights.to_vec());
                 race.best_gate_bias = Some(t.gate_bias.to_vec());
-                let mut rw = Vec::with_capacity(96);
-                rw.extend_from_slice(&t.reflex_steer);
-                rw.extend_from_slice(&t.reflex_throttle);
-                rw.extend_from_slice(&t.reflex_brake);
+                // Dequantize i8 TRIN bytes → f32 runtime weights. Mapping i8/127 covers
+                // [-1.0, 1.0]. Cars trained pre-V5 had ternary {-1,0,+1} which maps cleanly.
+                let mut rw: Vec<f32> = Vec::with_capacity(96);
+                for &b in &t.reflex_steer    { rw.push(b as f32 / 127.0); }
+                for &b in &t.reflex_throttle { rw.push(b as f32 / 127.0); }
+                for &b in &t.reflex_brake    { rw.push(b as f32 / 127.0); }
                 race.best_reflex_weights = Some(rw);
             }
             // Se o DNA foi treinado em outra seed/largura, loga aviso e descarta champion_distance
@@ -472,7 +474,7 @@ pub fn spawn_swarm(
                 engine.gate.bias[..n].copy_from_slice(&gb[..n]);
             }
             if let Some(ref rw) = race.best_reflex_weights {
-                // SpecialistBrain has 3 BitLinears: steer (32), throttle (32), brake (32) = 96 i8 weights.
+                // SpecialistBrain has 3 FloatLinears: steer (32), throttle (32), brake (32) = 96 f32 weights.
                 let steer_len = engine.reflex.steer.weights.len();
                 let throttle_len = engine.reflex.throttle.weights.len();
                 let brake_len = engine.reflex.brake.weights.len();
@@ -498,11 +500,16 @@ pub fn spawn_swarm(
                         *b += (rng.random::<f32>() - 0.5) * 0.1;
                     }
                 }
-                // Reflex weights are i8 ternary (BitLinear). Mutate by random small ternary perturbation.
+                // Reflex weights são f32 (FloatLinear). Mutate gaussian smooth — pequenos
+                // ajustes em vez de flip ternário disruptivo. σ=0.05, clamp [-2.0, 2.0].
                 for layer in [&mut engine.reflex.steer, &mut engine.reflex.throttle, &mut engine.reflex.brake] {
                     for w in layer.weights.iter_mut() {
                         if rng.random_bool(rate) {
-                            *w = match rng.random_range(0..3) { 0 => -1, 1 => 0, _ => 1 };
+                            // Box-Muller approx via 2 uniforms; cheap noise.
+                            let u1 = (rng.random::<f32>()).max(1e-7);
+                            let u2 = rng.random::<f32>();
+                            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                            *w = (*w + 0.05 * z).clamp(-2.0, 2.0);
                         }
                     }
                 }

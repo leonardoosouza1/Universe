@@ -707,7 +707,7 @@ pub(super) fn evolution_pipeline(
                 // Trinity: capture champion gate + reflex weights alongside cortex.
                 race.best_gate_weights = Some(best.engine.gate.weights.to_vec());
                 race.best_gate_bias = Some(best.engine.gate.bias.to_vec());
-                let mut reflex_w: Vec<i8> = Vec::new();
+                let mut reflex_w: Vec<f32> = Vec::with_capacity(96);
                 reflex_w.extend_from_slice(&best.engine.reflex.steer.weights);
                 reflex_w.extend_from_slice(&best.engine.reflex.throttle.weights);
                 reflex_w.extend_from_slice(&best.engine.reflex.brake.weights);
@@ -718,9 +718,15 @@ pub(super) fn evolution_pipeline(
                     gate_w_arr.copy_from_slice(&best.engine.gate.weights);
                     let mut gate_b_arr = [0.0f32; 3];
                     gate_b_arr.copy_from_slice(&best.engine.gate.bias);
-                    let mut steer_arr = [0i8; 32]; steer_arr.copy_from_slice(&best.engine.reflex.steer.weights);
-                    let mut thr_arr = [0i8; 32]; thr_arr.copy_from_slice(&best.engine.reflex.throttle.weights);
-                    let mut brake_arr = [0i8; 32]; brake_arr.copy_from_slice(&best.engine.reflex.brake.weights);
+                    // Quantize f32 weights → i8 [-127..127] for compact disk storage.
+                    // Range mapping: w * 127, clamped. Lossy but DNA file stays 96 bytes.
+                    let q = |w: f32| -> i8 { (w * 127.0).clamp(-127.0, 127.0) as i8 };
+                    let mut steer_arr = [0i8; 32];
+                    let mut thr_arr = [0i8; 32];
+                    let mut brake_arr = [0i8; 32];
+                    for (i, &w) in best.engine.reflex.steer.weights.iter().enumerate().take(32)    { steer_arr[i] = q(w); }
+                    for (i, &w) in best.engine.reflex.throttle.weights.iter().enumerate().take(32) { thr_arr[i]   = q(w); }
+                    for (i, &w) in best.engine.reflex.brake.weights.iter().enumerate().take(32)    { brake_arr[i] = q(w); }
                     crate::evolution::dna_genesis::TrinityWeights {
                         gate_weights: gate_w_arr, gate_bias: gate_b_arr,
                         reflex_steer: steer_arr, reflex_throttle: thr_arr, reflex_brake: brake_arr,

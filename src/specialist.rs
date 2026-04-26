@@ -13,7 +13,8 @@
 //! Este módulo existe pra bloquear o API e permitir micro-benchmark comparativo
 //! com o monolítico 128→64 atual.
 
-use crate::layers::{BitLinear, BrainForward};
+use crate::layers::BrainForward;
+use crate::float_layers::FloatLinear;
 
 /// Máscara de canais de input por especialista (32 ints, cada 0..127).
 /// Define QUAIS canais do sensory_wave[128] vão pra cada cérebro.
@@ -78,19 +79,22 @@ pub const BRAKE_CHANNELS: [usize; 32] = [
 /// Papel: modulação (não substituição). Similar a SACI SwarmCoordinator.policy_head.
 pub const GATE_DIM: usize = 8;
 
-/// Swarm de 3 especialistas.
+/// Swarm de 3 especialistas. F32 runtime (FloatLinear) — gradiente smooth permite
+/// composição AND ("rápido E vai virar = freia"). Quantize ternário só no disco
+/// (TRIN chunk DNA = i8×96, dequantize ao carregar). Decisão: f32 onde precisa
+/// continuum, ternary onde precisa trilema discreto (genes futuros).
 pub struct SpecialistBrain {
-    pub steer: BitLinear,    // 32 → 1
-    pub throttle: BitLinear, // 32 → 1
-    pub brake: BitLinear,    // 32 → 1
+    pub steer: FloatLinear,    // 32 → 1
+    pub throttle: FloatLinear, // 32 → 1
+    pub brake: FloatLinear,    // 32 → 1
 }
 
 impl SpecialistBrain {
     pub fn new() -> Self {
         Self {
-            steer: BitLinear::new(32, 1),
-            throttle: BitLinear::new(32, 1),
-            brake: BitLinear::new(32, 1),
+            steer: FloatLinear::new(32, 1),
+            throttle: FloatLinear::new(32, 1),
+            brake: FloatLinear::new(32, 1),
         }
     }
 
@@ -123,13 +127,14 @@ impl BrainForward for SpecialistBrain {
         self.forward_specialist(input).to_vec()
     }
     fn myelinate(&mut self, factor: f32) {
-        self.steer.myelinate(factor);
-        self.throttle.myelinate(factor);
-        self.brake.myelinate(factor);
+        // F32 runtime: scale weights uniformly (analog to BitLinear scale bump).
+        let f = factor.clamp(0.5, 2.0);
+        for w in self.steer.weights.iter_mut() { *w *= f; }
+        for w in self.throttle.weights.iter_mut() { *w *= f; }
+        for w in self.brake.weights.iter_mut() { *w *= f; }
     }
     fn quantize(&mut self, _latent: &[f32]) {
-        // Priming por-cérebro acontece em `spawn.rs` (futuro).
-        // Quantize global não faz sentido aqui.
+        // No-op: f32 runtime; quantize happens at DNA save boundary.
     }
 }
 
