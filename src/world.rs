@@ -27,7 +27,7 @@ pub struct VoxelWorld {
 
 impl VoxelWorld {
     pub fn new(_seed: u64, track_width: f32) -> Self {
-        let size = 160; 
+        let size = 240; // 240×240 cells × 3m = 720×720m world
         let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
         let mut flow = vec![Vec2::ZERO; size * size];
@@ -681,17 +681,17 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
         ((z >> 11) as f64 / (1u64 << 53) as f64) as f32
     };
 
-    // Base oval centered at (80, 80), radii ~55. Sample N waypoints around it.
-    let cx = 80.0_f32;
-    let cy = 80.0_f32;
-    let n_waypoints = 8 + (next() * 4.0) as usize; // 8..11
-    let rx_base = 50.0 + next() * 10.0;            // 50..60
-    let ry_base = 50.0 + next() * 10.0;
+    // Grid 240×240. Center (120,120). Radii scale to ~75-90 for full use.
+    let cx = 120.0_f32;
+    let cy = 120.0_f32;
+    let n_waypoints = 10 + (next() * 5.0) as usize; // 10..14 (more variety on bigger map)
+    let rx_base = 75.0 + next() * 15.0;            // 75..90
+    let ry_base = 75.0 + next() * 15.0;
     // Two harmonics for wobble — Fourier sum, like Turing radial mode.
-    let h1_amp = 6.0 + next() * 8.0;   // 6..14
+    let h1_amp = 10.0 + next() * 12.0;   // 10..22
     let h1_freq = 2.0 + (next() * 3.0).floor(); // 2..4
     let h1_phase = next() * std::f32::consts::TAU;
-    let h2_amp = 3.0 + next() * 5.0;
+    let h2_amp = 5.0 + next() * 8.0;
     let h2_freq = 3.0 + (next() * 4.0).floor(); // 3..6
     let h2_phase = next() * std::f32::consts::TAU;
     let rotation = next() * std::f32::consts::TAU;
@@ -702,13 +702,12 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
         let theta = rotation + t * std::f32::consts::TAU;
         let wobble = h1_amp * (h1_freq * theta + h1_phase).sin()
                    + h2_amp * (h2_freq * theta + h2_phase).sin();
-        let rx = (rx_base + wobble).clamp(35.0, 65.0);
-        let ry = (ry_base + wobble).clamp(35.0, 65.0);
-        let x = (cx + rx * theta.cos()).clamp(15.0, 145.0);
-        let y = (cy + ry * theta.sin()).clamp(15.0, 145.0);
+        let rx = (rx_base + wobble).clamp(55.0, 100.0);
+        let ry = (ry_base + wobble).clamp(55.0, 100.0);
+        let x = (cx + rx * theta.cos()).clamp(20.0, 220.0);
+        let y = (cy + ry * theta.sin()).clamp(20.0, 220.0);
         pts.push(Vec2::new(x, y));
     }
-    // Close loop.
     pts.push(pts[0]);
     pts
 }

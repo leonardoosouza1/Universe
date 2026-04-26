@@ -184,6 +184,39 @@ Battery: 5 random seeds × 3 gens, swarm=50, speed=16x.
 
 Sweet spot: K=1-2 holes/track. K=2-3 quebrava 5555 (regressão pra 2035m).
 
+---
+
+## Battery v5 (2026-04-26): bigger map + no timeout + 10-lap cap
+
+Mudanças:
+- Grid 160→**240** (480m × 480m → **720m × 720m world**, lap ~1699m).
+- `generation_timeout_s` desabilitado: race só termina em winner ou all-dead.
+- Lap cap 5→10. Cap teórico = 16990m.
+- Procedural waypoints rescaled (10-14 WPs, radii 75-90 cells).
+
+| Seed | Champion | Best median | Min deaths |
+|---|---|---|---|
+| 9001 | **16989m** (gen 4) | 1322m | 35/50 |
+| 5555 | 16705m (gen 5) | **2319m** (gen 4) | **30/50** |
+| 1337 | **16998m** (gen 2!) | 1700m | 38/50 |
+| 7777 | 16459m | 1302m | 35/50 |
+| 4242 | 1046m ❌ | 394m | 50/50 |
+
+**4/5 seeds bateram cap 17km. Seed 1337 completou 10 voltas já em gen 2.**
+
+| Métrica | Baseline | v5 |
+|---|---|---|
+| Champion | 703m | **16998m** (24×) |
+| Median | 282m | **2319m** (8×) |
+| Survival peak | 0% | 40% (5555 gen 4: 20 carros >2km) |
+
+**Outlier 4242**: procedural layout específico travou. Hipótese: combinação waypoint+holes+spawn cria zona morta. Investigação futura.
+
+**Insights**:
+- Pista era cap dominante até v4. Map maior + timeout removido + cap ampliado = unlocks reais.
+- Trinity tem capacidade pra 10 voltas em swarm 50.
+- Variância entre seeds aumentou — precisamos diversidade no procedural ou seed-filter.
+
 ## Trade-offs aceitáveis
 
 | Ganho | Custo |

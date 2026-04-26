@@ -267,14 +267,16 @@ pub(super) fn evolution_pipeline(
     let dt = time.delta_secs();
     env.tick(dt);
     if query.is_empty() { return; }
-    let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 5);
+    let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 10);
     // Geração encerra por QUALQUER dos:
-    //  - winner (5 voltas)
+    //  - winner (10 voltas)
     //  - all_dead (não adianta esperar ninguém vivo)
     //  - timeout configurável (carros vivos tiveram tempo de acumular laps)
     //  - reset manual
     let all_dead = query.iter().all(|(_, r, _, _)| r.is_dead);
-    let timeout_reached = env.generation_time >= config.generation_timeout_s;
+    // Timeout disabled: gen ends only on winner (10 laps) or all_dead.
+    let timeout_reached = false;
+    let _ = config.generation_timeout_s; // silence unused
 
     if winner.is_some() || all_dead || timeout_reached || race.should_reset {
         // Rank global por fitness — reutilizado pelo pool elite + relatório.
