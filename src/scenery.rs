@@ -104,5 +104,63 @@ pub fn spawn_scenery(
     )).id();
     entities.push(sun_e);
 
+    // ---- 4. URBAN CITY RING — buildings ao redor da pista (vibe street race) ----
+    // Anel de prédios entre o grid (720m) e as montanhas (1500m). Boxes de
+    // alturas variadas, cores de concreto/vidro, placement aleatório no anel.
+    let n_buildings = 80;
+    let inner_r = 380.0_f32; // logo fora do grid 720m
+    let outer_r = 900.0_f32; // antes das montanhas 1500m
+    let mut bld_rng = make_rng(0xC1_D7_BE_EF_u64);
+
+    for _ in 0..n_buildings {
+        let theta = bld_rng() * std::f32::consts::TAU;
+        let r = inner_r + bld_rng() * (outer_r - inner_r);
+        let bx = cx + r * theta.cos();
+        let bz = cz + r * theta.sin();
+        let bw = 12.0 + bld_rng() * 18.0;   // 12..30m wide
+        let bd = 12.0 + bld_rng() * 18.0;   // 12..30m deep
+        let bh = 25.0 + bld_rng() * 110.0;  // 25..135m tall (highrises mix)
+        // Cor: tons concreto cinza/bege/azulado pra variedade urbana.
+        let cv = bld_rng();
+        let color = if cv < 0.33 {
+            Color::srgb(0.55, 0.55, 0.58) // concreto
+        } else if cv < 0.66 {
+            Color::srgb(0.62, 0.58, 0.50) // bege
+        } else {
+            Color::srgb(0.40, 0.46, 0.55) // glass blue
+        };
+        let mat = materials.add(StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.6,
+            metallic: 0.15,
+            reflectance: 0.4,
+            ..default()
+        });
+        let e = commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(bw, bh, bd))),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(bx, bh * 0.5 - 2.0, bz),
+            SimulationEntity,
+        )).id();
+        entities.push(e);
+
+        // Janelas iluminadas (emissive cube no topo) — só pros prédios mais altos.
+        if bh > 80.0 && bld_rng() < 0.4 {
+            let win_mat = materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.9, 0.6),
+                emissive: LinearRgba::new(2.0, 1.6, 0.8, 1.0).into(),
+                unlit: true,
+                ..default()
+            });
+            let we = commands.spawn((
+                Mesh3d(meshes.add(Cuboid::new(bw * 0.8, 4.0, bd * 0.8))),
+                MeshMaterial3d(win_mat),
+                Transform::from_xyz(bx, bh - 10.0, bz),
+                SimulationEntity,
+            )).id();
+            entities.push(we);
+        }
+    }
+
     entities
 }

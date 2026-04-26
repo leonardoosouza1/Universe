@@ -20,7 +20,18 @@ impl Plugin for RacerPlugin {
                 tick_npcs_system.before(motor::update_racers),
                 motor::update_racers.before(crate::physics::PhysicsSet),
             ))
-           .add_systems(Update, (camera_system, skidmark_cleanup_system));
+           .add_systems(Update, (camera_system, skidmark_cleanup_system, toggle_gizmos_system));
+    }
+}
+
+/// KeyG toggles dev gizmos (track pillars, paths, flags) for clean racing-game look.
+fn toggle_gizmos_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut dev: ResMut<crate::evolution::DevSettings>,
+) {
+    if keys.just_pressed(KeyCode::KeyG) {
+        dev.show_gizmos = !dev.show_gizmos;
+        println!("🎮 Gizmos {}", if dev.show_gizmos { "ON" } else { "OFF (clean racing view)" });
     }
 }
 

@@ -64,18 +64,19 @@ pub struct DevSettings {
     pub pain_sensitivity: f32,
     pub wave_amplitude: f32,
     pub flow_influence: f32,
+    /// Toggle visual gizmos: champion path, waypoint pillars, flag, last-gen path.
+    /// Hotkey G (toggle). Default ON for dev, can hide for clean racing-game look.
+    pub show_gizmos: bool,
 }
 
 impl Default for DevSettings {
     fn default() -> Self {
         Self {
-            mutation_rate: 0.008,  // v4: 0.015 ainda erodia axiomas (gen 49 dna_view mostrou
-                                   // canais 79/82/85-86 apagados). 0.008 = ~65 pesos/gen = 49%
-                                   // menos erosão. Combinado com reinject_axioms preserva
-                                   // sinais críticos indefinidamente.
+            mutation_rate: 0.008,
             pain_sensitivity: 1.0,
             wave_amplitude: 70.0,
             flow_influence: 0.5,
+            show_gizmos: true,
         }
     }
 }

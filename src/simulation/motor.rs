@@ -196,6 +196,10 @@ pub(super) fn update_racers(
     let vdt = dt;
     let world = &world_res.0;
 
+    // --- TOGGLE GIZMOS (KeyG) ---
+    // Wrap todo o bloco de gizmos visuais (flag, paths, pilares) em dev.show_gizmos.
+    // Permite limpar UI pra "modo jogo" quando jogador quer só dirigir.
+    if dev.show_gizmos {
     // --- RENDERIZAR MARCO-ZERO (A BANDEIRA DO CAMPEÃO GLOBAL) ---
     if let Some(flag_pos) = race.global_best_position {
         // Haste de 15 metros cravada no chão
@@ -267,6 +271,7 @@ pub(super) fn update_racers(
         gizmos.line(wp, wp + Vec3::Y * 3.0, pillar_color);
         gizmos.sphere(wp + Vec3::Y * 3.5, 0.8, pillar_color);
     }
+    } // end dev.show_gizmos
 
     // --- PRÉ-CÁLCULO (Primeiro passo read-only sobre a mesma query) ---
     let mut best_score = -10000.0;
