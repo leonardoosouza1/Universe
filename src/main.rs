@@ -96,7 +96,7 @@ fn main() {
         should_reset: false,
         hard_reset: false,
         show_confirm_modal: false,
-        camera_distance: 150.0,
+        camera_distance: 28.0, // cinematic chase (≤80 = chase, >80 = top-down legacy)
         is_free_cam: false,
         death_markers: Vec::new(),
         global_best_distance: 0.0,

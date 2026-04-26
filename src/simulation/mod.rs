@@ -123,10 +123,26 @@ fn camera_system(
             }
             if let Some(e) = target {
                 if let Ok((_, _, t)) = racer_query.get(e) {
-                    let offset = Vec3::new(-0.6, 0.8, -0.6).normalize() * race.camera_distance;
-                    let goal = t.translation + offset;
-                    cam_t.translation = cam_t.translation.lerp(goal, 0.05);
-                    cam_t.look_at(t.translation, Vec3::Y);
+                    // Cinematic chase: behind car along -forward, slightly above, looks at point ahead.
+                    // camera_distance: 10..400. Mapped: <=80 = chase atrás, >80 = top-down legacy.
+                    let chase = race.camera_distance <= 80.0;
+                    let goal = if chase {
+                        // forward = right() per existing convention (see motor.rs:376)
+                        let fwd = t.right().as_vec3();
+                        let chase_dist = race.camera_distance.max(8.0);
+                        let height = chase_dist * 0.35 + 1.5;
+                        t.translation - fwd * chase_dist + Vec3::Y * height
+                    } else {
+                        let offset = Vec3::new(-0.6, 0.8, -0.6).normalize() * race.camera_distance;
+                        t.translation + offset
+                    };
+                    cam_t.translation = cam_t.translation.lerp(goal, if chase { 0.10 } else { 0.05 });
+                    let look_target = if chase {
+                        // Aponta 12m à frente do carro pra leve antecipação cinematográfica.
+                        let fwd = t.right().as_vec3();
+                        t.translation + fwd * 12.0 + Vec3::Y * 0.5
+                    } else { t.translation };
+                    cam_t.look_at(look_target, Vec3::Y);
                 }
             }
         }
