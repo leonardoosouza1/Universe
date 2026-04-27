@@ -203,10 +203,11 @@ pub fn spawn_swarm(
     // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     if current_best_w.is_none() {
         if let Some(dna) = load_champion_dna("CHAMPION.dna") {
-            // V6: CEQU chunk (DCT compression) preferido. Reconstruct via inverse DCT.
-            // Fallback: dequantize raw i8 fast_weights se CEQU ausente (DNAs pré-v6).
-            current_best_w = Some(if let Some(ref dct) = dna.cortex_dct {
-                crate::evolution::dna_genesis::cortex_from_dct(dct)
+            // Source of truth: CRAW chunk (i8 raw, lossless round-trip). compress_organism
+            // path tinha quantize ternary que destruía f32 trained weights.
+            // Fallback: dna.fast_weights (legacy DNAs sem CRAW).
+            current_best_w = Some(if let Some(ref craw) = dna.cortex_raw {
+                craw.iter().map(|&w| w as f32 / 63.5).collect()
             } else {
                 dna.fast_weights.iter().map(|&w| w as f32 / 63.5).collect()
             });
@@ -245,10 +246,11 @@ pub fn spawn_swarm(
                     if let Some(mut file) = open_report_log() {
                         let _ = writeln!(file, "⚠️ CHAMPION.dna veio de outra pista (seed {} width {:.1}) — threshold resetado", dna.seed, dna.track_width);
                     }
-                } else if dna.generation > 0 {
-                    // Preserva progresso de axiom_strength decay (evita reset p/ gen=1 após reboot).
-                    race.generation = race.generation.max(dna.generation as _);
                 }
+                // V6: NÃO pump race.generation pra dna.generation — evolution state
+                // (elite_pool, fitness_history, env transitions) começa vazio em UI
+                // reload, gen pumped causava mismatch (rain transitions, time dilation
+                // skip_n=2 em gen≥10, etc.) que degradava DNA carregado.
             }
         }
     }
@@ -433,12 +435,10 @@ pub fn spawn_swarm(
                 // champion já é Vec<f32> agora (cortex f32 runtime).
                 engine.instinct_layer.quantize(champion);
                 engine.instinct_layer.set_scale(current_best_s);
-                // Hypernet expand returns Vec<i8> ternary; convert to f32 small magnitude.
-                if current_best_hypernet.active {
-                    let expanded = current_best_hypernet.expand();
-                    let n = expanded.len().min(engine.instinct_layer.weights.len());
-                    for i in 0..n { engine.instinct_layer.weights[i] = expanded[i] as f32 / 127.0; }
-                }
+                // Hypernet DISABLED for f32 cortex — expansion era ternary {-1,0,1}/127
+                // ≈ ±0.008 magnitude que sobrescrevia weights treinados f32 (~±2.0)
+                // destruindo a rede no spawn. Hypernet ficará pra V2 com basis f32 real.
+                let _ = current_best_hypernet;
                 if let Some(ref champion_slow) = current_best_slow_w {
                     // Option 4: i8 DNA → f32 FloatLinear weights (decode factor 63.5).
                     let exact_slow: Vec<f32> = champion_slow.iter().map(|&w| w as f32 / 63.5).collect();

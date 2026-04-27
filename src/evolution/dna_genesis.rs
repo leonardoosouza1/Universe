@@ -226,6 +226,11 @@ pub const TAG_META_UNIVERSE: &[u8; 4] = b"META";
 pub const TAG_TRINITY: &[u8; 4] = b"TRIN";
 // TLV TAG para cortex equation (DCT compression). Opcional — substitui fast_weights raw.
 pub const TAG_CORTEX_EQ: &[u8; 4] = b"CEQU";
+// TLV TAG para slow_brain weights (V6 equation-only DNA — sem TREE/GENE).
+pub const TAG_SLOW_RAW: &[u8; 4] = b"SLOW";
+// TLV TAG para cortex weights raw i8 (bypass compress_organism que quantiza ternary).
+// Necessário pra preservar weights f32 trained com fidelidade plena (i8/63.5 round-trip).
+pub const TAG_CORTEX_RAW: &[u8; 4] = b"CRAW";
 
 /// Cortex DCT compression — 256 coeffs cobrem 8192 weights via inverse DCT-II.
 /// 32× compressão. Lossy mas smooth. Pra DNAs onde fidelidade absoluta não é
@@ -484,8 +489,11 @@ pub struct DnaPayload {
     // --- v5 / TLV TRIN chunk: Trinity gate + reflex weights (None se DNA pré-v5) ---
     pub trinity: Option<TrinityWeights>,
     // --- v6 / TLV CEQU chunk: cortex DCT compression (256 coeffs → 8192 weights).
-    // Quando presente, sobrescreve fast_weights raw. Reconstruction lossy ~32×.
+    // Experimental — ainda lossy demais pra ser source-of-truth.
     pub cortex_dct: Option<[f32; CORTEX_DCT_COEFFS]>,
+    // --- v6 / TLV CRAW chunk: cortex raw i8 weights (bypass compress_organism
+    // que quantizava ternary e destruía f32 trained). Source of truth pra cortex.
+    pub cortex_raw: Option<Vec<i8>>,
 }
 
 pub fn save_champion_dna(
@@ -566,7 +574,7 @@ pub fn save_champion_dna_v5(
         slow_weights,
         generation,
         fitness,
-        Sap::default() // Por enquanto sem neuro-moduladores dinâmicos no save base
+        Sap::default()
     );
 
     // 2. Cria o chunk META exclusivo do Universo para conter seed, scales, track e morpho
@@ -587,10 +595,14 @@ pub fn save_champion_dna_v5(
         payload.add_chunk(Chunk::new(*TAG_TRINITY, t.to_bytes().to_vec()));
     }
 
-    // CEQU chunk (cortex equation): DCT compression. Substitui fast_weights raw
-    // ao carregar — economia ~32× mas lossy. Save sempre emite junto pra rollback.
+    // CRAW chunk (cortex raw i8) — bypass compress_organism's ternary quantization
+    // que destruía f32 weights. Esta é a fonte de verdade do cortex agora.
+    payload.add_chunk(Chunk::new(*TAG_CORTEX_RAW, fast_weights.iter().map(|&b| b as u8).collect()));
+
+    // CEQU chunk (cortex equation): DCT compression for future equation-only DNA.
+    // Currently EXPERIMENTAL — not used on load (lossy 32× reconstruction não preserva
+    // trained net fidelity). Mantido pra iteração futura com basis menos perdida.
     {
-        // Convert i8 fast_weights → f32 → DCT 256 coeffs.
         let cortex_f32: Vec<f32> = fast_weights.iter().map(|&w| w as f32 / 63.5).collect();
         let dct = cortex_to_dct(&cortex_f32);
         payload.add_chunk(Chunk::new(*TAG_CORTEX_EQ, dct_coeffs_to_bytes(&dct).to_vec()));
@@ -660,12 +672,16 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                             // CEQU chunk (cortex equation, opcional).
                             let cortex_dct = payload.find_chunk(TAG_CORTEX_EQ)
                                 .and_then(|c| dct_coeffs_from_bytes(&c.data));
+                            // CRAW chunk (cortex raw i8) — bypass compress_organism ternary.
+                            let cortex_raw: Option<Vec<i8>> = payload.find_chunk(TAG_CORTEX_RAW)
+                                .map(|c| c.data.iter().map(|&b| b as i8).collect());
                             return Some(DnaPayload {
                                 fast_weights, fast_scale,
                                 slow_weights, slow_scale,
                                 generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
                                 trinity,
                                 cortex_dct,
+                                cortex_raw,
                             });
                         }
                     }
@@ -725,6 +741,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
             trinity: None,
             cortex_dct: None,
+            cortex_raw: None,
         });
         }
     }
@@ -750,6 +767,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             kan_knots: default_kan_knots(),
             trinity: None,
             cortex_dct: None,
+            cortex_raw: None,
         });
     }
 

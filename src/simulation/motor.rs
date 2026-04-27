@@ -841,7 +841,10 @@ pub(super) fn update_racers(
         // Gated atrás de gen ≥ 10 pra não desestabilizar bootstrap evolutivo.
         racer.brain_tick_counter = racer.brain_tick_counter.wrapping_add(1);
         let cortisol = racer.engine.metabolism.cortisol;
-        let skip_n: u8 = if race.generation >= 10 && cortisol < 0.5 { 2 } else { 1 };
+        // Time dilation desabilitada: skip_n=2 em gen>=10 reduzia brain freq pra
+        // 30Hz e degradava DNA reload (cars precisam reagir 60Hz pra cap).
+        let _ = cortisol;
+        let skip_n: u8 = 1;
         let should_fire = (racer.brain_tick_counter % skip_n) == 0;
 
         // --- ETAPA PERCEPTION v2: full upgrade (with retrain) ---
