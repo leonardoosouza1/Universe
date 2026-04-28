@@ -512,9 +512,9 @@ pub(super) fn update_racers(
         }
         let open_l_i8 = ((open_left as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
         let open_r_i8 = ((open_right as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
-        // Duplicação 8× — sinais novos competem com retina pooled trained.
-        for i in 36..44 { sensory_wave[i] = open_l_i8; }    // 8 cells left
-        for i in 44..52 { sensory_wave[i] = open_r_i8; }    // 8 cells right
+        // Vitais: 4× pra bootstrap rápido. Sinais novos precisam força inicial.
+        for i in 36..40 { sensory_wave[i] = open_l_i8; }
+        for i in 40..44 { sensory_wave[i] = open_r_i8; }
 
         // BUG FIX 3 (user report): "pista pequena bate direto". Wall imminent
         // binary signal forte — pixels centrais (10..22) com retina alta = parede frontal.
@@ -528,8 +528,7 @@ pub(super) fn update_racers(
                                    else if wall_central_max > 80 { 90 }
                                    else if wall_central_max > 40 { 50 }
                                    else { 0 };
-        // 8× wall_imminent — perigo frontal binário.
-        for i in 52..60 { sensory_wave[i] = wall_imminent_i8; }
+        for i in 44..48 { sensory_wave[i] = wall_imminent_i8; }
         sensory_wave[93] = dark_center_i8;
 
         // --- FLUXO ÓPTICO TEMPORAL (delta entre frames) ---
@@ -916,9 +915,10 @@ pub(super) fn update_racers(
             let yaw_i8   = ((yaw     / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
             let pitch_i8 = ((pitch_r / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
             let roll_i8  = ((roll    / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
-            for i in 16..20 { sensory_wave[i] = yaw_i8; }
-            for i in 20..24 { sensory_wave[i] = pitch_i8; }
-            for i in 24..28 { sensory_wave[i] = roll_i8; }
+            // Single-channel proprio (f32 cortex aprende magnitude via weight).
+            sensory_wave[16] = yaw_i8;
+            sensory_wave[17] = pitch_i8;
+            sensory_wave[18] = roll_i8;
 
             // Curvature lookahead — signed angles.
             let curv_at = |ahead_m: f32| -> f32 {
@@ -941,8 +941,7 @@ pub(super) fn update_racers(
             sensory_wave[78] = c40;
             sensory_wave[79] = c40;
             sensory_wave[80] = c100;
-            // ch 32..35 = curv180 dup (lookahead estratégico).
-            for i in 32..36 { sensory_wave[i] = c180; }
+            sensory_wave[32] = c180;
 
             // Pre-brake: speed × max curv across 3 horizons. Curva longa (180m) pesa
             // 0.5 (cars têm tempo). Curva próxima (40m) pesa 1.0 (urgente).
@@ -952,7 +951,7 @@ pub(super) fn update_racers(
                 .max(c180_signed.abs() / yn * 0.5)
                 .clamp(0.0, 1.0);
             let pre_brake = (speed_norm * curv_abs_max * 127.0).clamp(0.0, 127.0) as i8;
-            for i in 28..32 { sensory_wave[i] = pre_brake; }
+            sensory_wave[28] = pre_brake;
         }
 
         if should_fire {

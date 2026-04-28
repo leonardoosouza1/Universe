@@ -874,7 +874,7 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
     // Min curvature total: força layout sinuoso. 540° = ~1.5× volta de curvas integradas.
     if total_curve_deg < 540.0 { return false; }
     // Min sharp turns: ≥4 garante variedade (hairpins/S-curves obrigatórios).
-    if sharp_turns < 6 { return false; }
+    if sharp_turns < 4 { return false; }
     // Min max_turn: força ao menos UMA curva fechada (>55°).
     if max_turn < 55.0 { return false; }
     // Avg segment length: muito comprido = retas longas chatas. Cap em 50m médio.

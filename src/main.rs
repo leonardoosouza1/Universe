@@ -39,7 +39,7 @@ fn main() {
         config.tracks.insert(0, universe::config::TrackProfile {
             name: format!("Procedural-{seed}"),
             seed,
-            track_width: 32.0, // tight — força precisão
+            track_width: 36.0, // intermediário entre tight e easy — bootstrap viável
             complexity: 0.5,
         });
         config.selected_track_index = 0;
