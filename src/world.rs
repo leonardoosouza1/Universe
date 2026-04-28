@@ -546,7 +546,7 @@ impl VoxelWorld {
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
                 
                 let mut hit_voxel = VoxelType::Road;
-                let mut hit_dist = 400.0;
+                let mut hit_dist = 600.0;
                 
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
                 
@@ -580,7 +580,7 @@ impl VoxelWorld {
                 
                 // Alcance ~400m (134 blocos × 3m cell). Profundidade aumentada — modelo
                 // antecipa curvas longas em retas largas a 80m/s antes (era 300m).
-                for _ in 0..134 {
+                for _ in 0..200 {
                     if side_dist_x < side_dist_y {
                         side_dist_x += delta_dist_x; map_x += step_x; side = 0;
                     } else {
@@ -606,7 +606,7 @@ impl VoxelWorld {
                     } else {
                         hit_dist = current_dist;
                     }
-                } else if dir_y < -0.001 && dist_to_ground <= 400.0 {
+                } else if dir_y < -0.001 && dist_to_ground <= 600.0 {
                     // Sem paredes, mas bateu no chão
                     hit_dist = dist_to_ground;
                     let hit_px = eye_pos.x + dir_x * hit_dist;
@@ -614,7 +614,7 @@ impl VoxelWorld {
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
                 }
                 
-                let depth_fade = (hit_dist / 400.0).clamp(0.0, 1.0);
+                let depth_fade = (hit_dist / 600.0).clamp(0.0, 1.0);
 
                 // --- VISÃO ABSOLUTA ---
                 // Para que o modelo NUNCA confunda uma parede longe com a pista perto.
@@ -626,17 +626,23 @@ impl VoxelWorld {
                 //   Dá diferenciação de 90 entre "encostando (0m)" e "razoavelmente próxima (75m)".
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
-                        // Triple-scale depth: sqrt perto (0-30m crítico) + linear médio
-                        // (30-120m antecipa curva) + tail longe (120-200m setup pré-curva).
+                        // Quad-scale depth (alcance estendido 600m):
+                        // 0-30m sqrt 127→55 (colisão crítica)
+                        // 30-120m linear 55→0 (frear pra curva)
+                        // 120-300m linear 0→-25 (setup curva longa)
+                        // 300-600m linear -25→-50 (visão estratégica)
                         if hit_dist < 30.0 {
                             let near = (hit_dist / 30.0).clamp(0.0, 1.0);
-                            127.0 - (near.sqrt() * 72.0) // 127→55
+                            127.0 - (near.sqrt() * 72.0)
                         } else if hit_dist < 120.0 {
                             let mid = ((hit_dist - 30.0) / 90.0).clamp(0.0, 1.0);
-                            55.0 - (mid * 60.0) // 55→-5
+                            55.0 - (mid * 55.0)
+                        } else if hit_dist < 300.0 {
+                            let far = ((hit_dist - 120.0) / 180.0).clamp(0.0, 1.0);
+                            0.0 - (far * 25.0)
                         } else {
-                            let far = ((hit_dist - 120.0) / 80.0).clamp(0.0, 1.0);
-                            -5.0 - (far * 25.0) // -5→-30
+                            let xfar = ((hit_dist - 300.0) / 300.0).clamp(0.0, 1.0);
+                            -25.0 - (xfar * 25.0)
                         }
                     },
                     VoxelType::Grass => {
@@ -860,12 +866,21 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         }
     }
     // Permite hairpins até 90° + sequências de 4 curvas (chicanes desafiadoras OK).
-    if max_turn > 90.0 { return false; }
-    if max_consecutive > 4 { return false; }
-    // Mínimo de curvas (rejeita ovais quase planos).
-    if total_curve_deg < 360.0 { return false; }
-    // Pelo menos 3 curvas afiadas (rejeita layouts retos demais).
-    if sharp_turns < 2 { return false; }
+    // CEILING (descarta layouts impossíveis):
+    if max_turn > 95.0 { return false; }
+    if max_consecutive > 5 { return false; }
+
+    // FLOOR (descarta layouts FÁCEIS DEMAIS — cars batem cap em poucas gens):
+    // Min curvature total: força layout sinuoso. 540° = ~1.5× volta de curvas integradas.
+    if total_curve_deg < 540.0 { return false; }
+    // Min sharp turns: ≥4 garante variedade (hairpins/S-curves obrigatórios).
+    if sharp_turns < 6 { return false; }
+    // Min max_turn: força ao menos UMA curva fechada (>55°).
+    if max_turn < 55.0 { return false; }
+    // Avg segment length: muito comprido = retas longas chatas. Cap em 50m médio.
+    let avg_seg_m = (lap_len_cells * 3.0) / (n - 1) as f32;
+    if avg_seg_m > 50.0 { return false; }
+
     true
 }
 

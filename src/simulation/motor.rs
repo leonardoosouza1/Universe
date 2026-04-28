@@ -931,27 +931,26 @@ pub(super) fn update_racers(
                 } else { 0.0 }
             };
             let yn = std::f32::consts::FRAC_PI_2;
-            let c25_signed = curv_at(25.0);
-            let c60_signed = curv_at(60.0);
-            let c90_signed = curv_at(90.0);
-            let c25 = ((c25_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            let c60 = ((c60_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            let c90 = ((c90_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            sensory_wave[78] = c25;
-            sensory_wave[79] = c25;
-            sensory_wave[80] = c60;
-            // ch 32..35 = curv90 dup (lookahead 90m, pré-curva longa).
-            for i in 32..36 { sensory_wave[i] = c90; }
+            // Lookahead estendido: 40m próximo, 100m médio, 180m longe (alcance visão 600m).
+            let c40_signed = curv_at(40.0);
+            let c100_signed = curv_at(100.0);
+            let c180_signed = curv_at(180.0);
+            let c40 = ((c40_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c100 = ((c100_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c180 = ((c180_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            sensory_wave[78] = c40;
+            sensory_wave[79] = c40;
+            sensory_wave[80] = c100;
+            // ch 32..35 = curv180 dup (lookahead estratégico).
+            for i in 32..36 { sensory_wave[i] = c180; }
 
-            // Pre-brake signal: speed × max(|curv_25|, |curv_60|, 0.7×|curv_90|) × 127.
-            // Adiciona horizonte 90m com peso 0.7 — antecipa curvas longas (≥80m).
+            // Pre-brake: speed × max curv across 3 horizons. Curva longa (180m) pesa
+            // 0.5 (cars têm tempo). Curva próxima (40m) pesa 1.0 (urgente).
             let speed_norm = (speed / 80.0).clamp(0.0, 1.0);
-            let curv_abs_max = (c25_signed.abs() / yn)
-                .max(c60_signed.abs() / yn)
-                .max(c90_signed.abs() / yn * 0.7)
+            let curv_abs_max = (c40_signed.abs() / yn)
+                .max(c100_signed.abs() / yn * 0.85)
+                .max(c180_signed.abs() / yn * 0.5)
                 .clamp(0.0, 1.0);
-            // Linear: sinal proporcional. Antes quadratic causava over-brake → cars
-            // não terminavam volta em pistas estreitas.
             let pre_brake = (speed_norm * curv_abs_max * 127.0).clamp(0.0, 127.0) as i8;
             for i in 28..32 { sensory_wave[i] = pre_brake; }
         }
