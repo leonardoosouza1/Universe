@@ -494,6 +494,40 @@ pub(super) fn update_racers(
         sensory_wave[90] = dark_center_i8;
         sensory_wave[91] = dark_center_i8;
         sensory_wave[92] = dark_center_i8;
+
+        // BUG FIX 2 (user report): "modelo escolhe menor lado". Adiciona canais EXPLÍCITOS:
+        //   open_left_width  = pixels escuros consecutivos à esquerda do centro até PRIMEIRA parede
+        //   open_right_width = idem à direita
+        // Net aprende: se left > right, vira esquerda. Resolve bistable choice.
+        let center_idx: usize = 15;
+        let mut open_left: i32 = 0;
+        for i in (0..center_idx).rev() {
+            let v = retina_binocular[32 + i] as i32;
+            if v < 0 { open_left += 1; } else { break; } // negativo = road; positivo = parede
+        }
+        let mut open_right: i32 = 0;
+        for i in (center_idx + 1)..32 {
+            let v = retina_binocular[32 + i] as i32;
+            if v < 0 { open_right += 1; } else { break; }
+        }
+        let open_l_i8 = ((open_left as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
+        let open_r_i8 = ((open_right as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
+        for i in 36..40 { sensory_wave[i] = open_l_i8; }
+        for i in 40..44 { sensory_wave[i] = open_r_i8; }
+
+        // BUG FIX 3 (user report): "pista pequena bate direto". Wall imminent
+        // binary signal forte — pixels centrais (10..22) com retina alta = parede frontal.
+        let mut wall_central_max: i32 = -128;
+        for i in 10..22 {
+            let v = retina_binocular[32 + i] as i32;
+            if v > wall_central_max { wall_central_max = v; }
+        }
+        // > 80 = parede a < 30m; > 110 = colisão iminente.
+        let wall_imminent_i8: i8 = if wall_central_max > 110 { 127 }
+                                   else if wall_central_max > 80 { 90 }
+                                   else if wall_central_max > 40 { 50 }
+                                   else { 0 };
+        for i in 44..48 { sensory_wave[i] = wall_imminent_i8; }
         sensory_wave[93] = dark_center_i8;
 
         // --- FLUXO ÓPTICO TEMPORAL (delta entre frames) ---
