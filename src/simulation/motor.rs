@@ -512,8 +512,9 @@ pub(super) fn update_racers(
         }
         let open_l_i8 = ((open_left as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
         let open_r_i8 = ((open_right as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
-        for i in 36..40 { sensory_wave[i] = open_l_i8; }
-        for i in 40..44 { sensory_wave[i] = open_r_i8; }
+        // Duplicação 8× — sinais novos competem com retina pooled trained.
+        for i in 36..44 { sensory_wave[i] = open_l_i8; }    // 8 cells left
+        for i in 44..52 { sensory_wave[i] = open_r_i8; }    // 8 cells right
 
         // BUG FIX 3 (user report): "pista pequena bate direto". Wall imminent
         // binary signal forte — pixels centrais (10..22) com retina alta = parede frontal.
@@ -527,7 +528,8 @@ pub(super) fn update_racers(
                                    else if wall_central_max > 80 { 90 }
                                    else if wall_central_max > 40 { 50 }
                                    else { 0 };
-        for i in 44..48 { sensory_wave[i] = wall_imminent_i8; }
+        // 8× wall_imminent — perigo frontal binário.
+        for i in 52..60 { sensory_wave[i] = wall_imminent_i8; }
         sensory_wave[93] = dark_center_i8;
 
         // --- FLUXO ÓPTICO TEMPORAL (delta entre frames) ---

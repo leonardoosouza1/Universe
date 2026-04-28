@@ -453,11 +453,10 @@ pub fn spawn_swarm(
             // Box-Muller σ=0.05 — pequenos ajustes em vez de flips disruptivos.
             if simple_mut_slot {
                 let rate_boosted = (effective_mutation_rate * 2.0).min(0.25);
-                // σ adaptativa: explora rápido cedo (0.12), lock-in fino tarde (0.03).
-                // Decay exponencial: σ(gen) = 0.03 + 0.09 × 0.85^(gen-1).
-                // gen 1: 0.12, gen 5: 0.075, gen 10: 0.048, gen 20+: 0.04~0.03
+                // σ adaptativa: explora cedo (0.12) com floor 0.06 (mantém exploração).
+                // Net precisa σ > 0.05 pra absorver canais novos (open_l/r, wall_imminent).
                 let g = race.generation.max(1);
-                let sigma_cortex = 0.03_f32 + 0.09_f32 * 0.85_f32.powi((g as i32 - 1).max(0));
+                let sigma_cortex = 0.06_f32 + 0.08_f32 * 0.88_f32.powi((g as i32 - 1).max(0));
                 for w in engine.instinct_layer.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
                         let u1 = (rng.random::<f32>()).max(1e-7);
