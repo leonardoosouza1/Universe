@@ -67,6 +67,8 @@ pub struct DevSettings {
     /// Toggle visual gizmos: champion path, waypoint pillars, flag, last-gen path.
     /// Hotkey G (toggle). Default ON for dev, can hide for clean racing-game look.
     pub show_gizmos: bool,
+    /// Toggle vision cones (fovea raycast verde) on selected racer. KeyH.
+    pub show_vision: bool,
 }
 
 impl Default for DevSettings {
@@ -77,6 +79,7 @@ impl Default for DevSettings {
             wave_amplitude: 70.0,
             flow_influence: 0.5,
             show_gizmos: true,
+            show_vision: true,
         }
     }
 }

@@ -32,8 +32,9 @@ pub fn spawn_scenery(
     let mut entities: Vec<Entity> = Vec::new();
 
     // World center: voxel grid 240×240 cells × 3m -> 720m, center (360, _, 360).
-    let cx = 360.0_f32;
-    let cz = 360.0_f32;
+    // Grid 320 cells × 3m = 960m world. Center at (480, _, 480).
+    let cx = 480.0_f32;
+    let cz = 480.0_f32;
 
     // ---- 1. Sea plane (10000m × 10000m, just below grass) ----
     let sea_e = commands.spawn((
@@ -84,18 +85,16 @@ pub fn spawn_scenery(
         entities.push(e);
     }
 
-    // ---- 3. Sun: bright glowing sphere far in the sky ----
-    // Direction from world center toward DirectionalLight pos (360, 600, 240).
-    // Light is at world (360, 600, 240) and world center is (360, 0, 360):
-    // direction = (0, 600, -120) normalized.
+    // ---- 3. Sun + halo (sphere + larger ghost glow) ----
     let dir = Vec3::new(0.0, 600.0, -120.0).normalize();
     let sun_pos = Vec3::new(cx, 0.0, cz) + dir * 4000.0;
 
+    // Sun core (bright disc)
     let sun_e = commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(80.0))),
+        Mesh3d(meshes.add(Sphere::new(120.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.95, 0.7),
-            emissive: LinearRgba::new(8.0, 7.5, 5.5, 1.0).into(),
+            emissive: LinearRgba::new(15.0, 13.0, 8.0, 1.0).into(),
             unlit: true,
             ..default()
         })),
@@ -103,6 +102,37 @@ pub fn spawn_scenery(
         SimulationEntity,
     )).id();
     entities.push(sun_e);
+
+    // Sun halo (ghost sphere, larger + softer — bloom amplifica)
+    let halo_e = commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(280.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.92, 0.65, 0.4),
+            emissive: LinearRgba::new(3.5, 2.8, 1.5, 1.0).into(),
+            unlit: true,
+            alpha_mode: AlphaMode::Add, // additive blending = glow
+            ..default()
+        })),
+        Transform::from_translation(sun_pos),
+        SimulationEntity,
+    )).id();
+    entities.push(halo_e);
+
+    // ---- 3b. Moon (oposto ao sol, prateado) ----
+    let moon_dir = Vec3::new(0.0, 300.0, 200.0).normalize();
+    let moon_pos = Vec3::new(cx, 0.0, cz) + moon_dir * 3500.0;
+    let moon_e = commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(70.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.92, 0.94, 0.98),
+            emissive: LinearRgba::new(2.8, 3.0, 3.5, 1.0).into(),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_translation(moon_pos),
+        SimulationEntity,
+    )).id();
+    entities.push(moon_e);
 
     // ---- 4. URBAN CITY RING — buildings ao redor da pista (vibe street race) ----
     // Anel de prédios entre o grid (720m) e as montanhas (1500m). Boxes de

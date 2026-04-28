@@ -75,10 +75,10 @@ impl Default for UniverseConfig {
                 // Default = procedural seed 9001. Matches DNA training seeds — UI mode loads
                 // CHAMPION.dna trained on this layout instead of mismatching with hardcoded.
                 TrackProfile {
-                    name: "Procedural Sigma".to_string(),     // EASY procedural
+                    name: "Procedural Sigma".to_string(),     // EASY procedural (apertada — força precisão)
                     seed: 9001,
-                    track_width: 44.0,
-                    complexity: 0.3,
+                    track_width: 26.0,
+                    complexity: 0.5,
                 },
                 TrackProfile {
                     name: "Dubai Oval".to_string(),           // EASY hardcoded

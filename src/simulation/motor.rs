@@ -462,17 +462,34 @@ pub(super) fn update_racers(
         // Essa foi a crítica do usuário: "os carros não tentam centralizar o preto".
         // O sinal anterior (ch 81 lane_offset) existia mas só votava ±1 contra 40+
         // canais concorrentes. Aqui damos força proporcional à sua importância.
-        let mut dark_sum_i: f32 = 0.0;
-        let mut dark_weight: f32 = 0.0;
-        for i in 0..32 {
-            // APENAS periférica — fóvea é sacádica (gira com gaze), seu index não
-            // corresponde mais a ângulo fixo. Usar a fóvea aqui polui o centro de
-            // massa com viés falso sempre que a cabeça vira.
-            let d = (-retina_binocular[32 + i] as f32).max(0.0);
-            dark_sum_i += d * (i as f32 - 15.5);
-            dark_weight += d;
+        // BUG FIX (user report): centroide global entre 2 blobs escuros (curva em
+        // S, pista atrás) caía em PAREDE. Modelo virava pro meio da parede achando
+        // que era pista. Solução: sliding window — encontra janela com MAIOR soma
+        // de darkness (=blob mais largo/profundo de pista visível) e usa SEU centro.
+        const W: usize = 5; // janela 5 pixels (~28° angular)
+        let mut best_window_start = 0usize;
+        let mut best_window_sum: f32 = -1.0;
+        let mut best_window_centroid: f32 = 0.0;
+        for start in 0..=(32 - W) {
+            let mut sum: f32 = 0.0;
+            let mut weighted_idx: f32 = 0.0;
+            for k in 0..W {
+                let v = retina_binocular[32 + start + k] as i32;
+                let d = (-v as f32).max(0.0);
+                sum += d;
+                weighted_idx += d * (start + k) as f32;
+            }
+            if sum > best_window_sum {
+                best_window_sum = sum;
+                best_window_start = start;
+                best_window_centroid = if sum > 1.0 { weighted_idx / sum } else { (start + W/2) as f32 };
+            }
         }
-        let dark_center_norm = if dark_weight > 1.0 { (dark_sum_i / (dark_weight * 15.5)).clamp(-1.0, 1.0) } else { 0.0 };
+        let _ = best_window_start;
+        // Centroide da janela vencedora normalizado em [-1, 1] (idx 15.5 = centro).
+        let dark_center_norm: f32 = if best_window_sum > 1.0 {
+            ((best_window_centroid - 15.5) / 15.5).clamp(-1.0, 1.0)
+        } else { 0.0 };
         let dark_center_i8 = (dark_center_norm * 127.0).clamp(-127.0, 127.0) as i8;
         sensory_wave[90] = dark_center_i8;
         sensory_wave[91] = dark_center_i8;
@@ -880,16 +897,25 @@ pub(super) fn update_racers(
             let yn = std::f32::consts::FRAC_PI_2;
             let c25_signed = curv_at(25.0);
             let c60_signed = curv_at(60.0);
+            let c90_signed = curv_at(90.0);
             let c25 = ((c25_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
             let c60 = ((c60_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c90 = ((c90_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
             sensory_wave[78] = c25;
             sensory_wave[79] = c25;
             sensory_wave[80] = c60;
+            // ch 32..35 = curv90 dup (lookahead 90m, pré-curva longa).
+            for i in 32..36 { sensory_wave[i] = c90; }
 
-            // Pre-brake signal: speed_norm × |curv_max| × 127. Sempre positivo (magnitude).
-            // Quanto maior, mais perigo de overshoot. Modelo aprende a frear cedo.
+            // Pre-brake signal: speed × max(|curv_25|, |curv_60|, 0.7×|curv_90|) × 127.
+            // Adiciona horizonte 90m com peso 0.7 — antecipa curvas longas (≥80m).
             let speed_norm = (speed / 80.0).clamp(0.0, 1.0);
-            let curv_abs_max = (c25_signed.abs() / yn).max(c60_signed.abs() / yn).clamp(0.0, 1.0);
+            let curv_abs_max = (c25_signed.abs() / yn)
+                .max(c60_signed.abs() / yn)
+                .max(c90_signed.abs() / yn * 0.7)
+                .clamp(0.0, 1.0);
+            // Linear: sinal proporcional. Antes quadratic causava over-brake → cars
+            // não terminavam volta em pistas estreitas.
             let pre_brake = (speed_norm * curv_abs_max * 127.0).clamp(0.0, 127.0) as i8;
             for i in 28..32 { sensory_wave[i] = pre_brake; }
         }
@@ -1859,8 +1885,9 @@ pub(super) fn update_racers(
         }
 
         // --- 6. ESPIONAGEM NEURAL (GIZMOS DO CAMPO DE VISÃO) ---
-        if race.selected_racer.is_some() && race.selected_racer.unwrap() == entity ||
-           (race.selected_racer.is_none() && current_best == entity) {
+        // Toggle KeyH (dev.show_vision) — esconde cones verdes pra visual limpo.
+        if dev.show_vision && (race.selected_racer.is_some() && race.selected_racer.unwrap() == entity ||
+           (race.selected_racer.is_none() && current_best == entity)) {
 
             let forward = *transform.right();
             let up = *transform.up();

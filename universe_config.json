@@ -13,8 +13,8 @@
     {
       "name": "Procedural Sigma",
       "seed": 9001,
-      "track_width": 44.0,
-      "complexity": 0.3
+      "track_width": 8.0,
+      "complexity": 0.5
     },
     {
       "name": "Dubai Oval",
@@ -54,14 +54,26 @@
     },
     {
       "name": "New Circuit 8",
-      "seed": 11542601072604277280,
+      "seed": 11542601072604277271,
+      "track_width": 8.0,
+      "complexity": 1.0
+    },
+    {
+      "name": "New Circuit 9",
+      "seed": 7680263426089583842,
+      "track_width": 18.0,
+      "complexity": 1.0
+    },
+    {
+      "name": "New Circuit 10",
+      "seed": 487553006189709482,
       "track_width": 18.0,
       "complexity": 1.0
     }
   ],
-  "selected_track_index": 0,
+  "selected_track_index": 9,
   "swarm_count": 50,
-  "time_scale": 3.0,
+  "time_scale": 4.0,
   "generation_timeout_s": 120.0,
   "rotate_tracks": false,
   "gens_per_track": 3

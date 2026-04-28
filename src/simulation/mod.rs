@@ -25,6 +25,7 @@ impl Plugin for RacerPlugin {
 }
 
 /// KeyG toggles dev gizmos (track pillars, paths, flags) for clean racing-game look.
+/// KeyH toggles vision cones (fovea raycast verde no carro selecionado).
 fn toggle_gizmos_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut dev: ResMut<crate::evolution::DevSettings>,
@@ -32,6 +33,10 @@ fn toggle_gizmos_system(
     if keys.just_pressed(KeyCode::KeyG) {
         dev.show_gizmos = !dev.show_gizmos;
         println!("🎮 Gizmos {}", if dev.show_gizmos { "ON" } else { "OFF (clean racing view)" });
+    }
+    if keys.just_pressed(KeyCode::KeyH) {
+        dev.show_vision = !dev.show_vision;
+        println!("👁  Vision cones {}", if dev.show_vision { "ON" } else { "OFF" });
     }
 }
 

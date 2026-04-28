@@ -808,7 +808,11 @@ pub fn spawn_swarm(
             let pos_2d = center_2d + perp_2d * (col_offset * 3.0);
             let p = Vec3::new(pos_2d.x, world.start_pos.y, pos_2d.y);
             let angle = dir_2d.y.atan2(dir_2d.x);
-            (p, Quat::from_rotation_y(-angle), target_progress)
+            // GRID spawn: spawn_progress=0 marca como "largada" pra is_grid_spawn
+            // gate de crown. Net progress depois subtrai 0 → puro track_progress.
+            // (Antes target_progress confundia gate, impedia DNA crown).
+            let _ = target_progress;
+            (p, Quat::from_rotation_y(-angle), 0.0_f32)
         } else {
             // Distribui ao longo dos waypoints. Fração = 25%, 50%, 75%, 87%... em faixa circular.
             let distributed_idx = (i - GRID_SPAWNS) as f32;

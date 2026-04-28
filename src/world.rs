@@ -30,7 +30,7 @@ pub struct VoxelWorld {
 
 impl VoxelWorld {
     pub fn new(_seed: u64, track_width: f32) -> Self {
-        let size = 240; // 240×240 cells × 3m = 720×720m world
+        let size = 320; // 320×320 cells × 3m = 960×960m world (mapa maior)
         let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
         let mut flow = vec![Vec2::ZERO; size * size];
@@ -404,9 +404,10 @@ impl VoxelWorld {
                     let dx = x as f32 - half;
                     let dy = y as f32 - half;
                     let radial = (dx * dx + dy * dy).sqrt();
-                    // Grid 240. Center fade-free até radial=90 cells. Borda 90..120 desce.
-                    let edge_t = ((radial - 90.0) / 30.0).clamp(0.0, 1.0); // 0=center, 1=edge
-                    let py_eff = py - edge_t * edge_t * 3.0; // até 3m abaixo na borda
+                    // Grid 320 cells. Plateau até radial 100 (300m centro). Slope 100..160 cells
+                    // desce 4m → encontra sea Y=-2 antes do edge. Sem vácuo visível com céu.
+                    let edge_t = ((radial - 100.0) / 60.0).clamp(0.0, 1.0);
+                    let py_eff = py - edge_t * edge_t * 4.0; // até 4m abaixo (passa sea Y=-2)
                     let b = grass_pos.len() as u32;
                     let x0 = px - overlap;
                     let x1 = px + self.cell_size + overlap;
@@ -763,26 +764,27 @@ fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
         ((z >> 11) as f64 / (1u64 << 53) as f64) as f32
     };
 
-    let cx = 120.0_f32;
-    let cy = 120.0_f32;
-    // 12-16 anchors = mais variedade de curvas. Annulus 50..115 (laps ~3km).
-    let n_anchors = 12 + (next() * 5.0) as usize;
+    // Grid 320 → centro (160, 160). Annulus expandido 70..150 cells = laps grandes.
+    let cx = 160.0_f32;
+    let cy = 160.0_f32;
+    // 16-22 anchors = pista LONGA com várias voltas, hairpins, S-curves.
+    let n_anchors = 16 + (next() * 7.0) as usize;
     let mut anchors: Vec<Vec2> = Vec::with_capacity(n_anchors);
     let mut tries = 0;
-    while anchors.len() < n_anchors && tries < 800 {
+    while anchors.len() < n_anchors && tries < 1000 {
         tries += 1;
-        let r = 50.0 + next() * 65.0; // 50..115 cells = full annulus
+        let r = 70.0 + next() * 80.0; // 70..150 cells = 210..450m radius
         let theta = next() * std::f32::consts::TAU;
         let p = Vec2::new(cx + r * theta.cos(), cy + r * theta.sin());
-        if p.x < 25.0 || p.x > 215.0 || p.y < 25.0 || p.y > 215.0 { continue; }
-        if anchors.iter().any(|a| a.distance(p) < 38.0) { continue; }
+        if p.x < 35.0 || p.x > 285.0 || p.y < 35.0 || p.y > 285.0 { continue; }
+        if anchors.iter().any(|a| a.distance(p) < 42.0) { continue; }
         anchors.push(p);
     }
     if anchors.len() < 8 {
         anchors.clear();
         for i in 0..10 {
             let theta = i as f32 / 10.0 * std::f32::consts::TAU;
-            anchors.push(Vec2::new(cx + 80.0 * theta.cos(), cy + 80.0 * theta.sin()));
+            anchors.push(Vec2::new(cx + 110.0 * theta.cos(), cy + 110.0 * theta.sin()));
         }
     }
 
@@ -812,7 +814,7 @@ fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
                 + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
                 + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
             );
-            waypoints.push(Vec2::new(pt.x.clamp(20.0, 220.0), pt.y.clamp(20.0, 220.0)));
+            waypoints.push(Vec2::new(pt.x.clamp(30.0, 290.0), pt.y.clamp(30.0, 290.0)));
         }
     }
     waypoints.push(waypoints[0]);
@@ -832,7 +834,8 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         lap_len_cells += w[0].distance(w[1]);
     }
     let lap_m = lap_len_cells * 3.0;
-    if !(1800.0..=5000.0).contains(&lap_m) { return false; }
+    // Lap range 2500..7000m — pistas grandes com várias voltas, hairpins e S-curves.
+    if !(2500.0..=7000.0).contains(&lap_m) { return false; }
 
     // Turn angles entre segmentos.
     let n = waypoints.len();
@@ -856,8 +859,9 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
             consecutive_sharp = 0;
         }
     }
-    if max_turn > 80.0 { return false; }
-    if max_consecutive > 3 { return false; }
+    // Permite hairpins até 90° + sequências de 4 curvas (chicanes desafiadoras OK).
+    if max_turn > 90.0 { return false; }
+    if max_consecutive > 4 { return false; }
     // Mínimo de curvas (rejeita ovais quase planos).
     if total_curve_deg < 360.0 { return false; }
     // Pelo menos 3 curvas afiadas (rejeita layouts retos demais).
