@@ -559,6 +559,19 @@ pub(super) fn update_racers(
                                    else if wall_central_max > 40 { 50 }
                                    else { 0 };
         for i in 44..48 { sensory_wave[i] = wall_imminent_i8; }
+
+        // ch 48..51 = TRAPPED_SCORE: gate em wall_pressure ALTO (parede a ≤30m).
+        // Antes ativava no spawn (speed=0 dava trapped) → cars davam ré sempre.
+        // Agora só ativa quando há PAREDE REAL próxima.
+        let speed_kmh_now = ((sensory_wave[65] as f32 / 127.0) * 80.0 * 3.6).max(0.0);
+        let wall_pressure = wall_imminent_i8 as f32;
+        let trapped_i8: i8 = if wall_pressure >= 80.0 {
+            // Parede a ≤30m. Combina com stuck_speed e lr_blocked.
+            let stuck_speed = (1.0 - (speed_kmh_now / 25.0).clamp(0.0, 1.0)) * 127.0;
+            let lr_blocked = (1.0 - (open_l_norm + open_r_norm) * 0.5).clamp(0.0, 1.0) * 127.0;
+            (stuck_speed * 0.3 + wall_pressure * 0.5 + lr_blocked * 0.2).clamp(0.0, 127.0) as i8
+        } else { 0 };
+        for i in 48..52 { sensory_wave[i] = trapped_i8; }
         sensory_wave[93] = dark_center_i8;
 
         // --- FLUXO ÓPTICO TEMPORAL (delta entre frames) ---

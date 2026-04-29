@@ -154,6 +154,14 @@ fn build_priming_weights() -> Vec<f32> {
     weights[2 * 128 + 44] = 5.0;   // wall_imminent → brake
     weights[0 * 128 + 44] = -4.0;  // wall_imminent → corta throttle
 
+    // A20: TRAPPED_SCORE (ch 48..51) → ré como OPÇÃO (não force).
+    // Priming sutil throttle negativo + brake off quando trapped alto.
+    // Net pode evoluir pra reverse OR rejeitar (mutação decide).
+    for i in 48..52 {
+        weights[0 * 128 + i] = -2.5;  // throttle negativo leve = aceita ré
+        weights[2 * 128 + i] = -1.5;  // tira brake (não pode dar ré freando)
+    }
+
     // A18 (NOVO): GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
     // Valor = ângulo da fóvea normalizado [-127..+127] mapeando [-60°..+60°].
     // Positivo ⇒ pista aberta à direita ⇒ steer DIREITA. Negativo ⇒ LEFT.

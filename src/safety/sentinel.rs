@@ -118,7 +118,10 @@ impl Sentinel {
         }
 
         // ----- Tier 2 SOFT proposals -----
-        if s.slip_avg > 0.4 && s.current_thr > 0.5 {
+        // DRIFT PERMISSION: slip threshold 0.4 → 0.65, current_thr 0.5 → 0.7.
+        // Permite cars deslizar em apex sem TCS cortar throttle imediato.
+        // Mutação aprende "drift = mais speed na curva". Sem tunar net.
+        if s.slip_avg > 0.65 && s.current_thr > 0.7 {
             out.flags |= SafetyFlags::TCS;
             prop.throttle -= 0.4;
         }
