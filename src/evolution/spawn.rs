@@ -149,11 +149,10 @@ fn build_priming_weights() -> Vec<f32> {
     // A19 (V6): pre_brake e wall_imminent priming SEGURO (canais novos).
     // open_l/r/best_escape ficam sem priming pra evitar conflito de steer signals
     // — net evolui peso natural via mutation (ainda mais lento mas estável).
-    // Stage 1 baseline (winner Tests A/B/C): pesos moderados sem saturar.
-    weights[2 * 128 + 28] = 4.0;   // pre_brake → brake leve
-    weights[0 * 128 + 28] = -3.0;  // pre_brake → corta throttle
-    weights[2 * 128 + 44] = 5.0;   // wall_imminent → brake
-    weights[0 * 128 + 44] = -4.0;  // wall_imminent → corta throttle
+    weights[2 * 128 + 28] = 4.0;
+    weights[0 * 128 + 28] = -3.0;
+    weights[2 * 128 + 44] = 5.0;
+    weights[0 * 128 + 44] = -4.0;
 
     // A20: trapped_score (ch 48..51) → ré como OPÇÃO (não force).
     for i in 48..52 {
