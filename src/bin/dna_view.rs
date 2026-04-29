@@ -52,9 +52,86 @@ fn main() {
     }
 
     println!();
-    println!("🧠 INPUT CHANNELS (first layer) — canais sensoriais ativos por neurônio");
-    println!("   Forte (>30% ativo): canal que polariza múltiplos neurônios = sinal crítico");
-    input_channel_stats(&dna.fast_weights, 128, 64);
+    if let Some(craw) = &dna.cortex_raw {
+        println!("─────────────────────────────────────────────────────────────────");
+        println!("🧠 CRAW CORTEX f32 ANALYSIS (source of truth — bypass compress_organism)");
+        println!("─────────────────────────────────────────────────────────────────");
+        cortex_f32_stats(craw);
+        println!();
+        f32_input_channel_stats(craw, 128, 64);
+    } else {
+        println!("⚠  Sem CRAW chunk (DNA pré-V6) — análise canal usa fast_weights ternary legacy");
+        input_channel_stats(&dna.fast_weights, 128, 64);
+    }
+}
+
+fn cortex_f32_stats(craw: &[i8]) {
+    // Dequantize i8 / 63.5 → f32 (scale do save).
+    let weights: Vec<f32> = craw.iter().map(|&w| w as f32 / 63.5).collect();
+    let n = weights.len() as f32;
+    let mean: f32 = weights.iter().sum::<f32>() / n;
+    let var: f32 = weights.iter().map(|w| (w - mean).powi(2)).sum::<f32>() / n;
+    let std = var.sqrt();
+    let mut max = f32::MIN;
+    let mut min = f32::MAX;
+    let mut dead_count = 0;
+    let mut sat_count = 0;
+    for &w in &weights {
+        if w > max { max = w; }
+        if w < min { min = w; }
+        if w.abs() < 0.01 { dead_count += 1; }
+        if w.abs() > 1.5 { sat_count += 1; }
+    }
+    println!("  total weights : {}", weights.len());
+    println!("  mean / std    : {:.4} / {:.4}", mean, std);
+    println!("  range         : [{:.4}, {:.4}]", min, max);
+    println!("  dead (|w|<.01): {} ({:.1}%) — neurônios mortos / canais ignorados",
+             dead_count, dead_count as f32 * 100.0 / n);
+    println!("  saturated     : {} ({:.1}%) — peso |w|>1.5 (clamp ±2 limite)",
+             sat_count, sat_count as f32 * 100.0 / n);
+}
+
+fn f32_input_channel_stats(craw: &[i8], inputs: usize, neurons: usize) {
+    if craw.len() != inputs * neurons { return; }
+    let weights: Vec<f32> = craw.iter().map(|&w| w as f32 / 63.5).collect();
+
+    // Por canal: soma absoluta de pesos cross-neurons (importance) +
+    // count de neurônios que polarizam fortemente (>0.3 abs).
+    let mut ch_stats: Vec<(usize, f32, usize, f32)> = (0..inputs).map(|c| {
+        let mut sum_abs = 0.0_f32;
+        let mut polarized = 0usize;
+        let mut max_abs = 0.0_f32;
+        for n in 0..neurons {
+            let w = weights[n * inputs + c];
+            sum_abs += w.abs();
+            if w.abs() > 0.3 { polarized += 1; }
+            if w.abs() > max_abs { max_abs = w.abs(); }
+        }
+        (c, sum_abs / neurons as f32, polarized, max_abs)
+    }).collect();
+
+    // TOP 25 canais usados (maior |w| médio cross-neurons).
+    println!("  TOP 25 canais MAIS USADOS (peso médio absoluto cross-neurons):");
+    println!("  {:>4} {:>9} {:>8} {:>8}  bar", "ch", "|w|_mean", "|polariz|", "|w|_max");
+    let mut top = ch_stats.clone();
+    top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (ch, mw, pol, maxw) in top.iter().take(25) {
+        let bar_len = (mw * 80.0).clamp(0.0, 40.0) as usize;
+        let bar = "█".repeat(bar_len);
+        println!("  {:>4} {:>9.4} {:>8} {:>8.3}  {}{}", ch, mw, pol, maxw, bar, channel_label(*ch));
+    }
+
+    println!();
+    println!("  20 canais MUDOS (rede ignora — peso médio < 0.01):");
+    let mut silent = ch_stats.clone();
+    silent.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut shown = 0;
+    for (ch, mw, _, maxw) in silent.iter() {
+        if shown >= 20 { break; }
+        if *mw > 0.05 { break; } // só mostra realmente mudos
+        println!("  {:>4} {:>9.4} max={:.3}  {}", ch, mw, maxw, channel_label(*ch));
+        shown += 1;
+    }
 }
 
 fn dump_layer(title: &str, weights: &[i8], inputs: usize, neurons: usize, expected_size: usize) {
@@ -144,19 +221,47 @@ fn input_channel_stats(weights: &[i8], inputs: usize, neurons: usize) {
 
 fn channel_label(ch: usize) -> &'static str {
     match ch {
-        0..=31   => "  ← retina fóvea",
-        32..=63  => "  ← retina periférica",
+        0..=7    => "  ← fóvea pooled (8 bins center-dense)",
+        8..=15   => "  ← periférica pooled (8 bins)",
+        16       => "  ← yaw_rate",
+        17       => "  ← pitch_rate",
+        18       => "  ← roll_rate",
+        28       => "  ← pre_brake (speed×curv)",
+        32       => "  ← curv180m lookahead",
+        36..=39  => "  ← open_left_width × 4",
+        40..=43  => "  ← open_right_width × 4",
+        44..=47  => "  ← wall_imminent × 4",
+        60..=63  => "  ← BEST_ESCAPE direction × 4",
         64       => "  ← alinhamento c/ pista",
         65       => "  ← velocidade",
         66       => "  ← lateral_vel (drift)",
         67       => "  ← hp",
-        79       => "  ← curvatura 25m",
+        68       => "  ← rpm_ratio",
+        69       => "  ← gear",
+        70       => "  ← tire_temp",
+        71       => "  ← downforce",
+        72       => "  ← in_draft",
+        73       => "  ← grass under car",
+        74       => "  ← steer_limit dyn",
+        75       => "  ← rain wetness",
+        76..=77  => "  ← whisker dist L/R",
+        78..=79  => "  ← curv40m signed dup",
+        80       => "  ← curv100m signed",
+        81       => "  ← lane_offset",
         82       => "  ← ttc_inv (colisão iminente)",
-        85       => "  ← proximidade parede L",
-        86       => "  ← proximidade parede R",
+        83..=84  => "  ← motion L/R (optic flow)",
+        85       => "  ← wall_ema_L (proximidade)",
+        86       => "  ← wall_ema_R (proximidade)",
+        87       => "  ← slip_signal",
+        88       => "  ← proximity_sustain",
+        89       => "  ← reverse_state",
+        90..=93  => "  ← dark_center × 4 (sliding window)",
         94..=97  => "  ← whiskers ±30/±60°",
-        98       => "  ← gaze_yaw",
+        108..=110 => "  ← racing_line offset/derivative/lookahead",
+        120..=122 => "  ← memory (last action)",
+        124      => "  ← spinning",
         125      => "  ← stress competitivo",
+        126..=127 => "  ← joy tick/streak",
         _        => "",
     }
 }

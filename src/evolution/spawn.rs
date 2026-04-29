@@ -146,6 +146,14 @@ fn build_priming_weights() -> Vec<f32> {
     weights[0 * 128 + 94] = -8.0;
     weights[0 * 128 + 95] = -8.0;
 
+    // A19 (V6): pre_brake e wall_imminent priming SEGURO (canais novos).
+    // open_l/r/best_escape ficam sem priming pra evitar conflito de steer signals
+    // — net evolui peso natural via mutation (ainda mais lento mas estável).
+    weights[2 * 128 + 28] = 4.0;   // pre_brake → brake leve
+    weights[0 * 128 + 28] = -3.0;  // pre_brake → corta throttle
+    weights[2 * 128 + 44] = 5.0;   // wall_imminent → brake
+    weights[0 * 128 + 44] = -4.0;  // wall_imminent → corta throttle
+
     // A18 (NOVO): GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
     // Valor = ângulo da fóvea normalizado [-127..+127] mapeando [-60°..+60°].
     // Positivo ⇒ pista aberta à direita ⇒ steer DIREITA. Negativo ⇒ LEFT.
@@ -453,10 +461,17 @@ pub fn spawn_swarm(
             // Box-Muller σ=0.05 — pequenos ajustes em vez de flips disruptivos.
             if simple_mut_slot {
                 let rate_boosted = (effective_mutation_rate * 2.0).min(0.25);
-                // σ adaptativa: explora cedo (0.12) com floor 0.06 (mantém exploração).
-                // Net precisa σ > 0.05 pra absorver canais novos (open_l/r, wall_imminent).
+                // STRATIFIED mutation: slots top próximos do champion (clones quase
+                // puros), slots fundo exploram. User report: gen N+1 majority não
+                // replica champion da gen N. Antes σ uniform 0.06+ destruía herança.
                 let g = race.generation.max(1);
-                let sigma_cortex = 0.06_f32 + 0.08_f32 * 0.88_f32.powi((g as i32 - 1).max(0));
+                let base_decay = 0.04_f32 + 0.06_f32 * 0.88_f32.powi((g as i32 - 1).max(0));
+                let sigma_cortex = match i {
+                    0..=4   => base_decay * 0.15,  // clones quase exatos (σ ≈ 0.006)
+                    5..=14  => base_decay * 0.5,   // small variance (σ ≈ 0.02)
+                    15..=29 => base_decay * 1.0,   // medium (σ ≈ 0.04)
+                    _       => base_decay * 2.0,   // explore (σ ≈ 0.08-0.20)
+                };
                 for w in engine.instinct_layer.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
                         let u1 = (rng.random::<f32>()).max(1e-7);

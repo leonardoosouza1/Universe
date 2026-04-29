@@ -36,20 +36,28 @@ fn main() {
     let seed_override: Option<u64> = args.iter().position(|a| a == "--seed")
         .and_then(|i| args.get(i+1))
         .and_then(|s| s.parse().ok());
+    let width_override: Option<f32> = args.iter().position(|a| a == "--width")
+        .and_then(|i| args.get(i+1))
+        .and_then(|s| s.parse().ok());
     if let Some(n) = swarm_override { config.swarm_count = n; }
     if let Some(s) = time_scale_override { config.time_scale = s; }
     if let Some(seed) = seed_override {
-        // Inject a synthetic procedural track at index 0 so all downstream code (rotate
-        // off, current_track) uses the requested seed unchanged. Width matches default.
+        let w = width_override.unwrap_or(36.0);
         config.tracks.insert(0, universe::config::TrackProfile {
-            name: format!("Procedural-{seed}"),
+            name: format!("Procedural-{seed}-w{}", w as u32),
             seed,
-            track_width: 36.0, // intermediário — bootstrap viável + curvas significativas
+            track_width: w,
             complexity: 0.5,
         });
         config.selected_track_index = 0;
         config.rotate_tracks = false;
-        println!("🌱 SEED OVERRIDE | seed={} (procedural track)", seed);
+        println!("🌱 SEED OVERRIDE | seed={} width={}m (procedural track)", seed, w);
+    } else if let Some(w) = width_override {
+        // Apenas largura override sem seed — aplica em current track.
+        if let Some(t) = config.tracks.get_mut(config.selected_track_index) {
+            t.track_width = w;
+        }
+        println!("📏 WIDTH OVERRIDE | width={}m", w);
     }
     if headless { config.time_scale = config.time_scale.max(8.0); }
 

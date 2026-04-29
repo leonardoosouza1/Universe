@@ -80,7 +80,8 @@ impl Sentinel {
             });
             return out;
         }
-        if s.ttc_forward < 0.3 && s.speed_kmh > 15.0 {
+        // FCA mais sensível pra pistas estreitas: 0.6s + 25kmh (era 0.3s + 15kmh).
+        if s.ttc_forward < 0.6 && s.speed_kmh > 25.0 {
             out.flags |= SafetyFlags::FCA;
             out.hard_veto = Some(IntentVec { throttle: 0.0, brake: 1.0, steer: 0.0 });
             return out;
@@ -125,7 +126,8 @@ impl Sentinel {
             out.flags |= SafetyFlags::AQUA;
             prop.throttle -= 0.3;
         }
-        if s.curv25 > 25.0 && s.speed_kmh > 55.0 {
+        // CornerLim mais cedo — pistas tight precisam pre-brake antes da curva.
+        if s.curv25 > 18.0 && s.speed_kmh > 40.0 {
             out.flags |= SafetyFlags::CORNER_LIM;
             prop.brake += 0.3;
         }
