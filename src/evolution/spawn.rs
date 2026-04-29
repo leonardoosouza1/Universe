@@ -160,6 +160,16 @@ fn build_priming_weights() -> Vec<f32> {
         weights[2 * 128 + i] = -1.5;
     }
 
+    // A21 (DNA diagnostic): canais com peso < 0.03 = ignored. Forçar uso.
+    // Speed (ch 65) é VITAL pra decisão "frear pré-curva". Net atual ignora.
+    weights[2 * 128 + 65] = 4.0;   // speed alta → brake (composição "rápido demais")
+    // Open_left_width × 4 (ch 36..39) → steer LEFT (saída 1 negativo).
+    for i in 36..40 { weights[1 * 128 + i] = -3.5; }
+    // Open_right_width × 4 (ch 40..43) → steer RIGHT (positivo).
+    for i in 40..44 { weights[1 * 128 + i] = 3.5; }
+    // Best_escape × 4 (ch 60..63) signed → steer matching, peso moderado.
+    for i in 60..64 { weights[1 * 128 + i] = 5.0; }
+
     // A18 (NOVO): GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
     // Valor = ângulo da fóvea normalizado [-127..+127] mapeando [-60°..+60°].
     // Positivo ⇒ pista aberta à direita ⇒ steer DIREITA. Negativo ⇒ LEFT.
