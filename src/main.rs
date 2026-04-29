@@ -39,6 +39,16 @@ fn main() {
     let width_override: Option<f32> = args.iter().position(|a| a == "--width")
         .and_then(|i| args.get(i+1))
         .and_then(|s| s.parse().ok());
+    let no_holes = args.iter().any(|a| a == "--no-holes");
+    let easy_track = args.iter().any(|a| a == "--easy");
+    if no_holes {
+        universe::world::NO_HOLES.store(true, std::sync::atomic::Ordering::Relaxed);
+        println!("🕳  HOLES DISABLED");
+    }
+    if easy_track {
+        universe::world::EASY_TRACK.store(true, std::sync::atomic::Ordering::Relaxed);
+        println!("📏 EASY TRACK validation (oval-friendly)");
+    }
     if let Some(n) = swarm_override { config.swarm_count = n; }
     if let Some(s) = time_scale_override { config.time_scale = s; }
     if let Some(seed) = seed_override {

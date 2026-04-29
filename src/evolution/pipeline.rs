@@ -277,9 +277,12 @@ pub(super) fn evolution_pipeline(
     //  - timeout configurável (carros vivos tiveram tempo de acumular laps)
     //  - reset manual
     let all_dead = query.iter().all(|(_, r, _, _)| r.is_dead);
-    // Timeout disabled: gen ends only on winner (10 laps) or all_dead.
-    let timeout_reached = false;
-    let _ = config.generation_timeout_s; // silence unused
+    // Timeout só pra pistas LARGAS (>30m) — narrow precisa paciência pra cars
+    // aprenderem. Wide stuck = timeout cortar runaway.
+    let track_w = config.current_track().track_width;
+    let timeout_reached = if track_w > 30.0 {
+        env.generation_time >= config.generation_timeout_s
+    } else { false };
 
     if winner.is_some() || all_dead || timeout_reached || race.should_reset {
         // Rank global por fitness — reutilizado pelo pool elite + relatório.

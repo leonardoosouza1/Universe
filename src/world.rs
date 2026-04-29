@@ -1,6 +1,11 @@
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
+pub static NO_HOLES: AtomicBool = AtomicBool::new(false);
+pub static EASY_TRACK: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum VoxelType { Grass = 0, Road = 1, Wall = 2, Hole = 3 }
@@ -90,7 +95,12 @@ impl VoxelWorld {
         // desvio ativo, não passivo. Só sobrescreve Road (nunca Wall/Grass).
         // Cada ponto vira bloco 2×2 (6m × 6m) — visível na retina e passível de colisão
         // pelo chassi (2m × 2.6m). Holes isolados de 1 cell eram skipáveis.
-        for hole_cell in track_holes_for_seed(_seed) {
+        let holes_iter = if NO_HOLES.load(Ordering::Relaxed) {
+            Vec::new()
+        } else {
+            track_holes_for_seed(_seed)
+        };
+        for hole_cell in holes_iter {
             let hx = hole_cell.x.round() as i32;
             let hy = hole_cell.y.round() as i32;
             for dy in 0..2 {
@@ -770,20 +780,25 @@ fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
         ((z >> 11) as f64 / (1u64 << 53) as f64) as f32
     };
 
-    // Grid 320 → centro (160, 160). Annulus expandido 70..150 cells = laps grandes.
+    // Grid 320 → centro (160, 160).
     let cx = 160.0_f32;
     let cy = 160.0_f32;
-    // 16-22 anchors = pista LONGA com várias voltas, hairpins, S-curves.
-    let n_anchors = 16 + (next() * 7.0) as usize;
+    let easy = EASY_TRACK.load(Ordering::Relaxed);
+    // EASY = oval pequeno 8-12 anchors radius 50-90 cells. NORMAL = 16-22 anchors 70-150.
+    let (n_anchors, r_min, r_max, sp) = if easy {
+        (8 + (next() * 5.0) as usize, 50.0, 90.0, 35.0)
+    } else {
+        (16 + (next() * 7.0) as usize, 70.0, 150.0, 42.0)
+    };
     let mut anchors: Vec<Vec2> = Vec::with_capacity(n_anchors);
     let mut tries = 0;
     while anchors.len() < n_anchors && tries < 1000 {
         tries += 1;
-        let r = 70.0 + next() * 80.0; // 70..150 cells = 210..450m radius
+        let r = r_min + next() * (r_max - r_min);
         let theta = next() * std::f32::consts::TAU;
         let p = Vec2::new(cx + r * theta.cos(), cy + r * theta.sin());
         if p.x < 35.0 || p.x > 285.0 || p.y < 35.0 || p.y > 285.0 { continue; }
-        if anchors.iter().any(|a| a.distance(p) < 42.0) { continue; }
+        if anchors.iter().any(|a| a.distance(p) < sp) { continue; }
         anchors.push(p);
     }
     if anchors.len() < 8 {
@@ -840,8 +855,13 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         lap_len_cells += w[0].distance(w[1]);
     }
     let lap_m = lap_len_cells * 3.0;
-    // Lap range 2500..7000m — pistas grandes com várias voltas, hairpins e S-curves.
-    if !(2500.0..=7000.0).contains(&lap_m) { return false; }
+    // Lap range geral.
+    if EASY_TRACK.load(Ordering::Relaxed) {
+        // Easy mode aceita laps curtos (1000-2200m). Validação extra abaixo.
+        if !(1000.0..=2200.0).contains(&lap_m) { return false; }
+    } else {
+        if !(2500.0..=7000.0).contains(&lap_m) { return false; }
+    }
 
     // Turn angles entre segmentos.
     let n = waypoints.len();
@@ -866,18 +886,24 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         }
     }
     // Permite hairpins até 90° + sequências de 4 curvas (chicanes desafiadoras OK).
+    // EASY mode: relax tudo + lap curto.
+    if EASY_TRACK.load(Ordering::Relaxed) {
+        if max_turn > 70.0 { return false; }
+        if max_consecutive > 2 { return false; }
+        if sharp_turns > 4 { return false; }
+        if lap_m > 2200.0 { return false; }     // lap curto, volta achievable
+        if lap_m < 1000.0 { return false; }
+        return true;
+    }
+
     // CEILING (descarta layouts impossíveis):
     if max_turn > 95.0 { return false; }
     if max_consecutive > 5 { return false; }
 
-    // FLOOR (descarta layouts FÁCEIS DEMAIS — cars batem cap em poucas gens):
-    // Min curvature total: força layout sinuoso. 540° = ~1.5× volta de curvas integradas.
+    // FLOOR (descarta layouts FÁCEIS DEMAIS):
     if total_curve_deg < 540.0 { return false; }
-    // Min sharp turns: ≥4 garante variedade (hairpins/S-curves obrigatórios).
     if sharp_turns < 4 { return false; }
-    // Min max_turn: força ao menos UMA curva fechada (>55°).
     if max_turn < 55.0 { return false; }
-    // Avg segment length: muito comprido = retas longas chatas. Cap em 50m médio.
     let avg_seg_m = (lap_len_cells * 3.0) / (n - 1) as f32;
     if avg_seg_m > 50.0 { return false; }
 
