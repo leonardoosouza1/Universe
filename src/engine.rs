@@ -74,7 +74,8 @@ impl SlowBrain {
 /// `cfc_state` é RUNTIME-ONLY — não persiste em .dna v3 (reset a cada spawn).
 pub struct SovereignEngine {
     pub metabolism: Metabolism,
-    pub instinct_layer: BitLinear,
+    pub instinct_layer: BitLinear,         // 128 → 64 (Layer 1, sensory mixing)
+    pub cortex_l2: crate::float_layers::FloatLinear,  // 64 → 32 (Layer 2, composição AND/OR)
     pub slow_brain: SlowBrain,
     pub heart_resonance: ResonantNode,
     pub cfc_state: CfCCell,
@@ -124,6 +125,7 @@ impl SovereignEngine {
         Self {
             metabolism: Metabolism::new(),
             instinct_layer: BitLinear::new(128, 64),
+            cortex_l2: crate::float_layers::FloatLinear::new(64, 32),
             slow_brain: SlowBrain::new(),
             heart_resonance: ResonantNode::new(1.0),
             cfc_state: CfCCell::new(64),
@@ -299,7 +301,7 @@ impl SovereignEngine {
             self.predicted_retina[j] = 0.7 * self.predicted_retina[j] + 0.3 * current_retina_f[j];
         }
 
-        // 1. Percepção Ternária: BitLinear → final_intent.
+        // 1. Percepção single-layer (Stage 3 reverted: 2-layer regrediu 90% em wide tracks).
         let raw_output = self.instinct_layer.forward(&filtered_wave);
         let mut final_intent = [0.0f32; 64];
         for (i, &val) in raw_output.iter().enumerate() {

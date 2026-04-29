@@ -100,6 +100,7 @@ fn main() {
         generation: 1,
         seed: initial_seed,
         best_weights: None,
+        best_l2_weights: None,
         best_scale: 1.0,
         best_slow_weights: None,
         best_slow_scale: 1.0,

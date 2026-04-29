@@ -219,14 +219,16 @@ pub fn spawn_swarm(
     // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     if current_best_w.is_none() {
         if let Some(dna) = load_champion_dna("CHAMPION.dna") {
-            // Source of truth: CRAW chunk (i8 raw, lossless round-trip). compress_organism
-            // path tinha quantize ternary que destruía f32 trained weights.
-            // Fallback: dna.fast_weights (legacy DNAs sem CRAW).
             current_best_w = Some(if let Some(ref craw) = dna.cortex_raw {
                 craw.iter().map(|&w| w as f32 / 63.5).collect()
             } else {
                 dna.fast_weights.iter().map(|&w| w as f32 / 63.5).collect()
             });
+            // V7: load cortex_l2 weights (Layer 2 deep). Default zeros se ausente
+            // (DNAs pré-V7) — cortex_l2 inicializa zeros, mutação preenche.
+            if let Some(ref l2) = dna.cortex_l2_raw {
+                race.best_l2_weights = Some(l2.iter().map(|&w| w as f32 / 63.5).collect());
+            }
             current_best_s = dna.fast_scale;
             if let Some(sw) = dna.slow_weights {
                 current_best_slow_w = Some(sw);
@@ -451,6 +453,11 @@ pub fn spawn_swarm(
                 // champion já é Vec<f32> agora (cortex f32 runtime).
                 engine.instinct_layer.quantize(champion);
                 engine.instinct_layer.set_scale(current_best_s);
+                // V7: load cortex_l2 weights into this engine.
+                if let Some(ref l2) = race.best_l2_weights {
+                    let n = l2.len().min(engine.cortex_l2.weights.len());
+                    engine.cortex_l2.weights[..n].copy_from_slice(&l2[..n]);
+                }
                 // Hypernet DISABLED for f32 cortex — expansion era ternary {-1,0,1}/127
                 // ≈ ±0.008 magnitude que sobrescrevia weights treinados f32 (~±2.0)
                 // destruindo a rede no spawn. Hypernet ficará pra V2 com basis f32 real.
@@ -481,6 +488,15 @@ pub fn spawn_swarm(
                     _       => base_decay * 2.0,   // explore (σ ≈ 0.08-0.20)
                 };
                 for w in engine.instinct_layer.weights.iter_mut() {
+                    if rng.random_bool(rate_boosted) {
+                        let u1 = (rng.random::<f32>()).max(1e-7);
+                        let u2 = rng.random::<f32>();
+                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
+                    }
+                }
+                // Mutate cortex_l2 (Layer 2 — deep composition).
+                for w in engine.cortex_l2.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
                         let u1 = (rng.random::<f32>()).max(1e-7);
                         let u2 = rng.random::<f32>();

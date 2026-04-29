@@ -705,6 +705,7 @@ pub(super) fn evolution_pipeline(
                     .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect();
                 let slow_scale: f32 = 1.0;
                 race.best_weights = Some(weights.clone());
+                race.best_l2_weights = Some(best.engine.cortex_l2.weights.clone());
                 race.best_scale = scale;
                 race.best_slow_weights = Some(slow_weights.clone());
                 race.best_slow_scale = slow_scale;
@@ -740,7 +741,10 @@ pub(super) fn evolution_pipeline(
                 // Cortex f32 runtime — quantize pra i8 no save com scale 63.5
                 // (cobre range ±2.0 do mutation clamp sem saturar).
                 let weights_q: Vec<i8> = weights.iter().map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
-                let _ = crate::evolution::dna_genesis::save_champion_dna_v5(
+                // V7: cortex_l2 também quantizado pra disk.
+                let l2_q: Vec<i8> = best.engine.cortex_l2.weights.iter()
+                    .map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
+                let _ = crate::evolution::dna_genesis::save_champion_dna_v7(
                     "CHAMPION.dna",
                     &weights_q, scale,
                     &slow_weights, slow_scale,
@@ -752,6 +756,7 @@ pub(super) fn evolution_pipeline(
                     race.current_hypernet,
                     best.kan_out.knots,
                     Some(&trinity_save),
+                    Some(&l2_q),
                 );
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
