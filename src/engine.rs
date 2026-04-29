@@ -125,7 +125,13 @@ impl SovereignEngine {
         Self {
             metabolism: Metabolism::new(),
             instinct_layer: BitLinear::new(128, 64),
-            cortex_l2: crate::float_layers::FloatLinear::new(64, 32),
+            cortex_l2: {
+                // Identity-like init: passthrough primeiros 32 canais. Mutação
+                // adiciona composições gradualmente. Sem isso forward = zero collapse.
+                let mut l = crate::float_layers::FloatLinear::new(64, 32);
+                for i in 0..32 { l.weights[i * 64 + i] = 1.0; }
+                l
+            },
             slow_brain: SlowBrain::new(),
             heart_resonance: ResonantNode::new(1.0),
             cfc_state: CfCCell::new(64),
@@ -301,7 +307,7 @@ impl SovereignEngine {
             self.predicted_retina[j] = 0.7 * self.predicted_retina[j] + 0.3 * current_retina_f[j];
         }
 
-        // 1. Percepção single-layer (Stage 3 reverted: 2-layer regrediu 90% em wide tracks).
+        // 1. Percepção single-layer (Stage 3 reverted, Test A identity tampouco ajudou).
         let raw_output = self.instinct_layer.forward(&filtered_wave);
         let mut final_intent = [0.0f32; 64];
         for (i, &val) in raw_output.iter().enumerate() {

@@ -149,17 +149,16 @@ fn build_priming_weights() -> Vec<f32> {
     // A19 (V6): pre_brake e wall_imminent priming SEGURO (canais novos).
     // open_l/r/best_escape ficam sem priming pra evitar conflito de steer signals
     // — net evolui peso natural via mutation (ainda mais lento mas estável).
+    // Stage 1 baseline (winner Tests A/B/C): pesos moderados sem saturar.
     weights[2 * 128 + 28] = 4.0;   // pre_brake → brake leve
     weights[0 * 128 + 28] = -3.0;  // pre_brake → corta throttle
     weights[2 * 128 + 44] = 5.0;   // wall_imminent → brake
     weights[0 * 128 + 44] = -4.0;  // wall_imminent → corta throttle
 
-    // A20: TRAPPED_SCORE (ch 48..51) → ré como OPÇÃO (não force).
-    // Priming sutil throttle negativo + brake off quando trapped alto.
-    // Net pode evoluir pra reverse OR rejeitar (mutação decide).
+    // A20: trapped_score (ch 48..51) → ré como OPÇÃO (não force).
     for i in 48..52 {
-        weights[0 * 128 + i] = -2.5;  // throttle negativo leve = aceita ré
-        weights[2 * 128 + i] = -1.5;  // tira brake (não pode dar ré freando)
+        weights[0 * 128 + i] = -2.5;
+        weights[2 * 128 + i] = -1.5;
     }
 
     // A18 (NOVO): GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
