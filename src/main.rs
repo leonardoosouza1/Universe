@@ -14,6 +14,11 @@ pub struct HeadlessMode {
     pub gens_target: u32,
 }
 
+/// UI auto-start: pula menu e entra em Simulation direto.
+/// Ativa quando `--seed N` passa em modo não-headless.
+#[derive(Resource, Clone, Copy)]
+pub struct UiAutoStart(pub bool);
+
 fn main() {
     let mut config = UniverseConfig::load_or_create();
     let args: Vec<String> = std::env::args().collect();
@@ -39,7 +44,7 @@ fn main() {
         config.tracks.insert(0, universe::config::TrackProfile {
             name: format!("Procedural-{seed}"),
             seed,
-            track_width: 36.0, // intermediário entre tight e easy — bootstrap viável
+            track_width: 36.0, // intermediário — bootstrap viável + curvas significativas
             complexity: 0.5,
         });
         config.selected_track_index = 0;
@@ -74,6 +79,8 @@ fn main() {
         Window { title: "IARA v2101 - Sovereign Dev Engine".into(), ..default() }
     };
     app.insert_resource(HeadlessMode { enabled: headless, gens_target });
+    // UI auto-start quando --seed passou em modo não-headless.
+    app.insert_resource(UiAutoStart(seed_override.is_some() && !headless));
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(window),
         ..default()
@@ -132,7 +139,16 @@ fn main() {
     .run();
 }
 
-fn headless_autostart(hl: Res<HeadlessMode>, mut next_state: ResMut<NextState<AppState>>) {
+fn headless_autostart(
+    hl: Res<HeadlessMode>,
+    ui_auto: Res<UiAutoStart>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    if ui_auto.0 {
+        println!("🎮 UI AUTO-START | --seed passou em modo gráfico, entrando direto na simulação");
+        next_state.set(AppState::Simulation);
+        return;
+    }
     if hl.enabled {
         println!("🤖 HEADLESS MODE | gens_target={} | swarm={} | speed={}×",
             hl.gens_target,

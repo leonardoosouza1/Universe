@@ -496,25 +496,55 @@ pub(super) fn update_racers(
         sensory_wave[92] = dark_center_i8;
 
         // BUG FIX 2 (user report): "modelo escolhe menor lado". Adiciona canais EXPLÍCITOS:
-        //   open_left_width  = pixels escuros consecutivos à esquerda do centro até PRIMEIRA parede
-        //   open_right_width = idem à direita
-        // Net aprende: se left > right, vira esquerda. Resolve bistable choice.
-        let center_idx: usize = 15;
-        let mut open_left: i32 = 0;
-        for i in (0..center_idx).rev() {
+        // Soma de "darkness" (road = i8 negativo) por metade. Não exige contiguidade
+        // do centro — antes parede colada ao center idx zerava sinal mesmo com road longe.
+        let mut left_dark_sum: i32 = 0;
+        let mut right_dark_sum: i32 = 0;
+        for i in 0..16 {
             let v = retina_binocular[32 + i] as i32;
-            if v < 0 { open_left += 1; } else { break; } // negativo = road; positivo = parede
+            if v < 0 { left_dark_sum += -v; }
         }
-        let mut open_right: i32 = 0;
-        for i in (center_idx + 1)..32 {
+        for i in 16..32 {
             let v = retina_binocular[32 + i] as i32;
-            if v < 0 { open_right += 1; } else { break; }
+            if v < 0 { right_dark_sum += -v; }
         }
-        let open_l_i8 = ((open_left as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
-        let open_r_i8 = ((open_right as f32 / 16.0).clamp(0.0, 1.0) * 127.0) as i8;
+        // Max possível: 16 pixels × 128 = 2048. Normalize.
+        let open_l_norm = (left_dark_sum as f32 / 2048.0).clamp(0.0, 1.0);
+        let open_r_norm = (right_dark_sum as f32 / 2048.0).clamp(0.0, 1.0);
+        let open_l_i8 = (open_l_norm * 127.0) as i8;
+        let open_r_i8 = (open_r_norm * 127.0) as i8;
         // Vitais: 4× pra bootstrap rápido. Sinais novos precisam força inicial.
         for i in 36..40 { sensory_wave[i] = open_l_i8; }
         for i in 40..44 { sensory_wave[i] = open_r_i8; }
+
+        // BEST ESCAPE direction (NOVO — bug user "vai sempre pra parede").
+        // Encontra LONGEST contiguous run de pixels escuros (road) na periférica.
+        // Output = ângulo signed [-1, 1] do centro do run em relação ao center idx.
+        // Sinal forte e UNÍVOCO de "vai pra cá pra escapar parede".
+        let mut best_run_start = 0usize;
+        let mut best_run_len = 0usize;
+        let mut cur_run_start = 0usize;
+        let mut cur_run_len = 0usize;
+        for i in 0..32 {
+            let v = retina_binocular[32 + i] as i32;
+            if v < -10 { // escuro = road
+                if cur_run_len == 0 { cur_run_start = i; }
+                cur_run_len += 1;
+                if cur_run_len > best_run_len {
+                    best_run_start = cur_run_start;
+                    best_run_len = cur_run_len;
+                }
+            } else {
+                cur_run_len = 0;
+            }
+        }
+        let escape_norm: f32 = if best_run_len >= 2 {
+            let center_of_run = best_run_start as f32 + (best_run_len as f32 - 1.0) * 0.5;
+            ((center_of_run - 15.5) / 15.5).clamp(-1.0, 1.0)
+        } else { 0.0 };
+        let escape_i8 = (escape_norm * 127.0).clamp(-127.0, 127.0) as i8;
+        // 4× duplicação — sinal vital, deve dominar steer em bistable choice.
+        for i in 60..64 { sensory_wave[i] = escape_i8; }
 
         // BUG FIX 3 (user report): "pista pequena bate direto". Wall imminent
         // binary signal forte — pixels centrais (10..22) com retina alta = parede frontal.
