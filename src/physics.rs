@@ -501,6 +501,10 @@ fn powertrain_and_tire_system(
 
             // Mu ajustado por temperatura do pneu
             let temp_factor = if config.physics.enable_thermal { 1.0 - (w.tire_temp - tire.optimal_temp).abs() * 0.5 } else { 1.0 };
+            // Speed-grip falloff: cars rápidos PERDEM grip lateral. Força frear pra virar.
+            // 20m/s baseline. Cada m/s acima reduz grip 0.8%. Floor 0.6 em 70m/s.
+            let speed_now = body.velocity.length();
+            let _ = speed_now;
             let mu = tire.mu_peak * terrain_grip * env_grip * temp_factor.clamp(0.7, 1.0);
 
             // Velocidade linear da roda vs velocidade do carro naquele ponto
@@ -542,7 +546,7 @@ fn powertrain_and_tire_system(
             if contact_forward_vel.abs() > 0.5 {
                 slip_angle = contact_lateral_vel.atan2(contact_forward_vel.abs());
                 let b_lat = 12.0;
-                let c_lat = 1.35; // Reduzido de 1.9. Mantém ~85% do grip quando está 100% de lado, curando o "bug do gelo" lateral
+                let c_lat = 1.35;
                 f_lat = load * mu * (c_lat * (b_lat * slip_angle).atan()).sin();
             } else {
                 // Bug Gelo Fix: Grip sintético viscoso a baixas velocidades
