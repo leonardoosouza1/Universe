@@ -126,10 +126,17 @@ impl SovereignEngine {
             metabolism: Metabolism::new(),
             instinct_layer: BitLinear::new(128, 64),
             cortex_l2: {
-                // Identity-like init: passthrough primeiros 32 canais. Mutação
-                // adiciona composições gradualmente. Sem isso forward = zero collapse.
+                // Init: identity passthrough + small random perturbation. Cars começam
+                // funcionais (passa L1 raw) mas mutação tem semente pra evoluir composição.
                 let mut l = crate::float_layers::FloatLinear::new(64, 32);
-                for i in 0..32 { l.weights[i * 64 + i] = 1.0; }
+                let mut s: u64 = 0xC0DE_CAFE;
+                let mut next = || {
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0 // [-1, 1]
+                };
+                for i in 0..2048 { l.weights[i] = next() * 0.05; }
+                // Diagonal identity boost: primeiros 32 canais passthrough.
+                for i in 0..32 { l.weights[i * 64 + i] += 1.0; }
                 l
             },
             slow_brain: SlowBrain::new(),
@@ -307,13 +314,22 @@ impl SovereignEngine {
             self.predicted_retina[j] = 0.7 * self.predicted_retina[j] + 0.3 * current_retina_f[j];
         }
 
-        // 1. Percepção single-layer (Stage 3 reverted, Test A identity tampouco ajudou).
-        let raw_output = self.instinct_layer.forward(&filtered_wave);
+        // STAGE 3 PROPER: 2-layer com identity+random init.
+        // L1 raw → tanh activation → L2 composes → tanh final
+        let l1_raw = self.instinct_layer.forward(&filtered_wave);
+        let mut l1_act = [0i8; 64];
+        for (i, &v) in l1_raw.iter().enumerate().take(64) {
+            l1_act[i] = ((v.tanh() * 127.0).clamp(-127.0, 127.0)) as i8;
+        }
+        let l2_raw = self.cortex_l2.forward(&l1_act);
         let mut final_intent = [0.0f32; 64];
-        for (i, &val) in raw_output.iter().enumerate() {
-            if i < 64 {
-                final_intent[i] = (val * 2.0).tanh();
-            }
+        // Skip connection: L2 alimenta first 32, L1 raw alimenta last 32 (preserva
+        // single-layer reactive baseline mesmo se L2 colapsa).
+        for (i, &val) in l2_raw.iter().enumerate().take(32) {
+            final_intent[i] = (val * 2.0).tanh();
+        }
+        for (i, &val) in l1_raw.iter().enumerate().skip(32).take(32) {
+            final_intent[i] = (val * 2.0).tanh();
         }
         self.final_intent = final_intent.to_vec();
 
