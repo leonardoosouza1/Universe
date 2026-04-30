@@ -183,6 +183,15 @@ fn build_priming_weights() -> Vec<f32> {
     // Best_escape × 4 (ch 60..63) signed → steer matching, peso moderado.
     for i in 60..64 { weights[1 * 128 + i] = 5.0; }
 
+    // A23: LOOKAHEAD steer (curv 100m/180m signed) — DNA atual ignora estes (mortos).
+    // Sem isso, carro só vê parede via whiskers/fovea = REATIVO. Vira "do nada".
+    // curv signed positivo = curva à direita → steer right (positivo).
+    weights[1 * 128 + 80] = 8.0;   // curv100m signed → steer matching
+    weights[1 * 128 + 32] = 6.0;   // curv180m signed → steer preemptivo
+    // Curva forte (qualquer lado) → frear ANTES da parede aparecer.
+    weights[2 * 128 + 79] = 10.0;  // brake-prep magnitude → brake
+    weights[0 * 128 + 79] = -6.0;  // brake-prep → corta throttle
+
     // A18 (NOVO): GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
     // Valor = ângulo da fóvea normalizado [-127..+127] mapeando [-60°..+60°].
     // Positivo ⇒ pista aberta à direita ⇒ steer DIREITA. Negativo ⇒ LEFT.
