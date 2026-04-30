@@ -188,11 +188,9 @@ impl EnvironmentalState {
         // o track estiver disponível. Limpamos aqui para evitar carry-over entre gens.
         self.npcs.clear();
 
-        // Sorteio determinístico (seed = generation_index) para 30% de chance de
-        // transição de chuva mid-race. Gate: só a partir da gen 5 para não esmagar
-        // populações bootstrap. Level 0 (validation) nunca agenda transição.
-        self.rain_transition_scheduled = if self.generation_index >= 5 {
-            // Hash simples determinístico (splitmix-ish) sobre generation_index.
+        // Rain DISABLED — trocava environment entre gens, cars trained dry crashing
+        // em rain. Causava cliff drop em mediana (user report).
+        self.rain_transition_scheduled = if false {
             let mut x = self.generation_index as u64;
             x = x.wrapping_mul(0x9E3779B97F4A7C15);
             x ^= x >> 30;

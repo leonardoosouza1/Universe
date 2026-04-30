@@ -466,11 +466,12 @@ pub(super) fn update_racers(
         // S, pista atrás) caía em PAREDE. Modelo virava pro meio da parede achando
         // que era pista. Solução: sliding window — encontra janela com MAIOR soma
         // de darkness (=blob mais largo/profundo de pista visível) e usa SEU centro.
-        const W: usize = 5; // janela 5 pixels (~28° angular)
-        let mut best_window_start = 0usize;
+        // Sliding window FRONTAL ONLY (idx 8..23, ±70°).
+        const W: usize = 5;
+        let mut best_window_start = 8usize;
         let mut best_window_sum: f32 = -1.0;
         let mut best_window_centroid: f32 = 0.0;
-        for start in 0..=(32 - W) {
+        for start in 8..=(24 - W) {
             let mut sum: f32 = 0.0;
             let mut weighted_idx: f32 = 0.0;
             for k in 0..W {
@@ -517,17 +518,16 @@ pub(super) fn update_racers(
         for i in 36..40 { sensory_wave[i] = open_l_i8; }
         for i in 40..44 { sensory_wave[i] = open_r_i8; }
 
-        // BEST ESCAPE direction (NOVO — bug user "vai sempre pra parede").
-        // Encontra LONGEST contiguous run de pixels escuros (road) na periférica.
-        // Output = ângulo signed [-1, 1] do centro do run em relação ao center idx.
-        // Sinal forte e UNÍVOCO de "vai pra cá pra escapar parede".
+        // BEST ESCAPE direction — RESTRICT to FRONTAL field (idx 8..23, ~±70°).
+        // Bug fix user: periph 180° pegava pista ATRÁS, modelo virava pra trás batendo.
+        // Frontal-only = car só considera "escape pra onde tô indo".
         let mut best_run_start = 0usize;
         let mut best_run_len = 0usize;
         let mut cur_run_start = 0usize;
         let mut cur_run_len = 0usize;
-        for i in 0..32 {
+        for i in 8..24 { // frontal half only
             let v = retina_binocular[32 + i] as i32;
-            if v < -10 { // escuro = road
+            if v < -10 {
                 if cur_run_len == 0 { cur_run_start = i; }
                 cur_run_len += 1;
                 if cur_run_len > best_run_len {

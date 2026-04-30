@@ -461,10 +461,19 @@ pub fn spawn_swarm(
                 // champion já é Vec<f32> agora (cortex f32 runtime).
                 engine.instinct_layer.quantize(champion);
                 engine.instinct_layer.set_scale(current_best_s);
-                // V7: load cortex_l2 weights into this engine.
                 if let Some(ref l2) = race.best_l2_weights {
                     let n = l2.len().min(engine.cortex_l2.weights.len());
                     engine.cortex_l2.weights[..n].copy_from_slice(&l2[..n]);
+                }
+                // CHAMPION VERIFY: printar checksum simples do DNA carregado em slot 0.
+                // User pediu validação que DNA campeão realmente carrega entre gens.
+                if i == 0 {
+                    let cksum: f32 = champion.iter().take(64).sum();
+                    let l2_cksum: f32 = race.best_l2_weights.as_ref()
+                        .map(|v| v.iter().take(64).sum::<f32>()).unwrap_or(0.0);
+                    let nonzero_l1 = champion.iter().filter(|&&w| w.abs() > 0.01).count();
+                    println!("✓ SLOT 0 CHAMPION gen={} L1_sum={:.3} L2_sum={:.3} L1_active={} (DNA carregado)",
+                        race.generation, cksum, l2_cksum, nonzero_l1);
                 }
                 // Hypernet DISABLED for f32 cortex — expansion era ternary {-1,0,1}/127
                 // ≈ ±0.008 magnitude que sobrescrevia weights treinados f32 (~±2.0)
