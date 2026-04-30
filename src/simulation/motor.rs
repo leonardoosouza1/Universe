@@ -314,7 +314,7 @@ pub(super) fn update_racers(
     *retina_tick_counter = retina_tick_counter.wrapping_add(1);
     let recompute_retinas = (*retina_tick_counter % RETINA_SKIP) == 0;
 
-    let retinas: HashMap<Entity, [i8; 64]> = if recompute_retinas {
+    let retinas: HashMap<Entity, [i8; 256]> = if recompute_retinas {
         let retina_inputs: Vec<(Entity, Vec3, Vec3, Vec3)> = query
             .iter()
             .filter(|(_, r, _, _, _, _)| !r.is_dead)
@@ -382,40 +382,36 @@ pub(super) fn update_racers(
         // Retina FIXA forward (sacádica desativada). Dado precomputado PARALELAMENTE acima
         // via rayon par_iter — este loop serial apenas consome o resultado por entidade.
         let _ = (forward, right);
-        let retina_binocular = *retinas.get(&entity).unwrap_or(&[-128i8; 64]);
-        // RETINA POOLED — 8 bins fóvea (NÃO-UNIFORMES, center-dense) + 8 bins periférica (uniforme).
-        //
-        // Fóvea cobre 50° (índices 0..32, -25° a +25°). Bins center-dense: pixels centrais
-        // (±5°) ocupam 1-2 bins dedicados, bordas ficam em bins largos. Dá agudeza pra
-        // curvas apertadas (precisão ±5° critical) sem estourar canais.
-        //
-        //   Bin 0: px 0..3    (-25° a -19°) — borda esquerda larga
-        //   Bin 1: px 3..8    (-19° a -12°)
-        //   Bin 2: px 8..13   (-12° a  -4°) — meio-esquerda
-        //   Bin 3: px 13..16  (-4°  a   0°) — CENTRO (3 px, ~5° precisão)
-        //   Bin 4: px 16..19  ( 0°  a  +4°) — CENTRO
-        //   Bin 5: px 19..24  (+4°  a +12°)
-        //   Bin 6: px 24..29  (+12° a +19°)
-        //   Bin 7: px 29..32  (+19° a +25°) — borda direita larga
+        let retina_binocular = *retinas.get(&entity).unwrap_or(&[-128i8; 256]);
+        // RETINA POOLED — Consolidamos as 5 camadas de visão em sinais acionáveis.
+        // O cérebro recebe o valor MÁXIMO de cada bin horizontal através de todas as linhas.
+        // Isso dá percepção volumétrica: se houver parede em qualquer altura, ele vê.
+        use crate::world::{RETINA_ROWS, RETINA_COLS};
+        
         const FOV_BINS: [(usize, usize); 8] = [
             (0, 3), (3, 8), (8, 13), (13, 16),
             (16, 19), (19, 24), (24, 29), (29, 32),
         ];
         for (bin, &(lo, hi)) in FOV_BINS.iter().enumerate() {
             let mut fov_max: i8 = -128;
-            for p in lo..hi {
-                let f = retina_binocular[p];
-                if f > fov_max { fov_max = f; }
+            for row in 0..RETINA_ROWS {
+                for p in lo..hi {
+                    let f = retina_binocular[row * RETINA_COLS + p];
+                    if f > fov_max { fov_max = f; }
+                }
             }
             sensory_wave[bin] = fov_max;
         }
-        // Periférica uniforme — papel de ALERTA, não precisão. 32 → 8 bins max-pool.
+        
+        // Periférica uniforme — Max-pool através de todas as 5 camadas.
         for bin in 0..8 {
             let start = bin * 4;
             let mut per_max: i8 = -128;
-            for k in 0..4 {
-                let p = retina_binocular[32 + start + k];
-                if p > per_max { per_max = p; }
+            for row in 0..RETINA_ROWS {
+                for k in 0..4 {
+                    let p = retina_binocular[row * RETINA_COLS + start + k];
+                    if p > per_max { per_max = p; }
+                }
             }
             sensory_wave[8 + bin] = per_max;
         }

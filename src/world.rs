@@ -2,6 +2,9 @@ use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use std::sync::atomic::{AtomicBool, Ordering};
+pub const RETINA_ROWS: usize = 3;
+pub const RETINA_COLS: usize = 32;
+pub const RETINA_PITCHES: [f32; 3] = [-0.18, -0.06, 0.0]; // [0]=Down, [1]=Straight
 
 /// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
 pub static NO_HOLES: AtomicBool = AtomicBool::new(false);
@@ -536,40 +539,27 @@ impl VoxelWorld {
     /// `gaze_yaw` (rad): offset angular da fóvea relativa ao forward. Simula saccade ocular —
     /// a fóvea vira pro setor mais escuro detectado pela periférica. Periférica ignora gaze
     /// (sempre centrada no forward — é o "campo panorâmico" fixo do motorista).
-    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; 64] {
-        let mut pixels = [-128; 64];
+
+    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; 256] {
+        let mut pixels = [-128; 256];
         let eye_pos = pos + Vec3::Y * 0.4;
         let cell = self.cell_size;
 
-        // Retina unificada 180° dual-scale:
-        //   Row 0 = FÓVEA TAN-WARP 180° (pitch -0.04, yaw = gaze_yaw): cobertura total 180°
-        //           com distribuição NÃO-UNIFORME center-dense (tan warp). ~1.5°/pixel no
-        //           centro (precisão pra curvas fechadas), ~15°/pixel nas bordas (cobertura
-        //           lateral). Resolve o trade-off antigo: antes era 50° linear (cego lateral)
-        //           ou 180° linear (5.6°/px — cego pra curva).
-        //   Row 1 = PERIFÉRICA 180° LINEAR (pitch 0.0, yaw fixo): uniforme, serve de motion
-        //           detector baseline — row 0 warpada comparada com row 1 linear revela
-        //           velocidade angular lateral (útil pra prever curva).
-        const TAN_K: f32 = 1.25_f32; // Warp clássico — center-dense balanceado
+                const TAN_K: f32 = 1.25_f32; 
         let tan_k_val = TAN_K.tan();
-        for row in 0..2 {
-            let fov_half = 90.0_f32.to_radians(); // Ambas rows agora 180°
-            let pitch = if row == 0 { -0.04_f32 } else { 0.0_f32 };
+        for row in 0..RETINA_ROWS {
+            let fov_half = 90.0_f32.to_radians(); 
+            let pitch = RETINA_PITCHES[row];
             let gaze = if row == 0 { gaze_yaw } else { 0.0 };
             let dir_y = pitch.sin();
             let cos_pitch = pitch.cos();
 
-            for i in 0..32 {
-                let index = (row * 32) + i;
-                let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
+            for i in 0..RETINA_COLS {
+                let index = (row * RETINA_COLS) + i;
+                let normalized_i = (i as f32 / (RETINA_COLS as f32 - 1.0)) * 2.0 - 1.0;
 
-                // Row 0: tan warp center-dense. Row 1: linear uniforme.
-                let yaw_angle = if row == 0 {
-                    let warped = (normalized_i * TAN_K).tan() / tan_k_val;
-                    warped * fov_half + gaze
-                } else {
-                    normalized_i * fov_half
-                };
+                                                // Sincronizado: Ambos LINEARES para alinhar colunas na UI.
+                let yaw_angle = normalized_i * fov_half + gaze;
                 
                 let dir_x = (forward.x * yaw_angle.cos() + right.x * yaw_angle.sin()) * cos_pitch;
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
@@ -655,23 +645,12 @@ impl VoxelWorld {
                 //   Dá diferenciação de 90 entre "encostando (0m)" e "razoavelmente próxima (75m)".
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
-                        // Quad-scale depth (alcance estendido 600m):
-                        // 0-30m sqrt 127→55 (colisão crítica)
-                        // 30-120m linear 55→0 (frear pra curva)
-                        // 120-300m linear 0→-25 (setup curva longa)
-                        // 300-600m linear -25→-50 (visão estratégica)
-                        if hit_dist < 30.0 {
-                            let near = (hit_dist / 30.0).clamp(0.0, 1.0);
-                            127.0 - (near.sqrt() * 72.0)
-                        } else if hit_dist < 120.0 {
-                            let mid = ((hit_dist - 30.0) / 90.0).clamp(0.0, 1.0);
-                            55.0 - (mid * 55.0)
-                        } else if hit_dist < 1200.0 {
-                            let far = ((hit_dist - 120.0) / 480.0).clamp(0.0, 1.0);
-                            0.0 - (far * 25.0)
+                        if hit_dist < 150.0 {
+                            let n = (hit_dist / 150.0).clamp(0.0, 1.0);
+                            127.0 - (n * 100.0) // 127 (perto) até 27 (150m)
                         } else {
-                            let xfar = ((hit_dist - 1200.0) / 1200.0).clamp(0.0, 1.0);
-                            -25.0 - (xfar * 25.0)
+                            let f = ((hit_dist - 150.0) / 1050.0).clamp(0.0, 1.0);
+                            27.0 - (f * 52.0) // 27 até -25 (1200m)
                         }
                     },
                     VoxelType::Grass => {

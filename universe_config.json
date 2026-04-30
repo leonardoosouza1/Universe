@@ -13,19 +13,19 @@
     {
       "name": "Procedural Sigma",
       "seed": 9001,
-      "track_width": 28.0,
+      "track_width": 18.0,
       "complexity": 0.5
     },
     {
       "name": "Dubai Oval",
       "seed": 123,
-      "track_width": 30.0,
+      "track_width": 18.0,
       "complexity": 0.3
     },
     {
       "name": "Interlagos Gateway",
       "seed": 64,
-      "track_width": 26.0,
+      "track_width": 20.0,
       "complexity": 1.0
     },
     {
@@ -37,7 +37,7 @@
     {
       "name": "Silverstone Flow",
       "seed": 512,
-      "track_width": 24.0,
+      "track_width": 20.0,
       "complexity": 1.8
     },
     {
@@ -55,8 +55,10 @@
   ],
   "selected_track_index": 0,
   "swarm_count": 50,
-  "time_scale": 3.0,
+  "time_scale": 4.0,
   "generation_timeout_s": 120.0,
   "rotate_tracks": false,
-  "gens_per_track": 3
+  "gens_per_track": 3,
+  "easy_track": false,
+  "no_holes": false
 }
