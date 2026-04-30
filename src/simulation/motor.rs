@@ -314,7 +314,7 @@ pub(super) fn update_racers(
     *retina_tick_counter = retina_tick_counter.wrapping_add(1);
     let recompute_retinas = (*retina_tick_counter % RETINA_SKIP) == 0;
 
-    let retinas: HashMap<Entity, [i8; 256]> = if recompute_retinas {
+    let retinas: HashMap<Entity, [i8; 512]> = if recompute_retinas {
         let retina_inputs: Vec<(Entity, Vec3, Vec3, Vec3)> = query
             .iter()
             .filter(|(_, r, _, _, _, _)| !r.is_dead)
@@ -382,7 +382,7 @@ pub(super) fn update_racers(
         // Retina FIXA forward (sacádica desativada). Dado precomputado PARALELAMENTE acima
         // via rayon par_iter — este loop serial apenas consome o resultado por entidade.
         let _ = (forward, right);
-        let retina_binocular = *retinas.get(&entity).unwrap_or(&[-128i8; 256]);
+        let retina_binocular = *retinas.get(&entity).unwrap_or(&[-128i8; 512]);
         // RETINA POOLED — Consolidamos as 5 camadas de visão em sinais acionáveis.
         // O cérebro recebe o valor MÁXIMO de cada bin horizontal através de todas as linhas.
         // Isso dá percepção volumétrica: se houver parede em qualquer altura, ele vê.

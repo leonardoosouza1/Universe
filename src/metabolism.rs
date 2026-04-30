@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 /// or wall-contact); drained into slow_brain via Hebbian during sleep.
 #[derive(Clone, Debug)]
 pub struct EpisodicTrace {
-    pub retina: [i8; 256],
+    pub retina: [i8; 512],
     pub action: [f32; 2],
     pub reward: f32,
 }
@@ -49,7 +49,7 @@ pub struct Metabolism {
     pub curiosity: f32,
     /// Ring buffer dos últimos 16 frames da retina binocular (64 canais).
     /// Rotate_right(1) + insert no índice 0. Compute variance across history.
-    pub retina_history: [[i8; 256]; 16],
+    pub retina_history: [[i8; 512]; 16],
 
     // ------------------------------------------------------------------
     // Tier 4.2 — Epigenética parcial (running means hormonais)
@@ -191,27 +191,27 @@ impl Metabolism {
     /// Alta variância (novidade sensorial) → curiosity relaxa lentamente.
     ///
     /// `current_retina` é o visual_cortex binocular pós-frame (64 canais i8).
-    pub fn update_curiosity(&mut self, current_retina: &[i8; 256], dt: f32) {
+    pub fn update_curiosity(&mut self, current_retina: &[i8; 512], dt: f32) {
         // Variância escalar média entre os 64 canais do histórico.
         // Converte i8 → f32 / 127 → [-1, 1] pra variância bounded em [0, 1].
-        let mut sum = [0.0f32; 256];
+        let mut sum = [0.0f32; 512];
         for frame in self.retina_history.iter() {
-            for j in 0..256 {
+            for j in 0..512 {
                 sum[j] += frame[j] as f32 / 127.0;
             }
         }
         let n = self.retina_history.len() as f32; // 16
-        let mean: [f32; 256] = std::array::from_fn(|j| sum[j] / n);
+        let mean: [f32; 512] = std::array::from_fn(|j| sum[j] / n);
 
         let mut var_acc = 0.0f32;
         for frame in self.retina_history.iter() {
-            for j in 0..256 {
+            for j in 0..512 {
                 let d = (frame[j] as f32 / 127.0) - mean[j];
                 var_acc += d * d;
             }
         }
         // Normalize: max variance if each sample ±1 = ~1.0. Saturate at 1.0.
-        let novelty = (var_acc / (n * 256.0)).sqrt().min(1.0);
+        let novelty = (var_acc / (n * 512.0)).sqrt().min(1.0);
 
         // Monotonia (1 - novelty) alimenta curiosity com rate 0.5/s.
         let delta = (1.0 - novelty) * dt * 0.5;
@@ -279,7 +279,7 @@ impl Metabolism {
     /// Captura um trace episódico se for saliente.
     /// Condição: |reward| > 0.1 OU wall_hit. Ring buffer com cap EPISODIC_CAP:
     /// empurra o mais antigo pra fora quando cheio.
-    pub fn record_episode(&mut self, retina: &[i8; 256], action: [f32; 2], reward: f32, wall_hit: bool) {
+    pub fn record_episode(&mut self, retina: &[i8; 512], action: [f32; 2], reward: f32, wall_hit: bool) {
         if reward.abs() <= 0.1 && !wall_hit {
             return;
         }
@@ -313,7 +313,7 @@ impl Default for Metabolism {
             predicted_reward: 0.0,
             cortisol: 0.0,
             curiosity: 0.0,
-            retina_history: [[0i8; 256]; 16],
+            retina_history: [[0i8; 512]; 16],
             cortisol_sum: 0.0,
             dopamine_sum: 0.0,
             curiosity_sum: 0.0,

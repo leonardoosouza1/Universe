@@ -124,7 +124,7 @@ pub struct Racer {
     pub total_laps: usize,
     pub stagnation: f32,
     pub memory: [f32; 5], // [throttle, steer, brake, prev_shift_up, prev_shift_down]
-    pub visual_cortex: [i8; 256],
+    pub visual_cortex: [i8; 512],
     // --- NOVOS CAMPOS (Sovereign Drive Evolution) ---
     pub tire_temp: f32,       // Carga térmica dos pneus 0.0-1.0
     pub engine_power: f32,    // Degradação mecânica 0.1-1.0 (1.0 = full)

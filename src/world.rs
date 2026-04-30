@@ -2,9 +2,9 @@ use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use std::sync::atomic::{AtomicBool, Ordering};
-pub const RETINA_ROWS: usize = 3;
+pub const RETINA_ROWS: usize = 8;
 pub const RETINA_COLS: usize = 32;
-pub const RETINA_PITCHES: [f32; 3] = [-0.18, -0.06, 0.0]; // [0]=Down, [1]=Straight
+pub const RETINA_PITCHES: [f32; 8] = [-0.06,-0.04,-0.02,-0.01,0.0, 0.01, 0.02, 0.04]; // [0]=Down, [1]=Straight
 
 /// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
 pub static NO_HOLES: AtomicBool = AtomicBool::new(false);
@@ -540,8 +540,8 @@ impl VoxelWorld {
     /// a fóvea vira pro setor mais escuro detectado pela periférica. Periférica ignora gaze
     /// (sempre centrada no forward — é o "campo panorâmico" fixo do motorista).
 
-    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; 256] {
-        let mut pixels = [-128; 256];
+    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; 512] {
+        let mut pixels = [-128; 512];
         let eye_pos = pos + Vec3::Y * 0.4;
         let cell = self.cell_size;
 
@@ -612,25 +612,31 @@ impl VoxelWorld {
                     }
                 }
                 
+                // Determinar o voxel do solo para decidir se ele bloqueia a visão
+                let ground_dist = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 2000.0 };
+                let ground_voxel = if ground_dist < 1200.0 {
+                    let px = eye_pos.x + dir_x * ground_dist;
+                    let pz = eye_pos.z + dir_z * ground_dist;
+                    self.get_voxel_at(px, pz)
+                } else { VoxelType::Road };
+
                 if hit {
                     let current_dist = (if side == 0 { (map_x as f32 - ray_start.x + (1 - step_x) as f32 / 2.0) / ray_dir.x } 
                     else { (map_y as f32 - ray_start.y + (1 - step_y) as f32 / 2.0) / ray_dir.y }) * cell;
                     
-                    if dir_y < -0.001 && current_dist > dist_to_ground {
-                        // O raio bateu no chão ANTES de atingir a parede lateral DDA
-                        hit_dist = dist_to_ground;
-                        let hit_px = eye_pos.x + dir_x * hit_dist;
-                        let hit_pz = eye_pos.z + dir_z * hit_dist;
-                        hit_voxel = self.get_voxel_at(hit_px, hit_pz);
+                    // Se o solo for um obstáculo (Grama/Buraco) e estiver mais perto que a parede, ele ganha.
+                    // Se for Estrada, o sensor "enxerga através" até a parede (Ciano/Vermelho).
+                    if (ground_voxel == VoxelType::Grass || ground_voxel == VoxelType::Hole) && ground_dist < current_dist {
+                        hit_dist = ground_dist;
+                        hit_voxel = ground_voxel;
                     } else {
                         hit_dist = current_dist;
+                        hit_voxel = VoxelType::Wall; // DDA só detecta Wall/Hole
                     }
-                } else if dir_y < -0.001 && dist_to_ground <= 1200.0 {
-                    // Sem paredes, mas bateu no chão
-                    hit_dist = dist_to_ground;
-                    let hit_px = eye_pos.x + dir_x * hit_dist;
-                    let hit_pz = eye_pos.z + dir_z * hit_dist;
-                    hit_voxel = self.get_voxel_at(hit_px, hit_pz);
+                } else {
+                    // Se não bateu em parede no DDA, o resultado é o que estiver no solo (Grama ou Estrada)
+                    hit_dist = ground_dist.min(1200.0);
+                    hit_voxel = ground_voxel;
                 }
                 
                 let depth_fade = (hit_dist / 1200.0).clamp(0.0, 1.0);
