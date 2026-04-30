@@ -5,6 +5,7 @@ use crate::resonance::ResonantNode;
 use crate::types::SplineNode;
 use crate::cfc::CfCCell;
 use crate::kan::SensoryPreFilter;
+use crate::world::RETINA_TOTAL;
 use std::sync::RwLock;
 
 /// Tier 6.8 — Mirror neurons / observational learning.
@@ -13,11 +14,11 @@ use std::sync::RwLock;
 /// fim da gen (quando há coroação). Cada SovereignEngine consulta aqui via
 /// `SovereignEngine::champion_snapshot()`. Sem lock contention significativo —
 /// leitura simples por frame, escrita 1× por gen.
-static CHAMPION_RETINA_MEAN: RwLock<Option<[f32; 64]>> = RwLock::new(None);
+static CHAMPION_RETINA_MEAN: RwLock<Option<[f32; RETINA_TOTAL]>> = RwLock::new(None);
 static CHAMPION_ACTION: RwLock<Option<[f32; 2]>> = RwLock::new(None);
 
 /// Atualiza o snapshot global do campeão (chamado pelo pipeline no fim da gen).
-pub fn set_global_champion_snapshot(retina_mean: [f32; 64], action: [f32; 2]) {
+pub fn set_global_champion_snapshot(retina_mean: [f32; RETINA_TOTAL], action: [f32; 2]) {
     if let Ok(mut g) = CHAMPION_RETINA_MEAN.write() { *g = Some(retina_mean); }
     if let Ok(mut g) = CHAMPION_ACTION.write() { *g = Some(action); }
 }
@@ -98,7 +99,7 @@ pub struct SovereignEngine {
     /// Snapshot retina do campeão da gen anterior (média dos 16 frames do
     /// retina_history do winner). Opcional: quando None, o engine cai no global
     /// CHAMPION_RETINA_MEAN. Permite override local (ex: testes, spawn com DNA).
-    pub champion_retina_snapshot: Option<[f32; 64]>,
+    pub champion_retina_snapshot: Option<[f32; RETINA_TOTAL]>,
     /// Última ação motora conhecida do campeão (throttle, steer).
     pub champion_action: Option<[f32; 2]>,
     // ------------------------------------------------------------------
@@ -107,7 +108,7 @@ pub struct SovereignEngine {
     /// Previsão da retina para o próximo tick. EMA simples sobre retina real.
     /// Erro de predição = |current - predicted| (L1 médio) alimenta curiosity
     /// como drive intrínseco. RUNTIME-only.
-    pub predicted_retina: [f32; 64],
+    pub predicted_retina: [f32; RETINA_TOTAL],
     // ------------------------------------------------------------------
     // Trinity (Gate + Reflex + Sentinel) — Task 4 wiring
     // ------------------------------------------------------------------
@@ -162,7 +163,7 @@ impl SovereignEngine {
             final_intent: vec![0.0; 64],
             champion_retina_snapshot: None,
             champion_action: None,
-            predicted_retina: [0.0; 64],
+            predicted_retina: [0.0; RETINA_TOTAL],
             gate: crate::gate::GateBrain::new_uniform(0xDA7E),
             reflex: crate::specialist::SpecialistBrain::new(),
             last_chaos: 0.0,
@@ -247,7 +248,7 @@ impl SovereignEngine {
 
     /// Tier 6.8 — consulta o snapshot do campeão: prefere override local,
     /// senão lê do global process-wide. Retorna None se nada foi setado.
-    pub fn champion_snapshot(&self) -> Option<([f32; 64], [f32; 2])> {
+    pub fn champion_snapshot(&self) -> Option<([f32; RETINA_TOTAL], [f32; 2])> {
         let retina = self.champion_retina_snapshot.or_else(|| {
             CHAMPION_RETINA_MEAN.read().ok().and_then(|g| *g)
         })?;
@@ -310,19 +311,19 @@ impl SovereignEngine {
         // do tick anterior. Erro L1 médio vira drive intrínseco (curiosity hook).
         // Predição p/ próximo tick = EMA (0.7 * prev + 0.3 * current) — baseline
         // sem cérebro; substituível por rede preditiva no futuro (Dreamer-like).
-        let mut current_retina_f = [0.0f32; 64];
-        for j in 0..64 {
-            current_retina_f[j] = filtered_retina[j] as f32 / 127.0;
+        let mut current_retina_f = [0.0f32; RETINA_TOTAL];
+        for j in 0..RETINA_TOTAL {
+            current_retina_f[j] = if j < filtered_retina.len() { filtered_retina[j] as f32 / 127.0 } else { 0.0 };
         }
         let mut err_acc = 0.0f32;
-        for j in 0..64 {
+        for j in 0..RETINA_TOTAL {
             err_acc += (current_retina_f[j] - self.predicted_retina[j]).abs();
         }
-        let prediction_error = err_acc / 64.0;
+        let prediction_error = err_acc / RETINA_TOTAL as f32;
         self.metabolism.prediction_error = prediction_error;
         self.metabolism.apply_prediction_error(prediction_error);
         // EMA update p/ próximo tick.
-        for j in 0..64 {
+        for j in 0..RETINA_TOTAL {
             self.predicted_retina[j] = 0.7 * self.predicted_retina[j] + 0.3 * current_retina_f[j];
         }
 

@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use std::collections::{HashSet, VecDeque};
 use crate::engine::SovereignEngine;
+use crate::world::RETINA_TOTAL;
 
 /// Tier 1.1 — Reward shaping denso.
 /// Ring buffers (128 amostras ≈ 2s @ 64Hz FixedUpdate) + voxel grid de exploração.
@@ -124,7 +125,7 @@ pub struct Racer {
     pub total_laps: usize,
     pub stagnation: f32,
     pub memory: [f32; 5], // [throttle, steer, brake, prev_shift_up, prev_shift_down]
-    pub visual_cortex: [i8; 64],
+    pub visual_cortex: [i8; RETINA_TOTAL],
     // --- NOVOS CAMPOS (Sovereign Drive Evolution) ---
     pub tire_temp: f32,       // Carga térmica dos pneus 0.0-1.0
     pub engine_power: f32,    // Degradação mecânica 0.1-1.0 (1.0 = full)

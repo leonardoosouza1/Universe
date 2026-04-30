@@ -58,5 +58,7 @@
   "time_scale": 3.0,
   "generation_timeout_s": 120.0,
   "rotate_tracks": false,
-  "gens_per_track": 3
+  "gens_per_track": 3,
+  "easy_track": false,
+  "no_holes": false
 }

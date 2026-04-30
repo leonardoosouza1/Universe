@@ -3,6 +3,18 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// ============================================================================
+// RETINA CONFIG — Fonte única de verdade. Altere AQUI e tudo se adapta.
+// Cada row é uma camada vertical de visão com pitch diferente.
+// Pitches negativos olham para baixo, positivos para cima.
+// eye_height=0.4m → ground_dist ≈ 0.4/|pitch| metros.
+// ============================================================================
+pub const RETINA_ROWS: usize = 4;
+pub const RETINA_COLS: usize = 32;
+pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 128
+/// [Row0=-0.08 chão~5m] [Row1=-0.04 perto~10m] [Row2=-0.01 médio~40m] [Row3=0.02 horizonte]
+pub const RETINA_PITCHES: [f32; RETINA_ROWS] = [-0.08, -0.04, -0.01, 0.02];
+
 /// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
 pub static NO_HOLES: AtomicBool = AtomicBool::new(false);
 pub static EASY_TRACK: AtomicBool = AtomicBool::new(false);
@@ -536,34 +548,25 @@ impl VoxelWorld {
     /// `gaze_yaw` (rad): offset angular da fóvea relativa ao forward. Simula saccade ocular —
     /// a fóvea vira pro setor mais escuro detectado pela periférica. Periférica ignora gaze
     /// (sempre centrada no forward — é o "campo panorâmico" fixo do motorista).
-    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; 64] {
-        let mut pixels = [-128; 64];
+    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; RETINA_TOTAL] {
+        let mut pixels = [-128i8; RETINA_TOTAL];
         let eye_pos = pos + Vec3::Y * 0.4;
         let cell = self.cell_size;
 
-        // Retina unificada 180° dual-scale:
-        //   Row 0 = FÓVEA TAN-WARP 180° (pitch -0.04, yaw = gaze_yaw): cobertura total 180°
-        //           com distribuição NÃO-UNIFORME center-dense (tan warp). ~1.5°/pixel no
-        //           centro (precisão pra curvas fechadas), ~15°/pixel nas bordas (cobertura
-        //           lateral). Resolve o trade-off antigo: antes era 50° linear (cego lateral)
-        //           ou 180° linear (5.6°/px — cego pra curva).
-        //   Row 1 = PERIFÉRICA 180° LINEAR (pitch 0.0, yaw fixo): uniforme, serve de motion
-        //           detector baseline — row 0 warpada comparada com row 1 linear revela
-        //           velocidade angular lateral (útil pra prever curva).
-        const TAN_K: f32 = 1.25_f32; // Warp clássico — center-dense balanceado
+        const TAN_K: f32 = 1.25_f32;
         let tan_k_val = TAN_K.tan();
-        for row in 0..2 {
-            let fov_half = 90.0_f32.to_radians(); // Ambas rows agora 180°
-            let pitch = if row == 0 { -0.04_f32 } else { 0.0_f32 };
+        for row in 0..RETINA_ROWS {
+            let fov_half = 90.0_f32.to_radians();
+            let pitch = RETINA_PITCHES[row];
             let gaze = if row == 0 { gaze_yaw } else { 0.0 };
             let dir_y = pitch.sin();
             let cos_pitch = pitch.cos();
 
-            for i in 0..32 {
-                let index = (row * 32) + i;
-                let normalized_i = (i as f32 / 31.0) * 2.0 - 1.0;
+            for i in 0..RETINA_COLS {
+                let index = row * RETINA_COLS + i;
+                let normalized_i = (i as f32 / (RETINA_COLS as f32 - 1.0)) * 2.0 - 1.0;
 
-                // Row 0: tan warp center-dense. Row 1: linear uniforme.
+                // Row 0: tan warp center-dense (fóvea). Demais: linear uniforme.
                 let yaw_angle = if row == 0 {
                     let warped = (normalized_i * TAN_K).tan() / tan_k_val;
                     warped * fov_half + gaze
