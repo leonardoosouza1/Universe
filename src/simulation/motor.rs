@@ -602,6 +602,19 @@ pub(super) fn update_racers(
         sensory_wave[114] = (approach_left / 32).clamp(-127, 127) as i8;
         sensory_wave[115] = (approach_right / 32).clamp(-127, 127) as i8;
 
+        // FOVEAL OPTICAL FLOW (ch 116/117) — forward expansion = looming wall.
+        // Bug do "vira na parede do nada": só ch 114/115 periph. Centro frontal sem motion.
+        // rays 12..20 = ±~15° frontal (fovea TAN_K 1.25 dense).
+        let mut fovea_approach: i32 = 0;
+        let mut fovea_motion_abs: i32 = 0;
+        for i in 12..20 {
+            let dr = retina_binocular[i] as i32 - racer.visual_cortex[i] as i32;
+            fovea_approach += dr;          // + = wall vindo na frente
+            fovea_motion_abs += dr.abs();
+        }
+        sensory_wave[116] = (fovea_approach / 16).clamp(-127, 127) as i8;
+        sensory_wave[117] = (fovea_motion_abs / 16).min(127) as i8;
+
         racer.visual_cortex = retina_binocular;
 
         // --- CAOS VISUAL (Medo de Obstáculos) ---

@@ -183,6 +183,14 @@ fn build_priming_weights() -> Vec<f32> {
     // Best_escape × 4 (ch 60..63) signed → steer matching, peso moderado.
     for i in 60..64 { weights[1 * 128 + i] = 5.0; }
 
+    // A24: FOVEAL OPTICAL FLOW — parede vindo na frente (ch 116) = brake máximo.
+    // Resolve "vira na parede do nada": canal mostra parede aproximando ANTES dela
+    // estar perto, não só presente.
+    weights[2 * 128 + 116] = 14.0;  // approach frontal signed → brake forte
+    weights[0 * 128 + 116] = -10.0; // → corta throttle
+    weights[2 * 128 + 117] = 8.0;   // motion magnitude → brake moderado
+    weights[0 * 128 + 117] = -6.0;  // → reduz throttle
+
     // A23: LOOKAHEAD steer (curv 100m/180m signed) — DNA atual ignora estes (mortos).
     // Sem isso, carro só vê parede via whiskers/fovea = REATIVO. Vira "do nada".
     // curv signed positivo = curva à direita → steer right (positivo).
