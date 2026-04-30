@@ -1194,7 +1194,12 @@ pub(super) fn update_racers(
         // KAN output head: spline suave por canal antes do clamp final — elimina saturação ±1
         // hard do raw logit ([-2,2] esperado) e dá curva evoluível por carro.
         let neural_throttle = racer.kan_out.eval(0, intent[0]);
-        let base_pedal = ((neural_throttle + 1.0) * 0.5).clamp(0.0, 1.0); // Remap [-1,1] → [0,1]
+        // FIX simétrico throttle: ANTES era (n+1)/2 → 0-output virava 50% pedal default.
+        // Cars aceleravam mesmo quando cortex saía neutro/negativo. Agora:
+        //   neural < 0 → pedal 0 (não acelera)
+        //   neural > 0 → pedal proporcional (full at 1.0)
+        // Equilibra com brake (linha 1245: brake threshold 0.2).
+        let base_pedal = neural_throttle.max(0.0).clamp(0.0, 1.0);
 
         // SLOW BRAIN MODULATION RE-ENABLED — System 2 active.
         let slow = &racer.engine.slow_brain.output;
@@ -1242,7 +1247,14 @@ pub(super) fn update_racers(
             else { 0.0 }
         };
         #[cfg(not(feature = "brake_symmetric"))]
-        let raw_brake = if brake_spline > 0.2 { ((brake_spline - 0.2) * 1.25).clamp(0.0, 1.0) } else { 0.0 };
+        let raw_brake = {
+            // FIX: era threshold 0.2 — assimétrico vs throttle pedal sempre engajado.
+            // Cars não freavam mesmo com brake priming +14/+15 porque cortex output
+            // raramente excede 0.2. Dead-zone simétrica 0.05 (mesmo brake_symmetric).
+            let dead = 0.05_f32;
+            if brake_spline > dead { ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0) }
+            else { 0.0 }
+        };
         let combined_brake = (raw_brake + brake_anticip).clamp(0.0, 1.0);
         let mut brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
 
