@@ -13,43 +13,43 @@
     {
       "name": "Procedural Sigma",
       "seed": 9001,
-      "track_width": 36.0,
+      "track_width": 28.0,
       "complexity": 0.5
     },
     {
       "name": "Dubai Oval",
       "seed": 123,
-      "track_width": 44.0,
+      "track_width": 30.0,
       "complexity": 0.3
     },
     {
       "name": "Interlagos Gateway",
       "seed": 64,
-      "track_width": 36.0,
+      "track_width": 26.0,
       "complexity": 1.0
     },
     {
       "name": "Monaco Tight",
       "seed": 256,
-      "track_width": 28.0,
+      "track_width": 22.0,
       "complexity": 2.0
     },
     {
       "name": "Silverstone Flow",
       "seed": 512,
-      "track_width": 32.0,
+      "track_width": 24.0,
       "complexity": 1.8
     },
     {
       "name": "Nurburgring Hills",
       "seed": 768,
-      "track_width": 30.0,
+      "track_width": 24.0,
       "complexity": 2.5
     },
     {
       "name": "Suzuka Crossing",
       "seed": 1024,
-      "track_width": 26.0,
+      "track_width": 20.0,
       "complexity": 3.0
     }
   ],

@@ -75,45 +75,45 @@ impl Default for UniverseConfig {
                 // Default = procedural seed 9001. Matches DNA training seeds — UI mode loads
                 // CHAMPION.dna trained on this layout instead of mismatching with hardcoded.
                 TrackProfile {
-                    name: "Procedural Sigma".to_string(),     // intermediário — bootstrap + desafio
+                    name: "Procedural Sigma".to_string(),
                     seed: 9001,
-                    track_width: 36.0,
+                    track_width: 28.0,
                     complexity: 0.5,
                 },
                 TrackProfile {
-                    name: "Dubai Oval".to_string(),           // EASY hardcoded
+                    name: "Dubai Oval".to_string(),
                     seed: 123,
-                    track_width: 44.0,
+                    track_width: 30.0,
                     complexity: 0.3,
                 },
                 TrackProfile {
-                    name: "Interlagos Gateway".to_string(),   // MEDIUM
+                    name: "Interlagos Gateway".to_string(),
                     seed: 64,
-                    track_width: 36.0,
+                    track_width: 26.0,
                     complexity: 1.0,
                 },
                 TrackProfile {
-                    name: "Monaco Tight".to_string(),         // HARD
+                    name: "Monaco Tight".to_string(),
                     seed: 256,
-                    track_width: 28.0,
+                    track_width: 22.0,
                     complexity: 2.0,
                 },
                 TrackProfile {
-                    name: "Silverstone Flow".to_string(),     // VERY HARD
+                    name: "Silverstone Flow".to_string(),
                     seed: 512,
-                    track_width: 32.0,
+                    track_width: 24.0,
                     complexity: 1.8,
                 },
                 TrackProfile {
-                    name: "Nurburgring Hills".to_string(),    // EXTREME (rampas)
+                    name: "Nurburgring Hills".to_string(),
                     seed: 768,
-                    track_width: 30.0,
+                    track_width: 24.0,
                     complexity: 2.5,
                 },
                 TrackProfile {
-                    name: "Suzuka Crossing".to_string(),      // INSANE (multi-hairpin)
+                    name: "Suzuka Crossing".to_string(),
                     seed: 1024,
-                    track_width: 26.0,
+                    track_width: 20.0,
                     complexity: 3.0,
                 },
             ],

@@ -52,7 +52,7 @@ fn main() {
     if let Some(n) = swarm_override { config.swarm_count = n; }
     if let Some(s) = time_scale_override { config.time_scale = s; }
     if let Some(seed) = seed_override {
-        let w = width_override.unwrap_or(36.0);
+        let w = width_override.unwrap_or(28.0);
         config.tracks.insert(0, universe::config::TrackProfile {
             name: format!("Procedural-{seed}-w{}", w as u32),
             seed,

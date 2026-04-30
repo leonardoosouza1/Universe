@@ -448,17 +448,29 @@ pub fn spawn_swarm(
         // (até mesmo se o elite_pool inteiro for ruim, o HoF preserva o melhor de todos os tempos).
         let slot_is_champion = i == 0 && current_best_w.is_some();
 
-        // SIMPLE ELITISM: slot 0 = champion puro, slots 1..N = champion + mutação.
-        // Zero Hall of Fame, zero priming-refresh, zero tournament. Se algum mutante
-        // bater champion, assume no fim da gen (ver pipeline.rs). Ver melhorias/simple-elitism.md.
+        // SIMPLE ELITISM v2: slot 0 = champion puro, slots 1..(N-15) = champion + mutação,
+        // últimos 15 slots = PRIMING REFRESH (fresh DNA) pra evitar monoculture.
+        // User reportou: gen 2 TODOS batem mesma curva (clones do bug do champion).
+        // Priming refresh dá diversidade — se champion stuck em local minimum,
+        // priming cars exploram alternativas.
+        let priming_slot = i >= config.swarm_count.saturating_sub(5);
         #[cfg(feature = "simple_elitism")]
-        let simple_mut_slot = !slot_is_champion && current_best_w.is_some();
+        let simple_mut_slot = !slot_is_champion && !priming_slot && current_best_w.is_some();
         #[cfg(not(feature = "simple_elitism"))]
         let simple_mut_slot = false;
 
-        if slot_is_champion || simple_mut_slot {
+        if priming_slot {
+            // PRIMING REFRESH: fresh DNA com axiomas. Diversidade vs monoculture.
+            let priming = build_priming_weights();
+            // Adiciona ruído pra cada slot ser único (sem isso 15 priming idênticos).
+            let mut jittered = priming;
+            for w in jittered.iter_mut() {
+                if rng.random_bool(0.02) { *w += (rng.random::<f32>() - 0.5) * 0.5; }
+            }
+            engine.instinct_layer.quantize(&jittered);
+            engine.instinct_layer.set_scale(1.0);
+        } else if slot_is_champion || simple_mut_slot {
             if let Some(ref champion) = current_best_w {
-                // champion já é Vec<f32> agora (cortex f32 runtime).
                 engine.instinct_layer.quantize(champion);
                 engine.instinct_layer.set_scale(current_best_s);
                 if let Some(ref l2) = race.best_l2_weights {
