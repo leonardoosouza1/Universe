@@ -183,6 +183,17 @@ fn build_priming_weights() -> Vec<f32> {
     // Best_escape × 4 (ch 60..63) signed → steer matching, peso moderado.
     for i in 60..64 { weights[1 * 128 + i] = 5.0; }
 
+    // A25: WIDTH-INVARIANT (Tesla-like generalização) — track-width-relative reactions.
+    // ch 118 fwd_dist/hw: BAIXO (parede dentro de 1 track-width) → brake forte.
+    // ch 119 corridor/hw: BAIXO (corredor estreito) → reduz throttle.
+    // ch 123 whisker_min/hw: BAIXO (lateral perto) → brake moderado.
+    // Inversão: peso negativo na entrada → ativa output quando canal BAIXO.
+    weights[2 * 128 + 118] = -16.0; // canal baixo (wall close relative) → brake
+    weights[0 * 128 + 118] = 8.0;   // canal alto (wall far relative) → throttle OK
+    weights[0 * 128 + 119] = 6.0;   // corridor amplo → throttle full
+    weights[2 * 128 + 119] = -8.0;  // corridor narrow → brake
+    weights[2 * 128 + 123] = -10.0; // whisker proximity normalized → brake
+
     // A24: FOVEAL OPTICAL FLOW — parede vindo na frente (ch 116) = brake máximo.
     // Resolve "vira na parede do nada": canal mostra parede aproximando ANTES dela
     // estar perto, não só presente.

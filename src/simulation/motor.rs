@@ -837,6 +837,20 @@ pub(super) fn update_racers(
         let ttc_inv = (speed / fwd_probe).clamp(0.0, 10.0); // 10 = ~0.1s de TTC
         sensory_wave[82] = ((ttc_inv / 10.0) * 127.0) as i8;
 
+        // ── WIDTH-INVARIANT CHANNELS (Tesla-like generalization) ──
+        // Sem isto, DNA over-fits absolute pixel intensity → 28m DNA não funciona em 16m.
+        // Normalize by half_width = mesma reação qualquer pista.
+        // ch 118: forward_wall_dist / hw — "X track-widths à frente" (clamp 0..3)
+        let fwd_norm = (fwd_probe / hw).clamp(0.0, 3.0);
+        sensory_wave[118] = ((fwd_norm / 3.0) * 127.0).clamp(0.0, 127.0) as i8;
+        // ch 119: lateral corridor / hw — "espaço livre lateral em track-widths"
+        let corridor = (dist_l + dist_r) / (2.0 * hw);
+        sensory_wave[119] = (corridor.clamp(0.0, 2.0) * 63.5).clamp(0.0, 127.0) as i8;
+        // ch 123: whisker min dist / hw — parede mais próxima qualquer lado, normalizada
+        let whisker_min = dist_l.min(dist_r).max(0.1);
+        let whisker_norm = (whisker_min / hw).clamp(0.0, 1.5);
+        sensory_wave[123] = ((whisker_norm / 1.5) * 127.0).clamp(0.0, 127.0) as i8;
+
         // --- MEMÓRIA SENSORIAL PERSISTENTE ---
         // EMA (alpha ~0.15/frame @ 60Hz ≈ ~0.5s de meia-vida) suaviza picos de ruído
         // e mantém sensação de "tem parede perto" mesmo se o raycast momentâneo falhar.
