@@ -45,8 +45,35 @@ fn main() {
 
     dump_layer("INSTINCT FAST (128 inputs × 64 neurons)", &dna.fast_weights, 128, 64, DNA_FAST_SIZE);
 
-    if let Some(ref sw) = dna.slow_weights {
-        dump_layer("SLOW BRAIN (32 inputs × 8 neurons)", sw, 32, 8, DNA_SLOW_SIZE);
+    if let Some(ref sf) = dna.slow_f32 {
+        println!("─────────────────────────────────────────────────────────────────");
+        println!("🔹 SLOW BRAIN f32 RAW (32 inputs × 8 neurons) — SLWF chunk lossless");
+        let nonzero = sf.iter().filter(|&&w| w.abs() > 1e-6).count();
+        let neg = sf.iter().filter(|&&w| w < -1e-6).count();
+        let pos = sf.iter().filter(|&&w| w > 1e-6).count();
+        let total = sf.len();
+        let mean_abs: f32 = sf.iter().map(|w| w.abs()).sum::<f32>() / total as f32;
+        let max_abs = sf.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+        println!("  total         : {}", total);
+        println!("  ativos        : {} ({:.1}%)  neg={} pos={}", nonzero, nonzero as f32 * 100.0 / total as f32, neg, pos);
+        println!("  |w|_mean      : {:.4}", mean_abs);
+        println!("  |w|_max       : {:.4}", max_abs);
+        println!();
+        println!("  heatmap (8 neurônios × 32 inputs):");
+        for n in 0..8 {
+            let off = n * 32;
+            let row: String = (0..32).map(|i| {
+                let w = sf[off + i];
+                if w > 0.05 { '+' }
+                else if w < -0.05 { '-' }
+                else if w.abs() > 1e-6 { '·' }
+                else { '.' }
+            }).collect();
+            println!("  N{:02} │{}", n, row);
+        }
+        println!();
+    } else if let Some(ref sw) = dna.slow_weights {
+        dump_layer("SLOW BRAIN (32 inputs × 8 neurons) — LEGACY ternary", sw, 32, 8, DNA_SLOW_SIZE);
     } else {
         println!("⚠  slow_weights ausente (DNA legacy v1).");
     }

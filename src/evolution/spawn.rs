@@ -260,9 +260,13 @@ pub fn spawn_swarm(
                 race.best_l2_weights = Some(l2.iter().map(|&w| w as f32 / 63.5).collect());
             }
             current_best_s = dna.fast_scale;
-            if let Some(sw) = dna.slow_weights {
-                // v10: RESTAURANDO herança do slow_brain. 
-                current_best_slow_w = Some(sw.iter().map(|&w| w as f32 / 63.5).collect());
+            // SLWF lossless f32 chunk preferido. Fallback ternary se DNA antigo.
+            if let Some(sf32) = dna.slow_f32.as_ref() {
+                current_best_slow_w = Some(sf32.clone());
+                current_best_slow_s = dna.slow_scale;
+            } else if let Some(sw) = dna.slow_weights {
+                // Legacy: ternário {-1,0,+1} → magnitude priming 0.33.
+                current_best_slow_w = Some(sw.iter().map(|&w| (w as f32) * 0.33).collect());
                 current_best_slow_s = dna.slow_scale;
             }
 
@@ -493,6 +497,11 @@ pub fn spawn_swarm(
             }
             engine.instinct_layer.quantize(&jittered);
             engine.instinct_layer.set_scale(1.0);
+            // FIX BUG: priming refresh slots não primavam slow brain — System 2 ficava zerado.
+            // Resultado: champion eleito desse slot tinha slow weights = 0 → save todo zero.
+            let slow_priming: Vec<f32> = build_slow_priming_weights()
+                .into_iter().map(|w| w / 3.0).collect();
+            engine.slow_brain.layer.set_weights(&slow_priming);
         } else if slot_is_champion || simple_mut_slot {
             if let Some(ref champion) = current_best_w {
                 engine.instinct_layer.quantize(champion);
@@ -801,8 +810,8 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
                 if let Some(ref best_slow) = current_best_slow_w {
-                    let exact_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32 / 63.5).collect();
-                    engine.slow_brain.layer.set_weights(&exact_slow);
+                    // FIX: best_slow já é f32 normalizado (load /63.5 em line 265). Não dividir de novo.
+                    engine.slow_brain.layer.set_weights(best_slow);
                 }
                 if let Some(ref l2) = race.best_l2_weights {
                     engine.cortex_l2.set_weights(l2);
@@ -821,7 +830,10 @@ pub fn spawn_swarm(
                 engine.instinct_layer.set_scale(current_best_s);
                 if let Some(ref best_slow) = current_best_slow_w {
                     // Option 4: f32 base + gaussian mutation σ=0.02.
-                    let mut mutated_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32 / 63.5).collect();
+                    // FIX: best_slow já é f32 normalizado (load fez /63.5 em line 265).
+                    // Bug anterior: dividia /63.5 de novo → 0.33 / 63.5 ≈ 0.005 → save round 0.
+                    // Slow brain morria toda gen por double normalization.
+                    let mut mutated_slow: Vec<f32> = best_slow.clone();
                     for w in mutated_slow.iter_mut() {
                         if rng.random_bool(effective_mutation_rate) {
                             let u1 = (rng.random::<f32>()).max(1e-7);

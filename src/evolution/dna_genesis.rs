@@ -231,6 +231,9 @@ pub const TAG_TRINITY: &[u8; 4] = b"TRIN";
 pub const TAG_CORTEX_EQ: &[u8; 4] = b"CEQU";
 // TLV TAG para slow_brain weights (V6 equation-only DNA — sem TREE/GENE).
 pub const TAG_SLOW_RAW: &[u8; 4] = b"SLOW";
+// TLV TAG para slow_brain weights f32 RAW (bypass Tree/sparse::compress que
+// clamp não-ternários a zero). 256 weights × 4 bytes = 1024 bytes. Lossless f32.
+pub const TAG_SLOW_F32: &[u8; 4] = b"SLWF";
 // TLV TAG para cortex weights raw i8 (bypass compress_organism que quantiza ternary).
 // Necessário pra preservar weights f32 trained com fidelidade plena (i8/63.5 round-trip).
 pub const TAG_CORTEX_RAW: &[u8; 4] = b"CRAW";
@@ -504,6 +507,8 @@ pub struct DnaPayload {
     // --- v7 / TLV CL2W chunk: cortex layer 2 weights (64×32=2048 i8 quantizado 63.5).
     pub cortex_l2_raw: Option<Vec<i8>>,
     pub cortex_l3_raw: Option<Vec<i8>>,
+    // SLWF chunk: slow_brain raw f32 (lossless). Bypassa Tree/sparse compressor ternary.
+    pub slow_f32: Option<Vec<f32>>,
 }
 
 pub fn save_champion_dna(
@@ -580,7 +585,7 @@ pub fn save_champion_dna_v5(
     trinity: Option<&TrinityWeights>,
 ) -> std::io::Result<()> {
     save_champion_dna_v7(path, fast_weights, fast_scale, slow_weights, slow_scale,
-        generation, seed, track_width, fitness, morpho, hypernet, kan_knots, trinity, None)
+        generation, seed, track_width, fitness, morpho, hypernet, kan_knots, trinity, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -599,6 +604,7 @@ pub fn save_champion_dna_v7(
     kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
     trinity: Option<&TrinityWeights>,
     cortex_l2: Option<&[i8]>,
+    slow_f32: Option<&[f32]>,
 ) -> std::io::Result<()> {
     // 1. Gera o payload compressando os genomas (V4)
     let mut payload = compress_organism(
@@ -634,6 +640,16 @@ pub fn save_champion_dna_v7(
     // CL2W chunk (cortex layer 2, NOVO V7).
     if let Some(l2) = cortex_l2 {
         payload.add_chunk(Chunk::new(*TAG_CORTEX_L2, l2.iter().map(|&b| b as u8).collect()));
+    }
+
+    // SLWF chunk (slow_brain raw f32) — bypass Tree/sparse::compress ternary clamp.
+    // Sem isso, slow weights = qualquer valor não {-1,0,+1} viravam zero no save.
+    if let Some(sw) = slow_f32 {
+        let mut bytes = Vec::with_capacity(sw.len() * 4);
+        for &w in sw {
+            bytes.extend_from_slice(&w.to_le_bytes());
+        }
+        payload.add_chunk(Chunk::new(*TAG_SLOW_F32, bytes));
     }
 
     // CEQU chunk (cortex equation): DCT compression for future equation-only DNA.
@@ -715,6 +731,14 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                             // CL2W chunk (V7): cortex layer 2 weights raw i8 (64×32=2048).
                             let cortex_l2_raw: Option<Vec<i8>> = payload.find_chunk(TAG_CORTEX_L2)
                                 .map(|c| c.data.iter().map(|&b| b as i8).collect());
+                            // SLWF chunk: slow_brain raw f32 (lossless, bypass ternary).
+                            let slow_f32: Option<Vec<f32>> = payload.find_chunk(TAG_SLOW_F32)
+                                .and_then(|c| {
+                                    if c.data.len() % 4 != 0 { return None; }
+                                    Some(c.data.chunks_exact(4)
+                                        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                                        .collect())
+                                });
                             return Some(DnaPayload {
                 car_model_idx: 0,
                                 fast_weights, fast_scale,
@@ -725,6 +749,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                                 cortex_raw,
                                 cortex_l2_raw,
                                 cortex_l3_raw: None,
+                                slow_f32,
                             });
                         }
                     }
@@ -788,6 +813,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             cortex_raw: None,
             cortex_l2_raw: None,
             cortex_l3_raw: None,
+            slow_f32: None,
         });
         }
     }
@@ -817,6 +843,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             cortex_raw: None,
             cortex_l2_raw: None,
             cortex_l3_raw: None,
+            slow_f32: None,
         });
     }
 

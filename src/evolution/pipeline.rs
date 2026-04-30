@@ -750,8 +750,14 @@ pub(super) fn evolution_pipeline(
                 // V7: cortex_l2 também quantizado pra disk.
                 let l2_q: Vec<i8> = best.engine.cortex_l2.weights.iter()
                     .map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
+                // FIX BUG: sparse::compress (TLV/Tree) clamp valores não-ternários para 0.
+                // Slow weights eram salvas como i8 -127..127 mas compressor só preserva
+                // {-1, 0, +1}. Resultado: slow brain morria 100% no save (dna_view 99% mute).
+                // Ternarização explícita: threshold 0.15 (acima do priming 0.33/3=0.11
+                // mas suficiente pra capturar mutações σ=0.3 acumuladas).
                 let slow_weights_q: Vec<i8> = slow_weights.iter()
-                    .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect();
+                    .map(|&w| if w > 0.15 { 1i8 } else if w < -0.15 { -1i8 } else { 0i8 })
+                    .collect();
                 let _ = crate::evolution::dna_genesis::save_champion_dna_v7(
                     "CHAMPION.dna",
                     &weights_q, scale,
@@ -765,6 +771,7 @@ pub(super) fn evolution_pipeline(
                     best.kan_out.knots,
                     Some(&trinity_save),
                     Some(&l2_q),
+                    Some(&slow_weights),  // SLWF chunk: raw f32 (lossless, bypass ternary).
                 );
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
