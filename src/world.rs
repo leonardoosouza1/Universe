@@ -877,7 +877,11 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
     let lap_m = lap_len_cells * 3.0;
     // Lap range geral.
     if EASY_TRACK.load(Ordering::Relaxed) {
-        if !(11200.0..=3500.0).contains(&lap_m) { return false; }
+        // FIX: range estava invertido (11200..3500 = empty) — typo histórico
+        // que rejeitava TODAS pistas em --easy mode → procedural caía em fallback
+        // simples. UI vs headless: DNA treinado em fallback, UI gera pista
+        // real diferente → carros pareciam ruins.
+        if !(1200.0..=3500.0).contains(&lap_m) { return false; }
     } else {
         if !(2500.0..=7000.0).contains(&lap_m) { return false; }
     }

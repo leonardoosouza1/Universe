@@ -183,6 +183,14 @@ fn build_priming_weights() -> Vec<f32> {
     // Best_escape × 4 (ch 60..63) signed → steer matching, peso moderado.
     for i in 60..64 { weights[1 * 128 + i] = 5.0; }
 
+    // A26: RACING LINE FOLLOWER (Tesla HD-map analog).
+    // ch 108: line_offset_m / hw signed. + = car off to right of optimal line.
+    // ch 110: lookahead_m / hw signed. + = optimal line goes right ahead.
+    // Steer corrige off-line + antecipa curva.
+    weights[1 * 128 + 108] = -10.0; // off-line right (positivo) → steer LEFT (negativo) pra retornar
+    weights[1 * 128 + 110] = 10.0;  // line vai direita → steer right preemptivo
+    weights[1 * 128 + 109] = 4.0;   // d_off improving → manter direção (pequeno reforço)
+
     // A25: WIDTH-INVARIANT (Tesla-like generalização) — track-width-relative reactions.
     // ch 118 fwd_dist/hw: BAIXO (parede dentro de 1 track-width) → brake forte.
     // ch 119 corridor/hw: BAIXO (corredor estreito) → reduz throttle.

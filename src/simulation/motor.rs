@@ -1302,6 +1302,31 @@ pub(super) fn update_racers(
                     brake_intent = brake_intent.max(0.5 * severity);
                 }
             }
+            // PATH PROJECTION SENTINEL (Tesla-like trajectory predict).
+            // Projeta trajetória 3 passos × 0.4s baseado em speed+steer atual.
+            // Se qualquer ponto projetado tem parede <2m, FORCE brake.
+            // Captura curvas que straight TTC não pega.
+            if speed > 5.0 {
+                let steer_now = racer.memory[1]; // -1..+1 last steer
+                let yaw_rate = steer_now * speed * 0.05; // approx rad/s
+                let mut sim_x = pos.x;
+                let mut sim_z = pos.z;
+                let mut sim_phase = racer.phase;
+                let dt_proj = 0.4;
+                let mut min_clearance = f32::INFINITY;
+                for _ in 0..3 {
+                    sim_phase += yaw_rate * dt_proj;
+                    sim_x += sim_phase.cos() * speed * dt_proj;
+                    sim_z += sim_phase.sin() * speed * dt_proj;
+                    let clr = world.raycast(sim_x, sim_z, sim_phase, 8.0);
+                    if clr < min_clearance { min_clearance = clr; }
+                }
+                if min_clearance < 2.0 {
+                    let severity = (1.0 - min_clearance / 2.0).clamp(0.0, 1.0);
+                    brake_intent = brake_intent.max(0.6 * severity);
+                }
+            }
+
             // LATERAL anti-collision: parede side em <1.5m + speed alto → brake.
             if speed > SENTINEL_MIN_SPEED {
                 let lat_l = world.raycast(pos.x, pos.z,

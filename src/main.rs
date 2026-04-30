@@ -41,14 +41,22 @@ fn main() {
         .and_then(|s| s.parse().ok());
     let no_holes = args.iter().any(|a| a == "--no-holes");
     let easy_track = args.iter().any(|a| a == "--easy");
-    if no_holes {
+    // FIX UI vs headless: flags persistem em universe_config.json. UI carrega
+    // mesma config que último headless training → DNA e pista combinam.
+    let final_no_holes = no_holes || config.no_holes;
+    let final_easy = easy_track || config.easy_track;
+    if final_no_holes {
         universe::world::NO_HOLES.store(true, std::sync::atomic::Ordering::Relaxed);
         println!("🕳  HOLES DISABLED");
     }
-    if easy_track {
+    if final_easy {
         universe::world::EASY_TRACK.store(true, std::sync::atomic::Ordering::Relaxed);
         println!("📏 EASY TRACK validation (oval-friendly)");
     }
+    // Persiste se CLI passou — próximo run UI herda automatic.
+    if no_holes { config.no_holes = true; }
+    if easy_track { config.easy_track = true; }
+    let _ = config.save();
     if let Some(n) = swarm_override { config.swarm_count = n; }
     if let Some(s) = time_scale_override { config.time_scale = s; }
     if let Some(seed) = seed_override {

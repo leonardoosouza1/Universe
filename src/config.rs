@@ -60,6 +60,13 @@ pub struct UniverseConfig {
     pub rotate_tracks: bool,
     #[serde(default = "default_gens_per_track")]
     pub gens_per_track: usize,
+    /// FIX UI vs headless mismatch: salvas flags do último treino pra UI
+    /// reproduzir mesma pista que DNA viu. Sem isso DNA treinado --easy
+    /// --no-holes rodava em pista hard com holes na UI → cars ruins.
+    #[serde(default)]
+    pub easy_track: bool,
+    #[serde(default)]
+    pub no_holes: bool,
 }
 
 fn default_generation_timeout_s() -> f32 { 120.0 }
@@ -123,6 +130,8 @@ impl Default for UniverseConfig {
             generation_timeout_s: 120.0,
             rotate_tracks: false,
             gens_per_track: 3,
+            easy_track: false,
+            no_holes: false,
         }
     }
 }
