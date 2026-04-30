@@ -758,21 +758,27 @@ pub(super) fn evolution_pipeline(
                 let slow_weights_q: Vec<i8> = slow_weights.iter()
                     .map(|&w| if w > 0.15 { 1i8 } else if w < -0.15 { -1i8 } else { 0i8 })
                     .collect();
-                let _ = crate::evolution::dna_genesis::save_champion_dna_v7(
-                    "CHAMPION.dna",
-                    &weights_q, scale,
-                    &slow_weights_q, slow_scale,
-                    race.generation as u32,
-                    race.seed as u32,
-                    config.current_track().track_width,
-                    this_gen_best_dist,
-                    race.current_morpho,
-                    race.current_hypernet,
-                    best.kan_out.knots,
-                    Some(&trinity_save),
-                    Some(&l2_q),
-                    Some(&slow_weights),  // SLWF chunk: raw f32 (lossless, bypass ternary).
-                );
+                // Save TWICE: generic CHAMPION.dna (latest run) + per-width
+                // CHAMPION_W{width}m.dna (memória persistente por pista, não desaprende).
+                let track_w = config.current_track().track_width;
+                let per_width = format!("CHAMPION_W{}m.dna", track_w as i32);
+                for path in &["CHAMPION.dna", per_width.as_str()] {
+                    let _ = crate::evolution::dna_genesis::save_champion_dna_v7(
+                        path,
+                        &weights_q, scale,
+                        &slow_weights_q, slow_scale,
+                        race.generation as u32,
+                        race.seed as u32,
+                        track_w,
+                        this_gen_best_dist,
+                        race.current_morpho,
+                        race.current_hypernet,
+                        best.kan_out.knots,
+                        Some(&trinity_save),
+                        Some(&l2_q),
+                        Some(&slow_weights),
+                    );
+                }
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
                     let _ = writeln!(file, "👑 **NOVO CAMPEÃO COROADO!** Distância: {:.1}m (Gen {}) — Superou {:.1}m anterior", this_gen_best_dist, race.generation, race.champion_distance);
