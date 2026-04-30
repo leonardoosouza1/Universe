@@ -575,7 +575,7 @@ impl VoxelWorld {
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
                 
                 let mut hit_voxel = VoxelType::Road;
-                let mut hit_dist = 800.0;
+                let mut hit_dist = 1200.0;
                 
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
                 
@@ -609,7 +609,7 @@ impl VoxelWorld {
                 
                 // Alcance ~400m (134 blocos × 3m cell). Profundidade aumentada — modelo
                 // antecipa curvas longas em retas largas a 80m/s antes (era 300m).
-                for _ in 0..267 {
+                for _ in 0..400 {
                     if side_dist_x < side_dist_y {
                         side_dist_x += delta_dist_x; map_x += step_x; side = 0;
                     } else {
@@ -635,7 +635,7 @@ impl VoxelWorld {
                     } else {
                         hit_dist = current_dist;
                     }
-                } else if dir_y < -0.001 && dist_to_ground <= 800.0 {
+                } else if dir_y < -0.001 && dist_to_ground <= 1200.0 {
                     // Sem paredes, mas bateu no chão
                     hit_dist = dist_to_ground;
                     let hit_px = eye_pos.x + dir_x * hit_dist;
@@ -643,7 +643,7 @@ impl VoxelWorld {
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
                 }
                 
-                let depth_fade = (hit_dist / 800.0).clamp(0.0, 1.0);
+                let depth_fade = (hit_dist / 1200.0).clamp(0.0, 1.0);
 
                 // --- VISÃO ABSOLUTA ---
                 // Para que o modelo NUNCA confunda uma parede longe com a pista perto.
@@ -666,11 +666,11 @@ impl VoxelWorld {
                         } else if hit_dist < 120.0 {
                             let mid = ((hit_dist - 30.0) / 90.0).clamp(0.0, 1.0);
                             55.0 - (mid * 55.0)
-                        } else if hit_dist < 800.0 {
+                        } else if hit_dist < 1200.0 {
                             let far = ((hit_dist - 120.0) / 480.0).clamp(0.0, 1.0);
                             0.0 - (far * 25.0)
                         } else {
-                            let xfar = ((hit_dist - 800.0) / 800.0).clamp(0.0, 1.0);
+                            let xfar = ((hit_dist - 1200.0) / 1200.0).clamp(0.0, 1.0);
                             -25.0 - (xfar * 25.0)
                         }
                     },
@@ -877,7 +877,7 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
     let lap_m = lap_len_cells * 3.0;
     // Lap range geral.
     if EASY_TRACK.load(Ordering::Relaxed) {
-        if !(1800.0..=3500.0).contains(&lap_m) { return false; }
+        if !(11200.0..=3500.0).contains(&lap_m) { return false; }
     } else {
         if !(2500.0..=7000.0).contains(&lap_m) { return false; }
     }

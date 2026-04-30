@@ -151,13 +151,16 @@ fn build_priming_weights() -> Vec<f32> {
     // — net evolui peso natural via mutation (ainda mais lento mas estável).
     // Brain trace mostrou raw_thr SEMPRE +0.33. Cars nunca freiam.
     // Bump 2x priming brake — força output 2 dominar quando perigo.
-    weights[2 * 128 + 28] = 10.0;  // pre_brake → brake forte
-    weights[0 * 128 + 28] = -8.0;  // pre_brake → corta throttle
-    weights[2 * 128 + 44] = 12.0;  // wall_imminent → brake muito forte
-    weights[0 * 128 + 44] = -10.0; // wall_imminent → throttle off
+    weights[2 * 128 + 28] = 10.0;
+    weights[0 * 128 + 28] = -8.0;
+    weights[2 * 128 + 44] = 12.0;
+    weights[0 * 128 + 44] = -10.0;
     // Plus retina center ahead (ch 3, 4 fovea center pooled bins) → brake.
-    weights[2 * 128 + 3] = 6.0;
-    weights[2 * 128 + 4] = 6.0;
+    weights[2 * 128 + 3] = 12.0;
+    weights[2 * 128 + 4] = 12.0;
+    // Plus retina center periph (8..15 = horizonte center) → brake.
+    weights[2 * 128 + 11] = 8.0;
+    weights[2 * 128 + 12] = 8.0;
     // A22: approach detection signed. Parede VINDO esquerda → steer DIREITA.
     // ch 114 high (positivo) = aproximação esquerda → output 1 positivo (right).
     weights[1 * 128 + 114] = 4.0;
