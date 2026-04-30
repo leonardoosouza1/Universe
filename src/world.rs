@@ -467,16 +467,35 @@ impl VoxelWorld {
                         f(b+1, b+3, b+5), f(b+3, b+7, b+5), // +x
                     ].iter().flat_map(|tri| tri.iter().copied()).collect::<Vec<u32>>());
                 } else if v == VoxelType::Hole {
-                    // Desenha Hole como quad PRETO 0.3m abaixo do road — visualmente
-                    // óbvio pro espectador humano e ainda detectável pela retina (hit_dist
-                    // volta ~90 no canal). Usa road_pos (mesmo material road) com cor preta.
+                    // Hole 3D: caixa funda 2.5m com 4 paredes laterais + bottom preto.
+                    // Antes apenas quad raso 0.3m — invisível no chase cam.
+                    // Agora visualmente óbvio: caixa profunda preta com sombra de borda.
+                    let depth = 2.5_f32;
+                    let inset = 0.05_f32;
+                    let x0 = px + inset;
+                    let x1 = px + self.cell_size - inset;
+                    let z0 = pz + inset;
+                    let z1 = pz + self.cell_size - inset;
+                    let y_top = py - 0.05;     // borda superior (afundamento visível)
+                    let y_bot = py - depth;
                     let b = road_pos.len() as u32;
+                    // 8 vertices: 4 top + 4 bottom
                     road_pos.extend_from_slice(&[
-                        [px, py - 0.3, pz], [px+self.cell_size, py - 0.3, pz],
-                        [px, py - 0.3, pz+self.cell_size], [px+self.cell_size, py - 0.3, pz+self.cell_size]
+                        [x0, y_top, z0], [x1, y_top, z0], [x0, y_top, z1], [x1, y_top, z1],
+                        [x0, y_bot, z0], [x1, y_bot, z0], [x0, y_bot, z1], [x1, y_bot, z1],
                     ]);
-                    road_colors.extend_from_slice(&[[0.0, 0.0, 0.0, 1.0]; 4]);
-                    road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
+                    // Top edges = cinza escuro (borda do buraco). Bottom = preto.
+                    let edge = [0.10, 0.10, 0.12, 1.0];
+                    let void = [0.0, 0.0, 0.0, 1.0];
+                    road_colors.extend_from_slice(&[edge, edge, edge, edge, void, void, void, void]);
+                    // Bottom (visto de cima): triangles a partir dos bottom verts.
+                    road_indices.extend_from_slice(&[
+                        b+4, b+5, b+6, b+5, b+7, b+6,        // bottom face
+                        b+0, b+4, b+1, b+1, b+4, b+5,        // -z wall
+                        b+2, b+3, b+6, b+3, b+7, b+6,        // +z wall
+                        b+0, b+2, b+4, b+2, b+6, b+4,        // -x wall
+                        b+1, b+5, b+3, b+3, b+5, b+7,        // +x wall
+                    ]);
                 }
             }
         }
