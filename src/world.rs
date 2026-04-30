@@ -784,9 +784,10 @@ fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
     let cx = 160.0_f32;
     let cy = 160.0_f32;
     let easy = EASY_TRACK.load(Ordering::Relaxed);
-    // EASY = oval pequeno 8-12 anchors radius 50-90 cells. NORMAL = 16-22 anchors 70-150.
+    // EASY = pista PEQUENA real (não oval): 10-14 anchors, raio 50-100, mais variação.
+    // NORMAL = pista grande complexa: 16-22 anchors, raio 70-150.
     let (n_anchors, r_min, r_max, sp) = if easy {
-        (8 + (next() * 5.0) as usize, 50.0, 90.0, 35.0)
+        (10 + (next() * 5.0) as usize, 50.0, 100.0, 35.0)
     } else {
         (16 + (next() * 7.0) as usize, 70.0, 150.0, 42.0)
     };
@@ -857,42 +858,63 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
     let lap_m = lap_len_cells * 3.0;
     // Lap range geral.
     if EASY_TRACK.load(Ordering::Relaxed) {
-        // Easy mode aceita laps curtos (1000-2200m). Validação extra abaixo.
-        if !(1000.0..=2200.0).contains(&lap_m) { return false; }
+        if !(1800.0..=3500.0).contains(&lap_m) { return false; }
     } else {
         if !(2500.0..=7000.0).contains(&lap_m) { return false; }
     }
 
-    // Turn angles entre segmentos.
+    // Turn angles entre segmentos + turn-rate per meter (minecraft-style validation).
     let n = waypoints.len();
     let mut max_turn: f32 = 0.0;
     let mut sharp_turns = 0usize;
     let mut consecutive_sharp = 0usize;
     let mut max_consecutive = 0usize;
     let mut total_curve_deg = 0.0_f32;
+    let mut max_turn_per_meter: f32 = 0.0;
+    let mut min_seg_len_at_sharp: f32 = f32::MAX;
     for i in 1..n - 1 {
-        let v_in = (waypoints[i] - waypoints[i - 1]).normalize_or_zero();
-        let v_out = (waypoints[i + 1] - waypoints[i]).normalize_or_zero();
+        let v_in_raw = waypoints[i] - waypoints[i - 1];
+        let v_out_raw = waypoints[i + 1] - waypoints[i];
+        let v_in = v_in_raw.normalize_or_zero();
+        let v_out = v_out_raw.normalize_or_zero();
         let dot = v_in.dot(v_out).clamp(-1.0, 1.0);
         let turn = dot.acos().to_degrees();
         if turn > max_turn { max_turn = turn; }
         total_curve_deg += turn;
+
+        // Turn-rate-per-meter: curva apertada em segmento curto = perigo.
+        // Cars só conseguem dirigir se gradient suficiente.
+        let seg_in_m = v_in_raw.length() * 3.0; // cells × 3m
+        let seg_out_m = v_out_raw.length() * 3.0;
+        let avg_seg = (seg_in_m + seg_out_m) * 0.5;
+        if avg_seg > 0.5 {
+            let tpm = turn / avg_seg;
+            if tpm > max_turn_per_meter { max_turn_per_meter = tpm; }
+        }
         if turn > 50.0 {
             sharp_turns += 1;
             consecutive_sharp += 1;
             if consecutive_sharp > max_consecutive { max_consecutive = consecutive_sharp; }
+            if avg_seg < min_seg_len_at_sharp { min_seg_len_at_sharp = avg_seg; }
         } else {
             consecutive_sharp = 0;
         }
     }
+    // Curvas afiadas precisam segmento ≥ 12m (cars têm tempo de reagir).
+    // Sem isso, layout = curva 60° em 5m = impossível.
+    if sharp_turns > 0 && min_seg_len_at_sharp < 12.0 { return false; }
+    // Turn rate ≤ 8°/m (curva 60° precisa segmento ≥ 7.5m).
+    if max_turn_per_meter > 8.0 { return false; }
     // Permite hairpins até 90° + sequências de 4 curvas (chicanes desafiadoras OK).
-    // EASY mode: relax tudo + lap curto.
+    // EASY mode: pista REAL com curvas reais. Sem ser oval.
+    // Mantém variedade (sharp turns, S-curves) mas sem extremos.
     if EASY_TRACK.load(Ordering::Relaxed) {
-        if max_turn > 70.0 { return false; }
-        if max_consecutive > 2 { return false; }
-        if sharp_turns > 4 { return false; }
-        if lap_m > 2200.0 { return false; }     // lap curto, volta achievable
-        if lap_m < 1000.0 { return false; }
+        if max_turn > 85.0 { return false; }       // hairpins ok mas não impossíveis
+        if max_consecutive > 3 { return false; }   // até 3 chicanes seguidas
+        if sharp_turns < 3 || sharp_turns > 8 { return false; } // 3-8 curvas afiadas
+        if total_curve_deg < 360.0 { return false; }    // mínimo 1 volta integrada
+        let avg_seg_m = (lap_len_cells * 3.0) / (n - 1) as f32;
+        if avg_seg_m > 60.0 { return false; }
         return true;
     }
 
