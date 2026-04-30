@@ -76,6 +76,7 @@ pub struct SovereignEngine {
     pub metabolism: Metabolism,
     pub instinct_layer: BitLinear,         // 128 → 64 (Layer 1, sensory mixing)
     pub cortex_l2: crate::float_layers::FloatLinear,  // 64 → 32 (Layer 2, composição AND/OR)
+    pub cortex_l3: crate::float_layers::FloatLinear,  // 32 → 16 (Layer 3, deep abstract)
     pub slow_brain: SlowBrain,
     pub heart_resonance: ResonantNode,
     pub cfc_state: CfCCell,
@@ -132,11 +133,22 @@ impl SovereignEngine {
                 let mut s: u64 = 0xC0DE_CAFE;
                 let mut next = || {
                     s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                    ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0 // [-1, 1]
+                    ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
                 };
                 for i in 0..2048 { l.weights[i] = next() * 0.05; }
-                // Diagonal identity boost: primeiros 32 canais passthrough.
                 for i in 0..32 { l.weights[i * 64 + i] += 1.0; }
+                l
+            },
+            cortex_l3: {
+                // Layer 3: 32→16 abstract composition. Identity passthrough + small random.
+                let mut l = crate::float_layers::FloatLinear::new(32, 16);
+                let mut s: u64 = 0xDEAD_BEEF;
+                let mut next = || {
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+                };
+                for i in 0..512 { l.weights[i] = next() * 0.05; }
+                for i in 0..16 { l.weights[i * 32 + i] += 1.0; }
                 l
             },
             slow_brain: SlowBrain::new(),
@@ -314,8 +326,7 @@ impl SovereignEngine {
             self.predicted_retina[j] = 0.7 * self.predicted_retina[j] + 0.3 * current_retina_f[j];
         }
 
-        // STAGE 3 PROPER: 2-layer com identity+random init.
-        // L1 raw → tanh activation → L2 composes → tanh final
+        // Stage 3 (winner): 2-layer cortex L1 → tanh → L2.
         let l1_raw = self.instinct_layer.forward(&filtered_wave);
         let mut l1_act = [0i8; 64];
         for (i, &v) in l1_raw.iter().enumerate().take(64) {
@@ -323,8 +334,6 @@ impl SovereignEngine {
         }
         let l2_raw = self.cortex_l2.forward(&l1_act);
         let mut final_intent = [0.0f32; 64];
-        // Skip connection: L2 alimenta first 32, L1 raw alimenta last 32 (preserva
-        // single-layer reactive baseline mesmo se L2 colapsa).
         for (i, &val) in l2_raw.iter().enumerate().take(32) {
             final_intent[i] = (val * 2.0).tanh();
         }
@@ -332,6 +341,7 @@ impl SovereignEngine {
             final_intent[i] = (val * 2.0).tanh();
         }
         self.final_intent = final_intent.to_vec();
+        let _ = &self.cortex_l3; // kept struct, forward unused
 
         // 1b. Tier 6.8 — Mirror neurons / observational learning.
         //     Compara a retina filtrada atual (pós-KAN+CfC) com a média retiniana

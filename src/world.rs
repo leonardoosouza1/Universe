@@ -550,7 +550,7 @@ impl VoxelWorld {
         //   Row 1 = PERIFÉRICA 180° LINEAR (pitch 0.0, yaw fixo): uniforme, serve de motion
         //           detector baseline — row 0 warpada comparada com row 1 linear revela
         //           velocidade angular lateral (útil pra prever curva).
-        const TAN_K: f32 = 1.55_f32; // Warp aumentado: fovea center super densa (~1°/px no eixo)
+        const TAN_K: f32 = 1.25_f32; // Warp clássico — center-dense balanceado
         let tan_k_val = TAN_K.tan();
         for row in 0..2 {
             let fov_half = 90.0_f32.to_radians(); // Ambas rows agora 180°
@@ -666,11 +666,11 @@ impl VoxelWorld {
                         } else if hit_dist < 120.0 {
                             let mid = ((hit_dist - 30.0) / 90.0).clamp(0.0, 1.0);
                             55.0 - (mid * 55.0)
-                        } else if hit_dist < 300.0 {
-                            let far = ((hit_dist - 120.0) / 180.0).clamp(0.0, 1.0);
+                        } else if hit_dist < 800.0 {
+                            let far = ((hit_dist - 120.0) / 480.0).clamp(0.0, 1.0);
                             0.0 - (far * 25.0)
                         } else {
-                            let xfar = ((hit_dist - 300.0) / 300.0).clamp(0.0, 1.0);
+                            let xfar = ((hit_dist - 800.0) / 800.0).clamp(0.0, 1.0);
                             -25.0 - (xfar * 25.0)
                         }
                     },

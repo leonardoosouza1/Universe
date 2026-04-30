@@ -283,18 +283,27 @@ fn update_hud(
                         });
                     });
 
-                    // Retina Visual
-                    panel.spawn((Text::new("CÓRTEX (L | R) Muro Sup | Chão Inf"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::WHITE)))
+                    // Retina Visual (LIDAR 2000m)
+                    panel.spawn((Text::new("LIDAR 2000m (Ciano=Longe, Vermelho=Perto)"), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 1.0))))
                          .insert(Node { margin: UiRect::top(Val::Px(12.0)), ..default() });
-                         
                     panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(30.0), flex_direction: FlexDirection::Column, margin: UiRect::top(Val::Px(4.0)), ..default() }).with_children(|retina_col| {
-                        // Linha 1: Horizonte (Muros), Linha 0: Chão (Asfalto/Grama)
-                        for row in (0..2).rev() { 
+                        for row in (0..2).rev() {
                             retina_col.spawn(Node { width: Val::Percent(100.0), height: Val::Percent(50.0), flex_direction: FlexDirection::Row, ..default() }).with_children(|retina_row| {
                                 for x in 0..32 {
                                     let i = (row * 32) + x;
-                                    let brightness = ((r.visual_cortex[i] as f32 + 128.0) / 255.0).clamp(0.0, 1.0);
-                                    let color = Color::srgb(brightness, brightness, brightness);
+                                    let v = r.visual_cortex[i] as f32;
+                                    let color = if v >= 45.0 {
+                                        let intensity = ((v - 45.0) / 82.0).clamp(0.0, 1.0);
+                                        Color::srgb(0.5 + 0.5 * intensity, 0.0, 0.0)
+                                    } else if v >= 10.0 {
+                                        Color::srgb(0.8, 0.6, 0.0)
+                                    } else if v >= -60.0 {
+                                        let intensity = ((v + 60.0) / 70.0).clamp(0.0, 1.0);
+                                        Color::srgb(0.0, 0.3 + 0.7 * intensity, 0.5 + 0.5 * intensity)
+                                    } else {
+                                        let intensity = ((v + 128.0) / 68.0).clamp(0.0, 1.0);
+                                        Color::srgb(intensity * 0.15, intensity * 0.15, intensity * 0.2)
+                                    };
                                     retina_row.spawn(Node {
                                         width: Val::Percent(100.0 / 32.0),
                                         height: Val::Percent(100.0),

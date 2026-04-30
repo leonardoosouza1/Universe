@@ -357,8 +357,7 @@ pub(super) fn evolution_pipeline(
                 fast_scale: r.engine.instinct_layer.weight_scale,
                 // Option 4: FloatLinear runtime → lossy quantize to i8 for DNA storage.
                 // Clamp range [-2,2] → i8 [-127,127].
-                slow_weights: r.engine.slow_brain.layer.weights.iter()
-                    .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect(),
+                slow_weights: r.engine.slow_brain.layer.weights.clone(),
                 slow_scale: 1.0,
                 fitness: new_fit,
                 scar_mask,
@@ -368,6 +367,9 @@ pub(super) fn evolution_pipeline(
                 curiosity_mean: r.engine.metabolism.mean_curiosity(),
                 // Tier 6.3 LITE: propaga morpho genes do racer vivo pra elite pool.
                 morpho: r.morpho,
+                cortex_l2: r.engine.cortex_l2.weights.clone(),
+                cortex_l3: r.engine.cortex_l3.weights.clone(),
+                car_model_idx: r.car_model_idx,
                 // v11: captura knots do KAN output head pra inheritance entre gens.
                 kan_knots: r.kan_out.knots,
             };
@@ -704,11 +706,12 @@ pub(super) fn evolution_pipeline(
                 let weights = best.engine.instinct_layer.weights.clone();
                 let scale = best.engine.instinct_layer.weight_scale;
                 // Option 4: FloatLinear → lossy i8 encoding at scale 63.5 for DNA storage.
-                let slow_weights: Vec<i8> = best.engine.slow_brain.layer.weights.iter()
-                    .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect();
+                let slow_weights: Vec<f32> = best.engine.slow_brain.layer.weights.clone();
                 let slow_scale: f32 = 1.0;
                 race.best_weights = Some(weights.clone());
+                race.best_car_model_idx = Some(best.car_model_idx);
                 race.best_l2_weights = Some(best.engine.cortex_l2.weights.clone());
+                race.best_l3_weights = Some(best.engine.cortex_l3.weights.clone());
                 race.best_scale = scale;
                 race.best_slow_weights = Some(slow_weights.clone());
                 race.best_slow_scale = slow_scale;
@@ -747,10 +750,12 @@ pub(super) fn evolution_pipeline(
                 // V7: cortex_l2 também quantizado pra disk.
                 let l2_q: Vec<i8> = best.engine.cortex_l2.weights.iter()
                     .map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
+                let slow_weights_q: Vec<i8> = slow_weights.iter()
+                    .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect();
                 let _ = crate::evolution::dna_genesis::save_champion_dna_v7(
                     "CHAMPION.dna",
                     &weights_q, scale,
-                    &slow_weights, slow_scale,
+                    &slow_weights_q, slow_scale,
                     race.generation as u32,
                     race.seed as u32,
                     config.current_track().track_width,
@@ -781,6 +786,7 @@ pub(super) fn evolution_pipeline(
         // Limpar o peso do MVP legado (HARD RESET DE PESOS CORROMPIDOS)
         if race.hard_reset {
             race.best_weights = None;
+            race.best_car_model_idx = None;
             race.best_slow_weights = None;
             race.best_gate_weights = None;
             race.best_gate_bias = None;

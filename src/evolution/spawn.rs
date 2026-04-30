@@ -149,10 +149,15 @@ fn build_priming_weights() -> Vec<f32> {
     // A19 (V6): pre_brake e wall_imminent priming SEGURO (canais novos).
     // open_l/r/best_escape ficam sem priming pra evitar conflito de steer signals
     // — net evolui peso natural via mutation (ainda mais lento mas estável).
-    weights[2 * 128 + 28] = 4.0;
-    weights[0 * 128 + 28] = -3.0;
-    weights[2 * 128 + 44] = 5.0;
-    weights[0 * 128 + 44] = -4.0;
+    // Brain trace mostrou raw_thr SEMPRE +0.33. Cars nunca freiam.
+    // Bump 2x priming brake — força output 2 dominar quando perigo.
+    weights[2 * 128 + 28] = 10.0;  // pre_brake → brake forte
+    weights[0 * 128 + 28] = -8.0;  // pre_brake → corta throttle
+    weights[2 * 128 + 44] = 12.0;  // wall_imminent → brake muito forte
+    weights[0 * 128 + 44] = -10.0; // wall_imminent → throttle off
+    // Plus retina center ahead (ch 3, 4 fovea center pooled bins) → brake.
+    weights[2 * 128 + 3] = 6.0;
+    weights[2 * 128 + 4] = 6.0;
     // A22: approach detection signed. Parede VINDO esquerda → steer DIREITA.
     // ch 114 high (positivo) = aproximação esquerda → output 1 positivo (right).
     weights[1 * 128 + 114] = 4.0;
@@ -244,9 +249,11 @@ pub fn spawn_swarm(
             }
             current_best_s = dna.fast_scale;
             if let Some(sw) = dna.slow_weights {
-                current_best_slow_w = Some(sw);
+                // v10: RESTAURANDO herança do slow_brain. 
+                current_best_slow_w = Some(sw.iter().map(|&w| w as f32 / 63.5).collect());
                 current_best_slow_s = dna.slow_scale;
             }
+
             // Tier 6.3 LITE: absorve morpho genes serializados.
             current_best_morpho = dna.morpho;
             // Tier 6.4 LITE: absorve hypernet seed (default inactive p/ arquivos antigos).
@@ -496,11 +503,11 @@ pub fn spawn_swarm(
                 // ≈ ±0.008 magnitude que sobrescrevia weights treinados f32 (~±2.0)
                 // destruindo a rede no spawn. Hypernet ficará pra V2 com basis f32 real.
                 let _ = current_best_hypernet;
-                if let Some(ref champion_slow) = current_best_slow_w {
-                    // Option 4: i8 DNA → f32 FloatLinear weights (decode factor 63.5).
-                    let exact_slow: Vec<f32> = champion_slow.iter().map(|&w| w as f32 / 63.5).collect();
-                    engine.slow_brain.layer.set_weights(&exact_slow);
-                    let _ = current_best_slow_s;
+                if let Some(ref l3) = race.best_l3_weights {
+                    engine.cortex_l3.set_weights(l3);
+                }
+                if let Some(ref slow) = race.best_slow_weights {
+                    engine.slow_brain.layer.set_weights(slow);
                 }
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
@@ -529,8 +536,16 @@ pub fn spawn_swarm(
                         *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
                     }
                 }
-                // Mutate cortex_l2 (Layer 2 — deep composition).
                 for w in engine.cortex_l2.weights.iter_mut() {
+                    if rng.random_bool(rate_boosted) {
+                        let u1 = (rng.random::<f32>()).max(1e-7);
+                        let u2 = rng.random::<f32>();
+                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
+                    }
+                }
+                // Mutate cortex_l3 (Layer 3 — deep abstract).
+                for w in engine.cortex_l3.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
                         let u1 = (rng.random::<f32>()).max(1e-7);
                         let u2 = rng.random::<f32>();
@@ -619,8 +634,10 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = elite.fast_weights.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(elite.fast_scale);
-                let exact_slow: Vec<f32> = elite.slow_weights.iter().map(|&w| w as f32 / 63.5).collect();
-                engine.slow_brain.layer.set_weights(&exact_slow);
+                
+                engine.slow_brain.layer.set_weights(&elite.slow_weights);
+                    engine.cortex_l2.set_weights(&elite.cortex_l2);
+                    engine.cortex_l3.set_weights(&elite.cortex_l3);
                 let _ = elite.slow_scale;
                 // Tier 4.2: clone herda 10% do estado hormonal médio do único parent.
                 epigenetic_parents = Some((elite.cortisol_mean, elite.dopamine_mean, elite.curiosity_mean));
@@ -775,6 +792,12 @@ pub fn spawn_swarm(
                     let exact_slow: Vec<f32> = best_slow.iter().map(|&w| w as f32 / 63.5).collect();
                     engine.slow_brain.layer.set_weights(&exact_slow);
                 }
+                if let Some(ref l2) = race.best_l2_weights {
+                    engine.cortex_l2.set_weights(l2);
+                }
+                if let Some(ref l3) = race.best_l3_weights {
+                    engine.cortex_l3.set_weights(l3);
+                }
             } else {
                 let mut mutated: Vec<f32> = best.iter().enumerate().map(|(idx, &w)| {
                     // TIER 4.4: zona protegida isenta de mutação.
@@ -900,7 +923,19 @@ pub fn spawn_swarm(
             let progress = world.get_track_progress(p.x, p.z);
             (p, Quat::from_rotation_y(-angle), progress)
         };
-        let (racer_entity, car_model) = match i % 5 {
+        let elite_range_end = 1 + race.elite_pool.len();
+        let mut spawn_model_idx = i % 5;
+        if slot_is_champion {
+            if let Some(idx) = race.best_car_model_idx {
+                spawn_model_idx = idx as usize;
+            }
+        } else if i >= 1 && i < elite_range_end {
+            if i - 1 < race.elite_pool.len() {
+                let elite = &race.elite_pool[i - 1];
+                spawn_model_idx = elite.car_model_idx as usize;
+            }
+        }
+        let (racer_entity, car_model) = match spawn_model_idx % 5 {
             0 => (crate::prefabs::spawn_porsche_911_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[0]),
             1 => (crate::prefabs::spawn_ferrari_296_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[1]),
             2 => (crate::prefabs::spawn_mclaren_720s_gt3(commands, Transform::from_translation(spawn_pos).with_rotation(spawn_rot), &mut *meshes, racer_mat.clone()), car_models[2]),
@@ -912,6 +947,7 @@ pub fn spawn_swarm(
             Racer {
                 name: if i == 0 && current_best_w.is_some() { "👑 CHAMPION".to_string() } else { format!("{}-{}", names[i % names.len()], rng.random_range(10..99)) },
                 car_model: car_model.to_string(),
+                car_model_idx: (spawn_model_idx % 5) as u8,
                 engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
                 pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 100.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; 64],
@@ -994,6 +1030,7 @@ pub fn spawn_swarm(
                     }
                     head
                 },
+                stable_seed: if i == 0 { 42 } else { rng.random::<u64>() },
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

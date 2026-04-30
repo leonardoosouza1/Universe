@@ -620,7 +620,7 @@ pub(super) fn update_racers(
 
         // --- RUÍDO NOTURNO E PÂNICO: Incerteza sensorial ---
         use rand::prelude::*;
-        let mut rng = rand::rng();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
 
         if env.is_night() || panic_level > 0.0 {
             let magnitude = (15.0 + panic_level * 50.0) as i8;
@@ -688,7 +688,7 @@ pub(super) fn update_racers(
         if comp_stress > 0 {
             let noise_amplitude = (comp_stress as f32 / 127.0) * 5.0;
             for i in 0..16 {
-                let noise = (rand::random::<f32>() - 0.5) * noise_amplitude;
+                let noise = (rng.random::<f32>() - 0.5) * noise_amplitude;
                 sensory_wave[i] = (sensory_wave[i] as f32 + noise).clamp(-128.0, 127.0) as i8;
             }
         }
@@ -863,7 +863,7 @@ pub(super) fn update_racers(
                            else { 0 };
 
         // --- SKIDMARKS DE DRIFT ---
-        if is_drifting && rand::random::<f32>() < 0.15 { // rate limit to ~10 FPS
+        if is_drifting && rng.random::<f32>() < 0.15 { // rate limit to ~10 FPS
             let (mark_mesh, mark_mat) = skidmark_cache.get_or_insert_with(|| {
                 (
                     meshes.add(Rectangle::new(1.0, 1.0)),
@@ -1180,20 +1180,18 @@ pub(super) fn update_racers(
         // Removido survival_throttle 0.3 mínimo: tirava pressão seletiva sobre aprender throttle.
         // KAN output head: spline suave por canal antes do clamp final — elimina saturação ±1
         // hard do raw logit ([-2,2] esperado) e dá curva evoluível por carro.
-        let neural_throttle = intent[0]; // KAN disabled — passthrough
+        let neural_throttle = racer.kan_out.eval(0, intent[0]);
         let base_pedal = ((neural_throttle + 1.0) * 0.5).clamp(0.0, 1.0); // Remap [-1,1] → [0,1]
 
-        // SLOW BRAIN MODULATION DISABLED — user report "otimização reconstrói
-        // cérebro bugado". Cars usam puro cortex output sem System 2 distortion.
-        // Pra reativar: descomentar slow.* abaixo e remover constants.
-        let _slow = &racer.engine.slow_brain.output;
-        let aggression: f32 = 0.0;
-        let throttle_cap: f32 = 1.0;
+        // SLOW BRAIN MODULATION RE-ENABLED — System 2 active.
+        let slow = &racer.engine.slow_brain.output;
+        let aggression: f32 = slow[0] * 0.5;                // Bias [-0.5, 0.5]
+        let throttle_cap: f32 = 1.0 - slow[1].max(0.0) * 0.8; // Range [0.2, 1.0], Neutral at 0.0
+        let risk_damp: f32 = slow[2].max(0.0) * 0.5;         // Range [0.0, 0.5], Neutral at 0.0
+        let steer_bias: f32 = slow[3] * 0.15;               // Bias [-0.15, 0.15]
+        let brake_anticip: f32 = slow[4].max(0.0) * 0.5;    // Range [0.0, 0.5], Neutral at 0.0
+        let line_hint: f32 = slow[5] * 0.2;                 // Bias [-0.2, 0.2]
         let cortisol = racer.engine.metabolism.risk_aversion();
-        let risk_damp: f32 = (cortisol * 0.3).min(0.3);
-        let steer_bias: f32 = 0.0;
-        let brake_anticip: f32 = 0.0;
-        let line_hint: f32 = 0.0;
 
         // Tier 3.2: medo freia (throttle -30% max) e suaviza volante (steer -20% max).
         let cortisol_throttle_mult = 1.0 - cortisol * 0.3;
@@ -1201,7 +1199,7 @@ pub(super) fn update_racers(
         let pedal_intent = (base_pedal * (1.0 + aggression * 0.5) * cortisol_throttle_mult)
             .clamp(0.0, throttle_cap);
         // KAN spline no steer raw ANTES do smoothing (v8) — suaviza curva por carro evoluído.
-        let steer_spline = intent[1]; // KAN disabled — passthrough
+        let steer_spline = racer.kan_out.eval(1, intent[1]);
         // Gain compensation: cérebro fala em "unidades físicas reais" — multiplicamos
         // pelo inverso de dynamic_steer_limit (cap 2×) ANTES do clamp, p/ que saturação
         // do neural ±1 corresponda a full-lock verdadeiro em qualquer velocidade.
@@ -1220,7 +1218,7 @@ pub(super) fn update_racers(
 
         // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2).
         // KAN spline no brake raw antes do threshold — mesma razão do throttle/steer.
-        let brake_spline = intent[2]; // KAN disabled — passthrough
+        let brake_spline = racer.kan_out.eval(2, intent[2]);
         // Brake symmetric: dead-zone central ±0.05 em vez de threshold assimétrico 0.2.
         // Permite modulação fina mas evita brake-constante de carros freshborn (spline≈0).
         // Ver melhorias/gain-asymmetry.md §Assimetria de throttle → brake.
@@ -1335,7 +1333,7 @@ pub(super) fn update_racers(
         let curiosity = racer.engine.metabolism.exploration_drive();
         let exploration_steer = if curiosity > 0.7 && racer.stagnation > 60.0 && !is_reversing {
             use rand::prelude::*;
-            let mut rng = rand::rng();
+            let mut rng = rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
             // Box-Muller aproximado via soma de 4 uniformes (determinístico-friendly,
             // evita dep em rand_distr). Média 0, std ≈ 0.58.
             let u: f32 = (0..4).map(|_| rng.random::<f32>() - 0.5).sum();
@@ -1692,7 +1690,7 @@ pub(super) fn update_racers(
                 let drift_bonus = avg_slip_angle.min(0.6) * track_velocity * alignment * 0.08;
                 racer.joy_integral += drift_bonus * dt;
                 // Fumaça visível: dobra chance de skidmark durante clean drift.
-                if rand::random::<f32>() < 0.25 {
+                if rng.random::<f32>() < 0.25 {
                     racer.tire_temp = (racer.tire_temp + 0.02 * dt).min(1.0);
                 }
             }

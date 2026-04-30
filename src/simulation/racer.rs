@@ -111,6 +111,7 @@ impl DeathReason {
 pub struct Racer {
     pub name: String,
     pub car_model: String,
+    pub car_model_idx: u8,
     pub engine: SovereignEngine,
     pub is_dead: bool,
     pub amplitude: f32,
@@ -197,6 +198,8 @@ pub struct Racer {
     // --- KAN output head: spline suave por output (throttle/steer/brake) ---
     /// WHY: elimina zig-zag ±1 saturado do clamp duro; evoluído via mutate_spline_knots.
     pub kan_out: crate::kan::KanOutputHead,
+    /// Seed estável para PRNG local (ruído sensorial/exploração determinístico).
+    pub stable_seed: u64,
 }
 
 /// Frame de diagnóstico do cérebro do racer.

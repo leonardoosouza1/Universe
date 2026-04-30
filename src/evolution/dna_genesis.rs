@@ -132,8 +132,10 @@ impl MorphoGenes {
 pub struct EliteDna {
     pub fast_weights: Vec<f32>, // f32 runtime; quantize só ao salvar DNA
     pub fast_scale: f32,
-    pub slow_weights: Vec<i8>,
+    pub slow_weights: Vec<f32>,
     pub slow_scale: f32,
+    pub cortex_l2: Vec<f32>,
+    pub cortex_l3: Vec<f32>,
     pub fitness: f32,
     /// Runtime-only. Comprimento == fast_weights.len(). TTL por peso (0 = livre).
     pub scar_mask: Vec<u8>,
@@ -146,6 +148,7 @@ pub struct EliteDna {
     pub curiosity_mean: f32,
     // --- Tier 6.3 LITE: morphological co-evolution (serializado em .dna v3.1) ---
     pub morpho: MorphoGenes,
+    pub car_model_idx: u8,
     /// v11: KAN output head knots (runtime-only, não serializa em .dna).
     /// 3 outputs × KAN_OUT_KNOTS cada. Preserva spline aprendido entre gens.
     pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; 3],
@@ -477,6 +480,7 @@ pub struct DnaPayload {
     pub fast_scale: f32,
     pub slow_weights: Option<Vec<i8>>,
     pub slow_scale: f32,
+    
     pub generation: u32,
     pub seed: u32,
     pub track_width: f32,
@@ -484,6 +488,7 @@ pub struct DnaPayload {
     pub version: u16,
     // --- Tier 6.3 LITE: defaults pra arquivos antigos sem tail morpho ---
     pub morpho: MorphoGenes,
+    pub car_model_idx: u8,
     // --- Tier 6.4 LITE: hypernet seed (inactive default p/ backward-compat) ---
     pub hypernet: HypernetSeed,
     // --- v3.3 / V4 META tail: KAN output-head knots (preserva spline aprendido) ---
@@ -498,6 +503,7 @@ pub struct DnaPayload {
     pub cortex_raw: Option<Vec<i8>>,
     // --- v7 / TLV CL2W chunk: cortex layer 2 weights (64×32=2048 i8 quantizado 63.5).
     pub cortex_l2_raw: Option<Vec<i8>>,
+    pub cortex_l3_raw: Option<Vec<i8>>,
 }
 
 pub fn save_champion_dna(
@@ -710,6 +716,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                             let cortex_l2_raw: Option<Vec<i8>> = payload.find_chunk(TAG_CORTEX_L2)
                                 .map(|c| c.data.iter().map(|&b| b as i8).collect());
                             return Some(DnaPayload {
+                car_model_idx: 0,
                                 fast_weights, fast_scale,
                                 slow_weights, slow_scale,
                                 generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
@@ -717,6 +724,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                                 cortex_dct,
                                 cortex_raw,
                                 cortex_l2_raw,
+                                cortex_l3_raw: None,
                             });
                         }
                     }
@@ -771,6 +779,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             default_kan_knots()
         };
         return Some(DnaPayload {
+                car_model_idx: 0,
             fast_weights, fast_scale,
             slow_weights: Some(slow_weights), slow_scale,
             generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
@@ -778,6 +787,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             cortex_dct: None,
             cortex_raw: None,
             cortex_l2_raw: None,
+            cortex_l3_raw: None,
         });
         }
     }
@@ -795,6 +805,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             (None, 1.0, 1u16)
         };
         return Some(DnaPayload {
+                car_model_idx: 0,
             fast_weights, fast_scale,
             slow_weights, slow_scale,
             generation: 0, seed: 0, track_width: 0.0, fitness: 0.0, version,
@@ -805,6 +816,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             cortex_dct: None,
             cortex_raw: None,
             cortex_l2_raw: None,
+            cortex_l3_raw: None,
         });
     }
 
