@@ -550,7 +550,7 @@ impl VoxelWorld {
         //   Row 1 = PERIFÉRICA 180° LINEAR (pitch 0.0, yaw fixo): uniforme, serve de motion
         //           detector baseline — row 0 warpada comparada com row 1 linear revela
         //           velocidade angular lateral (útil pra prever curva).
-        const TAN_K: f32 = 1.25_f32; // Warp strength: maior k → centro mais denso
+        const TAN_K: f32 = 1.55_f32; // Warp aumentado: fovea center super densa (~1°/px no eixo)
         let tan_k_val = TAN_K.tan();
         for row in 0..2 {
             let fov_half = 90.0_f32.to_radians(); // Ambas rows agora 180°
@@ -575,7 +575,7 @@ impl VoxelWorld {
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
                 
                 let mut hit_voxel = VoxelType::Road;
-                let mut hit_dist = 600.0;
+                let mut hit_dist = 800.0;
                 
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
                 
@@ -609,7 +609,7 @@ impl VoxelWorld {
                 
                 // Alcance ~400m (134 blocos × 3m cell). Profundidade aumentada — modelo
                 // antecipa curvas longas em retas largas a 80m/s antes (era 300m).
-                for _ in 0..200 {
+                for _ in 0..267 {
                     if side_dist_x < side_dist_y {
                         side_dist_x += delta_dist_x; map_x += step_x; side = 0;
                     } else {
@@ -635,7 +635,7 @@ impl VoxelWorld {
                     } else {
                         hit_dist = current_dist;
                     }
-                } else if dir_y < -0.001 && dist_to_ground <= 600.0 {
+                } else if dir_y < -0.001 && dist_to_ground <= 800.0 {
                     // Sem paredes, mas bateu no chão
                     hit_dist = dist_to_ground;
                     let hit_px = eye_pos.x + dir_x * hit_dist;
@@ -643,7 +643,7 @@ impl VoxelWorld {
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
                 }
                 
-                let depth_fade = (hit_dist / 600.0).clamp(0.0, 1.0);
+                let depth_fade = (hit_dist / 800.0).clamp(0.0, 1.0);
 
                 // --- VISÃO ABSOLUTA ---
                 // Para que o modelo NUNCA confunda uma parede longe com a pista perto.

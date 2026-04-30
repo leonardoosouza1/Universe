@@ -574,22 +574,33 @@ pub(super) fn update_racers(
         for i in 48..52 { sensory_wave[i] = trapped_i8; }
         sensory_wave[93] = dark_center_i8;
 
-        // --- FLUXO ÓPTICO TEMPORAL (delta entre frames) ---
-        // Mede variação entre retina atual e anterior, por metade. Sinal de "coisa
-        // aproximando". Canais 83 (esquerda) e 84 (direita).
+        // --- FLUXO ÓPTICO + APPROACH DETECTION ---
+        // Motion sums (ch 83/84) — qualquer movimento.
+        // Approach signed (ch 114/115) — parede APROXIMANDO de fora pra centro.
+        // Pixel value SOBE = wall ficando mais próximo (perto = positivo retina).
+        // ΔV signed em hemisfério: + = aproximando, - = afastando.
         let mut motion_left: i32 = 0;
         let mut motion_right: i32 = 0;
+        let mut approach_left: i32 = 0;   // delta signed sum (positivo = parede vindo)
+        let mut approach_right: i32 = 0;
         for i in 0..16 {
-            motion_left += (retina_binocular[i] as i32 - racer.visual_cortex[i] as i32).abs();
-            motion_left += (retina_binocular[32 + i] as i32 - racer.visual_cortex[32 + i] as i32).abs();
+            let dr_f = retina_binocular[i] as i32 - racer.visual_cortex[i] as i32;
+            let dr_p = retina_binocular[32 + i] as i32 - racer.visual_cortex[32 + i] as i32;
+            motion_left += dr_f.abs() + dr_p.abs();
+            // Periph LEFT: pixel value subindo = parede aproximando lateral esquerda.
+            approach_left += dr_p;
         }
         for i in 16..32 {
-            motion_right += (retina_binocular[i] as i32 - racer.visual_cortex[i] as i32).abs();
-            motion_right += (retina_binocular[32 + i] as i32 - racer.visual_cortex[32 + i] as i32).abs();
+            let dr_f = retina_binocular[i] as i32 - racer.visual_cortex[i] as i32;
+            let dr_p = retina_binocular[32 + i] as i32 - racer.visual_cortex[32 + i] as i32;
+            motion_right += dr_f.abs() + dr_p.abs();
+            approach_right += dr_p;
         }
-        // 32 pixels × max delta 255 ≈ 8160. Normaliza para [0,127].
         sensory_wave[83] = ((motion_left / 64).min(127)) as i8;
         sensory_wave[84] = ((motion_right / 64).min(127)) as i8;
+        // Approach signed: scale 16 px × delta±255 = ±4080. Norm /32 → [-127, 127].
+        sensory_wave[114] = (approach_left / 32).clamp(-127, 127) as i8;
+        sensory_wave[115] = (approach_right / 32).clamp(-127, 127) as i8;
 
         racer.visual_cortex = retina_binocular;
 
@@ -1169,26 +1180,20 @@ pub(super) fn update_racers(
         // Removido survival_throttle 0.3 mínimo: tirava pressão seletiva sobre aprender throttle.
         // KAN output head: spline suave por canal antes do clamp final — elimina saturação ±1
         // hard do raw logit ([-2,2] esperado) e dá curva evoluível por carro.
-        let neural_throttle = racer.kan_out.eval(0, intent[0]);
+        let neural_throttle = intent[0]; // KAN disabled — passthrough
         let base_pedal = ((neural_throttle + 1.0) * 0.5).clamp(0.0, 1.0); // Remap [-1,1] → [0,1]
 
-        // --- MODULAÇÃO DO SLOW BRAIN (System 2 sussurra pro System 1) ---
-        // 8 outputs: aggression, throttle_cap, risk_damp, steer_bias, brake_anticip,
-        //            line_hint, mem0 (feedback recorrente via slow_input[26]), mem1 (reservado).
-        // Inicia neutro (outputs=0 → multiplicadores = 1.0). Evolução descobre uso.
-        let slow = &racer.engine.slow_brain.output;
-        let aggression = slow[0];                             // -1..+1
-        let throttle_cap = (1.0 + slow[1] * 0.3).clamp(0.5, 1.0); // 0.7..1.0
-        // Tier 3.2: cortisol intensifica defensividade — risk_damp amplificado até +30%
-        // (cap final 0.3 se mantém, mas baseline sobe com medo sustentado).
+        // SLOW BRAIN MODULATION DISABLED — user report "otimização reconstrói
+        // cérebro bugado". Cars usam puro cortex output sem System 2 distortion.
+        // Pra reativar: descomentar slow.* abaixo e remover constants.
+        let _slow = &racer.engine.slow_brain.output;
+        let aggression: f32 = 0.0;
+        let throttle_cap: f32 = 1.0;
         let cortisol = racer.engine.metabolism.risk_aversion();
-        let risk_damp = (slow[2].max(0.0) + cortisol * 0.3).min(0.3); // 0..0.3
-        // slow[3..5] amplitudes BAIXAS inicialmente — pesos random injetam ruído no steer.
-        // Evolução pode amplificar via learning rate (outputs saturam +1/-1 quando útil).
-        // Começar pequeno evita sabotar gen 0-3 antes da seleção descobrir a função.
-        let steer_bias = slow[3].clamp(-1.0, 1.0) * 0.12;     // pre-turn bias (±0.12)
-        let brake_anticip = slow[4].max(0.0) * 0.20;          // pre-brake (0..0.20)
-        let line_hint = slow[5].clamp(-1.0, 1.0) * 0.06;      // apex pick (±0.06)
+        let risk_damp: f32 = (cortisol * 0.3).min(0.3);
+        let steer_bias: f32 = 0.0;
+        let brake_anticip: f32 = 0.0;
+        let line_hint: f32 = 0.0;
 
         // Tier 3.2: medo freia (throttle -30% max) e suaviza volante (steer -20% max).
         let cortisol_throttle_mult = 1.0 - cortisol * 0.3;
@@ -1196,7 +1201,7 @@ pub(super) fn update_racers(
         let pedal_intent = (base_pedal * (1.0 + aggression * 0.5) * cortisol_throttle_mult)
             .clamp(0.0, throttle_cap);
         // KAN spline no steer raw ANTES do smoothing (v8) — suaviza curva por carro evoluído.
-        let steer_spline = racer.kan_out.eval(1, intent[1]);
+        let steer_spline = intent[1]; // KAN disabled — passthrough
         // Gain compensation: cérebro fala em "unidades físicas reais" — multiplicamos
         // pelo inverso de dynamic_steer_limit (cap 2×) ANTES do clamp, p/ que saturação
         // do neural ±1 corresponda a full-lock verdadeiro em qualquer velocidade.
@@ -1215,7 +1220,7 @@ pub(super) fn update_racers(
 
         // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2).
         // KAN spline no brake raw antes do threshold — mesma razão do throttle/steer.
-        let brake_spline = racer.kan_out.eval(2, intent[2]);
+        let brake_spline = intent[2]; // KAN disabled — passthrough
         // Brake symmetric: dead-zone central ±0.05 em vez de threshold assimétrico 0.2.
         // Permite modulação fina mas evita brake-constante de carros freshborn (spline≈0).
         // Ver melhorias/gain-asymmetry.md §Assimetria de throttle → brake.

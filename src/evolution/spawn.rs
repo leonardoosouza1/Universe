@@ -153,6 +153,11 @@ fn build_priming_weights() -> Vec<f32> {
     weights[0 * 128 + 28] = -3.0;
     weights[2 * 128 + 44] = 5.0;
     weights[0 * 128 + 44] = -4.0;
+    // A22: approach detection signed. Parede VINDO esquerda → steer DIREITA.
+    // ch 114 high (positivo) = aproximação esquerda → output 1 positivo (right).
+    weights[1 * 128 + 114] = 4.0;
+    // ch 115 high = aproximação direita → output 1 negativo (left).
+    weights[1 * 128 + 115] = -4.0;
 
     // A20: trapped_score (ch 48..51) → ré como OPÇÃO (não force).
     for i in 48..52 {
