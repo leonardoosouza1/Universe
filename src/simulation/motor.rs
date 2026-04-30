@@ -1271,29 +1271,55 @@ pub(super) fn update_racers(
         };
         let combined_brake = (raw_brake + brake_anticip).clamp(0.0, 1.0);
         let mut brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
+        let mut pedal_intent_override: Option<f32> = None;
 
-        // SENTINEL BRAKE REFLEX — non-learnable hard brake.
-        // Inspirado no Sentinel do SACI: gating físico sobrepõe decisão neural
-        // quando perigo é fisicamente inescapável. Ver melhorias/gain-asymmetry.md.
-        // Disparo restrito: carro ATIVAMENTE acelerando contra parede (pedal>0.4)
-        // em speed alto com TTC curto. Evita amplificar stagnation em cruising.
-        #[cfg(feature = "sentinel_brake")]
+        // SENTINEL ANTI-COLLISION (ALWAYS-ON) — Tesla AEB-like emergency brake.
+        // Regra física: carro NÃO PODE bater. Se TTC < threshold, force brake +
+        // throttle cut. Não depende de DNA, é pure geometric prediction.
+        //
+        // Multi-tier severity:
+        //   TTC < 0.3s → brake 1.0 + throttle 0 (last resort)
+        //   TTC < 0.6s → brake 0.8 (preemptive)
+        //   TTC < 1.0s + closing → brake 0.5 (early warning)
         {
-            const SENTINEL_TTC: f32 = 0.5;
-            const SENTINEL_MIN_SPEED: f32 = 10.0;
-            const SENTINEL_MIN_PEDAL: f32 = 0.4;
-            if speed > SENTINEL_MIN_SPEED && pedal_intent > SENTINEL_MIN_PEDAL {
-                let fwd = world.raycast(pos.x, pos.z, racer.phase, 30.0);
+            const SENTINEL_TTC_HARD: f32 = 0.3;
+            const SENTINEL_TTC_BRAKE: f32 = 0.6;
+            const SENTINEL_TTC_WARN: f32 = 1.0;
+            const SENTINEL_MIN_SPEED: f32 = 3.0; // m/s ~ 11 km/h
+            if speed > SENTINEL_MIN_SPEED {
+                let fwd = world.raycast(pos.x, pos.z, racer.phase, 50.0);
                 let ttc = fwd / speed;
-                if ttc < SENTINEL_TTC {
-                    let severity = (1.0 - ttc / SENTINEL_TTC).clamp(0.0, 1.0);
-                    brake_intent = brake_intent.max(severity);
+                if ttc < SENTINEL_TTC_HARD {
+                    brake_intent = 1.0;
+                    pedal_intent_override = Some(0.0);
+                } else if ttc < SENTINEL_TTC_BRAKE {
+                    let severity = 1.0 - (ttc - SENTINEL_TTC_HARD)
+                        / (SENTINEL_TTC_BRAKE - SENTINEL_TTC_HARD);
+                    brake_intent = brake_intent.max(0.8 * severity);
+                } else if ttc < SENTINEL_TTC_WARN {
+                    let severity = 1.0 - (ttc - SENTINEL_TTC_BRAKE)
+                        / (SENTINEL_TTC_WARN - SENTINEL_TTC_BRAKE);
+                    brake_intent = brake_intent.max(0.5 * severity);
+                }
+            }
+            // LATERAL anti-collision: parede side em <1.5m + speed alto → brake.
+            if speed > SENTINEL_MIN_SPEED {
+                let lat_l = world.raycast(pos.x, pos.z,
+                    racer.phase + std::f32::consts::FRAC_PI_2, 10.0);
+                let lat_r = world.raycast(pos.x, pos.z,
+                    racer.phase - std::f32::consts::FRAC_PI_2, 10.0);
+                let lat_min = lat_l.min(lat_r);
+                if lat_min < 1.5 {
+                    let severity = 1.0 - lat_min / 1.5;
+                    brake_intent = brake_intent.max(0.4 * severity);
                 }
             }
         }
 
-        // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal
-        let final_pedal_intent = (pedal_intent - brake_intent).max(0.0);
+        // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal.
+        // Sentinel hard override (TTC <0.3s) força pedal=0.
+        let pedal_after_sentinel = pedal_intent_override.unwrap_or(pedal_intent);
+        let final_pedal_intent = (pedal_after_sentinel - brake_intent).max(0.0);
 
         // --- SISTEMA DE FUGA DE EMERGÊNCIA (ECAS) & STIGMERGY ---
         // Se a parede está perto (< 4m) na lateral, o reflexo físico FORÇA a roda pro lado oposto
@@ -1342,15 +1368,34 @@ pub(super) fn update_racers(
         let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 30.0);
         let safety_cap = (forward_wall_dist / SAFE_DIST).clamp(0.0, 1.0);
 
-        // --- SISTEMA DE RÉ DESATIVADO ---
-        // Removido: a ré virou muleta (carros ficavam em loop frente/ré).
-        // Agora: bateu = morre. Pressão seletiva máxima contra colisões.
-        // Mantemos as constantes/campos pra facilitar reabilitar no futuro se necessário.
-        let is_reversing = false;
-        let _ = (REVERSE_TRIGGER_DIST, REVERSE_MIN_DURATION, REVERSE_MAX_DURATION,
-                 REVERSE_EXIT_CLEAR, REVERSE_PEDAL, POST_REVERSE_LOCKOUT);
-        racer.reverse_timer = 0.0;
-        racer.post_reverse_lockout = 0.0;
+        // --- RÉ CONTROLADA (3-point turn em pista narrow) ---
+        // User: "saber virar e dar ré pra ajustar ângulo se preciso".
+        // Trigger ESTRITO: parede frontal <2.5m + lateral L+R bloqueada (<3m
+        // ambos lados) + speed quase zero + 1s+ stuck. Evita loop frente/ré.
+        let lat_l_check = world.raycast(pos.x, pos.z,
+            racer.phase + std::f32::consts::FRAC_PI_2, 10.0);
+        let lat_r_check = world.raycast(pos.x, pos.z,
+            racer.phase - std::f32::consts::FRAC_PI_2, 10.0);
+        let both_lat_blocked = lat_l_check < 4.0 && lat_r_check < 4.0;
+        if racer.reverse_timer <= 0.0 && racer.post_reverse_lockout <= 0.0
+            && forward_wall_dist < REVERSE_TRIGGER_DIST
+            && both_lat_blocked
+            && speed < 1.5
+            && racer.stagnation > 60.0
+        {
+            racer.reverse_timer = REVERSE_MIN_DURATION;
+        }
+        if racer.reverse_timer > 0.0 {
+            racer.reverse_timer -= dt;
+            if forward_wall_dist > REVERSE_EXIT_CLEAR
+                || racer.reverse_timer > REVERSE_MAX_DURATION
+            {
+                racer.reverse_timer = 0.0;
+                racer.post_reverse_lockout = POST_REVERSE_LOCKOUT;
+            }
+        }
+        if racer.post_reverse_lockout > 0.0 { racer.post_reverse_lockout -= dt; }
+        let is_reversing = racer.reverse_timer > 0.0;
 
         // (canal 89 já foi setado antes do execute_cycle, usando o estado do frame anterior)
 
