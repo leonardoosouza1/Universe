@@ -9,11 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // Pitches negativos olham para baixo, positivos para cima.
 // eye_height=0.4m → ground_dist ≈ 0.4/|pitch| metros.
 // ============================================================================
-pub const RETINA_ROWS: usize = 4;
-pub const RETINA_COLS: usize = 32;
-pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 128
-/// [Row0=-0.08 chão~5m] [Row1=-0.04 perto~10m] [Row2=-0.01 médio~40m] [Row3=0.02 horizonte]
-pub const RETINA_PITCHES: [f32; RETINA_ROWS] = [-0.08, -0.04, -0.01, 0.02];
+pub const RETINA_ROWS: usize = 6;
+pub const RETINA_COLS: usize = 64;
+pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 384
+/// Retina HD v2 — 6 camadas de varredura vertical (resolução 2.8°/pixel horizontal):
+/// [Row0=-0.10 chão~4m] [Row1=-0.06 perto~7m] [Row2=-0.03 médio~13m]
+/// [Row3=-0.01 longe~40m] [Row4=0.01 horizonte] [Row5=0.03 céu/longe]
+pub const RETINA_PITCHES: [f32; RETINA_ROWS] = [-0.10, -0.06, -0.03, -0.01, 0.01, 0.03];
 
 /// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
 pub static NO_HOLES: AtomicBool = AtomicBool::new(false);

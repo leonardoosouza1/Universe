@@ -41,7 +41,7 @@ pub struct SlowBrain {
 impl SlowBrain {
     pub fn new() -> Self {
         Self {
-            layer: FloatLinear::new(32, 8),
+            layer: FloatLinear::new(48, 8),
             output: [0.0; 8],
             tick_counter: 0,
             tick_interval: 8,       // roda 1× a cada 8 ticks (~8Hz @ 64Hz) — contexto fresco
@@ -49,7 +49,7 @@ impl SlowBrain {
     }
 
     /// Injeta entrada agregada. Só recomputa se for tick de "córtex".
-    pub fn tick(&mut self, input: &[i8; 32]) {
+    pub fn tick(&mut self, input: &[i8; 48]) {
         self.tick_counter = self.tick_counter.wrapping_add(1);
         if self.tick_counter % self.tick_interval != 0 { return; }
         let raw = self.layer.forward(input);
@@ -75,9 +75,9 @@ impl SlowBrain {
 /// `cfc_state` é RUNTIME-ONLY — não persiste em .dna v3 (reset a cada spawn).
 pub struct SovereignEngine {
     pub metabolism: Metabolism,
-    pub instinct_layer: BitLinear,         // 128 → 64 (Layer 1, sensory mixing)
-    pub cortex_l2: crate::float_layers::FloatLinear,  // 64 → 32 (Layer 2, composição AND/OR)
-    pub cortex_l3: crate::float_layers::FloatLinear,  // 32 → 16 (Layer 3, deep abstract)
+    pub instinct_layer: BitLinear,         // 192 → 96 (Layer 1, sensory mixing)
+    pub cortex_l2: crate::float_layers::FloatLinear,  // 96 → 48 (Layer 2, composição AND/OR)
+    pub cortex_l3: crate::float_layers::FloatLinear,  // 48 → 24 (Layer 3, deep abstract)
     pub slow_brain: SlowBrain,
     pub heart_resonance: ResonantNode,
     pub cfc_state: CfCCell,
@@ -88,7 +88,7 @@ pub struct SovereignEngine {
     /// Tier 2.4: per-output-neuron phase-coherence tracker (dopamine-gated Hebbian).
     /// Incrementa para os top-K neurônios que disparam forte após cada forward;
     /// decay 0.99/tick; reset em evento de mielinização. RUNTIME-only.
-    pub resonance_coherence: [f32; 64],
+    pub resonance_coherence: [f32; 96],
     pub current_time: f32,
     pub active_actions: Vec<SplineNode>,
     pub temperature: f32,
@@ -126,41 +126,38 @@ impl SovereignEngine {
     pub fn new() -> Self {
         Self {
             metabolism: Metabolism::new(),
-            instinct_layer: BitLinear::new(128, 64),
+            instinct_layer: BitLinear::new(192, 96),
             cortex_l2: {
-                // Init: identity passthrough + small random perturbation. Cars começam
-                // funcionais (passa L1 raw) mas mutação tem semente pra evoluir composição.
-                let mut l = crate::float_layers::FloatLinear::new(64, 32);
+                let mut l = crate::float_layers::FloatLinear::new(96, 48);
                 let mut s: u64 = 0xC0DE_CAFE;
                 let mut next = || {
                     s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
                     ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
                 };
-                for i in 0..2048 { l.weights[i] = next() * 0.05; }
-                for i in 0..32 { l.weights[i * 64 + i] += 1.0; }
+                for i in 0..4608 { l.weights[i] = next() * 0.05; }
+                for i in 0..48 { l.weights[i * 96 + i] += 1.0; }
                 l
             },
             cortex_l3: {
-                // Layer 3: 32→16 abstract composition. Identity passthrough + small random.
-                let mut l = crate::float_layers::FloatLinear::new(32, 16);
+                let mut l = crate::float_layers::FloatLinear::new(48, 24);
                 let mut s: u64 = 0xDEAD_BEEF;
                 let mut next = || {
                     s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
                     ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
                 };
-                for i in 0..512 { l.weights[i] = next() * 0.05; }
-                for i in 0..16 { l.weights[i * 32 + i] += 1.0; }
+                for i in 0..1152 { l.weights[i] = next() * 0.05; }
+                for i in 0..24 { l.weights[i * 48 + i] += 1.0; }
                 l
             },
             slow_brain: SlowBrain::new(),
             heart_resonance: ResonantNode::new(1.0),
-            cfc_state: CfCCell::new(64),
-            kan_filters: SensoryPreFilter::new(128),
-            resonance_coherence: [0.0; 64],
+            cfc_state: CfCCell::new(96),
+            kan_filters: SensoryPreFilter::new(192),
+            resonance_coherence: [0.0; 96],
             current_time: 0.0,
             active_actions: Vec::new(),
             temperature: 1.0,
-            final_intent: vec![0.0; 64],
+            final_intent: vec![0.0; 96],
             champion_retina_snapshot: None,
             champion_action: None,
             predicted_retina: [0.0; RETINA_TOTAL],
@@ -293,18 +290,15 @@ impl SovereignEngine {
         //     os 128 canais ANTES do CfC. Cada canal aprende curva própria
         //     (log p/ wall_distance, sat p/ speed, step p/ grass, etc).
         //     Init identity (coeffs=1.0) → comportamento ≈ pré-KAN no gen 0.
-        let mut kan_wave = [0i8; 128];
+        let mut kan_wave = [0i8; 192];
         self.kan_filters.apply(sensory_wave, &mut kan_wave);
 
-        // 0b. CfC PRE-PROCESSOR (Tier 2.1): filtra retina [0..64] com memória
-        //    temporal sobre o sinal JÁ passado pelo KAN. Estado persiste entre
-        //    ticks (reset só em spawn/death). Canais 64..127 (internal/flow/
-        //    proprioceptivos) passam somente pelo KAN (sem CfC).
-        let mut filtered_wave = [0i8; 128];
+        // 0b. CfC PRE-PROCESSOR: filtra retina [0..96] com memória temporal.
+        let mut filtered_wave = [0i8; 192];
         filtered_wave.copy_from_slice(&kan_wave);
-        let mut filtered_retina = [0i8; 64];
-        self.cfc_state.update(&kan_wave[0..64], &mut filtered_retina, delta_t);
-        filtered_wave[0..64].copy_from_slice(&filtered_retina);
+        let mut filtered_retina = [0i8; 96];
+        self.cfc_state.update(&kan_wave[0..96], &mut filtered_retina, delta_t);
+        filtered_wave[0..96].copy_from_slice(&filtered_retina);
 
         // Tier 6.1 — Predictive coding como drive primário (brain-free baseline).
         // Compara retina atual (pós-KAN+CfC, normalizada [-1,1]) com a predição
@@ -327,18 +321,18 @@ impl SovereignEngine {
             self.predicted_retina[j] = 0.7 * self.predicted_retina[j] + 0.3 * current_retina_f[j];
         }
 
-        // Stage 3 (winner): 2-layer cortex L1 → tanh → L2.
+        // Stage 3: 2-layer cortex L1 → tanh → L2 (Retina HD v2: 192→96→48).
         let l1_raw = self.instinct_layer.forward(&filtered_wave);
-        let mut l1_act = [0i8; 64];
-        for (i, &v) in l1_raw.iter().enumerate().take(64) {
+        let mut l1_act = [0i8; 96];
+        for (i, &v) in l1_raw.iter().enumerate().take(96) {
             l1_act[i] = ((v.tanh() * 127.0).clamp(-127.0, 127.0)) as i8;
         }
         let l2_raw = self.cortex_l2.forward(&l1_act);
-        let mut final_intent = [0.0f32; 64];
-        for (i, &val) in l2_raw.iter().enumerate().take(32) {
+        let mut final_intent = [0.0f32; 96];
+        for (i, &val) in l2_raw.iter().enumerate().take(48) {
             final_intent[i] = (val * 2.0).tanh();
         }
-        for (i, &val) in l1_raw.iter().enumerate().skip(32).take(32) {
+        for (i, &val) in l1_raw.iter().enumerate().skip(48).take(48) {
             final_intent[i] = (val * 2.0).tanh();
         }
         self.final_intent = final_intent.to_vec();

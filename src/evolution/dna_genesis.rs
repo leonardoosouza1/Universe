@@ -216,10 +216,13 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
 // ============================================================================
 pub const DNA_MAGIC: &[u8; 4] = b"IARA";
 pub const DNA_VERSION: u16 = 4;
-pub const DNA_FAST_SIZE: usize = 128 * 64;
-pub const DNA_SLOW_SIZE: usize = 32 * 8;
+pub const DNA_FAST_SIZE: usize = 192 * 96; // Retina HD v2
+pub const DNA_SLOW_SIZE: usize = 48 * 8;   // SlowBrain expanded
 pub const DNA_HEADER_SIZE: usize = 4 + 2 + 4 + 4 + 4 + 4;  // 22
-pub const DNA_V3_TOTAL: usize = DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE + 4 + DNA_SLOW_SIZE;  // 8478
+
+pub const DNA_FAST_SIZE_LEGACY: usize = 128 * 64; // 8192
+pub const DNA_SLOW_SIZE_LEGACY: usize = 32 * 8;   // 256
+pub const DNA_V3_TOTAL: usize = DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY;  // 8478
 pub const DNA_V31_TOTAL: usize = DNA_V3_TOTAL + MORPHO_BYTES;  // 8494
 pub const DNA_V32_TOTAL: usize = DNA_V31_TOTAL + HYPERNET_BYTES; // 8755 (v3.2 with hypernet tail)
 
@@ -244,7 +247,7 @@ pub const TAG_CORTEX_L2: &[u8; 4] = b"CL2W";
 /// 32× compressão. Lossy mas smooth. Pra DNAs onde fidelidade absoluta não é
 /// crítica (cars treinados convergem mesmo com aproximação).
 pub const CORTEX_DCT_COEFFS: usize = 256;
-pub const CORTEX_FULL_SIZE: usize = 8192;
+pub const CORTEX_FULL_SIZE: usize = 192 * 96; // Retina HD v2
 pub const CORTEX_DCT_BYTES: usize = CORTEX_DCT_COEFFS * 4; // 1024 bytes
 
 /// Forward DCT-II truncated to K coefficients.
@@ -767,12 +770,12 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             let track_width = f32::from_le_bytes(buf[14..18].try_into().ok()?);
             let fitness = f32::from_le_bytes(buf[18..22].try_into().ok()?);
             let fast_scale_raw = f32::from_le_bytes(buf[22..26].try_into().ok()?);
-            let fast_end = 26 + DNA_FAST_SIZE;
+            let fast_end = 26 + DNA_FAST_SIZE_LEGACY;
             let fast_weights: Vec<i8> = buf[26..fast_end].iter().map(|&b| b as i8).collect();
             let slow_scale_raw = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
             let slow_start = fast_end + 4;
 
-        let slow_end = slow_start + DNA_SLOW_SIZE;
+        let slow_end = slow_start + DNA_SLOW_SIZE_LEGACY;
         if buf.len() < slow_end { return None; }
         let slow_weights: Vec<i8> = buf[slow_start..slow_end].iter().map(|&b| b as i8).collect();
         // SANITIZAÇÃO: DNAs antigos podem ter scales astronômicos (bug myelinate
@@ -819,13 +822,13 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
     }
 
     // --- Legacy v1/v2 (no magic) ---
-    if buf.len() >= 4 + DNA_FAST_SIZE {
+    if buf.len() >= 4 + DNA_FAST_SIZE_LEGACY {
         let fast_scale = f32::from_le_bytes(buf[0..4].try_into().ok()?);
-        let fast_end = 4 + DNA_FAST_SIZE;
+        let fast_end = 4 + DNA_FAST_SIZE_LEGACY;
         let fast_weights: Vec<i8> = buf[4..fast_end].iter().map(|&b| b as i8).collect();
-        let (slow_weights, slow_scale, version) = if buf.len() >= fast_end + 4 + DNA_SLOW_SIZE {
+        let (slow_weights, slow_scale, version) = if buf.len() >= fast_end + 4 + DNA_SLOW_SIZE_LEGACY {
             let ss = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
-            let sw: Vec<i8> = buf[fast_end + 4..fast_end + 4 + DNA_SLOW_SIZE].iter().map(|&b| b as i8).collect();
+            let sw: Vec<i8> = buf[fast_end + 4..fast_end + 4 + DNA_SLOW_SIZE_LEGACY].iter().map(|&b| b as i8).collect();
             (Some(sw), ss, 2u16)
         } else {
             (None, 1.0, 1u16)
@@ -942,7 +945,8 @@ mod tests {
 
     #[test]
     fn v3_total_size_matches_layout() {
-        assert_eq!(DNA_V3_TOTAL, 4 + 2 + 4 + 4 + 4 + 4 + 4 + DNA_FAST_SIZE + 4 + DNA_SLOW_SIZE);
+        // Verifica consistencia v3 legacy (usando os layouts legacy):
+        assert_eq!(DNA_V3_TOTAL, 4 + 2 + 4 + 4 + 4 + 4 + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY);
         assert_eq!(DNA_V31_TOTAL, DNA_V3_TOTAL + MORPHO_BYTES);
     }
 

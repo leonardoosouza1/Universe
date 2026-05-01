@@ -560,7 +560,9 @@ pub fn spawn_swarm(
                 if let Some(ref l3) = race.best_l3_weights {
                     engine.cortex_l3.set_weights(l3);
                 }
-                if let Some(ref slow) = race.best_slow_weights {
+                // BUG FIX: carregar do current_best_slow_w que veio do DNA (sf32), e não do race
+                // que estava vazio no start.
+                if let Some(ref slow) = current_best_slow_w {
                     engine.slow_brain.layer.set_weights(slow);
                 }
             }
