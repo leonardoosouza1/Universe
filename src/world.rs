@@ -648,21 +648,9 @@ impl VoxelWorld {
                 
                 let depth_fade = (hit_dist / 1200.0).clamp(0.0, 1.0);
 
-                // --- VISÃO ABSOLUTA ---
-                // Para que o modelo NUNCA confunda uma parede longe com a pista perto.
-                //
-                // TIER 1.3 FIX — log-compress na parede:
-                //   Saturação a 127 em qualquer hit < 300m cegava a rede (Retina_C=127 constante
-                //   = brake perpétuo via A4). Substituímos linear por sqrt(depth_fade/0.5),
-                //   efetivo: range dinâmico 127..40 em 0..150m, saturando em 37 além disso.
-                //   Dá diferenciação de 90 entre "encostando (0m)" e "razoavelmente próxima (75m)".
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
                         // Quad-scale depth (alcance estendido 600m):
-                        // 0-30m sqrt 127→55 (colisão crítica)
-                        // 30-120m linear 55→0 (frear pra curva)
-                        // 120-300m linear 0→-25 (setup curva longa)
-                        // 300-600m linear -25→-50 (visão estratégica)
                         if hit_dist < 30.0 {
                             let near = (hit_dist / 30.0).clamp(0.0, 1.0);
                             127.0 - (near.sqrt() * 72.0)
