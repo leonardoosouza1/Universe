@@ -614,23 +614,35 @@ pub(super) fn update_racers(
         // --- CAOS VISUAL (Medo de Obstáculos) ---
         // O modelo deve procurar o "Preto" (Pista). Ver muito "Branco" (Parede) causa Pânico.
         // Pós pooled retina: itera 16 bins (8 fóvea + 8 periférica).
+        // --- AVALIAÇÃO VISUAL: MEDO VS HORIZONTE ---
         let mut visual_stress = 0.0;
+        let mut visual_freedom = 0.0;
         for i in 0..16 {
-            if sensory_wave[i] > 0 { visual_stress += (sensory_wave[i] as f32) / 127.0; }
+            let v = sensory_wave[i] as f32;
+            if v > 0.0 { 
+                visual_stress += v / 127.0; 
+            } else if v < -50.0 {
+                // Pixel bem negativo = pista livre ou parede muito distante (Ciano)
+                visual_freedom += v.abs() / 128.0;
+            }
         }
         visual_stress /= 16.0; // Média de brancura (0.0 a 1.0)
+        visual_freedom /= 16.0; // Média de espaço livre (0.0 a 1.0)
 
-        // Punição psicológica direta por olhar para paredes
-        racer.joy_integral -= visual_stress * 5.0 * dt;
+        // Punição suave por encarar paredes, mas RECOMPENSA FORTE por olhar pro horizonte.
+        // Isso incentiva o modelo a virar o volante até encontrar o caminho longo.
+        racer.joy_integral += (visual_freedom * 15.0 - visual_stress * 5.0) * dt;
 
-        let panic_level = if visual_stress > 0.2 { (visual_stress - 0.2) * 1.5 } else { 0.0 };
+        // [PÂNICO DESATIVADO] - O modelo ficava cego com ruído quando se aproximava 
+        // de paredes, o que causava o "congelamento" por falta de informação.
+        let panic_level = 0.0;
 
-        // --- RUÍDO NOTURNO E PÂNICO: Incerteza sensorial ---
+        // --- RUÍDO NOTURNO: Apenas incerteza do ambiente ---
         use rand::prelude::*;
         let mut rng = rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
 
-        if env.is_night() || panic_level > 0.0 {
-            let magnitude = (15.0 + panic_level * 50.0) as i8;
+        if env.is_night() {
+            let magnitude = 15;
             for i in 0..16 {
                 let noise = rng.random_range(-magnitude..magnitude);
                 sensory_wave[i] = sensory_wave[i].saturating_add(noise);
@@ -1282,6 +1294,12 @@ pub(super) fn update_racers(
         //   TTC < 0.6s → brake 0.8 (preemptive)
         //   TTC < 1.0s + closing → brake 0.5 (early warning)
         {
+            // [SENTINEL DESATIVADO POR SOLICITAÇÃO]
+            // O freio automático de emergência (AEB) estava fazendo o modelo "congelar"
+            // perto das paredes, impedindo-o de aprender a desviar por conta própria.
+            // O modelo agora tem liberdade total para bater ou desviar usando a rede neural.
+            
+            /*
             const SENTINEL_TTC_HARD: f32 = 0.3;
             const SENTINEL_TTC_BRAKE: f32 = 0.6;
             const SENTINEL_TTC_WARN: f32 = 1.0;
@@ -1303,9 +1321,6 @@ pub(super) fn update_racers(
                 }
             }
             // PATH PROJECTION SENTINEL (Tesla-like trajectory predict).
-            // Projeta trajetória 3 passos × 0.4s baseado em speed+steer atual.
-            // Se qualquer ponto projetado tem parede <2m, FORCE brake.
-            // Captura curvas que straight TTC não pega.
             if speed > 5.0 {
                 let steer_now = racer.memory[1]; // -1..+1 last steer
                 let yaw_rate = steer_now * speed * 0.05; // approx rad/s
@@ -1327,7 +1342,7 @@ pub(super) fn update_racers(
                 }
             }
 
-            // LATERAL anti-collision: parede side em <1.5m + speed alto → brake.
+            // LATERAL anti-collision
             if speed > SENTINEL_MIN_SPEED {
                 let lat_l = world.raycast(pos.x, pos.z,
                     racer.phase + std::f32::consts::FRAC_PI_2, 10.0);
@@ -1339,6 +1354,7 @@ pub(super) fn update_racers(
                     brake_intent = brake_intent.max(0.4 * severity);
                 }
             }
+            */
         }
 
         // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal.
@@ -1391,7 +1407,9 @@ pub(super) fn update_racers(
         const POST_REVERSE_LOCKOUT: f32 = 0.6;   // cooldown curto (era 1.5)
 
         let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 30.0);
-        let safety_cap = (forward_wall_dist / SAFE_DIST).clamp(0.0, 1.0);
+        // [SAFETY CAP DESATIVADO] - O acelerador não é mais cortado perto da parede.
+        // A rede neural decide se acelera ou não.
+        let safety_cap: f32 = 1.0; 
 
         // --- RÉ CONTROLADA (3-point turn em pista narrow) ---
         // User: "saber virar e dar ré pra ajustar ângulo se preciso".
