@@ -13,7 +13,7 @@
     {
       "name": "Procedural Sigma",
       "seed": 9001,
-      "track_width": 28.0,
+      "track_width": 18.0,
       "complexity": 0.5
     },
     {
@@ -51,14 +51,20 @@
       "seed": 1024,
       "track_width": 20.0,
       "complexity": 3.0
+    },
+    {
+      "name": "New Circuit 8",
+      "seed": 14893139857330030290,
+      "track_width": 18.0,
+      "complexity": 1.0
     }
   ],
-  "selected_track_index": 0,
-  "swarm_count": 50,
-  "time_scale": 3.0,
-  "generation_timeout_s": 120.0,
-  "rotate_tracks": false,
-  "gens_per_track": 3,
+  "selected_track_index": 7,
+  "swarm_count": 100,
+  "time_scale": 4.0,
+  "generation_timeout_s": 360.0,
+  "rotate_tracks": true,
+  "gens_per_track": 50,
   "easy_track": false,
-  "no_holes": false
+  "no_holes": true
 }
