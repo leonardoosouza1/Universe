@@ -420,11 +420,18 @@ pub(super) fn update_racers(
         let retina_binocular = *retinas.get(&entity).unwrap_or(&[-128i8; RETINA_TOTAL]);
         // RETINA POOLED — Volumétrico: max-pool across ALL rows para cada bin.
         // Se houver parede em QUALQUER camada de profundidade, o cérebro sabe.
-        // Retina HD v2: FOV_BINS adaptados para 64 colunas (mesmos 8 bins, mais pixels cada)
+        // Retina HD v2: FOV_BINS adaptados dinamicamente (8 bins, contínuos sem gaps)
         let c = RETINA_COLS;
-        let fov_bins = [
-            (0, c * 6 / 64), (c * 6 / 64, c * 16 / 64), (c * 16 / 64, c * 26 / 64), (c * 26 / 64, c / 2),
-            (c / 2, c * 38 / 64), (c * 38 / 64, c * 48 / 64), (c * 48 / 64, c * 58 / 64), (c * 58 / 64, c),
+        let cols_per_fov_bin = c / 8;
+        let fov_bins: [(usize, usize); 8] = [
+            (0, cols_per_fov_bin),
+            (cols_per_fov_bin, 2*cols_per_fov_bin),
+            (2*cols_per_fov_bin, 3*cols_per_fov_bin),
+            (3*cols_per_fov_bin, 4*cols_per_fov_bin),
+            (4*cols_per_fov_bin, 5*cols_per_fov_bin),
+            (5*cols_per_fov_bin, 6*cols_per_fov_bin),
+            (6*cols_per_fov_bin, 7*cols_per_fov_bin),
+            (7*cols_per_fov_bin, c), // Última bin pega até o final pra cobrir resto
         ];
         for (bin, &(lo, hi)) in fov_bins.iter().enumerate() {
             let mut fov_max: i8 = -128;
