@@ -162,39 +162,20 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     let line_err = inputs[CH_LINE] as f32 / 127.0;
     bias[1] += line_err * 0.20;
 
-    // A9 Extended: curvatura a 75m (ch 19) e 150m (ch 20) — steering preditivo em curvas longas
-    // Nürburgring/Suzuka precisam antecipar curvas severidade 2.5-3.0 com 100-200m de lookahead.
-    // Coefs menores que A9 core porque são sinais de longo prazo (planejamento, não reação).
-    bias[1] += (inputs[19] as f32 / 127.0) * 0.10; // 75m: peso moderado
-    bias[1] += (inputs[20] as f32 / 127.0) * 0.06; // 150m: peso leve (planejamento, não urgente)
+    // A9 Extended: coefs reduzidos drasticamente pra debug
+    bias[1] += (inputs[19] as f32 / 127.0) * 0.01; // 75m: peso mínimo
+    bias[1] += (inputs[20] as f32 / 127.0) * 0.005; // 150m: peso mínimo
 
-    // A-TTC: Time-To-Contact baseado em approach rate — reflexo de alta velocidade
-    // Canal 105 = TTC mínimo normalizado (127=iminente, 0=seguro, faixa 0-2s).
-    // Quando TTC > 0.7 (< 1.4s), ativa reflex de emergência.
+    // A-TTC: coefs reduzidos drasticamente pra debug
     let ttc_norm = inputs[105] as f32 / 127.0;
-    if ttc_norm > 0.7 {
-        // Brake hard baseado na urgência
-        bias[2] += ttc_norm * 0.50;
-        // Throttle off
-        bias[0] -= ttc_norm * 0.30;
-        // Steer direcionado pela abordagem L/R
-        let app_l = inputs[106] as f32 / 64.0;
-        let app_r = inputs[107] as f32 / 64.0;
-        if app_l.abs() > app_r.abs() {
-            // Parede vem da esquerda → vira direita
-            bias[1] -= app_l.abs() * 0.25;
-        } else {
-            // Parede vem da direita → vira esquerda
-            bias[1] += app_r.abs() * 0.25;
-        }
+    if ttc_norm > 0.85 { // threshold aumentado — só em perigo CRÍTICO
+        bias[2] += ttc_norm * 0.15; // brake muito fraco
+        bias[0] -= ttc_norm * 0.05; // throttle cut muito fraco
     }
 
-    // A-Depth: usar depth-per-row (ch 52-59) pra calibrar frenagem
-    // Se há parede detectada em row 0 (perto), corta throttle proporcional
-    let depth_near_px = (inputs[52] as f32 + inputs[53] as f32) / (2.0 * 127.0);
-    if depth_near_px > 0.3 {
-        bias[0] -= depth_near_px * 0.15;
-    }
+    // A-Depth: desabilitado — sempre 0
+    let _depth_near_px = (inputs[52] as f32 + inputs[53] as f32) / (2.0 * 127.0);
+    // if depth_near_px > 0.3 { bias[0] -= depth_near_px * 0.15; }
 
     bias
 }
