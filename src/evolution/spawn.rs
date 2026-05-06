@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use crate::simulation::Racer;
-use crate::world::{VoxelWorld, RETINA_TOTAL};
+use crate::world::VoxelWorld;
+use crate::config::iara::vision::RETINA_TOTAL;
 use crate::config::UniverseConfig;
 use rand::prelude::*;
 use std::io::Write;
@@ -1017,6 +1018,9 @@ pub fn spawn_swarm(
                 progress_stall: 0.0,
                 wall_ema_l: 15.0,
                 wall_ema_r: 15.0,
+                wall_dist_prev_l: 15.0,
+                wall_dist_prev_r: 15.0,
+                wall_dist_prev_f: 50.0,
                 proximity_sustain: 0.0,
                 post_reverse_lockout: 0.0,
                 spawn_progress,

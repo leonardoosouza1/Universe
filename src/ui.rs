@@ -284,7 +284,7 @@ fn update_hud(
                     });
 
                     // Retina Visual (LIDAR) — layout dinâmico via RETINA_ROWS/RETINA_COLS
-                    use crate::world::{RETINA_ROWS, RETINA_COLS};
+                    use crate::config::iara::vision::{RETINA_ROWS, RETINA_COLS};
                     panel.spawn((Text::new(format!("LIDAR {}x{} (Topo=Horizonte, Fundo=Chão)", RETINA_ROWS, RETINA_COLS)), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 1.0))))
                          .insert(Node { margin: UiRect::top(Val::Px(12.0)), ..default() });
                     let retina_height = (RETINA_ROWS as f32 * 14.0).max(30.0);

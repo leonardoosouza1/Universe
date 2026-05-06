@@ -6,7 +6,7 @@
 /// no .dna v3.
 
 use std::collections::VecDeque;
-use crate::world::RETINA_TOTAL;
+use crate::config::iara::vision::RETINA_TOTAL;
 
 /// Tier 2.3 — episodic memory trace used during sleep consolidation.
 /// Captured during wake only when something salient happens (big reward swing

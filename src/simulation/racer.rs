@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use std::collections::{HashSet, VecDeque};
 use crate::engine::SovereignEngine;
-use crate::world::RETINA_TOTAL;
+use crate::config::iara::vision::RETINA_TOTAL;
 
 /// Tier 1.1 — Reward shaping denso.
 /// Ring buffers (128 amostras ≈ 2s @ 64Hz FixedUpdate) + voxel grid de exploração.
@@ -144,6 +144,9 @@ pub struct Racer {
     pub progress_stall: f32,      // Segundos acumulados SEM ganhar 3m de pista (anti-donut)
     pub wall_ema_l: f32,          // EMA da distância à parede esquerda (decay ~1s) — sensação persistente
     pub wall_ema_r: f32,          // EMA da distância à parede direita
+    pub wall_dist_prev_l: f32,    // Distância à parede esquerda frame anterior (m) — para cálculo approach rate
+    pub wall_dist_prev_r: f32,    // Distância à parede direita frame anterior (m)
+    pub wall_dist_prev_f: f32,    // Distância à parede frontal frame anterior (m)
     pub proximity_sustain: f32,   // Segundos contínuos raspando alguma lateral (alerta sustentado)
     pub post_reverse_lockout: f32, // Cooldown pós-ré com throttle capado (evita "ré-acelera-bate")
     pub spawn_progress: f32,       // track_progress da posição de spawn — fitness usa (track_progress - spawn_progress)

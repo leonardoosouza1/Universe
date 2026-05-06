@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use crate::world::{VoxelType, VoxelWorldResource, RETINA_TOTAL};
+use crate::world::{VoxelType, VoxelWorldResource};
+use crate::config::iara::vision::{RETINA_TOTAL, RETINA_COLS, RETINA_ROWS};
 use crate::environment::EnvironmentalState;
 use super::racer::{Racer, Skidmark};
 
@@ -43,7 +44,7 @@ pub fn time_dilation_metrics() -> (u64, u64) {
 ///   98..101 = gaze tracker (A18)                  108 = racing-line offset (A21)
 /// Builds a 32-dim i8 input slice for the reflex SpecialistBrain by sampling key sensory channels.
 /// Conservative subset — enough for a simple safety-aware reflex.
-fn slow_input_for_reflex(sensory_wave: &[i8; 192]) -> [i8; 32] {
+fn slow_input_for_reflex(sensory_wave: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) -> [i8; 32] {
     let mut out = [0_i8; 32];
     for (dst, &src) in out.iter_mut().zip(sensory_wave.iter().take(32)) {
         *dst = src;
@@ -51,7 +52,7 @@ fn slow_input_for_reflex(sensory_wave: &[i8; 192]) -> [i8; 32] {
     out
 }
 
-fn axiom_policy(inputs: &[i8; 192]) -> [f32; 96] {
+fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) -> [f32; 96] {
     let mut bias = [0.0f32; 96];
     const WALL_T: i8 = 40;  // ~0.31 normalizado — parede próxima mas não encostada
 
@@ -160,6 +161,40 @@ fn axiom_policy(inputs: &[i8; 192]) -> [f32; 96] {
     const CH_LINE: usize = 108;
     let line_err = inputs[CH_LINE] as f32 / 127.0;
     bias[1] += line_err * 0.20;
+
+    // A9 Extended: curvatura a 75m (ch 19) e 150m (ch 20) — steering preditivo em curvas longas
+    // Nürburgring/Suzuka precisam antecipar curvas severidade 2.5-3.0 com 100-200m de lookahead.
+    // Coefs menores que A9 core porque são sinais de longo prazo (planejamento, não reação).
+    bias[1] += (inputs[19] as f32 / 127.0) * 0.10; // 75m: peso moderado
+    bias[1] += (inputs[20] as f32 / 127.0) * 0.06; // 150m: peso leve (planejamento, não urgente)
+
+    // A-TTC: Time-To-Contact baseado em approach rate — reflexo de alta velocidade
+    // Canal 105 = TTC mínimo normalizado (127=iminente, 0=seguro, faixa 0-2s).
+    // Quando TTC > 0.7 (< 1.4s), ativa reflex de emergência.
+    let ttc_norm = inputs[105] as f32 / 127.0;
+    if ttc_norm > 0.7 {
+        // Brake hard baseado na urgência
+        bias[2] += ttc_norm * 0.50;
+        // Throttle off
+        bias[0] -= ttc_norm * 0.30;
+        // Steer direcionado pela abordagem L/R
+        let app_l = inputs[106] as f32 / 64.0;
+        let app_r = inputs[107] as f32 / 64.0;
+        if app_l.abs() > app_r.abs() {
+            // Parede vem da esquerda → vira direita
+            bias[1] -= app_l.abs() * 0.25;
+        } else {
+            // Parede vem da direita → vira esquerda
+            bias[1] += app_r.abs() * 0.25;
+        }
+    }
+
+    // A-Depth: usar depth-per-row (ch 52-59) pra calibrar frenagem
+    // Se há parede detectada em row 0 (perto), corta throttle proporcional
+    let depth_near_px = (inputs[52] as f32 + inputs[53] as f32) / (2.0 * 127.0);
+    if depth_near_px > 0.3 {
+        bias[0] -= depth_near_px * 0.15;
+    }
 
     bias
 }
@@ -373,7 +408,7 @@ pub(super) fn update_racers(
         let track_phase = flow.y.atan2(flow.x);
 
         // --- 1. VISÃO DINÂMICA (COM CICLO DIA/NOITE) ---
-        let mut sensory_wave = [0i8; 192]; // Stack alloc — Retina HD v2 (192 canais)
+        let mut sensory_wave = [0i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]; // Stack alloc — Retina HD v2
 
         // --- VISÃO BIOLÓGICA ESTEREOSCÓPICA (Fóvea Dupla) ---
         let forward = transform.right().as_vec3();
@@ -385,13 +420,13 @@ pub(super) fn update_racers(
         let retina_binocular = *retinas.get(&entity).unwrap_or(&[-128i8; RETINA_TOTAL]);
         // RETINA POOLED — Volumétrico: max-pool across ALL rows para cada bin.
         // Se houver parede em QUALQUER camada de profundidade, o cérebro sabe.
-        use crate::world::{RETINA_ROWS, RETINA_COLS};
         // Retina HD v2: FOV_BINS adaptados para 64 colunas (mesmos 8 bins, mais pixels cada)
-        const FOV_BINS: [(usize, usize); 8] = [
-            (0, 6), (6, 16), (16, 26), (26, 32),
-            (32, 38), (38, 48), (48, 58), (58, 64),
+        let c = RETINA_COLS;
+        let fov_bins = [
+            (0, c * 6 / 64), (c * 6 / 64, c * 16 / 64), (c * 16 / 64, c * 26 / 64), (c * 26 / 64, c / 2),
+            (c / 2, c * 38 / 64), (c * 38 / 64, c * 48 / 64), (c * 48 / 64, c * 58 / 64), (c * 58 / 64, c),
         ];
-        for (bin, &(lo, hi)) in FOV_BINS.iter().enumerate() {
+        for (bin, &(lo, hi)) in fov_bins.iter().enumerate() {
             let mut fov_max: i8 = -128;
             for row in 0..RETINA_ROWS {
                 for p in lo..hi {
@@ -403,10 +438,11 @@ pub(super) fn update_racers(
         }
         // Periférica uniforme — max-pool volumétrico (64 cols / 8 bins = 8 cols/bin).
         for bin in 0..8 {
-            let start = bin * 8;
+            let cols_per_bin = RETINA_COLS / 8;
+            let start = bin * cols_per_bin;
             let mut per_max: i8 = -128;
             for row in 0..RETINA_ROWS {
-                for k in 0..8 {
+                for k in 0..cols_per_bin {
                     let p = retina_binocular[row * RETINA_COLS + start + k];
                     if p > per_max { per_max = p; }
                 }
@@ -415,9 +451,10 @@ pub(super) fn update_racers(
         }
         // --- HD VISUAL CHANNELS (128..191) — Alta resolução para o cérebro expandido ---
         // ch 128..143: Fóvea HD (16 bins × 4 cols, max-pool volumétrico)
+        let cols_per_bin_hd = RETINA_COLS / 16;
         for bin in 0..16usize {
-            let lo = bin * 4;
-            let hi = lo + 4;
+            let lo = bin * cols_per_bin_hd;
+            let hi = lo + cols_per_bin_hd;
             let mut fov_max: i8 = -128;
             for row in 0..RETINA_ROWS {
                 for p in lo..hi {
@@ -428,9 +465,10 @@ pub(super) fn update_racers(
             sensory_wave[128 + bin] = fov_max;
         }
         // ch 144..159: Periférica HD (16 bins × 4 cols, uniform)
+        let cols_per_bin_hd = RETINA_COLS / 16;
         for bin in 0..16usize {
-            let lo = bin * 4;
-            let hi = lo + 4;
+            let lo = bin * cols_per_bin_hd;
+            let hi = lo + cols_per_bin_hd;
             let mut per_max: i8 = -128;
             for row in 0..RETINA_ROWS {
                 for p in lo..hi {
@@ -440,9 +478,11 @@ pub(super) fn update_racers(
             }
             sensory_wave[144 + bin] = per_max;
         }
-        // ch 160..191: Raw horizon pixels (Row 3 = -0.01 rad, ~40m). Subsample 64→32 cols.
+        // ch 160..191: Raw horizon pixels. Subsample to 32 cols.
+        let horizon_row = RETINA_ROWS / 2;
+        let step = RETINA_COLS / 32;
         for i in 0..32usize {
-            sensory_wave[160 + i] = retina_binocular[3 * RETINA_COLS + i * 2];
+            sensory_wave[160 + i] = retina_binocular[horizon_row * RETINA_COLS + i * step];
         }
         // Canais 16..63 zerados explicitamente (garantia contra leak de frame anterior).
         for i in 16..64 { sensory_wave[i] = 0; }
@@ -457,7 +497,7 @@ pub(super) fn update_racers(
         let mut dark_angle_sum: f32 = 0.0;
         let mut dark_weight_sum: f32 = 0.0;
         for i in 12..52 {
-            let v = retina_binocular[3 * RETINA_COLS + i] as i32; // Row 3 (40m foresight)
+            let v = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32; // Row 3 (40m foresight)
             if v < 0 {
                 let strength = (-v) as f32;
                 let angle = ((i as f32 / (RETINA_COLS as f32 - 1.0)) * 2.0 - 1.0) * (per_fov / 2.0);
@@ -502,7 +542,7 @@ pub(super) fn update_racers(
             let mut weighted_idx: f32 = 0.0;
             for k in 0..W {
                 // Row 3 = 40m (visão longa) para achar a curva com antecedência
-                let v = retina_binocular[3 * RETINA_COLS + start + k] as i32;
+                let v = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + start + k] as i32;
                 let d = (-v as f32).max(0.0);
                 sum += d;
                 weighted_idx += d * (start + k) as f32;
@@ -530,11 +570,11 @@ pub(super) fn update_racers(
         let mut right_dark_sum: i32 = 0;
         let half = RETINA_COLS / 2;
         for i in 0..half {
-            let v = retina_binocular[3 * RETINA_COLS + i] as i32;
+            let v = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
             if v < 0 { left_dark_sum += -v; }
         }
         for i in half..RETINA_COLS {
-            let v = retina_binocular[3 * RETINA_COLS + i] as i32;
+            let v = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
             if v < 0 { right_dark_sum += -v; }
         }
         // Max possível: 32 pixels × 128 = 4096. Normalize.
@@ -553,8 +593,8 @@ pub(super) fn update_racers(
         let mut best_run_len = 0usize;
         let mut cur_run_start = 0usize;
         let mut cur_run_len = 0usize;
-        for i in 16..48 { // frontal half only (64 cols)
-            let v = retina_binocular[3 * RETINA_COLS + i] as i32;
+        for i in (RETINA_COLS/4)..(RETINA_COLS*3/4) { // frontal half only (64 cols)
+            let v = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
             if v < -10 {
                 if cur_run_len == 0 { cur_run_start = i; }
                 cur_run_len += 1;
@@ -575,10 +615,11 @@ pub(super) fn update_racers(
         for i in 60..64 { sensory_wave[i] = escape_i8; }
 
         // BUG FIX 3 (user report): "pista pequena bate direto". Wall imminent
-        // binary signal forte — pixels centrais (20..44) com retina alta = parede frontal.
+        // Usa uma linha apontada para ~13m para reflexos IMEDIATOS
         let mut wall_central_max: i32 = -128;
-        for i in 20..44 { // central ±34° em 64 cols
-            let v = retina_binocular[3 * RETINA_COLS + i] as i32; // Row 3 (40m) dá tempo de frear
+        let reflex_row = (RETINA_ROWS / 2).saturating_sub(1);
+        for i in (RETINA_COLS*5/16)..(RETINA_COLS*11/16) { 
+            let v = retina_binocular[reflex_row * RETINA_COLS + i] as i32;
             if v > wall_central_max { wall_central_max = v; }
         }
         // > 80 = parede a < 30m; > 110 = colisão iminente.
@@ -614,14 +655,14 @@ pub(super) fn update_racers(
         // Optical flow usa rows 3 e 4 (horizonte/céu) para detectar paredes se aproximando.
         // O chão (rows 0, 1) é constante e não gera motion delta útil para paredes.
         for i in 0..half {
-            let dr_f = retina_binocular[3 * RETINA_COLS + i] as i32 - racer.visual_cortex[3 * RETINA_COLS + i] as i32;
-            let dr_p = retina_binocular[4 * RETINA_COLS + i] as i32 - racer.visual_cortex[4 * RETINA_COLS + i] as i32;
+            let dr_f = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
+            let dr_p = retina_binocular[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32;
             motion_left += dr_f.abs() + dr_p.abs();
             approach_left += dr_p;
         }
         for i in half..RETINA_COLS {
-            let dr_f = retina_binocular[3 * RETINA_COLS + i] as i32 - racer.visual_cortex[3 * RETINA_COLS + i] as i32;
-            let dr_p = retina_binocular[4 * RETINA_COLS + i] as i32 - racer.visual_cortex[4 * RETINA_COLS + i] as i32;
+            let dr_f = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
+            let dr_p = retina_binocular[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32;
             motion_right += dr_f.abs() + dr_p.abs();
             approach_right += dr_p;
         }
@@ -636,12 +677,70 @@ pub(super) fn update_racers(
         let mut fovea_approach: i32 = 0;
         let mut fovea_motion_abs: i32 = 0;
         for i in 24..40 {
-            let dr = retina_binocular[3 * RETINA_COLS + i] as i32 - racer.visual_cortex[3 * RETINA_COLS + i] as i32;
+            let dr = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
             fovea_approach += dr;          // + = wall vindo na frente
             fovea_motion_abs += dr.abs();
         }
         sensory_wave[116] = (fovea_approach / 32).clamp(-127, 127) as i8;
         sensory_wave[117] = (fovea_motion_abs / 32).min(127) as i8;
+
+        // --- DEPTH-PER-ROW (canais 52-59): profundidade explícita por linha da retina ---
+        // Cada linha da retina é pitched para detectar objetos em distância diferente.
+        // Row 0 (pitch=-0.10 rad) vê perto; Row 7 (pitch=+0.05 rad) vê longe.
+        // Canal = soma de todos os pixels de PAREDE (valores positivos altos) nessa linha,
+        // normalizado. Dá ao modelo sinal claro: "há parede perto" vs "há parede longe".
+        for row in 0..RETINA_ROWS {
+            let wall_sum: i32 = (0..RETINA_COLS)
+                .map(|col| {
+                    let v = retina_binocular[row * RETINA_COLS + col] as i32;
+                    v.max(0) // Só wall/hole (positivos), ignora road (negativo) e grass (~0-40)
+                })
+                .sum();
+            // Normaliza: max teórico = 126 cols * 127 = 16002
+            let depth_normalized = ((wall_sum as f32 / 4000.0) * 127.0).min(127.0) as i8;
+            sensory_wave[52 + row] = depth_normalized;
+        }
+
+        // --- WALL APPROACH RATE (canais 102-107): dD/dt em m/s ---
+        // Detecta se parede está se aproximando (positivo) ou afastando (negativo).
+        // Essencial para reflexos em alta velocidade — modelo precisa de taxa, não só distância.
+        let DT = 1.0 / 64.0_f32;
+        let dist_l = (sensory_wave[76] as f32 / 127.0) * 15.0; // Reconstrói dist_l a partir do canal
+        let dist_r = (sensory_wave[77] as f32 / 127.0) * 15.0; // Reconstrói dist_r
+
+        let approach_rate_l = (racer.wall_dist_prev_l - dist_l) / DT;
+        let approach_rate_r = (racer.wall_dist_prev_r - dist_r) / DT;
+
+        // Frontal approach: usa row 3 (40m foresight) wall pixels centrais como proxy dist_front
+        let reflex_row = (RETINA_ROWS / 2).saturating_sub(1);
+        let front_wall_px: i32 = (RETINA_COLS/3..(2*RETINA_COLS/3))
+            .map(|col| retina_binocular[reflex_row * RETINA_COLS + col] as i32)
+            .filter(|&v| v > 0)
+            .sum();
+        let dist_front_now = if front_wall_px > 0 {
+            (30.0 * (1.0 - (front_wall_px as f32 / 2000.0).min(1.0))).max(1.0)
+        } else { 50.0 };
+        let approach_rate_f = (racer.wall_dist_prev_f - dist_front_now) / DT;
+
+        sensory_wave[102] = (approach_rate_l.clamp(-30.0, 30.0) / 30.0 * 127.0) as i8;
+        sensory_wave[103] = (approach_rate_r.clamp(-30.0, 30.0) / 30.0 * 127.0) as i8;
+        sensory_wave[104] = (approach_rate_f.clamp(-30.0, 30.0) / 30.0 * 127.0) as i8;
+
+        // TTC mínimo (tempo para contato): D / v_approach (0..2s → 127=iminente, 0=seguro)
+        let ttc_l = if approach_rate_l > 1.0 { (dist_l / approach_rate_l).min(2.0) } else { 2.0 };
+        let ttc_r = if approach_rate_r > 1.0 { (dist_r / approach_rate_r).min(2.0) } else { 2.0 };
+        let ttc_f = if approach_rate_f > 1.0 { (dist_front_now / approach_rate_f).min(2.0) } else { 2.0 };
+        let ttc_min = ttc_l.min(ttc_r).min(ttc_f).clamp(0.0, 2.0);
+        sensory_wave[105] = (127.0 * (1.0 - ttc_min / 2.0)) as i8;
+
+        // Delta_dist (derivada simples, ±15m/s range)
+        sensory_wave[106] = (approach_rate_l.clamp(-15.0, 15.0) / 15.0 * 64.0) as i8;
+        sensory_wave[107] = (approach_rate_r.clamp(-15.0, 15.0) / 15.0 * 64.0) as i8;
+
+        // Atualizar prev para próximo frame
+        racer.wall_dist_prev_l = dist_l;
+        racer.wall_dist_prev_r = dist_r;
+        racer.wall_dist_prev_f = dist_front_now;
 
         racer.visual_cortex = retina_binocular;
 
@@ -824,11 +923,11 @@ pub(super) fn update_racers(
         sensory_wave[97] = invert(d_fr60);
 
         // --- CURVATURA ANTECIPADA (LOOKAHEAD DE PISTA) ---
-        // Amostra o flow field à frente a 3 distâncias e mede o desvio angular
+        // Amostra o flow field à frente a múltiplas distâncias e mede o desvio angular
         // em relação ao heading atual. Positivo = pista curva à ESQUERDA;
-        // negativo = curva à DIREITA. É o "GPS interno" dos próximos ~2s.
+        // negativo = curva à DIREITA. É o "GPS interno" dos próximos ~5s.
         let forward_2d = Vec2::new(forward.x, forward.z);
-        for (slot, look_dist) in [(78usize, 10.0_f32), (79, 25.0), (80, 50.0)] {
+        for (slot, look_dist) in [(78usize, 10.0_f32), (79, 25.0), (80, 100.0), (19, 75.0), (20, 150.0)] {
             let sample = pos + forward * look_dist;
             let flow_ahead = world.get_flow_at(sample.x, sample.z);
             // cross-z (2D perp dot): forward × flow_ahead
@@ -1099,12 +1198,12 @@ pub(super) fn update_racers(
             let speed_kmh = speed * 3.6;
             // Wall raycast proxies derived from retina samples (i8 0..127). Larger sum = closer.
             let wall_l_proxy = {
-                let s: i32 = (32..38).map(|i| sensory_wave[i] as i32).sum();
+                let s: i32 = ((RETINA_COLS/2)..(RETINA_COLS*38/64)).map(|i| sensory_wave[i] as i32).sum();
                 let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
                 (1.0 - norm) * 5.0
             };
             let wall_r_proxy = {
-                let s: i32 = (58..64).map(|i| sensory_wave[i] as i32).sum();
+                let s: i32 = ((RETINA_COLS*58/64)..RETINA_COLS).map(|i| sensory_wave[i] as i32).sum();
                 let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
                 (1.0 - norm) * 5.0
             };
@@ -1177,8 +1276,11 @@ pub(super) fn update_racers(
         slow_input[5]  = (racer.tire_temp * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[6]  = (racer.engine_power * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[7]  = (alignment * 127.0) as i8;
-        slow_input[8]  = (lap_progress * 127.0).clamp(0.0, 127.0) as i8;
-        slow_input[9]  = (racer.total_laps as i8 * 25).min(127);
+        // BUG FIX: Second Lap Amnesia. 
+        // Omitimos lap_progress e total_laps da entrada do modelo. Eles causavam descontinuidade 
+        // no estado da rede quando a corrida completava uma volta, fazendo o carro "esquecer" como pilotar.
+        slow_input[8]  = 0;
+        slow_input[9]  = 0;
         slow_input[10] = ((racer.wall_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[11] = ((racer.grass_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[12] = (racer.stagnation * 127.0).clamp(0.0, 127.0) as i8;

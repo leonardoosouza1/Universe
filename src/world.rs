@@ -1,21 +1,9 @@
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
+use crate::config::iara::vision::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// ============================================================================
-// RETINA CONFIG — Fonte única de verdade. Altere AQUI e tudo se adapta.
-// Cada row é uma camada vertical de visão com pitch diferente.
-// Pitches negativos olham para baixo, positivos para cima.
-// eye_height=0.4m → ground_dist ≈ 0.4/|pitch| metros.
-// ============================================================================
-pub const RETINA_ROWS: usize = 6;
-pub const RETINA_COLS: usize = 64;
-pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 384
-/// Retina HD v2 — 6 camadas de varredura vertical (resolução 2.8°/pixel horizontal):
-/// [Row0=-0.10 chão~4m] [Row1=-0.06 perto~7m] [Row2=-0.03 médio~13m]
-/// [Row3=-0.01 longe~40m] [Row4=0.01 horizonte] [Row5=0.03 céu/longe]
-pub const RETINA_PITCHES: [f32; RETINA_ROWS] = [-0.10, -0.06, -0.03, -0.01, 0.01, 0.03];
 
 /// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
 pub static NO_HOLES: AtomicBool = AtomicBool::new(false);
@@ -558,7 +546,7 @@ impl VoxelWorld {
         const TAN_K: f32 = 1.25_f32;
         let tan_k_val = TAN_K.tan();
         for row in 0..RETINA_ROWS {
-            let fov_half = 90.0_f32.to_radians();
+            let fov_half = (FOV_DEG / 2.0).to_radians();
             let pitch = RETINA_PITCHES[row];
             let gaze = if row == 0 { gaze_yaw } else { 0.0 };
             let dir_y = pitch.sin();

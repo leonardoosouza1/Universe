@@ -5,7 +5,7 @@ use crate::resonance::ResonantNode;
 use crate::types::SplineNode;
 use crate::cfc::CfCCell;
 use crate::kan::SensoryPreFilter;
-use crate::world::RETINA_TOTAL;
+use crate::config::iara::vision::RETINA_TOTAL;
 use std::sync::RwLock;
 
 /// Tier 6.8 — Mirror neurons / observational learning.

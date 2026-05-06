@@ -221,3 +221,117 @@ mod tests {
         }
     }
 }
+
+// ============================================================================
+// IARA — HUB DE CONSTANTES DE REFERÊNCIA
+// ============================================================================
+// Documentação centralizada dos parâmetros do sistema.
+// Os valores abaixo ESPELHAM os que existem nos módulos originais.
+//
+// Para alterar um parâmetro:
+//   1. Mude o valor AQUI
+//   2. Mude no arquivo original correspondente (indicado nos comentários)
+//
+// Quando quiser que o sistema inteiro derive daqui automaticamente,
+// basta trocar o `use` no módulo original por `use crate::config::iara::*`.
+// ============================================================================
+
+pub mod iara {
+    // ── VISÃO (fonte: src/world.rs:12-18) ──────────────────────────────
+    pub mod vision {
+        pub const RETINA_ROWS: usize = 8;
+        pub const RETINA_COLS: usize = 128;
+        pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 384
+        pub const FOV_DEG: f32 = 160.0;
+        /// Ângulos de pitch por linha da retina (rad). Row 0 = horizonte alto, Row 5 = chão.
+        pub const RETINA_PITCHES: [f32; RETINA_ROWS] = [-0.10,-0.08, -0.06, -0.03, -0.01, 0.01, 0.03, 0.05];
+    }
+
+    // ── CÉREBRO (fonte: src/simulation/motor.rs, src/engine.rs) ────────
+    pub mod brain {
+        /// Sensory wave = array de 192 canais i8 (8 fóvea + 8 periférica + 64 HD + 112 telemetria/heurísticas).
+        /// NÃO é retina direta — passa por pooling no motor.rs.
+        pub const SENSORY_WAVE_SIZE: usize = 192;
+
+        /// Fast Brain: BitLinear 192→96 (instinct layer, pesos ternários no DNA).
+        pub const L1_NEURONS: usize = 96;
+
+        /// Cortex L2: 96→48 (deep composition).
+        pub const L2_NEURONS: usize = 48;
+
+        /// Cortex L3: 48→24 (pre-output).
+        pub const L3_NEURONS: usize = 24;
+
+        /// Slow Brain: FloatLinear 48→8 (córtex lento, roda a cada N ticks).
+        pub const SLOW_BRAIN_INPUTS: usize = 48;
+        pub const SLOW_BRAIN_OUTPUTS: usize = 8;
+        pub const SLOW_BRAIN_TICK_INTERVAL: u32 = 8; // Roda 1x a cada 8 ticks (~8Hz @ 64Hz)
+    }
+
+    // ── GENÉTICA / DNA (fonte: src/evolution/dna_genesis.rs) ───────────
+    pub mod genetics {
+        use super::brain::*;
+
+        // Versão atual do formato DNA
+        pub const DNA_VERSION: u16 = 4;
+
+        // Tamanho dos pesos (calculados a partir da arquitetura)
+        pub const DNA_FAST_SIZE: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
+        pub const DNA_SLOW_SIZE: usize = SLOW_BRAIN_INPUTS * SLOW_BRAIN_OUTPUTS; // 48 × 8 = 384
+
+        // Legacy (compatibilidade com DNAs antigos)
+        pub const DNA_FAST_SIZE_LEGACY: usize = 128 * 64; // 8.192
+        pub const DNA_SLOW_SIZE_LEGACY: usize = 32 * 8;   // 256
+
+        // Scars (trauma imutabilidade — Tier 6.6)
+        pub const SCAR_TTL_INITIAL: u8 = 5;       // trava por 5 gerações
+        pub const SCAR_FRACTION: f32 = 0.10;      // 10% dos pesos não-zero viram scar
+
+        // Zona Protegida de axiomas (spawn.rs:17)
+        pub const PROTECTED_ZONE_SIZE: usize = 819; // ~4.4% do DNA_FAST_SIZE
+
+        // Mutação de Pesos
+        pub const DEFAULT_MUTATION_RATE: f32 = 0.008; // 0.8% chance de flip por bit
+
+        // Mutação Morfológica (Corpo)
+        pub const MORPHO_MASS_RANGE: (f32, f32) = (700.0, 1400.0);
+        pub const MORPHO_WHEELBASE_RANGE: (f32, f32) = (1.5, 3.0);
+        pub const MORPHO_DOWNFORCE_RANGE: (f32, f32) = (0.5, 2.0);
+        pub const MORPHO_GRIP_RANGE: (f32, f32) = (0.8, 1.2);
+        pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% por gene por gen
+        pub const MORPHO_SIGMA_FRAC: f32 = 0.05;    // σ = 5% do range
+
+        // Hiper-rede (Compressão de Pesos)
+        pub const HYPERNET_COEFFS: usize = 64;
+        pub const HYPERNET_EXPAND_SIZE: usize = 2048;
+        pub const HYPERNET_MUTATION_FLIP_RATE: f32 = 0.02;
+        pub const HYPERNET_SIGMA: f32 = 0.05;
+        pub const HYPERNET_TERNARY_THRESH: f32 = 0.3;
+
+        // Métricas (settings.rs:5)
+        pub const FITNESS_HISTORY_CAP: usize = 100;
+    }
+
+    // ── SIMULAÇÃO (fonte: src/simulation/motor.rs) ─────────────────────
+    pub mod simulation {
+        // Timing
+        pub const TICK_RATE: f32 = 64.0;
+        pub const TIME_STEP: f32 = 1.0 / TICK_RATE;
+
+        // Thresholds de Punição (Survival Policy)
+        pub const STAGNATION_TIMEOUT_FRAMES: u32 = 960; // ~15s sem progresso = morte
+        pub const WALL_DAMAGE_BASE: f32 = 4.0;
+        pub const WALL_DAMAGE_MAX: f32 = 40.0;
+        pub const WALL_DAMAGE_GRACE: f32 = 20.0;
+        pub const SPEED_BLEED_DAMAGE: f32 = 30.0;
+        pub const WALL_PIN_TIME_S: f32 = 1.6;    // Segundos preso na parede para morrer
+        pub const HP_GRACE_FRAMES: u32 = 480;     // Frames de proteção pós-volta
+
+        // Recuperação
+        pub const WAYPOINT_DIST_M: f32 = 25.0;   // Distância entre checkpoints (metros)
+        pub const HEAL_AMOUNT: f32 = 40.0;        // HP recuperado por checkpoint
+
+        // Axiomas (Injeção de Instinto)
+        pub const AXIOM_DECAY_GENS: f32 = 50.0;  // Axiomas somem após N gerações
+    }
+}
