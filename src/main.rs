@@ -321,33 +321,41 @@ fn setup_scene(
 
     let mut world_entities = Vec::new();
 
-    // City mode: generate street grid instead of racing track
+    // City mode: create navigation state FIRST, before mesh generation
     if config.city_mode {
-        if let Some(city_nav) = world_res.1.as_ref() {
-            // Generate city mesh from grid
-            let (road_mesh, grass_mesh) = universe::scenery::generate_city_mesh(city_nav, 3.0);
-            let road_e = commands.spawn((
-                Mesh3d(meshes.add(road_mesh)),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(0.2, 0.2, 0.22), // dark asphalt
-                    perceptual_roughness: 0.7,
-                    metallic: 0.02,
-                    ..default()
-                })),
-                SimulationEntity,
-            )).id();
-            let grass_e = commands.spawn((
-                Mesh3d(meshes.add(grass_mesh)),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(0.15, 0.35, 0.15), // dark green
-                    perceptual_roughness: 0.95,
-                    metallic: 0.0,
-                    ..default()
-                })),
-                SimulationEntity,
-            )).id();
-            world_entities.extend([road_e, grass_e]);
-        }
+        println!("🏙️  SETUP_SCENE: City mode - creating city nav state...");
+        let city_nav = universe::city::CityNavState::new_city(320, 3.0, config.city_blocks as usize);
+        println!("🏙️  SETUP_SCENE: City nav created - grid_len={}", city_nav.grid.len());
+
+        // Generate city mesh from grid
+        let (road_mesh, grass_mesh) = universe::scenery::generate_city_mesh(&city_nav, 3.0);
+        let road_e = commands.spawn((
+            Mesh3d(meshes.add(road_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.2, 0.2, 0.22), // dark asphalt
+                perceptual_roughness: 0.7,
+                metallic: 0.02,
+                ..default()
+            })),
+            SimulationEntity,
+        )).id();
+        let grass_e = commands.spawn((
+            Mesh3d(meshes.add(grass_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.15, 0.35, 0.15), // dark green
+                perceptual_roughness: 0.95,
+                metallic: 0.0,
+                ..default()
+            })),
+            SimulationEntity,
+        )).id();
+        world_entities.extend([road_e, grass_e]);
+
+        // Spawn traffic lights and assign city nav to world_res
+        let traffic_lights = universe::scenery::spawn_traffic_lights(&mut commands, &mut meshes, &mut materials, &city_nav);
+        world_entities.extend(traffic_lights);
+        world_res.1 = Some(city_nav);
+        println!("🏙️  SETUP_SCENE: City mesh + nav assigned");
     } else {
         // Racing mode: generate procedural track
         let world = &world_res.0;
@@ -399,14 +407,6 @@ fn setup_scene(
         &mut commands, &mut meshes, &mut materials, &world_res.0
     );
     world_entities.extend(track_dec);
-
-    // City mode: generate navigation state and spawn traffic lights
-    if config.city_mode {
-        let city_nav = universe::city::CityNavState::new_city(320, 3.0, config.city_blocks as usize);
-        let traffic_lights = universe::scenery::spawn_traffic_lights(&mut commands, &mut meshes, &mut materials, &city_nav);
-        world_entities.extend(traffic_lights);
-        world_res.1 = Some(city_nav);
-    }
 
     race.world_entities = world_entities;
 

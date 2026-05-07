@@ -49,6 +49,8 @@ pub fn generate_city_mesh(city_nav: &crate::city::CityNavState, cell_size: f32) 
         }
     }
 
+    println!("🏙️  CITY MESH | road_verts={} grass_verts={} grid_size={}", road_pos.len(), grass_pos.len(), grid_size);
+
     let mut road_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     road_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, road_pos);
     road_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, road_norm);

@@ -1042,18 +1042,25 @@ pub(super) fn evolution_pipeline(
             "ts_unix": ts,
         }));
 
-        let world = VoxelWorld::new(next_track.seed, effective_width);
-        let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
-        // FIX: SimulationEntity marker garante que cleanup_simulation (OnExit) despawne
-        // estas meshes se o usuário voltar pro menu. Sem ele, sair+reentrar sim deixa
-        // o mapa da geração anterior visível por baixo do novo.
-        let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })), SimulationEntity)).id();
-        let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })), SimulationEntity)).id();
-        let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })), SimulationEntity)).id();
-        race.world_entities = vec![road_e, grass_e, wall_e];
-        // Spawn batched: agenda jobs, drain_spawn_queue processa em blocos por frame.
-        race.pending_spawn = Some((0, config.swarm_count));
-        world_res.0 = world;
+        // Racing mode: regenerate track each generation
+        // City mode: keep same city map, skip regeneration
+        if !config.city_mode {
+            let world = VoxelWorld::new(next_track.seed, effective_width);
+            let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
+            // FIX: SimulationEntity marker garante que cleanup_simulation (OnExit) despawne
+            // estas meshes se o usuário voltar pro menu. Sem ele, sair+reentrar sim deixa
+            // o mapa da geração anterior visível por baixo do novo.
+            let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })), SimulationEntity)).id();
+            let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })), SimulationEntity)).id();
+            let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })), SimulationEntity)).id();
+            race.world_entities = vec![road_e, grass_e, wall_e];
+            // Spawn batched: agenda jobs, drain_spawn_queue processa em blocos por frame.
+            race.pending_spawn = Some((0, config.swarm_count));
+            world_res.0 = world;
+        } else {
+            // City mode: reuse world_entities and pending_spawn from previous gen
+            race.pending_spawn = Some((0, config.swarm_count));
+        }
 
         // Tier 5.4 — NPCs obstáculos móveis spawnam DEPOIS do world rebuild
         // (precisa de waypoints_world válidos). Gate curricular (gen >= NPC_ACTIVATION_GEN)
