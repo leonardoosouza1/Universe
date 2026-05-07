@@ -6,6 +6,7 @@ pub mod logs;
 pub mod pipeline;
 pub mod settings;
 pub mod spawn;
+pub mod telemetry;
 
 pub use dna_genesis::{
     EliteDna, DnaPayload,

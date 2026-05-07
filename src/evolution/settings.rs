@@ -59,6 +59,8 @@ pub struct RaceSettings {
     // Tier 6.3/6.4 — morpho + hypernet do champion atual, persistidos via save_champion_dna_full.
     pub current_morpho: MorphoGenes,
     pub current_hypernet: HypernetSeed,
+    // Telemetry: gravação de dados por geração (NDJSON stats + binary replay)
+    pub telemetry: super::telemetry::TelemetryWriter,
 }
 
 #[derive(Resource)]

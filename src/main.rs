@@ -155,6 +155,9 @@ fn main() {
         current_axiom_strength: 1.0,
         current_morpho: universe::evolution::dna_genesis::MorphoGenes::default(),
         current_hypernet: universe::evolution::dna_genesis::HypernetSeed::default(),
+        telemetry: universe::evolution::telemetry::TelemetryWriter::new(
+            universe::evolution::telemetry::gen_run_id()
+        ),
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

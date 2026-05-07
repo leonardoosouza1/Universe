@@ -242,7 +242,7 @@ pub mod iara {
         pub const RETINA_ROWS: usize = 8;
         pub const RETINA_COLS: usize = 126;
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 384
-        pub const FOV_DEG: f32 = 140.0;
+        pub const FOV_DEG: f32 = 180.0;
         /// Ângulos de pitch por linha da retina (rad). Row 0 = horizonte alto, Row 5 = chão.
         pub const RETINA_PITCHES: [f32; RETINA_ROWS] = [-0.10,-0.08, -0.06, -0.03, -0.01, 0.01, 0.03, 0.05];
     }
