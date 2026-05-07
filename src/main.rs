@@ -138,6 +138,7 @@ fn main() {
         global_best_distance: 0.0,
         global_best_position: None,
         champion_distance: 0.0,
+        best_ever_dist: 0.0,
         elite_pool: Vec::new(),
         elite_clusters: Vec::new(),
         champion_path: Vec::new(),

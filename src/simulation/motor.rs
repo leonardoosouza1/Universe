@@ -177,12 +177,12 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     let _depth_near_px = (inputs[52] as f32 + inputs[53] as f32) / (2.0 * 127.0);
     // if depth_near_px > 0.3 { bias[0] -= depth_near_px * 0.15; }
 
-    // A-MotionRow0: movimento perto (row 0) = algo se aproximando = freio suave
-    let near_motion = inputs[21] as f32 / 127.0;
-    if near_motion > 0.6 {
-        bias[2] += near_motion * 0.06;  // brake hint
-        bias[0] -= near_motion * 0.03;  // throttle cut
-    }
+    // A-MotionRow0: disabled for stability (motion channels adding noise under SPEED_BLEED)
+    let _near_motion = inputs[21] as f32 / 127.0;
+    // if _near_motion > 0.6 {
+    //     bias[2] += _near_motion * 0.06;  // brake hint
+    //     bias[0] -= _near_motion * 0.03;  // throttle cut
+    // }
 
     bias
 }

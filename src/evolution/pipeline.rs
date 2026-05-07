@@ -373,6 +373,11 @@ pub(super) fn evolution_pipeline(
                 // v11: captura knots do KAN output head pra inheritance entre gens.
                 kan_knots: r.kan_out.knots,
             };
+            // Guard: só adiciona ao pool se racer atingiu distância mínima (sanidade check)
+            // Previne que DNA de crash total (<=0m) contaminar o pool
+            if r.track_progress < 300.0 {
+                continue;
+            }
             if race.elite_pool.len() < 10 {
                 race.elite_pool.push(candidate);
             } else {
@@ -697,7 +702,12 @@ pub(super) fn evolution_pipeline(
                 || val_ok
                 || simple_ok;
 
-            if should_crown {
+            // Guard: só salva DNA se for melhoria significativa (>10%) sobre best_ever
+            // Previne que mutações randomicamente boas sobrescrevam checkpoint sólido
+            let improvement_sufficient = race.best_ever_dist == 0.0
+                || this_gen_best_dist >= race.best_ever_dist * 1.10;
+
+            if should_crown && improvement_sufficient {
                 race.champion_distance = this_gen_best_dist; // Atualiza o limiar do campeão
                 race.gens_since_crown = 0; // Resetar contador de deadlock
                 // Guarda o traçado do campeão para visualizar na próxima geração.
@@ -779,6 +789,8 @@ pub(super) fn evolution_pipeline(
                         Some(&slow_weights),
                     );
                 }
+                // Update hard checkpoint
+                race.best_ever_dist = this_gen_best_dist.max(race.best_ever_dist);
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
                     let _ = writeln!(file, "👑 **NOVO CAMPEÃO COROADO!** Distância: {:.1}m (Gen {}) — Superou {:.1}m anterior", this_gen_best_dist, race.generation, race.champion_distance);
