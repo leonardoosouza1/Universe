@@ -319,48 +319,77 @@ fn setup_scene(
         ..default()
     });
 
-    let world = &world_res.0;
-    let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
-    
-    // Registra os IDs em race.world_entities para que o evolution_pipeline possa
-    // despawnar estas 3 meshes no fim da geração. Sem isso, cada reset criaria
-    // uma pista NOVA sobreposta à anterior (efeito "duas pistas").
-    let road_e = commands.spawn((
-        Mesh3d(meshes.add(r_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.13, 0.13, 0.15),
-            perceptual_roughness: 0.65,
-            metallic: 0.05,
-            reflectance: 0.4,
-            ..default()
-        })),
-        SimulationEntity,
-    )).id();
+    let mut world_entities = Vec::new();
 
-    let grass_e = commands.spawn((
-        Mesh3d(meshes.add(g_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.18, 0.42, 0.18),
-            perceptual_roughness: 0.95,
-            metallic: 0.0,
-            ..default()
-        })),
-        SimulationEntity,
-    )).id();
+    // City mode: generate street grid instead of racing track
+    if config.city_mode {
+        if let Some(city_nav) = world_res.1.as_ref() {
+            // Generate city mesh from grid
+            let (road_mesh, grass_mesh) = universe::scenery::generate_city_mesh(city_nav, 3.0);
+            let road_e = commands.spawn((
+                Mesh3d(meshes.add(road_mesh)),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.2, 0.2, 0.22), // dark asphalt
+                    perceptual_roughness: 0.7,
+                    metallic: 0.02,
+                    ..default()
+                })),
+                SimulationEntity,
+            )).id();
+            let grass_e = commands.spawn((
+                Mesh3d(meshes.add(grass_mesh)),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgb(0.15, 0.35, 0.15), // dark green
+                    perceptual_roughness: 0.95,
+                    metallic: 0.0,
+                    ..default()
+                })),
+                SimulationEntity,
+            )).id();
+            world_entities.extend([road_e, grass_e]);
+        }
+    } else {
+        // Racing mode: generate procedural track
+        let world = &world_res.0;
+        let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
 
-    let wall_e = commands.spawn((
-        Mesh3d(meshes.add(w_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.92, 0.93, 0.95), // concreto branco F1
-            perceptual_roughness: 0.55,
-            metallic: 0.0,
-            reflectance: 0.3,
-            ..default()
-        })),
-        SimulationEntity,
-    )).id();
+        let road_e = commands.spawn((
+            Mesh3d(meshes.add(r_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.13, 0.13, 0.15),
+                perceptual_roughness: 0.65,
+                metallic: 0.05,
+                reflectance: 0.4,
+                ..default()
+            })),
+            SimulationEntity,
+        )).id();
 
-    let mut world_entities = vec![road_e, grass_e, wall_e];
+        let grass_e = commands.spawn((
+            Mesh3d(meshes.add(g_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.18, 0.42, 0.18),
+                perceptual_roughness: 0.95,
+                metallic: 0.0,
+                ..default()
+            })),
+            SimulationEntity,
+        )).id();
+
+        let wall_e = commands.spawn((
+            Mesh3d(meshes.add(w_mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.92, 0.93, 0.95), // concreto branco F1
+                perceptual_roughness: 0.55,
+                metallic: 0.0,
+                reflectance: 0.3,
+                ..default()
+            })),
+            SimulationEntity,
+        )).id();
+
+        world_entities.extend([road_e, grass_e, wall_e]);
+    }
     // Atmospheric horizon: sea plane, mountain ring, sun. Decorative only —
     // sits far beyond the 720m voxel grid, never collides with cars.
     let scenery_entities = universe::scenery::spawn_scenery(&mut commands, &mut meshes, &mut materials);

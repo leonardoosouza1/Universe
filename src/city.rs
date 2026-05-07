@@ -77,6 +77,7 @@ pub struct CityNavState {
     pub grid_size: usize,           // 320 (world cells)
     pub cell_size: f32,             // 3.0 m
     pub block_size_cells: usize,    // CITY_BLOCK_CELLS = 32
+    pub grid: Vec<VoxelType>,       // Road vs Grass layout for visuals
 }
 
 impl CityNavState {
@@ -222,6 +223,7 @@ impl CityNavState {
             grid_size,
             cell_size,
             block_size_cells: block_size,
+            grid: grid.clone(),
         }
     }
 

@@ -5,7 +5,56 @@
 //! `SimulationEntity` so race reset cleans them up.
 
 use bevy::prelude::*;
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
 use crate::SimulationEntity;
+
+/// Generate city street mesh from city nav grid
+pub fn generate_city_mesh(city_nav: &crate::city::CityNavState, cell_size: f32) -> (Mesh, Mesh) {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+
+    let grid_size = city_nav.grid_size;
+    let mut road_pos = Vec::new();
+    let mut road_idx = Vec::new();
+    let mut grass_pos = Vec::new();
+    let mut grass_idx = Vec::new();
+
+    // Grid cells: road=dark asphalt, grass=green
+    for row in 0..grid_size {
+        for col in 0..grid_size {
+            let x = col as f32 * cell_size;
+            let z = row as f32 * cell_size;
+
+            let is_road = matches!(city_nav.grid[row * grid_size + col], crate::world::VoxelType::Road);
+            let verts = vec![
+                Vec3::new(x, 0.0, z),
+                Vec3::new(x + cell_size, 0.0, z),
+                Vec3::new(x + cell_size, 0.0, z + cell_size),
+                Vec3::new(x, 0.0, z + cell_size),
+            ];
+
+            let (positions, indices) = if is_road {
+                (&mut road_pos, &mut road_idx)
+            } else {
+                (&mut grass_pos, &mut grass_idx)
+            };
+
+            let base_idx = positions.len() as u32;
+            positions.extend(verts.iter().map(|v| [v.x, v.y, v.z]));
+            indices.extend([base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
+        }
+    }
+
+    let mut road_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    road_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, road_pos);
+    road_mesh.insert_indices(Indices::U32(road_idx));
+
+    let mut grass_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    grass_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, grass_pos);
+    grass_mesh.insert_indices(Indices::U32(grass_idx));
+
+    (road_mesh, grass_mesh)
+}
 
 /// Cheap deterministic PRNG — splitmix64. Same pattern as
 /// `world::procedural_waypoints`. Returns f32 in [0, 1).
