@@ -221,13 +221,20 @@ fn cleanup_simulation(
     }
 }
 
-fn setup_main_camera(mut commands: Commands) {
+fn setup_main_camera(mut commands: Commands, config: Res<UniverseConfig>) {
     use bevy::core_pipeline::bloom::Bloom;
     use bevy::core_pipeline::tonemapping::Tonemapping;
     use bevy::core_pipeline::motion_blur::MotionBlur;
     use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel,
                     VolumetricFog, ScreenSpaceReflections};
     use bevy_atmosphere::prelude::AtmosphereCamera;
+
+    // City mode: top-down view. Racing: cinematic angle
+    let (cam_pos, look_at) = if config.city_mode {
+        (Vec3::new(480.0, 600.0, 480.0), Vec3::new(480.0, 0.0, 480.0))  // Center city grid, straight down
+    } else {
+        (Vec3::new(0.0, 100.0, 300.0), Vec3::ZERO)  // Racing cinematic angle
+    };
 
     commands.spawn((
         Camera3d::default(),
@@ -254,7 +261,7 @@ fn setup_main_camera(mut commands: Commands) {
             ..default()
         },
         AtmosphereCamera::default(),
-        Transform::from_xyz(0.0, 100.0, 300.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(cam_pos.x, cam_pos.y, cam_pos.z).looking_at(look_at, Vec3::Y),
         bevy::pbr::DistanceFog {
             color: Color::srgb(0.55, 0.72, 0.88),
             falloff: bevy::pbr::FogFalloff::Linear { start: 600.0, end: 2500.0 },
