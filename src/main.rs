@@ -231,8 +231,10 @@ fn setup_main_camera(mut commands: Commands, config: Res<UniverseConfig>) {
 
     // City mode: top-down view. Racing: cinematic angle
     let (cam_pos, look_at) = if config.city_mode {
+        println!("📷 CAMERA: City mode - top-down at (480, 600, 480) looking at (480, 0, 480)");
         (Vec3::new(480.0, 600.0, 480.0), Vec3::new(480.0, 0.0, 480.0))  // Center city grid, straight down
     } else {
+        println!("📷 CAMERA: Racing mode - cinematic angle");
         (Vec3::new(0.0, 100.0, 300.0), Vec3::ZERO)  // Racing cinematic angle
     };
 
@@ -264,7 +266,13 @@ fn setup_main_camera(mut commands: Commands, config: Res<UniverseConfig>) {
         Transform::from_xyz(cam_pos.x, cam_pos.y, cam_pos.z).looking_at(look_at, Vec3::Y),
         bevy::pbr::DistanceFog {
             color: Color::srgb(0.55, 0.72, 0.88),
-            falloff: bevy::pbr::FogFalloff::Linear { start: 600.0, end: 2500.0 },
+            falloff: if config.city_mode {
+                // City: far fog so we can see entire grid
+                bevy::pbr::FogFalloff::Linear { start: 100.0, end: 2000.0 }
+            } else {
+                // Racing: standard fog
+                bevy::pbr::FogFalloff::Linear { start: 600.0, end: 2500.0 }
+            },
             ..default()
         },
     ));
