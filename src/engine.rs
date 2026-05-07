@@ -6,6 +6,7 @@ use crate::types::SplineNode;
 use crate::cfc::CfCCell;
 use crate::kan::SensoryPreFilter;
 use crate::config::iara::vision::RETINA_TOTAL;
+use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 use std::sync::RwLock;
 
 /// Tier 6.8 — Mirror neurons / observational learning.
@@ -126,7 +127,7 @@ impl SovereignEngine {
     pub fn new() -> Self {
         Self {
             metabolism: Metabolism::new(),
-            instinct_layer: BitLinear::new(192, 96),
+            instinct_layer: BitLinear::new(SENSORY_WAVE_SIZE, 96),
             cortex_l2: {
                 let mut l = crate::float_layers::FloatLinear::new(96, 48);
                 let mut s: u64 = 0xC0DE_CAFE;
@@ -152,7 +153,7 @@ impl SovereignEngine {
             slow_brain: SlowBrain::new(),
             heart_resonance: ResonantNode::new(1.0),
             cfc_state: CfCCell::new(96),
-            kan_filters: SensoryPreFilter::new(192),
+            kan_filters: SensoryPreFilter::new(SENSORY_WAVE_SIZE),
             resonance_coherence: [0.0; 96],
             current_time: 0.0,
             active_actions: Vec::new(),
@@ -290,11 +291,11 @@ impl SovereignEngine {
         //     os 128 canais ANTES do CfC. Cada canal aprende curva própria
         //     (log p/ wall_distance, sat p/ speed, step p/ grass, etc).
         //     Init identity (coeffs=1.0) → comportamento ≈ pré-KAN no gen 0.
-        let mut kan_wave = [0i8; 192];
+        let mut kan_wave = [0i8; SENSORY_WAVE_SIZE];
         self.kan_filters.apply(sensory_wave, &mut kan_wave);
 
         // 0b. CfC PRE-PROCESSOR: filtra retina [0..96] com memória temporal.
-        let mut filtered_wave = [0i8; 192];
+        let mut filtered_wave = [0i8; SENSORY_WAVE_SIZE];
         filtered_wave.copy_from_slice(&kan_wave);
         let mut filtered_retina = [0i8; 96];
         self.cfc_state.update(&kan_wave[0..96], &mut filtered_retina, delta_t);

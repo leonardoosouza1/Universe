@@ -215,13 +215,14 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
 //   - v3.1 (8494B): decodifica os 16 bytes finais.
 // ============================================================================
 pub const DNA_MAGIC: &[u8; 4] = b"IARA";
-pub const DNA_VERSION: u16 = 4;
-pub const DNA_FAST_SIZE: usize = 192 * 96; // Retina HD v2
-pub const DNA_SLOW_SIZE: usize = 48 * 8;   // SlowBrain expanded
+pub use crate::config::iara::genetics::*;
+
+
+
 pub const DNA_HEADER_SIZE: usize = 4 + 2 + 4 + 4 + 4 + 4;  // 22
 
-pub const DNA_FAST_SIZE_LEGACY: usize = 128 * 64; // 8192
-pub const DNA_SLOW_SIZE_LEGACY: usize = 32 * 8;   // 256
+
+
 pub const DNA_V3_TOTAL: usize = DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY;  // 8478
 pub const DNA_V31_TOTAL: usize = DNA_V3_TOTAL + MORPHO_BYTES;  // 8494
 pub const DNA_V32_TOTAL: usize = DNA_V31_TOTAL + HYPERNET_BYTES; // 8755 (v3.2 with hypernet tail)
@@ -247,7 +248,7 @@ pub const TAG_CORTEX_L2: &[u8; 4] = b"CL2W";
 /// 32× compressão. Lossy mas smooth. Pra DNAs onde fidelidade absoluta não é
 /// crítica (cars treinados convergem mesmo com aproximação).
 pub const CORTEX_DCT_COEFFS: usize = 256;
-pub const CORTEX_FULL_SIZE: usize = 192 * 96; // Retina HD v2
+pub const CORTEX_FULL_SIZE: usize = DNA_FAST_SIZE; // Retina HD v2
 pub const CORTEX_DCT_BYTES: usize = CORTEX_DCT_COEFFS * 4; // 1024 bytes
 
 /// Forward DCT-II truncated to K coefficients.

@@ -475,6 +475,47 @@ pub(super) fn update_racers(
         // Canais 16..63 zerados explicitamente (garantia contra leak de frame anterior).
         for i in 16..64 { sensory_wave[i] = 0; }
 
+        // Motion per-row: estrutura vertical de movimento (complementa ch 83/84 hemisférico).
+        // Row 0 (near pitch) + high motion = objeto próximo se movendo = urgente.
+        // Row 7 (far pitch) + motion = curva distante.
+        for row in 0..RETINA_ROWS {
+            let motion_sum: i32 = (0..RETINA_COLS)
+                .map(|col| {
+                    let cur = retina_binocular[row * RETINA_COLS + col] as i32;
+                    let prev = racer.visual_cortex[row * RETINA_COLS + col] as i32;
+                    (cur - prev).abs()
+                })
+                .sum();
+            // Max teórico: 255 * 126 = 32130
+            let motion_norm = ((motion_sum as f32 / 8000.0) * 127.0).min(127.0) as i8;
+            if row < 7 {
+                sensory_wave[21 + row] = motion_norm; // ch 21-27 = rows 0-6
+            } else {
+                sensory_wave[98] = motion_norm;        // ch 98 = row 7
+            }
+        }
+
+        // Edge density per-row: detecta boundaries via gradiente horizontal (simplified Sobel).
+        // Alta density = road edge, wall boundary, lane marking.
+        for row in 0..RETINA_ROWS {
+            let edge_sum: i32 = (0..RETINA_COLS - 1)
+                .map(|col| {
+                    let a = retina_binocular[row * RETINA_COLS + col] as i32;
+                    let b = retina_binocular[row * RETINA_COLS + col + 1] as i32;
+                    (a - b).abs()
+                })
+                .sum();
+            // Max teórico: 255 * 125 = 31875
+            let edge_norm = ((edge_sum as f32 / 6000.0) * 127.0).min(127.0) as i8;
+            let slot: usize = match row {
+                0 => 29, 1 => 30, 2 => 31,
+                3 => 33, 4 => 34, 5 => 35,
+                6 => 99, 7 => 100,
+                _ => unreachable!(),
+            };
+            sensory_wave[slot] = edge_norm;
+        }
+
         // --- SACCADE COM MEMÓRIA: média ponderada de pixels escuros + hold se cego ---
         // Usa TODOS os pixels escuros (valor negativo = road) no setor frontal (±60°),
         // pondera por "quão escuro" e calcula centroide angular. Se NADA está escuro
@@ -497,9 +538,7 @@ pub(super) fn update_racers(
         // Mantemos dark_center abaixo como priming de steer (canais 90-93) —
         // ele já carrega o sinal "pista vai pra lá, vira pra lá" sem girar o olho.
         racer.gaze_yaw = 0.0;
-        sensory_wave[98] = 0;
-        sensory_wave[99] = 0;
-        sensory_wave[100] = 0;
+        // Channels 98-100: motion/edge now computed above
         sensory_wave[101] = 0;
         let _ = (dark_angle_sum, dark_weight_sum, per_fov);
 
