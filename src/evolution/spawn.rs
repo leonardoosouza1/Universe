@@ -272,8 +272,14 @@ pub fn spawn_swarm(
     // Mutation rate com decay exponencial por geração: convergência gradual.
     // Floor em 0.005 mantém exploração residual mesmo após 100+ gerações.
     // v9: floor 0.005→0.012 pra sustentar exploração após 100+ gens.
-    let effective_mutation_rate = (dev.mutation_rate * 0.97_f32.powi(race.generation as i32 - 1))
-        .max(0.012) as f64;
+    // City mode: higher base rate + slower decay + higher floor for exploration in new task
+    let (base_rate, decay_rate, floor_rate) = if config.city_mode {
+        (0.018_f32, 0.96_f32, 0.018_f32)  // City: explore more, decay slower, higher floor
+    } else {
+        (dev.mutation_rate, 0.97_f32, 0.012_f32)  // Racing: standard convergence
+    };
+    let effective_mutation_rate = (base_rate * decay_rate.powi(race.generation as i32 - 1))
+        .max(floor_rate) as f64;
 
     // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     // PER-WIDTH: tenta CHAMPION_W{width}m.dna primeiro (memória por pista,

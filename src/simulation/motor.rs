@@ -215,6 +215,30 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     let dest_sin = inputs[111] as f32 / 127.0;
     bias[1] += dest_sin * 0.35;  // steer toward destination bearing
 
+    // A-TrafficRed: brake on red light when near intersection (city mode)
+    // Ch 110: traffic phase (0=green, 64=yellow, 127=red)
+    // Ch 114: proximity to light (0=far, 127=very close)
+    let traffic_phase = inputs[110] as f32 / 127.0;
+    let traffic_prox = inputs[114] as f32 / 127.0;
+    if traffic_phase > 0.8 && traffic_prox > 0.4 {
+        // Red light + close proximity: strong brake bias
+        bias[2] += traffic_phase * traffic_prox * 0.25;
+        bias[0] -= traffic_phase * traffic_prox * 0.15;
+    }
+
+    // A-IntersectionCaution: reduce throttle near intersections (city mode)
+    // Ch 115: intersection detection (0=far, 127=near)
+    let near_intersection = (inputs[115] as f32 / 127.0).max(0.0);
+    if near_intersection > 0.5 {
+        bias[0] -= near_intersection * 0.12;  // cut throttle approaching intersection
+        bias[1] *= 0.95;  // dampen steering to avoid sharp turns
+    }
+
+    // A-WallCityMode: wall-aware centering using expanded sensory (ch 116-117)
+    // Same logic as A13 but with city-mode redundancy for robustness
+    bias[1] += (inputs[116] as f32 / 127.0) * 0.10;  // left wall → steer right
+    bias[1] -= (inputs[117] as f32 / 127.0) * 0.10;  // right wall → steer left
+
     bias
 }
 
@@ -1260,11 +1284,11 @@ pub(super) fn update_racers(
             sensory_wave[28] = pre_brake;
         }
 
-        // --- CITY NAVIGATION SENSORY (ch 110-113, city mode only) ---
+        // --- CITY NAVIGATION SENSORY (ch 110-117, city mode only) ---
         // Gated behind config.city_mode check; no impact on race mode.
         if let Some(city_nav) = city_nav_state.as_ref() {
             // Ch 110: nearest traffic light state (0=green, 127=red)
-            if let Some((_, phase)) = city_nav.nearest_traffic_light(pos2d) {
+            if let Some((dist, phase)) = city_nav.nearest_traffic_light(pos2d) {
                 let phase_val: i8 = match phase {
                     crate::city::TrafficPhase::NsGreen => 0,
                     crate::city::TrafficPhase::NsYellow => 64,
@@ -1272,6 +1296,9 @@ pub(super) fn update_racers(
                     crate::city::TrafficPhase::EwYellow => 64,
                 };
                 sensory_wave[110] = phase_val;
+                // Ch 114: proximity to traffic light (127=very close <5m, 0=far >30m)
+                let prox_norm = 1.0 - (dist / 30.0).clamp(0.0, 1.0);
+                sensory_wave[114] = (prox_norm * 127.0) as i8;
             }
 
             // Ch 111-112: destination direction (sin/cos of bearing to goal)
@@ -1289,6 +1316,15 @@ pub(super) fn update_racers(
                 let dist_log = (dist / 50.0).log2().clamp(-3.0, 5.0);
                 (((dist_log + 3.0) / 8.0) * 127.0).clamp(0.0, 127.0) as i8
             };
+
+            // Ch 115: intersection detection (127 if within 30m of an intersection)
+            let near_intersection = city_nav.intersections.iter()
+                .any(|inter| pos2d.distance(inter.world_pos) < 30.0);
+            sensory_wave[115] = if near_intersection { 127 } else { 0 };
+
+            // Ch 116-117: wall proximity (same as racing, but recomputed for city safety awareness)
+            sensory_wave[116] = sensory_wave[85]; // left wall
+            sensory_wave[117] = sensory_wave[86]; // right wall
         }
 
         if should_fire {

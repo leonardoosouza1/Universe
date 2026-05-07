@@ -256,17 +256,30 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
 /// Primary: number of destinations reached.
 /// Secondary: approach to next destination, wall penalty, survival.
 pub(super) fn calc_city_fitness(r: &Racer) -> f32 {
-    let goal_bonus = r.nav_goals_reached as f32 * 20_000.0;
-    // Approach bonus: credit for getting closer to destination (even partial progress)
-    let approach_bonus = (1000.0 - r.nav_distance_to_goal).max(0.0) * 8.0;
+    // Exponential goal rewards: exponential growth incentivizes completing multiple goals
+    let goals = r.nav_goals_reached as f32;
+    let goal_bonus = if goals > 0.0 {
+        25_000.0 * (1.15_f32.powf(goals) - 1.0)
+    } else {
+        0.0
+    };
+
+    // Log-scaled approach bonus: more aggressive reward for crossing distance thresholds
+    let dist_clamped = r.nav_distance_to_goal.max(1.0).min(1000.0);
+    let log_dist = (dist_clamped / 1000.0).ln();
+    let approach_bonus = (-log_dist).max(0.0) * 12_000.0;
+
     // Survival bonus: penalty for death
-    let survival = if r.is_dead { 0.0 } else { 3_000.0 };
-    // Red light violations: heavy penalty to teach traffic rules
-    let redlight_pen = r.red_light_violations as f32 * 5_000.0;
+    let survival = if r.is_dead { 0.0 } else { 4_000.0 };
+
+    // Red light violations: strong penalty to enforce traffic rules
+    let redlight_pen = r.red_light_violations as f32 * 8_000.0;
+
     // Wall contact penalty: same as racing mode
     let wall_pen = r.wall_time * 200.0;
-    // Death penalty: small flat penalty if dead
-    let death_pen = if r.is_dead { 2_000.0 } else { 0.0 };
+
+    // Death penalty: substantial penalty if dead
+    let death_pen = if r.is_dead { 3_000.0 } else { 0.0 };
 
     goal_bonus + approach_bonus + survival - redlight_pen - wall_pen - death_pen
 }
