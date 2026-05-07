@@ -569,48 +569,66 @@ impl VoxelWorld {
                 
                 let mut hit_voxel = VoxelType::Road;
                 let mut hit_dist = 1200.0;
-                
+                let mut edge_proximity = 1.0f32; // 1.0=fully road, 0.0=at wall edge
+
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
-                
+
                 // Implementação do Algoritmo DDA (Digital Differential Analyzer) - Precisão Metafísica O(1)
                 let ray_start = Vec2::new(eye_pos.x / cell, eye_pos.z / cell);
                 let ray_dir = Vec2::new(dir_x, dir_z).normalize_or_zero();
-                
+
                 let mut map_x = ray_start.x.floor() as i32;
                 let mut map_y = ray_start.y.floor() as i32;
-                
+
                 let delta_dist_x = if ray_dir.x.abs() < 1e-5 { 1e30 } else { (1.0 / ray_dir.x).abs() };
                 let delta_dist_y = if ray_dir.y.abs() < 1e-5 { 1e30 } else { (1.0 / ray_dir.y).abs() };
-                
+
                 let step_x: i32; let step_y: i32;
                 let mut side_dist_x: f32; let mut side_dist_y: f32;
-                
+
                 if ray_dir.x < 0.0 {
                     step_x = -1; side_dist_x = (ray_start.x - map_x as f32) * delta_dist_x;
                 } else {
                     step_x = 1; side_dist_x = ((map_x as f32 + 1.0) - ray_start.x) * delta_dist_x;
                 }
-                
+
                 if ray_dir.y < 0.0 {
                     step_y = -1; side_dist_y = (ray_start.y - map_y as f32) * delta_dist_y;
                 } else {
                     step_y = 1; side_dist_y = ((map_y as f32 + 1.0) - ray_start.y) * delta_dist_y;
                 }
-                
+
                 let mut hit = false;
                 let mut side = 0; // 0 = hit X wall, 1 = hit Z wall
-                
+
                 // Alcance ~400m (134 blocos × 3m cell). Profundidade aumentada — modelo
                 // antecipa curvas longas em retas largas a 80m/s antes (era 300m).
-                for _ in 0..400 {
+                for step in 0..400 {
                     if side_dist_x < side_dist_y {
                         side_dist_x += delta_dist_x; map_x += step_x; side = 0;
                     } else {
                         side_dist_y += delta_dist_y; map_y += step_y; side = 1;
                     }
-                    
+
                     let voxel = self.get_voxel_at((map_x as f32) * cell, (map_y as f32) * cell);
                     if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
+                        // Detect road curvature: check if adjacent cells are also walls (curve) vs isolated (obstacle)
+                        let adjacent_wall_count = [
+                            (-1, 0), (1, 0), (0, -1), (0, 1),
+                            (-1, -1), (-1, 1), (1, -1), (1, 1)
+                        ].iter().filter(|&(dx, dz)| {
+                            let adj_voxel = self.get_voxel_at(((map_x + dx) as f32) * cell, ((map_y + dz) as f32) * cell);
+                            adj_voxel == VoxelType::Wall || adj_voxel == VoxelType::Hole
+                        }).count();
+
+                        // Smooth curve: 5+ adjacent walls → edge_proximity reduced (shows curve gradient)
+                        // Obstacle: <5 adjacent walls → edge_proximity stays high (shows edge sharp)
+                        edge_proximity = if adjacent_wall_count >= 5 {
+                            0.5 + (step as f32 / 400.0) * 0.5  // Curve: gradual fade
+                        } else {
+                            (step as f32 / 400.0)  // Obstacle: sharper transition
+                        };
+
                         hit_voxel = voxel; hit = true; break;
                     }
                 }
@@ -640,8 +658,9 @@ impl VoxelWorld {
 
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
-                        // Quad-scale depth (alcance estendido 600m):
-                        if hit_dist < 30.0 {
+                        // Curvature-aware: smooth curves show gradient, sharp obstacles show edge.
+                        // If edge_proximity < 1.0, interpolate toward road to show curve shape.
+                        let wall_base = if hit_dist < 30.0 {
                             let near = (hit_dist / 30.0).clamp(0.0, 1.0);
                             127.0 - (near.sqrt() * 72.0)
                         } else if hit_dist < 120.0 {
@@ -653,13 +672,25 @@ impl VoxelWorld {
                         } else {
                             let xfar = ((hit_dist - 1200.0) / 1200.0).clamp(0.0, 1.0);
                             -25.0 - (xfar * 25.0)
+                        };
+
+                        // For curves (edge_proximity < 1.0), blend toward road to show gradient
+                        if edge_proximity < 0.95 {
+                            let road_val = -128.0 + (depth_fade * 96.0);
+                            let blend = edge_proximity * 0.4; // Show curve shape via road blend
+                            wall_base * blend + road_val * (1.0 - blend)
+                        } else {
+                            wall_base
                         }
                     },
                     VoxelType::Grass => {
                         40.0 - (depth_fade * 40.0)
                     },
                     VoxelType::Road => {
-                        -128.0 + (depth_fade * 48.0)
+                        // Expanded range to show curves as smooth gradations.
+                        // Before: -128→-80 (48 range, abrupt transitions at curves).
+                        // Now: -128→-32 (96 range, smoother curve perception).
+                        -128.0 + (depth_fade * 96.0)
                     },
                     VoxelType::Hole => {
                         // Hole = buraco no asfalto. Mata no contato → canal precisa ser
