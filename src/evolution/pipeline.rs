@@ -580,65 +580,104 @@ pub(super) fn evolution_pipeline(
             let _ = writeln!(file, "Scars — new_this_gen: {} | pool_active: {} | max_ttl: {} (pre_decay: {}, post_decay: {})",
                 scars_created_this_gen, pool_active_scars, pool_max_ttl, total_active_scars_before, total_active_scars_after);
 
-            // --- DEATH BY ZONE (waypoint segment) ---
-            // Agrupa mortes por segmento da pista. Identifica "curva que mata".
-            let world = &world_res.0;
-            let n_segs = world.waypoints_world.len().saturating_sub(1).max(1);
-            let mut deaths_per_seg = vec![0u32; n_segs];
-            for (_, r, _, _) in sorted.iter() {
-                if r.is_dead {
-                    let seg = world.waypoint_zone(r.death_pos.x, r.death_pos.z).min(n_segs - 1);
-                    deaths_per_seg[seg] += 1;
+            // --- CITY MODE SPECIFIC REPORTING ---
+            if config.city_mode {
+                let goals_reached: Vec<u32> = sorted.iter().map(|(_, r, _, _)| r.nav_goals_reached).collect();
+                let violations: Vec<u32> = sorted.iter().map(|(_, r, _, _)| r.red_light_violations).collect();
+                let max_goals = goals_reached.iter().cloned().fold(0u32, u32::max);
+                let total_violations: u32 = violations.iter().sum();
+                let avg_violations = if total > 0 { total_violations as f32 / total as f32 } else { 0.0 };
+
+                let _ = writeln!(file, "\n### 🏙️  CITY NAVIGATION METRICS");
+                let _ = writeln!(file, "Max goals reached: {} | Total violations: {} | Avg violations/racer: {:.2}",
+                    max_goals, total_violations, avg_violations);
+
+                // Top navigators
+                let mut nav_sorted = sorted.iter().collect::<Vec<_>>();
+                nav_sorted.sort_by(|a, b| b.1.nav_goals_reached.cmp(&a.1.nav_goals_reached));
+
+                let _ = writeln!(file, "\n| Rank | Name | Goals | Violations | Dist to Goal |");
+                let _ = writeln!(file, "|---|---|---|---|---|");
+                for (i, (_, r, _, _)) in nav_sorted.iter().take(10).enumerate() {
+                    let _ = writeln!(file, "| {} | {} | {} | {} | {:.1}m |",
+                        i+1, r.name, r.nav_goals_reached, r.red_light_violations, r.nav_distance_to_goal);
+                }
+            } else {
+                // --- DEATH BY ZONE (waypoint segment) --- RACING MODE ONLY
+                let world = &world_res.0;
+                let n_segs = world.waypoints_world.len().saturating_sub(1).max(1);
+                let mut deaths_per_seg = vec![0u32; n_segs];
+                for (_, r, _, _) in sorted.iter() {
+                    if r.is_dead {
+                        let seg = world.waypoint_zone(r.death_pos.x, r.death_pos.z).min(n_segs - 1);
+                        deaths_per_seg[seg] += 1;
+                    }
+                }
+                let _ = writeln!(file, "\n### 💀 DEATHS POR SEGMENTO (waypoint i → i+1)");
+                for (i, count) in deaths_per_seg.iter().enumerate() {
+                    let p1 = world.waypoints_world[i];
+                    let p2 = world.waypoints_world[(i+1).min(world.waypoints_world.len()-1)];
+                    let bar = "█".repeat((((*count as f32) / (total as f32).max(1.0)) * 30.0) as usize);
+                    let _ = writeln!(file, "seg[{}] ({:.0},{:.0})→({:.0},{:.0}): {:3}  {}",
+                        i, p1.x, p1.y, p2.x, p2.y, count, bar);
                 }
             }
-            let _ = writeln!(file, "\n### 💀 DEATHS POR SEGMENTO (waypoint i → i+1)");
-            for (i, count) in deaths_per_seg.iter().enumerate() {
-                let p1 = world.waypoints_world[i];
-                let p2 = world.waypoints_world[i+1];
-                let bar = "█".repeat((((*count as f32) / (total as f32).max(1.0)) * 30.0) as usize);
-                let _ = writeln!(file, "seg[{}] ({:.0},{:.0})→({:.0},{:.0}): {:3}  {}",
-                    i, p1.x, p1.y, p2.x, p2.y, count, bar);
+
+            // --- ASCII MAP com death markers + finish positions (RACING MODE ONLY) ---
+            if !config.city_mode {
+                let world = &world_res.0;
+                let death_points: Vec<Vec3> = sorted.iter()
+                    .filter(|(_, r, _, _)| r.is_dead)
+                    .map(|(_, r, _, _)| r.death_pos).collect();
+                let alive_positions: Vec<Vec3> = sorted.iter()
+                    .filter(|(_, r, _, _)| !r.is_dead)
+                    .take(30)
+                    .map(|(_, _, _, body)| {
+                        let _ = body;
+                        Vec3::ZERO
+                    }).collect();
+                let map = world.render_ascii_map(100, 40, &death_points, &alive_positions);
+                let _ = writeln!(file, "\n### 🗺️  MAPA (100×40) | `.`=grass `=`=road `#`=wall `0-7`=waypoints `X`=morte");
+                let _ = writeln!(file, "```");
+                let _ = write!(file, "{}", map);
+                let _ = writeln!(file, "```");
             }
 
-            // --- ASCII MAP com death markers + finish positions ---
-            let death_points: Vec<Vec3> = sorted.iter()
-                .filter(|(_, r, _, _)| r.is_dead)
-                .map(|(_, r, _, _)| r.death_pos).collect();
-            let alive_positions: Vec<Vec3> = sorted.iter()
-                .filter(|(_, r, _, _)| !r.is_dead)
-                .take(30)
-                .map(|(_, _, _, body)| {
-                    let _ = body;
-                    Vec3::ZERO
-                }).collect();
-            let map = world.render_ascii_map(100, 40, &death_points, &alive_positions);
-            let _ = writeln!(file, "\n### 🗺️  MAPA (100×40) | `.`=grass `=`=road `#`=wall `0-7`=waypoints `X`=morte");
-            let _ = writeln!(file, "```");
-            let _ = write!(file, "{}", map);
-            let _ = writeln!(file, "```");
-
-            // --- PER-RACER ENHANCED (top + qualquer com lap) ---
-            let with_lap: Vec<_> = sorted.iter().filter(|(_, r, _, _)| r.total_laps > 0).collect();
-            if !with_lap.is_empty() {
-                let _ = writeln!(file, "\n### 🏆 RACERS COM VOLTAS COMPLETADAS (todos)");
-                let _ = writeln!(file, "| Nome | Laps | NET(m) | Peak(km/h) | Walls | Death | Frame | Zone |");
-                let _ = writeln!(file, "|---|---|---|---|---|---|---|---|");
-                for (_, r, _, _) in with_lap.iter() {
-                    let net = (r.track_progress - r.spawn_progress).max(0.0);
-                    let death = r.death_reason.map(|d| d.label()).unwrap_or("VIVO");
-                    let zone = if r.is_dead { world.waypoint_zone(r.death_pos.x, r.death_pos.z) as i32 } else { -1 };
-                    let _ = writeln!(file, "| {} | {} | {:.0} | {:.0} | {} | {} | {} | {} |",
-                        r.name, r.total_laps, net, r.peak_speed * 3.6, r.wall_hits, death, r.death_frame,
-                        if zone < 0 { "-".to_string() } else { zone.to_string() });
+            // --- PER-RACER ENHANCED (top + qualquer com lap) --- RACING MODE ONLY ---
+            if !config.city_mode {
+                let world = &world_res.0;
+                let with_lap: Vec<_> = sorted.iter().filter(|(_, r, _, _)| r.total_laps > 0).collect();
+                if !with_lap.is_empty() {
+                    let _ = writeln!(file, "\n### 🏆 RACERS COM VOLTAS COMPLETADAS (todos)");
+                    let _ = writeln!(file, "| Nome | Laps | NET(m) | Peak(km/h) | Walls | Death | Frame | Zone |");
+                    let _ = writeln!(file, "|---|---|---|---|---|---|---|---|");
+                    for (_, r, _, _) in with_lap.iter() {
+                        let net = (r.track_progress - r.spawn_progress).max(0.0);
+                        let death = r.death_reason.map(|d| d.label()).unwrap_or("VIVO");
+                        let zone = if r.is_dead { world.waypoint_zone(r.death_pos.x, r.death_pos.z) as i32 } else { -1 };
+                        let _ = writeln!(file, "| {} | {} | {:.0} | {:.0} | {} | {} | {} | {} |",
+                            r.name, r.total_laps, net, r.peak_speed * 3.6, r.wall_hits, death, r.death_frame,
+                            if zone < 0 { "-".to_string() } else { zone.to_string() });
+                    }
                 }
             }
 
             // Console summary compacto pra feedback ao vivo.
-            // FIX Bug 2: NET max real (não do top-fitness; rewards múltiplos desacoplam fitness e NET).
-            let net_max_real: f32 = nets.iter().cloned().fold(0.0_f32, f32::max);
-            println!("📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
-                race.generation, laps_0, laps_1, laps_2, laps_3p,
-                net_max_real, median(&nets), deaths, total);
+            if config.city_mode {
+                let goals_reached: Vec<u32> = sorted.iter().map(|(_, r, _, _)| r.nav_goals_reached).collect();
+                let max_goals = goals_reached.iter().cloned().fold(0u32, u32::max);
+                let avg_goals = if total > 0 { goals_reached.iter().sum::<u32>() as f32 / total as f32 } else { 0.0 };
+                let violations: Vec<u32> = sorted.iter().map(|(_, r, _, _)| r.red_light_violations).collect();
+                let total_violations: u32 = violations.iter().sum();
+                println!("🏙️  GEN {} | Max goals: {} | Avg goals: {:.1} | Violations: {} | Deaths {}/{}",
+                    race.generation, max_goals, avg_goals, total_violations, deaths, total);
+            } else {
+                // FIX Bug 2: NET max real (não do top-fitness; rewards múltiplos desacoplam fitness e NET).
+                let net_max_real: f32 = nets.iter().cloned().fold(0.0_f32, f32::max);
+                println!("📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
+                    race.generation, laps_0, laps_1, laps_2, laps_3p,
+                    net_max_real, median(&nets), deaths, total);
+            }
 
             // --- DIAGNÓSTICO CEREBRAL DO TOP-3 (NET) ---
             // Mostra o histórico dos 3 melhores. Se o volante não responde quando

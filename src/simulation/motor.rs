@@ -2377,6 +2377,38 @@ pub(super) fn update_racers(
             racer.prev_lap_prog = cur_lap_prog;
         }
 
+        // --- CITY NAVIGATION UPDATES (ch 110-113) ---
+        if config.city_mode {
+            if let Some(city_nav) = city_nav_state.as_ref() {
+                let pos2d = Vec2::new(transform.translation.x, transform.translation.z);
+
+                // Update distance to current destination
+                if let Some(dest) = racer.nav_destination {
+                    let new_dist = (dest.xz() - pos2d).length();
+                    racer.nav_distance_to_goal = new_dist;
+                    racer.nav_min_dist = racer.nav_min_dist.min(new_dist);
+
+                    // Destination reached: assign new destination
+                    if new_dist < 15.0 {
+                        racer.nav_goals_reached += 1;
+                        racer.nav_min_dist = f32::INFINITY;
+                        let dest_2d = city_nav.random_destination(pos2d, &mut rand::rng());
+                        racer.nav_destination = Some(Vec3::new(dest_2d.x, transform.translation.y, dest_2d.y));
+                        println!("🎯 {} reached goal #{}", racer.name, racer.nav_goals_reached);
+                    }
+                }
+
+                // Red light violation detection: crossing intersection while light is red
+                if let Some((dist_to_light, phase)) = city_nav.nearest_traffic_light(pos2d) {
+                    let is_red = matches!(phase, crate::city::TrafficPhase::NsYellow | crate::city::TrafficPhase::EwYellow);
+                    let in_intersection = dist_to_light < 8.0; // intersection radius ~8m
+                    if is_red && in_intersection && speed > 2.0 {
+                        racer.red_light_violations += 1;
+                    }
+                }
+            }
+        }
+
         // --- 6. ESPIONAGEM NEURAL (GIZMOS DO CAMPO DE VISÃO) ---
         // Toggle KeyH (dev.show_vision) — esconde cones verdes pra visual limpo.
         if dev.show_vision && (race.selected_racer.is_some() && race.selected_racer.unwrap() == entity ||
