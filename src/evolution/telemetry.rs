@@ -29,7 +29,7 @@ pub struct ReplayFrame {
 
 pub struct TelemetryWriter {
     pub run_id: String,
-    gen_file: Option<File>,
+    gen_writer: Option<BufWriter<File>>,
     replay_writer: Option<BufWriter<File>>,
 }
 
@@ -56,6 +56,7 @@ impl TelemetryWriter {
             .append(true)
             .open(format!("{}/generations.ndjson", dir))
             .ok();
+        let gen_writer = gen_file.map(|f| BufWriter::new(f));
 
         // replay.bin
         let replay_file = File::options()
@@ -67,14 +68,14 @@ impl TelemetryWriter {
 
         Self {
             run_id,
-            gen_file,
+            gen_writer,
             replay_writer,
         }
     }
 
     pub fn write_gen(&mut self, data: serde_json::Value) {
-        if let Some(f) = &mut self.gen_file {
-            let _ = writeln!(f, "{}", data);
+        if let Some(w) = &mut self.gen_writer {
+            let _ = writeln!(w, "{}", data);
         }
     }
 

@@ -893,56 +893,56 @@ pub(super) fn evolution_pipeline(
                 use std::io::Write;
                 let _ = writeln!(file, "🔀 **TRACK**: {} (seed={}, base_width={:.1}m, validation={})",
                     next_track.name, next_track.seed, base_width, is_val);
-
-                // Telemetria — extrai dados ANTES de chamar write_gen pra evitar borrow conflict
-                let nets: Vec<f32> = sorted.iter()
-                    .map(|(_, r, _, _)| r.track_progress.max(0.0))
-                    .collect();
-                let n = nets.len().max(1);
-                let avg_dist = nets.iter().sum::<f32>() / n as f32;
-                let mut nets_sorted = nets.clone();
-                nets_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let p50_dist = nets_sorted[n / 2];
-                let p90_dist = nets_sorted[(n * 9 / 10).min(n - 1)];
-                let crashes = sorted.iter().filter(|(_, r, _, _)| r.is_dead).count();
-                let speed_bleeds = sorted.iter()
-                    .filter(|(_, r, _, _)| matches!(r.death_reason, Some(crate::simulation::racer::DeathReason::SpeedBleed)))
-                    .count();
-                let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
-                let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
-                let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r)).unwrap_or(0.0);
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                // Extrai valores de race ANTES de usar race.telemetry
-                let run_id_copy = race.telemetry.run_id.clone();
-                let gen_num = race.generation;
-                let track_seed = race.seed;
-                let is_val = race.is_validation_gen;
-                let env_temp = env.asphalt_temp;
-                let env_wetness = env.weather_wetness;
-                let gen_dur = env.generation_time;
-                // Agora é seguro chamar write_gen
-                race.telemetry.write_gen(serde_json::json!({
-                    "run_id": run_id_copy,
-                    "gen": gen_num,
-                    "champion_dist_m": champ_dist,
-                    "best_fitness": best_fitness,
-                    "avg_dist_m": avg_dist,
-                    "p50_dist_m": p50_dist,
-                    "p90_dist_m": p90_dist,
-                    "crashes": crashes,
-                    "speed_bleeds": speed_bleeds,
-                    "survivors": n - crashes,
-                    "lap_count": laps,
-                    "track_seed": track_seed,
-                    "track_val": is_val,
-                    "env_temp": env_temp,
-                    "env_wetness": env_wetness,
-                    "gen_duration_secs": gen_dur,
-                    "ts_unix": ts,
-                }));
             }
         }
+
+        // Telemetria — sempre executar, não só em rotate_tracks
+        let nets: Vec<f32> = sorted.iter()
+            .map(|(_, r, _, _)| r.track_progress.max(0.0))
+            .collect();
+        let n = nets.len().max(1);
+        let avg_dist = nets.iter().sum::<f32>() / n as f32;
+        let mut nets_sorted = nets.clone();
+        nets_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let p50_dist = nets_sorted[n / 2];
+        let p90_dist = nets_sorted[(n * 9 / 10).min(n - 1)];
+        let crashes = sorted.iter().filter(|(_, r, _, _)| r.is_dead).count();
+        let speed_bleeds = sorted.iter()
+            .filter(|(_, r, _, _)| matches!(r.death_reason, Some(crate::simulation::racer::DeathReason::SpeedBleed)))
+            .count();
+        let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
+        let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
+        let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r)).unwrap_or(0.0);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        // Extrai valores de race ANTES de usar race.telemetry
+        let run_id_copy = race.telemetry.run_id.clone();
+        let gen_num = race.generation;
+        let track_seed = race.seed;
+        let is_val = race.is_validation_gen;
+        let env_temp = env.asphalt_temp;
+        let env_wetness = env.weather_wetness;
+        let gen_dur = env.generation_time;
+        // Agora é seguro chamar write_gen
+        race.telemetry.write_gen(serde_json::json!({
+            "run_id": run_id_copy,
+            "gen": gen_num,
+            "champion_dist_m": champ_dist,
+            "best_fitness": best_fitness,
+            "avg_dist_m": avg_dist,
+            "p50_dist_m": p50_dist,
+            "p90_dist_m": p90_dist,
+            "crashes": crashes,
+            "speed_bleeds": speed_bleeds,
+            "survivors": n - crashes,
+            "lap_count": laps,
+            "track_seed": track_seed,
+            "track_val": is_val,
+            "env_temp": env_temp,
+            "env_wetness": env_wetness,
+            "gen_duration_secs": gen_dur,
+            "ts_unix": ts,
+        }));
 
         let world = VoxelWorld::new(next_track.seed, effective_width);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
