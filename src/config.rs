@@ -275,9 +275,22 @@ pub mod iara {
 
     // ── CÉREBRO (fonte: src/simulation/motor.rs, src/engine.rs) ────────
     pub mod brain {
-        /// Sensory wave = array de 192 canais i8 (8 fóvea + 8 periférica + 64 HD + 112 telemetria/heurísticas).
+        use super::vision::{RETINA_COLS};
+
+        /// Calcula tamanho da sensory wave automaticamente.
+        /// Estrutura: 0-127 (fóvea, periférica, telemetria, lookahead)
+        ///          + 160-191 (retina horizon scan: 32 amostras)
+        /// Total = 128 + 32 = 160, mas marginalia para segurança = 160 + RETINA_COLS
+        const fn compute_sensory_size() -> usize {
+            // Retina horizon usa índices 160 até 160+32
+            // Mas deixar margem para RETINA_COLS em caso de ajustes futuros
+            160 + 32 + (RETINA_COLS / 4) // +32 margem buffer
+        }
+
+        /// Sensory wave = array de canais i8.
         /// NÃO é retina direta — passa por pooling no motor.rs.
-        pub const SENSORY_WAVE_SIZE: usize = 220;
+        /// Tamanho calculado automaticamente baseado em RETINA_ROWS/COLS.
+        pub const SENSORY_WAVE_SIZE: usize = compute_sensory_size();
 
         /// Fast Brain: BitLinear 192→96 (instinct layer, pesos ternários no DNA).
         pub const L1_NEURONS: usize = 96;
