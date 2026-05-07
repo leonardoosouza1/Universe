@@ -41,6 +41,7 @@ fn main() {
         .and_then(|s| s.parse().ok());
     let no_holes = args.iter().any(|a| a == "--no-holes");
     let easy_track = args.iter().any(|a| a == "--easy");
+    let city_mode = args.iter().any(|a| a == "--city");
     // FIX UI vs headless: flags persistem em universe_config.json. UI carrega
     // mesma config que último headless training → DNA e pista combinam.
     let final_no_holes = no_holes || config.no_holes;
@@ -53,9 +54,13 @@ fn main() {
         universe::world::EASY_TRACK.store(true, std::sync::atomic::Ordering::Relaxed);
         println!("📏 EASY TRACK validation (oval-friendly)");
     }
+    if city_mode {
+        println!("🏙️  CITY MODE | navigation task enabled");
+    }
     // Persiste se CLI passou — próximo run UI herda automatic.
     if no_holes { config.no_holes = true; }
     if easy_track { config.easy_track = true; }
+    if city_mode { config.city_mode = true; }
     let _ = config.save();
     if let Some(n) = swarm_override { config.swarm_count = n; }
     if let Some(s) = time_scale_override { config.time_scale = s; }

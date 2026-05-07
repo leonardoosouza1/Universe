@@ -73,7 +73,7 @@
   "gens_per_track": 50,
   "easy_track": false,
   "no_holes": true,
-  "city_mode": false,
+  "city_mode": true,
   "city_seed": 42,
   "city_blocks": 10
 }
