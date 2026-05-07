@@ -1094,6 +1094,12 @@ pub fn spawn_swarm(
                     head
                 },
                 stable_seed: if i == 0 { 42 } else { rng.random::<u64>() },
+                // Tier City: navigation fields (zeroed in race mode, set in city mode spawn)
+                nav_destination: None,
+                nav_goals_reached: 0,
+                nav_distance_to_goal: f32::MAX,
+                nav_min_dist: f32::MAX,
+                red_light_violations: 0,
             }
         ).with_children(|p| {
             p.spawn((Mesh3d(wing.clone()), MeshMaterial3d(racer_mat.clone()), Transform::from_xyz(-1.2, 0.4, 0.0)));

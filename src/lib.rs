@@ -25,6 +25,7 @@ pub mod config;
 pub mod ui_menu;
 pub mod substrate;
 pub mod scenery;
+pub mod city;
 
 use bevy::prelude::*;
 

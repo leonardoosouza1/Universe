@@ -204,6 +204,17 @@ pub struct Racer {
     pub kan_out: crate::kan::KanOutputHead,
     /// Seed estável para PRNG local (ruído sensorial/exploração determinístico).
     pub stable_seed: u64,
+    // --- Tier City: City Navigation Mode ---
+    /// Destino atual em modo city (None em race mode)
+    pub nav_destination: Option<Vec3>,
+    /// Contador de destinos alcançados nesta geração (city mode fitness primary signal)
+    pub nav_goals_reached: u32,
+    /// Distância em metros ao destino atual (euclidiana 2D)
+    pub nav_distance_to_goal: f32,
+    /// Mínimo histórico de nav_distance_to_goal para stagnation detection (monotônico)
+    pub nav_min_dist: f32,
+    /// Contador de violações de semáforo vermelho (penalidade fitness)
+    pub red_light_violations: u32,
 }
 
 /// Frame de diagnóstico do cérebro do racer.

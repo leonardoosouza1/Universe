@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
 
+// City navigation constants
+pub const CITY_BLOCK_CELLS: usize = 32;  // 32 cells × 3m = 96m per block (10 blocks = 960m, fits grid)
+
 #[derive(Resource, Debug, Serialize, Deserialize, Clone)]
 pub struct PhysicsSettings {
     pub enable_stall: bool,
@@ -67,10 +70,21 @@ pub struct UniverseConfig {
     pub easy_track: bool,
     #[serde(default)]
     pub no_holes: bool,
+    /// Tier City: ativa modo navegação urbana em vez de racing em loop.
+    /// Se true: ignora tracks[], gera grade 10×10 quarteirões com semáforos.
+    /// Se false: racing mode padrão com tracks procedurais.
+    #[serde(default)]
+    pub city_mode: bool,
+    #[serde(default = "default_city_seed")]
+    pub city_seed: u64,
+    #[serde(default = "default_city_blocks")]
+    pub city_blocks: u32,
 }
 
 fn default_generation_timeout_s() -> f32 { 120.0 }
 fn default_gens_per_track() -> usize { 3 }
+fn default_city_seed() -> u64 { 42 }
+fn default_city_blocks() -> u32 { 10 }
 
 impl Default for UniverseConfig {
     fn default() -> Self {
@@ -132,6 +146,9 @@ impl Default for UniverseConfig {
             gens_per_track: 3,
             easy_track: false,
             no_holes: false,
+            city_mode: false,
+            city_seed: 42,
+            city_blocks: 10,
         }
     }
 }
