@@ -1,0 +1,9 @@
+{
+  "profile": "openai",
+  "env": {
+    "OPENAI_BASE_URL": "http://localhost:1234/v1",
+    "OPENAI_MODEL": "qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2",
+    "OPENAI_API_FORMAT": "chat_completions"
+  },
+  "createdAt": "2026-05-02T19:30:44.313Z"
+}
