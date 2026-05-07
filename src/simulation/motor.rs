@@ -354,13 +354,12 @@ pub(super) fn update_racers(
     // Retina = 64 raycasts DDA × 2000 carros = 128k rays/tick. Em time_scale=10 são
     // ~10 substeps/frame real → 1.28M rays/frame. Pesado mesmo paralelizado via rayon.
     //
-    // Otimização: cache + skip. Recomputa retina só a cada RETINA_SKIP ticks (3 =
-    // ~47ms virtual de latência). Nos substeps restantes reusa racer.visual_cortex
-    // (guardado do último recompute). Carro a 60 m/s se desloca ~3m entre recomputes
-    // — tolerável pra percepção (walls têm largura 3m).
-    const RETINA_SKIP: u32 = 2;
+    // Otimização: cache + skip. Recomputa retina só a cada RETINA_SKIP ticks.
+    // RETINA_SKIP auto-calculado em config baseado em RETINA_ROWS×COLS pra evitar CPU bottleneck.
+    // Carro a 60 m/s se desloca ~3m entre recomputes — tolerável pra percepção (walls 3m).
+    let retina_skip = crate::config::iara::vision::RETINA_SKIP;
     *retina_tick_counter = retina_tick_counter.wrapping_add(1);
-    let recompute_retinas = (*retina_tick_counter % RETINA_SKIP) == 0;
+    let recompute_retinas = (*retina_tick_counter % retina_skip) == 0;
 
     let retinas: HashMap<Entity, [i8; RETINA_TOTAL]> = if recompute_retinas {
         let retina_inputs: Vec<(Entity, Vec3, Vec3, Vec3)> = query

@@ -239,8 +239,8 @@ mod tests {
 pub mod iara {
     // ── VISÃO (fonte: src/world.rs:12-18) ──────────────────────────────
     pub mod vision {
-        pub const RETINA_ROWS: usize = 14;
-        pub const RETINA_COLS: usize = 126;
+        pub const RETINA_ROWS: usize = 32;
+        pub const RETINA_COLS: usize = 256;
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 14 × 126 = 1764
         pub const FOV_DEG: f32 = 180.0;
 
@@ -271,6 +271,20 @@ pub mod iara {
         /// Ângulos de pitch por linha da retina (rad), auto-calculados.
         /// Row 0 = horizonte alto (-0.10 rad), Row N-1 = chão (+0.05 rad).
         pub const RETINA_PITCHES: [f32; RETINA_ROWS] = compute_pitches();
+
+        /// Auto-calculates retina skip factor based on resolution.
+        /// Higher resolution = more skipping to prevent CPU bottleneck.
+        /// Heuristic: RETINA_SKIP = 1 + (TOTAL_PIXELS / 1200)
+        /// - 14×126 = 1764 pixels → SKIP = 1 + 1.47 = 2
+        /// - 20×180 = 3600 pixels → SKIP = 1 + 3.0 = 4
+        /// - 8×64 = 512 pixels → SKIP = 1 + 0.43 = 1
+        pub const fn compute_retina_skip() -> u32 {
+            let total_pixels = RETINA_ROWS * RETINA_COLS;
+            let base_skip = 1 + (total_pixels / 1200);
+            if base_skip > 8 { 8 } else { base_skip as u32 }
+        }
+
+        pub const RETINA_SKIP: u32 = compute_retina_skip();
     }
 
     // ── CÉREBRO (fonte: src/simulation/motor.rs, src/engine.rs) ────────
