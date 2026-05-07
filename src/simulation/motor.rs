@@ -215,6 +215,16 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     let dest_sin = inputs[111] as f32 / 127.0;
     bias[1] += dest_sin * 0.35;  // steer toward destination bearing
 
+    // A-CityThrottle: strong forward bias in city mode (untrained brains need guidance)
+    // Ch 113: distance to destination (127=close, 0=far)
+    // Ch 115: near intersection (0=no, 127=yes)
+    let dist_to_goal = inputs[113] as f32 / 127.0;
+    let near_intersection = (inputs[115] as f32 / 127.0).max(0.0);
+    if dist_to_goal > 0.1 && near_intersection < 0.5 {
+        // Haven't reached goal and not near intersection: go forward
+        bias[0] += 0.40 * (1.0 - near_intersection);  // 0.40 throttle away from intersections
+    }
+
     // A-TrafficRed: brake on red light when near intersection (city mode)
     // Ch 110: traffic phase (0=green, 64=yellow, 127=red)
     // Ch 114: proximity to light (0=far, 127=very close)
@@ -228,7 +238,6 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
 
     // A-IntersectionCaution: reduce throttle near intersections (city mode)
     // Ch 115: intersection detection (0=far, 127=near)
-    let near_intersection = (inputs[115] as f32 / 127.0).max(0.0);
     if near_intersection > 0.5 {
         bias[0] -= near_intersection * 0.12;  // cut throttle approaching intersection
         bias[1] *= 0.95;  // dampen steering to avoid sharp turns
@@ -1341,6 +1350,14 @@ pub(super) fn update_racers(
                     let v = racer.engine.final_intent[i] + bias[i] * ax_strength;
                     racer.engine.final_intent[i] = v.clamp(-1.0, 1.0);
                 }
+                if config.city_mode && racer.grace_ticks < 20 {
+                    println!("DEBUG CITY: throttle = {:.3}, steering = {:.3}, brake = {:.3}",
+                        racer.engine.final_intent[0], racer.engine.final_intent[1], racer.engine.final_intent[2]);
+                }
+            }
+            // City mode: clamp throttle to [0, 1] to prevent reverse motion (untrained brains waste time reversing)
+            if config.city_mode {
+                racer.engine.final_intent[0] = racer.engine.final_intent[0].max(0.0);
             }
             // ---- Trinity decide (Gate + Reflex + Sentinel) ----
             let cortex_intent = [
@@ -1899,7 +1916,8 @@ pub(super) fn update_racers(
         // Overlap penalty afrouxado: 30 → 5 HP/s. Permite trail-braking legítimo em curvas.
         // Ainda pune conflict severo, mas não mata em 3s como antes.
         // Não aplicar durante ré (pedal real vem de REVERSE_PEDAL, não do neural).
-        let conflict = !is_reversing && final_pedal_intent > 0.4 && brake_intent > 0.4;
+        // (Disabled in city mode)
+        let conflict = !config.city_mode && !is_reversing && final_pedal_intent > 0.4 && brake_intent > 0.4;
         if conflict {
             racer.hp -= dt * 5.0;
             gizmos.sphere(pos + Vec3::new(0.0, 1.5, 0.0), 0.3, Color::srgb(1.0, 0.5, 0.0));
@@ -1908,20 +1926,24 @@ pub(super) fn update_racers(
         // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
         // Bootstrap grace: primeiros 10s sem penalidades duras — IA precisa de tempo
         // para o priming genético se expressar antes de ser culpada.
+        // (Disabled in city mode)
         let in_grace = racer.grace_ticks < 600;
-        if let Some(ref eng) = opt_engine {
-            if eng.current_rpm > eng.max_rpm * 0.95 {
-                racer.hp -= dt * 5.0; // Redline sempre pune — é sinal claro, não estagnação
-            }
-            // Burnout: reduzido e só fora do grace
-            if !in_grace && speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
-                racer.hp -= dt * 2.0; // era 5.0
+        if !config.city_mode {
+            if let Some(ref eng) = opt_engine {
+                if eng.current_rpm > eng.max_rpm * 0.95 {
+                    racer.hp -= dt * 5.0; // Redline sempre pune — é sinal claro, não estagnação
+                }
+                // Burnout: reduzido e só fora do grace
+                if !in_grace && speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
+                    racer.hp -= dt * 2.0; // era 5.0
+                }
             }
         }
 
         // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR ---
         // Só ativa após grace e fora de manobra de ré (recuar é lento mas legítimo).
-        if !in_grace && !is_reversing && speed < 1.0 {
+        // (Disabled in city mode - uses nav_stagnation_frames instead)
+        if !config.city_mode && !in_grace && !is_reversing && speed < 1.0 {
             racer.hp -= dt * 5.0;
         }
 
@@ -2100,32 +2122,35 @@ pub(super) fn update_racers(
             // Passar 10s sem ganhar 3m → drena 10HP/s (morte em ~10s de loop).
             // Afrouxado pra pistas estreitas: carro precisa de tempo pra manobrar em curva fechada,
             // e 5s/20HP/s antes matava qualquer um que parasse pra pensar numa L de 90°.
-            if racer.track_progress > racer.progress_checkpoint + 3.0 {
-                racer.progress_checkpoint = racer.track_progress;
-                racer.progress_stall = 0.0;
-            } else {
-                racer.progress_stall += dt;
-            }
-            if !in_grace && !is_reversing && racer.progress_stall > 10.0 {
-                racer.hp -= 10.0 * dt;
-            }
+            // (Disabled in city mode - uses nav_distance_to_goal instead)
+            if !config.city_mode {
+                if racer.track_progress > racer.progress_checkpoint + 3.0 {
+                    racer.progress_checkpoint = racer.track_progress;
+                    racer.progress_stall = 0.0;
+                } else {
+                    racer.progress_stall += dt;
+                }
+                if !in_grace && !is_reversing && racer.progress_stall > 10.0 {
+                    racer.hp -= 10.0 * dt;
+                }
 
-            // Punição Severa por Andar na Contramão — mas não durante manobra de ré de emergência.
-            if !is_reversing && racer.distance < -5.0 {
-                racer.hp -= 100.0 * dt;
-            }
+                // Punição Severa por Andar na Contramão — mas não durante manobra de ré de emergência.
+                if !is_reversing && racer.distance < -5.0 {
+                    racer.hp -= 100.0 * dt;
+                }
 
-            // Punição por fazer "zerinho" (Spinning in place donuts)
-            if body.angular_velocity.y.abs() > 1.5 && track_velocity.abs() < 5.0 {
-                racer.hp -= 30.0 * dt; // Se ficar girando mais que 1.5 rad/s parado, morre em ~3s
-            }
+                // Punição por fazer "zerinho" (Spinning in place donuts)
+                if body.angular_velocity.y.abs() > 1.5 && track_velocity.abs() < 5.0 {
+                    racer.hp -= 30.0 * dt; // Se ficar girando mais que 1.5 rad/s parado, morre em ~3s
+                }
 
-            // Punição de Desgaste de Pneu (Destruição Térmica): Evitar Burnouts Livres
-            // Se as rodas estão escorregando loucamente (Slip Ratio enorme) e o carro não avança muito
-            let avg_slip = body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0;
-            if avg_slip > 0.5 && track_velocity.abs() < 15.0 {
-                // "Estourar os Pneus": Drena vida absurdamente rápido se derrapar à toa acelerando a 80% parado
-                racer.hp -= avg_slip * 10.0 * dt;
+                // Punição de Desgaste de Pneu (Destruição Térmica): Evitar Burnouts Livres
+                // Se as rodas estão escorregando loucamente (Slip Ratio enorme) e o carro não avança muito
+                let avg_slip = body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0;
+                if avg_slip > 0.5 && track_velocity.abs() < 15.0 {
+                    // "Estourar os Pneus": Drena vida absurdamente rápido se derrapar à toa acelerando a 80% parado
+                    racer.hp -= avg_slip * 10.0 * dt;
+                }
             }
 
             // === DRIFT REWARD (derrapagem limpa) ===
@@ -2280,7 +2305,8 @@ pub(super) fn update_racers(
         // Frame-based = estável independente de time_scale / FPS / max_delta do Bevy.
         let prev_max = racer.max_progress;
         racer.max_progress = racer.max_progress.max(racer.track_progress);
-        if out_of_grace && !in_post_lap_grace {
+        // Racing stagnation detection (race mode only). City mode uses nav_stagnation_frames.
+        if !config.city_mode && out_of_grace && !in_post_lap_grace {
             if racer.max_progress > prev_max + 0.01 {
                 // v2: checkpoint 2m→0.5m (stagnation zera com progresso fino, não só chunks grandes).
                 // Carros que vão lentamente mas avançam não morrem por STAG.
@@ -2304,6 +2330,8 @@ pub(super) fn update_racers(
                 commands.entity(entity).insert(Visibility::Hidden);
                 println!("💀 {} STAGNATION aos frame {} (sem avanço {} frames)", racer.name, racer.grace_ticks, racer.stagnation as u32);
             }
+        } else if config.city_mode {
+            racer.stagnation = 0.0;
         } else {
             racer.stagnation = 0.0;
             racer.progress_checkpoint = racer.max_progress;
@@ -2316,7 +2344,9 @@ pub(super) fn update_racers(
         // bleed quando parados DE VERDADE (sem crescer max_progress).
         let cur_speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
         let making_progress = racer.max_progress > prev_max + 0.005;
-        if out_of_grace && !in_post_lap_grace && cur_speed < 2.0 && !making_progress {
+        // SPEED_BLEED only in race mode. City mode uses nav_distance_to_goal + stagnation detection.
+        let speed_bleed_check = !config.city_mode && out_of_grace && !in_post_lap_grace && cur_speed < 2.0 && !making_progress;
+        if speed_bleed_check {
             racer.slow_time += 1.0;
             if racer.slow_time > 360.0 { // Era 180.0. Mais tempo devagar sem HP bleed.
                 racer.hp -= 30.0 * dt; // Dano muito mais suave (era 100.0)
@@ -2347,9 +2377,9 @@ pub(super) fn update_racers(
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004 + corner_cost) * dt;
 
         // Idle brake penalty: brake forte + parado dreno HP pequeno.
-        // Caçador sem presa não pode hibernar freando.
+        // Caçador sem presa não pode hibernar freando. (Disabled in city mode)
         #[cfg(feature = "survival_pressure")]
-        if brake_intent > 0.5 && speed < 3.0 && !is_reversing {
+        if !config.city_mode && brake_intent > 0.5 && speed < 3.0 && !is_reversing {
             racer.hp -= 2.0 * dt;
         }
         if racer.fuel <= 0.0 && !racer.is_dead {

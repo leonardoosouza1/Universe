@@ -368,7 +368,7 @@ impl VoxelWorld {
 
         // Overlap: expand grass/road quads by 0.05 cell (~15cm) to hide sub-pixel
         // seams at distance. Adjacent quads overlap; tearing/Z-fighting cracks vanish.
-        let overlap = 0.05 * self.cell_size;
+        let overlap = 0.005 * self.cell_size;
 
         for y in 0..self.size {
             for x in 0..self.size {

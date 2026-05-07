@@ -685,6 +685,14 @@ pub(super) fn evolution_pipeline(
                 let total_violations: u32 = violations.iter().sum();
                 println!("🏙️  GEN {} | Max goals: {} | Avg goals: {:.1} | Violations: {} | Deaths {}/{}",
                     race.generation, max_goals, avg_goals, total_violations, deaths, total);
+
+                // Debug: show death reasons for first few racers
+                for (_, r, _, _) in sorted.iter().take(3) {
+                    let death_label = r.death_reason.as_ref().map(|d| d.label()).unwrap_or("ALIVE");
+                    let dist = r.nav_distance_to_goal;
+                    println!("  {} — dist_to_goal: {:.1}m | goals: {} | death: {}",
+                        r.name, dist, r.nav_goals_reached, death_label);
+                }
             } else {
                 // FIX Bug 2: NET max real (não do top-fitness; rewards múltiplos desacoplam fitness e NET).
                 let net_max_real: f32 = nets.iter().cloned().fold(0.0_f32, f32::max);

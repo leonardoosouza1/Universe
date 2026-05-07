@@ -921,6 +921,9 @@ pub fn spawn_swarm(
             // City spawn: random position from spawn_points, assign random destination
             if nav_state.spawn_points.is_empty() {
                 // Fallback if no spawn points (shouldn't happen with proper generation)
+                if idx_start == 0 {
+                    println!("⚠️  SPAWN: City mode but NO spawn_points!");
+                }
                 (Vec3::new(480.0, 10.0, 480.0), Quat::IDENTITY, 0.0, None)
             } else {
                 let spawn_idx = rng.random_range(0..nav_state.spawn_points.len());
@@ -928,9 +931,15 @@ pub fn spawn_swarm(
                 let spawn_3d = Vec3::new(spawn_2d.x, world.start_pos.y, spawn_2d.y);
                 let dest_2d = nav_state.random_destination(spawn_2d, &mut rng);
                 let dest_3d = Vec3::new(dest_2d.x, world.start_pos.y, dest_2d.y);
+                if idx_start == 0 {
+                    println!("🚗 SPAWN: City mode - batch {} models with destinations", idx_end - idx_start);
+                }
                 (spawn_3d, Quat::IDENTITY, 0.0, Some(dest_3d))
             }
         } else {
+            if config.city_mode && idx_start == 0 {
+                println!("⚠️  SPAWN: City mode but city_nav is None!");
+            }
             // --- SPAWN DISTRIBUÍDO AO LONGO DA PISTA (Andrychowicz et al, 2017) ---
             // Carros 0..29 (champion + 10 elites + 10 priming + 9 crossover) começam na
             // largada — 30 tentativas independentes do DNA bom, o suficiente pra que pelo
