@@ -45,10 +45,11 @@ fn drain_spawn_queue(
     let Some((next_i, total)) = race.pending_spawn else { return; };
     let batch_end = (next_i + SPAWN_BATCH_SIZE).min(total);
     let world = &world_res.0;
+    let city_nav = world_res.1.as_ref();
     spawn_swarm(
         &mut commands, &mut meshes, &mut materials, &mut race,
         world, &dev, &config,
-        next_i, batch_end,
+        next_i, batch_end, city_nav,
     );
     race.pending_spawn = if batch_end >= total { None } else { Some((batch_end, total)) };
 }

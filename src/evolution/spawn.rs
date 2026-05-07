@@ -246,6 +246,7 @@ pub fn spawn_swarm(
     config: &UniverseConfig,
     idx_start: usize,
     idx_end: usize,
+    city_nav: Option<&crate::city::CityNavState>,
 ) {
     let mut rng = rand::rng();
     let wing = meshes.add(Cuboid::new(0.6, 0.8, 2.0));
@@ -907,21 +908,37 @@ pub fn spawn_swarm(
         let color = if i == 0 && current_best_w.is_some() { Color::srgb(0.0, 1.0, 0.8) } else { Color::srgb(rng.random::<f32>(), rng.random::<f32>(), rng.random::<f32>()) };
         let racer_mat = materials.add(StandardMaterial { base_color: color, emissive: LinearRgba::from(color) * 4.0, perceptual_roughness: 0.1, metallic: 0.9, ..default() });
 
-        // --- SPAWN DISTRIBUÍDO AO LONGO DA PISTA (Andrychowicz et al, 2017) ---
-        // Carros 0..29 (champion + 10 elites + 10 priming + 9 crossover) começam na
-        // largada — 30 tentativas independentes do DNA bom, o suficiente pra que pelo
-        // menos um sobreviva à largada e prove skill transferível.
-        // Carros 30+ spawnam em pontos espalhados pela pista (coverage).
-        // Fitness usa NET progress (track_progress - spawn_progress), então carros
-        // que nasceram na curva e sobreviveram 30m PROVARAM habilidade de curva.
-        // Isso quebra o platô deceptivo de "só reta dá fitness alto".
-        // simple_elitism: TODOS no grid. Sem distributed spawn.
-        // Cada carro é champion+mutação, todos partem do zero = comparação justa.
-        #[cfg(feature = "simple_elitism")]
-        const GRID_SPAWNS: usize = usize::MAX;
-        #[cfg(not(feature = "simple_elitism"))]
-        const GRID_SPAWNS: usize = 30; // rollback v7 (grid 50 regressed)
-        let (spawn_pos, spawn_rot, spawn_progress) = if i < GRID_SPAWNS {
+        // --- SPAWN CITY MODE vs RACE MODE ---
+        let (spawn_pos, spawn_rot, spawn_progress, city_nav_dest) = if config.city_mode && city_nav.is_some() {
+            let nav_state = city_nav.unwrap();
+            // City spawn: random position from spawn_points, assign random destination
+            if nav_state.spawn_points.is_empty() {
+                // Fallback if no spawn points (shouldn't happen with proper generation)
+                (Vec3::new(480.0, 10.0, 480.0), Quat::IDENTITY, 0.0, None)
+            } else {
+                let spawn_idx = rng.random_range(0..nav_state.spawn_points.len());
+                let spawn_2d = nav_state.spawn_points[spawn_idx];
+                let spawn_3d = Vec3::new(spawn_2d.x, world.start_pos.y, spawn_2d.y);
+                let dest_2d = nav_state.random_destination(spawn_2d, &mut rng);
+                let dest_3d = Vec3::new(dest_2d.x, world.start_pos.y, dest_2d.y);
+                (spawn_3d, Quat::IDENTITY, 0.0, Some(dest_3d))
+            }
+        } else {
+            // --- SPAWN DISTRIBUÍDO AO LONGO DA PISTA (Andrychowicz et al, 2017) ---
+            // Carros 0..29 (champion + 10 elites + 10 priming + 9 crossover) começam na
+            // largada — 30 tentativas independentes do DNA bom, o suficiente pra que pelo
+            // menos um sobreviva à largada e prove skill transferível.
+            // Carros 30+ spawnam em pontos espalhados pela pista (coverage).
+            // Fitness usa NET progress (track_progress - spawn_progress), então carros
+            // que nasceram na curva e sobreviveram 30m PROVARAM habilidade de curva.
+            // Isso quebra o platô deceptivo de "só reta dá fitness alto".
+            // simple_elitism: TODOS no grid. Sem distributed spawn.
+            // Cada carro é champion+mutação, todos partem do zero = comparação justa.
+            #[cfg(feature = "simple_elitism")]
+            const GRID_SPAWNS: usize = usize::MAX;
+            #[cfg(not(feature = "simple_elitism"))]
+            const GRID_SPAWNS: usize = 30; // rollback v7 (grid 50 regressed)
+            let (sp, sr, sprog) = if i < GRID_SPAWNS {
             // Grid spawn ao longo dos waypoints (segue a pista). Cada row recua 6m
             // em arco da pista, lateral spread por col mantém dentro do road width.
             // Antes: avançava reto da start_pos → curvas Catmull-Rom punham carros
@@ -968,20 +985,22 @@ pub fn spawn_swarm(
             // (Antes target_progress confundia gate, impedia DNA crown).
             let _ = target_progress;
             (p, Quat::from_rotation_y(-angle), 0.0_f32)
-        } else {
-            // Distribui ao longo dos waypoints. Fração = 25%, 50%, 75%, 87%... em faixa circular.
-            let distributed_idx = (i - GRID_SPAWNS) as f32;
-            let total_distributed = (config.swarm_count - GRID_SPAWNS).max(1) as f32;
-            let fraction = 0.15 + (distributed_idx / total_distributed) * 0.7; // [0.15..0.85]
-            let wp_count = world.waypoints_world.len().max(2);
-            let target_wp = ((fraction * wp_count as f32) as usize).min(wp_count - 2);
-            let wp = world.waypoints_world[target_wp];
-            let wp_next = world.waypoints_world[target_wp + 1];
-            let dir = (wp_next - wp).normalize_or_zero();
-            let p = Vec3::new(wp.x, world.start_pos.y, wp.y);
-            let angle = dir.y.atan2(dir.x);
-            let progress = world.get_track_progress(p.x, p.z);
-            (p, Quat::from_rotation_y(-angle), progress)
+            } else {
+                // Distribui ao longo dos waypoints. Fração = 25%, 50%, 75%, 87%... em faixa circular.
+                let distributed_idx = (i - GRID_SPAWNS) as f32;
+                let total_distributed = (config.swarm_count - GRID_SPAWNS).max(1) as f32;
+                let fraction = 0.15 + (distributed_idx / total_distributed) * 0.7; // [0.15..0.85]
+                let wp_count = world.waypoints_world.len().max(2);
+                let target_wp = ((fraction * wp_count as f32) as usize).min(wp_count - 2);
+                let wp = world.waypoints_world[target_wp];
+                let wp_next = world.waypoints_world[target_wp + 1];
+                let dir = (wp_next - wp).normalize_or_zero();
+                let p = Vec3::new(wp.x, world.start_pos.y, wp.y);
+                let angle = dir.y.atan2(dir.x);
+                let progress = world.get_track_progress(p.x, p.z);
+                (p, Quat::from_rotation_y(-angle), progress)
+            };
+            (sp, sr, sprog, None)
         };
         let elite_range_end = 1 + race.elite_pool.len();
         let mut spawn_model_idx = i % 5;
@@ -1094,11 +1113,15 @@ pub fn spawn_swarm(
                     head
                 },
                 stable_seed: if i == 0 { 42 } else { rng.random::<u64>() },
-                // Tier City: navigation fields (zeroed in race mode, set in city mode spawn)
-                nav_destination: None,
+                // Tier City: navigation fields (set in city mode spawn, None in race mode)
+                nav_destination: city_nav_dest,
                 nav_goals_reached: 0,
-                nav_distance_to_goal: f32::MAX,
-                nav_min_dist: f32::MAX,
+                nav_distance_to_goal: if let Some(dest) = city_nav_dest {
+                    (dest - spawn_pos).length()
+                } else {
+                    f32::MAX
+                },
+                nav_min_dist: if city_nav_dest.is_some() { f32::INFINITY } else { f32::MAX },
                 red_light_violations: 0,
             }
         ).with_children(|p| {

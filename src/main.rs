@@ -364,6 +364,15 @@ fn setup_scene(
         &mut commands, &mut meshes, &mut materials, &world_res.0
     );
     world_entities.extend(track_dec);
+
+    // City mode: generate navigation state and spawn traffic lights
+    if config.city_mode {
+        let city_nav = universe::city::CityNavState::new_city(320, 3.0, config.city_blocks as usize);
+        let traffic_lights = universe::scenery::spawn_traffic_lights(&mut commands, &mut meshes, &mut materials, &city_nav);
+        world_entities.extend(traffic_lights);
+        world_res.1 = Some(city_nav);
+    }
+
     race.world_entities = world_entities;
 
     // Spawn batched — não bloqueia frame inicial. drain_spawn_queue consome progressivamente.

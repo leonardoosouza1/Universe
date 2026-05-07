@@ -80,6 +80,14 @@ pub struct CityNavState {
 }
 
 impl CityNavState {
+    /// Generate a city grid without modifying existing world grid.
+    /// Creates internal city layout for navigation only.
+    pub fn new_city(grid_size: usize, cell_size: f32, num_blocks: usize) -> Self {
+        let mut grid = vec![VoxelType::Grass; grid_size * grid_size];
+        let mut flow = vec![Vec2::ZERO; grid_size * grid_size];
+        Self::generate(&mut grid, &mut flow, grid_size, cell_size, num_blocks)
+    }
+
     /// Generate a city grid. Modifies the VoxelWorld grid and flow field in-place.
     pub fn generate(
         grid: &mut Vec<VoxelType>,

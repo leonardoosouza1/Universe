@@ -320,3 +320,84 @@ pub fn spawn_track_decorations(
 
     entities
 }
+
+/// Component to mark traffic lights and track their intersection index
+#[derive(Component, Clone, Copy)]
+pub struct TrafficLightMarker {
+    pub intersection_idx: usize,
+}
+
+/// Spawn traffic lights for city navigation mode.
+/// Returns entity IDs for cleanup.
+pub fn spawn_traffic_lights(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    city_nav: &crate::city::CityNavState,
+) -> Vec<Entity> {
+    let mut entities: Vec<Entity> = Vec::new();
+    let post_height = 4.0_f32;
+    let sphere_radius = 0.3_f32;
+
+    // Colors for traffic light states
+    let red = Color::srgb(1.0, 0.0, 0.0);
+    let yellow = Color::srgb(1.0, 1.0, 0.0);
+    let green = Color::srgb(0.0, 1.0, 0.0);
+
+    let red_mat = materials.add(StandardMaterial {
+        base_color: red,
+        emissive: LinearRgba::from(red) * 3.0,
+        unlit: true,
+        ..default()
+    });
+    let yellow_mat = materials.add(StandardMaterial {
+        base_color: yellow,
+        emissive: LinearRgba::from(yellow) * 3.0,
+        unlit: true,
+        ..default()
+    });
+    let green_mat = materials.add(StandardMaterial {
+        base_color: green,
+        emissive: LinearRgba::from(green) * 3.0,
+        unlit: true,
+        ..default()
+    });
+
+    let post_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.1, 0.1, 0.1),
+        perceptual_roughness: 0.8,
+        metallic: 0.1,
+        ..default()
+    });
+
+    let sphere_mesh = meshes.add(Sphere::new(sphere_radius));
+
+    for (idx, inter) in city_nav.intersections.iter().enumerate() {
+        let pos_3d = Vec3::new(inter.world_pos.x, 0.5, inter.world_pos.y);
+
+        // Post (vertical pole)
+        let post_e = commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.1, post_height, 0.1))),
+            MeshMaterial3d(post_mat.clone()),
+            Transform::from_translation(pos_3d + Vec3::Y * post_height * 0.5),
+            SimulationEntity,
+        )).id();
+        entities.push(post_e);
+
+        // Three light spheres (red, yellow, green) - stacked vertically
+        let y_base = post_height - 0.5;
+        let colors = [(red_mat.clone(), 0.6), (yellow_mat.clone(), 0.3), (green_mat.clone(), 0.0)];
+        for (color_mat, offset) in colors.iter() {
+            let light_e = commands.spawn((
+                Mesh3d(sphere_mesh.clone()),
+                MeshMaterial3d(color_mat.clone()),
+                Transform::from_translation(pos_3d + Vec3::Y * (y_base + offset)),
+                TrafficLightMarker { intersection_idx: idx },
+                SimulationEntity,
+            )).id();
+            entities.push(light_e);
+        }
+    }
+
+    entities
+}

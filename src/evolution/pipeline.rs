@@ -271,6 +271,12 @@ pub(super) fn calc_city_fitness(r: &Racer) -> f32 {
     goal_bonus + approach_bonus + survival - redlight_pen - wall_pen - death_pen
 }
 
+/// Helper: dispatch fitness calculation based on mode
+#[inline]
+fn get_fitness(r: &Racer, city_mode: bool) -> f32 {
+    if city_mode { calc_city_fitness(r) } else { calc_fitness(r) }
+}
+
 pub(super) fn evolution_pipeline(
     mut commands: Commands,
     mut race: ResMut<RaceSettings>,
@@ -289,7 +295,11 @@ pub(super) fn evolution_pipeline(
     let dt = time.delta_secs();
     env.tick(dt);
     if query.is_empty() { return; }
-    let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 10);
+    let winner = if config.city_mode {
+        query.iter().find(|(_, r, _, _)| r.nav_goals_reached >= 10)
+    } else {
+        query.iter().find(|(_, r, _, _)| r.total_laps >= 10)
+    };
     // Geração encerra por QUALQUER dos:
     //  - winner (10 voltas)
     //  - all_dead (não adianta esperar ninguém vivo)
@@ -307,8 +317,8 @@ pub(super) fn evolution_pipeline(
         // Rank global por fitness — reutilizado pelo pool elite + relatório.
         let mut sorted: Vec<_> = query.iter().collect();
         sorted.sort_by(|a, b| {
-            let score_a = calc_fitness(a.1);
-            let score_b = calc_fitness(b.1);
+            let score_a = get_fitness(a.1, config.city_mode);
+            let score_b = get_fitness(b.1, config.city_mode);
             score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -337,7 +347,7 @@ pub(super) fn evolution_pipeline(
 
         let mut scars_created_this_gen = 0usize;
         for (rank, (_, r, _, _)) in sorted.iter().take(10).enumerate() {
-            let new_fit = calc_fitness(r);
+            let new_fit = get_fitness(r, config.city_mode);
             // ---- Trinity fitness penalties / rewards ----
             const LN3: f32 = 1.0986123; // ln(3) — max entropy of 3-class softmax
             let hv = r.engine.hard_veto_count as f32;
@@ -493,7 +503,7 @@ pub(super) fn evolution_pipeline(
             // Summary agregado: distribuição de NET/fitness/survival.
             let nets: Vec<f32> = sorted.iter().map(|(_, r, _, _)| (r.track_progress - r.spawn_progress).max(0.0)).collect();
             let deaths = sorted.iter().filter(|(_, r, _, _)| r.is_dead).count();
-            let fits: Vec<f32> = sorted.iter().map(|(_, r, _, _)| calc_fitness(r)).collect();
+            let fits: Vec<f32> = sorted.iter().map(|(_, r, _, _)| get_fitness(r, config.city_mode)).collect();
             let median = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[v.len()/2] } };
             let p90 = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[(v.len()*1/10).min(v.len()-1)] } }; // v já ordenado desc
             let mean = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 } };
@@ -542,7 +552,7 @@ pub(super) fn evolution_pipeline(
             let mut def_speed_sum = 0.0f32; let mut agg_speed_sum = 0.0f32;
             let mut def_fit_sum = 0.0f32; let mut agg_fit_sum = 0.0f32;
             for (_, r, _, _) in sorted.iter() {
-                let f = calc_fitness(r);
+                let f = get_fitness(r, config.city_mode);
                 let sp = r.telemetry.speed_on_track();
                 if r.niche == 0 {
                     def_n += 1; def_wall_sum += r.wall_time; def_speed_sum += sp; def_fit_sum += f;
@@ -850,7 +860,7 @@ pub(super) fn evolution_pipeline(
         let gen_fitness: f32 = {
             let n = sorted.len();
             if n == 0 { 0.0 }
-            else { sorted.iter().map(|(_, r, _, _)| calc_fitness(r)).sum::<f32>() / n as f32 }
+            else { sorted.iter().map(|(_, r, _, _)| get_fitness(r, config.city_mode)).sum::<f32>() / n as f32 }
         };
         if race.fitness_history.len() == super::settings::FITNESS_HISTORY_CAP {
             race.fitness_history.pop_front();
@@ -944,7 +954,7 @@ pub(super) fn evolution_pipeline(
             .count();
         let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
         let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
-        let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r)).unwrap_or(0.0);
+        let best_fitness = sorted.first().map(|(_, r, _, _)| get_fitness(r, config.city_mode)).unwrap_or(0.0);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
         // Extrai valores de race ANTES de usar race.telemetry
