@@ -91,9 +91,10 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     bias[1] += (inputs[78] as f32 / 127.0) * 0.20;
     bias[1] += (inputs[79] as f32 / 127.0) * 0.32;  // v5: 0.40→0.32 (menos overshoot)
     bias[1] += (inputs[80] as f32 / 127.0) * 0.25;
-    // v5: pre-brake só em curva SEVERA (threshold) em vez de proporcional sempre.
+    // v6: pre-brake em curva aumentado 0.10→0.20 para combat speed bleeds.
+    // Teste mostrou 13.6/20 bleeds ainda é alto. Aumentar cut pra mais agressivo.
     let curv_mag = ((inputs[79] as f32).abs() + (inputs[80] as f32).abs()) / 254.0;
-    bias[0] -= curv_mag * 0.10; // v5: 0.25→0.10 (não mata throttle no ápice)
+    bias[0] -= curv_mag * 0.20; // Doubled from 0.10 (more aggressive speed limiting)
     // A10: lane offset (81) — valor positivo = mais espaço à direita ⇒ estou à ESQUERDA ⇒
     // preciso virar pra DIREITA = steer positivo. Coef boostado 0.08→0.22 (v2) pra virar
     // o sinal primário de centralização em pistas narrow.
@@ -162,9 +163,12 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     let line_err = inputs[CH_LINE] as f32 / 127.0;
     bias[1] += line_err * 0.20;
 
-    // A9 Extended: coefs reduzidos drasticamente pra debug
-    bias[1] += (inputs[19] as f32 / 127.0) * 0.01; // 75m: peso mínimo
-    bias[1] += (inputs[20] as f32 / 127.0) * 0.005; // 150m: peso mínimo
+    // A9 Extended: 7-distance lookahead steering guidance (20m to 350m).
+    // Weight decreases with distance: immediate corners require urgent correction.
+    bias[1] += (inputs[20] as f32 / 127.0) * 0.35; // 20m nearest (urgency max)
+    bias[1] += (inputs[79] as f32 / 127.0) * 0.18; // 70m (reorg from c100 slot)
+    bias[1] += (inputs[101] as f32 / 127.0) * 0.12; // 260m far horizon
+    bias[1] += (inputs[102] as f32 / 127.0) * 0.06; // 350m ultra-far (stabilize)
 
     // A-TTC: coefs reduzidos drasticamente pra debug
     let ttc_norm = inputs[105] as f32 / 127.0;
@@ -183,6 +187,27 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     //     bias[2] += _near_motion * 0.06;  // brake hint
     //     bias[0] -= _near_motion * 0.03;  // throttle cut
     // }
+
+    // A-HeadingAlign: correct heading when misaligned with road flow.
+    // Detects spinning/drifting via yaw rate (ch 16) + poor alignment (inverse of ch 64).
+    // If yaw is high but flow alignment is low, apply steering damping.
+    // If flow alignment is poor but yaw is neutral, apply bias toward road flow.
+    let yaw_rate_norm = (inputs[16] as f32).abs() / 127.0;
+    let flow_align_norm = (inputs[64] as f32 / 127.0).max(0.0); // 0=misaligned, 1=aligned
+    if flow_align_norm < 0.5 && yaw_rate_norm > 0.4 {
+        // Spinning + poor alignment: dampen steering override
+        bias[1] *= 0.70;
+    }
+    if flow_align_norm < 0.6 {
+        // Generally misaligned: use road flow hint (ch 83 left, ch 84 right optical flow)
+        let flow_l = (inputs[83] as f32 / 127.0).max(0.0);
+        let flow_r = (inputs[84] as f32 / 127.0).max(0.0);
+        if flow_l > flow_r {
+            bias[1] += (flow_l - flow_r) * 0.15; // road curving left, steer left
+        } else if flow_r > flow_l {
+            bias[1] -= (flow_r - flow_l) * 0.15; // road curving right, steer right
+        }
+    }
 
     bias
 }
@@ -1174,7 +1199,7 @@ pub(super) fn update_racers(
             sensory_wave[17] = pitch_i8;
             sensory_wave[18] = roll_i8;
 
-            // Curvature lookahead — signed angles.
+            // Curvature lookahead — signed angles (7 distances for better curve prediction).
             let curv_at = |ahead_m: f32| -> f32 {
                 let probe = Vec3::new(pos.x, 0.0, pos.z) + forward * ahead_m;
                 let f = world.get_flow_at(probe.x, probe.z);
@@ -1185,24 +1210,38 @@ pub(super) fn update_racers(
                 } else { 0.0 }
             };
             let yn = std::f32::consts::FRAC_PI_2;
-            // Lookahead estendido: 40m próximo, 100m médio, 180m longe (alcance visão 600m).
+            // 7 distances: near/mid/far progression for granular curve perception.
+            let c20_signed = curv_at(20.0);
             let c40_signed = curv_at(40.0);
-            let c100_signed = curv_at(100.0);
+            let c70_signed = curv_at(70.0);
+            let c120_signed = curv_at(120.0);
             let c180_signed = curv_at(180.0);
-            let c40 = ((c40_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            let c100 = ((c100_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            let c180 = ((c180_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            sensory_wave[78] = c40;
-            sensory_wave[79] = c40;
-            sensory_wave[80] = c100;
-            sensory_wave[32] = c180;
+            let c260_signed = curv_at(260.0);
+            let c350_signed = curv_at(350.0);
 
-            // Pre-brake: speed × max curv across 3 horizons. Curva longa (180m) pesa
-            // 0.5 (cars têm tempo). Curva próxima (40m) pesa 1.0 (urgente).
+            let c20 = ((c20_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c40 = ((c40_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c70 = ((c70_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c120 = ((c120_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c180 = ((c180_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c260 = ((c260_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+            let c350 = ((c350_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
+
+            // Ch 20, 78, 79, 80, 32, 101, 102 (7 lookahead channels).
+            sensory_wave[20] = c20;  // 20m nearest
+            sensory_wave[78] = c40;  // 40m near
+            sensory_wave[79] = c70;  // 70m mid
+            sensory_wave[80] = c120; // 120m mid-far
+            sensory_wave[32] = c180; // 180m far
+            sensory_wave[101] = c260; // 260m very far
+            sensory_wave[102] = c350; // 350m horizon
+
+            // Pre-brake: speed × max curv across horizons. Weights decay: nearest highest.
             let speed_norm = (speed / 80.0).clamp(0.0, 1.0);
             let curv_abs_max = (c40_signed.abs() / yn)
-                .max(c100_signed.abs() / yn * 0.85)
-                .max(c180_signed.abs() / yn * 0.5)
+                .max(c70_signed.abs() / yn * 0.90)
+                .max(c120_signed.abs() / yn * 0.70)
+                .max(c180_signed.abs() / yn * 0.50)
                 .clamp(0.0, 1.0);
             let pre_brake = (speed_norm * curv_abs_max * 127.0).clamp(0.0, 127.0) as i8;
             sensory_wave[28] = pre_brake;

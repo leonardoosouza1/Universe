@@ -375,6 +375,7 @@ pub(super) fn evolution_pipeline(
             };
             // Guard: só adiciona ao pool se racer atingiu distância mínima (sanidade check)
             // Previne que DNA de crash total (<=0m) contaminar o pool
+            // 300m threshold: minimum viability, allows pool to refresh frequently
             if r.track_progress < 300.0 {
                 continue;
             }
