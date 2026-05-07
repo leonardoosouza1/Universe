@@ -110,8 +110,9 @@ fn main() {
         Window { title: "IARA v2101 - Sovereign Dev Engine".into(), ..default() }
     };
     app.insert_resource(HeadlessMode { enabled: headless, gens_target });
-    // UI auto-start quando --seed passou em modo não-headless.
-    app.insert_resource(UiAutoStart(seed_override.is_some() && !headless));
+    // UI auto-start quando --seed ou --city passou em modo não-headless.
+    let ui_auto_start = (seed_override.is_some() || city_mode) && !headless;
+    app.insert_resource(UiAutoStart(ui_auto_start));
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(window),
         ..default()
@@ -183,7 +184,7 @@ fn headless_autostart(
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     if ui_auto.0 {
-        println!("🎮 UI AUTO-START | --seed passou em modo gráfico, entrando direto na simulação");
+        println!("🎮 UI AUTO-START | --seed ou --city detectado, entrando direto na simulação");
         next_state.set(AppState::Simulation);
         return;
     }
