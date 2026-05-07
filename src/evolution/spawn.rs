@@ -1128,6 +1128,7 @@ pub fn spawn_swarm(
                     f32::MAX
                 },
                 nav_min_dist: if city_nav_dest.is_some() { f32::INFINITY } else { f32::MAX },
+                nav_stagnation_frames: 0,
                 red_light_violations: 0,
             }
         ).with_children(|p| {

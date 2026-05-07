@@ -538,7 +538,7 @@ pub(super) fn evolution_pipeline(
             // Death reason breakdown — categórico via DeathReason enum.
             let mut d_hp = 0; let mut d_pin = 0; let mut d_bat = 0;
             let mut d_stag = 0; let mut d_sbld = 0; let mut d_fuel = 0;
-            let mut d_hole = 0; let mut d_npc = 0; let mut d_unk = 0;
+            let mut d_hole = 0; let mut d_npc = 0; let mut d_city_stag = 0; let mut d_unk = 0;
             for (_, r, _, _) in sorted.iter() {
                 if !r.is_dead { continue; }
                 match r.death_reason {
@@ -550,11 +550,12 @@ pub(super) fn evolution_pipeline(
                     Some(crate::simulation::racer::DeathReason::Fuel) => d_fuel += 1,
                     Some(crate::simulation::racer::DeathReason::Hole) => d_hole += 1,
                     Some(crate::simulation::racer::DeathReason::NpcHit) => d_npc += 1,
+                    Some(crate::simulation::racer::DeathReason::CityStagnation) => d_city_stag += 1,
                     None => d_unk += 1,
                 }
             }
-            let _ = writeln!(file, "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} HOLE:{} NPC:{} ?:{}",
-                d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_hole, d_npc, d_unk);
+            let _ = writeln!(file, "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} HOLE:{} NPC:{} CITY_STAG:{} ?:{}",
+                d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_hole, d_npc, d_city_stag, d_unk);
 
             // Tier 4.3 — NICHO-SPLITTING METRICS.
             // Diferencial de pressão: defensive pune wall_time 2×, aggressive premia

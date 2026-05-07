@@ -2422,12 +2422,26 @@ pub(super) fn update_racers(
                 if let Some(dest) = racer.nav_destination {
                     let new_dist = (dest.xz() - pos2d).length();
                     racer.nav_distance_to_goal = new_dist;
-                    racer.nav_min_dist = racer.nav_min_dist.min(new_dist);
+
+                    // Stagnation detection: if no improvement in nav_min_dist for 600 frames (~10s)
+                    if new_dist < racer.nav_min_dist {
+                        racer.nav_min_dist = new_dist;
+                        racer.nav_stagnation_frames = 0;
+                    } else {
+                        racer.nav_stagnation_frames += 1;
+                        if racer.nav_stagnation_frames > 600 && !racer.is_dead {
+                            racer.is_dead = true;
+                            racer.death_reason = Some(crate::simulation::racer::DeathReason::CityStagnation);
+                            racer.death_frame = racer.grace_ticks;
+                            racer.death_pos = transform.translation;
+                        }
+                    }
 
                     // Destination reached: assign new destination
                     if new_dist < 15.0 {
                         racer.nav_goals_reached += 1;
                         racer.nav_min_dist = f32::INFINITY;
+                        racer.nav_stagnation_frames = 0;
                         let dest_2d = city_nav.random_destination(pos2d, &mut rand::rng());
                         racer.nav_destination = Some(Vec3::new(dest_2d.x, transform.translation.y, dest_2d.y));
                         println!("🎯 {} reached goal #{}", racer.name, racer.nav_goals_reached);

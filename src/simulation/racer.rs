@@ -83,14 +83,15 @@ impl Default for RacerTelemetry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeathReason {
-    HpZero,       // HP drained outside wall event
-    Pinado,       // Wall-time > 0.8s
-    Batida,       // Wall hit chain → HP 0
-    Stagnation,   // max_progress não cresceu
-    SpeedBleed,   // < 2 m/s + sem progresso → HP drain
-    Fuel,         // fuel <= 0
-    Hole,         // Caiu em buraco (VoxelType::Hole) → morte instantânea
-    NpcHit,       // Colisão violenta com NPC obstáculo → HP 0
+    HpZero,        // HP drained outside wall event
+    Pinado,        // Wall-time > 0.8s
+    Batida,        // Wall hit chain → HP 0
+    Stagnation,    // max_progress não cresceu (racing mode)
+    SpeedBleed,    // < 2 m/s + sem progresso → HP drain
+    Fuel,          // fuel <= 0
+    Hole,          // Caiu em buraco (VoxelType::Hole) → morte instantânea
+    NpcHit,        // Colisão violenta com NPC obstáculo → HP 0
+    CityStagnation, // nav_min_dist não melhorou em 10s (city mode)
 }
 
 impl DeathReason {
@@ -104,6 +105,7 @@ impl DeathReason {
             DeathReason::Fuel => "FUEL",
             DeathReason::Hole => "HOLE",
             DeathReason::NpcHit => "NPC",
+            DeathReason::CityStagnation => "CITY_STAG",
         }
     }
 }
@@ -213,6 +215,8 @@ pub struct Racer {
     pub nav_distance_to_goal: f32,
     /// Mínimo histórico de nav_distance_to_goal para stagnation detection (monotônico)
     pub nav_min_dist: f32,
+    /// Contador de frames sem progresso no nav_min_dist (stagnation detection)
+    pub nav_stagnation_frames: u32,
     /// Contador de violações de semáforo vermelho (penalidade fitness)
     pub red_light_violations: u32,
 }
