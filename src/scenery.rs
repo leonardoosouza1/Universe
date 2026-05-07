@@ -15,8 +15,10 @@ pub fn generate_city_mesh(city_nav: &crate::city::CityNavState, cell_size: f32) 
 
     let grid_size = city_nav.grid_size;
     let mut road_pos = Vec::new();
+    let mut road_norm = Vec::new();
     let mut road_idx = Vec::new();
     let mut grass_pos = Vec::new();
+    let mut grass_norm = Vec::new();
     let mut grass_idx = Vec::new();
 
     // Grid cells: road=dark asphalt, grass=green
@@ -32,25 +34,29 @@ pub fn generate_city_mesh(city_nav: &crate::city::CityNavState, cell_size: f32) 
                 Vec3::new(x + cell_size, 0.0, z + cell_size),
                 Vec3::new(x, 0.0, z + cell_size),
             ];
+            let normal = [0.0, 1.0, 0.0]; // upward facing
 
-            let (positions, indices) = if is_road {
-                (&mut road_pos, &mut road_idx)
+            let (positions, normals, indices) = if is_road {
+                (&mut road_pos, &mut road_norm, &mut road_idx)
             } else {
-                (&mut grass_pos, &mut grass_idx)
+                (&mut grass_pos, &mut grass_norm, &mut grass_idx)
             };
 
             let base_idx = positions.len() as u32;
             positions.extend(verts.iter().map(|v| [v.x, v.y, v.z]));
+            normals.extend(vec![normal; 4]);
             indices.extend([base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
         }
     }
 
     let mut road_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     road_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, road_pos);
+    road_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, road_norm);
     road_mesh.insert_indices(Indices::U32(road_idx));
 
     let mut grass_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     grass_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, grass_pos);
+    grass_mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, grass_norm);
     grass_mesh.insert_indices(Indices::U32(grass_idx));
 
     (road_mesh, grass_mesh)

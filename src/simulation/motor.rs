@@ -2423,13 +2423,15 @@ pub(super) fn update_racers(
                     let new_dist = (dest.xz() - pos2d).length();
                     racer.nav_distance_to_goal = new_dist;
 
-                    // Stagnation detection: if no improvement in nav_min_dist for 600 frames (~10s)
+                    // Stagnation detection: if no improvement in nav_min_dist for extended period
+                    // City mode: 1800 frames (~30s) to allow learning. Racing: 600 frames (~10s)
+                    let stagnation_limit = if config.city_mode { 1800 } else { 600 };
                     if new_dist < racer.nav_min_dist {
                         racer.nav_min_dist = new_dist;
                         racer.nav_stagnation_frames = 0;
                     } else {
                         racer.nav_stagnation_frames += 1;
-                        if racer.nav_stagnation_frames > 600 && !racer.is_dead {
+                        if racer.nav_stagnation_frames > stagnation_limit && !racer.is_dead {
                             racer.is_dead = true;
                             racer.death_reason = Some(crate::simulation::racer::DeathReason::CityStagnation);
                             racer.death_frame = racer.grace_ticks;

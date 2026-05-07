@@ -960,28 +960,31 @@ pub(super) fn evolution_pipeline(
         race.env_level = next_level;
         env.randomize_level(next_level);
 
-        // --- TIER 5.3 MULTI-TRACK ROTATION ---
+        // --- TIER 5.3 MULTI-TRACK ROTATION (racing mode only) ---
         // Decide qual track a PRÓXIMA geração vai rodar. `race.generation` já foi incrementado
         // acima. Validation gens pinam em tracks[0] pra comparação honesta de campeão.
+        // CITY MODE: skip rotation, stay on same city nav state
         let next_gen_idx = race.generation as usize;
         let next_track = config.track_for_gen(next_gen_idx, is_val);
-        let track_changed = config.rotate_tracks && next_track.seed != race.seed;
+        let track_changed = !config.city_mode && config.rotate_tracks && next_track.seed != race.seed;
         if track_changed {
             // Campeão salvo foi num track diferente — threshold vira armadilha
             // (não replica numa pista nova). Decay 0.8 força rebaseline rápido
             // sem apagar o DNA (best_weights preservado).
             race.champion_distance *= 0.8;
         }
-        race.seed = next_track.seed;
+        if !config.city_mode {
+            race.seed = next_track.seed;
+        }
 
-        // --- CURRICULUM ADAPTATIVO DE LARGURA ---
+        // --- CURRICULUM ADAPTATIVO DE LARGURA (racing mode only) ---
         // Pista começa um pouco mais larga (base + 4m) e estreita rápido com voltas do campeão.
         // Cada volta completada reduz o bônus em 2m — piso (base) atingido em 2 voltas reais.
         let base_width = next_track.track_width;
         let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
         let width_bonus = (4.0 - champion_laps * 2.0).max(0.0);
         let effective_width = base_width + width_bonus;
-        if config.rotate_tracks {
+        if !config.city_mode && config.rotate_tracks {
             println!("🔀 TRACK ROTATION gen={} → \"{}\" (seed={}, width={:.1}m, val={})",
                 next_gen_idx, next_track.name, next_track.seed, effective_width, is_val);
             if let Some(mut file) = open_report_log() {
