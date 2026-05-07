@@ -91,10 +91,10 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     bias[1] += (inputs[78] as f32 / 127.0) * 0.20;
     bias[1] += (inputs[79] as f32 / 127.0) * 0.32;  // v5: 0.40→0.32 (menos overshoot)
     bias[1] += (inputs[80] as f32 / 127.0) * 0.25;
-    // v6: pre-brake em curva aumentado 0.10→0.20 para combat speed bleeds.
-    // Teste mostrou 13.6/20 bleeds ainda é alto. Aumentar cut pra mais agressivo.
+    // v5: pre-brake só em curva SEVERA (threshold) em vez de proporcional sempre.
+    // Tested 0.20 → regressed (305m swing, 15.4 bleeds). 0.10 is sweet spot.
     let curv_mag = ((inputs[79] as f32).abs() + (inputs[80] as f32).abs()) / 254.0;
-    bias[0] -= curv_mag * 0.20; // Doubled from 0.10 (more aggressive speed limiting)
+    bias[0] -= curv_mag * 0.10; // Stable at 0.10; aggressive cut causes volatility
     // A10: lane offset (81) — valor positivo = mais espaço à direita ⇒ estou à ESQUERDA ⇒
     // preciso virar pra DIREITA = steer positivo. Coef boostado 0.08→0.22 (v2) pra virar
     // o sinal primário de centralização em pistas narrow.
