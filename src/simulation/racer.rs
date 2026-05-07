@@ -227,6 +227,10 @@ pub struct BrainSnapshot {
     pub steer_limit: f32,          // Fator dinâmico 1/(1+v*0.02)
     pub risk_damp: f32,            // Atenuação do slow brain (0..0.3)
     pub top_channels: [(u8, i8); 5], // Top-5 canais mais ativados (|valor|), com índice+valor
+
+    // --- Vision replay data (compressed retina + sensory channels) ---
+    pub retina_fov: [i8; 112],     // 8 FOV bins × 14 RETINA_ROWS (compressed from 1764 bytes)
+    pub sensory_compact: [i8; 32], // Top-32 telemetry channels: speed, alignment, curvature, walls, etc
 }
 
 pub struct PainSynapse {

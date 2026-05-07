@@ -1785,6 +1785,30 @@ pub(super) fn update_racers(
             let ri_thr = racer.engine.final_intent[0];
             let ri_str = racer.engine.final_intent[1];
             let ri_brk = racer.engine.final_intent[2];
+            // Compress retina into 8 FOV bins (already computed into sw[0..8])
+            let mut retina_fov = [0i8; 112];
+            // sw[0..8] are fóvea FOV bins. Distribute across rows for visualization.
+            // For now, repeat the fóvea bins 14 times (one per RETINA_ROW).
+            for row in 0..14 {
+                for bin in 0..8 {
+                    retina_fov[row * 8 + bin] = sw[bin];
+                }
+            }
+
+            // Compact sensory channels: speed, alignment, curvature, walls, etc
+            let mut sensory_compact = [0i8; 32];
+            sensory_compact[0] = sw[65];   // speed_kmh
+            sensory_compact[1] = sw[64];   // flow alignment
+            sensory_compact[2] = sw[78];   // curvature 40m
+            sensory_compact[3] = sw[79];   // curvature 70m
+            sensory_compact[4] = sw[80];   // curvature 120m
+            sensory_compact[5] = sw[85];   // wall_prox_l
+            sensory_compact[6] = sw[86];   // wall_prox_r
+            sensory_compact[7] = sw[82];   // ttc urgency
+            sensory_compact[8] = sw[66];   // lateral velocity (drift)
+            sensory_compact[9] = sw[67];   // hp
+            // Fill rest with zero (reserved for future expansion)
+
             racer.brain_trace.push(crate::simulation::racer::BrainSnapshot {
                 t: engine_time,
                 speed_kmh: speed * 3.6,
@@ -1801,6 +1825,8 @@ pub(super) fn update_racers(
                 steer_limit: snap_steer_limit,
                 risk_damp: snap_risk_damp,
                 top_channels: top5,
+                retina_fov,
+                sensory_compact,
             });
         }
 

@@ -957,6 +957,34 @@ pub(super) fn evolution_pipeline(
             "ts_unix": ts,
         }));
 
+        // Export champion brain trace as JSON for vision replay
+        if let Some((_, best, _, _)) = sorted.first() {
+            if !best.brain_trace.is_empty() {
+                let trace_json: Vec<serde_json::Value> = best.brain_trace.iter().map(|snap| {
+                    serde_json::json!({
+                        "t": snap.t,
+                        "speed_kmh": snap.speed_kmh,
+                        "wall_prox_l": snap.wall_prox_l,
+                        "wall_prox_r": snap.wall_prox_r,
+                        "ttc_inv": snap.ttc_inv,
+                        "curv_25": snap.curv_25,
+                        "raw_throttle": snap.raw_throttle,
+                        "raw_steer": snap.raw_steer,
+                        "raw_brake": snap.raw_brake,
+                        "retina_fov": snap.retina_fov.to_vec(),
+                        "sensory_compact": snap.sensory_compact.to_vec(),
+                    })
+                }).collect();
+
+                let trace_path = format!("logs/champion_gen_{:04}_brain_trace.json", gen_num);
+                if let Ok(mut file) = std::fs::File::create(&trace_path) {
+                    if let Ok(json_str) = serde_json::to_string(&trace_json) {
+                        let _ = std::io::Write::write_all(&mut file, json_str.as_bytes());
+                    }
+                }
+            }
+        }
+
         let world = VoxelWorld::new(next_track.seed, effective_width);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
         // FIX: SimulationEntity marker garante que cleanup_simulation (OnExit) despawne
