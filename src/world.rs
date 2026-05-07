@@ -569,7 +569,6 @@ impl VoxelWorld {
                 
                 let mut hit_voxel = VoxelType::Road;
                 let mut hit_dist = 1200.0;
-                let mut edge_proximity = 1.0f32; // 1.0=fully road, 0.0=at wall edge
 
                 let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
 
@@ -603,7 +602,7 @@ impl VoxelWorld {
 
                 // Alcance ~400m (134 blocos × 3m cell). Profundidade aumentada — modelo
                 // antecipa curvas longas em retas largas a 80m/s antes (era 300m).
-                for step in 0..400 {
+                for _ in 0..400 {
                     if side_dist_x < side_dist_y {
                         side_dist_x += delta_dist_x; map_x += step_x; side = 0;
                     } else {
@@ -612,23 +611,6 @@ impl VoxelWorld {
 
                     let voxel = self.get_voxel_at((map_x as f32) * cell, (map_y as f32) * cell);
                     if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
-                        // Detect road curvature: check if adjacent cells are also walls (curve) vs isolated (obstacle)
-                        let adjacent_wall_count = [
-                            (-1, 0), (1, 0), (0, -1), (0, 1),
-                            (-1, -1), (-1, 1), (1, -1), (1, 1)
-                        ].iter().filter(|&(dx, dz)| {
-                            let adj_voxel = self.get_voxel_at(((map_x + dx) as f32) * cell, ((map_y + dz) as f32) * cell);
-                            adj_voxel == VoxelType::Wall || adj_voxel == VoxelType::Hole
-                        }).count();
-
-                        // Smooth curve: 5+ adjacent walls → edge_proximity reduced (shows curve gradient)
-                        // Obstacle: <5 adjacent walls → edge_proximity stays high (shows edge sharp)
-                        edge_proximity = if adjacent_wall_count >= 5 {
-                            0.5 + (step as f32 / 400.0) * 0.5  // Curve: gradual fade
-                        } else {
-                            (step as f32 / 400.0)  // Obstacle: sharper transition
-                        };
-
                         hit_voxel = voxel; hit = true; break;
                     }
                 }
@@ -658,9 +640,8 @@ impl VoxelWorld {
 
                 let pixel_val = match hit_voxel {
                     VoxelType::Wall => {
-                        // Curvature-aware: smooth curves show gradient, sharp obstacles show edge.
-                        // If edge_proximity < 1.0, interpolate toward road to show curve shape.
-                        let wall_base = if hit_dist < 30.0 {
+                        // Quad-scale depth (alcance estendido 600m):
+                        if hit_dist < 30.0 {
                             let near = (hit_dist / 30.0).clamp(0.0, 1.0);
                             127.0 - (near.sqrt() * 72.0)
                         } else if hit_dist < 120.0 {
@@ -672,24 +653,15 @@ impl VoxelWorld {
                         } else {
                             let xfar = ((hit_dist - 1200.0) / 1200.0).clamp(0.0, 1.0);
                             -25.0 - (xfar * 25.0)
-                        };
-
-                        // For curves (edge_proximity < 1.0), blend toward road to show gradient
-                        if edge_proximity < 0.95 {
-                            let road_val = -128.0 + (depth_fade * 96.0);
-                            let blend = edge_proximity * 0.4; // Show curve shape via road blend
-                            wall_base * blend + road_val * (1.0 - blend)
-                        } else {
-                            wall_base
                         }
                     },
                     VoxelType::Grass => {
                         40.0 - (depth_fade * 40.0)
                     },
                     VoxelType::Road => {
-                        // Expanded range to show curves as smooth gradations.
-                        // Before: -128→-80 (48 range, abrupt transitions at curves).
-                        // Now: -128→-32 (96 range, smoother curve perception).
+                        // Expanded range: shows curves more clearly via finer gradation.
+                        // Before: -128→-80 (range 48). Now: -128→-32 (range 96).
+                        // Extra 48 values lets retina encode curve shape as smooth transitions.
                         -128.0 + (depth_fade * 96.0)
                     },
                     VoxelType::Hole => {
