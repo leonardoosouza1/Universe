@@ -284,7 +284,8 @@ pub fn spawn_swarm(
     // Carrega CHAMPION.dna (v3 com magic "IARA" ou legacy v1/v2).
     // PER-WIDTH: tenta CHAMPION_W{width}m.dna primeiro (memória por pista,
     // não desaprende ao mudar de pista), fallback genérico CHAMPION.dna.
-    if current_best_w.is_none() {
+    // CITY MODE: skip champion loading — start fresh from random seeds (new task).
+    if current_best_w.is_none() && !config.city_mode {
         let cw = config.current_track().track_width as i32;
         let per_width_path = format!("CHAMPION_W{}m.dna", cw);
         let dna_loaded = load_champion_dna(&per_width_path)
