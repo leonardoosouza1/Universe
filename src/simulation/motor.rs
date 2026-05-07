@@ -1923,6 +1923,37 @@ pub(super) fn update_racers(
                 transform.translation.z,
             );
 
+            // --- REPLAY SAMPLING @ 16Hz, TOP-5 RACERS ---
+            if *retina_tick_counter % 4 == 0 {
+                let my_rank = rank_by_entity.get(&entity).copied().unwrap_or(999);
+                if my_rank < 5 {
+                    use crate::evolution::telemetry::{ReplayFrame, name_to_id};
+                    let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
+                    let frame = ReplayFrame {
+                        frame_tick: racer.grace_ticks,
+                        generation: race.generation as u16,
+                        rank: my_rank as u8,
+                        flags: if racer.is_dead { 1 } else { 0 },
+                        pos_x: pos.x,
+                        pos_z: pos.z,
+                        heading: yaw,
+                        speed_ms: racer.amplitude,
+                        throttle: racer.memory[0],
+                        steer: racer.memory[1],
+                        brake: racer.memory[2],
+                        hp: racer.hp,
+                        distance_m: racer.distance,
+                        track_progress: racer.track_progress,
+                        total_laps: racer.total_laps as u16,
+                        racer_id: name_to_id(&racer.name),
+                        joy_tick: sensory_wave[126] as f32 / 127.0,
+                        sensory_wave,
+                        _reserved: [0u8; 8],
+                    };
+                    race.telemetry.write_frame(&frame);
+                }
+            }
+
             // Distância verdadeira: Projeção da velocidade na direção da pista (Flow)
             let flow_3d = Vec3::new(flow.x, 0.0, flow.y).normalize_or_zero();
             let track_velocity = body.velocity.dot(flow_3d);
