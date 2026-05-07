@@ -13,7 +13,7 @@
     {
       "name": "Procedural Sigma",
       "seed": 9001,
-      "track_width": 18.0,
+      "track_width": 14.0,
       "complexity": 0.5
     },
     {
@@ -66,10 +66,10 @@
     }
   ],
   "selected_track_index": 0,
-  "swarm_count": 20,
+  "swarm_count": 40,
   "time_scale": 2.0,
-  "generation_timeout_s": 360.0,
-  "rotate_tracks": true,
+  "generation_timeout_s": 3960.0,
+  "rotate_tracks": false,
   "gens_per_track": 50,
   "easy_track": false,
   "no_holes": true

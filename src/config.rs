@@ -239,19 +239,45 @@ mod tests {
 pub mod iara {
     // ── VISÃO (fonte: src/world.rs:12-18) ──────────────────────────────
     pub mod vision {
-        pub const RETINA_ROWS: usize = 8;
+        pub const RETINA_ROWS: usize = 14;
         pub const RETINA_COLS: usize = 126;
-        pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 384
+        pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 14 × 126 = 1764
         pub const FOV_DEG: f32 = 180.0;
-        /// Ângulos de pitch por linha da retina (rad). Row 0 = horizonte alto, Row 5 = chão.
-        pub const RETINA_PITCHES: [f32; RETINA_ROWS] = [-0.10,-0.08, -0.06, -0.03, -0.01, 0.01, 0.03, 0.05];
+
+        /// Limites de pitch da retina (rad).
+        /// MIN = row 0 (olha levemente para cima / horizonte distante, ângulo negativo = acima).
+        /// MAX = row N-1 (olha para baixo / chão próximo, ângulo positivo = abaixo).
+        /// Range original: -0.10 rad (~-5.7°) a +0.05 rad (~+2.8°).
+        pub const RETINA_MIN_PITCH: f32 = -0.06;
+        pub const RETINA_MAX_PITCH: f32 = -0.001;
+
+        /// Calcula pitches linearmente espaçados entre MIN e MAX para N rows.
+        /// Row 0 = MIN (horizonte distante), Row N-1 = MAX (chão próximo).
+        const fn compute_pitches() -> [f32; RETINA_ROWS] {
+            let mut pitches = [0.0_f32; RETINA_ROWS];
+            if RETINA_ROWS <= 1 {
+                pitches[0] = RETINA_MIN_PITCH;
+                return pitches;
+            }
+            let step = (RETINA_MAX_PITCH - RETINA_MIN_PITCH) / (RETINA_ROWS as f32 - 1.0);
+            let mut i = 0;
+            while i < RETINA_ROWS {
+                pitches[i] = RETINA_MIN_PITCH + step * i as f32;
+                i += 1;
+            }
+            pitches
+        }
+
+        /// Ângulos de pitch por linha da retina (rad), auto-calculados.
+        /// Row 0 = horizonte alto (-0.10 rad), Row N-1 = chão (+0.05 rad).
+        pub const RETINA_PITCHES: [f32; RETINA_ROWS] = compute_pitches();
     }
 
     // ── CÉREBRO (fonte: src/simulation/motor.rs, src/engine.rs) ────────
     pub mod brain {
         /// Sensory wave = array de 192 canais i8 (8 fóvea + 8 periférica + 64 HD + 112 telemetria/heurísticas).
         /// NÃO é retina direta — passa por pooling no motor.rs.
-        pub const SENSORY_WAVE_SIZE: usize = 192;
+        pub const SENSORY_WAVE_SIZE: usize = 220;
 
         /// Fast Brain: BitLinear 192→96 (instinct layer, pesos ternários no DNA).
         pub const L1_NEURONS: usize = 96;

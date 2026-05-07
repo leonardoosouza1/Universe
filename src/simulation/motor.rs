@@ -543,7 +543,7 @@ pub(super) fn update_racers(
                 0 => 29, 1 => 30, 2 => 31,
                 3 => 33, 4 => 34, 5 => 35,
                 6 => 99, 7 => 100,
-                _ => unreachable!(),
+                _ => 0,
             };
             sensory_wave[slot] = edge_norm;
         }

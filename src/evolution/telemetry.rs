@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use serde_json::json;
+use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 
 /// Fixed-size replay frame. #[repr(C)] for zero-copy binary write.
 /// Size: 272 bytes (fits in 256 + 16 padding, numpy will handle)
@@ -23,7 +24,7 @@ pub struct ReplayFrame {
     pub total_laps: u16,
     pub racer_id: u16,
     pub joy_tick: f32,
-    pub sensory_wave: [i8; 192],
+    pub sensory_wave: [i8; SENSORY_WAVE_SIZE],
     pub _reserved: [u8; 8],
 }
 
