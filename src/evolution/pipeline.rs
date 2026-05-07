@@ -252,6 +252,25 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
         - death_penalty
 }
 
+/// City navigation fitness: goal-reaching distance metric.
+/// Primary: number of destinations reached.
+/// Secondary: approach to next destination, wall penalty, survival.
+pub(super) fn calc_city_fitness(r: &Racer) -> f32 {
+    let goal_bonus = r.nav_goals_reached as f32 * 20_000.0;
+    // Approach bonus: credit for getting closer to destination (even partial progress)
+    let approach_bonus = (1000.0 - r.nav_distance_to_goal).max(0.0) * 8.0;
+    // Survival bonus: penalty for death
+    let survival = if r.is_dead { 0.0 } else { 3_000.0 };
+    // Red light violations: heavy penalty to teach traffic rules
+    let redlight_pen = r.red_light_violations as f32 * 5_000.0;
+    // Wall contact penalty: same as racing mode
+    let wall_pen = r.wall_time * 200.0;
+    // Death penalty: small flat penalty if dead
+    let death_pen = if r.is_dead { 2_000.0 } else { 0.0 };
+
+    goal_bonus + approach_bonus + survival - redlight_pen - wall_pen - death_pen
+}
+
 pub(super) fn evolution_pipeline(
     mut commands: Commands,
     mut race: ResMut<RaceSettings>,

@@ -12,8 +12,14 @@ pub static EASY_TRACK: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum VoxelType { Grass = 0, Road = 1, Wall = 2, Hole = 3 }
 
-#[derive(Resource, Default)]
-pub struct VoxelWorldResource(pub VoxelWorld);
+#[derive(Resource)]
+pub struct VoxelWorldResource(pub VoxelWorld, pub Option<crate::city::CityNavState>);
+
+impl Default for VoxelWorldResource {
+    fn default() -> Self {
+        Self(VoxelWorld::default(), None)
+    }
+}
 
 pub struct VoxelWorld {
     pub size: usize,

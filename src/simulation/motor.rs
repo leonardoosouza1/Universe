@@ -209,6 +209,12 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
         }
     }
 
+    // A-Nav: destination steering guidance (city mode only, decays via ax_strength at call site)
+    // Channels 111-112 encode sin/cos of bearing error to destination.
+    // Drives steering toward the goal direction. Harmless in race mode (ch 111/112 always zero).
+    let dest_sin = inputs[111] as f32 / 127.0;
+    bias[1] += dest_sin * 0.35;  // steer toward destination bearing
+
     bias
 }
 
@@ -236,7 +242,14 @@ pub(super) fn update_racers(
     // (spawn.rs is frozen by task constraints).
     mut prev_line_offset: Local<HashMap<Entity, f32>>,
     mut gizmos: Gizmos,
+    config: Res<crate::config::UniverseConfig>,
 ) {
+    // City navigation state (None in race mode, Some in city mode)
+    let city_nav_state = if config.city_mode {
+        world_res.1.as_ref()
+    } else {
+        None
+    };
     // Rodando em FixedUpdate: dt = Time<Fixed>::delta = 1/64s constante. Bevy já
     // substepa o schedule N vezes por frame real conforme time_scale (Virtual).
     // Sem cap, sem vdt separado — fixed step garante determinismo e sync com física.
@@ -1245,6 +1258,37 @@ pub(super) fn update_racers(
                 .clamp(0.0, 1.0);
             let pre_brake = (speed_norm * curv_abs_max * 127.0).clamp(0.0, 127.0) as i8;
             sensory_wave[28] = pre_brake;
+        }
+
+        // --- CITY NAVIGATION SENSORY (ch 110-113, city mode only) ---
+        // Gated behind config.city_mode check; no impact on race mode.
+        if let Some(city_nav) = city_nav_state.as_ref() {
+            // Ch 110: nearest traffic light state (0=green, 127=red)
+            if let Some((_, phase)) = city_nav.nearest_traffic_light(pos2d) {
+                let phase_val: i8 = match phase {
+                    crate::city::TrafficPhase::NsGreen => 0,
+                    crate::city::TrafficPhase::NsYellow => 64,
+                    crate::city::TrafficPhase::EwGreen => 0,
+                    crate::city::TrafficPhase::EwYellow => 64,
+                };
+                sensory_wave[110] = phase_val;
+            }
+
+            // Ch 111-112: destination direction (sin/cos of bearing to goal)
+            if let Some(dest) = racer.nav_destination {
+                let to_dest = dest.xz() - pos2d;
+                let target_angle = to_dest.y.atan2(to_dest.x);
+                let heading_error = target_angle - racer.phase;
+                sensory_wave[111] = ((heading_error.sin()) * 127.0).clamp(-127.0, 127.0) as i8;
+                sensory_wave[112] = ((heading_error.cos()) * 127.0).clamp(-127.0, 127.0) as i8;
+            }
+
+            // Ch 113: distance band to destination (log-scaled, 127=close <50m, 0=far >1000m)
+            sensory_wave[113] = {
+                let dist = racer.nav_distance_to_goal.max(1.0);
+                let dist_log = (dist / 50.0).log2().clamp(-3.0, 5.0);
+                (((dist_log + 3.0) / 8.0) * 127.0).clamp(0.0, 127.0) as i8
+            };
         }
 
         if should_fire {

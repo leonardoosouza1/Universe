@@ -161,7 +161,7 @@ fn main() {
         ),
     })
     .insert_resource(DevSettings::default())
-    .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))
+    .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width), None))
     .insert_resource(EnvironmentalState::default())
     .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin, MenuPlugin))
     .add_plugins(bevy_atmosphere::plugin::AtmospherePlugin)
