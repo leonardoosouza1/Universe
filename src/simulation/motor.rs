@@ -2184,9 +2184,10 @@ pub(super) fn update_racers(
         }
 
         // GRACE em frames REAIS — virtual time é caótico nos primeiros frames (FPS
-        // irregular em swarm grande, max_delta do Bevy, etc). 640 frames reais ≈ 10s real
-        // ≈ tempo suficiente pra rede propagar e carro sair da largada em QUALQUER time_scale.
-        let out_of_grace = racer.grace_ticks >= 2560;
+        // irregular em swarm grande, max_delta do Bevy, etc). Era 2560 frames (40s).
+        // v2: estendida pra 7200 frames (112.5s) = quase full generation (120s).
+        // Permite evolução aprender sem harsh penalties interrupting progress.
+        let out_of_grace = racer.grace_ticks >= 7200;
 
         // === POST-LAP GRACE (calculado cedo — wall check abaixo precisa de HP grace) ===
         if racer.post_lap_grace > 0 { racer.post_lap_grace = racer.post_lap_grace.saturating_sub(1); }
