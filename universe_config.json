@@ -66,8 +66,8 @@
     }
   ],
   "selected_track_index": 0,
-  "swarm_count": 20,
-  "time_scale": 2.0,
+  "swarm_count": 1,
+  "time_scale": 1.0,
   "generation_timeout_s": 3960.0,
   "rotate_tracks": false,
   "gens_per_track": 50,

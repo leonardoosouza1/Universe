@@ -1269,13 +1269,14 @@ pub(super) fn update_racers(
             ];
             let speed_kmh = speed * 3.6;
             // Wall raycast proxies derived from retina samples (i8 0..127). Larger sum = closer.
+            let horizon_row = RETINA_ROWS / 2;
             let wall_l_proxy = {
-                let s: i32 = ((RETINA_COLS/2)..(RETINA_COLS*38/64)).map(|i| sensory_wave[i] as i32).sum();
+                let s: i32 = ((RETINA_COLS/2)..(RETINA_COLS*38/64)).map(|i| retina_binocular[horizon_row * RETINA_COLS + i] as i32).sum();
                 let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
                 (1.0 - norm) * 5.0
             };
             let wall_r_proxy = {
-                let s: i32 = ((RETINA_COLS*58/64)..RETINA_COLS).map(|i| sensory_wave[i] as i32).sum();
+                let s: i32 = ((RETINA_COLS*58/64)..RETINA_COLS).map(|i| retina_binocular[horizon_row * RETINA_COLS + i] as i32).sum();
                 let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
                 (1.0 - norm) * 5.0
             };
