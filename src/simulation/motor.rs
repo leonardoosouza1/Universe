@@ -508,6 +508,54 @@ pub(super) fn update_racers(
         for i in 0..32usize {
             sensory_wave[160 + i] = retina_binocular[horizon_row * RETINA_COLS + i * step];
         }
+
+        // === 3-ZONE DEPTH AXIOMS (May 8, 2026) ===
+        // SHORT (rows 0-4, 0-20m): immediate collision detection
+        // MEDIUM (rows 5-9, 20-60m): mid-field validation
+        // LONG (rows 10-13, 60-200m): lookahead curve detection
+        // ch 192-199: SHORT foveal (8 bins)
+        for bin in 0..8 {
+            let cols_per_fov_bin = RETINA_COLS / 8;
+            let lo = bin * cols_per_fov_bin;
+            let hi = lo + cols_per_fov_bin;
+            let mut max_val: i8 = -128;
+            for row in 0..5 {  // rows 0-4 only
+                for p in lo..hi {
+                    let v = retina_binocular[row * RETINA_COLS + p];
+                    if v > max_val { max_val = v; }
+                }
+            }
+            sensory_wave[192 + bin] = max_val;
+        }
+        // ch 200-207: MEDIUM foveal (8 bins)
+        for bin in 0..8 {
+            let cols_per_fov_bin = RETINA_COLS / 8;
+            let lo = bin * cols_per_fov_bin;
+            let hi = lo + cols_per_fov_bin;
+            let mut max_val: i8 = -128;
+            for row in 5..10 {  // rows 5-9 only
+                for p in lo..hi {
+                    let v = retina_binocular[row * RETINA_COLS + p];
+                    if v > max_val { max_val = v; }
+                }
+            }
+            sensory_wave[200 + bin] = max_val;
+        }
+        // ch 208-215: LONG foveal (8 bins)
+        for bin in 0..8 {
+            let cols_per_fov_bin = RETINA_COLS / 8;
+            let lo = bin * cols_per_fov_bin;
+            let hi = lo + cols_per_fov_bin;
+            let mut max_val: i8 = -128;
+            for row in 10..RETINA_ROWS {  // rows 10-13
+                for p in lo..hi {
+                    let v = retina_binocular[row * RETINA_COLS + p];
+                    if v > max_val { max_val = v; }
+                }
+            }
+            sensory_wave[208 + bin] = max_val;
+        }
+
         // Canais 16..63 zerados explicitamente (garantia contra leak de frame anterior).
         for i in 16..64 { sensory_wave[i] = 0; }
 
@@ -1035,7 +1083,8 @@ pub(super) fn update_racers(
 
         // Canal 82: URGÊNCIA DE COLISÃO FRONTAL — speed / forward_wall_dist.
         // Alto = vou bater logo. Combina TTC inverso num único sinal [0..127].
-        let fwd_probe = world.raycast(pos.x, pos.z, racer.phase, 30.0).max(0.5);
+        // v2: 30→120m lookahead. 4.4s @ 100kmh. Permite antecipar curvas distantes.
+        let fwd_probe = world.raycast(pos.x, pos.z, racer.phase, 120.0).max(0.5);
         let ttc_inv = (speed / fwd_probe).clamp(0.0, 10.0); // 10 = ~0.1s de TTC
         sensory_wave[82] = ((ttc_inv / 10.0) * 127.0) as i8;
 
@@ -1450,9 +1499,10 @@ pub(super) fn update_racers(
         slow_input[28] = ((curv_60 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
         slow_input[29] = if racer.grace_ticks < 2560 { 127 } else { 0 }; // in_grace (tick-based, sync with motor grace)
         slow_input[30] = ((curv_90 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
-        // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >6m).
-        let forward_wall_dist_sensor = world.raycast(pos.x, pos.z, racer.phase, 30.0);
-        slow_input[31] = ((forward_wall_dist_sensor / 6.0).clamp(0.0, 1.0) * 127.0) as i8;
+        // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >30m).
+        // v2: raycast 30→120m. Normalize by 30m pra sensor ficar 0-127 meaningful.
+        let forward_wall_dist_sensor = world.raycast(pos.x, pos.z, racer.phase, 120.0);
+        slow_input[31] = ((forward_wall_dist_sensor / 30.0).clamp(0.0, 1.0) * 127.0) as i8;
         racer.engine.slow_brain.tick(&slow_input);
 
         // Usar final_intent estabilizado pelo CfC e KAN em vez de pesos crus (Evita ZigZag)
@@ -1662,7 +1712,8 @@ pub(super) fn update_racers(
         const REVERSE_PEDAL: f32 = 0.75;         // >0.5 garante stall recovery
         const POST_REVERSE_LOCKOUT: f32 = 0.6;   // cooldown curto (era 1.5)
 
-        let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 30.0);
+        // v2: 30→120m lookahead. Permite antecipar parede distante.
+        let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 120.0);
         // [SAFETY CAP DESATIVADO] - O acelerador não é mais cortado perto da parede.
         // A rede neural decide se acelera ou não.
         let safety_cap: f32 = 1.0; 
