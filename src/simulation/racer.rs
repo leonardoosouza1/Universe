@@ -229,7 +229,7 @@ pub struct BrainSnapshot {
     pub top_channels: [(u8, i8); 5], // Top-5 canais mais ativados (|valor|), com índice+valor
 
     // --- Vision replay data (compressed retina + sensory channels) ---
-    pub retina_fov: Vec<i8>,       // FOV_BINS × RETINA_ROWS (dynamic size, supports variable retina dimensions)
+    pub retina_fov: [i8; 112],     // 8 FOV bins × 14 RETINA_ROWS (compressed from 1764 bytes)
     pub sensory_compact: [i8; 32], // Top-32 telemetry channels: speed, alignment, curvature, walls, etc
 }
 
