@@ -377,9 +377,10 @@ pub(super) fn evolution_pipeline(
                 kan_knots: r.kan_out.knots,
             };
             // Guard: só adiciona ao pool se racer atingiu distância mínima (sanidade check)
-            // Previne que DNA de crash total (<=0m) contaminar o pool
+            // Previne que DNA de crash total (<=0m) ou DNA MORTA contaminar o pool.
             // v8b: 150m→100m. Carros em pista 14m fazem ~100m, threshold seletivo mas não muito.
-            if r.track_progress < 100.0 {
+            // v9: rejeita DEAD racers — elite DNA deve ser de carros vivos que sobreviveram.
+            if r.track_progress < 100.0 || r.is_dead {
                 continue;
             }
             if race.elite_pool.len() < 10 {
