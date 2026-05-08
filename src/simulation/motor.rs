@@ -1786,12 +1786,12 @@ pub(super) fn update_racers(
         // --- INÉRCIA DE ATUADOR (Direção Hidráulica Rápida) ---
         // Em ré: aplica pedal reverso fixo e solta o freio, sobrescrevendo o intent neural.
         // Em modo normal: multiplica pelo safety_cap (zero se encostado na parede, 1 se >6m).
-        // Pedal: durante ré, aplica REVERSE_PEDAL fixo. Em lockout pós-ré, capa em 0.3
-        // (para evitar re-acelerada imediata de volta contra a parede). Normal: safety_cap.
+        // Pedal: durante ré, aplica REVERSE_PEDAL fixo. Em lockout pós-ré, capa em 0.8 (era 0.3)
+        // v8b: aumentar de 0.3→0.8 pra não matar aceleração durante aprendizado inicial.
         let pedal_target = if is_reversing {
             REVERSE_PEDAL
         } else if racer.post_reverse_lockout > 0.0 {
-            (final_pedal_intent * safety_cap).min(0.3)
+            (final_pedal_intent * safety_cap).min(0.8)
         } else {
             final_pedal_intent * safety_cap
         };
