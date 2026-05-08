@@ -38,7 +38,7 @@ impl Default for LabParams {
             experiment_name: "default".to_string(),
             variant_id: 0,
             axiom_wall_avoidance: 0.18,
-            axiom_dark_center: 0.35,
+            axiom_dark_center: 0.45,
             axiom_whisker: 0.15,
             axiom_racing_line: 0.26,
             axiom_decay_divisor: 50.0,
