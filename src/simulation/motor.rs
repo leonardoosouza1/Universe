@@ -54,6 +54,7 @@ fn slow_input_for_reflex(sensory_wave: &[i8; crate::config::iara::brain::SENSORY
 
 fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], lab: &crate::lab::LabParams) -> [f32; 96] {
     let mut bias = [0.0f32; 96];
+    bias[0] = 0.35;  // Base forward throttle — ensures Gen 1 moves forward by default, prevents reverse spiral death
     let WALL_T: i8 = lab.wall_t_threshold;  // ~0.31 normalizado — parede próxima mas não encostada
 
     // A1: parede esquerda (perif bins 8..11) → steer direita (+)
@@ -1452,7 +1453,7 @@ pub(super) fn update_racers(
         let yaw_norm = std::f32::consts::FRAC_PI_2;
         slow_input[27] = ((curv_30 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
         slow_input[28] = ((curv_60 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
-        slow_input[29] = if racer.grace_ticks < 640 { 127 } else { 0 }; // in_grace (tick-based, sync with motor grace)
+        slow_input[29] = if racer.grace_ticks < 2560 { 127 } else { 0 }; // in_grace (tick-based, sync with motor grace)
         slow_input[30] = ((curv_90 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
         // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >6m).
         let forward_wall_dist_sensor = world.raycast(pos.x, pos.z, racer.phase, 30.0);
@@ -1894,8 +1895,9 @@ pub(super) fn update_racers(
         // Overlap penalty afrouxado: 30 → 5 HP/s. Permite trail-braking legítimo em curvas.
         // Ainda pune conflict severo, mas não mata em 3s como antes.
         // Não aplicar durante ré (pedal real vem de REVERSE_PEDAL, não do neural).
+        // Grace period: não punir Gen 1 conflito durante bootstrap (primeira 10s).
         let conflict = !is_reversing && final_pedal_intent > 0.4 && brake_intent > 0.4;
-        if conflict {
+        if conflict && racer.grace_ticks >= 2560 {
             racer.hp -= dt * 5.0;
             gizmos.sphere(pos + Vec3::new(0.0, 1.5, 0.0), 0.3, Color::srgb(1.0, 0.5, 0.0));
         }
@@ -1903,10 +1905,11 @@ pub(super) fn update_racers(
         // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
         // Bootstrap grace: primeiros 10s sem penalidades duras — IA precisa de tempo
         // para o priming genético se expressar antes de ser culpada.
-        let in_grace = racer.grace_ticks < 640;
+        let in_grace = racer.grace_ticks < 2560;
         if let Some(ref eng) = opt_engine {
-            if eng.current_rpm > eng.max_rpm * 0.95 {
-                racer.hp -= dt * 5.0; // Redline sempre pune — é sinal claro, não estagnação
+            // Redline: punish only after grace (Gen 1 needs time to learn rev control)
+            if !in_grace && eng.current_rpm > eng.max_rpm * 0.95 {
+                racer.hp -= dt * 5.0;
             }
             // Burnout: reduzido e só fora do grace
             if !in_grace && speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
@@ -1935,7 +1938,7 @@ pub(super) fn update_racers(
         // VoxelType::Hole sob centro do carro → kill. Força a rede a desviar ativamente
         // de buracos (pixel distinto na retina ~90, enquanto road ~-80 e wall ~127).
         // Grace window v5: 180→640 frames (3s→10s). Gen 1 precisa mais tempo pra aprender.
-        if voxel_current == VoxelType::Hole && !racer.is_dead && racer.grace_ticks >= 640 {
+        if voxel_current == VoxelType::Hole && !racer.is_dead && racer.grace_ticks >= 2560 {
             racer.is_dead = true;
             racer.hp = 0.0;
             racer.death_reason = Some(crate::simulation::racer::DeathReason::Hole);
@@ -1949,7 +1952,7 @@ pub(super) fn update_racers(
 
         // --- NPC HIT: Dano pesado, kill se HP zero ---
         // Cooldown reutilizado do wall_cooldown evita double-dip no mesmo hit.
-        if !racer.is_dead && racer.grace_ticks >= 180 && env.npc_hit(Vec2::new(pos.x, pos.z)) && racer.wall_cooldown == 0.0 {
+        if !racer.is_dead && racer.grace_ticks >= 2560 && env.npc_hit(Vec2::new(pos.x, pos.z)) && racer.wall_cooldown == 0.0 {
             racer.telemetry.hit_npc_count += 1;
             racer.wall_cooldown = 0.8;
             racer.hp -= 50.0;
@@ -2013,7 +2016,8 @@ pub(super) fn update_racers(
             // Motor afogado: NÃO mata instantaneamente!
             // A IA precisa aprender a sequência de partida (reduzir pra marcha 0/1 + segurar acelerador).
             // Drena HP lentamente (bateria do starter) como pressão evolutiva para reiniciar rápido.
-            if engine_comp.is_stalled {
+            // Grace period: Gen 1 pode ter motor stalled durante bootstrap sem battery drain.
+            if !in_grace && engine_comp.is_stalled {
                 racer.hp -= 1.0 * dt; // Bateria drena lentamente: ~100s até morrer
             }
 
@@ -2106,19 +2110,22 @@ pub(super) fn update_racers(
             }
 
             // Punição Severa por Andar na Contramão — mas não durante manobra de ré de emergência.
-            if !is_reversing && racer.distance < -5.0 {
+            // Grace period: Gen 1 não pode ser punido por efeitos secundários de spin-up inicial.
+            if !in_grace && !is_reversing && racer.distance < -5.0 {
                 racer.hp -= 100.0 * dt;
             }
 
             // Punição por fazer "zerinho" (Spinning in place donuts)
-            if body.angular_velocity.y.abs() > 1.5 && track_velocity.abs() < 5.0 {
+            // Grace period: Gen 1 pode girar durante bootstrap sem morrer.
+            if !in_grace && body.angular_velocity.y.abs() > 1.5 && track_velocity.abs() < 5.0 {
                 racer.hp -= 30.0 * dt; // Se ficar girando mais que 1.5 rad/s parado, morre em ~3s
             }
 
             // Punição de Desgaste de Pneu (Destruição Térmica): Evitar Burnouts Livres
             // Se as rodas estão escorregando loucamente (Slip Ratio enorme) e o carro não avança muito
+            // Grace period: Gen 1 pode derrapar durante spin-up initial sem penalidade.
             let avg_slip = body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0;
-            if avg_slip > 0.5 && track_velocity.abs() < 15.0 {
+            if !in_grace && avg_slip > 0.5 && track_velocity.abs() < 15.0 {
                 // "Estourar os Pneus": Drena vida absurdamente rápido se derrapar à toa acelerando a 80% parado
                 racer.hp -= avg_slip * 10.0 * dt;
             }
@@ -2187,9 +2194,9 @@ pub(super) fn update_racers(
         }
 
         // GRACE em frames REAIS — virtual time é caótico nos primeiros frames (FPS
-        // irregular em swarm grande, max_delta do Bevy, etc). 180 frames reais ≈ 3s real
+        // irregular em swarm grande, max_delta do Bevy, etc). 640 frames reais ≈ 10s real
         // ≈ tempo suficiente pra rede propagar e carro sair da largada em QUALQUER time_scale.
-        let out_of_grace = racer.grace_ticks >= 180;
+        let out_of_grace = racer.grace_ticks >= 2560;
 
         // === POST-LAP GRACE (calculado cedo — wall check abaixo precisa de HP grace) ===
         if racer.post_lap_grace > 0 { racer.post_lap_grace = racer.post_lap_grace.saturating_sub(1); }
@@ -2344,8 +2351,9 @@ pub(super) fn update_racers(
 
         // Idle brake penalty: brake forte + parado dreno HP pequeno.
         // Caçador sem presa não pode hibernar freando.
+        // Grace period: Gen 1 pode usar brake durante bootstrap sem penalidade.
         #[cfg(feature = "survival_pressure")]
-        if brake_intent > 0.5 && speed < 3.0 && !is_reversing {
+        if !in_grace && brake_intent > 0.5 && speed < 3.0 && !is_reversing {
             racer.hp -= 2.0 * dt;
         }
         if racer.fuel <= 0.0 && !racer.is_dead {

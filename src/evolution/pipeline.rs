@@ -926,6 +926,15 @@ pub(super) fn evolution_pipeline(
         let speed_bleeds = sorted.iter()
             .filter(|(_, r, _, _)| matches!(r.death_reason, Some(crate::simulation::racer::DeathReason::SpeedBleed)))
             .count();
+
+        // Count death reasons
+        let mut death_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (_, r, _, _) in &sorted {
+            if let Some(ref reason) = r.death_reason {
+                *death_counts.entry(format!("{:?}", reason)).or_insert(0) += 1;
+            }
+        }
+
         let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
         let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
         let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).unwrap_or(0.0);
@@ -958,6 +967,7 @@ pub(super) fn evolution_pipeline(
             "env_wetness": env_wetness,
             "gen_duration_secs": gen_dur,
             "ts_unix": ts,
+            "death_reasons": death_counts,
         }));
 
         // Export champion brain trace as JSON for vision replay
