@@ -54,7 +54,6 @@ fn slow_input_for_reflex(sensory_wave: &[i8; crate::config::iara::brain::SENSORY
 
 fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], lab: &crate::lab::LabParams) -> [f32; 96] {
     let mut bias = [0.0f32; 96];
-    bias[0] = 0.35;  // Base forward throttle — ensures Gen 1 moves forward by default, prevents reverse spiral death
     let WALL_T: i8 = lab.wall_t_threshold;  // ~0.31 normalizado — parede próxima mas não encostada
 
     // A1: parede esquerda (perif bins 8..11) → steer direita (+)
@@ -1892,36 +1891,32 @@ pub(super) fn update_racers(
             physical_throttle *= racer.engine_power.max(0.6);
         }
 
-        // Overlap penalty afrouxado: 30 → 5 HP/s. Permite trail-braking legítimo em curvas.
-        // Ainda pune conflict severo, mas não mata em 3s como antes.
-        // Não aplicar durante ré (pedal real vem de REVERSE_PEDAL, não do neural).
-        // Grace period: não punir Gen 1 conflito durante bootstrap (primeira 10s).
-        let conflict = !is_reversing && final_pedal_intent > 0.4 && brake_intent > 0.4;
-        if conflict && racer.grace_ticks >= 2560 {
-            racer.hp -= dt * 5.0;
-            gizmos.sphere(pos + Vec3::new(0.0, 1.5, 0.0), 0.3, Color::srgb(1.0, 0.5, 0.0));
-        }
+        // Overlap penalty — DISABLED v7
+        // Was killing post-grace when carros learned throttle+brake combo.
+        // let conflict = !is_reversing && final_pedal_intent > 0.4 && brake_intent > 0.4;
+        // if conflict && racer.grace_ticks >= 2560 {
+        //     racer.hp -= dt * 5.0;
+        //     gizmos.sphere(pos + Vec3::new(0.0, 1.5, 0.0), 0.3, Color::srgb(1.0, 0.5, 0.0));
+        // }
 
-        // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
-        // Bootstrap grace: primeiros 10s sem penalidades duras — IA precisa de tempo
-        // para o priming genético se expressar antes de ser culpada.
+        // --- OVER-REV PENALTY & CLUTCH BURN — DISABLED v7
         let in_grace = racer.grace_ticks < 2560;
-        if let Some(ref eng) = opt_engine {
-            // Redline: punish only after grace (Gen 1 needs time to learn rev control)
-            if !in_grace && eng.current_rpm > eng.max_rpm * 0.95 {
-                racer.hp -= dt * 5.0;
-            }
-            // Burnout: reduzido e só fora do grace
-            if !in_grace && speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
-                racer.hp -= dt * 2.0; // era 5.0
-            }
-        }
+        // if let Some(ref eng) = opt_engine {
+        //     // Redline: punish only after grace (Gen 1 needs time to learn rev control)
+        //     if !in_grace && eng.current_rpm > eng.max_rpm * 0.95 {
+        //         racer.hp -= dt * 5.0;
+        //     }
+        //     // Burnout: reduzido e só fora do grace
+        //     if !in_grace && speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
+        //         racer.hp -= dt * 2.0; // era 5.0
+        //     }
+        // }
 
-        // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR ---
-        // Só ativa após grace e fora de manobra de ré (recuar é lento mas legítimo).
-        if !in_grace && !is_reversing && speed < 1.0 {
-            racer.hp -= dt * 5.0;
-        }
+        // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR — DISABLED v7
+        // Was primary post-grace killer (5 HP/s when speed < 1 m/s)
+        // if !in_grace && !is_reversing && speed < 1.0 {
+        //     racer.hp -= dt * 5.0;
+        // }
 
         // --- MODELO TÉRMICO DOS PNEUS (agora per-wheel em physics.rs) ---
         // Ler a média das rodas para a telemetria do Racer
@@ -1950,24 +1945,23 @@ pub(super) fn update_racers(
             println!("💀 {} HOLE frame {} pos=({:.1},{:.1})", racer.name, racer.grace_ticks, pos.x, pos.z);
         }
 
-        // --- NPC HIT: Dano pesado, kill se HP zero ---
-        // Cooldown reutilizado do wall_cooldown evita double-dip no mesmo hit.
-        if !racer.is_dead && racer.grace_ticks >= 2560 && env.npc_hit(Vec2::new(pos.x, pos.z)) && racer.wall_cooldown == 0.0 {
-            racer.telemetry.hit_npc_count += 1;
-            racer.wall_cooldown = 0.8;
-            racer.hp -= 50.0;
-            if racer.hp <= 0.0 {
-                racer.is_dead = true;
-                racer.hp = 0.0;
-                racer.death_reason = Some(crate::simulation::racer::DeathReason::NpcHit);
-                racer.death_frame = racer.grace_ticks;
-                racer.death_pos = pos;
-                race.death_markers.push(pos);
-                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
-                commands.entity(entity).insert(Visibility::Hidden);
-                println!("💀 {} NPC_HIT frame {}", racer.name, racer.grace_ticks);
-            }
-        }
+        // --- NPC HIT — DISABLED v7
+        // if !racer.is_dead && racer.grace_ticks >= 2560 && env.npc_hit(Vec2::new(pos.x, pos.z)) && racer.wall_cooldown == 0.0 {
+        //     racer.telemetry.hit_npc_count += 1;
+        //     racer.wall_cooldown = 0.8;
+        //     racer.hp -= 50.0;
+        //     if racer.hp <= 0.0 {
+        //         racer.is_dead = true;
+        //         racer.hp = 0.0;
+        //         racer.death_reason = Some(crate::simulation::racer::DeathReason::NpcHit);
+        //         racer.death_frame = racer.grace_ticks;
+        //         racer.death_pos = pos;
+        //         race.death_markers.push(pos);
+        //         if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+        //         commands.entity(entity).insert(Visibility::Hidden);
+        //         println!("💀 {} NPC_HIT frame {}", racer.name, racer.grace_ticks);
+        //     }
+        // }
 
         // --- DINÂMICA DE CASTER (STEERING WEIGHT DEPENDENTE DA VELOCIDADE) ---
         // Steer_limit = MaxSteer / (1.0 + speed * 0.02)
@@ -2109,11 +2103,11 @@ pub(super) fn update_racers(
                 racer.hp -= 10.0 * dt;
             }
 
-            // Punição Severa por Andar na Contramão — mas não durante manobra de ré de emergência.
-            // Grace period: Gen 1 não pode ser punido por efeitos secundários de spin-up inicial.
-            if !in_grace && !is_reversing && racer.distance < -5.0 {
-                racer.hp -= 100.0 * dt;
-            }
+            // Punição Severa por Andar na Contramão — DISABLED v7
+            // Era matando carros post-grace por backing up. Com base throttle bias deve ser natural forward.
+            // if !in_grace && !is_reversing && racer.distance < -5.0 {
+            //     racer.hp -= 100.0 * dt;
+            // }
 
             // Punição por fazer "zerinho" (Spinning in place donuts)
             // Grace period: Gen 1 pode girar durante bootstrap sem morrer.
@@ -2234,7 +2228,8 @@ pub(super) fn update_racers(
                 let max_dmg = if out_of_grace { 40.0 } else { 20.0 }; // reduzido (era 60/35)
                 let mut dmg = 4.0 + impact_norm * (max_dmg - 4.0); // base dmg 4.0 (era 8.0)
                 if in_post_lap_hp_grace { dmg *= 0.3; }
-                racer.hp -= dmg;
+                // Wall damage disabled v7: was main killer post-grace
+                // racer.hp -= dmg;
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     racer.hp = 0.0;
@@ -2312,17 +2307,14 @@ pub(super) fn update_racers(
             racer.progress_checkpoint = racer.max_progress;
         }
 
-        // === SPEED BLEED (em FRAMES reais) ===
-        // Velocidade < 2 m/s por 120 frames (≈2s reais) E sem avanço → sangra 100 HP/s real.
-        // Guard `making_progress`: curvas lentas (hairpin) não devem matar — muitos carros
-        // passavam reduzindo a <3 m/s no apex e morriam por bleed mesmo avançando. Agora só
-        // bleed quando parados DE VERDADE (sem crescer max_progress).
+        // === SPEED BLEED (RE-ENABLED v8) ===
+        // Penaliza carros parados. Força evolução: aprende a mover ou morre.
         let cur_speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
         let making_progress = racer.max_progress > prev_max + 0.005;
         if out_of_grace && !in_post_lap_grace && cur_speed < 2.0 && !making_progress {
             racer.slow_time += 1.0;
-            if racer.slow_time > 360.0 { // Era 180.0. Mais tempo devagar sem HP bleed.
-                racer.hp -= 30.0 * dt; // Dano muito mais suave (era 100.0)
+            if racer.slow_time > 360.0 {
+                racer.hp -= 30.0 * dt;
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     racer.hp = 0.0;
@@ -2332,7 +2324,6 @@ pub(super) fn update_racers(
                     race.death_markers.push(pos);
                     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
                     commands.entity(entity).insert(Visibility::Hidden);
-                    println!("💀 {} SPEED_BLEED aos frame {} (slow_time={} frames)", racer.name, racer.grace_ticks, racer.slow_time as u32);
                 }
             }
         } else {

@@ -57,7 +57,7 @@ fn main() {
             "experiment_name": name.to_string(),
             "variant_id": idx,
             "axiom_wall_avoidance": 0.18,
-            "axiom_dark_center": 0.35,
+            "axiom_dark_center": 0.45,
             "axiom_whisker": 0.15,
             "axiom_racing_line": 0.26,
             "axiom_decay_divisor": 50.0,
