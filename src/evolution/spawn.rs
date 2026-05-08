@@ -1009,7 +1009,7 @@ pub fn spawn_swarm(
                 car_model: car_model.to_string(),
                 car_model_idx: (spawn_model_idx % 5) as u8,
                 engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
-                pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 200.0, total_laps: 0,
+                pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1.0, hp: 500.0, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; RETINA_TOTAL],
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
                 joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: spawn_progress, grace_ticks: 0,
