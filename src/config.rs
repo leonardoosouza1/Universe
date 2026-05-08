@@ -239,10 +239,10 @@ mod tests {
 pub mod iara {
     // ── VISÃO (fonte: src/world.rs:12-18) ──────────────────────────────
     pub mod vision {
-        pub const RETINA_ROWS: usize = 16;
-        pub const RETINA_COLS: usize = 256;
+        pub const RETINA_ROWS: usize = 14;
+        pub const RETINA_COLS: usize = 126;
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 14 × 126 = 1764
-        pub const FOV_DEG: f32 = 180.0;
+        pub const FOV_DEG: f32 = 120.0;
         pub const RETINA_SKIP: u32 = 2;
 
         /// Limites de pitch da retina (rad).
@@ -250,7 +250,7 @@ pub mod iara {
         /// MAX = row N-1 (olha para baixo / chão próximo, ângulo positivo = abaixo).
         /// Range original: -0.10 rad (~-5.7°) a +0.05 rad (~+2.8°).
         pub const RETINA_MIN_PITCH: f32 = -0.06;
-        pub const RETINA_MAX_PITCH: f32 = -0.001;
+        pub const RETINA_MAX_PITCH: f32 = -0.03;
 
         /// Calcula pitches linearmente espaçados entre MIN e MAX para N rows.
         /// Row 0 = MIN (horizonte distante), Row N-1 = MAX (chão próximo).

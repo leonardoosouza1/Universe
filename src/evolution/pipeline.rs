@@ -169,7 +169,7 @@ fn compute_phi_proxy(r: &Racer) -> f32 {
     if phi.is_nan() || phi.is_infinite() { 0.0 } else { phi.clamp(0.0, 1.0) }
 }
 
-pub(super) fn calc_fitness(r: &Racer) -> f32 {
+pub(super) fn calc_fitness(r: &Racer, track_width: f32) -> f32 {
     // ===================================================
     // FITNESS SIMPLIFICADO — sinal limpo para seleção.
     // ===================================================
@@ -177,7 +177,7 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
     //   base    = progresso NA PISTA (domínio 100× maior que desempates)
     //   lap     = bônus por voltas completas (50k cada)
     //   joy     = desempate fino entre carros equidistantes (~1%)
-    //   wall    = regularização suave (não fitness-killer)
+    //   wall    = regularização suave (não fitness-killer, scale-aware para pistas narrow)
     //   death   = linear em "quão pouco andou antes de morrer"
     //
     // Removido: exponencial `prog^1.3` (criava discontinuidade artificial),
@@ -195,8 +195,10 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
     // Depois de uma volta completa, lap_bonus domina e proximity fica estável.
     let prox_frac = (prog / 500.0).clamp(0.0, 1.0);
     let proximity_bonus = prox_frac * prox_frac * 10000.0;
-    // Wall penalty 50 → 200: raspar parede agora custa MUITO mais progresso equivalente.
-    // 1s de wall_time = 200pts = 2m de track_progress deletados.
+    // Wall penalty: escala com track_width. Narrow tracks (<14m) têm paredes inevitáveis.
+    // Wide tracks (>20m) podem evitar paredes → pena maior.
+    // Formula: base 200 × (track_width / 14.0)^0.7 — cresce lentamente com width.
+    let width_penalty_scale = (track_width / 14.0).powf(0.7).clamp(0.5, 2.0);
     // Tier 4.3 — Nicho-splitting (simpler version, shared-pool).
     //   niche == 0 (defensive):  wall_penalty × 2.0  — pune raspar parede forte.
     //   niche == 1 (aggressive): speed_reward × 1.5  — premia velocidade on-road.
@@ -204,7 +206,7 @@ pub(super) fn calc_fitness(r: &Racer) -> f32 {
     // via tournament/mate-preference. Lineage fica introspectável pelo campo.
     let wall_mult: f32 = if r.niche == 0 { 2.0 } else { 1.0 };
     let speed_mult: f32 = if r.niche == 1 { 1.5 } else { 1.0 };
-    let wall_penalty = r.wall_time * 200.0 * wall_mult;
+    let wall_penalty = r.wall_time * 200.0 * width_penalty_scale * wall_mult;
     // Wall hits: cada contato durante grace custa 500pts adicionais (fora do grace morre direto).
     let hit_penalty = r.wall_hits as f32 * 500.0;
     // Death penalty REWORKED: antes `(100-prog)*10` capava em 1000pts e zerava após 100m
@@ -288,8 +290,8 @@ pub(super) fn evolution_pipeline(
         // Rank global por fitness — reutilizado pelo pool elite + relatório.
         let mut sorted: Vec<_> = query.iter().collect();
         sorted.sort_by(|a, b| {
-            let score_a = calc_fitness(a.1);
-            let score_b = calc_fitness(b.1);
+            let score_a = calc_fitness(a.1, track_w);
+            let score_b = calc_fitness(b.1, track_w);
             score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -318,7 +320,7 @@ pub(super) fn evolution_pipeline(
 
         let mut scars_created_this_gen = 0usize;
         for (rank, (_, r, _, _)) in sorted.iter().take(10).enumerate() {
-            let new_fit = calc_fitness(r);
+            let new_fit = calc_fitness(r, track_w);
             // ---- Trinity fitness penalties / rewards ----
             const LN3: f32 = 1.0986123; // ln(3) — max entropy of 3-class softmax
             let hv = r.engine.hard_veto_count as f32;
@@ -474,7 +476,7 @@ pub(super) fn evolution_pipeline(
             // Summary agregado: distribuição de NET/fitness/survival.
             let nets: Vec<f32> = sorted.iter().map(|(_, r, _, _)| (r.track_progress - r.spawn_progress).max(0.0)).collect();
             let deaths = sorted.iter().filter(|(_, r, _, _)| r.is_dead).count();
-            let fits: Vec<f32> = sorted.iter().map(|(_, r, _, _)| calc_fitness(r)).collect();
+            let fits: Vec<f32> = sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w)).collect();
             let median = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[v.len()/2] } };
             let p90 = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[(v.len()*1/10).min(v.len()-1)] } }; // v já ordenado desc
             let mean = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 } };
@@ -523,7 +525,7 @@ pub(super) fn evolution_pipeline(
             let mut def_speed_sum = 0.0f32; let mut agg_speed_sum = 0.0f32;
             let mut def_fit_sum = 0.0f32; let mut agg_fit_sum = 0.0f32;
             for (_, r, _, _) in sorted.iter() {
-                let f = calc_fitness(r);
+                let f = calc_fitness(r, track_w);
                 let sp = r.telemetry.speed_on_track();
                 if r.niche == 0 {
                     def_n += 1; def_wall_sum += r.wall_time; def_speed_sum += sp; def_fit_sum += f;
@@ -831,7 +833,7 @@ pub(super) fn evolution_pipeline(
         let gen_fitness: f32 = {
             let n = sorted.len();
             if n == 0 { 0.0 }
-            else { sorted.iter().map(|(_, r, _, _)| calc_fitness(r)).sum::<f32>() / n as f32 }
+            else { sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w)).sum::<f32>() / n as f32 }
         };
         if race.fitness_history.len() == super::settings::FITNESS_HISTORY_CAP {
             race.fitness_history.pop_front();
@@ -925,7 +927,7 @@ pub(super) fn evolution_pipeline(
             .count();
         let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
         let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
-        let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r)).unwrap_or(0.0);
+        let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r, track_w)).unwrap_or(0.0);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
         // Extrai valores de race ANTES de usar race.telemetry

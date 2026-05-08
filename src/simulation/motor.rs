@@ -57,14 +57,15 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     const WALL_T: i8 = 40;  // ~0.31 normalizado — parede próxima mas não encostada
 
     // A1: parede esquerda (perif 32..37) → steer direita (+)
+    // Reduzido 0.30→0.18 pra narrow tracks: deixar brain aprender reflexo, não axiom dominar
     let wall_l: i32 = (32..38).map(|i| inputs[i] as i32).sum();
     if wall_l > WALL_T as i32 * 2 {
-        bias[1] += 0.30;
+        bias[1] += 0.18;
     }
     // A2: parede direita (perif 58..63) → steer esquerda (-)
     let wall_r: i32 = (58..64).map(|i| inputs[i] as i32).sum();
     if wall_r > WALL_T as i32 * 2 {
-        bias[1] -= 0.30;
+        bias[1] -= 0.18;
     }
     // A3: alinhamento com fluxo (64) → acelera
     bias[0] += (inputs[64] as f32 / 127.0) * 0.15;
@@ -115,25 +116,27 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
         bias[0] -= 0.12;
     }
     // A16: dark-center tracker (90..93) → siga o escuro (centro de pista)
+    // Boosted 0.28→0.40 pra narrow tracks: "find road" domina wall fear
     let dark_center: i32 = (90..94).map(|i| inputs[i] as i32).sum();
-    bias[1] += (dark_center as f32 / (127.0 * 4.0)) * 0.28;
+    bias[1] += (dark_center as f32 / (127.0 * 4.0)) * 0.40;
     // A17: whiskers diagonais (94..97) — parede perto em diagonal
     //   94 = FL 30°, 95 = FR 30°, 96 = FL 60°, 97 = FR 60°
+    // Reduced 0.28→0.15 pra narrow tracks: diagonal walls common, avoid false brakes
     if inputs[94] > WALL_T {
-        bias[1] += 0.28;                                // FL → steer direita forte
-        bias[2] += 0.18; bias[0] -= 0.16;
+        bias[1] += 0.15;                                // FL → steer direita
+        bias[2] += 0.10; bias[0] -= 0.08;
     }
     if inputs[96] > WALL_T {
-        bias[1] += 0.20;                                // FL larga
-        bias[2] += 0.14;
+        bias[1] += 0.12;                                // FL larga
+        bias[2] += 0.08;
     }
     if inputs[95] > WALL_T {
-        bias[1] -= 0.28;                                // FR → steer esquerda forte
-        bias[2] += 0.18; bias[0] -= 0.16;
+        bias[1] -= 0.15;                                // FR → steer esquerda
+        bias[2] += 0.10; bias[0] -= 0.08;
     }
     if inputs[97] > WALL_T {
-        bias[1] -= 0.20;
-        bias[2] += 0.14;
+        bias[1] -= 0.12;
+        bias[2] += 0.08;
     }
     // A18: gaze tracker (98..101) → fóvea aponta pra onde há pista aberta
     let gaze: i32 = (98..102).map(|i| inputs[i] as i32).sum();
@@ -159,9 +162,10 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
     // Axiom decay (race.current_axiom_strength) é aplicado no call site, então
     // aqui só semeamos o prior. v13: 0.35→0.20 (HOLE=5181 em v12, overcorrection
     // pro apex puxava carro pra fora em curva fechada).
+    // v14: 0.20→0.26 pra narrow tracks — precision on centerline critical
     const CH_LINE: usize = 108;
     let line_err = inputs[CH_LINE] as f32 / 127.0;
-    bias[1] += line_err * 0.20;
+    bias[1] += line_err * 0.26;
 
     // A9 Extended: 7-distance lookahead steering guidance (20m to 350m).
     // Weight decreases with distance: immediate corners require urgent correction.
