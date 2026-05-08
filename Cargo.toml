@@ -58,3 +58,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "bitlinear"
 harness = false
+
+[[bin]]
+name = "universe-lab"
+path = "src/bin/lab.rs"

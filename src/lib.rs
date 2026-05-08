@@ -1,3 +1,4 @@
+pub mod lab;
 pub mod safety;
 pub mod chaos;
 pub mod gate;

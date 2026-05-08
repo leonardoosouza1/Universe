@@ -1,0 +1,42 @@
+{
+  "name": "axiom_dark_center_sweep",
+  "gens": 15,
+  "variants": [
+    {
+      "name": "dark_0.25",
+      "config": {
+        "selected_track_index": 0
+      },
+      "params": {
+        "axiom_dark_center": 0.25
+      }
+    },
+    {
+      "name": "dark_0.35",
+      "config": {
+        "selected_track_index": 0
+      },
+      "params": {
+        "axiom_dark_center": 0.35
+      }
+    },
+    {
+      "name": "dark_0.45",
+      "config": {
+        "selected_track_index": 0
+      },
+      "params": {
+        "axiom_dark_center": 0.45
+      }
+    },
+    {
+      "name": "dark_0.55",
+      "config": {
+        "selected_track_index": 0
+      },
+      "params": {
+        "axiom_dark_center": 0.55
+      }
+    }
+  ]
+}

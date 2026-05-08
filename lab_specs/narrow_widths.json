@@ -1,0 +1,34 @@
+{
+  "name": "narrow_track_widths",
+  "gens": 20,
+  "variants": [
+    {
+      "name": "w14_baseline",
+      "config": {
+        "selected_track_index": 0
+      },
+      "params": {}
+    },
+    {
+      "name": "w13_baseline",
+      "config": {
+        "selected_track_index": 2
+      },
+      "params": {}
+    },
+    {
+      "name": "w11_baseline",
+      "config": {
+        "selected_track_index": 3
+      },
+      "params": {}
+    },
+    {
+      "name": "w10_baseline",
+      "config": {
+        "selected_track_index": 6
+      },
+      "params": {}
+    }
+  ]
+}
