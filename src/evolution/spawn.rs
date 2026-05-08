@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use crate::simulation::Racer;
 use crate::world::VoxelWorld;
 use crate::config::iara::vision::RETINA_TOTAL;
+use crate::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS};
 use crate::config::UniverseConfig;
 use rand::prelude::*;
 use std::io::Write;
@@ -10,12 +11,15 @@ use super::dna_genesis::{EliteDna, MorphoGenes, HypernetSeed, load_champion_dna}
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 
+/// Stride para indexação de pesos: weights[output * SWS + input_channel].
+/// DEVE ser = SENSORY_WAVE_SIZE (input_dim do BitLinear). Era hardcoded 128,
+/// causando desalinhamento quando SENSORY_WAVE_SIZE mudou pra 223.
+const SWS: usize = SENSORY_WAVE_SIZE;
+
 // TIER 4.4 — GENES NEUTROS (ZONA PROTEGIDA).
-// Primeiros 10% dos índices do instinct_fast (128*64 = 8192 pesos → 819) são
-// reservados como "zona neutra/protegida": isentos de mutação E isentos de
-// crossover (sempre copiados do parent_a). Preserva axiomas entre gerações
-// sem precisar de re-injeção permanente (coexiste com apply_axiom_decay).
-const PROTECTED_ZONE_SIZE: usize = 819;
+// Primeiros ~5% dos índices do instinct_fast são reservados como
+// "zona neutra/protegida": isentos de mutação E isentos de crossover.
+const PROTECTED_ZONE_SIZE: usize = 400;
 
 /// Constrói o vetor de pesos do instinct_layer pré-semeado com os axiomas A1–A15.
 /// Usado tanto na geração 0 (sem pool/DNA) quanto periodicamente em gens seguintes
@@ -37,7 +41,7 @@ fn build_slow_priming_weights() -> Vec<f32> {
 }
 
 fn build_priming_weights() -> Vec<f32> {
-    let mut weights = vec![0.0f32; 128 * 64];
+    let mut weights = vec![0.0f32; SWS * L1_NEURONS];
 
     // Motor.rs faz POOLING da retina: fóvea 32 px → 8 bins (ch 0..7),
     // periférica 32 px → 8 bins (ch 8..15). Ch 16..63 ZERADOS pelo motor.
@@ -47,74 +51,75 @@ fn build_priming_weights() -> Vec<f32> {
     // Bins 8-9 = esquerda extremo/lateral. Bins 14-15 = direita. 10-13 = centro.
     //
     // A1: Wall à esquerda (perif bin 8, 9) → vira à DIREITA (positivo).
-    // Magnitudes ATENUADAS (v2): era ±18/14, causava zig-zag brutal em pista 14m
-    // (perif sempre vê wall 4-7m → priming dominava lane_offset). Agora é reflexo
-    // fino, lane_offset A10 (ch 81) é o sinal primário de centralização.
-    weights[1 * 128 + 8] = 6.0;
-    weights[1 * 128 + 9] = 4.0;
+    // v4: 6/4→3/2. Periférica SEMPRE vê wall em pista <14m. Magnitude alta
+    // causava zig-zag perpétuo. Agora é sugestão leve, evolução refina.
+    weights[1 * SWS + 8] = 3.0;
+    weights[1 * SWS + 9] = 2.0;
     // A2: Wall à direita (perif bin 14, 15) → vira à ESQUERDA (negativo)
-    weights[1 * 128 + 14] = -4.0;
-    weights[1 * 128 + 15] = -6.0;
+    weights[1 * SWS + 14] = -2.0;
+    weights[1 * SWS + 15] = -3.0;
     // A3: Alinhamento com fluxo (canal 64) → acelera (magnitude alta p/ sobrepor pooling sparse)
-    weights[0 * 128 + 64] = 12.0;
+    weights[0 * SWS + 64] = 12.0;
     // A4: Parede no centro periférica (apenas bin 11, 12 = centro exato) → corta throttle LEVE.
     // Magnitudes baixas: ganho vem da fóvea (A7b). Periférica center sempre
     // acende leve em pistas estreitas — forte demais = carro trava parado.
-    weights[0 * 128 + 11] = -3.0;
-    weights[0 * 128 + 12] = -3.0;
+    weights[0 * SWS + 11] = -3.0;
+    weights[0 * SWS + 12] = -3.0;
     // A4d: BRAKE removido do priming (causa travamento permanente em pistas narrow).
     // Brake emergente vem dos whiskers (94-97) que só acendem em colisão iminente.
     // A5: Dor de grama (73) → reduz throttle
     // Sensor 73 = -128 SE grass, 0 caso contrário. w=+5 × (-128) = sinal negativo p/ throttle = corta. ✓
-    weights[0 * 128 + 73] = 5.0;
+    weights[0 * SWS + 73] = 5.0;
     // A6: Comp-stress (125) → acelera
-    weights[0 * 128 + 125] = 3.0;
+    weights[0 * SWS + 125] = 3.0;
     // A7: Freio pânico removido do priming — whiskers (94-97) já acendem BRAKE em proximidade real.
     // A7b: Fóvea centro (bin 3, 4 = px 13..19 centro). Retina: road=NEGATIVO, wall=POSITIVO.
     // Road clear (value −128) × weight (−6) = +768 contrib = ACELERA. Wall ahead (value +)
     // × weight (−) = negativo = corta throttle.
-    weights[0 * 128 + 3] = -8.0;
-    weights[0 * 128 + 4] = -8.0;
+    // v4: -8→-4. Fóvea center vê wall frequentemente em narrow → -8 cortava throttle demais.
+    weights[0 * SWS + 3] = -4.0;
+    weights[0 * SWS + 4] = -4.0;
     // A7c REMOVIDO: bins extremos de fóvea SEMPRE veem paredes em pistas narrow (wall 7m lateral
     // entra em bin 0/7 a 15m à frente). Steer forçado pra um lado → deriva contra wall oposta.
     // Dark_center (90-93) já guia steering via centroide angular do road.
     // A8: Deriva lateral (66) → contra-steer
-    weights[1 * 128 + 66] = -5.0;
+    // v4: -5→-3. Contra-steer mais suave, deixa evolução aprender drift.
+    weights[1 * SWS + 66] = -3.0;
     // A9: Curvatura antecipada (78/79/80).
     // cross(forward, flow_ahead) em xz-plane: POSITIVO = flow vira à DIREITA.
     // Steer out 1: positivo = RIGHT. Logo sinal deve ser +, não -. FIX v3.
-    weights[1 * 128 + 78] = 6.0;
-    weights[1 * 128 + 79] = 10.0;
-    weights[1 * 128 + 80] = 4.0;
-    // A10: Lane offset (81) → centraliza. BOOST (v2): 4→12, agora sinal
-    // primário de steering em reta. Lane offset é relativo (centro) e imune
-    // ao ruído de perif "sempre vejo parede".
-    weights[1 * 128 + 81] = 12.0;
+    // v4: curvatura mantida moderada — é o axioma MAIS útil (antecipa curvas).
+    weights[1 * SWS + 78] = 5.0;
+    weights[1 * SWS + 79] = 8.0;
+    weights[1 * SWS + 80] = 4.0;
+    // A10: Lane offset (81) → centraliza. v4: 5→2. Sugestão leve.
+    // Evolução aprende centralização melhor que priming fixo em narrow.
+    weights[1 * SWS + 81] = 2.0;
     // A11: Urgência de colisão (82) → freia + corta motor.
     // MAGNITUDE boost (v2): 10→15 brake, -6→-10 throttle.
     // Match nível A16/A18 (gaze/dark) que usam 4× duplicação.
     // Ver melhorias/survival-pressure.md §A/B validado — carros perceb TTC mas não freiam.
-    weights[2 * 128 + 82] = 15.0;
-    weights[0 * 128 + 82] = -10.0;
+    weights[2 * SWS + 82] = 15.0;
+    weights[0 * SWS + 82] = -10.0;
     // A11b: REFORÇO — replicar em canais vizinhos pra vencer quantize ternária.
     // Canal 82 é único então duplicamos via peso em outras linhas de output igual.
     // Isso não duplica input — apenas soma contribuição nas mesmas saídas via vizinhos
     // 85/86 (memória parede) que já correlacionam com TTC alto:
-    weights[2 * 128 + 85] = 8.0;   // mem-wall-L + brake (já tem steer em A13)
-    weights[2 * 128 + 86] = 8.0;   // mem-wall-R + brake
-    // A12: Fluxo óptico (83/84) → steer anti-aproximação
-    weights[1 * 128 + 83] = 5.0;
-    weights[1 * 128 + 84] = -5.0;
-    // A13: Memória de parede (85/86)
-    weights[1 * 128 + 85] = 8.0;
-    weights[1 * 128 + 86] = -8.0;
+    weights[2 * SWS + 85] = 8.0;   // mem-wall-L + brake (já tem steer em A13)
+    weights[2 * SWS + 86] = 8.0;   // mem-wall-R + brake
+    // A12: Fluxo óptico (83/84) → steer anti-aproximação. v4: 5→3.
+    weights[1 * SWS + 83] = 3.0;
+    weights[1 * SWS + 84] = -3.0;
+    // A13: Memória de parede (85/86). v4: 8→4. Sempre ativo em narrow, precisa ser suave.
+    weights[1 * SWS + 85] = 4.0;
+    weights[1 * SWS + 86] = -4.0;
     // A14: Slip angle (87) → contra-volante
-    weights[1 * 128 + 87] = 4.0;
+    weights[1 * SWS + 87] = 4.0;
     // A15: Proximidade sustentada (88) → corta throttle + FREIA (v2).
     // Antes só cortava throttle; carro ficava em coast, não freava até bater.
     // v2: adiciona brake forte — "se tô grudado na parede há tempo, freia E recua intent".
-    weights[0 * 128 + 88] = -7.0;
-    weights[2 * 128 + 88] = 8.0;
+    weights[0 * SWS + 88] = -7.0;
+    weights[2 * SWS + 88] = 8.0;
 
     // A16 (NOVO): DARK-CENTER TRACKER (canais 90-93) → SIGA O ESCURO.
     // Resposta à crítica do usuário: "o carro não tenta centralizar o preto".
@@ -124,112 +129,105 @@ fn build_priming_weights() -> Vec<f32> {
     // em 100% dos modelos spawn. Lane offset (A10: ch81=+12.0) é sinal primário.
     // Dark center é refinamento, não dominador.
     for i in 90..94 {
-        weights[1 * 128 + i] = 4.0;
+        weights[1 * SWS + i] = 4.0;
     }
 
-    // A17 (NOVO): WHISKERS DIAGONAIS (canais 94-97) — reflexo de curva fechada.
+    // A17: WHISKERS DIAGONAIS (canais 94-97) — reflexo de curva fechada.
     //   94 = forward-left 30°  | 95 = forward-right 30°
     //   96 = forward-left 60°  | 97 = forward-right 60°
-    //  Valor 127 = parede encostando naquele ângulo.
-    //  - Parede diagonal à ESQUERDA (94, 96) → steer DIREITA (positivo) + BRAKE.
-    //  - Parede diagonal à DIREITA  (95, 97) → steer ESQUERDA (negativo) + BRAKE.
-    //  Magnitudes altas (12-18) pra sobreviver quantize e ganhar peso contra A16 quando
-    //  a retina vê "aberto na diagonal" mas a parede está fechando.
-    weights[1 * 128 + 94] = 18.0;   // FL 30° → steer RIGHT forte
-    weights[1 * 128 + 96] = 14.0;   // FL 60° → steer RIGHT moderado
-    weights[1 * 128 + 95] = -18.0;  // FR 30° → steer LEFT forte
-    weights[1 * 128 + 97] = -14.0;  // FR 60° → steer LEFT moderado
-    // BRAKE em qualquer whisker próximo (todos os 4 → saída 2 = brake)
-    weights[2 * 128 + 94] = 10.0;
-    weights[2 * 128 + 95] = 10.0;
-    weights[2 * 128 + 96] = 8.0;
-    weights[2 * 128 + 97] = 8.0;
-    // Corta throttle também (saída 0 = accel)
-    weights[0 * 128 + 94] = -8.0;
-    weights[0 * 128 + 95] = -8.0;
+    //  v4: STEERING reduzido 18→8 / 14→6. Em narrow track whiskers SEMPRE detectam
+    //  parede lateral → magnitude alta = oscilação perpétua. Agora é sugestão,
+    //  evolução aprende o quanto virar. BRAKE mantido forte (seguro freiar).
+    weights[1 * SWS + 94] = 8.0;    // FL 30° → steer RIGHT (era 18)
+    weights[1 * SWS + 96] = 6.0;    // FL 60° → steer RIGHT (era 14)
+    weights[1 * SWS + 95] = -8.0;   // FR 30° → steer LEFT  (era -18)
+    weights[1 * SWS + 97] = -6.0;   // FR 60° → steer LEFT  (era -14)
+    // BRAKE mantido forte — freiar é sempre seguro, steering não.
+    weights[2 * SWS + 94] = 10.0;
+    weights[2 * SWS + 95] = 10.0;
+    weights[2 * SWS + 96] = 8.0;
+    weights[2 * SWS + 97] = 8.0;
+    // Corta throttle moderado (era -8, agora -5).
+    weights[0 * SWS + 94] = -5.0;
+    weights[0 * SWS + 95] = -5.0;
 
     // A19 (V6): pre_brake e wall_imminent priming SEGURO (canais novos).
     // open_l/r/best_escape ficam sem priming pra evitar conflito de steer signals
     // — net evolui peso natural via mutation (ainda mais lento mas estável).
     // Brain trace mostrou raw_thr SEMPRE +0.33. Cars nunca freiam.
     // Bump 2x priming brake — força output 2 dominar quando perigo.
-    weights[2 * 128 + 28] = 10.0;
-    weights[0 * 128 + 28] = -8.0;
-    weights[2 * 128 + 44] = 12.0;
-    weights[0 * 128 + 44] = -10.0;
+    weights[2 * SWS + 28] = 10.0;
+    weights[0 * SWS + 28] = -8.0;
+    weights[2 * SWS + 44] = 12.0;
+    weights[0 * SWS + 44] = -10.0;
     // Plus retina center ahead (ch 3, 4 fovea center pooled bins) → brake.
-    weights[2 * 128 + 3] = 12.0;
-    weights[2 * 128 + 4] = 12.0;
+    weights[2 * SWS + 3] = 12.0;
+    weights[2 * SWS + 4] = 12.0;
     // Plus retina center periph (8..15 = horizonte center) → brake.
-    weights[2 * 128 + 11] = 8.0;
-    weights[2 * 128 + 12] = 8.0;
+    weights[2 * SWS + 11] = 8.0;
+    weights[2 * SWS + 12] = 8.0;
     // A22: approach detection signed. Parede VINDO esquerda → steer DIREITA.
     // ch 114 high (positivo) = aproximação esquerda → output 1 positivo (right).
-    weights[1 * 128 + 114] = 4.0;
+    weights[1 * SWS + 114] = 4.0;
     // ch 115 high = aproximação direita → output 1 negativo (left).
-    weights[1 * 128 + 115] = -4.0;
+    weights[1 * SWS + 115] = -4.0;
 
     // A20: trapped_score (ch 48..51) → ré como OPÇÃO (não force).
     for i in 48..52 {
-        weights[0 * 128 + i] = -2.5;
-        weights[2 * 128 + i] = -1.5;
+        weights[0 * SWS + i] = -2.5;
+        weights[2 * SWS + i] = -1.5;
     }
 
     // A21 (DNA diagnostic): canais com peso < 0.03 = ignored. Forçar uso.
     // Speed (ch 65) é VITAL pra decisão "frear pré-curva". Net atual ignora.
-    weights[2 * 128 + 65] = 4.0;   // speed alta → brake (composição "rápido demais")
-    // Open_left_width × 4 (ch 36..39) → steer LEFT (saída 1 negativo).
-    for i in 36..40 { weights[1 * 128 + i] = -3.5; }
-    // Open_right_width × 4 (ch 40..43) → steer RIGHT (positivo).
-    for i in 40..44 { weights[1 * 128 + i] = 3.5; }
-    // Best_escape × 4 (ch 60..63) signed → steer matching, peso moderado.
-    for i in 60..64 { weights[1 * 128 + i] = 5.0; }
+    weights[2 * SWS + 65] = 4.0;   // speed alta → brake (composição "rápido demais")
+    // Open_left_width × 4 (ch 36..39) → steer LEFT (saída 1 negativo). v4: 3.5→2.0
+    for i in 36..40 { weights[1 * SWS + i] = -2.0; }
+    // Open_right_width × 4 (ch 40..43) → steer RIGHT (positivo). v4: 3.5→2.0
+    for i in 40..44 { weights[1 * SWS + i] = 2.0; }
+    // Best_escape × 4 (ch 60..63) signed → steer matching. v4: 5→3.
+    for i in 60..64 { weights[1 * SWS + i] = 3.0; }
 
     // A26: RACING LINE FOLLOWER (Tesla HD-map analog).
-    // ch 108: line_offset_m / hw signed. + = car off to right of optimal line.
-    // ch 110: lookahead_m / hw signed. + = optimal line goes right ahead.
-    // Steer corrige off-line + antecipa curva.
-    weights[1 * 128 + 108] = -10.0; // off-line right (positivo) → steer LEFT (negativo) pra retornar
-    weights[1 * 128 + 110] = 10.0;  // line vai direita → steer right preemptivo
-    weights[1 * 128 + 109] = 4.0;   // d_off improving → manter direção (pequeno reforço)
+    // v4: -10/10→-6/6. Menos agressivo — evolução refina o quanto seguir a racing line.
+    weights[1 * SWS + 108] = -6.0;  // off-line right → steer LEFT pra retornar
+    weights[1 * SWS + 110] = 6.0;   // line vai direita → steer right preemptivo
+    weights[1 * SWS + 109] = 3.0;   // d_off improving → manter direção
 
     // A25: WIDTH-INVARIANT (Tesla-like generalização) — track-width-relative reactions.
     // ch 118 fwd_dist/hw: BAIXO (parede dentro de 1 track-width) → brake forte.
     // ch 119 corridor/hw: BAIXO (corredor estreito) → reduz throttle.
     // ch 123 whisker_min/hw: BAIXO (lateral perto) → brake moderado.
     // Inversão: peso negativo na entrada → ativa output quando canal BAIXO.
-    weights[2 * 128 + 118] = -16.0; // canal baixo (wall close relative) → brake
-    weights[0 * 128 + 118] = 8.0;   // canal alto (wall far relative) → throttle OK
-    weights[0 * 128 + 119] = 6.0;   // corridor amplo → throttle full
-    weights[2 * 128 + 119] = -8.0;  // corridor narrow → brake
-    weights[2 * 128 + 123] = -10.0; // whisker proximity normalized → brake
+    weights[2 * SWS + 118] = -16.0; // canal baixo (wall close relative) → brake
+    weights[0 * SWS + 118] = 8.0;   // canal alto (wall far relative) → throttle OK
+    weights[0 * SWS + 119] = 6.0;   // corridor amplo → throttle full
+    weights[2 * SWS + 119] = -8.0;  // corridor narrow → brake
+    weights[2 * SWS + 123] = -10.0; // whisker proximity normalized → brake
 
     // A24: FOVEAL OPTICAL FLOW — parede vindo na frente (ch 116) = brake máximo.
     // Resolve "vira na parede do nada": canal mostra parede aproximando ANTES dela
     // estar perto, não só presente.
-    weights[2 * 128 + 116] = 14.0;  // approach frontal signed → brake forte
-    weights[0 * 128 + 116] = -10.0; // → corta throttle
-    weights[2 * 128 + 117] = 8.0;   // motion magnitude → brake moderado
-    weights[0 * 128 + 117] = -6.0;  // → reduz throttle
+    weights[2 * SWS + 116] = 14.0;  // approach frontal signed → brake forte
+    weights[0 * SWS + 116] = -10.0; // → corta throttle
+    weights[2 * SWS + 117] = 8.0;   // motion magnitude → brake moderado
+    weights[0 * SWS + 117] = -6.0;  // → reduz throttle
 
     // A23: LOOKAHEAD steer (curv 100m/180m signed) — DNA atual ignora estes (mortos).
     // Sem isso, carro só vê parede via whiskers/fovea = REATIVO. Vira "do nada".
     // curv signed positivo = curva à direita → steer right (positivo).
-    weights[1 * 128 + 80] = 8.0;   // curv100m signed → steer matching
-    weights[1 * 128 + 32] = 6.0;   // curv180m signed → steer preemptivo
+    weights[1 * SWS + 80] = 8.0;   // curv100m signed → steer matching
+    weights[1 * SWS + 32] = 6.0;   // curv180m signed → steer preemptivo
     // Curva forte (qualquer lado) → frear ANTES da parede aparecer.
-    weights[2 * 128 + 79] = 10.0;  // brake-prep magnitude → brake
-    weights[0 * 128 + 79] = -6.0;  // brake-prep → corta throttle
+    weights[2 * SWS + 79] = 10.0;  // brake-prep magnitude → brake
+    weights[0 * SWS + 79] = -6.0;  // brake-prep → corta throttle
 
-    // A18 (NOVO): GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
-    // Valor = ângulo da fóvea normalizado [-127..+127] mapeando [-60°..+60°].
-    // Positivo ⇒ pista aberta à direita ⇒ steer DIREITA. Negativo ⇒ LEFT.
-    // Com MEMÓRIA: se visão fica toda branca (parede), gaze mantém última direção
-    // conhecida — carro continua virando pra onde viu pista pela última vez.
-    // Duplicado 4× (igual A16) pra dominar após quantize ternária: na gen 1 este vira
-    // o maior vetor de steering, rede aleatória não consegue anular.
+    // A18: GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
+    // v4: 14→5. Total era 56 (14×4 canais), dominava todo o steering.
+    // Em narrow track, gaze oscilava violentamente. Agora é refinamento,
+    // não dominador. Evolução aprende o quanto confiar no gaze.
     for i in 98..102 {
-        weights[1 * 128 + i] = 14.0;
+        weights[1 * SWS + i] = 5.0;
     }
 
     weights
@@ -411,8 +409,8 @@ pub fn spawn_swarm(
     // mutação pontual em layer ternário tem alta probabilidade de virar 0 após quantize —
     // burst força variação coerente de um sensor inteiro.
     let burst_mutate_input_channel = |weights: &mut Vec<f32>, scar_mask_union: &[u8], rng: &mut rand::rngs::ThreadRng| {
-        let n_outputs = 64usize;
-        let n_inputs = 128usize;
+        let n_outputs = L1_NEURONS;
+        let n_inputs = SWS;
         let c = rng.random_range(0..n_inputs);
         for out in 0..n_outputs {
             let idx = out * n_inputs + c;
@@ -461,7 +459,7 @@ pub fn spawn_swarm(
         ];
         for &ch in critical {
             for out in 0..3 {
-                let idx = out * 128 + ch;
+                let idx = out * SWS + ch;
                 if idx >= weights.len() { continue; }
                 let current = weights[idx];
                 let axiom = priming[idx];

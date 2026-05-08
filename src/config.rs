@@ -239,22 +239,24 @@ mod tests {
 pub mod iara {
     // ── VISÃO (fonte: src/world.rs:12-18) ──────────────────────────────
     pub mod vision {
-        pub const RETINA_ROWS: usize = 14;
-        pub const RETINA_COLS: usize = 126;
-        pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; // 14 × 126 = 1764
-        pub const FOV_DEG: f32 = 120.0;
+        // ORIGINAL
+        // pub const RETINA_ROWS: usize = 14;
+        // pub const RETINA_COLS: usize = 126;
+        // pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; 
+        // pub const FOV_DEG: f32 = 140.0;
+        // pub const RETINA_SKIP: u32 = 2;
+        // pub const RETINA_MIN_PITCH: f32 = -0.04;
+        // pub const RETINA_MAX_PITCH: f32 = -0.005;
+        
+        // NEW TEST
+        pub const RETINA_ROWS: usize = 8;
+        pub const RETINA_COLS: usize = 16;
+        pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; 
+        pub const FOV_DEG: f32 = 140.0;
         pub const RETINA_SKIP: u32 = 2;
+        pub const RETINA_MIN_PITCH: f32 = -0.035;
+        pub const RETINA_MAX_PITCH: f32 = -0.005;
 
-        /// Limites de pitch da retina (rad).
-        /// MIN = row 0 (olha para horizonte distante, ângulo negativo = acima).
-        /// MAX = row N-1 (olha para chão próximo, ângulo positivo = abaixo).
-        /// Expandido: -0.10 rad (~-5.7°) a +0.05 rad (~+2.8°).
-        /// Aumenta cobertura vertical para melhor percepção de curvas e paredes.
-        pub const RETINA_MIN_PITCH: f32 = -0.10;
-        pub const RETINA_MAX_PITCH: f32 = 0.05;
-
-        /// Calcula pitches linearmente espaçados entre MIN e MAX para N rows.
-        /// Row 0 = MIN (horizonte distante), Row N-1 = MAX (chão próximo).
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];
             if RETINA_ROWS <= 1 {
