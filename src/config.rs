@@ -246,11 +246,12 @@ pub mod iara {
         pub const RETINA_SKIP: u32 = 2;
 
         /// Limites de pitch da retina (rad).
-        /// MIN = row 0 (olha levemente para cima / horizonte distante, ângulo negativo = acima).
-        /// MAX = row N-1 (olha para baixo / chão próximo, ângulo positivo = abaixo).
-        /// Range original: -0.10 rad (~-5.7°) a +0.05 rad (~+2.8°).
-        pub const RETINA_MIN_PITCH: f32 = -0.06;
-        pub const RETINA_MAX_PITCH: f32 = -0.03;
+        /// MIN = row 0 (olha para horizonte distante, ângulo negativo = acima).
+        /// MAX = row N-1 (olha para chão próximo, ângulo positivo = abaixo).
+        /// Expandido: -0.10 rad (~-5.7°) a +0.05 rad (~+2.8°).
+        /// Aumenta cobertura vertical para melhor percepção de curvas e paredes.
+        pub const RETINA_MIN_PITCH: f32 = -0.10;
+        pub const RETINA_MAX_PITCH: f32 = 0.05;
 
         /// Calcula pitches linearmente espaçados entre MIN e MAX para N rows.
         /// Row 0 = MIN (horizonte distante), Row N-1 = MAX (chão próximo).

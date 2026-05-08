@@ -41,13 +41,14 @@ fn drain_spawn_queue(
     world_res: Res<crate::world::VoxelWorldResource>,
     dev: Res<DevSettings>,
     config: Res<crate::config::UniverseConfig>,
+    lab: Res<crate::lab::LabParams>,
 ) {
     let Some((next_i, total)) = race.pending_spawn else { return; };
     let batch_end = (next_i + SPAWN_BATCH_SIZE).min(total);
     let world = &world_res.0;
     spawn_swarm(
         &mut commands, &mut meshes, &mut materials, &mut race,
-        world, &dev, &config,
+        world, &dev, &config, &lab,
         next_i, batch_end,
     );
     race.pending_spawn = if batch_end >= total { None } else { Some((batch_end, total)) };

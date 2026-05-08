@@ -6,6 +6,7 @@ use universe::evolution::{EvolutionPlugin, RaceSettings, DevSettings};
 use universe::environment::EnvironmentalState;
 use universe::config::UniverseConfig;
 use universe::ui_menu::MenuPlugin;
+use universe::lab::LabParams;
 use universe::{AppState, SimulationEntity};
 
 #[derive(Resource, Clone, Copy)]
@@ -41,6 +42,12 @@ fn main() {
         .and_then(|s| s.parse().ok());
     let no_holes = args.iter().any(|a| a == "--no-holes");
     let easy_track = args.iter().any(|a| a == "--easy");
+    let lab_params_path: Option<String> = args.iter().position(|a| a == "--lab-params")
+        .and_then(|i| args.get(i+1))
+        .map(|s| s.to_string());
+    let experiment_name: Option<String> = args.iter().position(|a| a == "--experiment-name")
+        .and_then(|i| args.get(i+1))
+        .map(|s| s.to_string());
     // FIX UI vs headless: flags persistem em universe_config.json. UI carrega
     // mesma config que último headless training → DNA e pista combinam.
     let final_no_holes = no_holes || config.no_holes;
@@ -79,6 +86,20 @@ fn main() {
     }
     if headless { config.time_scale = config.time_scale.max(8.0); }
 
+    // Load lab params if provided
+    let mut lab_params = if let Some(path) = lab_params_path {
+        LabParams::load(&path).unwrap_or_else(|e| {
+            eprintln!("⚠️  Failed to load lab params from {}: {}. Using defaults.", path, e);
+            LabParams::default()
+        })
+    } else {
+        LabParams::default()
+    };
+    // Override experiment name if provided via CLI
+    if let Some(name) = experiment_name {
+        lab_params.experiment_name = name;
+    }
+
     // Tier 5.3: ativa rotação de pistas via CLI (`--rotate`) ou env (UNIVERSE_ROTATE=1).
     let rotate_flag = args.iter().any(|a| a == "--rotate")
         || std::env::var("UNIVERSE_ROTATE").ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
@@ -105,6 +126,7 @@ fn main() {
         Window { title: "IARA v2101 - Sovereign Dev Engine".into(), ..default() }
     };
     app.insert_resource(HeadlessMode { enabled: headless, gens_target });
+    app.insert_resource(lab_params.clone());
     // UI auto-start quando --seed passou em modo não-headless.
     app.insert_resource(UiAutoStart(seed_override.is_some() && !headless));
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -156,9 +178,13 @@ fn main() {
         current_axiom_strength: 1.0,
         current_morpho: universe::evolution::dna_genesis::MorphoGenes::default(),
         current_hypernet: universe::evolution::dna_genesis::HypernetSeed::default(),
-        telemetry: universe::evolution::telemetry::TelemetryWriter::new(
-            universe::evolution::telemetry::gen_run_id()
-        ),
+        telemetry: {
+            let lab_copy = lab_params.clone();
+            universe::evolution::telemetry::TelemetryWriter::new(
+                universe::evolution::telemetry::gen_run_id(),
+                &lab_copy
+            )
+        },
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

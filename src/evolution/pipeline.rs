@@ -169,7 +169,7 @@ fn compute_phi_proxy(r: &Racer) -> f32 {
     if phi.is_nan() || phi.is_infinite() { 0.0 } else { phi.clamp(0.0, 1.0) }
 }
 
-pub(super) fn calc_fitness(r: &Racer, track_width: f32) -> f32 {
+pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabParams) -> f32 {
     // ===================================================
     // FITNESS SIMPLIFICADO — sinal limpo para seleção.
     // ===================================================
@@ -186,7 +186,7 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32) -> f32 {
     // NET progress: o quanto o carro andou DESDE seu spawn. Fundamental com distributed
     // spawn — senão quem nasce no waypoint 80% e não anda nada tem fitness alto "de graça".
     let prog = (r.track_progress - r.spawn_progress).max(0.0);
-    let lap_bonus = r.total_laps as f32 * 50000.0;
+    let lap_bonus = r.total_laps as f32 * lab.lap_bonus;
     let joy = r.joy_integral * 1.0;  // Desempate fino
 
     // Proximity bonus: incentiva FECHAR a volta. Quadrático em NET até saturar em 500m.
@@ -212,10 +212,10 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32) -> f32 {
     // Death penalty REWORKED: antes `(100-prog)*10` capava em 1000pts e zerava após 100m
     // — dying ficava de graça depois. Agora: 2000 flat + 5% do prog (perdeu potencial).
     // 800m prog + death = 2000 + 400 = 2400pts. 800m prog survived = 0 penalty + SURVIVAL_BONUS.
-    let death_penalty = if r.is_dead { 2000.0 + prog * 0.05 } else { 0.0 };
+    let death_penalty = if r.is_dead { lab.death_penalty + prog * 0.05 } else { 0.0 };
     // Survival bonus: sobreviver até final da geração tem valor flat. Quebra incentivo de
     // "acelera geral + morre" quando progresso é equivalente a quem vai devagar e chega.
-    let survival_bonus = if r.is_dead { 0.0 } else { 3000.0 };
+    let survival_bonus = if r.is_dead { 0.0 } else { lab.survival_bonus };
 
     // --- TIER 1.1: SINAIS DENSOS DE REWARD SHAPING ---
     // Cada um premia behavior que correlaciona com progresso de longo prazo.
@@ -223,20 +223,20 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32) -> f32 {
     //
     // 1) Smoothness: penaliza jitter de volante (clamp piso -500 — não é prêmio infinito ficar parado).
     let steering_var = r.telemetry.steering_variance();
-    let smoothness_reward = (-steering_var * K_SMOOTH).max(-500.0);
+    let smoothness_reward = (-steering_var * lab.k_smooth).max(-500.0);
     // 2) Speed-on-track: velocidade acumulada ON-ROAD (anti-grass, anti-wall).
-    let speed_reward = r.telemetry.speed_on_track() * K_SPEED * speed_mult;
+    let speed_reward = r.telemetry.speed_on_track() * lab.k_speed * speed_mult;
     // 3) Novelty: sqrt(voxels únicos on-road). On-road obrigatório = anti circle-exploit.
     let unique_voxels = r.telemetry.visited_voxels.len();
-    let novelty_bonus = (unique_voxels as f32).sqrt() * K_NOVEL;
+    let novelty_bonus = (unique_voxels as f32).sqrt() * lab.k_novel;
     // 4) Stability: integral de (1 - |yaw_rate|) on-road — premia dirigibilidade controlada.
-    let stability_reward = r.telemetry.stability_integral() * K_STAB;
+    let stability_reward = r.telemetry.stability_integral() * lab.k_stab;
 
     // Tier 6.9 — Phi (IIT) proxy: integra sensores×ações na fitness.
     // Max teórico ~1.0 × 300 = 300pts. Típico 0.2-0.5 → 60-150pts (≈1-3%).
-    let phi_reward = compute_phi_proxy(r) * K_PHI;
+    let phi_reward = compute_phi_proxy(r) * lab.k_phi;
     // Tier 6.7 — Aesthetic judge: baixo jerk + linha consistente.
-    let aesthetic_reward = aesthetic_score(&r.telemetry) * K_AESTH;
+    let aesthetic_reward = aesthetic_score(&r.telemetry) * lab.k_aesth;
 
     lap_bonus
         + prog * 100.0
@@ -265,6 +265,7 @@ pub(super) fn evolution_pipeline(
     mut materials: ResMut<Assets<StandardMaterial>>,
     config: Res<UniverseConfig>,
     time: Res<Time>,
+    lab: Res<crate::lab::LabParams>,
 ) {
     // Tick do timer ambiental: usa virtual delta cheio (SEM cap). Motor+física agora rodam
     // em FixedUpdate (substep N× por frame em time_scale alto), env aqui acompanha o tempo
@@ -290,8 +291,8 @@ pub(super) fn evolution_pipeline(
         // Rank global por fitness — reutilizado pelo pool elite + relatório.
         let mut sorted: Vec<_> = query.iter().collect();
         sorted.sort_by(|a, b| {
-            let score_a = calc_fitness(a.1, track_w);
-            let score_b = calc_fitness(b.1, track_w);
+            let score_a = calc_fitness(a.1, track_w, &lab);
+            let score_b = calc_fitness(b.1, track_w, &lab);
             score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -320,7 +321,7 @@ pub(super) fn evolution_pipeline(
 
         let mut scars_created_this_gen = 0usize;
         for (rank, (_, r, _, _)) in sorted.iter().take(10).enumerate() {
-            let new_fit = calc_fitness(r, track_w);
+            let new_fit = calc_fitness(r, track_w, &lab);
             // ---- Trinity fitness penalties / rewards ----
             const LN3: f32 = 1.0986123; // ln(3) — max entropy of 3-class softmax
             let hv = r.engine.hard_veto_count as f32;
@@ -476,7 +477,7 @@ pub(super) fn evolution_pipeline(
             // Summary agregado: distribuição de NET/fitness/survival.
             let nets: Vec<f32> = sorted.iter().map(|(_, r, _, _)| (r.track_progress - r.spawn_progress).max(0.0)).collect();
             let deaths = sorted.iter().filter(|(_, r, _, _)| r.is_dead).count();
-            let fits: Vec<f32> = sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w)).collect();
+            let fits: Vec<f32> = sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).collect();
             let median = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[v.len()/2] } };
             let p90 = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[(v.len()*1/10).min(v.len()-1)] } }; // v já ordenado desc
             let mean = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 } };
@@ -525,7 +526,7 @@ pub(super) fn evolution_pipeline(
             let mut def_speed_sum = 0.0f32; let mut agg_speed_sum = 0.0f32;
             let mut def_fit_sum = 0.0f32; let mut agg_fit_sum = 0.0f32;
             for (_, r, _, _) in sorted.iter() {
-                let f = calc_fitness(r, track_w);
+                let f = calc_fitness(r, track_w, &lab);
                 let sp = r.telemetry.speed_on_track();
                 if r.niche == 0 {
                     def_n += 1; def_wall_sum += r.wall_time; def_speed_sum += sp; def_fit_sum += f;
@@ -833,7 +834,7 @@ pub(super) fn evolution_pipeline(
         let gen_fitness: f32 = {
             let n = sorted.len();
             if n == 0 { 0.0 }
-            else { sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w)).sum::<f32>() / n as f32 }
+            else { sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).sum::<f32>() / n as f32 }
         };
         if race.fitness_history.len() == super::settings::FITNESS_HISTORY_CAP {
             race.fitness_history.pop_front();
@@ -927,7 +928,7 @@ pub(super) fn evolution_pipeline(
             .count();
         let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
         let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
-        let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r, track_w)).unwrap_or(0.0);
+        let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).unwrap_or(0.0);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
         // Extrai valores de race ANTES de usar race.telemetry

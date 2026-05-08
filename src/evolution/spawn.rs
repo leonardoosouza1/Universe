@@ -244,6 +244,7 @@ pub fn spawn_swarm(
     world: &VoxelWorld,
     dev: &DevSettings,
     config: &UniverseConfig,
+    lab: &crate::lab::LabParams,
     idx_start: usize,
     idx_end: usize,
 ) {
@@ -437,7 +438,7 @@ pub fn spawn_swarm(
     // v15: floor 0.15 → 0.35. Gen 1 produziu 7 laps (priming ninja), evolução
     // degrada após gen 50 (axiom 0.15 insuficiente). Floor alto mantém prior
     // forte sem congelar evolução (65% espaço livre nos pesos).
-    let mut axiom_strength = (1.0 - gen_f / 50.0).max(0.35);
+    let mut axiom_strength = (1.0 - gen_f / lab.axiom_decay_divisor).max(lab.axiom_floor);
     if race.axiom_boost_counter > 0 {
         axiom_strength = axiom_strength.max(0.5);
     }

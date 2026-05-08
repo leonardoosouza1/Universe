@@ -52,10 +52,28 @@ fn main() {
             }
         }
 
-        // Build lab_params JSON
+        // Build lab_params JSON with all defaults, then merge overrides
         let mut params = json!({
             "experiment_name": name.to_string(),
-            "variant_id": idx
+            "variant_id": idx,
+            "axiom_wall_avoidance": 0.18,
+            "axiom_dark_center": 0.35,
+            "axiom_whisker": 0.15,
+            "axiom_racing_line": 0.26,
+            "axiom_decay_divisor": 50.0,
+            "axiom_floor": 0.35,
+            "k_smooth": 100.0,
+            "k_speed": 0.5,
+            "k_novel": 50.0,
+            "k_stab": 200.0,
+            "k_phi": 300.0,
+            "k_aesth": 200.0,
+            "lap_bonus": 50000.0,
+            "survival_bonus": 3000.0,
+            "death_penalty": 2000.0,
+            "speed_bleed_damage": 15.0,
+            "stagnation_secs": 15.0,
+            "wall_t_threshold": 40
         });
         if let Some(lab_params) = lab_params_spec {
             if let Some(obj) = lab_params.as_object() {

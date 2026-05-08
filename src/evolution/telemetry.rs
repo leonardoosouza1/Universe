@@ -35,11 +35,11 @@ pub struct TelemetryWriter {
 }
 
 impl TelemetryWriter {
-    pub fn new(run_id: String) -> Self {
+    pub fn new(run_id: String, lab: &crate::lab::LabParams) -> Self {
         let dir = format!("telemetry/{}", run_id);
         let _ = fs::create_dir_all(&dir);
 
-        // run_meta.json with feature flags
+        // run_meta.json with feature flags + lab experiment metadata
         let features: Vec<&str> = vec![
             #[cfg(feature = "survival_pressure")]
             "survival_pressure",
@@ -48,7 +48,12 @@ impl TelemetryWriter {
             #[cfg(feature = "trinity_swarm")]
             "trinity_swarm",
         ];
-        let meta = json!({ "run_id": run_id.clone(), "features": features });
+        let meta = json!({
+            "run_id": run_id.clone(),
+            "features": features,
+            "experiment_name": lab.experiment_name,
+            "variant_id": lab.variant_id
+        });
         let _ = std::fs::write(format!("{}/run_meta.json", dir), meta.to_string());
 
         // generations.ndjson
