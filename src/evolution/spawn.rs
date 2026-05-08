@@ -220,6 +220,32 @@ fn build_priming_weights() -> Vec<f32> {
     weights[2 * SWS + 78] = 8.0;   // curvatura magnitude → brake preemptivo
     weights[0 * SWS + 78] = -5.0;  // → corta throttle em curva
 
+    // A-DEPTH: MULTI-ZONE DISTANCE PERCEPTION (ch 52-65) — priming leve.
+    // Expõe informação de profundidade que retina JÁ captura (rows 0-13 = 5m-600m).
+    // ch 52-58 (rows 0-6, perto 5-48m): brake + steer pra evitar emergência
+    // ch 59-65 (rows 7-13, longe 65-600m): steer antecipado pra curvas que vêm
+    // Pesos mínimos (0.2-0.5) — Gen 1 aprende usar canais, não domina decisões.
+
+    // NEAR ZONE (ch 52-58): Paredes perto = BRAKE + STEER antecipado
+    // Decay: 52 (5m) mais forte → 58 (48m) mais fraco
+    weights[2 * SWS + 52] = 0.5;   // row 0 (~5m) brake emergência
+    weights[2 * SWS + 53] = 0.4;   // row 1 (~10m) brake
+    weights[2 * SWS + 54] = 0.3;   // row 2 (~15m) brake
+    weights[2 * SWS + 55] = 0.2;   // row 3 (~20m) brake leve
+    // rows 4-6 (56-58): sem priming, deixa evolução aprender
+
+    // NEAR ZONE steering antecipado (quando parede perto, vira cedo)
+    weights[1 * SWS + 52] = 0.3;   // row 0 parede = steer (direction TBD por evolução)
+    weights[1 * SWS + 53] = 0.2;   // row 1 parede = steer moderado
+
+    // FAR ZONE (ch 59-65): Paredes longe = STEER antecipado (lookahead pra curva)
+    // Sem brake (longe demais), só steering pra antecipar mudança
+    weights[1 * SWS + 59] = 0.2;   // row 7 (~65m) steer leve
+    weights[1 * SWS + 60] = 0.2;   // row 8 (~82m) steer leve
+    weights[1 * SWS + 61] = 0.2;   // row 9 (~100m) steer antecipado
+    weights[1 * SWS + 62] = 0.15;  // row 10 (~150m) steer mais leve
+    weights[1 * SWS + 63] = 0.1;   // row 11 (~300m) steer muito leve
+
     // A18: GAZE TRACKER (canais 98-101) — DESATIVADO.
     // Assim como em axiom_policy, os canais 98-101 não contêm mais gaze.
     // Canal 98 é motion_norm (sempre ≥0), o que causava um bias permanente
