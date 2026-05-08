@@ -96,9 +96,9 @@ fn build_priming_weights() -> Vec<f32> {
     weights[1 * SWS + 78] = 5.0;
     weights[1 * SWS + 79] = 8.0;
     weights[1 * SWS + 80] = 4.0;
-    // A10: Lane offset (81) → centraliza. v5: 2→6. Gen 1 precisa se centralizar FORTE.
-    // Sem sinal forte, Gen 1 sai da pista imediatamente. Evolução refina depois.
-    weights[1 * SWS + 81] = 6.0;
+    // A10: Lane offset (81) → centraliza. RESTORED 12.0 (was reduced to 6.0).
+    // Gen 1 cannot navigate without strong centering signal.
+    weights[1 * SWS + 81] = 12.0;
     // A11: Urgência de colisão (82) → freia + corta motor.
     // MAGNITUDE boost (v2): 10→15 brake, -6→-10 throttle.
     // Match nível A16/A18 (gaze/dark) que usam 4× duplicação.
@@ -129,21 +129,19 @@ fn build_priming_weights() -> Vec<f32> {
     // Resposta à crítica do usuário: "o carro não tenta centralizar o preto".
     // Canal = centro de massa angular dos pixels de pista, normalizado [-1..+1].
     // Positivo ⇒ pista à direita ⇒ steer RIGHT. Negativo ⇒ pista à esquerda ⇒ LEFT.
-    // v5: 4.0→7.0. Gen 1 precisa signal forte pra seguir centro. Evolution refina.
+    // RESTORED 15.0 (was reduced to 7.0). Gen 1 needs strong "find road" signal.
     for i in 90..94 {
-        weights[1 * SWS + i] = 7.0;
+        weights[1 * SWS + i] = 15.0;
     }
 
     // A17: WHISKERS DIAGONAIS (canais 94-97) — reflexo de curva fechada.
     //   94 = forward-left 30°  | 95 = forward-right 30°
     //   96 = forward-left 60°  | 97 = forward-right 60°
-    //  v4: STEERING reduzido 18→8 / 14→6. Em narrow track whiskers SEMPRE detectam
-    //  parede lateral → magnitude alta = oscilação perpétua. Agora é sugestão,
-    //  evolução aprende o quanto virar. BRAKE mantido forte (seguro freiar).
-    weights[1 * SWS + 94] = 8.0;    // FL 30° → steer RIGHT (era 18)
-    weights[1 * SWS + 96] = 6.0;    // FL 60° → steer RIGHT (era 14)
-    weights[1 * SWS + 95] = -8.0;   // FR 30° → steer LEFT  (era -18)
-    weights[1 * SWS + 97] = -6.0;   // FR 60° → steer LEFT  (era -14)
+    // RESTORED original strong values (was reduced to 8/6). Gen 1 must detect and avoid curves.
+    weights[1 * SWS + 94] = 18.0;   // FL 30° → steer RIGHT
+    weights[1 * SWS + 96] = 14.0;   // FL 60° → steer RIGHT
+    weights[1 * SWS + 95] = -18.0;  // FR 30° → steer LEFT
+    weights[1 * SWS + 97] = -14.0;  // FR 60° → steer LEFT
     // BRAKE mantido forte — freiar é sempre seguro, steering não.
     weights[2 * SWS + 94] = 10.0;
     weights[2 * SWS + 95] = 10.0;

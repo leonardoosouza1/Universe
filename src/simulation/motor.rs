@@ -57,8 +57,6 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
     let WALL_T: i8 = lab.wall_t_threshold;  // ~0.31 normalizado — parede próxima mas não encostada
 
     // A1: parede esquerda (perif bins 8..11) → steer direita (+)
-    // FIX: era ch 32..37 (retina raw antiga). Com pooling v2, periférica = bins 8..15.
-    // Bins 8-11 = metade esquerda, Bins 12-15 = metade direita.
     let wall_l: i32 = (8..12).map(|i| inputs[i] as i32).sum();
     if wall_l > WALL_T as i32 * 2 {
         bias[1] += lab.axiom_wall_avoidance;
@@ -71,13 +69,11 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
     // A3: alinhamento com fluxo (64) → acelera
     bias[0] += (inputs[64] as f32 / 127.0) * 0.15;
     // A4: parede no centro (perif bins 10..13 = centro da periférica) → corta throttle
-    // FIX: era ch 42..54 (retina raw antiga). Periférica pooled = bins 8..15.
     let wall_c: i32 = (10..14).map(|i| inputs[i] as i32).sum();
     if wall_c > WALL_T as i32 * 2 {
         bias[0] -= 0.25;
     }
     // A4d/A7: fóvea centro (bins 3..5) → brake forte (parede direto à frente)
-    // FIX: era ch 46..50 (retina raw). Fóvea pooled = bins 0..7, centro = 3..5.
     let wall_front: i32 = (3..6).map(|i| inputs[i] as i32).sum();
     if wall_front > WALL_T as i32 * 2 {
         bias[2] += 0.30;
