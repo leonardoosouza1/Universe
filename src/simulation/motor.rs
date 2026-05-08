@@ -1452,7 +1452,7 @@ pub(super) fn update_racers(
         let yaw_norm = std::f32::consts::FRAC_PI_2;
         slow_input[27] = ((curv_30 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
         slow_input[28] = ((curv_60 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
-        slow_input[29] = if racer.grace_ticks < 600 { 127 } else { 0 }; // in_grace (tick-based)
+        slow_input[29] = if racer.grace_ticks < 640 { 127 } else { 0 }; // in_grace (tick-based, sync with motor grace)
         slow_input[30] = ((curv_90 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
         // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >6m).
         let forward_wall_dist_sensor = world.raycast(pos.x, pos.z, racer.phase, 30.0);
@@ -1903,7 +1903,7 @@ pub(super) fn update_racers(
         // --- OVER-REV PENALTY & CLUTCH BURN (Termodinâmica de motor) ---
         // Bootstrap grace: primeiros 10s sem penalidades duras — IA precisa de tempo
         // para o priming genético se expressar antes de ser culpada.
-        let in_grace = racer.grace_ticks < 600;
+        let in_grace = racer.grace_ticks < 640;
         if let Some(ref eng) = opt_engine {
             if eng.current_rpm > eng.max_rpm * 0.95 {
                 racer.hp -= dt * 5.0; // Redline sempre pune — é sinal claro, não estagnação
@@ -2288,17 +2288,18 @@ pub(super) fn update_racers(
             } else {
                 racer.stagnation += 1.0;
             }
-            // v3: threshold 480→960 frames (~15s sim). Carros podem parar para entender a pista por mais tempo.
-            if racer.stagnation > 960.0 {
-                racer.is_dead = true;
-                racer.death_reason = Some(crate::simulation::racer::DeathReason::Stagnation);
-                racer.death_frame = racer.grace_ticks;
-                racer.death_pos = pos;
-                race.death_markers.push(pos);
-                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
-                commands.entity(entity).insert(Visibility::Hidden);
-                println!("💀 {} STAGNATION aos frame {} (sem avanço {} frames)", racer.name, racer.grace_ticks, racer.stagnation as u32);
-            }
+            // v5: Remover stagnation kill temporariamente pra Gen 1 aprender.
+            // Todos morrendo = ninguém evolui. Timeout será reimplementado com elite pool.
+            // if racer.stagnation > 1920.0 {
+            //     racer.is_dead = true;
+            //     racer.death_reason = Some(crate::simulation::racer::DeathReason::Stagnation);
+            //     racer.death_frame = racer.grace_ticks;
+            //     racer.death_pos = pos;
+            //     race.death_markers.push(pos);
+            //     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+            //     commands.entity(entity).insert(Visibility::Hidden);
+            //     println!("💀 {} STAGNATION aos frame {} (sem avanço {} frames)", racer.name, racer.grace_ticks, racer.stagnation as u32);
+            // }
         } else {
             racer.stagnation = 0.0;
             racer.progress_checkpoint = racer.max_progress;
