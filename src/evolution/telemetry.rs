@@ -32,6 +32,7 @@ pub struct TelemetryWriter {
     pub run_id: String,
     gen_writer: Option<BufWriter<File>>,
     replay_writer: Option<BufWriter<File>>,
+    debug_writer: Option<BufWriter<File>>,
 }
 
 impl TelemetryWriter {
@@ -72,10 +73,19 @@ impl TelemetryWriter {
             .ok();
         let replay_writer = replay_file.map(|f| BufWriter::with_capacity(256 * 256, f));
 
+        // debug.ndjson (spawn/early behavior diagnostics)
+        let debug_file = File::options()
+            .create(true)
+            .append(true)
+            .open(format!("{}/debug.ndjson", dir))
+            .ok();
+        let debug_writer = debug_file.map(|f| BufWriter::new(f));
+
         Self {
             run_id,
             gen_writer,
             replay_writer,
+            debug_writer,
         }
     }
 
@@ -94,6 +104,12 @@ impl TelemetryWriter {
                 )
             };
             let _ = w.write_all(bytes);
+        }
+    }
+
+    pub fn write_debug(&mut self, data: serde_json::Value) {
+        if let Some(w) = &mut self.debug_writer {
+            let _ = writeln!(w, "{}", data);
         }
     }
 }

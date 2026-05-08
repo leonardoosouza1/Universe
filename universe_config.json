@@ -19,58 +19,46 @@
     {
       "name": "Dubai Oval",
       "seed": 123,
-      "track_width": 30.0,
+      "track_width": 15.0,
       "complexity": 0.3
     },
     {
       "name": "Interlagos Gateway",
       "seed": 64,
-      "track_width": 26.0,
+      "track_width": 13.0,
       "complexity": 1.0
     },
     {
       "name": "Monaco Tight",
       "seed": 256,
-      "track_width": 22.0,
+      "track_width": 11.0,
       "complexity": 2.0
     },
     {
       "name": "Silverstone Flow",
       "seed": 512,
-      "track_width": 24.0,
+      "track_width": 12.0,
       "complexity": 1.8
     },
     {
       "name": "Nurburgring Hills",
       "seed": 768,
-      "track_width": 24.0,
+      "track_width": 12.0,
       "complexity": 2.5
     },
     {
       "name": "Suzuka Crossing",
       "seed": 1024,
-      "track_width": 20.0,
+      "track_width": 10.0,
       "complexity": 3.0
-    },
-    {
-      "name": "New Circuit 8",
-      "seed": 14893139857330030290,
-      "track_width": 18.0,
-      "complexity": 1.0
-    },
-    {
-      "name": "New Circuit 9",
-      "seed": 17880542434884118457,
-      "track_width": 18.0,
-      "complexity": 1.0
     }
   ],
   "selected_track_index": 0,
-  "swarm_count": 36,
-  "time_scale": 2.0,
-  "generation_timeout_s": 3960.0,
+  "swarm_count": 50,
+  "time_scale": 3.0,
+  "generation_timeout_s": 120.0,
   "rotate_tracks": false,
-  "gens_per_track": 50,
+  "gens_per_track": 3,
   "easy_track": false,
-  "no_holes": true
+  "no_holes": false
 }

@@ -1250,6 +1250,24 @@ pub(super) fn update_racers(
 
         if should_fire {
             racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
+
+            // DEBUG: capture spawn behavior (first 1.0s of each racer)
+            if racer.race_time < 1.0 {
+                let steer_pre_axiom = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
+                let throttle = racer.engine.final_intent.get(0).copied().unwrap_or(0.0);
+                let sensory_sample = format!("[{},{},{},{},{}]", sensory_wave[0], sensory_wave[1], sensory_wave[75], sensory_wave[82], sensory_wave[118]);
+                race.telemetry.write_debug(serde_json::json!({
+                    "gen": race.generation,
+                    "tick": (racer.race_time * 64.0) as u32,
+                    "entity_id": entity.index(),
+                    "pos": format!("({:.1},{:.1})", pos.x, pos.z),
+                    "steer_pre_axiom": format!("{:.3}", steer_pre_axiom),
+                    "throttle": format!("{:.3}", throttle),
+                    "sensory_sample": sensory_sample,
+                    "track_progress": format!("{:.1}", racer.track_progress)
+                }));
+            }
+
             // Tier 1.3 — Axiom como prior externo (potential-based shaping).
             // Injeta bias procedural no output do brain APÓS o forward. Escala decai
             // com a geração (race.current_axiom_strength: 1.0 gen 0 → 0.0 gen 50+).
@@ -1261,6 +1279,20 @@ pub(super) fn update_racers(
                 for i in 0..n {
                     let v = racer.engine.final_intent[i] + bias[i] * ax_strength;
                     racer.engine.final_intent[i] = v.clamp(-1.0, 1.0);
+                }
+
+                // DEBUG: post-axiom steer
+                if racer.race_time < 1.0 {
+                    let steer_post_axiom = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
+                    let axiom_steer_bias = bias.get(1).copied().unwrap_or(0.0);
+                    race.telemetry.write_debug(serde_json::json!({
+                        "gen": race.generation,
+                        "tick": (racer.race_time * 64.0) as u32,
+                        "entity_id": entity.index(),
+                        "steer_post_axiom": format!("{:.3}", steer_post_axiom),
+                        "axiom_steer_bias": format!("{:.3}", axiom_steer_bias),
+                        "axiom_strength": format!("{:.3}", ax_strength)
+                    }));
                 }
             }
             // ---- Trinity decide (Gate + Reflex + Sentinel) ----
