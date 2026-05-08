@@ -1830,13 +1830,15 @@ pub(super) fn update_racers(
             let ri_thr = racer.engine.final_intent[0];
             let ri_str = racer.engine.final_intent[1];
             let ri_brk = racer.engine.final_intent[2];
-            // Compress retina into 8 FOV bins (already computed into sw[0..8])
-            let mut retina_fov = [0i8; 112];
-            // sw[0..8] are fóvea FOV bins. Distribute across rows for visualization.
-            // For now, repeat the fóvea bins 14 times (one per RETINA_ROW).
-            for row in 0..14 {
-                for bin in 0..8 {
-                    retina_fov[row * 8 + bin] = sw[bin];
+            // Compress retina into FOV_BINS (already computed into sw[0..FOV_BINS])
+            const FOV_BINS: usize = 8;
+            const RETINA_ROWS_LOCAL: usize = 14;
+            let mut retina_fov = vec![0i8; FOV_BINS * RETINA_ROWS_LOCAL];
+            // sw[0..FOV_BINS] are fóvea FOV bins. Distribute across rows for visualization.
+            // For now, repeat the fóvea bins (one per RETINA_ROW).
+            for row in 0..RETINA_ROWS_LOCAL {
+                for bin in 0..FOV_BINS {
+                    retina_fov[row * FOV_BINS + bin] = sw[bin];
                 }
             }
 
