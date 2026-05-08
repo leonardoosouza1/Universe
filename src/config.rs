@@ -363,7 +363,8 @@ pub mod iara {
         pub const WALL_DAMAGE_BASE: f32 = 4.0;
         pub const WALL_DAMAGE_MAX: f32 = 40.0;
         pub const WALL_DAMAGE_GRACE: f32 = 20.0;
-        pub const SPEED_BLEED_DAMAGE: f32 = 30.0;
+        // Reduced 30→15 for narrow tracks: models need time to navigate tight corners
+        pub const SPEED_BLEED_DAMAGE: f32 = 15.0;
         pub const WALL_PIN_TIME_S: f32 = 1.6;    // Segundos preso na parede para morrer
         pub const HP_GRACE_FRAMES: u32 = 480;     // Frames de proteção pós-volta
 

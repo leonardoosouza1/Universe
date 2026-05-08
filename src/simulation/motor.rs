@@ -116,9 +116,9 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) ->
         bias[0] -= 0.12;
     }
     // A16: dark-center tracker (90..93) → siga o escuro (centro de pista)
-    // Boosted 0.28→0.40 pra narrow tracks: "find road" domina wall fear
+    // Boosted 0.28→0.35 pra narrow tracks: "find road" without oscillation
     let dark_center: i32 = (90..94).map(|i| inputs[i] as i32).sum();
-    bias[1] += (dark_center as f32 / (127.0 * 4.0)) * 0.40;
+    bias[1] += (dark_center as f32 / (127.0 * 4.0)) * 0.35;
     // A17: whiskers diagonais (94..97) — parede perto em diagonal
     //   94 = FL 30°, 95 = FR 30°, 96 = FL 60°, 97 = FR 60°
     // Reduced 0.28→0.15 pra narrow tracks: diagonal walls common, avoid false brakes
