@@ -213,22 +213,20 @@ fn build_priming_weights() -> Vec<f32> {
     weights[2 * SWS + 117] = 8.0;   // motion magnitude → brake moderado
     weights[0 * SWS + 117] = -6.0;  // → reduz throttle
 
-    // A23: LOOKAHEAD steer (curv 100m/180m signed) — DNA atual ignora estes (mortos).
-    // Sem isso, carro só vê parede via whiskers/fovea = REATIVO. Vira "do nada".
-    // curv signed positivo = curva à direita → steer right (positivo).
-    weights[1 * SWS + 80] = 8.0;   // curv100m signed → steer matching
-    weights[1 * SWS + 32] = 6.0;   // curv180m signed → steer preemptivo
-    // Curva forte (qualquer lado) → frear ANTES da parede aparecer.
-    weights[2 * SWS + 79] = 10.0;  // brake-prep magnitude → brake
-    weights[0 * SWS + 79] = -6.0;  // brake-prep → corta throttle
+    // A23: LOOKAHEAD (curv 100m/180m) JÁ ESTÁ EM A9 (canais 78/79/80).
+    // Remover duplicata: A9 já cobre lookahead via curvatura antecipada.
+    // Axioma consolidado — não sobrescrever.
+    // Curva forte (qualquer lado) → frear ANTES da parede aparecer (apenas brake).
+    weights[2 * SWS + 78] = 8.0;   // curvatura magnitude → brake preemptivo
+    weights[0 * SWS + 78] = -5.0;  // → corta throttle em curva
 
-    // A18: GAZE TRACKER (canais 98-101) — fóvea sacádica aponta pro caminho aberto.
-    // v4: 14→5. Total era 56 (14×4 canais), dominava todo o steering.
-    // Em narrow track, gaze oscilava violentamente. Agora é refinamento,
-    // não dominador. Evolução aprende o quanto confiar no gaze.
-    for i in 98..102 {
-        weights[1 * SWS + i] = 5.0;
-    }
+    // A18: GAZE TRACKER (canais 98-101) — DESATIVADO.
+    // Assim como em axiom_policy, os canais 98-101 não contêm mais gaze.
+    // Canal 98 é motion_norm (sempre ≥0), o que causava um bias permanente
+    // pra DIREITA (+5.0 no output 1) durante o priming.
+    // for i in 98..102 {
+    //     weights[1 * SWS + i] = 5.0;
+    // }
 
     weights
 }

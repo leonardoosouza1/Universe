@@ -56,25 +56,29 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
     let mut bias = [0.0f32; 96];
     let WALL_T: i8 = lab.wall_t_threshold;  // ~0.31 normalizado — parede próxima mas não encostada
 
-    // A1: parede esquerda (perif 32..37) → steer direita (+)
-    let wall_l: i32 = (32..38).map(|i| inputs[i] as i32).sum();
+    // A1: parede esquerda (perif bins 8..11) → steer direita (+)
+    // FIX: era ch 32..37 (retina raw antiga). Com pooling v2, periférica = bins 8..15.
+    // Bins 8-11 = metade esquerda, Bins 12-15 = metade direita.
+    let wall_l: i32 = (8..12).map(|i| inputs[i] as i32).sum();
     if wall_l > WALL_T as i32 * 2 {
         bias[1] += lab.axiom_wall_avoidance;
     }
-    // A2: parede direita (perif 58..63) → steer esquerda (-)
-    let wall_r: i32 = (58..64).map(|i| inputs[i] as i32).sum();
+    // A2: parede direita (perif bins 12..15) → steer esquerda (-)
+    let wall_r: i32 = (12..16).map(|i| inputs[i] as i32).sum();
     if wall_r > WALL_T as i32 * 2 {
         bias[1] -= lab.axiom_wall_avoidance;
     }
     // A3: alinhamento com fluxo (64) → acelera
     bias[0] += (inputs[64] as f32 / 127.0) * 0.15;
-    // A4: parede no centro (perif 42..54) → corta throttle
-    let wall_c: i32 = (42..54).map(|i| inputs[i] as i32).sum();
-    if wall_c > WALL_T as i32 * 4 {
+    // A4: parede no centro (perif bins 10..13 = centro da periférica) → corta throttle
+    // FIX: era ch 42..54 (retina raw antiga). Periférica pooled = bins 8..15.
+    let wall_c: i32 = (10..14).map(|i| inputs[i] as i32).sum();
+    if wall_c > WALL_T as i32 * 2 {
         bias[0] -= 0.25;
     }
-    // A4d/A7: centro exato (46..50) → brake forte (parede direto à frente)
-    let wall_front: i32 = (46..50).map(|i| inputs[i] as i32).sum();
+    // A4d/A7: fóvea centro (bins 3..5) → brake forte (parede direto à frente)
+    // FIX: era ch 46..50 (retina raw). Fóvea pooled = bins 0..7, centro = 3..5.
+    let wall_front: i32 = (3..6).map(|i| inputs[i] as i32).sum();
     if wall_front > WALL_T as i32 * 2 {
         bias[2] += 0.30;
     }
@@ -135,9 +139,12 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
         bias[1] -= lab.axiom_whisker * 0.80;
         bias[2] += lab.axiom_whisker * 0.53;
     }
-    // A18: gaze tracker (98..101) → fóvea aponta pra onde há pista aberta
-    let gaze: i32 = (98..102).map(|i| inputs[i] as i32).sum();
-    bias[1] += (gaze as f32 / (127.0 * 4.0)) * 0.25;
+    // A18: gaze tracker — DESATIVADO em axiom_policy.
+    // Canais 98-101 NÃO contêm gaze: ch98=motion_norm (sempre ≥0 → bias RIGHT),
+    // ch101-102=curvature lookahead. Isso causava virada pra direita sistemática.
+    // O dark-center A16 (ch 90-93) já faz o papel de seguir a pista.
+    // let gaze: i32 = (98..102).map(|i| inputs[i] as i32).sum();
+    // bias[1] += (gaze as f32 / (127.0 * 4.0)) * 0.25;
 
     // A19 REVERTIDO v6b: testado em 200 gens — champion peak 621m vs v5 736m.
     // Anti-stall forçava throttle em estados pós-curva que não deveriam acelerar.
@@ -1394,13 +1401,19 @@ pub(super) fn update_racers(
         slow_input[11] = ((racer.grass_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[12] = (racer.stagnation * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[13] = if env.is_night() { 127 } else { 0 };
-        // 14..21: retina pooled — 4 regiões, max-pool volumétrico across all rows
-        for reg in 0..4 {
+        // 14..21: retina pooled — até 4 regiões, max-pool volumétrico across all rows.
+        // Adapta ao RETINA_COLS real: com 16 cols → 4 regiões de 4 bins.
+        // Com 8 cols → 4 regiões de 2 bins. Evita OOB quando RETINA_COLS < 32.
+        let n_regions = 4usize.min(RETINA_COLS);
+        let bins_per_region = RETINA_COLS / n_regions.max(1);
+        for reg in 0..n_regions {
             let mut max_near: i8 = -128;
             let mut max_far: i8 = -128;
             for row in 0..RETINA_ROWS {
-                for j in 0..8 {
-                    let v = racer.visual_cortex[row * RETINA_COLS + reg * 8 + j];
+                for j in 0..bins_per_region {
+                    let col = reg * bins_per_region + j;
+                    if col >= RETINA_COLS { break; }
+                    let v = racer.visual_cortex[row * RETINA_COLS + col];
                     if row < RETINA_ROWS / 2 {
                         if v > max_near { max_near = v; }
                     } else {

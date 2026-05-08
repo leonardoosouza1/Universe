@@ -249,13 +249,13 @@ pub mod iara {
         // pub const RETINA_MAX_PITCH: f32 = -0.005;
         
         // NEW TEST
-        pub const RETINA_ROWS: usize = 8;
-        pub const RETINA_COLS: usize = 16;
+        pub const RETINA_ROWS: usize = 18;
+        pub const RETINA_COLS: usize = 120;
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; 
         pub const FOV_DEG: f32 = 140.0;
         pub const RETINA_SKIP: u32 = 2;
         pub const RETINA_MIN_PITCH: f32 = -0.035;
-        pub const RETINA_MAX_PITCH: f32 = -0.005;
+        pub const RETINA_MAX_PITCH: f32 = -0.0042;
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];
