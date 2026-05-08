@@ -1934,8 +1934,8 @@ pub(super) fn update_racers(
         // --- HOLE: Morte instantânea ---
         // VoxelType::Hole sob centro do carro → kill. Força a rede a desviar ativamente
         // de buracos (pixel distinto na retina ~90, enquanto road ~-80 e wall ~127).
-        // Grace window preserva bootstrap: primeiros 180 frames reais sem penalidade.
-        if voxel_current == VoxelType::Hole && !racer.is_dead && racer.grace_ticks >= 180 {
+        // Grace window v5: 180→640 frames (3s→10s). Gen 1 precisa mais tempo pra aprender.
+        if voxel_current == VoxelType::Hole && !racer.is_dead && racer.grace_ticks >= 640 {
             racer.is_dead = true;
             racer.hp = 0.0;
             racer.death_reason = Some(crate::simulation::racer::DeathReason::Hole);

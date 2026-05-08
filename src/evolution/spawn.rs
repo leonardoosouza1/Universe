@@ -51,20 +51,21 @@ fn build_priming_weights() -> Vec<f32> {
     // Bins 8-9 = esquerda extremo/lateral. Bins 14-15 = direita. 10-13 = centro.
     //
     // A1: Wall à esquerda (perif bin 8, 9) → vira à DIREITA (positivo).
-    // v4: 6/4→3/2. Periférica SEMPRE vê wall em pista <14m. Magnitude alta
-    // causava zig-zag perpétuo. Agora é sugestão leve, evolução refina.
-    weights[1 * SWS + 8] = 3.0;
-    weights[1 * SWS + 9] = 2.0;
+    // v5: 3/2→6/5. Gen 1 com pesos aleatórios precisa signal forte pra desviar wall.
+    // Periférica vê wall em pista <14m — se não vira AGORA, bate.
+    weights[1 * SWS + 8] = 6.0;
+    weights[1 * SWS + 9] = 5.0;
     // A2: Wall à direita (perif bin 14, 15) → vira à ESQUERDA (negativo)
-    weights[1 * SWS + 14] = -2.0;
-    weights[1 * SWS + 15] = -3.0;
+    weights[1 * SWS + 14] = -5.0;
+    weights[1 * SWS + 15] = -6.0;
     // A3: Alinhamento com fluxo (canal 64) → acelera (magnitude alta p/ sobrepor pooling sparse)
     weights[0 * SWS + 64] = 12.0;
-    // A4: Parede no centro periférica (apenas bin 11, 12 = centro exato) → corta throttle LEVE.
-    // Magnitudes baixas: ganho vem da fóvea (A7b). Periférica center sempre
-    // acende leve em pistas estreitas — forte demais = carro trava parado.
-    weights[0 * SWS + 11] = -3.0;
-    weights[0 * SWS + 12] = -3.0;
+    // A4: Parede no centro periférica (apenas bin 11, 12 = centro exato) → corta throttle.
+    // v5: -3→-6, add brake. Gen 1 throttle 0.95 always — precisa força pra aprender recuo.
+    weights[0 * SWS + 11] = -6.0;
+    weights[0 * SWS + 12] = -6.0;
+    weights[2 * SWS + 11] = 6.0;
+    weights[2 * SWS + 12] = 6.0;
     // A4d: BRAKE removido do priming (causa travamento permanente em pistas narrow).
     // Brake emergente vem dos whiskers (94-97) que só acendem em colisão iminente.
     // A5: Dor de grama (73) → reduz throttle
@@ -76,9 +77,12 @@ fn build_priming_weights() -> Vec<f32> {
     // A7b: Fóvea centro (bin 3, 4 = px 13..19 centro). Retina: road=NEGATIVO, wall=POSITIVO.
     // Road clear (value −128) × weight (−6) = +768 contrib = ACELERA. Wall ahead (value +)
     // × weight (−) = negativo = corta throttle.
-    // v4: -8→-4. Fóvea center vê wall frequentemente em narrow → -8 cortava throttle demais.
-    weights[0 * SWS + 3] = -4.0;
-    weights[0 * SWS + 4] = -4.0;
+    // v5: -4→-8. Gen 1 throttle stuck 0.95, precisa brake mais forte pra aprender.
+    weights[0 * SWS + 3] = -8.0;
+    weights[0 * SWS + 4] = -8.0;
+    // Brake junto (output 2)
+    weights[2 * SWS + 3] = 8.0;
+    weights[2 * SWS + 4] = 8.0;
     // A7c REMOVIDO: bins extremos de fóvea SEMPRE veem paredes em pistas narrow (wall 7m lateral
     // entra em bin 0/7 a 15m à frente). Steer forçado pra um lado → deriva contra wall oposta.
     // Dark_center (90-93) já guia steering via centroide angular do road.
@@ -92,9 +96,9 @@ fn build_priming_weights() -> Vec<f32> {
     weights[1 * SWS + 78] = 5.0;
     weights[1 * SWS + 79] = 8.0;
     weights[1 * SWS + 80] = 4.0;
-    // A10: Lane offset (81) → centraliza. v4: 5→2. Sugestão leve.
-    // Evolução aprende centralização melhor que priming fixo em narrow.
-    weights[1 * SWS + 81] = 2.0;
+    // A10: Lane offset (81) → centraliza. v5: 2→6. Gen 1 precisa se centralizar FORTE.
+    // Sem sinal forte, Gen 1 sai da pista imediatamente. Evolução refina depois.
+    weights[1 * SWS + 81] = 6.0;
     // A11: Urgência de colisão (82) → freia + corta motor.
     // MAGNITUDE boost (v2): 10→15 brake, -6→-10 throttle.
     // Match nível A16/A18 (gaze/dark) que usam 4× duplicação.
@@ -125,11 +129,9 @@ fn build_priming_weights() -> Vec<f32> {
     // Resposta à crítica do usuário: "o carro não tenta centralizar o preto".
     // Canal = centro de massa angular dos pixels de pista, normalizado [-1..+1].
     // Positivo ⇒ pista à direita ⇒ steer RIGHT. Negativo ⇒ pista à esquerda ⇒ LEFT.
-    // v2: magnitude reduzida 15.0→4.0. Valor 15.0 causava steer direita sistemático
-    // em 100% dos modelos spawn. Lane offset (A10: ch81=+12.0) é sinal primário.
-    // Dark center é refinamento, não dominador.
+    // v5: 4.0→7.0. Gen 1 precisa signal forte pra seguir centro. Evolution refina.
     for i in 90..94 {
-        weights[1 * SWS + i] = 4.0;
+        weights[1 * SWS + i] = 7.0;
     }
 
     // A17: WHISKERS DIAGONAIS (canais 94-97) — reflexo de curva fechada.
