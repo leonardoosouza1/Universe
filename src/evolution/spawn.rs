@@ -120,10 +120,11 @@ fn build_priming_weights() -> Vec<f32> {
     // Resposta à crítica do usuário: "o carro não tenta centralizar o preto".
     // Canal = centro de massa angular dos pixels de pista, normalizado [-1..+1].
     // Positivo ⇒ pista à direita ⇒ steer RIGHT. Negativo ⇒ pista à esquerda ⇒ LEFT.
-    // Duplicado em 4 canais para que, após quantize ternária (todos ±1), este axioma
-    // some 4× o sinal de um axioma normal — vira o maior vetor de steering na rede.
+    // v2: magnitude reduzida 15.0→4.0. Valor 15.0 causava steer direita sistemático
+    // em 100% dos modelos spawn. Lane offset (A10: ch81=+12.0) é sinal primário.
+    // Dark center é refinamento, não dominador.
     for i in 90..94 {
-        weights[1 * 128 + i] = 15.0;
+        weights[1 * 128 + i] = 4.0;
     }
 
     // A17 (NOVO): WHISKERS DIAGONAIS (canais 94-97) — reflexo de curva fechada.

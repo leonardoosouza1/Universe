@@ -54,7 +54,7 @@ fn slow_input_for_reflex(sensory_wave: &[i8; crate::config::iara::brain::SENSORY
 
 fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], lab: &crate::lab::LabParams) -> [f32; 96] {
     let mut bias = [0.0f32; 96];
-    const WALL_T: i8 = 40;  // ~0.31 normalizado — parede próxima mas não encostada
+    let WALL_T: i8 = lab.wall_t_threshold;  // ~0.31 normalizado — parede próxima mas não encostada
 
     // A1: parede esquerda (perif 32..37) → steer direita (+)
     let wall_l: i32 = (32..38).map(|i| inputs[i] as i32).sum();
@@ -1252,13 +1252,15 @@ pub(super) fn update_racers(
             racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
 
             // DEBUG: capture spawn behavior (first 1.0s of each racer)
+            let debug_gen = race.generation;
+            let debug_tick = (racer.race_time * 64.0) as u32;
             if racer.race_time < 1.0 {
                 let steer_pre_axiom = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
                 let throttle = racer.engine.final_intent.get(0).copied().unwrap_or(0.0);
                 let sensory_sample = format!("[{},{},{},{},{}]", sensory_wave[0], sensory_wave[1], sensory_wave[75], sensory_wave[82], sensory_wave[118]);
                 race.telemetry.write_debug(serde_json::json!({
-                    "gen": race.generation,
-                    "tick": (racer.race_time * 64.0) as u32,
+                    "gen": debug_gen,
+                    "tick": debug_tick,
                     "entity_id": entity.index(),
                     "pos": format!("({:.1},{:.1})", pos.x, pos.z),
                     "steer_pre_axiom": format!("{:.3}", steer_pre_axiom),
@@ -1286,8 +1288,8 @@ pub(super) fn update_racers(
                     let steer_post_axiom = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
                     let axiom_steer_bias = bias.get(1).copied().unwrap_or(0.0);
                     race.telemetry.write_debug(serde_json::json!({
-                        "gen": race.generation,
-                        "tick": (racer.race_time * 64.0) as u32,
+                        "gen": debug_gen,
+                        "tick": debug_tick,
                         "entity_id": entity.index(),
                         "steer_post_axiom": format!("{:.3}", steer_post_axiom),
                         "axiom_steer_bias": format!("{:.3}", axiom_steer_bias),
