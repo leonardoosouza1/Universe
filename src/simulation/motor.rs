@@ -2084,6 +2084,9 @@ pub(super) fn update_racers(
             sensory_compact[9] = sw[67];   // hp
             // Fill rest with zero (reserved for future expansion)
 
+            // DEBUG: Disabled brain_trace sampling temporarily for performance profiling.
+            // Re-enable after identifying bottleneck.
+            /*
             racer.brain_trace.push(crate::simulation::racer::BrainSnapshot {
                 t: engine_time,
                 speed_kmh: speed * 3.6,
@@ -2103,6 +2106,7 @@ pub(super) fn update_racers(
                 retina_fov,
                 sensory_compact,
             });
+            */
         }
 
         // BOS removido — o sistema de penalidades já pune sobreposição
@@ -2232,6 +2236,9 @@ pub(super) fn update_racers(
             // Limita o ângulo real da roda traseira dependendo da velocidade
             engine_comp.steer = physical_steer * dynamic_steer_limit;
             engine_comp.manual_shift_req = shift_req;
+
+            // Physics system (physics.rs) handles: throttle→torque→forces→integration
+            // Just set the control inputs; physics.rs will calculate realistic response
 
             // Motor afogado: NÃO mata instantaneamente!
             // A IA precisa aprender a sequência de partida (reduzir pra marcha 0/1 + segurar acelerador).

@@ -377,10 +377,11 @@ pub(super) fn evolution_pipeline(
                 kan_knots: r.kan_out.knots,
             };
             // Guard: só adiciona ao pool se racer atingiu distância mínima (sanidade check)
-            // Previne que DNA de crash total (<=0m) ou DNA MORTA contaminar o pool.
+            // Previne que DNA de crash total (<=0m) contaminar o pool.
             // v8b: 150m→100m. Carros em pista 14m fazem ~100m, threshold seletivo mas não muito.
-            // v9: rejeita DEAD racers — elite DNA deve ser de carros vivos que sobreviveram.
-            if r.track_progress < 100.0 || r.is_dead {
+            // v10: remove is_dead filter — genético preserva fitness alta independente de morte.
+            // Elite selection é fitness-based, não liveness-based. Dead agent com 917m > live com 50m.
+            if r.track_progress < 25.0 {
                 continue;
             }
             if race.elite_pool.len() < 10 {
@@ -974,6 +975,8 @@ pub(super) fn evolution_pipeline(
             "death_reasons": death_counts,
         }));
 
+        // DEBUG: Disabled brain trace export for performance. Re-enable after bottleneck identified.
+        /*
         // Export champion brain trace as JSON for vision replay
         if let Some((_, best, _, _)) = sorted.first() {
             if !best.brain_trace.is_empty() {
@@ -1001,6 +1004,7 @@ pub(super) fn evolution_pipeline(
                 }
             }
         }
+        */
 
         let world = VoxelWorld::new(next_track.seed, effective_width);
         let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
