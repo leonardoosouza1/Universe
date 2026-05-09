@@ -2110,27 +2110,9 @@ pub(super) fn update_racers(
                 racer.sensory_snapshot[i] = sensory_wave[i];
             }
 
-            // === VISION VALIDATION DIAGNOSTIC ===
-            // High-detail sensory dump: what agent sees (all 64 semantic channels) vs actions
-            // Test: print at EVERY frame during grace period to debug
-            if racer.name == "Agent_0" && racer.grace_ticks < 300 && racer.grace_ticks % 64 == 0 {
-                // NEAR ZONE: wall proximity (ch 16-23)
-                let near_left: f32 = (16..20).map(|i| sw[i] as i32).sum::<i32>() as f32 / (127.0 * 4.0);
-                let near_right: f32 = (20..24).map(|i| sw[i] as i32).sum::<i32>() as f32 / (127.0 * 4.0);
-
-                // NEAR ZONE: lookahead at 5-40m (ch 40-47)
-                let near_road_5m = sw[40] as f32 / 127.0;    // First channel is 5m ahead
-
-                // FAR ZONE: horizon detection at 80-200m (ch 48-55)
-                let far_apex = sw[48] as f32 / 127.0;        // First channel is 80m ahead
-
-                // Actions
-                let throttle_out = ri_thr;
-                let steer_out = final_steer_intent;
-
-                eprintln!("VISION t={:04} | NL={:+.2} NR={:+.2} | NEAR_5m={:+.2} | FAR_80m={:+.2} | steer={:+.2} throttle={:+.2}",
-                    racer.grace_ticks, near_left, near_right, near_road_5m, far_apex, steer_out, throttle_out);
-            }
+            // === VISION VALIDATION DIAGNOSTIC (disabled for now) ===
+            // Debug diagnostics can be re-enabled with conditional logging if needed.
+            // For now, sensory_snapshot is captured for UI visualization.
 
             // DEBUG: Disabled brain_trace sampling temporarily for performance profiling.
             // Re-enable after identifying bottleneck.
