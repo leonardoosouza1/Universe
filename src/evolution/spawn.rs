@@ -316,10 +316,10 @@ pub fn spawn_swarm(
                 if let Some(ref l3) = race.best_l3_weights {
                     engine.cortex_l3.set_weights(l3);
                 }
-                // V8: Apply SlowBrain weights from champion DNA
-                if let Some(ref slow_w) = race.best_slow_weights {
-                    engine.slow_brain.set_all_weights(slow_w);
-                }
+                // TODO: SlowBrain causing 25m regression. Disabled pending fix.
+                // if let Some(ref slow_w) = race.best_slow_weights {
+                //     engine.slow_brain.set_all_weights(slow_w);
+                // }
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
             morpho_this = current_best_morpho;
@@ -441,8 +441,8 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(elite.fast_scale);
 
-                // V8: SlowBrain weights from elite pool
-                engine.slow_brain.set_all_weights(&elite.slow_weights);
+                // TODO: SlowBrain causing regression. Disabled.
+                // engine.slow_brain.set_all_weights(&elite.slow_weights);
                 engine.cortex_l2.set_weights(&elite.cortex_l2);
                 engine.cortex_l3.set_weights(&elite.cortex_l3);
                 // Tier 4.2: clone herda 10% do estado hormonal médio do único parent.
@@ -570,10 +570,10 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
-                // V8: Apply SlowBrain weights to champion clones
-                if let Some(ref slow_w) = race.best_slow_weights {
-                    engine.slow_brain.set_all_weights(slow_w);
-                }
+                // TODO: SlowBrain causing regression. Disabled.
+                // if let Some(ref slow_w) = race.best_slow_weights {
+                //     engine.slow_brain.set_all_weights(slow_w);
+                // }
                 if let Some(ref l2) = race.best_l2_weights {
                     engine.cortex_l2.set_weights(l2);
                 }
