@@ -204,6 +204,9 @@ pub struct Racer {
     pub kan_out: crate::kan::KanOutputHead,
     /// Seed estável para PRNG local (ruído sensorial/exploração determinístico).
     pub stable_seed: u64,
+    /// Last sensory snapshot (64 semantic channels) for visualization/diagnostics.
+    /// Updated each frame in update_racers() for UI to display what agent sees.
+    pub sensory_snapshot: [i8; 64],
 }
 
 /// Frame de diagnóstico do cérebro do racer.

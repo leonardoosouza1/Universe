@@ -27,6 +27,7 @@ pub mod config;
 pub mod ui_menu;
 pub mod substrate;
 pub mod scenery;
+pub mod visualization;
 
 use bevy::prelude::*;
 

@@ -585,15 +585,20 @@ pub(super) fn update_racers(
             sensory_wave[32 + angle_idx] = (cross * 127.0).clamp(-127.0, 127.0) as i8;
         }
 
-        // --- ch 40-47: road_ahead (lookahead metrics at 8 distances) ---
-        // Samples road properties ahead: presence, grip quality, banking
+        // === NEAR ZONE (5-40m) vs FAR ZONE (80-200m) pooling ===
+        // Split horizon into depth layers for lookahead depth perception.
+        // User complaint: "model doesn't see curves ahead, can't see crest, needs surreal detail"
+        // Solution: Zone-based encoding reveals multiple depth layers explicitly.
+
+        // --- ch 40-47: NEAR ZONE (5-40m lookahead - immediate decisions) ---
+        // Samples road properties at near distances for reactive steering
         for dist_idx in 0..8 {
-            let look_dist = 5.0 + dist_idx as f32 * 6.0; // 5m, 11m, 17m, ..., 53m
+            let look_dist = 5.0 + dist_idx as f32 * 5.0; // 5m, 10m, 15m, ..., 40m
             let probe_pos = pos + forward * look_dist;
             let voxel = world.get_voxel_at(probe_pos.x, probe_pos.z);
             let flow = world.get_flow_at(probe_pos.x, probe_pos.z);
 
-            // Encode road quality: road=60, grass=-60, wall=127, hole=-127
+            // Encode road quality with depth emphasis
             let road_quality = match voxel {
                 VoxelType::Road => 60,
                 VoxelType::Grass => -60,
@@ -601,25 +606,41 @@ pub(super) fn update_racers(
                 VoxelType::Hole => -127,
             };
 
-            // Modulate by flow curvature (sharper = higher)
+            // Modulate by flow curvature AND distance (farther = lower signal = attention shift)
+            let dist_decay = (40.0 - look_dist) / 40.0; // 1.0 at 5m, 0.0 at 40m
             let flow_mag = flow.length();
-            sensory_wave[40 + dist_idx] = ((road_quality as f32 * (0.5 + flow_mag * 0.5)).clamp(-127.0, 127.0)) as i8;
+            sensory_wave[40 + dist_idx] = ((road_quality as f32 * (0.5 + flow_mag * 0.5) * dist_decay).clamp(-127.0, 127.0)) as i8;
         }
 
-        // --- ch 48-55: horizon (apex detection & banking) ---
-        // Detect upcoming apex distance and banking angle
+        // --- ch 48-55: FAR ZONE + HORIZON (80-200m lookahead - strategic planning) ---
+        // Detect upcoming curves, crests, turns at strategic distance.
+        // High resolution: 8 steps × 15m = 80-200m coverage.
         for step in 0..8 {
-            let horizon_dist = 10.0 + step as f32 * 10.0; // 10m, 20m, ..., 80m
+            let horizon_dist = 80.0 + step as f32 * 15.0; // 80m, 95m, ..., 185m
             let apex_pos = pos + forward * horizon_dist;
+
+            // Multi-layered horizon detection:
+            // 1. Height profile (crest detection)
             let height_now = world.get_height_at(apex_pos.x, apex_pos.z);
-            let height_ahead = world.get_height_at(apex_pos.x + forward.x * 5.0, apex_pos.z + forward.z * 5.0);
+            let height_ahead = world.get_height_at(apex_pos.x + forward.x * 10.0, apex_pos.z + forward.z * 10.0);
             let height_delta = height_ahead - height_now;
 
-            // Combine height slope + banking for apex detection
+            // 2. Banking/roll angle (curve banking indicator)
             let normal = world.get_surface_normal(apex_pos.x, apex_pos.z);
-            let banking = normal.x.atan2(normal.y); // Roll angle
+            let banking = normal.x.atan2(normal.y);
 
-            let apex_signal = (height_delta * 50.0 + banking * 30.0).clamp(-127.0, 127.0) as i8;
+            // 3. Road continuity (is road present at this distance?)
+            let voxel_far = world.get_voxel_at(apex_pos.x, apex_pos.z);
+            let road_presence = match voxel_far {
+                VoxelType::Road => 1.0,
+                VoxelType::Grass => 0.3,  // Weak signal if off-road
+                VoxelType::Wall => -1.0,  // Strong negative if wall
+                VoxelType::Hole => -0.5,
+            };
+
+            // Combine signals: crest (height_delta) + banking (curve indicator) + road presence
+            let apex_signal = (height_delta * 50.0 + banking * 40.0 + road_presence * 30.0)
+                .clamp(-127.0, 127.0) as i8;
             sensory_wave[48 + step] = apex_signal;
         }
 
@@ -2084,17 +2105,36 @@ pub(super) fn update_racers(
             sensory_compact[9] = sw[67];   // hp
             // Fill rest with zero (reserved for future expansion)
 
+            // Capture sensory snapshot for visualization/diagnostics (UI panel access)
+            for i in 0..64 {
+                racer.sensory_snapshot[i] = sensory_wave[i];
+            }
+
             // === VISION VALIDATION DIAGNOSTIC ===
-            // Log what agent sees (far-range sensory) vs what it does
+            // High-detail sensory dump: what agent sees (all 64 semantic channels) vs actions
             if racer.name == "Agent_0" && racer.grace_ticks % 500 == 0 && racer.grace_ticks > 50 {
-                let near_wall_l = sw[16] as f32 / 127.0;
-                let near_wall_r = sw[23] as f32 / 127.0;
-                let far_road_q = sw[40] as f32 / 127.0;
-                let horizon = sw[48] as f32 / 127.0;
+                // NEAR ZONE: wall proximity (ch 16-23)
+                let near_walls: Vec<f32> = (16..24).map(|i| sw[i] as f32 / 127.0).collect();
+                let near_left = near_walls[0..4].iter().sum::<f32>() / 4.0;
+                let near_right = near_walls[4..8].iter().sum::<f32>() / 4.0;
+
+                // NEAR ZONE: lookahead at 5-40m (ch 40-47)
+                let near_road: Vec<f32> = (40..48).map(|i| sw[i] as f32 / 127.0).collect();
+                let near_road_quality = near_road[0] as f32;  // 5m ahead
+
+                // FAR ZONE: horizon detection at 80-200m (ch 48-55)
+                let far_horizon: Vec<f32> = (48..56).map(|i| sw[i] as f32 / 127.0).collect();
+                let far_apex_signal = far_horizon[0] as f32;  // 80m ahead
+
+                // Actions
                 let throttle_out = ri_thr;
                 let steer_out = final_steer_intent;
-                eprintln!("VISION t={:4} | NEAR_L={:+.2} NEAR_R={:+.2} | FAR_ROAD={:+.2} HORIZON={:+.2} | ACTION steer={:+.2} throttle={:+.2} speed={:5.1}",
-                    racer.grace_ticks, near_wall_l, near_wall_r, far_road_q, horizon, steer_out, throttle_out, speed);
+
+                // Composite vision quality score
+                let vision_range_used = if far_apex_signal.abs() > 0.1 { "FAR+NEAR" } else { "NEAR" };
+
+                eprintln!("VISION t={:5} | NEAR_L={:+.2} NEAR_R={:+.2} | ROAD_5m={:+.2} | FAR_APEX_80m={:+.2} [{:?}] | ACT steer={:+.2} throttle={:+.2} spd={:5.1}",
+                    racer.grace_ticks, near_left, near_right, near_road_quality, far_apex_signal, vision_range_used, steer_out, throttle_out, speed);
             }
 
             // DEBUG: Disabled brain_trace sampling temporarily for performance profiling.
