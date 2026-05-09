@@ -769,13 +769,11 @@ pub(super) fn evolution_pipeline(
                 // V7: cortex_l2 também quantizado pra disk.
                 let l2_q: Vec<i8> = best.engine.cortex_l2.weights.iter()
                     .map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
-                // FIX BUG: sparse::compress (TLV/Tree) clamp valores não-ternários para 0.
-                // Slow weights eram salvas como i8 -127..127 mas compressor só preserva
-                // {-1, 0, +1}. Resultado: slow brain morria 100% no save (dna_view 99% mute).
-                // Ternarização explícita: threshold 0.15 (acima do priming 0.33/3=0.11
-                // mas suficiente pra capturar mutações σ=0.3 acumuladas).
+                // V8: SlowBrain uses proper i8 quantization [-127,127], not ternary.
+                // Ternary {-1,0,+1} lost precision. Now dequantize via /127.0 for [-1,1] range.
+                // Enables smooth steering modulation, fine speed control.
                 let slow_weights_q: Vec<i8> = slow_weights.iter()
-                    .map(|&w| if w > 0.15 { 1i8 } else if w < -0.15 { -1i8 } else { 0i8 })
+                    .map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8)
                     .collect();
                 // Save TWICE: generic CHAMPION.dna (latest run) + per-width
                 // CHAMPION_W{width}m.dna (memória persistente por pista, não desaprende).

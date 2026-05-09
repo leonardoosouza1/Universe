@@ -1,0 +1,19 @@
+{
+  "swarm_count": 1,
+  "seed": 9001,
+  "selected_track_index": 0,
+  "tracks": [
+    {
+      "name": "14m narrow",
+      "track_width": 14.0,
+      "seed": 9001,
+      "complexity": 0.5
+    }
+  ],
+  "generation_timeout_s": 300,
+  "physics": {
+    "gravity": 9.81,
+    "tire_slip_threshold": 0.1
+  },
+  "easy_track": false
+}
