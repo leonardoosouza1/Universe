@@ -102,7 +102,6 @@ pub fn spawn_swarm(
                 race.best_l2_weights = Some(l2.iter().map(|&w| w as f32 / 63.5).collect());
             }
             current_best_s = dna.fast_scale;
-            // NOTE: SlowBrain weights not loaded from DNA. Uses fresh initialization.
 
             // Tier 6.3 LITE: absorve morpho genes serializados.
             current_best_morpho = dna.morpho;
@@ -310,7 +309,6 @@ pub fn spawn_swarm(
                 if let Some(ref l3) = race.best_l3_weights {
                     engine.cortex_l3.set_weights(l3);
                 }
-                // NOTE: SlowBrain weights no longer loaded. Initialized in SovereignEngine::new()
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
             morpho_this = current_best_morpho;
