@@ -2112,29 +2112,24 @@ pub(super) fn update_racers(
 
             // === VISION VALIDATION DIAGNOSTIC ===
             // High-detail sensory dump: what agent sees (all 64 semantic channels) vs actions
-            if racer.name == "Agent_0" && racer.grace_ticks % 500 == 0 && racer.grace_ticks > 50 {
+            // Test: print at EVERY frame during grace period to debug
+            if racer.name == "Agent_0" && racer.grace_ticks < 300 && racer.grace_ticks % 64 == 0 {
                 // NEAR ZONE: wall proximity (ch 16-23)
-                let near_walls: Vec<f32> = (16..24).map(|i| sw[i] as f32 / 127.0).collect();
-                let near_left = near_walls[0..4].iter().sum::<f32>() / 4.0;
-                let near_right = near_walls[4..8].iter().sum::<f32>() / 4.0;
+                let near_left: f32 = (16..20).map(|i| sw[i] as i32).sum::<i32>() as f32 / (127.0 * 4.0);
+                let near_right: f32 = (20..24).map(|i| sw[i] as i32).sum::<i32>() as f32 / (127.0 * 4.0);
 
                 // NEAR ZONE: lookahead at 5-40m (ch 40-47)
-                let near_road: Vec<f32> = (40..48).map(|i| sw[i] as f32 / 127.0).collect();
-                let near_road_quality = near_road[0] as f32;  // 5m ahead
+                let near_road_5m = sw[40] as f32 / 127.0;    // First channel is 5m ahead
 
                 // FAR ZONE: horizon detection at 80-200m (ch 48-55)
-                let far_horizon: Vec<f32> = (48..56).map(|i| sw[i] as f32 / 127.0).collect();
-                let far_apex_signal = far_horizon[0] as f32;  // 80m ahead
+                let far_apex = sw[48] as f32 / 127.0;        // First channel is 80m ahead
 
                 // Actions
                 let throttle_out = ri_thr;
                 let steer_out = final_steer_intent;
 
-                // Composite vision quality score
-                let vision_range_used = if far_apex_signal.abs() > 0.1 { "FAR+NEAR" } else { "NEAR" };
-
-                eprintln!("VISION t={:5} | NEAR_L={:+.2} NEAR_R={:+.2} | ROAD_5m={:+.2} | FAR_APEX_80m={:+.2} [{:?}] | ACT steer={:+.2} throttle={:+.2} spd={:5.1}",
-                    racer.grace_ticks, near_left, near_right, near_road_quality, far_apex_signal, vision_range_used, steer_out, throttle_out, speed);
+                eprintln!("VISION t={:04} | NL={:+.2} NR={:+.2} | NEAR_5m={:+.2} | FAR_80m={:+.2} | steer={:+.2} throttle={:+.2}",
+                    racer.grace_ticks, near_left, near_right, near_road_5m, far_apex, steer_out, throttle_out);
             }
 
             // DEBUG: Disabled brain_trace sampling temporarily for performance profiling.
