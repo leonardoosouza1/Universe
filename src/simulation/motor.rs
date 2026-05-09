@@ -2084,6 +2084,19 @@ pub(super) fn update_racers(
             sensory_compact[9] = sw[67];   // hp
             // Fill rest with zero (reserved for future expansion)
 
+            // === VISION VALIDATION DIAGNOSTIC ===
+            // Log what agent sees (far-range sensory) vs what it does
+            if racer.name == "Agent_0" && racer.grace_ticks % 500 == 0 && racer.grace_ticks > 50 {
+                let near_wall_l = sw[16] as f32 / 127.0;
+                let near_wall_r = sw[23] as f32 / 127.0;
+                let far_road_q = sw[40] as f32 / 127.0;
+                let horizon = sw[48] as f32 / 127.0;
+                let throttle_out = ri_thr;
+                let steer_out = final_steer_intent;
+                eprintln!("VISION t={:4} | NEAR_L={:+.2} NEAR_R={:+.2} | FAR_ROAD={:+.2} HORIZON={:+.2} | ACTION steer={:+.2} throttle={:+.2} speed={:5.1}",
+                    racer.grace_ticks, near_wall_l, near_wall_r, far_road_q, horizon, steer_out, throttle_out, speed);
+            }
+
             // DEBUG: Disabled brain_trace sampling temporarily for performance profiling.
             // Re-enable after identifying bottleneck.
             /*
