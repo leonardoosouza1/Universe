@@ -508,8 +508,139 @@ pub(super) fn update_racers(
         for i in 0..32usize {
             sensory_wave[160 + i] = retina_binocular[horizon_row * RETINA_COLS + i * step];
         }
-        // Canais 16..63 zerados explicitamente (garantia contra leak de frame anterior).
-        for i in 16..64 { sensory_wave[i] = 0; }
+        // === 64 SEMANTIC SENSORY CHANNELS (ch 16-63, no raycasts) ===
+        // All queries via world.get_voxel_at(), get_height_at(), get_flow_at() — O(1) ops.
+        //
+        // Layout:
+        // ch 16-23:  wall_distance_fov (8 angles, FOV left→right, distance in meters i8: 0=sky, 1-127=1-127m)
+        // ch 24-31:  wall_width_fov (obstacle width in each FOV bin)
+        // ch 32-39:  wall_curvature_fov (local curvature per angle)
+        // ch 40-47:  road_ahead (curve sharpness, banking, grip)
+        // ch 48-55:  horizon (apex distance 25m ahead, turn sharpness, banking)
+        // ch 56-63:  ground_material + agent_state (road=0, grass=64, hole=-127, speed, throttle, etc.)
+
+        let forward_2d = Vec2::new(forward.x, forward.z);
+
+        // --- ch 16-23: wall_distance_fov (8 angles across FOV) ---
+        // Query world grid at 8 angles ahead, encode distance as i8 (0=sky/far, 127=very close)
+        for angle_idx in 0..8 {
+            let angle_rad = forward.y.asin() + ((angle_idx as f32 - 3.5) / 3.5) * 0.4; // ±40° spread
+            let dir = Vec3::new(
+                angle_rad.cos() * forward.x,
+                angle_rad.sin(),
+                angle_rad.cos() * forward.z,
+            ).normalize_or_zero();
+
+            // Sample 8 distance points (3m..24m) to find wall proximity
+            let mut wall_dist_min = f32::MAX;
+            for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0].iter() {
+                let sample_pos = pos + dir * sample_dist;
+                let voxel = world.get_voxel_at(sample_pos.x, sample_pos.z);
+                if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
+                    wall_dist_min = wall_dist_min.min(*sample_dist);
+                }
+            }
+            // Encode: 0=no wall found, 127=<1m, 1-126=1-126m
+            let dist_encoded = if wall_dist_min >= 24.0 { 0i8 }
+                              else { ((127.0 * (24.0 - wall_dist_min) / 24.0).clamp(1.0, 127.0)) as i8 };
+            sensory_wave[16 + angle_idx] = dist_encoded;
+        }
+
+        // --- ch 24-31: wall_width_fov (obstacle width per angle) ---
+        // For each angle, measure obstacle extent (cone width)
+        for angle_idx in 0..8 {
+            let angle_rad = forward.y.asin() + ((angle_idx as f32 - 3.5) / 3.5) * 0.4;
+            let dir = Vec3::new(
+                angle_rad.cos() * forward.x,
+                angle_rad.sin(),
+                angle_rad.cos() * forward.z,
+            ).normalize_or_zero();
+
+            // Sample perpendicular to check width
+            let perp = Vec3::new(-dir.z, 0.0, dir.x).normalize_or_zero();
+            let mut width = 0.0;
+            for offset in [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0].iter() {
+                let probe = pos + dir * 12.0 + perp * offset;
+                let voxel = world.get_voxel_at(probe.x, probe.z);
+                if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
+                    width += offset.abs();
+                }
+            }
+            let width_encoded = (width / 6.0 * 127.0).clamp(0.0, 127.0) as i8;
+            sensory_wave[24 + angle_idx] = width_encoded;
+        }
+
+        // --- ch 32-39: wall_curvature_fov (local curvature per angle) ---
+        // Measure flow field curvature (cross product of forward × flow_ahead)
+        for angle_idx in 0..8 {
+            let angle_rad = forward.y.asin() + ((angle_idx as f32 - 3.5) / 3.5) * 0.4;
+            let dist_ahead = 10.0 + (angle_idx as f32) * 1.5;
+            let sample_pos = pos + Vec3::new(
+                angle_rad.cos() * forward.x * dist_ahead,
+                0.0,
+                angle_rad.cos() * forward.z * dist_ahead,
+            );
+            let flow_local = world.get_flow_at(sample_pos.x, sample_pos.z);
+            let cross = forward_2d.x * flow_local.y - forward_2d.y * flow_local.x;
+            sensory_wave[32 + angle_idx] = (cross * 127.0).clamp(-127.0, 127.0) as i8;
+        }
+
+        // --- ch 40-47: road_ahead (lookahead metrics at 8 distances) ---
+        // Samples road properties ahead: presence, grip quality, banking
+        for dist_idx in 0..8 {
+            let look_dist = 5.0 + dist_idx as f32 * 6.0; // 5m, 11m, 17m, ..., 53m
+            let probe_pos = pos + forward * look_dist;
+            let voxel = world.get_voxel_at(probe_pos.x, probe_pos.z);
+            let flow = world.get_flow_at(probe_pos.x, probe_pos.z);
+
+            // Encode road quality: road=60, grass=-60, wall=127, hole=-127
+            let road_quality = match voxel {
+                VoxelType::Road => 60,
+                VoxelType::Grass => -60,
+                VoxelType::Wall => 127,
+                VoxelType::Hole => -127,
+            };
+
+            // Modulate by flow curvature (sharper = higher)
+            let flow_mag = flow.length();
+            sensory_wave[40 + dist_idx] = ((road_quality as f32 * (0.5 + flow_mag * 0.5)).clamp(-127.0, 127.0)) as i8;
+        }
+
+        // --- ch 48-55: horizon (apex detection & banking) ---
+        // Detect upcoming apex distance and banking angle
+        for step in 0..8 {
+            let horizon_dist = 10.0 + step as f32 * 10.0; // 10m, 20m, ..., 80m
+            let apex_pos = pos + forward * horizon_dist;
+            let height_now = world.get_height_at(apex_pos.x, apex_pos.z);
+            let height_ahead = world.get_height_at(apex_pos.x + forward.x * 5.0, apex_pos.z + forward.z * 5.0);
+            let height_delta = height_ahead - height_now;
+
+            // Combine height slope + banking for apex detection
+            let normal = world.get_surface_normal(apex_pos.x, apex_pos.z);
+            let banking = normal.x.atan2(normal.y); // Roll angle
+
+            let apex_signal = (height_delta * 50.0 + banking * 30.0).clamp(-127.0, 127.0) as i8;
+            sensory_wave[48 + step] = apex_signal;
+        }
+
+        // --- ch 56-63: ground_material + agent_state (hybrid) ---
+        // ch 56-59: ground material + friction at current position
+        let current_voxel = world.get_voxel_at(pos.x, pos.z);
+        let material_code = match current_voxel {
+            VoxelType::Road => 0,
+            VoxelType::Grass => 64,
+            VoxelType::Wall => 100,
+            VoxelType::Hole => -127,
+        } as i8;
+        for i in 0..4 {
+            sensory_wave[56 + i] = material_code;
+        }
+
+        // ch 60-63: agent state (speed, throttle, steer intent - will be filled below)
+        // Placeholder for telemetry channels
+        for i in 0..4 {
+            sensory_wave[60 + i] = 0;
+        }
 
         // Motion per-row: estrutura vertical de movimento (complementa ch 83/84 hemisférico).
         // Row 0 (near pitch) + high motion = objeto próximo se movendo = urgente.
@@ -957,39 +1088,56 @@ pub(super) fn update_racers(
         // Canal 75: Clima / Wetness
         sensory_wave[75] = (env.weather_wetness * 127.0).clamp(0.0, 127.0) as i8;
 
-        // --- NOVOS SENSORES DE PROXIMIDADE LATERAL (TRACK OFFSET 2.0) ---
-        // Permite "sentir" a margem da pista mesmo sem olhar.
-        let left_angle = racer.phase + std::f32::consts::FRAC_PI_2;
-        let right_angle = racer.phase - std::f32::consts::FRAC_PI_2;
-        let dist_l = world.raycast(pos.x, pos.z, left_angle, 15.0);
-        let dist_r = world.raycast(pos.x, pos.z, right_angle, 15.0);
-        sensory_wave[76] = ((dist_l / 15.0) * 127.0) as i8;
-        sensory_wave[77] = ((dist_r / 15.0) * 127.0) as i8;
+        // --- SENSORES DE PROXIMIDADE LATERAL (sem raycasts) ---
+        // Sampled grid queries: procura paredes a 90° esquerda/direita
+        let mut dist_l = 15.0;
+        let mut dist_r = 15.0;
+        let left_perp = Vec3::new(-forward.z, 0.0, forward.x).normalize_or_zero();
+        let right_perp = -left_perp;
 
-        // --- WHISKERS DIAGONAIS (canais 94-97) — visão de canto de L ---
-        // Em curva de 90° fechada a retina vê "aberto" na direção diagonal (corte da parede
-        // externa), mas os raycasts a 90° puro não pegam a parede interna aproximando.
-        // Whiskers a ±30° e ±60° do heading cobrem esse ponto cego. Sinal invertido:
-        // 127 = parede encostando, 0 = 10m+ livre. Range curto (10m) pra sinal forte
-        // sobreviver quantize ternária e disparar reflexo imediato.
+        for sample_dist in [1.0, 3.0, 6.0, 9.0, 12.0, 15.0].iter() {
+            let left_probe = pos + left_perp * sample_dist;
+            let right_probe = pos + right_perp * sample_dist;
+            if dist_l == 15.0 && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
+                                 || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole) {
+                dist_l = *sample_dist;
+            }
+            if dist_r == 15.0 && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
+                                 || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole) {
+                dist_r = *sample_dist;
+            }
+        }
+        sensory_wave[76] = ((dist_l / 15.0) * 127.0).clamp(0.0, 127.0) as i8;
+        sensory_wave[77] = ((dist_r / 15.0) * 127.0).clamp(0.0, 127.0) as i8;
+
+        // --- WHISKERS DIAGONAIS (canais 94-97) — grid-based proximity ---
+        // Sample 4 diagonal directions (±30°, ±60°) with grid queries
         const WHISKER_RANGE: f32 = 10.0;
-        let ang30 = std::f32::consts::FRAC_PI_6;   // 30°
-        let ang60 = std::f32::consts::FRAC_PI_3;   // 60°
-        let d_fl30 = world.raycast(pos.x, pos.z, racer.phase + ang30, WHISKER_RANGE);
-        let d_fr30 = world.raycast(pos.x, pos.z, racer.phase - ang30, WHISKER_RANGE);
-        let d_fl60 = world.raycast(pos.x, pos.z, racer.phase + ang60, WHISKER_RANGE);
-        let d_fr60 = world.raycast(pos.x, pos.z, racer.phase - ang60, WHISKER_RANGE);
-        let invert = |d: f32| -> i8 { ((1.0 - (d / WHISKER_RANGE).clamp(0.0, 1.0)) * 127.0) as i8  };
-        sensory_wave[94] = invert(d_fl30);
-        sensory_wave[95] = invert(d_fr30);
-        sensory_wave[96] = invert(d_fl60);
-        sensory_wave[97] = invert(d_fr60);
+        let ang30 = std::f32::consts::FRAC_PI_6;
+        let ang60 = std::f32::consts::FRAC_PI_3;
+
+        let measure_whisker = |angle_offset: f32| -> i8 {
+            let angle = racer.phase + angle_offset;
+            let dir = Vec3::new(angle.cos(), 0.0, angle.sin());
+            let mut min_dist = WHISKER_RANGE;
+            for sample_dist in [1.0, 3.0, 5.0, 7.0, 10.0].iter() {
+                let probe = pos + dir * sample_dist;
+                if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
+                   || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                    min_dist = min_dist.min(*sample_dist);
+                }
+            }
+            ((1.0 - (min_dist / WHISKER_RANGE).clamp(0.0, 1.0)) * 127.0) as i8
+        };
+        sensory_wave[94] = measure_whisker(ang30);
+        sensory_wave[95] = measure_whisker(-ang30);
+        sensory_wave[96] = measure_whisker(ang60);
+        sensory_wave[97] = measure_whisker(-ang60);
 
         // --- CURVATURA ANTECIPADA (LOOKAHEAD DE PISTA) ---
         // Amostra o flow field à frente a múltiplas distâncias e mede o desvio angular
         // em relação ao heading atual. Positivo = pista curva à ESQUERDA;
         // negativo = curva à DIREITA. É o "GPS interno" dos próximos ~5s.
-        let forward_2d = Vec2::new(forward.x, forward.z);
         for (slot, look_dist) in [(78usize, 10.0_f32), (79, 25.0), (80, 100.0), (19, 75.0), (20, 150.0)] {
             let sample = pos + forward * look_dist;
             let flow_ahead = world.get_flow_at(sample.x, sample.z);
@@ -1033,10 +1181,18 @@ pub(super) fn update_racers(
         } else { 0.0 };
         sensory_wave[110] = ((lookahead_m / hw).clamp(-1.0, 1.0) * 127.0) as i8;
 
-        // Canal 82: URGÊNCIA DE COLISÃO FRONTAL — speed / forward_wall_dist.
-        // Alto = vou bater logo. Combina TTC inverso num único sinal [0..127].
-        let fwd_probe = world.raycast(pos.x, pos.z, racer.phase, 30.0).max(0.5);
-        let ttc_inv = (speed / fwd_probe).clamp(0.0, 10.0); // 10 = ~0.1s de TTC
+        // Canal 82: URGÊNCIA DE COLISÃO FRONTAL — grid-based forward probe (no raycast).
+        // Sampled ahead to find closest wall, compute TTC inverso num único sinal [0..127].
+        let mut fwd_probe = 30.0f32;
+        for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
+            let probe = pos + forward * sample_dist;
+            if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
+               || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                fwd_probe = *sample_dist;
+                break;
+            }
+        }
+        let ttc_inv = (speed / fwd_probe.max(0.5)).clamp(0.0, 10.0); // 10 = ~0.1s de TTC
         sensory_wave[82] = ((ttc_inv / 10.0) * 127.0) as i8;
 
         // ── WIDTH-INVARIANT CHANNELS (Tesla-like generalization) ──
@@ -1450,10 +1606,18 @@ pub(super) fn update_racers(
         slow_input[28] = ((curv_60 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
         slow_input[29] = if racer.grace_ticks < 2560 { 127 } else { 0 }; // in_grace (tick-based, sync with motor grace)
         slow_input[30] = ((curv_90 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
-        // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >6m).
-        let forward_wall_dist_sensor = world.raycast(pos.x, pos.z, racer.phase, 30.0);
+        // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >6m), via grid query
+        let mut forward_wall_dist_sensor = 30.0f32;
+        for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
+            let probe = pos + transform.right().as_vec3() * sample_dist;
+            if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
+               || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                forward_wall_dist_sensor = *sample_dist;
+                break;
+            }
+        }
         slow_input[31] = ((forward_wall_dist_sensor / 6.0).clamp(0.0, 1.0) * 127.0) as i8;
-        racer.engine.slow_brain.tick(&slow_input);
+        racer.engine.slow_brain.tick(&slow_input, dt);
 
         // Usar final_intent estabilizado pelo CfC e KAN em vez de pesos crus (Evita ZigZag)
         let intent = &racer.engine.final_intent;
@@ -1488,9 +1652,10 @@ pub(super) fn update_racers(
         let aggression: f32 = slow[0] * 0.5;                // Bias [-0.5, 0.5]
         let throttle_cap: f32 = 1.0 - slow[1].max(0.0) * 0.8; // Range [0.2, 1.0], Neutral at 0.0
         let risk_damp: f32 = slow[2].max(0.0) * 0.5;         // Range [0.0, 0.5], Neutral at 0.0
-        let steer_bias: f32 = slow[3] * 0.15;               // Bias [-0.15, 0.15]
-        let brake_anticip: f32 = slow[4].max(0.0) * 0.5;    // Range [0.0, 0.5], Neutral at 0.0
-        let line_hint: f32 = slow[5] * 0.2;                 // Bias [-0.2, 0.2]
+        // NOTE: slow[3..5] don't exist (output is [f32; 3]). Disabled pending refactor.
+        let steer_bias: f32 = 0.0; // slow[3] * 0.15; was: Bias [-0.15, 0.15]
+        let brake_anticip: f32 = 0.0; // slow[4].max(0.0) * 0.5; was: Range [0.0, 0.5]
+        let line_hint: f32 = 0.0; // slow[5] * 0.2; was: Bias [-0.2, 0.2]
         let cortisol = racer.engine.metabolism.risk_aversion();
 
         // Tier 3.2: medo freia (throttle -30% max) e suaviza volante (steer -20% max).
@@ -1561,7 +1726,16 @@ pub(super) fn update_racers(
             const SENTINEL_TTC_WARN: f32 = 1.0;
             const SENTINEL_MIN_SPEED: f32 = 3.0; // m/s ~ 11 km/h
             if speed > SENTINEL_MIN_SPEED {
-                let fwd = world.raycast(pos.x, pos.z, racer.phase, 50.0);
+                // Grid-based forward distance (no raycast)
+                let mut fwd = 50.0f32;
+                for sample_dist in [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0].iter() {
+                    let probe = pos + transform.right().as_vec3() * sample_dist;
+                    if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
+                       || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                        fwd = *sample_dist;
+                        break;
+                    }
+                }
                 let ttc = fwd / speed;
                 if ttc < SENTINEL_TTC_HARD {
                     brake_intent = 1.0;
@@ -1576,7 +1750,7 @@ pub(super) fn update_racers(
                     brake_intent = brake_intent.max(0.5 * severity);
                 }
             }
-            // PATH PROJECTION SENTINEL (Tesla-like trajectory predict).
+            // PATH PROJECTION SENTINEL (grid-based trajectory predict, no raycast).
             if speed > 5.0 {
                 let steer_now = racer.memory[1]; // -1..+1 last steer
                 let yaw_rate = steer_now * speed * 0.05; // approx rad/s
@@ -1589,7 +1763,17 @@ pub(super) fn update_racers(
                     sim_phase += yaw_rate * dt_proj;
                     sim_x += sim_phase.cos() * speed * dt_proj;
                     sim_z += sim_phase.sin() * speed * dt_proj;
-                    let clr = world.raycast(sim_x, sim_z, sim_phase, 8.0);
+                    // Grid query at trajectory point
+                    let mut clr = 8.0f32;
+                    let sim_dir = Vec3::new(sim_phase.cos(), 0.0, sim_phase.sin());
+                    for sample_dist in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0].iter() {
+                        let probe = Vec3::new(sim_x, pos.y, sim_z) + sim_dir * sample_dist;
+                        if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
+                           || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                            clr = *sample_dist;
+                            break;
+                        }
+                    }
                     if clr < min_clearance { min_clearance = clr; }
                 }
                 if min_clearance < 2.0 {
@@ -1598,12 +1782,24 @@ pub(super) fn update_racers(
                 }
             }
 
-            // LATERAL anti-collision
+            // LATERAL anti-collision (grid-based, no raycast)
             if speed > SENTINEL_MIN_SPEED {
-                let lat_l = world.raycast(pos.x, pos.z,
-                    racer.phase + std::f32::consts::FRAC_PI_2, 10.0);
-                let lat_r = world.raycast(pos.x, pos.z,
-                    racer.phase - std::f32::consts::FRAC_PI_2, 10.0);
+                let left_perp = Vec3::new(-transform.right().as_vec3().z, 0.0, transform.right().as_vec3().x).normalize_or_zero();
+                let right_perp = -left_perp;
+                let mut lat_l = 10.0f32;
+                let mut lat_r = 10.0f32;
+                for sample_dist in [1.0, 3.0, 5.0, 7.0, 10.0].iter() {
+                    let left_probe = pos + left_perp * sample_dist;
+                    let right_probe = pos + right_perp * sample_dist;
+                    if lat_l == 10.0f32 && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
+                       || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole) {
+                        lat_l = *sample_dist;
+                    }
+                    if lat_r == 10.0f32 && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
+                       || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole) {
+                        lat_r = *sample_dist;
+                    }
+                }
                 let lat_min = lat_l.min(lat_r);
                 if lat_min < 1.5 {
                     let severity = 1.0 - lat_min / 1.5;
@@ -1622,13 +1818,26 @@ pub(super) fn update_racers(
         // Se a parede está perto (< 4m) na lateral, o reflexo físico FORÇA a roda pro lado oposto
         // Feedback visual: desenha setas vermelhas indicando a "repulsa" das paredes
         let mut emerg_steer = 0.0;
-        let left_angle = racer.phase + std::f32::consts::FRAC_PI_2;
-        let right_angle = racer.phase - std::f32::consts::FRAC_PI_2;
         // ECAS danger 4m→2.5m: em pista estreita, 4m tava disparando constante e brigava
         // com steering aprendido. Agora só reflexo em emergência real (<2.5m lateral).
         let danger_dist = 2.5;
-        let p_dist_l = world.raycast(pos.x, pos.z, left_angle, 10.0);
-        let p_dist_r = world.raycast(pos.x, pos.z, right_angle, 10.0);
+        // Grid-based proximity check (no raycasts)
+        let left_perp = Vec3::new(-transform.right().as_vec3().z, 0.0, transform.right().as_vec3().x).normalize_or_zero();
+        let right_perp = -left_perp;
+        let mut p_dist_l = 10.0f32;
+        let mut p_dist_r = 10.0f32;
+        for sample_dist in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0].iter() {
+            let left_probe = pos + left_perp * sample_dist;
+            let right_probe = pos + right_perp * sample_dist;
+            if p_dist_l == 10.0f32 && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
+               || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole) {
+                p_dist_l = *sample_dist;
+            }
+            if p_dist_r == 10.0f32 && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
+               || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole) {
+                p_dist_r = *sample_dist;
+            }
+        }
 
         // ECAS AGORA É DICA, NÃO OVERRIDE. Severity multiplier 2.0 → 0.5.
         // A rede ainda precisa APRENDER a virar, ECAS só empurra o volante na hora do choque.
@@ -1662,19 +1871,38 @@ pub(super) fn update_racers(
         const REVERSE_PEDAL: f32 = 0.75;         // >0.5 garante stall recovery
         const POST_REVERSE_LOCKOUT: f32 = 0.6;   // cooldown curto (era 1.5)
 
-        let forward_wall_dist = world.raycast(pos.x, pos.z, racer.phase, 30.0);
+        // Grid-based forward wall distance (no raycast)
+        let mut forward_wall_dist = 30.0f32;
+        for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
+            let probe = pos + transform.right().as_vec3() * sample_dist;
+            if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
+               || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                forward_wall_dist = *sample_dist;
+                break;
+            }
+        }
         // [SAFETY CAP DESATIVADO] - O acelerador não é mais cortado perto da parede.
         // A rede neural decide se acelera ou não.
-        let safety_cap: f32 = 1.0; 
+        let safety_cap: f32 = 1.0;
 
         // --- RÉ CONTROLADA (3-point turn em pista narrow) ---
         // User: "saber virar e dar ré pra ajustar ângulo se preciso".
         // Trigger ESTRITO: parede frontal <2.5m + lateral L+R bloqueada (<3m
         // ambos lados) + speed quase zero + 1s+ stuck. Evita loop frente/ré.
-        let lat_l_check = world.raycast(pos.x, pos.z,
-            racer.phase + std::f32::consts::FRAC_PI_2, 10.0);
-        let lat_r_check = world.raycast(pos.x, pos.z,
-            racer.phase - std::f32::consts::FRAC_PI_2, 10.0);
+        let mut lat_l_check = 10.0f32;
+        let mut lat_r_check = 10.0f32;
+        for sample_dist in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0].iter() {
+            let left_probe = pos + left_perp * sample_dist;
+            let right_probe = pos + right_perp * sample_dist;
+            if lat_l_check == 10.0f32 && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
+               || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole) {
+                lat_l_check = *sample_dist;
+            }
+            if lat_r_check == 10.0f32 && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
+               || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole) {
+                lat_r_check = *sample_dist;
+            }
+        }
         let both_lat_blocked = lat_l_check < 4.0 && lat_r_check < 4.0;
         if racer.reverse_timer <= 0.0 && racer.post_reverse_lockout <= 0.0
             && forward_wall_dist < REVERSE_TRIGGER_DIST
