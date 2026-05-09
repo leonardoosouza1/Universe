@@ -308,10 +308,17 @@ pub mod iara {
         /// Cortex L3: 48→24 (pre-output).
         pub const L3_NEURONS: usize = 24;
 
-        /// Slow Brain: FloatLinear 48→8 (córtex lento, roda a cada N ticks).
+        /// Slow Brain: CfC(4) + Dense(64→16) + Dense(16→3) (córtex lento, roda a cada N ticks).
+        pub const SLOW_BRAIN_CFC_DIM: usize = 4;
+        pub const SLOW_BRAIN_D1_IN: usize = 64;
+        pub const SLOW_BRAIN_D1_OUT: usize = 16;
+        pub const SLOW_BRAIN_D2_IN: usize = 16;
+        pub const SLOW_BRAIN_D2_OUT: usize = 3; // throttle, steer, brake
+        pub const SLOW_BRAIN_TICK_INTERVAL: u32 = 8; // Roda 1x a cada 8 ticks (~8Hz @ 64Hz)
+
+        /// Legacy constants (for backward compatibility)
         pub const SLOW_BRAIN_INPUTS: usize = 48;
         pub const SLOW_BRAIN_OUTPUTS: usize = 8;
-        pub const SLOW_BRAIN_TICK_INTERVAL: u32 = 8; // Roda 1x a cada 8 ticks (~8Hz @ 64Hz)
     }
 
     // ── GENÉTICA / DNA (fonte: src/evolution/dna_genesis.rs) ───────────
@@ -319,11 +326,13 @@ pub mod iara {
         use super::brain::*;
 
         // Versão atual do formato DNA
-        pub const DNA_VERSION: u16 = 4;
+        pub const DNA_VERSION: u16 = 8;
 
         // Tamanho dos pesos (calculados a partir da arquitetura)
         pub const DNA_FAST_SIZE: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
-        pub const DNA_SLOW_SIZE: usize = SLOW_BRAIN_INPUTS * SLOW_BRAIN_OUTPUTS; // 48 × 8 = 384
+        // DNA v8: SlowBrain full (dense1 + dense2 + biases + scales)
+        // dense1.weights(1024) + dense1.bias(16) + dense1.scale(4) + dense2.weights(48) + dense2.bias(3) + dense2.scale(4) = 1099
+        pub const DNA_SLOW_SIZE: usize = (SLOW_BRAIN_D1_IN * SLOW_BRAIN_D1_OUT) + SLOW_BRAIN_D1_OUT + 4 + (SLOW_BRAIN_D2_IN * SLOW_BRAIN_D2_OUT) + SLOW_BRAIN_D2_OUT + 4; // 1099
 
         // Legacy (compatibilidade com DNAs antigos)
         pub const DNA_FAST_SIZE_LEGACY: usize = 128 * 64; // 8.192

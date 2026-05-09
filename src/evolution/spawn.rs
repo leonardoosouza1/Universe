@@ -103,6 +103,13 @@ pub fn spawn_swarm(
             }
             current_best_s = dna.fast_scale;
 
+            // V8: Load SlowBrain weights (ternary {-1,0,+1} → f32 via /127)
+            if let Some(ref slow) = dna.slow_weights {
+                let slow_f32: Vec<f32> = slow.iter().map(|&b| b as f32 / 127.0).collect();
+                race.best_slow_weights = Some(slow_f32);
+                race.best_slow_scale = dna.slow_scale;
+            }
+
             // Tier 6.3 LITE: absorve morpho genes serializados.
             current_best_morpho = dna.morpho;
             // Tier 6.4 LITE: absorve hypernet seed (default inactive p/ arquivos antigos).
@@ -309,6 +316,10 @@ pub fn spawn_swarm(
                 if let Some(ref l3) = race.best_l3_weights {
                     engine.cortex_l3.set_weights(l3);
                 }
+                // V8: Apply SlowBrain weights from champion DNA
+                if let Some(ref slow_w) = race.best_slow_weights {
+                    engine.slow_brain.set_all_weights(slow_w);
+                }
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
             morpho_this = current_best_morpho;
@@ -430,7 +441,8 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(elite.fast_scale);
 
-                // NOTE: SlowBrain weights not loaded. Uses fresh initialization.
+                // V8: SlowBrain weights from elite pool
+                engine.slow_brain.set_all_weights(&elite.slow_weights);
                 engine.cortex_l2.set_weights(&elite.cortex_l2);
                 engine.cortex_l3.set_weights(&elite.cortex_l3);
                 // Tier 4.2: clone herda 10% do estado hormonal médio do único parent.
@@ -558,7 +570,10 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
-                // NOTE: SlowBrain not loaded. Uses fresh init.
+                // V8: Apply SlowBrain weights to champion clones
+                if let Some(ref slow_w) = race.best_slow_weights {
+                    engine.slow_brain.set_all_weights(slow_w);
+                }
                 if let Some(ref l2) = race.best_l2_weights {
                     engine.cortex_l2.set_weights(l2);
                 }
