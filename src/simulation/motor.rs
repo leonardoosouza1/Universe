@@ -1605,7 +1605,9 @@ pub(super) fn update_racers(
         slow_input[24] = (racer.memory[2] * 127.0) as i8;
         slow_input[25] = (racer.engine.final_intent[3] * 127.0) as i8;
         // 26: memória auto-recorrente (slow[0] do tick anterior)
-        slow_input[26] = (racer.engine.slow_brain.output[0] * 127.0) as i8;
+        // DISABLED: SlowBrain weights never loaded from DNA (always zero). Dead code.
+        // slow_input[26] = (racer.engine.slow_brain.output[0] * 127.0) as i8;
+        slow_input[26] = 0;
         // 27..28, 30: LOOKAHEAD DE CURVATURA — flow da pista a 30/60/90m à frente.
         // Signed yaw [-π/2, +π/2] → normalizado pra [-127, +127]. Negativo = curva à esquerda,
         // positivo = direita. System 2 agora SABE que a próxima curva vira e em qual direção,
@@ -1640,7 +1642,8 @@ pub(super) fn update_racers(
             }
         }
         slow_input[31] = ((forward_wall_dist_sensor / 6.0).clamp(0.0, 1.0) * 127.0) as i8;
-        racer.engine.slow_brain.tick(&slow_input, dt);
+        // DISABLED: SlowBrain never evolved (weights always zero). Skipping tick.
+        // racer.engine.slow_brain.tick(&slow_input, dt);
 
         // Usar final_intent estabilizado pelo CfC e KAN em vez de pesos crus (Evita ZigZag)
         let intent = &racer.engine.final_intent;
@@ -1670,11 +1673,11 @@ pub(super) fn update_racers(
         // Equilibra com brake (linha 1245: brake threshold 0.2).
         let base_pedal = neural_throttle.max(0.0).clamp(0.0, 1.0);
 
-        // SLOW BRAIN MODULATION RE-ENABLED — System 2 active.
-        let slow = &racer.engine.slow_brain.output;
-        let aggression: f32 = slow[0] * 0.5;                // Bias [-0.5, 0.5]
-        let throttle_cap: f32 = 1.0 - slow[1].max(0.0) * 0.8; // Range [0.2, 1.0], Neutral at 0.0
-        let risk_damp: f32 = slow[2].max(0.0) * 0.5;         // Range [0.0, 0.5], Neutral at 0.0
+        // SLOW BRAIN DISABLED — weights never loaded from DNA (always zero).
+        // let slow = &racer.engine.slow_brain.output;
+        let aggression: f32 = 0.0;  // slow[0] * 0.5;
+        let throttle_cap: f32 = 1.0; // 1.0 - slow[1].max(0.0) * 0.8;
+        let risk_damp: f32 = 0.0;     // slow[2].max(0.0) * 0.5;
         // NOTE: slow[3..5] don't exist (output is [f32; 3]). Disabled pending refactor.
         let steer_bias: f32 = 0.0; // slow[3] * 0.15; was: Bias [-0.15, 0.15]
         let brake_anticip: f32 = 0.0; // slow[4].max(0.0) * 0.5; was: Range [0.0, 0.5]
