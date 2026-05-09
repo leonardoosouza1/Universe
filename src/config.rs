@@ -248,17 +248,18 @@ pub mod iara {
         // pub const RETINA_MIN_PITCH: f32 = -0.04;
         // pub const RETINA_MAX_PITCH: f32 = -0.005;
         
-        // EXPANDED VISION: 2.3x rows + 2x cols. See full field (sky→road).
+        // EXPANDED VISION: 1.4x rows + 1.3x cols. Full field + performance balance.
         // User feedback: agent sees same place always, can't see curves ahead.
-        // Solution: Full-field vision captures elevation changes, distant curves, road detail.
-        pub const RETINA_ROWS: usize = 32;     // 14→32: sky to ground detail
-        pub const RETINA_COLS: usize = 256;    // 126→256: wider FOV angular resolution
+        // Solution: Full-field vision (sky→road) + practical perf (20x160 = 3200px vs 32x256 = 8192px)
+        pub const RETINA_ROWS: usize = 20;     // 14→20: sky to ground detail
+        pub const RETINA_COLS: usize = 160;    // 126→160: wider FOV, less raycast load
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS;
         pub const FOV_DEG: f32 = 140.0;        // 120→140°: better horizontal coverage
         pub const RETINA_SKIP: u32 = 1;        // was 2: include every pixel, no decimation
-        // Pitch: ROW 0 = sky (curves/crest), ROW 16 = horizon, ROW 31 = asfalto
-        pub const RETINA_MIN_PITCH: f32 = 0.12;    // +0.12 rad = +6.9° UP (see crest, curves ahead)
-        pub const RETINA_MAX_PITCH: f32 = -0.12;   // -0.12 rad = -6.9° DOWN (see road, grass, obstacles)
+        // Pitch: always DOWN (raycasting constraint), but wider range for depth
+        // ROW 0 = far ahead (distant curves/obstacles), ROW 10 = horizon, ROW 19 = road close
+        pub const RETINA_MIN_PITCH: f32 = -0.15;   // -0.15 rad = -8.6° DOWN far/curves
+        pub const RETINA_MAX_PITCH: f32 = -0.01;   // -0.01 rad = -0.6° DOWN near/road
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];

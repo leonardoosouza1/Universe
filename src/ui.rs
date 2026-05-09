@@ -283,17 +283,24 @@ fn update_hud(
                         });
                     });
 
-                    // Retina Visual (LIDAR) — layout dinâmico via RETINA_ROWS/RETINA_COLS
+                    // Retina Visual (LIDAR) — downsampled pra render (32×256→8×64 na UI)
                     use crate::config::iara::vision::{RETINA_ROWS, RETINA_COLS};
-                    panel.spawn((Text::new(format!("LIDAR {}x{} (Topo=Horizonte, Fundo=Chão)", RETINA_ROWS, RETINA_COLS)), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 1.0))))
+                    let ds = 4;  // downsample: skip every 4 pixels
+                    let ds_rows = (RETINA_ROWS + ds - 1) / ds;
+                    let ds_cols = (RETINA_COLS + ds - 1) / ds;
+                    panel.spawn((Text::new(format!("LIDAR {RETINA_ROWS}×{RETINA_COLS} (viz {ds_rows}×{ds_cols})")), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 1.0))))
                          .insert(Node { margin: UiRect::top(Val::Px(12.0)), ..default() });
-                    let retina_height = (RETINA_ROWS as f32 * 14.0).max(30.0);
+                    let retina_height = (ds_rows as f32 * 18.0).max(40.0);
                     panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(retina_height), flex_direction: FlexDirection::Column, margin: UiRect::top(Val::Px(4.0)), ..default() }).with_children(|retina_col| {
-                        let row_pct = 100.0 / RETINA_ROWS as f32;
-                        let col_pct = 100.0 / RETINA_COLS as f32;
-                        for row in (0..RETINA_ROWS).rev() {
+                        let row_pct = 100.0 / ds_rows as f32;
+                        let col_pct = 100.0 / ds_cols as f32;
+                        for drow in 0..ds_rows {
+                            let row = drow * ds;
+                            if row >= RETINA_ROWS { continue; }
                             retina_col.spawn(Node { width: Val::Percent(100.0), height: Val::Percent(row_pct), flex_direction: FlexDirection::Row, ..default() }).with_children(|retina_row| {
-                                for x in 0..RETINA_COLS {
+                                for dcol in 0..ds_cols {
+                                    let x = dcol * ds;
+                                    if x >= RETINA_COLS { continue; }
                                     let i = (row * RETINA_COLS) + x;
                                     let v = r.visual_cortex[i] as f32;
                                     let color = if v >= 45.0 {
