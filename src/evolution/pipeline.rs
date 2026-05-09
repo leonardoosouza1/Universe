@@ -919,7 +919,7 @@ pub(super) fn evolution_pipeline(
 
         // Telemetria — sempre executar, não só em rotate_tracks
         let nets: Vec<f32> = sorted.iter()
-            .map(|(_, r, _, _)| r.track_progress.max(0.0))
+            .map(|(_, r, _, _)| (r.track_progress - r.spawn_progress).max(0.0))
             .collect();
         let n = nets.len().max(1);
         let avg_dist = nets.iter().sum::<f32>() / n as f32;
@@ -941,7 +941,7 @@ pub(super) fn evolution_pipeline(
         }
 
         let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
-        let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
+        let champ_dist = sorted.first().map(|(_, r, _, _)| (r.track_progress - r.spawn_progress).max(0.0)).unwrap_or(0.0);
         let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).unwrap_or(0.0);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
