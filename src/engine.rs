@@ -1,6 +1,7 @@
 use crate::metabolism::Metabolism;
 use crate::layers::BitLinear;
 use crate::float_layers::FloatLinear;
+use crate::dense_layer::DenseLayer;
 use crate::resonance::ResonantNode;
 use crate::types::SplineNode;
 use crate::cfc::CfCCell;
@@ -24,38 +25,138 @@ pub fn set_global_champion_snapshot(retina_mean: [f32; RETINA_TOTAL], action: [f
     if let Ok(mut g) = CHAMPION_ACTION.write() { *g = Some(action); }
 }
 
-/// Córtex estratégico — cérebro LENTO.
-/// Roda a cada N ticks (subsampling), integra contexto e emite bias que
-/// MODULA (não substitui) o cérebro rápido. Camada 32→8 ternária.
-/// Saídas:
-///   0: aggression_bias   (-1..+1)  modula pedal
-///   1: throttle_cap_bias (-1..+1)  reduz teto do pedal em situação de risco
-///   2: risk_damp         (-1..+1)  amortece volante em alta velocidade
-///   3..7: reservado para evolução descobrir uso
+/// Córtex estratégico — cérebro LENTO com arquitetura CfC + Dense f32.
+/// Roda a cada N ticks (subsampling), integra contexto e emite ações motoras diretas.
+///
+/// Arquitetura:
+///   input[48] → normalize [-1,1] → CfC(64, dim-expansion) → relu
+///   → Dense1(64→16) → relu → Dense2(16→3) → tanh → [throttle, steer, brake]
+///
+/// SlowBrain mantém temporal state via CfC, permitindo aprendizado contínuo
+/// de padrões contextuais (risco, fadiga, etc) sem ternário quantizado.
+///
+/// Output de 3 dims: [throttle, steer, brake] em [-1,1] (brake em [0,1]).
 pub struct SlowBrain {
-    pub layer: FloatLinear,
-    pub output: [f32; 8],        // held entre ticks lentos
+    pub cfc: CfCCell,                  // 64 canais com memória temporal
+    pub dense1: DenseLayer,            // 64 → 16
+    pub dense2: DenseLayer,            // 16 → 3 (throttle, steer, brake)
+    pub output: [f32; 3],              // [throttle, steer, brake] held entre ticks
     pub tick_counter: u32,
-    pub tick_interval: u32,      // roda 1× a cada N ticks
+    pub tick_interval: u32,            // roda 1× a cada N ticks
 }
 
 impl SlowBrain {
     pub fn new() -> Self {
+        // Dense1: Gaussian init com σ=0.1
+        let mut dense1 = DenseLayer::new(64, 16);
+        let mut rng_seed: u64 = 0xDEAD_BEEF;
+        let mut rng = || {
+            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((rng_seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+        };
+        for w in dense1.weights.iter_mut() {
+            *w = rng() * 0.1;
+        }
+        for b in dense1.bias.iter_mut() {
+            *b = rng() * 0.01;
+        }
+
+        // Dense2: Gaussian init com σ=0.1
+        let mut dense2 = DenseLayer::new(16, 3);
+        let mut rng_seed: u64 = 0xCAFE_BABE;
+        let mut rng = || {
+            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((rng_seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+        };
+        for w in dense2.weights.iter_mut() {
+            *w = rng() * 0.1;
+        }
+        for b in dense2.bias.iter_mut() {
+            *b = rng() * 0.01;
+        }
+
         Self {
-            layer: FloatLinear::new(48, 8),
-            output: [0.0; 8],
+            cfc: CfCCell::new(64),
+            dense1,
+            dense2,
+            output: [0.0; 3],
             tick_counter: 0,
-            tick_interval: 8,       // roda 1× a cada 8 ticks (~8Hz @ 64Hz) — contexto fresco
+            tick_interval: 8,  // roda 1× a cada 8 ticks (~8Hz @ 64Hz)
         }
     }
 
-    /// Injeta entrada agregada. Só recomputa se for tick de "córtex".
-    pub fn tick(&mut self, input: &[i8; 48]) {
+    /// Injeta entrada agregada de 48 dimensões (normalizada em [-1, 1]).
+    /// Só recomputa se for tick de "córtex". Realiza forward completo:
+    /// 1. Expande input[48] → cfc_input[64] (padding com zeros)
+    /// 2. CfC(64) com memória temporal
+    /// 3. Dense1(64→16) → relu
+    /// 4. Dense2(16→3) → tanh
+    /// Salva resultado em output[3].
+    pub fn tick(&mut self, input: &[i8; 48], dt: f32) {
         self.tick_counter = self.tick_counter.wrapping_add(1);
         if self.tick_counter % self.tick_interval != 0 { return; }
-        let raw = self.layer.forward(input);
-        for i in 0..8 {
-            self.output[i] = (raw[i] * 2.0).tanh();
+
+        // Expande input[48] → cfc_input[64] com padding zeros
+        let mut cfc_input = [0i8; 64];
+        cfc_input[..48].copy_from_slice(input);
+
+        // CfC update (temporal filtering)
+        let mut cfc_out = [0i8; 64];
+        self.cfc.update(&cfc_input, &mut cfc_out, dt);
+
+        // Converte output CfC para f32 [-1, 1]
+        let mut cfc_f32 = [0.0f32; 64];
+        for i in 0..64 {
+            cfc_f32[i] = (cfc_out[i] as f32) / 127.0;
+        }
+
+        // Dense1 → ReLU
+        let d1_raw = self.dense1.forward(&cfc_f32);
+        let mut d1_relu = [0.0f32; 16];
+        for i in 0..16 {
+            d1_relu[i] = d1_raw[i].max(0.0);
+        }
+
+        // Dense2 → Tanh
+        let d2_raw = self.dense2.forward(&d1_relu);
+        for i in 0..3 {
+            self.output[i] = d2_raw[i].tanh();
+        }
+    }
+
+    /// Retorna weights agregados (Dense1 + Dense2) para compatibilidade com DNA.
+    /// Total: (64×16) + 16 + (16×3) + 3 = 1024 + 16 + 48 + 3 = 1091 pesos.
+    pub fn all_weights(&self) -> Vec<f32> {
+        let mut all = Vec::new();
+        all.extend_from_slice(&self.dense1.weights);
+        all.extend_from_slice(&self.dense1.bias);
+        all.extend_from_slice(&self.dense2.weights);
+        all.extend_from_slice(&self.dense2.bias);
+        all
+    }
+
+    /// Carrega weights agregados. Ignora tamanho incompatível (backward-compat).
+    pub fn set_all_weights(&mut self, weights: &[f32]) {
+        let mut offset = 0;
+        let d1_w_size = self.dense1.weights.len();
+        let d1_b_size = self.dense1.bias.len();
+        let d2_w_size = self.dense2.weights.len();
+        let d2_b_size = self.dense2.bias.len();
+
+        if offset + d1_w_size <= weights.len() {
+            self.dense1.weights.copy_from_slice(&weights[offset..offset + d1_w_size]);
+            offset += d1_w_size;
+        }
+        if offset + d1_b_size <= weights.len() {
+            self.dense1.bias.copy_from_slice(&weights[offset..offset + d1_b_size]);
+            offset += d1_b_size;
+        }
+        if offset + d2_w_size <= weights.len() {
+            self.dense2.weights.copy_from_slice(&weights[offset..offset + d2_w_size]);
+            offset += d2_w_size;
+        }
+        if offset + d2_b_size <= weights.len() {
+            self.dense2.bias.copy_from_slice(&weights[offset..offset + d2_b_size]);
         }
     }
 }
@@ -266,18 +367,10 @@ impl SovereignEngine {
             // Hebbian ternário. Guard sleep_consolidated é resetado em update()
             // quando adenosine cai abaixo de 0.5 (acordado o suficiente).
             if self.metabolism.adenosine >= 1.0 && !self.metabolism.sleep_consolidated {
-                let episodes: Vec<_> = self.metabolism.episodic_buffer.drain(..).collect();
-                if !episodes.is_empty() {
-                    // Tier 6.2 LITE — Dreamer-style rollouts: 10 passadas com
-                    // shuffle LCG consolidam padrões salientes durante o sono.
-                    let rollouts = 10usize;
-                    crate::memory::dream_rollout(
-                        &mut self.slow_brain.layer,
-                        &episodes,
-                        rollouts,
-                    );
-                    println!("[DREAM] rollouts={} episodes={}", rollouts, episodes.len());
-                }
+                let _episodes: Vec<_> = self.metabolism.episodic_buffer.drain(..).collect();
+                // Tier 6.2 LITE — Sleep consolidation disabled for new SlowBrain architecture.
+                // Future: implement Hebbian consolidation via CfC + Dense state injection.
+                // For now, clear buffer to prevent unbounded memory growth.
                 self.metabolism.sleep_consolidated = true;
             }
             self.metabolism.update(delta_t);

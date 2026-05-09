@@ -12,6 +12,18 @@ pub static EASY_TRACK: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum VoxelType { Grass = 0, Road = 1, Wall = 2, Hole = 3 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectProposal {
+    /// Angle from origin to cluster center (radians)
+    pub angle: f32,
+    /// Distance from origin to cluster center (meters)
+    pub distance: f32,
+    /// Width of cluster perpendicular to radial direction (cells)
+    pub width: f32,
+    /// Local curvature of centerline (average banking value)
+    pub curvature: f32,
+}
+
 #[derive(Resource, Default)]
 pub struct VoxelWorldResource(pub VoxelWorld);
 
@@ -33,6 +45,10 @@ pub struct VoxelWorld {
     /// Ideal racing line (outside-in-outside, precomputed once per track).
     /// Used to feed sensor channels 108/109/110 (lateral offset, derivative, lookahead).
     pub racing_line: crate::simulation::racing_line::RacingLine,
+    /// Detected wall clusters as object proposals (precomputed @ init)
+    pub proposals: Vec<ObjectProposal>,
+    /// Flag: proposals need recomputation if true
+    pub proposal_valid: bool,
 }
 
 impl VoxelWorld {
@@ -187,7 +203,7 @@ impl VoxelWorld {
             track_width,
         );
 
-        Self {
+        let mut world = Self {
             size, grid, flow, height_map, banking, min_dist_to_road, cell_size,
             start_pos,
             lap_distance: total_dist,
@@ -195,7 +211,154 @@ impl VoxelWorld {
             waypoint_arcs,
             start_progress,
             racing_line,
+            proposals: Vec::new(),
+            proposal_valid: true,
+        };
+
+        // Precompute wall cluster proposals (O(N) once at init, O(1) per query)
+        world.proposals = world.detect_wall_clusters();
+        world
+    }
+
+    /// O(1) material lookup: returns voxel type at world coordinates
+    /// Returns Wall if outside grid bounds
+    pub fn material_at(&self, pos: Vec2) -> VoxelType {
+        let x = (pos.x / self.cell_size).round() as i32;
+        let z = (pos.y / self.cell_size).round() as i32;
+        if x >= 0 && x < self.size as i32 && z >= 0 && z < self.size as i32 {
+            self.grid[z as usize * self.size + x as usize]
+        } else {
+            VoxelType::Wall
         }
+    }
+
+    /// O(1) elevation lookup: returns height at grid cell nearest to world position
+    /// Returns 0.0 if outside grid bounds
+    pub fn elevation_at(&self, pos: Vec2) -> f32 {
+        let x = (pos.x / self.cell_size).round() as i32;
+        let z = (pos.y / self.cell_size).round() as i32;
+        if x >= 0 && x < self.size as i32 && z >= 0 && z < self.size as i32 {
+            self.height_map[z as usize * self.size + x as usize]
+        } else {
+            0.0
+        }
+    }
+
+    /// O(1) curvature (banking) lookup: returns banking angle at grid cell
+    /// Returns 0.0 if outside grid bounds
+    pub fn curvature_at(&self, pos: Vec2) -> f32 {
+        let x = (pos.x / self.cell_size).round() as i32;
+        let z = (pos.y / self.cell_size).round() as i32;
+        if x >= 0 && x < self.size as i32 && z >= 0 && z < self.size as i32 {
+            self.banking[z as usize * self.size + x as usize]
+        } else {
+            0.0
+        }
+    }
+
+    /// Detects wall clusters using connected-components (flood-fill on Wall cells)
+    /// Returns vector of ObjectProposals, one per cluster
+    pub fn detect_wall_clusters(&self) -> Vec<ObjectProposal> {
+        let mut visited = vec![false; self.size * self.size];
+        let mut proposals = Vec::new();
+
+        for y in 0..self.size {
+            for x in 0..self.size {
+                let idx = y * self.size + x;
+                if !visited[idx] && self.grid[idx] == VoxelType::Wall {
+                    let cluster = self.flood_fill_cluster(x, y, &mut visited);
+                    if let Some(proposal) = self.compute_proposal_from_cluster(&cluster) {
+                        proposals.push(proposal);
+                    }
+                }
+            }
+        }
+
+        proposals
+    }
+
+    /// Flood-fill: collects all contiguous Wall cells starting from (x, y)
+    fn flood_fill_cluster(
+        &self,
+        start_x: usize,
+        start_y: usize,
+        visited: &mut [bool],
+    ) -> Vec<(usize, usize)> {
+        let mut cluster = Vec::new();
+        let mut stack = vec![(start_x as i32, start_y as i32)];
+
+        while let Some((x, y)) = stack.pop() {
+            if x < 0 || x >= self.size as i32 || y < 0 || y >= self.size as i32 {
+                continue;
+            }
+
+            let idx = y as usize * self.size + x as usize;
+            if visited[idx] {
+                continue;
+            }
+
+            if self.grid[idx] != VoxelType::Wall {
+                continue;
+            }
+
+            visited[idx] = true;
+            cluster.push((x as usize, y as usize));
+
+            stack.push((x + 1, y));
+            stack.push((x - 1, y));
+            stack.push((x, y + 1));
+            stack.push((x, y - 1));
+        }
+
+        cluster
+    }
+
+    /// Computes ObjectProposal from cluster of Wall cells
+    fn compute_proposal_from_cluster(
+        &self,
+        cluster: &[(usize, usize)],
+    ) -> Option<ObjectProposal> {
+        if cluster.is_empty() {
+            return None;
+        }
+
+        let mut cx = 0.0_f32;
+        let mut cz = 0.0_f32;
+        for &(x, z) in cluster {
+            cx += (x as f32 + 0.5) * self.cell_size;
+            cz += (z as f32 + 0.5) * self.cell_size;
+        }
+        cx /= cluster.len() as f32;
+        cz /= cluster.len() as f32;
+
+        let angle = cz.atan2(cx);
+        let distance = (cx * cx + cz * cz).sqrt();
+
+        let cos_a = angle.cos();
+        let sin_a = angle.sin();
+        let mut min_perp = f32::MAX;
+        let mut max_perp = f32::MIN;
+        for &(x, z) in cluster {
+            let wx = (x as f32 + 0.5) * self.cell_size;
+            let wz = (z as f32 + 0.5) * self.cell_size;
+            let perp = -wx * sin_a + wz * cos_a;
+            min_perp = min_perp.min(perp);
+            max_perp = max_perp.max(perp);
+        }
+        let width = (max_perp - min_perp) / self.cell_size;
+
+        let mut total_curvature = 0.0_f32;
+        for &(x, z) in cluster {
+            total_curvature += self.banking[z * self.size + x];
+        }
+        let curvature = total_curvature / cluster.len() as f32;
+
+        Some(ObjectProposal {
+            angle,
+            distance,
+            width,
+            curvature,
+        })
     }
 
     /// Renderiza mapa ASCII top-down.
@@ -1039,9 +1202,9 @@ pub fn track_start_for_seed(seed: u64) -> Vec2 {
 
 impl Default for VoxelWorld {
     fn default() -> Self {
-        Self { 
-            size: 0, 
-            grid: Vec::new(), 
+        Self {
+            size: 0,
+            grid: Vec::new(),
             flow: Vec::new(),
             height_map: Vec::new(),
             banking: Vec::new(),
@@ -1053,6 +1216,8 @@ impl Default for VoxelWorld {
             waypoint_arcs: Vec::new(),
             start_progress: 0.0,
             racing_line: crate::simulation::racing_line::RacingLine::default(),
+            proposals: Vec::new(),
+            proposal_valid: true,
         }
     }
 }

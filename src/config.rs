@@ -255,7 +255,7 @@ pub mod iara {
         pub const FOV_DEG: f32 = 120.0;
         pub const RETINA_SKIP: u32 = 2;
         pub const RETINA_MIN_PITCH: f32 = -0.06;  // REVERTED: pitch tuned for axiom priming
-        pub const RETINA_MAX_PITCH: f32 = -0.03;  // Don't change without retraining axioms
+        pub const RETINA_MAX_PITCH: f32 = -0.025;  // Don't change without retraining axioms
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];

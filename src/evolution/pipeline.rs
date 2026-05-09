@@ -360,7 +360,7 @@ pub(super) fn evolution_pipeline(
                 fast_scale: r.engine.instinct_layer.weight_scale,
                 // Option 4: FloatLinear runtime → lossy quantize to i8 for DNA storage.
                 // Clamp range [-2,2] → i8 [-127,127].
-                slow_weights: r.engine.slow_brain.layer.weights.clone(),
+                slow_weights: r.engine.slow_brain.all_weights(),
                 slow_scale: 1.0,
                 fitness: new_fit,
                 scar_mask,
@@ -724,7 +724,7 @@ pub(super) fn evolution_pipeline(
                 let weights = best.engine.instinct_layer.weights.clone();
                 let scale = best.engine.instinct_layer.weight_scale;
                 // Option 4: FloatLinear → lossy i8 encoding at scale 63.5 for DNA storage.
-                let slow_weights: Vec<f32> = best.engine.slow_brain.layer.weights.clone();
+                let slow_weights: Vec<f32> = best.engine.slow_brain.all_weights();
                 let slow_scale: f32 = 1.0;
                 race.best_weights = Some(weights.clone());
                 race.best_car_model_idx = Some(best.car_model_idx);

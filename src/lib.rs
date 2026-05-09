@@ -8,6 +8,7 @@ pub mod types;
 pub mod layers;
 pub mod specialist;
 pub mod float_layers;
+pub mod dense_layer;
 pub mod kan;
 pub mod resonance;
 pub mod cfc;
