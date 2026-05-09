@@ -650,6 +650,9 @@ pub(super) fn evolution_pipeline(
             race.last_gen_path = gen_best.path.clone();
             race.last_gen_net = (gen_best.track_progress - gen_best.spawn_progress).max(0.0);
             race.last_gen_was_grid = gen_best.spawn_progress < 1.0;
+            // Debug: dump best racer's brain trace for vision analysis (15Hz sampling)
+            let run_id = format!("gen_{}", race.generation);
+            crate::evolution::telemetry::save_brain_trace(&run_id, &gen_best.name, &gen_best.brain_trace);
         }
 
         // SELEÇÃO POR NET PROGRESS, RESTRITA A GRID-SPAWNS.

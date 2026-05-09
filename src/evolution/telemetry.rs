@@ -129,3 +129,33 @@ pub fn name_to_id(name: &str) -> u16 {
     }
     h as u16
 }
+
+/// Save racer's brain trace to JSON for frame-by-frame vision debugging.
+pub fn save_brain_trace(run_id: &str, racer_name: &str, trace: &[crate::simulation::racer::BrainSnapshot]) {
+    if trace.is_empty() { return; }
+    let mut frames = Vec::new();
+    for (i, snap) in trace.iter().enumerate() {
+        frames.push(json!({
+            "frame": i,
+            "t": snap.t,
+            "speed_kmh": snap.speed_kmh,
+            "wall_prox_l": snap.wall_prox_l,
+            "wall_prox_r": snap.wall_prox_r,
+            "ttc_inv": snap.ttc_inv,
+            "curv_25": snap.curv_25,
+            "raw_throttle": snap.raw_throttle,
+            "raw_steer": snap.raw_steer,
+            "raw_brake": snap.raw_brake,
+            "physical_steer": snap.physical_steer,
+            "steer_limit": snap.steer_limit,
+            "risk_damp": snap.risk_damp,
+            "top_channels": snap.top_channels.iter().map(|(idx, val)| json!({"ch": idx, "val": val})).collect::<Vec<_>>(),
+            "retina_fov": snap.retina_fov,
+            "sensory_compact": snap.sensory_compact.to_vec()
+        }));
+    }
+    let output = serde_json::to_string_pretty(&frames).unwrap_or_default();
+    // Save to debug/ subdir for easy access; telemetry uses timestamp, we use run_id (gen_N)
+    let _ = std::fs::create_dir_all("debug");
+    let _ = std::fs::write(format!("debug/brain_trace_gen_{}.json", run_id.replace("gen_", "")), output);
+}

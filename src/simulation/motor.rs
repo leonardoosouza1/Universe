@@ -1803,8 +1803,8 @@ pub(super) fn update_racers(
         // --- DIAGNÓSTICO: SNAPSHOT DO CÉREBRO (~2Hz) ---
         // Captura entradas/saídas e atenuações para dump posterior nos reports.
         racer.trace_timer -= dt;
-        if racer.trace_timer <= 0.0 && racer.brain_trace.len() < 15 {
-            racer.trace_timer = 0.5;
+        if racer.trace_timer <= 0.0 && racer.brain_trace.len() < 1800 {  // ~30s @ 60Hz
+            racer.trace_timer = 0.066;  // 15Hz tracing for frame-by-frame vision debug
             // Top-5 canais mais ativos (|valor|)
             let sw = &sensory_wave;
             let mut pairs: Vec<(u8, i8)> = (0..128u8)
