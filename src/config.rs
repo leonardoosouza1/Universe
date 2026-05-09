@@ -254,8 +254,8 @@ pub mod iara {
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS;
         pub const FOV_DEG: f32 = 120.0;
         pub const RETINA_SKIP: u32 = 2;
-        pub const RETINA_MIN_PITCH: f32 = -0.10;  // row 0: sees 5m away (close walls)
-        pub const RETINA_MAX_PITCH: f32 = -0.02;  // row 13: sees 25m away (lookahead)
+        pub const RETINA_MIN_PITCH: f32 = -0.06;  // REVERTED: pitch tuned for axiom priming
+        pub const RETINA_MAX_PITCH: f32 = -0.03;  // Don't change without retraining axioms
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];
