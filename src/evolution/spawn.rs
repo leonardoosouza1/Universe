@@ -27,234 +27,19 @@ const PROTECTED_ZONE_SIZE: usize = 400;
 // FIX: slow brain (32→8, 256 pesos) ficava 100% zero por ~125 gens.
 // Priming diagonal: cada output k soma banda de 4 inputs → força sinal > 0
 // e evolução afina a partir de base funcional.
-fn build_slow_priming_weights() -> Vec<f32> {
-    let mut w = vec![0.0f32; 32 * 8];
-    for out in 0..8 {
-        for i in 0..4 {
-            let idx = out * 32 + (out * 4 + i);
-            if idx < w.len() {
-                w[idx] = 1.0;
-            }
-        }
-    }
-    w
-}
 
-fn build_priming_weights() -> Vec<f32> {
+/// Random initialization for fast weights (L1 cortex).
+/// Returns Vec<f32> with N(0, 0.1) distribution.
+fn initialize_fast_weights_random() -> Vec<f32> {
+    let mut rng = rand::rng();
     let mut weights = vec![0.0f32; SWS * L1_NEURONS];
-
-    // Motor.rs faz POOLING da retina: fóvea 32 px → 8 bins (ch 0..7),
-    // periférica 32 px → 8 bins (ch 8..15). Ch 16..63 ZERADOS pelo motor.
-    // Priming DEVE atacar os bins novos, não os pixels antigos.
-    //
-    // Periférica bins (uniforme, 4 px cada): 8=px32-35 ... 15=px60-63.
-    // Bins 8-9 = esquerda extremo/lateral. Bins 14-15 = direita. 10-13 = centro.
-    //
-    // A1: Wall à esquerda (perif bin 8, 9) → vira à DIREITA (positivo).
-    // v5: 3/2→6/5. Gen 1 com pesos aleatórios precisa signal forte pra desviar wall.
-    // Periférica vê wall em pista <14m — se não vira AGORA, bate.
-    weights[1 * SWS + 8] = 6.0;
-    weights[1 * SWS + 9] = 5.0;
-    // A2: Wall à direita (perif bin 14, 15) → vira à ESQUERDA (negativo)
-    weights[1 * SWS + 14] = -5.0;
-    weights[1 * SWS + 15] = -6.0;
-    // A3: Alinhamento com fluxo (canal 64) → acelera (magnitude alta p/ sobrepor pooling sparse)
-    weights[0 * SWS + 64] = 12.0;
-    // A4: Parede no centro periférica (apenas bin 11, 12 = centro exato) → corta throttle.
-    // v5: -3→-6, add brake. Gen 1 throttle 0.95 always — precisa força pra aprender recuo.
-    weights[0 * SWS + 11] = -6.0;
-    weights[0 * SWS + 12] = -6.0;
-    weights[2 * SWS + 11] = 6.0;
-    weights[2 * SWS + 12] = 6.0;
-    // A4d: BRAKE removido do priming (causa travamento permanente em pistas narrow).
-    // Brake emergente vem dos whiskers (94-97) que só acendem em colisão iminente.
-    // A5: Dor de grama (73) → reduz throttle
-    // Sensor 73 = -128 SE grass, 0 caso contrário. w=+5 × (-128) = sinal negativo p/ throttle = corta. ✓
-    weights[0 * SWS + 73] = 5.0;
-    // A6: Comp-stress (125) → acelera
-    weights[0 * SWS + 125] = 3.0;
-    // A7: Freio pânico removido do priming — whiskers (94-97) já acendem BRAKE em proximidade real.
-    // A7b: Fóvea centro (bin 3, 4 = px 13..19 centro). Retina: road=NEGATIVO, wall=POSITIVO.
-    // Road clear (value −128) × weight (−6) = +768 contrib = ACELERA. Wall ahead (value +)
-    // × weight (−) = negativo = corta throttle.
-    // v5: -4→-8. Gen 1 throttle stuck 0.95, precisa brake mais forte pra aprender.
-    weights[0 * SWS + 3] = -8.0;
-    weights[0 * SWS + 4] = -8.0;
-    // Brake junto (output 2)
-    weights[2 * SWS + 3] = 8.0;
-    weights[2 * SWS + 4] = 8.0;
-    // A7c REMOVIDO: bins extremos de fóvea SEMPRE veem paredes em pistas narrow (wall 7m lateral
-    // entra em bin 0/7 a 15m à frente). Steer forçado pra um lado → deriva contra wall oposta.
-    // Dark_center (90-93) já guia steering via centroide angular do road.
-    // A8: Deriva lateral (66) → contra-steer
-    // v4: -5→-3. Contra-steer mais suave, deixa evolução aprender drift.
-    weights[1 * SWS + 66] = -3.0;
-    // A9: Curvatura antecipada (78/79/80).
-    // cross(forward, flow_ahead) em xz-plane: POSITIVO = flow vira à DIREITA.
-    // Steer out 1: positivo = RIGHT. Logo sinal deve ser +, não -. FIX v3.
-    // v4: curvatura mantida moderada — é o axioma MAIS útil (antecipa curvas).
-    weights[1 * SWS + 78] = 5.0;
-    weights[1 * SWS + 79] = 8.0;
-    weights[1 * SWS + 80] = 4.0;
-    // A10: Lane offset (81) → centraliza. RESTORED 12.0 (was reduced to 6.0).
-    // Gen 1 cannot navigate without strong centering signal.
-    weights[1 * SWS + 81] = 12.0;
-    // A11: Urgência de colisão (82) → freia + corta motor.
-    // MAGNITUDE boost (v2): 10→15 brake, -6→-10 throttle.
-    // Match nível A16/A18 (gaze/dark) que usam 4× duplicação.
-    // Ver melhorias/survival-pressure.md §A/B validado — carros perceb TTC mas não freiam.
-    weights[2 * SWS + 82] = 15.0;
-    weights[0 * SWS + 82] = -10.0;
-    // A11b: REFORÇO — replicar em canais vizinhos pra vencer quantize ternária.
-    // Canal 82 é único então duplicamos via peso em outras linhas de output igual.
-    // Isso não duplica input — apenas soma contribuição nas mesmas saídas via vizinhos
-    // 85/86 (memória parede) que já correlacionam com TTC alto:
-    weights[2 * SWS + 85] = 8.0;   // mem-wall-L + brake (já tem steer em A13)
-    weights[2 * SWS + 86] = 8.0;   // mem-wall-R + brake
-    // A12: Fluxo óptico (83/84) → steer anti-aproximação. v4: 5→3.
-    weights[1 * SWS + 83] = 3.0;
-    weights[1 * SWS + 84] = -3.0;
-    // A13: Memória de parede (85/86). v4: 8→4. Sempre ativo em narrow, precisa ser suave.
-    weights[1 * SWS + 85] = 4.0;
-    weights[1 * SWS + 86] = -4.0;
-    // A14: Slip angle (87) → contra-volante
-    weights[1 * SWS + 87] = 4.0;
-    // A15: Proximidade sustentada (88) → corta throttle + FREIA (v2).
-    // Antes só cortava throttle; carro ficava em coast, não freava até bater.
-    // v2: adiciona brake forte — "se tô grudado na parede há tempo, freia E recua intent".
-    weights[0 * SWS + 88] = -7.0;
-    weights[2 * SWS + 88] = 8.0;
-
-    // A16 (NOVO): DARK-CENTER TRACKER (canais 90-93) → SIGA O ESCURO.
-    // Resposta à crítica do usuário: "o carro não tenta centralizar o preto".
-    // Canal = centro de massa angular dos pixels de pista, normalizado [-1..+1].
-    // Positivo ⇒ pista à direita ⇒ steer RIGHT. Negativo ⇒ pista à esquerda ⇒ LEFT.
-    // RESTORED 15.0 (was reduced to 7.0). Gen 1 needs strong "find road" signal.
-    for i in 90..94 {
-        weights[1 * SWS + i] = 15.0;
+    for w in weights.iter_mut() {
+        // Box-Muller gaussian N(0, 0.1).
+        let u1 = (rng.random::<f32>()).max(1e-7);
+        let u2 = rng.random::<f32>();
+        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+        *w = z * 0.1;
     }
-
-    // A17: WHISKERS DIAGONAIS (canais 94-97) — reflexo de curva fechada.
-    //   94 = forward-left 30°  | 95 = forward-right 30°
-    //   96 = forward-left 60°  | 97 = forward-right 60°
-    // RESTORED original strong values (was reduced to 8/6). Gen 1 must detect and avoid curves.
-    weights[1 * SWS + 94] = 18.0;   // FL 30° → steer RIGHT
-    weights[1 * SWS + 96] = 14.0;   // FL 60° → steer RIGHT
-    weights[1 * SWS + 95] = -18.0;  // FR 30° → steer LEFT
-    weights[1 * SWS + 97] = -14.0;  // FR 60° → steer LEFT
-    // BRAKE mantido forte — freiar é sempre seguro, steering não.
-    weights[2 * SWS + 94] = 10.0;
-    weights[2 * SWS + 95] = 10.0;
-    weights[2 * SWS + 96] = 8.0;
-    weights[2 * SWS + 97] = 8.0;
-    // Corta throttle moderado (era -8, agora -5).
-    weights[0 * SWS + 94] = -5.0;
-    weights[0 * SWS + 95] = -5.0;
-
-    // A19 (V6): pre_brake e wall_imminent priming SEGURO (canais novos).
-    // open_l/r/best_escape ficam sem priming pra evitar conflito de steer signals
-    // — net evolui peso natural via mutation (ainda mais lento mas estável).
-    // Brain trace mostrou raw_thr SEMPRE +0.33. Cars nunca freiam.
-    // Bump 2x priming brake — força output 2 dominar quando perigo.
-    weights[2 * SWS + 28] = 10.0;
-    weights[0 * SWS + 28] = -8.0;
-    weights[2 * SWS + 44] = 12.0;
-    weights[0 * SWS + 44] = -10.0;
-    // Plus retina center ahead (ch 3, 4 fovea center pooled bins) → brake.
-    weights[2 * SWS + 3] = 12.0;
-    weights[2 * SWS + 4] = 12.0;
-    // Plus retina center periph (8..15 = horizonte center) → brake.
-    weights[2 * SWS + 11] = 8.0;
-    weights[2 * SWS + 12] = 8.0;
-    // A22: approach detection signed. Parede VINDO esquerda → steer DIREITA.
-    // ch 114 high (positivo) = aproximação esquerda → output 1 positivo (right).
-    weights[1 * SWS + 114] = 4.0;
-    // ch 115 high = aproximação direita → output 1 negativo (left).
-    weights[1 * SWS + 115] = -4.0;
-
-    // A20: trapped_score (ch 48..51) → ré como OPÇÃO (não force).
-    for i in 48..52 {
-        weights[0 * SWS + i] = -2.5;
-        weights[2 * SWS + i] = -1.5;
-    }
-
-    // A21 (DNA diagnostic): canais com peso < 0.03 = ignored. Forçar uso.
-    // Speed (ch 65) é VITAL pra decisão "frear pré-curva". Net atual ignora.
-    weights[2 * SWS + 65] = 4.0;   // speed alta → brake (composição "rápido demais")
-    // Open_left_width × 4 (ch 36..39) → steer LEFT (saída 1 negativo). v4: 3.5→2.0
-    for i in 36..40 { weights[1 * SWS + i] = -2.0; }
-    // Open_right_width × 4 (ch 40..43) → steer RIGHT (positivo). v4: 3.5→2.0
-    for i in 40..44 { weights[1 * SWS + i] = 2.0; }
-    // Best_escape × 4 (ch 60..63) signed → steer matching. v4: 5→3.
-    for i in 60..64 { weights[1 * SWS + i] = 3.0; }
-
-    // A26: RACING LINE FOLLOWER (Tesla HD-map analog).
-    // v4: -10/10→-6/6. Menos agressivo — evolução refina o quanto seguir a racing line.
-    weights[1 * SWS + 108] = -6.0;  // off-line right → steer LEFT pra retornar
-    weights[1 * SWS + 110] = 6.0;   // line vai direita → steer right preemptivo
-    weights[1 * SWS + 109] = 3.0;   // d_off improving → manter direção
-
-    // A25: WIDTH-INVARIANT (Tesla-like generalização) — track-width-relative reactions.
-    // ch 118 fwd_dist/hw: BAIXO (parede dentro de 1 track-width) → brake forte.
-    // ch 119 corridor/hw: BAIXO (corredor estreito) → reduz throttle.
-    // ch 123 whisker_min/hw: BAIXO (lateral perto) → brake moderado.
-    // Inversão: peso negativo na entrada → ativa output quando canal BAIXO.
-    weights[2 * SWS + 118] = -16.0; // canal baixo (wall close relative) → brake
-    weights[0 * SWS + 118] = 8.0;   // canal alto (wall far relative) → throttle OK
-    weights[0 * SWS + 119] = 6.0;   // corridor amplo → throttle full
-    weights[2 * SWS + 119] = -8.0;  // corridor narrow → brake
-    weights[2 * SWS + 123] = -10.0; // whisker proximity normalized → brake
-
-    // A24: FOVEAL OPTICAL FLOW — parede vindo na frente (ch 116) = brake máximo.
-    // Resolve "vira na parede do nada": canal mostra parede aproximando ANTES dela
-    // estar perto, não só presente.
-    weights[2 * SWS + 116] = 14.0;  // approach frontal signed → brake forte
-    weights[0 * SWS + 116] = -10.0; // → corta throttle
-    weights[2 * SWS + 117] = 8.0;   // motion magnitude → brake moderado
-    weights[0 * SWS + 117] = -6.0;  // → reduz throttle
-
-    // A23: LOOKAHEAD (curv 100m/180m) JÁ ESTÁ EM A9 (canais 78/79/80).
-    // Remover duplicata: A9 já cobre lookahead via curvatura antecipada.
-    // Axioma consolidado — não sobrescrever.
-    // Curva forte (qualquer lado) → frear ANTES da parede aparecer (apenas brake).
-    weights[2 * SWS + 78] = 8.0;   // curvatura magnitude → brake preemptivo
-    weights[0 * SWS + 78] = -5.0;  // → corta throttle em curva
-
-    // A-DEPTH: MULTI-ZONE DISTANCE PERCEPTION (ch 52-65) — priming leve.
-    // Expõe informação de profundidade que retina JÁ captura (rows 0-13 = 5m-600m).
-    // ch 52-58 (rows 0-6, perto 5-48m): brake + steer pra evitar emergência
-    // ch 59-65 (rows 7-13, longe 65-600m): steer antecipado pra curvas que vêm
-    // Pesos mínimos (0.2-0.5) — Gen 1 aprende usar canais, não domina decisões.
-
-    // NEAR ZONE (ch 52-58): Paredes perto = BRAKE + STEER antecipado
-    // Decay: 52 (5m) mais forte → 58 (48m) mais fraco
-    // Reduzido 50% (0.5→0.25) para evitar instabilidade com mutação Gen 2-3.
-    weights[2 * SWS + 52] = 0.25;  // row 0 (~5m) brake emergência
-    weights[2 * SWS + 53] = 0.2;   // row 1 (~10m) brake
-    weights[2 * SWS + 54] = 0.15;  // row 2 (~15m) brake
-    weights[2 * SWS + 55] = 0.1;   // row 3 (~20m) brake leve
-    // rows 4-6 (56-58): sem priming, deixa evolução aprender
-
-    // NEAR ZONE steering antecipado (quando parede perto, vira cedo)
-    weights[1 * SWS + 52] = 0.15;  // row 0 parede = steer (direction TBD por evolução)
-    weights[1 * SWS + 53] = 0.1;   // row 1 parede = steer moderado
-
-    // FAR ZONE (ch 59-65): Paredes longe = STEER antecipado (lookahead pra curva)
-    // Sem brake (longe demais), só steering pra antecipar mudança
-    weights[1 * SWS + 59] = 0.1;   // row 7 (~65m) steer leve
-    weights[1 * SWS + 60] = 0.1;   // row 8 (~82m) steer leve
-    weights[1 * SWS + 61] = 0.1;   // row 9 (~100m) steer antecipado
-    weights[1 * SWS + 62] = 0.08;  // row 10 (~150m) steer mais leve
-    weights[1 * SWS + 63] = 0.05;  // row 11 (~300m) steer muito leve
-
-    // A18: GAZE TRACKER (canais 98-101) — DESATIVADO.
-    // Assim como em axiom_policy, os canais 98-101 não contêm mais gaze.
-    // Canal 98 é motion_norm (sempre ≥0), o que causava um bias permanente
-    // pra DIREITA (+5.0 no output 1) durante o priming.
-    // for i in 98..102 {
-    //     weights[1 * SWS + i] = 5.0;
-    // }
-
     weights
 }
 
@@ -283,8 +68,6 @@ pub fn spawn_swarm(
 
     let mut current_best_w = race.best_weights.clone();
     let mut current_best_s = race.best_scale;
-    let mut current_best_slow_w = race.best_slow_weights.clone();
-    let mut current_best_slow_s = race.best_slow_scale;
     // Tier 6.3 LITE: morpho do champion DNA (se carregado); default caso contrário.
     let mut current_best_morpho: MorphoGenes = MorphoGenes::default();
     // Tier 6.4 LITE: hypernet seed do champion DNA. Default = inactive (zero-cost).
@@ -319,15 +102,7 @@ pub fn spawn_swarm(
                 race.best_l2_weights = Some(l2.iter().map(|&w| w as f32 / 63.5).collect());
             }
             current_best_s = dna.fast_scale;
-            // SLWF lossless f32 chunk preferido. Fallback ternary se DNA antigo.
-            if let Some(sf32) = dna.slow_f32.as_ref() {
-                current_best_slow_w = Some(sf32.clone());
-                current_best_slow_s = dna.slow_scale;
-            } else if let Some(sw) = dna.slow_weights {
-                // Legacy: ternário {-1,0,+1} → magnitude priming 0.33.
-                current_best_slow_w = Some(sw.iter().map(|&w| (w as f32) * 0.33).collect());
-                current_best_slow_s = dna.slow_scale;
-            }
+            // NOTE: SlowBrain weights not loaded from DNA. Uses fresh initialization.
 
             // Tier 6.3 LITE: absorve morpho genes serializados.
             current_best_morpho = dna.morpho;
@@ -449,53 +224,9 @@ pub fn spawn_swarm(
         }
     };
 
-    // TIER 1.2 — AXIOM DECAY.
-    // Antes: reinject_axioms forçava pesos priming a cada gen (freezava evolução).
-    // Agora: axiom_strength cai linear de 1.0 (gen 0) até 0.0 (gen 50) — a partir de
-    // gen 50 evolução é totalmente livre. Emergency brake (axiom_boost_counter > 0)
-    // restaura strength mínimo 0.5 se fitness degradar > 50%.
-    //
-    // Blend: new = current * (1 - s) + axiom * s, depois round + clamp ternário.
-    // Estratégia: só age em canais críticos (mesma lista de antes) em todos os 3 outputs
-    // (throttle/steer/brake). Outros canais ficam totalmente livres pra evolução.
-    let gen_f = race.generation as f32;
-    // v15: floor 0.15 → 0.35. Gen 1 produziu 7 laps (priming ninja), evolução
-    // degrada após gen 50 (axiom 0.15 insuficiente). Floor alto mantém prior
-    // forte sem congelar evolução (65% espaço livre nos pesos).
-    let mut axiom_strength = (1.0 - gen_f / lab.axiom_decay_divisor).max(lab.axiom_floor);
-    if race.axiom_boost_counter > 0 {
-        axiom_strength = axiom_strength.max(0.5);
-    }
-    race.current_axiom_strength = axiom_strength;
-    let apply_axiom_decay = |weights: &mut Vec<f32>| {
-        if axiom_strength < 0.01 {
-            return; // gen 50+ (sem brake) → evolução totalmente livre.
-        }
-        let priming = build_priming_weights();
-        let critical: &[usize] = &[
-            0, 3, 4, 7,             // fóvea bins (centro + extremos)
-            8, 9, 10, 11, 12, 13, 14, 15, // periférica bins 8 (pós-pooling)
-            64,                     // alinhamento fluxo
-            79, 80, 82,             // curvatura + ttc
-            85, 86,                 // parede memória L/R
-            90, 91, 92, 93,         // dark-center A16
-            94, 95, 96, 97,         // whiskers A17
-            98, 99, 100, 101,       // gaze A18
-        ];
-        for &ch in critical {
-            for out in 0..3 {
-                let idx = out * SWS + ch;
-                if idx >= weights.len() { continue; }
-                let current = weights[idx];
-                let axiom = priming[idx];
-                if axiom.abs() < 0.01 { continue; } // sem axioma neste slot — deixa evoluir livre.
-                let blended = current * (1.0 - axiom_strength) + axiom * axiom_strength;
-                // Após quantize ternária cada peso vira ±1 ou 0; garante que o sinal
-                // do blend sobreviva via round+clamp pra ternário.
-                weights[idx] = blended.round().clamp(-1.0, 1.0);
-            }
-        }
-    };
+    // REMOVED: axiom_decay function and axiom_strength logic.
+    // Gen 0 forward: purely random initialization, no hardcoded steering biases.
+    // Evolution learns from scratch via mutation + selection.
 
     // Tier 6.4 LITE: mutação do hypernet seed 1x por gen (primeiro batch).
     // 2% chance de flip do active; se ativo, gaussian noise σ=0.05 nos coeffs.
@@ -547,20 +278,13 @@ pub fn spawn_swarm(
         let simple_mut_slot = false;
 
         if priming_slot {
-            // PRIMING REFRESH: fresh DNA com axiomas. Diversidade vs monoculture.
-            let priming = build_priming_weights();
-            // Adiciona ruído pra cada slot ser único (sem isso 15 priming idênticos).
-            let mut jittered = priming;
-            for w in jittered.iter_mut() {
-                if rng.random_bool(0.02) { *w += (rng.random::<f32>() - 0.5) * 0.5; }
-            }
-            engine.instinct_layer.quantize(&jittered);
+            // Fresh random initialization N(0, 0.1) for diversity.
+            // No hardcoded steering — purely learned evolution.
+            let fast_random = initialize_fast_weights_random();
+            engine.instinct_layer.quantize(&fast_random);
             engine.instinct_layer.set_scale(1.0);
-            // FIX BUG: priming refresh slots não primavam slow brain — System 2 ficava zerado.
-            // Resultado: champion eleito desse slot tinha slow weights = 0 → save todo zero.
-            let slow_priming: Vec<f32> = build_slow_priming_weights()
-                .into_iter().map(|w| w / 3.0).collect();
-            engine.slow_brain.layer.set_weights(&slow_priming);
+            // NOTE: SlowBrain now uses stateful CfC + Dense architecture.
+            // It is initialized in SovereignEngine::new() and not mutated in spawn.
         } else if slot_is_champion || simple_mut_slot {
             if let Some(ref champion) = current_best_w {
                 engine.instinct_layer.quantize(champion);
@@ -586,11 +310,7 @@ pub fn spawn_swarm(
                 if let Some(ref l3) = race.best_l3_weights {
                     engine.cortex_l3.set_weights(l3);
                 }
-                // BUG FIX: carregar do current_best_slow_w que veio do DNA (sf32), e não do race
-                // que estava vazio no start.
-                if let Some(ref slow) = current_best_slow_w {
-                    engine.slow_brain.layer.set_weights(slow);
-                }
+                // NOTE: SlowBrain weights no longer loaded. Initialized in SovereignEngine::new()
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
             morpho_this = current_best_morpho;
@@ -635,12 +355,7 @@ pub fn spawn_swarm(
                         *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
                     }
                 }
-                // Mutação leve no slow brain também (scale menor porque é float).
-                for w in engine.slow_brain.layer.weights.iter_mut() {
-                    if rng.random_bool(rate_boosted * 0.5) {
-                        *w += (rng.random::<f32>() - 0.5) * 0.3;
-                    }
-                }
+                // NOTE: SlowBrain mutation not supported. Stateful CfC + Dense architecture.
                 // Morpho jittered leve — mantém proximidade do champion
                 // (refator sem dep em MorphoGenes::jitter extra).
             }
@@ -716,35 +431,22 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = elite.fast_weights.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(elite.fast_scale);
-                
-                engine.slow_brain.layer.set_weights(&elite.slow_weights);
-                    engine.cortex_l2.set_weights(&elite.cortex_l2);
-                    engine.cortex_l3.set_weights(&elite.cortex_l3);
-                let _ = elite.slow_scale;
+
+                // NOTE: SlowBrain weights not loaded. Uses fresh initialization.
+                engine.cortex_l2.set_weights(&elite.cortex_l2);
+                engine.cortex_l3.set_weights(&elite.cortex_l3);
                 // Tier 4.2: clone herda 10% do estado hormonal médio do único parent.
                 epigenetic_parents = Some((elite.cortisol_mean, elite.dopamine_mean, elite.curiosity_mean));
                 // Tier 6.3 LITE: clone herda morpho do elite + mutação leve.
                 morpho_this = elite.morpho;
                 morpho_this.mutate(|| rng.random::<f32>());
             } else if i < elite_range_end + refresh_slots {
-                // PRIMING REFRESH: axiomas frescos + ruído leve para diversidade.
-                // Preserva instintos mas ainda permite exploração local.
-                let priming = build_priming_weights();
-                let jittered: Vec<f32> = priming.into_iter().map(|w| {
-                    if rng.random_bool(0.005) { rng.random_range(-1.0..1.0) } else { w }
-                }).collect();
-                engine.instinct_layer.quantize(&jittered);
-                // FIX: quantize gera scale=abs_mean (~0.055 para priming esparso) →
-                // sinal fica ~0.02 no forward, tanh saturado em ~0.04 → throttle zero.
-                // Força scale=1.0 pra priming ter força competitiva e poder vencer
-                // tournament. Sem isso axiomas nunca chegam no campeão (gen 13 mostrou
-                // canal 79 curvatura em 4.7%, era pra estar >30%).
+                // PRIMING REFRESH: fresh random N(0, 0.1) for diversity.
+                // No axiom bias — pure evolution from scratch.
+                let fast_random = initialize_fast_weights_random();
+                engine.instinct_layer.quantize(&fast_random);
                 engine.instinct_layer.set_scale(1.0);
-                // FIX: slow_brain também recebe priming diagonal pra sair do zero absoluto.
-                // Option 4: FloatLinear — priming /3.0 porque ternarização saturava em ±1.
-                let slow_priming: Vec<f32> = build_slow_priming_weights()
-                    .into_iter().map(|w| w / 3.0).collect();
-                engine.slow_brain.layer.set_weights(&slow_priming);
+                // SlowBrain initialized in SovereignEngine::new()
             } else {
                 // Tier 4.1 — MATE PREFERENCE.
                 // Seleciona p1 via tournament (top pool). Escolhe p2 ponderando por
@@ -814,7 +516,11 @@ pub fn spawn_swarm(
                     let scarred = scar_a.get(idx).copied().unwrap_or(0) > 0
                         || scar_b.get(idx).copied().unwrap_or(0) > 0;
                     if !scarred && rng.random_bool(effective_mutation_rate) {
-                        rng.random_range(-1.0..1.0)
+                        // Gaussian mutation σ=0.05 for continuous f32 weights
+                        let u1 = (rng.random::<f32>()).max(1e-7);
+                        let u2 = rng.random::<f32>();
+                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        (w + z * 0.05).clamp(-2.0, 2.0)
                     } else { w }
                 }).collect();
                 // 20% dos slots crossover sofrem burst por canal de entrada (além da mutação pontual).
@@ -824,26 +530,10 @@ pub fn spawn_swarm(
                         .map(|(&a, &b)| a.max(b)).collect();
                     burst_mutate_input_channel(&mut mutated_fast, &scar_union, &mut rng);
                 }
-                // TIER 1.2: decay axiomático — strength linear 1→0 até gen 50.
-                apply_axiom_decay(&mut mutated_fast);
                 engine.instinct_layer.quantize(&mutated_fast);
                 engine.instinct_layer.set_scale((parent_a.fast_scale + parent_b.fast_scale) * 0.5);
 
-                // slow_weights are i8 (slow_brain still ternary). Convert to f32 for crossover.
-                let pa_slow_f: Vec<f32> = parent_a.slow_weights.iter().map(|&w| w as f32).collect();
-                let pb_slow_f: Vec<f32> = parent_b.slow_weights.iter().map(|&w| w as f32).collect();
-                let crossed_slow = crossover_block(&pa_slow_f, &pb_slow_f, 32, &mut rng);
-                let mut mutated_slow: Vec<f32> = crossed_slow.into_iter().map(|w| w / 63.5).collect();
-                for w in mutated_slow.iter_mut() {
-                    if rng.random_bool(effective_mutation_rate) {
-                        // Box-Muller gaussian σ=0.02.
-                        let u1 = (rng.random::<f32>()).max(1e-7);
-                        let u2 = rng.random::<f32>();
-                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                        *w = (*w + 0.02 * z).clamp(-2.0, 2.0);
-                    }
-                }
-                engine.slow_brain.layer.set_weights(&mutated_slow);
+                // NOTE: SlowBrain not loaded/mutated in spawn. Uses fresh init from SovereignEngine::new()
                 // Tier 4.2: herança hormonal MÉDIA dos 2 pais (reprodução sexuada).
                 let cort = (parent_a.cortisol_mean + parent_b.cortisol_mean) * 0.5;
                 let dopa = (parent_a.dopamine_mean + parent_b.dopamine_mean) * 0.5;
@@ -870,10 +560,7 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
-                if let Some(ref best_slow) = current_best_slow_w {
-                    // FIX: best_slow já é f32 normalizado (load /63.5 em line 265). Não dividir de novo.
-                    engine.slow_brain.layer.set_weights(best_slow);
-                }
+                // NOTE: SlowBrain not loaded. Uses fresh init.
                 if let Some(ref l2) = race.best_l2_weights {
                     engine.cortex_l2.set_weights(l2);
                 }
@@ -884,39 +571,20 @@ pub fn spawn_swarm(
                 let mut mutated: Vec<f32> = best.iter().enumerate().map(|(idx, &w)| {
                     // TIER 4.4: zona protegida isenta de mutação.
                     if idx < PROTECTED_ZONE_SIZE { return w as f32; }
-                    if rng.random_bool(effective_mutation_rate) { rng.random_range(-1.0..1.0) } else { w as f32 }
+                    if rng.random_bool(effective_mutation_rate) {
+                        // Gaussian mutation σ=0.05
+                        let u1 = (rng.random::<f32>()).max(1e-7);
+                        let u2 = rng.random::<f32>();
+                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        (w as f32 + z * 0.05).clamp(-2.0, 2.0)
+                    } else {
+                        w as f32
+                    }
                 }).collect();
-                apply_axiom_decay(&mut mutated);
                 engine.instinct_layer.quantize(&mutated);
                 engine.instinct_layer.set_scale(current_best_s);
-                if let Some(ref best_slow) = current_best_slow_w {
-                    // Option 4: f32 base + gaussian mutation σ=0.02.
-                    // FIX: best_slow já é f32 normalizado (load fez /63.5 em line 265).
-                    // Bug anterior: dividia /63.5 de novo → 0.33 / 63.5 ≈ 0.005 → save round 0.
-                    // Slow brain morria toda gen por double normalization.
-                    let mut mutated_slow: Vec<f32> = best_slow.clone();
-                    for w in mutated_slow.iter_mut() {
-                        if rng.random_bool(effective_mutation_rate) {
-                            let u1 = (rng.random::<f32>()).max(1e-7);
-                            let u2 = rng.random::<f32>();
-                            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                            *w = (*w + 0.02 * z).clamp(-2.0, 2.0);
-                        }
-                    }
-                    engine.slow_brain.layer.set_weights(&mutated_slow);
-                }
+                // NOTE: SlowBrain not mutated. Uses fresh init from SovereignEngine::new()
             }
-        } else {
-            // --- PRIMING GENÉTICO (GERAÇÃO 0, SEM POOL/DNA) ---
-            // Axiomas A1–A15 definidos em build_priming_weights(). Magnitudes grandes
-            // pra sobreviver quantize ternária (bits ±1).
-            let weights = build_priming_weights();
-            engine.instinct_layer.quantize(&weights);
-            engine.instinct_layer.set_scale(1.0);
-            // FIX: gen 0 sem DNA também prima slow brain (Option 4: f32, /3.0 damp).
-            let slow_priming: Vec<f32> = build_slow_priming_weights()
-                .into_iter().map(|w| w / 3.0).collect();
-            engine.slow_brain.layer.set_weights(&slow_priming);
         }
 
         // Tier 4.2: seeda metabolismo do filho com 10% do estado hormonal do(s) parent(s).
