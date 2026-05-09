@@ -2189,7 +2189,7 @@ pub(super) fn update_racers(
         // irregular em swarm grande, max_delta do Bevy, etc). Era 2560 frames (40s).
         // v2: estendida pra 7200 frames (112.5s) = quase full generation (120s).
         // Permite evolução aprender sem harsh penalties interrupting progress.
-        let out_of_grace = racer.grace_ticks >= 7200;
+        let out_of_grace = racer.grace_ticks >= 7200;  // TEMP: original threshold, grace period fixes need refinement
 
         // === POST-LAP GRACE (calculado cedo — wall check abaixo precisa de HP grace) ===
         if racer.post_lap_grace > 0 { racer.post_lap_grace = racer.post_lap_grace.saturating_sub(1); }
@@ -2289,9 +2289,9 @@ pub(super) fn update_racers(
             } else {
                 racer.stagnation += 1.0;
             }
-            // v5: Remover stagnation kill temporariamente pra Gen 1 aprender.
-            // Todos morrendo = ninguém evolui. Timeout será reimplementado com elite pool.
-            // if racer.stagnation > 1920.0 {
+            // v5: Stagnation kill disabled. Fitness penalty via speed_bleed instead.
+            // Re-enable once wall/checkpoint logic refined (post_lap_grace interactions).
+            // if racer.stagnation > 1440.0 {
             //     racer.is_dead = true;
             //     racer.death_reason = Some(crate::simulation::racer::DeathReason::Stagnation);
             //     racer.death_frame = racer.grace_ticks;
