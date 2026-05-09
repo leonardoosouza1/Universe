@@ -103,12 +103,12 @@ pub fn spawn_swarm(
             }
             current_best_s = dna.fast_scale;
 
-            // V8: Load SlowBrain weights (ternary {-1,0,+1} → f32 via /127)
-            if let Some(ref slow) = dna.slow_weights {
-                let slow_f32: Vec<f32> = slow.iter().map(|&b| b as f32 / 127.0).collect();
-                race.best_slow_weights = Some(slow_f32);
-                race.best_slow_scale = dna.slow_scale;
-            }
+            // TODO: SlowBrain load/apply causing regression. Disabled.
+            // if let Some(ref slow) = dna.slow_weights {
+            //     let slow_f32: Vec<f32> = slow.iter().map(|&b| b as f32 / 127.0).collect();
+            //     race.best_slow_weights = Some(slow_f32);
+            //     race.best_slow_scale = dna.slow_scale;
+            // }
 
             // Tier 6.3 LITE: absorve morpho genes serializados.
             current_best_morpho = dna.morpho;
