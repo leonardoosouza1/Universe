@@ -248,18 +248,17 @@ pub mod iara {
         // pub const RETINA_MIN_PITCH: f32 = -0.04;
         // pub const RETINA_MAX_PITCH: f32 = -0.005;
         
-        // FIX: revert to baseline 14x126 for performance + correct pitch for forward vision.
-        // User complaint: model only sees ground, never forward. Root cause: pitch was inverted.
-        // Zone pooling (ch 40-47 NEAR, ch 48-55 FAR) + semantic queries provide depth.
+        // POOLING FIX: max-pool ALL rows destroys curve shape. Use zone-based pooling instead.
+        // 14 rows kept (no perf hit), but ch 0-15 now pool by zone (preserve depth + shape).
+        // - ch 0-7: FAR rows (0-4, ~80m) = distant curves/crests (what's ahead?)
+        // - ch 8-15: NEAR rows (10-14, ~20m) = close obstacles (must avoid now!)
         pub const RETINA_ROWS: usize = 14;
         pub const RETINA_COLS: usize = 126;
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS;
         pub const FOV_DEG: f32 = 120.0;
         pub const RETINA_SKIP: u32 = 2;
-        // Pitch: ROW 0 should look FORWARD/UP (horizon), ROW 13 should look DOWN (ground).
-        // More negative pitch = more downward. So MIN (row 0) < MAX (row 13) in magnitude.
-        pub const RETINA_MIN_PITCH: f32 = -0.025;  // row 0: slightly down = horizon/far
-        pub const RETINA_MAX_PITCH: f32 = -0.06;   // row 13: more down = ground/near
+        pub const RETINA_MIN_PITCH: f32 = -0.025;  // row 0: horizon/far
+        pub const RETINA_MAX_PITCH: f32 = -0.06;   // row 13: ground/near
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];

@@ -450,9 +450,11 @@ pub(super) fn update_racers(
             (6*cols_per_fov_bin, 7*cols_per_fov_bin),
             (7*cols_per_fov_bin, c), // Última bin pega até o final pra cobrir resto
         ];
+        // === ZONE-BASED POOLING (ch 0-15): preserve depth + curve shape ===
+        // FAR zone (ch 0-7): pool rows 0-4 (~80m ahead, distant curves)
         for (bin, &(lo, hi)) in fov_bins.iter().enumerate() {
             let mut fov_max: i8 = -128;
-            for row in 0..RETINA_ROWS {
+            for row in 0..5 {  // FAR rows only (rows 0-4)
                 for p in lo..hi {
                     let f = retina_binocular[row * RETINA_COLS + p];
                     if f > fov_max { fov_max = f; }
@@ -460,12 +462,12 @@ pub(super) fn update_racers(
             }
             sensory_wave[bin] = fov_max;
         }
-        // Periférica uniforme — max-pool volumétrico (64 cols / 8 bins = 8 cols/bin).
+        // NEAR zone (ch 8-15): pool rows 10-13 (~20m ahead, obstacles to avoid)
         for bin in 0..8 {
             let cols_per_bin = RETINA_COLS / 8;
             let start = bin * cols_per_bin;
             let mut per_max: i8 = -128;
-            for row in 0..RETINA_ROWS {
+            for row in 10..RETINA_ROWS {  // NEAR rows only (rows 10-13)
                 for k in 0..cols_per_bin {
                     let p = retina_binocular[row * RETINA_COLS + start + k];
                     if p > per_max { per_max = p; }
