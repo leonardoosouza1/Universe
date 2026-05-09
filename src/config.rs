@@ -248,18 +248,18 @@ pub mod iara {
         // pub const RETINA_MIN_PITCH: f32 = -0.04;
         // pub const RETINA_MAX_PITCH: f32 = -0.005;
         
-        // EXPANDED VISION: 1.4x rows + 1.3x cols. Full field + performance balance.
-        // User feedback: agent sees same place always, can't see curves ahead.
-        // Solution: Full-field vision (sky→road) + practical perf (20x160 = 3200px vs 32x256 = 8192px)
-        pub const RETINA_ROWS: usize = 20;     // 14→20: sky to ground detail
-        pub const RETINA_COLS: usize = 160;    // 126→160: wider FOV, less raycast load
+        // FIX: revert to baseline 14x126 for performance + correct pitch for forward vision.
+        // User complaint: model only sees ground, never forward. Root cause: pitch was inverted.
+        // Zone pooling (ch 40-47 NEAR, ch 48-55 FAR) + semantic queries provide depth.
+        pub const RETINA_ROWS: usize = 14;
+        pub const RETINA_COLS: usize = 126;
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS;
-        pub const FOV_DEG: f32 = 140.0;        // 120→140°: better horizontal coverage
-        pub const RETINA_SKIP: u32 = 1;        // was 2: include every pixel, no decimation
-        // Pitch: always DOWN (raycasting constraint), but wider range for depth
-        // ROW 0 = far ahead (distant curves/obstacles), ROW 10 = horizon, ROW 19 = road close
-        pub const RETINA_MIN_PITCH: f32 = -0.15;   // -0.15 rad = -8.6° DOWN far/curves
-        pub const RETINA_MAX_PITCH: f32 = -0.01;   // -0.01 rad = -0.6° DOWN near/road
+        pub const FOV_DEG: f32 = 120.0;
+        pub const RETINA_SKIP: u32 = 2;
+        // Pitch: ROW 0 should look FORWARD/UP (horizon), ROW 13 should look DOWN (ground).
+        // More negative pitch = more downward. So MIN (row 0) < MAX (row 13) in magnitude.
+        pub const RETINA_MIN_PITCH: f32 = -0.025;  // row 0: slightly down = horizon/far
+        pub const RETINA_MAX_PITCH: f32 = -0.06;   // row 13: more down = ground/near
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];
