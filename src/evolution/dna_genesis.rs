@@ -152,6 +152,8 @@ pub struct EliteDna {
     /// v11: KAN output head knots (runtime-only, não serializa em .dna).
     /// 3 outputs × KAN_OUT_KNOTS cada. Preserva spline aprendido entre gens.
     pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; 3],
+    /// Perception CfC weights (f32 lossless). Evolvable via mutation/crossover.
+    pub perception_weights: Vec<f32>,
 }
 
 /// Marca ~SCAR_FRACTION dos pesos NÃO-ZERO em `fast_weights` com scar TTL.
@@ -681,10 +683,10 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).ok()?;
 
-    // --- v4 with GenesisPayload ---
+    // --- v4+ with GenesisPayload (v8 pending full impl) ---
     if buf.len() > 6 && &buf[0..4] == DNA_MAGIC {
         let version = u16::from_le_bytes(buf[4..6].try_into().ok()?);
-        if version == 4 {
+        if version == 8 {
             // Desserializa o payload TLV a partir do byte 6
             if let Some(payload) = GenesisPayload::from_bytes(&buf[6..]) {
                 // Recupera os pesos biológicos

@@ -6,6 +6,7 @@ use crate::resonance::ResonantNode;
 use crate::types::SplineNode;
 use crate::cfc::CfCCell;
 use crate::kan::SensoryPreFilter;
+use crate::perception::RetinaPerception;
 use crate::config::iara::vision::RETINA_TOTAL;
 use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 use std::sync::RwLock;
@@ -222,6 +223,9 @@ pub struct SovereignEngine {
     pub gate_entropy_acc: f32,
     pub gate_entropy_n: u32,
     pub oscillators: Vec<crate::resonance::ResonantNode>,
+    /// Learned retina perception — parallel CfC pathway over zone-pooled retina.
+    /// Provides temporal visual features alongside the manual pooling in motor.rs.
+    pub retina_perception: RetinaPerception,
 }
 
 impl SovereignEngine {
@@ -274,6 +278,7 @@ impl SovereignEngine {
                 let freq = 0.5 + (i as f32) * (4.0 - 0.5) / 7.0;
                 crate::resonance::ResonantNode::new(freq)
             }).collect(),
+            retina_perception: RetinaPerception::new(),
         }
     }
 

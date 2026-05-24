@@ -12,6 +12,7 @@ pub mod dense_layer;
 pub mod kan;
 pub mod resonance;
 pub mod cfc;
+pub mod perception;
 pub mod metabolism;
 pub mod memory;
 pub mod simulation;
@@ -40,3 +41,9 @@ pub enum AppState {
 
 #[derive(Component)]
 pub struct SimulationEntity;
+
+#[derive(Resource, Clone, Copy)]
+pub struct HeadlessMode {
+    pub enabled: bool,
+    pub gens_target: u32,
+}

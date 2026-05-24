@@ -10,6 +10,8 @@ default-run = "universe"
 
 [dependencies]
 iara_genesis = { path = "iara_genesis" }
+iara-cfc = { path = "../iara-runtime/iara-cfc" }
+iara-perception = { path = "../iara-runtime/iara-perception" }
 bevy = { version = "0.16.0", default-features = false, features = [
     "bevy_pbr",
     "bevy_render",

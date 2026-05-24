@@ -289,9 +289,8 @@ pub mod iara {
         ///          + 160-191 (retina horizon scan: 32 amostras)
         /// Total = 128 + 32 = 160, mas marginalia para segurança = 160 + RETINA_COLS
         const fn compute_sensory_size() -> usize {
-            // Retina horizon usa índices 160 até 160+32
-            // Mas deixar margem para RETINA_COLS em caso de ajustes futuros
-            160 + 32 + (RETINA_COLS / 4) // +32 margem buffer
+            // 160 base + 32 horizon + 31 spare (perception injection etc.)
+            223
         }
 
         /// Sensory wave = array de canais i8.

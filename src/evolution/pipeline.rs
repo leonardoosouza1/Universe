@@ -266,6 +266,7 @@ pub(super) fn evolution_pipeline(
     config: Res<UniverseConfig>,
     time: Res<Time>,
     lab: Res<crate::lab::LabParams>,
+    hl: Res<crate::HeadlessMode>,
 ) {
     // Tick do timer ambiental: usa virtual delta cheio (SEM cap). Motor+física agora rodam
     // em FixedUpdate (substep N× por frame em time_scale alto), env aqui acompanha o tempo
@@ -375,6 +376,7 @@ pub(super) fn evolution_pipeline(
                 car_model_idx: r.car_model_idx,
                 // v11: captura knots do KAN output head pra inheritance entre gens.
                 kan_knots: r.kan_out.knots,
+                perception_weights: r.engine.retina_perception.weights_to_vec(),
             };
             // Guard: só adiciona ao pool se racer atingiu distância mínima (sanidade check)
             // Previne que DNA de crash total (<=0m) contaminar o pool.
@@ -1003,14 +1005,15 @@ pub(super) fn evolution_pipeline(
         */
 
         let world = VoxelWorld::new(next_track.seed, effective_width);
-        let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
-        // FIX: SimulationEntity marker garante que cleanup_simulation (OnExit) despawne
-        // estas meshes se o usuário voltar pro menu. Sem ele, sair+reentrar sim deixa
-        // o mapa da geração anterior visível por baixo do novo.
-        let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })), SimulationEntity)).id();
-        let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })), SimulationEntity)).id();
-        let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })), SimulationEntity)).id();
-        race.world_entities = vec![road_e, grass_e, wall_e];
+        if hl.enabled {
+            race.world_entities = Vec::new();
+        } else {
+            let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
+            let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })), SimulationEntity)).id();
+            let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })), SimulationEntity)).id();
+            let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })), SimulationEntity)).id();
+            race.world_entities = vec![road_e, grass_e, wall_e];
+        }
         // Spawn batched: agenda jobs, drain_spawn_queue processa em blocos por frame.
         race.pending_spawn = Some((0, config.swarm_count));
         world_res.0 = world;

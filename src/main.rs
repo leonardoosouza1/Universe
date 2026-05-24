@@ -7,13 +7,7 @@ use universe::environment::EnvironmentalState;
 use universe::config::UniverseConfig;
 use universe::ui_menu::MenuPlugin;
 use universe::lab::LabParams;
-use universe::{AppState, SimulationEntity};
-
-#[derive(Resource, Clone, Copy)]
-pub struct HeadlessMode {
-    pub enabled: bool,
-    pub gens_target: u32,
-}
+use universe::{AppState, SimulationEntity, HeadlessMode};
 
 /// UI auto-start: pula menu e entra em Simulation direto.
 /// Ativa quando `--seed N` passa em modo não-headless.
@@ -132,9 +126,11 @@ fn main() {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(window),
         ..default()
-    }))
-    .insert_resource(ClearColor(Color::srgb(0.42, 0.65, 0.88))) // céu azul claro
-    .init_state::<AppState>()
+    }));
+    if !headless {
+        app.insert_resource(ClearColor(Color::srgb(0.42, 0.65, 0.88)));
+    }
+    app.init_state::<AppState>()
     .insert_resource(config)
     .insert_resource(RaceSettings {
         generation: 1,
@@ -188,14 +184,24 @@ fn main() {
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))
-    .insert_resource(EnvironmentalState::default())
-    .add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin, MenuPlugin))
-    .add_plugins(bevy_atmosphere::plugin::AtmospherePlugin)
-    .add_systems(Startup, (setup_main_camera, apply_time_scale, headless_autostart))
-    .add_systems(OnEnter(AppState::Simulation), (setup_scene, setup_hud_container, apply_time_scale))
-    .add_systems(OnExit(AppState::Simulation), cleanup_simulation)
-    .add_systems(Update, headless_exit_check)
-    .run();
+    .insert_resource(EnvironmentalState::default());
+
+    if headless {
+        app.add_plugins((RacerPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin))
+            .add_systems(Startup, (apply_time_scale, headless_autostart))
+            .add_systems(OnEnter(AppState::Simulation), (setup_scene_headless, apply_time_scale))
+            .add_systems(OnExit(AppState::Simulation), cleanup_simulation)
+            .add_systems(Update, headless_exit_check);
+    } else {
+        app.add_plugins((RacerPlugin, UiPlugin, EvolutionPlugin, universe::physics::PhysicsPlugin, MenuPlugin))
+            .add_plugins(bevy_atmosphere::plugin::AtmospherePlugin)
+            .add_systems(Startup, (setup_main_camera, apply_time_scale, headless_autostart))
+            .add_systems(OnEnter(AppState::Simulation), (setup_scene, setup_hud_container, apply_time_scale))
+            .add_systems(OnExit(AppState::Simulation), cleanup_simulation)
+            .add_systems(Update, headless_exit_check);
+    }
+
+    app.run();
 }
 
 fn headless_autostart(
@@ -299,6 +305,20 @@ fn setup_hud_container(mut commands: Commands) {
         },
         LeaderboardUI,
     ));
+}
+
+fn setup_scene_headless(
+    mut race: ResMut<RaceSettings>,
+    mut world_res: ResMut<VoxelWorldResource>,
+    config: Res<UniverseConfig>,
+) {
+    let current_track = config.current_track();
+    let world = VoxelWorld::new(current_track.seed, current_track.track_width + 4.0);
+    world_res.0 = world;
+    race.seed = current_track.seed;
+    race.generation = 1;
+    race.world_entities = Vec::new();
+    race.pending_spawn = Some((0, config.swarm_count));
 }
 
 fn setup_scene(

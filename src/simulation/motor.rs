@@ -1431,6 +1431,10 @@ pub(super) fn update_racers(
         }
 
         if should_fire {
+            racer.engine.retina_perception.inject_into_wave(
+                &retina_binocular, &mut sensory_wave, 192, 0.3,
+            );
+
             racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
 
             // DEBUG: capture spawn behavior (first 1.0s of each racer)

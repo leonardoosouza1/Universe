@@ -445,6 +445,9 @@ pub fn spawn_swarm(
                 // engine.slow_brain.set_all_weights(&elite.slow_weights);
                 engine.cortex_l2.set_weights(&elite.cortex_l2);
                 engine.cortex_l3.set_weights(&elite.cortex_l3);
+                if !elite.perception_weights.is_empty() {
+                    engine.retina_perception.load_weights(&elite.perception_weights);
+                }
                 // Tier 4.2: clone herda 10% do estado hormonal médio do único parent.
                 epigenetic_parents = Some((elite.cortisol_mean, elite.dopamine_mean, elite.curiosity_mean));
                 // Tier 6.3 LITE: clone herda morpho do elite + mutação leve.
@@ -543,6 +546,21 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&mutated_fast);
                 engine.instinct_layer.set_scale((parent_a.fast_scale + parent_b.fast_scale) * 0.5);
 
+                // Perception: uniform crossover + gaussian mutation
+                if !parent_a.perception_weights.is_empty() && !parent_b.perception_weights.is_empty() {
+                    let pw: Vec<f32> = parent_a.perception_weights.iter()
+                        .zip(parent_b.perception_weights.iter())
+                        .map(|(&a, &b)| {
+                            let base = if rng.random_bool(0.5) { a } else { b };
+                            if rng.random_bool(effective_mutation_rate) {
+                                let u1 = (rng.random::<f32>()).max(1e-7);
+                                let u2 = rng.random::<f32>();
+                                let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                                (base + z * 0.05).clamp(-2.0, 2.0)
+                            } else { base }
+                        }).collect();
+                    engine.retina_perception.load_weights(&pw);
+                }
                 // NOTE: SlowBrain not loaded/mutated in spawn. Uses fresh init from SovereignEngine::new()
                 // Tier 4.2: herança hormonal MÉDIA dos 2 pais (reprodução sexuada).
                 let cort = (parent_a.cortisol_mean + parent_b.cortisol_mean) * 0.5;
