@@ -11,8 +11,8 @@
 /// Integration: motor.rs injects perception hidden state into sensory_wave
 /// before execute_cycle, so the existing brain layers see temporal visual features.
 
-use iara_cfc::Rng;
 use iara_perception::{
+    Rng,
     PerceptionOutput, PerceptionPipeline, Sensor, SensoryField, Zone, ZoneConfig, PoolMethod,
 };
 

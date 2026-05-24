@@ -103,12 +103,13 @@ pub fn spawn_swarm(
             }
             current_best_s = dna.fast_scale;
 
-            // TODO: SlowBrain load/apply causing regression. Disabled.
-            // if let Some(ref slow) = dna.slow_weights {
-            //     let slow_f32: Vec<f32> = slow.iter().map(|&b| b as f32 / 127.0).collect();
-            //     race.best_slow_weights = Some(slow_f32);
-            //     race.best_slow_scale = dna.slow_scale;
-            // }
+            // SlowBrain: prefer SLWF raw f32 (lossless), fallback to ternary i8.
+            if let Some(ref sf) = dna.slow_f32 {
+                race.best_slow_weights = Some(sf.clone());
+            } else if let Some(ref slow) = dna.slow_weights {
+                let slow_f32: Vec<f32> = slow.iter().map(|&b| b as f32 / 127.0).collect();
+                race.best_slow_weights = Some(slow_f32);
+            }
 
             // Tier 6.3 LITE: absorve morpho genes serializados.
             current_best_morpho = dna.morpho;
@@ -316,10 +317,9 @@ pub fn spawn_swarm(
                 if let Some(ref l3) = race.best_l3_weights {
                     engine.cortex_l3.set_weights(l3);
                 }
-                // TODO: SlowBrain causing 25m regression. Disabled pending fix.
-                // if let Some(ref slow_w) = race.best_slow_weights {
-                //     engine.slow_brain.set_all_weights(slow_w);
-                // }
+                if let Some(ref slow_w) = race.best_slow_weights {
+                    engine.slow_brain.set_all_weights(slow_w);
+                }
             }
             // Tier 6.3 LITE: champion preserva morpho exata (sem mutação no HoF).
             morpho_this = current_best_morpho;
@@ -364,7 +364,22 @@ pub fn spawn_swarm(
                         *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
                     }
                 }
-                // NOTE: SlowBrain mutation not supported. Stateful CfC + Dense architecture.
+                // SlowBrain mutation: Gaussian σ scaled like cortex, clamped [-2, 2].
+                // CfC state resets on spawn — only Dense1+Dense2 weights are heritable.
+                {
+                    let slow_all = engine.slow_brain.all_weights();
+                    let mut slow_mut = slow_all.clone();
+                    let sigma_slow = sigma_cortex * 1.5; // slightly higher σ — fewer weights, needs more exploration
+                    for w in slow_mut.iter_mut() {
+                        if rng.random_bool(rate_boosted) {
+                            let u1 = (rng.random::<f32>()).max(1e-7);
+                            let u2 = rng.random::<f32>();
+                            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                            *w = (*w + sigma_slow * z).clamp(-2.0, 2.0);
+                        }
+                    }
+                    engine.slow_brain.set_all_weights(&slow_mut);
+                }
                 // Morpho jittered leve — mantém proximidade do champion
                 // (refator sem dep em MorphoGenes::jitter extra).
             }
@@ -441,8 +456,7 @@ pub fn spawn_swarm(
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(elite.fast_scale);
 
-                // TODO: SlowBrain causing regression. Disabled.
-                // engine.slow_brain.set_all_weights(&elite.slow_weights);
+                engine.slow_brain.set_all_weights(&elite.slow_weights);
                 engine.cortex_l2.set_weights(&elite.cortex_l2);
                 engine.cortex_l3.set_weights(&elite.cortex_l3);
                 if !elite.perception_weights.is_empty() {
@@ -561,7 +575,21 @@ pub fn spawn_swarm(
                         }).collect();
                     engine.retina_perception.load_weights(&pw);
                 }
-                // NOTE: SlowBrain not loaded/mutated in spawn. Uses fresh init from SovereignEngine::new()
+                // SlowBrain: crossover + Gaussian mutation (same as perception path).
+                if !parent_a.slow_weights.is_empty() && !parent_b.slow_weights.is_empty() {
+                    let sw: Vec<f32> = parent_a.slow_weights.iter()
+                        .zip(parent_b.slow_weights.iter())
+                        .map(|(&a, &b)| {
+                            let base = if rng.random_bool(0.5) { a } else { b };
+                            if rng.random_bool(effective_mutation_rate) {
+                                let u1 = (rng.random::<f32>()).max(1e-7);
+                                let u2 = rng.random::<f32>();
+                                let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                                (base + z * 0.08).clamp(-2.0, 2.0) // σ=0.08, slightly higher for exploration
+                            } else { base }
+                        }).collect();
+                    engine.slow_brain.set_all_weights(&sw);
+                }
                 // Tier 4.2: herança hormonal MÉDIA dos 2 pais (reprodução sexuada).
                 let cort = (parent_a.cortisol_mean + parent_b.cortisol_mean) * 0.5;
                 let dopa = (parent_a.dopamine_mean + parent_b.dopamine_mean) * 0.5;
@@ -588,10 +616,9 @@ pub fn spawn_swarm(
                 let exact: Vec<f32> = best.iter().map(|&w| w as f32).collect();
                 engine.instinct_layer.quantize(&exact);
                 engine.instinct_layer.set_scale(current_best_s);
-                // TODO: SlowBrain causing regression. Disabled.
-                // if let Some(ref slow_w) = race.best_slow_weights {
-                //     engine.slow_brain.set_all_weights(slow_w);
-                // }
+                if let Some(ref slow_w) = race.best_slow_weights {
+                    engine.slow_brain.set_all_weights(slow_w);
+                }
                 if let Some(ref l2) = race.best_l2_weights {
                     engine.cortex_l2.set_weights(l2);
                 }

@@ -516,56 +516,61 @@ pub(super) fn update_racers(
         // All queries via world.get_voxel_at(), get_height_at(), get_flow_at() — O(1) ops.
         //
         // Layout:
-        // ch 16-23:  wall_distance_fov (8 angles, FOV left→right, distance in meters i8: 0=sky, 1-127=1-127m)
-        // ch 24-31:  wall_width_fov (obstacle width in each FOV bin)
-        // ch 32-39:  wall_curvature_fov (local curvature per angle)
-        // ch 40-47:  road_ahead (curve sharpness, banking, grip)
-        // ch 48-55:  horizon (apex distance 25m ahead, turn sharpness, banking)
-        // ch 56-63:  ground_material + agent_state (road=0, grass=64, hole=-127, speed, throttle, etc.)
+        // ch 16-23:  wall_distance_fov (8 YAW angles left→right, 60m range)
+        // ch 24-31:  wall_width_fov (obstacle width per YAW angle)
+        // ch 32-39:  wall_curvature_fov (flow curvature per YAW angle)
+        // ch 40-47:  road_ahead NEAR (5-40m, reactive steering)
+        // ch 48-55:  road_ahead FAR (45-150m, strategic — closes old 40-80m gap)
+        // ch 56-63:  ground_material + agent_state
 
         let forward_2d = Vec2::new(forward.x, forward.z);
+        let right_2d = Vec2::new(right.x, right.z);
 
-        // --- ch 16-23: wall_distance_fov (8 angles across FOV) ---
-        // Query world grid at 8 angles ahead, encode distance as i8 (0=sky/far, 127=very close)
+        // Helper: YAW-swept direction for a given angle index (0..8).
+        // Sweeps ±50° (covering inner 100° of 120° FOV), left→right.
+        // FIX: antigo código variava PITCH em vez de YAW — todos os 8 sensores
+        // olhavam na mesma direção lateral. Agora varre horizontalmente.
+        let fov_half_rad: f32 = 50.0_f32.to_radians(); // ±50° lateral sweep
+        let yaw_dir = |angle_idx: usize| -> Vec2 {
+            let frac = (angle_idx as f32 - 3.5) / 3.5; // -1.0 (left) → +1.0 (right)
+            let yaw = frac * fov_half_rad;
+            let dx = forward_2d.x * yaw.cos() + right_2d.x * yaw.sin();
+            let dz = forward_2d.y * yaw.cos() + right_2d.y * yaw.sin();
+            Vec2::new(dx, dz).normalize_or_zero()
+        };
+
+        // --- ch 16-23: wall_distance_fov (8 YAW angles, 60m range) ---
+        // Sweep LEFT→RIGHT detecting wall proximity at each lateral angle.
+        // Range 60m (was 24m) — at 20 m/s gives 3s reaction time for curves.
+        const WALL_SAMPLES: [f32; 8] = [3.0, 8.0, 15.0, 25.0, 35.0, 45.0, 52.0, 60.0];
+        const WALL_MAX_DIST: f32 = 60.0;
         for angle_idx in 0..8 {
-            let angle_rad = forward.y.asin() + ((angle_idx as f32 - 3.5) / 3.5) * 0.4; // ±40° spread
-            let dir = Vec3::new(
-                angle_rad.cos() * forward.x,
-                angle_rad.sin(),
-                angle_rad.cos() * forward.z,
-            ).normalize_or_zero();
-
-            // Sample 8 distance points (3m..24m) to find wall proximity
+            let dir = yaw_dir(angle_idx);
             let mut wall_dist_min = f32::MAX;
-            for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0].iter() {
-                let sample_pos = pos + dir * sample_dist;
-                let voxel = world.get_voxel_at(sample_pos.x, sample_pos.z);
+            for &sample_dist in WALL_SAMPLES.iter() {
+                let sx = pos.x + dir.x * sample_dist;
+                let sz = pos.z + dir.y * sample_dist;
+                let voxel = world.get_voxel_at(sx, sz);
                 if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
-                    wall_dist_min = wall_dist_min.min(*sample_dist);
+                    wall_dist_min = wall_dist_min.min(sample_dist);
                 }
             }
-            // Encode: 0=no wall found, 127=<1m, 1-126=1-126m
-            let dist_encoded = if wall_dist_min >= 24.0 { 0i8 }
-                              else { ((127.0 * (24.0 - wall_dist_min) / 24.0).clamp(1.0, 127.0)) as i8 };
+            // Encode: 0=no wall in 60m, 127=touching wall, 1-126=linear
+            let dist_encoded = if wall_dist_min >= WALL_MAX_DIST { 0i8 }
+                              else { ((127.0 * (WALL_MAX_DIST - wall_dist_min) / WALL_MAX_DIST).clamp(1.0, 127.0)) as i8 };
             sensory_wave[16 + angle_idx] = dist_encoded;
         }
 
-        // --- ch 24-31: wall_width_fov (obstacle width per angle) ---
-        // For each angle, measure obstacle extent (cone width)
+        // --- ch 24-31: wall_width_fov (obstacle width per YAW angle) ---
+        // For each lateral angle, measure obstacle width at 15m ahead.
         for angle_idx in 0..8 {
-            let angle_rad = forward.y.asin() + ((angle_idx as f32 - 3.5) / 3.5) * 0.4;
-            let dir = Vec3::new(
-                angle_rad.cos() * forward.x,
-                angle_rad.sin(),
-                angle_rad.cos() * forward.z,
-            ).normalize_or_zero();
-
-            // Sample perpendicular to check width
-            let perp = Vec3::new(-dir.z, 0.0, dir.x).normalize_or_zero();
+            let dir = yaw_dir(angle_idx);
+            let perp = Vec2::new(-dir.y, dir.x); // perpendicular (2D)
             let mut width = 0.0;
-            for offset in [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0].iter() {
-                let probe = pos + dir * 12.0 + perp * offset;
-                let voxel = world.get_voxel_at(probe.x, probe.z);
+            for &offset in [-3.0_f32, -2.0, -1.0, 1.0, 2.0, 3.0].iter() {
+                let px = pos.x + dir.x * 15.0 + perp.x * offset;
+                let pz = pos.z + dir.y * 15.0 + perp.y * offset;
+                let voxel = world.get_voxel_at(px, pz);
                 if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
                     width += offset.abs();
                 }
@@ -574,35 +579,30 @@ pub(super) fn update_racers(
             sensory_wave[24 + angle_idx] = width_encoded;
         }
 
-        // --- ch 32-39: wall_curvature_fov (local curvature per angle) ---
-        // Measure flow field curvature (cross product of forward × flow_ahead)
+        // --- ch 32-39: wall_curvature_fov (flow curvature per YAW angle) ---
+        // At each lateral angle, sample flow field 10-22m ahead → cross product
+        // with forward = local track curvature. Positive = curving right, neg = left.
         for angle_idx in 0..8 {
-            let angle_rad = forward.y.asin() + ((angle_idx as f32 - 3.5) / 3.5) * 0.4;
+            let dir = yaw_dir(angle_idx);
             let dist_ahead = 10.0 + (angle_idx as f32) * 1.5;
-            let sample_pos = pos + Vec3::new(
-                angle_rad.cos() * forward.x * dist_ahead,
-                0.0,
-                angle_rad.cos() * forward.z * dist_ahead,
-            );
-            let flow_local = world.get_flow_at(sample_pos.x, sample_pos.z);
+            let sx = pos.x + dir.x * dist_ahead;
+            let sz = pos.z + dir.y * dist_ahead;
+            let flow_local = world.get_flow_at(sx, sz);
             let cross = forward_2d.x * flow_local.y - forward_2d.y * flow_local.x;
             sensory_wave[32 + angle_idx] = (cross * 127.0).clamp(-127.0, 127.0) as i8;
         }
 
-        // === NEAR ZONE (5-40m) vs FAR ZONE (80-200m) pooling ===
-        // Split horizon into depth layers for lookahead depth perception.
-        // User complaint: "model doesn't see curves ahead, can't see crest, needs surreal detail"
-        // Solution: Zone-based encoding reveals multiple depth layers explicitly.
+        // === NEAR ZONE (5-40m) vs FAR ZONE (45-150m) ===
+        // Two depth layers for lookahead: reactive + strategic.
+        // FAR zone starts at 45m (was 80m) — closes the old 40-80m gap.
 
-        // --- ch 40-47: NEAR ZONE (5-40m lookahead - immediate decisions) ---
-        // Samples road properties at near distances for reactive steering
+        // --- ch 40-47: NEAR ZONE (5-40m lookahead - reactive steering) ---
         for dist_idx in 0..8 {
-            let look_dist = 5.0 + dist_idx as f32 * 5.0; // 5m, 10m, 15m, ..., 40m
+            let look_dist = 5.0 + dist_idx as f32 * 5.0; // 5, 10, 15, ..., 40m
             let probe_pos = pos + forward * look_dist;
             let voxel = world.get_voxel_at(probe_pos.x, probe_pos.z);
             let flow = world.get_flow_at(probe_pos.x, probe_pos.z);
 
-            // Encode road quality with depth emphasis
             let road_quality = match voxel {
                 VoxelType::Road => 60,
                 VoxelType::Grass => -60,
@@ -610,39 +610,31 @@ pub(super) fn update_racers(
                 VoxelType::Hole => -127,
             };
 
-            // Modulate by flow curvature AND distance (farther = lower signal = attention shift)
-            let dist_decay = (40.0 - look_dist) / 40.0; // 1.0 at 5m, 0.0 at 40m
             let flow_mag = flow.length();
-            sensory_wave[40 + dist_idx] = ((road_quality as f32 * (0.5 + flow_mag * 0.5) * dist_decay).clamp(-127.0, 127.0)) as i8;
+            sensory_wave[40 + dist_idx] = ((road_quality as f32 * (0.5 + flow_mag * 0.5)).clamp(-127.0, 127.0)) as i8;
         }
 
-        // --- ch 48-55: FAR ZONE + HORIZON (80-200m lookahead - strategic planning) ---
-        // Detect upcoming curves, crests, turns at strategic distance.
-        // High resolution: 8 steps × 15m = 80-200m coverage.
+        // --- ch 48-55: FAR ZONE (45-150m lookahead - strategic planning) ---
+        // Detects curves, crests, turns. Starts at 45m to close old 40-80m gap.
         for step in 0..8 {
-            let horizon_dist = 80.0 + step as f32 * 15.0; // 80m, 95m, ..., 185m
+            let horizon_dist = 45.0 + step as f32 * 15.0; // 45, 60, 75, 90, 105, 120, 135, 150m
             let apex_pos = pos + forward * horizon_dist;
 
-            // Multi-layered horizon detection:
-            // 1. Height profile (crest detection)
             let height_now = world.get_height_at(apex_pos.x, apex_pos.z);
             let height_ahead = world.get_height_at(apex_pos.x + forward.x * 10.0, apex_pos.z + forward.z * 10.0);
             let height_delta = height_ahead - height_now;
 
-            // 2. Banking/roll angle (curve banking indicator)
             let normal = world.get_surface_normal(apex_pos.x, apex_pos.z);
             let banking = normal.x.atan2(normal.y);
 
-            // 3. Road continuity (is road present at this distance?)
             let voxel_far = world.get_voxel_at(apex_pos.x, apex_pos.z);
             let road_presence = match voxel_far {
                 VoxelType::Road => 1.0,
-                VoxelType::Grass => 0.3,  // Weak signal if off-road
-                VoxelType::Wall => -1.0,  // Strong negative if wall
+                VoxelType::Grass => 0.3,
+                VoxelType::Wall => -1.0,
                 VoxelType::Hole => -0.5,
             };
 
-            // Combine signals: crest (height_delta) + banking (curve indicator) + road presence
             let apex_signal = (height_delta * 50.0 + banking * 40.0 + road_presence * 30.0)
                 .clamp(-127.0, 127.0) as i8;
             sensory_wave[48 + step] = apex_signal;
