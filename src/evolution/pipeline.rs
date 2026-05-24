@@ -284,7 +284,7 @@ pub(super) fn evolution_pipeline(
     // Timeout só pra pistas LARGAS (>30m) — narrow precisa paciência pra cars
     // aprenderem. Wide stuck = timeout cortar runaway.
     let track_w = config.current_track().track_width;
-    let timeout_reached = if track_w > 30.0 {
+    let timeout_reached = if hl.enabled || track_w > 30.0 {
         env.generation_time >= config.generation_timeout_s
     } else { false };
 

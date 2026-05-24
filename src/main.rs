@@ -78,7 +78,7 @@ fn main() {
         }
         println!("📏 WIDTH OVERRIDE | width={}m", w);
     }
-    if headless { config.time_scale = config.time_scale.max(8.0); }
+    if headless && time_scale_override.is_none() { config.time_scale = config.time_scale.max(8.0); }
 
     // Load lab params if provided
     let mut lab_params = if let Some(path) = lab_params_path {

@@ -241,10 +241,9 @@ pub(super) fn update_racers(
     // (spawn.rs is frozen by task constraints).
     mut prev_line_offset: Local<HashMap<Entity, f32>>,
     mut gizmos: Gizmos,
+    mut perf_accum: Local<(u32, f64, f64, f64, f64)>,
 ) {
-    // Rodando em FixedUpdate: dt = Time<Fixed>::delta = 1/64s constante. Bevy já
-    // substepa o schedule N vezes por frame real conforme time_scale (Virtual).
-    // Sem cap, sem vdt separado — fixed step garante determinismo e sync com física.
+    let t_frame_start = std::time::Instant::now();
     let dt = time.delta_secs();
     let vdt = dt;
     let world = &world_res.0;
@@ -366,6 +365,7 @@ pub(super) fn update_racers(
     *retina_tick_counter = retina_tick_counter.wrapping_add(1);
     let recompute_retinas = (*retina_tick_counter % retina_skip) == 0;
 
+    let t_retina = std::time::Instant::now();
     let retinas: HashMap<Entity, [i8; RETINA_TOTAL]> = if recompute_retinas {
         let retina_inputs: Vec<(Entity, Vec3, Vec3, Vec3)> = query
             .iter()
@@ -386,6 +386,8 @@ pub(super) fn update_racers(
             .map(|(e, r, _, _, _, _)| (e, r.visual_cortex))
             .collect()
     };
+
+    perf_accum.1 += t_retina.elapsed().as_secs_f64();
 
     // --- PRECOMPUTA RANK + SPATIAL HASH (elimina O(N²) do loop principal) ---
     // Antes: cada carro sortava todos (O(N log N) × N) + scan comp_stress/draft O(N) × N
@@ -1431,11 +1433,15 @@ pub(super) fn update_racers(
         }
 
         if should_fire {
+            let t_percept = std::time::Instant::now();
             racer.engine.retina_perception.inject_into_wave(
                 &retina_binocular, &mut sensory_wave, 192, 0.3,
             );
+            perf_accum.2 += t_percept.elapsed().as_secs_f64();
 
+            let t_brain = std::time::Instant::now();
             racer.engine.execute_cycle(&sensory_wave, track_phase, dt);
+            perf_accum.3 += t_brain.elapsed().as_secs_f64();
 
             // DEBUG: capture spawn behavior (first 1.0s of each racer)
             let debug_gen = race.generation;
@@ -2706,4 +2712,19 @@ pub(super) fn update_racers(
         }
     }
 
+    // --- PERF LOG (every 640 ticks ≈ 10s sim time) ---
+    let frame_us = t_frame_start.elapsed().as_secs_f64();
+    perf_accum.4 += frame_us;
+    perf_accum.0 += 1;
+    if perf_accum.0 >= 640 {
+        let n = perf_accum.0 as f64;
+        println!("⏱ PERF/640t | total={:.1}ms retina={:.1}ms percept={:.2}ms brain={:.1}ms | per_tick: {:.2}ms",
+            perf_accum.4 * 1000.0,
+            perf_accum.1 * 1000.0,
+            perf_accum.2 * 1000.0,
+            perf_accum.3 * 1000.0,
+            perf_accum.4 / n * 1000.0,
+        );
+        *perf_accum = (0, 0.0, 0.0, 0.0, 0.0);
+    }
 }
