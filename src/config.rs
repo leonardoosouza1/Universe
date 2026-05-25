@@ -257,7 +257,7 @@ pub mod iara {
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS;
         pub const FOV_DEG: f32 = 120.0;
         pub const RETINA_SKIP: u32 = 1;
-        pub const RETINA_MIN_PITCH: f32 = -0.025;  // row 0: horizon/far
+        pub const RETINA_MIN_PITCH: f32 = -0.012;  // row 0: horizon/far (~33m ground @ 0.4m eye)
         pub const RETINA_MAX_PITCH: f32 = -0.06;   // row 13: ground/near
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {

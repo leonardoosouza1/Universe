@@ -1676,11 +1676,12 @@ pub(super) fn update_racers(
         let slow = &racer.engine.slow_brain.output;
         let aggression: f32 = slow[0] * 0.5;                // Bias [-0.5, 0.5]
         let throttle_cap: f32 = 1.0 - slow[1].max(0.0) * 0.8; // Range [0.2, 1.0], Neutral at 0.0
-        let risk_damp: f32 = slow[2].max(0.0) * 0.5;         // Range [0.0, 0.5], Neutral at 0.0
-        // NOTE: slow[3..5] don't exist (output is [f32; 3]). Disabled pending refactor.
-        let steer_bias: f32 = 0.0; // slow[3] * 0.15; was: Bias [-0.15, 0.15]
-        let brake_anticip: f32 = 0.0; // slow[4].max(0.0) * 0.5; was: Range [0.0, 0.5]
-        let line_hint: f32 = 0.0; // slow[5] * 0.2; was: Bias [-0.2, 0.2]
+        // v3: slow[2] repurposed: risk_damp→steer_bias.
+        // OLD risk_damp was DAMPENING steer in curves (counterproductive for tight turns).
+        // NEW steer_bias: System-2 anticipatory steering from curvature lookahead (30/60/90m).
+        // Signed: positive = steer right, negative = steer left. Range [-0.20, 0.20].
+        let steer_bias: f32 = slow[2] * 0.20;
+        let risk_damp: f32 = 0.0; // Disabled: was weakening steer exactly when curves need it most
         let cortisol = racer.engine.metabolism.risk_aversion();
 
         // Tier 3.2: medo freia (throttle -30% max) e suaviza volante (steer -20% max).
@@ -1698,12 +1699,14 @@ pub(super) fn update_racers(
         let gain_comp = (1.0 + speed * 0.02).min(2.0);
         #[cfg(not(feature = "gain_comp_steer"))]
         let gain_comp = 1.0_f32;
-        let steer_raw_unclamped = (steer_spline + steer_bias + line_hint) * cortisol_steer_mult * gain_comp;
+        let steer_raw_unclamped = (steer_spline + steer_bias) * cortisol_steer_mult * gain_comp;
         // v8: smoothing temporal via prev_steer_mem (memory[1] snapshot).
         // Combate saturação ±1 winner-take-all alternada frame a frame.
         let prev_steer_mem = racer.memory[1];
         let new_steer = steer_raw_unclamped.clamp(-1.0, 1.0);
-        let steer_raw = prev_steer_mem * 0.65 + new_steer * 0.35;
+        // v3: 0.65/0.35→0.50/0.50 — faster steer response for tight curves.
+        // Old: ~180ms lag (3.6m blind @ 20 m/s). New: ~125ms (2.5m).
+        let steer_raw = prev_steer_mem * 0.50 + new_steer * 0.50;
         let steer_intent = steer_raw.clamp(-1.0, 1.0) * (1.0 - risk_damp);
 
         // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2).
@@ -1727,7 +1730,7 @@ pub(super) fn update_racers(
             if brake_spline > dead { ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0) }
             else { 0.0 }
         };
-        let combined_brake = (raw_brake + brake_anticip).clamp(0.0, 1.0);
+        let combined_brake = raw_brake.clamp(0.0, 1.0);
         let mut brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
         let mut pedal_intent_override: Option<f32> = None;
 
@@ -2455,10 +2458,11 @@ pub(super) fn update_racers(
         }
 
         // GRACE em frames REAIS — virtual time é caótico nos primeiros frames (FPS
-        // irregular em swarm grande, max_delta do Bevy, etc). Era 2560 frames (40s).
-        // v2: estendida pra 7200 frames (112.5s) = quase full generation (120s).
-        // Permite evolução aprender sem harsh penalties interrupting progress.
-        let out_of_grace = racer.grace_ticks >= 7200;  // TEMP: original threshold, grace period fixes need refinement
+        // irregular em swarm grande, max_delta do Bevy, etc).
+        // v3: 3200 frames (50s). Era 7200 (112.5s) = 93.7% da geração protegida,
+        // criaturas crawling a 1-2 m/s ficavam imortais. Agora 50s de bootstrap +
+        // 70s de pressão seletiva real (speed bleed, wall damage, etc.).
+        let out_of_grace = racer.grace_ticks >= 3200;
 
         // === POST-LAP GRACE (calculado cedo — wall check abaixo precisa de HP grace) ===
         if racer.post_lap_grace > 0 { racer.post_lap_grace = racer.post_lap_grace.saturating_sub(1); }
@@ -2578,8 +2582,10 @@ pub(super) fn update_racers(
         // === SPEED BLEED (RE-ENABLED v8) ===
         // Penaliza carros parados. Força evolução: aprende a mover ou morre.
         let cur_speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
-        let making_progress = racer.max_progress > prev_max + 0.005;
-        if out_of_grace && !in_post_lap_grace && cur_speed < 2.0 && !making_progress {
+        // v3: speed threshold 2.0→4.0 (crawlers at 1-2 m/s now count as stalled).
+        // making_progress threshold 0.005→0.05 (require meaningful forward motion, not micro-creep).
+        let making_progress = racer.max_progress > prev_max + 0.05;
+        if out_of_grace && !in_post_lap_grace && cur_speed < 4.0 && !making_progress {
             racer.slow_time += 1.0;
             if racer.slow_time > 360.0 {
                 racer.hp -= 30.0 * dt;
