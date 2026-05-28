@@ -1366,6 +1366,7 @@ pub(super) fn update_racers(
         //   78     = curv25_signed (cortex + axiom)
         //   79     = curv25_signed (Sentinel + axiom — duplicado)
         //   80     = curv60_signed (lookahead)
+        // Proprioception: yaw/pitch/roll into sensory wave
         {
             let yaw = if let Some(ref body) = opt_body { body.angular_velocity.y } else { 0.0 };
             let pitch_r = if let Some(ref body) = opt_body { body.angular_velocity.x } else { 0.0 };
@@ -1373,31 +1374,33 @@ pub(super) fn update_racers(
             let yaw_i8   = ((yaw     / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
             let pitch_i8 = ((pitch_r / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
             let roll_i8  = ((roll    / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
-            // Single-channel proprio (f32 cortex aprende magnitude via weight).
             sensory_wave[16] = yaw_i8;
             sensory_wave[17] = pitch_i8;
             sensory_wave[18] = roll_i8;
+        }
 
-            // Curvature lookahead — signed angles (7 distances for better curve prediction).
-            let curv_at = |ahead_m: f32| -> f32 {
-                let probe = Vec3::new(pos.x, 0.0, pos.z) + forward * ahead_m;
-                let f = world.get_flow_at(probe.x, probe.z);
-                if f.length_squared() > 1e-4 {
-                    let cross_y = forward.x * f.y - forward.z * f.x;
-                    let dot = (forward.x * f.x + forward.z * f.y).clamp(-1.0, 1.0);
-                    cross_y.atan2(dot)
-                } else { 0.0 }
-            };
-            let yn = std::f32::consts::FRAC_PI_2;
-            // 7 distances: near/mid/far progression for granular curve perception.
-            let c20_signed = curv_at(20.0);
-            let c40_signed = curv_at(40.0);
-            let c70_signed = curv_at(70.0);
-            let c120_signed = curv_at(120.0);
-            let c180_signed = curv_at(180.0);
-            let c260_signed = curv_at(260.0);
-            let c350_signed = curv_at(350.0);
+        // Curvature lookahead — signed angles (7 distances for better curve prediction).
+        // Hoisted out of inner block so governor can access these values downstream.
+        let curv_at = |ahead_m: f32| -> f32 {
+            let probe = Vec3::new(pos.x, 0.0, pos.z) + forward * ahead_m;
+            let f = world.get_flow_at(probe.x, probe.z);
+            if f.length_squared() > 1e-4 {
+                let cross_y = forward.x * f.y - forward.z * f.x;
+                let dot = (forward.x * f.x + forward.z * f.y).clamp(-1.0, 1.0);
+                cross_y.atan2(dot)
+            } else { 0.0 }
+        };
+        let yn = std::f32::consts::FRAC_PI_2;
+        // 7 distances: near/mid/far progression for granular curve perception.
+        let c20_signed = curv_at(20.0);
+        let c40_signed = curv_at(40.0);
+        let c70_signed = curv_at(70.0);
+        let c120_signed = curv_at(120.0);
+        let c180_signed = curv_at(180.0);
+        let c260_signed = curv_at(260.0);
+        let c350_signed = curv_at(350.0);
 
+        {
             let c20 = ((c20_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
             let c40 = ((c40_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
             let c70 = ((c70_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
@@ -1735,6 +1738,72 @@ pub(super) fn update_racers(
         let combined_brake = raw_brake.clamp(0.0, 1.0);
         let mut brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
         let mut pedal_intent_override: Option<f32> = None;
+
+        // ================================================================
+        // === CURVATURE SPEED GOVERNOR (physics-based, NOT evolved)     ===
+        // ================================================================
+        // Tesla doesn't evolve braking — it calculates v² ≤ μ·g·r.
+        // Estimate turn radius from curvature probes, compute max safe
+        // cornering speed, brake proportionally if overspeeding.
+        //
+        // r_est = ahead_dist / |angle|  (arc approximation)
+        // v_safe = sqrt(μ · g · r_est × C)
+        //
+        // C (concentration) corrects for tight turns packed into a fraction
+        // of the lookahead distance. Short probes (40m) give more accurate
+        // radii than long ones (120m). 20m probe skipped — too sensitive
+        // to moderate curves that the car can actually negotiate.
+        //
+        // Calibration: hairpin r_real≈17m. 40m probe θ=0.79 → r_est=50.6m.
+        // C=0.5 → r_eff=25.3m → v_safe=15.8m/s. Progressive braking from
+        // 25→16 m/s over the approach. Neural net adds on top via gate.
+        {
+            const G: f32 = 9.81;
+            const MIN_ANGLE: f32 = 0.05;   // ~2.9° — below this, road is straight
+            const GOV_MIN_SPEED: f32 = 5.0; // don't govern below 18 km/h
+
+            // Per-probe: (distance, angle, concentration_factor)
+            // Short probes: C closer to 1.0 (arc approx is more accurate)
+            // Long probes: C lower (curve may be packed into fraction of d)
+            let probes: [(f32, f32, f32); 3] = [
+                (40.0,  c40_signed.abs(),  0.5),  // primary braking zone
+                (70.0,  c70_signed.abs(),  0.45), // pre-decel zone
+                (120.0, c120_signed.abs(), 0.4),  // early warning
+            ];
+
+            if speed > GOV_MIN_SPEED {
+                let mut gov_brake = 0.0_f32;
+
+                for &(dist, angle, concentration) in &probes {
+                    if angle < MIN_ANGLE { continue; }
+
+                    let r_eff = (dist / angle) * concentration;
+                    let v_safe = (G * r_eff).sqrt(); // μ=1.0 implicit
+
+                    if speed > v_safe {
+                        let overspeed = (speed - v_safe) / v_safe;
+                        let time_to_curve = dist / speed;
+
+                        let urgency = if time_to_curve < 1.0 {
+                            1.0
+                        } else if time_to_curve < 3.0 {
+                            1.0 - (time_to_curve - 1.0) / 2.0 * 0.7
+                        } else {
+                            0.3
+                        };
+
+                        let probe_brake = (overspeed * urgency).clamp(0.0, 1.0);
+                        gov_brake = gov_brake.max(probe_brake);
+                    }
+                }
+
+                brake_intent = brake_intent.max(gov_brake);
+
+                if gov_brake > 0.5 {
+                    pedal_intent_override = Some(0.0);
+                }
+            }
+        }
 
         // SENTINEL ANTI-COLLISION (ALWAYS-ON) — Tesla AEB-like emergency brake.
         // Regra física: carro NÃO PODE bater. Se TTC < threshold, force brake +

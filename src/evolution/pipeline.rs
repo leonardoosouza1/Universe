@@ -916,12 +916,15 @@ pub(super) fn evolution_pipeline(
         race.seed = next_track.seed;
 
         // --- CURRICULUM ADAPTATIVO DE LARGURA ---
-        // Pista começa um pouco mais larga (base + 4m) e estreita rápido com voltas do campeão.
-        // Cada volta completada reduz o bônus em 2m — piso (base) atingido em 2 voltas reais.
+        // main.rs creates the initial world with track_width + 4.0 (wall margin).
+        // The pipeline must use the SAME convention: full_width = base + 4.0.
+        // Curriculum narrows from full_width by up to 4m as champion completes laps.
+        // Floor: never narrower than base_width (the user-specified width).
         let base_width = next_track.track_width;
+        let full_width = base_width + 4.0; // match main.rs convention
         let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
-        let width_bonus = (4.0 - champion_laps * 2.0).max(0.0);
-        let effective_width = base_width + width_bonus;
+        let narrowing = (champion_laps * 2.0).min(4.0);
+        let effective_width = (full_width - narrowing).max(base_width);
         if config.rotate_tracks {
             println!("🔀 TRACK ROTATION gen={} → \"{}\" (seed={}, width={:.1}m, val={})",
                 next_gen_idx, next_track.name, next_track.seed, effective_width, is_val);
