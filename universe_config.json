@@ -59,12 +59,12 @@
       "complexity": 1.0
     }
   ],
-  "selected_track_index": 2,
-  "swarm_count": 30,
-  "time_scale": 2.0,
+  "selected_track_index": 0,
+  "swarm_count": 33,
+  "time_scale": 1.0,
   "generation_timeout_s": 120.0,
   "rotate_tracks": false,
   "gens_per_track": 3,
-  "easy_track": false,
-  "no_holes": false
+  "easy_track": true,
+  "no_holes": true
 }

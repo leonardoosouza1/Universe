@@ -900,7 +900,9 @@ pub(super) fn update_racers(
         // Row 0 (pitch=-0.10 rad) vê perto; Row 7 (pitch=+0.05 rad) vê longe.
         // Canal = soma de todos os pixels de PAREDE (valores positivos altos) nessa linha,
         // normalizado. Dá ao modelo sinal claro: "há parede perto" vs "há parede longe".
-        for row in 0..RETINA_ROWS {
+        // IMPORTANT: capped at 8 rows (ch 52-59) — NOT RETINA_ROWS (14).
+        // Rows 8-13 would write to ch 60-65, overwriting escape_i8 in ch 60-63 (vital steering signal).
+        for row in 0..8 {
             let wall_sum: i32 = (0..RETINA_COLS)
                 .map(|col| {
                     let v = retina_binocular[row * RETINA_COLS + col] as i32;
@@ -1411,7 +1413,7 @@ pub(super) fn update_racers(
             sensory_wave[80] = c120; // 120m mid-far
             sensory_wave[32] = c180; // 180m far
             sensory_wave[101] = c260; // 260m very far
-            sensory_wave[102] = c350; // 350m horizon
+            sensory_wave[111] = c350; // 350m horizon (moved from ch102 to avoid overwriting approach_rate_l)
 
             // Pre-brake: speed × max curv across horizons. Weights decay: nearest highest.
             let speed_norm = (speed / 80.0).clamp(0.0, 1.0);
@@ -2562,18 +2564,19 @@ pub(super) fn update_racers(
             } else {
                 racer.stagnation += 1.0;
             }
-            // v5: Stagnation kill disabled. Fitness penalty via speed_bleed instead.
-            // Re-enable once wall/checkpoint logic refined (post_lap_grace interactions).
-            // if racer.stagnation > 1440.0 {
-            //     racer.is_dead = true;
-            //     racer.death_reason = Some(crate::simulation::racer::DeathReason::Stagnation);
-            //     racer.death_frame = racer.grace_ticks;
-            //     racer.death_pos = pos;
-            //     race.death_markers.push(pos);
-            //     if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
-            //     commands.entity(entity).insert(Visibility::Hidden);
-            //     println!("💀 {} STAGNATION aos frame {} (sem avanço {} frames)", racer.name, racer.grace_ticks, racer.stagnation as u32);
-            // }
+            // v8: Stagnation kill RE-ENABLED. Carros que não avançam 0.5m em 480 frames
+            // (≈7.5s) morrem. Sem isto, carros ficam parados contra paredes até timeout
+            // de 120s, desperdiçando tempo de evolução.
+            if racer.stagnation > 480.0 {
+                racer.is_dead = true;
+                racer.hp = 0.0;
+                racer.death_reason = Some(crate::simulation::racer::DeathReason::Stagnation);
+                racer.death_frame = racer.grace_ticks;
+                racer.death_pos = pos;
+                race.death_markers.push(pos);
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                commands.entity(entity).insert(Visibility::Hidden);
+            }
         } else {
             racer.stagnation = 0.0;
             racer.progress_checkpoint = racer.max_progress;
@@ -2587,8 +2590,8 @@ pub(super) fn update_racers(
         let making_progress = racer.max_progress > prev_max + 0.05;
         if out_of_grace && !in_post_lap_grace && cur_speed < 4.0 && !making_progress {
             racer.slow_time += 1.0;
-            if racer.slow_time > 360.0 {
-                racer.hp -= 30.0 * dt;
+            if racer.slow_time > 180.0 {  // v8: 360→180 frames (~2.8s) antes de speed bleed
+                racer.hp -= 60.0 * dt;    // v8: 30→60 HP/s (kills in ~1.7s instead of ~3.3s)
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
                     racer.hp = 0.0;

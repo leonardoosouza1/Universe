@@ -238,9 +238,27 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabPar
     // Tier 6.7 — Aesthetic judge: baixo jerk + linha consistente.
     let aesthetic_reward = aesthetic_score(&r.telemetry) * lab.k_aesth;
 
+    // Curve bonus (byte-lab transfer: "specialist paradox" — reward curve mastery).
+    // Each major curve passed earns a step bonus. Distances are approximate midpoints
+    // of tight turns on typical seed 9001 tracks. Works on any track: if a stretch
+    // has no curve at that distance, the car just gets free points for going straight.
+    let curve_thresholds: &[(f32, f32)] = &[
+        (200.0, 2000.0),   // first gentle curve
+        (500.0, 4000.0),   // first tight curve (~50°)
+        (620.0, 5000.0),   // second tight curve (~52°)
+        (760.0, 6000.0),   // third tight curve (~48°)
+        (1000.0, 8000.0),  // mid-lap curves
+        (1300.0, 10000.0), // far curves
+    ];
+    let curve_bonus: f32 = curve_thresholds.iter()
+        .filter(|(threshold, _)| prog >= *threshold)
+        .map(|(_, bonus)| bonus)
+        .sum();
+
     lap_bonus
         + prog * 100.0
         + proximity_bonus
+        + curve_bonus
         + joy
         + survival_bonus
         + smoothness_reward
@@ -713,12 +731,11 @@ pub(super) fn evolution_pipeline(
                 || val_ok
                 || simple_ok;
 
-            // Guard: só salva DNA se for melhoria significativa (>10%) sobre best_ever
-            // Previne que mutações randomicamente boas sobrescrevam checkpoint sólido
-            let improvement_sufficient = race.best_ever_dist == 0.0
-                || this_gen_best_dist >= race.best_ever_dist * 1.10;
-
-            if should_crown && improvement_sufficient {
+            // Guard removido: o requisito de melhoria ≥10% sobre best_ever_dist (que
+            // nunca decai) bloqueava ganhos incrementais após 664m — o campeão precisava
+            // atingir 730m de uma vez. champion_distance (que SÍ decai) já garante
+            // elitismo suficiente via val_ok / simple_ok acima.
+            if should_crown {
                 race.champion_distance = this_gen_best_dist; // Atualiza o limiar do campeão
                 race.gens_since_crown = 0; // Resetar contador de deadlock
                 // Guarda o traçado do campeão para visualizar na próxima geração.

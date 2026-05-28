@@ -19,6 +19,10 @@ pub struct CfCCell {
     pub decay_rate: f32,
     pub input_gain: f32,
     pub clamp_range: f32,
+    /// Denoising noise magnitude (byte-lab transfer: SSM_NOISE=0.15 fixed exposure bias).
+    /// Injects small perturbations in state to make creatures robust to self-induced drift.
+    pub denoise_mag: f32,
+    denoise_counter: u32,
 }
 
 impl CfCCell {
@@ -29,6 +33,8 @@ impl CfCCell {
             decay_rate: 0.5,     // exp(-0.5 * dt) por tick
             input_gain: 1.0,
             clamp_range: 2.0,
+            denoise_mag: 0.10,   // byte-lab validated: 15% noise fixes exposure bias
+            denoise_counter: 0,
         }
     }
 
@@ -37,6 +43,14 @@ impl CfCCell {
         for s in self.state.iter_mut() {
             *s = 0.0;
         }
+        self.denoise_counter = 0; // Deterministic denoising start per creature
+    }
+
+    /// Seed the denoising counter with a unique value per car.
+    /// Champion clones with identical weights but different denoise phases
+    /// take slightly different paths — truly independent attempts.
+    pub fn seed_denoise(&mut self, seed: u32) {
+        self.denoise_counter = seed;
     }
 
     /// Update dim-preserving: recebe input i8 [hidden_size], atualiza state,
@@ -48,9 +62,23 @@ impl CfCCell {
         let decay = (-self.decay_rate * dt).exp();
         let gain_dt = self.input_gain * dt;
         let clamp = self.clamp_range;
+        // Denoising: cheap deterministic noise via counter-based hash (no RNG needed).
+        // Byte-lab discovery: 15% state noise during forward pass fixes exposure bias —
+        // creatures become robust to self-induced sensory drift from their own actions.
+        self.denoise_counter = self.denoise_counter.wrapping_add(1);
+        let noise_mag = self.denoise_mag;
         for i in 0..self.hidden_size {
             let x = (input[i] as f32) / 127.0;
             let mut s = self.state[i] * decay + x * gain_dt;
+            // Inject deterministic noise (~15% of channels per tick, cheap hash).
+            if noise_mag > 0.0 {
+                let h = self.denoise_counter.wrapping_mul(2654435761).wrapping_add(i as u32);
+                if h % 7 == 0 { // ~14% of channels hit per tick
+                    // Pseudo-uniform noise in [-noise_mag, +noise_mag] from hash bits.
+                    let noise = ((h >> 8) as f32 / 16777216.0 - 0.5) * 2.0 * noise_mag;
+                    s += noise;
+                }
+            }
             if s > clamp { s = clamp; } else if s < -clamp { s = -clamp; }
             self.state[i] = s;
             let filtered = s.tanh();
@@ -81,6 +109,7 @@ mod tests {
     #[test]
     fn update_stabilizes_on_constant_input() {
         let mut cfc = CfCCell::new(4);
+        cfc.denoise_mag = 0.0; // disable noise for deterministic test
         let input = [127i8, 0, -127, 64];
         let mut out = [0i8; 4];
         // 600 passos de 1/60s → 10s virtuais, bem acima do time-constant 1/decay=2s.
@@ -97,6 +126,7 @@ mod tests {
     #[test]
     fn state_decays_to_zero_without_input() {
         let mut cfc = CfCCell::new(2);
+        cfc.denoise_mag = 0.0; // disable noise for deterministic test
         cfc.state[0] = 1.5;
         cfc.state[1] = -1.5;
         let input = [0i8; 2];

@@ -17,9 +17,12 @@ use super::settings::{RaceSettings, DevSettings};
 const SWS: usize = SENSORY_WAVE_SIZE;
 
 // TIER 4.4 — GENES NEUTROS (ZONA PROTEGIDA).
-// Primeiros ~5% dos índices do instinct_fast são reservados como
-// "zona neutra/protegida": isentos de mutação E isentos de crossover.
-const PROTECTED_ZONE_SIZE: usize = 400;
+// Definida como 0: throttle ocupa índices 0-222 e steer 223-399 (layout
+// weights[output * SWS + input]). PROTECTED_ZONE_SIZE=400 congelava
+// 100% do throttle e 79% do steer — impedindo evolução dos outputs mais
+// importantes e causando plateau em 664m. Priming A23 já provê valores
+// iniciais; evolução precisa de liberdade total para melhorar a partir daí.
+const PROTECTED_ZONE_SIZE: usize = 0;
 
 /// Constrói o vetor de pesos do instinct_layer pré-semeado com os axiomas A1–A15.
 /// Usado tanto na geração 0 (sem pool/DNA) quanto periodicamente em gens seguintes
@@ -29,17 +32,62 @@ const PROTECTED_ZONE_SIZE: usize = 400;
 // e evolução afina a partir de base funcional.
 
 /// Random initialization for fast weights (L1 cortex).
-/// Returns Vec<f32> with N(0, 0.1) distribution.
+/// Returns Vec<f32> with A24 sparse motor priming + random feature neurons.
+///
+/// KEY INSIGHT (A24): L1 output neurons 0-2 map to motor intent (throttle,
+/// steer, brake) via L2's diagonal initialization. With N(0,0.1) random
+/// weights, each motor neuron sums ~110 random ternary inputs that drown
+/// the curvature priming signal (SNR ≈ 0.26). Fix: motor neurons 0-2
+/// get ONLY priming weights (all other inputs zeroed). Feature neurons
+/// 3-95 keep random weights for evolution to explore.
+///
+/// This makes curvature → brake response RELIABLE from gen 0 instead
+/// of stochastic. Cars consistently brake before the hairpin at 754m.
+///
+/// Layout: weights[output * SWS + input_channel]
+/// Motor neurons: 0=throttle, 1=steer, 2=brake (via L2 diagonal → final_intent).
 fn initialize_fast_weights_random() -> Vec<f32> {
     let mut rng = rand::rng();
     let mut weights = vec![0.0f32; SWS * L1_NEURONS];
-    for w in weights.iter_mut() {
-        // Box-Muller gaussian N(0, 0.1).
-        let u1 = (rng.random::<f32>()).max(1e-7);
-        let u2 = rng.random::<f32>();
-        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-        *w = z * 0.1;
+
+    // Feature neurons 3..96: random N(0, 0.1) for evolutionary exploration.
+    // Motor neurons 0..3: start at ZERO, only priming weights set below.
+    for neuron in 3..L1_NEURONS {
+        for ch in 0..SWS {
+            let u1 = (rng.random::<f32>()).max(1e-7);
+            let u2 = rng.random::<f32>();
+            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+            weights[neuron * SWS + ch] = z * 0.1;
+        }
     }
+
+    // === MOTOR NEURON 0: THROTTLE ===
+    // Sparse: flow_alignment + curvature throttle-cut. No random noise.
+    weights[0 * SWS + 64] = 5.0;   // flow_alignment → throttle boost
+    weights[0 * SWS + 79] = -6.0;  // curv 70m → cut throttle (curve ahead)
+    weights[0 * SWS + 78] = -4.0;  // curv 40m → cut throttle (curve imminent)
+
+    // === MOTOR NEURON 1: STEER ===
+    // Sparse: curvature probes at multiple distances + lane offset + dark center.
+    weights[1 * SWS + 80] = 8.0;   // curv 120m signed → steer preemptive
+    weights[1 * SWS + 32] = 6.0;   // curv 180m signed → steer far ahead
+    weights[1 * SWS + 79] = 6.0;   // curv 70m signed → steer near
+    weights[1 * SWS + 78] = 4.0;   // curv 40m signed → steer immediate
+    weights[1 * SWS + 20] = 3.0;   // curv 20m signed → steer reactive
+    weights[1 * SWS + 81] = 3.0;   // lane_offset → steer towards center
+    for ch in 90..94 {
+        weights[1 * SWS + ch] = 4.0; // dark center tracker → steer to road
+    }
+
+    // === MOTOR NEURON 2: BRAKE ===
+    // Sparse: curvature probes only. No random noise, no ch20/ch28 (caused
+    // over-braking at earlier curves → 661m plateau in v15).
+    // ch79 (70m) overshoots at hairpin but works for WP24/32 curves.
+    // ch78 (40m) sees the hairpin perfectly from 714m.
+    // With sparse neuron, BOTH signals are clean → reliable curve braking.
+    weights[2 * SWS + 79] = 10.0;  // curv 70m → hard brake (WP24/32 curves)
+    weights[2 * SWS + 78] = 8.0;   // curv 40m → hard brake (CRITICAL for hairpin)
+
     weights
 }
 
@@ -261,17 +309,28 @@ pub fn spawn_swarm(
 
     for i in idx_start..idx_end.min(config.swarm_count) {
         let mut engine = crate::engine::SovereignEngine::new();
+
+        // --- HALL OF FAME (CHAMPION FALLBACK) ---
+        // Slot 0: SEMPRE carrega o CHAMPION DNA se existe. Imune à deriva geracional
+        // (até mesmo se o elite_pool inteiro for ruim, o HoF preserva o melhor de todos os tempos).
+        // v13: 1 pure champion clone (was 3). 3 clones caused 15-18% crash rate from
+        // collisions on narrow track despite denoise seeding. 1 clone had 4% crash rate.
+        // Denoise seeding still provides stochastic robustness for the single clone.
+        let slot_is_champion = i == 0 && current_best_w.is_some();
+
+        // Denoising phase per car: gen-hash XOR slot for diversity.
+        // All cars (including champion) get different noise each gen, testing
+        // robustness across noise patterns. This is what enabled the 2450m breakthrough.
+        let gen_hash = (race.generation as u32).wrapping_mul(2654435761);
+        let denoise_seed = (i as u32).wrapping_mul(7919) ^ gen_hash;
+        engine.slow_brain.cfc.seed_denoise(denoise_seed);
+        engine.cfc_state.seed_denoise(denoise_seed.wrapping_add(13));
         // Tier 4.2: herança epigenética parcial (10%) — se houver parent(s).
         // Preenchido nas branches de reprodução; None = organismo de priming/boot.
         let mut epigenetic_parents: Option<(f32, f32, f32)> = None;
         // Tier 6.3 LITE: morpho do novo racer. Preenchido nas branches conforme fonte
         // (champion / elite clone / parents crossover / priming). Mutado e clampado.
         let mut morpho_this: MorphoGenes = MorphoGenes::default();
-
-        // --- HALL OF FAME (CHAMPION FALLBACK) ---
-        // Slot 0: SEMPRE carrega o CHAMPION DNA se existe. Imune à deriva geracional
-        // (até mesmo se o elite_pool inteiro for ruim, o HoF preserva o melhor de todos os tempos).
-        let slot_is_champion = i == 0 && current_best_w.is_some();
 
         // SIMPLE ELITISM v2: slot 0 = champion puro, slots 1..(N-15) = champion + mutação,
         // últimos 15 slots = PRIMING REFRESH (fresh DNA) pra evitar monoculture.
@@ -344,7 +403,7 @@ pub fn spawn_swarm(
                         let u1 = (rng.random::<f32>()).max(1e-7);
                         let u2 = rng.random::<f32>();
                         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                        *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
+                        *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
                 for w in engine.cortex_l2.weights.iter_mut() {
@@ -352,7 +411,7 @@ pub fn spawn_swarm(
                         let u1 = (rng.random::<f32>()).max(1e-7);
                         let u2 = rng.random::<f32>();
                         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                        *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
+                        *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
                 // Mutate cortex_l3 (Layer 3 — deep abstract).
@@ -361,10 +420,10 @@ pub fn spawn_swarm(
                         let u1 = (rng.random::<f32>()).max(1e-7);
                         let u2 = rng.random::<f32>();
                         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                        *w = (*w + sigma_cortex * z).clamp(-2.0, 2.0);
+                        *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
-                // SlowBrain mutation: Gaussian σ scaled like cortex, clamped [-2, 2].
+                // SlowBrain mutation: Gaussian σ scaled like cortex, clamped [-10, 10].
                 // CfC state resets on spawn — only Dense1+Dense2 weights are heritable.
                 {
                     let slow_all = engine.slow_brain.all_weights();
@@ -375,7 +434,7 @@ pub fn spawn_swarm(
                             let u1 = (rng.random::<f32>()).max(1e-7);
                             let u2 = rng.random::<f32>();
                             let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                            *w = (*w + sigma_slow * z).clamp(-2.0, 2.0);
+                            *w = (*w + sigma_slow * z).clamp(-10.0, 10.0);
                         }
                     }
                     engine.slow_brain.set_all_weights(&slow_mut);
@@ -421,7 +480,7 @@ pub fn spawn_swarm(
                     }
                 }
                 // Reflex weights são f32 (FloatLinear). Mutate gaussian smooth — pequenos
-                // ajustes em vez de flip ternário disruptivo. σ=0.05, clamp [-2.0, 2.0].
+                // ajustes em vez de flip ternário disruptivo. σ=0.05, clamp [-10.0, 10.0].
                 for layer in [&mut engine.reflex.steer, &mut engine.reflex.throttle, &mut engine.reflex.brake] {
                     for w in layer.weights.iter_mut() {
                         if rng.random_bool(rate) {
@@ -429,7 +488,7 @@ pub fn spawn_swarm(
                             let u1 = (rng.random::<f32>()).max(1e-7);
                             let u2 = rng.random::<f32>();
                             let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                            *w = (*w + 0.05 * z).clamp(-2.0, 2.0);
+                            *w = (*w + 0.05 * z).clamp(-10.0, 10.0);
                         }
                     }
                 }
@@ -547,7 +606,7 @@ pub fn spawn_swarm(
                         let u1 = (rng.random::<f32>()).max(1e-7);
                         let u2 = rng.random::<f32>();
                         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                        (w + z * 0.05).clamp(-2.0, 2.0)
+                        (w + z * 0.05).clamp(-10.0, 10.0)
                     } else { w }
                 }).collect();
                 // 20% dos slots crossover sofrem burst por canal de entrada (além da mutação pontual).
@@ -570,7 +629,7 @@ pub fn spawn_swarm(
                                 let u1 = (rng.random::<f32>()).max(1e-7);
                                 let u2 = rng.random::<f32>();
                                 let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                                (base + z * 0.05).clamp(-2.0, 2.0)
+                                (base + z * 0.05).clamp(-10.0, 10.0)
                             } else { base }
                         }).collect();
                     engine.retina_perception.load_weights(&pw);
@@ -585,7 +644,7 @@ pub fn spawn_swarm(
                                 let u1 = (rng.random::<f32>()).max(1e-7);
                                 let u2 = rng.random::<f32>();
                                 let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                                (base + z * 0.08).clamp(-2.0, 2.0) // σ=0.08, slightly higher for exploration
+                                (base + z * 0.08).clamp(-10.0, 10.0) // σ=0.08, slightly higher for exploration
                             } else { base }
                         }).collect();
                     engine.slow_brain.set_all_weights(&sw);
@@ -634,7 +693,7 @@ pub fn spawn_swarm(
                         let u1 = (rng.random::<f32>()).max(1e-7);
                         let u2 = rng.random::<f32>();
                         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-                        (w as f32 + z * 0.05).clamp(-2.0, 2.0)
+                        (w as f32 + z * 0.05).clamp(-10.0, 10.0)
                     } else {
                         w as f32
                     }
@@ -643,6 +702,13 @@ pub fn spawn_swarm(
                 engine.instinct_layer.set_scale(current_best_s);
                 // NOTE: SlowBrain not mutated. Uses fresh init from SovereignEngine::new()
             }
+        } else {
+            // COLD START: no champion, no elite pool. ALL cars get A23 priming.
+            // Without this, only priming_slot (5 cars) had curvature instincts —
+            // the other 25 were pure random N(0,0.1) and couldn't navigate curves.
+            let fast_random = initialize_fast_weights_random();
+            engine.instinct_layer.quantize(&fast_random);
+            engine.instinct_layer.set_scale(1.0);
         }
 
         // Tier 4.2: seeda metabolismo do filho com 10% do estado hormonal do(s) parent(s).

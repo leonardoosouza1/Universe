@@ -737,8 +737,11 @@ fn integration_system(
         transform.translation += body.velocity * dt;
 
         // Angular Damping: Damping de yaw escala com a velocidade para matar speed-wobbles em altas velocidades
-        let base_yaw_damping = 800.0;
-        let speed_yaw_damping = speed * 100.0; 
+        // v8: reduced from 800/100 — was over-damped with multiplicative damping removed.
+        // v10: 300/45 caused catastrophic instability (0m gens). Reverted to 400/60.
+        // The 93° hairpin barrier is a BRAKING issue, not a turning issue.
+        let base_yaw_damping = 400.0;
+        let speed_yaw_damping = speed * 60.0;
         let total_yaw_damping = base_yaw_damping + speed_yaw_damping;
         let drag_torque_y = -body.angular_velocity.y * total_yaw_damping;
 
@@ -757,7 +760,10 @@ fn integration_system(
         transform.rotate_y(body.angular_velocity.y * dt);
         transform.rotation = transform.rotation.normalize();
 
-        // Angular damping (tire drag + aero)
-        body.angular_velocity *= 0.92_f32.powf(dt * 60.0);
+        // Angular damping v8: REMOVED multiplicative damping (was double-damping
+        // with drag_torque_y above). The torque-based damping (lines 740-748) already
+        // provides speed-proportional yaw damping. The extra 0.92^(dt*60) was over-
+        // constraining turning, preventing cars from navigating 50°+ curves.
+        // body.angular_velocity *= 0.92_f32.powf(dt * 60.0);
     }
 }
