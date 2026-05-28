@@ -66,5 +66,5 @@
   "rotate_tracks": false,
   "gens_per_track": 3,
   "easy_track": true,
-  "no_holes": true
+  "no_holes": false
 }

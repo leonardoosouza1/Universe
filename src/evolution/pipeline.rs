@@ -923,7 +923,10 @@ pub(super) fn evolution_pipeline(
         let base_width = next_track.track_width;
         let full_width = base_width + 4.0; // match main.rs convention
         let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
-        let narrowing = (champion_laps * 2.0).min(4.0);
+        // Slow narrowing: 0.5m per champion lap (was 2.0m — too aggressive).
+        // 0 laps→18m, 2 laps→17m, 4 laps→16m, 8 laps→14m (floor).
+        // Cars need many gens to adapt from wide to narrow track.
+        let narrowing = (champion_laps * 0.5).min(4.0);
         let effective_width = (full_width - narrowing).max(base_width);
         if config.rotate_tracks {
             println!("🔀 TRACK ROTATION gen={} → \"{}\" (seed={}, width={:.1}m, val={})",
