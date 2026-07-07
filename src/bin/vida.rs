@@ -9,6 +9,8 @@ use universe::cfc::CfCCell;
 use universe::layers::BitLinear;
 use universe::dense_layer::DenseLayer;
 use std::io::{Read, Write};
+use bevy::prelude::*;
+use bevy::math::Isometry2d;
 
 // ---- dimensões do cérebro ----
 const NIN: usize = 20;   // sensores (extero + intero + tempo)
@@ -94,6 +96,7 @@ struct Being {
     brain: Brain, cog: Cognition, senses: [f32; NIN], prev_pred: [f32; NIN], last_act: usize,
     // acumuladores p/ fitness/métricas
     sat_sum: f64, perr_sum: f64, act_cnt: [u32; NOUT], drink_thirsty: f64, eat_hungry: f64, nest_ticks: u32, born: u32,
+    trail: Vec<[f32; 2]>, act_hist: Vec<u8>,   // rota + histórico de ações (só modos ao vivo)
 }
 fn new_cog() -> Cognition { Cognition { mem:[0.0;NIN], h1:[0.0;NH1], rec:[0.0;NH1], h2:[0.0;NH2], out:[0.0;NOUT], pred:[0.0;NIN] } }
 impl Being {
@@ -102,7 +105,8 @@ impl Being {
             energy: 70.0, hydra: 70.0, stamina: 80.0, health: 100.0, age: 0, gener, alive: true,
             dopa: 0.0, corti: 0.0, curio: 0.0, adeno: 0.0,
             brain: Brain::from_genome(g), cog: new_cog(), senses: [0.0; NIN], prev_pred: [0.0; NIN], last_act: 0,
-            sat_sum: 0.0, perr_sum: 0.0, act_cnt: [0; NOUT], drink_thirsty: 0.0, eat_hungry: 0.0, nest_ticks: 0, born }
+            sat_sum: 0.0, perr_sum: 0.0, act_cnt: [0; NOUT], drink_thirsty: 0.0, eat_hungry: 0.0, nest_ticks: 0, born,
+            trail: Vec::new(), act_hist: Vec::new() }
     }
     fn satisfaction(&self) -> f32 { (self.energy + self.hydra + self.stamina) / 300.0 }
     fn fitness(&self) -> f64 {
@@ -163,8 +167,188 @@ fn main() {
         "--record" => record(),
         "--watch"  => watch(),
         "--serve"  => serve(),
+        "--lab"    => lab(),
         _ => evolve(40),
     }
+}
+
+// ================== LAB GRÁFICO NATIVO (Bevy) — a engine Rust renderizando o cérebro por dentro ==================
+#[derive(Resource)]
+struct Sim { w: World, beings: Vec<Being>, tick: u32, sel: Option<u32>, paused: bool, speed: f32, acc: f32, rng: Rng, g: Vec<f32>, nextid: u32, follow: bool }
+#[derive(Component)] struct Hud;
+#[derive(Component)] struct Help;
+
+fn lab() {
+    let mut rng = Rng(3);
+    let g = load_genome("vida_champion.dna").unwrap_or_else(|| { println!("(sem vida_champion.dna — evolua antes; usando aleatório)"); random_genome(&mut rng) });
+    let mut w = World::new(130, 7, 5, 5, &mut rng);
+    let beings: Vec<Being> = (0..70).map(|i| { let mut cg = g.clone();
+        for v in cg.iter_mut() { if rng.f() < 0.12 { *v += rng.g() * 0.12; } } Being::from_genome(i, rng.f(), rng.f(), 0, 0, &cg, &mut rng) }).collect();
+    println!("IARA-VIDA LAB (Bevy) — clique num ser p/ inspecionar · Espaço=pausa · ↑↓=veloc · .=passo · P=perturbar cérebro · S=spawn · F=comida · X=predador · R=reset · TAB=seguir");
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(Window {
+            title: "IARA-VIDA · o cérebro de um ser, por dentro".into(), resolution: (1400.0, 780.0).into(), ..default() }), ..default() }))
+        .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
+        .insert_resource(Sim { w, beings, tick: 0, sel: None, paused: false, speed: 5.0, acc: 0.0, rng, g, nextid: 900, follow: true })
+        .add_systems(Startup, setup_lab)
+        .add_systems(Update, (input_lab, step_lab, draw_lab, hud_lab).chain())
+        .run();
+}
+fn setup_lab(mut c: Commands) {
+    c.spawn(Camera2d::default());
+    c.spawn((Text::new(""), TextFont { font_size: 13.0, ..default() }, TextColor(Color::srgb(0.82, 0.9, 1.0)),
+        Node { position_type: PositionType::Absolute, left: Val::Px(14.0), top: Val::Px(10.0), ..default() }, Hud));
+    c.spawn((Text::new("clique=inspecionar  espaço=pausa  ↑↓=veloc  .=passo  P=perturbar  S=spawn  F=comida  X=predador  R=reset  TAB=seguir"),
+        TextFont { font_size: 12.0, ..default() }, TextColor(Color::srgb(0.45, 0.55, 0.7)),
+        Node { position_type: PositionType::Absolute, left: Val::Px(14.0), bottom: Val::Px(8.0), ..default() }, Help));
+    // rótulos das camadas do cérebro (posição de tela = 700 + coluna_x)
+    let labels = [(730.0,"sensores"),(870.0,"percepção"),(1000.0,"instinto"),(1118.0,"memória"),(1220.0,"pensamento"),(1305.0,"ação"),(1360.0,"previsão")];
+    for (sx, name) in labels { c.spawn((Text::new(name), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.5,0.62,0.78)),
+        Node { position_type: PositionType::Absolute, left: Val::Px(sx-24.0), top: Val::Px(52.0), ..default() })); }
+}
+// mapeia mundo [0,1]² → metade esquerda da tela; cérebro na metade direita
+fn wpos(x: f32, y: f32) -> Vec2 { Vec2::new(-360.0 + (x - 0.5) * 640.0, (0.5 - y) * 640.0) }
+fn npos(cx: f32, i: usize, n: usize) -> Vec2 { let span = 600.0; let y = if n > 1 { span * 0.5 - i as f32 * span / (n - 1) as f32 } else { 0.0 }; Vec2::new(cx, y) }
+fn act_col(a: usize) -> Color { match a { 2 => Color::srgb(0.48,0.83,0.41), 3 => Color::srgb(0.29,0.64,1.0), 4 => Color::srgb(0.6,0.52,1.0), 5 => Color::srgb(1.0,0.71,0.33), _ => Color::srgb(0.42,0.5,0.62) } }
+fn actf(v: f32) -> Color { let a = v.abs().min(1.0); if v >= 0.0 { Color::srgba(0.2,0.82,0.65,0.25+a*0.75) } else { Color::srgba(1.0,0.71,0.33,0.25+a*0.75) } }
+fn gc(g: &mut Gizmos, p: Vec2, r: f32, c: Color) { g.circle_2d(Isometry2d::from_translation(p), r, c); }
+
+fn step_lab(time: Res<Time>, mut sim: ResMut<Sim>) {
+    if sim.paused { return; }
+    let dt = time.delta_secs();
+    sim.acc += sim.speed * dt;
+    let mut budget = 0;
+    while sim.acc >= 1.0 && budget < 40 {
+        let s = &mut *sim;
+        step_world(&mut s.beings, &mut s.w, s.tick, &mut s.rng, true, true);
+        s.tick += 1; s.acc -= 1.0; budget += 1;
+    }
+    // segue o protagonista (ser vivo mais velho) se estiver no modo seguir ou se o selecionado morreu
+    let alive_sel = sim.sel.map_or(false, |id| sim.beings.iter().any(|b| b.id == id));
+    if sim.follow || !alive_sel {
+        if let Some(id) = sim.beings.iter().max_by_key(|b| b.age).map(|b| b.id) { sim.sel = Some(id); }
+    }
+}
+
+fn input_lab(mut sim: ResMut<Sim>, keys: Res<ButtonInput<KeyCode>>, mouse: Res<ButtonInput<MouseButton>>,
+             windows: Query<&Window>, cams: Query<(&Camera, &GlobalTransform), With<Camera2d>>) {
+    if keys.just_pressed(KeyCode::Space) { sim.paused = !sim.paused; }
+    if keys.just_pressed(KeyCode::ArrowUp) { sim.speed = (sim.speed * 1.5).min(60.0); }
+    if keys.just_pressed(KeyCode::ArrowDown) { sim.speed = (sim.speed / 1.5).max(0.3); }
+    if keys.just_pressed(KeyCode::Tab) { sim.follow = !sim.follow; }
+    if keys.just_pressed(KeyCode::Period) { let s = &mut *sim; step_world(&mut s.beings, &mut s.w, s.tick, &mut s.rng, true, true); s.tick += 1; }
+    if keys.just_pressed(KeyCode::KeyR) { let mut rr = Rng(sim.tick as u64 + 7); let g = sim.g.clone();
+        sim.w = World::new(130,7,5,5,&mut rr); sim.beings = (0..70).map(|i| { let mut cg=g.clone(); for v in cg.iter_mut(){ if rr.f()<0.12 {*v+=rr.g()*0.12;} } Being::from_genome(i, rr.f(), rr.f(), 0, 0, &cg, &mut rr) }).collect(); sim.tick=0; sim.sel=None; }
+    if keys.just_pressed(KeyCode::KeyS) { let s=&mut *sim; let mut cg=s.g.clone(); for v in cg.iter_mut(){ if s.rng.f()<0.2 {*v+=s.rng.g()*0.2;} }
+        let (x,y)=(s.rng.f(),s.rng.f()); let id=s.nextid; s.nextid+=1; let mut b=Being::from_genome(id,x,y,0,s.tick,&cg,&mut s.rng); b.brain.reset(); s.beings.push(b); }
+    if keys.just_pressed(KeyCode::KeyF) { let s=&mut *sim; for _ in 0..8 { let (x,y)=(s.rng.f(),s.rng.f()); s.w.food.push((x,y,true,0.0)); } }
+    if keys.just_pressed(KeyCode::KeyX) { let s=&mut *sim; let (x,y)=(s.rng.f(),s.rng.f()); s.w.preds.push((x,y)); }
+    if keys.just_pressed(KeyCode::KeyP) { if let Some(id)=sim.sel { let s=&mut *sim; if let Some(b)=s.beings.iter_mut().find(|b| b.id==id) {
+        let mut cg=b.brain.genome(); for v in cg.iter_mut(){ if s.rng.f()<0.25 { *v=(*v+s.rng.g()*0.5).clamp(-3.0,3.0); } } b.brain=Brain::from_genome(&cg); } } }
+    // clique = inspecionar o ser mais próximo
+    if mouse.just_pressed(MouseButton::Left) {
+        if let (Ok(win), Ok((cam, ct))) = (windows.single(), cams.single()) {
+            if let Some(cur) = win.cursor_position() {
+                if let Ok(wp) = cam.viewport_to_world_2d(ct, cur) {
+                    let mut best = 22.0; let mut bid = None;
+                    for b in &sim.beings { let p = wpos(b.x, b.y); let d = p.distance(wp); if d < best { best = d; bid = Some(b.id); } }
+                    if bid.is_some() { sim.sel = bid; sim.follow = false; }
+                }
+            }
+        }
+    }
+}
+
+fn draw_lab(mut giz: Gizmos, sim: Res<Sim>) {
+    let night = sim.w.is_night(sim.tick);
+    // moldura do mundo
+    let dim = if night { 0.5 } else { 1.0 };
+    giz.rect_2d(Isometry2d::from_translation(Vec2::new(-360.0, 0.0)), Vec2::new(646.0, 646.0), Color::srgba(0.3,0.4,0.6,0.25));
+    // ninhos, água, comida
+    for n in &sim.w.nests { gc(&mut giz, wpos(n.0,n.1), n.2*640.0, Color::srgba(0.6,0.52,1.0,0.35)); }
+    for wt in &sim.w.water { let p=wpos(wt.0,wt.1); gc(&mut giz,p,4.0,Color::srgb(0.29,0.64,1.0)); gc(&mut giz,p,12.0,Color::srgba(0.29,0.64,1.0,0.18)); }
+    for f in &sim.w.food { if f.2 { gc(&mut giz, wpos(f.0,f.1), 1.6, Color::srgba(0.4,0.75,0.28,dim)); } }
+    // seres (rotas + corpo)
+    for b in &sim.beings {
+        let p = wpos(b.x, b.y);
+        if b.trail.len() > 1 { for k in 1..b.trail.len() { let a=wpos(b.trail[k-1][0],b.trail[k-1][1]); let c=wpos(b.trail[k][0],b.trail[k][1]);
+            giz.line_2d(a, c, Color::srgba(0.35,0.45,0.6,0.10)); } }
+        let e = (b.energy/100.0).clamp(0.0,1.0); let col = act_col(b.last_act);
+        gc(&mut giz, p, 2.0+e*2.6, col);
+    }
+    for pr in &sim.w.preds { let p=wpos(pr.0,pr.1); gc(&mut giz,p,4.5,Color::srgb(1.0,0.36,0.42)); gc(&mut giz,p,8.0,Color::srgba(1.0,0.36,0.42,0.2)); }
+    // protagonista selecionado: destaque + antenas + rota forte + CÉREBRO
+    let sel = sim.sel.and_then(|id| sim.beings.iter().find(|b| b.id==id));
+    if let Some(b) = sel {
+        let p = wpos(b.x, b.y);
+        gc(&mut giz, p, 9.0, Color::WHITE); gc(&mut giz, p, 13.0, Color::srgba(1.0,1.0,1.0,0.3));
+        for k in 1..b.trail.len() { let a=wpos(b.trail[k-1][0],b.trail[k-1][1]); let cc=wpos(b.trail[k][0],b.trail[k][1]); giz.line_2d(a,cc,Color::srgba(1.0,1.0,1.0,0.4)); }
+        draw_brain(&mut giz, b, &sim.g);
+    }
+}
+
+// desenha o CÉREBRO COMPLETO do ser (metade direita): sensores→mem→instinto→memória→pensamento→ação+world-model
+fn draw_brain(giz: &mut Gizmos, b: &Being, _g: &[f32]) {
+    let w = b.brain.genome();
+    let mut o = 0; let take = |n: usize, o: &mut usize| { let s = w[*o..*o+n].to_vec(); *o += n; s };
+    let l1 = take(NIN*NH1,&mut o); let _l2b_off = NH1*NH2; let l2 = take(NH1*NH2,&mut o); let _l2bias = take(NH2,&mut o);
+    let act = take(NH2*NOUT,&mut o); let _actb = take(NOUT,&mut o); let wm = take(NH2*NIN,&mut o);
+    let cS=30.0; let cM=170.0; let cL1=300.0; let cR=418.0; let cL2=520.0; let cO=605.0; let cW=660.0;
+    let pS:Vec<Vec2>=(0..NIN).map(|i| npos(cS,i,NIN)).collect();
+    let pM:Vec<Vec2>=(0..NIN).map(|i| npos(cM,i,NIN)).collect();
+    let pL1:Vec<Vec2>=(0..NH1).map(|i| npos(cL1,i,NH1)).collect();
+    let pR:Vec<Vec2>=(0..NH1).map(|i| npos(cR,i,NH1)).collect();
+    let pL2:Vec<Vec2>=(0..NH2).map(|i| npos(cL2,i,NH2)).collect();
+    let pO:Vec<Vec2>=(0..NOUT).map(|i| npos(cO,i,NOUT)).collect();
+    let pP:Vec<Vec2>=(0..NIN).map(|i| npos(cW,i,NIN)).collect();
+    let mx=|a:&[f32]| a.iter().fold(1e-6f32,|m,v| m.max(v.abs()));
+    let (mL1,mL2,mA,mW)=(mx(&l1),mx(&l2),mx(&act),mx(&wm));
+    let syn=|giz:&mut Gizmos,a:&[Vec2],b:&[Vec2],wt:&[f32],ci:usize,ro:usize,m:f32|{
+        for j in 0..ro { for i in 0..ci { let ww=wt[j*ci+i]; if ww.abs()<m*0.55 {continue;}
+            let col=if ww>=0.0 {Color::srgba(0.2,0.82,0.65,(ww.abs()/m*0.4).min(0.38))} else {Color::srgba(1.0,0.36,0.42,(ww.abs()/m*0.4).min(0.38))};
+            giz.line_2d(a[i],b[j],col); } } };
+    // sinapses (por baixo)
+    syn(giz,&pM,&pL1,&l1,NIN,NH1,mL1); syn(giz,&pR,&pL2,&l2,NH1,NH2,mL2);
+    syn(giz,&pL2,&pO,&act,NH2,NOUT,mA); syn(giz,&pL2,&pP,&wm,NH2,NIN,mW);
+    // links de memória CfC (tracejado)
+    for i in 0..NIN { giz.line_2d(pS[i],pM[i],Color::srgba(0.29,0.78,1.0,0.22)); }
+    for i in 0..NH1 { giz.line_2d(pL1[i],pR[i],Color::srgba(0.29,0.78,1.0,0.22)); }
+    // nós (ativações)
+    let cog=&b.cog;
+    let node=|giz:&mut Gizmos,p:Vec2,r:f32,v:f32|{ let a=v.abs().min(1.0);
+        let glow=if v>=0.0 {Color::srgba(0.2,0.82,0.65,a*0.22)} else {Color::srgba(1.0,0.71,0.33,a*0.22)};
+        if a>0.1 { gc(giz,p,r+2.0+a*4.0,glow); } gc(giz,p,r,actf(v)); };
+    for i in 0..NIN { node(giz,pS[i],4.0,b.senses[i]); }
+    for i in 0..NIN { node(giz,pM[i],4.0,cog.mem[i]); }
+    for i in 0..NH1 { node(giz,pL1[i],4.5,cog.h1[i]); }
+    for i in 0..NH1 { node(giz,pR[i],4.5,cog.rec[i]); }
+    for i in 0..NH2 { node(giz,pL2[i],5.0,cog.h2[i]); }
+    for i in 0..NOUT { node(giz,pO[i],6.0,cog.out[i]); }
+    gc(giz,pO[b.last_act],10.0,act_col(b.last_act));   // anel na AÇÃO escolhida
+    for i in 0..NIN { node(giz,pP[i],3.5,cog.pred[i]); }
+}
+
+fn hud_lab(sim: Res<Sim>, mut q: Query<&mut Text, With<Hud>>) {
+    let sel = sim.sel.and_then(|id| sim.beings.iter().find(|b| b.id==id));
+    let bar = |v: f32, mx: f32| { let n=14usize; let f=((v/mx)*n as f32).round().clamp(0.0,n as f32) as usize; format!("[{}{}]","=".repeat(f)," ".repeat(n-f)) };
+    let mut s = format!("IARA-VIDA · tick {} · {} · população {} · veloc {:.1}/s{}\n",
+        sim.tick, if sim.w.is_night(sim.tick) {"NOITE"} else {"DIA"}, sim.beings.len(), sim.speed, if sim.paused {"  [PAUSADO]"} else {""});
+    if let Some(b) = sel {
+        s += &format!("\n── SER #{} · idade {} · geração {} · ação: {} ──\n", b.id, b.age, b.gener, ACT_NAMES[b.last_act].to_uppercase());
+        s += &format!("energia    {} {:>3.0}\n", bar(b.energy,100.0), b.energy);
+        s += &format!("hidratação {} {:>3.0}\n", bar(b.hydra,100.0), b.hydra);
+        s += &format!("vigor      {} {:>3.0}\n", bar(b.stamina,100.0), b.stamina);
+        s += &format!("saúde      {} {:>3.0}\n", bar(b.health,100.0), b.health);
+        s += &format!("\ndopamina {} cortisol {} curiosid {} fadiga {}\n",
+            bar(b.dopa,1.0), bar(b.corti,1.0), bar(b.curio,1.0), bar(b.adeno,1.0));
+        let tot: u32 = b.act_cnt.iter().sum::<u32>().max(1);
+        s += "\nhistórico de ações (vida toda):\n";
+        for i in 0..NOUT { s += &format!("  {:<10} {} {:.0}%\n", ACT_NAMES[i], bar(b.act_cnt[i] as f32, tot as f32), b.act_cnt[i] as f32/tot as f32*100.0); }
+        s += "\ncérebro à direita → sensores · mem.perceptual · instinto(L1) · memória CfC · pensamento(L2) · ação · world-model";
+    } else {
+        s += "\nclique num ser (bolinha) pra abrir o cérebro dele.";
+    }
+    if let Ok(mut t) = q.single_mut() { *t = Text::new(s); }
 }
 
 // ---- carrega/salva genoma (formato simples f32 LE; e i8 quantizado estilo Universe) ----
@@ -196,7 +380,7 @@ fn evolve(gens: u32) {
     let mut champ = genomes[0].clone(); let mut champ_fit = -1.0;
     println!("IARA-VIDA evolve — pop {} · genoma {} pesos · mundo multi-necessidade (comida/água/ninho/predador/dia-noite)\n", pop, GENOME);
     for gn in 0..gens {
-        let fits = eval_pop(&genomes, &[100 + gn as u64, 555 + gn as u64, 909 + gn as u64]);
+        let fits = eval_pop(&genomes, &[100 + gn as u64, 555 + gn as u64, 909 + gn as u64, 222 + gn as u64, 777 + gn as u64]);
         let mut idx: Vec<usize> = (0..pop).collect(); idx.sort_by(|&a, &b| fits[b].partial_cmp(&fits[a]).unwrap());
         if fits[idx[0]] > champ_fit { champ_fit = fits[idx[0]]; champ = genomes[idx[0]].clone(); }
         let mean: f64 = fits.iter().sum::<f64>() / pop as f64;
@@ -302,6 +486,10 @@ fn step_world(beings: &mut Vec<Being>, w: &mut World, t: u32, r: &mut Rng, allow
         // ethograma pelo que REALMENTE aconteceu (não pelo gate cru)
         let la = if ate {2} else if drank {3} else if rested {4} else if signal>0.7 && mthr<0.25 {5} else {0};
         b.last_act = la; b.act_cnt[la] += 1;
+        if allow_repro {   // rota + histórico só nos modos ao vivo (não pesa a evolução)
+            b.trail.push([b.x, b.y]); let l = b.trail.len(); if l > 60 { b.trail.drain(0..l-60); }
+            b.act_hist.push(la as u8); let h = b.act_hist.len(); if h > 160 { b.act_hist.drain(0..h-160); }
+        }
         // acumuladores
         b.sat_sum += b.satisfaction() as f64; b.perr_sum += perr as f64;
         b.age += 1; b.prev_pred = cog.pred; b.cog = cog; b.senses = s;
