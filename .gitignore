@@ -3,3 +3,9 @@
 /ffmpeg-7.0.2-amd64-static
 race_reports.md
 /telemetry
+
+# IARA-Vida artefatos gerados
+vida/trace.json
+vida/trace.js
+vida_champion.dna
+champion_survival_*.dna

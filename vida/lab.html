@@ -1,0 +1,194 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IARA-VIDA · laboratório glass-box</title>
+<style>
+:root{--bg:#0a0d13;--pan:#111722;--pan2:#0e1420;--bd:#212b3c;--tx:#c9d6e8;--mut:#748399;--dim:#4a5566;
+--teal:#35d0a5;--blue:#4aa3ff;--purp:#9a86ff;--amber:#ffb454;--red:#ff5c6c;--green:#7bd36a;--gray:#6b7a90;}
+*{box-sizing:border-box;font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;}
+body{margin:0;background:radial-gradient(1200px 600px at 30% -10%,#131b28,#0a0d13);color:var(--tx);font-size:13px;}
+.wrap{max-width:1500px;margin:0 auto;padding:14px 18px 40px;}
+h1{font-size:16px;font-weight:600;margin:0;letter-spacing:.3px;}
+h1 b{color:var(--teal);} .sub{color:var(--mut);font-size:12px;font-weight:400;}
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;background:var(--pan);border:1px solid var(--bd);border-radius:12px;margin-bottom:12px;}
+.btn{background:#182130;border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:6px;}
+.btn:hover{background:#1d2838;border-color:#31415a;} .btn.pri{background:#123326;border-color:#1d5a41;color:var(--teal);}
+input[type=range]{accent-color:var(--teal);height:4px;} .badge{padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;}
+.day{background:#2a2410;color:var(--amber);} .night{background:#101a2e;color:var(--blue);}
+.grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:12px;}
+.panel{background:var(--pan);border:1px solid var(--bd);border-radius:12px;padding:12px 14px;}
+.panel h3{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:7px;}
+.panel h3 .dot{width:7px;height:7px;border-radius:50%;background:var(--teal);}
+canvas{display:block;width:100%;border-radius:8px;}
+.needrow{display:flex;align-items:center;gap:8px;margin:7px 0;font-size:12px;}
+.needrow .nm{width:64px;color:var(--mut);} .bar{flex:1;height:9px;background:#0c121c;border-radius:6px;overflow:hidden;}
+.bar > i{display:block;height:100%;border-radius:6px;transition:width .1s;} .needrow .val{width:32px;text-align:right;font-variant-numeric:tabular-nums;}
+.mods{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;}
+.mod{background:var(--pan2);border-radius:8px;padding:7px 9px;} .mod .l{color:var(--mut);font-size:11px;} .mod .g{height:6px;background:#0c121c;border-radius:4px;margin-top:5px;overflow:hidden;} .mod .g>i{display:block;height:100%;}
+.actbig{font-size:22px;font-weight:600;margin:2px 0 0;} .actsub{color:var(--mut);font-size:11px;}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px;}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--mut);margin-top:8px;}
+.legend span{display:inline-flex;align-items:center;gap:5px;} .legend i{width:9px;height:9px;border-radius:50%;display:inline-block;}
+.small{font-size:11px;color:var(--mut);} .kv{font-variant-numeric:tabular-nums;color:var(--tx);}
+</style></head><body><div class="wrap">
+<div class="top">
+  <div style="flex:1;min-width:200px;"><h1>IARA-<b>VIDA</b> · laboratório glass-box <span class="sub">— um ser cognitivo (CfC + BitLinear, recorrente · neuromodulado · preditivo) por dentro</span></h1></div>
+  <button class="btn pri" id="play">▶ tocar</button>
+  <button class="btn" id="back">⏴</button><button class="btn" id="fwd">⏵</button>
+  <span class="small">veloc</span><input type="range" id="spd" min="1" max="16" value="4" style="width:90px;">
+  <span id="daybadge" class="badge day">dia</span>
+  <span class="small">frame <b class="kv" id="fnum">0</b> · tick <b class="kv" id="tnum">0</b> · protagonista <b class="kv" id="fid">#0</b></span>
+</div>
+<input type="range" id="scrub" min="0" max="100" value="0" style="width:100%;margin:0 0 12px;">
+<div class="grid">
+  <div class="panel"><h3><span class="dot"></span>mundo vivo <span class="small" style="text-transform:none;margin-left:auto;font-weight:400;">pop <b class="kv" id="pop">0</b> · verde=come azul=bebe roxo=descansa cinza=anda</span></h3>
+    <canvas id="world" width="720" height="540"></canvas>
+    <div class="legend"><span><i style="background:var(--green)"></i>comida</span><span><i style="background:var(--blue)"></i>água</span><span><i style="background:var(--purp)"></i>ninho</span><span><i style="background:var(--red)"></i>predador</span><span><i style="background:#fff"></i>protagonista</span></div>
+  </div>
+  <div class="panel"><h3><span class="dot" style="background:var(--amber)"></span>corpo & impulsos do ser</h3>
+    <div class="actbig" id="actbig">—</div><div class="actsub" id="actsub">ação atual</div>
+    <div style="margin-top:12px;">
+      <div class="needrow"><span class="nm">energia</span><div class="bar"><i id="n0" style="background:var(--green)"></i></div><span class="val" id="v0">0</span></div>
+      <div class="needrow"><span class="nm">hidratação</span><div class="bar"><i id="n1" style="background:var(--blue)"></i></div><span class="val" id="v1">0</span></div>
+      <div class="needrow"><span class="nm">vigor</span><div class="bar"><i id="n2" style="background:var(--purp)"></i></div><span class="val" id="v2">0</span></div>
+      <div class="needrow"><span class="nm">saúde</span><div class="bar"><i id="n3" style="background:var(--red)"></i></div><span class="val" id="v3">0</span></div>
+    </div>
+    <div class="small" style="margin:12px 0 4px;text-transform:uppercase;letter-spacing:.06em;">neuromoduladores</div>
+    <div class="mods">
+      <div class="mod"><div class="l">dopamina (recompensa)</div><div class="g"><i id="m0" style="background:var(--teal)"></i></div></div>
+      <div class="mod"><div class="l">cortisol (medo)</div><div class="g"><i id="m1" style="background:var(--red)"></i></div></div>
+      <div class="mod"><div class="l">curiosidade (surpresa)</div><div class="g"><i id="m2" style="background:var(--amber)"></i></div></div>
+      <div class="mod"><div class="l">fadiga (adenosina)</div><div class="g"><i id="m3" style="background:var(--purp)"></i></div></div>
+    </div>
+    <div class="small" style="margin-top:12px;">O ser sente as próprias necessidades (interocepção) e o mundo, guarda memória no CfC recorrente, e o ganho do córtex é modulado por dopamina/cortisol. Ele prevê a próxima percepção (world-model) — o erro vira <b style="color:var(--amber)">curiosidade</b>.</div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:12px;"><h3><span class="dot" style="background:var(--purp)"></span>cérebro por dentro — sensores → memória perceptual → córtex L1 → memória recorrente (CfC) → córtex L2 → ação + world-model
+  <span class="small" style="text-transform:none;margin-left:auto;font-weight:400;">nó: <b style="color:var(--teal)">ativo+</b>/<b style="color:var(--amber)">ativo−</b> · sinapse: <b style="color:var(--teal)">peso+</b>/<b style="color:var(--red)">peso−</b> · tracejado ciano = memória CfC</span></h3>
+  <canvas id="brain" width="1440" height="440"></canvas>
+</div>
+
+<div class="row3">
+  <div class="panel"><h3><span class="dot" style="background:var(--blue)"></span>memória recorrente (CfC) no tempo</h3>
+    <canvas id="mem" width="460" height="230"></canvas>
+    <div class="small" style="margin-top:6px;">cada linha = 1 neurônio de memória; colunas = tempo. Padrões estáveis = o ser "segura" um plano; ondas = ritmo dia/noite.</div></div>
+  <div class="panel"><h3><span class="dot" style="background:var(--green)"></span>necessidades & neuromod no tempo</h3>
+    <canvas id="charts" width="460" height="230"></canvas>
+    <div class="legend"><span><i style="background:var(--green)"></i>energia</span><span><i style="background:var(--blue)"></i>hidra</span><span><i style="background:var(--purp)"></i>vigor</span><span><i style="background:var(--red)"></i>saúde</span><span><i style="background:var(--amber)"></i>medo</span></div></div>
+  <div class="panel"><h3><span class="dot" style="background:var(--amber)"></span>world-model: previsto × real & ethograma</h3>
+    <canvas id="pred" width="460" height="150"></canvas>
+    <canvas id="etho" width="460" height="60" style="margin-top:6px;"></canvas>
+    <div class="small" style="margin-top:6px;">barras: previsão do ser (topo) vs sensação real (baixo) de cada sensor. Faixa: sequência de ações (cores).</div></div>
+</div>
+</div>
+<script src="trace.js"></script>
+<script>
+(function(){
+  const T = window.VIDA_TRACE;
+  if(!T){ document.body.innerHTML='<div style="padding:40px;color:#ff5c6c">trace.js não encontrado. Rode <code>./target/release/vida --record</code> na raiz do Universe e abra este arquivo da pasta vida/.</div>'; return; }
+  const D=T.dims, F=T.frames, NIN=D.nin,NH1=D.nh1,NH2=D.nh2,NOUT=D.nout;
+  const SN=T.sense_names, AN=T.act_names;
+  const ACTC={0:'#6b7a90',1:'#6b7a90',2:'#7bd36a',3:'#4aa3ff',4:'#9a86ff',5:'#ffb454'};
+  // ---- fatiar o genoma em matrizes de peso (mesmo layout do Rust) ----
+  const g=T.genome; let o=0; const take=n=>{const s=g.slice(o,o+n);o+=n;return s;};
+  const L1=take(NIN*NH1), L2=take(NH1*NH2), L2b=take(NH2), ACT=take(NH2*NOUT), ACTb=take(NOUT), WM=take(NH2*NIN), WMb=take(NIN);
+  const mx=a=>{let m=1e-6;for(const v of a)m=Math.max(m,Math.abs(v));return m;};
+  const mL1=mx(L1),mL2=mx(L2),mACT=mx(ACT),mWM=mx(WM);
+  // ---- estado ----
+  let fi=0, playing=false, speed=4;
+  const el=id=>document.getElementById(id);
+  const W=el('world'),wx=W.getContext('2d'); const B=el('brain'),bx=B.getContext('2d');
+  const M=el('mem'),mxx=M.getContext('2d'); const C=el('charts'),cx=C.getContext('2d');
+  const P=el('pred'),px=P.getContext('2d'); const E=el('etho'),ex=E.getContext('2d');
+  el('scrub').max=F.length-1;
+  const div=(v,neg,pos)=>{v=Math.max(-1,Math.min(1,v));const a=Math.abs(v);const c=v>=0?pos:neg;
+    return `rgba(${c},${0.15+a*0.85})`;};
+  const TEAL='53,208,165', AMBER='255,180,84', RED='255,92,108';
+
+  function drawWorld(f){
+    wx.fillStyle = f.night? '#080b12':'#0d1119'; wx.fillRect(0,0,W.width,W.height);
+    if(f.night){ wx.fillStyle='rgba(20,40,80,0.12)'; wx.fillRect(0,0,W.width,W.height); }
+    const sx=x=>x*W.width, sy=y=>y*W.height;
+    // ninhos
+    for(const n of T.nests){ wx.strokeStyle='rgba(154,134,255,0.5)';wx.setLineDash([4,4]);wx.lineWidth=1.2;
+      wx.beginPath();wx.arc(sx(n[0]),sy(n[1]),n[2]*W.width,0,7);wx.stroke();wx.setLineDash([]);
+      wx.fillStyle='rgba(154,134,255,0.08)';wx.fill(); }
+    // água
+    for(const p of T.water){ wx.fillStyle='rgba(74,163,255,0.9)'; wx.beginPath();wx.arc(sx(p[0]),sy(p[1]),4,0,7);wx.fill();
+      wx.fillStyle='rgba(74,163,255,0.14)';wx.beginPath();wx.arc(sx(p[0]),sy(p[1]),13,0,7);wx.fill(); }
+    // comida
+    wx.fillStyle='#5aa03a'; for(let i=0;i<f.fx.length;i++){ wx.fillRect(sx(f.fx[i])-1.5,sy(f.fy[i])-1.5,3,3); }
+    // seres
+    for(let i=0;i<f.bx.length;i++){ const c=ACTC[f.ba[i]]||'#6b7a90'; const e=f.be[i]/100;
+      wx.globalAlpha=0.4+0.6*e; wx.fillStyle=c; wx.beginPath();wx.arc(sx(f.bx[i]),sy(f.by[i]),2.4,0,7);wx.fill(); wx.globalAlpha=1; }
+    // predadores
+    for(let i=0;i<f.px.length;i++){ wx.fillStyle='rgba(255,92,108,0.2)';wx.beginPath();wx.arc(sx(f.px[i]),sy(f.py[i]),9,0,7);wx.fill();
+      wx.fillStyle='#ff5c6c';wx.beginPath();wx.arc(sx(f.px[i]),sy(f.py[i]),4,0,7);wx.fill(); }
+    // protagonista
+    const fo=f.focal; wx.strokeStyle='#fff';wx.lineWidth=2;wx.beginPath();wx.arc(sx(fo.x),sy(fo.y),8,0,7);wx.stroke();
+    wx.strokeStyle='rgba(255,255,255,0.25)';wx.beginPath();wx.arc(sx(fo.x),sy(fo.y),14,0,7);wx.stroke();
+  }
+
+  function nodes(x,vals,names,side){ const n=vals.length,H=B.height,pad=30,gap=(H-2*pad)/(n-1);
+    const arr=[]; for(let i=0;i<n;i++){ const y=pad+i*gap; arr.push([x,y]);
+      bx.beginPath();bx.arc(x,y,5.5,0,7); bx.fillStyle=div(vals[i],AMBER,TEAL);bx.fill();
+      bx.strokeStyle='rgba(255,255,255,0.18)';bx.lineWidth=0.7;bx.stroke();
+      if(names){ bx.fillStyle='#8595ab';bx.font='9px Inter';bx.textAlign=side; bx.fillText(names[i], side==='right'?x+11:x-11, y+3); } }
+    return arr; }
+  function edges(A,Bn,Wt,cols,rows,m){ for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){ const w=Wt[j*cols+i]; if(Math.abs(w)<m*0.25)continue;
+    bx.strokeStyle=w>=0?`rgba(${TEAL},${Math.min(0.5,Math.abs(w)/m*0.5)})`:`rgba(${RED},${Math.min(0.5,Math.abs(w)/m*0.5)})`;
+    bx.lineWidth=Math.min(1.6,Math.abs(w)/m*1.6); bx.beginPath();bx.moveTo(A[i][0],A[i][1]);bx.lineTo(Bn[j][0],Bn[j][1]);bx.stroke(); } }
+  function memlink(A,Bn){ bx.strokeStyle='rgba(74,200,255,0.28)';bx.setLineDash([3,3]);bx.lineWidth=0.8;
+    const n=Math.min(A.length,Bn.length); for(let i=0;i<n;i++){bx.beginPath();bx.moveTo(A[i][0],A[i][1]);bx.lineTo(Bn[i][0],Bn[i][1]);bx.stroke();} bx.setLineDash([]); }
+  function label(x,t){ bx.fillStyle='#5f6f86';bx.font='10px Inter';bx.textAlign='center';bx.fillText(t,x,14); }
+  function drawBrain(f){
+    bx.clearRect(0,0,B.width,B.height); const fo=f.focal;
+    const X={sens:70,mem:300,l1:520,rec:730,l2:940,out:1180,pred:1380};
+    // desenha edges primeiro (atrás), nós depois
+    const pS=nodes(X.sens,fo.senses,SN,'right'); // right-align labels to the left
+    const pM=nodes(X.mem,fo.mem,null); const pL1=nodes(X.l1,fo.h1,null);
+    const pR=nodes(X.rec,fo.rec,null); const pL2=nodes(X.l2,fo.h2,null);
+    const pO=nodes(X.out,fo.out,AN,'left'); const pP=nodes(X.pred,fo.pred,null);
+    // re-render com edges por baixo: limpar e refazer na ordem certa
+    bx.clearRect(0,0,B.width,B.height);
+    memlink(pS,pM); edges(pM,pL1,L1,NIN,NH1,mL1); memlink(pL1,pR); edges(pR,pL2,L2,NH1,NH2,mL2);
+    edges(pL2,pO,ACT,NH2,NOUT,mACT); edges(pL2,pP,WM,NH2,NIN,mWM);
+    nodes(X.sens,fo.senses,SN,'right'); nodes(X.mem,fo.mem,null); nodes(X.l1,fo.h1,null);
+    nodes(X.rec,fo.rec,null); nodes(X.l2,fo.h2,null); nodes(X.out,fo.out,AN,'left'); nodes(X.pred,fo.pred,null);
+    label(X.sens,'sensores (20)');label(X.mem,'mem. perceptual');label(X.l1,'córtex L1');label(X.rec,'mem. recorrente CfC');label(X.l2,'córtex L2');label(X.out,'ação');label(X.pred,'world-model');
+  }
+  function drawMem(cur){ const win=140,x0=Math.max(0,cur-win),cols=cur-x0+1; mxx.fillStyle='#0a0f18';mxx.fillRect(0,0,M.width,M.height);
+    const cw=M.width/win, rh=M.height/NH1; for(let c=0;c<cols;c++){ const fr=F[x0+c]; for(let n=0;n<NH1;n++){ const v=fr.focal.rec[n];
+      mxx.fillStyle=div(v,AMBER,TEAL); mxx.fillRect(c*cw,n*rh,cw+0.6,rh+0.6); } } }
+  function line(ctx,cw,data,col,mn,mx2,x0,cur){ ctx.strokeStyle=col;ctx.lineWidth=1.4;ctx.beginPath();
+    for(let c=x0;c<=cur;c++){ const v=data(F[c]); const xx=(c-x0)/(cur-x0||1)*cw; const yy=C.height-8-(v-mn)/(mx2-mn)*(C.height-16);
+      if(c===x0)ctx.moveTo(xx,yy);else ctx.lineTo(xx,yy);} ctx.stroke(); }
+  function drawCharts(cur){ const win=200,x0=Math.max(0,cur-win); cx.fillStyle='#0a0f18';cx.fillRect(0,0,C.width,C.height);
+    const cw=C.width; line(cx,cw,f=>f.focal.needs[0],'#7bd36a',0,100,x0,cur); line(cx,cw,f=>f.focal.needs[1],'#4aa3ff',0,100,x0,cur);
+    line(cx,cw,f=>f.focal.needs[2],'#9a86ff',0,100,x0,cur); line(cx,cw,f=>f.focal.needs[3],'#ff5c6c',0,100,x0,cur);
+    line(cx,cw,f=>f.focal.mod[1]*100,'#ffb454',0,100,x0,cur); }
+  function drawPred(f){ px.fillStyle='#0a0f18';px.fillRect(0,0,P.width,P.height); const fo=f.focal,cw=P.width/NIN;
+    for(let i=0;i<NIN;i++){ const pr=(fo.pred[i]+1)/2, re=(fo.senses[i]+1)/2;
+      px.fillStyle='rgba(255,180,84,0.85)';px.fillRect(i*cw+1,P.height/2-pr*(P.height/2-4),cw-2,pr*(P.height/2-4));
+      px.fillStyle='rgba(53,208,165,0.85)';px.fillRect(i*cw+1,P.height/2,cw-2,re*(P.height/2-4)); }
+    px.strokeStyle='#223';px.beginPath();px.moveTo(0,P.height/2);px.lineTo(P.width,P.height/2);px.stroke(); }
+  function drawEtho(cur){ const win=180,x0=Math.max(0,cur-win); ex.fillStyle='#0a0f18';ex.fillRect(0,0,E.width,E.height);
+    const cw=E.width/win; for(let c=x0;c<=cur;c++){ ex.fillStyle=ACTC[F[c].focal.act]||'#6b7a90'; ex.fillRect((c-x0)*cw,0,cw+0.6,E.height); } }
+
+  function render(){ const f=F[fi];
+    drawWorld(f); drawBrain(f); drawMem(fi); drawCharts(fi); drawPred(f); drawEtho(fi);
+    el('fnum').textContent=fi; el('tnum').textContent=f.t; el('fid').textContent='#'+f.focal.id; el('pop').textContent=f.bx.length;
+    el('scrub').value=fi; const db=el('daybadge'); db.textContent=f.night?'noite':'dia'; db.className='badge '+(f.night?'night':'day');
+    const nm=f.focal.needs, md=f.focal.mod;
+    for(let i=0;i<4;i++){ el('n'+i).style.width=Math.max(0,nm[i])+'%'; el('v'+i).textContent=Math.round(nm[i]); }
+    for(let i=0;i<4;i++){ el('m'+i).style.width=Math.round(Math.max(0,md[i])*100)+'%'; }
+    const a=f.focal.act; el('actbig').textContent=AN[a]; el('actbig').style.color=ACTC[a]||'#c9d6e8';
+    el('actsub').textContent='decisão dominante do córtex neste instante';
+  }
+  let acc=0; function loop(){ if(playing){ acc+=speed; while(acc>=1){ fi=(fi+1)%F.length; acc--; } render(); } requestAnimationFrame(loop); }
+  el('play').onclick=function(){ playing=!playing; this.textContent=playing?'⏸ pausar':'▶ tocar'; this.classList.toggle('pri',!playing); };
+  el('back').onclick=()=>{ fi=Math.max(0,fi-1); render(); }; el('fwd').onclick=()=>{ fi=Math.min(F.length-1,fi+1); render(); };
+  el('scrub').oninput=e=>{ fi=+e.target.value; render(); }; el('spd').oninput=e=>speed=+e.target.value;
+  render(); loop();
+})();
+</script></body></html>
