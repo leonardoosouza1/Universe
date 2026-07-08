@@ -192,21 +192,70 @@ fn lab() {
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
         .insert_resource(Sim { w, beings, tick: 0, sel: None, paused: false, speed: 5.0, acc: 0.0, rng, g, nextid: 900, follow: true })
         .add_systems(Startup, setup_lab)
-        .add_systems(Update, (input_lab, step_lab, draw_lab, hud_lab).chain())
+        .add_systems(Update, (input_lab, btn_click, step_lab, draw_lab, hud_lab).chain())
+        .add_systems(Update, btn_hover)
         .run();
 }
+// ---- UI componentizada ----
+#[derive(Clone, Copy, PartialEq)] enum Act { PlayPause, Faster, Slower, Step, Spawn, Food, Pred, Reset, Follow, Perturb }
+#[derive(Component)] struct Btn(Act);
+#[derive(Component)] struct SpeedTag;
+#[derive(Component)] struct PlayTag;
+const BTN_BG: Color = Color::srgb(0.12,0.16,0.24);
+const BTN_HOV: Color = Color::srgb(0.20,0.28,0.42);
+const BTN_PRESS: Color = Color::srgb(0.16,0.45,0.55);
+const TOPH: f32 = 48.0; const BOTH: f32 = 150.0;
+
+fn apply_act(a: Act, s: &mut Sim) {
+    match a {
+        Act::PlayPause => s.paused = !s.paused,
+        Act::Faster => s.speed = (s.speed*1.5).min(60.0),
+        Act::Slower => s.speed = (s.speed/1.5).max(0.3),
+        Act::Follow => s.follow = !s.follow,
+        Act::Step => { step_world(&mut s.beings,&mut s.w,s.tick,&mut s.rng,true,true); s.tick+=1; }
+        Act::Reset => { let mut rr=Rng(s.tick as u64+7); let g=s.g.clone(); s.w=World::new(130,7,5,5,&mut rr);
+            s.beings=(0..70).map(|i|{let mut cg=g.clone(); for v in cg.iter_mut(){if rr.f()<0.12{*v+=rr.g()*0.12;}} Being::from_genome(i,rr.f(),rr.f(),0,0,&cg,&mut rr)}).collect(); s.tick=0; s.sel=None; }
+        Act::Spawn => { let mut cg=s.g.clone(); for v in cg.iter_mut(){if s.rng.f()<0.2{*v+=s.rng.g()*0.2;}} let (x,y)=(s.rng.f(),s.rng.f()); let id=s.nextid; s.nextid+=1; let mut b=Being::from_genome(id,x,y,0,s.tick,&cg,&mut s.rng); b.brain.reset(); s.beings.push(b); }
+        Act::Food => { for _ in 0..8 { let (x,y)=(s.rng.f(),s.rng.f()); s.w.food.push((x,y,true,0.0)); } }
+        Act::Pred => { let (x,y)=(s.rng.f(),s.rng.f()); s.w.preds.push((x,y)); }
+        Act::Perturb => { if let Some(id)=s.sel { if let Some(b)=s.beings.iter_mut().find(|b|b.id==id){ let mut cg=b.brain.genome(); for v in cg.iter_mut(){if s.rng.f()<0.25{*v=(*v+s.rng.g()*0.5).clamp(-3.0,3.0);}} b.brain=Brain::from_genome(&cg);} } }
+    }
+}
+fn btn_click(q: Query<(&Interaction,&Btn),(Changed<Interaction>,With<Button>)>, mut sim: ResMut<Sim>) {
+    for (i,b) in &q { if *i==Interaction::Pressed { let s=&mut *sim; apply_act(b.0, s); } }
+}
+fn btn_hover(mut q: Query<(&Interaction,&mut BackgroundColor),(Changed<Interaction>,With<Button>)>) {
+    for (i,mut bg) in &mut q { bg.0 = match *i { Interaction::Pressed=>BTN_PRESS, Interaction::Hovered=>BTN_HOV, Interaction::None=>BTN_BG }; }
+}
+fn node_btn(w: f32) -> Node { Node { width: Val::Px(w), height: Val::Px(30.0), justify_content: JustifyContent::Center,
+    align_items: AlignItems::Center, margin: UiRect::right(Val::Px(4.0)), ..default() } }
+fn tf(s: f32) -> TextFont { TextFont { font_size: s, ..default() } }
 fn setup_lab(mut c: Commands) {
     c.spawn(Camera2d::default());
-    c.spawn((Text::new(""), TextFont { font_size: 13.0, ..default() }, TextColor(Color::srgb(0.82, 0.9, 1.0)),
-        Node { position_type: PositionType::Absolute, left: Val::Px(14.0), top: Val::Px(10.0), ..default() }, Hud));
-    c.spawn((Text::new("clique=inspecionar  espaço=pausa  ↑↓=veloc  .=passo  P=perturbar  S=spawn  F=comida  X=predador  R=reset  TAB=seguir"),
-        TextFont { font_size: 12.0, ..default() }, TextColor(Color::srgb(0.45, 0.55, 0.7)),
-        Node { position_type: PositionType::Absolute, left: Val::Px(14.0), bottom: Val::Px(8.0), ..default() }, Help));
-    // rótulos das camadas do cérebro (posição de tela = 700 + coluna_x)
-    let labels = [(730.0,"sensores"),(870.0,"percepção"),(1000.0,"instinto"),(1118.0,"memória"),(1220.0,"pensamento"),(1305.0,"ação"),(1360.0,"previsão")];
-    for (sx, name) in labels { c.spawn((Text::new(name), TextFont { font_size: 11.0, ..default() }, TextColor(Color::srgb(0.5,0.62,0.78)),
-        Node { position_type: PositionType::Absolute, left: Val::Px(sx-24.0), top: Val::Px(52.0), ..default() })); }
+    // rótulos do cérebro em world-space (alinham com as colunas em qualquer tamanho de janela) + título do mundo
+    for (x, name) in BLBL { c.spawn((Text2d::new(name), tf(15.0), TextColor(Color::srgb(0.55,0.68,0.85)), Transform::from_xyz(x, 332.0, 1.0))); }
+    c.spawn((Text2d::new("MUNDO VIVO"), tf(15.0), TextColor(Color::srgb(0.5,0.6,0.75)), Transform::from_xyz(-360.0, 340.0, 1.0)));
+    // ── BARRA DE CONTROLE (topo, botões clicáveis) ──
+    c.spawn((Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(100.0),
+        height: Val::Px(TOPH), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, padding: UiRect::horizontal(Val::Px(10.0)), ..default() },
+        BackgroundColor(Color::srgba(0.05,0.07,0.11,0.97)))).with_children(|bar| {
+        bar.spawn((Text::new("IARA-VIDA"), tf(16.0), TextColor(Color::srgb(0.35,0.85,0.7)), Node { margin: UiRect::right(Val::Px(14.0)), ..default() }));
+        bar.spawn((Button, node_btn(74.0), BackgroundColor(BTN_BG), Btn(Act::PlayPause))).with_children(|b| { b.spawn((Text::new("PAUSAR"), tf(13.0), TextColor(Color::WHITE), PlayTag)); });
+        bar.spawn((Button, node_btn(30.0), BackgroundColor(BTN_BG), Btn(Act::Slower))).with_children(|b| { b.spawn((Text::new("-"), tf(17.0), TextColor(Color::WHITE))); });
+        bar.spawn((Node { width: Val::Px(96.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },))
+            .with_children(|b| { b.spawn((Text::new("veloc 5.0/s"), tf(12.0), TextColor(Color::srgb(0.7,0.82,0.98)), SpeedTag)); });
+        bar.spawn((Button, node_btn(30.0), BackgroundColor(BTN_BG), Btn(Act::Faster))).with_children(|b| { b.spawn((Text::new("+"), tf(17.0), TextColor(Color::WHITE))); });
+        for (lbl, act, w) in [("passo",Act::Step,58.0f32),("+ ser",Act::Spawn,60.0),("+ comida",Act::Food,86.0),("+ predador",Act::Pred,96.0),("perturbar",Act::Perturb,84.0),("seguir",Act::Follow,60.0),("reset",Act::Reset,56.0)] {
+            bar.spawn((Button, node_btn(w), BackgroundColor(BTN_BG), Btn(act))).with_children(|b| { b.spawn((Text::new(lbl), tf(13.0), TextColor(Color::srgb(0.86,0.91,1.0)))); });
+        }
+    });
+    // ── PAINEL INSPETOR (base) ──
+    c.spawn((Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Percent(100.0),
+        height: Val::Px(BOTH), padding: UiRect::all(Val::Px(12.0)), ..default() }, BackgroundColor(Color::srgba(0.05,0.07,0.11,0.95))))
+        .with_children(|p| { p.spawn((Text::new("clique num ser (bolinha) pra inspecionar o cérebro dele."), tf(13.0), TextColor(Color::srgb(0.82,0.9,1.0)), Hud)); });
 }
+// colunas do cérebro (world-x) + rótulo — usadas por setup e draw_brain
+const BLBL: [(f32, &str); 7] = [(30.0,"sensores"),(170.0,"percepção"),(300.0,"instinto"),(418.0,"memória"),(520.0,"pensamento"),(605.0,"ação"),(660.0,"previsão")];
 // mapeia mundo [0,1]² → metade esquerda da tela; cérebro na metade direita
 fn wpos(x: f32, y: f32) -> Vec2 { Vec2::new(-360.0 + (x - 0.5) * 640.0, (0.5 - y) * 640.0) }
 fn npos(cx: f32, i: usize, n: usize) -> Vec2 { let span = 600.0; let y = if n > 1 { span * 0.5 - i as f32 * span / (n - 1) as f32 } else { 0.0 }; Vec2::new(cx, y) }
@@ -250,6 +299,7 @@ fn input_lab(mut sim: ResMut<Sim>, keys: Res<ButtonInput<KeyCode>>, mouse: Res<B
     if mouse.just_pressed(MouseButton::Left) {
         if let (Ok(win), Ok((cam, ct))) = (windows.single(), cams.single()) {
             if let Some(cur) = win.cursor_position() {
+                if cur.y <= TOPH || cur.y >= win.height() - BOTH { return; }   // ignora cliques na barra/painel
                 if let Ok(wp) = cam.viewport_to_world_2d(ct, cur) {
                     let mut best = 22.0; let mut bid = None;
                     for b in &sim.beings { let p = wpos(b.x, b.y); let d = p.distance(wp); if d < best { best = d; bid = Some(b.id); } }
@@ -296,7 +346,7 @@ fn draw_brain(giz: &mut Gizmos, b: &Being, _g: &[f32]) {
     let mut o = 0; let take = |n: usize, o: &mut usize| { let s = w[*o..*o+n].to_vec(); *o += n; s };
     let l1 = take(NIN*NH1,&mut o); let _l2b_off = NH1*NH2; let l2 = take(NH1*NH2,&mut o); let _l2bias = take(NH2,&mut o);
     let act = take(NH2*NOUT,&mut o); let _actb = take(NOUT,&mut o); let wm = take(NH2*NIN,&mut o);
-    let cS=30.0; let cM=170.0; let cL1=300.0; let cR=418.0; let cL2=520.0; let cO=605.0; let cW=660.0;
+    let cS=BLBL[0].0; let cM=BLBL[1].0; let cL1=BLBL[2].0; let cR=BLBL[3].0; let cL2=BLBL[4].0; let cO=BLBL[5].0; let cW=BLBL[6].0;
     let pS:Vec<Vec2>=(0..NIN).map(|i| npos(cS,i,NIN)).collect();
     let pM:Vec<Vec2>=(0..NIN).map(|i| npos(cM,i,NIN)).collect();
     let pL1:Vec<Vec2>=(0..NH1).map(|i| npos(cL1,i,NH1)).collect();
@@ -331,27 +381,27 @@ fn draw_brain(giz: &mut Gizmos, b: &Being, _g: &[f32]) {
     for i in 0..NIN { node(giz,pP[i],3.5,cog.pred[i]); }
 }
 
-fn hud_lab(sim: Res<Sim>, mut q: Query<&mut Text, With<Hud>>) {
-    let sel = sim.sel.and_then(|id| sim.beings.iter().find(|b| b.id==id));
-    let bar = |v: f32, mx: f32| { let n=14usize; let f=((v/mx)*n as f32).round().clamp(0.0,n as f32) as usize; format!("[{}{}]","=".repeat(f)," ".repeat(n-f)) };
-    let mut s = format!("IARA-VIDA · tick {} · {} · população {} · veloc {:.1}/s{}\n",
-        sim.tick, if sim.w.is_night(sim.tick) {"NOITE"} else {"DIA"}, sim.beings.len(), sim.speed, if sim.paused {"  [PAUSADO]"} else {""});
-    if let Some(b) = sel {
-        s += &format!("\n── SER #{} · idade {} · geração {} · ação: {} ──\n", b.id, b.age, b.gener, ACT_NAMES[b.last_act].to_uppercase());
-        s += &format!("energia    {} {:>3.0}\n", bar(b.energy,100.0), b.energy);
-        s += &format!("hidratação {} {:>3.0}\n", bar(b.hydra,100.0), b.hydra);
-        s += &format!("vigor      {} {:>3.0}\n", bar(b.stamina,100.0), b.stamina);
-        s += &format!("saúde      {} {:>3.0}\n", bar(b.health,100.0), b.health);
-        s += &format!("\ndopamina {} cortisol {} curiosid {} fadiga {}\n",
-            bar(b.dopa,1.0), bar(b.corti,1.0), bar(b.curio,1.0), bar(b.adeno,1.0));
-        let tot: u32 = b.act_cnt.iter().sum::<u32>().max(1);
-        s += "\nhistórico de ações (vida toda):\n";
-        for i in 0..NOUT { s += &format!("  {:<10} {} {:.0}%\n", ACT_NAMES[i], bar(b.act_cnt[i] as f32, tot as f32), b.act_cnt[i] as f32/tot as f32*100.0); }
-        s += "\ncérebro à direita → sensores · mem.perceptual · instinto(L1) · memória CfC · pensamento(L2) · ação · world-model";
-    } else {
-        s += "\nclique num ser (bolinha) pra abrir o cérebro dele.";
+fn hud_lab(sim: Res<Sim>,
+    mut hq: Query<&mut Text, (With<Hud>, Without<SpeedTag>, Without<PlayTag>)>,
+    mut sq: Query<&mut Text, (With<SpeedTag>, Without<Hud>, Without<PlayTag>)>,
+    mut pq: Query<&mut Text, (With<PlayTag>, Without<Hud>, Without<SpeedTag>)>) {
+    if let Ok(mut t) = sq.single_mut() { *t = Text::new(format!("veloc {:.1}/s", sim.speed)); }
+    if let Ok(mut t) = pq.single_mut() { *t = Text::new(if sim.paused { "RODAR" } else { "PAUSAR" }); }
+    let bar = |v: f32, mx: f32| { let n=16usize; let f=((v/mx)*n as f32).round().clamp(0.0,n as f32) as usize; format!("[{}{}]","#".repeat(f)," ".repeat(n-f)) };
+    let mut s = format!("tick {} · {} · pop {}", sim.tick, if sim.w.is_night(sim.tick) {"NOITE"} else {"DIA"}, sim.beings.len());
+    match sim.sel.and_then(|id| sim.beings.iter().find(|b| b.id==id)) {
+        Some(b) => {
+            s += &format!("        SER #{} · idade {} · geracao {} · ACAO: {}\n", b.id, b.age, b.gener, ACT_NAMES[b.last_act].to_uppercase());
+            s += &format!("energia {} {:>3.0}    hidratacao {} {:>3.0}    vigor {} {:>3.0}    saude {} {:>3.0}\n",
+                bar(b.energy,100.0),b.energy, bar(b.hydra,100.0),b.hydra, bar(b.stamina,100.0),b.stamina, bar(b.health,100.0),b.health);
+            s += &format!("dopamina {}  cortisol {}  curiosidade {}  fadiga {}\n", bar(b.dopa,1.0),bar(b.corti,1.0),bar(b.curio,1.0),bar(b.adeno,1.0));
+            let tot: u32 = b.act_cnt.iter().sum::<u32>().max(1);
+            s += "historico de acoes:  ";
+            for i in 0..NOUT { s += &format!("{} {:.0}%   ", ACT_NAMES[i], b.act_cnt[i] as f32/tot as f32*100.0); }
+        }
+        None => { s += "        — clique numa bolinha do mundo pra inspecionar o cerebro do ser —"; }
     }
-    if let Ok(mut t) = q.single_mut() { *t = Text::new(s); }
+    if let Ok(mut t) = hq.single_mut() { *t = Text::new(s); }
 }
 
 // ---- carrega/salva genoma (formato simples f32 LE; e i8 quantizado estilo Universe) ----
