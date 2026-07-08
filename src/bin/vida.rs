@@ -187,7 +187,8 @@ fn lab() {
     println!("IARA-VIDA LAB (Bevy) — clique num ser p/ inspecionar · Espaço=pausa · ↑↓=veloc · .=passo · P=perturbar cérebro · S=spawn · F=comida · X=predador · R=reset · TAB=seguir");
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(Window {
-            title: "IARA-VIDA · o cérebro de um ser, por dentro".into(), resolution: (1400.0, 780.0).into(), ..default() }), ..default() }))
+            title: "IARA-VIDA · o cérebro de um ser, por dentro".into(), resolution: (1400.0, 780.0).into(),
+            present_mode: bevy::window::PresentMode::AutoVsync, ..default() }), ..default() }))
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
         .insert_resource(Sim { w, beings, tick: 0, sel: None, paused: false, speed: 5.0, acc: 0.0, rng, g, nextid: 900, follow: true })
         .add_systems(Startup, setup_lab)
@@ -267,14 +268,16 @@ fn draw_lab(mut giz: Gizmos, sim: Res<Sim>) {
     // ninhos, água, comida
     for n in &sim.w.nests { gc(&mut giz, wpos(n.0,n.1), n.2*640.0, Color::srgba(0.6,0.52,1.0,0.35)); }
     for wt in &sim.w.water { let p=wpos(wt.0,wt.1); gc(&mut giz,p,4.0,Color::srgb(0.29,0.64,1.0)); gc(&mut giz,p,12.0,Color::srgba(0.29,0.64,1.0,0.18)); }
-    for f in &sim.w.food { if f.2 { gc(&mut giz, wpos(f.0,f.1), 1.6, Color::srgba(0.4,0.75,0.28,dim)); } }
-    // seres (rotas + corpo)
+    // comida como tracinho (1 linha em vez de círculo de 32 segmentos)
+    for f in &sim.w.food { if f.2 { let p=wpos(f.0,f.1); giz.line_2d(p+Vec2::new(-2.0,0.0), p+Vec2::new(2.0,0.0), Color::srgba(0.4,0.78,0.28,dim)); } }
+    // seres: rota curta (só últimos 6 pts) + corpo
     for b in &sim.beings {
         let p = wpos(b.x, b.y);
-        if b.trail.len() > 1 { for k in 1..b.trail.len() { let a=wpos(b.trail[k-1][0],b.trail[k-1][1]); let c=wpos(b.trail[k][0],b.trail[k][1]);
-            giz.line_2d(a, c, Color::srgba(0.35,0.45,0.6,0.10)); } }
-        let e = (b.energy/100.0).clamp(0.0,1.0); let col = act_col(b.last_act);
-        gc(&mut giz, p, 2.0+e*2.6, col);
+        let st = b.trail.len().saturating_sub(6);
+        for k in (st+1)..b.trail.len() { let a=wpos(b.trail[k-1][0],b.trail[k-1][1]); let c=wpos(b.trail[k][0],b.trail[k][1]);
+            giz.line_2d(a, c, Color::srgba(0.35,0.45,0.6,0.09)); }
+        let e = (b.energy/100.0).clamp(0.0,1.0);
+        gc(&mut giz, p, 2.0+e*2.6, act_col(b.last_act));
     }
     for pr in &sim.w.preds { let p=wpos(pr.0,pr.1); gc(&mut giz,p,4.5,Color::srgb(1.0,0.36,0.42)); gc(&mut giz,p,8.0,Color::srgba(1.0,0.36,0.42,0.2)); }
     // protagonista selecionado: destaque + antenas + rota forte + CÉREBRO
@@ -317,7 +320,7 @@ fn draw_brain(giz: &mut Gizmos, b: &Being, _g: &[f32]) {
     let cog=&b.cog;
     let node=|giz:&mut Gizmos,p:Vec2,r:f32,v:f32|{ let a=v.abs().min(1.0);
         let glow=if v>=0.0 {Color::srgba(0.2,0.82,0.65,a*0.22)} else {Color::srgba(1.0,0.71,0.33,a*0.22)};
-        if a>0.1 { gc(giz,p,r+2.0+a*4.0,glow); } gc(giz,p,r,actf(v)); };
+        if a>0.35 { gc(giz,p,r+2.0+a*4.0,glow); } gc(giz,p,r,actf(v)); };
     for i in 0..NIN { node(giz,pS[i],4.0,b.senses[i]); }
     for i in 0..NIN { node(giz,pM[i],4.0,cog.mem[i]); }
     for i in 0..NH1 { node(giz,pL1[i],4.5,cog.h1[i]); }
