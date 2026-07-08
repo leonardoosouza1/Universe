@@ -205,8 +205,50 @@ fn main() {
         "--serve"  => serve(),
         "--lab"    => lab(),
         "--validate" => validate(),
+        "--freq" => experiment_freq(),
         _ => evolve(40),
     }
+}
+
+// ===== EXPERIMENTO: mapa em BANDAS DE FREQUÊNCIA — onde os seres se fixam? correlaciona com a freq do cérebro (CfC) =====
+fn band_of(y: f32) -> usize { if y < 1.0/3.0 { 0 } else if y < 2.0/3.0 { 1 } else { 2 } }
+// comida por banda: BAIXA freq = poucos clusters grandes (padrão espacial lento) · ALTA = fina e espalhada (padrão rápido)
+fn banded_food(r: &mut Rng) -> Vec<(f32, f32, bool, f32)> {
+    let mut f = Vec::new();
+    for _ in 0..4  { let (cx, cy) = (r.f(), r.f()*0.30);        for _ in 0..15 { f.push(((cx + r.g()*0.05).rem_euclid(1.0), (cy + r.g()*0.05).clamp(0.0,0.32), true, 0.0)); } }
+    for _ in 0..12 { let (cx, cy) = (r.f(), 0.34 + r.f()*0.30); for _ in 0..6  { f.push(((cx + r.g()*0.025).rem_euclid(1.0), (cy + r.g()*0.025).clamp(0.34,0.65), true, 0.0)); } }
+    for _ in 0..85 { f.push((r.f(), 0.67 + r.f()*0.32, true, 0.0)); }
+    f
+}
+fn experiment_freq() {
+    let mut r0 = Rng(1);
+    let g = load_genome("vida_champion.dna").unwrap_or_else(|| { println!("(sem vida_champion.dna — evolua antes; aleatório)"); random_genome(&mut r0) });
+    println!("EXPERIMENTO — MAPA EM BANDAS DE FREQUÊNCIA (baixa/média/alta). Onde os seres se fixam? Correlaciona com a freq do CÉREBRO (decay CfC).\n");
+    let mut occ = [0f64; 3];
+    let mut by_brain = [[0f64; 3]; 2];   // [0=cérebro lento, 1=rápido][banda]
+    for seed in 0..4u64 {
+        let mut r = Rng(500 + seed);
+        let mut w = World::new(0, 6, 4, 0, &mut r);   // sem comida aleatória, sem predador
+        w.food = banded_food(&mut r);
+        let mut beings: Vec<Being> = (0..80).map(|i| { let mut cg = g.clone();
+            for v in cg.iter_mut() { if r.f()<0.18 { *v += r.g()*0.25; } } Being::from_genome(i, r.f(), r.f(), 0, 0, &cg, &mut r) }).collect();
+        // ESPECTRO DE FREQUÊNCIA CEREBRAL: força o decay do CfC de 0.3 (lento) a 3.3 (rápido) na população
+        for (i, b) in beings.iter_mut().enumerate() { b.brain.cfc_r.decay_rate = 0.3 + 3.0 * (i as f32 / 79.0); }
+        for t in 0..3000u32 {
+            // FREQUÊNCIA TEMPORAL por banda: BAIXA = comida estável · MÉDIA = pisca devagar · ALTA = pisca rápido
+            for f in w.food.iter_mut() { f.2 = match band_of(f.1) { 0 => true, 1 => (t/16)%2==0, _ => (t/3)%2==0 }; }
+            step_world(&mut beings, &mut w, t, &mut r, false, false);
+            for b in &beings { if b.alive { let band = band_of(b.y); occ[band] += 1.0;
+                let fast = b.brain.cfc_r.decay_rate > 1.8; by_brain[if fast {1} else {0}][band] += 1.0; } } }
+    }
+    let tot: f64 = occ.iter().sum::<f64>().max(1.0);
+    println!("Ocupação por banda (fração do tempo-ser):");
+    for b in 0..3 { println!("  {:<6} freq: {:>5.1}%", ["BAIXA","MÉDIA","ALTA"][b], occ[b]/tot*100.0); }
+    let ts: f64 = by_brain[0].iter().sum::<f64>().max(1.0); let tf: f64 = by_brain[1].iter().sum::<f64>().max(1.0);
+    println!("\nPreferência conforme a FREQUÊNCIA DO CÉREBRO (decay do CfC recorrente):");
+    println!("  cérebro LENTO  (baixa freq): baixa {:>4.0}% · média {:>4.0}% · alta {:>4.0}%", by_brain[0][0]/ts*100.0, by_brain[0][1]/ts*100.0, by_brain[0][2]/ts*100.0);
+    println!("  cérebro RÁPIDO (alta freq):  baixa {:>4.0}% · média {:>4.0}% · alta {:>4.0}%", by_brain[1][0]/tf*100.0, by_brain[1][1]/tf*100.0, by_brain[1][2]/tf*100.0);
+    println!("\n→ HIPÓTESE (ressonância): se o cérebro RÁPIDO concentra na banda ALTA e o LENTO na BAIXA, a freq interna casa com a freq do terreno.");
 }
 
 // VALIDAÇÃO por ABLAÇÃO: o mesmo campeão COM aprender (comer=conhecimento) vs SEM aprender → conhecimento = sobrevivência?
