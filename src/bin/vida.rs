@@ -12,17 +12,18 @@ use std::io::{Read, Write};
 use bevy::prelude::*;
 use bevy::math::Isometry2d;
 
-// ---- dimensões do cérebro ----
-const NIN: usize = 20;   // sensores (extero + intero + tempo)
-const NH1: usize = 16;   // córtex instinto (BitLinear)
-const NH2: usize = 12;   // córtex associação (Dense)
-const NOUT: usize = 6;   // ações: virar, acelerar, comer, beber, descansar, sinalizar
+// ---- dimensões do cérebro (com COMUNICAÇÃO POR BYTE: ouve 8 bits dos vizinhos, fala 8 bits) ----
+const NMSG: usize = 8;   // bits da mensagem (um BYTE — a tese byte viva)
+const NIN: usize = 27;   // 18 sensores + 8 bits ouvidos + viés
+const NH1: usize = 20;   // córtex instinto (BitLinear)
+const NH2: usize = 14;   // córtex associação (Dense)
+const NOUT: usize = 13;  // 0 virar,1 acelerar,2 comer,3 beber,4 descansar + 8 bits de mensagem
 const DT: f32 = 0.1;
 
 const SENSE_NAMES: [&str; NIN] = ["comida_esq","comida_dir","agua_esq","agua_dir","pred_esq","pred_dir",
-    "pred_prox","ninho_x","ninho_y","vizinhos","alinham","fome","sede","fadiga","medo","saude",
-    "dia_sin","dia_cos","sinal","vies"];
-const ACT_NAMES: [&str; NOUT] = ["virar","acelerar","comer","beber","descansar","sinalizar"];
+    "pred_prox","ninho_x","ninho_y","vizinhos","alinham","fome","sede","fadiga","medo","saude","dia_sin","dia_cos",
+    "ouve0","ouve1","ouve2","ouve3","ouve4","ouve5","ouve6","ouve7","vies"];
+const ACT_NAMES: [&str; NOUT] = ["virar","acelerar","comer","beber","descansar","fala0","fala1","fala2","fala3","fala4","fala5","fala6","fala7"];
 
 // ---- RNG determinístico ----
 struct Rng(u64);
@@ -72,7 +73,9 @@ impl Brain {
         let gain = (1.0 + 0.5 * dopa - 0.4 * corti).clamp(0.3, 2.0);
         let h2v: Vec<f32> = self.l2.forward(&recf).iter().map(|x| x.max(0.0) * gain).collect(); let h2: [f32; NH2] = arr(&h2v);
         let outv = self.act.forward(&h2v);
-        let out: [f32; NOUT] = [outv[0].tanh(), sig(outv[1]), sig(outv[2]), sig(outv[3]), sig(outv[4]), sig(outv[5])];
+        let mut out = [0.0f32; NOUT];
+        out[0] = outv[0].tanh();                          // virar ∈ [-1,1]
+        for k in 1..NOUT { out[k] = sig(outv[k]); }       // acelerar/comer/beber/descansar + 8 bits de fala ∈ [0,1]
         let pred: [f32; NIN] = arr(&self.wm.forward(&h2v).iter().map(|x| x.tanh()).collect::<Vec<_>>());
         Cognition { mem, h1, rec, h2, out, pred }
     }
@@ -97,6 +100,7 @@ struct Being {
     // acumuladores p/ fitness/métricas
     sat_sum: f64, perr_sum: f64, act_cnt: [u32; NOUT], drink_thirsty: f64, eat_hungry: f64, nest_ticks: u32, born: u32,
     trail: Vec<[f32; 2]>, act_hist: Vec<u8>,   // rota + histórico de ações (só modos ao vivo)
+    byte: u8, neigh: f32, neigh_sum: f64,       // byte que o ser FALA (8 bits) + nº de vizinhos + soma (agrupamento)
 }
 fn new_cog() -> Cognition { Cognition { mem:[0.0;NIN], h1:[0.0;NH1], rec:[0.0;NH1], h2:[0.0;NH2], out:[0.0;NOUT], pred:[0.0;NIN] } }
 impl Being {
@@ -106,14 +110,15 @@ impl Being {
             dopa: 0.0, corti: 0.0, curio: 0.0, adeno: 0.0,
             brain: Brain::from_genome(g), cog: new_cog(), senses: [0.0; NIN], prev_pred: [0.0; NIN], last_act: 0,
             sat_sum: 0.0, perr_sum: 0.0, act_cnt: [0; NOUT], drink_thirsty: 0.0, eat_hungry: 0.0, nest_ticks: 0, born,
-            trail: Vec::new(), act_hist: Vec::new() }
+            trail: Vec::new(), act_hist: Vec::new(), byte: 0, neigh: 0.0, neigh_sum: 0.0 }
     }
     fn satisfaction(&self) -> f32 { (self.energy + self.hydra + self.stamina) / 300.0 }
     fn fitness(&self) -> f64 {
         let ticks = self.age.max(1) as f64;
         let sat = self.sat_sum / ticks;                         // satisfação média de necessidades
         let pred_acc = (1.0 - (self.perr_sum / ticks)).max(0.0); // acurácia do world-model
-        ticks * (0.5 + 0.5 * sat) + 120.0 * pred_acc
+        let group = self.neigh_sum / ticks;                     // tamanho médio de grupo (inteligência coletiva)
+        ticks * (0.5 + 0.5 * sat) + 120.0 * pred_acc + 22.0 * group
     }
 }
 
@@ -139,7 +144,7 @@ fn field(x: f32, y: f32, pts: &[(f32, f32)], sig: f32) -> f32 {
 }
 
 // senses do ser (glass-box, [-1,1])
-fn sense(b: &Being, w: &World, t: u32, neigh_d: f32, neigh_align: f32, signal: f32) -> [f32; NIN] {
+fn sense(b: &Being, w: &World, t: u32, neigh_d: f32, neigh_align: f32, heard: &[f32; NMSG]) -> [f32; NIN] {
     let hl = [b.x + 0.03*(b.head+0.6).cos(), b.y + 0.03*(b.head+0.6).sin()];
     let hr = [b.x + 0.03*(b.head-0.6).cos(), b.y + 0.03*(b.head-0.6).sin()];
     let foods: Vec<(f32,f32)> = w.food.iter().filter(|f| f.2).map(|f| (f.0, f.1)).collect();
@@ -147,15 +152,18 @@ fn sense(b: &Being, w: &World, t: u32, neigh_d: f32, neigh_align: f32, signal: f
     let (wl, wr) = (field(hl[0],hl[1],&w.water,0.10), field(hr[0],hr[1],&w.water,0.10));
     let (pl, pr) = (field(hl[0],hl[1],&w.preds,0.11), field(hr[0],hr[1],&w.preds,0.11));
     let pprox = field(b.x,b.y,&w.preds,0.10);
-    // ninho mais próximo (direção)
     let mut best = 9.0; let (mut ndx, mut ndy) = (0.0, 0.0);
     for &(nx,ny,_) in &w.nests { let (dx,dy)=(wd(nx,b.x),wd(ny,b.y)); let d=dx*dx+dy*dy; if d<best { best=d; ndx=dx; ndy=dy; } }
     let nn = best.sqrt().max(1e-3);
     let ph = w.day_phase(t);
-    [tanh(fl-fr), tanh(fl+fr-0.5), tanh(wl-wr), tanh(wl+wr-0.5), tanh(pl-pr), tanh(pl+pr),
-     (pprox).min(1.0), (ndx/nn), (ndy/nn), tanh(neigh_d), neigh_align,
-     1.0 - b.energy/100.0, 1.0 - b.hydra/100.0, b.adeno, b.corti, b.health/100.0,
-     ph.sin(), ph.cos(), signal, 1.0]
+    let mut s = [0.0f32; NIN];
+    s[0]=tanh(fl-fr); s[1]=tanh(fl+fr-0.5); s[2]=tanh(wl-wr); s[3]=tanh(wl+wr-0.5);
+    s[4]=tanh(pl-pr); s[5]=tanh(pl+pr); s[6]=pprox.min(1.0); s[7]=ndx/nn; s[8]=ndy/nn;
+    s[9]=tanh(neigh_d); s[10]=neigh_align; s[11]=1.0-b.energy/100.0; s[12]=1.0-b.hydra/100.0;
+    s[13]=b.adeno; s[14]=b.corti; s[15]=b.health/100.0; s[16]=ph.sin(); s[17]=ph.cos();
+    for k in 0..NMSG { s[18+k]=heard[k]; }   // 8 bits OUVIDOS dos vizinhos (byte médio local)
+    s[NIN-1]=1.0;                            // viés
+    s
 }
 fn tanh(x: f32) -> f32 { x.tanh() }
 
@@ -310,32 +318,37 @@ fn input_lab(mut sim: ResMut<Sim>, keys: Res<ButtonInput<KeyCode>>, mouse: Res<B
     }
 }
 
+// cor a partir do BYTE (a "linguagem" vira cor): matiz = valor do byte
+fn byte_col(byte: u8, l: f32, a: f32) -> Color { Color::hsla(byte as f32 / 255.0 * 360.0, 0.78, l.clamp(0.0,1.0), a.clamp(0.0,1.0)) }
 fn draw_lab(mut giz: Gizmos, sim: Res<Sim>) {
     let night = sim.w.is_night(sim.tick);
-    // moldura do mundo
-    let dim = if night { 0.5 } else { 1.0 };
-    giz.rect_2d(Isometry2d::from_translation(Vec2::new(-360.0, 0.0)), Vec2::new(646.0, 646.0), Color::srgba(0.3,0.4,0.6,0.25));
-    // ninhos, água, comida
-    for n in &sim.w.nests { gc(&mut giz, wpos(n.0,n.1), n.2*640.0, Color::srgba(0.6,0.52,1.0,0.35)); }
-    for wt in &sim.w.water { let p=wpos(wt.0,wt.1); gc(&mut giz,p,4.0,Color::srgb(0.29,0.64,1.0)); gc(&mut giz,p,12.0,Color::srgba(0.29,0.64,1.0,0.18)); }
-    // comida como tracinho (1 linha em vez de círculo de 32 segmentos)
-    for f in &sim.w.food { if f.2 { let p=wpos(f.0,f.1); giz.line_2d(p+Vec2::new(-2.0,0.0), p+Vec2::new(2.0,0.0), Color::srgba(0.4,0.78,0.28,dim)); } }
-    // seres: rota curta (só últimos 6 pts) + corpo
-    for b in &sim.beings {
-        let p = wpos(b.x, b.y);
-        let st = b.trail.len().saturating_sub(6);
-        for k in (st+1)..b.trail.len() { let a=wpos(b.trail[k-1][0],b.trail[k-1][1]); let c=wpos(b.trail[k][0],b.trail[k][1]);
-            giz.line_2d(a, c, Color::srgba(0.35,0.45,0.6,0.09)); }
-        let e = (b.energy/100.0).clamp(0.0,1.0);
-        gc(&mut giz, p, 2.0+e*2.6, act_col(b.last_act));
+    let dim = if night { 0.6 } else { 1.0 };
+    giz.rect_2d(Isometry2d::from_translation(Vec2::new(-360.0, 0.0)), Vec2::new(646.0, 646.0), Color::srgba(0.2,0.3,0.5,0.14));
+    // ninhos (santuários) · água (poças brilhantes) · comida (brilho verde)
+    for nst in &sim.w.nests { let p=wpos(nst.0,nst.1); let rr=nst.2*640.0; gc(&mut giz,p,rr,Color::srgba(0.6,0.52,1.0,0.30)); gc(&mut giz,p,rr*0.6,Color::srgba(0.6,0.52,1.0,0.12)); }
+    for wt in &sim.w.water { let p=wpos(wt.0,wt.1); gc(&mut giz,p,3.5,Color::srgb(0.4,0.72,1.0)); gc(&mut giz,p,10.0,Color::srgba(0.29,0.64,1.0,0.22)); gc(&mut giz,p,18.0,Color::srgba(0.29,0.64,1.0,0.07)); }
+    for f in &sim.w.food { if f.2 { gc(&mut giz, wpos(f.0,f.1), 1.6, Color::srgba(0.5,0.9,0.35,dim)); } }
+    // TEIA SOCIAL: liga vizinhos próximos; cor = média dos bytes → grupos que "falam igual" viram uma constelação
+    let bs = &sim.beings;
+    for i in 0..bs.len() { if !bs[i].alive { continue; }
+        for j in (i+1)..bs.len() { if !bs[j].alive { continue; }
+            let dd = wd(bs[i].x,bs[j].x).powi(2)+wd(bs[i].y,bs[j].y).powi(2);
+            if dd < 0.018 { let a=(1.0-dd/0.018)*0.22*dim; let byte=(((bs[i].byte as u16)+(bs[j].byte as u16))/2) as u8;
+                giz.line_2d(wpos(bs[i].x,bs[i].y), wpos(bs[j].x,bs[j].y), byte_col(byte,0.55,a)); } } }
+    // SERES: glow + corpo colorido pelo BYTE falado + rastro + pulso de fala animado
+    for b in bs { if !b.alive { continue; } let p=wpos(b.x,b.y); let e=(b.energy/100.0).clamp(0.0,1.0);
+        let st=b.trail.len().saturating_sub(8);
+        for k in (st+1)..b.trail.len() { giz.line_2d(wpos(b.trail[k-1][0],b.trail[k-1][1]),wpos(b.trail[k][0],b.trail[k][1]), byte_col(b.byte,0.5,0.06*dim)); }
+        gc(&mut giz, p, 3.0+e*4.0, byte_col(b.byte, 0.42, 0.14*dim));   // glow
+        gc(&mut giz, p, 1.6+e*2.2, byte_col(b.byte, 0.32+e*0.35, dim)); // corpo
+        if b.neigh>0.0 && b.byte!=0 { let ph=((sim.tick.wrapping_add(b.id))%24) as f32/24.0; gc(&mut giz,p,4.0+ph*11.0, byte_col(b.byte,0.62,(1.0-ph)*0.16*dim)); }
     }
-    for pr in &sim.w.preds { let p=wpos(pr.0,pr.1); gc(&mut giz,p,4.5,Color::srgb(1.0,0.36,0.42)); gc(&mut giz,p,8.0,Color::srgba(1.0,0.36,0.42,0.2)); }
-    // protagonista selecionado: destaque + antenas + rota forte + CÉREBRO
-    let sel = sim.sel.and_then(|id| sim.beings.iter().find(|b| b.id==id));
-    if let Some(b) = sel {
+    for pr in &sim.w.preds { let p=wpos(pr.0,pr.1); gc(&mut giz,p,4.0,Color::srgb(1.0,0.3,0.36)); gc(&mut giz,p,9.0,Color::srgba(1.0,0.2,0.3,0.25)); gc(&mut giz,p,16.0,Color::srgba(1.0,0.15,0.25,0.09)); }
+    // selecionado: destaque branco + rota forte + CÉREBRO
+    if let Some(b) = sim.sel.and_then(|id| sim.beings.iter().find(|b| b.id==id)) {
         let p = wpos(b.x, b.y);
-        gc(&mut giz, p, 9.0, Color::WHITE); gc(&mut giz, p, 13.0, Color::srgba(1.0,1.0,1.0,0.3));
-        for k in 1..b.trail.len() { let a=wpos(b.trail[k-1][0],b.trail[k-1][1]); let cc=wpos(b.trail[k][0],b.trail[k][1]); giz.line_2d(a,cc,Color::srgba(1.0,1.0,1.0,0.4)); }
+        gc(&mut giz, p, 10.0, Color::WHITE); gc(&mut giz, p, 14.0, Color::srgba(1.0,1.0,1.0,0.3));
+        for k in 1..b.trail.len() { giz.line_2d(wpos(b.trail[k-1][0],b.trail[k-1][1]),wpos(b.trail[k][0],b.trail[k][1]),Color::srgba(1.0,1.0,1.0,0.4)); }
         draw_brain(&mut giz, b, &sim.g);
     }
 }
@@ -388,7 +401,13 @@ fn hud_lab(sim: Res<Sim>,
     if let Ok(mut t) = sq.single_mut() { *t = Text::new(format!("veloc {:.1}/s", sim.speed)); }
     if let Ok(mut t) = pq.single_mut() { *t = Text::new(if sim.paused { "RODAR" } else { "PAUSAR" }); }
     let bar = |v: f32, mx: f32| { let n=16usize; let f=((v/mx)*n as f32).round().clamp(0.0,n as f32) as usize; format!("[{}{}]","#".repeat(f)," ".repeat(n-f)) };
-    let mut s = format!("tick {} · {} · pop {}", sim.tick, if sim.w.is_night(sim.tick) {"NOITE"} else {"DIA"}, sim.beings.len());
+    // MÉTRICAS DE INTELIGÊNCIA COLETIVA (validação): agrupamento, vocabulário-byte, sobrevivência
+    let np = sim.beings.len().max(1) as f32;
+    let avg_neigh = sim.beings.iter().map(|b| b.neigh).sum::<f32>() / np;
+    let avg_age = sim.beings.iter().map(|b| b.age).sum::<u32>() as f32 / np;
+    let mut seen = [false; 256]; let mut vocab = 0; for b in &sim.beings { if !seen[b.byte as usize] { seen[b.byte as usize]=true; vocab+=1; } }
+    let mut s = format!("tick {} · {} · pop {}      COLETIVO →  grupo medio {:.1}  ·  vocabulario {} bytes  ·  idade media {:.0}",
+        sim.tick, if sim.w.is_night(sim.tick) {"NOITE"} else {"DIA"}, sim.beings.len(), avg_neigh, vocab, avg_age);
     match sim.sel.and_then(|id| sim.beings.iter().find(|b| b.id==id)) {
         Some(b) => {
             s += &format!("        SER #{} · idade {} · geracao {} · ACAO: {}\n", b.id, b.age, b.gener, ACT_NAMES[b.last_act].to_uppercase());
@@ -396,8 +415,9 @@ fn hud_lab(sim: Res<Sim>,
                 bar(b.energy,100.0),b.energy, bar(b.hydra,100.0),b.hydra, bar(b.stamina,100.0),b.stamina, bar(b.health,100.0),b.health);
             s += &format!("dopamina {}  cortisol {}  curiosidade {}  fadiga {}\n", bar(b.dopa,1.0),bar(b.corti,1.0),bar(b.curio,1.0),bar(b.adeno,1.0));
             let tot: u32 = b.act_cnt.iter().sum::<u32>().max(1);
-            s += "historico de acoes:  ";
-            for i in 0..NOUT { s += &format!("{} {:.0}%   ", ACT_NAMES[i], b.act_cnt[i] as f32/tot as f32*100.0); }
+            s += &format!("historico de acoes:  ");
+            for i in 0..5 { s += &format!("{} {:.0}%   ", ACT_NAMES[i], b.act_cnt[i] as f32/tot as f32*100.0); }
+            s += &format!("   ·   FALA byte {:03} ({:08b}) · ouve {} vizinhos", b.byte, b.byte, b.neigh as u32);
         }
         None => { s += "        — clique numa bolinha do mundo pra inspecionar o cerebro do ser —"; }
     }
@@ -417,7 +437,7 @@ fn eval_pop(genomes: &[Vec<f32>], seeds: &[u64]) -> Vec<f64> {
     let mut fit = vec![0.0f64; genomes.len()];
     for &seed in seeds {
         let mut r = Rng(seed);
-        let mut w = World::new(80, 6, 4, 3, &mut r);
+        let mut w = World::new(80, 6, 4, 4, &mut r);
         let mut beings: Vec<Being> = genomes.iter().enumerate()
             .map(|(i, g)| Being::from_genome(i as u32, r.f(), r.f(), 0, 0, g, &mut r)).collect();
         for t in 0..1800u32 { step_world(&mut beings, &mut w, t, &mut r, false, false); if beings.iter().all(|b| !b.alive) { break; } }
@@ -463,7 +483,7 @@ fn report_being(g: &[f32]) {
     let (mut eat_h, mut drink_t, mut nest, mut pacc, mut tt) = (0.0f64, 0.0f64, 0u32, 0.0f64, 0.0f64);
     for &sd in &seeds {
         let mut r = Rng(sd);
-        let mut w = World::new(80, 6, 4, 3, &mut r);
+        let mut w = World::new(80, 6, 4, 4, &mut r);
         let mut b = vec![Being::from_genome(0, 0.5, 0.5, 0, 0, g, &mut r)];
         for t in 0..cap { step_world(&mut b, &mut w, t, &mut r, false, false); if !b[0].alive { break; } }
         let bb = &b[0]; lifes.push(bb.age);
@@ -492,18 +512,21 @@ fn step_world(beings: &mut Vec<Being>, w: &mut World, t: u32, r: &mut Rng, allow
         let n = best.sqrt().max(1e-3); w.preds[pi] = ((px + dx/n*pspeed).rem_euclid(1.0), (py + dy/n*pspeed).rem_euclid(1.0)); }
     // senso coletivo: densidade + alinhamento local, e sinal (quem viu predador vocaliza)
     let poss: Vec<(f32,f32,f32,f32,bool)> = beings.iter().map(|b| (b.x,b.y,b.head.cos(),b.head.sin(),b.alive)).collect();
-    let signals: Vec<f32> = beings.iter().map(|b| b.cog.out[5]).collect();
+    let prev_bytes: Vec<u8> = beings.iter().map(|b| b.byte).collect();   // byte que cada ser FALAVA (tick anterior)
     let n = beings.len();
     let mut newborns: Vec<Being> = Vec::new();
     let mut nextid = beings.iter().map(|b| b.id).max().unwrap_or(0) + 1;
     for i in 0..n {
         if !beings[i].alive { continue; }
-        // vizinhança
-        let (mut dens, mut ax, mut ay, mut sig_heard) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        // vizinhança: densidade + alinhamento + BYTE OUVIDO (média ponderada dos bits dos vizinhos)
+        let (mut dens, mut ax, mut ay, mut wsum) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let mut heard = [0.0f32; NMSG];
         for j in 0..n { if j!=i && poss[j].4 { let dd = wd(beings[i].x,poss[j].0).powi(2)+wd(beings[i].y,poss[j].1).powi(2);
-            if dd < 0.02 { dens += 1.0; ax += poss[j].2; ay += poss[j].3; sig_heard = sig_heard.max(signals[j]); } } }
+            if dd < 0.025 { let wgt = 1.0 - dd/0.025; dens += 1.0; ax += poss[j].2; ay += poss[j].3; wsum += wgt;
+                for k in 0..NMSG { if (prev_bytes[j] >> k) & 1 == 1 { heard[k] += wgt; } else { heard[k] -= wgt; } } } } }
+        if wsum > 0.0 { for k in 0..NMSG { heard[k] = (heard[k]/wsum).clamp(-1.0,1.0); } }
         let align = if dens>0.0 { (ax*beings[i].head.cos()+ay*beings[i].head.sin())/dens } else { 0.0 };
-        let s = sense(&beings[i], w, t, dens*0.15, align, sig_heard);
+        let s = sense(&beings[i], w, t, dens*0.15, align, &heard);
         // surpresa (world-model): erro entre previsão anterior e sensação atual
         let perr: f32 = (0..NIN).map(|k| (beings[i].prev_pred[k] - s[k]).abs()).sum::<f32>() / NIN as f32;
         beings[i].curio = 0.9*beings[i].curio + 0.1*perr;
@@ -511,8 +534,11 @@ fn step_world(beings: &mut Vec<Being>, w: &mut World, t: u32, r: &mut Rng, allow
         let cog = beings[i].brain.think(&s, dopa, corti);
         // AÇÃO
         let turn = cog.out[0]; let thrust = cog.out[1];
-        let (eat, drink, rest, signal) = (cog.out[2], cog.out[3], cog.out[4], cog.out[5]);
+        let (eat, drink, rest) = (cog.out[2], cog.out[3], cog.out[4]);
+        // BYTE que o ser FALA agora (8 bits de mensagem)
+        let mut byte = 0u8; for k in 0..NMSG { if cog.out[5+k] > 0.5 { byte |= 1 << k; } }
         let b = &mut beings[i];
+        b.byte = byte; b.neigh = dens; b.neigh_sum += dens as f64;
         // consumir (comer/beber/descansar) REDUZ locomoção → o ser tem que ESCOLHER viajar vs consumir
         let consum = eat.max(drink).max(rest);
         let mthr = thrust * (1.0 - 0.65 * consum);
@@ -535,9 +561,11 @@ fn step_world(beings: &mut Vec<Being>, w: &mut World, t: u32, r: &mut Rng, allow
         b.corti = (0.92*b.corti + 0.4*fear).clamp(0.0, 1.0);
         b.adeno = (b.adeno + 0.35*mthr*DT - if rested {1.0*DT} else {0.0}).clamp(0.0, 1.0);
         b.dopa *= 0.90;
-        if fear > 0.85 { for &(px,py) in &w.preds { if wd(b.x,px).powi(2)+wd(b.y,py).powi(2) < 0.022*0.022 { b.health -= 34.0; b.corti = 1.0; } } }
-        // ethograma pelo que REALMENTE aconteceu (não pelo gate cru)
-        let la = if ate {2} else if drank {3} else if rested {4} else if signal>0.7 && mthr<0.25 {5} else {0};
+        // PREDAÇÃO com DILUIÇÃO: predador confunde no grupo — pega o ISOLADO (seleção por AGRUPAMENTO)
+        if fear > 0.85 { for &(px,py) in &w.preds { if wd(b.x,px).powi(2)+wd(b.y,py).powi(2) < 0.022*0.022 {
+            if r.f() < 1.0/(1.0 + 0.7*b.neigh) { b.health -= 34.0; b.corti = 1.0; } } } }
+        // ethograma pelo que REALMENTE aconteceu (bits de fala não são "ação")
+        let la = if ate {2} else if drank {3} else if rested {4} else {0};
         b.last_act = la; b.act_cnt[la] += 1;
         if allow_repro {   // rota + histórico só nos modos ao vivo (não pesa a evolução)
             b.trail.push([b.x, b.y]); let l = b.trail.len(); if l > 60 { b.trail.drain(0..l-60); }
@@ -546,7 +574,6 @@ fn step_world(beings: &mut Vec<Being>, w: &mut World, t: u32, r: &mut Rng, allow
         // acumuladores
         b.sat_sum += b.satisfaction() as f64; b.perr_sum += perr as f64;
         b.age += 1; b.prev_pred = cog.pred; b.cog = cog; b.senses = s;
-        let _ = signal;
         // morte
         if b.energy <= 0.0 || b.hydra <= 0.0 || b.health <= 0.0 { b.alive = false; }
         // reprodução (a-life mode)
