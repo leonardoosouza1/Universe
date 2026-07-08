@@ -11,6 +11,8 @@ use universe::dense_layer::DenseLayer;
 use std::io::{Read, Write};
 use bevy::prelude::*;
 use bevy::math::Isometry2d;
+use std::sync::atomic::{AtomicBool, Ordering};
+static LEARN: AtomicBool = AtomicBool::new(true);   // ablação: desliga o "comer=aprender" pra validar conhecimento=sobrevivência
 
 // ---- dimensões do cérebro (com COMUNICAÇÃO POR BYTE: ouve 8 bits dos vizinhos, fala 8 bits) ----
 const NMSG: usize = 8;   // bits da mensagem (um BYTE — a tese byte viva)
@@ -24,6 +26,12 @@ const SENSE_NAMES: [&str; NIN] = ["comida_esq","comida_dir","agua_esq","agua_dir
     "pred_prox","ninho_x","ninho_y","vizinhos","alinham","fome","sede","fadiga","medo","saude","dia_sin","dia_cos",
     "ouve0","ouve1","ouve2","ouve3","ouve4","ouve5","ouve6","ouve7","vies"];
 const ACT_NAMES: [&str; NOUT] = ["virar","acelerar","comer","beber","descansar","fala0","fala1","fala2","fala3","fala4","fala5","fala6","fala7"];
+
+// ---- DOMÍNIOS DE CONHECIMENTO (comida = frase/bytes; comer = aprender; saber = sobreviver) ----
+const NDOM: usize = 6;
+const DOM_NAMES: [&str; NDOM] = ["forrageio","agua","perigo","abrigo","social","navegacao"];
+// a "frase" (bytes) que a comida de cada domínio ensina — o conhecimento fica VISÍVEL
+const DOM_FACTS: [&str; NDOM] = ["o verde alimenta","o azul mata a sede","o vermelho te caca","a noite pede abrigo","o cardume protege","o terreno se atravessa"];
 
 // ---- RNG determinístico ----
 struct Rng(u64);
@@ -101,6 +109,7 @@ struct Being {
     sat_sum: f64, perr_sum: f64, act_cnt: [u32; NOUT], drink_thirsty: f64, eat_hungry: f64, nest_ticks: u32, born: u32,
     trail: Vec<[f32; 2]>, act_hist: Vec<u8>,   // rota + histórico de ações (só modos ao vivo)
     byte: u8, neigh: f32, neigh_sum: f64,       // byte que o ser FALA (8 bits) + nº de vizinhos + soma (agrupamento)
+    knowledge: [f32; NDOM], learned: u32,       // CONHECIMENTO por domínio (0..1) + nº de aprendizados (comer=aprender)
 }
 fn new_cog() -> Cognition { Cognition { mem:[0.0;NIN], h1:[0.0;NH1], rec:[0.0;NH1], h2:[0.0;NH2], out:[0.0;NOUT], pred:[0.0;NIN] } }
 impl Being {
@@ -110,7 +119,8 @@ impl Being {
             dopa: 0.0, corti: 0.0, curio: 0.0, adeno: 0.0,
             brain: Brain::from_genome(g), cog: new_cog(), senses: [0.0; NIN], prev_pred: [0.0; NIN], last_act: 0,
             sat_sum: 0.0, perr_sum: 0.0, act_cnt: [0; NOUT], drink_thirsty: 0.0, eat_hungry: 0.0, nest_ticks: 0, born,
-            trail: Vec::new(), act_hist: Vec::new(), byte: 0, neigh: 0.0, neigh_sum: 0.0 }
+            trail: Vec::new(), act_hist: Vec::new(), byte: 0, neigh: 0.0, neigh_sum: 0.0,
+            knowledge: [0.0; NDOM], learned: 0 }
     }
     fn satisfaction(&self) -> f32 { (self.energy + self.hydra + self.stamina) / 300.0 }
     fn fitness(&self) -> f64 {
@@ -118,7 +128,8 @@ impl Being {
         let sat = self.sat_sum / ticks;                         // satisfação média de necessidades
         let pred_acc = (1.0 - (self.perr_sum / ticks)).max(0.0); // acurácia do world-model
         let group = self.neigh_sum / ticks;                     // tamanho médio de grupo (inteligência coletiva)
-        ticks * (0.5 + 0.5 * sat) + 120.0 * pred_acc + 22.0 * group
+        let know = self.knowledge.iter().sum::<f32>() as f64 / NDOM as f64;   // amplitude de conhecimento adquirido
+        ticks * (0.5 + 0.5 * sat) + 120.0 * pred_acc + 22.0 * group + 300.0 * know
     }
 }
 
@@ -133,10 +144,23 @@ impl World {
             water: (0..nwater).map(|_| (r.f(), r.f())).collect(),
             nests: (0..nnest).map(|_| (r.f(), r.f(), 0.09)).collect(),
             preds: (0..npred).map(|_| (r.f(), r.f())).collect(),
-            day_len: 600, regrow: 40.0, metab: 3.0, night_drain: 4.0 }
+            day_len: 600, regrow: 40.0, metab: 3.0, night_drain: 5.5 }
     }
     fn is_night(&self, t: u32) -> bool { (t % self.day_len) >= self.day_len / 2 }
     fn day_phase(&self, t: u32) -> f32 { (t % self.day_len) as f32 / self.day_len as f32 * std::f32::consts::TAU }
+}
+// TERRENO POR FREQUÊNCIA (função livre): cada domínio é uma banda de frequência (baixa=continente, alta=ilha).
+// domain_at = qual domínio "vence" em (x,y) → os domínios se formam no terreno pela frequência (ideia do codec).
+fn domain_at(x: f32, y: f32) -> usize {
+    use std::f32::consts::TAU;
+    let mut best = f32::MIN; let mut bd = 0;
+    for k in 0..NDOM {
+        let f = 1.0 + k as f32 * 1.25;              // frequência cresce com o domínio
+        let ph = k as f32 * 2.1;
+        let v = (TAU*f*x + ph).sin() + (TAU*f*y + ph*1.7).cos() + 0.55*(TAU*f*1.6*(x+y) + ph).sin();
+        if v > best { best = v; bd = k; }
+    }
+    bd
 }
 fn wd(a: f32, b: f32) -> f32 { let mut d = a - b; while d > 0.5 { d -= 1.0; } while d < -0.5 { d += 1.0; } d }
 fn field(x: f32, y: f32, pts: &[(f32, f32)], sig: f32) -> f32 {
@@ -156,13 +180,17 @@ fn sense(b: &Being, w: &World, t: u32, neigh_d: f32, neigh_align: f32, heard: &[
     for &(nx,ny,_) in &w.nests { let (dx,dy)=(wd(nx,b.x),wd(ny,b.y)); let d=dx*dx+dy*dy; if d<best { best=d; ndx=dx; ndy=dy; } }
     let nn = best.sqrt().max(1e-3);
     let ph = w.day_phase(t);
+    // CONHECIMENTO ABRE OS SENTIDOS: sem saber, o ser é quase cego pra água/perigo/abrigo/social
+    let kw = &b.knowledge;
+    let (gf,gw,gp,gn,gs) = (0.5+0.5*kw[0], 0.05+0.95*kw[1], 0.05+0.95*kw[2], 0.12+0.88*kw[3], 0.12+0.88*kw[4]);
+    let (fl,fr)=(fl*gf,fr*gf); let (wl,wr)=(wl*gw,wr*gw); let (pl,pr,pprox)=(pl*gp,pr*gp,pprox*gp); let (ndx,ndy)=(ndx*gn,ndy*gn);
     let mut s = [0.0f32; NIN];
     s[0]=tanh(fl-fr); s[1]=tanh(fl+fr-0.5); s[2]=tanh(wl-wr); s[3]=tanh(wl+wr-0.5);
     s[4]=tanh(pl-pr); s[5]=tanh(pl+pr); s[6]=pprox.min(1.0); s[7]=ndx/nn; s[8]=ndy/nn;
     s[9]=tanh(neigh_d); s[10]=neigh_align; s[11]=1.0-b.energy/100.0; s[12]=1.0-b.hydra/100.0;
     s[13]=b.adeno; s[14]=b.corti; s[15]=b.health/100.0; s[16]=ph.sin(); s[17]=ph.cos();
-    for k in 0..NMSG { s[18+k]=heard[k]; }   // 8 bits OUVIDOS dos vizinhos (byte médio local)
-    s[NIN-1]=1.0;                            // viés
+    for k in 0..NMSG { s[18+k]=heard[k]*gs; }   // 8 bits ouvidos — só valem se o ser SABE do social
+    s[NIN-1]=1.0;                               // viés
     s
 }
 fn tanh(x: f32) -> f32 { x.tanh() }
@@ -176,8 +204,32 @@ fn main() {
         "--watch"  => watch(),
         "--serve"  => serve(),
         "--lab"    => lab(),
+        "--validate" => validate(),
         _ => evolve(40),
     }
+}
+
+// VALIDAÇÃO por ABLAÇÃO: o mesmo campeão COM aprender (comer=conhecimento) vs SEM aprender → conhecimento = sobrevivência?
+fn validate() {
+    let mut r0 = Rng(1);
+    let g = load_genome("vida_champion.dna").unwrap_or_else(|| { println!("(sem vida_champion.dna — evolua antes; aleatório)"); random_genome(&mut r0) });
+    println!("VALIDAÇÃO — conhecimento = sobrevivência?  (ablação: comer=aprender LIGADO vs DESLIGADO, 5 mundos)\n");
+    for (label, learn) in [("APRENDE (comer=conhecimento)", true), ("NAO aprende (ablacao)", false)] {
+        LEARN.store(learn, Ordering::Relaxed);
+        let (mut life, mut nb, mut learned) = (0f64, 0f64, 0f64); let mut know = [0f64; NDOM];
+        for seed in 0..5u64 {
+            let mut r = Rng(300 + seed);
+            let mut w = World::new(80, 6, 4, 4, &mut r);
+            let mut beings: Vec<Being> = (0..60).map(|i| { let mut cg=g.clone(); for v in cg.iter_mut(){ if r.f()<0.1 {*v+=r.g()*0.1;} } Being::from_genome(i, r.f(), r.f(), 0, 0, &cg, &mut r) }).collect();
+            for t in 0..1800u32 { step_world(&mut beings, &mut w, t, &mut r, false, false); if beings.iter().all(|b| !b.alive) { break; } }
+            for b in &beings { life += b.age as f64; nb += 1.0; learned += b.learned as f64; for k in 0..NDOM { know[k] += b.knowledge[k] as f64; } }
+        }
+        print!("  {:<32} vida media {:>6.0} ticks · aprendizados/ser {:>4.1} · conhecimento:", label, life/nb, learned/nb);
+        for k in 0..NDOM { print!(" {} {:.2}", DOM_NAMES[k], know[k]/nb); }
+        println!();
+    }
+    LEARN.store(true, Ordering::Relaxed);
+    println!("\n→ se APRENDE vive bem mais que a ablação, CONHECIMENTO = SOBREVIVÊNCIA está validado numericamente.");
 }
 
 // ================== LAB GRÁFICO NATIVO (Bevy) — a engine Rust renderizando o cérebro por dentro ==================
@@ -320,14 +372,19 @@ fn input_lab(mut sim: ResMut<Sim>, keys: Res<ButtonInput<KeyCode>>, mouse: Res<B
 
 // cor a partir do BYTE (a "linguagem" vira cor): matiz = valor do byte
 fn byte_col(byte: u8, l: f32, a: f32) -> Color { Color::hsla(byte as f32 / 255.0 * 360.0, 0.78, l.clamp(0.0,1.0), a.clamp(0.0,1.0)) }
+fn dom_col(d: usize, l: f32, a: f32) -> Color { Color::hsla(d as f32 / NDOM as f32 * 340.0, 0.62, l.clamp(0.0,1.0), a.clamp(0.0,1.0)) }
 fn draw_lab(mut giz: Gizmos, sim: Res<Sim>) {
     let night = sim.w.is_night(sim.tick);
     let dim = if night { 0.6 } else { 1.0 };
+    // TERRENO POR FREQUÊNCIA: fundo de domínios (cada bioma uma cor) — os domínios se formam no espaço
+    let gr = 30usize;
+    for gy in 0..gr { for gx in 0..gr { let x=(gx as f32+0.5)/gr as f32; let y=(gy as f32+0.5)/gr as f32;
+        gc(&mut giz, wpos(x,y), 2.2, dom_col(domain_at(x,y), 0.5, 0.09*dim)); } }
     giz.rect_2d(Isometry2d::from_translation(Vec2::new(-360.0, 0.0)), Vec2::new(646.0, 646.0), Color::srgba(0.2,0.3,0.5,0.14));
-    // ninhos (santuários) · água (poças brilhantes) · comida (brilho verde)
     for nst in &sim.w.nests { let p=wpos(nst.0,nst.1); let rr=nst.2*640.0; gc(&mut giz,p,rr,Color::srgba(0.6,0.52,1.0,0.30)); gc(&mut giz,p,rr*0.6,Color::srgba(0.6,0.52,1.0,0.12)); }
     for wt in &sim.w.water { let p=wpos(wt.0,wt.1); gc(&mut giz,p,3.5,Color::srgb(0.4,0.72,1.0)); gc(&mut giz,p,10.0,Color::srgba(0.29,0.64,1.0,0.22)); gc(&mut giz,p,18.0,Color::srgba(0.29,0.64,1.0,0.07)); }
-    for f in &sim.w.food { if f.2 { gc(&mut giz, wpos(f.0,f.1), 1.6, Color::srgba(0.5,0.9,0.35,dim)); } }
+    // COMIDA colorida pelo DOMÍNIO de conhecimento que ela ensina (comida = frase/bytes)
+    for f in &sim.w.food { if f.2 { gc(&mut giz, wpos(f.0,f.1), 1.9, dom_col(domain_at(f.0,f.1), 0.55, dim)); } }
     // TEIA SOCIAL: liga vizinhos próximos; cor = média dos bytes → grupos que "falam igual" viram uma constelação
     let bs = &sim.beings;
     for i in 0..bs.len() { if !bs[i].alive { continue; }
@@ -337,9 +394,11 @@ fn draw_lab(mut giz: Gizmos, sim: Res<Sim>) {
                 giz.line_2d(wpos(bs[i].x,bs[i].y), wpos(bs[j].x,bs[j].y), byte_col(byte,0.55,a)); } } }
     // SERES: glow + corpo colorido pelo BYTE falado + rastro + pulso de fala animado
     for b in bs { if !b.alive { continue; } let p=wpos(b.x,b.y); let e=(b.energy/100.0).clamp(0.0,1.0);
+        let know = b.knowledge.iter().sum::<f32>()/NDOM as f32;    // conhecimento total (0..1)
         let st=b.trail.len().saturating_sub(8);
         for k in (st+1)..b.trail.len() { giz.line_2d(wpos(b.trail[k-1][0],b.trail[k-1][1]),wpos(b.trail[k][0],b.trail[k][1]), byte_col(b.byte,0.5,0.06*dim)); }
-        gc(&mut giz, p, 3.0+e*4.0, byte_col(b.byte, 0.42, 0.14*dim));   // glow
+        if know>0.05 { gc(&mut giz, p, 5.0+know*9.0, Color::srgba(1.0,0.95,0.75,know*0.16*dim)); }  // AURA de conhecimento (dourada, cresce c/ a mente)
+        gc(&mut giz, p, 3.0+e*4.0, byte_col(b.byte, 0.42, 0.14*dim));   // glow do byte
         gc(&mut giz, p, 1.6+e*2.2, byte_col(b.byte, 0.32+e*0.35, dim)); // corpo
         if b.neigh>0.0 && b.byte!=0 { let ph=((sim.tick.wrapping_add(b.id))%24) as f32/24.0; gc(&mut giz,p,4.0+ph*11.0, byte_col(b.byte,0.62,(1.0-ph)*0.16*dim)); }
     }
@@ -418,6 +477,8 @@ fn hud_lab(sim: Res<Sim>,
             s += &format!("historico de acoes:  ");
             for i in 0..5 { s += &format!("{} {:.0}%   ", ACT_NAMES[i], b.act_cnt[i] as f32/tot as f32*100.0); }
             s += &format!("   ·   FALA byte {:03} ({:08b}) · ouve {} vizinhos", b.byte, b.byte, b.neigh as u32);
+            s += &format!("\nCONHECIMENTO (comeu {} frases):  ", b.learned);
+            for k in 0..NDOM { let fill=((b.knowledge[k]*4.0).round() as usize).min(4); s += &format!("{} [{}{}]  ", DOM_NAMES[k], "#".repeat(fill), "-".repeat(4-fill)); }
         }
         None => { s += "        — clique numa bolinha do mundo pra inspecionar o cerebro do ser —"; }
     }
@@ -547,13 +608,16 @@ fn step_world(beings: &mut Vec<Being>, w: &mut World, t: u32, r: &mut Rng, allow
         b.y = (b.y + mthr*0.5*DT*b.head.sin()).rem_euclid(1.0);
         let in_nest = w.nests.iter().any(|&(nx,ny,rr)| wd(b.x,nx).powi(2)+wd(b.y,ny).powi(2) < rr*rr);
         // metabolismo REAL (parado morre): energia ~0.3/tick + esforço; à noite fora do ninho drena mais
-        let mut ecost = w.metab*DT + 6.0*mthr*DT;
-        if night && !in_nest { ecost += w.night_drain*DT; }
+        let mut ecost = w.metab*DT + 6.0*mthr*DT*(1.0 - 0.45*b.knowledge[5]);   // NAVEGAÇÃO: sabe atravessar → gasta menos
+        if night && !in_nest { ecost += w.night_drain*DT*(1.0 - 0.7*b.knowledge[3]); }   // ABRIGO: conhecimento sobrevive à noite
         b.energy -= ecost; b.hydra -= (2.0 + 3.0*mthr)*DT; b.stamina -= (1.2*mthr + if night && !in_nest {0.8} else {0.2})*DT;
         let hungry = b.energy < 55.0; let thirsty = b.hydra < 55.0;
         let (mut ate, mut drank, mut rested) = (false, false, false);
         if eat > 0.5 { for f in w.food.iter_mut() { if f.2 && wd(b.x,f.0).powi(2)+wd(b.y,f.1).powi(2) < 0.03*0.03 {
-            f.2 = false; f.3 = w.regrow; b.energy = (b.energy+26.0).min(100.0); b.dopa = (b.dopa+0.6).min(1.0); ate = true; if hungry { b.eat_hungry += 1.0; } break; } } }
+            let d = domain_at(f.0, f.1);                    // comida carrega o CONHECIMENTO do domínio onde nasceu
+            f.2 = false; f.3 = w.regrow; b.energy = (b.energy+22.0).min(100.0); b.dopa = (b.dopa+0.6).min(1.0);
+            if LEARN.load(Ordering::Relaxed) { b.knowledge[d] = (b.knowledge[d] + 0.16).min(1.0); b.learned += 1; }   // COMER = APRENDER
+            ate = true; if hungry { b.eat_hungry += 1.0; } break; } } }
         if drink > 0.5 && field(b.x,b.y,&w.water,0.05) > 0.4 { b.hydra = (b.hydra+11.0).min(100.0); b.dopa = (b.dopa+0.3).min(1.0); drank = true; if thirsty { b.drink_thirsty += 1.0; } }
         if rest > 0.5 && in_nest { b.stamina = (b.stamina+5.0).min(100.0); b.health = (b.health+1.2).min(100.0); rested = true; }
         if in_nest { b.nest_ticks += 1; }
