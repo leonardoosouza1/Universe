@@ -1,0 +1,54 @@
+{
+  "fonte": "ByteBrain 8M congelado, semente K=8/int4 (768B), germinacao offline",
+  "germinacao_ms_total": 22834,
+  "regioes": [
+    {
+      "regiao": "Clareira do Norte",
+      "fato": "ha agua limpa ao norte",
+      "fiel": true,
+      "esperado": "ha agua limpa ao norte"
+    },
+    {
+      "regiao": "Bosque Sombrio",
+      "fato": "o predador caca de noit",
+      "fiel": true,
+      "esperado": "o predador caca de noite"
+    },
+    {
+      "regiao": "Campo Dourado",
+      "fato": "a fruta azul mata a fom",
+      "fiel": true,
+      "esperado": "a fruta azul mata a fome"
+    },
+    {
+      "regiao": "Colina Ventosa",
+      "fato": "o cardume protege do pe",
+      "fiel": true,
+      "esperado": "o cardume protege do perigo"
+    },
+    {
+      "regiao": "Lago Espelhado",
+      "fato": "beba aqui para nao ter",
+      "fiel": true,
+      "esperado": "beba aqui para nao ter sede"
+    },
+    {
+      "regiao": "Gruta Funda",
+      "fato": "a gruta abriga contra a",
+      "fiel": true,
+      "esperado": "a gruta abriga contra a noite"
+    },
+    {
+      "regiao": "Vale das Pedras",
+      "fato": "cuidado com o buraco fu",
+      "fiel": true,
+      "esperado": "cuidado com o buraco fundo"
+    },
+    {
+      "regiao": "Mata Alta",
+      "fato": "esconda-se dentro do ar",
+      "fiel": true,
+      "esperado": "esconda-se dentro do arbusto"
+    }
+  ]
+}
