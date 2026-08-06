@@ -1,0 +1,310 @@
+=== cortex_evolve: folha cortical 32×32 como cérebro ===
+  60 seres · 6000 ticks/gen · 15 gens
+  Genoma: afw init N(1.0,σ=0.5)  mw init N(0,σ=0.2)  tau_spread evolui
+  Evolução: sigma=0.050  p_mutate=0.020  n_elite=3  tourney=3
+  Inibição: fat_beta=0.00  div_sigma=0.00  (varredura — sem recompilar)
+  Mapa de modalidade a cada 99 gerações
+  Critério P1 registrado: razão intra/inter > 3× (sem afrouxamento)
+  SEM muletas motoras  |  Fitness: metros contínuos
+  População: ALEATÓRIA (seed=índice, σ_afw=0.5, σ_mw=0.2)
+
+🗺  MAP DIAG track_width=18.0m cell=3.0m lap=2928.1m
+   voxels road=17471 wall=2861 grass=82060 hole=8 road_ratio=17.1%
+   start_pos=(203.9, 405.7) start_progress=14.4m / lap 2928.1m (0.5%)
+   WP[0] (208,420) seg_len=0.0m turn=0.0° straight
+   WP[1] (200,392) seg_len=28.8m turn=0.9° straight
+   WP[2] (191,360) seg_len=33.3m turn=0.0° straight
+   WP[3] (181,325) seg_len=35.9m turn=0.8° straight
+   WP[4] (172,290) seg_len=36.6m turn=1.7° straight
+   WP[5] (164,255) seg_len=35.4m turn=2.9° straight
+   WP[6] (158,223) seg_len=32.4m turn=5.2° straight
+   WP[7] (155,196) seg_len=27.6m turn=10.1° straight
+   WP[8] (157,175) seg_len=21.5m turn=18.5° straight
+   WP[9] (164,159) seg_len=17.4m turn=19.2° straight
+   WP[10] (175,146) seg_len=16.8m turn=16.0° straight
+   WP[11] (190,137) seg_len=17.2m turn=12.4° straight
+   WP[12] (207,131) seg_len=18.0m turn=9.7° straight
+   WP[13] (225,128) seg_len=18.5m turn=8.1° straight
+   WP[14] (244,128) seg_len=18.4m turn=7.6° straight
+   WP[15] (261,130) seg_len=17.6m turn=8.3° straight
+   WP[16] (277,134) seg_len=16.0m turn=17.0° straight
+   WP[17] (291,143) seg_len=16.3m turn=15.2° straight
+   WP[18] (304,157) seg_len=19.7m turn=7.3° straight
+   WP[19] (317,175) seg_len=22.4m turn=2.9° straight
+   WP[20] (330,195) seg_len=23.9m turn=0.1° straight
+   WP[21] (343,215) seg_len=23.8m turn=3.2° straight
+   WP[22] (356,233) seg_len=22.2m turn=7.8° straight
+   WP[23] (370,247) seg_len=19.4m turn=16.3° straight
+   WP[24] (384,255) seg_len=16.0m turn=22.4° straight
+   WP[25] (398,257) seg_len=13.9m turn=18.5° straight
+   WP[26] (411,254) seg_len=13.5m turn=13.3° straight
+   WP[27] (424,248) seg_len=14.5m turn=7.3° straight
+   WP[28] (438,240) seg_len=15.9m turn=2.4° straight
+   WP[29] (452,230) seg_len=17.3m turn=1.3° straight
+   WP[30] (468,220) seg_len=18.6m turn=4.3° straight
+   WP[31] (485,210) seg_len=19.7m turn=6.8° straight
+   WP[32] (504,203) seg_len=20.9m turn=2.9° straight
+   WP[33] (528,194) seg_len=25.1m turn=1.0° straight
+   WP[34] (557,184) seg_len=30.3m turn=0.2° straight
+   WP[35] (588,173) seg_len=33.2m turn=1.1° straight
+   WP[36] (620,162) seg_len=33.8m turn=2.2° straight
+   WP[37] (650,153) seg_len=32.0m turn=4.0° straight
+   WP[38] (678,147) seg_len=28.0m turn=8.0° straight
+   WP[39] (700,145) seg_len=22.0m turn=19.6° straight
+   WP[40] (714,149) seg_len=15.0m turn=53.5° CURVE
+   WP[41] (719,161) seg_len=12.9m turn=33.1° CURVE
+   WP[42] (715,181) seg_len=20.3m turn=10.1° straight
+   WP[43] (705,206) seg_len=27.1m turn=3.5° straight
+   WP[44] (691,234) seg_len=30.7m turn=0.4° straight
+   WP[45] (678,261) seg_len=30.7m turn=2.5° straight
+   WP[46] (667,286) seg_len=27.1m turn=8.4° straight
+   WP[47] (662,306) seg_len=20.2m turn=30.7° CURVE
+   WP[48] (665,317) seg_len=11.9m turn=67.9° ⚠ SHARP
+   WP[49] (679,318) seg_len=13.6m turn=23.3° straight
+   WP[50] (701,312) seg_len=22.9m turn=6.9° straight
+   WP[51] (728,300) seg_len=29.9m turn=2.4° straight
+   WP[52] (758,285) seg_len=33.5m turn=0.1° straight
+   WP[53] (788,270) seg_len=33.4m turn=2.2° straight
+   WP[54] (815,258) seg_len=29.5m turn=6.8° straight
+   WP[55] (836,251) seg_len=22.1m turn=24.8° straight
+   WP[56] (849,253) seg_len=12.6m turn=62.5° ⚠ SHARP
+   WP[57] (852,263) seg_len=10.8m turn=28.8° straight
+   WP[58] (850,279) seg_len=16.3m turn=10.7° straight
+   WP[59] (842,300) seg_len=21.9m turn=4.8° straight
+   WP[60] (832,324) seg_len=26.2m turn=2.4° straight
+   WP[61] (819,349) seg_len=28.8m turn=0.9° straight
+   WP[62] (805,376) seg_len=29.5m turn=0.2° straight
+   WP[63] (792,401) seg_len=28.4m turn=1.5° straight
+   WP[64] (781,424) seg_len=25.4m turn=2.2° straight
+   WP[65] (770,445) seg_len=23.8m turn=5.1° straight
+   WP[66] (756,465) seg_len=24.7m turn=2.3° straight
+   WP[67] (742,486) seg_len=25.3m turn=0.2° straight
+   WP[68] (727,507) seg_len=25.2m turn=2.7° straight
+   WP[69] (714,527) seg_len=24.7m turn=5.6° straight
+   WP[70] (703,549) seg_len=23.8m turn=8.9° straight
+   WP[71] (696,570) seg_len=22.8m turn=12.5° straight
+   WP[72] (694,593) seg_len=22.5m turn=17.4° straight
+   WP[73] (699,617) seg_len=25.3m turn=12.4° straight
+   WP[74] (711,645) seg_len=30.4m turn=6.2° straight
+   WP[75] (728,674) seg_len=33.7m turn=2.9° straight
+   WP[76] (747,703) seg_len=34.8m turn=0.6° straight
+   WP[77] (766,731) seg_len=33.1m turn=2.0° straight
+   WP[78] (781,755) seg_len=28.8m turn=6.8° straight
+   WP[79] (790,775) seg_len=22.0m turn=21.7° straight
+   WP[80] (791,789) seg_len=14.0m turn=52.9° CURVE
+   WP[81] (783,796) seg_len=10.7m turn=36.8° CURVE
+   WP[82] (768,797) seg_len=14.8m turn=13.8° straight
+   WP[83] (748,794) seg_len=20.3m turn=5.5° straight
+   WP[84] (725,787) seg_len=24.5m turn=1.9° straight
+   WP[85] (699,779) seg_len=26.9m turn=0.3° straight
+   WP[86] (673,771) seg_len=27.5m turn=2.4° straight
+   WP[87] (647,764) seg_len=26.2m turn=5.5° straight
+   WP[88] (625,760) seg_len=23.2m turn=6.4° straight
+   WP[89] (603,759) seg_len=21.4m turn=3.0° straight
+   WP[90] (582,759) seg_len=21.6m turn=1.9° straight
+   WP[91] (560,760) seg_len=21.8m turn=0.8° straight
+   WP[92] (538,761) seg_len=21.9m turn=0.2° straight
+   WP[93] (516,762) seg_len=21.8m turn=1.2° straight
+   WP[94] (495,762) seg_len=21.6m turn=2.4° straight
+   WP[95] (473,762) seg_len=21.3m turn=3.5° straight
+   WP[96] (453,760) seg_len=20.9m turn=4.4° straight
+   WP[97] (432,757) seg_len=20.5m turn=3.7° straight
+   WP[98] (413,753) seg_len=20.3m turn=2.6° straight
+   WP[99] (393,747) seg_len=20.1m turn=1.5° straight
+   WP[100] (374,742) seg_len=20.1m turn=0.3° straight
+   WP[101] (355,736) seg_len=20.1m turn=0.8° straight
+   WP[102] (335,730) seg_len=20.2m turn=2.0° straight
+   WP[103] (315,725) seg_len=20.3m turn=3.1° straight
+   WP[104] (295,721) seg_len=20.6m turn=5.6° straight
+   WP[105] (273,719) seg_len=22.8m turn=4.6° straight
+   WP[106] (247,719) seg_len=26.0m turn=2.0° straight
+   WP[107] (219,719) seg_len=27.4m turn=0.3° straight
+   WP[108] (192,720) seg_len=27.0m turn=1.5° straight
+   WP[109] (167,720) seg_len=24.7m turn=4.3° straight
+   WP[110] (147,718) seg_len=20.7m turn=10.6° straight
+   WP[111] (132,714) seg_len=15.2m turn=30.9° CURVE
+   WP[112] (125,707) seg_len=9.9m turn=61.3° ⚠ SHARP
+   WP[113] (128,697) seg_len=11.0m turn=26.7° straight
+   WP[114] (141,683) seg_len=18.3m turn=7.6° straight
+   WP[115] (160,668) seg_len=24.7m turn=2.1° straight
+   WP[116] (183,651) seg_len=28.7m turn=0.7° straight
+   WP[117] (207,633) seg_len=30.1m turn=3.2° straight
+   WP[118] (230,614) seg_len=29.0m turn=7.0° straight
+   WP[119] (247,595) seg_len=25.6m turn=14.6° straight
+   WP[120] (257,577) seg_len=20.8m turn=20.2° straight
+   WP[121] (259,559) seg_len=17.9m turn=14.8° straight
+   WP[122] (257,542) seg_len=17.7m turn=10.8° straight
+   WP[123] (252,524) seg_len=18.7m turn=6.3° straight
+   WP[124] (244,506) seg_len=20.0m turn=2.5° straight
+   WP[125] (234,486) seg_len=21.5m turn=0.6° straight
+   WP[126] (224,466) seg_len=22.8m turn=3.1° straight
+   WP[127] (215,444) seg_len=23.9m turn=5.4° straight
+   WP[128] (208,420) seg_len=25.2m turn=0.0° straight
+mundo: 320×320 · 129 wp · volta=2928m  [69ms]
+[perception] create_shader_module (spatial)...
+[perception] shader_module (spatial) OK
+[perception] create_pipeline_layout (spatial)...
+[perception] create_compute_pipeline (spatial)...
+[perception] pipeline (spatial) OK
+[perception] create_shader_module (temporal)...
+[perception] shader_module (temporal) OK
+[perception] create_pipeline_layout (temporal)...
+[perception] create_compute_pipeline (temporal)...
+[perception] pipeline (temporal) OK
+[perception] create_shader_module (motion)...
+[perception] shader_module (motion) OK
+[perception] create_compute_pipeline (motion)...
+[perception] pipeline (motion) OK
+[cortex_sheet] Folha 32×32=1024 unidades × 60 seres | τ ∈ [1.6ms, 318ms]
+[cortex_sheet] buf_afw: 52 MB | buf_mw: 720 KB
+[cortex_evolve] Adapter: AMD Radeon RX 6750 XT (RADV NAVI22) · cap=60
+[cortex_evolve] Folha 32×32=1024 unidades | τ ∈ [1.6ms, 318ms] spread 199×
+[cortex_evolve] Genoma: afw=228352  mw=3072  tau_spread=1f
+CortexCtx pronto  [92ms]
+
+  [sat-folha] |act|>0.9: 954.5 unid/ser (93.2% total) | universais=619 | max=1.000 mean=0.970
+gen    0 | med=     18m (0.01V) max=    385m (0.13V) | ≥1V=0 ≥2V=0 morto=38% | 34.2s
+
+── MAPA DE MODALIDADE (gen    0) ─────────────────────────────────
+   A=canais 0-111 (visão/retina)  B=canais 112-222 (propriocepção)
+   Critério registrado: razão intra/inter > 3× (sem afrouxamento)
+
+   AABBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBABB
+   BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+   BBBBBBBBBBBBBBBBBBBBBBBBBAAABBBB
+   BBBBBBBBBBBBBBBBBBBBBBBBBBABBBBB
+   BBBBBBBBBBBBBBBBABBBBABABABBBABB
+   BBBBBBBBBBBBBBAABABBABBBBBABBBBB
+   BBBBBBBBABAAAAAAAABBABAAAABABBBB
+   BBBBAAAAAAAAAAAAAAAAAAABBBBAAABA
+   BBBBABAAAAAAAAAAAAAAAAAABABBBABA
+   BBABBABBAAAAAAAAAAAAAABAAAAAABAA
+   BBBAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   BBABBAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   ABAAABAAAAAAAAAAAAAAAAAAAAAAAAAA
+   ABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   AAAAAABAAAAAAAAAAAAAAAAAAAAAAAAA
+   BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+   BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+   A=630 (61.5%)  B=394 (38.5%)  ?=0 (0.0%)
+
+── MAPA DE FRONTEIRA (correlação cruzada com vizinhos) ──────────────
+   . = interior (corr≥0.9)  , = transição (0.7-0.9)  o = fronteira (0.5-0.7)  # = forte (<0.5)
+   ,,,,,,.,......................,.
+   ,,...,........................,.
+   ...,.,,........................o
+   ,..,...........................,
+   ,..,...........................,
+   ,,..............................
+   .,..............................
+   ................................
+   .,..............................
+   .,..............................
+   ...,,...........................
+   ,,o,............................
+   ,,,,...........................,
+   ..,o,.,,.................,......
+   .,##,,##,..........,............
+   ..##o.,,.....,,........,........
+   .####,.......,........,,........
+   ##.ooo...,............,....,....
+   ##o.##o.....,...,..........,....
+   ##o..#..........................
+   .o..............................
+   #...............................
+   #o..............................
+   #...............................
+   ................................
+   ................................
+   ................................
+   ................................
+   ......o.........................
+   #....o#o........................
+   #o.o..o........o..o.............
+   #####.........######............
+
+── CRITÉRIO P1: razão intra/inter ────────────────────────────────────
+   Limiar registrado: razão > 3× (avaliado abaixo)
+   pares intra=3573 corr=+0.9697  |  pares inter=333 corr=+0.6317
+   INCONCLUSIVO razão=1.54× (1.5-3× — tendência, não confirmado)
+
+── ESPALHAMENTO DE τ (ativas vs silentes) ────────────────────────────
+   ATIVAS (1007):  τ ∈ [1.60ms, 318.0ms]  spread=198.8×
+   SILENTES (   1): τ ∈ [270.88ms, 270.9ms]  spread=1.0×
+   Spread ativas = 198.8× → PASS >10×
+
+  [sat-folha] |act|>0.9: 952.0 unid/ser (93.0% total) | universais=617 | max=1.000 mean=0.969
+gen    1 | med=    104m (0.04V) max=    476m (0.16V) | ≥1V=0 ≥2V=0 morto=22% | 34.4s
+  [sat-folha] |act|>0.9: 951.8 unid/ser (92.9% total) | universais=677 | max=1.000 mean=0.969
+gen    2 | med=    107m (0.04V) max=    480m (0.16V) | ≥1V=0 ≥2V=0 morto=18% | 34.5s
+  [sat-folha] |act|>0.9: 951.1 unid/ser (92.9% total) | universais=629 | max=1.000 mean=0.969
+gen    3 | med=    111m (0.04V) max=    346m (0.12V) | ≥1V=0 ≥2V=0 morto=28% | 34.5s
+  [sat-folha] |act|>0.9: 972.0 unid/ser (94.9% total) | universais=650 | max=1.000 mean=0.977
+gen    4 | med=    131m (0.04V) max=    666m (0.23V) | ≥1V=0 ≥2V=0 morto=17% | 35.3s
+  [sat-folha] |act|>0.9: 960.6 unid/ser (93.8% total) | universais=640 | max=1.000 mean=0.972
+gen    5 | med=    153m (0.05V) max=    678m (0.23V) | ≥1V=0 ≥2V=0 morto=17% | 35.4s
+  [sat-folha] |act|>0.9: 956.5 unid/ser (93.4% total) | universais=625 | max=1.000 mean=0.971
+gen    6 | med=    128m (0.04V) max=    473m (0.16V) | ≥1V=0 ≥2V=0 morto=22% | 35.0s
+  [sat-folha] |act|>0.9: 967.1 unid/ser (94.4% total) | universais=685 | max=1.000 mean=0.975
+gen    7 | med=    138m (0.05V) max=    474m (0.16V) | ≥1V=0 ≥2V=0 morto=20% | 34.5s
+  [sat-folha] |act|>0.9: 972.2 unid/ser (94.9% total) | universais=706 | max=1.000 mean=0.977
+gen    8 | med=    138m (0.05V) max=    491m (0.17V) | ≥1V=0 ≥2V=0 morto=20% | 34.6s
+  [sat-folha] |act|>0.9: 971.9 unid/ser (94.9% total) | universais=689 | max=1.000 mean=0.977
+gen    9 | med=    142m (0.05V) max=   1184m (0.40V) | ≥1V=0 ≥2V=0 morto=22% | 34.2s
+  [sat-folha] |act|>0.9: 990.5 unid/ser (96.7% total) | universais=752 | max=1.000 mean=0.984
+gen   10 | med=    144m (0.05V) max=    485m (0.17V) | ≥1V=0 ≥2V=0 morto=22% | 34.1s
+  [sat-folha] |act|>0.9: 988.2 unid/ser (96.5% total) | universais=743 | max=1.000 mean=0.983
+gen   11 | med=    149m (0.05V) max=    496m (0.17V) | ≥1V=0 ≥2V=0 morto=18% | 34.3s
+  [sat-folha] |act|>0.9: 984.9 unid/ser (96.2% total) | universais=743 | max=1.000 mean=0.981
+gen   12 | med=    138m (0.05V) max=    488m (0.17V) | ≥1V=0 ≥2V=0 morto=27% | 34.2s
+  [sat-folha] |act|>0.9: 989.2 unid/ser (96.6% total) | universais=750 | max=1.000 mean=0.983
+gen   13 | med=    149m (0.05V) max=    493m (0.17V) | ≥1V=0 ≥2V=0 morto=22% | 34.1s
+  [sat-folha] |act|>0.9: 992.6 unid/ser (96.9% total) | universais=762 | max=1.000 mean=0.984
+gen   14 | med=    149m (0.05V) max=    963m (0.33V) | ≥1V=0 ≥2V=0 morto=22% | 34.6s
+
+=== RESULTADO FINAL (521.7s total) ===
+Última geração (gen   14):
+  mediana: 149m (0.051 voltas)
+  máximo:  963m (0.329 voltas)
+  ≥1 volta: 0/60  ≥2 voltas: 0/60
+  mortalidade: 21.7%
+
+=== TRAJETÓRIA DA MEDIANA (OLS) ===
+  Todas 15 gens: slope=+5.40m/gen  σ=1.47  razão=3.68σ
+  -1gen (14 gens): slope=+5.93m/gen  σ=1.66  razão=3.57σ
+  -2gen (13 gens): slope=+6.49m/gen  σ=1.90  razão=3.41σ
+  -3gen (12 gens): slope=+7.58m/gen  σ=2.12  razão=3.57σ
+
+=== TABELA COMPLETA ===
+  gen    0: med=     18m (0.006V) max=    385m (0.132V)
+  gen    1: med=    104m (0.036V) max=    476m (0.163V)
+  gen    2: med=    107m (0.037V) max=    480m (0.164V)
+  gen    3: med=    111m (0.038V) max=    346m (0.118V)
+  gen    4: med=    131m (0.045V) max=    666m (0.228V)
+  gen    5: med=    153m (0.052V) max=    678m (0.232V)
+  gen    6: med=    128m (0.044V) max=    473m (0.162V)
+  gen    7: med=    138m (0.047V) max=    474m (0.162V)
+  gen    8: med=    138m (0.047V) max=    491m (0.168V)
+  gen    9: med=    142m (0.049V) max=   1184m (0.404V)
+  gen   10: med=    144m (0.049V) max=    485m (0.166V)
+  gen   11: med=    149m (0.051V) max=    496m (0.169V)
+  gen   12: med=    138m (0.047V) max=    488m (0.167V)
+  gen   13: med=    149m (0.051V) max=    493m (0.168V)
+  gen   14: med=    149m (0.051V) max=    963m (0.329V)
+=== FIM cortex_evolve ===

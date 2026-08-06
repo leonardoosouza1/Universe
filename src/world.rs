@@ -8,6 +8,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
 pub static NO_HOLES: AtomicBool = AtomicBool::new(false);
 pub static EASY_TRACK: AtomicBool = AtomicBool::new(false);
+/// Silencia o despejo de 129 waypoints que `VoxelWorld::new` faz no stdout.
+///
+/// O mapa impresso é útil UMA vez, para conferir o traçado. Em ferramentas que constroem
+/// o mundo só para consultar geometria (o diagnosticador de replay, por exemplo) ele afoga
+/// o relatório de verdade em 130 linhas.
+pub static QUIET_MAP: AtomicBool = AtomicBool::new(false);
+
+/// Liga o silêncio enquanto o valor devolvido estiver vivo.
+pub fn silence_map_diag() -> impl Drop {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) { QUIET_MAP.store(false, Ordering::Relaxed); }
+    }
+    QUIET_MAP.store(true, Ordering::Relaxed);
+    Guard
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum VoxelType { Grass = 0, Road = 1, Wall = 2, Hole = 3 }
@@ -171,6 +187,7 @@ impl VoxelWorld {
         let n_wall = grid.iter().filter(|v| **v == VoxelType::Wall).count();
         let n_grass = grid.iter().filter(|v| **v == VoxelType::Grass).count();
         let n_hole = grid.iter().filter(|v| **v == VoxelType::Hole).count();
+        if !QUIET_MAP.load(Ordering::Relaxed) {
         println!("🗺  MAP DIAG track_width={:.1}m cell={:.1}m lap={:.1}m", track_width * cell_size * 0.0 + track_width, cell_size, total_dist);
         println!("   voxels road={} wall={} grass={} hole={} road_ratio={:.1}%", n_road, n_wall, n_grass, n_hole, 100.0 * n_road as f32 / (n_road + n_wall + n_grass + n_hole) as f32);
         println!("   start_pos=({:.1}, {:.1}) start_progress={:.1}m / lap {:.1}m ({:.1}%)",
@@ -194,6 +211,7 @@ impl VoxelWorld {
             let tag = if turn_deg > 60.0 { "⚠ SHARP" } else if turn_deg > 30.0 { "CURVE" } else { "straight" };
             println!("   WP[{}] ({:.0},{:.0}) seg_len={:.1}m turn={:.1}° {}",
                 i, waypoints_world[i].x, waypoints_world[i].y, seg_len, turn_deg, tag);
+        }
         }
 
         // Precompute ideal racing line (outside-in-outside). Built once per
@@ -709,8 +727,11 @@ impl VoxelWorld {
         const TAN_K: f32 = 1.25_f32;
         let tan_k_val = TAN_K.tan();
         for row in 0..RETINA_ROWS {
-            let fov_half = (FOV_DEG / 2.0).to_radians();
-            let pitch = RETINA_PITCHES[row];
+            // ALCANCE e ÂNGULO vêm de `visao::` para poderem ser VARIADOS (ver `visao.rs`).
+            // Sem parâmetro, devolvem exatamente as constantes originais — há teste travando
+            // isso, senão a mudança alteraria o comportamento de todo experimento anterior.
+            let fov_half = (crate::visao::fov_deg() / 2.0).to_radians();
+            let pitch = crate::visao::pitch(row);
             let gaze = if row == 0 { gaze_yaw } else { 0.0 };
             let dir_y = pitch.sin();
             let cos_pitch = pitch.cos();
@@ -912,6 +933,20 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
             Vec2::new(65.0, 115.0), Vec2::new(85.0, 95.0),
             Vec2::new(60.0, 70.0),
         ],
+        // CURRÍCULO POR DIFICULDADE MEDIDA (ver `pista_gen.rs`).
+        // Faixa de sementes própria, ≥ 1_000_000, para não mudar o comportamento de nenhuma
+        // semente existente — o campeão foi treinado na 42 e as pistas à mão têm sementes
+        // baixas. Formato: 1_000_000 + degrau*1000 + variante.
+        //   degrau 1 exige a sonda de 20 m · 2 a de 40 m · 3 a de 70 m · 4 a de 120 m
+        // Ex.: `--seed 1003007` = degrau 3 (difícil), variante 7.
+        s if s >= 1_000_000 => {
+            let degrau = (((s - 1_000_000) / 1000) as usize).clamp(1, 4);
+            let variante = (s - 1_000_000) % 1000;
+            // se não achar pista naquela faixa, cai no procedural em vez de devolver uma
+            // mais fácil fingindo ser a pedida
+            crate::pista_gen::do_curriculo(degrau, variante)
+                .unwrap_or_else(|| procedural_waypoints(seed))
+        }
         _ => procedural_waypoints(seed),
     }
 }

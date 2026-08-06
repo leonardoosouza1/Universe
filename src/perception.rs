@@ -16,7 +16,7 @@ use iara_perception::{
     PerceptionOutput, PerceptionPipeline, Sensor, SensoryField, Zone, ZoneConfig, PoolMethod,
 };
 
-use crate::config::iara::vision::{RETINA_ROWS, RETINA_COLS, RETINA_TOTAL};
+use crate::config::iara::vision::{RETINA_ROWS, RETINA_COLS};
 
 pub const PERCEPTION_HIDDEN: usize = 16;
 pub const PERCEPTION_DECISIONS: usize = 4;
@@ -165,6 +165,9 @@ impl RetinaPerception {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Import local do módulo de teste: `cargo fix` remove imports do escopo do
+    // arquivo quando só os testes os usam, porque analisa sem `cfg(test)`.
+    use crate::config::iara::vision::RETINA_TOTAL;
 
     #[test]
     fn retina_sensor_pools_columns() {

@@ -1,9 +1,15 @@
+pub mod brain_capacity;
+pub mod visao;
+pub mod pista_gen;
+pub mod neuro;
 pub mod lab;
 pub mod safety;
 pub mod chaos;
 pub mod gate;
 pub mod engine;
 pub mod world;
+/// Núcleo de simulação em GPU, sem parte gráfica (Bevy vira só o visualizador).
+pub mod gpu;
 pub mod types;
 pub mod layers;
 pub mod specialist;
@@ -12,10 +18,13 @@ pub mod dense_layer;
 pub mod kan;
 pub mod resonance;
 pub mod cfc;
+/// Gerador determinístico único — ver `rng.rs` para o bug de sinal que motivou.
+pub mod rng;
 pub mod perception;
 pub mod metabolism;
 pub mod memory;
 pub mod simulation;
+pub mod replay;
 pub mod ui;
 pub mod evolution;
 pub mod reality;

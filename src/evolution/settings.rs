@@ -38,6 +38,17 @@ pub struct RaceSettings {
     pub champion_path: Vec<Vec3>,   // Traçado do último campeão (spawn → última posição)
     pub champion_net_dist: f32,     // Distância NET do último campeão (para label do traçado)
     pub gens_since_crown: u32,      // Gens consecutivas sem coroar — destrava threshold se > N
+    /// Fração da POPULAÇÃO que fechou ≥1 volta na geração anterior.
+    /// Rege o currículo de ambiente (ver `pipeline::decide_next_env_level_pop`). Antes ele
+    /// era regido pela distância do CAMPEÃO, e um único carro de sorte levava os 60 para um
+    /// nível em que a aderência cai a 0,33 e a frenagem exigida (130 m) passa do alcance do
+    /// sensor mais longo (120 m) — cegueira, não dificuldade.
+    pub frac_completou_volta: f32,
+    /// Quanto a pista está estreitada em relação à largura cheia, em metros.
+    /// Persiste entre gerações e anda no máximo 0,25 m por vez, nos dois sentidos — pode
+    /// ALARGAR de volta quando a população não sustenta. Ver o currículo de largura em
+    /// `pipeline.rs`, que antes era dirigido pela distância do campeão.
+    pub estreitamento: f32,
     pub last_gen_path: Vec<Vec3>,   // Traçado do melhor da última gen (refresca sempre)
     pub last_gen_net: f32,          // NET do melhor da última gen
     pub last_gen_was_grid: bool,    // true se o melhor nasceu na largada (elegível pra coroar)
@@ -62,6 +73,10 @@ pub struct RaceSettings {
     pub current_hypernet: HypernetSeed,
     // Telemetry: gravação de dados por geração (NDJSON stats + binary replay)
     pub telemetry: super::telemetry::TelemetryWriter,
+    /// Escritor do novo formato de replay (128 bytes/frame) — gravado quando
+    /// lab.record_replay=true. None = sem gravação. Aberto no início de cada geração
+    /// e fechado (flush) no final pelo evolution_pipeline.
+    pub replay_writer: Option<crate::replay::ReplayWriter>,
 }
 
 #[derive(Resource)]

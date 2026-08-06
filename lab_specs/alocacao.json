@@ -1,0 +1,34 @@
+{
+  "name": "alocacao_neural_por_ablacao",
+  "_porque": "Quanto cada via do cérebro CARREGA — medido desligando uma por vez. O peso do portão diz o quanto uma via é USADA; só a ablação diz o quanto ela SERVE. Medido na bancada Python: genes moduladores derivaram até b=-1.67 enquanto a ablação daqueles mesmos genes custava +0.0%. Ver src/neuro.rs.",
+  "_predicao_registrada": "A via LENTA (que modula agressão/teto/viés) tem de custar caro aqui. Em 2026-07-30 mediu-se, num mundo de sobrevivência, que modular a constante de tempo rende +0.11% contra os 24.20% da forma fechada — porque lá o objetivo é de TAXA. Corrida é de INSTANTE: frear tarde na curva de 40m é batida, e nenhuma média correta salva. Se a via lenta custar ~0% aqui também, a explicação taxa-vs-instante cai.",
+  "_como_ler": "Custo de ablação = (fitness da linha de base - fitness com a via desligada) / fitness da linha de base. Comparar com uso_medio impresso ao fim de cada geração: a DISTÂNCIA entre uso e contribuição é o resultado.",
+  "gens": 25,
+  "variants": [
+    {
+      "name": "base_nenhuma",
+      "config": { "selected_track_index": 0 },
+      "params": { "via_ablada": "" }
+    },
+    {
+      "name": "sem_cortex",
+      "config": { "selected_track_index": 0 },
+      "params": { "via_ablada": "cortex" }
+    },
+    {
+      "name": "sem_reflexo",
+      "config": { "selected_track_index": 0 },
+      "params": { "via_ablada": "reflexo" }
+    },
+    {
+      "name": "sem_lenta",
+      "config": { "selected_track_index": 0 },
+      "params": { "via_ablada": "lenta" }
+    },
+    {
+      "name": "sem_sentinela_suave",
+      "config": { "selected_track_index": 0 },
+      "params": { "via_ablada": "sentinela" }
+    }
+  ]
+}

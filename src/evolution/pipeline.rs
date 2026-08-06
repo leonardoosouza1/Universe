@@ -6,7 +6,7 @@ use crate::config::UniverseConfig;
 use crate::SimulationEntity;
 use iara_genesis::codec::semantic::BehaviorFingerprint;
 
-use super::dna_genesis::{EliteDna, save_champion_dna_full, apply_catastrophic_scars, decay_scars};
+use super::dna_genesis::{EliteDna, apply_catastrophic_scars, decay_scars};
 
 // Fitness-sharing niching threshold: parents/elites with Hamming distance
 // > NICHE_DISTANCE on their 64-bit BehaviorFingerprint are considered
@@ -14,25 +14,86 @@ use super::dna_genesis::{EliteDna, save_champion_dna_full, apply_catastrophic_sc
 // tight enough to split genuinely different strategies but loose enough to
 // group minor mutations of the same lineage.
 // v14: tentou 10, piorou (tudo 1 cluster). Revertido pra 8.
+//
+// ⚠️ ESSA CALIBRAÇÃO É NULA. Ela foi feita quando `BehaviorFingerprint` SATURAVA e toda
+// distância par a par era 0 — qualquer limiar dava 1 cluster. O experimento não mediu o que
+// achava que media. Ver `iara_genesis/src/codec/semantic.rs`.
+//
+// MEDIDO depois do conserto do fingerprint (`telemetry/probe_dist`):
+//   gen 1-3: dist_med 5,0-5,3 · dist_max 10
+//   gen 4-7: dist_med 2,4-2,6 · dist_max 8
+//
+// Ou seja: o limiar 8 é 1,5-3× MAIOR que a distância típica entre elites. Ele apaga toda a
+// diversidade que existe — e existe, porque `dist_med` cai de 5,3 para 2,4 mas nunca chega a
+// zero. Daí `clusters=1` em toda geração.
 pub(super) const NICHE_DISTANCE: u32 = 8;
+
+/// Limiar de nicho ADAPTATIVO: a mediana das distâncias par a par do próprio pool.
+///
+/// Mesmo princípio que consertou o fingerprint — **critério relativo, não absoluto**. Um
+/// limiar fixo precisa ser calibrado contra uma escala de distâncias que muda ao longo da
+/// evolução (5,3 no começo, 2,4 depois de convergir); a mediana acompanha sozinha.
+///
+/// Com a mediana como limiar, ~metade dos pares conta como mesmo nicho e a outra metade
+/// separa — então `clusters` fica entre 2 e ~pool/2 por construção, em vez de colapsar.
+///
+/// `NICHE_DISTANCE` vira TETO: nunca afrouxar além do que a calibração antiga permitia.
+pub(super) fn limiar_de_nicho(dists: &[u32]) -> u32 {
+    if dists.is_empty() {
+        return NICHE_DISTANCE;
+    }
+    let mut d: Vec<u32> = dists.to_vec();
+    d.sort_unstable();
+    d[d.len() / 2].min(NICHE_DISTANCE)
+}
+
+/// Todas as distâncias de Hamming par a par entre os elites.
+///
+/// Serve para saber se `clusters=1` é monocultura de verdade ou limiar frouxo: a contagem de
+/// clusters sozinha não distingue os dois casos.
+pub(super) fn distancias_entre_elites(elites: &[EliteDna]) -> Vec<u32> {
+    let fps: Vec<BehaviorFingerprint> = elites.iter()
+        .map(|e| {
+            let q: Vec<i8> = e.fast_weights.iter()
+                .map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
+            BehaviorFingerprint::from_weights(&q)
+        })
+        .collect();
+    let mut out = Vec::new();
+    for i in 0..fps.len() {
+        for j in (i + 1)..fps.len() {
+            out.push(fps[i].distance(&fps[j]));
+        }
+    }
+    out
+}
 
 /// Clusters elites by Hamming distance on BehaviorFingerprint.
 /// Returns (cluster_id_per_elite, cluster_size_per_elite).
 /// Greedy single-pass: elite joins the first existing cluster whose
-/// representative is within NICHE_DISTANCE, otherwise opens a new one.
-pub(super) fn cluster_elites(elites: &[EliteDna]) -> (Vec<usize>, Vec<usize>) {
+/// representative is within the threshold, otherwise opens a new one.
+///
+/// O limiar é ADAPTATIVO (`limiar_de_nicho`): a mediana das distâncias do próprio pool,
+/// limitada por `NICHE_DISTANCE`. Limiar fixo não funciona porque a escala das distâncias
+/// muda ao longo da evolução — medido 5,3 nas primeiras gerações e 2,4 depois de convergir.
+pub(super) fn cluster_elites(elites: &[EliteDna], adaptativo: bool) -> (Vec<usize>, Vec<usize>) {
     let fps: Vec<BehaviorFingerprint> = elites.iter()
         .map(|e| {
             let q: Vec<i8> = e.fast_weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
             BehaviorFingerprint::from_weights(&q)
         })
         .collect();
+    let mut pares = Vec::new();
+    for i in 0..fps.len() {
+        for j in (i + 1)..fps.len() { pares.push(fps[i].distance(&fps[j])); }
+    }
+    let limiar = if adaptativo { limiar_de_nicho(&pares) } else { NICHE_DISTANCE };
     let mut reps: Vec<BehaviorFingerprint> = Vec::new();
     let mut ids: Vec<usize> = Vec::with_capacity(elites.len());
     for fp in fps.iter() {
         let mut found: Option<usize> = None;
         for (i, r) in reps.iter().enumerate() {
-            if fp.distance(r) <= NICHE_DISTANCE { found = Some(i); break; }
+            if fp.distance(r) <= limiar { found = Some(i); break; }
         }
         match found {
             Some(i) => ids.push(i),
@@ -46,44 +107,93 @@ pub(super) fn cluster_elites(elites: &[EliteDna]) -> (Vec<usize>, Vec<usize>) {
 }
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
-use super::spawn::spawn_swarm;
 
 /// Decide nível ambiental da próxima geração.
 /// Muta `gens_until_validation` e `is_validation_gen` de forma pura/testável.
 /// Retorna (level, is_validation_gen_flag).
+/// Fração da população que precisa completar uma volta para o currículo AVANÇAR.
+pub const FRACAO_PARA_SUBIR: f32 = 0.30;
+/// Abaixo desta fração o currículo RECUA — o nível atual está fora do alcance.
+pub const FRACAO_PARA_DESCER: f32 = 0.05;
+
 pub fn decide_next_env_level(
     gens_until_validation: &mut u32,
     champion_distance: f32,
     lap_distance: f32,
     current_level: u8,
 ) -> (u8, bool) {
-    if *gens_until_validation <= 1 {
-        *gens_until_validation = 3;
-        (0, true)
-    } else {
-        *gens_until_validation -= 1;
-        let target = EnvironmentalState::level_for_champion(champion_distance, lap_distance);
-        // RAMP GRADUAL: só sobe 1 nível por gen. Salto 1→3 matava toda população
-        // (champion especializado em level 1 não sobrevivia asphalt frio + chuva).
-        let capped = target.min(current_level.saturating_add(1));
-        (capped, false)
-    }
+    // compatibilidade: sem dado de população, comporta-se como antes
+    decide_next_env_level_pop(gens_until_validation, champion_distance, lap_distance,
+                              current_level, None)
 }
 
-// Tier 1.1 — constantes de reward shaping denso.
-// Calibradas pra cada sinal contribuir 1-5% da fitness de um champion típico.
-const K_SMOOTH: f32 = 100.0;   // steering jitter: penalidade até -500
-const K_SPEED: f32 = 0.5;      // speed_on_track: 30 m/s × 120s × 0.5 ≈ 1800 max
-const K_NOVEL: f32 = 50.0;     // sqrt(voxels): sqrt(2000) × 50 ≈ 2236 max
-const K_STAB: f32 = 200.0;     // stability_integral: 0..500 range
+/// Decide o próximo nível de ambiente pela POPULAÇÃO, não pelo campeão.
+///
+/// # O que estava errado
+///
+/// `level_for_champion` olha só `champion_distance / lap_distance`. Medido nas corridas de
+/// ablação: na geração 1 um carro fez 1,93 voltas no seco, o que põe o alvo em nível 3, e a
+/// população inteira vai junto. O resultado, gen a gen:
+///
+/// | gen | nível | completaram ≥1 volta | mortalidade |
+/// |---|---|---|---|
+/// | 1 | 1 | **23,6/60** | 70% |
+/// | 2 | 2 | 1,2/60 | 98% |
+/// | 3 | 3 | 0,6/60 | 99% |
+///
+/// E não é só "difícil". No nível 3 o sorteio vai a 15°C de asfalto com pista encharcada,
+/// o que derruba a aderência a ~0,33. Com isso a frenagem exigida na curva mais fechada vai
+/// a **130,9 m**, e a sonda de curvatura mais longa do carro alcança **120 m**:
+///
+/// > O carro fica FISICAMENTE CEGO para a curva. Nenhum cérebro resolve, e o que se mede ali
+/// > é ruído dividido por ruído.
+///
+/// # Os dois consertos
+///
+/// 1. **Avançar pela população.** Só sobe se ao menos [`FRACAO_PARA_SUBIR`] completar uma
+///    volta; recua se menos de [`FRACAO_PARA_DESCER`] conseguir. Com histerese entre as duas,
+///    para não oscilar.
+/// 2. **Recuar é possível.** Antes o nível só subia; uma geração de sorte prendia a
+///    população num ambiente que ela não sustentava, sem volta.
+///
+/// `frac_completou` = fração dos seres que fecharam ≥1 volta na geração que acabou.
+/// `None` = sem dado (mantém o comportamento antigo, para os testes existentes).
+pub fn decide_next_env_level_pop(
+    gens_until_validation: &mut u32,
+    champion_distance: f32,
+    lap_distance: f32,
+    current_level: u8,
+    frac_completou: Option<f32>,
+) -> (u8, bool) {
+    if *gens_until_validation <= 1 {
+        *gens_until_validation = 3;
+        return (0, true);
+    }
+    *gens_until_validation -= 1;
 
-// Tier 6.9 — Phi (IIT) proxy como pressão seletiva.
-// Cheap integrated-information approximation from brain_trace snapshots:
-// correlation magnitude between sensory channels and motor outputs, averaged.
-// Higher = retina/probe channels jointly drive actions (integrated architecture).
-// Alvo: 1-3% da fitness de um champion típico (~500-1500 pts).
-const K_PHI: f32 = 300.0;
-const K_AESTH: f32 = 200.0;
+    let Some(frac) = frac_completou else {
+        // caminho legado: alvo pelo campeão, subindo no máximo 1 nível por geração
+        let target = EnvironmentalState::level_for_champion(champion_distance, lap_distance);
+        return (target.min(current_level.saturating_add(1)), false);
+    };
+
+    let proximo = if frac >= FRACAO_PARA_SUBIR {
+        // a população consolidou este nível: um degrau acima, nunca dois
+        current_level.saturating_add(1).min(3)
+    } else if frac < FRACAO_PARA_DESCER {
+        // ninguém sustenta: recua para onde dá para aprender alguma coisa
+        current_level.saturating_sub(1).max(1)
+    } else {
+        current_level.max(1) // zona de consolidação: fica onde está
+    };
+    (proximo, false)
+}
+
+// As seis constantes de reward shaping (K_SMOOTH, K_SPEED, K_NOVEL, K_STAB, K_PHI,
+// K_AESTH) foram removidas: cada uma aparecia UMA vez no arquivo, na própria definição.
+// A fitness em uso é distância pura, e essa lista dava a impressão de um objetivo
+// multi-termo que não existe. Se voltarem a ser necessárias, voltam com o consumidor
+// junto — constante sem consumidor é documentação de uma intenção, não código.
 
 fn aesthetic_score(telem: &crate::simulation::racer::RacerTelemetry) -> f32 {
     let steer: Vec<f32> = telem.steering_history.iter().copied().collect();
@@ -169,6 +279,22 @@ fn compute_phi_proxy(r: &Racer) -> f32 {
     if phi.is_nan() || phi.is_infinite() { 0.0 } else { phi.clamp(0.0, 1.0) }
 }
 
+/// Bônus de volta — inteiro (antigo) ou contínuo em voltas fracionárias.
+///
+/// Separado de `calc_fitness` porque `Racer` tem ~60 campos e não dá para construir num
+/// teste; e porque o degrau que esta função contém merecia ser testável sozinho.
+///
+/// `continuo == false` ou `lap_dist <= 0` (mundo ainda não escreveu o comprimento) devolvem
+/// o comportamento antigo, que é o que mantém a comparação A/B honesta.
+pub(super) fn bonus_de_volta(prog: f32, lap_dist: f32, total_laps: usize, bonus: f32,
+                             continuo: bool) -> f32 {
+    if continuo && lap_dist > 0.0 {
+        (prog / lap_dist) * bonus
+    } else {
+        total_laps as f32 * bonus
+    }
+}
+
 pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabParams) -> f32 {
     // ===================================================
     // FITNESS SIMPLIFICADO — sinal limpo para seleção.
@@ -186,7 +312,23 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabPar
     // NET progress: o quanto o carro andou DESDE seu spawn. Fundamental com distributed
     // spawn — senão quem nasce no waypoint 80% e não anda nada tem fitness alto "de graça".
     let prog = (r.track_progress - r.spawn_progress).max(0.0);
-    let lap_bonus = r.total_laps as f32 * lab.lap_bonus;
+    // O DEGRAU DENTRO DA FITNESS.
+    //
+    // `total_laps` é INTEIRO e `lap_bonus` vale 50.000, enquanto `prog` chega a ~5.800 m — o
+    // bônus domina o progresso por ~9×. A seleção então quase não distingue carros dentro do
+    // mesmo balde de volta:
+    //
+    //   3,01 voltas -> 155.000 · 3,99 voltas -> 156.600 (**+1%**) · 4,00 voltas -> 206.600 (+32%)
+    //
+    // A população estava exatamente aí: melhor carro em 3,72 voltas de um teto físico de
+    // 4,36. Ir de 3,0 para 3,99 — a melhoria que se QUER selecionar — valia 1%. É o mesmo
+    // degrau que escondeu as voltas no relatório, agora dentro do SINAL DE SELEÇÃO.
+    //
+    // Contínuo mantém escala e incentivo a fechar voltas, sem o degrau. Fica atrás de flag
+    // para a comparação A/B ser possível; `lap_dist_m == 0` (mundo ainda não escreveu o
+    // comprimento) também cai no comportamento antigo.
+    let lap_bonus = bonus_de_volta(prog, r.lap_dist_m, r.total_laps, lab.lap_bonus,
+                                   lab.lap_bonus_continuo);
     let joy = r.joy_integral * 1.0;  // Desempate fino
 
     // Proximity bonus: incentiva FECHAR a volta. Quadrático em NET até saturar em 500m.
@@ -275,7 +417,7 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabPar
 pub(super) fn evolution_pipeline(
     mut commands: Commands,
     mut race: ResMut<RaceSettings>,
-    dev: Res<DevSettings>,
+    _dev: Res<DevSettings>,
     mut world_res: ResMut<VoxelWorldResource>,
     mut env: ResMut<EnvironmentalState>,
     query: Query<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody)>,
@@ -292,9 +434,17 @@ pub(super) fn evolution_pipeline(
     let dt = time.delta_secs();
     env.tick(dt);
     if query.is_empty() { return; }
-    let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 10);
+    // MODO VIDA: limite elevado de 10 para 200 voltas.
+    // Com vida longa (HP_INICIAL=300, regeneração 1 HP/s enquanto avança, FUEL=relógio real),
+    // o primeiro ser a completar 10 voltas dispara a geração antes do timeout — e isso cortava
+    // a geração cedo demais, impedindo que os outros seres acumulassem dados de seleção.
+    // A 200 voltas (>10× o tempo de uma geração típica de ~600 s / 60-70 s/volta ≈ 9 voltas),
+    // na prática a geração vai sempre até o timeout — o comportamento desejado.
+    // Se um ser extremamente competente fizer >200 voltas num único run, a geração encerra
+    // normalmente. O campo de 10 virou sentinel de "terminar quando ninguém mais aprender".
+    let winner = query.iter().find(|(_, r, _, _)| r.total_laps >= 200);
     // Geração encerra por QUALQUER dos:
-    //  - winner (10 voltas)
+    //  - winner (200 voltas — sentinel praticamente inalcançável no tempo de geração)
     //  - all_dead (não adianta esperar ninguém vivo)
     //  - timeout configurável (carros vivos tiveram tempo de acumular laps)
     //  - reset manual
@@ -423,7 +573,7 @@ pub(super) fn evolution_pipeline(
         // sorting for elitism: a lone explorer with fitness 10k beats a 3-clone
         // dominant strategy at 12k each (12k/3 = 4k). Prevents convergence to a
         // single genotype and preserves alternate strategies for future crossover.
-        let (_pre_ids, pre_sizes) = cluster_elites(&race.elite_pool);
+        let (_pre_ids, pre_sizes) = cluster_elites(&race.elite_pool, lab.nicho_adaptativo);
         let mut order: Vec<usize> = (0..race.elite_pool.len()).collect();
         order.sort_by(|&i, &j| {
             let fi = race.elite_pool[i].fitness / pre_sizes[i].max(1) as f32;
@@ -434,7 +584,7 @@ pub(super) fn evolution_pipeline(
         race.elite_pool = reordered;
         // Re-cluster after reorder so cluster ids correspond to the new positions
         // (spawn.rs reads race.elite_clusters in tournament rejection sampling).
-        let (ids_post, sizes_post) = cluster_elites(&race.elite_pool);
+        let (ids_post, sizes_post) = cluster_elites(&race.elite_pool, lab.nicho_adaptativo);
         race.elite_clusters = ids_post;
         let cluster_count = sizes_post.iter().copied().max().map(|_| {
             let mut seen = std::collections::BTreeSet::new();
@@ -444,8 +594,24 @@ pub(super) fn evolution_pipeline(
         let largest_cluster_size = sizes_post.iter().copied().max().unwrap_or(0);
         // Telemetry — small one-line stderr log per generation (parallel to the
         // existing println! GEN summary). Concise so it can be grepped easily.
-        eprintln!("[NICHE] gen={} pool={} clusters={} largest={} thr={}",
-            race.generation, race.elite_pool.len(), cluster_count, largest_cluster_size, NICHE_DISTANCE);
+        // DISTÂNCIA REAL entre os elites, não só a contagem de clusters.
+        //
+        // `clusters=1` sozinho é ambíguo: pode ser monocultura genuína OU limiar frouxo
+        // demais. A distribuição das distâncias separa os dois — se a distância típica é 3 e
+        // o limiar é 8, o limiar está apagando diversidade que EXISTE.
+        //
+        // Importa porque a calibração histórica do limiar ("v14: tentou 10, piorou — tudo 1
+        // cluster") foi feita quando o fingerprint SATURAVA e toda distância era 0. Aquela
+        // conclusão é nula, e esta linha é o que permite refazê-la com dado de verdade.
+        let dists = distancias_entre_elites(&race.elite_pool);
+        let (d_med, d_max) = if dists.is_empty() { (0.0, 0) } else {
+            (dists.iter().sum::<u32>() as f32 / dists.len() as f32,
+             dists.iter().copied().max().unwrap_or(0))
+        };
+        let thr_usado = if lab.nicho_adaptativo { limiar_de_nicho(&dists) } else { NICHE_DISTANCE };
+        eprintln!("[NICHE] gen={} pool={} clusters={} largest={} thr={} dist_med={:.1} dist_max={}",
+            race.generation, race.elite_pool.len(), cluster_count, largest_cluster_size,
+            thr_usado, d_med, d_max);
 
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
         if let Some(mut file) = open_report_log() {
@@ -512,6 +678,11 @@ pub(super) fn evolution_pipeline(
                 fits.first().copied().unwrap_or(0.0), p90(&fits), median(&fits), mean(&fits));
 
             // Lap completion distribution — quantos completaram 1, 2, 3+ voltas
+            // guardado no RaceSettings porque o currículo é decidido lá fora, noutro escopo
+            race.frac_completou_volta = if total > 0 {
+                sorted.iter().filter(|(_, r, _, _)| r.total_laps >= 1).count() as f32
+                    / total as f32
+            } else { 0.0 };
             let laps_0 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 0).count();
             let laps_1 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 1).count();
             let laps_2 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 2).count();
@@ -635,6 +806,18 @@ pub(super) fn evolution_pipeline(
             println!("📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
                 race.generation, laps_0, laps_1, laps_2, laps_3p,
                 net_max_real, median(&nets), deaths, total);
+
+            // USO das vias (peso médio do portão) ao lado da via ablada. Linha grepável.
+            // Uso NÃO é contribuição: o par (uso aqui, custo da ablação entre variantes) é o
+            // resultado do experimento de alocação — ver `neuro.rs` e `lab_specs/alocacao.json`.
+            {
+                let (uso, n, vetos) = crate::neuro::uso_medio();
+                println!("🧠 ALOC gen={} ablada={} uso_cortex={:.3} uso_reflexo={:.3} \
+                          uso_sentinela={:.3} vetos={} n={} net_max={:.0} net_med={:.0}",
+                    race.generation, crate::neuro::ablada().nome(),
+                    uso[0], uso[1], uso[2], vetos, n, net_max_real, median(&nets));
+                crate::neuro::zerar_uso();
+            }
 
             // --- DIAGNÓSTICO CEREBRAL DO TOP-3 (NET) ---
             // Mostra o histórico dos 3 melhores. Se o volante não responde quando
@@ -796,7 +979,16 @@ pub(super) fn evolution_pipeline(
                 // CHAMPION_W{width}m.dna (memória persistente por pista, não desaprende).
                 let track_w = config.current_track().track_width;
                 let per_width = format!("CHAMPION_W{}m.dna", track_w as i32);
-                for path in &["CHAMPION.dna", per_width.as_str()] {
+                // LINHAGEM: um instantâneo por coroação, com a geração no nome. É o que
+                // permite responder "quando esta sinapse nasceu" — `sinapses --contra` entre
+                // dois instantâneos consecutivos mostra o que nasceu, morreu e engrossou.
+                // Escolhido em vez de gravar a geração de nascimento DENTRO do .dna: aquilo
+                // exigiria um bloco novo no formato e um passe extra no caminho quente da
+                // mutação, e os testes de DNA legado desta branch já falham. Copiar arquivo
+                // não corre risco nenhum e dá a mesma informação, fora da simulação.
+                let _ = std::fs::create_dir_all("linhagem");
+                let snapshot = format!("linhagem/gen{:05}.dna", race.generation);
+                for path in &["CHAMPION.dna", per_width.as_str(), snapshot.as_str()] {
                     let _ = crate::evolution::dna_genesis::save_champion_dna_v7(
                         path,
                         &weights_q, scale,
@@ -884,6 +1076,14 @@ pub(super) fn evolution_pipeline(
 
         for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
         for (e, _, _, _) in query.iter() { commands.entity(e).despawn(); }
+
+        // Fecha o escritor de replay desta geração antes de incrementar o contador.
+        // O próximo update_racers abrirá um novo arquivo para gen N+1.
+        if let Some(ref mut rw) = race.replay_writer {
+            let _ = rw.flush();
+        }
+        race.replay_writer = None;
+
         race.generation += 1; race.should_reset = false; race.hard_reset = false; race.selected_racer = None;
 
         // CURRICULUM LEVEL + VALIDATION GEN (ver decide_next_env_level)
@@ -891,11 +1091,15 @@ pub(super) fn evolution_pipeline(
         let champ_dist = race.champion_distance;
         let lap_dist = world_res.0.lap_distance;
         let current_lvl = race.env_level;
-        let (next_level, is_val) = decide_next_env_level(
+        // fração da POPULAÇÃO que fechou ≥1 volta — é ela que rege o currículo agora,
+        // não a distância do campeão (ver decide_next_env_level_pop)
+        let frac_completou = Some(race.frac_completou_volta);
+        let (next_level, is_val) = decide_next_env_level_pop(
             &mut race.gens_until_validation,
             champ_dist,
             lap_dist,
             current_lvl,
+            frac_completou,
         );
         race.is_validation_gen = is_val;
         race.env_level = next_level;
@@ -922,11 +1126,23 @@ pub(super) fn evolution_pipeline(
         // Floor: never narrower than base_width (the user-specified width).
         let base_width = next_track.track_width;
         let full_width = base_width + 4.0; // match main.rs convention
-        let champion_laps = (race.champion_distance / world_res.0.lap_distance.max(1.0)).max(0.0);
-        // Slow narrowing: 0.5m per champion lap (was 2.0m — too aggressive).
-        // 0 laps→18m, 2 laps→17m, 4 laps→16m, 8 laps→14m (floor).
-        // Cars need many gens to adapt from wide to narrow track.
-        let narrowing = (champion_laps * 0.5).min(4.0);
+        // ESTREITAMENTO PELA POPULAÇÃO, não pelo campeão.
+        //
+        // Era `champion_laps * 0.5`, com `champion_laps = champion_distance / lap_distance`.
+        // Mesma falha do currículo de ambiente, num segundo mecanismo: um carro que fez 1,93
+        // voltas estreitava 0,96 m para os 60. Medido antes deste conserto: a pista ia de
+        // 18,0 para 17,1 m entre a gen 1 e a 2, e a fração que completava volta caía de 39%
+        // para 7%.
+        //
+        // Agora o alvo sai da FRAÇÃO da população que fecha volta, com a mesma zona morta do
+        // currículo de ambiente (nada abaixo de FRACAO_PARA_SUBIR), e o estreitamento anda no
+        // máximo 0,25 m por geração — nos DOIS sentidos, para poder alargar de volta quando a
+        // população não sustenta.
+        let alvo = 4.0
+            * ((race.frac_completou_volta - FRACAO_PARA_SUBIR) / 0.50).clamp(0.0, 1.0);
+        let passo = 0.25;
+        race.estreitamento += (alvo - race.estreitamento).clamp(-passo, passo);
+        let narrowing = race.estreitamento.clamp(0.0, 4.0);
         let effective_width = (full_width - narrowing).max(base_width);
         if config.rotate_tracks {
             println!("🔀 TRACK ROTATION gen={} → \"{}\" (seed={}, width={:.1}m, val={})",
@@ -1054,7 +1270,109 @@ pub(super) fn evolution_pipeline(
 
 #[cfg(test)]
 mod tests {
-    use super::decide_next_env_level;
+    use super::{bonus_de_volta, decide_next_env_level, limiar_de_nicho, NICHE_DISTANCE};
+
+    /// O limiar fixo de 8 apaga a diversidade que MEDIMOS existir.
+    ///
+    /// Distâncias reais entre elites (`telemetry/probe_dist`, depois do conserto do
+    /// fingerprint): mediana 2,4–5,3 e máximo 8–10. Com limiar 8, tudo cai no primeiro
+    /// cluster — daí `clusters=1` em toda geração de todo treino.
+    #[test]
+    fn limiar_fixo_e_grande_demais_para_a_distancia_medida() {
+        // amostra com a forma do medido na geração 4-7: mediana 2,4, máximo 8
+        let medido = [1, 2, 2, 2, 3, 3, 4, 8];
+        assert!(NICHE_DISTANCE > 2 * 2, "8 é mais que o dobro da mediana medida");
+        assert!(limiar_de_nicho(&medido) < NICHE_DISTANCE,
+                "o adaptativo tem de apertar quando a população converge");
+    }
+
+    /// O adaptativo ACOMPANHA a escala: aperta quando a população converge e afrouxa quando
+    /// ela é diversa. É o que um limiar absoluto não consegue fazer.
+    #[test]
+    fn limiar_adaptativo_acompanha_a_escala() {
+        let cedo = [4, 5, 5, 5, 6, 6, 7, 10];      // gen 1-3: mediana ~5
+        let tarde = [1, 2, 2, 2, 3, 3, 4, 8];      // gen 4-7: mediana ~2,4
+        assert!(limiar_de_nicho(&cedo) > limiar_de_nicho(&tarde));
+    }
+
+    /// Nunca afrouxar além do que a calibração antiga permitia.
+    #[test]
+    fn limiar_adaptativo_respeita_o_teto() {
+        let dispersos = [30, 40, 50, 60];
+        assert_eq!(limiar_de_nicho(&dispersos), NICHE_DISTANCE);
+    }
+
+    /// Pool degenerado (todos idênticos) não pode explodir em N clusters de 1.
+    #[test]
+    fn pool_identico_continua_um_cluster() {
+        assert_eq!(limiar_de_nicho(&[0, 0, 0, 0]), 0);
+    }
+
+    /// Sem pares (pool de 0 ou 1) devolve o limiar antigo, sem dividir por zero.
+    #[test]
+    fn pool_vazio_cai_no_limiar_antigo() {
+        assert_eq!(limiar_de_nicho(&[]), NICHE_DISTANCE);
+    }
+
+    const PISTA: f32 = 1658.0;
+    const BONUS: f32 = 50_000.0;
+
+    /// O degrau: com contagem inteira, ir de 3,01 para 3,99 voltas quase não é premiado, e é
+    /// exatamente aí que a população estava (melhor carro 3,72 de um teto físico de 4,36).
+    ///
+    /// Sem isto medido, "a evolução estagnou" parecia culpa do cérebro. A seleção é que não
+    /// enxergava a melhoria.
+    #[test]
+    fn contagem_inteira_e_quase_cega_dentro_do_balde() {
+        let a = bonus_de_volta(3.01 * PISTA, PISTA, 3, BONUS, false);
+        let b = bonus_de_volta(3.99 * PISTA, PISTA, 3, BONUS, false);
+        assert_eq!(a, b, "dentro do balde o bônus é literalmente idêntico");
+
+        // Só o progresso bruto separa os dois, e ele é ~9× menor que o bônus.
+        let dif_prog = (3.99 - 3.01) * PISTA;
+        assert!(dif_prog / a < 0.02,
+                "o sinal que sobra é {:.1}% — praticamente ruído", dif_prog / a * 100.0);
+    }
+
+    /// O contínuo enxerga a mesma melhoria com sinal proporcional ao ganho real.
+    #[test]
+    fn continuo_enxerga_a_melhoria_dentro_do_balde() {
+        let a = bonus_de_volta(3.01 * PISTA, PISTA, 3, BONUS, true);
+        let b = bonus_de_volta(3.99 * PISTA, PISTA, 3, BONUS, true);
+        let ganho = (b - a) / a;
+        assert!(ganho > 0.30, "ganho de apenas {:.1}%", ganho * 100.0);
+    }
+
+    /// Monotonicidade estrita: qualquer metro a mais tem de valer mais. É o que garante que
+    /// não sobrou nenhum patamar onde a seleção fique cega.
+    #[test]
+    fn continuo_e_estritamente_monotono() {
+        let mut ant = f32::NEG_INFINITY;
+        for i in 0..400 {
+            let prog = i as f32 * 15.0;
+            let v = bonus_de_volta(prog, PISTA, (prog / PISTA) as usize, BONUS, true);
+            assert!(v > ant || prog == 0.0, "patamar em prog={prog}");
+            ant = v;
+        }
+    }
+
+    /// A contagem inteira tem patamares — a prova direta do que o contínuo conserta.
+    #[test]
+    fn contagem_inteira_tem_patamares() {
+        let patamares = (0..400).filter(|i| {
+            let (p1, p2) = (*i as f32 * 15.0, (*i + 1) as f32 * 15.0);
+            bonus_de_volta(p1, PISTA, (p1 / PISTA) as usize, BONUS, false)
+                == bonus_de_volta(p2, PISTA, (p2 / PISTA) as usize, BONUS, false)
+        }).count();
+        assert!(patamares > 350, "esperava quase tudo em patamar, deu {patamares}");
+    }
+
+    /// Compatibilidade: sem a flag, ou antes de o mundo escrever o comprimento, nada muda.
+    #[test]
+    fn sem_flag_ou_sem_comprimento_mantem_o_antigo() {
+        assert_eq!(bonus_de_volta(5000.0, PISTA, 3, BONUS, false), 3.0 * BONUS);
+        assert_eq!(bonus_de_volta(5000.0, 0.0, 3, BONUS, true), 3.0 * BONUS);
+    }
 
     #[test]
     fn validation_cycle_is_every_three_gens() {
@@ -1102,5 +1420,118 @@ mod tests {
         let mut counter: u32 = 3;
         let (lvl, _) = decide_next_env_level(&mut counter, 2000.0, 900.0, 2);
         assert_eq!(lvl, 3);
+    }
+}
+
+#[cfg(test)]
+mod testes_curriculo_populacao {
+    use super::{decide_next_env_level_pop, FRACAO_PARA_DESCER, FRACAO_PARA_SUBIR};
+
+    /// O caso real que quebrou o treino: um carro de sorte fez 1,93 voltas e levou os 60
+    /// para o nível 3, onde a aderência cai a 0,33 e a frenagem exigida (130 m) passa do
+    /// alcance do sensor mais longo (120 m). Medido: 23,6/60 completavam volta -> 1,2/60.
+    #[test]
+    fn campeao_de_sorte_nao_arrasta_a_populacao() {
+        let mut val = 5;
+        // campeão fez 1,93 voltas (3198 m numa volta de 1658), mas só 8% da população fechou
+        let (nivel, _) = decide_next_env_level_pop(&mut val, 3198.0, 1658.0, 1, Some(0.08));
+        assert_eq!(nivel, 1, "8% da população não sustenta subir de nível");
+    }
+
+    #[test]
+    fn sobe_so_quando_a_populacao_consolida() {
+        let mut val = 5;
+        let (n, _) = decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1,
+                                               Some(FRACAO_PARA_SUBIR + 0.05));
+        assert_eq!(n, 2, "com a fração acima do limiar, sobe um degrau");
+    }
+
+    #[test]
+    fn sobe_no_maximo_um_degrau_por_geracao() {
+        let mut val = 5;
+        let (n, _) = decide_next_env_level_pop(&mut val, 99999.0, 1658.0, 1, Some(0.95));
+        assert_eq!(n, 2, "nunca dois degraus de uma vez, por melhor que tenha sido");
+    }
+
+    #[test]
+    fn recua_quando_ninguem_sustenta() {
+        let mut val = 5;
+        let (n, _) = decide_next_env_level_pop(&mut val, 3198.0, 1658.0, 3,
+                                               Some(FRACAO_PARA_DESCER / 2.0));
+        assert_eq!(n, 2, "sem ninguém completando volta, o nível tem de recuar");
+    }
+
+    #[test]
+    fn ha_histerese_entre_subir_e_descer() {
+        // na faixa do meio fica parado: sem isso o nível oscilaria a cada geração e a
+        // população nunca consolidaria nada
+        let meio = (FRACAO_PARA_DESCER + FRACAO_PARA_SUBIR) / 2.0;
+        let mut val = 5;
+        let (n, _) = decide_next_env_level_pop(&mut val, 0.0, 1658.0, 2, Some(meio));
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn nunca_recua_abaixo_de_um_nem_passa_de_tres() {
+        let mut val = 5;
+        let (n, _) = decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1, Some(0.0));
+        assert_eq!(n, 1, "piso é o nível 1");
+        let mut val = 5;
+        let (n, _) = decide_next_env_level_pop(&mut val, 0.0, 1658.0, 3, Some(1.0));
+        assert_eq!(n, 3, "teto é o nível 3");
+    }
+
+    #[test]
+    fn sem_dado_de_populacao_mantem_o_comportamento_antigo() {
+        // os testes legados chamam a versão sem população; ela não pode mudar de resposta
+        let mut val = 5;
+        let (n, _) = decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1, None);
+        assert_eq!(n, 1);
+    }
+}
+
+#[cfg(test)]
+mod testes_largura_populacao {
+    use super::FRACAO_PARA_SUBIR;
+
+    /// Réplica da lógica de `pipeline.rs` para poder testá-la sem montar o mundo inteiro.
+    fn passo_largura(estreitamento: &mut f32, frac: f32) -> f32 {
+        let alvo = 4.0 * ((frac - FRACAO_PARA_SUBIR) / 0.50).clamp(0.0, 1.0);
+        *estreitamento += (alvo - *estreitamento).clamp(-0.25, 0.25);
+        estreitamento.clamp(0.0, 4.0)
+    }
+
+    #[test]
+    fn campeao_de_sorte_nao_estreita_a_pista() {
+        // o caso real: 8% da população fechava volta e a pista estreitava mesmo assim,
+        // porque UM carro tinha feito 1,93 voltas
+        let mut e = 0.0;
+        for _ in 0..10 { passo_largura(&mut e, 0.08); }
+        assert_eq!(e, 0.0, "com 8% da população, a pista não pode estreitar");
+    }
+
+    #[test]
+    fn estreita_devagar_quando_a_populacao_sustenta() {
+        let mut e = 0.0;
+        let d1 = passo_largura(&mut e, 0.80);
+        assert!((d1 - 0.25).abs() < 1e-6, "no máximo 0,25 m por geração, deu {d1}");
+        for _ in 0..40 { passo_largura(&mut e, 0.80); }
+        assert!((e - 4.0).abs() < 1e-3, "com 80% consolidado chega ao teto de 4 m, deu {e}");
+    }
+
+    #[test]
+    fn alarga_de_volta_quando_a_populacao_desaba() {
+        let mut e = 0.0;
+        for _ in 0..40 { passo_largura(&mut e, 0.80); }   // estreitou até 4 m
+        assert!(e > 3.9);
+        for _ in 0..40 { passo_largura(&mut e, 0.02); }   // população desabou
+        assert_eq!(e, 0.0, "a pista tem de alargar de volta — antes isso era impossível");
+    }
+
+    #[test]
+    fn nunca_passa_do_teto_de_quatro_metros() {
+        let mut e = 0.0;
+        for _ in 0..100 { passo_largura(&mut e, 1.0); }
+        assert!(e <= 4.0 + 1e-6);
     }
 }

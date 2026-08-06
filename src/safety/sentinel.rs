@@ -201,11 +201,27 @@ mod tests {
 
     #[test]
     fn tcs_cuts_throttle_on_slip() {
+        // Acima do limiar de derrapagem: o TCS tem de agir.
         let mut s = base_state();
-        s.slip_avg = 0.5; s.current_thr = 0.8;
+        s.slip_avg = 0.7; s.current_thr = 0.8;
         let out = Sentinel::evaluate(&s);
         assert!(out.flags.contains(SafetyFlags::TCS));
         assert!(out.soft_proposal.throttle < 0.0);
+    }
+
+    /// A permissão de derrapagem é intencional (limiares subiram de 0,4/0,5 para
+    /// 0,65/0,7) para o ser poder deslizar no ápice sem o TCS cortar o acelerador na
+    /// hora. Esse limite não tinha teste: a mudança silenciou os dois testes acima e
+    /// ninguém percebeu, porque a suíte já estava vermelha. Este fixa a fronteira.
+    #[test]
+    fn tcs_allows_drift_below_threshold() {
+        let mut s = base_state();
+        s.slip_avg = 0.5; s.current_thr = 0.8;   // derrapagem moderada, acelerador alto
+        let out = Sentinel::evaluate(&s);
+        assert!(
+            !out.flags.contains(SafetyFlags::TCS),
+            "TCS não deve cortar em derrapagem de ápice (slip 0,5 < limiar 0,65)"
+        );
     }
 
     #[test]
@@ -232,7 +248,7 @@ mod tests {
         // Combined throttle delta would be -0.7 + -0.4 + -0.3 = -1.4, must clamp to -1.0.
         let mut s = base_state();
         s.yaw_rate = 2.0;
-        s.slip_avg = 0.5;
+        s.slip_avg = 0.7;   // acima do limiar de derrapagem (0,65)
         s.current_thr = 0.8;
         s.rain = 0.8;
         s.speed_kmh = 50.0;

@@ -7,17 +7,36 @@ pub mod racing_line;
 pub use racer::{Racer, PainSynapse, Skidmark};
 pub use racing_line::RacingLine;
 
+/// Label para ordering de sistemas — necessário porque update_racers tem muitos parâmetros
+/// e o Bevy 0.16 não aceita referências diretas à função além do limite de tupla.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UpdateRacersSet;
+
 pub struct RacerPlugin;
 
 impl Plugin for RacerPlugin {
     fn build(&self, app: &mut App) {
+        // Contexto de GPU da retina — vive entre ticks (recriar por tick anularia o ganho).
+        app.init_resource::<crate::gpu::RetinaGpuRes>();
+        // Contexto de GPU da percepção — compartilha device/queue da retina.
+        // Criado sob demanda quando lab.gpu_core=true; Default é None (zero overhead se desligado).
+        app.init_resource::<crate::gpu::perception::PerceptionGpuRes>();
+        // Contexto de GPU do cérebro — forward pass neural na GPU.
+        // Criado sob demanda quando lab.gpu_core=true.
+        app.init_resource::<crate::gpu::brain::BrainGpuRes>();
+        // Contexto de GPU da física — 3 kernels encadeados (A→B→C) na GPU.
+        // Criado sob demanda quando lab.gpu_core=true.
+        app.init_resource::<crate::gpu::physics::PhysicsGpuRes>();
         // Motor → FixedUpdate antes da física: brain e physics sincronizados.
         // Time_scale agora escala Virtual → Bevy roda N substeps de FixedUpdate por frame
         // real. Brain tick N× POR frame (antes só 1×), sem tunneling em time_scale alto.
-        // Tier 5.4: tick_npcs_system roda ANTES de update_racers pra racers leem posições
-        // frescas dos obstáculos móveis.
+        // Tier 5.4: tick_npcs_system roda ANTES de update_racers via set label.
+        // update_racers tem 17 parâmetros — o Bevy 0.16 não aceita before/in_set em
+        // fn items além de certo limite. Solução: label em tick_npcs_system e ordering
+        // sobre o set, garantindo NPC→racer sem tocar na assinatura da fn pesada.
+        app.configure_sets(FixedUpdate, UpdateRacersSet);
         app.add_systems(FixedUpdate, (
-                tick_npcs_system.before(motor::update_racers),
+                tick_npcs_system.before(crate::physics::PhysicsSet),
                 motor::update_racers.before(crate::physics::PhysicsSet),
             ))
            .add_systems(Update, (camera_system, skidmark_cleanup_system, toggle_gizmos_system));

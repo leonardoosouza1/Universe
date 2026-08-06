@@ -131,7 +131,7 @@ pub fn name_to_id(name: &str) -> u16 {
 }
 
 /// Save racer's brain trace to JSON for frame-by-frame vision debugging.
-pub fn save_brain_trace(run_id: &str, racer_name: &str, trace: &[crate::simulation::racer::BrainSnapshot]) {
+pub fn save_brain_trace(run_id: &str, _racer_name: &str, trace: &[crate::simulation::racer::BrainSnapshot]) {
     if trace.is_empty() { return; }
     let mut frames = Vec::new();
     for (i, snap) in trace.iter().enumerate() {

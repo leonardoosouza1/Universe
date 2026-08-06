@@ -66,6 +66,11 @@ impl BitLinear {
     pub fn quantize(&mut self, full_precision: &[f32]) {
         let n = full_precision.len().min(self.weights.len());
         self.weights[..n].copy_from_slice(&full_precision[..n]);
+        // ABLAÇÃO DO PRIMING (ver `neuro.rs`): aplicada AQUI porque `quantize` é o ponto
+        // ÚNICO por onde os pesos entram nesta camada — vale para o cérebro aleatório
+        // inicial, para o campeão carregado do DNA e para os membros do pool de elite.
+        // Zerar noutro lugar deixaria algum desses caminhos passar com o priming intacto.
+        crate::neuro::ablar_priming(&mut self.weights, self.input_dim);
         // Update legacy scale field as abs_mean (still used by some DNA paths).
         let abs_mean: f32 = full_precision.iter().map(|w| w.abs()).sum::<f32>() / full_precision.len().max(1) as f32;
         self.weight_scale = abs_mean.max(1e-4);
@@ -78,7 +83,12 @@ impl BitLinear {
     /// Quantize f32 weights to i8 for DNA disk. Scale 63.5 cobre range [-2.0, 2.0]
     /// (clamp do mutation) sem saturar. Antes 127 saturava metade do range.
     pub fn quantize_for_save(&self) -> Vec<i8> {
-        self.weights.iter().map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect()
+        // `.round()` antes do corte: `as i8` trunca PARA ZERO, o que encolhe toda
+        // magnitude sistematicamente (0,5 → 31,75 → 31 → 0,48819). Num laço evolutivo,
+        // que salva e recarrega o campeão a cada geração, isso é decaimento acumulado
+        // dos pesos, não ruído simétrico. Arredondar deixa o erro em ±0,5/63,5 ≈ 1/127,
+        // que é a precisão que o teste deste arquivo sempre declarou esperar.
+        self.weights.iter().map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect()
     }
 
     /// Dequantize i8 disk weights → f32 runtime. i8/63.5 covers [-2.0, 2.0].

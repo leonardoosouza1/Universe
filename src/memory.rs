@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use crate::types::PotentialWell;
-use crate::layers::BitLinear;
 use crate::float_layers::FloatLinear;
 use crate::metabolism::EpisodicTrace;
 

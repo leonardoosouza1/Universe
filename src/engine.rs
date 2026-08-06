@@ -1,6 +1,5 @@
 use crate::metabolism::Metabolism;
 use crate::layers::BitLinear;
-use crate::float_layers::FloatLinear;
 use crate::dense_layer::DenseLayer;
 use crate::resonance::ResonantNode;
 use crate::types::SplineNode;
@@ -48,32 +47,28 @@ pub struct SlowBrain {
 
 impl SlowBrain {
     pub fn new() -> Self {
-        // Dense1: Gaussian init com σ=0.1
+        // Init simétrico σ=0.1. Usava um LCG escrito à mão cujo mapeamento final era
+        // `x/2^31 - 1.0`, que devolve [-1,0) e não [-1,1): TODOS os 1024 pesos do dense1
+        // e os 48 do dense2 nasciam negativos. Uma camada de sinal único é um somador,
+        // então as três saídas viravam a mesma soma (correlação +0,9999, PC1 = 100% da
+        // variância) e nunca positivas — `throttle_cap` ficava preso em 1,0. Medido em
+        // `src/bin/slow_probe.rs`; agora vem de `rng::Lcg`, que tem teste de simetria.
         let mut dense1 = DenseLayer::new(64, 16);
-        let mut rng_seed: u64 = 0xDEAD_BEEF;
-        let mut rng = || {
-            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((rng_seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0
-        };
+        let mut rng = crate::rng::Lcg::new(0xDEAD_BEEF);
         for w in dense1.weights.iter_mut() {
-            *w = rng() * 0.1;
+            *w = rng.symmetric() * 0.1;
         }
         for b in dense1.bias.iter_mut() {
-            *b = rng() * 0.01;
+            *b = rng.symmetric() * 0.01;
         }
 
-        // Dense2: Gaussian init com σ=0.1
         let mut dense2 = DenseLayer::new(16, 3);
-        let mut rng_seed: u64 = 0xCAFE_BABE;
-        let mut rng = || {
-            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((rng_seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0
-        };
+        let mut rng = crate::rng::Lcg::new(0xCAFE_BABE);
         for w in dense2.weights.iter_mut() {
-            *w = rng() * 0.1;
+            *w = rng.symmetric() * 0.1;
         }
         for b in dense2.bias.iter_mut() {
-            *b = rng() * 0.01;
+            *b = rng.symmetric() * 0.01;
         }
 
         Self {
@@ -226,6 +221,22 @@ pub struct SovereignEngine {
     /// Learned retina perception — parallel CfC pathway over zone-pooled retina.
     /// Provides temporal visual features alongside the manual pooling in motor.rs.
     pub retina_perception: RetinaPerception,
+    // ------------------------------------------------------------------
+    // Fadiga de SAÍDA (output fatigue, espelho de OUT_ALPHA/OUT_BETA em brain.wgsl)
+    // ------------------------------------------------------------------
+    /// Estado lento da fadiga de saída por canal (96 slots = 48 L2 + 48 bypass).
+    ///
+    /// Mecanismo idêntico ao brain.wgsl etapa 2:
+    ///   out_fat[j] += OUT_ALPHA * (|raw[j]| - out_fat[j]) * dt
+    ///   intent[j]  = tanh(sign(raw[j]) * max(0, |raw[j]| - OUT_BETA * out_fat[j]))
+    ///
+    /// OUT_ALPHA = 4.0, OUT_BETA = 0.85 — mesmos valores do shader.
+    ///   τ ≈ 0.25 s (sobe em ~16 ticks para 63% do alvo); rápido o suficiente
+    ///   para quebrar saturação antes de ~10 ticks sem engessar sinal variado.
+    ///
+    /// Estado RUNTIME-ONLY: resetado em spawn/death junto com cfc_state.
+    /// Não persiste em .dna — ser recém-nascido começa sem fadiga de saída.
+    pub out_fatigue: [f32; 96],
 }
 
 impl SovereignEngine {
@@ -233,25 +244,20 @@ impl SovereignEngine {
         Self {
             metabolism: Metabolism::new(),
             instinct_layer: BitLinear::new(SENSORY_WAVE_SIZE, 96),
+            // Identidade + perturbação simétrica. Com o LCG quebrado a perturbação era
+            // toda negativa (média -0,025 × 96 entradas = viés DC de -2,4 por saída),
+            // um modo comum somado a TODAS as unidades antes de qualquer aprendizado.
             cortex_l2: {
                 let mut l = crate::float_layers::FloatLinear::new(96, 48);
-                let mut s: u64 = 0xC0DE_CAFE;
-                let mut next = || {
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                    ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
-                };
-                for i in 0..4608 { l.weights[i] = next() * 0.05; }
+                let mut r = crate::rng::Lcg::new(0xC0DE_CAFE);
+                for i in 0..4608 { l.weights[i] = r.symmetric() * 0.05; }
                 for i in 0..48 { l.weights[i * 96 + i] += 1.0; }
                 l
             },
             cortex_l3: {
                 let mut l = crate::float_layers::FloatLinear::new(48, 24);
-                let mut s: u64 = 0xDEAD_BEEF;
-                let mut next = || {
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                    ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
-                };
-                for i in 0..1152 { l.weights[i] = next() * 0.05; }
+                let mut r = crate::rng::Lcg::new(0xDEAD_BEEF);
+                for i in 0..1152 { l.weights[i] = r.symmetric() * 0.05; }
                 for i in 0..24 { l.weights[i * 48 + i] += 1.0; }
                 l
             },
@@ -279,6 +285,7 @@ impl SovereignEngine {
                 crate::resonance::ResonantNode::new(freq)
             }).collect(),
             retina_perception: RetinaPerception::new(),
+            out_fatigue: [0.0f32; 96],
         }
     }
 
@@ -322,10 +329,24 @@ impl SovereignEngine {
         let w = self.gate.forward(&gi);
         self.gate_entropy_acc += crate::gate::GateBrain::entropy(&w);
         self.gate_entropy_n = self.gate_entropy_n.saturating_add(1);
+        crate::neuro::registrar_uso(&w);
 
-        let cortex_iv = IntentVec { throttle: cortex_intent[0], steer: cortex_intent[1], brake: cortex_intent[2] };
-        let reflex_iv = IntentVec { throttle: reflex_raw[0], steer: reflex_raw[1], brake: reflex_raw[2] };
-        let sentinel_iv = sentinel_out.soft_proposal;
+        let mut cortex_iv = IntentVec { throttle: cortex_intent[0], steer: cortex_intent[1], brake: cortex_intent[2] };
+        let mut reflex_iv = IntentVec { throttle: reflex_raw[0], steer: reflex_raw[1], brake: reflex_raw[2] };
+        let mut sentinel_iv = sentinel_out.soft_proposal;
+
+        // ABLAÇÃO DE VIA (ver `neuro.rs`): zera a intenção DEPOIS do portão, não os pesos.
+        // Assim o portão continua vendo o mesmo mundo e distribuindo os mesmos pesos — o que
+        // se mede é a falta da via, não uma mudança de comportamento do misturador.
+        let zero = IntentVec { throttle: 0.0, steer: 0.0, brake: 0.0 };
+        match crate::neuro::ablada() {
+            crate::neuro::Via::Cortex => cortex_iv = zero,
+            crate::neuro::Via::Reflexo => reflex_iv = zero,
+            crate::neuro::Via::SentinelaSuave | crate::neuro::Via::SentinelaTotal => {
+                sentinel_iv = zero
+            }
+            _ => {}
+        }
 
         let mixed = IntentVec {
             throttle: w[0]*cortex_iv.throttle + w[1]*reflex_iv.throttle + w[2]*sentinel_iv.throttle,
@@ -333,8 +354,15 @@ impl SovereignEngine {
             brake:    w[0]*cortex_iv.brake    + w[1]*reflex_iv.brake    + w[2]*sentinel_iv.brake,
         };
 
-        let final_iv = if let Some(veto) = sentinel_out.hard_veto {
+        // O veto DURO só cai na ablação total. Na suave ele fica: sem veto o carro bate nos
+        // primeiros segundos e o número mediria "morreu cedo", não a contribuição da via.
+        let veto_ativo = match crate::neuro::ablada() {
+            crate::neuro::Via::SentinelaTotal => None,
+            _ => sentinel_out.hard_veto,
+        };
+        let final_iv = if let Some(veto) = veto_ativo {
             self.hard_veto_count = self.hard_veto_count.saturating_add(1);
+            crate::neuro::registrar_veto();
             veto
         } else {
             if !sentinel_out.flags.is_empty() {
@@ -389,6 +417,20 @@ impl SovereignEngine {
         //     os 128 canais ANTES do CfC. Cada canal aprende curva própria
         //     (log p/ wall_distance, sat p/ speed, step p/ grass, etc).
         //     Init identity (coeffs=1.0) → comportamento ≈ pré-KAN no gen 0.
+        // ABLAÇÃO POR SENTIDO (ver `neuro.rs`): zera o grupo de canais ANTES do KAN, do CfC
+        // e de tudo mais. Assim a ablação significa "este sentido não existe" e não "este
+        // sentido chega distorcido" — se fosse depois do filtro, o KAN já teria misturado o
+        // canal ablado com os outros e o número mediria outra coisa.
+        let mut onda_ablada = [0i8; SENSORY_WAVE_SIZE];
+        let sensory_wave: &[i8] = if matches!(crate::neuro::ablada(), crate::neuro::Via::Sentido(_)) {
+            let n = sensory_wave.len().min(SENSORY_WAVE_SIZE);
+            onda_ablada[..n].copy_from_slice(&sensory_wave[..n]);
+            crate::neuro::ablar_sentido(&mut onda_ablada[..n]);
+            &onda_ablada[..n]
+        } else {
+            sensory_wave
+        };
+
         let mut kan_wave = [0i8; SENSORY_WAVE_SIZE];
         self.kan_filters.apply(sensory_wave, &mut kan_wave);
 
@@ -427,12 +469,48 @@ impl SovereignEngine {
             l1_act[i] = ((v.tanh() * 127.0).clamp(-127.0, 127.0)) as i8;
         }
         let l2_raw = self.cortex_l2.forward(&l1_act);
+
+        // Fadiga de saída — espelho exato do brain.wgsl etapa 2 (OUT_ALPHA/OUT_BETA).
+        //
+        // Quebra ponto fixo de saída: intent[0] saturado em +1.0 desde tick 10.
+        // A fadiga de input do CfC age no state recorrente, mas não alcança L2/bypass.
+        //
+        // Equação por canal j (mesma que o shader, mesma ordem de operações):
+        //   out_fat[j] += OUT_ALPHA * (|raw[j]| - out_fat[j]) * dt
+        //   intent[j]  = tanh(sign(raw) * max(0, |raw[j]| - OUT_BETA * out_fat[j]))
+        //
+        // O encolhimento age sobre a MAGNITUDE. A forma anterior subtraía direto
+        // (`raw - OUT_BETA*out_fat`) e era assimétrica, porque `out_fat` rastreia
+        // |raw|: com raw negativo sustentado ela SOMAVA em módulo e empurrava para
+        // -0,999, enquanto com raw positivo atenuava para 0,15·raw. A fadiga, que
+        // deveria ser neutra, enviesava a população inteira para baixo.
+        //
+        // OUT_ALPHA = 4.0: τ ≈ 0.25 s (63% do alvo em ~16 ticks @ 64 Hz).
+        //   Suficientemente rápido para agir antes do ponto fixo se consolidar
+        //   (~10 ticks), sem engessar sinal que varia normalmente entre ticks.
+        // OUT_BETA = 0.85: em regime permanente (out_fat → |raw|), intent →
+        //   tanh(|raw| × 0.15). Com |raw| = 3.8: tanh(0.57) ≈ 0.54 < 0.90 ✓.
+        const OUT_ALPHA: f32 = 4.0;
+        const OUT_BETA:  f32 = 0.85;
+
         let mut final_intent = [0.0f32; 96];
-        for (i, &val) in l2_raw.iter().enumerate().take(48) {
-            final_intent[i] = (val * 2.0).tanh();
+        // Canais 0..48: via L2 (val * 2.0 como no shader: acc * 2/127 * 127 = acc * 2)
+        for (j, &val) in l2_raw.iter().enumerate().take(48) {
+            let raw = val * 2.0;
+            // Atualiza fadiga ANTES de aplicar (mesma ordem do shader):
+            self.out_fatigue[j] += OUT_ALPHA * (raw.abs() - self.out_fatigue[j]) * delta_t;
+            let adapted = raw.signum() * (raw.abs() - OUT_BETA * self.out_fatigue[j]).max(0.0);
+            final_intent[j] = adapted.tanh();
         }
-        for (i, &val) in l1_raw.iter().enumerate().skip(48).take(48) {
-            final_intent[i] = (val * 2.0).tanh();
+        // Canais 48..96: bypass de L1 (l1_raw[48..96] × 2.0).
+        // Itera l1_raw[48..96] com índice k de 0..48; j = 48+k.
+        // NOTA: não usar enumerate().skip(48) pois k começaria em 48 e j=96 estouraria.
+        for (k, &val) in l1_raw[48..96].iter().enumerate() {
+            let j = 48 + k;  // k ∈ [0,48), j ∈ [48,96)
+            let raw = val * 2.0;
+            self.out_fatigue[j] += OUT_ALPHA * (raw.abs() - self.out_fatigue[j]) * delta_t;
+            let adapted = raw.signum() * (raw.abs() - OUT_BETA * self.out_fatigue[j]).max(0.0);
+            final_intent[j] = adapted.tanh();
         }
         self.final_intent = final_intent.to_vec();
         let _ = &self.cortex_l3; // kept struct, forward unused

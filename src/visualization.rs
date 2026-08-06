@@ -12,7 +12,7 @@ pub struct VisionPanel {
 pub struct VisionVisualizationPlugin;
 
 impl Plugin for VisionVisualizationPlugin {
-    fn build(&self, app: &mut App) {
+    fn build(&self, _app: &mut App) {
         // Plugin currently disabled - vision data available via racer.sensory_snapshot
         // for logging and diagnostics. Full UI overlay in future release.
     }

@@ -11,6 +11,25 @@ use super::dna_genesis::{EliteDna, MorphoGenes, HypernetSeed, load_champion_dna}
 use super::logs::open_report_log;
 use super::settings::{RaceSettings, DevSettings};
 
+
+/// Amostra N(0,1) por Box-Muller a partir do RNG de thread.
+///
+/// Esta fórmula estava escrita à mão **onze vezes** neste arquivo, sempre idêntica,
+/// sempre com o mesmo `max(1e-7)` protegendo o `ln(0)`. Onze cópias significam que
+/// corrigir uma não corrige as outras — foi exatamente assim que um erro de sinal num
+/// LCG sobreviveu a sete cópias e fez 100% dos pesos do cérebro lento nascerem
+/// negativos (ver `src/rng.rs`).
+///
+/// Descarta o segundo valor do par (a variante em `gpu/evolution.rs` guarda o `spare`).
+/// Aqui a chamada é esparsa e por peso, então guardar estado entre chamadas exigiria
+/// carregar o par junto do RNG sem ganho mensurável.
+#[inline]
+fn gauss(rng: &mut impl rand::Rng) -> f32 {
+    let u1 = rng.random::<f32>().max(1e-7);
+    let u2 = rng.random::<f32>();
+    (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
+}
+
 /// Stride para indexação de pesos: weights[output * SWS + input_channel].
 /// DEVE ser = SENSORY_WAVE_SIZE (input_dim do BitLinear). Era hardcoded 128,
 /// causando desalinhamento quando SENSORY_WAVE_SIZE mudou pra 223.
@@ -54,10 +73,42 @@ fn initialize_fast_weights_random() -> Vec<f32> {
     // Motor neurons 0..3: start at ZERO, only priming weights set below.
     for neuron in 3..L1_NEURONS {
         for ch in 0..SWS {
-            let u1 = (rng.random::<f32>()).max(1e-7);
-            let u2 = rng.random::<f32>();
-            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+            let z = gauss(&mut rng);
             weights[neuron * SWS + ch] = z * 0.1;
+        }
+    }
+
+    // MODO DE NASCIMENTO DOS MOTORES (ver `neuro::Nascimento`).
+    //
+    // O priming abaixo faz DUAS coisas de uma vez: torna o neurônio motor ESPARSO — o que
+    // resolve o SNR de 0,26 descrito no comentário desta função — e escolhe QUAIS canais ele
+    // escuta, que é conhecimento humano injetado. Os modos separam as duas, para poder
+    // perguntar se a evolução acha sozinha os canais que o humano escolheu.
+    match crate::neuro::nascimento() {
+        crate::neuro::Nascimento::Primado => {} // segue para o priming à mão, abaixo
+        crate::neuro::Nascimento::Denso => {
+            // sem esparsidade: os motores viram neurônios de característica comuns. É o piso
+            // que o comentário do SNR descreve como sinal afogado.
+            for neuron in 0..3 {
+                for ch in 0..SWS {
+                    let z = gauss(&mut rng);
+                    weights[neuron * SWS + ch] = z * 0.1;
+                }
+            }
+            return weights;
+        }
+        crate::neuro::Nascimento::EsparsoAleatorio => {
+            // mesma QUANTIDADE de conexões do priming à mão (3 no acelerador, 10 no esterço,
+            // 2 no freio) e mesma faixa de magnitude — o que muda é só QUAIS canais. Assim a
+            // comparação isola a escolha do conteúdo, não a quantidade nem a força.
+            for neuron in 0..3 {
+                for _ in 0..crate::neuro::n_conexoes_motor(neuron) {
+                    let ch = (rng.random::<f32>() * SWS as f32) as usize % SWS;
+                    let sinal = if rng.random::<f32>() < 0.5 { -1.0 } else { 1.0 };
+                    weights[neuron * SWS + ch] = sinal * (3.0 + rng.random::<f32>() * 7.0);
+                }
+            }
+            return weights;
         }
     }
 
@@ -101,7 +152,7 @@ pub fn spawn_swarm(
     world: &VoxelWorld,
     dev: &DevSettings,
     config: &UniverseConfig,
-    lab: &crate::lab::LabParams,
+    _lab: &crate::lab::LabParams,
     idx_start: usize,
     idx_end: usize,
 ) {
@@ -112,7 +163,7 @@ pub fn spawn_swarm(
     let car_models = ["Porsche 911 GT3", "Ferrari 296 GT3", "McLaren 720S GT3", "Aston Martin Vantage", "Audi R8 LMS"];
 
     let start_flow = world.get_flow_at(world.start_pos.x, world.start_pos.z);
-    let start_angle = start_flow.y.atan2(start_flow.x);
+    let _start_angle = start_flow.y.atan2(start_flow.x);
 
     let mut current_best_w = race.best_weights.clone();
     let mut current_best_s = race.best_scale;
@@ -392,34 +443,39 @@ pub fn spawn_swarm(
                 // replica champion da gen N. Antes σ uniform 0.06+ destruía herança.
                 let g = race.generation.max(1);
                 let base_decay = 0.04_f32 + 0.06_f32 * 0.88_f32.powi((g as i32 - 1).max(0));
-                let sigma_cortex = match i {
-                    0..=4   => base_decay * 0.15,  // clones quase exatos (σ ≈ 0.006)
-                    5..=14  => base_decay * 0.5,   // small variance (σ ≈ 0.02)
-                    15..=29 => base_decay * 1.0,   // medium (σ ≈ 0.04)
-                    _       => base_decay * 2.0,   // explore (σ ≈ 0.08-0.20)
+                // A faixa EXPLORADORA (σ dobrado) começa onde `fracao_exploradora` manda.
+                // Era fixo no slot 30 de 60, ou seja METADE da população — e medido nos
+                // relatórios: a MEDIANA da população é zero metros, com `wall_mean = 0,00s`.
+                // Não é batida nem parede; é a mutação destruindo o genoma. A população
+                // efetiva era 30, não 60. Agora dá para medir qual fração vale.
+                let n_pop = config.swarm_count.max(1);
+                let ini_explora =
+                    ((1.0 - crate::neuro::fracao_exploradora()) * n_pop as f32) as usize;
+                let sigma_cortex = if i >= ini_explora {
+                    base_decay * 2.0                       // explorar (σ ≈ 0.08-0.20)
+                } else if i * 2 >= ini_explora {
+                    base_decay * 1.0                       // médio (σ ≈ 0.04)
+                } else if i * 6 >= ini_explora {
+                    base_decay * 0.5                       // pequeno (σ ≈ 0.02)
+                } else {
+                    base_decay * 0.15                      // clones quase exatos (σ ≈ 0.006)
                 };
                 for w in engine.instinct_layer.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
-                        let u1 = (rng.random::<f32>()).max(1e-7);
-                        let u2 = rng.random::<f32>();
-                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        let z = gauss(&mut rng);
                         *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
                 for w in engine.cortex_l2.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
-                        let u1 = (rng.random::<f32>()).max(1e-7);
-                        let u2 = rng.random::<f32>();
-                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        let z = gauss(&mut rng);
                         *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
                 // Mutate cortex_l3 (Layer 3 — deep abstract).
                 for w in engine.cortex_l3.weights.iter_mut() {
                     if rng.random_bool(rate_boosted) {
-                        let u1 = (rng.random::<f32>()).max(1e-7);
-                        let u2 = rng.random::<f32>();
-                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        let z = gauss(&mut rng);
                         *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
@@ -431,9 +487,7 @@ pub fn spawn_swarm(
                     let sigma_slow = sigma_cortex * 1.5; // slightly higher σ — fewer weights, needs more exploration
                     for w in slow_mut.iter_mut() {
                         if rng.random_bool(rate_boosted) {
-                            let u1 = (rng.random::<f32>()).max(1e-7);
-                            let u2 = rng.random::<f32>();
-                            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                            let z = gauss(&mut rng);
                             *w = (*w + sigma_slow * z).clamp(-10.0, 10.0);
                         }
                     }
@@ -485,9 +539,7 @@ pub fn spawn_swarm(
                     for w in layer.weights.iter_mut() {
                         if rng.random_bool(rate) {
                             // Box-Muller approx via 2 uniforms; cheap noise.
-                            let u1 = (rng.random::<f32>()).max(1e-7);
-                            let u2 = rng.random::<f32>();
-                            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                            let z = gauss(&mut rng);
                             *w = (*w + 0.05 * z).clamp(-10.0, 10.0);
                         }
                     }
@@ -603,9 +655,7 @@ pub fn spawn_swarm(
                         || scar_b.get(idx).copied().unwrap_or(0) > 0;
                     if !scarred && rng.random_bool(effective_mutation_rate) {
                         // Gaussian mutation σ=0.05 for continuous f32 weights
-                        let u1 = (rng.random::<f32>()).max(1e-7);
-                        let u2 = rng.random::<f32>();
-                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        let z = gauss(&mut rng);
                         (w + z * 0.05).clamp(-10.0, 10.0)
                     } else { w }
                 }).collect();
@@ -626,9 +676,7 @@ pub fn spawn_swarm(
                         .map(|(&a, &b)| {
                             let base = if rng.random_bool(0.5) { a } else { b };
                             if rng.random_bool(effective_mutation_rate) {
-                                let u1 = (rng.random::<f32>()).max(1e-7);
-                                let u2 = rng.random::<f32>();
-                                let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                                let z = gauss(&mut rng);
                                 (base + z * 0.05).clamp(-10.0, 10.0)
                             } else { base }
                         }).collect();
@@ -641,9 +689,7 @@ pub fn spawn_swarm(
                         .map(|(&a, &b)| {
                             let base = if rng.random_bool(0.5) { a } else { b };
                             if rng.random_bool(effective_mutation_rate) {
-                                let u1 = (rng.random::<f32>()).max(1e-7);
-                                let u2 = rng.random::<f32>();
-                                let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                                let z = gauss(&mut rng);
                                 (base + z * 0.08).clamp(-10.0, 10.0) // σ=0.08, slightly higher for exploration
                             } else { base }
                         }).collect();
@@ -685,14 +731,12 @@ pub fn spawn_swarm(
                     engine.cortex_l3.set_weights(l3);
                 }
             } else {
-                let mut mutated: Vec<f32> = best.iter().enumerate().map(|(idx, &w)| {
+                let mutated: Vec<f32> = best.iter().enumerate().map(|(idx, &w)| {
                     // TIER 4.4: zona protegida isenta de mutação.
                     if idx < PROTECTED_ZONE_SIZE { return w as f32; }
                     if rng.random_bool(effective_mutation_rate) {
                         // Gaussian mutation σ=0.05
-                        let u1 = (rng.random::<f32>()).max(1e-7);
-                        let u2 = rng.random::<f32>();
-                        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+                        let z = gauss(&mut rng);
                         (w as f32 + z * 0.05).clamp(-10.0, 10.0)
                     } else {
                         w as f32
@@ -826,7 +870,7 @@ pub fn spawn_swarm(
                 car_model: car_model.to_string(),
                 car_model_idx: (spawn_model_idx % 5) as u8,
                 engine, is_dead: false, distance: 0.0, phase: 0.0, amplitude: 0.0,
-                pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: 1000.0, hp: 100000.0, total_laps: 0,
+                pain_memories: Vec::new(), stagnation: 0.0, prev_pos: spawn_pos, fuel: crate::simulation::racer::FUEL_INICIAL, hp: crate::simulation::racer::HP_INICIAL, total_laps: 0,
                 memory: [0.0; 5], visual_cortex: [0; RETINA_TOTAL],
                 tire_temp: 0.0, engine_power: 1.0, grass_time: 0.0, wall_time: 0.0, aquaplaning_timer: 0.0,
                 joy_integral: 0.0, joy_streak: 0.0, wall_hits: 0, wall_cooldown: 0.0, last_waypoint: 0, track_progress: spawn_progress, grace_ticks: 0,
@@ -846,6 +890,7 @@ pub fn spawn_swarm(
                 brain_trace: Vec::with_capacity(15),
                 trace_timer: 0.0,
                 gaze_yaw: 0.0,
+                lap_dist_m: 0.0,
                 max_progress: spawn_progress,
                 slow_time: 0.0,
                 race_time: 0.0,

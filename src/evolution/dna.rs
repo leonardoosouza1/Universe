@@ -577,4 +577,129 @@ mod tests {
         assert!((loaded.morpho.wheelbase - d.wheelbase).abs() < 1e-5);
         let _ = std::fs::remove_file(path);
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // TESTE DE EQUIVALÊNCIA CROSS-MÓDULO (REDE DE PROTEÇÃO CRÍTICA)
+    // ────────────────────────────────────────────────────────────────────────
+    // Garante que um arquivo salvo por dna.rs::save_champion_dna é legível
+    // por dna_genesis::load_champion_dna (o loader ativo em produção).
+    //
+    // A duplicação de dna.rs vs dna_genesis.rs é PERIGOSA: se os layouts
+    // divergirem, salvar pelo caminho errado corrompe DNAs em silêncio.
+    //
+    // POR QUE ESSA DIVERGÊNCIA EXISTE (não remover sem ler):
+    //   - dna.rs tem save_champion_dna_full() que escreve formato V3 flat.
+    //   - dna_genesis.rs tem save_champion_dna_full() que delega ao V4 TLV
+    //     via compress_organism() (iara_genesis).
+    //   - dna.rs::save produz um arquivo V3 (8494-8755 bytes, magic+flat).
+    //   - dna_genesis::load lê V3 como legacy path (version != 4) — funciona.
+    //   - dna_genesis::save_champion_dna_v7 produz arquivo V8 (TLV iara_genesis).
+    //   - dna.rs::load NÃO conhece o formato V8 TLV — é o loader ANTIGO.
+    //
+    // FONTE DE VERDADE: dna_genesis.rs é a única implementação ativa.
+    // dna.rs deve ser mantido APENAS para backward-compat de leitura de
+    // arquivos legacy V1/V2/V3 que existam em disco.
+    //
+    // NÃO remova dna.rs sem garantir que o legacy path de V3/V1/V2 ainda
+    // esteja em dna_genesis.rs (ele já está — ver load_champion_dna lá).
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// 1. dna.rs salva um V3; dna_genesis carrega — pesos devem bater.
+    #[test]
+    fn dna_legacy_writer_readable_by_genesis_loader() {
+        let (fast, slow) = sample_weights(7);
+        let path = std::env::temp_dir().join("iara_cross_module_legacy.dna");
+        let path_s = path.to_str().unwrap();
+
+        // Salva pelo caminho LEGADO (dna.rs) — produz V3 flat.
+        save_champion_dna(path_s, &fast, 0.25, &slow, 0.125, 10, 42, 14.0, 123.4)
+            .expect("dna.rs::save deve funcionar");
+
+        // Carrega pelo caminho ATIVO (dna_genesis) — deve conseguir ler o V3.
+        let loaded = crate::evolution::dna_genesis::load_champion_dna(path_s)
+            .expect("dna_genesis::load deve ler arquivo V3 salvo por dna.rs");
+
+        // Metadados devem ser preservados.
+        assert_eq!(loaded.generation, 10, "generation divergiu entre módulos");
+        assert_eq!(loaded.seed, 42, "seed divergiu entre módulos");
+        assert!((loaded.track_width - 14.0).abs() < 1e-4, "track_width divergiu");
+        assert!((loaded.fitness - 123.4).abs() < 1e-2, "fitness divergiu");
+        assert!((loaded.fast_scale - 0.25).abs() < 1e-4, "fast_scale divergiu");
+        assert!((loaded.slow_scale - 0.125).abs() < 1e-4, "slow_scale divergiu");
+        assert_eq!(loaded.fast_weights, fast, "fast_weights divergiram entre módulos");
+        assert_eq!(loaded.slow_weights.as_deref().unwrap(), slow.as_slice(),
+            "slow_weights divergiram entre módulos");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 2. Constantes de tamanho de DNA em dna.rs devem casar com os LEGACY
+    ///    de dna_genesis.rs (se divergirem, o parser legacy quebra).
+    #[test]
+    fn dna_size_constants_match_genesis_legacy() {
+        // dna.rs define DNA_FAST_SIZE = 128*64 = 8192 (legado).
+        // dna_genesis.rs define DNA_FAST_SIZE_LEGACY = 128*64 = 8192.
+        // Se alguém mudar um e não o outro, o parser V3 flat vai ler bytes errados.
+        assert_eq!(
+            DNA_FAST_SIZE,
+            crate::config::iara::genetics::DNA_FAST_SIZE_LEGACY,
+            "DNA_FAST_SIZE em dna.rs != DNA_FAST_SIZE_LEGACY em config — \
+             isso quebraria o parser legacy V3"
+        );
+        assert_eq!(
+            DNA_SLOW_SIZE,
+            crate::config::iara::genetics::DNA_SLOW_SIZE_LEGACY,
+            "DNA_SLOW_SIZE em dna.rs != DNA_SLOW_SIZE_LEGACY em config — \
+             isso quebraria o parser legacy V3"
+        );
+    }
+
+    /// 3. MorphoGenes::to_le_bytes / from_le_bytes em dna.rs devem ser
+    ///    bit-a-bit idênticos aos de dna_genesis.rs.
+    #[test]
+    fn morpho_bytes_identical_across_modules() {
+        let m_dna = MorphoGenes { mass: 1100.0, wheelbase: 2.3, downforce: 1.5, grip_mult: 1.0 };
+
+        // Serializa via dna.rs.
+        let bytes_dna = m_dna.to_le_bytes();
+
+        // Desserializa via dna_genesis.rs.
+        let m_genesis = crate::evolution::dna_genesis::MorphoGenes::from_le_bytes(&bytes_dna)
+            .expect("dna_genesis deve desserializar bytes de dna.rs");
+
+        assert!((m_dna.mass - m_genesis.mass).abs() < 1e-4,
+            "MorphoGenes.mass diverge: {} vs {}", m_dna.mass, m_genesis.mass);
+        assert!((m_dna.wheelbase - m_genesis.wheelbase).abs() < 1e-5,
+            "MorphoGenes.wheelbase diverge");
+        assert!((m_dna.downforce - m_genesis.downforce).abs() < 1e-5,
+            "MorphoGenes.downforce diverge");
+        assert!((m_dna.grip_mult - m_genesis.grip_mult).abs() < 1e-5,
+            "MorphoGenes.grip_mult diverge");
+
+        // E vice-versa: serializa via dna_genesis, desserializa via dna.
+        let m_gen2 = crate::evolution::dna_genesis::MorphoGenes {
+            mass: 900.0, wheelbase: 2.8, downforce: 0.7, grip_mult: 1.1
+        };
+        let bytes_gen2 = m_gen2.to_le_bytes();
+        let m_back = MorphoGenes::from_le_bytes(&bytes_gen2)
+            .expect("dna.rs deve desserializar bytes de dna_genesis");
+        assert!((m_gen2.mass - m_back.mass).abs() < 1e-4, "round-trip invertido falhou");
+    }
+
+    /// 4. HypernetSeed::to_le_bytes / from_le_bytes devem ser idênticos.
+    #[test]
+    fn hypernet_bytes_identical_across_modules() {
+        let mut h_dna = HypernetSeed::default();
+        h_dna.active = true;
+        h_dna.coeffs[0] = 0.5;
+        h_dna.coeffs[1] = -0.3;
+
+        // dna.rs → dna_genesis.
+        let bytes = h_dna.to_le_bytes();
+        let h_gen = crate::evolution::dna_genesis::HypernetSeed::from_le_bytes(&bytes)
+            .expect("dna_genesis deve ler HypernetSeed de dna.rs");
+        assert_eq!(h_gen.active, h_dna.active);
+        assert!((h_gen.coeffs[0] - h_dna.coeffs[0]).abs() < 1e-5);
+        assert!((h_gen.coeffs[1] - h_dna.coeffs[1]).abs() < 1e-5);
+    }
 }

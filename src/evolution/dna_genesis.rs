@@ -881,11 +881,10 @@ mod tests {
     fn dct_roundtrip_random_signal_lossy_but_bounded() {
         // Random weights — 32× compression IS lossy, but RMS should stay reasonable.
         let n = CORTEX_FULL_SIZE;
-        let mut s = 12345_u64;
-        let original: Vec<f32> = (0..n).map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((s >> 33) as f32 / (1u64 << 31) as f32) - 1.0
-        }).collect();
+        // Var(U[-1,1]) = 1/3, que é o que o limiar de MSE abaixo assume. Com o LCG
+        // quebrado o sinal era U[-1,0), variância 1/12 — o teste passava por sorte.
+        let mut r = crate::rng::Lcg::new(12345);
+        let original: Vec<f32> = (0..n).map(|_| r.symmetric()).collect();
         let coeffs = cortex_to_dct(&original);
         let recovered = cortex_from_dct(&coeffs);
         let mse = original.iter().zip(recovered.iter())
@@ -898,6 +897,21 @@ mod tests {
     fn sample_weights(offset: i8) -> (Vec<i8>, Vec<i8>) {
         let fast: Vec<i8> = (0..DNA_FAST_SIZE).map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
         let slow: Vec<i8> = (0..DNA_SLOW_SIZE).map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
+        (fast, slow)
+    }
+
+    /// Pesos no tamanho dos formatos LEGADOS (v1/v2/v3).
+    ///
+    /// Os testes de compatibilidade usavam `DNA_FAST_SIZE`, que acompanhou o crescimento
+    /// da L1 (8192 → 21408 = 223×96). Só que os formatos legados são definidos com 8192
+    /// pesos: o teste escrevia um arquivo grande demais para o próprio formato que dizia
+    /// testar, e falhava por TAMANHO, não por conteúdo. O leitor sempre esteve certo —
+    /// já usa `DNA_FAST_SIZE_LEGACY`.
+    fn sample_weights_legacy(offset: i8) -> (Vec<i8>, Vec<i8>) {
+        let fast: Vec<i8> = (0..DNA_FAST_SIZE_LEGACY)
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
+        let slow: Vec<i8> = (0..DNA_SLOW_SIZE_LEGACY)
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
         (fast, slow)
     }
 
@@ -922,7 +936,7 @@ mod tests {
 
     #[test]
     fn legacy_v2_loads_with_zero_metadata() {
-        let (fast, slow) = sample_weights(1);
+        let (fast, slow) = sample_weights_legacy(1);
         let path = std::env::temp_dir().join("iara_test_v2_genesis.dna");
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&0.5_f32.to_le_bytes()).unwrap();
@@ -984,7 +998,7 @@ mod tests {
     #[test]
     fn legacy_v3_without_morpho_loads_with_default() {
         // Simula um arquivo v3 salvo pre-tier-6.3 (8478 bytes, sem morpho tail).
-        let (fast, slow) = sample_weights(3);
+        let (fast, slow) = sample_weights_legacy(3);
         let path = std::env::temp_dir().join("iara_test_v3_legacy_nomorpho.dna");
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(DNA_MAGIC).unwrap();

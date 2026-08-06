@@ -94,6 +94,45 @@ fn main() {
         lab_params.experiment_name = name;
     }
 
+    // Ablação de via (ver `neuro.rs`). Fixada uma vez, no arranque, e global de processo: o
+    // `universe-lab` roda cada variante num processo separado, então não há o que confundir.
+    // Impresso SEMPRE, inclusive na linha de base — um experimento de ablação em que não se
+    // vê qual via caiu é um experimento sem rótulo.
+    let via = universe::neuro::Via::de_str(&lab_params.via_ablada);
+    universe::neuro::definir_ablacao(via);
+    if !lab_params.via_ablada.trim().is_empty() && via == universe::neuro::Via::Nenhuma {
+        eprintln!("⚠️  via_ablada=\"{}\" não é uma via conhecida — rodando SEM ablação. \
+                   Vias: cortex · reflexo · sentinela · sentinela_total · lenta",
+                  lab_params.via_ablada);
+    }
+    println!("🧠 via ablada: {}", via.nome());
+
+    // Modo de nascimento dos neurônios motores (ver `neuro::Nascimento`). Impresso sempre:
+    // um experimento sobre independência do modelo em que não se vê como ele nasceu é um
+    // experimento sem rótulo.
+    let nasc = universe::neuro::Nascimento::de_str(&lab_params.nascimento);
+    universe::neuro::definir_nascimento(nasc);
+    println!("🌱 nascimento dos motores: {}", nasc.nome());
+
+    // Parâmetros da visão (ver `visao.rs`). Zero = mantém o padrão, para que nenhum
+    // experimento antigo mude de comportamento por omissão.
+    let vp = universe::visao::Params {
+        alcance_m: if lab_params.visao_alcance_m > 0.0 { lab_params.visao_alcance_m }
+                   else { universe::visao::ALCANCE_PADRAO },
+        fov_deg: if lab_params.visao_fov_deg > 0.0 { lab_params.visao_fov_deg }
+                 else { universe::config::iara::vision::FOV_DEG },
+    };
+    universe::visao::definir(vp);
+    // Fração da população na faixa de mutação destrutiva (ver `neuro.rs`). Medido: com o
+    // padrão de 0,50 a MEDIANA da população é ZERO metros — metade não sai do lugar, e
+    // `wall_mean = 0,00s` mostra que não é batida: é a mutação destruindo o genoma.
+    let fexp = if lab_params.fracao_exploradora > 0.0 { lab_params.fracao_exploradora }
+               else { universe::neuro::FRACAO_EXPLORADORA_PADRAO };
+    universe::neuro::definir_fracao_exploradora(fexp);
+    println!("🎲 fração exploradora (σ alto): {:.0}%", fexp * 100.0);
+    println!("👁  visão: alcance {:.1} m · abertura {:.0}° · cega acima de {:.1} m/s",
+             vp.alcance_m, vp.fov_deg, universe::visao::velocidade_cega(vp.alcance_m, 11.4));
+
     // Tier 5.3: ativa rotação de pistas via CLI (`--rotate`) ou env (UNIVERSE_ROTATE=1).
     let rotate_flag = args.iter().any(|a| a == "--rotate")
         || std::env::var("UNIVERSE_ROTATE").ok().map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
@@ -109,25 +148,61 @@ fn main() {
 
     let mut app = App::new();
 
-    let window = if headless {
-        Window {
-            title: "IARA v2101 - HEADLESS".into(),
-            visible: false,
-            resolution: (320.0, 240.0).into(),
-            ..default()
-        }
-    } else {
-        Window { title: "IARA v2101 - Sovereign Dev Engine".into(), ..default() }
-    };
     app.insert_resource(HeadlessMode { enabled: headless, gens_target });
     app.insert_resource(lab_params.clone());
     // UI auto-start quando --seed passou em modo não-headless.
     app.insert_resource(UiAutoStart(seed_override.is_some() && !headless));
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(window),
-        ..default()
-    }));
-    if !headless {
+    if headless {
+        // HEADLESS DE VERDADE — sem janela, sem GPU, sem swap chain.
+        //
+        // Antes, `--headless` só passava `visible: false` e ainda criava janela real no X.
+        // Duas consequências medidas:
+        //
+        //   1. As DUAS corridas do A/B de nicho morreram no mesmo panic —
+        //      `Couldn't get swap chain texture ... swap chain has been lost`, em
+        //      `bevy_render::view::window::prepare_windows` — aos 27 e 28 de 30 gerações.
+        //      Corrida de dias é impossível assim, e são dias que a evolução exige: 1000
+        //      gerações custam 2,4 dias, e as raposas de Belyaev viraram dóceis em 60.
+        //   2. Prendia a simulação a um display X existente (`xvfb-run` não resolvia).
+        //
+        // Nada em headless usa GPU: não existe um único `.wgsl` no repositório nem pipeline
+        // de compute, e a retina (`world::render_binocular_retina`) é raycast DDA em CPU
+        // sobre voxels, paralelizado por rayon. A janela era peso morto que derrubava tudo.
+        //
+        // `backends: None` faz o wgpu não criar dispositivo; os tipos de asset (Mesh,
+        // StandardMaterial) seguem registrados como DADOS, que é o único uso que o código
+        // headless faz deles.
+        app.add_plugins(
+            DefaultPlugins
+                .build()
+                .disable::<bevy::winit::WinitPlugin>()
+                .set(bevy::render::RenderPlugin {
+                    render_creation: bevy::render::settings::RenderCreation::Automatic(
+                        bevy::render::settings::WgpuSettings {
+                            backends: None,
+                            ..default()
+                        },
+                    ),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                }),
+        );
+        // Sem Winit não há laço de eventos: o ScheduleRunner passa a bombear os frames.
+        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
+            std::time::Duration::ZERO,
+        ));
+    } else {
+        app.add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "IARA v2101 - Sovereign Dev Engine".into(),
+                ..default()
+            }),
+            ..default()
+        }));
         app.insert_resource(ClearColor(Color::srgb(0.42, 0.65, 0.88)));
     }
     app.init_state::<AppState>()
@@ -162,6 +237,8 @@ fn main() {
         champion_path: Vec::new(),
         champion_net_dist: 0.0,
         gens_since_crown: 0,
+        frac_completou_volta: 0.0,
+        estreitamento: 0.0,
         last_gen_path: Vec::new(),
         last_gen_net: 0.0,
         last_gen_was_grid: false,
@@ -181,6 +258,9 @@ fn main() {
                 &lab_copy
             )
         },
+        // Replay writer (novo formato 128 bytes/frame) — iniciado no começo de cada
+        // geração pelo motor.rs quando lab.record_replay = true.
+        replay_writer: None,
     })
     .insert_resource(DevSettings::default())
     .insert_resource(VoxelWorldResource(VoxelWorld::new(initial_seed, initial_width)))

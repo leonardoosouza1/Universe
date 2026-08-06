@@ -282,7 +282,7 @@ pub mod iara {
 
     // ── CÉREBRO (fonte: src/simulation/motor.rs, src/engine.rs) ────────
     pub mod brain {
-        use super::vision::{RETINA_COLS};
+        
 
         /// Calcula tamanho da sensory wave automaticamente.
         /// Estrutura: 0-127 (fóvea, periférica, telemetria, lookahead)

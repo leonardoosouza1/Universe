@@ -13,6 +13,7 @@
 /// State é CLAMPED em [-clamp_range, +clamp_range] pra evitar blow-up
 /// (failure mode documentado em melhorias/02-cerebro-dormente.md§2.1).
 
+#[derive(Clone)]
 pub struct CfCCell {
     pub hidden_size: usize,
     pub state: Vec<f32>,
@@ -23,6 +24,22 @@ pub struct CfCCell {
     /// Injects small perturbations in state to make creatures robust to self-induced drift.
     pub denoise_mag: f32,
     denoise_counter: u32,
+    /// Fadiga adaptativa por canal (spike-frequency adaptation).
+    ///
+    /// Estado lento que sobe quando |state[i]| é alto, subtrai do input efetivo
+    /// quebrando realimentação positiva e evitando ponto fixo irreversível.
+    ///
+    /// Equação por canal i:
+    ///   fatigue[i] += alpha * (|state[i]| - fatigue[i]) * dt
+    ///   x_efetivo = x - beta * fatigue[i]
+    ///
+    /// alpha=0.3: τ ≈ 3.3s ≈ 210 ticks @ 64Hz (sobe devagar, não confunde ruído de tick).
+    /// beta=0.4: com fatigue=1.8 subtrai 0.72 do input [-1,1] — suficiente para quebrar saturaçao.
+    pub fatigue: Vec<f32>,
+    /// Parâmetro alpha da fadiga (velocidade de integração). Padrão: 0.3.
+    pub fatigue_alpha: f32,
+    /// Parâmetro beta da fadiga (força da subtração). Padrão: 0.4.
+    pub fatigue_beta: f32,
 }
 
 impl CfCCell {
@@ -35,6 +52,16 @@ impl CfCCell {
             clamp_range: 2.0,
             denoise_mag: 0.10,   // byte-lab validated: 15% noise fixes exposure bias
             denoise_counter: 0,
+            fatigue: vec![0.0; hidden_size],
+            fatigue_alpha: 1.0,  // τ ≈ 1s @ 64Hz — sobe em ~64 ticks para 63% do alvo
+            // β=0.4: com o encolhimento suave o ponto fixo de entrada máxima sustentada
+            // é s = 2(1 - β·s) ⇒ s = 2/(1+2β). Com β=0.4 dá s=1.111 (saída 102/127, o
+            // canal continua informando); com β=0.8 dá s=0.769 (saída 82) e o CfC deixa
+            // de passar sinal sustentado, quebrando `update_stabilizes_on_constant_input`.
+            // 0.4 é o valor que a documentação deste arquivo sempre declarou — o código
+            // tinha ido para 0.8 sem atualizar nem o comentário nem o teste. Segue como
+            // parâmetro de varredura, não como constante sagrada.
+            fatigue_beta:  0.4,
         }
     }
 
@@ -42,6 +69,10 @@ impl CfCCell {
     pub fn reset(&mut self) {
         for s in self.state.iter_mut() {
             *s = 0.0;
+        }
+        // Zera fadiga junto com o estado — ser recém-nascido começa sem fadiga acumulada.
+        for f in self.fatigue.iter_mut() {
+            *f = 0.0;
         }
         self.denoise_counter = 0; // Deterministic denoising start per creature
     }
@@ -56,6 +87,9 @@ impl CfCCell {
     /// Update dim-preserving: recebe input i8 [hidden_size], atualiza state,
     /// escreve filtered i8 [hidden_size] = tanh(state) * 127.
     /// Input e output em i8 pra respeitar o pipeline ternário do BitLinear.
+    ///
+    /// Inclui fadiga adaptativa (spike-frequency adaptation): subtrai beta*fatigue[i]
+    /// do input efetivo antes de aplicar o CfC, quebrando pontos fixos de saturação.
     pub fn update(&mut self, input: &[i8], output: &mut [i8], dt: f32) {
         debug_assert_eq!(input.len(), self.hidden_size);
         debug_assert_eq!(output.len(), self.hidden_size);
@@ -67,8 +101,28 @@ impl CfCCell {
         // creatures become robust to self-induced sensory drift from their own actions.
         self.denoise_counter = self.denoise_counter.wrapping_add(1);
         let noise_mag = self.denoise_mag;
+        let alpha = self.fatigue_alpha;
+        let beta  = self.fatigue_beta;
         for i in 0..self.hidden_size {
-            let x = (input[i] as f32) / 127.0;
+            let x_raw = (input[i] as f32) / 127.0;
+            // Fadiga adaptativa por LIMIAR SUAVE — atenua, nunca inverte.
+            //
+            // A forma anterior era `x = x_raw - beta * fatigue`, subtração crua. Ela
+            // quebra os dois contratos que definem um CfC, e os testes deste arquivo
+            // pegaram os dois:
+            //   · sem entrada nenhuma, a fadiga integra |state| e passa a EMPURRAR o
+            //     estado para o negativo — o filtro cria sinal do nada;
+            //   · com +127 sustentado a fadiga chega a ~1,8 e subtrai 1,44 de x=1,0,
+            //     então uma entrada positiva constante produz saída NEGATIVA.
+            // O comentário original registrava a inversão ("input efetivo negativo")
+            // como se fosse recurso.
+            //
+            // Adaptação por frequência de disparo atenua a resposta, não troca o sinal
+            // dela. `sign(x)·max(0, |x| - beta·fat)` é o encolhimento suave — o mesmo
+            // operador da Lei do Garimpo e do OMP, aqui no eixo do tempo: só passa o que
+            // excede o custo acumulado.
+            let threshold = beta * self.fatigue[i];
+            let x = x_raw.signum() * (x_raw.abs() - threshold).max(0.0);
             let mut s = self.state[i] * decay + x * gain_dt;
             // Inject deterministic noise (~15% of channels per tick, cheap hash).
             if noise_mag > 0.0 {
@@ -80,6 +134,9 @@ impl CfCCell {
                 }
             }
             if s > clamp { s = clamp; } else if s < -clamp { s = -clamp; }
+            // Atualiza fadiga: filtro passa-baixa sobre |state| (spike-frequency adaptation).
+            // fat += alpha * (|s| - fat) * dt
+            self.fatigue[i] += alpha * (s.abs() - self.fatigue[i]) * dt;
             self.state[i] = s;
             let filtered = s.tanh();
             output[i] = (filtered * 127.0).clamp(-127.0, 127.0) as i8;
