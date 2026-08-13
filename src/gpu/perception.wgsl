@@ -138,8 +138,8 @@ struct Pose {
 const RETINA_ROWS:    u32 = 14u;
 const RETINA_COLS:    u32 = 126u;
 const RETINA_TOTAL:   u32 = 1764u;   // 14 × 126
-const WAVE_SIZE:      u32 = 223u;
-const WAVE_U32S:      u32 = 56u;     // ceil(223 / 4) = 56
+const WAVE_SIZE:      u32 = 192u;   // = SENSORY_WAVE_SIZE em config.rs
+const WAVE_U32S:      u32 = 48u;     // ceil(192 / 4) = 48
 
 // Amostras para sensores laterais (ch 76-77): expandidas de 27m → 40m.
 // CONTA DO ALCANCE: velocidade máxima observada = 28 m/s.

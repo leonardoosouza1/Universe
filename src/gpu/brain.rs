@@ -43,6 +43,9 @@ const L2_WEIGHTS_PER_SER: usize = L1_NEURONS * L2_NEURONS;          // 96 × 48 
 const KAN_KNOTS: usize = 16;
 const KAN_WEIGHTS_PER_SER: usize = SENSORY_WAVE_SIZE * KAN_KNOTS;   // 223 × 16 = 3.568
 
+/// Fadiga de saída herdada: 0,85. Documentada em `BrainParams::out_beta`.
+pub const OUT_BETA_PADRAO: f32 = 0.85;
+
 /// Estado CfC por ser: 96 floats (state) + 1 u32 (counter, bitcast como f32) = 97 f32
 const CFC_SLOTS_PER_SER: usize = L1_NEURONS + 1;  // 97
 
@@ -71,7 +74,17 @@ pub struct BrainParams {
     /// 56 u32 por ser) em vez do binding 1 (buf_wave, i32 sign-extended da CPU).
     /// Elimina o round-trip percepção→CPU→GPU por tick. O gpu_validate passa 0.
     pub use_percept_direct: u32,
-    _pad1: u32,
+    /// Força da fadiga de SAÍDA (`OUT_BETA`), antes uma constante de shader.
+    ///
+    /// Em regime permanente `out_fat → |raw|`, então a saída vira `(1 - out_beta)·|raw|`:
+    /// com 0,85 um comando SUSTENTADO sai a 15% da intenção, em ~1 s. Isso é adaptação a
+    /// estímulo constante — ótimo num sensor (detecta novidade), veneno num comando motor,
+    /// onde segurar o acelerador na reta é justamente o que se quer. E como o operador é
+    /// aplicado DEPOIS do L2, nenhum peso do genoma escapa dele.
+    ///
+    /// Vira parâmetro para poder ser MEDIDO em teste pareado em vez de discutido.
+    /// O padrão 0,85 é o histórico: sem passar nada, o comportamento é o de antes.
+    pub out_beta: f32,
 }
 
 // ── INPUT POR SER ─────────────────────────────────────────────────────────────
@@ -109,6 +122,13 @@ pub struct BrainGpu {
     /// Inicializado em zeros; atualizado a cada tick pelo kernel brain.wgsl.
     buf_fatigue: wgpu::Buffer,  // f32 × (cap × FATIGUE_PER_SER)     — residente
 
+    /// Banco de τ: taxa de decaimento do CfC por canal por ser, em s⁻¹ (d = 1/τ).
+    ///
+    /// Constante durante a geração, como os pesos: τ é herdado do genoma e não muda na
+    /// vida do ser. Enviado por `upload_tau`. Nasce em `DECAY_DEFAULT` (τ = 2,0 s em todos
+    /// os canais) para que quem não chamar `upload_tau` obtenha o comportamento antigo.
+    buf_tau:    wgpu::Buffer,   // f32 × (cap × L1_NEURONS)          — por geração
+
     /// Buffer de debug temporário: exporta l1_raw + inputs CfC/KAN para ser 0.
     /// Layout: [l1_raw[0..95], cfc_in[0..95], kan_in[96..222]] = 319 f32
     buf_debug:  wgpu::Buffer,
@@ -120,6 +140,9 @@ pub struct BrainGpu {
     /// O gpu_validate e forward() usam buf_wave (binding 1) e precisam de algo
     /// válido no binding 8 para que create_bind_group não falhe. Tamanho = 4 bytes.
     buf_percept_dummy: wgpu::Buffer,
+
+    /// Força da fadiga de saída usada nos dispatches. Ver `BrainParams::out_beta`.
+    pub out_beta: f32,
 
     /// Número máximo de seres suportado com estes buffers.
     pub capacity: usize,
@@ -156,6 +179,7 @@ impl BrainGpu {
                 storage_entry(7, false),        // buf_debug  (diagnóstico temporário)
                 storage_entry(8, true),         // buf_percept: u32 de percepcao.wgsl (GPU path)
                 storage_entry(9, false),        // buf_fatigue (read_write, fadiga adaptativa)
+                storage_entry(10, true),        // buf_tau     (read, banco de τ por canal)
             ],
         });
 
@@ -247,6 +271,16 @@ impl BrainGpu {
                  | wgpu::BufferUsages::COPY_SRC, // para diagnóstico de fadiga
         });
 
+        // Banco de τ: f32 × 96 × cap. Nasce em DECAY_DEFAULT (τ = 2,0 s), que é o valor
+        // único que o cérebro usava — assim o caminho que não chama `upload_tau` continua
+        // idêntico ao de antes em vez de rodar com τ = 0 (decay = 1, memória infinita).
+        let taus_init: Vec<f32> = vec![crate::cfc::DECAY_DEFAULT; capacity * L1_NEURONS];
+        let buf_tau = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brain-tau"),
+            contents: bytemuck::cast_slice(&taus_init),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         // Readback: MAP_READ separado (não pode combinar com STORAGE em wgpu).
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-readback"),
@@ -286,6 +320,8 @@ impl BrainGpu {
             buf_intent,
             buf_cfc,
             buf_fatigue,
+            buf_tau,
+            out_beta: OUT_BETA_PADRAO,
             buf_debug,
             buf_readback,
             buf_percept_dummy,
@@ -346,6 +382,23 @@ impl BrainGpu {
             l2_data.extend_from_slice(w);
         }
         self.queue.write_buffer(&self.buf_l2w, 0, bytemuck::cast_slice(&l2_data));
+    }
+
+    /// Envia o banco de τ: `n × L1_NEURONS` taxas de decaimento em s⁻¹, em ordem de ser.
+    ///
+    /// Chamado uma vez por geração, junto com os pesos — τ é herdado, não muda por tick.
+    /// Quem não chamar fica com o `DECAY_DEFAULT` da inicialização, que é o τ = 2,0 s
+    /// uniforme de antes; assim o controle do experimento é o comportamento histórico.
+    pub fn upload_tau(&self, taus: &[f32], n: usize) {
+        assert!(n <= self.capacity, "n={n} excede capacidade {}", self.capacity);
+        // Comprimento errado aqui seria um bug MUDO: o kernel leria τ do ser seguinte
+        // (ou lixo do fim do buffer) e a condição "heterogênea" viraria ruído embaralhado
+        // sem nenhum sintoma visível. Foi exatamente essa classe de erro — stride errado
+        // na onda sensorial — que já embaralhou a entrada do cérebro lento neste projeto.
+        assert_eq!(taus.len(), n * L1_NEURONS,
+            "banco de τ tem {} valores, esperava {} ({n} seres × {L1_NEURONS} canais)",
+            taus.len(), n * L1_NEURONS);
+        self.queue.write_buffer(&self.buf_tau, 0, bytemuck::cast_slice(taus));
     }
 
     // ── DOWNLOAD DO ESTADO CFC (diagnóstico) ──────────────────────────────
@@ -515,7 +568,7 @@ impl BrainGpu {
             n_beings: n as u32,
             dt,
             use_percept_direct: 0,
-            _pad1: 0,
+            out_beta: crate::gpu::brain::OUT_BETA_PADRAO,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-params"),
@@ -540,6 +593,7 @@ impl BrainGpu {
                 wgpu::BindGroupEntry { binding: 7, resource: self.buf_debug.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: self.buf_percept_dummy.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 9, resource: self.buf_fatigue.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
             ],
         });
 
@@ -645,7 +699,7 @@ impl BrainGpu {
             n_beings: n as u32,
             dt,
             use_percept_direct,
-            _pad1: 0,
+            out_beta: self.out_beta,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("brain-params-chain"),
@@ -667,6 +721,7 @@ impl BrainGpu {
                 wgpu::BindGroupEntry { binding: 7, resource: self.buf_debug.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: percept_binding.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 9, resource: self.buf_fatigue.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
             ],
         });
 

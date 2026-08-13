@@ -29,7 +29,7 @@ use crate::kan::KAN_OUT_KNOTS;
 use crate::engine::SovereignEngine;
 
 // ── Dimensões derivadas ────────────────────────────────────────────────────────
-pub const N_L1_WEIGHTS: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 223 × 96 = 21.408
+pub const N_L1_WEIGHTS: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
 pub const N_L2_WEIGHTS: usize = L1_NEURONS * L2_NEURONS;         // 96  × 48 =  4.608
 pub const N_KAN_KNOTS:  usize = 3 * KAN_OUT_KNOTS;               // 3   × 12 =     36
 
@@ -53,7 +53,17 @@ pub struct Genome {
     /// ajustá-la nem como se livrar dela. Herdável e mutável, ela pode ser selecionada
     /// ou descartada pelo próprio processo.
     pub slow: Vec<f32>,
+    /// Banco de τ: taxa de decaimento do CfC por canal (s⁻¹), `N_CFC_CHANNELS` valores.
+    ///
+    /// Nasce uniforme em `DECAY_DEFAULT` (τ = 2,0 s, o valor único de antes) e só vira
+    /// heterogêneo por `randomize_tau`. Assim a condição de controle é literalmente o
+    /// cérebro histórico rodando pelo código novo — mesmo shader, mesma fórmula, só o
+    /// vetor difere.
+    pub tau: Vec<f32>,
 }
+
+/// Canais do CfC — o filtro cobre os primeiros 96 da onda sensorial.
+pub const N_CFC_CHANNELS: usize = 96;
 
 impl Genome {
     /// Gera genoma com pesos aleatórios (N(0, σ_l1)).
@@ -90,7 +100,22 @@ impl Genome {
         // igual em todos os seres de propósito — a diferença tem que ser SELECIONADA,
         // não sorteada, senão a primeira geração já mistura dois efeitos.
         let slow = crate::engine::SlowBrain::new().all_weights();
-        Self { l1, l2, kan_knots, slow }
+        // τ uniforme = comportamento herdado. Heterogêneo só por `randomize_tau`, para que
+        // o braço de controle do experimento seja o cérebro antigo, não um terceiro caso.
+        let tau = vec![crate::cfc::DECAY_DEFAULT; N_CFC_CHANNELS];
+        Self { l1, l2, kan_knots, slow, tau }
+    }
+
+    /// Sorteia o banco de τ log-uniforme em [25 ms, 4 s] — a condição heterogênea.
+    pub fn randomize_tau(&mut self, seed: u64) {
+        self.tau = crate::cfc::log_uniform_decays(seed, N_CFC_CHANNELS);
+    }
+
+    /// Achata o banco de τ de vários genomas no layout que `BrainGpu::upload_tau` espera.
+    pub fn pack_taus(genomes: &[Genome]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(genomes.len() * N_CFC_CHANNELS);
+        for g in genomes { out.extend_from_slice(&g.tau); }
+        out
     }
 
     /// Carrega genoma a partir de um `SovereignEngine` existente.
@@ -101,15 +126,28 @@ impl Genome {
         // SAÍDA (throttle/steer/brake) não ficam no engine — usamos o default.
         let kan_knots = crate::evolution::dna_genesis::default_kan_knots();
         let slow = eng.slow_brain.all_weights();
-        Self { l1, l2, kan_knots, slow }
+        let tau = vec![crate::cfc::DECAY_DEFAULT; N_CFC_CHANNELS];
+        Self { l1, l2, kan_knots, slow, tau }
     }
 
     /// Escreve genoma em um `SovereignEngine` (substitui pesos).
+    ///
+    /// Falha explicitamente se L1/L2 divergirem — truncamento silencioso já causou
+    /// pesos perdidos sem aviso, resultado: seres nasciam com genoma parcialmente zerado
+    /// enquanto métricas de seleção pareciam normais.
     pub fn apply_to_engine(&self, eng: &mut SovereignEngine) {
-        let n1 = self.l1.len().min(eng.instinct_layer.weights.len());
-        eng.instinct_layer.weights[..n1].copy_from_slice(&self.l1[..n1]);
-        let n2 = self.l2.len().min(eng.cortex_l2.weights.len());
-        eng.cortex_l2.weights[..n2].copy_from_slice(&self.l2[..n2]);
+        assert_eq!(
+            self.l1.len(), eng.instinct_layer.weights.len(),
+            "L1 tem {} pesos, engine espera {} — divergência de SENSORY_WAVE_SIZE ou L1_NEURONS",
+            self.l1.len(), eng.instinct_layer.weights.len()
+        );
+        eng.instinct_layer.weights.copy_from_slice(&self.l1);
+        assert_eq!(
+            self.l2.len(), eng.cortex_l2.weights.len(),
+            "L2 tem {} pesos, engine espera {} — divergência de L1_NEURONS ou L2_NEURONS",
+            self.l2.len(), eng.cortex_l2.weights.len()
+        );
+        eng.cortex_l2.weights.copy_from_slice(&self.l2);
         if !self.slow.is_empty() { eng.slow_brain.set_all_weights(&self.slow); }
         // KAN knots são usados pelo ciclo de evolução diretamente (não no engine).
     }
@@ -236,6 +274,21 @@ pub fn evolve(
             if rng.f32() < params.p_mutate * 3.0 {
                 *w += rng.gauss() * params.sigma * 1.5;
                 *w = w.clamp(-2.0, 2.0);
+            }
+        }
+        // Mutação do banco de τ: MULTIPLICATIVA, em log.
+        //
+        // Aditiva seria errada aqui. A faixa vai de 0,25 a 40 s⁻¹ — um σ que mexe de
+        // verdade num canal de 0,25 atropela um de 40, e vice-versa. O que tem escala
+        // constante é a razão: ×1,15 significa a mesma coisa em qualquer ponto da faixa.
+        //
+        // Taxa 3× a dos pesos pelo mesmo motivo do lento: são 96 valores contra 26 mil,
+        // e com a taxa base o banco de τ mal seria tocado numa vida de 30 gerações.
+        let d_lo = 1.0 / crate::cfc::TAU_MAX_S;
+        let d_hi = 1.0 / crate::cfc::TAU_MIN_S;
+        for d in filho.tau.iter_mut() {
+            if rng.f32() < params.p_mutate * 3.0 {
+                *d = (*d * (rng.gauss() * 0.20).exp()).clamp(d_lo, d_hi);
             }
         }
         // KAN knots: mutação esparsa (0.5% por knot, σ=0.05).

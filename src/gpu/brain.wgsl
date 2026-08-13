@@ -83,7 +83,14 @@
 // ── CONSTANTES ────────────────────────────────────────────────────────────────
 
 // Tamanho da sensory_wave (config.rs: SENSORY_WAVE_SIZE = 223)
-const WAVE:      u32 = 223u;
+const WAVE:      u32 = 192u;
+
+// Palavras u32 da onda empacotada (4 canais i8 por u32). DEVE bater com o
+// WAVE_U32S dos shaders de percepção (perception*.wgsl = 48). Era 56u hardcoded aqui
+// (de quando a onda tinha 223 canais); ao reduzir para 192 esqueci este sítio, e o
+// cérebro passou a ler a percepção com stride 56 enquanto ela é escrita com 48 —
+// cada ser lia dados do vizinho. Bug medido e corrigido nesta sessão.
+const WAVE_U32S: u32 = 48u;   // ceil(192/4)
 
 // L1: BitLinear WAVE→96 (config.rs: L1_NEURONS = 96)
 const L1_OUT:    u32 = 96u;
@@ -94,10 +101,18 @@ const L2_OUT:    u32 = 48u;
 // KAN: 16 knots por canal (kan.rs: spline_coeffs [f32; 16])
 const KAN_KNOTS: u32 = 16u;
 
-// Parâmetros CfC — instância-constantes que NÃO evoluem (cfc.rs:29-36)
-// Se tornarem evoluíveis no futuro, mover para uniform buffer.
-const CFC_DECAY_RATE:  f32 = 0.5;
-const CFC_INPUT_GAIN:  f32 = 1.0;
+// Parâmetros CfC.
+//
+// τ DEIXOU DE SER CONSTANTE. Aqui havia `CFC_DECAY_RATE = 0.5` e `CFC_INPUT_GAIN = 1.0`:
+// um τ de 2,0 s idêntico nos 96 canais, inclusive nos de parede, curvatura e velocidade.
+// Agora a taxa vem de `buf_tau` — um valor por canal por ser, herdado do genoma
+// (espelha `cfc.rs: decay_rates`).
+//
+// `CFC_DC_GAIN` é o ganho em regime permanente, IGUAL para todo τ. O par antigo dava
+// input_gain/decay = 1,0/0,5 = 2,0, então 2,0 mantém a escala do sinal. Sem essa
+// normalização um canal rápido sairia ~80× mais fraco e seria descartado por ser mudo,
+// não por ser rápido (ver `cfc.rs: dc_gain`).
+const CFC_DC_GAIN:     f32 = 2.0;
 const CFC_CLAMP:       f32 = 2.0;
 const CFC_DENOISE_MAG: f32 = 0.10;  // ~14% dos canais perturbados por tick
 
@@ -136,7 +151,7 @@ const FATIGUE_BETA:  f32 = 0.4;  // ver cfc.rs: 2/(1+2β) preserva resposta sust
 //
 // Mecanismo: mesmo filtro passa-baixa aplicado na saída final_intent.
 //   out_fat[i] += OUT_ALPHA * (|intent_raw[i]| - out_fat[i]) * dt
-//   intent_final[i] = tanh(sign(raw) * max(0, |raw| - OUT_BETA * out_fat[i]))
+//   intent_final[i] = tanh(sign(raw) * max(0, |raw| - params.out_beta * out_fat[i]))
 //
 // OUT_ALPHA = 4.0: τ ≈ 0.25s (sobe em ~16 ticks para 63% do alvo).
 //   Resposta mais rápida: o throttle trava em 10 ticks, então a fadiga precisa agir
@@ -157,7 +172,7 @@ const FATIGUE_BETA:  f32 = 0.4;  // ver cfc.rs: 2/(1+2β) preserva resposta sust
 //   (v2: 0.6→0.85 — com 0.6, em regime permanente ficava tanh(l2_raw*0.4) que para
 //    l2_raw=3.8 ainda dava tanh(1.52)≈0.91, marginalmente acima do limiar de 0.90.)
 const OUT_ALPHA: f32 = 4.0;
-const OUT_BETA:  f32 = 0.85;
+// OUT_BETA saiu daqui: agora vem de `params.out_beta`, por ser.
 
 // ── STRUCTS ───────────────────────────────────────────────────────────────────
 
@@ -169,7 +184,9 @@ struct Params {
     // por ser, i8 empacotados em little-endian). Elimina o readback percepção→CPU
     // e o write_buffer CPU→GPU que existia antes. O gpu_validate passa 0 aqui.
     use_percept_direct: u32,
-    _pad1:             u32,
+    // Força da fadiga de saída. Era `const OUT_BETA = 0.85`; virou parâmetro para
+    // poder ser medida em teste pareado (ver `BrainParams::out_beta` no host).
+    out_beta:          f32,
 }
 
 // ── BINDINGS ──────────────────────────────────────────────────────────────────
@@ -218,6 +235,13 @@ struct Params {
 // Não salva counter separado: usa o mesmo counter do buf_cfc.
 // Cresce quando |state[i]| é alto; subtrai do input CfC quebrando ponto fixo.
 @group(0) @binding(9) var<storage, read_write> buf_fatigue: array<f32>;
+
+// Constantes de tempo do CfC, uma por canal por ser — o "banco de τ".
+// Layout: ser * L1_OUT + canal  (96 f32 por ser). Guarda a TAXA DE DECAIMENTO em s⁻¹
+// (d = 1/τ), não τ, porque é a forma que entra direto no exponencial.
+// Somente leitura: τ é herdado do genoma e fixo na vida do ser. Modular τ em tempo real
+// foi medido e não paga (+0,11%); TER τ variado é que é selecionado (40× vs 5,3×).
+@group(0) @binding(10) var<storage, read>      buf_tau:     array<f32>;
 
 // ── MEMÓRIA DE WORKGROUP ──────────────────────────────────────────────────────
 
@@ -307,7 +331,7 @@ fn main(
         if params.use_percept_direct == 1u {
             // Desempacota i8 two's-complement de buf_percept (saída de percepcao.wgsl).
             // 56 u32 por ser: byte ch está em word (ch/4), shift ((ch%4)*8).
-            let percept_base: u32 = being * 56u;  // WAVE_U32S = ceil(223/4) = 56
+            let percept_base: u32 = being * WAVE_U32S;
             let word: u32   = buf_percept[percept_base + ch / 4u];
             let byte_u: u32 = (word >> ((ch % 4u) * 8u)) & 0xFFu;
             // Extensão de sinal u8 → i32 two's-complement:
@@ -324,7 +348,7 @@ fn main(
         if ch < WAVE {
             var raw_i32: i32;
             if params.use_percept_direct == 1u {
-                let percept_base: u32 = being * 56u;
+                let percept_base: u32 = being * WAVE_U32S;
                 let word: u32   = buf_percept[percept_base + ch / 4u];
                 let byte_u: u32 = (word >> ((ch % 4u) * 8u)) & 0xFFu;
                 raw_i32 = select(i32(byte_u), i32(byte_u) - 256, byte_u >= 128u);
@@ -376,8 +400,12 @@ fn main(
         let counter_new: u32  = counter_old + 1u;  // wrapping em u32 por padrão em WGSL
 
         let dt: f32     = params.dt;
-        let decay: f32  = exp(-CFC_DECAY_RATE * dt);    // cfc.rs:62
-        let gain_dt: f32 = CFC_INPUT_GAIN * dt;          // cfc.rs:63
+        // τ POR CANAL: taxa de decaimento herdada do genoma, em s⁻¹.
+        let d: f32       = buf_tau[being * L1_OUT + i];
+        let decay: f32   = exp(-d * dt);
+        // Ganho DC normalizado — reaproveita o `decay` já calculado, sem exp extra.
+        // Estacionário: s* = x·G·(1-decay)/(1-decay) = x·G, para qualquer τ.
+        let gain_dt: f32 = CFC_DC_GAIN * (1.0 - decay);
 
         // x = input normalizado do canal, com fadiga aplicada como LIMIAR SUAVE:
         //   x_efetivo = sign(x) * max(0, |x| - beta * fat)
@@ -539,7 +567,7 @@ fn main(
         let l2_raw: f32 = acc * (2.0 / 127.0);
 
         // Fadiga de saída: lê slot [96+j] do buf_fatigue (segunda metade do buffer expandido).
-        // Rastreia |intent| para canal j; subtrai OUT_BETA * out_fat do raw antes do tanh.
+        // Rastreia |intent| para canal j; subtrai params.out_beta * out_fat do raw antes do tanh.
         // Quebra o ponto fixo de saída sem afetar canais que variam normalmente.
         let out_fat_base: u32 = being * L1_OUT * 2u + L1_OUT;  // slots [96..192] por ser
         var out_fat: f32 = buf_fatigue[out_fat_base + j];
@@ -547,13 +575,13 @@ fn main(
         buf_fatigue[out_fat_base + j] = out_fat;
 
         // Fadiga de saída como LIMIAR SUAVE sobre a MAGNITUDE:
-        //   intent = tanh(sign(raw) * max(0, |raw| - OUT_BETA * out_fat))
+        //   intent = tanh(sign(raw) * max(0, |raw| - params.out_beta * out_fat))
         // `out_fat` rastreia |raw|, então a forma anterior (`raw - OUT_BETA*out_fat`)
         // era ASSIMÉTRICA: com raw sustentado negativo ela subtraía um termo positivo
         // do já-negativo e empurrava para a saturação (-0,999), enquanto com raw
         // positivo atenuava para 0,15·raw. A fadiga enviesava toda a população para
         // baixo. Agora encolhe a magnitude e preserva o sinal, nos dois lados.
-        let adapted: f32 = sign(l2_raw) * max(0.0, abs(l2_raw) - OUT_BETA * out_fat);
+        let adapted: f32 = sign(l2_raw) * max(0.0, abs(l2_raw) - params.out_beta * out_fat);
         buf_intent[intent_base + j] = tanh(adapted);
     }
 
@@ -567,7 +595,7 @@ fn main(
         out_fat_bp = out_fat_bp + OUT_ALPHA * (abs(raw_bp) - out_fat_bp) * params.dt;
         buf_fatigue[out_fat_base_bp + tid] = out_fat_bp;
 
-        let adapted_bp: f32 = sign(raw_bp) * max(0.0, abs(raw_bp) - OUT_BETA * out_fat_bp);
+        let adapted_bp: f32 = sign(raw_bp) * max(0.0, abs(raw_bp) - params.out_beta * out_fat_bp);
         buf_intent[intent_base + tid] = tanh(adapted_bp);
     }
 

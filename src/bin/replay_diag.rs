@@ -81,8 +81,12 @@ fn main() {
     let mut stopped = 0usize;
     let mut excursions: Vec<Excursion> = Vec::new();
     let mut cur: Option<Excursion> = None;
-    let mut prog_min = f32::MAX;
-    let mut prog_max = f32::MIN;
+    // Avanço LÍQUIDO monotônico, não amplitude. `max - min` conta um ser que recua
+    // cruzando a linha (14m→2900m) como '99,5% da volta' — falso. Mesmo bug já
+    // corrigido no replay_obs; o replay_diag ainda tinha a versão antiga.
+    let mut prog_liq = 0.0f32;
+    let mut prog_pico = 0.0f32;
+    let mut prog_ant = world.get_track_progress(fr[0].pos[0], fr[0].pos[2]);
     let mut speed_sum = 0.0f64;
     let mut speed_max = 0.0f32;
 
@@ -90,8 +94,11 @@ fn main() {
         let p = Vec2::new(f.pos[0], f.pos[2]);
         let mat = world.material_at(p);
         let prog = world.get_track_progress(p.x, p.y);
-        prog_min = prog_min.min(prog);
-        prog_max = prog_max.max(prog);
+        let mut d = prog - prog_ant;
+        if d < -lap * 0.5 { d += lap; } else if d > lap * 0.5 { d -= lap; }
+        prog_liq += d.clamp(-lap * 0.1, lap * 0.1);
+        prog_pico = prog_pico.max(prog_liq);
+        prog_ant = prog;
         speed_sum += f.speed as f64;
         speed_max = speed_max.max(f.speed);
 
@@ -133,7 +140,7 @@ fn main() {
     println!("  marcha à ré:       {:5.1}%", pct(reversing));
 
     println!("\n── AVANÇO NO CIRCUITO ──");
-    let span = prog_max - prog_min;
+    let span = prog_pico.max(0.0);
     println!("  progresso alcançado: {:.0} m de {:.0} m ({:.1}% da volta)",
              span, lap, 100.0 * span / lap);
     println!("  velocidade média {:.2} m/s ({:.1} km/h) · máxima {:.2} m/s ({:.1} km/h)",

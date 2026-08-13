@@ -131,29 +131,30 @@ impl SlowBrain {
         all
     }
 
-    /// Carrega weights agregados. Ignora tamanho incompatível (backward-compat).
+    /// Carrega weights agregados.
+    ///
+    /// Falha explicitamente se o tamanho não bater — a versão anterior ignorava
+    /// divergências silenciosamente, causando corrupção em cascata: quando um bloco
+    /// não cabia, o offset não avançava e o bloco seguinte lia dados do lugar errado.
     pub fn set_all_weights(&mut self, weights: &[f32]) {
-        let mut offset = 0;
         let d1_w_size = self.dense1.weights.len();
         let d1_b_size = self.dense1.bias.len();
         let d2_w_size = self.dense2.weights.len();
         let d2_b_size = self.dense2.bias.len();
-
-        if offset + d1_w_size <= weights.len() {
-            self.dense1.weights.copy_from_slice(&weights[offset..offset + d1_w_size]);
-            offset += d1_w_size;
-        }
-        if offset + d1_b_size <= weights.len() {
-            self.dense1.bias.copy_from_slice(&weights[offset..offset + d1_b_size]);
-            offset += d1_b_size;
-        }
-        if offset + d2_w_size <= weights.len() {
-            self.dense2.weights.copy_from_slice(&weights[offset..offset + d2_w_size]);
-            offset += d2_w_size;
-        }
-        if offset + d2_b_size <= weights.len() {
-            self.dense2.bias.copy_from_slice(&weights[offset..offset + d2_b_size]);
-        }
+        let expected = d1_w_size + d1_b_size + d2_w_size + d2_b_size;
+        assert_eq!(
+            weights.len(), expected,
+            "slow_brain espera {} valores ({}w+{}b+{}w+{}b), recebeu {}",
+            expected, d1_w_size, d1_b_size, d2_w_size, d2_b_size, weights.len()
+        );
+        let mut offset = 0;
+        self.dense1.weights.copy_from_slice(&weights[offset..offset + d1_w_size]);
+        offset += d1_w_size;
+        self.dense1.bias.copy_from_slice(&weights[offset..offset + d1_b_size]);
+        offset += d1_b_size;
+        self.dense2.weights.copy_from_slice(&weights[offset..offset + d2_w_size]);
+        offset += d2_w_size;
+        self.dense2.bias.copy_from_slice(&weights[offset..offset + d2_b_size]);
     }
 }
 

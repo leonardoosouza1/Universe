@@ -20,11 +20,12 @@
 // temporizadores. Preencher esses slots com um canal parecido seria inventar sinal;
 // zero é honesto e a razão de participação vai mostrar quantas dimensões sobraram.
 //
-// A onda chega empacotada: 4 canais i8 por u32 (WAVE_U32S = ceil(223/4) = 56 u32
+// A onda chega empacotada: 4 canais i8 por u32 (WAVE_U32S = ceil(192/4) = 48 u32
 // por ser), que é o mesmo empacotamento que o kernel do cérebro rápido consome.
 
 const INPUT_SIZE: u32 = 48u;
-const WAVE_U32S:  u32 = 56u;
+const WAVE_U32S:  u32 = 48u;   // ceil(192/4). Era 56u (onda de 223) — o lento lia
+                               // a percepção com stride errado, entrada embaralhada. Corrigido.
 
 struct GatherParams {
     n_beings: u32,

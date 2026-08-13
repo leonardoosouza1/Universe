@@ -514,7 +514,7 @@ pub(super) fn update_racers(
                         let retina_legada = retina_ctx.read_legacy_after_submit(n_dispatched);
 
                         // Lê percepção (buf_readback já foi copiado no encoder pelo bind_and_dispatch).
-                        let waves = pctx.read_after_submit(n_alive, bytes_percept);
+                        let waves = pctx.read_after_submit(retina_ctx.device(), n_alive, bytes_percept);
 
                         if retina_legada.len() == n_alive && waves.len() == n_alive {
                             Some((retina_legada, Some(waves)))
@@ -1761,7 +1761,8 @@ pub(super) fn update_racers(
         let c120_signed = curv_at(120.0);
         let c180_signed = curv_at(180.0);
         let c260_signed = curv_at(260.0);
-        let c350_signed = curv_at(350.0);
+        // c350_signed não é mais usado aqui: ch111 (350m) migrou para
+        // perception_temporal.wgsl (curv_at_d), eliminando conflito de escrita CPU/GPU.
 
         {
             let c20 = ((c20_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
@@ -1770,16 +1771,16 @@ pub(super) fn update_racers(
             let c120 = ((c120_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
             let c180 = ((c180_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
             let c260 = ((c260_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
-            let c350 = ((c350_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
 
-            // Ch 20, 78, 79, 80, 32, 101, 102 (7 lookahead channels).
+            // Ch 20, 78, 79, 80, 32, 101 (6 lookahead channels).
+            // ch111 (350m horizon) foi movido para perception_temporal.wgsl:curv_at_d(350)
+            // — conflito de escrita eliminado; agora só a GPU escreve ch111.
             sensory_wave[20] = c20;  // 20m nearest
             sensory_wave[78] = c40;  // 40m near
             sensory_wave[79] = c70;  // 70m mid
             sensory_wave[80] = c120; // 120m mid-far
             sensory_wave[32] = c180; // 180m far
             sensory_wave[101] = c260; // 260m very far
-            sensory_wave[111] = c350; // 350m horizon (moved from ch102 to avoid overwriting approach_rate_l)
 
             // Pre-brake: speed × max curv across horizons. Weights decay: nearest highest.
             let speed_norm = (speed / 80.0).clamp(0.0, 1.0);

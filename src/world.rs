@@ -103,8 +103,21 @@ impl VoxelWorld {
                 let idx = y * size + x;
                 flow[idx] = best_dir;
                 min_dist_to_road[idx] = min_dist;
-                grid[idx] = if min_dist < track_width / 2.0 { VoxelType::Road }
-                            else if min_dist < (track_width / 2.0) + 1.5 { VoxelType::Wall }
+                // ERRO DE UNIDADE, corrigido: `min_dist` sai de `pos = (x, y)` da GRADE,
+                // logo está em CÉLULAS; `track_width` vem do chamador em METROS. Comparar
+                // os dois direto multiplicava a pista por `cell_size` (3,0): uma pista
+                // declarada de 28 m virava 84 m reais, medido com `pista_check` (42 m de
+                // asfalto livre para cada lado do eixo, em todo o traçado).
+                //
+                // A consequência não foi cosmética. Com 84 m de largura e curva de raio
+                // 51 m, a pista é mais larga do que a curva é fechada — não existe curva a
+                // negociar. E TODOS os sensores de parede saturam: `fwd_dist` cravado em
+                // 30,0, raios laterais no teto, retina com o mesmo valor em toda direção.
+                // O ser não tinha o que ver nem por que virar. Foi isso, e não o cérebro,
+                // que segurou a evolução em 3/24 setores por trinta gerações.
+                let dist_m = min_dist * cell_size;
+                grid[idx] = if dist_m < track_width / 2.0 { VoxelType::Road }
+                            else if dist_m < (track_width / 2.0) + 4.5 { VoxelType::Wall }
                             else { VoxelType::Grass };
                 
                 // Elevação: amplitude/frequência por pista — Nürburgring Hills tem rampas sérias.
@@ -118,7 +131,8 @@ impl VoxelWorld {
                 
                 // Banking: inclinação em curvas (segmentos 2,3,5,6 são curvas)
                 if grid[idx] == VoxelType::Road && (best_seg_idx == 2 || best_seg_idx == 3 || best_seg_idx == 5 || best_seg_idx == 6) {
-                    let norm_dist = min_dist / (track_width / 2.0); // 0=centro, 1=borda
+                    // Mesma correção de unidade: metros contra metros.
+                    let norm_dist = (min_dist * cell_size) / (track_width / 2.0); // 0=centro, 1=borda
                     banking[idx] = 0.12 * (1.0 - norm_dist); // ~7° de banking no centro das curvas
                 }
             }

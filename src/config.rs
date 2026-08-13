@@ -289,8 +289,18 @@ pub mod iara {
         ///          + 160-191 (retina horizon scan: 32 amostras)
         /// Total = 128 + 32 = 160, mas marginalia para segurança = 160 + RETINA_COLS
         const fn compute_sensory_size() -> usize {
-            // 160 base + 32 horizon + 31 spare (perception injection etc.)
-            223
+            // 160 base + 32 horizon = 192. É TUDO que a percepção escreve: o último bloco
+            // do `perception.wgsl` é o "BLOCO Q: ch 160-191".
+            //
+            // Havia mais 31 canais "spare (perception injection etc.)" que nunca foram
+            // preenchidos por bloco nenhum. Medido pela auditoria da visão: os canais
+            // 192..222 são ZERO em todos os seres, sempre. O efeito não é neutro — a
+            // primeira camada tinha 31 × 96 = 2.976 pesos ligados a zero constante, e a
+            // evolução mutava esses pesos toda geração, gastando busca em parâmetros que
+            // não podem influenciar nada.
+            //
+            // Reservar espaço para o futuro custa caro quando o futuro não chega.
+            192
         }
 
         /// Sensory wave = array de canais i8.
@@ -388,5 +398,37 @@ pub mod iara {
 
         // Axiomas (Injeção de Instinto)
         pub const AXIOM_DECAY_GENS: f32 = 50.0;  // Axiomas somem após N gerações
+    }
+
+    /// Manobra de ré de emergência: parede frontal muito perto + parado + estagnado
+    /// dispara ré por tempo mínimo, com cooldown pós-ré. Réplica de `motor.rs`,
+    /// portada para os três laços GPU headless (`gpu_evolve`, `gpu_loop`, `cortex_evolve`).
+    ///
+    /// Deduplicado (E3, REFACTOR_PLAN.md §2.3): existiam TRÊS cópias locais destas
+    /// constantes — e elas tinham DIVERGIDO: `gpu_evolve.rs` e `gpu_loop.rs` declaravam
+    /// `REVERSE_TRIGGER_DIST = 3.0` mas nunca a USAVAM (o `if` do gatilho tinha o
+    /// literal `4.0` hardcoded ao lado — a constante era morta, confirmado pelo warning
+    /// `constant REVERSE_TRIGGER_DIST is never used`). Só `cortex_evolve.rs` referenciava
+    /// a constante de fato, e a dele valia `4.0` — ou seja, o comportamento REAL dos três
+    /// binários sempre foi `4.0`; o `3.0` era um valor morto que mentia sobre o gatilho.
+    /// A constante única abaixo usa o valor efetivamente em vigor (`4.0`).
+    pub mod reverse_maneuver {
+        /// Distância frontal (m) abaixo da qual a ré é disparada (com parado+estagnado).
+        pub const TRIGGER_DIST_M: f32 = 4.0;
+        /// Duração mínima da manobra de ré, em segundos.
+        pub const MIN_DURATION_S: f32 = 0.4;
+        /// Duração máxima da manobra de ré, em segundos (timeout de segurança).
+        pub const MAX_DURATION_S: f32 = 1.5;
+        /// Distância frontal (m) a partir da qual a ré é considerada "livre" e encerra.
+        pub const EXIT_CLEAR_M: f32 = 2.5;
+        /// Cooldown pós-ré, em segundos: throttle capeado, nova ré bloqueada.
+        pub const POST_LOCKOUT_S: f32 = 0.6;
+        /// Ticks de estagnação (speed < 1.5 m/s) exigidos antes de habilitar o gatilho.
+        /// 60 ticks ≈ 1 s @ 64 Hz.
+        pub const STAGNATION_TICKS: u32 = 60;
+        /// Velocidade máxima (m/s) para o gatilho de ré considerar o ser "parado".
+        pub const TRIGGER_SPEED_MAX_MS: f32 = 1.5;
+        /// Pedal fixo (acelerador) durante a ré ativa — mesmo valor de `motor.rs`.
+        pub const PEDAL: f32 = 0.75;
     }
 }

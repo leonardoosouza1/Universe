@@ -85,6 +85,31 @@ impl SensoryPreFilter {
 pub const KAN_OUT_KNOTS: usize = 12;
 pub const KAN_OUT_DOMAIN: f32 = 2.0; // domínio [-DOMAIN, +DOMAIN]
 
+/// Avalia spline linear-interpolado (B-spline grau 1) direto sobre uma matriz crua
+/// de knots — mesma matemática de `KanOutputHead::eval`, mas sem exigir o wrapper
+/// struct. Existe porque `Genome::kan_knots` (gpu/evolution.rs) e os binários GPU
+/// (`gpu_evolve`, `gpu_loop`) carregam os knots como `[[f32; KAN_OUT_KNOTS]; 3]` cru,
+/// não como `KanOutputHead`.
+///
+/// Deduplicado (E3, REFACTOR_PLAN.md §2.3): existiam DUAS reimplementações
+/// byte-idênticas desta fórmula como closures locais em `gpu_evolve.rs` e
+/// `gpu_loop.rs` (esta última já comentava "idêntico ao KanOutputHead::eval()" sem
+/// de fato compartilhar código) — fonte de verdade única agora.
+#[inline]
+pub fn eval_knots(knots: &[[f32; KAN_OUT_KNOTS]; 3], out_idx: usize, x: f32) -> f32 {
+    let out_idx = out_idx.min(2);
+    // mapeia x em [-DOMAIN, +DOMAIN] pra índice [0, KAN_OUT_KNOTS-1]
+    let xc = x.clamp(-KAN_OUT_DOMAIN, KAN_OUT_DOMAIN);
+    let u = (xc + KAN_OUT_DOMAIN) / (2.0 * KAN_OUT_DOMAIN); // [0,1]
+    let fpos = u * ((KAN_OUT_KNOTS - 1) as f32);
+    let i0 = fpos.floor() as usize;
+    let i1 = (i0 + 1).min(KAN_OUT_KNOTS - 1);
+    let frac = fpos - (i0 as f32);
+    let a = knots[out_idx][i0];
+    let b = knots[out_idx][i1];
+    (a + (b - a) * frac).clamp(-1.0, 1.0)
+}
+
 #[derive(Clone, Debug)]
 pub struct KanOutputHead {
     /// Ordem: [throttle, steer, brake] × KAN_OUT_KNOTS nós cada.
@@ -112,17 +137,7 @@ impl KanOutputHead {
     /// Output sempre em [-1, 1].
     #[inline]
     pub fn eval(&self, out_idx: usize, x: f32) -> f32 {
-        let out_idx = out_idx.min(2);
-        // mapeia x em [-DOMAIN, +DOMAIN] pra índice [0, KAN_OUT_KNOTS-1]
-        let xc = x.clamp(-KAN_OUT_DOMAIN, KAN_OUT_DOMAIN);
-        let u = (xc + KAN_OUT_DOMAIN) / (2.0 * KAN_OUT_DOMAIN); // [0,1]
-        let fpos = u * ((KAN_OUT_KNOTS - 1) as f32);
-        let i0 = fpos.floor() as usize;
-        let i1 = (i0 + 1).min(KAN_OUT_KNOTS - 1);
-        let frac = fpos - (i0 as f32);
-        let a = self.knots[out_idx][i0];
-        let b = self.knots[out_idx][i1];
-        (a + (b - a) * frac).clamp(-1.0, 1.0)
+        eval_knots(&self.knots, out_idx, x)
     }
 
     /// Mutação leve dos knots — chamada pelo spawn.rs quando o filho herda a head.

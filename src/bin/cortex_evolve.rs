@@ -69,48 +69,14 @@ const SIGMA_AFW: f32 = 0.5;
 const SIGMA_MW:  f32 = 0.2;
 
 // ── Tipos locais ──────────────────────────────────────────────────────────────
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct RetinaParamsGpu {
-    grid_size: u32,
-    n_beings:  u32,
-    cell_size: f32,
-    fov_half:  f32,
-    pitches:   [[f32; 4]; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct PoseRaw {
-    pos_gaze: [f32; 4],
-    dirs:     [f32; 4],
-}
-
-fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
+//
+// RetinaParamsGpu/PoseRaw/uniform_entry/storage_entry/pos_of/make_physics_state
+// eram cópias idênticas às de gpu_evolve.rs e gpu_loop.rs — deduplicadas em E3
+// (REFACTOR_PLAN.md §2.3) para src/gpu/retina_types.rs, src/gpu/core.rs e
+// src/gpu/physics.rs.
+use universe::gpu::retina_types::{RetinaParamsGpu, PoseRaw};
+use universe::gpu::core::{uniform_entry, storage_entry};
+use universe::gpu::physics::{pos_of, make_physics_state};
 
 // ── Genoma da folha cortical ──────────────────────────────────────────────────
 
@@ -289,68 +255,9 @@ struct BeingState {
     post_reverse_lockout: f32,
 }
 
-fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] { p.pos }
-
-/// Física inicial: v0=0, sem throttle injetado.
-fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
-    let normal_load = 1350.0 * 9.81 / 4.0;
-    let wheel = WheelGpu::from_cpu(0.0, 0.0, 0.0, normal_load, 60.0, 0.0, 0.0);
-    let lat = [fwd[2], 0.0, -fwd[0]];
-    PhysicsStateGpu {
-        vel: [0.0; 3],
-        av_y: 0.0,
-        wheels: [wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b],
-        pos: [start[0], start[1].max(0.5), start[2]],
-        _pad_pos: 0.0,
-        fwd,
-        _pad_fwd: 0.0,
-        lat,
-        _pad_lat: 0.0,
-        max_torque: 620.0,
-        current_rpm: 2000.0,
-        max_rpm: 8500.0,
-        throttle: 0.0,
-        brake_cmd: 0.0,
-        steer: 0.0,
-        drive_torque_out: 0.0,
-        current_gear: 3,
-        shift_timer: 0.0,
-        is_stalled: 0,
-        starter_timer: 0.0,
-        flywheel_inertia: 0.15,
-        engine_temp: 90.0,
-        oil_temp: 85.0,
-        mass: 1350.0,
-        drag_coeff: 0.32,
-        wheel_base: 2.65,
-        cg_height: 0.45,
-        track_width: 1.55,
-        lsd_lock_ratio: 0.3,
-        brake_torque_max: 4000.0,
-        drivetrain: 1,
-        mu_peak: 1.6,
-        cornering_stiffness: 55000.0,
-        wheel_radius: 0.33,
-        wheel_inertia: 1.5,
-        optimal_temp: 0.5,
-        susp_stiffness: 45000.0,
-        susp_damping: 3000.0,
-        susp_rest: 0.25,
-        susp_max_travel: 0.12,
-        _pad_before_wind: 0.0,
-        wind: [0.0; 3],
-        _pad_wind: 0.0,
-        terrain_grip: 1.0,
-        env_grip: 1.0,
-        aquaplaning: 1.0,
-        config_flags: pack_config_flags(true, true, true, true, true, true),
-        dt: 1.0 / 64.0,
-        _pad_dt: 0.0,
-    }
-}
+// pos_of() e make_physics_state() agora vêm de universe::gpu::physics (dedup E3, ver
+// o `use` no início do arquivo) — v0=0.0 nos dois caminhos torna a versão anterior
+// (`vel: [0.0; 3]` literal) numericamente idêntica à canônica (`fwd * v0` com v0=0.0).
 
 // ── Contexto GPU ──────────────────────────────────────────────────────────────
 
@@ -727,13 +634,11 @@ impl CortexCtx {
 
         // ── Reverse timer + CfC percepção ─────────────────────────────────────
         {
-            const REVERSE_TRIGGER_DIST:  f32 = 4.0;
-            const REVERSE_MIN_DURATION:  f32 = 0.4;
-            const REVERSE_MAX_DURATION:  f32 = 1.5;
-            const REVERSE_EXIT_CLEAR:    f32 = 2.5;
-            const POST_REVERSE_LOCKOUT:  f32 = 0.6;
-            const STAGNATION_FOR_REVERSE: u32 = 60;
-            const REV_SPEED_MAX:         f32 = 1.5;
+            // Deduplicado (E3, REFACTOR_PLAN.md §2.3) para
+            // universe::config::iara::reverse_maneuver — este arquivo já usava o valor
+            // correto (4.0, via constante de fato REFERENCIADA), diferente de
+            // gpu_evolve.rs/gpu_loop.rs onde a constante local `=3.0` era morta.
+            use universe::config::iara::reverse_maneuver as revcfg;
 
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
@@ -766,11 +671,11 @@ impl CortexCtx {
                     let stag = states[i].stagnation_ticks;
                     let lock = states[i].post_reverse_lockout;
                     if rev <= 0.0 && lock <= 0.0
-                        && fwd_dist < REVERSE_TRIGGER_DIST
-                        && speed < REV_SPEED_MAX
-                        && stag > STAGNATION_FOR_REVERSE
+                        && fwd_dist < revcfg::TRIGGER_DIST_M
+                        && speed < revcfg::TRIGGER_SPEED_MAX_MS
+                        && stag > revcfg::STAGNATION_TICKS
                     {
-                        states[i].reverse_timer = REVERSE_MIN_DURATION;
+                        states[i].reverse_timer = revcfg::MIN_DURATION_S;
                         states[i].stagnation_ticks = 0;
                     }
                 }
@@ -778,9 +683,9 @@ impl CortexCtx {
                     let rev = states[i].reverse_timer;
                     if rev > 0.0 {
                         let nr = rev - dt;
-                        if fwd_dist > REVERSE_EXIT_CLEAR || nr > REVERSE_MAX_DURATION {
+                        if fwd_dist > revcfg::EXIT_CLEAR_M || nr > revcfg::MAX_DURATION_S {
                             states[i].reverse_timer = 0.0;
-                            states[i].post_reverse_lockout = POST_REVERSE_LOCKOUT;
+                            states[i].post_reverse_lockout = revcfg::POST_LOCKOUT_S;
                         } else {
                             states[i].reverse_timer = nr.max(0.0);
                         }
@@ -986,7 +891,7 @@ impl CortexCtx {
             let in_lockout   = states[i].post_reverse_lockout > 0.0;
 
             if is_reversing {
-                s.throttle  = 0.75;
+                s.throttle  = universe::config::iara::reverse_maneuver::PEDAL;
                 s.steer     = 0.0;
                 s.brake_cmd = 0.0;
                 s.current_gear = 0;

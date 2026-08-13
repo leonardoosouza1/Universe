@@ -209,6 +209,26 @@ impl RacingLine {
         let normal_left = Vec2::new(-tan.y, tan.x);
         (pos - look_p).dot(normal_left).clamp(-self.half_width, self.half_width)
     }
+
+    /// Return the world-space position on the racing line `s` meters ahead of `pos`.
+    /// Returns `pos` if the projection fails or the line is empty.
+    pub fn lookahead_point(&self, pos: Vec2, s: f32) -> Vec2 {
+        let Some((i, t, _proj, _tan)) = self.project(pos) else { return pos; };
+        if self.arc.is_empty() { return pos; }
+        let seg_len = (self.arc[i + 1] - self.arc[i]).max(1e-4);
+        let s0 = self.arc[i] + t * seg_len;
+        let target = (s0 + s).rem_euclid(self.total_len.max(1e-4));
+        let mut j = 0usize;
+        for k in 0..self.arc.len() - 1 {
+            if self.arc[k] <= target && target <= self.arc[k + 1] {
+                j = k;
+                break;
+            }
+        }
+        let seg_l = (self.arc[j + 1] - self.arc[j]).max(1e-4);
+        let u = ((target - self.arc[j]) / seg_l).clamp(0.0, 1.0);
+        self.points[j] + (self.points[j + 1] - self.points[j]) * u
+    }
 }
 
 /// Resample a polyline at uniform arc-length `step`. Returns at least the

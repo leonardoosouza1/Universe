@@ -71,52 +71,13 @@ use universe::simulation::racing_line::RacingLine;
 use universe::visao::pitch;
 use universe::perception::RetinaPerception;
 
-// ─── Parâmetros do uniform da retina (local, espelhando mod.rs::ParamsGpu) ───
-// Mantido aqui para não violar a privacidade do tipo interno.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct RetinaParamsGpu {
-    grid_size: u32,
-    n_beings:  u32,
-    cell_size: f32,
-    fov_half:  f32,
-    // 4 × vec4 = 4 linhas × 4 pitches por linha (rows 0-15).
-    pitches:   [[f32; 4]; 4],
-}
-
-// ─── Postura raw para o shader retina (espelhando mod.rs::PoseRaw) ──────────
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct PoseRaw {
-    pos_gaze: [f32; 4], // [x, y, z, gaze_yaw]
-    dirs:     [f32; 4], // [fwd.x, fwd.z, right.x, right.z]
-}
-
-// ─── Helpers de bind group layout ────────────────────────────────────────────
-fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
+// ─── Tipos/helpers deduplicados (E3, REFACTOR_PLAN §2.3) ─────────────────────
+// RetinaParamsGpu/PoseRaw/uniform_entry/storage_entry/pos_of/make_physics_state
+// eram cópias idênticas às de gpu_evolve.rs e cortex_evolve.rs — unificadas em
+// src/gpu/retina_types.rs, src/gpu/core.rs e src/gpu/physics.rs.
+use universe::gpu::retina_types::{RetinaParamsGpu, PoseRaw};
+use universe::gpu::core::{uniform_entry, storage_entry};
+use universe::gpu::physics::{pos_of, make_physics_state};
 
 // ─── Estado de um ser para o laço (CPU-side, posição física) ─────────────────
 
@@ -141,94 +102,8 @@ struct BeingState {
     post_reverse_lockout: f32,
 }
 
-/// Posição extraída de PhysicsStateGpu para comparação de distância.
-fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] { p.pos }
-
-/// Constrói PhysicsStateGpu inicial para um ser na posição `start`.
-fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
-    // Roda inicial: omega=0, slip_ratio=0, slip_angle=0, normal_load=massa*g/4
-    // Massa alinhada com state_base (1350 kg, não 1000 kg).
-    let normal_load = 1350.0 * 9.81 / 4.0; // ~3310 N
-    let wheel = WheelGpu::from_cpu(
-        0.0, 0.0, 0.0, normal_load,
-        60.0,  // tire_temp °C
-        0.0,   // susp_comp inicial (kernel distribui carga estática se susp negativa)
-        0.0,   // prev_comp
-    );
-    // Lateral = perpendicular ao fwd no plano XZ.
-    let lat = [fwd[2], 0.0, -fwd[0]];
-    // Velocidade inicial de 1 m/s na direção forward. A física GPU usa Pacejka para
-    // calcular forças de pneu; com vel=0 e omega=0, o slip ratio não está definido
-    // e o carro não sai do lugar (bug de estado degenerado com ponto de partida nulo).
-    // 1 m/s é suficiente para o Pacejka calcular slip_ratio não-degenerado e gerar torque.
-    // v0 = 0: se os seres se moverem, o movimento é DECISÃO DO CÉREBRO.
-    // Com v0 = 1,0 m/s seis seres distintos davam 1,3947 m e 0,7852 m/s IDÊNTICOS até a
-    // quarta casa — era a velocidade injetada decaindo, não pilotagem.
-    let v0 = 0.0_f32;  // m/s
-    PhysicsStateGpu {
-        vel: [fwd[0] * v0, 0.0, fwd[2] * v0],
-        av_y: 0.0,
-        wheels: [wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b],
-        // O solo é imposto em `height_at(x,z) + 0,5` pela fase de colisão; nascer em y=0
-        // fazia o carro ser teleportado para cima no primeiro tick.
-        pos: [start[0], start[1].max(0.5), start[2]],
-        _pad_pos: 0.0,
-        fwd,
-        _pad_fwd: 0.0,
-        lat,
-        _pad_lat: 0.0,
-        // Parâmetros alinhados com state_base (gpu_validate.rs) que valida 162/162 PASS.
-        // Diferenças críticas que impediam movimento:
-        //   max_rpm=7000 → rr=1.02 → tm=0 → torque zero (motor acima do limite com v=0)
-        //   aquaplaning=0.0 → todas as forças de pneu nulas (tlong/tlat *= aq=0)
-        // Ambos os bugs juntos garantiam vel=0 para sempre.
-        max_torque: 620.0,
-        current_rpm: 2000.0,
-        max_rpm: 8500.0,      // 7000 fazia rr=1.02>1 → tm=0 com carro parado
-        throttle: 0.0,
-        brake_cmd: 0.0,
-        steer: 0.0,
-        drive_torque_out: 0.0,
-        // 1ª MARCHA — convenção do shader: 0=ré, 1=neutro, 2=1ª … 6=6ª (physics.wgsl:76).
-        // Gear 3 (2ª marcha) alinhado com state_base para evitar rpm degenerado.
-        current_gear: 3,
-        shift_timer: 0.0,
-        is_stalled: 0,
-        starter_timer: 0.0,
-        flywheel_inertia: 0.15,
-        engine_temp: 90.0,
-        oil_temp: 85.0,
-        mass: 1350.0,
-        drag_coeff: 0.32,
-        wheel_base: 2.65,
-        cg_height: 0.45,
-        track_width: 1.55,
-        lsd_lock_ratio: 0.3,
-        brake_torque_max: 4000.0,
-        drivetrain: 1, // RWD
-        mu_peak: 1.6,
-        cornering_stiffness: 55000.0,
-        wheel_radius: 0.33,
-        wheel_inertia: 1.5,
-        optimal_temp: 0.5,
-        susp_stiffness: 45000.0,
-        susp_damping: 3000.0,
-        susp_rest: 0.25,
-        susp_max_travel: 0.12,
-        _pad_before_wind: 0.0,
-        wind: [0.0; 3],
-        _pad_wind: 0.0,
-        terrain_grip: 1.0,
-        env_grip: 1.0,
-        aquaplaning: 1.0,     // 0.0 anulava tlong/tlat*aq → pneus sem força mesmo com torque
-        config_flags: pack_config_flags(true, true, true, true, true, true),
-        dt: 1.0 / 64.0,
-        _pad_dt: 0.0,
-    }
-}
+// pos_of() e make_physics_state() agora vêm de universe::gpu::physics (dedup E3, ver
+// o `use` no início do arquivo) — eram cópias idênticas às de gpu_evolve.rs/cortex_evolve.rs.
 
 // ─── Contexto unificado: retina + percepção + cérebro no mesmo device ─────────
 
@@ -339,10 +214,18 @@ impl GpuLoop {
         ))?;
         let name = adapter.get_info().name.clone();
         let mut limits = wgpu::Limits::downlevel_defaults();
-        // Cérebro usa 9 storage buffers (bindings 1-9), percepção usa 7 (bindings 1-7).
-        // O binding 9 (buf_fatigue) é o novo máximo do sistema.
-        // Driver Vulkan tipicamente suporta ≥ 16 storage por stage — 9 é seguro.
-        limits.max_storage_buffers_per_shader_stage = 9;
+        // Cérebro usa 10 storage buffers: bindings 1-9 mais o `buf_tau` (banco de τ) —
+        // mesma contagem documentada em gpu_evolve/context.rs::GpuCtx::new(). O valor
+        // "9" aqui estava desatualizado (comentário mentiroso: dizia que binding 9 era
+        // o máximo, mas `create_bind_group_layout(brain-layout)` já pedia 10 bindings
+        // e o wgpu abortava com "Too many bindings of type StorageBuffers... limit is
+        // 9, count was 10"). Achado ao rodar `gpu_loop` para validar o E3 (dedup de
+        // uniform_entry/storage_entry/kan_eval) — corrigido aqui na mesma sessão, não
+        // é um "próximo passo".
+        // Pedir 12 dá a mesma folga de gpu_evolve.rs para os próximos buffers sem
+        // voltar aqui a cada binding novo; se o adaptador não suportar, `request_device`
+        // falha na abertura em vez de corromper dado.
+        limits.max_storage_buffers_per_shader_stage = 12;
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label:             Some("iara-loop"),
@@ -785,14 +668,14 @@ impl GpuLoop {
         // CfC de percepção: usa retina do tick T-1 (lida no readback após submit T-1).
         // Atraso de 1 tick é aceitável — motor.rs também usa visual_cortex anterior.
         {
-            // Constantes idênticas ao motor.rs L2177-2182.
-            const REVERSE_TRIGGER_DIST: f32 = 3.0;   // parede frontal < 3m para acionar
-            const REVERSE_MIN_DURATION: f32 = 0.4;   // duração mínima da ré (s)
-            const REVERSE_MAX_DURATION: f32 = 1.5;   // duração máxima da ré (s)
-            const REVERSE_EXIT_CLEAR: f32   = 2.5;   // afasta 2.5m antes de sair da ré
-            const POST_REVERSE_LOCKOUT: f32 = 0.6;   // cooldown pós-ré (s)
-            const STAGNATION_FOR_REVERSE: u32 = 60;  // 60 ticks ≈ 1s @ 64Hz (motor.rs usa stagnation>60)
-            const REV_SPEED_MAX: f32        = 1.5;   // m/s — máximo para trigger de ré
+            // Deduplicado (E3, REFACTOR_PLAN.md §2.3) para
+            // universe::config::iara::reverse_maneuver. TRIGGER_DIST_M=4.0 (não 3.0):
+            // este arquivo já usava `fwd_dist < 4.0` de propósito (ver comentário no
+            // gatilho abaixo) — a constante local `REVERSE_TRIGGER_DIST=3.0` nunca era
+            // lida (warning `never used`), só citada em comentário. `gpu_evolve.rs`
+            // tinha o MESMO padrão (constante morta em 3.0, literal usado em 4.0) — o
+            // valor canônico único abaixo é o que os três binários já rodavam de fato.
+            use universe::config::iara::reverse_maneuver as revcfg;
 
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
@@ -846,25 +729,26 @@ impl GpuLoop {
                     states[i].post_reverse_lockout = (states[i].post_reverse_lockout - dt).max(0.0);
                 }
 
-                // Trigger: parede frontal <3m + speed<1.5 + stagnation>60 + sem lockout.
+                // Trigger: parede frontal <4m + speed<1.5 + stagnation>60 + sem lockout.
                 // NOTA: removemos a condição `both_blocked` do motor.rs por uma razão importante:
                 // o CHAMPION foi treinado com a lógica do motor.rs onde ré aciona ANTES de ficar
                 // preso contra uma só parede. Quando lat_r está livre mas lat_l+fwd bloqueados,
                 // o modelo emite throttle negativo (sinalizando intenção de ré) — esse sinal deve
                 // ativar a ré. Sem isso, throttle negativo é clippado para zero e o carro trava.
                 // Além disso: o motor.rs usa `forward_wall_dist` que é calculado diferente
-                // (com probes mais longos) — nosso fwd_dist pode ser mais restritivo.
-                // Solução: trigger em `fwd_dist < 4.0` (mais permissivo que 3.0) para compensar.
+                // (com probes mais longos) — nosso fwd_dist pode ser mais restritivo. Por isso
+                // o gatilho usa 4.0 m (`revcfg::TRIGGER_DIST_M`), mais permissivo que os 3.0 m
+                // que uma leitura ingênua de motor.rs sugeriria.
                 {
                     let rev = states[i].reverse_timer;
                     let stag = states[i].stagnation_ticks;
                     let lockout = states[i].post_reverse_lockout;
                     if rev <= 0.0 && lockout <= 0.0
-                        && fwd_dist < 4.0  // mais permissivo que REVERSE_TRIGGER_DIST=3.0
-                        && speed < REV_SPEED_MAX
-                        && stag > STAGNATION_FOR_REVERSE
+                        && fwd_dist < revcfg::TRIGGER_DIST_M
+                        && speed < revcfg::TRIGGER_SPEED_MAX_MS
+                        && stag > revcfg::STAGNATION_TICKS
                     {
-                        states[i].reverse_timer = REVERSE_MIN_DURATION;
+                        states[i].reverse_timer = revcfg::MIN_DURATION_S;
                         states[i].stagnation_ticks = 0;
                     }
                 }
@@ -875,9 +759,9 @@ impl GpuLoop {
                     if rev > 0.0 {
                         let new_rev = rev - dt;
                         // Sai da ré se: frontal ficou livre (>2.5m) ou timeout máximo.
-                        if fwd_dist > REVERSE_EXIT_CLEAR || new_rev > REVERSE_MAX_DURATION {
+                        if fwd_dist > revcfg::EXIT_CLEAR_M || new_rev > revcfg::MAX_DURATION_S {
                             states[i].reverse_timer = 0.0;
-                            states[i].post_reverse_lockout = POST_REVERSE_LOCKOUT;
+                            states[i].post_reverse_lockout = revcfg::POST_LOCKOUT_S;
                         } else {
                             states[i].reverse_timer = new_rev.max(0.0);
                         }
@@ -1165,22 +1049,13 @@ impl GpuLoop {
         // Além disso, replica o smoothing temporal do steer (motor.rs L1925):
         //   steer_raw = prev_steer * 0.50 + new_steer * 0.50
         // Isso amortece o steer de tick para tick e evita reversão abrupta ±1 winner-take-all.
+        // Deduplicado (E3, REFACTOR_PLAN.md §2.3): usa universe::kan::eval_knots em vez
+        // de reimplementar a fórmula do B-spline aqui (era cópia idêntica da closure de
+        // gpu_evolve.rs, e o comentário só AFIRMAVA ser idêntica a KanOutputHead::eval()
+        // sem compartilhar o código de fato).
         let kan_eval_fn = |out_idx: usize, x: f32| -> f32 {
-            // B-spline grau 1 idêntico ao KanOutputHead::eval() em kan.rs.
-            // KAN_OUT_KNOTS=12, KAN_OUT_DOMAIN=2.0 — fixos ao compilar (não const pq closure).
-            let xc = x.clamp(-2.0_f32, 2.0_f32);
-            let u = (xc + 2.0) / 4.0;
-            let fpos = u * 11.0;  // (KAN_OUT_KNOTS-1) = 11
-            let i0 = fpos.floor() as usize;
-            let i1 = (i0 + 1).min(11);
-            let frac = fpos - (i0 as f32);
-            let a = self.kan_knots[out_idx][i0];
-            let b = self.kan_knots[out_idx][i1];
-            (a + (b - a) * frac).clamp(-1.0, 1.0)
+            universe::kan::eval_knots(&self.kan_knots, out_idx, x)
         };
-        // REVERSE_PEDAL = 0.75: mesmo valor do motor.rs L2181. Garante saída da ré.
-        const REVERSE_PEDAL: f32 = 0.75;
-
         let mut phys_states: Vec<PhysicsStateGpu> = (0..n).map(|i| {
             let mut s = states[i].phys;
             let intent = &intents[i];
@@ -1209,7 +1084,7 @@ impl GpuLoop {
                 // Force-shift para gear=0 (Reverse): shift_req = -1 repetido até gear=0.
                 // A física desce 1 marcha por tick quando throttle > 0 e gear > 0 na ré.
                 // Replicamos forçando current_gear = 0 diretamente (mesma semântica que shift_req).
-                s.throttle   = REVERSE_PEDAL;  // pedal de recuo fixo
+                s.throttle   = universe::config::iara::reverse_maneuver::PEDAL;  // pedal de recuo fixo
                 s.steer      = 0.0;             // backup reto (sem risco de girar para outra parede)
                 s.brake_cmd  = 0.0;             // sem freio (o pedal reverso acelera a ré)
                 s.current_gear = 0;             // gear 0 = Reverse (convenção do physics.wgsl)
@@ -1340,9 +1215,21 @@ impl GpuLoop {
             return false;
         }
 
-        // Atualiza estados na CPU.
+        // Atualiza estados na CPU + rotação de yaw (idem gpu_evolve.rs).
         for i in 0..n {
             states[i].phys = phys_states[i];
+            let theta = states[i].phys.av_y * dt;
+            let (sin_t, cos_t) = theta.sin_cos();
+            let fwd = states[i].phys.fwd;
+            let lat = states[i].phys.lat;
+            states[i].phys.fwd[0] = fwd[0] * cos_t - fwd[2] * sin_t;
+            states[i].phys.fwd[2] = fwd[0] * sin_t + fwd[2] * cos_t;
+            states[i].phys.lat[0] = lat[0] * cos_t - lat[2] * sin_t;
+            states[i].phys.lat[2] = lat[0] * sin_t + lat[2] * cos_t;
+            let fn_ = (states[i].phys.fwd[0].powi(2) + states[i].phys.fwd[2].powi(2)).sqrt().max(1e-6);
+            let ln_ = (states[i].phys.lat[0].powi(2) + states[i].phys.lat[2].powi(2)).sqrt().max(1e-6);
+            states[i].phys.fwd[0] /= fn_; states[i].phys.fwd[2] /= fn_;
+            states[i].phys.lat[0] /= ln_; states[i].phys.lat[2] /= ln_;
         }
 
         // ── 8. Atualiza memory0 no estado temporal da GPU ─────────────────────

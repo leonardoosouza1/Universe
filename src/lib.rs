@@ -1,4 +1,8 @@
 pub mod brain_capacity;
+/// Núcleo matemático puro — funções sem dependência de GPU/Bevy (E1).
+pub mod math;
+/// Métricas de ativação + guardas de runtime, construídas sobre `math::*` (E4).
+pub mod analysis;
 pub mod visao;
 pub mod pista_gen;
 pub mod neuro;

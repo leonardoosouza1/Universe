@@ -43,6 +43,7 @@ pub mod core;
 pub mod evolution;
 pub mod cortex_sheet;
 pub mod slow_brain;
+pub mod retina_types;
 
 use std::borrow::Cow;
 
@@ -141,22 +142,11 @@ pub struct Pose {
     pub gaze_yaw: f32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ParamsGpu {
-    grid_size: u32,
-    n_beings: u32,
-    cell_size: f32,
-    fov_half: f32,
-    pitches: [[f32; 4]; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct PoseRaw {
-    pos_gaze: [f32; 4],
-    dirs: [f32; 4],
-}
+// Deduplicado (E3): era a quinta cópia idêntica de `RetinaParamsGpu`/`PoseRaw`
+// (as outras quatro estavam em gpu_evolve.rs, gpu_loop.rs, cortex_evolve.rs e —
+// antes ainda — dentro deste mesmo arquivo sob nomes diferentes). Alias local para
+// não reescrever todos os literais `ParamsGpu { .. }` abaixo.
+use crate::gpu::retina_types::{RetinaParamsGpu as ParamsGpu, PoseRaw};
 
 /// Contexto de compute persistente. Criar isto custa (abre dispositivo, compila shader), então
 /// vive durante toda a corrida — recriar por tick anularia o ganho.

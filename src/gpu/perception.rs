@@ -81,7 +81,7 @@ use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 use crate::config::iara::vision::RETINA_TOTAL;
 
 /// Número de u32 por ser no buffer de saída. ceil(SENSORY_WAVE_SIZE / 4).
-pub const WAVE_U32S: usize = (SENSORY_WAVE_SIZE + 3) / 4; // (223 + 3) / 4 = 56
+pub const WAVE_U32S: usize = (SENSORY_WAVE_SIZE + 3) / 4; // (192 + 3) / 4 = 48
 
 /// Pose de um ser para o kernel de percepção.
 /// Campos em coordenadas de mundo — mesmos campos que `PoseGpu` da retina, mais `phase`.
@@ -143,11 +143,11 @@ struct ParamsGpu {
 ///  [24] prop_rpm_ratio        — current_rpm / max_rpm [0,1] → ch68
 ///  [25] prop_gear             — current_gear [0,7] → ch69
 ///  [26] prop_tire_temp_norm   — media das temps / 120°C [0,1] → ch70
-///  [27] prop_downforce_norm   — downforce/weight [0,1] → ch71 (reservado, zero por ora)
-///  [28] prop_in_draft         — 1.0 se em draft, else 0.0 → ch72 (reservado, zero)
+///  [27] prop_temp_motor       — engine_temp [20-150°C → 0-1] → ch71 (slot era downforce, sobrescrito)
+///  [28] prop_temp_oleo        — oil_temp [20-150°C → 0-1] → ch72 (slot era draft, sobrescrito)
 ///  [29] prop_on_grass         — 1.0 se voxel atual é grama, else 0.0 → ch73
 ///  [30] prop_steer_abs        — |steer| [0,1] → ch74 (efeito limitador)
-///  [31] prop_wetness          — wetness do clima [0,1] → ch75 (reservado, zero)
+///  [31] prop_stagnation_ticks — ticks sem avançar [0-64 → 0-1] → ch75 (slot era wetness, sobrescrito)
 ///
 /// NOVOS slots v2 (expandidos de 32 → 50):
 ///  [32] reverse_timer         — tempo restante de ré (s); > 0 = em ré → ch89 = 127
@@ -157,12 +157,35 @@ struct ParamsGpu {
 ///           No shader: wave[192+i] = clamp(tanh(hidden[i]) * 127 * 0.3, -127, 127)
 ///  [49] _pad3
 ///
+/// NOVOS slots v3 (expandidos de 50 → 54) — canais dopaminérgicos e de stress:
+///  [50] joy_tick      — progresso*superfície normalizado [-1,1] → ch126
+///  [51] joy_streak    — segundos de flow acumulado / 5.0 [0,1] → ch127
+///  [52] is_spinning   — 1.0 se |av_y|>1.5 && speed<2.0 → ch124 = -128
+///  [53] comp_stress   — proximidade normalizada [0,1] (0=líder, 1=alguém a <20m) → ch125
+///
+/// Adicionalmente, slots usados para ch87, ch99, ch100, ch121, ch122 (sem slot próprio —
+/// injetados via update_extra2_temporal em array separado de 5 f32):
+///  update_extra2_temporal grava em [49] _pad3 (reutilizado) NÃO — usa array separado
+///  porque os canais 87/99/100/121/122 são calculados no readback e chegam tarde.
+///  Esses sinais são entregues via update_extra2_temporal() gravando nos slots [49-53]
+///  SE ainda não houver conflito. Nota: [49] era _pad3 e agora vira:
+///  [49] slip_signal   — ch87: cross2D(fwd, vel_norm) [-1,1]
+///  E os slots [50-53] acima (v3) são usados para ch124-127.
+///  Para ch99/100 e ch121/122: entregues via update_extra3_temporal nos slots [54-57].
+///
+/// NOVOS slots v4 (expandidos de 54 → 58):
+///  [54] edge_row6     — edge density linha 6 da retina [0,1] → ch99
+///  [55] edge_row7     — edge density linha 7 da retina [0,1] → ch100
+///  [56] steer_mem     — phys.steer suavizado [-1,1] → ch121
+///  [57] brake_mem     — phys.brake_cmd [0,1] → ch122
+///
 /// Campos [16-18] são injetados pela CPU em `update_dist_temporal()` ANTES do dispatch.
 /// Campos [20-31] são injetados pela CPU em `update_proprioception_temporal()` ANTES do dispatch.
 /// Campos [32] e [33-48] são injetados em `update_extra_temporal()` ANTES do dispatch.
+/// Campos [49-57] são injetados em `update_extra2_temporal()` APÓS readback (dentro do tick).
 /// Elimina loops sobre `grid` no shader temporal, prevenindo o crash do compilador ACO
 /// do RADV que ocorria com loops sobre storage buffers em workgroup_size=1.
-pub const TEMPORAL_STRIDE: usize = 50;
+pub const TEMPORAL_STRIDE: usize = 58;
 
 /// Contexto de compute persistente para o kernel de percepção.
 ///
@@ -424,10 +447,12 @@ impl PerceptionGpu {
         // Zeros iniciais: EMA começa em 0m (será forçado para dist_l/r real nos primeiros ticks).
         // prev_dist começa em 15m (sem approach rate no tick 0 → canais 102-107 ficam zerados).
         // Após 1 tick, todos os estados refletem valores reais.
-        // TEMPORAL_STRIDE expandido de 32 → 50:
+        // TEMPORAL_STRIDE expandido de 50 → 58:
         //   slots 32: reverse_timer (ch89)
         //   slots 33-48: cfc_hidden[0..15] (ch192-207)
-        //   slot 49: _pad
+        //   slot 49: slip_signal (ch87)
+        //   slots 50-53: joy_tick, joy_streak, is_spinning, comp_stress → ch124-127
+        //   slots 54-57: edge_row6, edge_row7, steer_mem, brake_mem → ch99, ch100, ch121, ch122
         let temporal_init: Vec<f32> = {
             let mut v = vec![0.0f32; cap * TEMPORAL_STRIDE];
             // Inicializa prev_dist_l/r/f com 40m/40m/50m para evitar spike na approach rate
@@ -458,10 +483,11 @@ impl PerceptionGpu {
                 v[b + 29] = 0.0;   // prop_on_grass: na pista
                 v[b + 30] = 0.0;   // prop_steer_abs: sem esterçamento
                 v[b + 31] = 0.0;   // prop_wetness: reservado
-                // Slots v2 [32-49] — zeros já corretos (sem ré no tick 0, cfc_hidden=0).
+                // Slots v2 [32-48] — zeros já corretos (sem ré no tick 0, cfc_hidden=0).
                 // [32] reverse_timer = 0.0 (não em ré)
                 // [33-48] cfc_hidden = 0.0 (CfC sem histórico → primeira percepção zerada)
-                // [49] _pad = 0.0
+                // Slots v3 [49-57] — zeros: sem slip, sem joy, sem stress no tick 0.
+                // Serão sobrescritos pela CPU via update_extra2_temporal() antes do dispatch.
             }
             v
         };
@@ -812,6 +838,34 @@ impl PerceptionGpu {
         }
     }
 
+    /// Injeta sinais dopaminérgicos, de dor e estresse (slots 49-53) ANTES do dispatch.
+    ///
+    /// Chamado ANTES de `bind_and_dispatch`, depois de calcular os valores na CPU.
+    /// Esses canais eram escritos apenas no motor.rs; agora chegam ao caminho GPU também.
+    ///
+    /// # Layout de `extra2_vals[i]` (9 f32)
+    ///
+    /// ```
+    /// [0] slip_signal  — cross2D(fwd_norm, vel_norm) [-1,1] → ch87
+    /// [1] joy_tick     — progress_speed * surface_factor [-1,1] → ch126
+    /// [2] joy_streak   — joy_streak_s / 5.0 [0,1] → ch127
+    /// [3] is_spinning  — 1.0 se |av_y|>1.5 && speed<2.0, else 0.0 → ch124
+    /// [4] comp_stress  — proximidade normalizada [0,1] → ch125
+    /// [5] edge_row6    — edge density linha 6 da retina [0,1] → ch99
+    /// [6] edge_row7    — edge density linha 7 da retina [0,1] → ch100
+    /// [7] steer_mem    — phys.steer [-1,1] → ch121
+    /// [8] brake_mem    — phys.brake_cmd [0,1] → ch122
+    /// ```
+    pub fn update_extra2_temporal(&self, queue: &wgpu::Queue, extra2_vals: &[[f32; 9]]) {
+        let n = extra2_vals.len().min(self.capacity);
+        if n == 0 { return; }
+        // Slots 49-57 (9 f32 contíguos). Um write_buffer por ser = 36 bytes.
+        for i in 0..n {
+            let byte_offset = (i * TEMPORAL_STRIDE + 49) as u64 * 4;
+            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::cast_slice(&extra2_vals[i]));
+        }
+    }
+
     /// Grava o dispatch da percepção num `CommandEncoder` externo SEM fazer submit nem poll.
     ///
     /// # Por que existe
@@ -1002,8 +1056,19 @@ impl PerceptionGpu {
     /// `device.poll(Wait)` retornou. Sem isso o buffer não estará mapeado e o método panickará.
     ///
     /// Retorna um vetor de [i8; SENSORY_WAVE_SIZE] com os canais portados pela GPU.
+    /// Lê a onda sensorial de volta. EXIGE o `device` para servir o mapeamento.
+    ///
+    /// A versão anterior chamava `map_async` e ia direto para `recv()`, com o comentário
+    /// "o caller já fez poll(Wait) no encoder externo". Não basta: `map_async` enfileira
+    /// uma requisição NOVA, que precisa do próprio poll para o callback ser chamado. O
+    /// `recv()` esperava para sempre — a função NUNCA funcionou, e por isso o
+    /// `cortex_evolve` faz o map/poll/recv à mão em vez de chamá-la.
+    ///
+    /// É o mesmo deadlock já documentado duas vezes nesta base: **poll DEPOIS do
+    /// map_async, nunca antes**.
     pub fn read_after_submit(
         &self,
+        device:   &wgpu::Device,
         n:        usize,
         bytes_out: u64,
     ) -> Vec<[i8; SENSORY_WAVE_SIZE]> {
@@ -1015,10 +1080,8 @@ impl PerceptionGpu {
         let slice = self.buf_readback.slice(0..bytes_out);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // poll(Poll) em vez de Wait — o caller já fez poll(Wait) no encoder externo.
-        // Se o submit já foi processado, map_async completa imediatamente; senão Poll drena a fila.
-        // Usamos recv() com timeout nulo para garantir sincronização sem duplo bloqueio.
-        // Na prática: após device.poll(Wait) do encoder externo, o buffer já está pronto.
+        // O poll QUE FALTAVA: sem ele o callback nunca é servido e o recv trava.
+        device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
         let data = slice.get_mapped_range();
@@ -1253,7 +1316,10 @@ mod tests {
     /// Verifica que WAVE_U32S cobre todos os canais sem overflow.
     #[test]
     fn wave_u32s_cobre_todos_os_canais() {
-        assert_eq!(WAVE_U32S, 56, "56 × 4 = 224 bytes ≥ 223 canais");
+        // SENSORY_WAVE_SIZE = 192 (onda atual, ver perception/channels.rs). O "223"
+        // do comentário antigo era a onda legada (cortex_sheet N_INPUTS=223) — mentiroso
+        // aqui, pois este WAVE_U32S é derivado de SENSORY_WAVE_SIZE=192, não 223.
+        assert_eq!(WAVE_U32S, 48, "48 × 4 = 192 bytes = 192 canais, sem folga");
         assert!(WAVE_U32S * 4 >= SENSORY_WAVE_SIZE);
     }
 

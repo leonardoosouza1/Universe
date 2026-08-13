@@ -55,7 +55,7 @@ struct Params {
 const RETINA_ROWS:  u32 = 14u;
 const RETINA_COLS:  u32 = 126u;
 const RETINA_TOTAL: u32 = 1764u;   // 14 × 126
-const WAVE_U32S:    u32 = 56u;     // ceil(223/4)
+const WAVE_U32S:    u32 = 48u;     // ceil(192/4)
 
 // Normalizador: motor.rs usa sum_max ≈ 8000 bytes de u8.
 // Em distância metro: 8000 / (255 / 60) ≈ 1882 m de soma de delta-dist.

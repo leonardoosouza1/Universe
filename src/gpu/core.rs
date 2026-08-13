@@ -615,9 +615,13 @@ impl CoreGpu {
 }
 
 // ── Helpers de bind group layout ────────────────────────────────────────────
-// Copiados de mod.rs para não criar dependência circular (mod.rs é de outro agente).
+// Fonte canônica única (E3/REFACTOR_PLAN §2.3 "Deduplicação"). Antes desta
+// unificação existiam 14 cópias idênticas espalhadas por src/gpu/*.rs e
+// src/bin/*.rs — cada uma corrigida ou não conforme quem mexeu por último.
+// `pub` para que os bins (gpu_evolve, gpu_loop, cortex_evolve) e os demais
+// módulos de src/gpu/ importem em vez de duplicar.
 
-fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -630,7 +634,7 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+pub fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,

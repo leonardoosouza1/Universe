@@ -13,12 +13,64 @@
 /// State é CLAMPED em [-clamp_range, +clamp_range] pra evitar blow-up
 /// (failure mode documentado em melhorias/02-cerebro-dormente.md§2.1).
 
+/// Constante de tempo mais RÁPIDA admitida, em segundos.
+///
+/// 25 ms ≈ 1,6 tick a 64 Hz. Abaixo disso o canal só reproduz o passo de integração e
+/// τ deixa de significar algo — é o piso de Nyquist do simulador, não uma escolha de gosto.
+pub const TAU_MIN_S: f32 = 0.025;
+/// Constante de tempo mais LENTA admitida, em segundos.
+///
+/// 4 s é o dobro do τ único que o cérebro usava, para que a faixa contenha o valor antigo
+/// com folga dos dois lados e o controle não fique numa borda.
+pub const TAU_MAX_S: f32 = 4.0;
+
+/// Taxa de decaimento uniforme herdada (s⁻¹): τ = 2,0 s em todos os canais.
+pub const DECAY_DEFAULT: f32 = 0.5;
+/// Ganho em regime permanente. 2,0 reproduz o par antigo (input_gain 1,0 ÷ decay 0,5).
+pub const DC_GAIN_DEFAULT: f32 = 2.0;
+
+/// Sorteia taxas de decaimento log-uniformes em [1/TAU_MAX_S, 1/TAU_MIN_S] — o "banco de τ".
+///
+/// Log-uniforme, e não uniforme, porque a grandeza que importa é a ORDEM DE GRANDEZA da
+/// memória. Sorteio uniforme em `d ∈ [0,25; 40]` colocaria metade dos canais abaixo de
+/// τ = 50 ms: seriam 48 canais quase idênticos e nenhum contexto. Em log a faixa fica
+/// coberta por década.
+///
+/// É a mesma inicialização que Perez-Nieves et al. (2021, Nature Comms) reportam como a
+/// distribuição ótima aprendida em redes de disparo, e é a forma que a evolução do saci
+/// escolheu sozinha quando teve liberdade ([1, 17, 120, 2000, 20000]).
+pub fn log_uniform_decays(seed: u64, n: usize) -> Vec<f32> {
+    let mut rng = crate::rng::Lcg::new(seed);
+    let lo = (1.0 / TAU_MAX_S).ln();
+    let hi = (1.0 / TAU_MIN_S).ln();
+    (0..n).map(|_| (lo + rng.uniform() * (hi - lo)).exp()).collect()
+}
+
 #[derive(Clone)]
 pub struct CfCCell {
     pub hidden_size: usize,
     pub state: Vec<f32>,
-    pub decay_rate: f32,
-    pub input_gain: f32,
+    /// Taxa de decaimento POR CANAL, em s⁻¹ — o inverso da constante de tempo (τ = 1/d).
+    ///
+    /// Era um escalar único. Virou vetor por duas medidas nossas: TER escalas de tempo
+    /// variadas é selecionado (banco de τ, 40× contra 5,3× do controle) e no saci a
+    /// evolução escolheu sozinha [1, 17, 120, 2000, 20000] pagando +2,1pp. Trocar τ com o
+    /// regime é que NÃO paga (+0,11%) — por isso aqui τ é herdado e fixo na vida do ser,
+    /// não modulado em tempo real.
+    ///
+    /// O que estava em jogo: com um τ só, o ser tinha 2,0 s de memória em TODOS os canais,
+    /// inclusive parede, curvatura e velocidade. A 15 m/s um filtro de 2 s entrega ao
+    /// volante a percepção de 30 m atrás — a curva inteira. Andar rápido ficava punido
+    /// pelo próprio cérebro.
+    pub decay_rates: Vec<f32>,
+    /// Ganho em regime permanente, IGUAL para todo canal, independente de τ.
+    ///
+    /// Sem isto o experimento morreria por artefato em vez de medir τ: em
+    /// `s = s·e^{-d·dt} + x·g·dt` com `g` fixo o estacionário é `x·g/d`, então um canal de
+    /// τ=25 ms sai 80× mais fraco que um de 2 s. A evolução descartaria o rápido por ser
+    /// MUDO, não por ser rápido. Com `g·dt = G·(1 - e^{-d·dt})` o estacionário é `x·G`
+    /// para qualquer τ, e a única diferença entre canais passa a ser a memória.
+    pub dc_gain: f32,
     pub clamp_range: f32,
     /// Denoising noise magnitude (byte-lab transfer: SSM_NOISE=0.15 fixed exposure bias).
     /// Injects small perturbations in state to make creatures robust to self-induced drift.
@@ -47,8 +99,8 @@ impl CfCCell {
         Self {
             hidden_size,
             state: vec![0.0; hidden_size],
-            decay_rate: 0.5,     // exp(-0.5 * dt) por tick
-            input_gain: 1.0,
+            decay_rates: vec![DECAY_DEFAULT; hidden_size],  // τ = 2,0 s, o valor herdado
+            dc_gain: DC_GAIN_DEFAULT,
             clamp_range: 2.0,
             denoise_mag: 0.10,   // byte-lab validated: 15% noise fixes exposure bias
             denoise_counter: 0,
@@ -77,6 +129,16 @@ impl CfCCell {
         self.denoise_counter = 0; // Deterministic denoising start per creature
     }
 
+    /// Substitui as constantes de tempo (uma por canal, em s⁻¹).
+    ///
+    /// Silenciosamente ignora comprimento errado seria a receita de um bug mudo — daí o
+    /// assert: um vetor curto deixaria metade dos canais no τ antigo e a condição
+    /// "heterogênea" seria meia-heterogênea sem ninguém notar.
+    pub fn set_decay_rates(&mut self, d: &[f32]) {
+        assert_eq!(d.len(), self.hidden_size, "decay_rates tem que cobrir todos os canais");
+        self.decay_rates.copy_from_slice(d);
+    }
+
     /// Seed the denoising counter with a unique value per car.
     /// Champion clones with identical weights but different denoise phases
     /// take slightly different paths — truly independent attempts.
@@ -93,9 +155,8 @@ impl CfCCell {
     pub fn update(&mut self, input: &[i8], output: &mut [i8], dt: f32) {
         debug_assert_eq!(input.len(), self.hidden_size);
         debug_assert_eq!(output.len(), self.hidden_size);
-        let decay = (-self.decay_rate * dt).exp();
-        let gain_dt = self.input_gain * dt;
         let clamp = self.clamp_range;
+        let dc_gain = self.dc_gain;
         // Denoising: cheap deterministic noise via counter-based hash (no RNG needed).
         // Byte-lab discovery: 15% state noise during forward pass fixes exposure bias —
         // creatures become robust to self-induced sensory drift from their own actions.
@@ -123,6 +184,10 @@ impl CfCCell {
             // excede o custo acumulado.
             let threshold = beta * self.fatigue[i];
             let x = x_raw.signum() * (x_raw.abs() - threshold).max(0.0);
+            // τ por canal. `gain_dt` sai do MESMO decaimento para manter ganho DC = dc_gain
+            // em qualquer τ (ver doc de `dc_gain`) — um `exp`, nenhum transcendente extra.
+            let decay = (-self.decay_rates[i] * dt).exp();
+            let gain_dt = dc_gain * (1.0 - decay);
             let mut s = self.state[i] * decay + x * gain_dt;
             // Inject deterministic noise (~15% of channels per tick, cheap hash).
             if noise_mag > 0.0 {
@@ -144,10 +209,11 @@ impl CfCCell {
     }
 
     /// Legacy API (mantida pra não quebrar imports experimentais).
+    ///
+    /// Decai cada canal pelo SEU τ — antes era um decaimento único para todos.
     pub fn flow(&mut self, dt: f32) -> Vec<f32> {
-        let decay = (-self.decay_rate * dt).exp();
-        for s in self.state.iter_mut() {
-            *s *= decay;
+        for (s, &d) in self.state.iter_mut().zip(self.decay_rates.iter()) {
+            *s *= (-d * dt).exp();
         }
         self.state.clone()
     }

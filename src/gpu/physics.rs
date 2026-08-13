@@ -75,6 +75,81 @@ pub fn pack_config_flags(
         | ((abs       as u32) << 5)
 }
 
+/// Posição extraída de `PhysicsStateGpu`, para comparação de distância.
+///
+/// Deduplicado (E3): existia idêntica em `gpu_evolve.rs`, `gpu_loop.rs` e
+/// `cortex_evolve.rs` — os três bins comparavam posição do mesmo jeito.
+#[inline]
+pub fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] { p.pos }
+
+/// Constrói o `PhysicsStateGpu` inicial para um ser na posição `start`, olhando `fwd`.
+///
+/// Deduplicado (E3 — REFACTOR_PLAN §2.3): existiam TRÊS cópias byte-idênticas desta
+/// função (`gpu_evolve.rs`, `gpu_loop.rs`, `cortex_evolve.rs`), confirmadas campo a
+/// campo antes da unificação — nenhuma tinha divergido (v0=0.0 nos três: "se os seres
+/// se moverem, o movimento é DECISÃO DO CÉREBRO", não velocidade injetada).
+pub fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
+    let normal_load = 1350.0 * 9.81 / 4.0;
+    let wheel = WheelGpu::from_cpu(0.0, 0.0, 0.0, normal_load, 60.0, 0.0, 0.0);
+    let lat = [fwd[2], 0.0, -fwd[0]];
+    // v0 = 0 m/s: sem velocidade injetada. Movimento = decisão do cérebro.
+    let v0 = 0.0_f32;
+    PhysicsStateGpu {
+        vel: [fwd[0] * v0, 0.0, fwd[2] * v0],
+        av_y: 0.0,
+        wheels: [wheel.part_a, wheel.part_b,
+                 wheel.part_a, wheel.part_b,
+                 wheel.part_a, wheel.part_b,
+                 wheel.part_a, wheel.part_b],
+        pos: [start[0], start[1].max(0.5), start[2]],
+        _pad_pos: 0.0,
+        fwd,
+        _pad_fwd: 0.0,
+        lat,
+        _pad_lat: 0.0,
+        max_torque: 620.0,
+        current_rpm: 2000.0,
+        max_rpm: 8500.0,
+        throttle: 0.0,
+        brake_cmd: 0.0,
+        steer: 0.0,
+        drive_torque_out: 0.0,
+        current_gear: 3,   // 2ª marcha (convenção: 0=ré, 1=neutro, 2=1ª ...)
+        shift_timer: 0.0,
+        is_stalled: 0,
+        starter_timer: 0.0,
+        flywheel_inertia: 0.15,
+        engine_temp: 90.0,
+        oil_temp: 85.0,
+        mass: 1350.0,
+        drag_coeff: 0.32,
+        wheel_base: 2.65,
+        cg_height: 0.45,
+        track_width: 1.55,
+        lsd_lock_ratio: 0.3,
+        brake_torque_max: 4000.0,
+        drivetrain: 1,
+        mu_peak: 1.6,
+        cornering_stiffness: 55000.0,
+        wheel_radius: 0.33,
+        wheel_inertia: 1.5,
+        optimal_temp: 0.5,
+        susp_stiffness: 45000.0,
+        susp_damping: 3000.0,
+        susp_rest: 0.25,
+        susp_max_travel: 0.12,
+        _pad_before_wind: 0.0,
+        wind: [0.0; 3],
+        _pad_wind: 0.0,
+        terrain_grip: 1.0,
+        env_grip: 1.0,
+        aquaplaning: 1.0,
+        config_flags: pack_config_flags(true, true, true, true, true, true),
+        dt: 1.0 / 64.0,
+        _pad_dt: 0.0,
+    }
+}
+
 /// Stride do array `input: array<CarInput>` no WGSL.
 /// SizeOf(PhysicsStateGpu)=360, AlignOf=16 → stride=368.
 pub(crate) const INPUT_WGSL_STRIDE: usize = 368;
@@ -697,32 +772,9 @@ fn apply_output(e: &mut PhysicsStateGpu, s: &PhysicsOutputGpu) {
 // ============================================================
 // === HELPERS DE BIND GROUP                                ===
 // ============================================================
-
-fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
+// Deduplicado para src/gpu/core.rs (E3) — fonte canônica única. Havia 14 cópias
+// idênticas destas duas funções espalhadas por src/gpu/*.rs e src/bin/*.rs.
+use crate::gpu::core::{uniform_entry, storage_entry};
 
 // ============================================================
 // === RECURSO BEVY                                         ===
