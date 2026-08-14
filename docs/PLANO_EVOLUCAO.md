@@ -861,3 +861,46 @@ Pergunta do Leonardo: "se L2 não é usado, investigar pra que era, tem fluxo pr
   ganha controle do trade-off velocidade×percepção (liga com a Tese do Corpo).
 - Destino das linhas cegas restantes: candidatas a entrada do cérebro lento
   (buracos do slow_gather, ex. CHANNEL_MAP[25]=-1) = enxerto 1 de neuromod.
+
+### P1.9 — resultado do A/B de câmbio (2026-08-14, 2 sementes genuínas)
+
+Baseline travado (pos-auditoria) vs `--cambio auto` (30 gens, 20k ticks, mesmo
+campeão-base curriculo-s77/gen0059, pistas 9001+9003 com gate):
+
+| braço | Σ seres ≥1V | máx global | pico veloc |
+|---|---|---|---|
+| travado s77/s31 | 108 / 534 | 5907/5880 m | ~21,9 (motorizado; 27,9 em ladeira) |
+| auto s77/s31 | 18 / 5 | 4786/4212 m | 45,1 / 46,6 m/s |
+
+**Conclusão (replicada):** liberar marcha 3-6 SEM percepção compatível derruba o
+desempenho ~6-100× em completude de volta. A retina cega acima de 28 m/s e a
+marcha 2 funcionava como protetor acidental. Corpo e percepção co-adaptados —
+mesma família dos achados "120 m de visão não ajuda" e Tese do Corpo.
+
+**Predição REGISTRADA antes do braço neural fechar** (rodando agora): com mix
+85%/zero o intent[3]/[4] do elite fica abaixo do limiar 0,5 → neural ≈ travado
+(a opção sem a obrigação); cauda pequena de chance de descobrir upshift só em
+reta. Se neural >> travado, a leitura muda: o cérebro consegue usar velocidade
+QUANDO ele decide onde.
+
+**Implicação pro fechamento do cérebro:** o consumidor natural das linhas cegas
+de L2 não é o câmbio (corpo não sustenta) — reforça o caminho "linhas cegas →
+entradas do cérebro lento" (enxerto 1 de neuromod) como destino de valor.
+
+### P1.9 — braço neural fechado: predição REFUTADA, veredito final do câmbio
+
+Predição registrada era "neural ≈ travado" (intent[3]/[4] abaixo de 0,5). ERRADA
+pelo mecanismo: com `--norm-l2-por-desvio` (padrão), a saída das linhas cegas é
+z-score×ganho 2,0 → |tanh| passa de 0,5 com frequência → a caixa recebeu RUÍDO.
+
+Medição causal limpa (mesma população determinística na gen 0, só o modo muda):
+- travado gen0: 39/48 completam · neural gen0: 8/48 · depois 0 completantes por
+  29 gerações (Σ≥1V=8 vs 108/534 do travado). max_global do neural = a própria
+  gen 0 (4665 m). Sementes divergem (md5 gen0001 ✓) — replicado 2×.
+
+**Veredito final: `--cambio travado` PERMANECE padrão.** Dois negativos com
+mecanismo: (a) auto força velocidade além da percepção (retina cega >28 m/s);
+(b) neural entrega atuador a linhas-ruído. A caixa 3-6 vira alavanca REAL
+quando a percepção crescer — e qualquer religação futura das linhas cegas
+deve passar pelo cérebro LENTO (integrador, gated por out-beta), nunca
+direto num atuador. Runs: cambio-{auto,neural}-s{77,31}, travado-cont-* segue.
