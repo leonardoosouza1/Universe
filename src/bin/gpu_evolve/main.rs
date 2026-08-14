@@ -310,6 +310,8 @@ fn main() {
     let mut n_gens:   usize = 100;
     let mut retomar:  bool  = false;
     let mut l1_vivos: usize = 0;   // 0 = todos os 96 (sem ablacao)
+    let mut retomar_mix: f32 = 0.85;   // fracao do campeao preservada nos filhos
+    let mut trocar_ao_completar: usize = 0;  // 0 = rotacao por geracao (comportamento atual)
     let mut out_dir   = ".".to_string();
     // Parâmetros evolutivos ajustáveis via CLI (padrão conservador para fine-tuning).
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
@@ -423,6 +425,8 @@ fn main() {
                 // O PR mede 6,7 dimensoes em uso; esta flag testa se isso se traduz em
                 // metros — cortar ate onde o desempenho aguentar.
                 "--l1-vivos" => { i += 1; if i < args.len() { l1_vivos = args[i].parse().unwrap_or(0); } }
+                "--retomar-mix" => { i += 1; if i < args.len() { retomar_mix = args[i].parse().unwrap_or(0.85); } }
+                "--trocar-ao-completar" => { i += 1; if i < args.len() { trocar_ao_completar = args[i].parse().unwrap_or(1); } }
                 // Banco de τ log-uniforme em [25 ms, 4 s] em vez do τ = 2,0 s uniforme.
                 // Sem a flag o comportamento é o histórico — é o braço de controle.
                 "--tau-hetero" => { tau_hetero = true; }
@@ -521,6 +525,8 @@ fn main() {
     // mudança, então o A/B em andamento não é afetado.
     let t0 = Instant::now();
     let mut world_seed_atual = pista_da_gen(&pistas, gen_offset);
+    // Índice do currículo: anda por MÉRITO (volta completada), não por geração.
+    let mut idx_curriculo: usize = gen_offset;
     let mut world = VoxelWorld::new(world_seed_atual, track_width);
     let mut lap_dist = world.lap_distance as f64;
     println!("mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
@@ -619,19 +625,37 @@ fn main() {
                 // Semente a população a partir do melhor genoma + variações.
                 let mut pop = Vec::with_capacity(n_seres);
                 pop.push(best.clone());  // elite exato
-                let evo = EvoParams { p_mutate: 0.05, sigma: 0.15, n_elite: 1, tournament_k: 1 };
+                // ── COMO OS FILHOS DO CAMPEÃO NASCEM ────────────────────────────
+                //
+                // Leonardo: *"faça uma mutação superleve nos outros carros, nada de 70/30,
+                // mais algo de 85/15 para preservar mais o campeão — só que sem pesos
+                // aleatórios, pode ser pesos zerados."*
+                //
+                // Duas mudanças, e a segunda importa mais que a primeira:
+                //
+                // 1. A proporção passa a ser parâmetro (`--retomar-mix`, padrão 0,85). O
+                //    70/30 anterior custava caro: o campeão recarregado rendia ~1.076 m
+                //    contra 4.223 m do original, o que inviabilizava reavaliar o campeão
+                //    puro e contaminou a curva de ablação desta sessão.
+                //
+                // 2. O que entra na mistura deixa de ser ruído e passa a ser ZERO. A
+                //    diferença é de natureza, não de grau: misturar com um genoma aleatório
+                //    empurra cada peso na direção de um valor SORTEADO — é adicionar um
+                //    cérebro estranho ao do pai. Misturar com zero apenas ATENUA o peso
+                //    (`w · 0,85`), preservando a direção do vetor e reduzindo o ganho.
+                //    O filho fica sendo o mesmo cérebro, mais tímido — nada é inventado.
+                //    Cosseno com o pai permanece 1,0 por construção; só a norma cai.
+                //
+                // A diversidade da população passa a vir da mutação gaussiana normal ao
+                // longo das gerações, não de um chute inicial que destrói o que foi ganho.
+                let mix = retomar_mix.clamp(0.0, 1.0);
+                println!(
+                    "  filhos do campeão: {:.0}% do pai + {:.0}% zero (atenuação, sem ruído)",
+                    mix * 100.0, (1.0 - mix) * 100.0);
                 while pop.len() < n_seres {
                     let mut filho = best.clone();
-                    // Reusa a lógica de mutação do módulo.
-                    let seed = pop.len() as u64 ^ (gen_id as u64 * 0xDEAD_BEEF);
-                    let noise_src = Genome::random(seed);
-                    // Mistura: 70% pai + 30% aleatório (perturba mais forte para diversidade).
-                    for (w, n) in filho.l1.iter_mut().zip(noise_src.l1.iter()) {
-                        *w = *w * 0.70 + *n * 0.30;
-                    }
-                    for (w, n) in filho.l2.iter_mut().zip(noise_src.l2.iter()) {
-                        *w = *w * 0.70 + *n * 0.30;
-                    }
+                    for w in filho.l1.iter_mut() { *w *= mix; }
+                    for w in filho.l2.iter_mut() { *w *= mix; }
                     pop.push(filho);
                 }
                 pop
@@ -695,7 +719,20 @@ fn main() {
         // (mais abaixo) deixa "sujo" ao trocar de pista por conta própria — este
         // `if` é o que traz o treino de volta no início da PRÓXIMA geração, sem
         // precisar de nenhum código de "restaurar" no bloco held-out em si.
-        let seed_gen = pista_da_gen(&pistas, gen_abs);
+        // ── CURRÍCULO: avança a pista quando o circuito for DOMINADO ─────────
+        //
+        // Leonardo: *"pegue o campeão e rode em pistas diferentes; quando ele completar o
+        // circuito, troque de pista."*
+        //
+        // A rotação por geração (`gen % n`) troca a pista no relógio, independente de o ser
+        // estar aprendendo ou apanhando. Com `--trocar-ao-completar N`, o índice do
+        // currículo só avança quando pelo menos N seres completam uma volta: enquanto a
+        // pista não for vencida, ela continua; vencida, vem a próxima. É a diferença entre
+        // trocar de assunto no relógio e trocar quando a lição foi aprendida.
+        //
+        // O índice é separado de `gen_abs` justamente porque um deles anda sozinho e o
+        // outro só anda por mérito.
+        let seed_gen = pista_da_gen(&pistas, if trocar_ao_completar > 0 { idx_curriculo } else { gen_abs });
         if seed_gen != world_seed_atual {
             world = VoxelWorld::new(seed_gen, track_width);
             ctx.reload_world(&world);
@@ -1264,6 +1301,15 @@ fn main() {
                 setores_frac,
                 slope,
             );
+        }
+
+        // Circuito dominado? Então a próxima geração corre numa pista nova.
+        if trocar_ao_completar > 0 && r.n_ge1v >= trocar_ao_completar {
+            idx_curriculo += 1;
+            let proxima = pista_da_gen(&pistas, idx_curriculo);
+            println!(
+                "  [curriculo] {} seres completaram a volta (limiar {}) — pista {} → {}",
+                r.n_ge1v, trocar_ao_completar, world_seed_atual, proxima);
         }
 
         println!(
