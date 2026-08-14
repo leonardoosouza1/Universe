@@ -175,6 +175,9 @@ fn avaliar_held_out(
             life_left: n_ticks as f64,
             reverse_timer: 0.0,
             post_reverse_lockout: 0.0,
+            shift_cooldown: 0.0,
+            shift_up_prev: 0.0,
+            shift_down_prev: 0.0,
             joy_tick: 0.0,
             joy_streak: 0.0,
             edge_row6: 0.0,
@@ -315,6 +318,7 @@ fn main() {
     let mut retomar:  bool  = false;
     let mut l1_vivos: usize = 0;   // 0 = todos os 96 (sem ablacao)
     let mut retomar_mix: f32 = 0.85;   // fracao do campeao preservada nos filhos
+    let mut congela_l2_cegas: bool = false;
     let mut trocar_ao_completar: usize = 0;  // 0 = rotacao por geracao (comportamento atual)
     /// P1.8, achado "currículo avança com UM ser rastejando promove a turma"
     /// (`--trocar-ao-completar 1` deixava um único ser lento fechar a lição pra
@@ -565,6 +569,18 @@ fn main() {
                 // do campo de buracos (1.087-1.092 m). Este A/B e o que separa "nao
                 // aprendem a desviar" de "os buracos sao a segunda parede".
                 "--sem-buracos" => { universe::world::NO_HOLES.store(true, Ordering::Relaxed); }
+                // Câmbio: travado (histórico, teto 21,5 m/s), auto (RPM, paridade Bevy)
+                // ou neural (auto + intent[3]/[4]). Ver CAMBIO_MODO em statics.rs.
+                "--cambio"    => { i += 1; if i < args.len() {
+                    let m = match args[i].as_str() {
+                        "travado" => 0u32, "auto" => 1, "neural" => 2,
+                        outro => { eprintln!("--cambio '{outro}' inválido (travado|auto|neural); usando travado"); 0 }
+                    };
+                    CAMBIO_MODO.store(m, Ordering::Relaxed);
+                } }
+                // Congela a mutação das linhas 5..48 de L2 (saídas que nenhum pipeline
+                // lê — "feature neurons" sem consumidor; 4.128 pesos de busca inerte).
+                "--l2-congelar-cegas" => { congela_l2_cegas = true; }
                 "--portal-curva" => { portal_curva = true; }
                 "--slow-steer" => { i += 1; if i < args.len() { slow_steer_auth = args[i].parse().unwrap_or(0.20); } }
                 "--refuel-laps"=>{ i += 1; if i < args.len() { refuel_laps = args[i].parse().unwrap_or(1).max(1); } }
@@ -900,6 +916,7 @@ fn main() {
         sigma:       evo_sigma,
         n_elite:     evo_n_elite,
         tournament_k: evo_tourney,
+        congela_l2_cegas,
     };
 
     // ── Histórico de medianas (para inclinação ao final) ──────────────────────
@@ -1088,6 +1105,9 @@ fn main() {
                            else { n_ticks as f64 },
                 reverse_timer: 0.0,
                 post_reverse_lockout: 0.0,
+                shift_cooldown: 0.0,
+                shift_up_prev: 0.0,
+                shift_down_prev: 0.0,
                 joy_tick: 0.0,
                 joy_streak: 0.0,
                 edge_row6: 0.0,
@@ -2054,7 +2074,7 @@ fn main() {
             // e deixado a seleção premiando hodômetro. As duas condições `--fitness dist`
             // e `--fitness prog` saíam idênticas ao dígito — e eu quase registrei isso
             // como "a fitness não importa". Ela nunca tinha mudado.
-            genomes = evolve(&genomes, &fitness, &evo_params, gen_abs);
+            genomes = evolve(&genomes, &fitness, &evo_params, gen_abs, pop_seed);
         }
     }
 

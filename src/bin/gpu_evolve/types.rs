@@ -79,4 +79,13 @@ pub struct BeingState {
     pub fuel:               f64,
     pub reverse_timer:      f32,
     pub post_reverse_lockout: f32,
+    /// Trava de troca de marcha (segundos). Espelha o `shift_timer` do Bevy: depois de
+    /// trocar, segura ~0,35 s antes da próxima troca (senão o limiar de RPM oscila e a
+    /// caixa fica batendo 2↔3 todo tick).
+    pub shift_cooldown:     f32,
+    /// intent[3]/[4] do tick anterior — detecção de BORDA do pedido neural de marcha
+    /// (paridade com `racer.memory[3]/[4]` em motor.rs:2484-2494: troca só em subida
+    /// 0→1 do sinal, não enquanto segurado).
+    pub shift_up_prev:      f32,
+    pub shift_down_prev:    f32,
 }

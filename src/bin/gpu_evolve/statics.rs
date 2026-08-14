@@ -67,6 +67,13 @@ pub static FUEL_TANK: AtomicF32 = AtomicF32::new();
 /// Se cada SETOR reabastece (padrão) ou só a volta inteira (`--refuel-lap-only`).
 pub static SETOR_PAGA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 pub static AUDITAR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Modo do câmbio (`--cambio`): 0 = travado (histórico: piso marcha 2, NUNCA sobe —
+/// teto físico v_max = 21,5 m/s com ratio 3,8×3,7, max_rpm 8750, raio 0,33; o pico
+/// real medido da população era 21,9 m/s, colado no limitador), 1 = auto por RPM
+/// (paridade com motor.rs:2476-2482), 2 = neural (auto + override intent[3]/[4],
+/// paridade com motor.rs:2484-2487). Padrão 0 até o A/B validar — mudar dinâmica
+/// por default sem medir é proibido (docs/PLANO_EVOLUCAO.md).
+pub static CAMBIO_MODO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Autoridade da metade lenta sobre o volante (padrão 0,20 histórico).
 pub static SLOW_STEER_AUTH: AtomicF32 = AtomicF32::new();
 /// Portais nas CURVAS em vez de setores uniformes.

@@ -656,7 +656,17 @@ pub struct EvoParams {
     pub n_elite: usize,
     /// Tamanho do torneio para seleção de pais.
     pub tournament_k: usize,
+    /// Congela a mutação das linhas CEGAS de L2 (5..48). Investigação 2026-08-14:
+    /// nenhum pipeline lê final_intent[5..48) — são 4.128 pesos de espaço de busca
+    /// inerte, carregados por carona genética do elitismo (linhas cegas ficaram
+    /// estatisticamente indistinguíveis das lidas em cosseno/curtose nas 2 sementes).
+    /// Linhas 0..5 seguem mutáveis: 0-2 = throttle/steer/brake, 3-4 = câmbio
+    /// (Bevy sempre; gpu_evolve sob `--cambio neural`).
+    pub congela_l2_cegas: bool,
 }
+
+/// Linhas de L2 com consumidor real (ver doc de `congela_l2_cegas`).
+pub const L2_LINHAS_LIDAS: usize = 5;
 
 impl Default for EvoParams {
     fn default() -> Self {
@@ -665,6 +675,7 @@ impl Default for EvoParams {
             sigma: 0.05,       // perturbação gaussiana σ=0.05
             n_elite: 3,        // top 3 passam sem mutação
             tournament_k: 3,   // torneio de 3
+            congela_l2_cegas: false,
         }
     }
 }
@@ -683,11 +694,20 @@ pub struct GenResult {
 ///
 /// `fitnesses[i]` = distância acumulada em metros do ser i na geração anterior.
 /// Retorna nova geração de genomas na mesma ordem (0..pop_size).
+///
+/// `pop_seed` (o `--seed` da CLI) ENTRA na semente de mutação. Antes ele não
+/// entrava: a semente era f(generation) puro, e sob `--retomar` (população
+/// derivada do campeão, sem `Genome::random`) duas execuções com `--seed 77` e
+/// `--seed 31` produziam genomas byte-idênticos em toda geração (medido por
+/// md5sum em pos-auditoria-s{77,31}, gens 0/5/10/15/18/19). `pop_seed=0`
+/// reproduz o stream antigo exatamente (o termo se anula) — baterias antigas
+/// continuam reproduzíveis.
 pub fn evolve(
     genomes:    &[Genome],
     fitnesses:  &[f64],
     params:     &EvoParams,
     generation: usize,   // índice da geração (para seed determinística)
+    pop_seed:   u64,     // `--seed` da CLI; 0 = stream histórico
 ) -> Vec<Genome> {
     let n = genomes.len();
     assert_eq!(fitnesses.len(), n, "fitnesses e genomes devem ter mesmo tamanho");
@@ -736,7 +756,8 @@ pub fn evolve(
 
     let seed = (generation as u64)
         .wrapping_mul(0x9E3779B97F4A7C15)
-        .wrapping_add(0xCAFE_BABE_DEAD_BEEF);
+        .wrapping_add(0xCAFE_BABE_DEAD_BEEF)
+        .wrapping_add(pop_seed.wrapping_mul(0xD6E8_FEB8_6659_FD93));
     let mut rng = Rng::new(seed);
 
     while nova.len() < n {
@@ -768,8 +789,15 @@ pub fn evolve(
         // filhos — nenhum teste assume que `evolve()` preserva o valor cru da
         // mutação nesses canais.
         filho.zero_dead_inputs();
-        // Mutação gaussiana em L2.
-        for w in filho.l2.iter_mut() {
+        // Mutação gaussiana em L2. Com `congela_l2_cegas`, só as linhas com
+        // consumidor real (0..L2_LINHAS_LIDAS) mutam — as cegas ficam como estão
+        // (nem random walk: o que o campeão tinha, fica congelado nele).
+        let l2_limite = if params.congela_l2_cegas {
+            L2_LINHAS_LIDAS * L1_NEURONS
+        } else {
+            filho.l2.len()
+        };
+        for w in filho.l2[..l2_limite].iter_mut() {
             if rng.f32() < params.p_mutate {
                 *w += rng.gauss() * params.sigma;
                 *w = w.clamp(-2.0, 2.0);
@@ -1070,6 +1098,48 @@ mod tests {
     /// coluna do canal morto tinha 100% de chance de sair de 0.0 já na geração 1
     /// SEM o fix — este teste falha sem `filho.zero_dead_inputs()` depois da
     /// mutação de L1 (`evolve()`, gpu/evolution.rs) e passa com ele.
+    /// Bug pos-auditoria-s{77,31} (2026-08-14): a semente de mutação era
+    /// f(generation) puro — dois processos com `--seed` diferentes, retomando o
+    /// MESMO campeão, produziam genomas byte-idênticos em toda geração (md5sum
+    /// igual em gens 0/5/10/15/18). Este teste falha sem o termo `pop_seed` na
+    /// semente e passa com ele. Também prova a compat: pop_seed=0 é determinístico.
+    #[test]
+    fn evolve_pop_seeds_diferentes_divergem_e_zero_reproduz() {
+        let n = 10;
+        let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false };
+        let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
+
+        let a  = evolve(&genomes, &fitnesses, &params, 1, 77);
+        let b  = evolve(&genomes, &fitnesses, &params, 1, 31);
+        let a2 = evolve(&genomes, &fitnesses, &params, 1, 77);
+
+        // Elite (índice 0) passa clonada nos dois — compara um filho MUTADO.
+        assert_ne!(a[1].l1, b[1].l1, "seeds 77 e 31 produziram o mesmo filho: pop_seed não entrou na mutação");
+        assert_eq!(a[1].l1, a2[1].l1, "mesma seed deixou de ser determinística");
+        assert_eq!(a[0].l1, b[0].l1, "elite não pode depender de seed (passa sem mutação)");
+    }
+
+    /// `--l2-congelar-cegas`: linhas 5..48 de L2 não mutam; 0..5 mutam normal.
+    #[test]
+    fn evolve_congela_linhas_cegas_de_l2() {
+        let n = 10;
+        let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: true };
+        let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
+
+        let nova = evolve(&genomes, &fitnesses, &params, 1, 0);
+        // Filho mutado (índice 1): acha o pai comparando as linhas cegas — elas têm
+        // de ser idênticas às de ALGUM genoma original (nunca mutaram).
+        let corte = L2_LINHAS_LIDAS * L1_NEURONS;
+        let filho = &nova[1];
+        let pai = genomes.iter().find(|g| g.l2[corte..] == filho.l2[corte..])
+            .expect("linhas cegas do filho não batem com nenhum pai: mutaram apesar do congelamento");
+        // E as linhas lidas TÊM de ter mutado (p_mutate=1.0 → 480 pesos, todos perturbados).
+        assert_ne!(pai.l2[..corte], filho.l2[..corte],
+            "linhas lidas não mutaram — congelamento vazou pro range errado");
+    }
+
     #[test]
     fn evolve_preserva_zero_dos_canais_mortos() {
         use crate::perception::channels::DEAD_L1_INPUTS;
@@ -1079,11 +1149,11 @@ mod tests {
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
         // p_mutate=1.0: garante que TODO peso de L1 (inclusive os dos canais mortos,
         // se a máscara não fosse reaplicada) sofre tentativa de mutação toda geração.
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3 };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..10 {
-            genomes = evolve(&genomes, &fitnesses, &params, geracao);
+            genomes = evolve(&genomes, &fitnesses, &params, geracao, 0);
             for (gi, g) in genomes.iter().enumerate() {
                 for &(ch, _motivo) in DEAD_L1_INPUTS {
                     for neuron in 0..L1_NEURONS {
@@ -1270,11 +1340,11 @@ mod tests {
         // ── Parte 1: padrão (mutação LIGADA) — faixas respeitadas + algo mudou ──
         let n = 12;
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3 };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..40 {
-            genomes = evolve(&genomes, &fitnesses, &params, geracao);
+            genomes = evolve(&genomes, &fitnesses, &params, geracao, 0);
             for g in &genomes {
                 for &a in &g.neuron_alpha {
                     assert!((0.0..=0.95).contains(&a), "geração {geracao}: alfa {a} fora de [0, 0.95]");
@@ -1331,7 +1401,7 @@ mod tests {
         let fitnesses2: Vec<f64> = (0..n2).map(|i| i as f64).collect();
 
         for geracao in 0..20 {
-            genomes2 = evolve(&genomes2, &fitnesses2, &params, geracao);
+            genomes2 = evolve(&genomes2, &fitnesses2, &params, geracao, 0);
         }
 
         for g in &genomes2 {

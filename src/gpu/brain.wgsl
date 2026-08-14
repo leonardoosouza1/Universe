@@ -28,17 +28,19 @@
 //   de P1.5 contra a saturação de L2 (48/48 neurônios ativos em 97,4% dos ticks,
 //   entropia 0,301 nats). Ver `BrainParams` no host (`brain.rs`) e a ETAPA 2 abaixo.
 //
-//   # P1.8 — final_intent[0..5) é a ÚNICA fatia que qualquer coisa lê
+//   # P1.8 (revisado 2026-08-14) — o que cada fatia de final_intent alimenta
 //
-//   Dos 96 slots de `final_intent`, só os 5 primeiros (throttle/steer/brake via
-//   `kan_out.eval`, shift_up/down via índices [3]/[4]) alimentam um atuador —
-//   TODOS vindos de L2 (slots [0..48)). O bypass de L1 em [48..96) e o resto de
-//   L2 em [5..48) não chegam a nenhum atuador nem a `axiom_policy`/coerência no
-//   pipeline de treino real (`gpu_evolve`, ver `context.rs::kan_eval`, que só lê
-//   índices 0-2). Ou seja: o bypass NÃO é uma rota que a evolução usa pra
-//   "contornar" L2 — ele simplesmente nunca chega a um atuador. Ver achado
-//   completo em docs/PLANO_EVOLUCAO.md "P1.8 - auditoria total" antes de reabrir
-//   esta investigação.
+//   TREINO (`gpu_evolve`): só [0..3) — throttle/steer/brake via `kan_eval`
+//   (context.rs:954-957). Câmbio é automático por RPM; [3]/[4] NUNCA são lidos
+//   nesse pipeline (a versão anterior deste comentário dizia "0-4 via shift" —
+//   isso vale só no Bevy). ENGINE BEVY: [0..3) atuadores (motor.rs:2026-2097),
+//   [3]/[4] câmbio (motor.rs:2451-2452), [0..64) entram em mielinização/coerência
+//   MAS `myelinate()` é no-op deliberado desde a migração F32 (layers.rs:55-62)
+//   e `axiom_policy` só escreve bias[0..3). RESUMO: [5..48) de L2 e o bypass
+//   [48..96) não alimentam decisão em NENHUM pipeline — são "feature neurons
+//   for evolution to explore" (commit 9ac2cdd) que nunca ganharam consumidor.
+//   Evidência completa: docs/PLANO_EVOLUCAO.md "P1.8" + investigação L2
+//   2026-08-14 (linhas cegas ≈ linhas lidas por carona genética do elitismo).
 // # Layout de memória (SoA — Structure of Arrays)
 //
 // Por que SoA e não AoS?

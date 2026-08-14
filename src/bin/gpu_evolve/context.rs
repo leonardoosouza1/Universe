@@ -1015,6 +1015,45 @@ impl GpuCtx {
                 if s.current_gear <= 1 { s.current_gear = 2; }
                 if s.current_gear > 2 && speed_now < 3.0 { s.current_gear -= 1; }
             }
+            // ── CÂMBIO (paridade com motor.rs:2451-2494) ──────────────────────
+            // A física deste pipeline SEMPRE teve caixa de 6 marchas (gear_ratio em
+            // physics_power_*.wgsl move a força), mas nada aqui subia de marcha: só o
+            // piso "≥2" e a queda <3 m/s acima. Teto físico da marcha 2:
+            // v_max = (8500+250)rpm ÷ (3,8×3,7) × 0,33 m = 21,5 m/s — e o pico real
+            // medido da população era 21,9 m/s, cravado no limitador. O Bevy resolve
+            // com auto-shift por RPM + override neural; portado aqui atrás de
+            // `--cambio auto|neural` (padrão travado até o A/B validar).
+            let modo_cambio = CAMBIO_MODO.load(Ordering::Relaxed);
+            if modo_cambio > 0 && !is_reversing {
+                let rpm     = states[i].phys.current_rpm;
+                let max_rpm = states[i].phys.max_rpm.max(1.0);
+                // Embreagem colada ≈ marcha ≥2 e v > 3,5 m/s. Bevy usa wheel_rpm>1200,
+                // que em marcha 2 (ratio 12) é v > 3,33 — aproximação de mesma ordem.
+                let engaged = s.current_gear >= 2 && speed_now > 3.5;
+                states[i].shift_cooldown = (states[i].shift_cooldown - dt).max(0.0);
+                if states[i].shift_cooldown <= 0.0 {
+                    let mut req: i32 = 0;
+                    if engaged && rpm > max_rpm * 0.85 && s.current_gear < 6 {
+                        req = 1;      // auto-upshift (motor.rs:2476)
+                    } else if engaged && rpm < max_rpm * 0.30 && s.current_gear > 2 {
+                        req = -1;     // auto-downshift (motor.rs:2480)
+                    } else if modo_cambio == 2 && engaged {
+                        // Override neural por BORDA (motor.rs:2484-2487): intent[3] sobe,
+                        // intent[4] desce — as duas primeiras linhas cegas de L2 ganham função.
+                        if intent[3] > 0.5 && states[i].shift_up_prev <= 0.5 && s.current_gear < 6 {
+                            req = 1;
+                        } else if intent[4] > 0.5 && states[i].shift_down_prev <= 0.5 && s.current_gear > 2 {
+                            req = -1;
+                        }
+                    }
+                    if req != 0 {
+                        s.current_gear = (s.current_gear as i32 + req).clamp(2, 6) as u32;
+                        states[i].shift_cooldown = 0.35;
+                    }
+                }
+                states[i].shift_up_prev   = intent[3];
+                states[i].shift_down_prev = intent[4];
+            }
             // ── OVERRIDE BRUTO, o último da cadeia ────────────────────────────
             // Vem depois de TODOS os ramos (normal, ré, lockout, piloto fantasma) porque a
             // pergunta que ele responde é sobre o CORPO: dado este comando exato chegando

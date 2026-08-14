@@ -815,3 +815,49 @@ Não são etapas, são dívidas — cada uma pode invalidar uma medição futura
 5. **matriz de L2 não entregue** à análise de ativação
 6. **KAN sensorial congelado** na identidade (`adapt()` nunca é chamado)
 7. **`cortex_l3` morto** — 1.152 pesos mutados fora do forward
+
+---
+
+## P1.9 — Fechamento do cérebro atual: L2, câmbio e seed (2026-08-14)
+
+Pergunta do Leonardo: "se L2 não é usado, investigar pra que era, tem fluxo pra alimentar?"
+
+**Resposta (2 agentes + verificação própria):**
+- L2 É o único caminho motor: `final_intent[0..3)` (throttle/steer/brake) vem todo de L2.
+  Fluxo de entrada funciona: percepção → KAN → CfC → L1 → i8 → L2.
+- O que NÃO tem consumidor: linhas 5..47 de L2 + bypass L1 `[48..96)` + `cortex_l3`.
+  Arqueologia: bypass nasceu como "baseline reativo + composição AND" (commit 3dbaed6);
+  linhas 3-95 eram "feature neurons for evolution to explore" (9ac2cdd) — exploração sem
+  consumidor. Dimensão 96 = L1_NEURONS, artefato, não escolha semântica.
+- Mielinização lê `[0..64)` mas `myelinate()` é no-op DELIBERADO desde a migração F32
+  (layers.rs:55-62). `axiom_policy` só escreve bias[0..3).
+- Pesos: linhas cegas ≈ indistinguíveis das lidas (cosseno/curtose, 2 sementes) — carona
+  genética do elitismo. Sinal fraco inverso em RMS² (lidas crescem MAIS, p≈0.04-0.05 nas 2).
+  JSON: /media/llm-data/scratch/l2-investigacao/.
+
+**Bugs achados e consertados no mesmo turno:**
+1. `--seed` NÃO entrava na mutação sob `--retomar` (semente = f(generation) puro) —
+   pos-auditoria-s77/s31 eram byte-idênticos (md5 gens 0/5/10/15/18). Fix: termo
+   `pop_seed` na semente de `evolve()` que se ANULA em pop_seed=0 (compat total).
+   Teste: `evolve_pop_seeds_diferentes_divergem_e_zero_reproduz`. s31 relançado com
+   binário novo: gen0001/0002 divergem do s77 ✓ (md5).
+2. Comentário P1.8 do brain.wgsl dizia "intent[3]/[4] = shift" no treino — FALSO
+   (câmbio era automático... e nem automático era, ver 3). Corrigido no header.
+3. **Caixa de 6 marchas sem upshift**: physics_power usa `gear_ratio` na força, mas o
+   gpu_evolve só tinha piso marcha 2 + queda <3 m/s. Teto físico da marcha 2:
+   (8500+250)rpm ÷ (3,8×3,7) × 0,33 = **21,5 m/s** — pico real medido da população:
+   21,9 m/s, colado no limitador. A população NUNCA pôde passar disso, independente
+   do cérebro. Fix: `--cambio travado|auto|neural` (paridade motor.rs:2451-2494,
+   auto-RPM + override neural por borda de intent[3]/[4], cooldown 0,35 s). Padrão
+   TRAVADO até A/B validar (mudar dinâmica por default sem medir é proibido).
+4. `--l2-congelar-cegas`: congela mutação das linhas 5..48 de L2 (4.128 pesos de busca
+   inerte). Teste: `evolve_congela_linhas_cegas_de_l2`. Padrão OFF (A/B).
+
+**Fila (quando a GPU liberar):**
+- Smoke 2 min: `--cambio auto` — marcha >2 aparece? velocidade passa de 22 m/s?
+- A/B 3 braços × 2 sementes: cambio travado/auto/neural (neural dá às linhas 3-4 de
+  L2 função de verdade; auto responde "o teto era o gargalo?").
+- Tensão rica: marcha 3+ ultrapassa 28 m/s = velocidade onde a retina CEGA — o ser
+  ganha controle do trade-off velocidade×percepção (liga com a Tese do Corpo).
+- Destino das linhas cegas restantes: candidatas a entrada do cérebro lento
+  (buracos do slow_gather, ex. CHANNEL_MAP[25]=-1) = enxerto 1 de neuromod.
