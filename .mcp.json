@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "docmcp": {
+      "command": "python3",
+      "args": ["/home/leonardo/projects/LLM/tools/docmcp/server.py"],
+      "env": {
+        "DOCMCP_CONFIG": "/home/leonardo/projects/LLM/tools/docmcp/configs/universe.json"
+      }
+    }
+  }
+}

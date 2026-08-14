@@ -4,7 +4,13 @@
     {
       "name": "replay",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8127", "--directory", "/tmp/replay_srv"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8127",
+        "--directory",
+        "/media/llm-data/scratch/replay_campeao"
+      ],
       "port": 8127
     }
   ]
