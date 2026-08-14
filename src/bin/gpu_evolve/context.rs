@@ -1054,6 +1054,13 @@ impl GpuCtx {
                 states[i].shift_up_prev   = intent[3];
                 states[i].shift_down_prev = intent[4];
             }
+            // Telemetria de pico (prova de vida do câmbio — ver statics.rs).
+            if speed_now > VEL_PICO.load(Ordering::Relaxed) {
+                VEL_PICO.store(speed_now, Ordering::Relaxed);
+            }
+            if s.current_gear > MARCHA_PICO.load(Ordering::Relaxed) {
+                MARCHA_PICO.store(s.current_gear, Ordering::Relaxed);
+            }
             // ── OVERRIDE BRUTO, o último da cadeia ────────────────────────────
             // Vem depois de TODOS os ramos (normal, ré, lockout, piloto fantasma) porque a
             // pergunta que ele responde é sobre o CORPO: dado este comando exato chegando

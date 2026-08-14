@@ -74,6 +74,12 @@ pub static AUDITAR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// paridade com motor.rs:2484-2487). Padrão 0 até o A/B validar — mudar dinâmica
 /// por default sem medir é proibido (docs/PLANO_EVOLUCAO.md).
 pub static CAMBIO_MODO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Telemetria por geração: pico de velocidade (m/s) e marcha máxima atingida.
+/// Zerados no início de cada geração (main.rs), atualizados no laço de decisão
+/// (context.rs, single-thread — load/compare/store basta). Provam se o câmbio
+/// vive: travado NUNCA passa de 21,5 m/s nem de marcha 2.
+pub static VEL_PICO: AtomicF32 = AtomicF32::new();
+pub static MARCHA_PICO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Autoridade da metade lenta sobre o volante (padrão 0,20 histórico).
 pub static SLOW_STEER_AUTH: AtomicF32 = AtomicF32::new();
 /// Portais nas CURVAS em vez de setores uniformes.

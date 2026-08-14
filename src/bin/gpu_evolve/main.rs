@@ -921,6 +921,10 @@ fn main() {
 
     // ── Histórico de medianas (para inclinação ao final) ──────────────────────
     let mut hist_med:  Vec<f64> = Vec::with_capacity(n_gens);
+    // Volta da pista em que CADA geração rodou — a tabela final normalizava tudo pela
+    // última pista carregada e imprimia V errada em bateria com rotação de currículo
+    // (medido: gen28 rodou 9001/2928m, tabela dividiu por 3691m e mostrou 1.256V).
+    let mut hist_lap:  Vec<f64> = Vec::with_capacity(n_gens);
     let mut hist_max:  Vec<f64> = Vec::with_capacity(n_gens);
     let mut hist_results: Vec<GenResult> = Vec::with_capacity(n_gens);
 
@@ -1516,6 +1520,7 @@ fn main() {
         let t_gen_s = t_gen.elapsed().as_secs_f64();
 
         hist_med.push(r.dist_med);
+        hist_lap.push(lap_dist);
         hist_max.push(r.dist_max);
 
         // ── Salva melhor genoma ────────────────────────────────────────────────
@@ -1663,8 +1668,12 @@ fn main() {
             println!("  [pista] hodômetro {:.0} m · progresso {:.0} m · aproveitamento {:.0}%",
                      odm, prm, if odm > 1.0 { 100.0 * prm / odm } else { 0.0 });
         }
-        println!("  [veloc] mediana {:.2} m/s ({:.1} km/h) | vida média {:.0}% da geração",
-                     vmed, vmed * 3.6, 100.0 * vida_med / n_ticks as f64);
+        println!("  [veloc] mediana {:.2} m/s ({:.1} km/h) | pico {:.1} m/s | marcha máx {} | vida média {:.0}% da geração",
+                     vmed, vmed * 3.6,
+                     VEL_PICO.load(Ordering::Relaxed), MARCHA_PICO.load(Ordering::Relaxed),
+                     100.0 * vida_med / n_ticks as f64);
+        VEL_PICO.store(0.0, Ordering::Relaxed);
+        MARCHA_PICO.store(0, Ordering::Relaxed);
         }
         println!("  [parede] {:.1}% dos ticks colado (<{:.0} m) | sem vida: {}/{} | custo={:.0} m/s",
                  100.0 * wall_frac, WALL_NEAR_M, sem_vida, n_seres, wall_cost);
@@ -2146,8 +2155,9 @@ fn main() {
     println!();
     println!("=== TABELA COMPLETA (gen | mediana metros | voltas) ===");
     for (i, (&med, &max)) in hist_med.iter().zip(hist_max.iter()).enumerate() {
+        let ld = hist_lap.get(i).copied().unwrap_or(lap_dist);
         println!("  gen {:4}: med={:7.0}m ({:.3}V) max={:7.0}m ({:.3}V)",
-            gen_offset + i, med, med / lap_dist, max, max / lap_dist);
+            gen_offset + i, med, med / ld, max, max / ld);
     }
 
     println!();
