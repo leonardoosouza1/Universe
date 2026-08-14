@@ -488,6 +488,264 @@ gerações:
 
 ---
 
+## P1.8 · Auditoria total (conserto aplicado em 2026-08-14)
+
+Workflow de agentes (diagnóstico paralelo → conserto sequencial, mesmo padrão do
+CLAUDE.md do projeto): 5 frentes auditaram o cérebro/mundo/currículo em paralelo,
+um agente sequencial aplicou os achados confirmados em ordem de gravidade,
+compilando após cada item. Prioridades fixas do Leonardo: (1) L2 tem que
+funcionar, (2) gerador de pistas com piso de raio + gate de passabilidade,
+(3) currículo com piso de mérito real, (4) partes mortas do cérebro.
+
+### 1 · L2 tem que funcionar
+
+**Causa raiz confirmada:** com σ_pesos=0,30 i.i.d. e 96 entradas quase-saturadas
+(L1 dispara em 97,4% dos ticks), `Std(l2_raw) ≈ 2,9-5,9` mesmo com `out_gain`
+reduzido — `tanh` satura sozinho em qualquer valor de `--ganho-saida` testado no
+A/B (2,0/1,0/0,5). L1 recebe correção espectral adaptativa por genoma
+(`SPECTRAL_INIT_ON`); L2 nunca recebeu — nem no init, nem depois.
+
+**Conserto:** `--norm-l2-por-desvio` já existia (P1.5) mas nascia DESLIGADA —
+normaliza `l2_raw` pelo desvio-padrão MEDIDO dos 48 valores do ser a cada tick,
+antes do ganho/tanh (`brain.wgsl`, guardado atrás de `params.norm_l2_by_std`,
+já testado/no-op-exato quando desligada). Virou o padrão em `gpu_evolve`
+(`src/bin/gpu_evolve/main.rs`): `norm_l2_por_desvio` nasce `true`, com
+`--sem-norm-l2-por-desvio` como braço de controle explícito para quem precisar
+reproduzir o comportamento histórico. Escolhido em vez de reescalar L2 no init
+(a outra alavanca do achado) porque já está implementado, testado por
+`gpu_validate --cerebro` (ver evidência abaixo) e é adaptativo por tick, não só
+no nascimento — ataca a causa (escala dinâmica que deriva por mutação sem
+regularização), não o sintoma.
+
+**Evidência:** `gpu_validate --cerebro` com a flag ligada por padrão —
+`final_intent (CPU-manual vs GPU) max_dif=1,7881e-7 mismatches=0/96`,
+`cerebro (drift CfC 100t) PASS`. `cargo test --release --bin gpu_evolve` 14/14.
+
+### 2 · Gerador de pistas — piso de raio + gate de passabilidade
+
+**Achado crítico confirmado:** `validate_track` (`src/world.rs`) media ângulo de
+virada e comprimento de segmento, nunca o RAIO da curva — pista podia ter curva
+fisicamente impossível e passar validação. **Achado alta:** buracos procedurais
+nasciam com deslocamento lateral ZERO (em cima do eixo) e sem checar largura
+livre pós-colocação; para seed≥1.000.000 (currículo) eram calculados sobre um
+traçado FANTASMA (`procedural_waypoints` rodava de novo, independente do
+`do_curriculo` que gerou o traçado real). **Achado alta:** `pista_check` (a
+ferramenta que mede se a pista é dirigível) nunca era chamada por `gpu_evolve` —
+não existia gate contra pista com defeito.
+
+**Conserto:**
+- `validate_track` ganhou piso de raio (`min_radius_m < 6.0` rejeita — mesmo
+  piso que `pista_gen.rs::gerar` já usa, `d.r_min < 6.0`, consistência entre os
+  dois geradores).
+- `procedural_waypoints` foi de 32 para 96 tentativas antes do fallback, e o
+  fallback (quando esgota) agora **loga alto** (`eprintln!`) em vez de cair em
+  silêncio num candidato não-validado — achado médio "fallback contradiz a
+  própria garantia que o módulo declara".
+- `track_holes_for_seed`/`procedural_holes` (`src/world.rs`) ganharam parâmetro
+  de traçado REAL (elimina o traçado fantasma) e deslocamento lateral pro lado
+  interno da curva (30% da largura real) + guard `track_width >= 12.0` no
+  overlay do buraco (não perfura pista estreita demais pro chassi 2m).
+- `VoxelWorld::validar_pista(width, ate) -> Vec<String>` (novo método, extraído
+  da lógica de `pista_check.rs`) roda como GATE em `gpu_evolve` para toda seed de
+  `--pistas`/`--pista-held-out` ANTES de subir GPU — aborta com `exit(1)` e
+  mensagem clara se alguma tiver defeito (eixo fora do asfalto ou
+  estrangulamento).
+
+**Achado adicional descoberto na verificação (fora da lista original):**
+`validate_track` já tinha um critério pré-existente,
+`min_seg_len_at_sharp < 12.0` ("curvas afiadas precisam segmento ≥ 12m"), que
+**rejeita ~100% dos candidatos procedurais** para QUALQUER seed testada (9001,
+9002, 9006, 9008, 1, 5, 42, 100, 555 — medido com um teste temporário, removido
+depois de confirmar). Isso significa que o caminho "validado" de
+`procedural_waypoints` já era essencialmente morto ANTES desta sessão — toda
+seed procedural sempre caía no fallback não-validado, silenciosamente. O piso de
+raio novo, portanto, não é hoje o filtro ativo (o `min_seg_len_at_sharp` rejeita
+primeiro); ele passa a valer no dia em que esse critério for recalibrado. A
+proteção REAL contra pista quebrada hoje é o gate `validar_pista` (item acima),
+que testei contra a geometria de fato servida (não a candidata rejeitada) e
+confirmei OK para 9001/9002/9006/9008 (3306-3414 m de eixo examinados, 0
+defeitos). Recalibrar `min_seg_len_at_sharp`/a amostragem do Catmull-Rom (hoje
+`n_samples=8`, não-uniforme em arco) fica para uma sessão futura — não é um bug
+que eu introduzi, e mexer no critério de 12m sem medir o efeito seria o mesmo
+erro que este projeto já cometeu (tweak sem pesquisa).
+
+**Evidência:** `cargo build --release --bin gpu_evolve` limpo a cada item.
+Smoke `--seres 4 --ticks 10 --gens 1 --pistas 9001,9002,9006,9008,9001`: gate
+imprime `[pista_check] seed N: OK (Xm de eixo examinados, sem defeito)` para as
+quatro, `exit 0`.
+
+### 3 · Currículo com piso de mérito real
+
+**Achado alta confirmado:** `--trocar-ao-completar` promovia usando `r.n_ge1v`
+(hodômetro/`prog_acum` ≥ `lap_dist`, sujeito a aliasing de posição — busca o
+segmento mais PRÓXIMO, sem exigir ordem de visita) enquanto o log de "voltas
+reais" já usava `voltas_reais`/`v1` (setor a setor, ORDENADO) — dois cálculos
+genuinamente diferentes respondendo a mesma pergunta, um deles não bate com o
+que o operador lê. Contexto do dia: "`--trocar-ao-completar 1`: UM ser
+rastejando promove a turma."
+
+**Conserto:** a condição de promoção agora usa `v1` (a MESMA grandeza do log
+"voltas reais") e exige UMA de duas rotas:
+- **população:** `v1 ≥ max(N configurado, 25% da população)` — o piso pedido
+  pelo Leonardo (`--trocar-ao-completar exige N≥25% da população`);
+- **velocidade:** `v1 ≥ N configurado` **e** mediana de velocidade da geração
+  ≥ `--curriculo-veloc-min` (padrão 5,0 m/s = 18 km/h — ~2× acima do pior
+  "rastejar" já medido neste projeto com vida fixa, 1,48-2,96 m/s, e bem abaixo
+  do ritmo de corrida real, ~22 m/s).
+
+Isso ataca exatamente o padrão do contexto (um ser sozinho completando a volta
+sem o resto da população acompanhar em quantidade OU ritmo). O log agora
+imprime qual rota disparou a promoção, e também imprime quando `v1>0` mas
+NENHUMA rota bateu (antes: silêncio total, exigia reler código pra saber por
+quê a pista não trocou).
+
+**Achados médios aplicados de graça (mesma área):**
+- métrica `[elite] mesmo genoma: X%` agora guarda a pista em que a fitness
+  anterior foi medida (`elite_fitness_anterior_pista`) e só compara/acumula
+  quando a pista não mudou — senão imprime "pista mudou... razão não
+  comparável" em vez de comparar fitness de pistas diferentes como se fossem a
+  mesma grandeza.
+
+**Evidência:** smoke `--seres 8 --ticks 400 --gens 2 --trocar-ao-completar 1
+--pistas 9001,64` roda sem erro; `cargo test --release --bin gpu_evolve` 14/14.
+
+### 4 · Partes mortas do cérebro
+
+- **`cortex_l3`** (1.152 pesos, caminho CPU/Bevy): mutado toda geração em
+  `src/evolution/spawn.rs` sem que `forward()` o use (`engine.rs:517`, `let _ =
+  &self.cortex_l3; // kept struct, forward unused`). Mutação REMOVIDA (opção
+  barata do achado — religar no forward é feature nova, 24→96 dims sem
+  mapeamento óbvio, fica para decisão explícita do Leonardo).
+- **KAN sensorial** (3.072 coeficientes, `SensoryPreFilter`): `adapt()` nunca é
+  chamado em nenhum caminho do `gpu_evolve` — coeficientes ficam `[1.0;16]`
+  identity para SEMPRE, em todo ser, toda geração (confirmado: não está no
+  `Genome`, `apply_to_engine` nunca toca `kan_filters`). Em vez de arrancar o
+  kernel GPU (risco maior, mexeria em bind group/shader já validado por
+  `gpu_validate --cerebro`), a correção ficou no lado CPU que é 100%
+  redundante: `BrainGpu::upload_weights` subia os mesmos 3.072×n floats
+  IDÊNTICOS a cada geração — agora sobe uma vez só (`kan_uploaded: AtomicBool`)
+  e pula nas chamadas seguintes. Comportamento idêntico (dado nunca muda),
+  banda economizada.
+- **`kan_knots` de SAÍDA** (3×12, campo do `Genome`): mutava toda geração em
+  `evolve()` mas o forward do `gpu_evolve` sempre usa `default_kan_knots()`
+  global (`main.rs`), nunca os do genoma — mutação era RNG/CPU gasto à toa e
+  sujava o `.dna` com "evolução" que não existe. Mutação REMOVIDA de
+  `evolve()` (opção barata do achado).
+- **`DEAD_L1_INPUTS`** (canal 70, TireTemp): zerado só em `Genome::random`
+  (nascimento) — `evolve()` mutava L1 livremente e não reaplicava a máscara.
+  Medido no campeão real (`evolve_best_gen0059.bin`): coluna ch70 já 96/96
+  não-zero, |w| médio 0,2085 (igual ao canal vizinho vivo). Novo método
+  `Genome::zero_dead_inputs()`, chamado em `evolve()` logo após a mutação de
+  L1 — **não** em `load_genome` (preservaria o princípio de "carregar do disco
+  não modifica peso", mesmo motivo do teste
+  `genoma_legado_carregado_do_disco_nao_e_reescalado`). Teste de regressão novo:
+  `evolve_preserva_zero_dos_canais_mortos` (10 gerações, `p_mutate=1.0`, falha
+  sem o fix, passa com ele).
+
+**Rejeitado nesta passada (feature nova, não bug):** religar `cortex_l3`/KAN
+sensorial/`kan_knots` de verdade no forward — cada um exige decisão de design
+(mapeamento de dimensões, novo tráfego de buffer por-ser) que o próprio achado
+já sinalizava precisar de confirmação explícita do Leonardo antes de codar.
+
+**Evidência:** `cargo build --lib` limpo a cada item; `cargo test --release
+--lib gpu::evolution::` 19/19 (inclui o teste novo).
+
+### 5 · Achados críticos/altos adicionais aplicados (fora dos 4 títulos, mesma
+### auditoria, "em ordem de gravidade")
+
+- **[crítica] CfC de percepção corrompia o ser seguinte.** `retina_digest.wgsl`
+  escrevia o estado CfC squashed ("ch192-207") em `buf_output` via
+  `write_channel(being, 192+i, ...)` — mas `buf_output` tem EXATAMENTE 48
+  words (192 bytes) por ser, sem folga (`SENSORY_WAVE_SIZE=192`,
+  `brain.wgsl`'s `const WAVE: u32 = 192u` nunca lê índice ≥192). O índice caía
+  no INÍCIO do bloco do PRÓXIMO ser, corrompendo via `atomicOr` os canais 0-15
+  dele (FAR/NEAR pool — lidos de verdade por L1). Como é `atomicOr` sobre
+  buffer zerado, o efeito é silencioso e não aparece em auditoria de variância
+  (preserva variância, só mistura o dado errado). Fix: os 16 valores agora vão
+  para `extra_out` (`EXTRA_OUT_STRIDE` 3→19), espaço próprio por ser —
+  `cfc_state` (o estado recorrente de verdade, usado pela PRÓXIMA chamada) não
+  foi tocado, só o canal de exposição que corrompia o vizinho. Escopo: só
+  `retina_digest.wgsl`, o kernel usado por `gpu_evolve`
+  (`src/bin/gpu_evolve/context.rs` usa `RetinaDigestGpu`, não
+  `perception_temporal.wgsl` — este último roda com o slot sempre zerado em
+  `gpu_evolve`, `val[1..17]` deliberadamente zero em `context.rs`, então o
+  mesmo padrão de escrita ali é hoje um no-op para este binário). A mesma
+  classe de bug existe em `perception_temporal.wgsl` para `gpu_loop.rs`/
+  `gpu_report.rs` (caminho Bevy/interativo) — **fora do escopo desta sessão**
+  (não é o pipeline de treino), documentado aqui para não se perder.
+  Validado na GPU real: `retina_digest_bate_com_cpu_ao_longo_de_varios_ticks`
+  (`--ignored`, roda com `cargo test --release --lib -- --ignored
+  retina_digest_parity`) — reescrito para ler `extra_out[3..19]` em vez do
+  endereço aliasado, PASS bit-exato contra o oráculo CPU. Bug encontrado
+  DURANTE o conserto (não no plano original): a primeira versão do fix só
+  copiava os 3 primeiros floats de `extra_out` em `read_after_submit`
+  (`retina_digest.rs`) — os 16 novos ficavam sempre `0.0`. Pego pelo próprio
+  teste de paridade (GPU=0 vs CPU=-2), corrigido antes de declarar pronto.
+  `gpu_validate --nucleo`/`--cerebro` PASS; smoke `gpu_evolve --seres 70`
+  (acima do limiar de 64 onde o bug se manifestava) roda limpo, 3 gerações,
+  mediana crescendo (+8,38 m/gen).
+- **[alta] `avaliar_held_out` contaminava `AUDIT_ACUM`.** `ctx.tick()`
+  acumula em `AUDIT_ACUM` sempre que `AUDITAR` está ligada, sem distinguir
+  ticks de treino de ticks do held-out (pista reservada, nunca deveria entrar
+  em métrica nenhuma usada pela seleção). Fix: `AUDITAR.store(false,...)` ao
+  redor da chamada de `avaliar_held_out`, restaurado depois — mesmo padrão que
+  `l1_samples`/`l2_samples`/etc já usavam, só que via o toggle que já existia
+  em vez de clonar o `AuditAcum` inteiro. Bônus: held-out para de pagar o
+  readback de visão que nunca usava.
+- **[alta] `DEAD_L1_INPUTS` erodindo por mutação.** Coberto na seção 4.
+- **[alta] `--retomar` + `--tau-hetero` descartava o τ evoluído do elite
+  exato.** `randomize_tau` rodava sobre a população INTEIRA (inclusive
+  `genomes[0]`, o clone exato do campeão carregado do disco), sobrescrevendo
+  um τ que já passou por seleção real em gerações anteriores. Fix: novo
+  booleano `elite_carregado_do_checkpoint` pula só o índice 0 quando ele é o
+  elite exato — os demais slots (filhos atenuados) continuam recebendo τ novo
+  normalmente, preservando o propósito da flag.
+
+### O que ficou de fora (rejeitado, com motivo)
+
+- **Hall-of-fame por pista** (achado alta — sem HOF, `n_elite=1` real
+  (`scripts/queue_overnight.sh`) arrisca perder o campeão bom da pista antiga
+  pra um sortudo da pista nova). Não implementado nesta passada: é uma
+  feature nova (estrutura de dados + ponto de injeção em `evolve()`/`main.rs`,
+  interação com elitismo/torneio a decidir), não um bug de uma linha — o
+  próprio achado descreve como "ajustes de como plugar", sinal de que precisa
+  de decisão de design, não só correção. Fica para uma sessão dedicada.
+- **Recalibrar `min_seg_len_at_sharp`/amostragem do gerador procedural** —
+  descrito na seção 2. Descoberto durante a verificação, não estava nos
+  achados originais, e mexer sem medir o efeito seria o mesmo erro que este
+  projeto já cometeu antes (tweak sem pesquisa).
+- **Religar `cortex_l3`/KAN sensorial/`kan_knots` de verdade no forward** —
+  feature nova em cada caso, coberto na seção 4.
+- **Cosméticos de baixa prioridade** (comentários "223" residuais em
+  `core.rs`, largura hardcoded de 14,0m na medição de dificuldade do
+  currículo, R_min por torque/amortecimento no `MATH_INVENTORY.md`) — não
+  tocados; achados de baixo impacto, sem urgência, e cada um isolado o
+  bastante para entrar como item avulso depois.
+
+### Build + testes finais
+
+```
+cargo build --release -j 2 --workspace           # limpo, só warnings pré-existentes
+cargo test  --release --workspace --exclude iara_genesis   # todos os alvos PASS
+```
+
+Achado colateral pego pelo gate final (não fazia parte da lista de P1.8, mas
+bloqueava `cargo test --workspace` limpo): `tests/integration_test.rs::
+test_bitlinear_inference` comparava contra uma fórmula que multiplicava
+`weight_scale` no forward — `BitLinear::forward` (`src/layers.rs`) não faz mais
+isso desde um commit anterior a esta sessão (`git log` confirma: nenhuma
+mudança minha em `layers.rs`/`tests/integration_test.rs` antes deste fix). A
+asserção nunca foi atualizada quando o comportamento mudou; corrigida para
+`30,0/127,0` (o valor que `forward()` de fato produz hoje), com o cálculo
+documentado no próprio teste.
+
+Também adicionado: `tests/wgsl_validation.rs::retina_digest_wgsl_e_valido` —
+`retina_digest.wgsl` (o shader mais tocado nesta sessão) ganhou a mesma rede de
+segurança estática (naga parse+type-check, sem GPU) que `brain.wgsl`/
+`perception*.wgsl` já tinham.
+
+---
+
 ## P2 · Corpo
 
 Cada item entra sozinho, com ablação. A ordem vai do que mais muda o ótimo para o que

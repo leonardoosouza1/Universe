@@ -81,3 +81,19 @@ fn brain_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/brain.wgsl");
     validar_wgsl("brain.wgsl", fonte);
 }
+
+/// Editado em P1.8 (docs/PLANO_EVOLUCAO.md, achado crítico "ch192-207 aliasava
+/// pro PRÓXIMO ser"): o loop que escrevia `write_channel(being, 192u+i, val)` em
+/// `output` (buffer compartilhado, sem espaço pros 16 canais extra — corrompia
+/// os canais 0-15 do ser seguinte via atomicOr) passou a escrever em
+/// `extra_out[being*EXTRA_STRIDE + 3 + i]` (espaço próprio por ser). Mudança
+/// estrutural (nova const `EXTRA_STRIDE`, três escritas de `extra_out`
+/// re-indexadas), validada na GPU real por
+/// `retina_digest_parity_test::retina_digest_bate_com_cpu_ao_longo_de_varios_ticks`
+/// (`--ignored`) — este teste aqui é a rede de segurança sem GPU, mesmo padrão
+/// dos demais nesta suíte.
+#[test]
+fn retina_digest_wgsl_e_valido() {
+    let fonte = include_str!("../src/gpu/retina_digest.wgsl");
+    validar_wgsl("retina_digest.wgsl", fonte);
+}

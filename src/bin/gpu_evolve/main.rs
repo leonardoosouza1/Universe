@@ -316,6 +316,19 @@ fn main() {
     let mut l1_vivos: usize = 0;   // 0 = todos os 96 (sem ablacao)
     let mut retomar_mix: f32 = 0.85;   // fracao do campeao preservada nos filhos
     let mut trocar_ao_completar: usize = 0;  // 0 = rotacao por geracao (comportamento atual)
+    /// P1.8, achado "currículo avança com UM ser rastejando promove a turma"
+    /// (`--trocar-ao-completar 1` deixava um único ser lento fechar a lição pra
+    /// população inteira). Piso: promoção exige `v1` (voltas REAIS, não hodômetro)
+    /// cobrindo pelo menos 25% da população, OU (se o usuário aceitar um `N`
+    /// menor) a mediana de velocidade da geração estar acima de um piso mínimo —
+    /// nenhuma das duas rotas sozinha valida "aprendeu", mas as duas juntas
+    /// cobrem tanto amplitude (quantos aprenderam) quanto ritmo (não é rastejo).
+    /// `--curriculo-veloc-min <m/s>` deixa o piso de velocidade ajustável — 5,0
+    /// m/s (18 km/h) é ~2× acima do pior "rastejar" já medido neste projeto
+    /// (1,48-2,96 m/s com vida fixa, ver comentário de `WALL_LIFE_DRAIN` acima) e
+    /// bem abaixo do ritmo de corrida medido (79 km/h ≈ 22 m/s), então não deveria
+    /// travar progresso real de currículo — é ponto de partida, não medição final.
+    let mut curriculo_veloc_min: f64 = 5.0;
     let mut out_dir   = ".".to_string();
     // Parâmetros evolutivos ajustáveis via CLI (padrão conservador para fine-tuning).
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
@@ -403,10 +416,16 @@ fn main() {
     /// o A/B pendente compara 2.0 vs 1.0 vs 0.5 contra a saturação de L2
     /// (48/48 neurônios ativos em 97,4% dos ticks).
     let mut ganho_saida: f32 = universe::gpu::brain::OUT_GAIN_PADRAO;
-    /// `--norm-l2-por-desvio`: segunda alavanca de P1.5 (padrão DESLIGADA) —
-    /// normaliza l2_raw pelo desvio-padrão dos 48 valores do MESMO ser antes do
-    /// ganho/tanh. Ataca a ESCALA da entrada de L2 em vez do ganho de saída.
-    let mut norm_l2_por_desvio = false;
+    /// `--norm-l2-por-desvio` / `--sem-norm-l2-por-desvio`: segunda alavanca de
+    /// P1.5. LIGADA por padrão desde a auditoria P1.8 (docs/PLANO_EVOLUCAO.md,
+    /// achado "L2 tem que funcionar") — normaliza l2_raw pelo desvio-padrão dos
+    /// 48 valores do MESMO ser antes do ganho/tanh. Ataca a ESCALA da entrada de
+    /// L2 (causa raiz medida: σ(l2_raw) ≈ 2,9-5,9 com σ_pesos=0,30 e out_gain=2,0,
+    /// suficiente pra saturar tanh sozinho) em vez do ganho de saída, que a mesma
+    /// auditoria mostrou não resolver de forma robusta em nenhum valor plausível
+    /// (2.0/1.0/0.5). `--sem-norm-l2-por-desvio` é o braço de controle (comportamento
+    /// histórico, idêntico ao pré-P1.8) para quem precisar comparar.
+    let mut norm_l2_por_desvio = true;
     /// `--piloto <g>`: ganho do piloto fantasma. Diagnóstico, não produção.
     let mut piloto: f32 = 0.0;
     let mut piloto_thr: f32 = 0.0;
@@ -456,6 +475,9 @@ fn main() {
                 "--l1-vivos" => { i += 1; if i < args.len() { l1_vivos = args[i].parse().unwrap_or(0); } }
                 "--retomar-mix" => { i += 1; if i < args.len() { retomar_mix = args[i].parse().unwrap_or(0.85); } }
                 "--trocar-ao-completar" => { i += 1; if i < args.len() { trocar_ao_completar = args[i].parse().unwrap_or(1); } }
+                // P1.8: piso de velocidade mediana para a rota alternativa de promoção
+                // do currículo (ver doc de `curriculo_veloc_min` acima).
+                "--curriculo-veloc-min" => { i += 1; if i < args.len() { curriculo_veloc_min = args[i].parse().unwrap_or(curriculo_veloc_min); } }
                 // Banco de τ log-uniforme em [25 ms, 4 s] em vez do τ = 2,0 s uniforme.
                 // Sem a flag o comportamento é o histórico — é o braço de controle.
                 "--tau-hetero" => { tau_hetero = true; }
@@ -509,9 +531,13 @@ fn main() {
                 // P1.5: ganho de saída (era a constante 2.0 hardcoded na ETAPA 2).
                 // Ver `BrainParams::out_gain` e o comentário de `ganho_saida` acima.
                 "--ganho-saida" => { i += 1; if i < args.len() { ganho_saida = args[i].parse().unwrap_or(ganho_saida); } }
-                // P1.5: normaliza l2_raw pelo desvio-padrão dos 48 valores do ser antes
-                // do ganho/tanh. Sem a flag, comportamento idêntico ao histórico.
+                // P1.5/P1.8: normaliza l2_raw pelo desvio-padrão dos 48 valores do ser
+                // antes do ganho/tanh. LIGADA por padrão desde P1.8 — esta flag vira
+                // no-op explícito (mantida para não quebrar scripts existentes).
                 "--norm-l2-por-desvio" => { norm_l2_por_desvio = true; }
+                // Braço de controle: desliga a normalização e volta ao comportamento
+                // histórico pré-P1.8 (l2_std fixo em 1.0, divisão é no-op no shader).
+                "--sem-norm-l2-por-desvio" => { norm_l2_por_desvio = false; }
                 // Piloto fantasma: ganho do controlador geométrico. 0 = cérebro no comando.
                 "--piloto"    => { i += 1; if i < args.len() { piloto = args[i].parse().unwrap_or(0.0); } }
                 "--piloto-thr" => { i += 1; if i < args.len() { piloto_thr = args[i].parse().unwrap_or(0.45); } }
@@ -611,6 +637,47 @@ fn main() {
         }
     }
 
+    // ── Gate de passabilidade (P1.8) ────────────────────────────────────────────
+    // Achado "pista_check nunca é chamado por gpu_evolve — não existe gate contra
+    // pista com defeito": sementes procedurais podiam ter eixo cortando parede ou
+    // estrangulamento e nada impedia uma bateria inteira de treinar contra um mapa
+    // impossível (quatro controladores independentes já pararam no mesmo ponto por
+    // isso). Valida TODAS as seeds de `--pistas`/`--pista-held-out` ANTES de subir
+    // GPU/gastar uma geração sequer — mesma checagem de `pista_check.rs`
+    // (`VoxelWorld::validar_pista`), sem precisar rodar o binário à parte.
+    if !pistas.is_empty() || pista_held_out.is_some() {
+        let mut seeds_a_checar: Vec<u64> = pistas.clone();
+        if let Some(ho) = pista_held_out {
+            if !seeds_a_checar.contains(&ho) { seeds_a_checar.push(ho); }
+        }
+        let mut alguma_falhou = false;
+        for &s in &seeds_a_checar {
+            let w = { let _q = universe::world::silence_map_diag(); VoxelWorld::new(s, track_width) };
+            let ate = w.lap_distance.max(1.0);
+            let defeitos = w.validar_pista(track_width, ate);
+            if !defeitos.is_empty() {
+                alguma_falhou = true;
+                eprintln!(
+                    "[pista_check] seed {s}: {} defeito(s) em {ate:.0}m de eixo — {}{}",
+                    defeitos.len(),
+                    defeitos.iter().take(3).cloned().collect::<Vec<_>>().join(" | "),
+                    if defeitos.len() > 3 { " | ..." } else { "" }
+                );
+            } else {
+                println!("[pista_check] seed {s}: OK ({ate:.0}m de eixo examinados, sem defeito)");
+            }
+        }
+        if alguma_falhou {
+            eprintln!(
+                "\nERRO: uma ou mais pistas de --pistas/--pista-held-out têm defeito \
+                 geométrico (eixo fora do asfalto ou estrangulamento) — nenhum controlador \
+                 venceria essa pista (achado P1.8). Rode `pista_check --seed <N> --width {track_width}` \
+                 para o detalhe completo e ajuste --pistas/--width antes de treinar."
+            );
+            std::process::exit(1);
+        }
+    }
+
     // ── Mundo ─────────────────────────────────────────────────────────────────
     // Seed = a pista de TREINO da primeira geração que este processo vai rodar
     // (`gen_offset` != 0 ao retomar). Sem `--pistas` (lista vazia), `pista_da_gen`
@@ -658,6 +725,11 @@ fn main() {
     // Fitness do melhor da geração anterior — o mesmo genoma reaparece sem mutação no
     // slot 0 da geração seguinte, então a comparação é do genoma consigo mesmo.
     let mut elite_fitness_anterior: Option<f64> = None;
+    // P1.8, achado "métrica de reprodução do elite não corrige quando a pista
+    // muda entre as duas gerações comparadas" — guarda em QUAL pista a fitness
+    // anterior foi medida; só compara/empurra pra `elite_reprod` quando a pista
+    // desta geração é a MESMA.
+    let mut elite_fitness_anterior_pista: Option<u64> = None;
     let mut elite_reprod: Vec<f64> = Vec::new();
     WALL_LIFE_DRAIN.store(wall_life, Ordering::Relaxed);
     STAG_LIFE_DRAIN.store(stag_life, Ordering::Relaxed);
@@ -718,12 +790,25 @@ fn main() {
                  universe::gpu::brain::OUT_GAIN_PADRAO);
     }
     if norm_l2_por_desvio {
-        println!("[P1.5] normalização de L2 por desvio-padrão LIGADA — l2_raw dividido pelo \
-                  desvio dos 48 valores do ser antes do ganho/tanh (padrão: desligada)");
+        println!("[P1.5/P1.8] normalização de L2 por desvio-padrão LIGADA (padrão desde P1.8) \
+                  — l2_raw dividido pelo desvio dos 48 valores do ser antes do ganho/tanh");
+    } else {
+        println!("[P1.5/P1.8] normalização de L2 por desvio-padrão DESLIGADA (--sem-norm-l2-por-desvio) \
+                  — braço de controle, comportamento histórico pré-P1.8 (l2_std=1.0, saturação de L2 \
+                  não corrigida)");
     }
     println!("GpuCtx pronto  [{:.0}ms]", t1.elapsed().as_secs_f64() * 1000.0);
 
     // ── Genomas iniciais ───────────────────────────────────────────────────────
+    // P1.8, achado "--retomar + --tau-hetero descarta o τ evoluído do campeão":
+    // `true` só quando `genomes[0]` é o clone EXATO de um `.bin` carregado do disco
+    // (linha "elite exato" abaixo) — usado mais abaixo pra NÃO sobrescrever o τ
+    // desse slot específico com `randomize_tau` (τ muta incondicionalmente em
+    // `evolve()`, então o τ de um campeão de várias gerações já passou por
+    // seleção real; os demais slots, mesmo vindos do campeão, são filhos
+    // ATENUADOS — não "exatos" — então ganhar τ heterogêneo neles é consistente
+    // com o resto do design de `--retomar-mix`).
+    let mut elite_carregado_do_checkpoint = false;
     let mut genomes: Vec<Genome> = if retomar {
         // Procura o arquivo de melhor genoma mais recente.
         let mut latest: Option<(usize, String)> = None;
@@ -736,6 +821,7 @@ fn main() {
         if let Some((gen_id, path)) = latest {
             println!("Retomando a partir de gen {:4}: {}", gen_id, path);
             if let Some(best) = load_genome(&path) {
+                elite_carregado_do_checkpoint = true;
                 // Semente a população a partir do melhor genoma + variações.
                 let mut pop = Vec::with_capacity(n_seres);
                 pop.push(best.clone());  // elite exato
@@ -794,7 +880,16 @@ fn main() {
     // A semente é derivada da mesma função dos pesos, mas com um deslocamento, senão o
     // banco de τ do ser i seria função da mesma sequência que gerou seus pesos.
     if tau_hetero {
-        for (i, g) in genomes.iter_mut().enumerate() {
+        // Pula o índice 0 quando ele é o "elite exato" vindo de checkpoint —
+        // sobrescrever o τ dele quebraria a garantia de clone exato e descartaria
+        // τ que já passou por seleção real em gerações anteriores (ver doc de
+        // `elite_carregado_do_checkpoint` acima).
+        let start = if elite_carregado_do_checkpoint { 1 } else { 0 };
+        if elite_carregado_do_checkpoint {
+            println!("  [tau-hetero] preservando τ evoluído do elite exato (slot 0) — \
+                      banco novo só nos demais {} slots", n_seres.saturating_sub(1));
+        }
+        for (i, g) in genomes.iter_mut().enumerate().skip(start) {
             g.randomize_tau(population_seed_for(pop_seed, i).wrapping_add(0x7A11_0000));
         }
     }
@@ -1356,13 +1451,21 @@ fn main() {
         // são calculados com a mesma fórmula de fitness (seja checkpoints, prog ou dist).
         // O slot 0 de `fitness` corresponde a `genomes[0]` = elite da geração anterior.
         if let Some(anterior) = elite_fitness_anterior {
-            let agora = fitness[0];
-            let razao = if anterior > 1.0 { agora / anterior } else { f64::NAN };
-            println!(
-                "  [elite] mesmo genoma: {:.0} → {:.0} (fitness, {:.0}% do anterior) · hodômetro={:.0}m",
-                anterior, agora, 100.0 * razao, dist_acum[0]
-            );
-            elite_reprod.push(razao);
+            if elite_fitness_anterior_pista == Some(seed_gen) {
+                let agora = fitness[0];
+                let razao = if anterior > 1.0 { agora / anterior } else { f64::NAN };
+                println!(
+                    "  [elite] mesmo genoma: {:.0} → {:.0} (fitness, {:.0}% do anterior) · hodômetro={:.0}m",
+                    anterior, agora, 100.0 * razao, dist_acum[0]
+                );
+                elite_reprod.push(razao);
+            } else {
+                println!(
+                    "  [elite] pista mudou desde a última reavaliação (seed {} → {}) — razão \
+                     não comparável, pulando",
+                    elite_fitness_anterior_pista.unwrap_or(0), seed_gen
+                );
+            }
         }
 
         // DISPERSÃO DA FITNESS — se for zero, a seleção é cega.
@@ -1450,13 +1553,60 @@ fn main() {
             );
         }
 
+        // Velocidade mediana da população (m/s) — hoisted pra cima do bloco de relatório
+        // de baixo (que a usa de novo) porque o gate do currículo (abaixo) também precisa
+        // dela ANTES daquele bloco rodar. Mesma fórmula: distância acumulada / tempo vivo.
+        let vmed: f64 = {
+            let mut v: Vec<f64> = (0..n_seres).map(|i| {
+                let seg = (states[i].ticks_alive.max(1) as f64) / 64.0;
+                dist_acum[i] / seg
+            }).collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+
         // Circuito dominado? Então a próxima geração corre numa pista nova.
-        if trocar_ao_completar > 0 && r.n_ge1v >= trocar_ao_completar {
+        //
+        // P1.8, achado "currículo promove com métrica DIFERENTE da que o log mostra
+        // como voltas reais": usa `v1` (voltas_reais ORDENADO, setor a setor) em vez
+        // de `r.n_ge1v` (hodômetro/prog_acum ≥ lap_dist, que faz aliasing de posição
+        // — `get_track_progress` busca o segmento mais PRÓXIMO, sem exigir ordem de
+        // visita) — os dois calculam a mesma pergunta por caminhos genuinamente
+        // diferentes, e só `v1` bate com o texto que o log já imprime como "voltas
+        // reais" (bloco `[setores]`, logo acima).
+        //
+        // Achado "UM ser rastejando promove a turma inteira" (`--trocar-ao-completar 1`):
+        // a promoção agora exige UMA das duas rotas, não só o `N` cru do usuário:
+        //   (a) `v1` cobre pelo menos 25% da população (amplitude — não foi 1 sortudo), OU
+        //   (b) `v1` já bate o `N` configurado E a mediana de velocidade da geração supera
+        //       `curriculo_veloc_min` (ritmo — quem completou não estava rastejando).
+        // Isso reforça, nunca afrouxa, o `N` que o usuário pediu: o piso populacional só
+        // AUMENTA o `N` efetivo quando 25% da população é maior que ele.
+        let piso_populacional = (((n_seres as f64) * 0.25).ceil() as usize).max(1);
+        let limiar_efetivo = trocar_ao_completar.max(piso_populacional);
+        let cond_populacao = v1 >= limiar_efetivo;
+        let cond_veloc = v1 >= trocar_ao_completar && vmed >= curriculo_veloc_min;
+        if trocar_ao_completar > 0 && (cond_populacao || cond_veloc) {
             idx_curriculo += 1;
             let proxima = pista_da_gen(&pistas, idx_curriculo);
+            let via = if cond_populacao {
+                format!("população (v1={} ≥ {} = max(N={}, 25%={}))",
+                        v1, limiar_efetivo, trocar_ao_completar, piso_populacional)
+            } else {
+                format!("velocidade (v1={} ≥ N={} · mediana {:.2}m/s ≥ piso {:.2}m/s)",
+                        v1, trocar_ao_completar, vmed, curriculo_veloc_min)
+            };
             println!(
-                "  [curriculo] {} seres completaram a volta (limiar {}) — pista {} → {}",
-                r.n_ge1v, trocar_ao_completar, world_seed_atual, proxima);
+                "  [curriculo] {} seres completaram a volta via {} — pista {} → {}",
+                v1, via, world_seed_atual, proxima);
+        } else if trocar_ao_completar > 0 && v1 > 0 {
+            // Visível mesmo quando NÃO promove: sem isto, "por que não trocou" exige
+            // reler o código toda vez que alguém completa a volta e a pista não muda.
+            println!(
+                "  [curriculo] {} seres completaram a volta, mas nem população (precisa {}) \
+                 nem velocidade (mediana {:.2}m/s, precisa {:.2}m/s com N={}) bateram o piso \
+                 — pista continua {}",
+                v1, limiar_efetivo, vmed, curriculo_veloc_min, trocar_ao_completar, world_seed_atual);
         }
 
         println!(
@@ -1479,13 +1629,8 @@ fn main() {
         }
         // Velocidade média da população. É a grandeza que a vida-ganha ataca: a distância
         // pode subir só por ter mais tempo, mas a velocidade não mente.
+        // (`vmed` já foi calculada acima, antes do gate do currículo — reusa aqui.)
         {
-            let mut v: Vec<f64> = (0..n_seres).map(|i| {
-                let seg = (states[i].ticks_alive.max(1) as f64) / 64.0;
-                dist_acum[i] / seg
-            }).collect();
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let vmed = v[v.len() / 2];
             let vida_med = states.iter().take(n_seres)
                 .map(|s| s.ticks_alive as f64).sum::<f64>() / n_seres as f64;
             {
@@ -1845,10 +1990,21 @@ fn main() {
         // para o porquê).
         if let Some(ho_seed) = pista_held_out {
             if gen_abs % held_out_cada == 0 {
+                // P1.8, achado "avaliar_held_out contamina AUDIT_ACUM": `ctx.tick()`
+                // acumula em AUDIT_ACUM (context.rs, gate `AUDITAR`) sempre que a flag
+                // está ligada — sem distinguir se o tick veio do laço de treino ou
+                // daqui. Desliga a flag SÓ durante os ticks do held-out (pista
+                // diferente da de treino) e restaura logo depois — mesmo padrão que
+                // `avaliar_held_out` já usa pra `l1_samples`/`l2_samples`/etc (limpos
+                // antes, main.rs ~linha 266-280), mas resolvido pelo toggle que já
+                // existe (`AUDITAR`, statics.rs) em vez de clonar o `AuditAcum` inteiro.
+                // Bônus: held-out para de pagar o readback de visão que nunca usa.
+                AUDITAR.store(false, Ordering::Relaxed);
                 let held_med = avaliar_held_out(
                     &mut ctx, n_seres, n_ticks, track_width, same_start,
                     &modo_fitness, ho_seed, &kan_knots_global,
                 );
+                AUDITAR.store(auditar_visao, Ordering::Relaxed);
                 // `avaliar_held_out` trocou a pista na GPU para `ho_seed` — a
                 // próxima geração detecta isso (`seed_gen != world_seed_atual`,
                 // topo do laço) e recarrega a pista de treino sozinha, sem
@@ -1886,6 +2042,7 @@ fn main() {
         elite_fitness_anterior = Some(
             fitness.iter().cloned().fold(f64::MIN, f64::max)
         );
+        elite_fitness_anterior_pista = Some(seed_gen);
 
         hist_results.push(r);
 

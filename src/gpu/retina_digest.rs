@@ -10,12 +10,25 @@
 //! 1. retina.dispatch                              ← escreve buf_retina_out (tick t)
 //! 2. percept.bind_and_dispatch(...)                ← clear_buffer(buf_output) + canais 0-191
 //! 3. retina_digest.bind_and_dispatch(enc, ...)     ← DEPOIS do clear acima; escreve
-//!                                                     ch192-207 em buf_output (atomicOr)
-//!                                                     e extra_out (min_wall/edge6/edge7)
-//! 4. brain.bind_and_dispatch(...)                  ← lê buf_output já completo
+//!                                                     extra_out (min_wall/edge6/edge7 +
+//!                                                     ch192-207, P1.8: NÃO MAIS em
+//!                                                     buf_output — ver achado no
+//!                                                     cabeçalho de retina_digest.wgsl)
+//! 4. brain.bind_and_dispatch(...)                  ← lê buf_output (canais 0-191)
 //! 5. queue.submit + device.poll(Wait)
-//! 6. retina_digest.read_after_submit(...)          ← 3 floats/ser, não 1764
+//! 6. retina_digest.read_after_submit(...)          ← EXTRA_OUT_STRIDE floats/ser, não 1764
 //! ```
+//!
+//! # P1.8 — ch192-207 não aliasa mais no `buf_output` do próximo ser
+//!
+//! Até P1.8, o passo 3 escrevia os 16 valores do estado CfC em `buf_output` nos
+//! índices 192-207 — só que `buf_output` tem EXATAMENTE 48 words (192 bytes) por
+//! ser, sem folga, então esse índice caía no INÍCIO do bloco do PRÓXIMO ser
+//! (corrompendo, via atomicOr, os canais 0-15 dele — FAR/NEAR pool, lidos de
+//! verdade por `brain.wgsl`). Como `brain.wgsl` nunca lê índice ≥ 192 de qualquer
+//! forma (`const WAVE: u32 = 192u`), os 16 valores nunca influenciavam a rede —
+//! só corrompiam o ser vizinho. Agora vão para `extra_out[3..19]`, espaço próprio
+//! por ser. Ver o cabeçalho de `retina_digest.wgsl` para a evidência completa.
 //!
 //! `buf_output_shared` é o MESMO `buf_output` de `PerceptionGpu` — este módulo não o
 //! possui, só recebe a referência a cada dispatch (igual ao padrão de
@@ -62,8 +75,17 @@ pub struct RetinaDigestGpu {
     pub capacity: usize,
 }
 
-/// Número de f32 por ser no buffer `extra_out`: `[min_wall_ahead, edge_row6, edge_row7]`.
-pub const EXTRA_OUT_STRIDE: usize = 3;
+/// Número de f32 por ser no buffer `extra_out`:
+/// `[min_wall_ahead, edge_row6, edge_row7, ch192..ch207(16, estado CfC squashed)]`.
+///
+/// P1.8: cresceu de 3 para 19 — os 16 últimos slots são o estado CfC de percepção
+/// que antes aliasava (via `write_channel`) para o `buf_output` do PRÓXIMO ser (ver
+/// achado no cabeçalho deste arquivo e de `retina_digest.wgsl`). `read_after_submit`
+/// devolve o array completo; `context.rs` hoje só consome `[0]`/`[1]`/`[2]`
+/// (min_wall_ahead/edge_row6/edge_row7) — `[3..19]` fica disponível pra quem
+/// precisar (ex.: religar como sensor de verdade em `brain.wgsl`, fora do escopo
+/// deste conserto).
+pub const EXTRA_OUT_STRIDE: usize = 19;
 
 impl RetinaDigestGpu {
     /// Cria o contexto e sobe os pesos do CfC uma única vez.
@@ -241,10 +263,16 @@ impl RetinaDigestGpu {
         let data = slice.get_mapped_range();
         let floats: &[f32] = bytemuck::cast_slice(&data);
         let mut out = vec![[0.0f32; EXTRA_OUT_STRIDE]; n];
+        // P1.8: copia a linha INTEIRA (`EXTRA_OUT_STRIDE`=19 floats), não só os 3
+        // primeiros — bug introduzido e pego na hora por
+        // `retina_digest_bate_com_cpu_ao_longo_de_varios_ticks` (--ignored): com o
+        // loop antigo hardcoded em [0],[1],[2], os slots [3..19) (ch192-207) ficavam
+        // sempre no `0.0` de inicialização do `Vec`, nunca no valor real escrito
+        // pela GPU. Registro aqui porque é exatamente a classe de erro (índice
+        // hardcoded que não acompanha o stride) que este projeto já pagou caro antes.
         for i in 0..n {
-            out[i][0] = floats[i * EXTRA_OUT_STRIDE];
-            out[i][1] = floats[i * EXTRA_OUT_STRIDE + 1];
-            out[i][2] = floats[i * EXTRA_OUT_STRIDE + 2];
+            let base = i * EXTRA_OUT_STRIDE;
+            out[i].copy_from_slice(&floats[base..base + EXTRA_OUT_STRIDE]);
         }
 
         drop(data);
@@ -275,9 +303,11 @@ mod tests {
 
     /// `EXTRA_OUT_STRIDE` é o contrato com `context.rs` — mudar sem atualizar os dois
     /// lados quebra em silêncio (lê lixo do próximo ser). Trava o valor aqui.
+    /// P1.8: 3→19 (16 slots novos para o estado CfC que deixou de aliasar em
+    /// `buf_output` — ver doc da constante).
     #[test]
-    fn extra_out_stride_e_tres() {
-        assert_eq!(EXTRA_OUT_STRIDE, 3);
+    fn extra_out_stride_e_dezenove() {
+        assert_eq!(EXTRA_OUT_STRIDE, 19);
     }
 }
 

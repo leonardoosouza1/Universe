@@ -88,9 +88,32 @@ fn main() {
     println!("pista: volta {:.0} m · {} waypoints · raio mínimo {:.1} m (setor {})",
              pista.lap, pista.n, pista.raio_min, pista.setor_do_raio_min);
 
+    // ── UM MUNDO POR GERAÇÃO ──────────────────────────────────────────────────
+    //
+    // Antes, a pista do PRIMEIRO arquivo era desenhada para a corrida inteira. Isso valia
+    // enquanto toda corrida tinha uma pista só. Com o currículo (`--pistas` + troca por
+    // mérito), uma corrida atravessa 8 geometrias: as trajetórias das gerações posteriores
+    // eram desenhadas sobre a pista errada e apareciam como se o ser tivesse saído do
+    // traçado — o que levou o Leonardo a perguntar "eles não seguem a pista, ou ela mudou?".
+    // Ela mudou. O viewer é que não sabia.
+    //
+    // Cache por semente porque construir um VoxelWorld não é barato e o currículo repete
+    // pistas ao reiniciar o ciclo.
+    let mut mundos: std::collections::HashMap<u64, (VoxelWorld, Pista)> =
+        std::collections::HashMap::new();
+    mundos.insert(semente0, (world, pista.clone()));
+
     let mut resumo = Vec::new();
     for (g, arq) in arquivos.iter().enumerate() {
-        match processar(arq, &world, &pista, passo) {
+        let semente_gen = ReplayReader::open(arq).map(|r| r.header.world_seed).unwrap_or(semente0);
+        let (world, pista) = mundos.entry(semente_gen).or_insert_with(|| {
+            let w = { let _q = universe::world::silence_map_diag(); VoxelWorld::new(semente_gen, width) };
+            let p = Pista::medir(&w, width);
+            println!("  (pista nova: semente {semente_gen} · volta {:.0} m · raio mínimo {:.1} m)",
+                     p.lap, p.raio_min);
+            (w, p)
+        });
+        match processar(arq, world, pista, passo) {
             Some((json, linha)) => {
                 let alvo = saida.join(format!("g{g:04}.json"));
                 if let Err(e) = std::fs::write(&alvo, json) {
@@ -115,6 +138,7 @@ fn main() {
 // ── GEOMETRIA DA PISTA ────────────────────────────────────────────────────────
 
 /// Métrica do traçado, medida uma vez. Tudo derivado dos waypoints reais.
+#[derive(Clone)]
 struct Pista {
     lap: f32,
     n: usize,
@@ -199,7 +223,14 @@ fn processar(arq: &Path, world: &VoxelWorld, pista: &Pista, passo: usize)
     -> Option<(String, LinhaResumo)>
 {
     let mut reader = ReplayReader::open(arq).ok()?;
-    if reader.header.world_seed != pista_semente(world) { /* mesma corrida, segue */ }
+    // O chamador agora entrega o mundo da semente CERTA para cada geração. Se ainda assim
+    // divergir, é bug de quem chamou — desenhar trajetória sobre a geometria errada produz
+    // exatamente o falso "o ser saiu da pista" que este `assert` existe para impedir.
+    debug_assert_eq!(
+        reader.header.world_seed, pista_semente(world),
+        "replay da semente {} sendo desenhado sobre a pista da semente {}",
+        reader.header.world_seed, pista_semente(world)
+    );
     let todos = reader.all_frames();
 
     let mut seres_json = Vec::new();

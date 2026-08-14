@@ -70,6 +70,12 @@ survival_pressure = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# Validação estática de WGSL sem GPU (parse + type-check via naga) — ver
+# tests/wgsl_validation.rs. Mesma versão que wgpu 24.0 já traz transitivamente
+# (Cargo.lock), só tornada direta e com a feature "wgsl-in" explícita: sem ela,
+# `naga::front::wgsl` não compila (feature-gated) e a unificação de features do
+# workspace não é algo para depender silenciosamente.
+naga = { version = "24.0", features = ["wgsl-in"] }
 
 [[bench]]
 name = "bitlinear"

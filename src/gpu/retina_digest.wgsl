@@ -46,19 +46,20 @@
 //    DURANTE a agregação da zona (não antes) — espelha `ZoneConfig::pool`.
 // 4. x = [far(16) | mid(16) | near(16)] = 48 floats — mesma ordem de `pool_flat()`.
 //
-// # ch192-207 — a MESMA defasagem de 1 tick que já existia
+// # extra_out[3..19] ("ch192-207") — a MESMA defasagem de 1 tick que já existia
 //
 // A CPU antiga injetava `hidden[]` em `buf_temporal[33-48]` ANTES do dispatch (estado
 // do CfC calculado no tick ANTERIOR, via readback pós-submit) e só `perception_temporal
-// .wgsl` convertia esse hidden em canal. Ou seja: ch192-207 no tick t sempre refletia o
-// CfC até o tick t-1. Este kernel replica a defasagem DENTRO do próprio dispatch:
-//   1) escreve ch192-207 usando `cfc_state` COMO ESTAVA no início do tick (= h após o
-//      tick t-1);
+// .wgsl` convertia esse hidden em canal (escrevendo em `output`, ch192-207 — ver achado
+// P1.8 abaixo sobre por que isto NÃO é mais reproduzido aqui). Este kernel preserva só
+// a DEFASAGEM (não o destino do valor):
+//   1) calcula os 16 valores usando `cfc_state` COMO ESTAVA no início do tick (= h após
+//      o tick t-1), grava em `extra_out[3..19]`;
 //   2) só DEPOIS processa a retina deste tick e escreve o h NOVO de volta em
 //      `cfc_state`, para o PRÓXIMO tick ler.
 // A fórmula de conversão hidden→canal é a aproximação x/(1+|x|) que já estava em
 // `perception_temporal.wgsl` (NÃO o `tanh()` nativo do WGSL) — copiada literalmente
-// abaixo para não mudar o valor que o cérebro recebe.
+// abaixo para não mudar o valor calculado, só o buffer de destino (ver achado P1.8).
 //
 // # Bindings
 //
@@ -71,12 +72,28 @@
 // binding 3 (storage, read_write) cfc_state: array<f32>  — N × 16, RESIDENTE na VRAM
 //   entre ticks. Zerado por `reset()` (host) entre gerações.
 // binding 4 (storage, read_write) output: array<atomic<u32>> — MESMO `buf_output` da
-//   percepção (perception.rs) — este kernel só escreve ch192-207 aqui, via atomicOr.
-//   PRÉ-CONDIÇÃO: já foi zerado por `enc.clear_buffer()` (percept.bind_and_dispatch o
-//   faz antes de qualquer dispatch) e este kernel deve rodar DEPOIS desse clear.
-// binding 5 (storage, read_write) extra_out: array<f32>  — N × 3:
+//   percepção (perception.rs). ESTE KERNEL NÃO ESCREVE MAIS AQUI (ver achado P1.8
+//   abaixo) — só lido implicitamente por outros kernels no mesmo pipeline; mantido
+//   no bind group porque o layout é compartilhado com `perception.rs`.
+// binding 5 (storage, read_write) extra_out: array<f32>  — N × EXTRA_STRIDE(19):
 //   [0] min_wall_ahead (m, sentinela grande se não há parede à frente nas colunas
-//       centrais), [1] edge_row6 normalizado [0,1], [2] edge_row7 normalizado [0,1].
+//       centrais), [1] edge_row6 normalizado [0,1], [2] edge_row7 normalizado [0,1],
+//   [3..19] ch192-207 (estado CfC de percepção squashed, ver achado abaixo).
+//
+// # P1.8 — achado crítico: ch192-207 aliasava para o PRÓXIMO ser (corrigido)
+//
+// `output` tem EXATAMENTE `WAVE_U32S=48` words (192 bytes) por ser — o mesmo
+// `SENSORY_WAVE_SIZE=192` que `brain.wgsl` lê (`const WAVE: u32 = 192u;`, sem
+// folga). Escrever em "ch192-207" via `write_channel` (que faz `ch/4` sem checar
+// limite) caía no índice `being*48 + 48..51` — o INÍCIO do bloco do PRÓXIMO ser,
+// corrompendo (via atomicOr) os canais 0-15 dele (FAR/NEAR pool, lidos de verdade
+// por L1). Como `brain.wgsl` nunca lê índice ≥ 192 (`WAVE=192u`, confirmado por
+// grep), os valores nem chegavam a influenciar a rede — o efeito observável era
+// SÓ a corrupção do ser vizinho. Fix: os 16 valores agora vão para `extra_out`
+// (espaço próprio por ser, sem colisão) em vez de `output`. O estado recorrente
+// de verdade (usado pela PRÓXIMA chamada deste kernel) continua correto e
+// intocado em `cfc_state` (binding 3) — isto só afeta o canal de EXPOSIÇÃO extra
+// que nunca foi lido por ninguém no pipeline de treino (gpu_evolve).
 //
 // # Dispatch
 //
@@ -102,6 +119,10 @@ const RETINA_ROWS:  u32 = 14u;
 const RETINA_COLS:  u32 = 126u;
 const RETINA_TOTAL: u32 = 1764u;
 const WAVE_U32S:    u32 = 48u;
+// P1.8: stride de `extra_out` por ser — 3 valores históricos (min_wall_ahead,
+// edge_row6, edge_row7) + 16 do estado CfC (ch192-207) que antes aliasava em
+// `output`. Ver achado no cabeçalho do arquivo (binding 5).
+const EXTRA_STRIDE: u32 = 19u;
 
 const POOL_BINS:    u32 = 16u;   // PERCEPTION_BINS
 const CFC_HIDDEN:   u32 = 16u;   // CFC_HIDDEN (math/cfc_perception.rs)
@@ -148,6 +169,10 @@ fn legacy_encoding(d: f32, mat: u32) -> i32 {
 }
 
 // ─── write_channel — CÓPIA LITERAL de perception.wgsl:208 ─────────────────────────
+// P1.8: sem call sites neste arquivo desde o fix de "ch192-207 aliasa pro próximo
+// ser" (achado no cabeçalho) — `output`/binding 4 continua declarado só porque o
+// bind group layout é compartilhado com `perception.rs`. Mantida (não deletada)
+// caso um consumidor futuro de verdade precise escrever em `output` daqui.
 fn write_channel(being: u32, ch: u32, val: i32) {
     let clamped  = clamp(val, -128, 127);
     let byte_val = u32(clamped & 0xFF);
@@ -187,7 +212,10 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
         let abs_h = abs(hi);
         let tanh_h = select(hi / (1.0 + abs_h), sign(hi) * 0.999, abs_h > 10.0);
         let val = i32(clamp(tanh_h * 127.0 * 0.3, -127.0, 127.0));
-        write_channel(being, 192u + i, val);
+        // P1.8: era `write_channel(being, 192u + i, val)` — aliasava pro ser
+        // seguinte (ver achado no cabeçalho). Vai para `extra_out`, espaço
+        // próprio deste ser, slots [3..19).
+        extra_out[being * EXTRA_STRIDE + 3u + i] = f32(val);
     }
 
     // ── 2) Varre a retina física deste tick: col-pool, min_wall_ahead, edge_row6/7 ──
@@ -236,9 +264,9 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
         }
     }
 
-    extra_out[being * 3u + 0u] = min_wall_ahead;
-    extra_out[being * 3u + 1u] = clamp(f32(edge_sum6) / 6000.0, 0.0, 1.0);
-    extra_out[being * 3u + 2u] = clamp(f32(edge_sum7) / 6000.0, 0.0, 1.0);
+    extra_out[being * EXTRA_STRIDE + 0u] = min_wall_ahead;
+    extra_out[being * EXTRA_STRIDE + 1u] = clamp(f32(edge_sum6) / 6000.0, 0.0, 1.0);
+    extra_out[being * EXTRA_STRIDE + 2u] = clamp(f32(edge_sum7) / 6000.0, 0.0, 1.0);
 
     // ── 3) Zone-pool: far=[0,5) mean, mid=[5,10) mean, near=[10,14) max ────────────
     // Espelha `retina_zones()` + `ZoneConfig::pool` — ordem far,mid,near em x[48].

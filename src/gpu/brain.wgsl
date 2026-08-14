@@ -12,9 +12,9 @@
 //
 // # Pipeline por ser (1 workgroup de 128 threads)
 //
-//   sensory_wave[223] ──► KAN por-canal (spline 16-knots)
+//   sensory_wave[WAVE=192] ──► KAN por-canal (spline 16-knots)
 //                       ──► CfC pré-processador (canais 0..96, state residente)
-//                       ──► BitLinear L1  (223→96, pesos f32, input i8)
+//                       ──► BitLinear L1  (192→96, pesos f32, input i8)
 //                       ──► tanh × 127 → i8  (quantiza pra L2)
 //                       ──► FloatLinear L2 (96→48, pesos f32)
 //                       ──► [opcional, params.norm_l2_by_std] / desvio-padrão dos 48
@@ -23,11 +23,22 @@
 //                       (cortex_l3 NÃO é usado na CPU — omitido aqui)
 //
 //   `params.out_gain` (padrão 2.0, idêntico ao hardcode histórico) e
-//   `params.norm_l2_by_std` (padrão 0/desligado) são os dois parâmetros do A/B
-//   de P1.5 (`docs/PLANO_EVOLUCAO.md`) contra a saturação de L2 (48/48 neurônios
-//   ativos em 97,4% dos ticks, entropia 0,301 nats). Ver `BrainParams` no host
-//   (`brain.rs`) e a ETAPA 2 abaixo.
+//   `params.norm_l2_by_std` (padrão 1/LIGADO desde P1.8 — ver docs/PLANO_EVOLUCAO.md
+//   seção "P1.8", achado "L2 tem que funcionar") são os dois parâmetros do A/B
+//   de P1.5 contra a saturação de L2 (48/48 neurônios ativos em 97,4% dos ticks,
+//   entropia 0,301 nats). Ver `BrainParams` no host (`brain.rs`) e a ETAPA 2 abaixo.
 //
+//   # P1.8 — final_intent[0..5) é a ÚNICA fatia que qualquer coisa lê
+//
+//   Dos 96 slots de `final_intent`, só os 5 primeiros (throttle/steer/brake via
+//   `kan_out.eval`, shift_up/down via índices [3]/[4]) alimentam um atuador —
+//   TODOS vindos de L2 (slots [0..48)). O bypass de L1 em [48..96) e o resto de
+//   L2 em [5..48) não chegam a nenhum atuador nem a `axiom_policy`/coerência no
+//   pipeline de treino real (`gpu_evolve`, ver `context.rs::kan_eval`, que só lê
+//   índices 0-2). Ou seja: o bypass NÃO é uma rota que a evolução usa pra
+//   "contornar" L2 — ele simplesmente nunca chega a um atuador. Ver achado
+//   completo em docs/PLANO_EVOLUCAO.md "P1.8 - auditoria total" antes de reabrir
+//   esta investigação.
 // # Layout de memória (SoA — Structure of Arrays)
 //
 // Por que SoA e não AoS?

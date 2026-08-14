@@ -155,32 +155,19 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    // ACHADO (pré-existente, fora do escopo desta migração — ver relatório): o layout
-    // de `output` é `WAVE_U32S=48` words POR SER, mas write_channel(being, 192+i, ...)
-    // usa `ch/4` sem levar isso em conta — o índice de palavra fica `being*48 + 48..51`,
-    // que é o INÍCIO do bloco do PRÓXIMO ser, não um espaço reservado deste ser. Ou
-    // seja: ch192-207 hoje ALIASA para o canal `i` (0-15, FAR/NEAR pool) do ser
-    // SEGUINTE — já acontecia em `perception_temporal.wgsl` antes desta migração,
-    // `retina_digest.wgsl` reproduz o MESMO endereçamento (mesma fórmula de
-    // `write_channel`) porque o mandato desta tarefa é preservar o comportamento
-    // atual bit a bit, não consertar um bug de layout descoberto de passagem.
-    // Alocamos `CAP_PAD` seres a mais só para o overflow do ÚLTIMO ser usado no teste
-    // cair numa área não lida (mesmo truque que `PerceptionGpu::new()` já faz com
-    // `capacity.max(64)` em produção) — SEM isso o índice do último ser sairia do
-    // buffer alocado neste teste pequeno (N_BEINGS=2) e o comportamento de
-    // clamping de bounds-check do driver seria implementation-defined.
-    const CAP_PAD: usize = 2;
-    let bytes_output = ((N_BEINGS + CAP_PAD) * WAVE_U32S * 4) as u64;
+    // P1.8: `output` (buf_output_shared) continua um parâmetro obrigatório de
+    // `bind_and_dispatch` — o bind group layout é compartilhado com
+    // `perception.rs` — mas o kernel NÃO escreve mais em ch192-207 dele (achado
+    // "ch192-207 aliasa pro PRÓXIMO ser", corrigido: os 16 valores agora vão
+    // para `extra_out[3..19]`, ver comparação abaixo). `buf_output` só precisa
+    // existir e ser do tamanho certo pro bind group não falhar — não há mais
+    // leitura de corrupção pra fazer aqui, então nenhum readback dele é
+    // necessário neste teste.
+    let bytes_output = (N_BEINGS * WAVE_U32S * 4) as u64;
     let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("test-output"),
         size: bytes_output,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let buf_output_readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("test-output-readback"),
-        size: bytes_output,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
@@ -208,46 +195,17 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
         enc.clear_buffer(&buf_output, 0, Some(bytes_output));
         let bytes_extra =
             digest.bind_and_dispatch(&mut enc, &device, &queue, N_BEINGS, &buf_retina, &buf_output);
-        enc.copy_buffer_to_buffer(&buf_output, 0, &buf_output_readback, 0, bytes_output);
         queue.submit(Some(enc.finish()));
         device.poll(wgpu::Maintain::Wait);
 
-        // ── Lê canais 192-207 ──────────────────────────────────────────────────
-        let slice = buf_output_readback.slice(0..bytes_output);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        device.poll(wgpu::Maintain::Wait);
-        let _ = rx.recv();
-        let data = slice.get_mapped_range();
-        let words: &[u32] = bytemuck::cast_slice(&data);
-        for being in 0..N_BEINGS {
-            // ch192-207 de `being` ALIASA para o canal i (0-15) de `being+1` — ver o
-            // comentário grande acima de `bytes_output`. Lemos daí, não do bloco de
-            // `being`, porque é ONDE o byte realmente aparece (mesmo endereçamento
-            // que já existia em `perception_temporal.wgsl`).
-            let base = (being + 1) * WAVE_U32S;
-            for ci in 0..16usize {
-                let ch = ci; // aliasado: canal i do próximo ser, não 192+i deste ser
-                let word = words[base + ch / 4];
-                let byte = ((word >> ((ch % 4) * 8)) & 0xFF) as u8;
-                let got = byte as i8;
-                let want = expected_channels[being][ci];
-                assert!(
-                    (got as i32 - want as i32).abs() <= 1,
-                    "tick={tick} being={being} ch192+{ci} (aliasado p/ ch{ci} do ser {}): GPU={got} CPU={want} (h_old={:?})",
-                    being + 1,
-                    cpu_percept[being].pipeline.state.h
-                );
-            }
-        }
-        drop(data);
-        buf_output_readback.unmap();
-
-        // ── Lê extra_out (min_wall_ahead, edge_row6, edge_row7) ─────────────────
+        // ── Lê extra_out: min_wall_ahead/edge_row6/edge_row7 (slots 0-2) e o
+        // estado CfC squashed "ch192-207" (slots 3-18, achado P1.8 — deixou de
+        // aliasar em `buf_output` e passou a viver aqui, espaço próprio por ser) ──
         let extra = digest.read_after_submit(&device, N_BEINGS, bytes_extra);
         for being in 0..N_BEINGS {
             let (want_wall, want_e6, want_e7) = cpu_wall_and_edges(&retinas_per_being[being]);
-            let [got_wall, got_e6, got_e7] = extra[being];
+            let row = extra[being];
+            let (got_wall, got_e6, got_e7) = (row[0], row[1], row[2]);
             // min_wall_ahead: se nenhuma parede qualificou, os dois lados usam
             // sentinelas GRANDES mas DIFERENTES (f32::MAX vs 1e9) — só comparamos
             // o valor exato quando uma parede real foi encontrada.
@@ -267,6 +225,16 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
                 (got_e7 - want_e7).abs() < 0.01,
                 "tick={tick} being={being} edge_row7: GPU={got_e7} CPU={want_e7}"
             );
+            for ci in 0..16usize {
+                let got = row[3 + ci];
+                let want = expected_channels[being][ci] as f32;
+                assert!(
+                    (got - want).abs() <= 1.0,
+                    "tick={tick} being={being} ch192+{ci} (agora extra_out[{}]): GPU={got} CPU={want} (h_old={:?})",
+                    3 + ci,
+                    cpu_percept[being].pipeline.state.h
+                );
+            }
         }
 
         // ── Avança o CfC da CPU para o próximo tick (mesma retina que a GPU viu) ──

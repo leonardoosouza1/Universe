@@ -218,6 +218,17 @@ pub struct BrainGpu {
     pub capacity: usize,
 
     pub adapter: String,
+
+    /// P1.8, achado "KAN sensorial congelado na identidade" — `eng.kan_filters`
+    /// nunca é tocado por `apply_to_engine`/mutação no `gpu_evolve` (não está no
+    /// `Genome`), então TODO ser de TODA geração sobe exatamente os mesmos 3072
+    /// coeficientes identity (`[1.0; 16]` por canal). Subir de novo a cada geração
+    /// é banda desperdiçada — `true` depois do primeiro `upload_weights` pula o
+    /// bloco KAN nas chamadas seguintes. Comportamento idêntico: a única forma de
+    /// isto ficar errado seria `kan_filters` passar a variar por ser/geração no
+    /// futuro, o que hoje não acontece em nenhum ponto do código (confirmado por
+    /// grep: `apply_to_engine` só copia l1/l2/slow).
+    kan_uploaded: std::sync::atomic::AtomicBool,
 }
 
 impl BrainGpu {
@@ -431,6 +442,7 @@ impl BrainGpu {
             buf_percept_dummy,
             capacity,
             adapter: adapter_name,
+            kan_uploaded: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -448,21 +460,30 @@ impl BrainGpu {
         // ── KAN ─────────────────────────────────────────────────────────────
         // SensoryPreFilter: Vec<KanAxiomFilter>, cada um com spline_coeffs [f32; 16].
         // Layout: ser × WAVE × KAN_KNOTS (SoA por ser).
-        let mut kan_data: Vec<f32> = Vec::with_capacity(n * KAN_WEIGHTS_PER_SER);
-        for eng in engines[..n].iter() {
-            for filter in eng.kan_filters.filters.iter().take(SENSORY_WAVE_SIZE) {
-                kan_data.extend_from_slice(&filter.spline_coeffs);
-            }
-            // Padding se num filters < SENSORY_WAVE_SIZE (não deve ocorrer, mas defensivo)
-            let missing = SENSORY_WAVE_SIZE.saturating_sub(eng.kan_filters.filters.len());
-            for _ in 0..missing {
-                // Coeficientes identity = 1.0 (sem deformação)
-                for _ in 0..KAN_KNOTS {
-                    kan_data.push(1.0);
+        //
+        // P1.8, achado "KAN sensorial congelado na identidade — adapt() nunca é
+        // chamado, não está no Genome do gpu_evolve": `eng.kan_filters` é SEMPRE
+        // `[1.0; 16]` por canal, pra TODO ser, em TODA geração (nada muta isso).
+        // Subir os mesmos 3072×n floats de novo a cada geração é banda pura —
+        // sobe uma vez (primeira chamada de `upload_weights`) e pula nas
+        // seguintes. Ver doc de `kan_uploaded`.
+        if !self.kan_uploaded.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let mut kan_data: Vec<f32> = Vec::with_capacity(n * KAN_WEIGHTS_PER_SER);
+            for eng in engines[..n].iter() {
+                for filter in eng.kan_filters.filters.iter().take(SENSORY_WAVE_SIZE) {
+                    kan_data.extend_from_slice(&filter.spline_coeffs);
+                }
+                // Padding se num filters < SENSORY_WAVE_SIZE (não deve ocorrer, mas defensivo)
+                let missing = SENSORY_WAVE_SIZE.saturating_sub(eng.kan_filters.filters.len());
+                for _ in 0..missing {
+                    // Coeficientes identity = 1.0 (sem deformação)
+                    for _ in 0..KAN_KNOTS {
+                        kan_data.push(1.0);
+                    }
                 }
             }
+            self.queue.write_buffer(&self.buf_kan, 0, bytemuck::cast_slice(&kan_data));
         }
-        self.queue.write_buffer(&self.buf_kan, 0, bytemuck::cast_slice(&kan_data));
 
         // ── L1 (instinct_layer: BitLinear WAVE→96) ───────────────────────
         // weights: Vec<f32>, row-major: weights[j * WAVE + i] = peso do neurônio j para input i

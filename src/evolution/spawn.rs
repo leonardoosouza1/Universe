@@ -472,13 +472,14 @@ pub fn spawn_swarm(
                         *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
-                // Mutate cortex_l3 (Layer 3 — deep abstract).
-                for w in engine.cortex_l3.weights.iter_mut() {
-                    if rng.random_bool(rate_boosted) {
-                        let z = gauss(&mut rng);
-                        *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
-                    }
-                }
+                // cortex_l3 (Layer 3): NÃO mutado — `forward()` não usa (engine.rs:517,
+                // `let _ = &self.cortex_l3; // kept struct, forward unused`). Mutar aqui
+                // era gasto puro de RNG/CPU por indivíduo/geração, e sujava o .dna com
+                // ruído que parece "camada aprendida" sem nunca influenciar
+                // comportamento — achado P1.8 "cortex_l3 morto" (auditoria confirmou
+                // custo/risco de religar no forward é alto — 24 dims sem mapeamento
+                // óbvio pros 96 slots de final_intent — então fica fora de escopo aqui;
+                // só o desperdício de mutação foi removido).
                 // SlowBrain mutation: Gaussian σ scaled like cortex, clamped [-10, 10].
                 // CfC state resets on spawn — only Dense1+Dense2 weights are heritable.
                 {

@@ -397,6 +397,27 @@ pub fn mutate_sensors(sensors: &mut [f32], p_mutate: f32, rng: &mut impl GenoRng
 pub const N_CFC_CHANNELS: usize = 96;
 
 impl Genome {
+    /// Zera a coluna de L1 dos canais em `perception::channels::DEAD_L1_INPUTS`
+    /// (hoje só TireTemp, ch70 — estruturalmente constante, ver a doc completa em
+    /// `Genome::random`). Extraída para método porque `Genome::random` zerava só
+    /// no NASCIMENTO — `evolve()` muta L1 toda geração sem reaplicar a máscara, e
+    /// medido no campeão real (`evolve_best_gen0059.bin`, coluna ch70) os 96
+    /// pesos já estavam 100% não-zero (|w| médio 0,2085, igual à magnitude do
+    /// canal vizinho vivo ch71) — a proteção erode geração a geração (achado
+    /// P1.8 "DEAD_L1_INPUTS zera só no nascimento").
+    ///
+    /// Chamar depois de qualquer mutação de L1. NÃO chamar em `load_genome` —
+    /// isso reescreveria em silêncio pesos reais que um campeão já treinou
+    /// (mesmo princípio do teste `genoma_legado_carregado_do_disco_nao_e_reescalado`:
+    /// carregar do disco não modifica peso).
+    pub fn zero_dead_inputs(&mut self) {
+        for &(ch, _motivo) in crate::perception::channels::DEAD_L1_INPUTS {
+            for neuron in 0..L1_NEURONS {
+                self.l1[neuron * SENSORY_WAVE_SIZE + ch] = 0.0;
+            }
+        }
+    }
+
     /// Gera genoma com pesos aleatórios (N(0, σ_l1)).
     ///
     /// σ_l1 = 0.30 para L1/L2 — colocada na escala de pesos reais observados
@@ -464,6 +485,10 @@ impl Genome {
                 l1[neuron * SENSORY_WAVE_SIZE + ch] = 0.0;
             }
         }
+        // (não chama `Genome::zero_dead_inputs` aqui porque `self` ainda não existe
+        // — `l1` é uma Vec local que só vira campo do Genome no `Self { .. }` abaixo.
+        // Mesma lógica, ver a doc do método para por que `evolve()` PRECISA
+        // reaplicar isto e `load_genome` não pode.)
 
         let kan_knots = crate::evolution::dna_genesis::default_kan_knots();
 
@@ -735,6 +760,14 @@ pub fn evolve(
                 *w = w.clamp(-2.0, 2.0);
             }
         }
+        // P1.8, achado "DEAD_L1_INPUTS zera só no nascimento" — reaplica a máscara
+        // dos canais mortos (ch70/TireTemp) depois da mutação de L1, pra ela não
+        // erodir geração a geração (medida no campeão real: 96/96 pesos já
+        // ressuscitados). Seguro chamar aqui: `evolve()` é quem PRODUZ genomas
+        // novos a cada geração, então isto é parte do processo normal de gerar
+        // filhos — nenhum teste assume que `evolve()` preserva o valor cru da
+        // mutação nesses canais.
+        filho.zero_dead_inputs();
         // Mutação gaussiana em L2.
         for w in filho.l2.iter_mut() {
             if rng.f32() < params.p_mutate {
@@ -775,23 +808,26 @@ pub fn evolve(
         if SENSORS_EVOLVE_ON.load(Ordering::Relaxed) {
             mutate_sensors(&mut filho.sensors, params.p_mutate * 3.0, &mut rng);
         }
-        // KAN knots: mutação esparsa (0.5% por knot, σ=0.05).
-        for row in filho.kan_knots.iter_mut() {
-            for k in row.iter_mut() {
-                if rng.f32() < 0.005 {
-                    *k = (*k + rng.gauss() * 0.05).clamp(-1.0, 1.0);
-                }
-            }
-        }
+        // kan_knots (SAÍDA, 3×12): NÃO mutado — achado P1.8 "kan_knots é mutado em
+        // toda geração mas nunca é lido de volta". `main.rs` passa `&kan_knots_global`
+        // (`default_kan_knots()`, fixo) para `ctx.tick()` em TODOS os call sites reais
+        // (laço principal e held-out) — `genomes[i].kan_knots` nunca é lido fora de
+        // save/load. Mutar aqui era RNG/CPU gasto à toa por indivíduo/geração, E
+        // sujava o `.dna` com "evolução" que não existe (o campo muda no disco, o
+        // comportamento não). Se/quando alguém religar os knots por-ser em
+        // `ctx.tick()` (ver doc do campo, achado completo em docs/PLANO_EVOLUCAO.md
+        // P1.8), a mutação volta aqui.
 
         // ── P1.7 — cérebro assíncrono (docs/PLANO_EVOLUCAO.md §P1.7) ────────────
         // Os quatro blocos abaixo são SEMPRE os ÚLTIMOS a consumir `rng` neste
-        // laço — l1/l2/slow/tau/sensores/kan_knots (acima) mutam exatamente como
-        // mutavam antes de P1.7 existir, byte a byte, porque nenhum deles teve
-        // sequer uma chamada de `rng` inserida ANTES de si. Um genoma que nasce
-        // neutro (todo `Genome::random`) e nunca muta estes campos (os quatro
-        // atomics desligados via `--sem-*`) reproduz a saída de hoje geração após
-        // geração — é o braço de controle mais forte que dá pra escrever.
+        // laço — l1/l2/slow/tau/sensores (acima) mutam exatamente como mutavam
+        // antes de P1.7 existir, byte a byte, porque nenhum deles teve sequer uma
+        // chamada de `rng` inserida ANTES de si. Um genoma que nasce neutro (todo
+        // `Genome::random`) e nunca muta estes campos (os quatro atomics
+        // desligados via `--sem-*`) reproduz a saída de hoje geração após geração
+        // — é o braço de controle mais forte que dá pra escrever. (`kan_knots`
+        // deixou de mutar em P1.8 — a garantia acima é sobre l1/l2/slow/tau/sensores,
+        // não muda com essa remoção.)
 
         // Mecanismo 1 (memória): alfa muta ADITIVO-clampado, não multiplicativo
         // como τ — τ é uma taxa de decaimento em s⁻¹ (grandeza com escala própria,
@@ -1024,6 +1060,40 @@ mod tests {
                 if ch + 1 < SENSORY_WAVE_SIZE {
                     let vizinho = g.l1[0 * SENSORY_WAVE_SIZE + (ch + 1)];
                     assert_ne!(vizinho, 0.0, "seed {seed}: canal vizinho ch{} não deveria ter sido zerado", ch + 1);
+                }
+            }
+        }
+    }
+
+    /// P1.8, achado "DEAD_L1_INPUTS zera só no nascimento, mutação de evolve() não
+    /// reaplica a máscara": com `p_mutate=1.0` (todo peso muta toda geração), a
+    /// coluna do canal morto tinha 100% de chance de sair de 0.0 já na geração 1
+    /// SEM o fix — este teste falha sem `filho.zero_dead_inputs()` depois da
+    /// mutação de L1 (`evolve()`, gpu/evolution.rs) e passa com ele.
+    #[test]
+    fn evolve_preserva_zero_dos_canais_mortos() {
+        use crate::perception::channels::DEAD_L1_INPUTS;
+        assert!(!DEAD_L1_INPUTS.is_empty(), "pré-condição: precisa de ao menos 1 canal morto pra testar algo");
+
+        let n = 10;
+        let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
+        // p_mutate=1.0: garante que TODO peso de L1 (inclusive os dos canais mortos,
+        // se a máscara não fosse reaplicada) sofre tentativa de mutação toda geração.
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3 };
+        let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
+
+        for geracao in 0..10 {
+            genomes = evolve(&genomes, &fitnesses, &params, geracao);
+            for (gi, g) in genomes.iter().enumerate() {
+                for &(ch, _motivo) in DEAD_L1_INPUTS {
+                    for neuron in 0..L1_NEURONS {
+                        let w = g.l1[neuron * SENSORY_WAVE_SIZE + ch];
+                        assert_eq!(
+                            w, 0.0,
+                            "geração {geracao}, genoma {gi}: l1[neuron={neuron}, ch={ch}] = {w}, \
+                             esperado 0.0 — canal morto ressuscitou pela mutação"
+                        );
+                    }
                 }
             }
         }

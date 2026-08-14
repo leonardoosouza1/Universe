@@ -37,11 +37,21 @@ fn test_bitlinear_inference() {
     let input = vec![10, 20, 30, 40];
     
     let output = layer.forward(&input);
-    
+
     // Calculation for out[0]: (10*1) + (20*-1) + (30*0) + (40*1) = 10 - 20 + 0 + 40 = 30
-    // Result scaled by weight_scale (abs_mean of full_weights = 0.75)
-    // 30 * 0.75 / 127.0 (norm_factor) = 0.17716535
-    
-    assert!((output[0] - (22.5 / 127.0)).abs() < 1e-5);
+    // 30 / 127.0 (norm_factor) = 0.23622047
+    //
+    // Achado (fora do escopo de P1.8, descoberto ao rodar `cargo test --workspace`
+    // como gate final do conserto): esta asserção assumia `output[0]` multiplicado
+    // por `weight_scale` (abs_mean dos pesos = 0.75) — mas `BitLinear::forward`
+    // (src/layers.rs:39-52) hoje NÃO multiplica `weight_scale` no forward (comentário
+    // do próprio campo, layers.rs:22: "Forward NÃO multiplica scale (peso já absorve
+    // magnitude)"). `weight_scale` só é lido/gravado no boundary do disco
+    // (`quantize_for_save`/`load_from_quantized`, ver layers.rs:83-98), não no forward
+    // em si. A asserção antiga (`22.5/127.0`) nunca foi atualizada quando esse
+    // comportamento mudou (git log mostra o último commit real em `layers.rs` como
+    // "fix(dna): cortex quantize scale 63.5 (was 127, saturated weights >1.0)",
+    // anterior a esta sessão) — corrigida aqui para refletir o forward atual.
+    assert!((output[0] - (30.0 / 127.0)).abs() < 1e-5);
     println!("BitLinear Output: {:?}", output);
 }

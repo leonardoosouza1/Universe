@@ -143,10 +143,16 @@ impl VoxelWorld {
         // desvio ativo, não passivo. Só sobrescreve Road (nunca Wall/Grass).
         // Cada ponto vira bloco 2×2 (6m × 6m) — visível na retina e passível de colisão
         // pelo chassi (2m × 2.6m). Holes isolados de 1 cell eram skipáveis.
+        // P1.8: passa o traçado REAL (`waypoints`, cell-space) e a largura real da
+        // pista — achado "buracos do currículo calculados sobre traçado FANTASMA"
+        // (procedural_holes rodava seu próprio `procedural_waypoints(seed)`
+        // independente, geometria sem relação com o que `do_curriculo` gerou para
+        // seed≥1_000_000) e achado "buracos nascem em cima do eixo" (offset
+        // lateral zero, sem guard de largura mínima).
         let holes_iter = if NO_HOLES.load(Ordering::Relaxed) {
             Vec::new()
         } else {
-            track_holes_for_seed(_seed)
+            track_holes_for_seed(_seed, &waypoints, track_width / cell_size)
         };
         for hole_cell in holes_iter {
             let hx = hole_cell.x.round() as i32;
@@ -157,7 +163,10 @@ impl VoxelWorld {
                     let cy = hy + dy;
                     if cx < 0 || cx >= size as i32 || cy < 0 || cy >= size as i32 { continue; }
                     let idx = cy as usize * size + cx as usize;
-                    if grid[idx] == VoxelType::Road {
+                    // Bloco tem ~6-8.5m de lado; só perfura pista larga o bastante pra
+                    // sobrar corredor pro chassi (2m×2.6m) — achado "overlay incondicional
+                    // sem consultar largura restante".
+                    if grid[idx] == VoxelType::Road && track_width >= 12.0 {
                         grid[idx] = VoxelType::Hole;
                     }
                 }
@@ -262,6 +271,68 @@ impl VoxelWorld {
         } else {
             VoxelType::Wall
         }
+    }
+
+    /// Caminha o eixo da pista e reporta defeitos geométricos: eixo fora do
+    /// asfalto (curva cortando parede/buraco) ou estrangulamento (largura livre
+    /// somada dos dois lados < metade da largura declarada). Extraído de
+    /// `src/bin/pista_check.rs` (P1.8, achado "pista_check nunca é chamado por
+    /// gpu_evolve — não existe gate contra pista com defeito") para servir de
+    /// GATE antes de treinar: uma pista com defeito não é vencível por NENHUM
+    /// controlador (quatro controladores independentes pararam no mesmo ponto —
+    /// não era coincidência de controle, era o mapa).
+    ///
+    /// `width`: largura declarada em metros (mesma usada em `VoxelWorld::new`).
+    /// `ate`: até quantos metros de eixo caminhar (tipicamente `self.lap_distance`).
+    /// Devolve uma linha de texto por defeito encontrado; vazio = pista dirigível
+    /// em todo o trecho examinado.
+    pub fn validar_pista(&self, width: f32, ate: f32) -> Vec<String> {
+        let wps = &self.waypoints_world;
+        let n = wps.len();
+        let mut defeitos = Vec::new();
+        if n < 2 {
+            defeitos.push("pista sem waypoints suficientes (n < 2)".to_string());
+            return defeitos;
+        }
+        let mut arco = 0.0f32;
+        let mut wp = 0usize;
+        let mut t = 0.0f32;
+        while arco < ate && wp < n - 1 {
+            let a = wps[wp];
+            let b = wps[wp + 1];
+            let seg = (b - a).length().max(0.001);
+            let p = a + (b - a) * (t / seg);
+            let dir_seg = (b - a) / seg;
+            let nrm = Vec2::new(-dir_seg.y, dir_seg.x);
+
+            let mat = self.material_at(p);
+            if !matches!(mat, VoxelType::Road) {
+                defeitos.push(format!("{arco:.0}m: eixo fora da pista ({mat:?})"));
+            } else {
+                let livre = |sinal: f32| -> f32 {
+                    let mut d = 0.0f32;
+                    while d < 300.0 {
+                        let q = p + nrm * (d * sinal);
+                        if !matches!(self.material_at(q), VoxelType::Road) { return d; }
+                        d += 0.5;
+                    }
+                    300.0
+                };
+                let esq = livre(1.0);
+                let dir = livre(-1.0);
+                if esq + dir < width * 0.5 {
+                    defeitos.push(format!(
+                        "{arco:.0}m: estrangulamento (livre {:.1}m de {width:.0}m declarados)",
+                        esq + dir
+                    ));
+                }
+            }
+
+            arco += 1.0;
+            t += 1.0;
+            if t >= seg { t -= seg; wp += 1; }
+        }
+        defeitos
     }
 
     /// O(1) elevation lookup: returns height at grid cell nearest to world position
@@ -971,7 +1042,11 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
 /// curvas), retorna a primeira que passa. Garante variedade entre seeds e
 /// rejeita layouts sem sentido.
 pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
-    for attempt in 0..32u64 {
+    // P1.8: orçamento subiu de 32→96 tentativas (achado "piso de raio piora o pior
+    // caso" — adicionar uma restrição geométrica nova ao `validate_track` só é
+    // seguro se o gerador continuar achando candidato válido; mais tentativas
+    // absorve a rejeição extra sem precisar pular a validação).
+    for attempt in 0..96u64 {
         let sub_seed = seed.wrapping_mul(0x9E3779B97F4A7C15)
                            .wrapping_add(attempt.wrapping_mul(0xC1D7BEEF));
         let candidate = generate_track_candidate(sub_seed);
@@ -979,7 +1054,18 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
             return candidate;
         }
     }
-    // Fallback se 32 tentativas falharem: oval mínimo garantido válido.
+    // Fallback se 96 tentativas falharem: NÃO é silencioso (achado "fallback
+    // contradiz a própria garantia que o módulo declara" — o comentário antigo
+    // dizia "garantido válido" mas o candidato abaixo nunca passa por
+    // `validate_track`). Loga alto o bastante pra aparecer em qualquer log de
+    // bateria; quem estiver rodando `--pistas` com essa seed vai ver isto ANTES
+    // do gate de passabilidade (`validar_pista`) travar o processo.
+    eprintln!(
+        "[AVISO] procedural_waypoints(seed={seed}): 96 tentativas de geração falharam a \
+         validate_track — caindo no candidato de reserva SEM validação geométrica. Esta \
+         pista pode ter curva impossível (piso de raio) ou comprimento fora da faixa. \
+         Rode `pista_check --seed {seed}` antes de treinar nela."
+    );
     generate_track_candidate(seed.wrapping_add(0xDEADBEEF))
 }
 
@@ -1091,13 +1177,19 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
     let mut total_curve_deg = 0.0_f32;
     let mut max_turn_per_meter: f32 = 0.0;
     let mut min_seg_len_at_sharp: f32 = f32::MAX;
+    // P1.8, achado "gerador procedural sem piso de raio": `validate_track` media
+    // ângulo de virada e comprimento de segmento, mas nunca o RAIO da curva — uma
+    // pista podia ter curva de raio de poucos metros (fisicamente impossível de
+    // negociar em velocidade de corrida) e passar validação assim mesmo.
+    let mut min_radius_m: f32 = f32::MAX;
     for i in 1..n - 1 {
         let v_in_raw = waypoints[i] - waypoints[i - 1];
         let v_out_raw = waypoints[i + 1] - waypoints[i];
         let v_in = v_in_raw.normalize_or_zero();
         let v_out = v_out_raw.normalize_or_zero();
         let dot = v_in.dot(v_out).clamp(-1.0, 1.0);
-        let turn = dot.acos().to_degrees();
+        let turn_rad = dot.acos();
+        let turn = turn_rad.to_degrees();
         if turn > max_turn { max_turn = turn; }
         total_curve_deg += turn;
 
@@ -1109,6 +1201,12 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         if avg_seg > 0.5 {
             let tpm = turn / avg_seg;
             if tpm > max_turn_per_meter { max_turn_per_meter = tpm; }
+            // Raio local ≈ arco/ângulo (aproximação de círculo osculador — mesma
+            // conta que `pista_check.rs` usa para reportar "raio" por waypoint).
+            if turn_rad > 1e-4 {
+                let raio_m = avg_seg / turn_rad;
+                if raio_m < min_radius_m { min_radius_m = raio_m; }
+            }
         }
         if turn > 50.0 {
             sharp_turns += 1;
@@ -1124,6 +1222,12 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
     if sharp_turns > 0 && min_seg_len_at_sharp < 12.0 { return false; }
     // Turn rate ≤ 8°/m (curva 60° precisa segmento ≥ 7.5m).
     if max_turn_per_meter > 8.0 { return false; }
+    // Piso de raio: mesmo piso que `pista_gen.rs::gerar` já usa (`d.r_min < 6.0`,
+    // pista_gen.rs:220) — consistência entre os dois geradores em vez de um piso
+    // arbitrário novo. Sementes procedurais fora da tabela nunca tinham essa
+    // checagem; medido no build atual o raio mínimo típico fica em 7-10m, então
+    // 6.0m é conservador (abaixo do observado) sem reabrir curvas hoje aceitas.
+    if min_radius_m.is_finite() && min_radius_m < 6.0 { return false; }
     // Permite hairpins até 90° + sequências de 4 curvas (chicanes desafiadoras OK).
     // EASY mode: pista REAL com curvas reais. Sem ser oval.
     // Mantém variedade (sharp turns, S-curves) mas sem extremos.
@@ -1168,7 +1272,13 @@ pub fn track_elevation_for_seed(seed: u64) -> (f32, f32) {
 /// Só pistas HARD+ recebem. Layout escolhido pra punir trajetória preguiçosa sem
 /// bloquear a racing line ideal — buraco sempre fora do centro da pista ou em
 /// trechos onde a IA deve já ter aprendido curvar.
-pub fn track_holes_for_seed(seed: u64) -> Vec<Vec2> {
+///
+/// `waypoints`: traçado REAL desta seed em cell-space (o mesmo que
+/// `track_waypoints_for_seed` produziu para o mundo — cobre inclusive o
+/// currículo, `do_curriculo`, cujo traçado é geometricamente distinto do que
+/// `procedural_waypoints(seed)` geraria sozinho). `largura_cells`: largura da
+/// pista em CÉLULAS (metros / cell_size), usada só pelo ramo procedural.
+pub fn track_holes_for_seed(seed: u64, waypoints: &[Vec2], largura_cells: f32) -> Vec<Vec2> {
     match seed {
         // Dubai / Interlagos — sem buracos (fase de aprendizado).
         123 | 64 => vec![],
@@ -1202,15 +1312,23 @@ pub fn track_holes_for_seed(seed: u64) -> Vec<Vec2> {
             Vec2::new(65.0, 135.0),   // Subida W
         ],
 
-        _ => procedural_holes(seed),
+        _ => procedural_holes(seed, waypoints, largura_cells),
     }
 }
 
 /// Procedural hazards: K holes near apex of waypoint curves, deterministic per seed.
 /// Inspired by water finding obstacles — placed at trajectory-critical points
-/// (apex of sharpest curves, ~70% from segment start).
-pub fn procedural_holes(seed: u64) -> Vec<Vec2> {
-    let waypoints = procedural_waypoints(seed);
+/// (apex of sharpest curves, ~70% from segment start, deslocado para o lado
+/// INTERNO da curva por uma fração da largura real da pista).
+///
+/// P1.8: recebe o traçado já calculado pelo chamador em vez de rodar
+/// `procedural_waypoints(seed)` de novo — achado "buracos do currículo
+/// calculados sobre traçado fantasma" (para seed≥1_000_000 o traçado real vem de
+/// `do_curriculo`, um algoritmo geometricamente diferente de `procedural_waypoints`;
+/// rodar os dois em paralelo produzia buracos sem relação com a pista que o carro
+/// de fato percorre). `largura_cells`: usada para o offset lateral (achado "buracos
+/// nascem em cima do eixo, deslocamento lateral zero").
+pub fn procedural_holes(seed: u64, waypoints: &[Vec2], largura_cells: f32) -> Vec<Vec2> {
     if waypoints.len() < 4 { return vec![]; }
     // Score each waypoint by turn angle; place hole near sharpest few apexes.
     let mut scored: Vec<(usize, f32)> = Vec::new();
@@ -1226,10 +1344,19 @@ pub fn procedural_holes(seed: u64) -> Vec<Vec2> {
     // Seed-deterministic count: 1 or 2 holes (conservative — must not break learning curve).
     let n_holes = 1 + ((seed.wrapping_mul(0xA1B2C3D4) >> 32) as usize & 1);
     scored.iter().take(n_holes).map(|(i, _)| {
-        // Position at 70% from prev → current (apex zone offset toward inside of curve).
+        // Position at 70% from prev → current (apex zone), deslocado lateralmente
+        // para o lado interno da curva por 30% da largura real — antes o buraco
+        // nascia exatamente EM CIMA do eixo (deslocamento lateral zero), podendo
+        // bloquear a pista inteira em curvas fechadas/estreitas.
         let prev = waypoints[i.saturating_sub(1)];
         let cur = waypoints[*i];
-        prev + (cur - prev) * 0.7
+        let next = waypoints[(*i + 1).min(waypoints.len() - 1)];
+        let dir_in = (cur - prev).normalize_or_zero();
+        let dir_out = (next - cur).normalize_or_zero();
+        let normal = Vec2::new(-dir_in.y, dir_in.x);
+        // Lado interno da curva: sinal do produto cruzado 2D entre entrada e saída.
+        let lado = if dir_in.perp_dot(dir_out) > 0.0 { 1.0 } else { -1.0 };
+        prev + (cur - prev) * 0.7 + normal * lado * (largura_cells * 0.3)
     }).collect()
 }
 
@@ -1278,6 +1405,8 @@ mod tests {
     fn ref_world() -> VoxelWorld {
         VoxelWorld::new(42, 10.0)
     }
+
+
 
     #[test]
     fn track_progress_never_negative() {
