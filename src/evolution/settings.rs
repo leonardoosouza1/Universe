@@ -11,7 +11,6 @@ pub struct RaceSettings {
     pub best_weights: Option<Vec<f32>>,
     pub best_car_model_idx: Option<u8>,
     pub best_l2_weights: Option<Vec<f32>>,
-    pub best_l3_weights: Option<Vec<f32>>, // V7: cortex layer 2 (64×32 = 2048)
     pub best_scale: f32,
     pub best_slow_weights: Option<Vec<f32>>,
     pub best_slow_scale: f32,

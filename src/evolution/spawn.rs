@@ -424,9 +424,6 @@ pub fn spawn_swarm(
                 // ≈ ±0.008 magnitude que sobrescrevia weights treinados f32 (~±2.0)
                 // destruindo a rede no spawn. Hypernet ficará pra V2 com basis f32 real.
                 let _ = current_best_hypernet;
-                if let Some(ref l3) = race.best_l3_weights {
-                    engine.cortex_l3.set_weights(l3);
-                }
                 if let Some(ref slow_w) = race.best_slow_weights {
                     engine.slow_brain.set_all_weights(slow_w);
                 }
@@ -472,14 +469,8 @@ pub fn spawn_swarm(
                         *w = (*w + sigma_cortex * z).clamp(-10.0, 10.0);
                     }
                 }
-                // cortex_l3 (Layer 3): NÃO mutado — `forward()` não usa (engine.rs:517,
-                // `let _ = &self.cortex_l3; // kept struct, forward unused`). Mutar aqui
-                // era gasto puro de RNG/CPU por indivíduo/geração, e sujava o .dna com
-                // ruído que parece "camada aprendida" sem nunca influenciar
-                // comportamento — achado P1.8 "cortex_l3 morto" (auditoria confirmou
-                // custo/risco de religar no forward é alto — 24 dims sem mapeamento
-                // óbvio pros 96 slots de final_intent — então fica fora de escopo aqui;
-                // só o desperdício de mutação foi removido).
+                // cortex_l3 removido por inteiro em 2026-08-14 (P1.9): nunca esteve
+                // no forward nem em formato de disco algum — ver docs/PLANO_EVOLUCAO.md.
                 // SlowBrain mutation: Gaussian σ scaled like cortex, clamped [-10, 10].
                 // CfC state resets on spawn — only Dense1+Dense2 weights are heritable.
                 {
@@ -570,7 +561,6 @@ pub fn spawn_swarm(
 
                 engine.slow_brain.set_all_weights(&elite.slow_weights);
                 engine.cortex_l2.set_weights(&elite.cortex_l2);
-                engine.cortex_l3.set_weights(&elite.cortex_l3);
                 if !elite.perception_weights.is_empty() {
                     engine.retina_perception.load_weights(&elite.perception_weights);
                 }
@@ -727,9 +717,6 @@ pub fn spawn_swarm(
                 }
                 if let Some(ref l2) = race.best_l2_weights {
                     engine.cortex_l2.set_weights(l2);
-                }
-                if let Some(ref l3) = race.best_l3_weights {
-                    engine.cortex_l3.set_weights(l3);
                 }
             } else {
                 let mutated: Vec<f32> = best.iter().enumerate().map(|(idx, &w)| {

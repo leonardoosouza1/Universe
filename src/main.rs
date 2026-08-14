@@ -213,7 +213,6 @@ fn main() {
         best_weights: None,
         best_car_model_idx: None,
         best_l2_weights: None,
-        best_l3_weights: None,
         best_scale: 1.0,
         best_slow_weights: None,
         best_slow_scale: 1.0,

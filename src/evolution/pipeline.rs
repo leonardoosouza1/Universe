@@ -540,7 +540,6 @@ pub(super) fn evolution_pipeline(
                 // Tier 6.3 LITE: propaga morpho genes do racer vivo pra elite pool.
                 morpho: r.morpho,
                 cortex_l2: r.engine.cortex_l2.weights.clone(),
-                cortex_l3: r.engine.cortex_l3.weights.clone(),
                 car_model_idx: r.car_model_idx,
                 // v11: captura knots do KAN output head pra inheritance entre gens.
                 kan_knots: r.kan_out.knots,
@@ -932,7 +931,6 @@ pub(super) fn evolution_pipeline(
                 race.best_weights = Some(weights.clone());
                 race.best_car_model_idx = Some(best.car_model_idx);
                 race.best_l2_weights = Some(best.engine.cortex_l2.weights.clone());
-                race.best_l3_weights = Some(best.engine.cortex_l3.weights.clone());
                 race.best_scale = scale;
                 race.best_slow_weights = Some(slow_weights.clone());
                 race.best_slow_scale = slow_scale;

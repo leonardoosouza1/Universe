@@ -135,7 +135,6 @@ pub struct EliteDna {
     pub slow_weights: Vec<f32>,
     pub slow_scale: f32,
     pub cortex_l2: Vec<f32>,
-    pub cortex_l3: Vec<f32>,
     pub fitness: f32,
     /// Runtime-only. Comprimento == fast_weights.len(). TTL por peso (0 = livre).
     pub scar_mask: Vec<u8>,
@@ -512,7 +511,6 @@ pub struct DnaPayload {
     pub cortex_raw: Option<Vec<i8>>,
     // --- v7 / TLV CL2W chunk: cortex layer 2 weights (64×32=2048 i8 quantizado 63.5).
     pub cortex_l2_raw: Option<Vec<i8>>,
-    pub cortex_l3_raw: Option<Vec<i8>>,
     // SLWF chunk: slow_brain raw f32 (lossless). Bypassa Tree/sparse compressor ternary.
     pub slow_f32: Option<Vec<f32>>,
 }
@@ -754,7 +752,6 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                                 cortex_dct,
                                 cortex_raw,
                                 cortex_l2_raw,
-                                cortex_l3_raw: None,
                                 slow_f32,
                             });
                         }
@@ -818,7 +815,6 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             cortex_dct: None,
             cortex_raw: None,
             cortex_l2_raw: None,
-            cortex_l3_raw: None,
             slow_f32: None,
         });
         }
@@ -848,7 +844,6 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             cortex_dct: None,
             cortex_raw: None,
             cortex_l2_raw: None,
-            cortex_l3_raw: None,
             slow_f32: None,
         });
     }

@@ -176,7 +176,6 @@ pub struct SovereignEngine {
     pub metabolism: Metabolism,
     pub instinct_layer: BitLinear,         // 192 → 96 (Layer 1, sensory mixing)
     pub cortex_l2: crate::float_layers::FloatLinear,  // 96 → 48 (Layer 2, composição AND/OR)
-    pub cortex_l3: crate::float_layers::FloatLinear,  // 48 → 24 (Layer 3, deep abstract)
     pub slow_brain: SlowBrain,
     pub heart_resonance: ResonantNode,
     pub cfc_state: CfCCell,
@@ -253,13 +252,6 @@ impl SovereignEngine {
                 let mut r = crate::rng::Lcg::new(0xC0DE_CAFE);
                 for i in 0..4608 { l.weights[i] = r.symmetric() * 0.05; }
                 for i in 0..48 { l.weights[i * 96 + i] += 1.0; }
-                l
-            },
-            cortex_l3: {
-                let mut l = crate::float_layers::FloatLinear::new(48, 24);
-                let mut r = crate::rng::Lcg::new(0xDEAD_BEEF);
-                for i in 0..1152 { l.weights[i] = r.symmetric() * 0.05; }
-                for i in 0..24 { l.weights[i * 48 + i] += 1.0; }
                 l
             },
             slow_brain: SlowBrain::new(),
@@ -514,7 +506,6 @@ impl SovereignEngine {
             final_intent[j] = adapted.tanh();
         }
         self.final_intent = final_intent.to_vec();
-        let _ = &self.cortex_l3; // kept struct, forward unused
 
         // 1b. Tier 6.8 — Mirror neurons / observational learning.
         //     Compara a retina filtrada atual (pós-KAN+CfC) com a média retiniana
