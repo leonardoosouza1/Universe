@@ -274,6 +274,10 @@ fn avaliar_held_out(
     ctx.slow_samples.clear();
     ctx.policy_samples.clear();
     ctx.nan_seres.clear();
+    // `regiao_l1`/`regiao_l2` (`--regioes`, src/analysis/regioes.rs) andam em lockstep
+    // com `l1_samples`/`l2_samples` — mesmo risco de contaminação, mesmo conserto.
+    ctx.regiao_l1.clear();
+    ctx.regiao_l2.clear();
 
     let mediana = |mut v: Vec<f64>| -> f64 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -379,6 +383,17 @@ fn main() {
     /// curvatura, velocidade e alinhamento: a 15 m/s um filtro de 2 s entrega ao volante
     /// a percepção de 30 m atrás, e andar rápido fica punido pelo próprio cérebro.
     let mut tau_hetero = false;
+    // P1.7 (docs/PLANO_EVOLUCAO.md) — cérebro assíncrono: memória por neurônio,
+    // período/limiar de contribuição, ativação heterogênea. Os três mecanismos
+    // ficam LIGADOS por padrão (genoma nasce neutro — ver `Genome::random` — e só
+    // diverge por mutação, o mesmo precedente do banco de τ). As quatro flags
+    // abaixo são o braço de controle: cada uma CONGELA seu campo no valor de
+    // nascença pelo resto da corrida E manda o shader ignorá-lo mesmo que um
+    // `--retomar` anterior já tivesse mutado algo (ver `BrainGpu::mech_off_mask`).
+    let mut sem_memoria_neuronal = false;
+    let mut sem_periodo_neuronal = false;
+    let mut sem_limiar_neuronal = false;
+    let mut sem_ativacao_heterogenea = false;
     /// `--centro-simetrico`: recuar SUBTRAI da fitness de centralização.
     let mut centro_simetrico = false;
     /// `--out-beta`: força da fadiga de saída. Padrão = o histórico.
@@ -403,6 +418,11 @@ fn main() {
     let mut ativacao_on = false;
     // `--ativacao-n <N>`: amostra a cada N ticks (padrão 64).
     let mut ativacao_n: u32 = 64;
+    // `--regioes`: cruza as amostras de `--ativacao` com a curvatura local da pista
+    // (src/analysis/regioes.rs) — reta vs curva por neurônio. Requer `--ativacao`
+    // ligada junto (a coleta em `ctx.tick()` só roda quando ela está ligada); sem
+    // `--ativacao`, `--regioes` sozinha não imprime nada (vetores ficam vazios).
+    let mut regioes_on = false;
     // `--painel [--painel-porta N]`: painel HTTP tempo-real (E5). Sem a flag, nenhuma
     // thread é lançada — zero overhead (REFACTOR_PLAN.md §3.7).
     let mut painel_on = false;
@@ -445,6 +465,41 @@ fn main() {
                 // DESLIGA para rodar o braço de controle do A/B.
                 "--sem-init-espectral" => {
                     universe::gpu::evolution::SPECTRAL_INIT_ON.store(false, Ordering::Relaxed);
+                }
+                // FASE SENSORES (degrau 1): liga a evolução de FOV/alcances/lookaheads de
+                // curvatura (ver doc de `SENSORS_EVOLVE_ON`). Padrão DESLIGADA — sem esta
+                // flag, todo genoma nasce e permanece em `SENSOR_DEFAULTS` (os hardcodes de
+                // hoje), protegendo qualquer bateria em curso que não passe a flag nova.
+                "--sensores-evolutivos" => {
+                    universe::gpu::evolution::SENSORS_EVOLVE_ON.store(true, Ordering::Relaxed);
+                }
+                // Força de volta ao braço de controle (já é o padrão) — nome literal pedido
+                // pela tarefa. Vence se vier DEPOIS de `--sensores-evolutivos` na linha de
+                // comando, igual `--sem-lento`/`--sem-init-espectral` para outros experimentos.
+                "--sensores-fixos" => {
+                    universe::gpu::evolution::SENSORS_EVOLVE_ON.store(false, Ordering::Relaxed);
+                }
+                // P1.7 (docs/PLANO_EVOLUCAO.md) — braço de controle do cérebro
+                // assíncrono, um por mecanismo. Cada um CONGELA a mutação do campo
+                // (atomic em `gpu::evolution`) E força o shader a ignorar o que o
+                // genoma carregar (`BrainGpu::*_off`) — ver a doc das variáveis
+                // `sem_*` acima. Sem nenhuma destas flags (padrão), os três
+                // mecanismos mutam livremente a partir do neutro de nascença.
+                "--sem-memoria-neuronal" => {
+                    sem_memoria_neuronal = true;
+                    universe::gpu::evolution::NEURON_MEM_MUTATE_ON.store(false, Ordering::Relaxed);
+                }
+                "--sem-periodo-neuronal" => {
+                    sem_periodo_neuronal = true;
+                    universe::gpu::evolution::NEURON_PERIOD_MUTATE_ON.store(false, Ordering::Relaxed);
+                }
+                "--sem-limiar-neuronal" => {
+                    sem_limiar_neuronal = true;
+                    universe::gpu::evolution::NEURON_THRESHOLD_MUTATE_ON.store(false, Ordering::Relaxed);
+                }
+                "--sem-ativacao-heterogenea" => {
+                    sem_ativacao_heterogenea = true;
+                    universe::gpu::evolution::NEURON_ACTIVATION_MUTATE_ON.store(false, Ordering::Relaxed);
                 }
                 // Cobra o recuo na fitness `centro` (ver a acumulação de `center_prog`).
                 "--centro-simetrico" => { centro_simetrico = true; }
@@ -493,6 +548,7 @@ fn main() {
                 "--gen-offset"=> { i += 1; if i < args.len() { gen_offset    = args[i].parse().unwrap_or(0); } }
                 "--ativacao"   => { ativacao_on = true; }
                 "--ativacao-n" => { i += 1; if i < args.len() { ativacao_n = args[i].parse().unwrap_or(64).max(1); } }
+                "--regioes"    => { regioes_on = true; }
                 "--painel"       => { painel_on = true; }
                 "--painel-porta" => { i += 1; if i < args.len() { painel_porta = args[i].parse().unwrap_or(3200); painel_on = true; } }
                 "--pistas"        => { i += 1; if i < args.len() { pistas = parse_pistas(&args[i]); } }
@@ -515,6 +571,28 @@ fn main() {
     } else {
         "DESLIGADA (--sem-init-espectral) — L1 nasce cru, σ=0.30 i.i.d. sem correção (braço de controle)"
     });
+    let sensors_evolve_on = universe::gpu::evolution::SENSORS_EVOLVE_ON.load(Ordering::Relaxed);
+    println!("  Sensores (FASE SENSORES, degrau 1): {}", if sensors_evolve_on {
+        "EVOLUINDO (--sensores-evolutivos) — FOV/alcance-parede/alcance-lateral/curvatura heterogêneos e mutáveis"
+    } else {
+        "FIXOS (padrão / --sensores-fixos) — todo genoma em SENSOR_DEFAULTS, os hardcodes de hoje"
+    });
+    // P1.7 — cérebro assíncrono: relatório de quais dos três mecanismos estão
+    // mutando nesta corrida. Genoma sempre nasce neutro (gen 0 idêntica ao
+    // cérebro de hoje); o que muda entre "ligado"/"--sem-*" é se a mutação afasta
+    // o campo do neutro ao longo das gerações.
+    println!("  Cérebro assíncrono (P1.7):");
+    println!("    memória por neurônio:  {}", if sem_memoria_neuronal {
+        "CONGELADA (--sem-memoria-neuronal) — alfa preso em 0.0, braço de controle"
+    } else { "mutando (padrão) — h[n]=h[n-1]·α+x[n]·(1-α), α∈[0,0.95] a partir de 0.0" });
+    println!("    período/limiar (L1):   {}{}", if sem_periodo_neuronal {
+        "período CONGELADO (--sem-periodo-neuronal) "
+    } else { "período mutando (padrão) " }, if sem_limiar_neuronal {
+        "· limiar CONGELADO (--sem-limiar-neuronal)"
+    } else { "· limiar mutando (padrão)" });
+    println!("    ativação heterogênea:  {}", if sem_ativacao_heterogenea {
+        "CONGELADA (--sem-ativacao-heterogenea) — todos em tanh, braço de controle"
+    } else { "mutando (padrão) — tanh/ReLU/linear/leaky-ReLU, taxa 0,2%/neurônio/geração" });
     println!("  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}", evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney);
     println!("  SEM muletas motoras (escape_ticks, curvature_governor)");
     println!("  Fitness: distância contínua em metros (sem degrau de volta inteira)");
@@ -596,6 +674,16 @@ fn main() {
     ctx.brain.out_beta = out_beta;
     ctx.brain.out_gain = ganho_saida;
     ctx.brain.norm_l2_by_std = norm_l2_por_desvio;
+    // P1.7 — mesmo bit que congela a mutação em `evolve()` (armado acima, no parsing
+    // das flags) TAMBÉM desliga a LEITURA do campo no shader — ver `mech_off_mask`
+    // em `BrainGpu`/`brain.wgsl`. Redundante quando o genoma nunca mutou (o campo já
+    // está neutro), mas necessário quando `--retomar` carrega um genoma que já tinha
+    // mutado ANTES da flag ser passada: sem isto, `--sem-X` deixaria de ser o braço
+    // de controle de verdade a partir do segundo `--retomar`.
+    ctx.brain.mem_off = sem_memoria_neuronal;
+    ctx.brain.period_off = sem_periodo_neuronal;
+    ctx.brain.threshold_off = sem_limiar_neuronal;
+    ctx.brain.activation_off = sem_ativacao_heterogenea;
     PILOTO_GANHO.store(piloto, Ordering::Relaxed);
     PILOTO_THR.store(if piloto_thr > 0.0 { piloto_thr } else { 0.45 }, Ordering::Relaxed);
     STEER_FIXO.store(steer_fixo, Ordering::Relaxed);
@@ -815,6 +903,39 @@ fn main() {
         // Banco de τ: vai separado porque τ vive no genoma, não no `SovereignEngine`.
         // Uma vez por geração, como os pesos — τ é herdado e fixo na vida do ser.
         ctx.brain.upload_tau(&Genome::pack_taus(&genomes), n_seres);
+        // Banco de sensores (FASE SENSORES, degrau 1): mesmo motivo do τ — vive no
+        // genoma, sobe uma vez por geração para o pipeline ESPACIAL de percepção.
+        // Com `SENSORS_EVOLVE_ON` no padrão (desligado), todo genoma tem
+        // `SENSOR_DEFAULTS` e este upload sobe os hardcodes de hoje — equivalente a
+        // nunca chamar o upload, só documenta a fonte única.
+        ctx.percept.upload_sensors(&ctx.queue, &Genome::pack_sensors(&genomes), n_seres);
+        // P1.7 (cérebro assíncrono) — metadados por neurônio (alfa/período/limiar/
+        // ativação): mesmo motivo do τ/sensores, uma vez por geração.
+        ctx.brain.upload_neuron_meta(&Genome::pack_neuron_meta(&genomes), n_seres);
+
+        // ── P1.7, mecanismo 2 — quantos neurônios de L1 disparam por tick ──────
+        //
+        // Requisito da tarefa: reportar quantos neurônios EFETIVAMENTE recalculam
+        // por tick (média e desvio), com a honestidade de que isto é REPRESENTAÇÃO,
+        // não velocidade — ver `simulate_l1_fire_counts`. Simulado em CPU pura (sem
+        // GPU, sem readback): o período de cada neurônio já está conhecido antes do
+        // tick 0 rodar. Janela de 840 ticks = MMC(1..8), cobre um ciclo completo dos
+        // períodos possíveis (1..8, clamp de `evolve()`) independente de onde a
+        // amostragem começaria dentro da corrida de verdade.
+        if !sem_periodo_neuronal {
+            let periods_flat: Vec<f32> = genomes.iter()
+                .flat_map(|g| g.neuron_period_l1.iter().copied())
+                .collect();
+            let janela = n_ticks.min(840).max(1);
+            let (media_disp, desvio_disp) = universe::gpu::evolution::simulate_l1_fire_counts(
+                &periods_flat, n_seres, janela);
+            let total_neuronios = (n_seres * universe::gpu::evolution::N_L1_NEURONS) as f64;
+            println!(
+                "  [periodo] neurônios de L1 disparando/tick: {:.1} ± {:.1} de {:.0} ({:.1}%) \
+                 · janela simulada {} ticks (REPRESENTAÇÃO, não velocidade — GPU roda todas as threads de qualquer forma)",
+                media_disp, desvio_disp, total_neuronios,
+                100.0 * media_disp / total_neuronios.max(1.0), janela);
+        }
 
         // ── Reseta CfC entre gerações ──────────────────────────────────────────
         // reset_cfc() reseta só percept_cfc (percepção visual).
@@ -1415,6 +1536,12 @@ fn main() {
             let l2 = std::mem::take(&mut ctx.l2_samples);
             let policy = std::mem::take(&mut ctx.policy_samples);
             let nan_seres = std::mem::take(&mut ctx.nan_seres);
+            // Contexto físico alinhado 1:1 a `l1`/`l2` (`--regioes`) — ver doc de
+            // `regiao_l1`/`regiao_l2` em context.rs. Sempre tomado aqui (mesmo sem
+            // `--regioes`) para não vazar amostra entre gerações, mesmo raciocínio
+            // do `mem::take` das linhas acima.
+            let regiao_l1 = std::mem::take(&mut ctx.regiao_l1);
+            let regiao_l2 = std::mem::take(&mut ctx.regiao_l2);
 
             // Pesos de L1 do CAMPEÃO desta geração (`best_idx`, calculado acima a
             // partir da fitness) — mesma fonte que o bloco `[tau]` logo abaixo usa
@@ -1534,6 +1661,63 @@ fn main() {
                                 ("indefinido", "amostras insuficientes para estimar a covariancia"),
                         };
                         println!("  [garimpo:{}] {} — {}", nome, rotulo, acao);
+                    }
+                }
+            }
+
+            // ── REGIÕES DA PISTA × ATIVAÇÃO (`--regioes`, src/analysis/regioes.rs) ──
+            //
+            // Leonardo: "o cérebro vai trabalhar em dimensões, neurônios e partes
+            // diferentes conforme ele está na pista, e isso precisa ser medido."
+            // Nunca cruzamos ativação com POSIÇÃO — isto cruza as MESMAS amostras
+            // `l1`/`l2` de cima com o contexto físico que `ctx.tick()` grava em
+            // lockstep (`regiao_l1`/`regiao_l2`): curvatura local, velocidade,
+            // distância à parede.
+            if regioes_on {
+                use universe::analysis::regioes;
+                // Limiares SEMPRE reportados (armadilha nº1 do protocolo de
+                // `contextual.rs`: nada aqui zera exatamente, o número depende da
+                // escolha). `LIMIAR_ATIVACAO_COESAO` reusa o mesmo valor do bloco
+                // `[contextual]` acima para a coesão ser comparável ao E3 geral.
+                const LIMIAR_CURVA: f32 = 0.02; // 1/m — raio < 50 m conta como "curva"
+                const LIMIAR_ESPECIALIZACAO: f32 = 0.30;
+                const LIMIAR_ATIVACAO_COESAO: f32 = 0.05;
+
+                for (nome, amostras, contexto) in [
+                    ("L1", &l1, &regiao_l1),
+                    ("L2", &l2, &regiao_l2),
+                ] {
+                    match regioes::analisar(nome, amostras, contexto,
+                        LIMIAR_CURVA, LIMIAR_ESPECIALIZACAO, LIMIAR_ATIVACAO_COESAO)
+                    {
+                        Some(r) => {
+                            println!(
+                                "  [regioes:{}] limiar_curva={:.3} 1/m · amostras reta={} curva={}",
+                                nome, r.limiar_curva, r.n_reta, r.n_curva);
+                            println!(
+                                "  [regioes:{}] especializacao >= {:.2}: {}/{} neuronios · idx {:?}",
+                                nome, r.limiar_especializacao, r.indices_especializados.len(),
+                                r.por_neuronio.len(), r.indices_especializados);
+                            let mut ord = r.por_neuronio.clone();
+                            ord.sort_by(|a, b| b.indice_especializacao
+                                .partial_cmp(&a.indice_especializacao).unwrap());
+                            let top: Vec<String> = ord.iter().take(5).map(|e| format!(
+                                "#{}(idx={:.2} corr_curva={:+.2} corr_vel={:+.2} corr_parede={:+.2})",
+                                e.indice, e.indice_especializacao, e.correlacao_curvatura,
+                                e.correlacao_velocidade, e.correlacao_dist_parede)).collect();
+                            println!("  [regioes:{}] top especializados: {}", nome, top.join(" "));
+                            match &r.coesao {
+                                Some(co) => println!(
+                                    "  [regioes:{}] coesao dos especializados: co-ativacao {:.3} vs independente {:.3} · excesso {:+.3}",
+                                    nome, co.coativacao_media, co.esperado_independente, co.excesso),
+                                None => println!(
+                                    "  [regioes:{}] coesao: N/A (menos de 2 especializados ou menos de 2 amostras de curva)",
+                                    nome),
+                            }
+                        }
+                        None => println!(
+                            "  [regioes:{}] sem dados (amostras={} contexto={} — desalinhado ou vazio)",
+                            nome, amostras.len(), contexto.len()),
                     }
                 }
             }

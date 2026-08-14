@@ -206,10 +206,23 @@ struct Params {
     // ESCALA da entrada de L2 (que pode crescer com a mutação ao longo das
     // gerações) em vez de só o ganho de saída. Ver ETAPA 2 abaixo.
     norm_l2_by_std:    u32,
-    // Padding: mantém o uniform em múltiplo de 16 bytes (8 × 4 = 32), mesma
-    // convenção do struct original (4 × 4 = 16). bytemuck::Zeroable no host
-    // garante conteúdo determinístico (zero), não lixo de padding.
-    _pad0:             u32,
+    // P1.7 (docs/PLANO_EVOLUCAO.md) — braço de controle dos três mecanismos
+    // assíncronos, um bit por mecanismo. Era `_pad0` (padding morto).
+    // bit0 = memória (mecanismo 1) desligada: alfa tratado como 0.0 no shader,
+    //        INDEPENDENTE do que o genoma carrega (mesmo contrato de `--sem-lento`:
+    //        o dado pode existir e ter mutado, o bit é que decide se ele é LIDO).
+    // bit1 = período (mecanismo 2) desligado: período tratado como 1 (recalcula
+    //        todo tick, igual hoje).
+    // bit2 = limiar (mecanismo 2) desligado: limiar tratado como 0.0 (nunca zera
+    //        contribuição por fraqueza).
+    // bit3 = ativação heterogênea (mecanismo 3) desligada: id tratado como 0
+    //        (tanh, a não-linearidade única de hoje).
+    // 0 (padrão) = todos os mecanismos LEEM o genoma normalmente. Um genoma
+    // recém-nascido (`Genome::random`) tem os quatro campos em valor neutro
+    // (0.0/1.0/0.0/0), então mesmo com a máscara em 0 a saída da geração 0 é
+    // idêntica à fórmula antiga — testado em
+    // `gpu::evolution::tests::genoma_novo_tem_mecanismos_p17_neutros`.
+    mech_off_mask:     u32,
     _pad1:             u32,
 }
 
@@ -267,6 +280,47 @@ struct Params {
 // foi medido e não paga (+0,11%); TER τ variado é que é selecionado (40× vs 5,3×).
 @group(0) @binding(10) var<storage, read>      buf_tau:     array<f32>;
 
+// ── P1.7 — CÉREBRO ASSÍNCRONO (docs/PLANO_EVOLUCAO.md §P1.7) ──────────────────
+//
+// Três mecanismos herdáveis, todos por-neurônio, todos nascendo NEUTROS (idênticos
+// ao cérebro de hoje) — ver `gpu::evolution::Genome` para os campos e `evolve()`
+// para a mutação. Crítica do Leonardo que motivou isto: *"o que estou pedindo é um
+// cérebro ASSÍNCRONO; ele vai trabalhar em dimensões, neurônios e partes diferentes
+// conforme está na pista; se você fica sempre no mesmo tanh só está queimando
+// tempo."* — hoje os 20 usos de tanh neste arquivo são a ÚNICA não-linearidade, e
+// os 96+48 neurônios de L1/L2 disparam em TODO tick (medido, não suposto).
+//
+// Metadados por neurônio — READ-ONLY, subido uma vez por geração (mesmo padrão de
+// `buf_tau`: o dado é herdado do genoma e fixo na vida do ser).
+// Layout por ser, NEURON_META_PER_SER=480 f32, contíguo em blocos:
+//   [0..96)    l1_alpha       (mecanismo 1 — memória L1, ∈[0,0.95])
+//   [96..192)  l1_period      (mecanismo 2 — período de recálculo L1, inteiro ≥1
+//                              armazenado como f32, mesma convenção de disco/genoma
+//                              de todo campo — só f32, ver genome_io.rs)
+//   [192..288) l1_threshold   (mecanismo 2 — limiar de contribuição L1, ∈[0,~1))
+//   [288..384) l1_activation  (mecanismo 3 — id de ativação L1: 0=tanh 1=relu
+//                              2=linear 3=leaky-relu(0.01), armazenado como f32)
+//   [384..432) l2_alpha       (mecanismo 1 — memória L2, ∈[0,0.95])
+//   [432..480) l2_activation  (mecanismo 3 — id de ativação L2)
+const NEURON_META_PER_SER: u32 = 480u;
+// Offsets dos blocos dentro de cada bloco-de-ser de `buf_neuron_meta` (ver layout
+// acima). `l1_alpha` fica no offset 0 (implícito, sem constante própria).
+const NEURON_META_L1_PERIOD_OFF:     u32 = 96u;
+const NEURON_META_L1_THRESHOLD_OFF:  u32 = 192u;
+const NEURON_META_L1_ACTIVATION_OFF: u32 = 288u;
+const NEURON_META_L2_ALPHA_OFF:      u32 = 384u;
+const NEURON_META_L2_ACTIVATION_OFF: u32 = 432u;
+@group(0) @binding(11) var<storage, read>      buf_neuron_meta: array<f32>;
+
+// Estado persistente da memória EMA por neurônio (mecanismo 1) — COPIA O PADRÃO de
+// `buf_cfc`: reside na GPU entre ticks, read_write, resetado em spawn/entre gerações
+// (`BrainGpu::reset_cfc` agora zera este buffer junto com buf_cfc/buf_fatigue — ver
+// host), NUNCA baixado por tick. Guarda h[n-1] — ver a conta do ganho de amplitude no
+// comentário de `apply_neuron_memory` abaixo.
+// Layout por ser, NEURON_MEM_PER_SER=144 f32: [0..96) memória L1, [96..144) memória L2.
+const NEURON_MEM_PER_SER: u32 = 144u;
+@group(0) @binding(12) var<storage, read_write> buf_neuron_mem: array<f32>;
+
 // ── MEMÓRIA DE WORKGROUP ──────────────────────────────────────────────────────
 
 var<workgroup> w_kan: array<i32, 223>;  // pós-KAN, pré-CfC: todos os canais
@@ -310,6 +364,64 @@ fn kan_filter_int(raw_i32: i32, knots_base: u32) -> i32 {
     // Resultado sem round-trip: raw_i32 * coeff (em escala de i8 / 127)
     // Equivalente a: (raw_i32/127 * coeff) * 127 = raw_i32 * coeff
     return i32(clamp(raw_f32 * c, -127.0, 127.0));
+}
+
+// ── P1.7: ativação heterogênea por neurônio (mecanismo 3) ─────────────────────
+//
+// ids: 0=tanh (padrão, hoje) · 1=ReLU · 2=linear · 3=leaky-ReLU(0.01).
+// Mesmas fórmulas de `math::activations` (src/math/activations.rs) — NÃO
+// reimplementa lógica nova, só espelha o que já existe lá (regra da tarefa: "as
+// funções JÁ EXISTEM, use de lá"). O clamp para a faixa i8 acontece no CHAMADOR
+// (`clamp(activated * 127.0, -127.0, 127.0)`), igual ao que já existia para tanh —
+// linear/ReLU sem essa saturação natural do tanh dependem inteiramente desse
+// clamp externo para não estourar a quantização.
+//
+// CUSTO DE DIVERGÊNCIA DE WARP (RDNA2, wave32): as 32 lanes de uma wave executam
+// em LOCKSTEP (SIMD). Se os neurônios mapeados nas lanes de uma MESMA wave tiverem
+// ids diferentes, o hardware precisa percorrer os branches que QUALQUER lane da
+// wave tomou — cada lane só grava o resultado do seu próprio caso (predicação),
+// mas o tempo pago é o de executar todos os casos distintos presentes na wave, não
+// só o seu. Com 96 neurônios de L1 = 3 waves de 32 (RDNA2 wave size, ver
+// CLAUDE.md do projeto) e mutação de ativação numa taxa BAIXA (ver `evolve()` em
+// `gpu/evolution.rs`), a fração de waves heterogêneas cresce devagar ao longo das
+// gerações — o custo é real (não é grátis) mas pequeno: os 4 casos são ALU pura
+// (sem acesso a memória divergente), poucas instruções cada.
+fn apply_activation(id: u32, x: f32) -> f32 {
+    if id == 1u { return max(x, 0.0); }                     // ReLU
+    if id == 2u { return x; }                                // linear (satura no clamp do chamador)
+    if id == 3u { return select(x, x * 0.01, x < 0.0); }      // leaky-ReLU(0.01)
+    return tanh(x);                                           // 0 = tanh (padrão, idêntico a hoje)
+}
+
+// ── P1.7: memória por neurônio (mecanismo 1) ───────────────────────────────────
+//
+// h[n] = h[n-1]·alfa + x[n]·(1-alfa) — combinação convexa, coeficientes somam 1.
+// Para ENTRADA CONSTANTE isso já tem ganho DC=1 em QUALQUER alfa (resolve h*=h*·alfa
+// + x·(1-alfa) ⇒ h*=x), diferente do CfC (`buf_cfc` acima), que precisa do fator
+// `CFC_DC_GAIN·(1-decay)` porque ali o "ganho" e o "decaimento" são parâmetros
+// livres independentes. Aqui não há esse artefato — mas há OUTRO: a AMPLITUDE
+// (variância) de um sinal que FLUTUA tick a tick (o caso real dos canais
+// sensoriais — parede/curvatura/velocidade nunca são constantes) É atenuada por um
+// filtro passa-baixa, mesmo com ganho DC exato em 1. Modelando x[n] como
+// aproximadamente ruído branco de variância σx² (resposta ao impulso do filtro:
+// h[n] = (1-alfa)·Σ_{k=0}^{n} alfa^k·x[n-k]):
+//
+//   Var(h) = (1-alfa)²·σx²·Σ alfa^{2k} = (1-alfa)²/(1-alfa²)·σx² = (1-alfa)/(1+alfa)·σx²
+//
+// Em alfa=0.95, Var(h)/Var(x) ≈ 0,026 — o neurônio pareceria 97% mais fraco (MUDO)
+// e seria descartado por fraco, não por lento (GAP 11 do CLAUDE.md do projeto).
+// O ganho que RESTAURA Var(saída)=Var(x) é o inverso da raiz desse fator:
+//
+//   gain(alfa) = sqrt((1+alfa)/(1-alfa))         [gain(0)=1 — sem mudança em alfa=0]
+//
+// Em alfa=0.95, gain≈6,24 — grande, mas finito porque alfa é clampado em 0.95 em
+// `evolve()` (alfa≥1 diverge, condição de estabilidade da equação a diferenças:
+// o polo do filtro fica em |alfa|<1). `max(1.0-alfa, 1e-3)` é só uma segunda trava
+// numérica (o clamp de `evolve()` já impede alfa=1, isto é defesa em profundidade
+// contra um genoma corrompido/legado fora de faixa).
+const NEURON_MEM_GAIN_EPS: f32 = 1e-3;
+fn neuron_mem_gain(alfa: f32) -> f32 {
+    return sqrt((1.0 + alfa) / max(1.0 - alfa, NEURON_MEM_GAIN_EPS));
 }
 
 // ── KERNEL PRINCIPAL ──────────────────────────────────────────────────────────
@@ -546,11 +658,72 @@ fn main(
 
     workgroupBarrier();
 
-    // Quantização l1_raw → l1_act (engine.rs:461-463)
-    //   l1_act[i] = clamp(tanh(l1_raw[i]) × 127, -127, 127)  como i8
+    // Quantização l1_raw → l1_act (engine.rs:461-463), estendida com P1.7:
+    //   l1_act[i] = clamp(ATIVAÇÃO(MEMÓRIA(PERÍODO/LIMIAR(l1_raw[i]))) × 127, -127, 127)
+    //
+    // Os quatro passos (mecanismo 2 → 1 → 3) vivem no MESMO bloco `if tid < L1_OUT`
+    // que já existia (não abrem barreira nova): cada thread só lê/escreve o SEU
+    // próprio índice em `w_l1r`/`buf_neuron_mem` — sem dependência cruzada entre
+    // neurônios — então cabe dentro do bloco de quantização sem risco de race.
+    // `w_l1r[tid]` é SOBRESCRITO com o valor pós-mecanismos: o bypass de L1
+    // (ETAPA 2, threads 48..95, mais abaixo) lê o MESMO array e portanto herda o
+    // efeito automaticamente — correto, porque memória/período/limiar são
+    // propriedades do NEURÔNIO, não de "para onde o sinal vai depois".
     if tid < L1_OUT {
-        let v: f32 = w_l1r[tid];
-        w_l1a[tid] = i32(clamp(tanh(v) * 127.0, -127.0, 127.0));
+        let j: u32 = tid;
+        let meta_base: u32 = being * NEURON_META_PER_SER;
+        let mem_base:  u32 = being * NEURON_MEM_PER_SER;
+        let off = params.mech_off_mask;
+
+        // ── Mecanismo 2 (período) — decide se ESTE tick recalcula a memória ────
+        // HONESTIDADE (CLAUDE.md/tarefa): na GPU todas as 96 threads rodam de
+        // qualquer forma a cada dispatch — período > 1 NÃO poupa tempo de GPU, só
+        // decide SE a memória é atualizada com o x[n] deste tick ou se mantém o
+        // valor anterior. O ganho é de REPRESENTAÇÃO (escalas de tempo
+        // convivendo — o pedido original do Leonardo), não de velocidade.
+        let period_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_PERIOD_OFF + j];
+        let period_off: bool = (off & 2u) != 0u;
+        // +0.5 antes do truncamento u32(): arredonda em vez de truncar pra baixo
+        // (período salvo como 2.999999 por erro de ponto flutuante não viraria 2).
+        // max(...,1u): período 0 (buffer não inicializado, ex. `forward()`/
+        // `gpu_validate`, que nunca sobe este buffer) cai em "recalcula todo tick",
+        // igual ao comportamento de hoje — nunca "nunca recalcula".
+        let period: u32 = select(max(u32(period_raw + 0.5), 1u), 1u, period_off);
+        // counter_new já foi escrito em buf_cfc por tid==0 na ETAPA 0B, antes da
+        // primeira workgroupBarrier() — visível aqui para todas as 96 threads.
+        let tick_counter: u32 = bitcast<u32>(buf_cfc[being * 97u + 96u]);
+        let fires: bool = period <= 1u || (tick_counter % period) == 0u;
+
+        // ── Mecanismo 1 (memória) — EMA com ganho de amplitude ──────────────────
+        // Ver a conta completa em `neuron_mem_gain` acima do kernel.
+        let alfa_raw: f32 = buf_neuron_meta[meta_base + j];
+        let mem_off: bool = (off & 1u) != 0u;
+        let alfa: f32 = select(alfa_raw, 0.0, mem_off);
+        var h: f32 = buf_neuron_mem[mem_base + j];
+        if fires {
+            // x[n] = l1_raw deste tick (matmul da ETAPA 1, ainda intocado aqui).
+            h = h * alfa + w_l1r[j] * (1.0 - alfa);
+            buf_neuron_mem[mem_base + j] = h;
+        }
+        // fora do tick do neurônio (!fires): `h` já é o valor guardado da última
+        // vez que ele disparou — "mantém o valor anterior", sem tocar o buffer.
+        var v_eff: f32 = h * neuron_mem_gain(alfa);
+
+        // ── Mecanismo 2 (limiar) — abaixo dele, contribui zero ──────────────────
+        let thr_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_THRESHOLD_OFF + j];
+        let threshold_off: bool = (off & 4u) != 0u;
+        let threshold: f32 = select(thr_raw, 0.0, threshold_off);
+        if abs(v_eff) < threshold { v_eff = 0.0; }
+
+        // Bypass (ETAPA 2, tid 48..95) e a quantização abaixo leem o valor final.
+        w_l1r[j] = v_eff;
+
+        // ── Mecanismo 3 (ativação heterogênea) ──────────────────────────────────
+        let act_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_ACTIVATION_OFF + j];
+        let activation_off: bool = (off & 8u) != 0u;
+        let act_id: u32 = select(u32(act_raw + 0.5), 0u, activation_off);
+        let activated: f32 = apply_activation(act_id, v_eff);
+        w_l1a[tid] = i32(clamp(activated * 127.0, -127.0, 127.0));
     }
 
     workgroupBarrier();
@@ -596,7 +769,23 @@ fn main(
             acc = acc + prod;
         }
 
-        w_l2r[j] = acc * (1.0 / 127.0);
+        let raw_l2: f32 = acc * (1.0 / 127.0);
+
+        // ── P1.7, mecanismo 1 (memória) para L2 — sem período/limiar: a tarefa
+        // pede período/limiar só para L1 ("a assincronia de verdade" mira a
+        // ENTRADA sensorial, onde escalas de tempo diferentes fazem sentido físico;
+        // L2 já lê L1 inteiro todo tick). L2 sempre "dispara" — `fires` implícito.
+        // Mesma conta de ganho de `neuron_mem_gain` acima do kernel.
+        let l2_meta_base: u32 = being * NEURON_META_PER_SER + NEURON_META_L2_ALPHA_OFF;
+        let l2_mem_base:  u32 = being * NEURON_MEM_PER_SER + L1_OUT;  // slots [96..144) = L2
+        let alfa_l2_raw: f32 = buf_neuron_meta[l2_meta_base + j];
+        let mem_off_l2: bool = (params.mech_off_mask & 1u) != 0u;
+        let alfa_l2: f32 = select(alfa_l2_raw, 0.0, mem_off_l2);
+        var h_l2: f32 = buf_neuron_mem[l2_mem_base + j];
+        h_l2 = h_l2 * alfa_l2 + raw_l2 * (1.0 - alfa_l2);
+        buf_neuron_mem[l2_mem_base + j] = h_l2;
+
+        w_l2r[j] = h_l2 * neuron_mem_gain(alfa_l2);
     }
 
     // Barrier em CONTROLE UNIFORME — TODAS as 128 threads passam por aqui, mesmo
@@ -673,7 +862,16 @@ fn main(
         // positivo atenuava para 0,15·raw. A fadiga enviesava toda a população para
         // baixo. Agora encolhe a magnitude e preserva o sinal, nos dois lados.
         let adapted: f32 = sign(l2_raw) * max(0.0, abs(l2_raw) - params.out_beta * out_fat);
-        buf_intent[intent_base + j] = tanh(adapted);
+
+        // P1.7, mecanismo 3 — ativação heterogênea de L2 (a não-linearidade FINAL
+        // de L2, antes hardcoded como tanh). O bypass de L1 (abaixo) continua com
+        // tanh fixo — squashing de SAÍDA MOTORA, não "ativação do neurônio de L1"
+        // (que já foi decidida na quantização, ETAPA 1).
+        let l2_act_base: u32 = being * NEURON_META_PER_SER + NEURON_META_L2_ACTIVATION_OFF;
+        let act_raw_l2: f32 = buf_neuron_meta[l2_act_base + j];
+        let activation_off_l2: bool = (params.mech_off_mask & 8u) != 0u;
+        let act_id_l2: u32 = select(u32(act_raw_l2 + 0.5), 0u, activation_off_l2);
+        buf_intent[intent_base + j] = apply_activation(act_id_l2, adapted);
     }
 
     // Threads 48..95: bypass de L1 → final_intent[48..95]

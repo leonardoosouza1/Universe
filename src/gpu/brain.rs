@@ -59,6 +59,16 @@ pub const OUT_GAIN_PADRAO: f32 = 2.0;
 /// Estado CfC por ser: 96 floats (state) + 1 u32 (counter, bitcast como f32) = 97 f32
 const CFC_SLOTS_PER_SER: usize = L1_NEURONS + 1;  // 97
 
+/// P1.7 (docs/PLANO_EVOLUCAO.md) — cérebro assíncrono. Metadados por neurônio,
+/// layout SoA por ser, espelha `buf_neuron_meta` em `brain.wgsl` byte a byte:
+/// `[l1_alpha(96), l1_period(96), l1_threshold(96), l1_activation(96), l2_alpha(48),
+/// l2_activation(48)]` = 480 f32 por ser. Ver `NEURON_META_PER_SER` no shader.
+pub const NEURON_META_PER_SER: usize = L1_NEURONS * 4 + L2_NEURONS * 2;  // 480
+
+/// P1.7 — estado persistente da memória EMA (mecanismo 1), por neurônio de L1+L2.
+/// `[l1_mem(96), l2_mem(48)]` = 144 f32 por ser. Espelha `NEURON_MEM_PER_SER` no shader.
+pub const NEURON_MEM_PER_SER: usize = L1_NEURONS + L2_NEURONS;  // 144
+
 /// Fadiga adaptativa por ser: 192 floats.
 /// Slots [0..96]  = fadiga de input do CfC (estado recorrente, já existia).
 /// Slots [96..192] = fadiga de saída (output fatigue, quebra ponto fixo de final_intent).
@@ -105,10 +115,16 @@ pub struct BrainParams {
     /// das gerações) em vez de só o ganho de saída. `u32` porque bool não é
     /// `bytemuck::Pod` de forma portável entre plataformas; 0/1 é o contrato.
     pub norm_l2_by_std: u32,
+    /// P1.7 — máscara de bits, um por mecanismo do cérebro assíncrono (braço de
+    /// controle do A/B, `gpu_evolve --sem-*`). Era `_pad0` (padding morto).
+    /// bit0=memória bit1=período bit2=limiar bit3=ativação heterogênea — 1 = a
+    /// leitura do genoma é IGNORADA para aquele mecanismo (tratado como neutro),
+    /// não importa o que a mutação tenha gravado. Ver `brain.wgsl::Params` para
+    /// a semântica completa por bit.
+    pub mech_off_mask: u32,
     /// Padding: mantém o uniform buffer em múltiplo de 16 bytes (8 campos × 4
     /// bytes = 32), mesma convenção do struct original (4 × 4 = 16). Zero
     /// determinístico via `bytemuck::Zeroable`, nunca lido pelo shader.
-    _pad0: u32,
     _pad1: u32,
 }
 
@@ -154,6 +170,15 @@ pub struct BrainGpu {
     /// os canais) para que quem não chamar `upload_tau` obtenha o comportamento antigo.
     buf_tau:    wgpu::Buffer,   // f32 × (cap × L1_NEURONS)          — por geração
 
+    /// P1.7 — metadados por neurônio (alfa/período/limiar/ativação), read-only,
+    /// subido uma vez por geração. Ver `NEURON_META_PER_SER`.
+    buf_neuron_meta: wgpu::Buffer,  // f32 × (cap × NEURON_META_PER_SER) — por geração
+
+    /// P1.7 — estado persistente da memória EMA por neurônio (mecanismo 1).
+    /// COPIA O PADRÃO de `buf_cfc`: read_write, residente, resetado em
+    /// spawn/entre gerações via `reset_cfc` (mesmo método, estendido).
+    buf_neuron_mem: wgpu::Buffer,   // f32 × (cap × NEURON_MEM_PER_SER)  — residente
+
     /// Buffer de debug temporário: exporta l1_raw + inputs CfC/KAN para ser 0.
     /// Layout: [l1_raw[0..95], cfc_in[0..95], kan_in[96..222]] = 319 f32
     buf_debug:  wgpu::Buffer,
@@ -179,6 +204,15 @@ pub struct BrainGpu {
     /// do ganho/tanh. Ver `BrainParams::norm_l2_by_std`. Padrão `false` —
     /// idêntico ao comportamento histórico (sem normalização).
     pub norm_l2_by_std: bool,
+
+    /// P1.7 — braço de controle por mecanismo (`gpu_evolve --sem-*`). Padrão
+    /// `false` nos quatro: os mecanismos LEEM o genoma normalmente (que nasce
+    /// neutro — ver `gpu::evolution::Genome`). Combinados em `mech_off_mask()`
+    /// para o uniform. Ver a doc de `BrainParams::mech_off_mask`.
+    pub mem_off: bool,
+    pub period_off: bool,
+    pub threshold_off: bool,
+    pub activation_off: bool,
 
     /// Número máximo de seres suportado com estes buffers.
     pub capacity: usize,
@@ -216,6 +250,8 @@ impl BrainGpu {
                 storage_entry(8, true),         // buf_percept: u32 de percepcao.wgsl (GPU path)
                 storage_entry(9, false),        // buf_fatigue (read_write, fadiga adaptativa)
                 storage_entry(10, true),        // buf_tau     (read, banco de τ por canal)
+                storage_entry(11, true),        // buf_neuron_meta (read, P1.7 — alfa/período/limiar/ativação)
+                storage_entry(12, false),       // buf_neuron_mem  (read_write, P1.7 — memória EMA residente)
             ],
         });
 
@@ -317,6 +353,30 @@ impl BrainGpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        // P1.7 — metadados por neurônio (alfa/período/limiar/ativação). Zero-init:
+        // um zero em cada campo já é neutro para alfa/limiar/ativação (0.0), e para
+        // período o shader trata 0 como "1" via `max(...,1u)` — ver o comentário no
+        // shader. Quem não chamar `upload_neuron_meta` (ex.: `gpu_validate`/`forward()`,
+        // que também força `mech_off_mask` para desligar os mecanismos por completo)
+        // continua com o comportamento histórico.
+        let neuron_meta_zeros: Vec<u8> = vec![0u8; capacity * NEURON_META_PER_SER * 4];
+        let buf_neuron_meta = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brain-neuron-meta"),
+            contents: &neuron_meta_zeros,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // P1.7 — estado persistente da memória EMA (mecanismo 1). Zeros = COPIA O
+        // PADRÃO de `buf_cfc`/`buf_fatigue` (estado inicial correto: memória vazia).
+        let neuron_mem_zeros: Vec<u8> = vec![0u8; capacity * NEURON_MEM_PER_SER * 4];
+        let buf_neuron_mem = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brain-neuron-mem"),
+            contents: &neuron_mem_zeros,
+            usage: wgpu::BufferUsages::STORAGE
+                 | wgpu::BufferUsages::COPY_DST
+                 | wgpu::BufferUsages::COPY_SRC, // reset por-ser via write_buffer + eventual diagnóstico
+        });
+
         // Readback: MAP_READ separado (não pode combinar com STORAGE em wgpu).
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-readback"),
@@ -357,9 +417,15 @@ impl BrainGpu {
             buf_cfc,
             buf_fatigue,
             buf_tau,
+            buf_neuron_meta,
+            buf_neuron_mem,
             out_beta: OUT_BETA_PADRAO,
             out_gain: OUT_GAIN_PADRAO,
             norm_l2_by_std: false,
+            mem_off: false,
+            period_off: false,
+            threshold_off: false,
+            activation_off: false,
             buf_debug,
             buf_readback,
             buf_percept_dummy,
@@ -437,6 +503,26 @@ impl BrainGpu {
             "banco de τ tem {} valores, esperava {} ({n} seres × {L1_NEURONS} canais)",
             taus.len(), n * L1_NEURONS);
         self.queue.write_buffer(&self.buf_tau, 0, bytemuck::cast_slice(taus));
+    }
+
+    /// P1.7 — envia os metadados por neurônio (alfa/período/limiar/ativação) de
+    /// `n` seres. Mesmo contrato de `upload_tau`: uma vez por geração, layout SoA
+    /// (`NEURON_META_PER_SER` floats por ser, ver o comentário do campo).
+    pub fn upload_neuron_meta(&self, meta: &[f32], n: usize) {
+        assert!(n <= self.capacity, "n={n} excede capacidade {}", self.capacity);
+        assert_eq!(meta.len(), n * NEURON_META_PER_SER,
+            "metadados de neurônio (P1.7) têm {} valores, esperava {} ({n} seres × {NEURON_META_PER_SER})",
+            meta.len(), n * NEURON_META_PER_SER);
+        self.queue.write_buffer(&self.buf_neuron_meta, 0, bytemuck::cast_slice(meta));
+    }
+
+    /// P1.7 — combina as quatro flags de controle num único bitmask para o uniform.
+    /// Ver a doc de `BrainParams::mech_off_mask` para o significado de cada bit.
+    fn mech_off_mask(&self) -> u32 {
+        (self.mem_off as u32)
+            | ((self.period_off as u32) << 1)
+            | ((self.threshold_off as u32) << 2)
+            | ((self.activation_off as u32) << 3)
     }
 
     // ── DOWNLOAD DO ESTADO CFC (diagnóstico) ──────────────────────────────
@@ -543,11 +629,17 @@ impl BrainGpu {
 
     // ── RESET DE ESTADO CFC PARA UM SER ───────────────────────────────────
 
-    /// Reseta o estado CfC e a fadiga adaptativa de um ser específico para zeros.
+    /// Reseta o estado CfC, a fadiga adaptativa e a memória EMA por neurônio (P1.7)
+    /// de um ser específico para zeros.
     ///
-    /// Equivalente a `CfCCell::reset()`. Escreve zeros nos 97 f32 do CfC e nos
-    /// 192 f32 da fadiga do ser (96 input + 96 output), preservando o estado dos outros.
-    /// Chamado em spawn/death — garante que ser recém-nascido começa sem fadiga.
+    /// Equivalente a `CfCCell::reset()`. Escreve zeros nos 97 f32 do CfC, nos
+    /// 192 f32 da fadiga do ser (96 input + 96 output) e nos 144 f32 da memória
+    /// por neurônio (mecanismo 1, P1.7 — COPIA O PADRÃO deste mesmo método),
+    /// preservando o estado dos outros. Chamado em spawn/death — garante que ser
+    /// recém-nascido começa sem fadiga E sem memória herdada do ocupante anterior
+    /// do slot (sem isto, o filho nasceria "lembrando" o que o pai sentiu por
+    /// último — o mesmo bug de estado vazando entre gerações que motivou resetar
+    /// `buf_cfc`/`buf_fatigue` aqui).
     pub fn reset_cfc(&self, ser_idx: usize) {
         if ser_idx >= self.capacity { return; }
         // Reseta CfC state + counter (97 f32)
@@ -558,6 +650,10 @@ impl BrainGpu {
         let fat_offset = (ser_idx * FATIGUE_PER_SER * 4) as u64;
         let fat_zeros: Vec<u8> = vec![0u8; FATIGUE_PER_SER * 4];
         self.queue.write_buffer(&self.buf_fatigue, fat_offset, &fat_zeros);
+        // P1.7 — reseta a memória EMA por neurônio: 144 f32 por ser (96 L1 + 48 L2).
+        let mem_offset = (ser_idx * NEURON_MEM_PER_SER * 4) as u64;
+        let mem_zeros: Vec<u8> = vec![0u8; NEURON_MEM_PER_SER * 4];
+        self.queue.write_buffer(&self.buf_neuron_mem, mem_offset, &mem_zeros);
     }
 
     // ── FORWARD PASS (por tick) ───────────────────────────────────────────
@@ -609,7 +705,12 @@ impl BrainGpu {
             out_beta: crate::gpu::brain::OUT_BETA_PADRAO,
             out_gain: crate::gpu::brain::OUT_GAIN_PADRAO,
             norm_l2_by_std: 0,
-            _pad0: 0,
+            // forward() é o caminho de EQUIVALÊNCIA CPU/GPU (usado por gpu_validate) —
+            // mesmo contrato que out_beta/out_gain/norm_l2_by_std já tinham aqui: SEMPRE
+            // o comportamento histórico, os três mecanismos de P1.7 desligados (0b1111),
+            // nunca expõe os novos parâmetros. `bind_and_dispatch` (produção) é quem lê
+            // `self.mech_off_mask`.
+            mech_off_mask: 0b1111,
             _pad1: 0,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -636,6 +737,8 @@ impl BrainGpu {
                 wgpu::BindGroupEntry { binding: 8, resource: self.buf_percept_dummy.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 9, resource: self.buf_fatigue.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 11, resource: self.buf_neuron_meta.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 12, resource: self.buf_neuron_mem.as_entire_binding() },
             ],
         });
 
@@ -744,7 +847,7 @@ impl BrainGpu {
             out_beta: self.out_beta,
             out_gain: self.out_gain,
             norm_l2_by_std: if self.norm_l2_by_std { 1 } else { 0 },
-            _pad0: 0,
+            mech_off_mask: self.mech_off_mask(),
             _pad1: 0,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -768,6 +871,8 @@ impl BrainGpu {
                 wgpu::BindGroupEntry { binding: 8, resource: percept_binding.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 9, resource: self.buf_fatigue.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 11, resource: self.buf_neuron_meta.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 12, resource: self.buf_neuron_mem.as_entire_binding() },
             ],
         });
 

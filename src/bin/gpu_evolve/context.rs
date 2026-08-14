@@ -21,6 +21,7 @@ use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu};
 use universe::gpu::retina_digest::RetinaDigestGpu;
 use universe::gpu::retina_types::{RetinaParamsGpu, PoseRaw};
 use universe::gpu::core::{uniform_entry, storage_entry};
+use universe::analysis::regioes::{CurvaturaPista, ContextoAmostra};
 use universe::world::VoxelWorld;
 use universe::simulation::racing_line::RacingLine;
 use universe::visao::pitch;
@@ -91,6 +92,33 @@ pub struct GpuCtx {
     /// Índices de ser com NaN/Inf detectado no estado L1 nesta geração (guarda de
     /// runtime, item 5 do E4). Populado em `tick()`, consumido/relatado em `main.rs`.
     pub nan_seres: std::collections::HashSet<usize>,
+
+    // ── Regiões da pista × ativação (`--regioes`, src/analysis/regioes.rs) ─────
+    // Nunca cruzávamos ativação com POSIÇÃO. Estes dois vetores andam em LOCKSTEP
+    // com `l1_samples`/`l2_samples` — empilhados na MESMA iteração do mesmo loop,
+    // então `regiao_l1[i]` é o contexto físico (curvatura/velocidade/dist_parede)
+    // exato do (ser, tick) que produziu `l1_samples[i]`. É o que garante o
+    // alinhamento por índice que `analysis::regioes::analisar` exige sem precisar
+    // carregar tick/ser junto — mais barato e sem acoplar os dois módulos.
+    /// Contexto alinhado a `l1_samples` (mesmo tamanho sempre, mesmo `continue` em NaN).
+    pub regiao_l1: Vec<ContextoAmostra>,
+    /// Contexto alinhado a `l2_samples` (mesmo tamanho sempre — L2 nunca pula por NaN).
+    pub regiao_l2: Vec<ContextoAmostra>,
+    /// κ(x,z) da pista atual — recalculado em `new()` e em `reload_world()` (rotação
+    /// de pistas, `--pistas`/`--pista-held-out`) para nunca medir curvatura da pista
+    /// errada depois de uma troca.
+    track_curvatura: CurvaturaPista,
+}
+
+/// Contexto físico (curvatura/velocidade/dist_parede) de UM ser neste tick, para
+/// pareamento 1:1 com uma amostra de ativação (`--regioes`). Função livre (não método,
+/// não closure) de propósito: evita qualquer disputa de borrow com `self` no ponto de
+/// chamada, que já mistura leitura de `states`/`phys_states` com `self.l1_samples.push`
+/// no mesmo bloco — ver `tick()`.
+fn contexto_regiao(track: &CurvaturaPista, p: &PhysicsStateGpu, dist_parede: f32) -> ContextoAmostra {
+    let curvatura = track.curvatura_em(p.pos[0], p.pos[2]);
+    let velocidade = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
+    ContextoAmostra { curvatura, velocidade, dist_parede }
 }
 
 impl GpuCtx {
@@ -197,6 +225,12 @@ impl GpuCtx {
 
         let retina_digest = RetinaDigestGpu::new(&device, &queue, cap);
 
+        // κ(x,z) da pista inicial — mesma fonte que `reload_world` usa depois.
+        let track_curvatura = {
+            let wps: Vec<(f32, f32)> = world.waypoints_world.iter().map(|p| (p.x, p.y)).collect();
+            CurvaturaPista::medir(&wps)
+        };
+
         eprintln!("[gpu_evolve] Adapter: {} · cap={}", name, cap);
 
         Some(Self {
@@ -221,6 +255,9 @@ impl GpuCtx {
             l2_samples: Vec::new(),
             policy_samples: Vec::new(),
             nan_seres: std::collections::HashSet::new(),
+            regiao_l1: Vec::new(),
+            regiao_l2: Vec::new(),
+            track_curvatura,
         })
     }
 
@@ -1016,9 +1053,18 @@ impl GpuCtx {
         if ATIVACAO_ON.load(Ordering::Relaxed) && brain_fires {
             let stride = ATIVACAO_N.load(Ordering::Relaxed).max(1);
             if (tick_idx as u32) % stride == 0 {
+                // Distância à parede mais próxima (min dos 3 raios já calculados no topo
+                // do tick, gravados em `states[i].dist_wall_*`) — mesmo dado que alimenta
+                // ch118/119/123, reaproveitado aqui sem raio novo.
+                let dist_parede = |i: usize| states[i].dist_wall_l
+                    .min(states[i].dist_wall_r)
+                    .min(states[i].dist_wall_f);
                 if intents.len() == n {
-                    for row in &intents {
+                    for (i, row) in intents.iter().enumerate() {
                         self.l2_samples.push(row[0..48].to_vec());
+                        // L2 nunca pula por NaN (só L1 tem essa guarda) — lockstep
+                        // garantido: um push de contexto por push de amostra.
+                        self.regiao_l2.push(contexto_regiao(&self.track_curvatura, &states[i].phys, dist_parede(i)));
                     }
                 }
                 // Estado CfC de L1 — único readback extra desta seção.
@@ -1032,6 +1078,9 @@ impl GpuCtx {
                         continue;
                     }
                     self.l1_samples.push(row.clone());
+                    // Mesmo `continue` acima pula ESTE push também — l1_samples e
+                    // regiao_l1 crescem sempre juntos, nunca desalinham.
+                    self.regiao_l1.push(contexto_regiao(&self.track_curvatura, &states[i].phys, dist_parede(i)));
                 }
                 // Comandos motores do "campeão" (ser 0) — para entropia de política.
                 // `phys_states[0]` já tem o comando FINAL (pós axiom_policy/piloto/
@@ -1130,5 +1179,12 @@ impl GpuCtx {
         // parede em `tick()`).
         self.racing_line = world.racing_line.clone();
         self.grid_cpu = grid_u32;
+
+        // κ(x,z) da pista NOVA — sem isto, depois de uma troca de pista (`--pistas`/
+        // `--pista-held-out`), `--regioes` continuaria medindo curvatura da pista
+        // ANTERIOR contra amostras de ativação da pista atual: números com aparência
+        // válida, silenciosamente errados.
+        let wps: Vec<(f32, f32)> = world.waypoints_world.iter().map(|p| (p.x, p.y)).collect();
+        self.track_curvatura = CurvaturaPista::medir(&wps);
     }
 }

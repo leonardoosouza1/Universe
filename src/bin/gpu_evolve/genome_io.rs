@@ -10,6 +10,11 @@
 //! KAN:     3*KAN_OUT_KNOTS × f32 LE
 //! slow:    N_SLOW_WEIGHTS × f32 LE   (opcional — lido só se o arquivo for grande o bastante)
 //! tau:     N_CFC_CHANNELS × f32 LE   (opcional — idem)
+//! sensors: N_SENSOR_GENES × f32 LE   (opcional — idem; FASE SENSORES, degrau 1)
+//! neuron_alpha:       (L1+L2) × f32 LE  (opcional — idem; P1.7, mecanismo 1)
+//! neuron_period_l1:   L1      × f32 LE  (opcional — idem; P1.7, mecanismo 2)
+//! neuron_threshold_l1: L1     × f32 LE  (opcional — idem; P1.7, mecanismo 2)
+//! neuron_activation:  (L1+L2) × f32 LE  (opcional — idem; P1.7, mecanismo 3)
 //! ```
 //!
 //! # Compatibilidade com o formato legado (SEM cabeçalho)
@@ -61,6 +66,15 @@ pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     }
     for w in &genome.slow { f.write_all(&w.to_le_bytes())?; }
     for d in &genome.tau  { f.write_all(&d.to_le_bytes())?; }
+    for s in &genome.sensors { f.write_all(&s.to_le_bytes())?; }
+    // P1.7 (docs/PLANO_EVOLUCAO.md) — cérebro assíncrono: memória, período/limiar,
+    // ativação heterogênea. Mesma regra dos blocos acima: campo novo aqui SEM
+    // atualizar `load_genome` junto é o gap 7 do CLAUDE.md do projeto (perdemos
+    // 1091 pesos em silêncio uma vez por esquecer isto) — `tests.rs` cobre.
+    for a in &genome.neuron_alpha { f.write_all(&a.to_le_bytes())?; }
+    for p in &genome.neuron_period_l1 { f.write_all(&p.to_le_bytes())?; }
+    for t in &genome.neuron_threshold_l1 { f.write_all(&t.to_le_bytes())?; }
+    for a in &genome.neuron_activation { f.write_all(&a.to_le_bytes())?; }
     Ok(())
 }
 
@@ -118,12 +132,51 @@ pub fn load_genome(path: &str) -> Option<Genome> {
         universe::engine::SlowBrain::new().all_weights()
     };
     let tau = if bytes.len() >= off + n_tau * 4 {
-        read_at(&bytes, off, n_tau)
+        let v = read_at(&bytes, off, n_tau); off += n_tau * 4; v
     } else {
         vec![universe::cfc::DECAY_DEFAULT; n_tau]
     };
+    // FASE SENSORES (degrau 1) — mesmo padrão opcional de slow/tau: arquivo gravado
+    // antes deste campo existir cai no default, que é a verdade (aquele genoma
+    // realmente rodava com os hardcodes de hoje, não com um valor inventado).
+    let n_sensors = universe::gpu::evolution::N_SENSOR_GENES;
+    let sensors = if bytes.len() >= off + n_sensors * 4 {
+        let v = read_at(&bytes, off, n_sensors); off += n_sensors * 4; v
+    } else {
+        universe::gpu::evolution::SENSOR_DEFAULTS.to_vec()
+    };
 
-    Some(Genome { l1, l2, kan_knots, slow, tau })
+    // P1.7 — mesmo padrão opcional de slow/tau/sensors: arquivo gravado antes
+    // destes campos existirem cai no NEUTRO (idêntico ao cérebro de hoje — ver
+    // `Genome::random`), que é a verdade, não uma invenção: aquele genoma
+    // realmente rodava sem memória/período/limiar/ativação heterogênea.
+    let n_l1 = universe::gpu::evolution::N_L1_NEURONS;
+    let n_l2 = universe::gpu::evolution::N_L2_NEURONS;
+    let neuron_alpha = if bytes.len() >= off + (n_l1 + n_l2) * 4 {
+        let v = read_at(&bytes, off, n_l1 + n_l2); off += (n_l1 + n_l2) * 4; v
+    } else {
+        vec![0.0; n_l1 + n_l2]
+    };
+    let neuron_period_l1 = if bytes.len() >= off + n_l1 * 4 {
+        let v = read_at(&bytes, off, n_l1); off += n_l1 * 4; v
+    } else {
+        vec![1.0; n_l1]
+    };
+    let neuron_threshold_l1 = if bytes.len() >= off + n_l1 * 4 {
+        let v = read_at(&bytes, off, n_l1); off += n_l1 * 4; v
+    } else {
+        vec![0.0; n_l1]
+    };
+    let neuron_activation = if bytes.len() >= off + (n_l1 + n_l2) * 4 {
+        read_at(&bytes, off, n_l1 + n_l2)
+    } else {
+        vec![0.0; n_l1 + n_l2]
+    };
+
+    Some(Genome {
+        l1, l2, kan_knots, slow, tau, sensors,
+        neuron_alpha, neuron_period_l1, neuron_threshold_l1, neuron_activation,
+    })
 }
 
 /// Semente do genoma inicial do ser `i` sob a semente de população `pop_seed`.

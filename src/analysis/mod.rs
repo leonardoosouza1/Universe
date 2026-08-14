@@ -6,3 +6,6 @@
 pub mod activation;
 /// Esparsidade contextual: *quem* dispara para *esta* situação (E1-E4 do protocolo).
 pub mod contextual;
+/// Regiões da pista × ativação: o cérebro usa neurônios diferentes em reta e em curva?
+/// Cruza `contextual`/`activation` (ativação) com a curvatura local da pista (posição).
+pub mod regioes;

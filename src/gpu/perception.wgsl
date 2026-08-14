@@ -141,6 +141,16 @@ struct Pose {
 // Encadear os dois no mesmo CommandEncoder garante que perception_temporal vê o
 // buf_output zerado e escreve nos slots livres sem race condition.
 
+// FASE SENSORES (degrau 1): banco de sensores herdáveis por ser — FOV do sweep de
+// parede/curvatura, alcance de parede, alcance lateral, 3 lookaheads de curvatura.
+// Binding 7 NESTE layout (independente do binding 7 de perception_temporal.wgsl acima —
+// são pipelines/bind groups DIFERENTES, o namespace de binding não colide). Host:
+// `gpu::evolution::N_SENSOR_GENES`/`sensor_idx` (ordem) e `PerceptionGpu::upload_sensors`
+// (envio). Nasce em SENSOR_DEFAULTS (ver perception.rs) — quem não chamar upload_sensors
+// lê exatamente os hardcodes de hoje.
+const N_SENSOR_GENES: u32 = 6u;
+@group(0) @binding(7) var<storage, read> sensors: array<f32>;
+
 // ─── Constantes ────────────────────────────────────────────────────────────────
 
 const RETINA_ROWS:    u32 = 14u;
@@ -149,20 +159,24 @@ const RETINA_TOTAL:   u32 = 1764u;   // 14 × 126
 const WAVE_SIZE:      u32 = 192u;   // = SENSORY_WAVE_SIZE em config.rs
 const WAVE_U32S:      u32 = 48u;     // ceil(192 / 4) = 48
 
-// Amostras para sensores laterais (ch 76-77): expandidas de 27m → 40m.
-// CONTA DO ALCANCE: velocidade máxima observada = 28 m/s.
-// A 28 m/s o ser percorre 40 m em 40/28 = 1.43 s — antecipação confortável.
-// Com 27m o prazo era 27/28 = 0.96 s (marginal). Com 40m = 1.43 s (≥1 s seguro).
-// O frontal usa 30 m (1.07 s) — o lateral deve cobrir pelo menos o mesmo horizonte.
+// Forma RELATIVA das amostras laterais (ch 76-77) — escalada por `lat_range_m`
+// (gene herdável, BLOCO J abaixo). CONTA DO ALCANCE HISTÓRICO (40m): velocidade
+// máxima observada = 28 m/s; a 28 m/s o ser percorre 40 m em 40/28 = 1.43 s —
+// antecipação confortável. Com 27m o prazo era 27/28 = 0.96 s (marginal). O frontal
+// usa 30 m (1.07 s) — o lateral deve cobrir pelo menos o mesmo horizonte.
 // BUG 1 (2026-08-04): 56% dos seres travavam por parede LATERAL sem ver a ameaça.
-// Fix: alcance lateral elevado a 40m, 10 amostras, normaliza por 40m.
+// Fix histórico: alcance lateral elevado a 40m, 10 amostras — hoje o TETO de 40m virou
+// o gene `lat_range_m` (herdável, ver `gpu::evolution::SENSOR_RANGES`); a FORMA
+// (progressão das 10 amostras) continua fixa, só escalada pelo alcance atual.
 const LAT_SAMPLES: array<f32, 10> = array(1.0, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 33.0, 40.0);
 
 // Amostras para whiskers (ch 94-97): mesmas do motor.rs
 const W_SAMPLES: array<f32, 5> = array(1.0, 3.0, 5.0, 7.0, 10.0);
 
-// ATENÇÃO: o motor.rs usa um angulo de 50° pra o yaw sweep dos sensores 16-39.
-const FOV_HALF_RAD: f32 = 0.872664625997; // 50° em radianos = pi/3.6
+// FOV do sweep ch16-39 (BLOCO C/D/E) — era `const FOV_HALF_RAD = 50°` fixo; agora é o
+// gene herdável `fov_half_rad`, lido do buffer `sensors` no início de `main()` (ver
+// `sb`/`fov_half_rad` logo abaixo do cálculo de `being`). Removido daqui para não
+// deixar DOIS valores de FOV competindo — o gene é a única fonte agora.
 
 // ─── Utilitários de grade ───────────────────────────────────────────────────────
 
@@ -306,6 +320,19 @@ fn main(
     let rgt_z = p.rgt_z;
     let phase = p.phase;
 
+    // ── Sensores herdáveis (FASE SENSORES, degrau 1) ──────────────────────────
+    // Lidos uma vez por ser, por workgroup — ordem = `gpu::evolution::sensor_idx`.
+    // Sem `upload_sensors` (ex.: caminho que nunca chamou o upload), o host inicializa
+    // este buffer com SENSOR_DEFAULTS (ver `PerceptionGpu::new`) — os hardcodes de
+    // hoje, byte-idênticos aos antigos literais deste arquivo.
+    let sb = being * N_SENSOR_GENES;
+    let fov_half_rad = sensors[sb + 0u];
+    let wall_range_m = sensors[sb + 1u];
+    let lat_range_m  = sensors[sb + 2u];
+    let curv_near_m  = sensors[sb + 3u];
+    let curv_mid_m   = sensors[sb + 4u];
+    let curv_far_m   = sensors[sb + 5u];
+
     // ─────────────────────────────────────────────────────────────────────────
     // BLOCO A: ch 0-7 — FAR pool (rows 0-4, 8 bins, max-pool sobre legado)
     //
@@ -355,11 +382,14 @@ fn main(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // BLOCO C: ch 16-23 — wall_distance_fov (8 ângulos YAW, range 60m)
+    // BLOCO C: ch 16-23 — wall_distance_fov (8 ângulos YAW, alcance herdável)
     //
-    // Varre ±50° (MOTOR: fov_half_rad = 50°). Para cada ângulo YAW, amostra a grade
-    // em 8 distâncias fixas (WALL_SAMPLES) e codifica a distância mínima até parede.
-    // Equivalente EXATO ao motor.rs — mesma grade, mesma função round(), mesmos samples.
+    // Varre ±fov_half_rad (gene herdável, hoje 50° para quem não evoluiu sensores —
+    // mesmo valor que o motor.rs usava fixo). Para cada ângulo YAW, amostra a grade em
+    // 8 distâncias — a FORMA relativa (progressão 3/8/15/25/35/45/52/60) continua fixa,
+    // escalada por `wall_range_m` (gene herdável, hoje 60m = comportamento antigo) — e
+    // codifica a distância mínima até parede. Com wall_range_m no valor histórico (60),
+    // byte-idêntico ao motor.rs de sempre.
     // ATENÇÃO: motor.rs sobrescreve ch 21-27 com motion per-row DEPOIS deste bloco.
     // O kernel GPU retorna os valores deste bloco — a CPU vai sobrescrever 21-27 com motion.
     // Resultado correto: este kernel escreve 16-23; CPU sobrescreve 21-27 = ch16-20 e 21-27
@@ -367,9 +397,9 @@ fn main(
     // ─────────────────────────────────────────────────────────────────────────
     if tid >= 16u && tid < 24u {
         let ai = tid - 16u;
-        // yaw_dir: igual ao motor.rs.
+        // yaw_dir: igual ao motor.rs, mas com FOV herdável.
         let frac = (f32(ai) - 3.5) / 3.5;
-        let yaw = frac * FOV_HALF_RAD;
+        let yaw = frac * fov_half_rad;
         let cy = cos(yaw); let sy = sin(yaw);
         let dir_x = fwd_x * cy + rgt_x * sy;
         let dir_z = fwd_z * cy + rgt_z * sy;
@@ -377,12 +407,13 @@ fn main(
         let ndx = select(dir_x / len, 0.0, len < 1e-6);
         let ndz = select(dir_z / len, 0.0, len < 1e-6);
 
-        // WALL_SAMPLES do motor.rs: [3, 8, 15, 25, 35, 45, 52, 60]
-        let wall_samples = array<f32, 8>(3.0, 8.0, 15.0, 25.0, 35.0, 45.0, 52.0, 60.0);
-        let WALL_MAX: f32 = 60.0;
+        // Forma relativa do motor.rs: [3, 8, 15, 25, 35, 45, 52, 60], escalada para o
+        // alcance herdado (60.0 = denominador histórico da forma).
+        let wall_shape = array<f32, 8>(3.0, 8.0, 15.0, 25.0, 35.0, 45.0, 52.0, 60.0);
+        let wall_scale = wall_range_m / 60.0;
         var wall_dist_min: f32 = 1e30;
         for (var si = 0u; si < 8u; si++) {
-            let sd = wall_samples[si];
+            let sd = wall_shape[si] * wall_scale;
             let sx = pos_x + ndx * sd;
             let sz = pos_z + ndz * sd;
             let v = voxel_at(sx, sz);
@@ -391,10 +422,10 @@ fn main(
             }
         }
         var encoded: i32;
-        if wall_dist_min >= WALL_MAX {
+        if wall_dist_min >= wall_range_m {
             encoded = 0;
         } else {
-            encoded = i32(clamp(127.0 * (WALL_MAX - wall_dist_min) / WALL_MAX, 1.0, 127.0));
+            encoded = i32(clamp(127.0 * (wall_range_m - wall_dist_min) / wall_range_m, 1.0, 127.0));
         }
         write_channel(being, 16u + ai, encoded);
     }
@@ -408,7 +439,7 @@ fn main(
     if tid >= 24u && tid < 32u {
         let ai = tid - 24u;
         let frac = (f32(ai) - 3.5) / 3.5;
-        let yaw = frac * FOV_HALF_RAD;
+        let yaw = frac * fov_half_rad;
         let cy = cos(yaw); let sy = sin(yaw);
         let dir_x = fwd_x * cy + rgt_x * sy;
         let dir_z = fwd_z * cy + rgt_z * sy;
@@ -443,7 +474,7 @@ fn main(
     if tid >= 32u && tid < 40u {
         let ai = tid - 32u;
         let frac = (f32(ai) - 3.5) / 3.5;
-        let yaw = frac * FOV_HALF_RAD;
+        let yaw = frac * fov_half_rad;
         let cy = cos(yaw); let sy = sin(yaw);
         let dir_x = fwd_x * cy + rgt_x * sy;
         let dir_z = fwd_z * cy + rgt_z * sy;
@@ -610,52 +641,53 @@ fn main(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // BLOCO J: ch 76-77 — distância lateral esq/dir (grid sampling, 1-40m)
+    // BLOCO J: ch 76-77 — distância lateral esq/dir (grid sampling, alcance herdável)
     //
     // Perpendiculares ao forward: left = (-fwd_z, fwd_x), right = -left.
-    // Amostra em [1,3,6,9,12,16,20,26,33,40] m (expandido de 27m → 40m).
-    // Normaliza por 40.0 (máximo das amostras) para manter escala [0,127].
-    // CONTA: 40m ÷ 28 m/s = 1.43 s de antecipação (frontal = 30m = 1.07 s).
+    // Forma relativa [1,3,6,9,12,16,20,26,33,40] escalada por `lat_range_m` (gene
+    // herdável — 40.0 é o denominador histórico da forma, ver comentário de
+    // `LAT_SAMPLES` acima). Normaliza por `lat_range_m` para manter escala [0,127].
     // ─────────────────────────────────────────────────────────────────────────
     if tid == 58u {
         // left_perp = (-fwd_z, fwd_x) normalizado (já é unitário pois fwd é unitário)
         let lp_x = -fwd_z;
         let lp_z =  fwd_x;
-        // Sentinela 40.0 = nenhuma parede no alcance.
-        var dist_l: f32 = 40.0;
-        var dist_r: f32 = 40.0;
+        let lat_scale = lat_range_m / 40.0;
+        // Sentinela lat_range_m = nenhuma parede no alcance.
+        var dist_l: f32 = lat_range_m;
+        var dist_r: f32 = lat_range_m;
         for (var si = 0u; si < 10u; si++) {
-            let sd = LAT_SAMPLES[si];
+            let sd = LAT_SAMPLES[si] * lat_scale;
             let lx = pos_x + lp_x * sd;
             let lz = pos_z + lp_z * sd;
             let rx = pos_x - lp_x * sd;
             let rz = pos_z - lp_z * sd;
             let vl = voxel_at(lx, lz);
             let vr = voxel_at(rx, rz);
-            if dist_l == 40.0 && (vl == 2u || vl == 3u) { dist_l = sd; }
-            if dist_r == 40.0 && (vr == 2u || vr == 3u) { dist_r = sd; }
+            if dist_l == lat_range_m && (vl == 2u || vl == 3u) { dist_l = sd; }
+            if dist_r == lat_range_m && (vr == 2u || vr == 3u) { dist_r = sd; }
         }
-        // 127 = encostado (sd mínimo), 0 = livre (40m ou mais).
-        write_channel(being, 76u, i32(clamp((dist_l / 40.0) * 127.0, 0.0, 127.0)));
-        write_channel(being, 77u, i32(clamp((dist_r / 40.0) * 127.0, 0.0, 127.0)));
+        // 127 = encostado (sd mínimo), 0 = livre (lat_range_m ou mais).
+        write_channel(being, 76u, i32(clamp((dist_l / lat_range_m) * 127.0, 0.0, 127.0)));
+        write_channel(being, 77u, i32(clamp((dist_r / lat_range_m) * 127.0, 0.0, 127.0)));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // BLOCO K: ch 78-80 — curvatura lookahead (40m, 70m, 120m)
+    // BLOCO K: ch 78-80 — curvatura lookahead (genes herdáveis, hoje 40m/70m/120m)
     //
     // Motor.rs: curv_at(d) = atan2(cross_y, dot) onde cross_y = fwd.x*f.y - fwd.z*f.x.
-    // Codificado em i8 dividindo por FRAC_PI_2. Equivalente exato.
+    // Codificado em i8 dividindo por FRAC_PI_2. Equivalente exato quando os genes
+    // estão nos valores históricos (curv_near/mid/far_m = 40/70/120, SENSOR_DEFAULTS).
     // ATENÇÃO: ch 78 é sobrescrito pela CPU depois (curvatura por lookahead distâncias,
     // bloco "CURVATURA ANTECIPADA" vem ANTES no motor.rs e escreve 78 com fluxo a 10m).
     // Então: a CPU sobrescreve ch 78 com curvatura a 10m APÓS este kernel.
-    // O kernel escreve 78=40m, 79=70m, 80=120m — a CPU escreve 78=40m novamente
-    // (fluxo forward a 10m no bloco CURVATURA, slot 78 = c40 = 40m lookahead).
-    // Analisado: motor.rs linha ~1452: sensory_wave[78] = c40 (curv_at(40m)).
-    // Este kernel faz o mesmo. Equivalência esperada.
+    // O kernel escreve 78=curv_near_m, 79=curv_mid_m, 80=curv_far_m — a CPU sobrescreve
+    // 78 de novo (fluxo forward a 10m no bloco CURVATURA do motor.rs, caminho CPU/Bevy,
+    // que não lê estes genes — ver "paridade CPU/GPU" na doc de SENSORS_EVOLVE_ON).
     // ─────────────────────────────────────────────────────────────────────────
     if tid == 59u {
         let yn = 1.5707963267948966; // FRAC_PI_2
-        let dists = array<f32, 3>(40.0, 70.0, 120.0);
+        let dists = array<f32, 3>(curv_near_m, curv_mid_m, curv_far_m);
         let slots = array<u32, 3>(78u, 79u, 80u);
         for (var di = 0u; di < 3u; di++) {
             let d = dists[di];

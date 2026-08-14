@@ -209,7 +209,8 @@ pub const TEMPORAL_STRIDE: usize = 58;
 /// Os três compartilham `buf_output` e escrevem em canais distintos.
 /// `bind_and_dispatch` despacha todos no mesmo `CommandEncoder` sem readback entre eles.
 pub struct PerceptionGpu {
-    // ── Pipeline espacial (perception.wgsl) — 7 bindings (sem temporal) ────────
+    // ── Pipeline espacial (perception.wgsl) — 8 bindings (binding 7 = buf_sensors,
+    // FASE SENSORES degrau 1; era 7 bindings antes deste campo existir) ────────────
     pipeline_spatial:  wgpu::ComputePipeline,
     layout_spatial:    wgpu::BindGroupLayout,
     // ── Pipeline temporal (perception_temporal.wgsl) — 8 bindings ───────────────
@@ -228,6 +229,17 @@ pub struct PerceptionGpu {
     buf_heights:  wgpu::Buffer,
     /// Poses dos seres (atualizado por tick via write_buffer). Tamanho: capacidade × PosePercep.
     buf_poses:    wgpu::Buffer,
+    /// Banco de sensores herdáveis por ser (FASE SENSORES, degrau 1: FOV do sweep de
+    /// parede/curvatura, alcance de parede, alcance lateral, 3 lookaheads de curvatura —
+    /// ver `gpu::evolution::N_SENSOR_GENES`/`sensor_idx`). Constante durante a geração,
+    /// como τ: herdado do genoma, enviado uma vez por `upload_sensors`. Nasce em
+    /// `SENSOR_DEFAULTS` repetido (os hardcodes de hoje) para que quem nunca chamar
+    /// `upload_sensors` (ex.: um caminho de teste que só usa `reduce` sem preparar
+    /// genomas) reproduza o comportamento antigo — mesmo padrão de `buf_tau` em
+    /// `brain.rs`. Binding 7 de `layout_spatial` (só o pipeline ESPACIAL lê; os lookaheads
+    /// de curvatura de `perception_temporal.wgsl` ficam fora de escopo nesta fase, ver
+    /// doc de `N_SENSOR_GENES`).
+    buf_sensors:  wgpu::Buffer,
     /// Saída: WAVE_U32S u32 por ser. Copiado para buf_readback antes de mapear.
     buf_output:   wgpu::Buffer,
     /// Buffer MAP_READ, tamanho = buf_output. Separado porque STORAGE | MAP_READ é inválido.
@@ -287,7 +299,11 @@ impl PerceptionGpu {
                 storage_entry(4, true),   // poses
                 storage_entry(5, true),   // retina física
                 storage_entry(6, false),  // buf_output (read_write, atomic)
-                // binding 7 (temporal) está APENAS no pipeline temporal
+                // binding 7 aqui = buf_sensors (FASE SENSORES, degrau 1). Namespace de
+                // binding é POR LAYOUT — não colide com o binding 7 de `layout_temporal`
+                // (que é o estado temporal, um buffer inteiramente diferente num pipeline
+                // separado). Ver doc de `buf_sensors` no struct.
+                storage_entry(7, true),   // sensores herdáveis (read-only)
             ],
         });
         eprintln!("[perception] create_pipeline_layout (spatial)...");
@@ -448,6 +464,20 @@ impl PerceptionGpu {
             mapped_at_creation: false,
         });
 
+        // ── Banco de sensores (FASE SENSORES, degrau 1) ───────────────────────
+        // Nasce em SENSOR_DEFAULTS repetido por ser — o hardcode de hoje (FOV=50°,
+        // wall_range=60m, lat_range=40m, curv=[40,70,120]m) — para que o caminho que
+        // nunca chama `upload_sensors` (testes, `gpu_validate` antes do primeiro upload)
+        // reproduza o comportamento antigo, exatamente como `buf_tau` nasce em
+        // DECAY_DEFAULT em `brain.rs`.
+        let sensors_init: Vec<f32> = crate::gpu::evolution::SENSOR_DEFAULTS
+            .iter().cycle().take(cap * crate::gpu::evolution::N_SENSOR_GENES).copied().collect();
+        let buf_sensors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("percep-sensors"),
+            contents: bytemuck::cast_slice(&sensors_init),
+            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         // ── Buffer de estado temporal por ser ─────────────────────────────────
         // TEMPORAL_STRIDE f32 por ser, zerado na criação.
         // Zeros iniciais: EMA começa em 0m (será forçado para dist_l/r real nos primeiros ticks).
@@ -532,6 +562,7 @@ impl PerceptionGpu {
             buf_flow,
             buf_heights,
             buf_poses,
+            buf_sensors,
             buf_output,
             buf_readback,
             buf_temporal,
@@ -604,7 +635,7 @@ impl PerceptionGpu {
             usage:    wgpu::BufferUsages::UNIFORM,
         });
 
-        // ── Bind group espacial (7 bindings, sem temporal) ───────────────────
+        // ── Bind group espacial (8 bindings: 0-6 + 7=buf_sensors, FASE SENSORES) ──
         let bg_spatial = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("percep-bg-spatial"),
             layout:  &self.layout_spatial,
@@ -616,6 +647,7 @@ impl PerceptionGpu {
                 wgpu::BindGroupEntry { binding: 4, resource: self.buf_poses.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: buf_retina_fisica.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: self.buf_sensors.as_entire_binding() },
             ],
         });
 
@@ -708,6 +740,27 @@ impl PerceptionGpu {
     /// Pré-condição: bind_and_dispatch() já copiou buf_output→buf_readback no encoder.
     pub fn buf_readback_ref(&self) -> &wgpu::Buffer {
         &self.buf_readback
+    }
+
+    /// Envia o banco de sensores: `n × N_SENSOR_GENES` valores, em ordem de ser (FASE
+    /// SENSORES, degrau 1 — ver doc de `buf_sensors` e `gpu::evolution::N_SENSOR_GENES`).
+    ///
+    /// Chamado uma vez por geração, junto com os pesos e o τ — os sensores são herdados
+    /// do genoma e não mudam durante a vida do ser. Quem não chamar fica com
+    /// `SENSOR_DEFAULTS` da inicialização (os hardcodes de hoje), então o braço de
+    /// controle do experimento (`SENSORS_EVOLVE_ON` desligado) é o comportamento
+    /// histórico — mesmo padrão de `BrainGpu::upload_tau`.
+    pub fn upload_sensors(&self, queue: &wgpu::Queue, sensors: &[f32], n: usize) {
+        use crate::gpu::evolution::N_SENSOR_GENES;
+        assert!(n <= self.capacity, "n={n} excede capacidade {}", self.capacity);
+        // Comprimento errado seria um bug MUDO: o kernel leria sensores do ser seguinte
+        // (ou lixo do fim do buffer) e a "evolução dos sensores" viraria ruído embaralhado
+        // sem sintoma visível — mesma classe de erro já vista neste projeto no stride da
+        // onda sensorial (ver CLAUDE.md, gap 1).
+        assert_eq!(sensors.len(), n * N_SENSOR_GENES,
+            "banco de sensores tem {} valores, esperava {} ({n} seres × {N_SENSOR_GENES} genes)",
+            sensors.len(), n * N_SENSOR_GENES);
+        queue.write_buffer(&self.buf_sensors, 0, bytemuck::cast_slice(sensors));
     }
 
     /// Atualiza `memory0` (índice 7 do estado temporal) para N seres via write_buffer parcial.
@@ -954,7 +1007,7 @@ impl PerceptionGpu {
             usage:    wgpu::BufferUsages::UNIFORM,
         });
 
-        // ── Bind group espacial (7 bindings) ─────────────────────────────────
+        // ── Bind group espacial (8 bindings: 0-6 + 7=buf_sensors, FASE SENSORES) ──
         let bg_spatial = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("percep-chain-bg-spatial"),
             layout:  &self.layout_spatial,
@@ -966,6 +1019,7 @@ impl PerceptionGpu {
                 wgpu::BindGroupEntry { binding: 4, resource: self.buf_poses.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: buf_retina_fisica.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: self.buf_sensors.as_entire_binding() },
             ],
         });
 

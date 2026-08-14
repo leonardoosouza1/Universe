@@ -30,6 +30,29 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
     let ultimo_slow = original.slow.len() - 1;
     original.slow[ultimo_slow] = 0.876_5;
     original.l2[7] = -0.999;
+    // FASE SENSORES: marca fora dos valores de SENSOR_DEFAULTS (que é o que
+    // `Genome::random` produz com SENSORS_EVOLVE_ON no padrão desligado) — sem isso o
+    // teste passaria mesmo se `save_genome`/`load_genome` esquecessem o campo, porque
+    // os dois lados cairiam no mesmo default (o erro exato do gap 7 do CLAUDE.md).
+    original.sensors[0] = 1.111_1;
+    let ultimo_sensor = original.sensors.len() - 1;
+    original.sensors[ultimo_sensor] = 199.9;
+    // P1.7 (cérebro assíncrono): marca fora dos neutros de `Genome::random`
+    // (0.0/1.0/0.0/0.0) — mesmo cuidado do resto do teste: sem isso o teste
+    // passaria mesmo se `save_genome`/`load_genome` esquecessem os campos,
+    // porque os dois lados cairiam no mesmo default (o erro exato do gap 7).
+    original.neuron_alpha[0] = 0.123_4;
+    let ultimo_alpha = original.neuron_alpha.len() - 1;
+    original.neuron_alpha[ultimo_alpha] = 0.876_5;
+    original.neuron_period_l1[0] = 5.0;
+    let ultimo_periodo = original.neuron_period_l1.len() - 1;
+    original.neuron_period_l1[ultimo_periodo] = 7.0;
+    original.neuron_threshold_l1[0] = 0.321;
+    let ultimo_limiar = original.neuron_threshold_l1.len() - 1;
+    original.neuron_threshold_l1[ultimo_limiar] = 0.654;
+    original.neuron_activation[0] = 2.0;
+    let ultima_ativacao = original.neuron_activation.len() - 1;
+    original.neuron_activation[ultima_ativacao] = 3.0;
 
     let path = std::env::temp_dir().join("universe_genoma_ida_volta.bin");
     let path = path.to_str().unwrap();
@@ -44,6 +67,16 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
         "cérebro LENTO não sobreviveu ao disco — era exatamente este o bug");
     assert_eq!(lido.tau, original.tau,
         "banco de τ não sobreviveu ao disco");
+    assert_eq!(lido.sensors, original.sensors,
+        "banco de sensores não sobreviveu ao disco");
+    assert_eq!(lido.neuron_alpha, original.neuron_alpha,
+        "memória por neurônio (P1.7, mecanismo 1) não sobreviveu ao disco");
+    assert_eq!(lido.neuron_period_l1, original.neuron_period_l1,
+        "período por neurônio (P1.7, mecanismo 2) não sobreviveu ao disco");
+    assert_eq!(lido.neuron_threshold_l1, original.neuron_threshold_l1,
+        "limiar por neurônio (P1.7, mecanismo 2) não sobreviveu ao disco");
+    assert_eq!(lido.neuron_activation, original.neuron_activation,
+        "ativação por neurônio (P1.7, mecanismo 3) não sobreviveu ao disco");
 }
 
 /// Genoma gravado por uma versão antiga (sem lento nem τ) ainda carrega.
@@ -73,6 +106,24 @@ fn genoma_antigo_sem_lento_nem_tau_ainda_carrega() {
     assert_eq!(lido.tau.len(), universe::gpu::evolution::N_CFC_CHANNELS);
     assert!(lido.tau.iter().all(|&d| d == universe::cfc::DECAY_DEFAULT));
     assert_eq!(lido.slow.len(), universe::engine::SlowBrain::new().all_weights().len());
+    // FASE SENSORES: genoma legado (gravado antes deste campo existir) tem que cair
+    // exatamente em SENSOR_DEFAULTS — "os valores de hoje como padrão", requisito
+    // explícito da tarefa (item 4).
+    assert_eq!(lido.sensors, universe::gpu::evolution::SENSOR_DEFAULTS.to_vec(),
+        "genoma legado sem sensores deveria carregar com SENSOR_DEFAULTS");
+    // P1.7: mesmo requisito — genoma gravado antes do cérebro assíncrono existir
+    // carrega com os NEUTROS de `Genome::random` (0.0/1.0/0.0/0.0), reproduzindo
+    // o comportamento real daquele genoma (rodava sem os três mecanismos).
+    let n_l1 = universe::gpu::evolution::N_L1_NEURONS;
+    let n_l2 = universe::gpu::evolution::N_L2_NEURONS;
+    assert_eq!(lido.neuron_alpha, vec![0.0; n_l1 + n_l2],
+        "genoma legado sem P1.7 deveria carregar alfa=0.0");
+    assert_eq!(lido.neuron_period_l1, vec![1.0; n_l1],
+        "genoma legado sem P1.7 deveria carregar período=1.0");
+    assert_eq!(lido.neuron_threshold_l1, vec![0.0; n_l1],
+        "genoma legado sem P1.7 deveria carregar limiar=0.0");
+    assert_eq!(lido.neuron_activation, vec![0.0; n_l1 + n_l2],
+        "genoma legado sem P1.7 deveria carregar ativação=0.0 (tanh)");
 }
 
 /// Genoma v2 (com cabeçalho `UGEN`) sobrevive ida-e-volta no disco.
@@ -86,6 +137,11 @@ fn genoma_v2_com_cabecalho_sobrevive_ida_e_volta() {
     original.randomize_tau(42);
     original.l1[0] = 0.123_4;
     original.slow[3] = -0.567_8;
+    original.sensors[1] = 88.8; // FASE SENSORES: marca fora de SENSOR_DEFAULTS
+    original.neuron_alpha[2] = 0.444_4;      // P1.7: marca fora dos neutros
+    original.neuron_period_l1[2] = 6.0;
+    original.neuron_threshold_l1[2] = 0.222_2;
+    original.neuron_activation[2] = 1.0;
 
     let path = std::env::temp_dir().join("universe_genoma_v2_cabecalho.bin");
     let path_str = path.to_str().unwrap();
@@ -107,6 +163,11 @@ fn genoma_v2_com_cabecalho_sobrevive_ida_e_volta() {
     assert_eq!(lido.kan_knots, original.kan_knots, "KAN mudou no disco (v2)");
     assert_eq!(lido.slow, original.slow, "lento mudou no disco (v2)");
     assert_eq!(lido.tau, original.tau, "τ mudou no disco (v2)");
+    assert_eq!(lido.sensors, original.sensors, "sensores mudaram no disco (v2)");
+    assert_eq!(lido.neuron_alpha, original.neuron_alpha, "memória (P1.7) mudou no disco (v2)");
+    assert_eq!(lido.neuron_period_l1, original.neuron_period_l1, "período (P1.7) mudou no disco (v2)");
+    assert_eq!(lido.neuron_threshold_l1, original.neuron_threshold_l1, "limiar (P1.7) mudou no disco (v2)");
+    assert_eq!(lido.neuron_activation, original.neuron_activation, "ativação (P1.7) mudou no disco (v2)");
 }
 
 /// Blob legado SINTÉTICO (sem magic "UGEN", só os bytes crus de L1|L2|KAN) ainda

@@ -51,10 +51,16 @@ fn perception_motion_wgsl_e_valido() {
     validar_wgsl("perception_motion.wgsl", fonte);
 }
 
-/// Editado na FASE CANAIS: só comentários (header "NÃO portado" atualizado para
-/// refletir ch114-117 saindo da lista de "só motor.rs") — sem mudança de lógica,
-/// mas incluído aqui por completude (qualquer edição neste arquivo passa pelo
-/// mesmo parser antes de chegar à GPU).
+/// FASE CANAIS (2026-08-14): inicialmente só comentários (header "NÃO portado"
+/// atualizado para refletir ch114-117 saindo da lista de "só motor.rs").
+///
+/// FASE SENSORES, degrau 1 (2026-08-14, mudança substantiva): FOV do sweep de
+/// parede/curvatura (BLOCO C/D/E) e alcances/lookaheads (BLOCO J/K) deixaram de ser
+/// `const` de compilação e viraram genes herdáveis por ser, lidos de um buffer novo
+/// (`sensors`, binding 7 de `layout_spatial`) — ver `gpu::evolution::N_SENSOR_GENES`/
+/// `PerceptionGpu::upload_sensors`. Mudança estrutural (binding novo, bind group
+/// layout com 1 entrada a mais, leitura por-ser no início de `main()`) — exatamente o
+/// tipo de edição em que um erro de sintaxe/tipo só apareceria numa GPU real.
 #[test]
 fn perception_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/perception.wgsl");

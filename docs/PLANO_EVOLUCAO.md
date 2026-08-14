@@ -316,6 +316,178 @@ baterias de currículo ocupando-a). Quando a GPU liberar, com ≥3 sementes pare
 
 ---
 
+## P1.7 · Cérebro assíncrono (implementado 2026-08-14)
+
+> Leonardo: *"o que estou pedindo é um cérebro ASSÍNCRONO; ele vai trabalhar em
+> dimensões, neurônios e partes diferentes conforme está na pista; se você fica
+> sempre no mesmo tanh só está queimando tempo."* Citou como exemplo:
+> `h[n] = alfa·h[n-1] + (1-alfa)·x[n]`.
+
+**Gargalo medido (não suposto):** `grep -c tanh src/gpu/brain.wgsl` = 20 ocorrências, nenhuma
+outra ativação. Todos os 96 neurônios de L1 e os 48 de L2 disparam em TODO tick — não há
+memória própria, período ou limiar por neurônio. O banco de τ do CfC (`tau`, já herdável e
+mutável desde antes) é o precedente direto: tornar τ heterogêneo quebrou a parede dos 680 m
+no Universe — a hipótese aqui é que o mesmo tipo de heterogeneidade, agora no CÉREBRO
+(não só no pré-processador sensorial), abre espaço parecido.
+
+**Três mecanismos, um só commit** (todos tocam `Genome` + `brain.wgsl` + `genome_io.rs` —
+separá-los corromperia o formato posicional do disco):
+
+1. **Memória por neurônio** (`neuron_alpha`, 96 L1 + 48 L2) — filtro EMA
+   `h[n] = h[n-1]·α + x[n]·(1-α)` sobre o valor PRÉ-ativação de cada neurônio (L1: o
+   acumulador do matmul, ANTES de tanh/ReLU/etc.; L2: o `l2_raw` pré-ganho). Nasce
+   α=0.0 (sem memória = idêntico a hoje); clamp em `evolve()`: [0, 0.95] — α≥1 diverge
+   (a equação a diferenças só é estável com o polo do filtro dentro do círculo unitário).
+   Estado `h[n-1]` num buffer novo na GPU (`buf_neuron_mem`, COPIA O PADRÃO de `buf_cfc`:
+   read_write, residente entre ticks, resetado em `BrainGpu::reset_cfc` — o mesmo método
+   que já zerava CfC/fadiga, estendido).
+
+   **GAP 11 (CLAUDE.md do projeto) — o mais importante deste mecanismo:** com α alto o
+   filtro passa-baixa preserva o ganho DC (α=0 e α=0.95 dão a MESMA saída para entrada
+   CONSTANTE — a combinação convexa já garante isso, sem precisar de normalização extra,
+   diferente do CfC), mas ATENUA a AMPLITUDE/variância de um sinal que FLUTUA tick a
+   tick — o caso real de todo canal sensorial. Modelando a entrada como ruído branco de
+   variância σx²: `Var(h)/Var(x) = (1-α)/(1+α)`. Em α=0.95 isso é ≈2,6% — o neurônio
+   pareceria 97% mais fraco (MUDO) e seria descartado por FRACO, não por LENTO. Conserto:
+   ganho de compensação `gain(α) = sqrt((1+α)/(1-α))` (gain(0)=1, sem mudança no braço
+   neutro), aplicado ao `h[n]` antes de seguir no pipeline. Conta completa, com a mesma
+   notação, no comentário de `neuron_mem_gain` em `brain.wgsl` e no doc do campo
+   `neuron_alpha` em `gpu/evolution.rs`.
+
+   Flag: `--sem-memoria-neuronal`.
+
+2. **Período e limiar** (`neuron_period_l1`, `neuron_threshold_l1` — só L1; a assincronia
+   temporal mira a ENTRADA sensorial, onde escalas de tempo diferentes fazem sentido
+   físico — L2 já lê L1 inteiro todo tick, sem "período" próprio que faça sentido igual).
+   PERÍODO: a cada quantos ticks o neurônio recalcula sua memória (nasce 1 = todo tick).
+   Fora do seu tick, MANTÉM o valor anterior — reusa o mesmo `buf_neuron_mem` do mecanismo
+   1 (a decisão "recalcula ou mantém" só decide SE o buffer é atualizado neste tick; o
+   valor final é sempre recomputado a partir do que está no buffer, então "manter" sai de
+   graça, sem precisar de um segundo buffer de cache). LIMIAR: abaixo dele, o neurônio
+   contribui zero (nasce 0.0 = sempre contribui).
+
+   **HONESTIDADE OBRIGATÓRIA (a mesma da tarefa):** na GPU todas as 96 threads de L1 rodam
+   em TODO dispatch, sempre — período > 1 NÃO economiza um ciclo de clock. O ganho é de
+   REPRESENTAÇÃO (escalas de tempo diferentes convivendo no mesmo cérebro, o pedido
+   original), nunca de velocidade. Documentado assim no shader e reportado por geração:
+
+   ```
+   [periodo] neurônios de L1 disparando/tick: MEDIA ± DESVIO de TOTAL (X%) · janela simulada N ticks
+   ```
+
+   Calculado em CPU pura (`gpu::evolution::simulate_l1_fire_counts`, testado sem GPU) —
+   o período de cada neurônio já é conhecido antes do tick 0 rodar, então simular é mais
+   barato e mais exato que amostrar a GPU. Janela = MMC(1..8) = 840 ticks (cobre um ciclo
+   completo dos períodos possíveis, clamp de `evolve()`), não a corrida inteira.
+
+   Flags: `--sem-periodo-neuronal` e `--sem-limiar-neuronal` (independentes).
+
+3. **Ativação heterogênea** (`neuron_activation`, 96 L1 + 48 L2) — seletor por neurônio
+   entre tanh (hoje)/ReLU/linear/leaky-ReLU(0,01), usando as fórmulas JÁ EXISTENTES em
+   `math::activations` (não reimplementadas — `brain.wgsl::apply_activation` é o espelho
+   GPU). Nasce 0.0 (tanh = idêntico a hoje). Aplicado em dois pontos bem definidos pela
+   arquitetura: a não-linearidade de QUANTIZAÇÃO de L1 (`l1_raw → i8`, o que alimenta L2)
+   e a não-linearidade FINAL de L2 (o que vira `final_intent[0..48]`). O bypass de L1→
+   `final_intent[48..96]` continua com tanh fixo de propósito — é squashing de SAÍDA
+   MOTORA (parametrizado por `out_gain`/`out_beta`, P1.5), não "ativação do neurônio de
+   L1" (que já foi decidida na quantização).
+
+   **Mutação DISCRETA, taxa MENOR que a gaussiana dos pesos** (0,2%/neurônio/geração,
+   contra a taxa 3× — ~6%/geração — usada nos outros campos herdáveis pequenos): trocar
+   tanh→ReLU muda o REGIME inteiro do neurônio (de sempre-ativo-saturando-suave para
+   metade-em-zero-exato), não é um ajuste fino como mover um peso em σ=0,05 — é uma
+   decisão discreta cujo efeito só a seleção mede depois de várias gerações. Taxa alta
+   faria o repertório oscilar sem tempo de a seleção provar se a troca ajudou.
+
+   **Custo de divergência de warp (RDNA2, wave32 — CLAUDE.md do projeto):** se as 32
+   lanes de uma wave tiverem ids de ativação diferentes, o hardware percorre TODOS os
+   casos presentes na wave (predicação) — real, mas pequeno (ALU pura, poucas
+   instruções por caso, sem acesso a memória divergente). Documentado no shader, não
+   vendido como grátis.
+
+   **Por que ataca o problema:** com tanh todo neurônio satura suave no batente; com
+   ReLU metade fica em ZERO EXATO — esparsidade CONTEXTUAL de verdade (o neurônio "não
+   opina" naquele instante em vez de opinar fraco), diferente da saturação de tanh, que
+   sempre emite algo.
+
+   Flag: `--sem-ativacao-heterogenea`.
+
+**Buffers novos (`brain.wgsl`, bindings 11-12 — cabe no limite já pedido, 12 storage
+buffers por estágio, sem precisar bumpar `gpu_evolve`/`gpu_validate`/`gpu_loop`):**
+`buf_neuron_meta` (read-only, `NEURON_META_PER_SER=480` f32/ser: `l1_alpha(96) ·
+l1_period(96) · l1_threshold(96) · l1_activation(96) · l2_alpha(48) · l2_activation(48)`,
+subido uma vez por geração — mesmo contrato de `buf_tau`) e `buf_neuron_mem` (read_write,
+`NEURON_MEM_PER_SER=144` f32/ser, estado residente — mesmo contrato de `buf_cfc`).
+
+**Braço de controle, o mais forte possível:** cada `--sem-X` (1) congela a MUTAÇÃO do
+campo em `evolve()` (atomics `NEURON_*_MUTATE_ON` em `gpu/evolution.rs`, padrão `true`) —
+o campo fica preso no neutro de nascença pelo resto da corrida — E (2) liga o bit
+correspondente de `BrainParams::mech_off_mask`, que faz o SHADER ignorar o que o genoma
+carrega, mesmo que um `--retomar` anterior à flag já tivesse mutado alguma coisa. Sem
+nenhuma flag (padrão), os três mecanismos mutam livremente a partir do neutro.
+
+**Genoma legado (herança intocada):** `.bin` salvo antes de P1.7 carrega com os seis
+campos em NEUTRO — a verdade sobre aquele genoma (rodava sem os três mecanismos), não uma
+invenção. Mesmo padrão opcional de `slow`/`tau`/`sensors` em `load_genome`
+(genome_io.rs) — comprimento do arquivo decide o que é lido.
+
+**Reprodução exata na geração 0 (requisito da tarefa, testado):** `Genome::random`
+sempre nasce com os seis campos neutros — `neuron_alpha`=0.0, `neuron_period_l1`=1.0,
+`neuron_threshold_l1`=0.0, `neuron_activation`=0.0 — que fazem `brain.wgsl` reproduzir a
+fórmula de antes desta mudança bit a bit (α=0 ⇒ ganho DC exato 1, h[n]=x[n]; período=1 ⇒
+recalcula todo tick; limiar=0 ⇒ `abs(v)<0.0` nunca é verdade, nunca zera; ativação=0 ⇒
+tanh). `forward()` (usado por `gpu_validate`) força `mech_off_mask=0b1111` incondicional
+— mesmo contrato que já tinha para `out_beta`/`out_gain`/`norm_l2_by_std`: o caminho de
+equivalência CPU/GPU nunca expõe parâmetro novo, sempre reproduz o histórico.
+
+**Testado** (sem GPU):
+- `gpu::evolution::tests::genoma_novo_tem_mecanismos_p17_neutros` — 5 sementes, os seis
+  campos nascem no valor exato que reproduz "hoje".
+- `neuron_mem_gain_em_alfa_zero_e_identidade` / `neuron_mem_gain_cresce_e_fica_finito_no_teto_do_clamp`
+  — a matemática do ganho (mesma fórmula do shader, espelhada em Rust puro).
+- `evolve_muta_mecanismos_p17_e_flags_sem_x_congelam_no_neutro` — um teste só (evita a
+  corrida de atomics entre threads de `cargo test`, R8 do CLAUDE.md do projeto): 40
+  gerações com `p_mutate=1.0`, nenhum campo sai de [0,0.95]/[1,8]/[0,0.9]/{0,1,2,3} e
+  ALGUM valor realmente mudou (não vacuamente verdadeiro); depois, com os quatro atomics
+  desligados, mais 20 gerações com os seis campos bit-idênticos ao neutro.
+- `pack_neuron_meta_produz_layout_esperado_pelo_shader` — o achatamento SoA bate com o
+  layout que `brain.wgsl` espera, campo a campo.
+- `simulate_l1_fire_counts_*` (3 testes) — período neutro dispara 100% sempre (desvio
+  zero); período=2 uniforme dá média 50% mas desvio MÁXIMO (todos em lockstep, degrau
+  0/total, não um valor constante — só período HETEROGÊNEO produz assincronia de
+  verdade); população mista (período=1 vs período=4) tem desvio > 0.
+- `bin::gpu_evolve::tests::genoma_sobrevive_ida_e_volta_no_disco` (estendido) — os seis
+  campos, marcados fora do neutro, sobrevivem ida-e-volta no disco.
+- `bin::gpu_evolve::tests::genoma_antigo_sem_lento_nem_tau_ainda_carrega` (estendido) —
+  `.bin` legado (sem P1.7) carrega com os seis campos em neutro.
+- `bin::gpu_evolve::tests::genoma_v2_com_cabecalho_sobrevive_ida_e_volta` (estendido) —
+  idem, formato v2 com cabeçalho.
+- `tests/wgsl_validation.rs::brain_wgsl_e_valido` — `brain.wgsl` editado ainda
+  parseia/type-checa (naga), sem precisar de GPU.
+
+**Smoke de GPU** (não bateria longa — 1-2 gerações, prova só que roda):
+```
+cd /home/leonardo/projects/LLM/Universe
+export HSA_OVERRIDE_GFX_VERSION=10.3.0 ROCR_VISIBLE_DEVICES=0
+env -u DISPLAY ./target/release/gpu_evolve --seres 8 --ticks 200 --gens 2 --out /media/llm-data/universe-runs/p1-7-smoke
+```
+
+**A/B PENDENTE — não rodado nesta sessão** (a tarefa era implementar os três mecanismos e
+provar que rodam, não medir efeito na fitness). Falta, com ≥3 sementes pareadas, ≥40
+gerações:
+- cada mecanismo isolado (`--sem-Y` nos outros dois) contra o braço totalmente neutro
+  (`--sem-memoria-neuronal --sem-periodo-neuronal --sem-limiar-neuronal
+  --sem-ativacao-heterogenea` — reproduz "hoje" pelo resto da corrida) — mediana de
+  distância, ≥1V/≥2V, e se o α/período/limiar/ativação realmente se afastam do neutro sob
+  seleção real (não só sob `p_mutate=1.0` sintético dos testes);
+- distribuição final de ativações escolhidas por neurônio (tanh domina? ReLU se
+  concentra em canais específicos — parede vs. curvatura vs. velocidade?);
+- correlação entre α alto e QUAL canal de entrada o neurônio lê mais forte (memória
+  deveria ser selecionada nos canais que precisam de contexto temporal — parede/
+  curvatura —, não nos que já são instantâneos, ex. telemetria de RPM).
+
+---
+
 ## P2 · Corpo
 
 Cada item entra sozinho, com ablação. A ordem vai do que mais muda o ótimo para o que
