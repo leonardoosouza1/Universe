@@ -389,11 +389,17 @@ impl PerceptionGpu {
 
         // ── Buffers estáticos: grade, fluxo, alturas ─────────────────────────
         // grade: u32 por célula (VoxelType como u32).
+        // COPY_DST (além de STORAGE): permite `reload_world()` trocar a pista via
+        // `queue.write_buffer` sem recriar o `wgpu::Buffer` nem os bind groups que o
+        // referenciam. Só é seguro porque `VoxelWorld::new` usa `size=320`/`cell_size=3.0`
+        // CONSTANTES independentes da seed (world.rs) — o tamanho em bytes destes três
+        // buffers nunca muda entre pistas, então o write cabe sempre (P1, rotação de
+        // pistas — docs/PLANO_EVOLUCAO.md).
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("percep-grid"),
             contents: bytemuck::cast_slice(&grid_u32),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // fluxo: vec2<f32> por célula → [f32, f32] empacotado.
@@ -406,14 +412,14 @@ impl PerceptionGpu {
         let buf_flow = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("percep-flow"),
             contents: bytemuck::cast_slice(&flow_flat),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // alturas: f32 por célula.
         let buf_heights = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("percep-heights"),
             contents: bytemuck::cast_slice(&world.height_map),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // ── Buffers dinâmicos: poses, saida, leitura ─────────────────────────
@@ -535,6 +541,28 @@ impl PerceptionGpu {
             grid_size: world.size as u32,
             cell_size: world.cell_size,
         })
+    }
+
+    /// Troca a grade/fluxo/alturas para uma pista NOVA sem recriar buffers, bind
+    /// groups nem pipelines — só `queue.write_buffer` (P1: rotação de pistas por
+    /// geração, docs/PLANO_EVOLUCAO.md).
+    ///
+    /// Só é válido porque `VoxelWorld::new` usa `size`/`cell_size` CONSTANTES
+    /// (world.rs: 320/3.0) independentes da seed — os três buffers têm sempre o
+    /// mesmo tamanho em bytes, então o `world` novo nunca pode ter grade de
+    /// tamanho diferente da que os buffers já têm alocada. O `debug_assert!`
+    /// documenta essa invariante e pega em teste/debug qualquer violação futura
+    /// (ex.: alguém tornar `size` dependente da seed); em release o custo é zero.
+    pub fn reload_world(&self, queue: &wgpu::Queue, world: &crate::world::VoxelWorld) {
+        debug_assert_eq!(world.size as u32, self.grid_size,
+            "reload_world: pista nova tem grade de tamanho diferente — buffer não realoca");
+        debug_assert!((world.cell_size - self.cell_size).abs() < 1e-6,
+            "reload_world: pista nova tem cell_size diferente — buffer não realoca");
+        let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
+        queue.write_buffer(&self.buf_grid, 0, bytemuck::cast_slice(&grid_u32));
+        let flow_flat: Vec<f32> = world.flow.iter().flat_map(|v| [v.x, v.y]).collect();
+        queue.write_buffer(&self.buf_flow, 0, bytemuck::cast_slice(&flow_flat));
+        queue.write_buffer(&self.buf_heights, 0, bytemuck::cast_slice(&world.height_map));
     }
 
     /// Roda o kernel de percepção para N seres, consumindo o buffer de retina física já em VRAM.

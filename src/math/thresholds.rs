@@ -32,6 +32,25 @@ pub const DEAD_EPS: f32 = 1e-4;
 /// aviso para investigação.
 pub const SPECTRAL_MAX: f32 = 1.0;
 
+/// Alvo do maior valor singular de L1 na INICIALIZAÇÃO do genoma (P0.5,
+/// `gpu::evolution::Genome::random`) — mesma grandeza que `SPECTRAL_MAX` audita depois
+/// do fato (`analysis::activation::spectral_summary`), agora usada como ALVO de
+/// nascimento em vez de limiar de alarme.
+///
+/// Motivação: 4 corridas independentes de `Genome::random` com σ=0.30 i.i.d. cru
+/// mediram ganho espectral de L1 em ~7.0 (7.101/7.050/7.048/6.983 —
+/// `docs/PLANO_EVOLUCAO.md` §P0.5). A teoria de echo-state networks pede
+/// `|λ_max| <= ~1` para dinâmica de entrada estável; a 7× o sinal sensorial é
+/// amplificado antes mesmo da primeira mutação, e a evolução mede-se sempre
+/// carregando esse viés de fundo (o campeão observado ficou 99,25% igual ao sorteio
+/// inicial — cosseno 0.9925 — sinal de que a seleção empurra o init ruim, não conserta).
+///
+/// 1.0 == `SPECTRAL_MAX` por definição (o alarme dispara ACIMA do que a init MIRA),
+/// mas mantida como constante separada: as duas grandezas significam coisas diferentes
+/// (limiar de alarme pós-fato vs. alvo de nascimento) e uma mudança futura numa não
+/// deve acoplar silenciosamente a outra.
+pub const SPECTRAL_INIT_TARGET: f32 = 1.0;
+
 /// Se verdadeiro, qualquer NaN detectado nas ativações aborta a análise.
 ///
 /// NaN em ativações = bug grave (divisão por zero, overflow de gradiente, etc.).
@@ -91,6 +110,15 @@ mod tests {
     fn spectral_max_positivo() {
         assert!(SPECTRAL_MAX > 0.0,
             "SPECTRAL_MAX deve ser positivo, valor = {}", SPECTRAL_MAX);
+    }
+
+    #[test]
+    fn spectral_init_target_positivo_e_igual_ao_alarme() {
+        assert!(SPECTRAL_INIT_TARGET > 0.0,
+            "SPECTRAL_INIT_TARGET deve ser positivo, valor = {}", SPECTRAL_INIT_TARGET);
+        // Por definição documentada: o alarme dispara acima do que a init mira.
+        assert_eq!(SPECTRAL_INIT_TARGET, SPECTRAL_MAX,
+            "alvo de init e limiar de alarme deveriam coincidir numericamente por definição");
     }
 
     #[test]

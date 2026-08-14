@@ -1,0 +1,418 @@
+//! GENOMA VIEWER — anatomia detalhada do cérebro salvo (`evolve_best_gen*.bin`).
+//!
+//! # Por que existe
+//!
+//! Leonardo: *"quando eu te pedir pra mostrar algum dado técnico, tem que ser detalhado —
+//! gráfico, como está o agrupamento, como está a distribuição desses neurônios."*
+//!
+//! O `dna_view` original lê o formato `.dna` (TLV ternário, 128×64) do caminho Bevy. O
+//! caminho de evolução na GPU salva outro formato — `UGEN` v2, com L1 de 192×96, L2 de
+//! 96×48, knots KAN, cérebro lento e banco de τ. Este binário lê ESSE formato e responde
+//! o que o relatório de três linhas do `--ativacao` não responde: **onde** está a
+//! competência dentro do cérebro.
+//!
+//! O relatório de ativação mede o cérebro RODANDO (precisa de GPU e de um mundo). Este
+//! mede o cérebro PARADO — só os pesos, sem simular nada. As duas leituras se cobrem: um
+//! neurônio pode ter peso grande e nunca disparar, e é essa diferença que interessa.
+//!
+//! # O que mostra
+//!
+//! · distribuição dos pesos por camada, com histograma ASCII
+//! · **agrupamento por canal sensorial** — qual grupo de sentidos alimenta mais o cérebro,
+//!   usando os nomes reais do registro `Channel` (não índices soltos)
+//! · **perfil por neurônio** — quais estão mortos, quais dominam, quanta entrada recebem
+//! · heatmap de L1 e L2
+//! · banco de τ: distribuição das escalas de tempo (o "banco de relógios" do cérebro)
+//!
+//! # Uso
+//!
+//!   genoma_view <caminho.bin> [--top 20] [--heatmap]
+
+use universe::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS};
+// `name_for` e fn livre do modulo: cobre os 192 indices, enquanto o enum `Channel` so
+// tem variante para os canais nomeados individualmente.
+use universe::perception::channels::name_for;
+use universe::math::stats;
+
+const MAGIC: &[u8; 4] = b"UGEN";
+
+/// Genoma lido do disco, campo a campo. Réplica de leitura do `genome_io.rs` do
+/// `gpu_evolve` — que vive dentro do binário e não pode ser importado daqui.
+struct Genoma {
+    versao: u32,
+    l1: Vec<f32>,
+    l2: Vec<f32>,
+    kan: Vec<f32>,
+    slow: Vec<f32>,
+    tau: Vec<f32>,
+}
+
+fn ler_f32(b: &[u8], off: &mut usize, n: usize) -> Vec<f32> {
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..n {
+        if *off + 4 > b.len() { break; }
+        v.push(f32::from_le_bytes([b[*off], b[*off+1], b[*off+2], b[*off+3]]));
+        *off += 4;
+    }
+    v
+}
+
+fn carregar(path: &str) -> Option<Genoma> {
+    let b = std::fs::read(path).ok()?;
+    let mut off = 0usize;
+    let versao = if b.len() > 8 && &b[0..4] == MAGIC {
+        off = 8;
+        u32::from_le_bytes([b[4], b[5], b[6], b[7]])
+    } else {
+        1 // legado: sem cabeçalho, compatibilidade por comprimento
+    };
+    let l1 = ler_f32(&b, &mut off, SENSORY_WAVE_SIZE * L1_NEURONS);
+    let l2 = ler_f32(&b, &mut off, L1_NEURONS * L2_NEURONS);
+    let kan = ler_f32(&b, &mut off, 3 * 12);
+    // O que sobra divide-se entre lento e τ; τ tem tamanho fixo pelo nº de canais CfC.
+    let restante = (b.len() - off) / 4;
+    let n_tau = restante.min(L1_NEURONS);
+    let slow = ler_f32(&b, &mut off, restante.saturating_sub(n_tau));
+    let tau = ler_f32(&b, &mut off, n_tau);
+    Some(Genoma { versao, l1, l2, kan, slow, tau })
+}
+
+/// Histograma ASCII — a "forma" da distribuição, que média e desvio escondem.
+fn histograma(vals: &[f32], bins: usize, largura: usize) {
+    if vals.is_empty() { println!("    (vazio)"); return; }
+    let h = stats::histogram(vals, bins);
+    let lo = vals.iter().cloned().fold(f32::MAX, f32::min);
+    let hi = vals.iter().cloned().fold(f32::MIN, f32::max);
+    let pico = *h.iter().max().unwrap_or(&1) as f32;
+    for (i, &c) in h.iter().enumerate() {
+        let a = lo + (hi - lo) * i as f32 / bins as f32;
+        let n = ((c as f32 / pico) * largura as f32).round() as usize;
+        println!("    {a:+7.3} │{}{} {c}", "█".repeat(n), " ".repeat(largura - n));
+    }
+}
+
+fn resumo(nome: &str, w: &[f32]) {
+    if w.is_empty() { println!("  {nome}: ausente"); return; }
+    // `percentile` ordena no lugar, entao trabalha sobre copia mutavel.
+    let mut abs: Vec<f32> = w.iter().map(|x| x.abs()).collect();
+    let media = stats::mean(w);
+    let sigma = stats::std_dev(w);
+    let mortos = abs.iter().filter(|&&x| x < 0.01).count();
+    let fortes = abs.iter().filter(|&&x| x > 1.0).count();
+    println!("  {nome}: {} pesos · média {media:+.4} · σ {sigma:.4} · |w|max {:.3}",
+             w.len(), abs.iter().cloned().fold(0.0, f32::max));
+    println!("    quase-zero (|w|<0.01): {mortos} ({:.1}%) · fortes (|w|>1.0): {fortes} ({:.1}%)",
+             mortos as f32 * 100.0 / w.len() as f32, fortes as f32 * 100.0 / w.len() as f32);
+    println!("    percentis |w|: p50 {:.3} · p90 {:.3} · p99 {:.3}",
+             stats::percentile(&mut abs, 50.0), stats::percentile(&mut abs, 90.0), stats::percentile(&mut abs, 99.0));
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let path = args.get(1).cloned().unwrap_or_else(|| {
+        eprintln!("uso: genoma_view <caminho.bin> [--top N] [--heatmap]");
+        std::process::exit(1);
+    });
+    let mut top = 20usize;
+    let mut heatmap = false;
+    let mut html_out: Option<String> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--top" => { i += 1; top = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(20); }
+            "--heatmap" => heatmap = true,
+            // Leonardo: "eu quero realmente poder ver, tipo, quem conversa com quem, quais
+            // grupos são" — texto nao mostra topologia. `--html` escreve uma pagina
+            // autocontida com o grafo do cerebro.
+            "--html" => { i += 1; html_out = args.get(i).cloned(); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(g) = carregar(&path) else {
+        eprintln!("falha ao ler {path}");
+        std::process::exit(1);
+    };
+
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("🧬 GENOMA — {path}");
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("  formato UGEN v{} · L1 {}×{} · L2 {}×{} · KAN {} · lento {} · τ {}",
+             g.versao, SENSORY_WAVE_SIZE, L1_NEURONS, L1_NEURONS, L2_NEURONS,
+             g.kan.len(), g.slow.len(), g.tau.len());
+    println!();
+
+    println!("─── DISTRIBUIÇÃO DOS PESOS ────────────────────────────────────────");
+    resumo("L1 (sensorial → rápido)", &g.l1);
+    resumo("L2 (rápido → motor)", &g.l2);
+    resumo("lento (modulação)", &g.slow);
+    println!("\n  forma de L1:");
+    histograma(&g.l1, 16, 40);
+
+    // ── AGRUPAMENTO POR SENTIDO ────────────────────────────────────────────
+    //
+    // A pergunta que importa não é "qual peso é maior", é "de qual SENTIDO o cérebro
+    // depende". Somando |w| de todos os neurônios por canal de entrada sai o orçamento
+    // de atenção do cérebro — e canal com soma ~0 é sentido que ele aprendeu a ignorar,
+    // seja porque é inútil, seja porque está quebrado (foi assim que os canais mortos
+    // apareceram na auditoria de 2026-08-11).
+    println!("\n─── ORÇAMENTO DE ATENÇÃO POR CANAL SENSORIAL ──────────────────────");
+    let mut por_canal: Vec<(usize, f32)> = (0..SENSORY_WAVE_SIZE)
+        .map(|ch| {
+            let soma: f32 = (0..L1_NEURONS)
+                .map(|n| g.l1.get(n * SENSORY_WAVE_SIZE + ch).map_or(0.0, |w| w.abs()))
+                .sum();
+            (ch, soma)
+        })
+        .collect();
+    let total: f32 = por_canal.iter().map(|(_, s)| s).sum::<f32>().max(1e-6);
+    por_canal.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    println!("  os {top} canais mais atendidos:");
+    for (ch, soma) in por_canal.iter().take(top) {
+        let pct = soma * 100.0 / total;
+        let barra = "▁▂▃▄▅▆▇█".chars().nth(((pct / 2.0).min(7.0)) as usize).unwrap_or('▁');
+        println!("    ch{ch:3} {barra} {pct:5.2}%  {}", name_for(*ch));
+    }
+    let ignorados: Vec<usize> = por_canal.iter()
+        .filter(|(_, s)| *s * 100.0 / total < 0.05)
+        .map(|(c, _)| *c).collect();
+    println!("\n  canais praticamente ignorados (<0,05% da atenção): {}", ignorados.len());
+    if !ignorados.is_empty() {
+        let amostra: Vec<String> = ignorados.iter().take(24).map(|c| format!("{c}")).collect();
+        println!("    {}", amostra.join(" "));
+    }
+
+    // ── PERFIL POR NEURÔNIO ────────────────────────────────────────────────
+    println!("\n─── PERFIL DOS {L1_NEURONS} NEURÔNIOS DE L1 ──────────────────────────────");
+    let mut perfil: Vec<(usize, f32, f32)> = (0..L1_NEURONS)
+        .map(|n| {
+            let ini = n * SENSORY_WAVE_SIZE;
+            let fim = (ini + SENSORY_WAVE_SIZE).min(g.l1.len());
+            let fatia = &g.l1[ini.min(g.l1.len())..fim];
+            let soma: f32 = fatia.iter().map(|w| w.abs()).sum();
+            // Saída: quanto este neurônio pesa em L2 — mede se alguém o escuta.
+            let saida: f32 = (0..L2_NEURONS)
+                .map(|j| g.l2.get(j * L1_NEURONS + n).map_or(0.0, |w| w.abs()))
+                .sum();
+            (n, soma, saida)
+        })
+        .collect();
+    let entrada_media = perfil.iter().map(|(_, e, _)| e).sum::<f32>() / L1_NEURONS as f32;
+    let mudos = perfil.iter().filter(|(_, _, s)| *s < 0.05 * entrada_media).count();
+    let surdos = perfil.iter().filter(|(_, e, _)| *e < 0.05 * entrada_media).count();
+    println!("  entrada média por neurônio: {entrada_media:.2}");
+    println!("  SURDOS (quase não recebem entrada): {surdos}");
+    println!("  MUDOS (L2 quase não os escuta):     {mudos}");
+    perfil.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+    println!("\n  os 10 neurônios mais influentes (por peso de saída em L2):");
+    for (n, ent, sai) in perfil.iter().take(10) {
+        // De qual canal cada um mais depende — dá o "papel" do neurônio.
+        let dom = (0..SENSORY_WAVE_SIZE)
+            .max_by(|&a, &b| {
+                let wa = g.l1.get(n * SENSORY_WAVE_SIZE + a).map_or(0.0, |w| w.abs());
+                let wb = g.l1.get(n * SENSORY_WAVE_SIZE + b).map_or(0.0, |w| w.abs());
+                wa.partial_cmp(&wb).unwrap()
+            })
+            .unwrap_or(0);
+        println!("    N{n:02}  entrada {ent:6.2}  saída {sai:6.2}  ← escuta sobretudo ch{dom} ({})",
+                 name_for(dom));
+    }
+
+    // ── BANCO DE τ ─────────────────────────────────────────────────────────
+    if !g.tau.is_empty() {
+        println!("\n─── BANCO DE τ (escalas de tempo do CfC) ──────────────────────────");
+        let mut t = g.tau.clone();
+        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("  {} canais · taxa d [{:.3}, {:.3}] s⁻¹ · τ = 1/d [{:.3}, {:.3}] s",
+                 t.len(), t[0], t[t.len()-1],
+                 1.0 / t[t.len()-1].max(1e-6), 1.0 / t[0].max(1e-6));
+        let mut t90 = t.clone(); let mut t10 = t.clone();
+        println!("  espalhamento p90/p10: {:.1}× (1,0 = população monotemporal)",
+                 stats::percentile(&mut t90, 90.0) / stats::percentile(&mut t10, 10.0).max(1e-6));
+        println!("\n  forma:");
+        histograma(&t, 12, 34);
+    }
+
+    if heatmap {
+        println!("\n─── HEATMAP L2 (48 motores × 96 neurônios) ────────────────────────");
+        println!("  + forte positivo · - forte negativo · · fraco · . nulo");
+        for j in 0..L2_NEURONS.min(48) {
+            let linha: String = (0..L1_NEURONS).map(|n| {
+                match g.l2.get(j * L1_NEURONS + n).copied().unwrap_or(0.0) {
+                    w if w >  0.3 => '+',
+                    w if w < -0.3 => '-',
+                    w if w.abs() > 0.05 => '·',
+                    _ => '.',
+                }
+            }).collect();
+            println!("  M{j:02} │{linha}");
+        }
+    }
+
+    if let Some(dest) = &html_out {
+        match escrever_html(&g, dest) {
+            Ok(_)  => println!("\n  → mapa visual do cérebro em {dest}"),
+            Err(e) => eprintln!("\n  falha ao escrever {dest}: {e}"),
+        }
+    }
+
+    println!("\n═══════════════════════════════════════════════════════════════════");
+    println!("  pesos parados ≠ neurônio ativo. Cruze com [ativacao] do gpu_evolve:");
+    println!("  peso grande que nunca dispara é capacidade desperdiçada.");
+}
+
+// ── MAPA VISUAL DO CÉREBRO ────────────────────────────────────────────────────
+//
+// Leonardo: *"eu não quero só que você me mande em texto — eu quero poder ver, tipo,
+// aqui tem neurônio x, neurônio y, eles fazem comunicação entre eles. Quem conversa com
+// quem, quem ativa, quais grupos são."*
+//
+// Escreve uma página HTML autocontida (nenhum recurso externo, abre com duplo clique) com
+// quatro leituras que o texto não dá:
+//
+//   1. GRAFO  — 96 neurônios de L1 em anel, ligados aos 48 motores de L2. A espessura e a
+//      cor de cada aresta são o peso; só as ligações fortes são desenhadas, senão viram
+//      4.608 linhas de espaguete.
+//   2. GRUPOS — neurônios agrupados por SEMELHANÇA DE ENTRADA (correlação dos vetores de
+//      peso). Dois neurônios que escutam os mesmos canais fazem o mesmo trabalho: se a
+//      evolução tivesse especializado o cérebro, apareceriam blocos; se ainda é sorteio,
+//      aparece ruído uniforme. É o teste visual de "evoluiu ou teve sorte".
+//   3. MATRIZ — L2×L1 completa em cores, para achar motor que ignora o cérebro inteiro.
+//   4. ATENÇÃO — orçamento por canal sensorial, barras ordenadas.
+fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
+    use std::fmt::Write as _;
+
+    // Peso de saída de cada neurônio de L1 (o quanto L2 o escuta) — vira o raio do nó.
+    let saida: Vec<f32> = (0..L1_NEURONS).map(|n| {
+        (0..L2_NEURONS).map(|j| g.l2.get(j * L1_NEURONS + n).map_or(0.0, |w| w.abs())).sum()
+    }).collect();
+    let saida_max = saida.iter().cloned().fold(1e-6, f32::max);
+
+    // Correlação entre vetores de entrada de dois neurônios: mede se fazem o mesmo trabalho.
+    let vetor = |n: usize| -> &[f32] {
+        let a = (n * SENSORY_WAVE_SIZE).min(g.l1.len());
+        let b = (a + SENSORY_WAVE_SIZE).min(g.l1.len());
+        &g.l1[a..b]
+    };
+    let mut sim = vec![0.0f32; L1_NEURONS * L1_NEURONS];
+    for a in 0..L1_NEURONS {
+        let va = vetor(a);
+        let na: f32 = va.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+        for b in 0..L1_NEURONS {
+            let vb = vetor(b);
+            let nb: f32 = vb.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+            let dot: f32 = va.iter().zip(vb).map(|(x, y)| x * y).sum();
+            sim[a * L1_NEURONS + b] = dot / (na * nb);
+        }
+    }
+    // Fora da diagonal: se a evolução agrupou funções, existe par com |cos| alto.
+    let mut fora: Vec<f32> = Vec::new();
+    for a in 0..L1_NEURONS { for b in 0..L1_NEURONS { if a != b { fora.push(sim[a*L1_NEURONS+b].abs()); } } }
+    fora.sort_by(|x, y| y.partial_cmp(x).unwrap());
+    let sim_max = fora.first().copied().unwrap_or(0.0);
+    let sim_med = fora.iter().sum::<f32>() / fora.len().max(1) as f32;
+
+    // Atenção por canal.
+    let mut aten: Vec<(usize, f32)> = (0..SENSORY_WAVE_SIZE).map(|ch| {
+        (ch, (0..L1_NEURONS).map(|n| g.l1.get(n * SENSORY_WAVE_SIZE + ch).map_or(0.0, |w| w.abs())).sum())
+    }).collect();
+    let aten_tot: f32 = aten.iter().map(|(_, s)| s).sum::<f32>().max(1e-6);
+    aten.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let mut h = String::new();
+    write!(h, r#"<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<title>Cérebro — mapa visual</title><style>
+:root{{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--pos:#3fb950;--neg:#f85149;--card:#161b22}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,sans-serif;padding:24px}}
+h1{{font-size:20px;margin:0 0 4px}} h2{{font-size:15px;margin:28px 0 8px;color:var(--fg)}}
+.sub{{color:var(--dim);margin-bottom:20px;font-size:13px}}
+.card{{background:var(--card);border:1px solid #30363d;border-radius:10px;padding:16px;margin-bottom:18px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}
+.kpi{{font-size:26px;font-weight:600}} .kpi small{{font-size:12px;color:var(--dim);font-weight:400;display:block}}
+canvas{{max-width:100%;height:auto;display:block}}
+.leg{{color:var(--dim);font-size:12px;margin-top:8px}}
+.bar{{height:13px;background:linear-gradient(90deg,#1f6feb,#58a6ff);border-radius:3px}}
+table{{border-collapse:collapse;width:100%;font-size:12px}} td{{padding:2px 6px;border-bottom:1px solid #21262d}}
+td.n{{color:var(--dim);width:74px}} td.v{{width:56px;text-align:right;color:var(--dim)}}
+</style></head><body>
+<h1>Cérebro — mapa visual</h1>
+<div class="sub">L1 {L1_NEURONS} neurônios · L2 {L2_NEURONS} motores · {SENSORY_WAVE_SIZE} canais sensoriais · UGEN v{}</div>
+<div class="grid">
+ <div class="card"><div class="kpi">{:.3}<small>maior semelhança entre dois neurônios (1,0 = clones)</small></div></div>
+ <div class="card"><div class="kpi">{:.3}<small>semelhança média — perto de 0 significa que cada um faz coisa diferente por acaso, não por especialização</small></div></div>
+ <div class="card"><div class="kpi">{:.2}%<small>atenção do canal mais atendido (uniforme seria {:.2}%)</small></div></div>
+</div>
+"#, g.versao, sim_max, sim_med, aten[0].1 * 100.0 / aten_tot, 100.0 / SENSORY_WAVE_SIZE as f32).ok();
+
+    // ── Grafo L1 → L2 ────────────────────────────────────────────────────────
+    write!(h, r#"<h2>Quem conversa com quem</h2><div class="card"><canvas id="g" width="1100" height="620"></canvas>
+<div class="leg">Anel externo: os {L1_NEURONS} neurônios de L1, raio proporcional a quanto L2 os escuta. Centro: os {L2_NEURONS} motores.
+Verde = ligação excitatória, vermelho = inibitória. Só ligações |w| &gt; 0,45 são desenhadas.</div></div>
+<script>
+const L1={L1_NEURONS}, L2={L2_NEURONS};
+const saida={:?};
+const arestas={};
+const c=document.getElementById('g'), x=c.getContext('2d');
+const cx=550, cy=310, R=270, r=120;
+function posL1(i){{const a=i/L1*2*Math.PI-Math.PI/2;return [cx+R*Math.cos(a), cy+R*Math.sin(a)];}}
+function posL2(j){{const a=j/L2*2*Math.PI-Math.PI/2;return [cx+r*Math.cos(a), cy+r*Math.sin(a)];}}
+for(const [n,j,w] of arestas){{
+  const [x1,y1]=posL1(n), [x2,y2]=posL2(j);
+  x.strokeStyle = w>0 ? `rgba(63,185,80,${{Math.min(Math.abs(w),1)*0.5}})` : `rgba(248,81,73,${{Math.min(Math.abs(w),1)*0.5}})`;
+  x.lineWidth=Math.min(Math.abs(w)*2.4,2.4); x.beginPath(); x.moveTo(x1,y1);
+  x.quadraticCurveTo(cx,cy,x2,y2); x.stroke();
+}}
+for(let j=0;j<L2;j++){{const [px,py]=posL2(j);x.fillStyle='#58a6ff';x.beginPath();x.arc(px,py,4,0,7);x.fill();}}
+for(let n=0;n<L1;n++){{const [px,py]=posL1(n);const s=saida[n];
+  x.fillStyle='#e3b341';x.beginPath();x.arc(px,py,3+s*7,0,7);x.fill();
+  if(n%8===0){{const a=n/L1*2*Math.PI-Math.PI/2;x.fillStyle='#8b949e';x.font='10px sans-serif';
+    x.fillText('N'+n, cx+(R+18)*Math.cos(a)-8, cy+(R+18)*Math.sin(a)+3);}}
+}}
+</script>"#,
+        saida.iter().map(|s| (s / saida_max * 100.0).round() / 100.0).collect::<Vec<f32>>(),
+        {
+            // Serializa a mao como array de arrays. `{:?}` de tupla Rust produz
+            // "(0, 1, 0.5)", que em JS e o operador virgula — o array chegava como lixo e
+            // o grafo saia em branco.
+            let mut e = String::from("[");
+            for j in 0..L2_NEURONS { for n in 0..L1_NEURONS {
+                let w = g.l2.get(j * L1_NEURONS + n).copied().unwrap_or(0.0);
+                if w.abs() > 0.45 {
+                    if e.len() > 1 { e.push(','); }
+                    let _ = write!(e, "[{n},{j},{:.2}]", w);
+                }
+            }}
+            e.push(']');
+            e
+        }).ok();
+
+    // ── Mapa de semelhança ───────────────────────────────────────────────────
+    write!(h, r#"<h2>Grupos: quem faz o mesmo trabalho</h2><div class="card"><canvas id="s" width="580" height="580"></canvas>
+<div class="leg">Cada célula é a semelhança entre os vetores de entrada de dois neurônios. <b>Blocos</b> = a evolução formou
+grupos especializados. <b>Ruído uniforme</b> = cada neurônio ficou diferente por sorteio, não por função — o cérebro
+ainda não se organizou.</div></div>
+<script>
+const S={:?};
+const cs=document.getElementById('s'), sx=cs.getContext('2d'), px=580/{L1_NEURONS};
+for(let a=0;a<{L1_NEURONS};a++)for(let b=0;b<{L1_NEURONS};b++){{
+  const v=S[a*{L1_NEURONS}+b];
+  sx.fillStyle = v>0 ? `rgba(63,185,80,${{Math.min(v*3,1)}})` : `rgba(248,81,73,${{Math.min(-v*3,1)}})`;
+  sx.fillRect(b*px,a*px,px+0.5,px+0.5);
+}}
+</script>"#, sim.iter().map(|v| (v * 1000.0).round() / 1000.0).collect::<Vec<f32>>()).ok();
+
+    // ── Atenção por canal ────────────────────────────────────────────────────
+    write!(h, r#"<h2>Orçamento de atenção por sentido</h2><div class="card"><table>"#).ok();
+    for (ch, s) in aten.iter().take(28) {
+        let pct = s * 100.0 / aten_tot;
+        write!(h, r#"<tr><td class="n">ch{ch}</td><td>{}</td><td style="width:55%"><div class="bar" style="width:{:.1}%"></div></td><td class="v">{pct:.2}%</td></tr>"#,
+               name_for(*ch), pct / aten[0].1 * aten_tot * 100.0).ok();
+    }
+    write!(h, r#"</table><div class="leg">Uniforme seria {:.2}% por canal. Quanto mais plano, menos o cérebro escolheu no que prestar atenção.</div></div>
+</body></html>"#, 100.0 / SENSORY_WAVE_SIZE as f32).ok();
+
+    std::fs::write(dest, h)
+}

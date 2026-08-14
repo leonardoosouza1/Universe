@@ -76,9 +76,11 @@ pub struct LayerStats {
     /// Maior valor singular dos pesos de entrada da camada (0.0 se `w_rec` não foi
     /// fornecido). Ver `collect_activation_stats` para como é calculado a partir de
     /// uma matriz retangular (L1 não é quadrada: 192→96).
-    pub spectral_radius: f32,
+    /// `None` quando a camada nao teve matriz de pesos entregue — nao confundir com zero.
+    pub spectral_radius: Option<f32>,
     /// Rank efetivo (95% da energia espectral) dos mesmos pesos. 0 se `w_rec` ausente.
-    pub effective_rank: usize,
+    /// `None` quando nao medido (ver [`Self::spectral_radius`]).
+    pub effective_rank: Option<usize>,
     /// Entropia da política (nats), só quando `policy_actions` foi passado.
     pub policy_entropy: Option<f32>,
     /// Histograma agregado (todas as amostras de todos os neurônios), 32 bins.
@@ -105,30 +107,6 @@ pub struct ActivationAlarm {
     pub threshold: f32,
 }
 
-/// Gram menor de uma matriz retangular linha-maior `[rows × cols]`: `W · Wᵀ`
-/// (`rows × rows`). Escolhido (em vez de `Wᵀ·W`, `cols × cols`) porque em L1
-/// `rows=96 < cols=192` — Gram menor custa `O(rows² · cols)` em vez de `O(cols² · rows)`,
-/// e o Jacobi que roda em cima é `O(rows³)` por sweep.
-///
-/// Os autovalores de `W·Wᵀ` são os valores singulares de `W` ao quadrado — mesma
-/// informação que `Wᵀ·W`, metade dos elementos a computar quando `rows < cols`.
-fn gram_matrix(w: &[f32], rows: usize, cols: usize) -> Vec<f32> {
-    let mut g = vec![0.0f32; rows * rows];
-    for i in 0..rows {
-        let ri = i * cols;
-        for k in i..rows {
-            let rk = k * cols;
-            let mut acc = 0.0f32;
-            for j in 0..cols {
-                acc += w[ri + j] * w[rk + j];
-            }
-            g[i * rows + k] = acc;
-            g[k * rows + i] = acc;
-        }
-    }
-    g
-}
-
 /// Espectro de valores singulares de `w` (`n_neurons × in_dim`, linha-maior) via
 /// Gram + Jacobi: raio espectral (maior valor singular, por power-iteration — barato
 /// e é o que interessa para o alarme de instabilidade) e rank efetivo (precisa do
@@ -143,11 +121,13 @@ fn spectral_summary(w: &[f32], n_neurons: usize) -> (f32, usize) {
     if in_dim == 0 {
         return (0.0, 0);
     }
-    let gram = gram_matrix(w, n_neurons, in_dim);
-    // Maior autovalor do Gram = maior valor singular de W ao quadrado.
-    let lambda_max = linalg::spectral_radius(&gram, n_neurons, 100).max(0.0);
-    let spectral_radius = lambda_max.sqrt();
-
+    // `linalg::largest_singular_value` já faz gram+power-iteration+sqrt (fonte única —
+    // é a MESMA conta que `gpu::evolution::Genome::random` usa pra normalizar na
+    // inicialização, P0.5). O rank efetivo precisa do espectro inteiro, então o Gram
+    // é recomputado aqui uma vez a mais para `eigenvalues_symmetric`; matrizes de L1
+    // (96×192) tornam isso desprezível frente ao custo do resto do relatório.
+    let spectral_radius = linalg::largest_singular_value(w, n_neurons, in_dim);
+    let gram = linalg::gram_matrix(w, n_neurons, in_dim);
     let eigs = linalg::eigenvalues_symmetric(&gram, n_neurons);
     let mut singular_vals: Vec<f32> = eigs.iter().map(|&e| e.max(0.0).sqrt()).collect();
     singular_vals.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
@@ -269,9 +249,14 @@ pub fn collect_activation_stats(
 
     let histogram = stats::histogram(&all_vals, HISTOGRAM_BINS);
 
+    // `None` = a camada nao teve matriz de pesos entregue a analise. Isso NAO e o mesmo
+    // que "raio espectral zero": antes este ramo devolvia (0.0, 0) e o relatorio imprimia
+    // "raio_espectral=0.000 rank_efetivo=0/48", que se le como colapso total da camada.
+    // Custou uma conclusao invertida em 2026-08-13 (L2 parecia morta e estava apenas nao
+    // medida). Ausencia de medida agora viaja como Option ate o relatorio, que imprime n/a.
     let (spectral_radius, effective_rank) = match w_rec {
-        Some(w) => spectral_summary(w, n_neurons),
-        None => (0.0, 0),
+        Some(w) => { let (r, k) = spectral_summary(w, n_neurons); (Some(r), Some(k)) }
+        None => (None, None),
     };
 
     let policy_entropy = policy_actions.and_then(|a| {
@@ -300,11 +285,15 @@ pub fn collect_activation_stats(
         }
     }
 
-    if spectral_radius > thresholds::SPECTRAL_MAX {
-        alarms.push(ActivationAlarm {
-            layer: layer_name.to_string(), kind: AlarmKind::SpectralRadiusHigh,
-            value: spectral_radius, threshold: thresholds::SPECTRAL_MAX,
-        });
+    // So alarma sobre o que foi de fato medido: camada sem matriz entregue nao gera
+    // alarme nenhum (nem falso positivo de "zero", nem falso negativo silencioso).
+    if let Some(sr) = spectral_radius {
+        if sr > thresholds::SPECTRAL_MAX {
+            alarms.push(ActivationAlarm {
+                layer: layer_name.to_string(), kind: AlarmKind::SpectralRadiusHigh,
+                value: sr, threshold: thresholds::SPECTRAL_MAX,
+            });
+        }
     }
 
     if let Some(min_snr) = neurons.iter().map(|s| s.snr_i8)
@@ -343,9 +332,11 @@ pub fn collect_activation_stats(
 /// chamada só lê os `Vec`/`struct` que já foram montados por `collect_activation_stats`).
 pub fn print_stats_report(stats: &LayerStats, alarms: &[ActivationAlarm]) {
     eprintln!(
-        "[ativacao:{}] amostras={} neuronios={} raio_espectral={:.3} rank_efetivo={}/{} entropia_politica={}",
+        "[ativacao:{}] amostras={} neuronios={} raio_espectral={} rank_efetivo={} entropia_politica={}",
         stats.layer_name, stats.n_samples, stats.neurons.len(),
-        stats.spectral_radius, stats.effective_rank, stats.neurons.len(),
+        stats.spectral_radius.map(|v| format!("{v:.3}")).unwrap_or_else(|| "n/a".to_string()),
+        stats.effective_rank.map(|k| format!("{k}/{}", stats.neurons.len()))
+             .unwrap_or_else(|| "n/a (pesos nao entregues)".to_string()),
         stats.policy_entropy.map(|v| format!("{v:.3}")).unwrap_or_else(|| "n/a".to_string()),
     );
     for a in alarms {
@@ -443,7 +434,7 @@ mod tests {
         w[0] = 10.0;
         let samples = vec![linha(&[0.0, 0.0, 0.0])];
         let (stats, alarms) = collect_activation_stats("teste", &samples, Some(&w), 3, None);
-        assert!(stats.spectral_radius > thresholds::SPECTRAL_MAX);
+        assert!(stats.spectral_radius.unwrap() > thresholds::SPECTRAL_MAX);
         assert!(alarms.iter().any(|a| a.kind == AlarmKind::SpectralRadiusHigh));
     }
 
@@ -492,8 +483,9 @@ mod tests {
     fn sem_w_rec_raio_e_rank_ficam_zero() {
         let samples = vec![linha(&[0.1, 0.2])];
         let (stats, alarms) = collect_activation_stats("SlowBrain", &samples, None, 2, None);
-        assert_eq!(stats.spectral_radius, 0.0);
-        assert_eq!(stats.effective_rank, 0);
+        // Sem matriz entregue: ausencia de medida, nao zero (ver doc do campo).
+        assert_eq!(stats.spectral_radius, None);
+        assert_eq!(stats.effective_rank, None);
         assert!(!alarms.iter().any(|a| a.kind == AlarmKind::SpectralRadiusHigh));
     }
 }

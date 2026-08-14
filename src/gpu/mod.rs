@@ -44,6 +44,7 @@ pub mod evolution;
 pub mod cortex_sheet;
 pub mod slow_brain;
 pub mod retina_types;
+pub mod retina_digest;
 
 use std::borrow::Cow;
 

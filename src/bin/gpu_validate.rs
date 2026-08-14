@@ -378,10 +378,14 @@ fn validate_brain() {
     };
     // CerebroGpu precisa de storage buffers por shader stage:
     //   buf_wave(1), buf_kan(2), buf_l1w(3), buf_l2w(4), buf_intent(5),
-    //   buf_cfc(6), buf_debug(7), buf_percept(8), buf_fatigue(9) = 9 storage.
+    //   buf_cfc(6), buf_debug(7), buf_percept(8), buf_fatigue(9), buf_tau(10) = 10 storage.
+    // Comentário antigo parava em 9 (buf_tau, o banco de τ por canal, foi adicionado
+    // depois em src/gpu/brain.rs e este arquivo nunca foi atualizado — mesma classe de
+    // bug de limite desatualizado já achada e corrigida em gpu_loop.rs no E3). Usamos
+    // 12 (mesmo valor de context.rs/gpu_loop.rs) para dar folga a bindings futuros.
     // downlevel_defaults() tem max=4, insuficiente.
     let mut limits = wgpu::Limits::downlevel_defaults();
-    limits.max_storage_buffers_per_shader_stage = 9;
+    limits.max_storage_buffers_per_shader_stage = 12;
     let (device_raw, queue_raw) = match pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("brain-validate"),
@@ -1328,7 +1332,13 @@ fn validate_perception(world: &VoxelWorld, poses_in: &[Pose]) {
     let _ = WAVE_U32S; // suppress unused
 }
 
-fn perception_cpu(world: &VoxelWorld, poses_in: &[Pose]) -> Vec<[i8; 223]> {
+fn perception_cpu(world: &VoxelWorld, poses_in: &[Pose]) -> Vec<[i8; universe::config::iara::brain::SENSORY_WAVE_SIZE]> {
+    // Onda legada tinha 223 canais; a atual tem 192 (SENSORY_WAVE_SIZE). A assinatura
+    // ficou hardcoded em 223 enquanto o corpo já usava SENSORY_WAVE_SIZE=192 — mesma
+    // classe de bug de "literal legado nunca atualizado" documentada no CLAUDE.md do
+    // projeto. Corrigido para usar a constante canônica (bug pré-existente, não
+    // introduzido por E1-E5; corrigido aqui porque o E6 exige build verde de todos
+    // os bins vivos listados).
     use universe::config::iara::brain::SENSORY_WAVE_SIZE;
     use universe::world::VoxelType;
 

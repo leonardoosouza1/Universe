@@ -4761,6 +4761,7 @@ dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
  "criterion",
+ "iara-cfc",
  "iara-perception",
  "iara_genesis",
  "libc",

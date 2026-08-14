@@ -1,5 +1,10 @@
 [workspace]
-members = [".", "iara_genesis"]
+# `iara_genesis` foi movido para `docs/arquivo/dirs/iara_genesis` no commit "removing
+# trash" (2c71c69) sem atualizar este manifesto — a crate NÃO é lixo (é dependência real
+# de `src/evolution/dna_genesis.rs`, `dna_view`, `dna_compress`, `generic_dna`), só o
+# caminho ficou obsoleto e quebrava TODO `cargo build` do workspace. Repontuado para o
+# caminho novo; arquivos não foram movidos de volta (evita conflito com o cleanup feito).
+members = [".", "docs/arquivo/dirs/iara_genesis"]
 
 [package]
 name = "universe"
@@ -9,8 +14,13 @@ rust-version = "1.85.0" # Versão estável em 2026
 default-run = "universe"
 
 [dependencies]
-iara_genesis = { path = "iara_genesis" }
+iara_genesis = { path = "docs/arquivo/dirs/iara_genesis" }
 iara-perception = { path = "../iara-runtime/iara-perception" }
+# Já era dependência TRANSITIVA via iara-perception (RetinaPerception usa CfcCell
+# internamente). Tornada direta para que `src/math/cfc_perception.rs` possa referenciar
+# `iara_cfc::CfcCell` sem duplicar a equação — ver doc daquele módulo. Mesma crate,
+# mesma versão que iara-perception já resolve; não adiciona código novo ao grafo.
+iara-cfc = { path = "../iara-runtime/iara-cfc" }
 bevy = { version = "0.16.0", default-features = false, features = [
     "bevy_pbr",
     "bevy_render",

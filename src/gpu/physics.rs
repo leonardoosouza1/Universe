@@ -497,17 +497,23 @@ impl PhysicsGpu {
             cache: None,
         });
 
-        // Buffers estáticos por pista
+        // Buffers estáticos por pista.
+        // COPY_DST (além de STORAGE): permite `reload_world()` trocar a pista via
+        // `queue.write_buffer` sem recriar buffer/bind-group/pipeline — ver o mesmo
+        // raciocínio em `gpu::perception::PerceptionGpu::reload_world` (P1, rotação
+        // de pistas — docs/PLANO_EVOLUCAO.md). Válido porque `grid_size`/`cell_size`
+        // são constantes por construção (`VoxelWorld::new`, world.rs), então o
+        // tamanho em bytes nunca muda entre pistas.
         let grid_u32: Vec<u32> = grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("physics-grid"),
             contents: bytemuck::cast_slice(&grid_u32),
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let buf_hmap = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("physics-hmap"),
             contents: bytemuck::cast_slice(hmap),
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         let cap           = capacity.max(64);
@@ -561,6 +567,25 @@ impl PhysicsGpu {
             grid_size: grid_size as u32,
             cell_size,
         })
+    }
+
+    /// Troca grade/heightmap para uma pista NOVA sem recriar buffer, bind group nem
+    /// pipeline — só `queue.write_buffer` (P1: rotação de pistas por geração,
+    /// docs/PLANO_EVOLUCAO.md). `device`/`queue` já são campos da struct, por isso
+    /// não precisa recebê-los como parâmetro.
+    ///
+    /// `grid`/`hmap` têm de ter o mesmo tamanho com que este `PhysicsGpu` foi
+    /// construído — verdade sempre que vêm de `VoxelWorld::new`, cujo `size` é
+    /// constante independente da seed (world.rs). O `debug_assert!` documenta essa
+    /// invariante; em release o custo é zero.
+    pub fn reload_world(&self, grid: &[u8], hmap: &[f32]) {
+        debug_assert_eq!(grid.len(), (self.grid_size * self.grid_size) as usize,
+            "reload_world: grade nova tem tamanho diferente do buffer alocado");
+        debug_assert_eq!(hmap.len(), (self.grid_size * self.grid_size) as usize,
+            "reload_world: heightmap novo tem tamanho diferente do buffer alocado");
+        let grid_u32: Vec<u32> = grid.iter().map(|v| *v as u32).collect();
+        self.queue.write_buffer(&self.buf_grid, 0, bytemuck::cast_slice(&grid_u32));
+        self.queue.write_buffer(&self.buf_hmap, 0, bytemuck::cast_slice(hmap));
     }
 
     /// Executa um passo de física para todos os carros em paralelo na GPU.

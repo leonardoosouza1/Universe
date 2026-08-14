@@ -10,21 +10,20 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use bytemuck::Pod;
 use wgpu::util::DeviceExt;
 
-use universe::config::iara::vision::{RETINA_ROWS, RETINA_TOTAL, RETINA_COLS};
+use universe::config::iara::vision::{RETINA_ROWS, RETINA_TOTAL};
 use universe::engine::SovereignEngine;
 use universe::gpu::brain::BrainGpu;
 use universe::gpu::slow_brain::SlowBrainGpu;
 use universe::gpu::perception::{PerceptionGpu, PosePerception};
 use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu};
+use universe::gpu::retina_digest::RetinaDigestGpu;
 use universe::gpu::retina_types::{RetinaParamsGpu, PoseRaw};
 use universe::gpu::core::{uniform_entry, storage_entry};
 use universe::world::VoxelWorld;
 use universe::simulation::racing_line::RacingLine;
 use universe::visao::pitch;
-use universe::perception::RetinaPerception;
 use universe::perception::channels::Channel;
 use universe::kan::KAN_OUT_KNOTS;
 
@@ -68,8 +67,11 @@ pub struct GpuCtx {
     pub grid_size_cpu: u32,
     pub cell_size_cpu: f32,
     pub phys_gpu:    PhysicsGpu,
-    pub percept_cfc: Vec<RetinaPerception>,
-    pub buf_retina_readback: wgpu::Buffer,
+    /// CfC de percepção + min_wall_ahead + edge_row6/7 — kernel `retina_digest.wgsl`.
+    /// Substitui o antigo readback de 340 KB/tick (retina inteira) + laço Rust
+    /// (`percept_cfc: Vec<RetinaPerception>` rodando na CPU); ver doc do módulo
+    /// `gpu::retina_digest` para o antes/depois completo.
+    pub retina_digest: RetinaDigestGpu,
     pub capacity:    usize,
 
     // ── Amostras de ativação (E4, `--ativacao`) ─────────────────────────────
@@ -133,11 +135,14 @@ impl GpuCtx {
         let queue  = Arc::new(raw_queue);
         let cap = capacity.max(1);
 
+        // COPY_DST: permite `reload_world()` trocar de pista via `write_buffer` sem
+        // recriar buffer/bind-group/pipeline (P1, rotação de pistas — ver o mesmo
+        // raciocínio em `gpu::perception::PerceptionGpu::reload_world`).
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("evolve-grid"),
             contents: bytemuck::cast_slice(&grid_u32),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         let buf_poses_retina = device.create_buffer(&wgpu::BufferDescriptor {
@@ -190,15 +195,7 @@ impl GpuCtx {
             Arc::clone(&device), Arc::clone(&queue), name.clone(),
             &grid_u8, &world.height_map, world.size, world.cell_size, cap)?;
 
-        let retina_readback_bytes = (cap * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
-        let buf_retina_readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("evolve-retina-readback"),
-            size:               retina_readback_bytes,
-            usage:              wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let percept_cfc: Vec<RetinaPerception> = (0..cap).map(|_| RetinaPerception::new()).collect();
+        let retina_digest = RetinaDigestGpu::new(&device, &queue, cap);
 
         eprintln!("[gpu_evolve] Adapter: {} · cap={}", name, cap);
 
@@ -218,8 +215,7 @@ impl GpuCtx {
             grid_size_cpu: world.size as u32,
             cell_size_cpu: world.cell_size,
             phys_gpu,
-            percept_cfc,
-            buf_retina_readback,
+            retina_digest,
             capacity: cap,
             l1_samples: Vec::new(),
             l2_samples: Vec::new(),
@@ -564,10 +560,14 @@ impl GpuCtx {
                     }
                 }
 
-                let hidden = &self.percept_cfc[i].pipeline.state.h;
+                // val[1..17] (cfc_hidden) fica em ZERO deliberadamente: ch192-207 agora
+                // são escritos diretamente por `retina_digest.wgsl` (que roda no mesmo
+                // encoder, lendo o estado do CfC direto da VRAM — sem passar pela CPU).
+                // Este slot de `update_extra_temporal` continua existindo só porque a
+                // função é COMPARTILHADA com gpu_loop.rs/gpu_report.rs (que ainda rodam
+                // o CfC na CPU); em gpu_evolve, só o slot [0] (reverse_timer) é real.
                 let mut val = [0.0f32; 17];
                 val[0] = states[i].reverse_timer;
-                for j in 0..16 { val[1+j] = if j < hidden.len() { hidden[j] } else { 0.0 }; }
                 extra.push(val);
             }
             self.percept.update_extra_temporal(&self.queue, &extra[..n]);
@@ -712,6 +712,18 @@ impl GpuCtx {
         self.percept.bind_and_dispatch(&mut enc, &self.device, &self.queue,
                                        &poses_percept[..n], &self.buf_retina_out);
 
+        // CfC de percepção + min_wall_ahead + edge_row6/7 — TUDO na GPU agora.
+        //
+        // Roda DEPOIS de `percept.bind_and_dispatch` (que zera `buf_output` antes de
+        // escrever os canais espaciais/temporais) porque este kernel escreve ch192-207
+        // no MESMO `buf_output` via atomicOr — escrever antes do clear perderia esses
+        // canais. Roda ANTES do cérebro, para que `brain.bind_and_dispatch` já veja
+        // ch192-207 preenchidos. Substitui o antigo readback de 340 KB/tick (retina
+        // inteira) + laço Rust — ver `gpu::retina_digest` para o antes/depois completo.
+        let extra_bytes = self.retina_digest.bind_and_dispatch(
+            &mut enc, &self.device, &self.queue, n, &self.buf_retina_out, self.percept.buf_output(),
+        );
+
         // Cérebro rápido — só dispara a cada `brain_skip` ticks.
         //
         // A percepção e a física continuam a 64 Hz: o que muda é a frequência de DECISÃO,
@@ -737,10 +749,6 @@ impl GpuCtx {
         // Encadeado no MESMO encoder: nenhum readback intermediário, nenhuma volta à CPU.
         self.slow.dispatch_gather(&mut enc, self.percept.buf_output(), n);
         self.slow.dispatch(&mut enc, n, dt);
-
-        // Cópia retina para readback do CfC.
-        let retina_copy_bytes = (n * RETINA_TOTAL * 4) as u64;
-        enc.copy_buffer_to_buffer(&self.buf_retina_out, 0, &self.buf_retina_readback, 0, retina_copy_bytes);
 
         // Submit único.
         self.queue.submit(Some(enc.finish()));
@@ -791,46 +799,22 @@ impl GpuCtx {
             }
         }
 
-        // Atualiza CfC percepção.
+        // ── Vida/parede/estagnação/combustível — dados de `retina_digest.wgsl` ────
+        //
+        // O CfC de percepção (ch192-207), `min_wall_ahead` e `edge_row6/7` agora são
+        // calculados NA GPU (retina_digest.wgsl, dispatched acima, no mesmo encoder).
+        // Aqui só descem 3 floats/ser (min_wall_ahead, edge_row6, edge_row7) em vez dos
+        // 1764 pixels/ser que eram lidos e reprocessados em Rust — a equação em si
+        // (legacy_encoding, col-pool, zone-pool, CfC) não muda, só migra de host para
+        // kernel (ver `gpu::retina_digest` e `math::cfc_perception`).
+        //
+        // O laço de vida abaixo (wall_ticks/dreno, estagnação, combustível, -1 tick de
+        // life_left) CONTINUA na CPU — só passa a consumir `min_wall_ahead` já pronto
+        // em vez de recalculá-lo dos pixels.
         {
-            let slice = self.buf_retina_readback.slice(0..retina_copy_bytes);
-            let (tx, rx) = std::sync::mpsc::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-            self.device.poll(wgpu::Maintain::Wait);
-            let _ = rx.recv();
-            let data = slice.get_mapped_range();
-            let retina_u32: &[u32] = bytemuck::cast_slice(&data);
+            let extra = self.retina_digest.read_after_submit(&self.device, n, extra_bytes);
             for i in 0..n {
-                let base = i * RETINA_TOTAL;
-                let mut retina_i8 = vec![0i8; RETINA_TOTAL];
-                let mut min_wall_ahead = f32::MAX;
-                for j in 0..RETINA_TOTAL {
-                    let packed = retina_u32[base + j];
-                    // Codificação ÚNICA, de `gpu::legacy_encoding`. Aqui havia uma quarta
-                    // cópia da fórmula, e ela tinha DIVERGIDO: parede em rampa LINEAR
-                    // (`127 - 72·d/30`) onde os outros três caminhos — world.rs,
-                    // gpu/mod.rs e perception.wgsl — usam raiz (`127 - 72·√(d/30)`).
-                    // A 15 m isso dava 91 contra 76: o CfC de percepção deste binário
-                    // recebia parede mais LONGE do que ela está, justamente no curto
-                    // alcance que decide se o ser bate.
-                    let dist_m   = (packed >> 8) as f32 / 1000.0;
-                    let material = (packed & 0xFF) as u8;
-
-                    // Parede à frente: colunas centrais da retina (o terço do meio dos
-                    // 120° de campo). O dado já está aqui — a retina é lida de volta a
-                    // cada tick para o CfC de percepção — então medir isto é de graça.
-                    if material == VOXEL_WALL {
-                        let col = j % RETINA_COLS;
-                        if col >= RETINA_COLS / 3 && col < 2 * RETINA_COLS / 3 {
-                            min_wall_ahead = min_wall_ahead.min(dist_m);
-                        }
-                    }
-
-                    retina_i8[j] = universe::gpu::legacy_encoding(universe::gpu::Pixel {
-                        dist_m,
-                        material,
-                    });
-                }
+                let min_wall_ahead = extra[i][0];
                 // Um tick "colado" é um tick com parede a menos de WALL_NEAR_M à frente.
                 // O limiar é maior que o carro (≈2 m) para pegar o encosto, não o roçar.
                 // Só conta para quem ainda está vivo. Um ser sem vida congela com freio,
@@ -866,25 +850,11 @@ impl GpuCtx {
                     states[i].ticks_alive += 1;
                 }
                 // Edge density das linhas 6 e 7 da retina → ch99, ch100.
-                // Mesma fórmula de motor.rs:910-926: gradiente horizontal linha-a-linha.
-                // Max teórico = 255 * 125 = 31875; normalizado por 6000 (motor.rs usa 6000).
-                // Guardado nos states para ser entregue ao temporal NO PRÓXIMO tick (1 tick atraso).
-                for row_idx in 6..=7 {
-                    let edge_sum: i32 = (0..RETINA_COLS - 1)
-                        .map(|col| {
-                            let a = retina_i8[row_idx * RETINA_COLS + col] as i32;
-                            let b = retina_i8[row_idx * RETINA_COLS + col + 1] as i32;
-                            (a - b).abs()
-                        })
-                        .sum();
-                    let edge_norm = ((edge_sum as f32 / 6000.0) * 1.0).clamp(0.0, 1.0);
-                    if row_idx == 6 { states[i].edge_row6 = edge_norm; }
-                    else            { states[i].edge_row7 = edge_norm; }
-                }
-                self.percept_cfc[i].perceive(&retina_i8);
+                // Guardado nos states para ser entregue ao temporal NO PRÓXIMO tick (1 tick
+                // de atraso) — mesmo contrato de antes, só que o valor já vem pronto.
+                states[i].edge_row6 = extra[i][1];
+                states[i].edge_row7 = extra[i][2];
             }
-            drop(data);
-            self.buf_retina_readback.unmap();
         }
 
         if intents.len() != n { return false; }
@@ -1105,8 +1075,45 @@ impl GpuCtx {
     /// Reseta CfC de percepção (estado recorrente) para todos os seres.
     /// Chamado entre gerações para que os filhos comecem sem memória.
     pub fn reset_cfc(&mut self, n: usize) {
-        for i in 0..n.min(self.capacity) {
-            self.percept_cfc[i] = RetinaPerception::new();
-        }
+        self.retina_digest.reset(&self.queue, n);
+    }
+
+    /// Troca a pista sem recriar device/pipelines/bind-groups — só reescreve os
+    /// buffers estáticos (grade/fluxo/alturas/heightmap) via `write_buffer` (P1:
+    /// rotação de pistas por geração + avaliação held-out, ver
+    /// docs/PLANO_EVOLUCAO.md §P1).
+    ///
+    /// NÃO chamado em nenhum caminho quando `--pistas`/`--pista-held-out` estão
+    /// ausentes — o binário sem essas flags nunca invoca este método, então o
+    /// comportamento (e o A/B em andamento) fica bit-a-bit idêntico ao de antes
+    /// desta mudança.
+    ///
+    /// Só é seguro porque `VoxelWorld::new` usa `size=320`/`cell_size=3.0`
+    /// CONSTANTES independentes da seed (world.rs) — nenhum buffer estático muda de
+    /// tamanho entre pistas, então dá pra sobrescrever em vez de realocar. Custo:
+    /// ~400 KB de upload total (grid×3 + heights + hmap), sub-milissegundo — ver a
+    /// estimativa em docs/PLANO_EVOLUCAO.md §P1 (irrelevante perto dos ~19,2 s/gen
+    /// medidos no P0).
+    pub fn reload_world(&mut self, world: &VoxelWorld) {
+        debug_assert_eq!(world.size as u32, self.grid_size,
+            "reload_world: pista nova tem grade de tamanho diferente — buffer não realoca");
+        debug_assert!((world.cell_size - self.cell_size).abs() < 1e-6,
+            "reload_world: pista nova tem cell_size diferente — buffer não realoca");
+
+        let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
+        self.queue.write_buffer(&self.buf_grid, 0, bytemuck::cast_slice(&grid_u32));
+
+        self.percept.reload_world(&self.queue, world);
+
+        let grid_u8: Vec<u8> = world.grid.iter().map(|v| *v as u8).collect();
+        self.phys_gpu.reload_world(&grid_u8, &world.height_map);
+
+        // Cópias CPU que ficariam presas na pista antiga se esquecidas aqui — ver
+        // risco correspondente em docs/PLANO_EVOLUCAO.md §P1: `racing_line`
+        // alimenta os canais sensoriais 108-110 (linha ideal), `grid_cpu` alimenta
+        // o voxel-sob-o-ser (dopamina/joy_tick, colisão CPU-side dos raios de
+        // parede em `tick()`).
+        self.racing_line = world.racing_line.clone();
+        self.grid_cpu = grid_u32;
     }
 }

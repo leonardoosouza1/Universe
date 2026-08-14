@@ -23,10 +23,65 @@
 //! `Genome::random()` usa LCG com seed derivada do índice do ser. Magnitude σ=0.3
 //! pra L1/L2. Pesos zerados (BitLinear::new()) → rede nula → nenhum movimento;
 //! σ=0.3 coloca pesos na escala que o motor.rs usa (~0.1–0.5 após treinamento).
+//!
+//! # Inicialização espectral de L1 (P0.5)
+//!
+//! O sorteio N(0, σ=0.30) i.i.d. acima, medido com `analysis::activation` em 4
+//! corridas independentes, produz ganho espectral de L1 (maior valor singular da
+//! matriz feedforward 192→96, a mesma grandeza que `AlarmKind::SpectralRadiusHigh`
+//! audita) em ~7.0 — bem acima do `|λ_max| <= ~1` que a teoria de echo-state pede
+//! para o sinal sensorial não ser amplificado antes da primeira mutação. Depois de
+//! sortear `l1`, `Genome::random` mede esse ganho com
+//! `math::linalg::largest_singular_value` e re-escala TODOS os pesos de L1 por um
+//! único fator escalar (`thresholds::SPECTRAL_INIT_TARGET / medido`) — um escalar
+//! preserva a direção relativa de cada peso, só ajusta a magnitude, e como a medida é
+//! LINEAR na matriz (`largest_singular_value(c·W) = c · largest_singular_value(W)`,
+//! ver teste `largest_singular_value_escala_linear_com_a_matriz` em
+//! `math/linalg.rs`), o fator atinge o alvo exatamente, não por aproximação.
+//!
+//! Controlado por [`SPECTRAL_INIT_ON`] (padrão: ligado) — o braço de controle do A/B
+//! é `--sem-init-espectral` no `gpu_evolve`. Só toca `l1`: L2 não entra no alarme
+//! (`collect_activation_stats("L2", ..., w_rec: None, ...)` em `gpu_evolve/main.rs`),
+//! então não há "o que o alarme mede" para L2 mirar. `load_genome` (genoma vindo do
+//! disco) NUNCA passa por `Genome::random` — constrói o `Genome` direto por struct
+//! literal — então um campeão salvo antes desta mudança carrega com o ganho espectral
+//! que ele sempre teve, intocado.
 
 use crate::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS};
 use crate::kan::KAN_OUT_KNOTS;
 use crate::engine::SovereignEngine;
+use crate::math::{linalg, thresholds};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Liga/desliga a inicialização espectral de L1 (P0.5) em `Genome::random`.
+///
+/// Padrão `true` (LIGADA) — nascer com ganho espectral ≈ `thresholds::SPECTRAL_INIT_TARGET`
+/// é o comportamento recomendado, não um experimento à parte. `gpu_evolve
+/// --sem-init-espectral` desliga (`store(false, ...)`) para rodar o braço de controle
+/// do A/B: população nascendo com o σ=0.30 i.i.d. cru, sem correção — o mesmo cérebro
+/// de antes da hipótese P0.5.
+///
+/// É um `AtomicBool` global (não um parâmetro de `Genome::random`) pelo mesmo motivo de
+/// `world::NO_HOLES`/`world::EASY_TRACK`: `Genome::random(seed)` é chamado em várias
+/// dezenas de lugares (população inicial, retomada de checkpoint, testes) e mudar a
+/// assinatura obrigaria a tocar todos eles só para propagar uma flag de CLI que é lida
+/// uma vez no início do processo.
+pub static SPECTRAL_INIT_ON: AtomicBool = AtomicBool::new(true);
+
+/// Fator escalar que leva um ganho `medido` para `alvo` (== `alvo / medido`).
+///
+/// Função pura, sem estado global — extraída de `Genome::random` para poder ser
+/// testada sem depender de [`SPECTRAL_INIT_ON`] (que é global e mutável; um teste que
+/// o alternasse arriscaria interferir com qualquer outro teste que chame
+/// `Genome::random` em paralelo, ver R8 do CLAUDE.md do projeto — "canário: números
+/// idênticos onde deveriam divergir").
+///
+/// `medido <= 1e-6` (L1 inteiro ~0, nunca observado com σ=0.30 e 18.432 pesos) devolve
+/// `1.0` — nada para escalar, e `0.0 × 1.0 = 0.0` continua nulo, não uma divisão por
+/// quase-zero explodindo o peso.
+fn spectral_rescale_factor(medido: f32, alvo: f32) -> f32 {
+    if medido > 1e-6 { alvo / medido } else { 1.0 }
+}
 
 // ── Dimensões derivadas ────────────────────────────────────────────────────────
 pub const N_L1_WEIGHTS: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
@@ -72,6 +127,10 @@ impl Genome {
     /// no CHAMPION.dna (|w| médio ≈ 0.15, max ≈ 0.7). Pesos zerados = rede nula.
     /// σ = 0.3 garante pelo menos ~30% dos pesos não-nulos com ação não-trivial.
     ///
+    /// Depois de sortear L1, e se [`SPECTRAL_INIT_ON`] estiver ligado (padrão), L1 é
+    /// re-escalado para nascer com ganho espectral ≈ `thresholds::SPECTRAL_INIT_TARGET`
+    /// — ver o módulo "Inicialização espectral de L1 (P0.5)" no topo do arquivo.
+    ///
     /// KAN knots = default (tanh ramp) — funciona como identidade suave e não
     /// precisa ser evoluído nos primeiros estágios.
     pub fn random(seed: u64) -> Self {
@@ -92,8 +151,26 @@ impl Genome {
             (g * sigma_l1).clamp(-3.0 * sigma_l1, 3.0 * sigma_l1)  // clamp em 3σ
         };
 
-        let l1: Vec<f32> = (0..N_L1_WEIGHTS).map(|_| gauss(&mut rng_f32)).collect();
+        let mut l1: Vec<f32> = (0..N_L1_WEIGHTS).map(|_| gauss(&mut rng_f32)).collect();
         let l2: Vec<f32> = (0..N_L2_WEIGHTS).map(|_| gauss(&mut rng_f32)).collect();
+
+        // P0.5 — inicialização espectral: mede o ganho que o sorteio acima acabou de
+        // produzir (mesma conta que `analysis::activation` usa pro alarme,
+        // `SpectralRadiusHigh`) e re-escala L1 por um único fator escalar para que o
+        // ganho medido bata em `thresholds::SPECTRAL_INIT_TARGET`. Um fator escalar
+        // sobre a matriz inteira escala o maior valor singular pelo mesmo fator
+        // (linear — ver teste em `math/linalg.rs`), então o alvo é atingido
+        // exatamente, não por tentativa. Só toca L1: é a única matriz que o alarme
+        // audita (L2 usa `w_rec: None` na chamada de `collect_activation_stats`).
+        //
+        // `SPECTRAL_INIT_ON` é o braço de controle do A/B (`--sem-init-espectral`,
+        // padrão LIGADO). Genoma vindo do disco (`load_genome`) nunca passa por aqui.
+        if SPECTRAL_INIT_ON.load(Ordering::Relaxed) {
+            let medido = linalg::largest_singular_value(&l1, L1_NEURONS, SENSORY_WAVE_SIZE);
+            let fator = spectral_rescale_factor(medido, thresholds::SPECTRAL_INIT_TARGET);
+            for w in l1.iter_mut() { *w *= fator; }
+        }
+
         let kan_knots = crate::evolution::dna_genesis::default_kan_knots();
 
         // Lento: parte da inicialização padrão e passa a divergir por mutação. Ele nasce
@@ -135,6 +212,30 @@ impl Genome {
     /// Falha explicitamente se L1/L2 divergirem — truncamento silencioso já causou
     /// pesos perdidos sem aviso, resultado: seres nasciam com genoma parcialmente zerado
     /// enquanto métricas de seleção pareciam normais.
+    /// Quantos neurônios de L1 ficam VIVOS. `0` = todos (comportamento normal).
+    ///
+    /// Leonardo: *"podemos avaliar o quanto de espaço eles realmente precisam, e se o
+    /// modelo ficar com pouco espaço a gente vai aumentando."*
+    ///
+    /// A medida de capacidade diz que L1 usa 6,7 das 96 dimensões (7%) — mas métrica não
+    /// é prova. Zerar os pesos de saída dos neurônios acima do corte e medir os metros
+    /// transforma a estimativa em experimento: se cortar 96→16 não custar desempenho, os
+    /// 93% ociosos estão demonstrados, não inferidos.
+    ///
+    /// Zera-se a SAÍDA (a coluna de L2 que lê aquele neurônio) e não a entrada, porque é
+    /// isso que remove a contribuição dele para o comportamento; zerar a entrada deixaria
+    /// o neurônio emitindo o seu viés.
+    pub fn ablar_l1_acima_de(&mut self, vivos: usize) {
+        use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS};
+        if vivos == 0 || vivos >= L1_NEURONS { return; }
+        for j in 0..L2_NEURONS {
+            for n in vivos..L1_NEURONS {
+                let idx = j * L1_NEURONS + n;
+                if idx < self.l2.len() { self.l2[idx] = 0.0; }
+            }
+        }
+    }
+
     pub fn apply_to_engine(&self, eng: &mut SovereignEngine) {
         assert_eq!(
             self.l1.len(), eng.instinct_layer.weights.len(),
@@ -343,4 +444,66 @@ pub fn linear_slope(ys: &[f64]) -> (f64, f64) {
     let var_resid = ssr / (n as f64 - 2.0).max(1.0);
     let slope_stderr = (var_resid / sxx).sqrt();
     (slope, slope_stderr)
+}
+
+// ---------------------------------------------------------------------------
+// Testes unitários — P0.5 (inicialização espectral de L1).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `spectral_rescale_factor` é pura function matemática — o teste central da
+    /// inicialização espectral que não precisa tocar `SPECTRAL_INIT_ON` nem sortear
+    /// pesos: dado o ganho ~7.0 medido empiricamente (CLAUDE.md do projeto, 4 corridas
+    /// independentes), o fator devolvido tem que levar exatamente a 1.0.
+    #[test]
+    fn spectral_rescale_factor_atinge_alvo_exatamente() {
+        let fator = spectral_rescale_factor(7.0, 1.0);
+        assert!((fator - 1.0 / 7.0).abs() < 1e-6, "fator = {fator}, esperado 1/7");
+        assert!((7.0 * fator - 1.0).abs() < 1e-6, "aplicar o fator deveria levar a 1.0");
+    }
+
+    /// Ganho ~0 (L1 nulo, nunca observado na prática) não deve gerar divisão explosiva
+    /// — o fator cai para 1.0 (identidade: nada para escalar).
+    #[test]
+    fn spectral_rescale_factor_ganho_quase_zero_nao_explode() {
+        assert_eq!(spectral_rescale_factor(0.0, 1.0), 1.0);
+        assert_eq!(spectral_rescale_factor(1e-9, 1.0), 1.0);
+    }
+
+    /// P0.5, requisito 4: genoma novo (flag padrão LIGADA) nasce com ganho espectral
+    /// de L1 medido em [0.8, 1.2] — não exatamente 1.0 porque a normalização mede o
+    /// GANHO DA MATRIZ INTEIRA sorteada (deve bater ~1.0 dentro do erro numérico do
+    /// power-iteration, ~100 iterações, mais o efeito do clamp em 3σ na cauda da
+    /// gaussiana), mas longe o bastante do ~7.0 sem correção para provar que a
+    /// re-escala está de fato acontecendo.
+    ///
+    /// Não mexe em `SPECTRAL_INIT_ON` (fica no padrão `true` do processo de teste) —
+    /// ver doc de `spectral_rescale_factor` sobre por que evitar alternar o atomic
+    /// global dentro de testes.
+    #[test]
+    fn genoma_novo_nasce_com_ganho_espectral_perto_de_1() {
+        assert!(
+            SPECTRAL_INIT_ON.load(Ordering::Relaxed),
+            "pré-condição do teste: a flag deveria estar no padrão (ligada) neste processo"
+        );
+        for seed in [1u64, 2, 3, 42, 999_999] {
+            let g = Genome::random(seed);
+            let ganho = linalg::largest_singular_value(&g.l1, L1_NEURONS, SENSORY_WAVE_SIZE);
+            assert!(
+                (0.8..=1.2).contains(&ganho),
+                "seed {seed}: ganho espectral de L1 = {ganho}, esperado em [0.8, 1.2]"
+            );
+        }
+    }
+
+    // P0.5, requisito 4 (parte 2, "herança intocada"): o teste que carrega um genoma
+    // legado de verdade do disco e confirma que `load_genome` não re-escala mora em
+    // `src/bin/gpu_evolve/tests.rs::genoma_legado_carregado_do_disco_nao_e_reescalado`
+    // — precisa de `load_genome`/`save_genome`, que vivem no binário `gpu_evolve`, não
+    // nesta crate. A garantia estrutural é simples de conferir por leitura: `load_genome`
+    // monta `Genome { l1, l2, kan_knots, slow, tau }` por struct literal direto
+    // (genome_io.rs), nunca chamando `Genome::random` nem `spectral_rescale_factor`.
 }

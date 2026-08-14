@@ -4,3 +4,5 @@
 //! aqui dentro. Quem lê os buffers da GPU e monta os `Vec<f32>` de amostra é o
 //! caller (`src/bin/gpu_evolve/context.rs`); este módulo só enxerga números.
 pub mod activation;
+/// Esparsidade contextual: *quem* dispara para *esta* situação (E1-E4 do protocolo).
+pub mod contextual;

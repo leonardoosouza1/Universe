@@ -50,6 +50,8 @@ mod genome_io;
 mod audit;
 mod pilots;
 mod context;
+mod painel;
+mod pistas;
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +59,7 @@ use statics::*;
 use context::GpuCtx;
 use types::BeingState;
 use genome_io::{save_genome, load_genome, population_seed_for};
+use pistas::{parse_pistas, pista_da_gen};
 
 use universe::gpu::evolution::{Genome, EvoParams, GenResult, evolve, gen_stats, linear_slope};
 use universe::world::VoxelWorld;
@@ -85,6 +88,210 @@ use universe::gpu::physics::{pos_of, make_physics_state};
 // AtomicF32 e life_cap() moveram para statics.rs (E3) — ver `use statics::*;` no
 // topo do arquivo, com tabela de "quem lê / quem escreve" no doc do módulo.
 
+// ── Avaliação held-out (P1, docs/PLANO_EVOLUCAO.md §P1) ───────────────────────
+
+/// Avalia a POPULAÇÃO ATUAL (mesmos genomas já upados na GPU — pesos não mudam
+/// entre pistas, só a geometria muda) na pista RESERVADA, por `n_ticks` (mesmo N
+/// do treino). NÃO muta `genomes` e não participa de `evolve()` — é medição pura.
+///
+/// # Por que a seleção nunca vê este número (item 4 da TAREFA)
+///
+/// `evolve()` só recebe a `fitness` de treino (chamado depois deste bloco no laço
+/// principal, com o vetor calculado ANTES da avaliação held-out rodar). Se a
+/// seleção enxergasse também a fitness held-out, o campeão passaria a ser
+/// escolhido (também) pelo desempenho na pista reservada — e ela deixaria de medir
+/// generalização, porque o próprio processo de seleção teria decorado ela também.
+/// Held-out só serve para alguma coisa enquanto continuar sendo a pista que a
+/// seleção NUNCA otimiza contra; por isso esta função devolve só um `f64` de
+/// relatório, sem tocar em `genomes`/`EvoParams`/`evolve`.
+///
+/// # Simplificações deliberadas (documentadas, não esquecidas)
+///
+/// Reimplementa (não reusa) o núcleo de acumulação de fitness do laço principal —
+/// odômetro, progresso monotônico, checkpoints em ordem, centralização — em vez de
+/// extrair uma função compartilhada, porque o laço principal está entrelaçado com
+/// replay/painel/dopamina/combustível/ativação, e tocar naquele bloco aumentaria o
+/// risco de mudar o comportamento do A/B em andamento por acidente. Ficam de fora
+/// de propósito (e não afetam a fórmula de nenhum `--fitness`):
+/// - `--portal-curva`: held-out sempre usa setor UNIFORME. Comparar `razao` exige
+///   a mesma contagem de setores nos dois lados; misturar contagens (43 portais no
+///   treino, 24 setores no held-out) tornaria a razão incomparável.
+/// - `--fuel`: held-out mede se a ROTA generaliza, não se a gestão de tanque
+///   generaliza — os dois são perguntas diferentes.
+/// - dopamina (`joy_tick`/`joy_streak`): não alimenta NENHUMA fórmula de fitness
+///   (`dist`/`prog`/`checkpoint`/`centro`), só um canal sensorial.
+/// - `--wall-cost` e vida "ganha por metro" (`--life-earn`): held-out dá vida
+///   CHEIA (`n_ticks`) para medir se o corpo/cérebro navega a pista reservada, não
+///   se a população sobrevive com o orçamento de fôlego calibrado para o TREINO.
+///
+/// Retorna a MEDIANA da fitness held-out entre os seres que terminaram VIVOS
+/// (`life_left > 0`) — item 3 da TAREFA ("razão usa mediana dos vivos"). Se
+/// ninguém sobreviver, cai para a mediana de TODOS (avisado via `eprintln!`) em
+/// vez de indexar um vetor vazio.
+fn avaliar_held_out(
+    ctx: &mut GpuCtx,
+    n_seres: usize,
+    n_ticks: usize,
+    track_width: f32,
+    same_start: bool,
+    modo_fitness: &str,
+    held_out_seed: u64,
+    kan_knots: &[[f32; universe::kan::KAN_OUT_KNOTS]; 3],
+) -> f64 {
+    let world_ho = VoxelWorld::new(held_out_seed, track_width);
+    // Troca a geometria na GPU (grade/fluxo/alturas/heightmap) sem recriar device
+    // nem pipeline — ver `GpuCtx::reload_world`. Reseta o estado recorrente (CfC)
+    // para que os seres cheguem na pista reservada sem memória da pista de treino
+    // desta geração — mesmo contrato de "reset entre gerações" que já existe no
+    // laço principal (main(), bloco "Reseta CfC entre gerações").
+    ctx.reload_world(&world_ho);
+    ctx.reset_cfc(n_seres);
+    for i in 0..n_seres { ctx.brain.reset_cfc(i); }
+
+    let lap_dist = world_ho.lap_distance as f64;
+    let n_wp = world_ho.waypoints_world.len();
+    let mut states: Vec<BeingState> = (0..n_seres).map(|i| {
+        let wi = if same_start { 0 } else { (i * n_wp / n_seres).min(n_wp - 1) };
+        let wp = world_ho.waypoints_world[wi];
+        let wp_next = world_ho.waypoints_world[(wi + 1).min(n_wp - 1)];
+        let dx = wp_next.x - wp.x;
+        let dz = wp_next.y - wp.y;
+        let len = (dx * dx + dz * dz).sqrt().max(1e-6);
+        let fwd = [dx / len, 0.0, dz / len];
+        let pos = [wp.x, 0.0, wp.y];
+        BeingState {
+            phys: make_physics_state(pos, fwd),
+            prev_steer: 0.0,
+            stagnation_ticks: 0,
+            wall_ticks: 0,
+            center_prog: 0.0,
+            sensor_steer: 0.0,
+            sensor_thr: 0.0,
+            sensor_brk: 0.0,
+            wp_near: 0,
+            fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
+            ticks_alive: 0,
+            // Vida CHEIA (ver doc da função: held-out mede rota, não orçamento de fôlego).
+            life_left: n_ticks as f64,
+            reverse_timer: 0.0,
+            post_reverse_lockout: 0.0,
+            joy_tick: 0.0,
+            joy_streak: 0.0,
+            edge_row6: 0.0,
+            edge_row7: 0.0,
+            phantom_d_min: 30.0,
+            dist_wall_l: 40.0,
+            dist_wall_r: 40.0,
+            dist_wall_f: 50.0,
+        }
+    }).collect();
+
+    let mut dist_acum: Vec<f64> = vec![0.0; n_seres];
+    let mut prog_acum: Vec<f64> = vec![0.0; n_seres];
+    let mut checkpoint: Vec<u32> = vec![0; n_seres];
+    let mut prog_prev: Vec<f32> = (0..n_seres)
+        .map(|i| world_ho.get_track_progress(states[i].phys.pos[0], states[i].phys.pos[2]))
+        .collect();
+    let mut pos_prev: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
+
+    // Tick de aquecimento — mesmo contrato do laço de treino (JIT/compilação
+    // descartada, não entra na fitness).
+    let _ = ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, kan_knots);
+
+    let dt = 1.0_f32 / 64.0;
+    for tick_i in 0..n_ticks {
+        if !ctx.tick(&mut states, n_seres, dt, tick_i + 1, kan_knots) {
+            eprintln!("[held-out] ERRO no tick {tick_i} — avaliação abortada, usando dados parciais.");
+            break;
+        }
+        // `ctx.tick()` já decrementa `life_left`/incrementa `ticks_alive` por conta
+        // própria (mesmo caminho usado no treino) — este laço só ACUMULA fitness,
+        // não mexe em vida.
+        for i in 0..n_seres {
+            let p1 = pos_of(&states[i].phys);
+            if states[i].life_left > 0.0 {
+                let dx = (p1[0] - pos_prev[i][0]) as f64;
+                let dz = (p1[2] - pos_prev[i][2]) as f64;
+                dist_acum[i] += (dx * dx + dz * dz).sqrt();
+
+                let cur = world_ho.get_track_progress(p1[0], p1[2]);
+                let ld = lap_dist as f32;
+                let mut d = cur - prog_prev[i];
+                if d < -ld * 0.5 { d += ld; } else if d > ld * 0.5 { d -= ld; }
+                let avanco = d.clamp(-ld * 0.1, ld * 0.1) as f64;
+                prog_acum[i] += avanco;
+                prog_prev[i] = cur;
+
+                // Centralização — só usada por `--fitness centro`; custo (9
+                // comparações/ser/tick) é desprezível perto do resto do tick.
+                let wps = &world_ho.waypoints_world;
+                let nwp = wps.len();
+                let mut melhor = states[i].wp_near;
+                let mut best_d = f32::MAX;
+                for off in 0..9 {
+                    let idx = (states[i].wp_near + nwp + off - 4) % nwp;
+                    let dxx = wps[idx].x - p1[0];
+                    let dzz = wps[idx].y - p1[2];
+                    let dd = dxx * dxx + dzz * dzz;
+                    if dd < best_d { best_d = dd; melhor = idx; }
+                }
+                states[i].wp_near = melhor;
+                let dist_eixo = best_d.sqrt();
+                let half = (track_width * 0.5).max(1.0);
+                let prox = (1.0 - dist_eixo / half).clamp(0.0, 1.0) as f64;
+                if avanco > 0.0 { states[i].center_prog += avanco * prox; }
+
+                // Setor SEMPRE uniforme (ver doc da função — held-out ignora
+                // `--portal-curva` de propósito, pra manter a contagem de setores
+                // comparável entre treino e held-out).
+                let setor = ((cur / ld) * N_CHECKPOINTS as f32) as u32;
+                let esperado = checkpoint[i] % N_CHECKPOINTS.max(1);
+                if setor == esperado { checkpoint[i] += 1; }
+            }
+            pos_prev[i] = p1;
+        }
+    }
+
+    let fitness_ho: Vec<f64> = match modo_fitness {
+        "dist" => dist_acum,
+        "prog" => prog_acum.iter().map(|p| p.max(0.0)).collect(),
+        "centro" => (0..n_seres).map(|i| {
+            checkpoint[i] as f64 * lap_dist + states[i].center_prog.max(0.0)
+        }).collect(),
+        _ => (0..n_seres).map(|i| {
+            checkpoint[i] as f64 * lap_dist + prog_acum[i].max(0.0)
+        }).collect(),
+    };
+
+    // Não deixa nenhuma amostra desta corrida vazar pro relatório de ativação da
+    // PRÓXIMA geração de treino — `ctx.tick()` alimenta `l1_samples`/`l2_samples`/
+    // `slow_samples`/`policy_samples`/`nan_seres` incondicionalmente quando
+    // `--ativacao` está ligado, sem saber que esta corrida é held-out. Sem este
+    // `clear()`, o relatório `[ativacao]`/`[lento]` da geração de treino seguinte
+    // misturaria amostras da pista reservada com amostras da pista de treino.
+    ctx.l1_samples.clear();
+    ctx.l2_samples.clear();
+    ctx.slow_samples.clear();
+    ctx.policy_samples.clear();
+    ctx.nan_seres.clear();
+
+    let mediana = |mut v: Vec<f64>| -> f64 {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    let vivos: Vec<f64> = (0..n_seres)
+        .filter(|&i| states[i].life_left > 0.0)
+        .map(|i| fitness_ho[i])
+        .collect();
+    if vivos.is_empty() {
+        eprintln!("[held-out] ninguém sobreviveu na pista reservada — mediana calculada \
+                    sobre TODOS os seres (não só vivos), número menos confiável.");
+        mediana(fitness_ho)
+    } else {
+        mediana(vivos)
+    }
+}
+
 // ── Ponto de entrada ──────────────────────────────────────────────────────────
 
 fn main() {
@@ -102,6 +309,7 @@ fn main() {
     let mut n_ticks:  usize = 8_000;   // 8.000 ticks = 125s @ 64Hz por geração
     let mut n_gens:   usize = 100;
     let mut retomar:  bool  = false;
+    let mut l1_vivos: usize = 0;   // 0 = todos os 96 (sem ablacao)
     let mut out_dir   = ".".to_string();
     // Parâmetros evolutivos ajustáveis via CLI (padrão conservador para fine-tuning).
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
@@ -184,6 +392,23 @@ fn main() {
     let mut ativacao_on = false;
     // `--ativacao-n <N>`: amostra a cada N ticks (padrão 64).
     let mut ativacao_n: u32 = 64;
+    // `--painel [--painel-porta N]`: painel HTTP tempo-real (E5). Sem a flag, nenhuma
+    // thread é lançada — zero overhead (REFACTOR_PLAN.md §3.7).
+    let mut painel_on = false;
+    let mut painel_porta: u16 = 3200;
+    /// `--pistas "9001,9002,..."`: conjunto de pistas de TREINO, rotacionadas
+    /// deterministicamente por geração (`pista_da_gen`, gen_abs % len). Vazio
+    /// (padrão) = comportamento anterior a esta flag: pista 9001 fixa — o A/B em
+    /// andamento (campeão treinado só nela, `--same-start`) continua reproduzível
+    /// sem tocar em nada.
+    let mut pistas: Vec<u64> = Vec::new();
+    /// `--pista-held-out <seed>`: pista RESERVADA, nunca sorteada por `pista_da_gen`
+    /// pro treino — só para MEDIR generalização (ver bloco `[generalizacao]`).
+    /// `None` (padrão) desliga a medição inteira: nenhum tick extra roda.
+    let mut pista_held_out: Option<u64> = None;
+    /// `--held-out-cada <K>`: mede held-out a cada K gerações (padrão 5). Só lido
+    /// quando `pista_held_out` está setada.
+    let mut held_out_cada: usize = 5;
     {
         let mut i = 1;
         while i < args.len() {
@@ -194,9 +419,20 @@ fn main() {
                 "--sigma"     => { i += 1; if i < args.len() { evo_sigma     = args[i].parse().unwrap_or(0.05); } }
                 "--p-mutate"  => { i += 1; if i < args.len() { evo_p_mutate  = args[i].parse().unwrap_or(0.02); } }
                 "--sem-lento" => { SLOW_ABLATED.store(true, std::sync::atomic::Ordering::Relaxed); }
+                // Curva de capacidade: quantos dos 96 neuronios de L1 ficam vivos.
+                // O PR mede 6,7 dimensoes em uso; esta flag testa se isso se traduz em
+                // metros — cortar ate onde o desempenho aguentar.
+                "--l1-vivos" => { i += 1; if i < args.len() { l1_vivos = args[i].parse().unwrap_or(0); } }
                 // Banco de τ log-uniforme em [25 ms, 4 s] em vez do τ = 2,0 s uniforme.
                 // Sem a flag o comportamento é o histórico — é o braço de controle.
                 "--tau-hetero" => { tau_hetero = true; }
+                // P0.5: inicialização espectral de L1 vem LIGADA por padrão (genoma
+                // nasce com ganho espectral ≈ 1.0 em vez do ~7.0 cru medido com
+                // σ=0.30 i.i.d. — ver `gpu::evolution::Genome::random`). Esta flag
+                // DESLIGA para rodar o braço de controle do A/B.
+                "--sem-init-espectral" => {
+                    universe::gpu::evolution::SPECTRAL_INIT_ON.store(false, Ordering::Relaxed);
+                }
                 // Cobra o recuo na fitness `centro` (ver a acumulação de `center_prog`).
                 "--centro-simetrico" => { centro_simetrico = true; }
                 // Força da fadiga de SAÍDA. 0,85 (padrão) faz comando sustentado sair a
@@ -223,6 +459,12 @@ fn main() {
                 "--fuel-tank" => { i += 1; if i < args.len() { fuel_tank = args[i].parse().unwrap_or(1.0); fuel_on = true; } }
                 "--refuel-lap-only" => { setor_paga = false; }
                 "--auditar-visao" => { auditar_visao = true; }
+                // Remove os buracos intencionais da pista (world.rs:141). Existia so no
+                // caminho Bevy (main.rs:50); exposto aqui porque a bateria pos-refatoracao
+                // mostrou a POPULACAO estacionada em 1.076 m por 20 geracoes — 11 m antes
+                // do campo de buracos (1.087-1.092 m). Este A/B e o que separa "nao
+                // aprendem a desviar" de "os buracos sao a segunda parede".
+                "--sem-buracos" => { universe::world::NO_HOLES.store(true, Ordering::Relaxed); }
                 "--portal-curva" => { portal_curva = true; }
                 "--slow-steer" => { i += 1; if i < args.len() { slow_steer_auth = args[i].parse().unwrap_or(0.20); } }
                 "--refuel-laps"=>{ i += 1; if i < args.len() { refuel_laps = args[i].parse().unwrap_or(1).max(1); } }
@@ -232,6 +474,11 @@ fn main() {
                 "--gen-offset"=> { i += 1; if i < args.len() { gen_offset    = args[i].parse().unwrap_or(0); } }
                 "--ativacao"   => { ativacao_on = true; }
                 "--ativacao-n" => { i += 1; if i < args.len() { ativacao_n = args[i].parse().unwrap_or(64).max(1); } }
+                "--painel"       => { painel_on = true; }
+                "--painel-porta" => { i += 1; if i < args.len() { painel_porta = args[i].parse().unwrap_or(3200); painel_on = true; } }
+                "--pistas"        => { i += 1; if i < args.len() { pistas = parse_pistas(&args[i]); } }
+                "--pista-held-out" => { i += 1; if i < args.len() { pista_held_out = args[i].parse().ok(); } }
+                "--held-out-cada" => { i += 1; if i < args.len() { held_out_cada = args[i].parse().unwrap_or(5).max(1); } }
                 "--retomar"   => { retomar = true; }
                 "--out"       => { i += 1; if i < args.len() { out_dir       = args[i].clone(); } }
                 _ => {}
@@ -241,21 +488,63 @@ fn main() {
     }
 
     let inicio = if retomar { "retomando de checkpoint" } else { "pesos ALEATÓRIOS (σ=0.30, N(0,σ))" };
+    let spectral_init_on = universe::gpu::evolution::SPECTRAL_INIT_ON.load(Ordering::Relaxed);
     println!("=== gpu_evolve: {} seres · {} ticks/gen · {} gens ===", n_seres, n_ticks, n_gens);
     println!("  Inicio: {}", inicio);
+    println!("  Init espectral L1 (P0.5): {}", if spectral_init_on {
+        "LIGADA — L1 nasce com ganho espectral ≈ 1.0 (alvo em thresholds::SPECTRAL_INIT_TARGET)"
+    } else {
+        "DESLIGADA (--sem-init-espectral) — L1 nasce cru, σ=0.30 i.i.d. sem correção (braço de controle)"
+    });
     println!("  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}", evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney);
     println!("  SEM muletas motoras (escape_ticks, curvature_governor)");
     println!("  Fitness: distância contínua em metros (sem degrau de volta inteira)");
     println!();
 
+    // ── Rotação de pistas (P1, docs/PLANO_EVOLUCAO.md) ────────────────────────
+    // Aviso não-fatal: se a pista reservada também estiver no conjunto de treino,
+    // ela deixa de medir generalização — o campeão veria a "reservada" durante o
+    // treino normal, então nunca é surpreendido por ela no bloco [generalizacao].
+    if let Some(ho) = pista_held_out {
+        if pistas.contains(&ho) {
+            eprintln!(
+                "[AVISO] --pista-held-out {} também está em --pistas — ela não é mais \
+                 reservada, a medição de generalização fica inválida.", ho
+            );
+        }
+    }
+
     // ── Mundo ─────────────────────────────────────────────────────────────────
+    // Seed = a pista de TREINO da primeira geração que este processo vai rodar
+    // (`gen_offset` != 0 ao retomar). Sem `--pistas` (lista vazia), `pista_da_gen`
+    // devolve 9001 para qualquer geração — mesmo hardcode literal de antes desta
+    // mudança, então o A/B em andamento não é afetado.
     let t0 = Instant::now();
-    let world = VoxelWorld::new(9001, track_width);
-    let lap_dist = world.lap_distance as f64;
-    println!("mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms]",
+    let mut world_seed_atual = pista_da_gen(&pistas, gen_offset);
+    let mut world = VoxelWorld::new(world_seed_atual, track_width);
+    let mut lap_dist = world.lap_distance as f64;
+    println!("mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
         world.size, world.size, world.waypoints_world.len(), lap_dist,
-        t0.elapsed().as_secs_f64() * 1000.0);
+        t0.elapsed().as_secs_f64() * 1000.0, world_seed_atual);
+    if !pistas.is_empty() {
+        println!("  [pistas] rotação LIGADA: {:?} (gen % {})", pistas, pistas.len());
+    }
+    if let Some(ho) = pista_held_out {
+        println!("  [pistas] held-out seed={} a cada {} gerações (medição pura, NUNCA entra na seleção)",
+                 ho, held_out_cada);
+    }
     println!();
+
+    // ── Painel HTTP tempo-real (E5, `--painel`) ────────────────────────────────
+    // Lançado ANTES do GPU subir de propósito: `GpuCtx::new` pode levar segundos, e o
+    // traçado (`set_track`) já fica disponível em `/api/status` enquanto isso acontece.
+    let painel: Option<painel::PainelHandle> = if painel_on {
+        let p = painel::PainelHandle::launch(painel_porta);
+        p.set_track(&world.waypoints_world);
+        Some(p)
+    } else {
+        None
+    };
 
     // ── GPU ───────────────────────────────────────────────────────────────────
     let t1 = Instant::now();
@@ -396,6 +685,26 @@ fn main() {
     for generation_idx in 0..n_gens {
         // gen_abs = número absoluto da geração (para relatório e arquivo de save).
         let gen_abs = gen_offset + generation_idx;
+
+        // ── Rotação de pistas (P1) ──────────────────────────────────────────────
+        // `seed_gen` é a pista de TREINO desta geração. Sem `--pistas` (lista
+        // vazia), `pista_da_gen` sempre devolve 9001 — `seed_gen == world_seed_atual`
+        // em toda geração, o `if` abaixo nunca dispara, e o comportamento fica
+        // idêntico ao binário de antes desta mudança (mundo criado uma vez, nunca
+        // recarregado). `world_seed_atual` também é o que a avaliação held-out
+        // (mais abaixo) deixa "sujo" ao trocar de pista por conta própria — este
+        // `if` é o que traz o treino de volta no início da PRÓXIMA geração, sem
+        // precisar de nenhum código de "restaurar" no bloco held-out em si.
+        let seed_gen = pista_da_gen(&pistas, gen_abs);
+        if seed_gen != world_seed_atual {
+            world = VoxelWorld::new(seed_gen, track_width);
+            ctx.reload_world(&world);
+            world_seed_atual = seed_gen;
+            lap_dist = world.lap_distance as f64;
+        }
+        println!("  [pista] gen {:4} usa seed={} ({} wp, volta={:.0}m)",
+                 gen_abs, seed_gen, world.waypoints_world.len(), lap_dist);
+
         // Limita a memória de AUDIT_ACUM (risco R6 do REFACTOR_PLAN.md): sem isto,
         // uma bateria de 100 gerações × 8.000 ticks acumula ~166 MB sem nunca liberar.
         // Efeito colateral aceito: o relatório final passa a refletir só a ÚLTIMA
@@ -416,15 +725,28 @@ fn main() {
         // diferentes. Com um ser por replay a resposta para "por que só 2 de 60 passam" é
         // inalcançável por construção.
         let n_grav = n_seres.min(255);
+        // `seed_gen` (não mais 9001 hardcoded): com rotação ligada, gravar sempre
+        // 9001 faria o replay MENTIR sobre qual pista produziu aquele arquivo —
+        // risco item do mapa P1. Sem `--pistas`, `seed_gen == 9001` sempre, e este
+        // campo do arquivo fica idêntico ao que já era.
         let mut replay_writer = universe::replay::ReplayWriter::create(
-            &replay_path, universe::replay::SOURCE_CORTEX, n_grav as u8, 64.0, 9001u64,
+            &replay_path, universe::replay::SOURCE_CORTEX, n_grav as u8, 64.0, seed_gen,
         ).ok();
         let t_gen = Instant::now();
 
         // ── Aplica genomas nos engines ─────────────────────────────────────────
         let mut engines: Vec<SovereignEngine> = (0..n_seres).map(|_| SovereignEngine::new()).collect();
         for (i, (eng, genome)) in engines.iter_mut().zip(genomes.iter()).enumerate() {
-            genome.apply_to_engine(eng);
+            if l1_vivos > 0 {
+                // Ablacao aplicada numa COPIA: o genoma herdado fica intacto, so o corpo
+                // avaliado perde os neuronios. Assim a curva mede o efeito de ter menos
+                // neuronios ATIVOS, sem mutilar a heranca ao longo das geracoes.
+                let mut g = genome.clone();
+                g.ablar_l1_acima_de(l1_vivos);
+                g.apply_to_engine(eng);
+            } else {
+                genome.apply_to_engine(eng);
+            }
         }
         ctx.upload_engines(&engines);
         // Banco de τ: vai separado porque τ vive no genoma, não no `SovereignEngine`.
@@ -758,6 +1080,32 @@ fn main() {
                 }
                 pos_prev[i] = p1;
             }
+
+            // ── Painel: snapshot de tick (E5, a cada 64 ticks) ────────────────────
+            // Fica DEPOIS do laço por-ser de cima de propósito: states[i].life_left/fuel
+            // já refletem este tick (vida ganha, combustível reabastecido no setor, etc.).
+            if let Some(p) = &painel {
+                if tick_i % 64 == 0 {
+                    let snaps: Vec<painel::BeingSnapshot> = (0..n_seres).map(|i| {
+                        let ph = &states[i].phys;
+                        let vel = (ph.vel[0].powi(2) + ph.vel[2].powi(2)).sqrt();
+                        painel::BeingSnapshot {
+                            id: i,
+                            x: ph.pos[0],
+                            z: ph.pos[2],
+                            vel,
+                            life: (states[i].life_left.max(0.0) as f32 / life_cap() as f32).min(1.0),
+                            vivo: states[i].life_left > 0.0,
+                        }
+                    }).collect();
+                    let fuel_mediana = {
+                        let mut fv: Vec<f64> = states.iter().take(n_seres).map(|s| s.fuel.max(0.0)).collect();
+                        fv.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        fv[fv.len() / 2] as f32
+                    };
+                    p.update_tick(tick_i as u64, snaps, fuel_mediana);
+                }
+            }
         }
 
         // ── Custo de parede ────────────────────────────────────────────────────
@@ -898,6 +1246,26 @@ fn main() {
                  cp_med, n_portais, 100.0 * cp_med as f32 / n_portais.max(1) as f32,
                  cp_max, n_portais, 100.0 * cp_max as f32 / n_portais.max(1) as f32, v1, v2);
 
+        // ── Painel: fim de geração (E5) ─────────────────────────────────────────
+        // Fica AQUI (não logo após `hist_med.push`, mais acima) porque é onde `checkpoint`
+        // e `n_portais` (para `setores`) já estão prontos — e `hist_med` já recebeu o push
+        // desta geração, então `linear_slope` já enxerga o ponto atual.
+        if let Some(p) = &painel {
+            let setores_frac: Vec<f32> = (0..n_portais).map(|s| {
+                checkpoint.iter().filter(|&&c| c > s).count() as f32 / n_seres.max(1) as f32
+            }).collect();
+            let slope = if hist_med.len() >= 2 { linear_slope(&hist_med).0 } else { 0.0 };
+            p.update_gen(
+                gen_abs as u32,
+                r.dist_med,
+                r.dist_max,
+                r.mortality * 100.0,
+                0.0, // obediência: não calculada neste laço — ver doc de `PainelState::obediencia_pct`.
+                setores_frac,
+                slope,
+            );
+        }
+
         println!(
             "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} morto={:.0}% | {:.1}s",
             gen_abs,
@@ -990,6 +1358,93 @@ fn main() {
             let (l2_stats, l2_alarms) = collect_activation_stats(
                 "L2", &l2, None, L2_NEURONS, Some(&policy));
 
+            // ── ESPARSIDADE CONTEXTUAL (E1-E4 do protocolo) ────────────────────
+            //
+            // Pergunta diferente da de cima: `[ativacao]` mede a SAÚDE da camada (morto,
+            // saturado, ganho); isto mede QUEM dispara para QUAL situação. A distinção
+            // importa porque a esparsidade ESTÁTICA (quais neurônios são globalmente
+            // importantes) esta refutada — com os 8 "mais importantes" de 128 o
+            // desempenho fica pior que o baseline, e a nossa atencao por canal ja media
+            // uniforme (0,52-0,66%). O que existe e a esparsidade CONTEXTUAL.
+            //
+            // Limiar sempre impresso: `tanh` nao zera exatamente, entao o numero depende
+            // da escolha, e escolha que muda resultado tem de aparecer no relatorio.
+            {
+                use universe::analysis::contextual as ctx;
+                const LIMIAR: f32 = 0.05;
+                for (nome, amostras) in [("L1", &l1), ("L2", &l2)] {
+                    if amostras.len() < 2 { continue; }
+                    let e = ctx::esparsidade(nome, amostras, LIMIAR);
+                    let p = ctx::persistencia(nome, amostras, LIMIAR, 37);
+                    let q = ctx::quente_frio(nome, amostras, LIMIAR);
+                    println!(
+                        "  [contextual:{}] limiar={:.2} · ativos {:.1}%±{:.1} · saturado {:.1}%",
+                        nome, LIMIAR, e.fracao_ativa_media * 100.0,
+                        e.fracao_ativa_sigma * 100.0, e.saturacao_media * 100.0);
+                    println!(
+                        "  [contextual:{}] persistencia {:.1}% · baseline {:.1}% · ganho {:+.1} pts · churn {:.1}%",
+                        nome, p.persistencia * 100.0, p.baseline_aleatorio * 100.0,
+                        p.ganho_temporal * 100.0, p.churn * 100.0);
+                    println!(
+                        "  [contextual:{}] {} neuronios cobrem 80% das ativacoes · {} nunca · {} sempre",
+                        nome, q.neuronios_para_80pct, q.nunca_ativos, q.sempre_ativos);
+                    // Armadilha nº 1 do protocolo: `tanh` nao zera, entao "ativo" e uma
+                    // escolha de limiar. A curva mostra se a conclusao sobrevive a ela.
+                    let sens = ctx::sensibilidade_ao_limiar(amostras, &[0.01, 0.05, 0.2, 0.5, 0.9]);
+                    let curva: Vec<String> = sens.iter()
+                        .map(|(l, f)| format!("{l:.2}→{:.0}%", f * 100.0)).collect();
+                    println!("  [contextual:{}] sensibilidade ao limiar: {}", nome, curva.join(" · "));
+
+                    // E3 — co-ativacao. E a base EMPIRICA para dividir o cerebro em
+                    // regioes: os grupos tem de sair de neuronios que disparam juntos,
+                    // nao de caixas desenhadas a priori. Excesso ~0 significa que cada
+                    // neuronio decide sozinho — sem estrutura de grupo, nao ha regiao a
+                    // separar (foi o que pesos aleatorios deram no protocolo: -0,1%).
+                    let co = ctx::coativacao(nome, amostras, LIMIAR, 5);
+                    println!(
+                        "  [contextual:{}] co-ativacao {:.3} vs independente {:.3} · excesso {:+.3}",
+                        nome, co.coativacao_media, co.esperado_independente, co.excesso);
+                    if !co.pares_fortes.is_empty() {
+                        let ps: Vec<String> = co.pares_fortes.iter()
+                            .map(|(i, j, e)| format!("({i},{j}){e:+.2}")).collect();
+                        println!("  [contextual:{}] pares mais acoplados: {}", nome, ps.join(" "));
+                    }
+
+                    // CAPACIDADE — quanto espaco este cerebro realmente USA.
+                    //
+                    // Leonardo: "podemos avaliar o quanto de espaco eles realmente
+                    // precisam, e se o modelo ficar com pouco espaco a gente vai
+                    // aumentando". `participation_ratio` responde isso a partir das
+                    // ativacoes reais: PR = (Σλ)²/Σλ² sobre o espectro da covariancia.
+                    // PR perto de N = usa todas as dimensoes (saturado, pede crescer);
+                    // PR << N = ha capacidade ociosa, crescer nao ajudaria.
+                    let n_neur = amostras[0].len();
+                    if let Some(pr) = universe::math::linalg::participation_ratio(amostras) {
+                        println!(
+                            "  [contextual:{}] capacidade: PR {:.1}/{} ({:.0}% das dimensoes em uso)",
+                            nome, pr, n_neur, 100.0 * pr / n_neur as f32);
+                    }
+                }
+            }
+
+            // Acumula para o painel (E5, `--painel`) enquanto imprime — mesmos números,
+            // um destino a mais. `painel_layers`/`painel_alarms` só são consumidos se
+            // `painel` for `Some`; construir sempre é barato (poucas dezenas de floats).
+            let mut painel_layers: Vec<painel::LayerSnapshot> = Vec::with_capacity(2);
+            let mut painel_alarms: Vec<String> = Vec::new();
+
+            // Ultimo instante de cada camada: `l1`/`l2` sao [amostra][neuronio] achatados,
+            // entao a ultima fatia de tamanho N e o estado no fim da geracao. E o "agora"
+            // que o painel anima; os agregados ao lado contam a historia.
+            let mut ultima_amostra_camada: std::collections::HashMap<String, Vec<f32>> =
+                std::collections::HashMap::new();
+            // `l1`/`l2` sao Vec<Vec<f32>>: uma linha por amostra, uma coluna por neuronio.
+            for (nome, buf) in [("L1", &l1), ("L2", &l2)] {
+                if let Some(ultima) = buf.last() {
+                    ultima_amostra_camada.insert(nome.to_string(), ultima.clone());
+                }
+            }
+
             for (stats, alarms) in [(&l1_stats, &l1_alarms), (&l2_stats, &l2_alarms)] {
                 universe::analysis::activation::print_stats_report(stats, alarms);
                 let n_neurons = stats.neurons.len().max(1);
@@ -997,12 +1452,42 @@ fn main() {
                     / n_neurons as f32;
                 let saturad_pct: f32 = stats.neurons.iter().map(|s| s.saturated_pct).sum::<f32>()
                     / n_neurons as f32;
+                let snr_pct: f32 = stats.neurons.iter().map(|s| s.snr_i8).sum::<f32>()
+                    / n_neurons as f32;
                 println!(
                     "  [ativacao:{}] amostras={} dead_pct={:.1}% saturad_pct={:.1}% \
-                     raio_espectral={:.3} rank_efetivo={}/{} alarmes={}",
+                     raio_espectral={} rank_efetivo={} alarmes={}",
                     stats.layer_name, stats.n_samples, dead_pct, saturad_pct,
-                    stats.spectral_radius, stats.effective_rank, n_neurons, alarms.len(),
+                    stats.spectral_radius.map(|v| format!("{v:.3}")).unwrap_or_else(|| "n/a".into()),
+                    stats.effective_rank.map(|k| format!("{k}/{n_neurons}"))
+                         .unwrap_or_else(|| "n/a (pesos nao entregues)".into()),
+                    alarms.len(),
                 );
+                if painel.is_some() {
+                    painel_layers.push(painel::LayerSnapshot {
+                        name: stats.layer_name.clone(),
+                        dead_pct,
+                        saturated_pct: saturad_pct,
+                        // Painel usa 0/0 como sentinela de "nao medido"; o rotulo textual
+                        // fica no relatorio de texto, que e onde a leitura humana acontece.
+                        spectral_radius: stats.spectral_radius.unwrap_or(0.0),
+                        effective_rank: stats.effective_rank.unwrap_or(0),
+                        snr_i8: snr_pct,
+                        histogram: stats.histogram.clone(),
+                        // Ativacao viva: `live` e o ultimo valor amostrado de cada
+                        // neuronio (o "agora" da camada); `mean_per_neuron` e a media da
+                        // geracao (o "sempre"). Ver os dois lado a lado distingue neuronio
+                        // que RESPONDE a pista de neuronio que so tem vies alto.
+                        live: ultima_amostra_camada.get(&stats.layer_name)
+                                 .cloned().unwrap_or_default(),
+                        mean_per_neuron: stats.neurons.iter().map(|n| n.mean).collect(),
+                    });
+                    for a in alarms {
+                        painel_alarms.push(format!(
+                            "{}: {:?} valor={:.2} limiar={:.2}", a.layer, a.kind, a.value, a.threshold
+                        ));
+                    }
+                }
             }
             if let Some(pe) = l2_stats.policy_entropy {
                 println!(
@@ -1015,6 +1500,14 @@ fn main() {
                     "  [ativacao] ALARME: NaN/Inf detectado no estado L1 de {} ser(es) nesta geração",
                     nan_seres.len(),
                 );
+                if painel.is_some() {
+                    painel_alarms.push(format!(
+                        "NaN/Inf detectado no estado L1 de {} ser(es) nesta geração", nan_seres.len()
+                    ));
+                }
+            }
+            if let Some(p) = &painel {
+                p.update_activation(painel_layers, painel_alarms);
             }
         }
 
@@ -1044,6 +1537,54 @@ fn main() {
             println!(
                 "  [tau] campeão τ p10 {:.3}s · mediana {:.3}s · p90 {:.3}s (espalha {:.1}×) | população {:.1}×",
                 p10, p50, p90, p90 / p10.max(1e-6), disp_pop);
+        }
+
+        // ── Held-out (P1) ───────────────────────────────────────────────────────
+        //
+        // Roda DEPOIS de todo relatório desta geração que consome
+        // `ctx.l1_samples`/`l2_samples`/`slow_samples`/`policy_samples`/`nan_seres`
+        // (blocos `[lento]` e `[ativacao:*]` acima, que já fizeram `mem::take`) —
+        // colocar antes contaminaria o relatório de ativação DESTA geração com
+        // ticks da pista reservada. E roda ANTES de `evolve()` logo abaixo — item 4
+        // da TAREFA: a seleção nunca vê este número (ver doc de `avaliar_held_out`
+        // para o porquê).
+        if let Some(ho_seed) = pista_held_out {
+            if gen_abs % held_out_cada == 0 {
+                let held_med = avaliar_held_out(
+                    &mut ctx, n_seres, n_ticks, track_width, same_start,
+                    &modo_fitness, ho_seed, &kan_knots_global,
+                );
+                // `avaliar_held_out` trocou a pista na GPU para `ho_seed` — a
+                // próxima geração detecta isso (`seed_gen != world_seed_atual`,
+                // topo do laço) e recarrega a pista de treino sozinha, sem
+                // precisar de nenhum código de "restaurar" aqui.
+                world_seed_atual = ho_seed;
+
+                // MEDIANA dos vivos (item 3 da TAREFA) — mesmo critério "vivo"
+                // (`life_left > 0.0`) usado no resto do relatório desta geração
+                // (ex.: bloco `sem_vida` logo abaixo).
+                let treino_vivos: Vec<f64> = (0..n_seres)
+                    .filter(|&i| states[i].life_left > 0.0)
+                    .map(|i| fitness[i])
+                    .collect();
+                let treino_med = if treino_vivos.is_empty() {
+                    // Ninguém vivo no treino: cai para todos, mesmo critério de
+                    // `avaliar_held_out` — mantém as duas médias no mesmo padrão.
+                    let mut f = fitness.clone();
+                    f.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    f[f.len() / 2]
+                } else {
+                    let mut v = treino_vivos;
+                    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    v[v.len() / 2]
+                };
+                let razao = if treino_med > 1.0 { held_med / treino_med } else { f64::NAN };
+                println!(
+                    "  [generalizacao] gen={:4} treino={:.0}m held={:.0}m razao={:.3}  \
+                     (pista treino=seed {} · held-out=seed {})",
+                    gen_abs, treino_med, held_med, razao, seed_gen, ho_seed,
+                );
+            }
         }
 
         // O genoma que vai para o slot 0 da próxima geração é o melhor DESTA.

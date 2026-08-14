@@ -1,3 +1,4 @@
+pub mod brain;
 pub mod brain_capacity;
 /// Núcleo matemático puro — funções sem dependência de GPU/Bevy (E1).
 pub mod math;

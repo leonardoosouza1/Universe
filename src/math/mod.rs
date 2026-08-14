@@ -11,9 +11,13 @@
 /// - `linalg`      — participation_ratio, raio espectral, rank efetivo
 /// - `laws`        — Lei do Garimpo, custo AIC/RIC
 /// - `thresholds`  — limiares nomeados para uso nos módulos de análise
+/// - `cfc_perception` — ponte canônica para `iara_cfc::CfcCell` (CfC de percepção),
+///   espelhada por `gpu/retina_digest.wgsl`. Único lugar deste crate com o layout de
+///   buffer do CfC — não reimplementa a equação (mora na crate `iara-cfc`).
 pub mod activations;
 pub mod stats;
 pub mod quant;
 pub mod linalg;
 pub mod laws;
 pub mod thresholds;
+pub mod cfc_perception;

@@ -213,6 +213,52 @@ pub fn spectral_radius(w_rec: &[f32], n: usize, max_iter: usize) -> f32 {
     eigenvalue
 }
 
+/// Gram menor de uma matriz retangular linha-maior `[rows × cols]`: `W · Wᵀ`
+/// (`rows × rows`). Escolhido (em vez de `Wᵀ·W`, `cols × cols`) porque em L1
+/// `rows=96 < cols=192` — Gram menor custa `O(rows² · cols)` em vez de `O(cols² · rows)`,
+/// e o Jacobi que roda em cima é `O(rows³)` por sweep.
+///
+/// Os autovalores de `W·Wᵀ` são os valores singulares de `W` ao quadrado — mesma
+/// informação que `Wᵀ·W`, metade dos elementos a computar quando `rows < cols`.
+///
+/// Movida de `analysis::activation` (E4) para cá em P0.5: passou a ter um segundo
+/// chamador (`gpu::evolution::Genome::random`, inicialização espectral) e duplicar a
+/// mesma conta em dois módulos é exatamente o tipo de duplicidade que diverge em
+/// silêncio quando um lado muda e o outro não.
+pub fn gram_matrix(w: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut g = vec![0.0f32; rows * rows];
+    for i in 0..rows {
+        let ri = i * cols;
+        for k in i..rows {
+            let rk = k * cols;
+            let mut acc = 0.0f32;
+            for j in 0..cols {
+                acc += w[ri + j] * w[rk + j];
+            }
+            g[i * rows + k] = acc;
+            g[k * rows + i] = acc;
+        }
+    }
+    g
+}
+
+/// Maior valor singular de uma matriz retangular `w` (`rows × cols`, linha-maior):
+/// `sqrt(λ_max(W·Wᵀ))`, via [`gram_matrix`] + [`spectral_radius`] (power-iteration).
+///
+/// É o mesmo número que `analysis::activation::spectral_summary` reporta como
+/// `LayerStats::spectral_radius` para W_L1 — aqui exposto como função pura pra poder
+/// ser medido e corrigido NA INICIALIZAÇÃO do genoma (`Genome::random`, P0.5), antes
+/// do primeiro tick, em vez de só diagnosticado depois do fato.
+///
+/// Retorna 0.0 se `rows == 0`, `cols == 0` ou `w.len() != rows * cols`.
+pub fn largest_singular_value(w: &[f32], rows: usize, cols: usize) -> f32 {
+    if rows == 0 || cols == 0 || w.len() != rows * cols {
+        return 0.0;
+    }
+    let gram = gram_matrix(w, rows, cols);
+    spectral_radius(&gram, rows, 100).max(0.0).sqrt()
+}
+
 /// Rank efetivo de um vetor de valores singulares (decrescente).
 ///
 /// Define rank efetivo como o menor k tal que:
@@ -355,6 +401,50 @@ mod tests {
         for (a, b) in eig.iter().zip(esperado.iter()) {
             assert!((a - b).abs() < 1e-3, "autovalor {} != esperado {}", a, b);
         }
+    }
+
+    /// `largest_singular_value` de uma matriz ortonormal (identidade 4×4) = 1.0.
+    #[test]
+    fn largest_singular_value_identidade_e_1() {
+        let n = 4usize;
+        let mut w = vec![0.0f32; n * n];
+        for i in 0..n { w[i * n + i] = 1.0; }
+        let sv = largest_singular_value(&w, n, n);
+        assert!((sv - 1.0).abs() < 0.05, "esperado ~1.0, obteve {sv}");
+    }
+
+    /// Matriz retangular (2×4, rows < cols, o caso de L1 192→96 na prática):
+    /// duas linhas ortogonais com normas diferentes → maior valor singular = maior norma.
+    #[test]
+    fn largest_singular_value_retangular() {
+        let w = vec![
+            2.0, 0.0, 0.0, 0.0,
+            0.0, 3.0, 0.0, 0.0,
+        ];
+        let sv = largest_singular_value(&w, 2, 4);
+        assert!((sv - 3.0).abs() < 0.05, "esperado ~3.0, obteve {sv}");
+    }
+
+    /// Escalar toda a matriz por `c` escala o maior valor singular pelo mesmo `c`
+    /// (linear) — é exatamente a propriedade que a inicialização espectral do genoma
+    /// (P0.5) usa para mirar o alvo: `fator = alvo / medido`.
+    #[test]
+    fn largest_singular_value_escala_linear_com_a_matriz() {
+        let base = vec![0.6_f32, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, -0.1];
+        let sv_base = largest_singular_value(&base, 2, 4);
+        let escalado: Vec<f32> = base.iter().map(|&v| v * 2.5).collect();
+        let sv_escalado = largest_singular_value(&escalado, 2, 4);
+        assert!(
+            (sv_escalado - sv_base * 2.5).abs() < 1e-3,
+            "esperado {} (= {} × 2.5), obteve {}", sv_base * 2.5, sv_base, sv_escalado
+        );
+    }
+
+    /// Forma errada (`w.len() != rows*cols`) devolve 0.0 em vez de entrar em pânico.
+    #[test]
+    fn largest_singular_value_forma_errada_retorna_zero() {
+        assert_eq!(largest_singular_value(&[1.0, 2.0, 3.0], 2, 2), 0.0);
+        assert_eq!(largest_singular_value(&[], 0, 5), 0.0);
     }
 
     /// A soma dos autovalores é o traço — checagem cruzada barata e independente

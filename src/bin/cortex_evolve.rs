@@ -59,7 +59,13 @@ use universe::config::iara::vision::{RETINA_ROWS, RETINA_TOTAL};
 
 // ── Constantes da folha ───────────────────────────────────────────────────────
 
-const N_INPUTS: usize = 223;   // SENSORY_WAVE_SIZE
+// ATENÇÃO: onda legada de 223 canais, DESATUALIZADA — `SENSORY_WAVE_SIZE` real hoje é 192
+// (ver src/perception/channels.rs). O comentário original aqui afirmava "= SENSORY_WAVE_SIZE",
+// o que é falso e é a causa do panic em runtime documentado no CLAUDE.md do projeto
+// ("index out of bounds: len is 192 but index is 192"). NÃO corrigido nesta rodada (E6):
+// exige portar toda a folha cortical Hebbiana (cortex_sheet.rs/.wgsl, N=1024×223 pesos) de
+// 223→192 entradas, fora do escopo de golden-parity — já registrado como não-feito em E2/E3.
+const N_INPUTS: usize = 223;
 const N_MOTOR:  usize = 3;     // throttle, steer, brake
 
 // Parâmetros do genoma

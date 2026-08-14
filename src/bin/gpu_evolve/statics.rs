@@ -47,8 +47,10 @@ pub static SLOW_ABLATED: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 #[inline]
 pub fn slow_ablated() -> bool { SLOW_ABLATED.load(Ordering::Relaxed) }
 
-/// Material de parede na grade de voxels (mesma ordem de `VoxelType`).
-pub const VOXEL_WALL: u8 = 2;
+// VOXEL_WALL (material de parede = 2, mesma ordem de `VoxelType`) foi removido daqui —
+// o único consumidor era o laço de `min_wall_ahead` em `context.rs::tick()`, migrado
+// para `gpu/retina_digest.wgsl` (que tem sua própria cópia da constante, `VOXEL_WALL:
+// u32 = 2u`, documentada lá). Ver `gpu::retina_digest` para a equivalência completa.
 /// Distância à frente abaixo da qual o ser conta como "colado" na parede.
 pub const WALL_NEAR_M: f32 = 3.0;
 /// Liga o combustível (mecanismo restaurado das branches que completavam voltas).

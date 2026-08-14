@@ -141,3 +141,45 @@ fn load_genome_detecta_legado_por_sniff_dos_primeiros_4_bytes() {
     assert_eq!(lido.l2, original.l2);
     assert_eq!(lido.kan_knots, original.kan_knots);
 }
+
+/// P0.5 (inicialização espectral de L1): genoma LEGADO carregado do disco NÃO é
+/// re-escalado — herança intocada.
+///
+/// `Genome::random` (fonte da normalização espectral, `src/gpu/evolution.rs`) só roda
+/// na CRIAÇÃO de um genoma novo. `load_genome` nunca chama `Genome::random` — monta o
+/// `Genome` direto por struct literal a partir dos bytes lidos (genome_io.rs). Este
+/// teste simula exatamente o caso real: um `.bin` salvo ANTES da hipótese P0.5 existir,
+/// com L1 no ganho espectral cru que σ=0.30 i.i.d. sempre produziu (~7.0, ver
+/// CLAUDE.md/docs/PLANO_EVOLUCAO.md §P0.5) — bem longe do alvo de 1.0. Se `load_genome`
+/// algum dia passasse a "corrigir" o genoma ao carregar, este teste pega: o campeão
+/// salvo por gerações de seleção mudaria de comportamento no meio da bateria, sem
+/// aviso, ao ser retomado.
+#[test]
+fn genoma_legado_carregado_do_disco_nao_e_reescalado() {
+    use universe::math::linalg::largest_singular_value;
+    use universe::config::iara::brain::{L1_NEURONS, SENSORY_WAVE_SIZE};
+
+    // Simula o L1 "legado": ganho espectral grande e conhecido, produzido sem
+    // nenhuma normalização (era assim que TODO genoma nascia antes de P0.5).
+    let mut legado = Genome::random(9999);
+    for w in legado.l1.iter_mut() { *w *= 6.0; }
+    let ganho_antes = largest_singular_value(&legado.l1, L1_NEURONS, SENSORY_WAVE_SIZE);
+    assert!(
+        ganho_antes > 2.0,
+        "pré-condição do teste: ganho deveria estar bem longe de 1.0, obteve {ganho_antes}"
+    );
+
+    let path = std::env::temp_dir().join("universe_genoma_legado_ganho_p05.bin");
+    let path_str = path.to_str().unwrap();
+    save_genome(&legado, path_str).expect("gravou");
+    let lido = load_genome(path_str).expect("leu");
+    let _ = std::fs::remove_file(path_str);
+
+    assert_eq!(lido.l1, legado.l1, "L1 mudou ao ir e voltar do disco — deveria ser byte-idêntico");
+    let ganho_depois = largest_singular_value(&lido.l1, L1_NEURONS, SENSORY_WAVE_SIZE);
+    assert!(
+        (ganho_depois - ganho_antes).abs() < 1e-3,
+        "ganho espectral mudou ao carregar: antes={ganho_antes}, depois={ganho_depois} — \
+         genoma legado foi re-escalado, e não deveria ter sido"
+    );
+}
