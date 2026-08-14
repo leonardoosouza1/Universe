@@ -1372,6 +1372,15 @@ fn main() {
             {
                 use universe::analysis::contextual as ctx;
                 const LIMIAR: f32 = 0.05;
+                // Entradas da Lei do Garimpo. `ganho` = quanto o melhor da geracao
+                // superou o melhor da anterior; `disp` = desvio da fitness na populacao,
+                // que e a escala do ruido contra a qual o ganho e comparado.
+                let ganho_fitness_geracao: Option<f32> = elite_fitness_anterior
+                    .map(|ant| (fitness[0] - ant).max(0.0) as f32);
+                let disp_fitness: f32 = {
+                    let vals: Vec<f32> = fitness.iter().map(|f| *f as f32).collect();
+                    universe::math::stats::std_dev(&vals)
+                };
                 for (nome, amostras) in [("L1", &l1), ("L2", &l2)] {
                     if amostras.len() < 2 { continue; }
                     let e = ctx::esparsidade(nome, amostras, LIMIAR);
@@ -1423,6 +1432,36 @@ fn main() {
                         println!(
                             "  [contextual:{}] capacidade: PR {:.1}/{} ({:.0}% das dimensoes em uso)",
                             nome, pr, n_neur, 100.0 * pr / n_neur as f32);
+
+                        // LEI DO GARIMPO — crescer o cerebro se justifica AGORA?
+                        //
+                        // Leonardo: "o modelo vai chegar em um maximo e vamos precisar
+                        // dessa evolucao". O veredito precisa de DUAS condicoes, e por
+                        // isso a funcao existia mas nunca foi chamada — faltava plugar:
+                        //
+                        //  (A) capacidade SATURADA (PR encostando na largura): se ha
+                        //      dimensao ociosa, crescer so adiciona peso morto;
+                        //  (B) o ganho de fitness exceder o limiar de ruido de busca,
+                        //      sigma*sqrt(2*ln M) com M = numero de alternativas testadas
+                        //      (a populacao). Sem isso, "melhorou" e o melhor de M sorteios,
+                        //      nao competencia — o mesmo erro que o Deflated Sharpe corrige
+                        //      em financas.
+                        //
+                        // Um veredito por camada, porque cada uma satura no seu tempo.
+                        let ganho = ganho_fitness_geracao.unwrap_or(0.0);
+                        let v = universe::brain_capacity::growth_verdict(
+                            amostras, n_neur, 0.80, ganho, disp_fitness, n_seres);
+                        let (rotulo, acao) = match v {
+                            universe::brain_capacity::Verdict::Grow =>
+                                ("CRESCER", "capacidade saturada e ganho acima do ruido de busca"),
+                            universe::brain_capacity::Verdict::WastedSpace =>
+                                ("nao crescer", "ha dimensoes ociosas — crescer desperdicaria"),
+                            universe::brain_capacity::Verdict::GainNotReal =>
+                                ("nao crescer", "saturada, mas o ganho nao passa do limiar do Garimpo"),
+                            universe::brain_capacity::Verdict::InsufficientData =>
+                                ("indefinido", "amostras insuficientes para estimar a covariancia"),
+                        };
+                        println!("  [garimpo:{}] {} — {}", nome, rotulo, acao);
                     }
                 }
             }
