@@ -31,14 +31,22 @@
 //   ch 144-159 Periférica HD (16 bins, max todas as rows)
 //   ch 160-191 Horizon scan raw (row RETINA_ROWS/2, 32 amostras)
 //
-// NÃO portado (mantém na CPU — leia comentários em percepcao.rs):
-//   ch 21-27, 98    motion per-row (requer visual_cortex anterior — estado temporal)
+// NÃO portado NESTE ARQUIVO (mantém fora de perception.wgsl — leia comentários em
+// percepcao.rs). ATENÇÃO: esta lista é de quando só existia este kernel; a maioria
+// destes canais JÁ tem fonte GPU hoje, só que em OUTRO arquivo — perception_temporal
+// .wgsl e perception_motion.wgsl, ambos despachados no MESMO CommandEncoder (ver
+// header desses dois arquivos para a lista atual, canal por canal):
+//   ch 21-27, 98    motion per-row — GPU: perception_motion.wgsl (não CPU)
 //   ch 29-31, 33-35 edge density por row (idem)
 //   ch 44-51, 60-63 VÁRIOS: o motor.rs sobrescreve esses slots em ordens diferentes —
 //                   veja nota "conflito de slots" abaixo
 //   ch 64-75  telemetria proprioceptiva (RPM, velocidade, temperatura, etc. — estado do corpo)
 //   ch 72     drafting (hash espacial entre seres — inter-ser)
-//   ch 83-84, 114-117 fluxo óptico hemisférico + foveal (requer visual_cortex anterior)
+//   ch 83-84  fluxo óptico hemisférico — GPU: perception_motion.wgsl (não CPU)
+//   ch 114-117 approach hemisférico + fóvea — GPU: perception_motion.wgsl desde
+//              FASE CANAIS (2026-08-14); antes só motor.rs (Bevy CPU) alimentava
+//              no binário de treino gpu_evolve — ver Channel::ApproachHemiL em
+//              perception/channels.rs para a justificativa completa.
 //   ch 85-86  wall EMA (acumulado por ser entre ticks)
 //   ch 87     slip angle (estado físico do corpo)
 //   ch 88     proximity_sustain (acumulado por ser)

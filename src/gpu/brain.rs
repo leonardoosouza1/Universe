@@ -46,6 +46,16 @@ const KAN_WEIGHTS_PER_SER: usize = SENSORY_WAVE_SIZE * KAN_KNOTS;   // 223 × 16
 /// Fadiga de saída herdada: 0,85. Documentada em `BrainParams::out_beta`.
 pub const OUT_BETA_PADRAO: f32 = 0.85;
 
+/// Ganho de saída herdado: 2,0. Documentado em `BrainParams::out_gain`.
+///
+/// Era a constante `2.0` hardcoded na ETAPA 2 de `brain.wgsl` (`l2_raw = acc *
+/// (2.0/127.0)` e `raw_bp = w_l1r[tid] * 2.0`) e em `engine.rs` (`raw = val *
+/// 2.0` nos dois loops). Virou parâmetro (P1.5, `docs/PLANO_EVOLUCAO.md`) para
+/// o A/B contra a saturação de L2 (48/48 neurônios ativos em 97,4% dos ticks,
+/// entropia da política 0,301 nats — abaixo do limiar de 0,50). Quem não passar
+/// `--ganho-saida` continua com exatamente este valor.
+pub const OUT_GAIN_PADRAO: f32 = 2.0;
+
 /// Estado CfC por ser: 96 floats (state) + 1 u32 (counter, bitcast como f32) = 97 f32
 const CFC_SLOTS_PER_SER: usize = L1_NEURONS + 1;  // 97
 
@@ -85,6 +95,21 @@ pub struct BrainParams {
     /// Vira parâmetro para poder ser MEDIDO em teste pareado em vez de discutido.
     /// O padrão 0,85 é o histórico: sem passar nada, o comportamento é o de antes.
     pub out_beta: f32,
+    /// Ganho aplicado a `l2_raw` (via L2) e ao bypass L1 antes da fadiga/tanh na
+    /// ETAPA 2. Era a constante `2.0` hardcoded no shader. Ver `OUT_GAIN_PADRAO`
+    /// — o A/B de P1.5 mede 2.0 vs 1.0 vs 0.5 contra a saturação de L2.
+    pub out_gain: f32,
+    /// P1.5, segunda alavanca (padrão 0 = DESLIGADA): 1 = normaliza `l2_raw`
+    /// pelo desvio-padrão dos 48 `l2_raw` do MESMO ser antes do ganho/tanh —
+    /// ataca a ESCALA da entrada de L2 (que pode crescer com a mutação ao longo
+    /// das gerações) em vez de só o ganho de saída. `u32` porque bool não é
+    /// `bytemuck::Pod` de forma portável entre plataformas; 0/1 é o contrato.
+    pub norm_l2_by_std: u32,
+    /// Padding: mantém o uniform buffer em múltiplo de 16 bytes (8 campos × 4
+    /// bytes = 32), mesma convenção do struct original (4 × 4 = 16). Zero
+    /// determinístico via `bytemuck::Zeroable`, nunca lido pelo shader.
+    _pad0: u32,
+    _pad1: u32,
 }
 
 // ── INPUT POR SER ─────────────────────────────────────────────────────────────
@@ -143,6 +168,17 @@ pub struct BrainGpu {
 
     /// Força da fadiga de saída usada nos dispatches. Ver `BrainParams::out_beta`.
     pub out_beta: f32,
+
+    /// Ganho de saída usado nos dispatches via `bind_and_dispatch`. Ver
+    /// `BrainParams::out_gain` / `OUT_GAIN_PADRAO`. Só `bind_and_dispatch` lê este
+    /// campo — `forward()` (usado por `gpu_validate`) sempre usa `OUT_GAIN_PADRAO`
+    /// hardcoded, o mesmo contrato que já existia para `out_beta`.
+    pub out_gain: f32,
+
+    /// Normalização de `l2_raw` pelo desvio-padrão dos 48 valores do ser, antes
+    /// do ganho/tanh. Ver `BrainParams::norm_l2_by_std`. Padrão `false` —
+    /// idêntico ao comportamento histórico (sem normalização).
+    pub norm_l2_by_std: bool,
 
     /// Número máximo de seres suportado com estes buffers.
     pub capacity: usize,
@@ -322,6 +358,8 @@ impl BrainGpu {
             buf_fatigue,
             buf_tau,
             out_beta: OUT_BETA_PADRAO,
+            out_gain: OUT_GAIN_PADRAO,
+            norm_l2_by_std: false,
             buf_debug,
             buf_readback,
             buf_percept_dummy,
@@ -569,6 +607,10 @@ impl BrainGpu {
             dt,
             use_percept_direct: 0,
             out_beta: crate::gpu::brain::OUT_BETA_PADRAO,
+            out_gain: crate::gpu::brain::OUT_GAIN_PADRAO,
+            norm_l2_by_std: 0,
+            _pad0: 0,
+            _pad1: 0,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-params"),
@@ -700,6 +742,10 @@ impl BrainGpu {
             dt,
             use_percept_direct,
             out_beta: self.out_beta,
+            out_gain: self.out_gain,
+            norm_l2_by_std: if self.norm_l2_by_std { 1 } else { 0 },
+            _pad0: 0,
+            _pad1: 0,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("brain-params-chain"),

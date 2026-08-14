@@ -1,4 +1,4 @@
-// PERCEPÇÃO TEMPORAL — canais inter-tick (85, 86, 88, 102-110, 118-120, 123).
+// PERCEPÇÃO TEMPORAL — canais inter-tick (64-75, 81, 85-89, 99-113, 118-127, 192-207).
 //
 // # Por que este kernel existe separado de perception.wgsl
 //
@@ -19,7 +19,10 @@
 //
 // Os dois kernels escrevem em canais DISTINTOS:
 //   perception.wgsl          → ch 0-97, 128-191
-//   perception_temporal.wgsl → ch 64-75, 85, 86, 88, 102-110, 118-120, 123, 192-207
+//   perception_temporal.wgsl → ch 64-75, 81, 85-89, 99-113, 118-127, 192-207
+//     (99, 100, 121, 122, 124-127 vêm de update_extra2_temporal — CPU injeta,
+//     shader só converte pra i8; 101 e 109 alimentados aqui — FASE CANAIS 2026-08-14,
+//     ver comentários nos respectivos write_channel abaixo)
 //
 // # Fluxo no encoder
 //
@@ -261,15 +264,33 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
 
     // ── Racing line (ch 108-110, 118, 119, 123) pré-computados pela CPU ───────
     // CPU injeta em temporal[10-15] antes do dispatch via update_racing_line_temporal().
+    // temporal[11] (antigo "cpu_d_off") NÃO é mais lido aqui — a CPU sempre enviou
+    // 0.0 nesse slot (derivada nunca implementada no host, ver histórico de
+    // Channel::LineOffsetDeriv em channels.rs). O slot continua sendo escrito pela
+    // CPU só para não mudar o layout de TEMPORAL_STRIDE; vestigial, sem leitor.
     let cpu_line_off_norm = temporal[tb + 10u];
-    let cpu_d_off         = temporal[tb + 11u];
     let cpu_la_off        = temporal[tb + 12u];
     let cpu_fwd_norm      = temporal[tb + 13u];
     let cpu_corridor      = temporal[tb + 14u];
     let cpu_whisker_norm  = temporal[tb + 15u];
 
     write_channel(being, 108u, i32(clamp(cpu_line_off_norm *  127.0, -127.0, 127.0)));
-    write_channel(being, 109u, i32(clamp(cpu_d_off         *  127.0, -127.0, 127.0)));
+
+    // ch109: derivada REAL do desvio da racing line — FIX 2026-08-14 (FASE CANAIS).
+    // ANTES: hardcoded 0.0 (a CPU nunca implementou o cálculo — ver comentário acima).
+    // O slot [8] deste MESMO buffer já guarda `cpu_line_off_norm` do tick ANTERIOR
+    // (salvo por este shader na seção "Atualiza estado temporal" no fim do arquivo) —
+    // a derivada é computável aqui, sem precisar de mais um slot injetado pela CPU.
+    // Vira TAXA (offset normalizado / segundo, dividido por DT) para não depender da
+    // frequência do tick — mesmo padrão de ApproachRate (ch102-104) acima.
+    // MAX_OFFSET_RATE=8,0/s é ESTIMATIVA (corredor típico atravessado em <1s na
+    // velocidade máxima observada, ~28 m/s) — NÃO validada por medição (GPU ocupada
+    // com baterias em 2026-08-14); calibrar com --auditar-visao antes de fechar a fase.
+    let prev_line_off_norm = temporal[tb + 8u];
+    let d_off_rate = (cpu_line_off_norm - prev_line_off_norm) / DT;
+    let MAX_OFFSET_RATE: f32 = 8.0;
+    write_channel(being, 109u, i32(clamp((d_off_rate / MAX_OFFSET_RATE) * 127.0, -127.0, 127.0)));
+
     // ch110: lookahead offset, sinal invertido (afastando da linha ideal → virar de volta)
     write_channel(being, 110u, i32(clamp(cpu_la_off        * -127.0, -127.0, 127.0)));
     write_channel(being, 118u, i32(clamp(cpu_fwd_norm      *  127.0,    0.0, 127.0)));
@@ -285,6 +306,13 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     write_channel(being, 111u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 350.0));
     write_channel(being, 112u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 200.0));
     write_channel(being, 113u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 275.0));
+
+    // ── ch101: curvatura a 260m — FIX 2026-08-14 (FASE CANAIS) ────────────────
+    // ANTES: só motor.rs escrevia (`sensory_wave[101] = c260`, caminho Bevy CPU) —
+    // `gpu_evolve` (o binário de treino) não importa motor.rs, então este canal
+    // ficava sem fonte nenhuma nesse caminho. Reusa `curv_at_d`, a MESMA função já
+    // validada para ch111-113 (só muda o argumento de distância) — sem lógica nova.
+    write_channel(being, 101u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 260.0));
 
     // ── Telemetria proprioceptiva (ch 64-75) — injetada via temporal[20-31] ──────
     //

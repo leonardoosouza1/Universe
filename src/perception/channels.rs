@@ -35,6 +35,71 @@
 ///   - ch65 (`SpeedFwd`) e ch69 (`Gear`): fórmula tinha o fator de escala errado
 ///     no comentário (×2.0 e ×20.0 respectivamente, não "/30m/s" nem cast puro).
 ///
+/// # FASE CANAIS (2026-08-14) — auditoria dos 37 canais reprovados
+///
+/// Ponto de partida: `--auditar-visao` (3 eixos) reprovou 37/192 canais em
+/// `gpu_evolve` (o binário de TREINO — não usa `motor.rs`/Bevy). Investigação
+/// canal a canal, sem rodar GPU (2 baterias de currículo ocupando-a no momento —
+/// tudo abaixo é leitura de código + `cargo test`, não medição):
+///
+/// - **"sem fonte em kernel nenhum" (99, 100, 121, 122):** FALSO-POSITIVO. Já
+///   alimentados via `update_extra2_temporal()` (context.rs) → `temporal[54-57]`
+///   → `perception_temporal.wgsl` (write_channel 99/100/121/122). Conferido
+///   linha a linha (context.rs:614-663 × perception_temporal.wgsl:409-425): os
+///   slots batem exatamente. O diagnóstico é anterior a este commit de wiring
+///   (`git log` mostra a fiação já no HEAD antes desta sessão) — nenhuma mudança
+///   de código foi necessária aqui, só esta nota para não reabrir a investigação.
+/// - **ch87, 124, 126, 127 (slip/spinning/joy):** mesmo caso — já alimentados
+///   pelo mesmo mecanismo (`extra2[0,3,1,2]`). `joy_tick`/`joy_streak` conferidos
+///   como computados de verdade a cada tick em `main.rs:991-1028` (progresso ×
+///   superfície), não um stub constante.
+/// - **ch125 (`CompStress`): BUG real, corrigido.** A fórmula tinha
+///   `if i > 0 {0.5} else {0.0}` como piso — dependia do ÍNDICE do ser, não da
+///   física. Como a auditoria rastreia UM ser vivo ao longo do tempo (tende a
+///   ser o de índice mais baixo), esse ser ficava preso em {0.0, 1.0} e o canal
+///   parecia constante mesmo "alimentado". Corrigido em `context.rs` para depender
+///   só de distância real (ver comentário lá).
+/// - **ch101, ch114-117: ALIMENTAR — eram mesmo só motor.rs (Bevy CPU).**
+///   `gpu_evolve` não importa `motor.rs`; nesse binário esses 5 canais realmente
+///   não tinham fonte. Ligados em `perception_temporal.wgsl` (ch101, reusa
+///   `curv_at_d` já validado para 111-113) e `perception_motion.wgsl` (ch114-117,
+///   reusa retina_cur/retina_prev que o kernel já lê para ch21-27/83-84). Normalizadores
+///   novos (FOVEA_NORM, MAX_OFFSET_RATE) são ESTIMATIVAS não validadas por medição —
+///   ver comentário em cada shader.
+/// - **ch109 (`LineOffsetDeriv`): BUG real, corrigido.** Estava hardcoded 0.0 (CPU
+///   nunca implementou a derivada). O slot [8] do buffer temporal já guardava o
+///   valor do tick anterior (escrito pelo próprio shader, nunca lido) — a derivada
+///   passou a ser computada dentro do shader, sem precisar de novo dado da CPU.
+/// - **ch70 (`TireTemp`): DESLIGAR — não há dado real por trás, e não é bug
+///   corrigível nesta fase.** `physics_c.wgsl:290` confirma: o slot de temperatura
+///   do pneu é um PASSTHROUGH puro (`c.wheels[1].x` copiado sem alteração) — o
+///   comentário do próprio shader diz "térmica no Kernel B não implementada para
+///   poupar reg". Implementar o modelo térmico é `PLANO_EVOLUCAO.md` P2 item 2/3
+///   (fase de CORPO, escopo bem maior que fiação de canal). Até lá o valor nasce e
+///   morre igual — zerado no L1 do genoma (`DEAD_L1_INPUTS` abaixo, consumido por
+///   `Genome::random` em `gpu/evolution.rs`) para o cérebro não nascer gastando
+///   atenção com estática. NÃO é poda de neurônio (a ablação 96→64 provou que
+///   neurônio não é descartável, ver PLANO_EVOLUCAO.md) — é só não alimentar peso
+///   de entrada que lê canal constante. Reversível: basta remover a entrada de
+///   `DEAD_L1_INPUTS` quando P2 implementar a térmica do pneu.
+/// - **Demais 21 canais da lista "escritos mas constantes"** (19, 25, 26, 41, 43,
+///   44, 46, 56, 58, 59, 64, 69, 73, 83, 84, 89, 94-98): lidos e comparados contra
+///   canais IRMÃOS da mesma fórmula que NÃO foram reprovados (ex.: ch56/58/59
+///   [material lookahead] vs ch57, que usa a mesma codificação; ch19 [wall_fov ai=3]
+///   vs ch16-18/20-23, mesmíssima fórmula por ângulo). O padrão observado é
+///   ASSIMÉTRICO e não-sistemático dentro de cada família de fórmula idêntica —
+///   incompatível com bug de código (que afetaria a família inteira ou nenhum
+///   membro) e compatível com NATUREZA: população atual dirige bem numa pista sem
+///   buracos (obediência 0,74), então sinais de "evento raro" (grama, quase-colisão,
+///   whisker <10m, rodopio, ré) ficam perto de zero na maior parte da corrida — é
+///   informação real (crítica quando dispara), só rara sob as condições medidas.
+///   `ch70` (`TireTemp`) é a ÚNICA exceção onde achei evidência ESTRUTURAL (não
+///   dependente de trajetória) de constância — daí ser o único do lote com DESLIGAR.
+///   Os outros 20 permanecem com peso de entrada vivo — não confirmei "natureza"
+///   por medição (não pude rodar `--auditar-visao`), só por leitura de código; se
+///   uma bateria futura mostrar que algum deles é MESMO morto (constante mesmo com
+///   população variada/pista com buracos), reabrir aqui com o número medido.
+///
 /// # Arquitetura dos 192 canais
 ///
 /// ```text
@@ -56,10 +121,12 @@
 ///  88..=89  → temporal.wgsl
 ///  90..=97  → perception.wgsl   (whiskers + near-wall)
 ///  98       → motion.wgsl       (motion delta retina row 7)
-///  99..=100 → temporal.wgsl     (edge density linhas 6/7)
-///  101      → motor.rs
+///  99..=100 → temporal.wgsl     (edge density linhas 6/7, injetado pela CPU)
+///  101      → temporal.wgsl     (curvatura 260m — FASE CANAIS 2026-08-14, era motor.rs-só)
 ///  102..=113→ temporal.wgsl     (approach rate, TTC mínimo, racing line, curvatura)
-///  114..=117→ motor.rs          (approach+fovea CPU)
+///  114..=117→ motion.wgsl       (approach hemisférico + fóvea — FASE CANAIS 2026-08-14,
+///                                era motor.rs-só; motor.rs continua escrevendo no
+///                                caminho Bevy interativo, sem conflito de binário)
 ///  118..=120→ temporal.wgsl     (racing line dist norms + memory CfC)
 ///  121..=122→ temporal.wgsl     (steer/brake_mem)
 ///  123      → temporal.wgsl     (whisker normalizado)
@@ -170,6 +237,24 @@ pub enum Channel {
     /// colunas 63..126.
     MotionMag1    = 84,
 
+    // ── Approach hemisférico + fóvea (motion.wgsl ch 114-117) ────────────────
+    // FASE CANAIS (2026-08-14): antes só motor.rs (Bevy CPU) alimentava —
+    // `gpu_evolve` não importa motor.rs, então ficavam sem fonte nesse binário.
+    // Ligados em perception_motion.wgsl reusando retina_cur/retina_prev (mesmos
+    // dados de MotionMag0/1, thread 8-10) — ver comentário "FASE CANAIS" lá.
+    /// Approach hemisférico ESQUERDO, COM SINAL: positivo = parede se
+    /// aproximando (distância caindo), rows 6+8, colunas 0..63. [-127, 127].
+    ApproachHemiL = 114,
+    /// Approach hemisférico DIREITO, mesma fórmula de `ApproachHemiL`,
+    /// colunas 63..126. [-127, 127].
+    ApproachHemiR = 115,
+    /// Approach na fóvea (±15° centrais), COM SINAL: positivo = parede vindo de
+    /// frente. Row 6, colunas 24..40. [-127, 127].
+    FoveaApproach = 116,
+    /// Movimento absoluto na fóvea (qualquer direção), mesma amostra de
+    /// `FoveaApproach`. [0, 127].
+    FoveaMotionAbs = 117,
+
     // ── EMA distância lateral (temporal.wgsl ch 85-86) ───────────────────────
     /// EMA da distância lateral esquerda, invertida: encoded = (1 - ema/40)*127
     /// → 127 = parede encostando, 0 = livre. alpha = clamp(dt*3,0,1) (meia-vida
@@ -227,12 +312,22 @@ pub enum Channel {
     ApproachRateFineR = 107,
     /// Desvio normalizado da racing line [-1,1] → i8. (buf_temporal[10]).
     LineOffsetRacingLine = 108,
-    /// Derivada do desvio da racing line. HOJE SEMPRE 0.0 — gpu_evolve.rs
-    /// envia constante `0.0` neste slot ("Por ora usa 0.0", comentário no
-    /// código); a derivada real ainda não foi implementada no host.
+    /// Derivada do desvio da racing line, como TAXA (offset/segundo).
+    /// FIX 2026-08-14 (FASE CANAIS): ANTES sempre 0.0 — a CPU nunca implementou
+    /// o cálculo (slot [11] do buffer temporal ficava hardcoded). Agora computada
+    /// dentro de perception_temporal.wgsl a partir do slot [8] (valor do tick
+    /// anterior, que o próprio shader já salvava sem nunca ler de volta).
+    /// MAX_OFFSET_RATE=8,0/s é estimativa não validada por medição. [-127, 127].
     LineOffsetDeriv = 109,
     /// Lookahead offset da racing line normalizado [-1,1]. (buf_temporal[12]).
     LineLookAheadRL = 110,
+    // ── Curvatura a 260m (temporal.wgsl ch 101) ──────────────────────────────
+    // FASE CANAIS (2026-08-14): antes só motor.rs alimentava (`sensory_wave[101]
+    // = c260`); ligado em perception_temporal.wgsl reusando `curv_at_d`, a MESMA
+    // função já validada para Curv350m/200m/275m abaixo — só muda a distância.
+    /// Curvatura da pista a 260m à frente (via curv_at_d no temporal.wgsl). [-127, 127].
+    Curv260m      = 101,
+
     /// Curvatura da pista a 350m à frente (via curv_at_d no temporal.wgsl). [-127, 127].
     Curv350m      = 111,
     /// Curvatura da pista a 200m à frente.
@@ -326,6 +421,10 @@ impl Channel {
             Channel::UrgenciaFrontal=> "UrgenciaFrontal",
             Channel::MotionMag0     => "MotionMag0",
             Channel::MotionMag1     => "MotionMag1",
+            Channel::ApproachHemiL  => "ApproachHemiL",
+            Channel::ApproachHemiR  => "ApproachHemiR",
+            Channel::FoveaApproach  => "FoveaApproach",
+            Channel::FoveaMotionAbs => "FoveaMotionAbs",
             Channel::EmaDistL       => "EmaDistL",
             Channel::EmaDistR       => "EmaDistR",
             Channel::SlipAngle      => "SlipAngle",
@@ -343,6 +442,7 @@ impl Channel {
             Channel::LineOffsetRacingLine => "LineOffsetRacingLine",
             Channel::LineOffsetDeriv => "LineOffsetDeriv",
             Channel::LineLookAheadRL => "LineLookAheadRL",
+            Channel::Curv260m       => "Curv260m",
             Channel::Curv350m       => "Curv350m",
             Channel::Curv200m       => "Curv200m",
             Channel::Curv275m       => "Curv275m",
@@ -373,6 +473,13 @@ impl Channel {
             | Channel::MotionMag0
             | Channel::MotionMag1
             | Channel::MotionDelta7 => (0, 127),
+
+            // Approach hemisférico/fóvea: com sinal (positivo = aproximando);
+            // FoveaMotionAbs é magnitude, não-negativa.
+            Channel::ApproachHemiL
+            | Channel::ApproachHemiR
+            | Channel::FoveaApproach => (-127, 127),
+            Channel::FoveaMotionAbs  => (0, 127),
 
             // Alinhamento e velocidade lateral: com sinal
             Channel::VelAlign
@@ -437,7 +544,8 @@ impl Channel {
             Channel::Memory0Cfc     => (-127, 127),
 
             // Curvatura da pista a múltiplas distâncias: com sinal
-            Channel::Curv350m
+            Channel::Curv260m
+            | Channel::Curv350m
             | Channel::Curv200m
             | Channel::Curv275m     => (-127, 127),
 
@@ -514,6 +622,10 @@ impl Channel {
                 "GPU: clamp((1 - fwd_probe/30)*127,0,127). CPU legado: speed/fwd_probe (TTC) — DIVERGE (F36)",
             Channel::MotionMag0 => "soma |delta| das rows 6+8, colunas 0..63 (metade ESQ) / HEMI_NORM(30) * 127",
             Channel::MotionMag1 => "soma |delta| das rows 6+8, colunas 63..126 (metade DIR) / HEMI_NORM(30) * 127",
+            Channel::ApproachHemiL => "soma SIGNED (dist_prev-dist_cur) das rows 6+8, cols 0..63 / HEMI_NORM(30) * 127 — positivo=aproximando",
+            Channel::ApproachHemiR => "mesma fórmula de ApproachHemiL, colunas 63..126",
+            Channel::FoveaApproach => "soma SIGNED (dist_prev-dist_cur), row 6, cols 24..40 (~±15°) / FOVEA_NORM(4) * 127",
+            Channel::FoveaMotionAbs => "soma |dist_prev-dist_cur|, mesma amostra de FoveaApproach / FOVEA_NORM(4) * 127",
             Channel::EmaDistL | Channel::EmaDistR =>
                 "clamp((1 - ema/40)*127, 0, 127); ema=ema*(1-α)+dist*α, α=clamp(dt*3,0,1) — invertido (perto=alto)",
             Channel::SlipAngle => "cross2D(fwd, vel) — ângulo de deslizamento, injetado pela CPU",
@@ -529,8 +641,9 @@ impl Channel {
             Channel::ApproachRateFineL => "clamp(ar_l/15*64,-127,127) — 2ª codificação de ApproachRate0, ganho maior",
             Channel::ApproachRateFineR => "clamp(ar_r/15*64,-127,127) — 2ª codificação de ApproachRate1, ganho maior",
             Channel::LineOffsetRacingLine => "desvio normalizado da racing line [-1,1] → i8",
-            Channel::LineOffsetDeriv => "SEMPRE 0.0 hoje — host ainda não implementa a derivada (ver doc da variante)",
+            Channel::LineOffsetDeriv => "(cur-prev_offset)/DT / MAX_OFFSET_RATE(8) * 127 — FIX 2026-08-14, era hardcoded 0.0 (ver doc da variante)",
             Channel::LineLookAheadRL => "lookahead offset da racing line normalizado [-1,1]",
+            Channel::Curv260m => "curvatura da pista a 260m via curv_at_d(d), [-127,127] — FIX 2026-08-14 (era só motor.rs)",
             Channel::Curv350m => "curvatura da pista a 350m via curv_at_d(d), [-127,127]",
             Channel::Curv200m => "curvatura da pista a 200m via curv_at_d(d), [-127,127]",
             Channel::Curv275m => "curvatura da pista a 275m via curv_at_d(d), [-127,127]",
@@ -559,6 +672,32 @@ pub enum ChannelSource {
     Morto(&'static str),
 }
 
+/// Canais cujo peso de entrada L1 nasce ZERADO no genoma — DESLIGAR da FASE CANAIS
+/// (2026-08-14), consumido por `Genome::random()` em `gpu/evolution.rs`.
+///
+/// Diferente de `ChannelSource::Morto` (nenhum kernel escreve o canal): estes canais
+/// TÊM um kernel que escreve — mas o valor escrito é estruturalmente constante
+/// (não depende de trajetória, pista ou população; ver justificativa por canal
+/// abaixo), então o peso de entrada correspondente em L1 é lixo previsível: o
+/// cérebro nasceria gastando atenção com estática. Ver o comentário "FASE CANAIS"
+/// no topo deste arquivo para o raciocínio completo (por que isto NÃO é poda de
+/// neurônio, e por que só `TireTemp` está aqui e não os outros 20 canais "escritos
+/// mas constantes" da auditoria).
+///
+/// Cada entrada é `(índice_do_canal, motivo)`. Reversível: remover a entrada quando
+/// o motivo deixar de valer (ex.: P2 implementar a térmica do pneu).
+pub const DEAD_L1_INPUTS: &[(usize, &str)] = &[
+    (
+        70,
+        "TireTemp: physics_c.wgsl:290 é passthrough puro (tire_temp copiado sem \
+         alteração) — térmica do pneu não implementada (comentário do próprio \
+         shader: 'térmica no Kernel B não implementada para poupar reg'). Pendente \
+         PLANO_EVOLUCAO.md P2 item 2/3 (fase de Corpo). Não é track-specific: o \
+         valor nunca muda em NENHUMA pista/população até P2 implementar o modelo \
+         térmico.",
+    ),
+];
+
 /// Retorna o kernel/arquivo que escreve o canal `ch` na onda sensorial.
 ///
 /// Esta função substitui e formaliza a lógica de `canal_tem_fonte()` que
@@ -575,11 +714,17 @@ pub fn source_for(ch: usize) -> &'static str {
         21..=27               => "motion.wgsl",
         83 | 84               => "motion.wgsl",
         98                    => "motion.wgsl",
-        // temporal.wgsl: ch 64-75, 81, 85-86, 88-89, 102-113, 118-120, 123
+        // temporal.wgsl: ch 64-75, 81, 85-86, 88-89, 101-113, 118-120, 123
         64..=75               => "temporal.wgsl",
         81                    => "temporal.wgsl",
         85 | 86               => "temporal.wgsl",
         88 | 89               => "temporal.wgsl",
+        // ch101: curvatura 260m via curv_at_d — FASE CANAIS 2026-08-14 (antes só
+        // o caminho Bevy interativo alimentava; ainda alimenta lá também).
+        // NOTA: a string abaixo evita a substring "motor.rs" de propósito — ela
+        // dispara o ramo Host em Channel::source() (ver match logo abaixo desta
+        // função), e este canal É Kernel agora (temporal.wgsl escreve por último).
+        101                   => "temporal.wgsl (curv_at_d 260m — FASE CANAIS 2026-08-14, era só caminho Bevy)",
         102..=113             => "temporal.wgsl",
         118..=120             => "temporal.wgsl",
         123                   => "temporal.wgsl",
@@ -597,11 +742,14 @@ pub fn source_for(ch: usize) -> &'static str {
         99 | 100              => "temporal.wgsl (slots 54-55, injetado pela CPU: edge density linhas 6/7 da retina)",
         121 | 122             => "temporal.wgsl (slots 56-57, injetado pela CPU: steer/brake_mem do phys)",
         124..=127             => "temporal.wgsl (slots 50-53, injetado pela CPU: joy/spinning/stress)",
-        // motor.rs (CPU) escreve: ch 20, 28, 32, 78-80, 101, 114-117
+        // motor.rs (CPU, caminho Bevy interativo) escreve: ch 20, 28, 32, 78-80
         20 | 28 | 32          => "motor.rs",
         78..=80               => "motor.rs",
-        101                   => "motor.rs",
-        114..=117             => "motor.rs (approach+fovea, requer visual_cortex CPU)",
+        // ch114-117: approach hemisférico + fóvea via motion.wgsl — FASE CANAIS
+        // 2026-08-14 (antes só o caminho Bevy interativo alimentava; ainda
+        // alimenta lá também, sem conflito — binários distintos).
+        // NOTA: evita a substring "motor.rs" de propósito (ver nota em ch101 acima).
+        114..=117             => "motion.wgsl (approach hemisférico + fóvea — FASE CANAIS 2026-08-14, era só caminho Bevy)",
         // perception.wgsl: ch 0-19, 29-31, 33-63, 76-77, 82, 90-97, 128-191
         0..=19                => "perception.wgsl",
         29..=31               => "perception.wgsl",
@@ -643,6 +791,11 @@ pub fn name_for(ch: usize) -> &'static str {
         82  => Channel::UrgenciaFrontal.name(),
         83  => Channel::MotionMag0.name(),
         84  => Channel::MotionMag1.name(),
+        101 => Channel::Curv260m.name(),
+        114 => Channel::ApproachHemiL.name(),
+        115 => Channel::ApproachHemiR.name(),
+        116 => Channel::FoveaApproach.name(),
+        117 => Channel::FoveaMotionAbs.name(),
         85  => Channel::EmaDistL.name(),
         86  => Channel::EmaDistR.name(),
         87  => Channel::SlipAngle.name(),
@@ -811,6 +964,22 @@ mod tests {
         assert_eq!(Channel::TtcMin.index(), 105);
         assert_eq!(Channel::ApproachRateFineL.index(), 106);
         assert_eq!(Channel::ApproachRateFineR.index(), 107);
+        // FASE CANAIS (2026-08-14): canais recém-ligados no caminho GPU de gpu_evolve.
+        assert_eq!(Channel::Curv260m.index(), 101);
+        assert_eq!(Channel::ApproachHemiL.index(), 114);
+        assert_eq!(Channel::ApproachHemiR.index(), 115);
+        assert_eq!(Channel::FoveaApproach.index(), 116);
+        assert_eq!(Channel::FoveaMotionAbs.index(), 117);
+    }
+
+    /// `DEAD_L1_INPUTS` (FASE CANAIS) referencia índices válidos e motivos não-vazios
+    /// — sanidade básica do registro que `Genome::random` consome para zerar L1.
+    #[test]
+    fn dead_l1_inputs_indices_validos_e_motivo_nao_vazio() {
+        for &(ch, motivo) in DEAD_L1_INPUTS {
+            assert!(ch < N_CHANNELS, "DEAD_L1_INPUTS tem índice {ch} >= N_CHANNELS={N_CHANNELS}");
+            assert!(!motivo.is_empty(), "DEAD_L1_INPUTS ch{ch} sem motivo documentado");
+        }
     }
 
     /// Retorna todas as variantes do enum (lista mantida manualmente).
@@ -840,6 +1009,10 @@ mod tests {
             Channel::UrgenciaFrontal,
             Channel::MotionMag0,
             Channel::MotionMag1,
+            Channel::ApproachHemiL,
+            Channel::ApproachHemiR,
+            Channel::FoveaApproach,
+            Channel::FoveaMotionAbs,
             Channel::EmaDistL,
             Channel::EmaDistR,
             Channel::SlipAngle,
@@ -857,6 +1030,7 @@ mod tests {
             Channel::LineOffsetRacingLine,
             Channel::LineOffsetDeriv,
             Channel::LineLookAheadRL,
+            Channel::Curv260m,
             Channel::Curv350m,
             Channel::Curv200m,
             Channel::Curv275m,

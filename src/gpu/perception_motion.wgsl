@@ -6,6 +6,9 @@
 // entre o frame atual da retina (buf_retina_fisica) e o frame anterior
 // (buf_retina_prev), sumada por linha.
 //
+// Também calcula ch 83-84 (motion hemisférico) e, desde 2026-08-14, ch 114-117
+// (approach hemisférico + fóvea) — ver bloco "FASE CANAIS" abaixo.
+//
 // # Equivalência com motor.rs
 //
 // motor.rs (linhas 854-869):
@@ -31,9 +34,11 @@
 //
 // # Dispatch
 //
-// workgroup_size = (8, 1, 1) — 8 threads por ser, tid 0-6 = linhas 0-6, tid 7 = linha 7
+// workgroup_size = (11, 1, 1) — 11 threads por ser: tid 0-6 = linhas 0-6 (ch21-27),
+// tid 7 = linha 7 (ch98), tid 8/9 = hemisférico esq/dir (ch83/84 + ch114/115,
+// FASE CANAIS 2026-08-14), tid 10 = fóvea (ch116/117, idem).
 // dispatch_workgroups(n_beings, 1, 1) — 1 workgroup por ser
-// Cada thread processa 126 pixels (row completa) e escreve 1 canal.
+// Cada thread das linhas 0-7 processa 126 pixels (row completa) e escreve 1 canal.
 //
 // # Atomics
 //
@@ -82,6 +87,10 @@ fn pixel_dist_m(packed: u32) -> f32 {
 // Cada u32 empacota 4 bytes little-endian: byte0=ch%4==0, ..., byte3=ch%4==3.
 // atomicOr: o buf_output foi zerado antes dos dispatches (enc.clear_buffer),
 // portanto OR com o byte desejado produz o valor final correto.
+//
+// APENAS para canais NÃO-NEGATIVOS (motion magnitude, sempre >=0) — por isso o
+// clamp inferior é 0, não -128. Canais com sinal (approach/fóvea abaixo) usam
+// `write_channel_signed`.
 fn write_channel(being: u32, ch: u32, val: i32) {
     let word_idx = being * WAVE_U32S + ch / 4u;
     let byte_pos = (ch % 4u) * 8u;
@@ -90,14 +99,57 @@ fn write_channel(being: u32, ch: u32, val: i32) {
     atomicOr(&output[word_idx], v << byte_pos);
 }
 
-// workgroup_size(10): 8 threads para rows 0-7 + 2 threads extras para ch83/84.
-// RDNA2 tem wave32; 10 threads = 1 wave incompleto mas executado em 1 wave (32 slots).
+// Idêntica a `write_channel`, mas preserva sinal (clamp em [-128,127] como
+// perception.wgsl/perception_temporal.wgsl fazem) — necessária para ch 114-116
+// (approach/fóvea COM SINAL: positivo = parede se aproximando).
+fn write_channel_signed(being: u32, ch: u32, val: i32) {
+    let word_idx = being * WAVE_U32S + ch / 4u;
+    let byte_pos = (ch % 4u) * 8u;
+    let clamped = clamp(val, -128, 127);
+    let v = u32(clamped & 0xFF) & 0xFFu;
+    atomicOr(&output[word_idx], v << byte_pos);
+}
+
+// ── FASE CANAIS (2026-08-14) — ch 114-117, antes só alimentados por motor.rs ────
+//
+// DIAGNÓSTICO (docs/PLANO_EVOLUCAO.md + auditoria 2026-08-14): ch101 e ch114-117
+// eram escritos SÓ no caminho Bevy CPU (motor.rs) — `gpu_evolve` (o binário de
+// treino/evolução) nunca importa `motor.rs`, então nesse caminho os canais ficavam
+// sem fonte nenhuma (reprovados por "sem_fonte" OU "sem variância", dependendo de
+// como o buffer zerado é lido). ch101 foi resolvido em `perception_temporal.wgsl`
+// (reusa `curv_at_d`, já validado para ch111-113). ch114-117 precisam de retina
+// atual × anterior — dados que ESTE kernel já tem (retina_cur/retina_prev), então
+// a fonte real (não uma reimplementação) é aqui.
+//
+// Fórmula original (motor.rs:1187-1226, CODIFICAÇÃO LEGADA em bytes, "positivo =
+// byte sobe = parede ficando mais perto"):
+//   approach_left/right (ch114/115): soma SIGNED de `cur_byte - prev_byte` na row
+//     "posterior" (RETINA_ROWS/2 + 1 = row 8), colunas 0..half / half..RETINA_COLS.
+//   fovea_approach/motion (ch116/117): soma signed/abs de `cur_byte - prev_byte`
+//     na row "frontal" (RETINA_ROWS/2 - 1 = row 6), colunas 24..40 (~±15° central).
+//
+// Adaptação para FÍSICA (metros, não byte legado — mesma migração já feita para
+// ch21-27/83-84 neste arquivo): em metros, MENOR distância = mais perto, o
+// contrário do byte legado. "Aproximando" vira `dist_prev_m - dist_cur_m > 0`
+// (distância caindo). Reusamos as MESMAS linhas (6 e 8) e a MESMA metade de
+// colunas que ch83/84 já leem — evita uma 3ª leitura de retina e mantém a
+// normalização (HEMI_NORM) comparável, já que é a mesma amostra, só sem abs().
+// Fóvea usa só row 6 (a linha "frontal" do motor.rs), colunas 24..40 — 16
+// amostras. FOVEA_NORM foi escalado a partir de HEMI_NORM proporcionalmente ao
+// número de amostras (16 vs 126 de HEMI): 30.0 * 16/126 ≈ 3.8 → arredondado a 4.0.
+// NÃO validado por medição (GPU ocupada com baterias em 2026-08-14) — validar com
+// `--auditar-visao` (σ_temporal/σ_entre destes 4 canais) antes de fechar a fase.
+const FOVEA_NORM: f32 = 4.0;
+
+// workgroup_size(11): 8 threads para rows 0-7 + 3 threads extras (ch83/84 hemisférico
+// + ch114-117 approach/fóvea, fase canais 2026-08-14).
+// RDNA2 tem wave32; 11 threads = 1 wave incompleto mas executado em 1 wave (32 slots).
 // Não há ganho em aumentar para 16 — o trabalho é O(RETINA_COLS) = 126 por thread.
-@compute @workgroup_size(10, 1, 1)
+@compute @workgroup_size(11, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         @builtin(local_invocation_id)  lid: vec3<u32>) {
     let being = gid.x;
-    let tid   = lid.x;  // 0-9: thread dentro do workgroup
+    let tid   = lid.x;  // 0-10: thread dentro do workgroup (11 threads, FASE CANAIS 2026-08-14)
 
     if being >= params.n_beings { return; }
 
@@ -135,6 +187,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     if tid == 8u {
         let half = RETINA_COLS / 2u;  // 63
         var sum_l: f32 = 0.0;
+        var signed_l: f32 = 0.0; // FASE CANAIS 2026-08-14: ch114 (approach esquerda)
         // Usa rows do meio (próximas, mais relevantes para navegação lateral).
         // rows (RETINA_ROWS/2 - 1) = 6 e (RETINA_ROWS/2 + 1) = 8 — mesmas do motor.rs.
         let row_a = RETINA_ROWS / 2u - 1u;  // row 6
@@ -142,11 +195,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         for (var col = 0u; col < half; col++) {
             let idx_a = being * RETINA_TOTAL + row_a * RETINA_COLS + col;
             let idx_b = being * RETINA_TOTAL + row_b * RETINA_COLS + col;
-            sum_l += abs(pixel_dist_m(retina_cur[idx_a]) - pixel_dist_m(retina_prev[idx_a]));
-            sum_l += abs(pixel_dist_m(retina_cur[idx_b]) - pixel_dist_m(retina_prev[idx_b]));
+            let d_a = pixel_dist_m(retina_prev[idx_a]) - pixel_dist_m(retina_cur[idx_a]);
+            let d_b = pixel_dist_m(retina_prev[idx_b]) - pixel_dist_m(retina_cur[idx_b]);
+            sum_l += abs(d_a) + abs(d_b);
+            signed_l += d_a + d_b; // positivo = distância caindo = parede se aproximando
         }
         let val = i32(clamp((sum_l / HEMI_NORM) * 127.0, 0.0, 127.0));
         write_channel(being, 83u, val);
+        // ch114: approach hemisférico esquerdo, COM SINAL — ver bloco "FASE CANAIS" acima.
+        let approach_l = i32(clamp((signed_l / HEMI_NORM) * 127.0, -127.0, 127.0));
+        write_channel_signed(being, 114u, approach_l);
         return;
     }
 
@@ -155,16 +213,45 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     if tid == 9u {
         let half = RETINA_COLS / 2u;  // 63
         var sum_r: f32 = 0.0;
+        var signed_r: f32 = 0.0; // FASE CANAIS 2026-08-14: ch115 (approach direita)
         let row_a = RETINA_ROWS / 2u - 1u;  // row 6
         let row_b = RETINA_ROWS / 2u + 1u;  // row 8
         for (var col = half; col < RETINA_COLS; col++) {
             let idx_a = being * RETINA_TOTAL + row_a * RETINA_COLS + col;
             let idx_b = being * RETINA_TOTAL + row_b * RETINA_COLS + col;
-            sum_r += abs(pixel_dist_m(retina_cur[idx_a]) - pixel_dist_m(retina_prev[idx_a]));
-            sum_r += abs(pixel_dist_m(retina_cur[idx_b]) - pixel_dist_m(retina_prev[idx_b]));
+            let d_a = pixel_dist_m(retina_prev[idx_a]) - pixel_dist_m(retina_cur[idx_a]);
+            let d_b = pixel_dist_m(retina_prev[idx_b]) - pixel_dist_m(retina_cur[idx_b]);
+            sum_r += abs(d_a) + abs(d_b);
+            signed_r += d_a + d_b;
         }
         let val = i32(clamp((sum_r / HEMI_NORM) * 127.0, 0.0, 127.0));
         write_channel(being, 84u, val);
+        // ch115: approach hemisférico direito, COM SINAL.
+        let approach_r = i32(clamp((signed_r / HEMI_NORM) * 127.0, -127.0, 127.0));
+        write_channel_signed(being, 115u, approach_r);
+        return;
+    }
+
+    // ── Thread 10: fóvea — approach + motion absoluto (ch 116, 117) ──────────
+    // FASE CANAIS 2026-08-14. Row 6 (RETINA_ROWS/2 - 1, a mesma "frontal" do
+    // motor.rs), colunas 24..40 (~±15° centrais, a fóvea) — ver bloco "FASE
+    // CANAIS" acima para a derivação de FOVEA_NORM e a adaptação de sinal.
+    if tid == 10u {
+        let row = RETINA_ROWS / 2u - 1u; // row 6
+        var signed_sum: f32 = 0.0;
+        var abs_sum: f32 = 0.0;
+        for (var col = 24u; col < 40u; col++) {
+            let idx = being * RETINA_TOTAL + row * RETINA_COLS + col;
+            let d = pixel_dist_m(retina_prev[idx]) - pixel_dist_m(retina_cur[idx]);
+            signed_sum += d;
+            abs_sum += abs(d);
+        }
+        // ch116: fovea_approach, COM SINAL (positivo = parede vindo de frente).
+        let approach = i32(clamp((signed_sum / FOVEA_NORM) * 127.0, -127.0, 127.0));
+        write_channel_signed(being, 116u, approach);
+        // ch117: fovea_motion_abs, magnitude (qualquer movimento na fóvea).
+        let motion = i32(clamp((abs_sum / FOVEA_NORM) * 127.0, 0.0, 127.0));
+        write_channel(being, 117u, motion);
         return;
     }
 }

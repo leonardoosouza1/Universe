@@ -631,22 +631,37 @@ impl GpuCtx {
 
                     // comp_stress O(n²): distância ao ser mais próximo em raio 20 m à frente.
                     // motor.rs:1359-1378: 0=líder (ou ninguém perto), 0.5=meio pelotão, 1.0=alguém <20m.
+                    //
+                    // BUG encontrado e corrigido (2026-08-14, FASE CANAIS): a versão anterior
+                    // usava `if i > 0 {0.5} else {0.0}` como piso — um artefato do ÍNDICE do
+                    // ser (o ser 0 sempre partia de 0.0, todos os outros de 0.5), sem relação
+                    // com proximidade real. Como a auditoria de visão rastreia UM ser vivo ao
+                    // longo do tempo (tipicamente o de índice mais baixo), esse ser lia
+                    // comp_stress preso em {0.0, 1.0} — nunca 0.5 — e o canal parecia
+                    // CONSTANTE sempre que ninguém chegava a <20m dele (o caso comum numa
+                    // população espalhada), mesmo com o dado corretamente "alimentado". Agora
+                    // o piso 0.5 depende de proximidade FÍSICA (alguém em até 40m, à frente ou
+                    // não) — igual para todos os seres, sem depender de posição no array.
                     let (px, pz) = (positions[i][0], positions[i][1]);
                     let (fx, fz) = (p.fwd[0], p.fwd[2]);
                     let mut has_near_ahead = false;
+                    let mut min_dist_any: f32 = f32::MAX;
                     for j in 0..n {
                         if j == i { continue; }
                         let dx = positions[j][0] - px;
                         let dz = positions[j][1] - pz;
                         let dist = (dx*dx + dz*dz).sqrt();
+                        if dist < min_dist_any { min_dist_any = dist; }
                         if dist < 20.0 {
                             let dot = (dx * fx + dz * fz) / dist.max(0.01);
-                            if dot > 0.3 { has_near_ahead = true; break; }
+                            if dot > 0.3 { has_near_ahead = true; }
                         }
                     }
-                    // 0.0=líder/ninguém, 0.5=genérico, 1.0=alguém próximo à frente.
-                    // Simplificado: 0 se nenhum <20m à frente, 1 se sim.
-                    let comp_stress = if has_near_ahead { 1.0f32 } else if i > 0 { 0.5 } else { 0.0 };
+                    // 0.0=ninguém em 40m, 0.5=alguém no pelotão (<40m, qualquer direção),
+                    // 1.0=alguém <20m à frente no cone de visão.
+                    let comp_stress = if has_near_ahead { 1.0f32 }
+                        else if min_dist_any < 40.0 { 0.5 }
+                        else { 0.0 };
 
                     extra2.push([
                         slip_signal.clamp(-1.0, 1.0),   // [0] → ch87

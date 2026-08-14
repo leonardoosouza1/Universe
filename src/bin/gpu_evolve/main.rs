@@ -383,6 +383,15 @@ fn main() {
     let mut centro_simetrico = false;
     /// `--out-beta`: força da fadiga de saída. Padrão = o histórico.
     let mut out_beta: f32 = universe::gpu::brain::OUT_BETA_PADRAO;
+    /// `--ganho-saida`: ganho aplicado a l2_raw/bypass na ETAPA 2 antes do tanh
+    /// (P1.5, `docs/PLANO_EVOLUCAO.md`). Padrão = a constante 2.0 histórica —
+    /// o A/B pendente compara 2.0 vs 1.0 vs 0.5 contra a saturação de L2
+    /// (48/48 neurônios ativos em 97,4% dos ticks).
+    let mut ganho_saida: f32 = universe::gpu::brain::OUT_GAIN_PADRAO;
+    /// `--norm-l2-por-desvio`: segunda alavanca de P1.5 (padrão DESLIGADA) —
+    /// normaliza l2_raw pelo desvio-padrão dos 48 valores do MESMO ser antes do
+    /// ganho/tanh. Ataca a ESCALA da entrada de L2 em vez do ganho de saída.
+    let mut norm_l2_por_desvio = false;
     /// `--piloto <g>`: ganho do piloto fantasma. Diagnóstico, não produção.
     let mut piloto: f32 = 0.0;
     let mut piloto_thr: f32 = 0.0;
@@ -442,6 +451,12 @@ fn main() {
                 // Força da fadiga de SAÍDA. 0,85 (padrão) faz comando sustentado sair a
                 // 15% da intenção em ~1 s; 0,0 desliga. Ver `BrainParams::out_beta`.
                 "--out-beta"  => { i += 1; if i < args.len() { out_beta = args[i].parse().unwrap_or(out_beta); } }
+                // P1.5: ganho de saída (era a constante 2.0 hardcoded na ETAPA 2).
+                // Ver `BrainParams::out_gain` e o comentário de `ganho_saida` acima.
+                "--ganho-saida" => { i += 1; if i < args.len() { ganho_saida = args[i].parse().unwrap_or(ganho_saida); } }
+                // P1.5: normaliza l2_raw pelo desvio-padrão dos 48 valores do ser antes
+                // do ganho/tanh. Sem a flag, comportamento idêntico ao histórico.
+                "--norm-l2-por-desvio" => { norm_l2_por_desvio = true; }
                 // Piloto fantasma: ganho do controlador geométrico. 0 = cérebro no comando.
                 "--piloto"    => { i += 1; if i < args.len() { piloto = args[i].parse().unwrap_or(0.0); } }
                 "--piloto-thr" => { i += 1; if i < args.len() { piloto_thr = args[i].parse().unwrap_or(0.45); } }
@@ -579,6 +594,8 @@ fn main() {
     SLOW_STEER_AUTH.store(slow_steer_auth, Ordering::Relaxed);
     if life_cap_arg > 0 { LIFE_CAP_TICKS.store(life_cap_arg, Ordering::Relaxed); }
     ctx.brain.out_beta = out_beta;
+    ctx.brain.out_gain = ganho_saida;
+    ctx.brain.norm_l2_by_std = norm_l2_por_desvio;
     PILOTO_GANHO.store(piloto, Ordering::Relaxed);
     PILOTO_THR.store(if piloto_thr > 0.0 { piloto_thr } else { 0.45 }, Ordering::Relaxed);
     STEER_FIXO.store(steer_fixo, Ordering::Relaxed);
@@ -606,6 +623,15 @@ fn main() {
         println!("fadiga de saída: out_beta={out_beta:.2} (padrão {:.2}) — comando sustentado \
                   sai a {:.0}% da intenção",
                  universe::gpu::brain::OUT_BETA_PADRAO, 100.0 * (1.0 - out_beta).max(0.0));
+    }
+    if (ganho_saida - universe::gpu::brain::OUT_GAIN_PADRAO).abs() > 1e-6 {
+        println!("[P1.5] ganho de saída: out_gain={ganho_saida:.2} (padrão {:.2}) — ETAPA 2 \
+                  (l2_raw e bypass) escalada antes da fadiga/tanh",
+                 universe::gpu::brain::OUT_GAIN_PADRAO);
+    }
+    if norm_l2_por_desvio {
+        println!("[P1.5] normalização de L2 por desvio-padrão LIGADA — l2_raw dividido pelo \
+                  desvio dos 48 valores do ser antes do ganho/tanh (padrão: desligada)");
     }
     println!("GpuCtx pronto  [{:.0}ms]", t1.elapsed().as_secs_f64() * 1000.0);
 

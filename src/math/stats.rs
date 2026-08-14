@@ -28,6 +28,31 @@ pub fn std_dev(xs: &[f32]) -> f32 {
     variance(xs).sqrt()
 }
 
+/// Desvio-padrão POPULACIONAL (divisor N, sem correção de Bessel), via
+/// soma-de-quadrados: `sqrt(E[x²] - E[x]²)`.
+///
+/// Espelha `brain.wgsl` ETAPA 2 (`params.norm_l2_by_std`, P1.5,
+/// `docs/PLANO_EVOLUCAO.md`) — o shader calcula `sum`/`sum_sq` num único laço
+/// (sem alocar um segundo vetor de desvios) porque roda em WGSL sem heap;
+/// esta função replica o MESMO algoritmo, não `std_dev`/N-1, para que o teste
+/// em `math::activations` compare a mesma fórmula que está no shader, não uma
+/// aproximação. `max(0.0, ...)` porque a variância por soma-de-quadrados pode
+/// dar um epsilon negativo por cancelamento de ponto flutuante quando os
+/// valores são quase iguais — mesma guarda que o shader tem.
+///
+/// Retorna 0.0 se vazio (não 0.0/0.0 = NaN).
+pub fn population_std_dev(xs: &[f32]) -> f32 {
+    if xs.is_empty() {
+        return 0.0;
+    }
+    let n = xs.len() as f32;
+    let sum: f32 = xs.iter().sum();
+    let sum_sq: f32 = xs.iter().map(|&x| x * x).sum();
+    let m = sum / n;
+    let variance = (sum_sq / n - m * m).max(0.0);
+    variance.sqrt()
+}
+
 /// Percentil p ∈ [0.0, 100.0] usando interpolação linear (método R7 / Excel).
 ///
 /// Ordena o slice in-place — passe uma cópia se precisar preservar a ordem.
@@ -181,6 +206,31 @@ mod tests {
     #[test]
     fn std_dev_de_constante_e_zero() {
         assert_eq!(std_dev(&[7.0; 5]), 0.0);
+    }
+
+    #[test]
+    fn population_std_dev_de_constante_e_zero() {
+        assert_eq!(population_std_dev(&[7.0; 48]), 0.0);
+    }
+
+    #[test]
+    fn population_std_dev_vazio_e_zero() {
+        assert_eq!(population_std_dev(&[]), 0.0);
+    }
+
+    #[test]
+    fn population_std_dev_conhecido() {
+        // {0,1,2,3} → média 1.5, variância POPULACIONAL (÷N) = 1.25, desvio ≈ 1.1180
+        let xs = [0.0_f32, 1.0, 2.0, 3.0];
+        let d = population_std_dev(&xs);
+        assert!((d - 1.25f32.sqrt()).abs() < 1e-5, "desvio populacional = {}", d);
+    }
+
+    #[test]
+    fn population_std_dev_e_menor_que_amostral_para_mesmo_conjunto() {
+        // Divisor N < N-1 → desvio populacional <= amostral (N>1).
+        let xs = [0.0_f32, 1.0, 2.0, 3.0, 4.0];
+        assert!(population_std_dev(&xs) < std_dev(&xs));
     }
 
     #[test]

@@ -17,9 +17,16 @@
 //                       ──► BitLinear L1  (223→96, pesos f32, input i8)
 //                       ──► tanh × 127 → i8  (quantiza pra L2)
 //                       ──► FloatLinear L2 (96→48, pesos f32)
-//                       ──► final_intent[0..48]  = tanh(l2_raw × 2.0)
-//                       + l1_raw[48..96] → tanh(× 2.0) → final_intent[48..96]
+//                       ──► [opcional, params.norm_l2_by_std] / desvio-padrão dos 48
+//                       ──► final_intent[0..48]  = tanh(l2_raw × params.out_gain)
+//                       + l1_raw[48..96] → tanh(× params.out_gain) → final_intent[48..96]
 //                       (cortex_l3 NÃO é usado na CPU — omitido aqui)
+//
+//   `params.out_gain` (padrão 2.0, idêntico ao hardcode histórico) e
+//   `params.norm_l2_by_std` (padrão 0/desligado) são os dois parâmetros do A/B
+//   de P1.5 (`docs/PLANO_EVOLUCAO.md`) contra a saturação de L2 (48/48 neurônios
+//   ativos em 97,4% dos ticks, entropia 0,301 nats). Ver `BrainParams` no host
+//   (`brain.rs`) e a ETAPA 2 abaixo.
 //
 // # Layout de memória (SoA — Structure of Arrays)
 //
@@ -46,7 +53,8 @@
 //   w_cfc[96]   i32 pós-CfC         :  96×4 =  384 B
 //   w_l1r[96]   f32 acumuladores L1 :  96×4 =  384 B
 //   w_l1a[96]   i32 l1 quantizado   :  96×4 =  384 B
-//   Total: ~2 KB por workgroup. RDNA2 garante ≥ 32 KB LDS por workgroup.
+//   w_l2r[48]   f32 l2_raw pré-ganho:  48×4 =  192 B  (P1.5, norm_l2_by_std)
+//   Total: ~2,2 KB por workgroup. RDNA2 garante ≥ 32 KB LDS por workgroup.
 //
 // # Divergência GPU×CPU esperada
 //
@@ -187,6 +195,22 @@ struct Params {
     // Força da fadiga de saída. Era `const OUT_BETA = 0.85`; virou parâmetro para
     // poder ser medida em teste pareado (ver `BrainParams::out_beta` no host).
     out_beta:          f32,
+    // P1.5: ganho aplicado a l2_raw e ao bypass L1 antes da fadiga/tanh na ETAPA 2.
+    // Era `l2_raw = acc * (2.0/127.0)` e `raw_bp = w_l1r[tid] * 2.0` — dois `2.0`
+    // hardcoded. Padrão 2.0 (`BrainParams::OUT_GAIN_PADRAO`) = comportamento
+    // idêntico ao histórico; o A/B testa 2.0 vs 1.0 vs 0.5 (docs/PLANO_EVOLUCAO.md
+    // P1.5) contra a saturação de L2 (48/48 neurônios ativos em 97,4% dos ticks).
+    out_gain:          f32,
+    // P1.5, segunda alavanca (padrão DESLIGADA=0): 1 = normaliza l2_raw pelo
+    // desvio-padrão dos 48 l2_raw do MESMO ser antes do ganho/tanh — ataca a
+    // ESCALA da entrada de L2 (que pode crescer com a mutação ao longo das
+    // gerações) em vez de só o ganho de saída. Ver ETAPA 2 abaixo.
+    norm_l2_by_std:    u32,
+    // Padding: mantém o uniform em múltiplo de 16 bytes (8 × 4 = 32), mesma
+    // convenção do struct original (4 × 4 = 16). bytemuck::Zeroable no host
+    // garante conteúdo determinístico (zero), não lixo de padding.
+    _pad0:             u32,
+    _pad1:             u32,
 }
 
 // ── BINDINGS ──────────────────────────────────────────────────────────────────
@@ -249,6 +273,8 @@ var<workgroup> w_kan: array<i32, 223>;  // pós-KAN, pré-CfC: todos os canais
 var<workgroup> w_cfc: array<i32, 96>;   // saída CfC (tanh(state) × 127, como i32)
 var<workgroup> w_l1r: array<f32, 96>;   // acumuladores raw do L1 (pré-tanh)
 var<workgroup> w_l1a: array<i32, 96>;   // L1 quantizado para entrada no L2 (i8 × 127)
+var<workgroup> w_l2r: array<f32, 48>;   // l2_raw PRÉ-ganho (acc/127, sem params.out_gain)
+                                          // — usado só quando params.norm_l2_by_std==1
 
 // ── KAN filter_pulse (equivalente a KanAxiomFilter::filter_pulse, kan.rs:18-29) ─
 
@@ -534,8 +560,9 @@ fn main(
     //          + bypass L1→final_intent[48..96]
     //
     // ENGINE (engine.rs:465-472):
-    //   final_intent[0..48]  = tanh(l2_raw × 2.0)       — via L2
-    //   final_intent[48..96] = tanh(l1_raw[48..96] × 2.0) — bypass de L2
+    //   final_intent[0..48]  = tanh(l2_raw × out_gain)       — via L2
+    //   final_intent[48..96] = tanh(l1_raw[48..96] × out_gain) — bypass de L2
+    //   (`out_gain` era a constante `2.0` hardcoded; ver `params.out_gain` — P1.5)
     //
     // Por que bypass? L2 tem 48 outputs mas final_intent tem 96 slots.
     // Os slots 48..95 são preenchidos diretamente com l1_raw (pré-L2).
@@ -549,8 +576,14 @@ fn main(
 
     let intent_base: u32 = being * 96u;
 
+    // ── Sub-etapa 2a: matmul L2, guarda l2_raw PRÉ-ganho em LDS ────────────────
+    //
+    // Separado do resto (fadiga+tanh) porque a normalização por desvio (item 3
+    // de P1.5, `params.norm_l2_by_std`) precisa dos 48 valores de l2_raw do MESMO
+    // ser prontos ao mesmo tempo — cada thread só calcula o SEU neurônio j, mas o
+    // desvio-padrão é sobre os 48. `w_l2r` guarda a mesma grandeza que
+    // `float_layers.rs::forward` devolve na CPU (acc/127, SEM ganho nenhum).
     if tid < L2_OUT {
-        // Thread tid ∈ [0,47]: neurônio j de L2
         let j: u32 = tid;
         let l2_base: u32 = being * (L2_OUT * L1_OUT) + j * L1_OUT;
         // CORREÇÃO: acumula sem norm por passo — aplica 1/127 uma vez no final
@@ -563,8 +596,66 @@ fn main(
             acc = acc + prod;
         }
 
-        // raw L2: acc * (1/127) * 2.0 — o que seria passado para tanh sem fadiga
-        let l2_raw: f32 = acc * (2.0 / 127.0);
+        w_l2r[j] = acc * (1.0 / 127.0);
+    }
+
+    // Barrier em CONTROLE UNIFORME — TODAS as 128 threads passam por aqui, mesmo
+    // as que não escreveram w_l2r (tid >= 48), porque WGSL exige que
+    // workgroupBarrier() não fique dentro de um `if` que só parte das threads
+    // executa (senão as que não entram no `if` nunca alcançam a barreira e o
+    // driver trava ou diverge — a barreira DEVE estar em código não-divergente).
+    workgroupBarrier();
+
+    // ── Sub-etapa 2b: desvio-padrão populacional dos 48 l2_raw deste ser ───────
+    //
+    // Só entra em jogo quando `params.norm_l2_by_std == 1`; com a flag OFF
+    // (padrão) `l2_std` fica em 1.0 e a divisão abaixo é um no-op exato — não
+    // muda um bit do resultado histórico. Toda thread recalcula o mesmo valor
+    // (redundante, mas 48 somas é desprezível ao lado do matmul 96×48 acima) —
+    // mais barato que mais um workgroup array + mais uma barreira só para
+    // broadcast de um escalar.
+    //
+    // Desvio POPULACIONAL (divisor N, não N-1): aqui a finalidade é normalizar
+    // amplitude, não inferir a variância de uma amostra — mesmo espírito de
+    // layer norm. NÃO subtrai a média: a hipótese em teste é que a SATURAÇÃO
+    // vem da ESCALA de l2_raw crescendo com a mutação ao longo das gerações
+    // (docs/PLANO_EVOLUCAO.md P1.5), não de um viés direcional — subtrair a
+    // média removeria também um eventual sinal direcional genuíno (ex.: "vira
+    // mais pra direita que pra esquerda nesta pista"), o que não é o que se
+    // quer atacar aqui.
+    var l2_std: f32 = 1.0;
+    if params.norm_l2_by_std == 1u {
+        var sum: f32 = 0.0;
+        var sum_sq: f32 = 0.0;
+        for (var k: u32 = 0u; k < L2_OUT; k = k + 1u) {
+            let v: f32 = w_l2r[k];
+            sum = sum + v;
+            sum_sq = sum_sq + v * v;
+        }
+        let mean: f32 = sum / f32(L2_OUT);
+        // max(0.0, ...): variância nunca é negativa por definição, mas o cálculo
+        // via soma-de-quadrados (E[x²] - E[x]²) pode dar um epsilon negativo por
+        // cancelamento de ponto flutuante quando os 48 valores são quase iguais.
+        let variance: f32 = max(0.0, sum_sq / f32(L2_OUT) - mean * mean);
+        // NORM_EPS evita explosão no início do treino, quando os 48 l2_raw ainda
+        // são quase todos ~0 (pesos recém-sorteados, σ=0.30 diluído por 96
+        // entradas) — dividir por um desvio ~0 amplificaria RUÍDO numérico, não
+        // sinal. 1e-3 está bem abaixo de qualquer desvio genuíno observado
+        // (l2_raw típico saturado ~3.8, ver comentário de OUT_BETA acima).
+        const NORM_EPS: f32 = 1e-3;
+        l2_std = max(sqrt(variance), NORM_EPS);
+    }
+
+    if tid < L2_OUT {
+        // Thread tid ∈ [0,47]: neurônio j de L2
+        let j: u32 = tid;
+
+        // Normaliza pela ESCALA (l2_std=1.0 e a divisão é no-op se a flag estiver
+        // desligada), depois aplica o ganho de saída — mesma ordem de grandeza
+        // que `acc * (2.0/127.0)` tinha antes quando out_gain=2.0 e a normalização
+        // está OFF: w_l2r[j] * out_gain == acc*(1/127)*2.0 == acc*(2.0/127.0).
+        let l2_scaled: f32 = w_l2r[j] / l2_std;
+        let l2_raw: f32 = l2_scaled * params.out_gain;
 
         // Fadiga de saída: lê slot [96+j] do buf_fatigue (segunda metade do buffer expandido).
         // Rastreia |intent| para canal j; subtrai params.out_beta * out_fat do raw antes do tanh.
@@ -586,10 +677,14 @@ fn main(
     }
 
     // Threads 48..95: bypass de L1 → final_intent[48..95]
-    // (engine.rs:469-471): final_intent[i] = tanh(l1_raw[i] × 2.0) para i ∈ [48,95]
+    // (engine.rs:469-471): final_intent[i] = tanh(l1_raw[i] × out_gain) para i ∈ [48,95]
+    // A normalização por desvio (params.norm_l2_by_std) NÃO se aplica aqui — o
+    // nome é "norm_l2_by_std" porque mede e corrige a escala de l2_raw
+    // especificamente; o bypass não passa pela matmul de L2, então não há
+    // "l2_raw" aqui para normalizar.
     if tid >= L2_OUT && tid < L1_OUT {
         // Mesmo mecanismo de fadiga de saída para o bypass.
-        let raw_bp: f32 = w_l1r[tid] * 2.0;
+        let raw_bp: f32 = w_l1r[tid] * params.out_gain;
         let out_fat_base_bp: u32 = being * L1_OUT * 2u + L1_OUT;
         var out_fat_bp: f32 = buf_fatigue[out_fat_base_bp + tid];
         out_fat_bp = out_fat_bp + OUT_ALPHA * (abs(raw_bp) - out_fat_bp) * params.dt;

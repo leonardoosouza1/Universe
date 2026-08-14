@@ -171,6 +171,24 @@ impl Genome {
             for w in l1.iter_mut() { *w *= fator; }
         }
 
+        // FASE CANAIS (2026-08-14) — zera a coluna de L1 dos canais em
+        // `perception::channels::DEAD_L1_INPUTS` (hoje só TireTemp, ch70): canais
+        // cujo kernel escreve mas o valor é estruturalmente constante (sem dado real
+        // por trás — ver justificativa no registro). O cérebro não nasce gastando
+        // peso de entrada com estática. Roda DEPOIS da re-escala espectral de
+        // propósito: mede/normaliza o ganho da matriz i.i.d. inteira primeiro, e só
+        // então zera as ~96 entradas (de 18.432) dos canais mortos — perturbação
+        // pequena o bastante (<1% dos pesos) para não tirar o ganho medido de
+        // [0.8, 1.2] (ver teste `genoma_novo_nasce_com_ganho_espectral_perto_de_1`).
+        // NÃO é poda de neurônio — a ablação 96→64 (PLANO_EVOLUCAO.md) provou que
+        // nenhum neurônio de L1 é descartável; isto só impede um peso de ENTRADA de
+        // ler um canal que nunca varia.
+        for &(ch, _motivo) in crate::perception::channels::DEAD_L1_INPUTS {
+            for neuron in 0..L1_NEURONS {
+                l1[neuron * SENSORY_WAVE_SIZE + ch] = 0.0;
+            }
+        }
+
         let kan_knots = crate::evolution::dna_genesis::default_kan_knots();
 
         // Lento: parte da inicialização padrão e passa a divergir por mutação. Ele nasce
@@ -496,6 +514,47 @@ mod tests {
                 (0.8..=1.2).contains(&ganho),
                 "seed {seed}: ganho espectral de L1 = {ganho}, esperado em [0.8, 1.2]"
             );
+        }
+    }
+
+    /// FASE CANAIS (2026-08-14): genoma novo nasce com a coluna de L1 dos canais
+    /// `DEAD_L1_INPUTS` (hoje só TireTemp, ch70) inteiramente zerada — nenhum dos
+    /// `L1_NEURONS` pesos que leem esse canal escapa do zeramento, em nenhuma seed.
+    #[test]
+    fn genoma_novo_zera_l1_dos_canais_mortos() {
+        use crate::perception::channels::DEAD_L1_INPUTS;
+        assert!(!DEAD_L1_INPUTS.is_empty(), "pré-condição: precisa de ao menos 1 canal morto pra testar algo");
+        for seed in [1u64, 7, 999] {
+            let g = Genome::random(seed);
+            for &(ch, _motivo) in DEAD_L1_INPUTS {
+                for neuron in 0..L1_NEURONS {
+                    let w = g.l1[neuron * SENSORY_WAVE_SIZE + ch];
+                    assert_eq!(w, 0.0, "seed {seed}: l1[neuron={neuron}, ch={ch}] = {w}, esperado 0.0");
+                }
+            }
+        }
+    }
+
+    /// FASE CANAIS: zerar os canais mortos não deve mudar canais VIZINHOS — sanidade
+    /// contra um erro de índice (off-by-one na coluna) que zerasse o canal errado.
+    /// Não mexe em `SPECTRAL_INIT_ON` (mesmo cuidado de
+    /// `genoma_novo_nasce_com_ganho_espectral_perto_de_1` — ver doc de
+    /// `spectral_rescale_factor` sobre por que evitar alternar o atomic global
+    /// dentro de testes, R8 do CLAUDE.md do projeto). Um vizinho ficar em 0.0
+    /// exatamente após reescala espectral tem probabilidade praticamente nula
+    /// (gaussiana contínua × fator escalar não-nulo); múltiplas seeds reduzem
+    /// ainda mais o risco de falso-negativo.
+    #[test]
+    fn zerar_canal_morto_nao_afeta_canal_vizinho_vivo() {
+        use crate::perception::channels::DEAD_L1_INPUTS;
+        for seed in [1u64, 7, 999] {
+            let g = Genome::random(seed);
+            for &(ch, _) in DEAD_L1_INPUTS {
+                if ch + 1 < SENSORY_WAVE_SIZE {
+                    let vizinho = g.l1[0 * SENSORY_WAVE_SIZE + (ch + 1)];
+                    assert_ne!(vizinho, 0.0, "seed {seed}: canal vizinho ch{} não deveria ter sido zerado", ch + 1);
+                }
+            }
         }
     }
 

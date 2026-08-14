@@ -200,6 +200,122 @@ não queimar GPU; havia baterias A/B ocupando-a). Falta medir, com ≥3 sementes
 
 ---
 
+## P1.5 · Cérebro sem lixo (saturação de L2) (implementado 2026-08-14)
+
+**Gargalo medido:** L2 dispara em 97,4% dos ticks, 48 de 48 neurônios sempre ativos.
+Persistência 97,4% com baseline 97,4% = ganho temporal ZERO — a camada não distingue
+situação nenhuma. Entropia da política (throttle/steer/brake, `--ativacao`) = 0,301 nats,
+abaixo do limiar de 0,50: repertório motor pobre.
+
+**Hipótese e confirmação (item 1 da tarefa):** `brain.wgsl` ETAPA 2 (linhas 559-576,
+comentário de cabeçalho) e `engine.rs` (linhas 494-515) tinham `2.0` HARDCODED em dois
+sítios cada — `l2_raw = acc * (2.0/127.0)` / `raw = val * 2.0` — aplicado tanto ao `l2_raw`
+(via L2) quanto ao bypass de L1. Confirmado: o ganho ERA fixo, sem parâmetro nenhum.
+
+**Achado que muda a leitura do problema (mesmo item 1):** `final_intent` tem 96 slots, mas
+só a METADE passa por L2. `final_intent[0..48]` vem do matmul L2 (`w_l2r`, ETAPA 2a,
+`brain.wgsl:586-600`); `final_intent[48..96]` é BYPASS direto de `l1_raw[48..96]` — nunca
+passa pela matriz L2, só pelo mesmo ganho/fadiga/tanh (`brain.wgsl:685-695`,
+`engine.rs:506-515`). Quem consome cada metade (`src/simulation/motor.rs`):
+  - `final_intent[0]`=throttle, `[1]`=steer, `[2]`=brake (`motor.rs:1811-1857`,
+    `racer.rs:302-304`) e `[3]`/`[4]`=troca de marcha (`motor.rs:2451-2452`,
+    `2544-2546`) — os 5 atuadores literais estão TODOS dentro da metade produzida por L2.
+  - `axiom_policy` (`motor.rs:1833-1836`) soma um viés aditivo a `final_intent[0..64]` —
+    MISTURA os 48 de L2 com os primeiros 16 do bypass; não há leitura isolada de "só
+    bypass" em nenhum consumidor.
+  - Diagnóstico de saturação/magnitude (`motor.rs:2842-2875`, dims_sat/intent_mag) lê os
+    96 inteiros.
+
+  Conclusão: a saturação medida (48/48 de L2) explica diretamente os 5 atuadores e o
+  viés de imitação, que são o que decide a corrida — não é um artefato de metade
+  irrelevante da saída. Mas como as duas metades COMPARTILHAM o mesmo `out_gain`/
+  `out_beta` na ETAPA 2, qualquer A/B no ganho mexe nas duas ao mesmo tempo; não dá pra
+  isolar "só conserta L2" sem também escalar o bypass — registrado aqui para quem for
+  interpretar o resultado do A/B.
+
+**Conserto (itens 2-4 da tarefa) — duas alavancas, ambas atrás de flag, ambas com o
+padrão = comportamento histórico:**
+
+1. **`--ganho-saida <g>`** (`gpu_evolve`) — `params.out_gain` em `brain.wgsl`
+   (`BrainParams::out_gain`, `gpu/brain.rs`). Substitui o `2.0` hardcode nos DOIS sítios
+   da ETAPA 2 (L2 e bypass). Padrão `OUT_GAIN_PADRAO = 2.0` — quem não passar a flag
+   reproduz EXATAMENTE o histórico (testado, ver abaixo). O A/B mede 2.0 vs 1.0 vs 0.5.
+2. **`--norm-l2-por-desvio`** (padrão DESLIGADA) — `params.norm_l2_by_std` em
+   `brain.wgsl`. Divide os 48 `l2_raw` pelo DESVIO-PADRÃO POPULACIONAL do próprio ser
+   (`ETAPA 2b`, `brain.wgsl:609-647`) antes do ganho/tanh — ataca a ESCALA da entrada de
+   L2 (que pode crescer com a mutação ao longo das gerações), não só o ganho de saída.
+   Só se aplica à via de L2 — o bypass não passa por L2, então não há "l2_raw" ali para
+   normalizar (`brain.wgsl:681-684`). Com a flag desligada, `l2_std=1.0` e a divisão é
+   um no-op EXATO — testado (`out_stage_norm_none_e_std_um_sao_identicos`).
+   `NORM_EPS = 1e-3` evita explosão numérica quando os 48 valores ainda são quase todos
+   ~0 (pesos recém-sorteados).
+
+**Sem regressão fora da flag:** `BrainGpu::new` nasce com `out_gain = OUT_GAIN_PADRAO`,
+`norm_l2_by_std = false` (`gpu/brain.rs:360-362`); `forward()` (usado por `gpu_validate`)
+sempre usa `OUT_GAIN_PADRAO` hardcoded, mesmo contrato que `out_beta` já tinha. `engine.rs`
+(caminho CPU/Bevy de `vida`/`universe`, fora do escopo do A/B em `gpu_evolve`) NÃO foi
+tocado — continua com o `2.0` hardcode; propagar o ganho pra lá é trabalho futuro se o
+A/B escolher um valor diferente de 2.0 (ver "não feito" abaixo).
+
+**Matemática extraída para função pura testável** (item 5 da tarefa) —
+`math::activations::out_stage` (`src/math/activations.rs`) espelha bit-a-bit a ETAPA 2
+do shader/`engine.rs`: normalização opcional por desvio → ganho → fadiga adaptativa
+(soft-threshold) → tanh. `math::stats::population_std_dev` espelha o cálculo de desvio
+POPULACIONAL (÷N, via soma-de-quadrados) que o shader faz sem alocar array extra.
+
+**Testado** (sem GPU):
+- `math::activations::tests::out_stage_ganho_padrao_reproduz_formula_historica_exatamente`
+  — com `out_gain=2.0`, `out_stage` reproduz EXATAMENTE (bit a bit) a fórmula hardcoded
+  antiga, para 6 valores de `raw_pregain` × 2 de `out_beta` × 3 de `out_fat`.
+- `out_stage_norm_none_e_std_um_sao_identicos` — flag desligada (`None`) é idêntica a
+  `Some(1.0)`, confirma que o no-op é exato.
+- `out_stage_norm_ligada_atenua_por_desvio_maior` — normalização atenua por um desvio
+  maior, isolado de fadiga (`out_beta=0`).
+- `out_stage_norm_com_desvio_quase_zero_nao_explode` — `NORM_EPS` segura o caso
+  degenerado (desvio ~0 no início do treino).
+- `out_stage_com_population_std_dev_reduz_saturacao` — end-to-end com
+  `population_std_dev` sobre um vetor de 48 `l2_raw` simulando saturação: a normalização
+  reduz (nunca aumenta) a fração de canais com `|tanh|>0,9`.
+- `math::stats::tests::population_std_dev_{conhecido,de_constante_e_zero,vazio_e_zero,
+  e_menor_que_amostral_para_mesmo_conjunto}` — a função de desvio isolada.
+- `tests/wgsl_validation.rs::brain_wgsl_e_valido` (novo) — `naga::front::wgsl::parse_str`
+  + `naga::valid::Validator` confirmam que o `brain.wgsl` editado parseia e type-checa
+  sem GPU (contrato do uniform `Params` com os campos novos + padding em múltiplo de 16
+  bytes).
+
+**Build + testes (comandos que produziram os números, sem tocar a GPU — instrução
+explícita da tarefa, há 2 baterias de currículo ocupando-a):**
+```
+cd /home/leonardo/projects/LLM/Universe
+nice -n 19 cargo build --release -j 2 --bin gpu_evolve   # exit 0
+nice -n 19 cargo build --release -j 2 --workspace        # exit 0
+nice -n 19 cargo test --release --workspace --exclude iara_genesis --no-fail-fast
+```
+309 testes executados, 308 ok, 1 FALHA — `test_bitlinear_inference`
+(`tests/integration_test.rs`), a MESMA falha pré-existente já confirmada (via `git
+stash`) na fase anterior (Fase Canais), em subsistema não-relacionado (BitLinear/
+`ablar_priming`) — não é regressão desta sessão. Os testes novos desta sessão (`out_stage`
+×5, `population_std_dev` ×4, `wgsl_validation::brain_wgsl_e_valido`, `gpu_evolve` bin
+14/14 incluindo `pistas`/genoma) passam todos.
+
+**A/B PENDENTE — não rodado nesta sessão** (instrução explícita: não tocar a GPU, há 2
+baterias de currículo ocupando-a). Quando a GPU liberar, com ≥3 sementes pareadas:
+- `--ganho-saida 2.0` (controle) vs `1.0` vs `0.5`, cada um por N gerações — medir
+  `--ativacao`: % de ticks com 48/48 neurônios de L2 ativos, entropia da política
+  (alvo: sair de 0,301 para ≥0,50 nats), persistência vs baseline;
+- não-regressão: mediana de distância ≥ 80% do baseline (3.189 m) em CADA ganho testado
+  — se o ganho menor destravar entropia mas destruir a fitness, o item entra pela
+  metade (ex.: 1,5 em vez de 1,0) ou some, igual à regra do P2;
+- repetir a bateria com `--norm-l2-por-desvio` LIGADA em cima do melhor `--ganho-saida`
+  encontrado — mede se a segunda alavanca (escala) ajuda além do ganho escalar sozinho,
+  ou se é redundante com ele;
+- se a saturação não ceder com nenhuma combinação: a hipótese muda de "escala/ganho" pra
+  "os pesos de L2 aprenderam a saturar de propósito" (ex.: política bang-bang é ótima
+  nesta pista) — precisaria de medição de fitness por REGIME de ganho, não só de
+  saturação, antes de insistir nessa via.
+
+---
+
 ## P2 · Corpo
 
 Cada item entra sozinho, com ablação. A ordem vai do que mais muda o ótimo para o que

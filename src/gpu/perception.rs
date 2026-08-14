@@ -15,7 +15,7 @@
 //! O kernel escreve 56 u32 por ser (ceil(223/4) = 56). Cada byte é um canal i8
 //! empacotado little-endian:
 //!
-//! ```
+//! ```text
 //! canal ch → saida[ser * 56 + ch/4], byte = ch % 4
 //! ```
 //!
@@ -747,7 +747,7 @@ impl PerceptionGpu {
     ///
     /// # Layout de `racing_vals[i]`
     ///
-    /// ```
+    /// ```text
     /// [0] cpu_line_off_norm  — ch108: desvio lateral normalizado [-1,1]
     /// [1] cpu_d_off          — ch109: derivada do desvio (escalada), [-1,1]
     /// [2] cpu_la_off         — ch110: lookahead offset norm [-1,1]
@@ -780,7 +780,7 @@ impl PerceptionGpu {
     ///
     /// # Layout de `dist_vals[i]`
     ///
-    /// ```
+    /// ```text
     /// [0] cpu_dist_l — menor dist lateral esq a Wall (m), LAT_SAMPLES [1,3,6,9,12,16,20,26,33,40]
     /// [1] cpu_dist_r — menor dist lateral dir a Wall (m)
     /// [2] cpu_dist_f — menor dist frontal a Wall/Hole (m), FWD_SAMPLES [3..30]
@@ -808,7 +808,7 @@ impl PerceptionGpu {
     ///
     /// # Layout de `vals[i]` — 12 f32 por ser
     ///
-    /// ```
+    /// ```text
     /// [0]  prop_alignment   — cos(angle heading vs pista tangente) ∈ [-1,1]
     /// [1]  prop_speed_m_s   — |vel| em m/s ∈ [0,80]
     /// [2]  prop_lat_vel     — dot(vel,lat) em m/s ∈ [-20,20]
@@ -850,7 +850,7 @@ impl PerceptionGpu {
     ///
     /// # Layout de `extra_vals[i]`
     ///
-    /// ```
+    /// ```text
     /// [0]    reverse_timer — tempo restante em ré (s), ≥ 0.0
     /// [1..16] cfc_hidden  — hidden state do CfC de percepção (16 floats)
     /// ```
@@ -873,7 +873,7 @@ impl PerceptionGpu {
     ///
     /// # Layout de `extra2_vals[i]` (9 f32)
     ///
-    /// ```
+    /// ```text
     /// [0] slip_signal  — cross2D(fwd_norm, vel_norm) [-1,1] → ch87
     /// [1] joy_tick     — progress_speed * surface_factor [-1,1] → ch126
     /// [2] joy_streak   — joy_streak_s / 5.0 [0,1] → ch127
