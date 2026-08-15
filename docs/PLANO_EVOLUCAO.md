@@ -953,3 +953,20 @@ validado; candidato a padrão de bateria longa.
 Fila (aguardando ordem do Leonardo p/ GPU): observação do campeão 6951 m no
 laboratório (cérebro a 50 m/s) · continuação curric p/ consolidar · A/B
 curric como padrão.
+
+### P1.9 — CORREÇÃO da leitura do currículo (validação de replay, 2026-08-15)
+
+Abrir o replay corrigiu a narrativa:
+1. Os 4 degraus subiram nas gens 0-3 (48→22→18→20 completantes; limiar 12 promove
+   até com a população CAINDO) — o "currículo" durou 4 gens, o resto foi caixa
+   aberta. g3: 28/48 mortos, mediana 1905 m. Recuperação: g28 com 2 mortos,
+   obediência 0,87, mediana 5572, máx 6950 (recorde validado por setores em
+   ordem: 57/24 = 2,375V × 2928 = 6954 ≈ 6951 ✓).
+2. CONFOUND detectado: teto6-direto (ontem) partiu do campeão VELHO (linhagem
+   4898); curric e teto3-fixo partiram do NOVO (travado-cont gen0039). Válida
+   é só curric vs teto3-fixo (mesmo start): 30,0 vs 21,9 Σ≥1V/gen, 6951 vs
+   6587 m, 247 vs 156 ≥2V — caixa inteira com 4 promoções > presa na 3ª.
+3. O que falta pra fechar a causalidade (aguardando ordem de GPU): CONTROLE
+   teto6-direto partindo do MESMO travado-cont gen0039 — separa "4 promoções
+   ajudam" de "campeão novo aguenta caixa aberta". E limiar de promoção do teto
+   merece subir (ex.: 50% da população) pra currículo agir como currículo.
