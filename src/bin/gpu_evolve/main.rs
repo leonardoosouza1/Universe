@@ -319,6 +319,7 @@ fn main() {
     let mut l1_vivos: usize = 0;   // 0 = todos os 96 (sem ablacao)
     let mut retomar_mix: f32 = 0.85;   // fracao do campeao preservada nos filhos
     let mut congela_l2_cegas: bool = false;
+    let mut observar_path: Option<String> = None;
     let mut trocar_ao_completar: usize = 0;  // 0 = rotacao por geracao (comportamento atual)
     /// P1.8, achado "currículo avança com UM ser rastejando promove a turma"
     /// (`--trocar-ao-completar 1` deixava um único ser lento fechar a lição pra
@@ -581,6 +582,9 @@ fn main() {
                 // Congela a mutação das linhas 5..48 de L2 (saídas que nenhum pipeline
                 // lê — "feature neurons" sem consumidor; 4.128 pesos de busca inerte).
                 "--l2-congelar-cegas" => { congela_l2_cegas = true; }
+                // Laboratório de observação: grava a cadeia neural do ser 0 por tick
+                // (394 f32/linha, ver context.rs). Usar com --retomar --gens 1.
+                "--observar"  => { i += 1; if i < args.len() { observar_path = Some(args[i].clone()); } }
                 "--portal-curva" => { portal_curva = true; }
                 "--slow-steer" => { i += 1; if i < args.len() { slow_steer_auth = args[i].parse().unwrap_or(0.20); } }
                 "--refuel-laps"=>{ i += 1; if i < args.len() { refuel_laps = args[i].parse().unwrap_or(1).max(1); } }
@@ -738,6 +742,15 @@ fn main() {
         }
     };
     ctx.brain_skip = brain_skip;
+    if let Some(ref path) = observar_path {
+        match std::fs::File::create(path) {
+            Ok(f) => {
+                ctx.obs_writer = Some(std::io::BufWriter::new(f));
+                println!("  [observar] gravando cadeia neural do ser 0 em {path} (394 f32/tick)");
+            }
+            Err(e) => { eprintln!("ERRO --observar {path}: {e}"); std::process::exit(1); }
+        }
+    }
     // Fitness do melhor da geração anterior — o mesmo genoma reaparece sem mutação no
     // slot 0 da geração seguinte, então a comparação é do genoma consigo mesmo.
     let mut elite_fitness_anterior: Option<f64> = None;

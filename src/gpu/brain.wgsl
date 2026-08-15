@@ -884,7 +884,12 @@ fn main(
         let act_raw_l2: f32 = buf_neuron_meta[l2_act_base + j];
         let activation_off_l2: bool = (params.mech_off_mask & 8u) != 0u;
         let act_id_l2: u32 = select(u32(act_raw_l2 + 0.5), 0u, activation_off_l2);
-        buf_intent[intent_base + j] = apply_activation(act_id_l2, adapted);
+        // clamp: o comentário de apply_activation prometia "satura no clamp do
+        // chamador", mas nenhum chamador clampava — ativação linear (id=2) vazava
+        // valor CRU (medido no laboratório: slots 16/31/45 do campeão a até 3,19)
+        // e inflava toda métrica que assume intent ∈ [-1,1] (saturação, dims_sat,
+        // intent_mag). Motor (0..3) nunca foi afetado: kan_eval/context clampam.
+        buf_intent[intent_base + j] = clamp(apply_activation(act_id_l2, adapted), -1.0, 1.0);
     }
 
     // Threads 48..95: bypass de L1 → final_intent[48..95]

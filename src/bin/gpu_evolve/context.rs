@@ -44,6 +44,9 @@ pub struct GpuCtx {
     pub cell_size:   f32,
     pub percept:     PerceptionGpu,
     pub brain:       BrainGpu,
+    /// LABORATÓRIO DE OBSERVAÇÃO (`--observar`): destino da gravação por tick do
+    /// ser 0 — ver o bloco de captura em `tick()` para o layout (394 f32/linha).
+    pub obs_writer:  Option<std::io::BufWriter<std::fs::File>>,
     /// Metade LENTA do cérebro (System 2): CfC-64 → Dense → Dense, 1 tick a cada 8.
     /// Estava ausente de todo o caminho GPU — `grep slow src/gpu/` voltava vazio — o que
     /// significa que "portar o cérebro para a GPU" tinha na verdade portado só a metade
@@ -239,7 +242,7 @@ impl GpuCtx {
             buf_grid, buf_poses_retina, buf_retina_out,
             grid_size: world.size as u32,
             cell_size: world.cell_size,
-            percept, brain, slow,
+            percept, brain, slow, obs_writer: None,
             slow_samples: Vec::new(),
             last_intents: Vec::new(),
             brain_skip: 1,
@@ -1082,6 +1085,40 @@ impl GpuCtx {
             s.dt = dt;
             s
         }).collect();
+
+        // ── LABORATÓRIO DE OBSERVAÇÃO (`--observar`) ──────────────────────────
+        // Grava a cadeia neural COMPLETA do ser 0 neste tick, em f32 cru:
+        //   [tick, speed, rpm, gear, engine_temp, throttle, steer, brake, life, joy,
+        //    onda_cfc(96) canais 0..96 pós-KAN+CfC (i8 como f32),
+        //    onda_kan(96) canais 96..192 pós-KAN,
+        //    l1_raw(96)   acumulador L1 pré-tanh,
+        //    intent(96)   final_intent pós-tanh (0..48=L2, 48..96=bypass)] = 394 f32.
+        // Só quando o cérebro disparou (senão a linha repetiria a decisão anterior).
+        if self.obs_writer.is_some() && brain_fires {
+            let (l1_raw, cfc_in, kan_in) = self.brain.download_debug();
+            let p = &phys_states[0];
+            let st = &states[0];
+            let mut row: Vec<f32> = Vec::with_capacity(394);
+            row.extend_from_slice(&[
+                tick_idx as f32,
+                (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt(),
+                p.current_rpm,
+                p.current_gear as f32,
+                p.engine_temp,
+                p.throttle, p.steer, p.brake_cmd,
+                st.life_left as f32,
+                st.joy_tick,
+            ]);
+            row.extend_from_slice(&cfc_in);                 // 96
+            row.extend_from_slice(&kan_in[..96.min(kan_in.len())]); // 96
+            row.extend_from_slice(&l1_raw);                 // 96
+            row.extend_from_slice(&intents[0]);             // 96
+            debug_assert_eq!(row.len(), 394);
+            use std::io::Write as _;
+            if let Some(w) = self.obs_writer.as_mut() {
+                let _ = w.write_all(bytemuck::cast_slice(&row));
+            }
+        }
 
         // ── AMOSTRAGEM DE MÉTRICAS DE ATIVAÇÃO (E4, `--ativacao`) ───────────────
         //
