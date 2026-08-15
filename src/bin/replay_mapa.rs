@@ -104,8 +104,13 @@ fn main() {
     mundos.insert(semente0, (world, pista.clone()));
 
     let mut resumo = Vec::new();
+    // Semente da pista de CADA geração — o HTML desenhava a pista da semente 0 para
+    // todas as gens (Leonardo viu trajetórias "em outra pista" na g39: currículo tinha
+    // trocado 9001→9003 e o desenho ficou na 9001). Agora o JS troca o traçado por gen.
+    let mut gen_seeds: Vec<u64> = Vec::new();
     for (g, arq) in arquivos.iter().enumerate() {
         let semente_gen = ReplayReader::open(arq).map(|r| r.header.world_seed).unwrap_or(semente0);
+        gen_seeds.push(semente_gen);
         let (world, pista) = mundos.entry(semente_gen).or_insert_with(|| {
             let w = { let _q = universe::world::silence_map_diag(); VoxelWorld::new(semente_gen, width) };
             let p = Pista::medir(&w, width);
@@ -127,7 +132,7 @@ fn main() {
     }
     if resumo.is_empty() { eprintln!("nenhuma geração legível"); std::process::exit(1); }
 
-    let html = gerar_html(&pista, &resumo, passo, width);
+    let html = gerar_html(&pista, &mundos, &gen_seeds, &resumo, passo, width);
     let alvo = saida.join("mapa.html");
     std::fs::write(&alvo, html).ok();
     std::fs::write(saida.join("index.html"),
@@ -341,11 +346,26 @@ fn pista_semente(_w: &VoxelWorld) -> u64 { 0 }  // placeholder: a checagem real 
 
 // ── VIEWER ────────────────────────────────────────────────────────────────────
 
-fn gerar_html(pista: &Pista, resumo: &[LinhaResumo], passo: usize, width: f32) -> String {
-    let via: String = pista.pts.iter().map(|(x, z)| format!("[{x:.1},{z:.1}]"))
-        .collect::<Vec<_>>().join(",");
-    let kap: String = pista.kappa.iter().map(|k| format!("{k:.4}"))
-        .collect::<Vec<_>>().join(",");
+fn gerar_html(pista: &Pista,
+              mundos: &std::collections::HashMap<u64, (VoxelWorld, Pista)>,
+              gen_seeds: &[u64],
+              resumo: &[LinhaResumo], passo: usize, width: f32) -> String {
+    // Uma geometria por SEMENTE; o JS escolhe pela semente da geração em foco.
+    let pistas: String = {
+        let mut out = String::from("{");
+        for (seed, (_, p)) in mundos {
+            let via: String = p.pts.iter().map(|(x, z)| format!("[{x:.1},{z:.1}]"))
+                .collect::<Vec<_>>().join(",");
+            let kap: String = p.kappa.iter().map(|k| format!("{k:.4}"))
+                .collect::<Vec<_>>().join(",");
+            out.push_str(&format!(
+                "{seed}:{{via:[{via}],kap:[{kap}],lap:{:.0},raio:{:.1},setor:{}}},",
+                p.lap, p.raio_min, p.setor_do_raio_min));
+        }
+        out.push('}');
+        out
+    };
+    let gseeds: String = gen_seeds.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(",");
     let res: String = resumo.iter().enumerate().map(|(g, l)| format!(
         "{{g:{g},med:{:.0},max:{:.0},mortos:{},obed:{:.3},sent:{:.3},vel:{:.2},mortes:[{}]}}",
         l.avanco_med, l.avanco_max, l.n_mortos, l.obediencia, l.sentido, l.vel_media_vivos,
@@ -374,9 +394,9 @@ small{{color:#8b949e}}
 </style>
 <header>
   <h1>MAPA — TODAS AS GERAÇÕES</h1>
-  <span><small>volta</small> {lap:.0} m · <small>pista</small> {width:.0} m ·
-        <small>raio mínimo</small> {raio_min:.0} m <small>(setor {setor_min})</small> ·
-        <small>1 quadro =</small> {passo} ticks</span>
+  <span><small>volta</small> <b id="hlap">{lap:.0}</b> m · <small>pista</small> {width:.0} m ·
+        <small>raio mínimo</small> <b id="hraio">{raio_min:.0}</b> m <small>(setor <span id="hsetor">{setor_min}</span>)</small> ·
+        <small>1 quadro =</small> {passo} ticks · <small>semente</small> <b id="hseed">–</b></span>
 </header>
 <div class="wrap">
   <div>
@@ -437,22 +457,32 @@ small{{color:#8b949e}}
   </div>
 </div>
 <script>
-const VIA=[{via}], KAP=[{kap}], RES=[{res}];
+const PISTAS={pistas}; const GSEED=[{gseeds}]; const RES=[{res}];
 const NG=RES.length, PASSO={passo}, LARG={width}, C=12;
 const cv=document.getElementById('c'), cx=cv.getContext('2d');
 const cg=document.getElementById('cg'), gx=cg.getContext('2d');
 
-let minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9;
-for(const [x,z] of VIA){{if(x<minX)minX=x;if(x>maxX)maxX=x;if(z<minZ)minZ=z;if(z>maxZ)maxZ=z;}}
-const M=26, esc=Math.min((cv.width-2*M)/(maxX-minX),(cv.height-2*M)/(maxZ-minZ));
-const ox=(cv.width-(maxX-minX)*esc)/2-minX*esc, oz=(cv.height-(maxZ-minZ)*esc)/2-minZ*esc;
+// Pista da GERAÇÃO em foco (o currículo troca 9001↔9003 no meio da bateria).
+let VIA=[], KAP=[], esc=1, ox=0, oz=0, KMAX=1;
+const M=26;
 const PX=x=>x*esc+ox, PZ=z=>z*esc+oz;
-const KMAX=Math.max(...KAP.map(Math.abs))||1;
+function ajustaPista(g){{
+  const p=PISTAS[GSEED[g]]||PISTAS[GSEED[0]];
+  VIA=p.via; KAP=p.kap;
+  let minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9;
+  for(const [x,z] of VIA){{if(x<minX)minX=x;if(x>maxX)maxX=x;if(z<minZ)minZ=z;if(z>maxZ)maxZ=z;}}
+  esc=Math.min((cv.width-2*M)/(maxX-minX),(cv.height-2*M)/(maxZ-minZ));
+  ox=(cv.width-(maxX-minX)*esc)/2-minX*esc; oz=(cv.height-(maxZ-minZ)*esc)/2-minZ*esc;
+  KMAX=Math.max(...KAP.map(Math.abs))||1;
+  const d=(i,v)=>{{const e=document.getElementById(i); if(e)e.textContent=v;}};
+  d('hlap',p.lap.toFixed(0)); d('hraio',p.raio.toFixed(0)); d('hsetor',p.setor); d('hseed',GSEED[g]??'–');
+}}
 
 let D=null, gen=0, q=0, tocando=false, gtocando=false, veloc=1, NQ=0;
 let verRastro=true, verCurva=true, verMorte=true, soAgonia=false;
 
 async function carrega(g){{
+  ajustaPista(g);
   const r=await fetch(`g${{String(g).padStart(4,'0')}}.json`);
   D=(await r.json()).seres;
   NQ=Math.max(...D.map(s=>s.length/C));
@@ -613,7 +643,7 @@ function vivosAgora(){{
 carrega(0);
 </script>
 "##,
-        via = via, kap = kap, res = res, gmax = resumo.len().saturating_sub(1),
+        pistas = pistas, gseeds = gseeds, res = res, gmax = resumo.len().saturating_sub(1),
         lap = pista.lap, width = width, passo = passo,
         raio_min = pista.raio_min, setor_min = pista.setor_do_raio_min,
     )
