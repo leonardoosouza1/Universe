@@ -1063,7 +1063,10 @@ mod tests {
     #[test]
     fn genoma_novo_zera_l1_dos_canais_mortos() {
         use crate::perception::channels::DEAD_L1_INPUTS;
-        assert!(!DEAD_L1_INPUTS.is_empty(), "pré-condição: precisa de ao menos 1 canal morto pra testar algo");
+        // Lista vazia desde 2026-08-15 (ch70 refutado por medição — canal estava
+        // VIVO; térmica implementada em physics_power_c.wgsl). Teste vira no-op
+        // até existir canal genuinamente morto; a máquina segue no forward.
+        if DEAD_L1_INPUTS.is_empty() { return; }
         for seed in [1u64, 7, 999] {
             let g = Genome::random(seed);
             for &(ch, _motivo) in DEAD_L1_INPUTS {
@@ -1148,7 +1151,10 @@ mod tests {
     #[test]
     fn evolve_preserva_zero_dos_canais_mortos() {
         use crate::perception::channels::DEAD_L1_INPUTS;
-        assert!(!DEAD_L1_INPUTS.is_empty(), "pré-condição: precisa de ao menos 1 canal morto pra testar algo");
+        // Lista vazia desde 2026-08-15 (ch70 refutado por medição — canal estava
+        // VIVO; térmica implementada em physics_power_c.wgsl). Teste vira no-op
+        // até existir canal genuinamente morto; a máquina segue no forward.
+        if DEAD_L1_INPUTS.is_empty() { return; }
 
         let n = 10;
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();

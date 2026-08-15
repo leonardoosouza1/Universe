@@ -70,7 +70,9 @@
 ///   nunca implementou a derivada). O slot [8] do buffer temporal já guardava o
 ///   valor do tick anterior (escrito pelo próprio shader, nunca lido) — a derivada
 ///   passou a ser computada dentro do shader, sem precisar de novo dado da CPU.
-/// - **ch70 (`TireTemp`): DESLIGAR — não há dado real por trás, e não é bug
+/// - **ch70 (`TireTemp`): [REVERTIDO 2026-08-15 — ver doc de DEAD_L1_INPUTS:
+///   o canal está VIVO; physics_power_c.wgsl implementa a térmica.] Veredito
+///   original (baseado no kernel errado): DESLIGAR — não há dado real por trás, e não é bug
 ///   corrigível nesta fase.** `physics_c.wgsl:290` confirma: o slot de temperatura
 ///   do pneu é um PASSTHROUGH puro (`c.wheels[1].x` copiado sem alteração) — o
 ///   comentário do próprio shader diz "térmica no Kernel B não implementada para
@@ -686,16 +688,15 @@ pub enum ChannelSource {
 ///
 /// Cada entrada é `(índice_do_canal, motivo)`. Reversível: remover a entrada quando
 /// o motivo deixar de valer (ex.: P2 implementar a térmica do pneu).
+/// REFUTADO POR MEDIÇÃO (2026-08-15, bateria de 139 validações): ch70 (TireTemp)
+/// está VIVO nos dois campeões observados (valores 1-79, std ~7, trajetória
+/// estruturada) — o veredito "passthrough" da auditoria leu physics_c.wgsl, mas o
+/// pipeline real do gpu_evolve termina em physics_power_c.wgsl, onde a térmica É
+/// implementada (linha ~271: temp += calor_derrapagem + calor_freio − resfriamento)
+/// e AFETA o grip (linha ~230). Zerar os pesos deste canal cegava o ser para um
+/// sinal que modula a própria aderência. Lista vazia mantida (a máquina
+/// zero_dead_inputs continua no lugar para o próximo canal genuinamente morto).
 pub const DEAD_L1_INPUTS: &[(usize, &str)] = &[
-    (
-        70,
-        "TireTemp: physics_c.wgsl:290 é passthrough puro (tire_temp copiado sem \
-         alteração) — térmica do pneu não implementada (comentário do próprio \
-         shader: 'térmica no Kernel B não implementada para poupar reg'). Pendente \
-         PLANO_EVOLUCAO.md P2 item 2/3 (fase de Corpo). Não é track-specific: o \
-         valor nunca muda em NENHUMA pista/população até P2 implementar o modelo \
-         térmico.",
-    ),
 ];
 
 /// Retorna o kernel/arquivo que escreve o canal `ch` na onda sensorial.

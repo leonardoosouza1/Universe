@@ -984,3 +984,20 @@ troca é imediata; o replay que ele via era a captura TRAVADO antiga do lab
 (agora substituída pelo campeão novo). Nota de parser: frames de replay têm
 prefixo [FRAME_TAG, being] = stride 130 — ferramenta própria sempre, nunca
 parse manual (2 erros meus de offset até usar o formato real).
+
+### P1.9 — bateria de 139 validações (2026-08-15): 106 passou · 16 falhou · 14 alarme
+
+Workflow de 10 agentes temáticos, cada validação com número+comando. Triagem:
+~20 problemas eram specs MINHAS erradas nos testes (±1 de marcha ignorando que a
+1ª não existe; fórmula de RPM sem embreagem patinando; "16 Hz"=stride 4 ticks —
+reincidência do gap#1; faixas históricas). Reais e tratados:
+1. **ch70 (TireTemp) estava VIVO e nós zerávamos os pesos dele**: o veredito
+   "morto" leu physics_c.wgsl; o pipeline real termina em physics_power_c.wgsl,
+   que IMPLEMENTA a térmica (aquece por derrapagem+freio, esfria) e usa a temp
+   no GRIP. Medição: 1-79 nos dois campeões. DEAD_L1_INPUTS agora vazio; o
+   próximo campeão pode aprender a sentir o pneu. (Premissa herdada por 3
+   sessões, derrubada por validação em volume — exatamente o propósito.)
+2. Σ≥2V da linha oficial vs [setores] divergem (13 vs 22 em rpm-evolucao-s31)
+   — dois contadores com definições diferentes; investigação aberta (fila).
+3. Cruzadas log×replay com diffs ±2-5% (max/vida) — definições de população/
+   amostragem; documentar as definições é a correção, não os números.
