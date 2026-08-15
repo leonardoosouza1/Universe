@@ -936,3 +936,20 @@ sobe +1 a cada promoção por mérito (a promoção que sobe teto NÃO roda pist
 degrau por vez). Bateria cambio-curric-s{77,31} (40 gens, máx 6) rodando.
 Predição: população mantém completagem entre degraus e termina ≥ teto3 fixo em
 Σ≥1V, com marcha máx ≥4 conquistada por mérito.
+
+### P1.9 — currículo de teto: PREDIÇÃO CONFIRMADA, recorde novo (2026-08-15)
+
+Final 40 gens × 2 sementes (cambio-curric, auto, teto 2→6 por mérito):
+- s31: Σ≥1V=1201 (30,0/gen) · Σ≥2V=247 · **máx 6951 m (recorde; antes 6706)** · pico 52,9 m/s
+- s77: Σ≥1V=812 (20,3/gen) · Σ≥2V=26 · máx 6385 m · pico 56,9 m/s
+- As DUAS sementes conquistaram os 4 degraus (2→3→4→5→6) por mérito populacional.
+
+Comparação (Σ≥1V/gen): travado 23,6/36,1 · teto6 direto 0,6/0,2 · teto3 fixo 6,2/21,9
+· **currículo 20,3/30,0** — com a caixa INTEIRA liberada e voltas duplas (247 no s31).
+A mesma população que colapsava 100× com teto6 de porteira aberta domina teto6
+quando o corpo é conquistado degrau a degrau. Currículo de corpo = mecanismo
+validado; candidato a padrão de bateria longa.
+
+Fila (aguardando ordem do Leonardo p/ GPU): observação do campeão 6951 m no
+laboratório (cérebro a 50 m/s) · continuação curric p/ consolidar · A/B
+curric como padrão.
