@@ -116,3 +116,18 @@ largada — o experimento é a RECONSTRUÇÃO: 60 gens, 2 sementes. Predições:
 (a) recupera ≥70% da completagem do controle até a gen 60; (b) [regioes:L1]
 passa a achar folhas fortes por bloco; (c) se recuperar, região é viável e o
 problema de M1 era só a moeda da pressão.
+
+## Maratona-v3 (contexto) + M3 parcial + E-REG2 lançado (2026-08-15)
+
+- Maratona-v3 FECHOU: perfis em produção sem canário (100 promoções/semente;
+  s77 32,9 voltas-duplas/gen). Pistas curta/curvas/retão aprovadas.
+- M3 aos 43/60: SEMENTES OPOSTAS — s31 mal reconstrói (med 1895, Σ≥1V=15);
+  s77 reconstrói forte (26,7/gen, 520 ≥2V, máx 7980 m ≈ 70% do controle e
+  subindo). Leitura parcial: cérebro regionalizado é VIÁVEL; a travessia do
+  vale pós-amputação tem variância enorme entre sementes. Veredito na gen 60.
+- E-REG2 lançado (`--tau-semeado`): τ por bloco (visão 0,5-4 s · REFLEXO
+  parede/estrada 0,3-0,8 s · corpo 1-4 s · associativo 4-15 s), 2 sementes ×
+  60 gens, mesma partida. Predições: (a) performance não regride >20% vs
+  partida (τ re-otimiza rápido); (b) [regioes] mostra especialização por bloco
+  maior que o histórico 0-1/48; (c) se blocos convergirem de volta ao τ
+  uniforme ~2 s, "função segue tempo" é FALSA aqui.

@@ -320,6 +320,7 @@ fn main() {
     let mut retomar_mix: f32 = 0.85;   // fracao do campeao preservada nos filhos
     let mut congela_l2_cegas: bool = false;
     let mut mascara_regioes: bool = false;
+    let mut tau_semeado: bool = false;
     let mut observar_path: Option<String> = None;
     let mut trocar_ao_completar: usize = 0;  // 0 = rotacao por geracao (comportamento atual)
     /// P1.8, achado "currículo avança com UM ser rastejando promove a turma"
@@ -600,6 +601,9 @@ fn main() {
                 "--l2-congelar-cegas" => { congela_l2_cegas = true; }
                 // M3: regiões DIRIGIDAS (teto de referência) — ver evolution.rs::mascara_permite.
                 "--mascara-regioes" => { mascara_regioes = true; }
+                // E-REG2 (M2): semeia τ por BLOCO (mesmos 4 blocos do M3) — reflexo
+                // curto na parede/estrada, longo no associativo. Função segue tempo?
+                "--tau-semeado" => { tau_semeado = true; }
                 // Laboratório de observação: grava a cadeia neural do ser 0 por tick
                 // (394 f32/linha, ver context.rs). Usar com --retomar --gens 1.
                 "--observar"  => { i += 1; if i < args.len() { observar_path = Some(args[i].clone()); } }
@@ -949,6 +953,31 @@ fn main() {
     }
 
     // Parâmetros evolutivos: configuráveis via CLI, default conservador.
+    if tau_semeado {
+        // E-REG2: priors de τ por bloco (log-uniforme na faixa; d = 1/τ):
+        //   bloco 0 visão: livre (0,5-4 s, faixa atual) · bloco 1 parede/estrada:
+        //   REFLEXO 0,3-0,8 s · bloco 2 corpo: 1-4 s · bloco 3 associativo: 4-15 s.
+        // Sobrescreve τ herdado em TODA a população (é a intervenção; a mutação
+        // segue refinando a partir daí).
+        for (gi, g) in genomes.iter_mut().enumerate() {
+            for j in 0..universe::config::iara::brain::L1_NEURONS {
+                let (lo, hi): (f64, f64) = match j / 24 {
+                    0 => (0.5, 4.0),
+                    1 => (0.3, 0.8),
+                    2 => (1.0, 4.0),
+                    _ => (4.0, 15.0),
+                };
+                let u = {
+                    let mut x = (gi as u64 * 96 + j as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(pop_seed);
+                    x ^= x >> 33; x = x.wrapping_mul(0xFF51AFD7ED558CCD); x ^= x >> 33;
+                    (x % 10_000) as f64 / 10_000.0
+                };
+                let tau = lo * (hi / lo).powf(u);
+                g.tau[j] = (1.0 / tau) as f32;
+            }
+        }
+        println!("  [tau-semeado] E-REG2: τ por bloco (visão 0,5-4s · reflexo 0,3-0,8s · corpo 1-4s · associativo 4-15s)");
+    }
     if mascara_regioes {
         for g in genomes.iter_mut() { universe::gpu::evolution::aplicar_mascara_regioes(g); }
         println!("  [mascara] regiões DIRIGIDAS ativas (4 blocos de 24: visão/parede/corpo/associativo)");
