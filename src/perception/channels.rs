@@ -826,6 +826,23 @@ pub fn name_for(ch: usize) -> &'static str {
         125 => Channel::CompStress.name(),
         126 => Channel::JoyTick.name(),
         127 => Channel::JoyStreak.name(),
+        // Fallback por BLOCO (layout de perception.wgsl:19-46 + motor.rs) — cobre os
+        // 192 índices com o nome da FAMÍLIA quando o canal não tem variante no enum.
+        // "anonimo" escondia 133/192 canais em toda ferramenta de visualização.
+        0..=15   => "retina_pool",
+        16..=23  => "parede_dist_fov",
+        24..=31  => "parede_largura_fov",
+        32..=39  => "parede_curv_fov",
+        40..=47  => "estrada_perto_5-40m",
+        48..=55  => "estrada_longe_45-150m",
+        56..=59  => "material_atual",
+        60..=63  => "direcao_de_fuga",
+        78..=81  => "curvatura_lookahead",
+        90..=93  => "rastreador_centro_escuro",
+        94..=97  => "whisker_diagonal",
+        128..=143 => "fovea_hd",
+        144..=159 => "periferica_hd",
+        160..=191 => "horizonte_raw",
         _   => "anonimo",
     }
 }

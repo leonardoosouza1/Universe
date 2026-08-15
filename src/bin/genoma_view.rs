@@ -102,6 +102,7 @@ fn main() {
     let mut top = 20usize;
     let mut heatmap = false;
     let mut html_out: Option<String> = None;
+    let mut json_out: Option<String> = None;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -111,6 +112,7 @@ fn main() {
             // grupos são" — texto nao mostra topologia. `--html` escreve uma pagina
             // autocontida com o grafo do cerebro.
             "--html" => { i += 1; html_out = args.get(i).cloned(); }
+            "--json" => { i += 1; json_out = args.get(i).cloned(); }
             _ => {}
         }
         i += 1;
@@ -237,6 +239,20 @@ fn main() {
         }
     }
 
+    // `--json`: dump completo pro LABORATÓRIO DE OBSERVAÇÃO (pesos + nomes de canal
+    // + P1.7 por neurônio), via parser canônico — nunca duplicar leitura de .bin.
+    if let Some(dest) = &json_out {
+        let gen_full = universe::gpu::genome_io::load_genome(std::env::args().nth(1).unwrap().as_str()).unwrap();
+        let nomes: Vec<String> = (0..SENSORY_WAVE_SIZE).map(|c| format!("\"{}\"", name_for(c))).collect();
+        let arr = |v: &[f32]| v.iter().map(|x| format!("{x:.4}")).collect::<Vec<_>>().join(",");
+        let js = format!(
+            "{{\"l1\":[{}],\"l2\":[{}],\"tau\":[{}],\"act\":[{}],\"alpha\":[{}],\"nomes\":[{}]}}",
+            arr(&gen_full.l1), arr(&gen_full.l2), arr(&gen_full.tau),
+            arr(&gen_full.neuron_activation), arr(&gen_full.neuron_alpha),
+            nomes.join(","));
+        std::fs::write(dest, js).expect("gravar json");
+        println!("  → json do genoma em {dest}");
+    }
     if let Some(dest) = &html_out {
         match escrever_html(&g, dest) {
             Ok(_)  => println!("\n  → mapa visual do cérebro em {dest}"),
