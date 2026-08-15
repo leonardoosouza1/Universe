@@ -36,8 +36,12 @@ use universe::math::stats;
 
 const MAGIC: &[u8; 4] = b"UGEN";
 
-/// Genoma lido do disco, campo a campo. Réplica de leitura do `genome_io.rs` do
-/// `gpu_evolve` — que vive dentro do binário e não pode ser importado daqui.
+/// Genoma para exibição. Preenchido pelo parser CANÔNICO (`universe::gpu::genome_io`).
+///
+/// A réplica de leitura que vivia aqui quebrou em silêncio quando os blocos
+/// P1.6/P1.7 entraram no formato: "τ = últimos 96 floats do arquivo" passou a ler
+/// `neuron_activation` — e o campeão real (τ espalha 3,2× no log de treino)
+/// aparecia como "monotemporal 0,0×". Parser duplicado nunca mais.
 struct Genoma {
     versao: u32,
     l1: Vec<f32>,
@@ -47,34 +51,16 @@ struct Genoma {
     tau: Vec<f32>,
 }
 
-fn ler_f32(b: &[u8], off: &mut usize, n: usize) -> Vec<f32> {
-    let mut v = Vec::with_capacity(n);
-    for _ in 0..n {
-        if *off + 4 > b.len() { break; }
-        v.push(f32::from_le_bytes([b[*off], b[*off+1], b[*off+2], b[*off+3]]));
-        *off += 4;
-    }
-    v
-}
-
 fn carregar(path: &str) -> Option<Genoma> {
-    let b = std::fs::read(path).ok()?;
-    let mut off = 0usize;
-    let versao = if b.len() > 8 && &b[0..4] == MAGIC {
-        off = 8;
-        u32::from_le_bytes([b[4], b[5], b[6], b[7]])
-    } else {
-        1 // legado: sem cabeçalho, compatibilidade por comprimento
-    };
-    let l1 = ler_f32(&b, &mut off, SENSORY_WAVE_SIZE * L1_NEURONS);
-    let l2 = ler_f32(&b, &mut off, L1_NEURONS * L2_NEURONS);
-    let kan = ler_f32(&b, &mut off, 3 * 12);
-    // O que sobra divide-se entre lento e τ; τ tem tamanho fixo pelo nº de canais CfC.
-    let restante = (b.len() - off) / 4;
-    let n_tau = restante.min(L1_NEURONS);
-    let slow = ler_f32(&b, &mut off, restante.saturating_sub(n_tau));
-    let tau = ler_f32(&b, &mut off, n_tau);
-    Some(Genoma { versao, l1, l2, kan, slow, tau })
+    // Sniff só para EXIBIR a versão; a leitura em si é do parser canônico.
+    let versao = std::fs::read(path).ok()
+        .map(|b| if b.len() > 8 && &b[0..4] == MAGIC { u32::from_le_bytes([b[4],b[5],b[6],b[7]]) } else { 1 })
+        .unwrap_or(0);
+    let g = universe::gpu::genome_io::load_genome(path)?;
+    // `Genome.tau` guarda a taxa d (s⁻¹); exibição converte para τ = 1/d adiante,
+    // idêntico ao que era antes (o campo já vinha como d no formato).
+    let kan: Vec<f32> = g.kan_knots.iter().flat_map(|r| r.iter().copied()).collect();
+    Some(Genoma { versao, l1: g.l1, l2: g.l2, kan, slow: g.slow, tau: g.tau })
 }
 
 /// Histograma ASCII — a "forma" da distribuição, que média e desvio escondem.
