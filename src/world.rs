@@ -1032,6 +1032,16 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
             crate::pista_gen::do_curriculo(degrau, variante)
                 .unwrap_or_else(|| procedural_waypoints(seed))
         }
+        // Bandas de PERFIL estrutural (Leonardo 2026-08-15): 8000-8099 curta,
+        // 8100-8199 só-curvas, 8200-8299 retão — roteiam pro gerador parametrizado
+        // (pista_gen::gerar_perfil), com fallback pro procedural comum se a banda
+        // não conseguir geometria válida (informação no log, nunca silêncio).
+        8000..=8099 => crate::pista_gen::gerar_perfil(seed, "curta", 28.0)
+            .unwrap_or_else(|| { eprintln!("[pista] perfil curta s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
+        8100..=8199 => crate::pista_gen::gerar_perfil(seed, "curvas", 28.0)
+            .unwrap_or_else(|| { eprintln!("[pista] perfil curvas s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
+        8200..=8299 => crate::pista_gen::gerar_perfil(seed, "retao", 28.0)
+            .unwrap_or_else(|| { eprintln!("[pista] perfil retao s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
         _ => procedural_waypoints(seed),
     }
 }

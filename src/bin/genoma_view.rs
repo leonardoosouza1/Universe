@@ -244,12 +244,14 @@ fn main() {
     if let Some(dest) = &json_out {
         let gen_full = universe::gpu::genome_io::load_genome(std::env::args().nth(1).unwrap().as_str()).unwrap();
         let nomes: Vec<String> = (0..SENSORY_WAVE_SIZE).map(|c| format!("\"{}\"", name_for(c))).collect();
+        let docs: Vec<String> = (0..SENSORY_WAVE_SIZE)
+            .map(|c| format!("{:?}", universe::perception::channels::doc_for(c))).collect();
         let arr = |v: &[f32]| v.iter().map(|x| format!("{x:.4}")).collect::<Vec<_>>().join(",");
         let js = format!(
-            "{{\"l1\":[{}],\"l2\":[{}],\"tau\":[{}],\"act\":[{}],\"alpha\":[{}],\"nomes\":[{}]}}",
+            "{{\"l1\":[{}],\"l2\":[{}],\"tau\":[{}],\"act\":[{}],\"alpha\":[{}],\"nomes\":[{}],\"docs\":[{}]}}",
             arr(&gen_full.l1), arr(&gen_full.l2), arr(&gen_full.tau),
             arr(&gen_full.neuron_activation), arr(&gen_full.neuron_alpha),
-            nomes.join(","));
+            nomes.join(","), docs.join(","));
         std::fs::write(dest, js).expect("gravar json");
         println!("  → json do genoma em {dest}");
     }

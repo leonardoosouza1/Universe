@@ -236,6 +236,33 @@ pub fn gerar(
     None
 }
 
+/// Perfis ESTRUTURAIS de pista (pedido do Leonardo 2026-08-15: "pistas realmente
+/// diferentes, não só uma rotina da outra — curta, só curva, com retão").
+/// Cada perfil muda os parâmetros do `tracado`, não só a semente:
+///   curta:  raio_base 25-40 m, 6-9 vértices  → volta ~1200-2000 m
+///   curvas: raio_base 35-55 m, 12-16 vértices, 0-1 retas → curva atrás de curva
+///   retao:  raio_base 75-110 m, 5-7 vértices, 3-4 retas  → retas longas, poucas curvas
+/// Guardas de sempre: r_min ≥ 6 m (físico) e comprimento ≥ 600 m.
+pub fn gerar_perfil(semente: u64, perfil: &str, largura: f32) -> Option<Vec<Vec2>> {
+    for t in 0..200u64 {
+        let s = semente.wrapping_mul(2654435761).wrapping_add(t);
+        let mut r = Rng::novo(s);
+        let (n_vert, n_retas, raio) = match perfil {
+            "curta"  => (6 + (r.proximo() * 4.0) as usize, 1, r.faixa(25.0, 40.0)),
+            "curvas" => (12 + (r.proximo() * 5.0) as usize, (r.proximo() * 2.0) as usize, r.faixa(35.0, 55.0)),
+            "retao"  => (5 + (r.proximo() * 3.0) as usize, 3 + (r.proximo() * 2.0) as usize, r.faixa(75.0, 110.0)),
+            _ => return None,
+        };
+        let wps = tracado(s, n_vert, n_retas, raio);
+        let d = medir(&wps, largura, 40.0);
+        if d.comprimento < 600.0 || d.r_min < 6.0 { continue; }
+        // curta de verdade: rejeita volta acima de 2200 m
+        if perfil == "curta" && d.comprimento > 2200.0 { continue; }
+        return Some(wps);
+    }
+    None
+}
+
 /// Faixas de `d_freio` de cada degrau do currículo, escolhidas para que cada uma exija uma
 /// sonda de curvatura mais longa que a anterior (o carro tem sondas a 20, 40, 70 e 120 m).
 pub const DEGRAUS: [(f32, f32); 4] = [(2.0, 18.0), (22.0, 38.0), (45.0, 68.0), (75.0, 115.0)];
