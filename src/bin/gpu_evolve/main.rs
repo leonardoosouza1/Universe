@@ -556,6 +556,9 @@ fn main() {
                 "--wall-life" => { i += 1; if i < args.len() { wall_life     = args[i].parse().unwrap_or(0); } }
                 // FÍSICA 1: vida/tick queimada por girar acima de 90% do RPM (0=off).
                 // E-REG1: λ do custo de fiação por distância (0=off). Ver statics.rs.
+                "--fiacao-cauda" => { i += 1; if i < args.len() {
+                    FIACAO_CAUDA.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
+                } }
                 "--custo-fiacao" => { i += 1; if i < args.len() {
                     CUSTO_FIACAO.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                 } }
@@ -1056,18 +1059,25 @@ fn main() {
         {
             let lam = CUSTO_FIACAO.load(Ordering::Relaxed);
             if lam > 0.0 {
+                let cauda = FIACAO_CAUDA.load(Ordering::Relaxed) as usize;
                 ctx.fiacao_custo = genomes.iter().map(|g| {
                     let (mut num, mut den) = (0.0f64, 0.0f64);
                     for j in 0..universe::config::iara::brain::L1_NEURONS {
                         let pj = j as f64 / 96.0;
-                        for c in 0..universe::config::iara::brain::SENSORY_WAVE_SIZE {
+                        let linha: Vec<(f64, f64)> = (0..universe::config::iara::brain::SENSORY_WAVE_SIZE).map(|c| {
                             let w = g.l1[j * universe::config::iara::brain::SENSORY_WAVE_SIZE + c].abs() as f64;
                             let pc = c as f64 / 192.0;
                             let d = (pj - pc).abs();
-                            let d = d.min(1.0 - d);
-                            num += w * d;
-                            den += w;
+                            (w, d.min(1.0 - d))
+                        }).collect();
+                        // E-REG1b: com --fiacao-cauda N, só as N conexões mais FORTES do
+                        // neurônio pagam fio — é onde os genomas diferem (ver statics.rs).
+                        let mut itens = linha;
+                        if cauda > 0 {
+                            itens.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                            itens.truncate(cauda);
                         }
+                        for (w, d) in itens { num += w * d; den += w; }
                     }
                     (lam as f64 * (num / den.max(1e-9)) * 2.0) as f32
                 }).collect();

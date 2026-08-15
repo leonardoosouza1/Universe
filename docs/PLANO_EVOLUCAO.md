@@ -1001,3 +1001,19 @@ reincidência do gap#1; faixas históricas). Reais e tratados:
    — dois contadores com definições diferentes; investigação aberta (fila).
 3. Cruzadas log×replay com diffs ±2-5% (max/vida) — definições de população/
    amostragem; documentar as definições é a correção, não os números.
+
+### Definições oficiais das métricas (fecha as divergências da bateria de 139)
+
+- **≥1V/≥2V (linha gen)**: voltas por SETORES EM ORDEM (voltas_reais) desde
+  2026-08-15. Antes vinha de prog_acum e subcontava (13 vs 22).
+- **med=/max= (linha gen)**: prog_acum (projeção de arco em metros contínuos,
+  clampada em ≥0). Difere do replay (dist_acum por integração de posição a
+  16 Hz) em ±2-5% — AMBOS honestos, medem coisas diferentes; não conciliar.
+- **vida média %**: média de ticks_alive/n_ticks sobre TODOS os seres da
+  geração. hp_norm do replay é fôlego INSTANTÂNEO por frame — outra grandeza.
+- **pico m/s ([veloc])**: máximo instantâneo entre TODOS os seres vivos no
+  tick (inclui ladeira). Mediana [veloc] = velocidade média por ser (dist
+  viva/ticks vivos), mediana sobre seres.
+- **máx em METROS entre maratonas com pistas curtas NÃO é comparável** — usar
+  Σ≥2V/gen (voltas reais por geração) para comparar baterias com rodízios
+  diferentes. (v3-s77: máx 10.659 m = 6,5 voltas na curta de 1.639 m.)

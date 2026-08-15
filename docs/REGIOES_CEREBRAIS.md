@@ -81,3 +81,18 @@ campeão rpm-evolucao (config idêntica fora o λ). PREDIÇÃO REGISTRADA: com �
 a modularidade Q da L1 (protocolo E-REG0) sobe acima do nulo (−0,005) no campeão
 final, e Σ≥1V/gen fica ≥80% do controle. Se Q não subir: a pressão está fraca
 (subir λ) ou a tese M1 falha aqui — medir antes de concluir.
+
+## E-REG1 — VEREDITO: NEGATIVO com mecanismo (2026-08-15)
+
+Q(λ0)=−0,0052±0,0007 · Q(λ0,5)=−0,0057±0,0001 — idênticos ao nulo. E a métrica
+DIRETA da pressão não moveu: dist ponderada 0,2491 vs 0,2493 (acaso=0,25).
+Mecanismo: o custo é média sobre 18.432 pesos → variância entre indivíduos ≈ 0 →
+imposto CONSTANTE, que não seleciona (mesma lei do controle de Landauer:
+imposto do mesmo tamanho mas constante não desloca o ótimo). Completagem: λ0,5
+manteve 94% do controle — o custo era inócuo nos dois eixos.
+
+**E-REG1b lançado**: `--fiacao-cauda 8` — só as 8 conexões mais FORTES de cada
+neurônio pagam fio (a cauda é onde genomas diferem; Lei do Garimpo). 2 sementes,
+mesma partida/config. Predição: dist ponderada da CAUDA cai vs 0,25 e Q sobe do
+nulo; se a dist da cauda cair sem Q subir, a organização é local-sem-módulos
+(informação nova de qualquer forma).

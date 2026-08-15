@@ -120,6 +120,12 @@ pub static CUSTO_RPM: AtomicF32 = AtomicF32::new();
 /// Peso forte em fio longo encarece → seleção puxa cada neurônio pra perto do
 /// que ele escuta; regiões emergem (ou a tese falha — Q medido decide). 0 = off.
 pub static CUSTO_FIACAO: AtomicF32 = AtomicF32::new();
+/// E-REG1b: custo de fiação só na CAUDA — top-N conexões mais fortes por neurônio
+/// (0 = todas, como E-REG1). Motivo (negativo do E-REG1 com mecanismo): a média
+/// sobre 18k pesos tem variância interindividual ≈ 0 (dist 0,2491 vs 0,2493 ≈
+/// acaso 0,25) — imposto constante não seleciona (mesma lei do Landauer/controle).
+/// A cauda é onde genomas DIFEREM: seleção ganha gradiente.
+pub static FIACAO_CAUDA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static WALL_LIFE_DRAIN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Ticks de vida consumidos a mais por tick PARADO (stagnation_ticks > 128). 0 = sem custo.
 ///
