@@ -554,6 +554,10 @@ fn main() {
                 "--wall-cost" => { i += 1; if i < args.len() { wall_cost     = args[i].parse().unwrap_or(0.0); } }
                 "--brain-skip"=> { i += 1; if i < args.len() { brain_skip    = args[i].parse().unwrap_or(1).max(1); } }
                 "--wall-life" => { i += 1; if i < args.len() { wall_life     = args[i].parse().unwrap_or(0); } }
+                // FÍSICA 1: vida/tick queimada por girar acima de 90% do RPM (0=off).
+                "--custo-rpm" => { i += 1; if i < args.len() {
+                    CUSTO_RPM.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                } }
                 "--stag-life-drain" => { i += 1; if i < args.len() { stag_life = args[i].parse().unwrap_or(0); } }
                 "--same-start"=> { same_start = true; }
                 "--life-earn" => { i += 1; if i < args.len() { life_earn     = args[i].parse().unwrap_or(0.0); } }

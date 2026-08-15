@@ -883,6 +883,17 @@ impl GpuCtx {
                     // parede compra oportunidade de andar, em vez de disputar com ela.
                     states[i].life_left -= WALL_LIFE_DRAIN.load(Ordering::Relaxed) as f64;
                 }
+                // FÍSICA 1 — custo de RPM alto (ver doc de CUSTO_RPM em statics.rs):
+                // acima de 90% do giro, cada tick queima vida proporcional ao excesso.
+                // Dá à marcha um MOTIVO além da velocidade: girar menos = viver mais.
+                let custo_rpm = CUSTO_RPM.load(Ordering::Relaxed);
+                if custo_rpm > 0.0 && states[i].life_left > 0.0 {
+                    let rpm_frac = states[i].phys.current_rpm / states[i].phys.max_rpm.max(1.0);
+                    if rpm_frac > 0.9 {
+                        let excesso = ((rpm_frac - 0.9) / 0.1).min(1.5);
+                        states[i].life_left -= (custo_rpm * excesso) as f64;
+                    }
+                }
                 // Custo de estagnação: parar sem avançar QUEIMA VIDA (Conserto 1, 2026-08-12).
                 // Sintoma medido: ser para em 272 m com life=3010 ticks e fica ESTÁTICO até
                 // hp=0 (tick 4020), sem tentar sair. Com life-earn, parar é de graça porque a

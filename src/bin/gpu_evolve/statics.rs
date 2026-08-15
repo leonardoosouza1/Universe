@@ -105,6 +105,14 @@ pub const N_CHECKPOINTS: u32 = 24;
 pub static STEER_ALPHA: AtomicF32 = AtomicF32::new();
 /// Ticks de vida consumidos a mais por tick colado. Global porque o custo é aplicado
 /// dentro do laço de leitura da retina, longe do parsing de argumentos.
+/// FÍSICA POR PARTES (Leonardo 2026-08-15: "penalizar por partes, com flags de
+/// ligar/desligar, N baterias validando de verdade"). Peça 1: CUSTO DE RPM ALTO.
+/// O campeão vive 73% dos ticks no limitador (medido no laboratório) — de graça.
+/// Na física real, giro alto desgasta motor e bebe combustível. Moeda CRUZADA
+/// (lei validada no ecossistema): custa VIDA (tempo), nunca a própria fitness.
+/// Custo por tick = CUSTO_RPM × excesso, onde excesso = (rpm/max − 0,9)/0,1
+/// (0 no limiar de 90%, 1 no limitador cravado). 0 = desligado (padrão).
+pub static CUSTO_RPM: AtomicF32 = AtomicF32::new();
 pub static WALL_LIFE_DRAIN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Ticks de vida consumidos a mais por tick PARADO (stagnation_ticks > 128). 0 = sem custo.
 ///
