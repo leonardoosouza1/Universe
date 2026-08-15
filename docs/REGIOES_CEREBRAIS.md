@@ -96,3 +96,23 @@ neurônio pagam fio (a cauda é onde genomas diferem; Lei do Garimpo). 2 semente
 mesma partida/config. Predição: dist ponderada da CAUDA cai vs 0,25 e Q sobe do
 nulo; se a dist da cauda cair sem Q subir, a organização é local-sem-módulos
 (informação nova de qualquer forma).
+
+## E-REG1b — VEREDITO: NEGATIVO replicado (2026-08-15)
+
+dist CAUDA top-8: s31 0,2489 (controle 0,2464) · s77 0,2471 (partida 0,2414) —
+não caiu em nenhuma semente (se algo, subiu); Q segue no nulo. Mecanismo final
+de M1: o diferencial de custo entre indivíduos (~0,01 vida/tick mesmo na cauda)
+é ordens de grandeza menor que as diferenças de fitness por pilotagem — a
+seleção não enxerga o fio. M1 (custo em VIDA) morto neste regime, 2 desenhos ×
+2-3 braços. Alternativa não testada (fila): viés MUTACIONAL (mutação que
+encurta fio é maior/mais provável — age na geração de variação, não na seleção).
+
+## E-REG M3 — lançado: regiões DIRIGIDAS como teto de referência
+
+`--mascara-regioes`: 4 blocos de 24 neurônios (visão 0-15+128-191 · parede/
+estrada 16-63 · corpo 64-95 · associativo=tudo), peso fora da máscara = 0
+reimposto pós-mutação e no load. Campeão mascarado PERDE ~2/3 das conexões na
+largada — o experimento é a RECONSTRUÇÃO: 60 gens, 2 sementes. Predições:
+(a) recupera ≥70% da completagem do controle até a gen 60; (b) [regioes:L1]
+passa a achar folhas fortes por bloco; (c) se recuperar, região é viável e o
+problema de M1 era só a moeda da pressão.

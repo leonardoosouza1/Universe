@@ -667,10 +667,41 @@ pub struct EvoParams {
     /// Achado da bateria P1.9: congelar com o valor fixo 5 deixava as linhas 3-4
     /// mutáveis mesmo sem leitor no modo travado (padrão).
     pub l2_linhas_lidas: usize,
+    /// M3: reimpõe a máscara de regiões após cada mutação (ver mascara_permite).
+    pub mascara_regioes: bool,
 }
 
 /// Linhas de L2 com consumidor no pipeline Bevy (compat p/ testes e default).
 pub const L2_LINHAS_LIDAS: usize = 5;
+
+/// E-REG (M3, docs/REGIOES_CEREBRAIS.md): máscara DIRIGIDA de regiões — teto de
+/// referência depois que M1 (custo em vida) falhou 2× (variância interindividual
+/// do custo ≈ 0; seleção não enxerga fio). 4 blocos de 24 neurônios de L1:
+///   bloco 0 (j 0-23):  VISÃO       — canais 0-15 (retina) + 128-191 (fóvea/perif/horizonte)
+///   bloco 1 (j 24-47): PAREDE/ESTRADA — canais 16-63
+///   bloco 2 (j 48-71): CORPO/PROX  — canais 64-95
+///   bloco 3 (j 72-95): ASSOCIATIVO — todos os 192 (hub integrador)
+/// Peso fora da máscara = 0, reimposto pós-mutação e ao carregar (mesma máquina
+/// do antigo DEAD_L1_INPUTS, agora por região).
+pub fn mascara_permite(j: usize, c: usize) -> bool {
+    match j / 24 {
+        0 => c < 16 || c >= 128,
+        1 => (16..64).contains(&c),
+        2 => (64..96).contains(&c),
+        _ => true,
+    }
+}
+
+/// Zera os pesos fora da máscara de regiões (chamar pós-mutação e pós-load).
+pub fn aplicar_mascara_regioes(g: &mut Genome) {
+    for j in 0..L1_NEURONS {
+        for c in 0..SENSORY_WAVE_SIZE {
+            if !mascara_permite(j, c) {
+                g.l1[j * SENSORY_WAVE_SIZE + c] = 0.0;
+            }
+        }
+    }
+}
 
 impl Default for EvoParams {
     fn default() -> Self {
@@ -681,6 +712,7 @@ impl Default for EvoParams {
             tournament_k: 3,   // torneio de 3
             congela_l2_cegas: false,
             l2_linhas_lidas: L2_LINHAS_LIDAS,
+            mascara_regioes: false,
         }
     }
 }
@@ -794,6 +826,7 @@ pub fn evolve(
         // filhos — nenhum teste assume que `evolve()` preserva o valor cru da
         // mutação nesses canais.
         filho.zero_dead_inputs();
+        if params.mascara_regioes { aplicar_mascara_regioes(&mut filho); }
         // Mutação gaussiana em L2. Com `congela_l2_cegas`, só as linhas com
         // consumidor real (0..L2_LINHAS_LIDAS) mutam — as cegas ficam como estão
         // (nem random walk: o que o campeão tinha, fica congelado nele).
@@ -1115,7 +1148,7 @@ mod tests {
     fn evolve_pop_seeds_diferentes_divergem_e_zero_reproduz() {
         let n = 10;
         let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         let a  = evolve(&genomes, &fitnesses, &params, 1, 77);
@@ -1133,7 +1166,7 @@ mod tests {
     fn evolve_congela_linhas_cegas_de_l2() {
         let n = 10;
         let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: true, l2_linhas_lidas: L2_LINHAS_LIDAS };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: true, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         let nova = evolve(&genomes, &fitnesses, &params, 1, 0);
@@ -1160,7 +1193,7 @@ mod tests {
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
         // p_mutate=1.0: garante que TODO peso de L1 (inclusive os dos canais mortos,
         // se a máscara não fosse reaplicada) sofre tentativa de mutação toda geração.
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..10 {
@@ -1351,7 +1384,7 @@ mod tests {
         // ── Parte 1: padrão (mutação LIGADA) — faixas respeitadas + algo mudou ──
         let n = 12;
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..40 {

@@ -319,6 +319,7 @@ fn main() {
     let mut l1_vivos: usize = 0;   // 0 = todos os 96 (sem ablacao)
     let mut retomar_mix: f32 = 0.85;   // fracao do campeao preservada nos filhos
     let mut congela_l2_cegas: bool = false;
+    let mut mascara_regioes: bool = false;
     let mut observar_path: Option<String> = None;
     let mut trocar_ao_completar: usize = 0;  // 0 = rotacao por geracao (comportamento atual)
     /// P1.8, achado "currículo avança com UM ser rastejando promove a turma"
@@ -597,6 +598,8 @@ fn main() {
                 // Congela a mutação das linhas 5..48 de L2 (saídas que nenhum pipeline
                 // lê — "feature neurons" sem consumidor; 4.128 pesos de busca inerte).
                 "--l2-congelar-cegas" => { congela_l2_cegas = true; }
+                // M3: regiões DIRIGIDAS (teto de referência) — ver evolution.rs::mascara_permite.
+                "--mascara-regioes" => { mascara_regioes = true; }
                 // Laboratório de observação: grava a cadeia neural do ser 0 por tick
                 // (394 f32/linha, ver context.rs). Usar com --retomar --gens 1.
                 "--observar"  => { i += 1; if i < args.len() { observar_path = Some(args[i].clone()); } }
@@ -946,12 +949,17 @@ fn main() {
     }
 
     // Parâmetros evolutivos: configuráveis via CLI, default conservador.
+    if mascara_regioes {
+        for g in genomes.iter_mut() { universe::gpu::evolution::aplicar_mascara_regioes(g); }
+        println!("  [mascara] regiões DIRIGIDAS ativas (4 blocos de 24: visão/parede/corpo/associativo)");
+    }
     let evo_params = EvoParams {
         p_mutate:    evo_p_mutate,
         sigma:       evo_sigma,
         n_elite:     evo_n_elite,
         tournament_k: evo_tourney,
         congela_l2_cegas,
+        mascara_regioes,
         // 5 linhas lidas só quando o câmbio neural dá leitor ao intent[3]/[4];
         // travado/auto: 3 (throttle/steer/brake).
         l2_linhas_lidas: if CAMBIO_MODO.load(Ordering::Relaxed) == 2 { 5 } else { 3 },
