@@ -61,3 +61,13 @@ Entra depois que M1-M3 derem um mapa; é a ponte com a linha neuromod/EXP10.
 - Predição registrada ANTES de cada bateria; negativo documentado com mecanismo.
 - Números idênticos entre sementes = alarme; validar com replay/mapa, não só log.
 - Custos em moeda CRUZADA (vida/tempo), nunca desconto direto na fitness.
+
+## E-REG0 — resultado (2026-08-15)
+
+Modularidade da L1 do campeão 6951 m (k-means na assinatura de entrada + Q de
+comunidade, 20 nulos por permutação de colunas): **Q ≈ −0,005 em k=2..8, idêntico
+ao nulo (−0,0049 ± 0,0000)**. O cérebro atual NÃO tem regiões — cada neurônio
+escuta mistura estatisticamente igual (consistente com PR 6,7/96 distribuído e
+ablação 96→64 que derruba 576→19 m). Ponto de partida limpo para M1: qualquer
+Q acima do nulo sob custo de fiação é emergência real. Ferramenta: o cálculo
+vira função em src/analysis quando E-REG1 entrar (por ora, protocolo neste doc).
