@@ -970,3 +970,17 @@ Abrir o replay corrigiu a narrativa:
    teto6-direto partindo do MESMO travado-cont gen0039 — separa "4 promoções
    ajudam" de "campeão novo aguenta caixa aberta". E limiar de promoção do teto
    merece subir (ex.: 50% da população) pra currículo agir como currículo.
+
+### P1.9 — custo de RPM: veredito final (2026-08-15)
+
+Bateria rpm-evolucao (custo 2.0, cambio auto, 30 gens × 2 sementes) vs controle
+cambio-curric (sem custo): Σ≥1V/gen 35,4/37,4 vs 30,0 · Σ≥2V 269/312 vs 247 ·
+vida 88-99%. Campeão novo em observação de 20k ticks: RPM méd 8155→4241, tempo
+≥90% do giro 86%→3%, marchas 2ª-5ª em uso. A física com válvula de escape
+ENSINOU a poupar motor sem perder completagem (ritmo médio menor: 12,3 vs 20,4
+m/s — troca deliberada). Pergunta do Leonardo "não troca 2ª→3ª?" validada nos
+dados: em 240k frames da maratona, ZERO frames de 2ª acima de 18,5 m/s — a
+troca é imediata; o replay que ele via era a captura TRAVADO antiga do lab
+(agora substituída pelo campeão novo). Nota de parser: frames de replay têm
+prefixo [FRAME_TAG, being] = stride 130 — ferramenta própria sempre, nunca
+parse manual (2 erros meus de offset até usar o formato real).
