@@ -236,29 +236,89 @@ pub fn gerar(
     None
 }
 
+/// Densifica uma polilinha fechada: insere pontos interpolados a cada `passo` metros.
+/// As pistas de perfil saem do `tracado` com 7-15 VÉRTICES crus — waypoints esparsos
+/// quebram o sistema de 24 setores (medido na maratona: seres com 5 voltas por metros
+/// e [setores] preso em 16/24, 0 voltas reais → promoção nunca dispara). As pistas
+/// normais têm ~1 waypoint a cada 23 m; igualamos.
+pub fn densificar(wps: &[Vec2], passo: f32) -> Vec<Vec2> {
+    let n = wps.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let a = wps[i];
+        let b = wps[(i + 1) % n];
+        let d = (b - a).length();
+        let divisoes = (d / passo).ceil().max(1.0) as usize;
+        for k in 0..divisoes {
+            out.push(a + (b - a) * (k as f32 / divisoes as f32));
+        }
+    }
+    out
+}
+
+/// Mesmo grid de `world.rs::GRID_CELLS` (320 cells) menos 40 cells de margem (20 de
+/// cada lado, pro raio de detecção de parede e deslocamento lateral do spawn) —
+/// duplicado aqui porque `pista_gen` é dependência de `world`, não o contrário, e
+/// não vale inverter só por esta constante. Se um mudar, o outro tem de mudar
+/// junto — não há teste cross-crate pra isso, só este comentário.
+///
+/// Existe porque `perfil_para_cells` (world.rs) ENCOLHE uniformemente qualquer
+/// pista cujo span passe disto — e o encolhimento muda a volta REAL sem que
+/// `gerar_perfil` saiba (achado 2026-08-15: sem este guard, uma pista aceita aqui
+/// como "2800 m" podia sair do encolhimento com bem menos, e o rótulo mentia).
+/// Rejeitando aqui, o `d.comprimento` medido é sempre o que chega ao jogo.
+const SPAN_MAX_CELLS: f32 = 280.0;
+
+/// Faixa de volta REAL (metros, medida por `medir()`) que cada perfil promete.
+/// Mesmo espírito de `DEGRAUS`: devolver `None` em vez de uma pista fora da
+/// faixa fingindo ser a pedida.
+const FAIXA_PERFIL: [(&str, f32, f32); 3] = [
+    ("curta", 1200.0, 2000.0),
+    ("curvas", 1800.0, 2600.0),
+    ("retao", 2200.0, 3200.0),
+];
+
 /// Perfis ESTRUTURAIS de pista (pedido do Leonardo 2026-08-15: "pistas realmente
 /// diferentes, não só uma rotina da outra — curta, só curva, com retão").
-/// Cada perfil muda os parâmetros do `tracado`, não só a semente:
-///   curta:  raio_base 25-40 m, 6-9 vértices  → volta ~1200-2000 m
-///   curvas: raio_base 35-55 m, 12-16 vértices, 0-1 retas → curva atrás de curva
-///   retao:  raio_base 75-110 m, 5-7 vértices, 3-4 retas  → retas longas, poucas curvas
-/// Guardas de sempre: r_min ≥ 6 m (físico) e comprimento ≥ 600 m.
+/// Cada perfil muda os parâmetros do `tracado`, não só a semente. `raio_base` é
+/// CELLS — mesma convenção de `gerar()`/`do_curriculo` (não metros: `tracado`
+/// nunca converteu; achado 2026-08-15 medindo em vez de supor). As faixas abaixo
+/// foram calibradas EMPIRICAMENTE contra `medir()` até bater `FAIXA_PERFIL`:
+///   curta:  raio_base 60-110 cells, 6-9 vértices  → volta 1200-2000 m
+///   curvas: raio_base 95-150 cells, 12-16 vértices, 0-1 retas → curva atrás de curva
+///   retao:  raio_base 170-260 cells, 5-7 vértices, 3-4 retas  → retas longas, poucas curvas
+/// Guardas de sempre: r_min ≥ 6 m (físico), span ≤ `SPAN_MAX_CELLS` (cabe no grid
+/// sem o encolhimento de `perfil_para_cells` mexer na volta prometida).
+///
+/// Devolve METROS de verdade (não cells): converte a saída CRUA de `tracado()`
+/// (cells) antes de densificar, porque `densificar(passo)` opera na MESMA
+/// unidade dos pontos que recebe — passar `passo=23.0` como "23 metros" contra
+/// pontos ainda em cells fazia o espaçamento real sair 3× maior (69 m), 13
+/// waypoints em vez de ~32 (achado 2026-08-15). O contrato de saída "metros" é
+/// o que `world.rs::perfil_para_cells` já espera (nome e comentário de lá).
 pub fn gerar_perfil(semente: u64, perfil: &str, largura: f32) -> Option<Vec<Vec2>> {
-    for t in 0..200u64 {
+    let (_, faixa_lo, faixa_hi) = FAIXA_PERFIL.iter().find(|(p, _, _)| *p == perfil)?;
+    for t in 0..2000u64 {
         let s = semente.wrapping_mul(2654435761).wrapping_add(t);
         let mut r = Rng::novo(s);
         let (n_vert, n_retas, raio) = match perfil {
-            "curta"  => (6 + (r.proximo() * 4.0) as usize, 1, r.faixa(25.0, 40.0)),
-            "curvas" => (12 + (r.proximo() * 5.0) as usize, (r.proximo() * 2.0) as usize, r.faixa(35.0, 55.0)),
-            "retao"  => (5 + (r.proximo() * 3.0) as usize, 3 + (r.proximo() * 2.0) as usize, r.faixa(75.0, 110.0)),
+            "curta"  => (6 + (r.proximo() * 4.0) as usize, 1, r.faixa(60.0, 110.0)),
+            "curvas" => (12 + (r.proximo() * 5.0) as usize, (r.proximo() * 2.0) as usize, r.faixa(95.0, 150.0)),
+            "retao"  => (5 + (r.proximo() * 3.0) as usize, 3 + (r.proximo() * 2.0) as usize, r.faixa(170.0, 260.0)),
             _ => return None,
         };
         let wps = tracado(s, n_vert, n_retas, raio);
         let d = medir(&wps, largura, 40.0);
-        if d.comprimento < 600.0 || d.r_min < 6.0 { continue; }
-        // curta de verdade: rejeita volta acima de 2200 m
-        if perfil == "curta" && d.comprimento > 2200.0 { continue; }
-        return Some(wps);
+        if d.r_min < 6.0 { continue; }
+        if d.comprimento < *faixa_lo || d.comprimento > *faixa_hi { continue; }
+        let (mut mn, mut mx) = (Vec2::new(f32::MAX, f32::MAX), Vec2::new(f32::MIN, f32::MIN));
+        for p in &wps { mn = mn.min(*p); mx = mx.max(*p); }
+        let span = mx - mn;
+        if span.x.max(span.y) > SPAN_MAX_CELLS { continue; }
+        // tracado() é CELLS (mesma convenção de do_curriculo); converte pra METROS
+        // AQUI, antes de densificar com passo real de 23 m — ver doc da função.
+        let wps_m: Vec<Vec2> = wps.iter().map(|p| *p * CELULA).collect();
+        return Some(densificar(&wps_m, 23.0));
     }
     None
 }

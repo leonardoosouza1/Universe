@@ -40,6 +40,18 @@ pub struct ObjectProposal {
     pub curvature: f32,
 }
 
+/// Fonte única do tamanho do grid — `VoxelWorld::new` (cells, ver `size` ali) e
+/// `perfil_para_cells` usavam números divergentes (320 real vs. 160 num comentário
+/// morto) porque cada um tinha sua própria constante mágica. Debug de unidades
+/// 2026-08-15: `size` mudou de 160→320 num commit anterior e ninguém atualizou os
+/// dois comentários que citavam "grid 160×160" nem o centro (80,80) que dependia
+/// dele — a pista de perfil acabava recentrada 80 células (240 m) fora do centro
+/// real do mundo. CENTRO é o geométrico do grid (`GRID_CELLS/2`); as pistas
+/// legadas abaixo (Dubai/Monaco/etc. e `pista_gen::tracado`, centro (120,120))
+/// são de um layout AINDA mais antigo e só continuam válidas por sorte de span
+/// pequeno — não mexidas aqui, fora do escopo deste conserto.
+pub const GRID_CELLS: f32 = 320.0; // == `size` em VoxelWorld::new; 320×320×3m = 960×960m
+
 #[derive(Resource, Default)]
 pub struct VoxelWorldResource(pub VoxelWorld);
 
@@ -69,7 +81,7 @@ pub struct VoxelWorld {
 
 impl VoxelWorld {
     pub fn new(_seed: u64, track_width: f32) -> Self {
-        let size = 320; // 320×320 cells × 3m = 960×960m world (mapa maior)
+        let size = GRID_CELLS as usize; // 320×320 cells × 3m = 960×960m world (mapa maior)
         let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
         let mut flow = vec![Vec2::ZERO; size * size];
@@ -959,8 +971,50 @@ fn dist_to_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 // TRACK LIBRARY — waypoints por seed (progressão easy → very hard)
 // ----------------------------------------------------------------------------
 // Coordenadas em CELLS (multiplicadas por cell_size=3m no VoxelWorld::new).
-// Grid 160×160 cells = 480×480m. Manter waypoints entre [10, 150] pra buffer.
+// Grid real = GRID_CELLS×GRID_CELLS = 320×320 cells = 960×960m (`VoxelWorld::new`,
+// size). As pistas escritas à mão logo abaixo (Dubai 123, Interlagos 64, Monaco
+// 256, Silverstone 512, Nürburgring 768, Suzuka 1024) e `pista_gen::tracado()`
+// foram desenhadas para um grid MENOR (comentários antigos citam 240×240,
+// centro 120) que já não existe — sobrevivem sem tocar a borda só porque o span
+// delas (raio até ~110 cells) cabe dentro de [0,320] mesmo fora do centro
+// verdadeiro. Não mexidas aqui (fora do escopo do debug de unidades 2026-08-15).
+// Pistas NOVAS (perfil / currículo) devem usar `GRID_CELLS` como fonte única,
+// não reinventar a constante — foi exatamente a duplicação (160 vs 320) que
+// causou o recentro errado corrigido abaixo.
 // ============================================================================
+/// Metros → cells (3 m) + recentro no CENTRO GEOMÉTRICO real do grid
+/// (`GRID_CELLS/2`); encolhe com aviso se não couber.
+///
+/// `wps_m` tem de estar em METROS de verdade — é o contrato de saída de
+/// `pista_gen::gerar_perfil` (que converte a saída CELLS de `tracado()` para
+/// metros antes de densificar; ver comentário lá). Achado 2026-08-15: esta
+/// função dividia por CELL uma entrada que JÁ estava em cells (o bug estava em
+/// `gerar_perfil`, não aqui) — a volta saía 3× menor (607m → 202m, seed 8005).
+/// Certo agora: gerar_perfil devolve metros de verdade, aqui dividimos 1× só.
+fn perfil_para_cells(wps_m: &[Vec2]) -> Vec<Vec2> {
+    const CELL: f32 = 3.0;
+    let mut wps: Vec<Vec2> = wps_m.iter().map(|p| *p / CELL).collect();
+    let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+    for p in &wps { min = min.min(*p); max = max.max(*p); }
+    let span = max - min;
+    // Margem de 20 cells (60m) pra cada lado — sobra pro raio de detecção de
+    // parede e pro deslocamento lateral do spawn. Antes: "cabe=130" e
+    // "centro_grid=80" eram calibrados pra um grid de 160 cells que não existe
+    // mais (real = 320, `GRID_CELLS`); o recentro caía 80 cells (240m) fora do
+    // centro verdadeiro (160,160), num canto do mundo real.
+    let margem = 20.0;
+    let cabe = GRID_CELLS - 2.0 * margem;
+    let escala = (cabe / span.x.max(span.y)).min(1.0);
+    if escala < 1.0 {
+        eprintln!("[pista] perfil não coube no grid (span {:.0}x{:.0} cells, limite {cabe:.0}) — encolhido {:.0}%",
+                  span.x, span.y, escala * 100.0);
+    }
+    let centro_atual = (min + max) * 0.5;
+    let centro_grid = Vec2::splat(GRID_CELLS / 2.0);
+    for p in wps.iter_mut() { *p = centro_grid + (*p - centro_atual) * escala; }
+    wps
+}
+
 pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
     match seed {
         // Dubai Oval — EASY: oval largo, curvas suaves <45°, runway longo.
@@ -1032,15 +1086,22 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
             crate::pista_gen::do_curriculo(degrau, variante)
                 .unwrap_or_else(|| procedural_waypoints(seed))
         }
+        // `gerar_perfil` devolve METROS de verdade (ver comentário lá); `perfil_para_cells`
+        // converte pra CELLS e recentra no centro geométrico do grid real (`GRID_CELLS`,
+        // 320×320 — ver header desta seção). Se mesmo recentrada não couber, encolhe
+        // uniformemente e AVISA (pista menor que a pedida é informação, nunca silêncio).
         // Bandas de PERFIL estrutural (Leonardo 2026-08-15): 8000-8099 curta,
         // 8100-8199 só-curvas, 8200-8299 retão — roteiam pro gerador parametrizado
         // (pista_gen::gerar_perfil), com fallback pro procedural comum se a banda
         // não conseguir geometria válida (informação no log, nunca silêncio).
         8000..=8099 => crate::pista_gen::gerar_perfil(seed, "curta", 28.0)
+            .map(|wps| perfil_para_cells(&wps))
             .unwrap_or_else(|| { eprintln!("[pista] perfil curta s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
         8100..=8199 => crate::pista_gen::gerar_perfil(seed, "curvas", 28.0)
+            .map(|wps| perfil_para_cells(&wps))
             .unwrap_or_else(|| { eprintln!("[pista] perfil curvas s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
         8200..=8299 => crate::pista_gen::gerar_perfil(seed, "retao", 28.0)
+            .map(|wps| perfil_para_cells(&wps))
             .unwrap_or_else(|| { eprintln!("[pista] perfil retao s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
         _ => procedural_waypoints(seed),
     }
@@ -1378,6 +1439,20 @@ pub fn track_start_for_seed(seed: u64) -> Vec2 {
         512  => Vec2::new(95.0, 62.0),   // Silverstone
         768  => Vec2::new(95.0, 68.0),   // Nürburgring
         1024 => Vec2::new(80.0, 70.0),   // Suzuka
+        // Achado 2026-08-15 (debug de unidades): currículo (≥1_000_000) e perfil
+        // (8000-8299) caíam no braço `_` abaixo, que chama `procedural_waypoints(seed)`
+        // — uma pista candidata TOTALMENTE diferente da que `track_waypoints_for_seed`
+        // de fato construiu pro mundo (do_curriculo / gerar_perfil). O carro não nascia
+        // fora da pista de verdade (start_progress ainda projeta no traçado real, ver
+        // `VoxelWorld::new`), mas a largada saía num ponto arbitrário da volta, gastava
+        // até 96 tentativas de `generate_track_candidate` à toa, e disparava o aviso
+        // "96 tentativas... caindo no candidato de reserva" em TODO boot dessas sementes
+        // — ruído que quase escondeu o bug real desta investigação. Roteando pro
+        // traçado que o mundo de fato usa.
+        s if s >= 1_000_000 || (8000..=8299).contains(&s) => {
+            let wp = track_waypoints_for_seed(seed);
+            if wp.len() >= 2 { (wp[0] + wp[1]) * 0.5 } else { Vec2::new(50.0, 20.0) }
+        }
         // Procedural: spawn at midpoint between waypoint[0] and waypoint[1] (forward into track).
         _    => {
             let wp = procedural_waypoints(seed);
