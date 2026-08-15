@@ -925,3 +925,14 @@ global (diferente do teto 6, que caiu 6-100×). Se falhar igual ao teto 6, a
 leitura muda: o problema não é a cegueira acima de 28 m/s, é a política de
 frenagem/curva co-adaptada à marcha 2 — e o degrau precisa ser o currículo
 (teto sobe DENTRO da bateria quando a população completa volta).
+
+### P1.9 — resultado teto3 + currículo de teto lançado
+
+teto3 fixo (30 gens, por gen): Σ≥1V/gen 6,2/21,9 vs travado 23,6/36,1 — predição
+"supera em 30 gens" REFUTADA; mas ≥2V=156 (s31), máx 6587 m, pico 37 m/s = 30-100×
+melhor que teto6, readaptação em curso. Leitura: degrau único ainda é grande demais
+OU 30 gens é pouco. Resposta: `--cambio-curriculo` — teto começa em 2 (≡ travado) e
+sobe +1 a cada promoção por mérito (a promoção que sobe teto NÃO roda pista; um
+degrau por vez). Bateria cambio-curric-s{77,31} (40 gens, máx 6) rodando.
+Predição: população mantém completagem entre degraus e termina ≥ teto3 fixo em
+Σ≥1V, com marcha máx ≥4 conquistada por mérito.

@@ -83,6 +83,13 @@ pub static CAMBIO_MODO: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 /// (30,5 m/s) sobe o limite ~40% ficando na borda da percepção — degrau de
 /// currículo do CORPO, não do cérebro.
 pub static CAMBIO_TETO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6);
+/// `--cambio-curriculo`: o teto COMEÇA em 2 (≡ travado) e sobe +1 a cada promoção
+/// por mérito (mesmo gatilho da rotação de pista), até `CAMBIO_TETO_MAX` (o valor
+/// de `--cambio-teto`). A promoção que sobe o teto NÃO roda a pista — um degrau
+/// de cada vez, corpo primeiro, pista depois (teto3 fixo: readaptação incompleta
+/// em 30 gens, Σ≥1V/gen 6-22 vs 24-36 do travado; teto6 direto: colapso 30-100×).
+pub static CAMBIO_CURRICULO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static CAMBIO_TETO_MAX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6);
 pub static VEL_PICO: AtomicF32 = AtomicF32::new();
 pub static MARCHA_PICO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Autoridade da metade lenta sobre o volante (padrão 0,20 histórico).

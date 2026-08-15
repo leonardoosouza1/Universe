@@ -572,6 +572,7 @@ fn main() {
                 "--sem-buracos" => { universe::world::NO_HOLES.store(true, Ordering::Relaxed); }
                 // Câmbio: travado (histórico, teto 21,5 m/s), auto (RPM, paridade Bevy)
                 // ou neural (auto + intent[3]/[4]). Ver CAMBIO_MODO em statics.rs.
+                "--cambio-curriculo" => { CAMBIO_CURRICULO.store(true, Ordering::Relaxed); }
                 "--cambio-teto" => { i += 1; if i < args.len() {
                     CAMBIO_TETO.store(args[i].parse().unwrap_or(6).clamp(2, 6), Ordering::Relaxed);
                 } }
@@ -745,6 +746,13 @@ fn main() {
         }
     };
     ctx.brain_skip = brain_skip;
+    if CAMBIO_CURRICULO.load(Ordering::Relaxed) {
+        // O valor de --cambio-teto vira o MÁXIMO; o teto vivo começa em 2 (≡ travado).
+        CAMBIO_TETO_MAX.store(CAMBIO_TETO.load(Ordering::Relaxed), Ordering::Relaxed);
+        CAMBIO_TETO.store(2, Ordering::Relaxed);
+        println!("  [cambio] currículo de teto LIGADO: começa na marcha 2, sobe por mérito até {}",
+                 CAMBIO_TETO_MAX.load(Ordering::Relaxed));
+    }
     if let Some(ref path) = observar_path {
         match std::fs::File::create(path) {
             Ok(f) => {
@@ -1637,6 +1645,19 @@ fn main() {
         let cond_populacao = v1 >= limiar_efetivo;
         let cond_veloc = v1 >= trocar_ao_completar && vmed >= curriculo_veloc_min;
         if trocar_ao_completar > 0 && (cond_populacao || cond_veloc) {
+            // Currículo de TETO DE MARCHA: a promoção sobe o corpo ANTES de rodar a
+            // pista — um degrau por vez. Só quando o teto está no máximo a promoção
+            // volta a rodar a pista.
+            let teto_atual = CAMBIO_TETO.load(Ordering::Relaxed);
+            let teto_max   = CAMBIO_TETO_MAX.load(Ordering::Relaxed);
+            if CAMBIO_CURRICULO.load(Ordering::Relaxed)
+                && CAMBIO_MODO.load(Ordering::Relaxed) > 0
+                && teto_atual < teto_max
+            {
+                CAMBIO_TETO.store(teto_atual + 1, Ordering::Relaxed);
+                println!("  [cambio] população completou a volta ({v1} seres) — teto de marcha {} → {} (pista continua {})",
+                         teto_atual, teto_atual + 1, world_seed_atual);
+            } else {
             idx_curriculo += 1;
             let proxima = pista_da_gen(&pistas, idx_curriculo);
             let via = if cond_populacao {
@@ -1649,6 +1670,7 @@ fn main() {
             println!(
                 "  [curriculo] {} seres completaram a volta via {} — pista {} → {}",
                 v1, via, world_seed_atual, proxima);
+            }
         } else if trocar_ao_completar > 0 && v1 > 0 {
             // Visível mesmo quando NÃO promove: sem isto, "por que não trocou" exige
             // reler o código toda vez que alguém completa a volta e a pista não muda.
