@@ -660,12 +660,16 @@ pub struct EvoParams {
     /// nenhum pipeline lê final_intent[5..48) — são 4.128 pesos de espaço de busca
     /// inerte, carregados por carona genética do elitismo (linhas cegas ficaram
     /// estatisticamente indistinguíveis das lidas em cosseno/curtose nas 2 sementes).
-    /// Linhas 0..5 seguem mutáveis: 0-2 = throttle/steer/brake, 3-4 = câmbio
-    /// (Bevy sempre; gpu_evolve sob `--cambio neural`).
+    /// Linhas 0..l2_linhas_lidas seguem mutáveis.
     pub congela_l2_cegas: bool,
+    /// Quantas linhas de L2 têm consumidor real NO MODO ATUAL: 3 (throttle/steer/
+    /// brake) com câmbio travado/auto, 5 com `--cambio neural` (intent[3]/[4]).
+    /// Achado da bateria P1.9: congelar com o valor fixo 5 deixava as linhas 3-4
+    /// mutáveis mesmo sem leitor no modo travado (padrão).
+    pub l2_linhas_lidas: usize,
 }
 
-/// Linhas de L2 com consumidor real (ver doc de `congela_l2_cegas`).
+/// Linhas de L2 com consumidor no pipeline Bevy (compat p/ testes e default).
 pub const L2_LINHAS_LIDAS: usize = 5;
 
 impl Default for EvoParams {
@@ -676,6 +680,7 @@ impl Default for EvoParams {
             n_elite: 3,        // top 3 passam sem mutação
             tournament_k: 3,   // torneio de 3
             congela_l2_cegas: false,
+            l2_linhas_lidas: L2_LINHAS_LIDAS,
         }
     }
 }
@@ -793,7 +798,7 @@ pub fn evolve(
         // consumidor real (0..L2_LINHAS_LIDAS) mutam — as cegas ficam como estão
         // (nem random walk: o que o campeão tinha, fica congelado nele).
         let l2_limite = if params.congela_l2_cegas {
-            L2_LINHAS_LIDAS * L1_NEURONS
+            params.l2_linhas_lidas.min(L2_NEURONS) * L1_NEURONS
         } else {
             filho.l2.len()
         };
@@ -1107,7 +1112,7 @@ mod tests {
     fn evolve_pop_seeds_diferentes_divergem_e_zero_reproduz() {
         let n = 10;
         let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         let a  = evolve(&genomes, &fitnesses, &params, 1, 77);
@@ -1125,7 +1130,7 @@ mod tests {
     fn evolve_congela_linhas_cegas_de_l2() {
         let n = 10;
         let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: true };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: true, l2_linhas_lidas: L2_LINHAS_LIDAS };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         let nova = evolve(&genomes, &fitnesses, &params, 1, 0);
@@ -1149,7 +1154,7 @@ mod tests {
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
         // p_mutate=1.0: garante que TODO peso de L1 (inclusive os dos canais mortos,
         // se a máscara não fosse reaplicada) sofre tentativa de mutação toda geração.
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..10 {
@@ -1340,7 +1345,7 @@ mod tests {
         // ── Parte 1: padrão (mutação LIGADA) — faixas respeitadas + algo mudou ──
         let n = 12;
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false };
+        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..40 {

@@ -1053,9 +1053,14 @@ impl GpuCtx {
                         s.current_gear = (s.current_gear as i32 + req).clamp(2, 6) as u32;
                         states[i].shift_cooldown = 0.35;
                     }
+                    // prev SÓ atualiza quando a troca era possível (cooldown zerado,
+                    // fora da ré): borda que sobe DURANTE cooldown/ré fica "pendente"
+                    // e dispara na primeira janela válida. Atualizar sempre engolia a
+                    // borda (prev virava 1 antes da janela abrir) — achado da bateria
+                    // de validação P1.9, dois sítios (cooldown e pós-ré).
+                    states[i].shift_up_prev   = intent[3];
+                    states[i].shift_down_prev = intent[4];
                 }
-                states[i].shift_up_prev   = intent[3];
-                states[i].shift_down_prev = intent[4];
             }
             // Telemetria de pico (prova de vida do câmbio — ver statics.rs).
             if speed_now > VEL_PICO.load(Ordering::Relaxed) {

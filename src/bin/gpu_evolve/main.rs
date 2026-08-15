@@ -930,6 +930,9 @@ fn main() {
         n_elite:     evo_n_elite,
         tournament_k: evo_tourney,
         congela_l2_cegas,
+        // 5 linhas lidas só quando o câmbio neural dá leitor ao intent[3]/[4];
+        // travado/auto: 3 (throttle/steer/brake).
+        l2_linhas_lidas: if CAMBIO_MODO.load(Ordering::Relaxed) == 2 { 5 } else { 3 },
     };
 
     // ── Histórico de medianas (para inclinação ao final) ──────────────────────
@@ -1077,6 +1080,12 @@ fn main() {
         for i in 0..n_seres {
             ctx.brain.reset_cfc(i);
         }
+        // Mesma família: `last_intents` (decisão cacheada p/ ticks em que o cérebro
+        // não dispara) e `brain_tick` atravessavam a fronteira de geração — os
+        // primeiros ticks da gen nova reusavam a ÚLTIMA decisão da gen anterior
+        // (achado da bateria de validação P1.9).
+        ctx.last_intents.clear();
+        ctx.brain_tick = 0;
 
         // ── Estado inicial dos seres ────────────────────────────────────────────
         // Distribui ao longo dos waypoints (diversidade de posição inicial).
@@ -2047,6 +2056,12 @@ fn main() {
                     &modo_fitness, ho_seed, &kan_knots_global,
                 );
                 AUDITAR.store(auditar_visao, Ordering::Relaxed);
+                // Mesma classe do toggle AUDITAR acima: o held-out roda ctx.tick()
+                // com os MESMOS statics de telemetria — sem este reset, o pico de
+                // velocidade/marcha da pista RESERVADA vazava pro [veloc] da
+                // geração de treino seguinte (achado da bateria de validação P1.9).
+                VEL_PICO.store(0.0, Ordering::Relaxed);
+                MARCHA_PICO.store(0, Ordering::Relaxed);
                 // `avaliar_held_out` trocou a pista na GPU para `ho_seed` — a
                 // próxima geração detecta isso (`seed_gen != world_seed_atual`,
                 // topo do laço) e recarrega a pista de treino sozinha, sem

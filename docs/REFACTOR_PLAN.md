@@ -875,3 +875,26 @@ idênticos (`MorphoGenes`, `EliteDna`, `SCAR_TTL_INITIAL`, etc.) ambos via
 ---
 
 *Fim do REFACTOR_PLAN.md — versão 1.0, 2026-08-13*
+
+## E7 — dívidas confirmadas pela bateria de validação P1.9 (2026-08-14, 23 achados)
+
+Consertados no ato: contaminação held-out de VEL_PICO/MARCHA_PICO; last_intents/
+brain_tick vazando entre gerações; borda do câmbio neural engolida por cooldown/ré;
+l2_linhas_lidas condicionado ao modo; limpeza-dados.sh (set -e frágil, log 2×);
+comentários mentirosos (0,35s "espelha" Bevy; localização de save/load).
+
+Fila (por dor, maior primeiro):
+1. gpu_report.rs DIVERGIU: sem auto-shift por RPM (motor.rs e gpu_loop.rs têm),
+   kan_eval 3ª reimplementação, BeingState 3º fork byte-idêntico ao de gpu_loop,
+   e formato de replay PRÓPRIO incompatível com o de motor.rs/gpu_evolve.
+   → decidir: atualizar gpu_report ou aposentá-lo (observatório antigo).
+2. CoreGpu (src/gpu/core.rs) ainda modela W3/cortex_l3 removido do engine
+   (W3_TOTAL, upload_weights(w3), orçamento de banda no header) + L3_NEURONS
+   em config.rs. Só gpu_validate usa, com dados sintéticos. Remover W3 inteiro.
+3. --retomar: procura checkpoint só em 0..n_gens (bateria de 60 gens retomada
+   com --gens 30 acha o gen29, não o gen59) e gen_id nunca vira gen_offset —
+   currículo/rotação reiniciam do zero. Documentar ou consertar com glob.
+4. CfC integra dt de 1 tick mesmo com --brain-skip>1 (dormante: default 1).
+5. math::activations morto (out_stage triplicada, zero chamadas à "canônica");
+   aic_cost/ric_penalty sem chamador; fórmula de fitness duplicada em main.rs.
+6. Formato .brain órfão de produção — ligar ao gpu_evolve ou remover.
