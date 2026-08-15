@@ -572,6 +572,9 @@ fn main() {
                 "--sem-buracos" => { universe::world::NO_HOLES.store(true, Ordering::Relaxed); }
                 // Câmbio: travado (histórico, teto 21,5 m/s), auto (RPM, paridade Bevy)
                 // ou neural (auto + intent[3]/[4]). Ver CAMBIO_MODO em statics.rs.
+                "--cambio-teto" => { i += 1; if i < args.len() {
+                    CAMBIO_TETO.store(args[i].parse().unwrap_or(6).clamp(2, 6), Ordering::Relaxed);
+                } }
                 "--cambio"    => { i += 1; if i < args.len() {
                     let m = match args[i].as_str() {
                         "travado" => 0u32, "auto" => 1, "neural" => 2,

@@ -1036,21 +1036,22 @@ impl GpuCtx {
                 states[i].shift_cooldown = (states[i].shift_cooldown - dt).max(0.0);
                 if states[i].shift_cooldown <= 0.0 {
                     let mut req: i32 = 0;
-                    if engaged && rpm > max_rpm * 0.85 && s.current_gear < 6 {
+                    let teto = CAMBIO_TETO.load(Ordering::Relaxed);
+                    if engaged && rpm > max_rpm * 0.85 && s.current_gear < teto {
                         req = 1;      // auto-upshift (motor.rs:2476)
                     } else if engaged && rpm < max_rpm * 0.30 && s.current_gear > 2 {
                         req = -1;     // auto-downshift (motor.rs:2480)
                     } else if modo_cambio == 2 && engaged {
                         // Override neural por BORDA (motor.rs:2484-2487): intent[3] sobe,
                         // intent[4] desce — as duas primeiras linhas cegas de L2 ganham função.
-                        if intent[3] > 0.5 && states[i].shift_up_prev <= 0.5 && s.current_gear < 6 {
+                        if intent[3] > 0.5 && states[i].shift_up_prev <= 0.5 && s.current_gear < teto {
                             req = 1;
                         } else if intent[4] > 0.5 && states[i].shift_down_prev <= 0.5 && s.current_gear > 2 {
                             req = -1;
                         }
                     }
                     if req != 0 {
-                        s.current_gear = (s.current_gear as i32 + req).clamp(2, 6) as u32;
+                        s.current_gear = (s.current_gear as i32 + req).clamp(2, teto as i32) as u32;
                         states[i].shift_cooldown = 0.35;
                     }
                     // prev SÓ atualiza quando a troca era possível (cooldown zerado,

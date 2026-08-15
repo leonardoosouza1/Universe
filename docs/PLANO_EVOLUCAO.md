@@ -904,3 +904,24 @@ mecanismo: (a) auto força velocidade além da percepção (retina cega >28 m/s)
 quando a percepção crescer — e qualquer religação futura das linhas cegas
 deve passar pelo cérebro LENTO (integrador, gated por out-beta), nunca
 direto num atuador. Runs: cambio-{auto,neural}-s{77,31}, travado-cont-* segue.
+
+### P1.9 — destrave de velocidade por DEGRAU (`--cambio-teto`, 2026-08-14)
+
+Diagnóstico com o laboratório (obs.f32, 20k ticks do campeão):
+- Visão NÃO saturada: 0% dos canais em +127 em todas as famílias e faixas de
+  velocidade; horizonte varia (std 34-91); 23% em −127 = asfalto escuro (semântica).
+- RPM no limitador em 73,1% dos ticks (méd 8155/8500) — o motor vive estourado
+  na marcha 2. Gargalo confirmado é o CORPO, não o cérebro nem o sensor.
+- temp motor 20→90° e canal 71 vivo (std 16,8) — correção de leitura minha:
+  o "constante" era o começo frio da corrida no screenshot.
+
+Ação: `--cambio-teto N` limita a caixa do auto/neural. Bateria cambio-teto3-s{77,31}
+(auto, teto 3 = 30,5 m/s, +42% sobre o teto atual, na borda dos 28 m/s da retina),
+30 gens, partindo dos campeões travado-cont (recorde 6706 m).
+
+**Predição REGISTRADA antes do resultado:** teto 3 fica dentro do alcance da
+percepção → a evolução readapta em ≤30 gens e SUPERA o travado em Σ≥1V e máx
+global (diferente do teto 6, que caiu 6-100×). Se falhar igual ao teto 6, a
+leitura muda: o problema não é a cegueira acima de 28 m/s, é a política de
+frenagem/curva co-adaptada à marcha 2 — e o degrau precisa ser o currículo
+(teto sobe DENTRO da bateria quando a população completa volta).

@@ -78,6 +78,11 @@ pub static CAMBIO_MODO: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 /// Zerados no início de cada geração (main.rs), atualizados no laço de decisão
 /// (context.rs, single-thread — load/compare/store basta). Provam se o câmbio
 /// vive: travado NUNCA passa de 21,5 m/s nem de marcha 2.
+/// Marcha máxima do auto/neural (`--cambio-teto`, padrão 6). O A/B mostrou que
+/// liberar até a 6ª (69 m/s) de uma vez DESTRÓI: retina cega >28 m/s. Teto 3
+/// (30,5 m/s) sobe o limite ~40% ficando na borda da percepção — degrau de
+/// currículo do CORPO, não do cérebro.
+pub static CAMBIO_TETO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6);
 pub static VEL_PICO: AtomicF32 = AtomicF32::new();
 pub static MARCHA_PICO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Autoridade da metade lenta sobre o volante (padrão 0,20 histórico).
