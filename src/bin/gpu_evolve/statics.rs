@@ -113,6 +113,13 @@ pub static STEER_ALPHA: AtomicF32 = AtomicF32::new();
 /// Custo por tick = CUSTO_RPM × excesso, onde excesso = (rpm/max − 0,9)/0,1
 /// (0 no limiar de 90%, 1 no limitador cravado). 0 = desligado (padrão).
 pub static CUSTO_RPM: AtomicF32 = AtomicF32::new();
+/// E-REG1 (docs/REGIOES_CEREBRAIS.md, M1): custo de FIAÇÃO por distância.
+/// Neurônio L1 j tem posição j/96 num anel; canal de entrada c tem posição c/192
+/// (a ordem dos canais JÁ agrupa famílias). dist = circular ∈ [0, 0,5].
+/// Custo por tick do ser = λ × (Σ|w|·dist / Σ|w|) × 2  ∈ [0, λ], pago em VIDA.
+/// Peso forte em fio longo encarece → seleção puxa cada neurônio pra perto do
+/// que ele escuta; regiões emergem (ou a tese falha — Q medido decide). 0 = off.
+pub static CUSTO_FIACAO: AtomicF32 = AtomicF32::new();
 pub static WALL_LIFE_DRAIN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Ticks de vida consumidos a mais por tick PARADO (stagnation_ticks > 128). 0 = sem custo.
 ///

@@ -71,3 +71,13 @@ escuta mistura estatisticamente igual (consistente com PR 6,7/96 distribuído e
 ablação 96→64 que derruba 576→19 m). Ponto de partida limpo para M1: qualquer
 Q acima do nulo sob custo de fiação é emergência real. Ferramenta: o cálculo
 vira função em src/analysis quando E-REG1 entrar (por ora, protocolo neste doc).
+
+## E-REG1 — lançado (2026-08-15)
+
+`--custo-fiacao λ` implementado: posição do neurônio j/96, canal c/192, dist
+circular, custo = λ×média(|w|·d)/média(|w|)×2 ∈ [0,λ] vida/tick, recalculado por
+geração. Bateria: λ=0 (controle pareado) vs λ=0,5, seed 31, 40 gens, partindo do
+campeão rpm-evolucao (config idêntica fora o λ). PREDIÇÃO REGISTRADA: com λ=0,5
+a modularidade Q da L1 (protocolo E-REG0) sobe acima do nulo (−0,005) no campeão
+final, e Σ≥1V/gen fica ≥80% do controle. Se Q não subir: a pressão está fraca
+(subir λ) ou a tese M1 falha aqui — medir antes de concluir.

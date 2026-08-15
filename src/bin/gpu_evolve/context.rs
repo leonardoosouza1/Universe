@@ -47,6 +47,10 @@ pub struct GpuCtx {
     /// LABORATÓRIO DE OBSERVAÇÃO (`--observar`): destino da gravação por tick do
     /// ser 0 — ver o bloco de captura em `tick()` para o layout (394 f32/linha).
     pub obs_writer:  Option<std::io::BufWriter<std::fs::File>>,
+    /// E-REG1: custo de fiação por ser (constante durante a geração — pesos não
+    /// mudam no meio). Preenchido pelo main a cada aplicação de genomas; drenado
+    /// da vida por tick quando CUSTO_FIACAO > 0. Vazio = sem custo.
+    pub fiacao_custo: Vec<f32>,
     /// Metade LENTA do cérebro (System 2): CfC-64 → Dense → Dense, 1 tick a cada 8.
     /// Estava ausente de todo o caminho GPU — `grep slow src/gpu/` voltava vazio — o que
     /// significa que "portar o cérebro para a GPU" tinha na verdade portado só a metade
@@ -242,7 +246,7 @@ impl GpuCtx {
             buf_grid, buf_poses_retina, buf_retina_out,
             grid_size: world.size as u32,
             cell_size: world.cell_size,
-            percept, brain, slow, obs_writer: None,
+            percept, brain, slow, obs_writer: None, fiacao_custo: Vec::new(),
             slow_samples: Vec::new(),
             last_intents: Vec::new(),
             brain_skip: 1,
@@ -893,6 +897,11 @@ impl GpuCtx {
                         let excesso = ((rpm_frac - 0.9) / 0.1).min(1.5);
                         states[i].life_left -= (custo_rpm * excesso) as f64;
                     }
+                }
+                // E-REG1 — custo de fiação (ver CUSTO_FIACAO em statics.rs): dreno
+                // constante por tick proporcional ao fio "longo" do genoma do ser.
+                if !self.fiacao_custo.is_empty() && states[i].life_left > 0.0 {
+                    states[i].life_left -= self.fiacao_custo[i.min(self.fiacao_custo.len()-1)] as f64;
                 }
                 // Custo de estagnação: parar sem avançar QUEIMA VIDA (Conserto 1, 2026-08-12).
                 // Sintoma medido: ser para em 272 m com life=3010 ticks e fica ESTÁTICO até

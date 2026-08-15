@@ -555,6 +555,10 @@ fn main() {
                 "--brain-skip"=> { i += 1; if i < args.len() { brain_skip    = args[i].parse().unwrap_or(1).max(1); } }
                 "--wall-life" => { i += 1; if i < args.len() { wall_life     = args[i].parse().unwrap_or(0); } }
                 // FÍSICA 1: vida/tick queimada por girar acima de 90% do RPM (0=off).
+                // E-REG1: λ do custo de fiação por distância (0=off). Ver statics.rs.
+                "--custo-fiacao" => { i += 1; if i < args.len() {
+                    CUSTO_FIACAO.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                } }
                 "--custo-rpm" => { i += 1; if i < args.len() {
                     CUSTO_RPM.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                 } }
@@ -1044,6 +1048,31 @@ fn main() {
                 g.apply_to_engine(eng);
             } else {
                 genome.apply_to_engine(eng);
+            }
+        }
+        // E-REG1: custo de fiação por ser, recalculado por geração (pesos fixos na
+        // vida). dist circular entre pos do canal (c/192) e do neurônio (j/96);
+        // custo = λ × média ponderada por |w| × 2 ∈ [0, λ] vida/tick.
+        {
+            let lam = CUSTO_FIACAO.load(Ordering::Relaxed);
+            if lam > 0.0 {
+                ctx.fiacao_custo = genomes.iter().map(|g| {
+                    let (mut num, mut den) = (0.0f64, 0.0f64);
+                    for j in 0..universe::config::iara::brain::L1_NEURONS {
+                        let pj = j as f64 / 96.0;
+                        for c in 0..universe::config::iara::brain::SENSORY_WAVE_SIZE {
+                            let w = g.l1[j * universe::config::iara::brain::SENSORY_WAVE_SIZE + c].abs() as f64;
+                            let pc = c as f64 / 192.0;
+                            let d = (pj - pc).abs();
+                            let d = d.min(1.0 - d);
+                            num += w * d;
+                            den += w;
+                        }
+                    }
+                    (lam as f64 * (num / den.max(1e-9)) * 2.0) as f32
+                }).collect();
+            } else {
+                ctx.fiacao_custo.clear();
             }
         }
         ctx.upload_engines(&engines);
@@ -1553,7 +1582,7 @@ fn main() {
         // gen_stats conta "voltas" como fitness/lap_dist. Com a fitness de checkpoint
         // valendo lap_dist por setor, isso vira número inflado (3 setores = "3 voltas").
         // As VOLTAS mostradas têm de vir do progresso real na pista, não da fitness.
-        let r = gen_stats(gen_abs, &prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>(), lap_dist);
+        let mut r = gen_stats(gen_abs, &prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>(), lap_dist);
         let t_gen_s = t_gen.elapsed().as_secs_f64();
 
         hist_med.push(r.dist_med);
@@ -1578,6 +1607,14 @@ fn main() {
         // distância, inclusive girando em círculo na mesma curva.
         let v1 = voltas_reais.iter().filter(|&&v| v >= 1).count();
         let v2 = voltas_reais.iter().filter(|&&v| v >= 2).count();
+        // Validação cruzada 2026-08-15: o ≥1V/≥2V da linha oficial vinha de
+        // prog_acum (projeção de arco, que PERDE metros em quinas de projeção) e
+        // divergia do contador de setores em ordem (13 vs 22 ≥2V nas mesmas gens
+        // de rpm-evolucao-s31). Setor em ordem é incheatável e é o mesmo critério
+        // do currículo — a linha oficial agora reporta ELE. dist_med/max seguem
+        // de prog_acum (metros contínuos são a métrica certa pra distância).
+        r.n_ge1v = v1;
+        r.n_ge2v = v2;
         let cp_med = {
             let mut c: Vec<u32> = checkpoint.clone();
             c.sort_unstable();
