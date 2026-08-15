@@ -131,3 +131,26 @@ problema de M1 era só a moeda da pressão.
   partida (τ re-otimiza rápido); (b) [regioes] mostra especialização por bloco
   maior que o histórico 0-1/48; (c) se blocos convergirem de volta ao τ
   uniforme ~2 s, "função segue tempo" é FALSA aqui.
+
+## M3 — VEREDITO FINAL: POSITIVO (s77) com risco de travessia (2026-08-15)
+
+s77: recuperação 73% do controle (29,2/gen, 842 ≥2V, máx 7980 m) e a predição-
+chave confirmada — [regioes:L1] 36/96 folhas (histórico: 16/96), índices
+AGRUPADOS nos blocos (25-39=parede/estrada, 48-63=corpo, 75-95=associativo).
+Primeira demonstração de cérebro com regiões funcionais no Universe.
+s31: presa no vale (0,9/gen, 3 promoções) — travessia pós-amputação é
+vale-dependente; mitigação futura: máscara GRADUAL (atenuar fora-da-região ao
+longo de N gens em vez de amputar na gen 0).
+
+## E-REG2 parcial (41/60): função-segue-tempo VIVA
+
+Performance ~90% do controle; estrutura temporal SOBREVIVE (espalha 10,6× vs
+3× histórico; p10 0,38 s reflexo · p90 4,0 s) — não convergiu de volta.
+
+## M2+M3 COMBINADO lançado (ereg-m23-completo)
+
+Máscara de regiões + τ por bloco no MESMO cérebro — o desenho-alvo do Leonardo
+("reflexo em tal parte, memória em outra, todos fazem algo"). 80 gens × 2
+sementes. Predições: (a) recuperação ≥ M3-s77 (τ certo por região ajuda a
+travessia); (b) folhas ≥ 36/96; (c) alarme se as duas sementes divergirem
+tanto quanto no M3 — travessia continua sendo o gargalo do método.
