@@ -154,3 +154,21 @@ Máscara de regiões + τ por bloco no MESMO cérebro — o desenho-alvo do Leon
 sementes. Predições: (a) recuperação ≥ M3-s77 (τ certo por região ajuda a
 travessia); (b) folhas ≥ 36/96; (c) alarme se as duas sementes divergirem
 tanto quanto no M3 — travessia continua sendo o gargalo do método.
+
+## E-REG2 — VEREDITO FINAL: POSITIVO ×2 sementes (2026-08-15)
+
+37,4/34,0 completantes/gen (93%/85% do controle), τ por bloco SOBREVIVE 60 gens
+(p10 0,46s reflexo · p90 4,0s associativo · espalha 8,8×), máx 8229 m. Função
+segue tempo: confirmada no eixo "estrutura temporal é selecionável e estável".
+
+## m23 parcial (40/80) + padrão de semente + obs do cérebro regionalizado
+
+- τ certo ACELERA a travessia: m23-s77 med 2053 m na gen 5 (M3 puro: ~2× mais
+  gens pro mesmo ponto). s77 a 25,9/gen aos 40.
+- s31 presa pela 3ª vez (M3, m23) no vale pós-amputação — padrão de SEMENTE,
+  não acaso; 3ª semente (s113) lançada pro desempate. Hipótese: diversidade da
+  população de partida (rpm-evolucao-s31) insuficiente pra travessia.
+- Campeão M3-s77 avaliado puro: med 6932 m (2,37V), 44/48 ≥1V, 31 ≥2V — e
+  AGORA É O CÉREBRO DO LABORATÓRIO (obs.f32+genoma+replay atualizados): dá pra
+  VER os blocos no painel Cérebro (região parede/estrada disparando na curva,
+  corpo no limitador, associativo integrando).
