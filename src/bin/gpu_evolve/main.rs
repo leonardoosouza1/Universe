@@ -57,6 +57,7 @@ mod tests;
 mod fantasma;
 mod escada;
 mod piloto_linear;
+mod piloto_forja;
 
 use statics::*;
 use context::GpuCtx;
@@ -428,6 +429,7 @@ fn main() {
     let mut fantasma_on = false;
     let mut escada_on   = false;
     let mut piloto_formula_path: Option<String> = None;
+    let mut piloto_forja_path: Option<String> = None;
     let mut portao_aleatorio: f32 = 0.0;
     let mut portao_semente: u64 = 0;
     /// Ticks de vida ganhos por METRO avançado. 0 = vida dada de graça (comportamento antigo).
@@ -659,6 +661,11 @@ fn main() {
                 // PILOTO POR FÓRMULA (PILOTO_POR_FORMULA.md): ser 0 dirigido pelo
                 // controlador ridge destilado do replay do campeão.
                 "--piloto-formula" => { i += 1; if i < args.len() { piloto_formula_path = Some(args[i].clone()); } }
+                // PILOTO v2 (não-linear, base pirâmide + arctanh na saída). Erra 31%
+                // menos no held-out temporal que o linear (0,179 vs 0,261) — a pergunta
+                // que este flag responde é se isso passa do limiar em que o erro deixa
+                // de acumular em malha fechada.
+                "--piloto-forja" => { i += 1; if i < args.len() { piloto_forja_path = Some(args[i].clone()); } }
                 // Controle do portão: abstenção ALEATÓRIA na mesma dose (ver
                 // piloto_linear.rs). Responde "o portão escolhe bem ou qualquer
                 // intervenção do cérebro na mesma taxa já bastaria?".
@@ -873,6 +880,16 @@ fn main() {
         }
     };
     ctx.brain_skip = brain_skip;
+    if let Some(ref p) = piloto_forja_path {
+        match piloto_forja::PilotoForja::carregar(p) {
+            Some(pf) => {
+                println!("  [piloto-forja] ser 0 dirigido pela base {} ({} features, {} mult/tick)",
+                         pf.base(), pf.n_features(), pf.mult_por_tick());
+                ctx.piloto_forja = Some(pf);
+            }
+            None => eprintln!("[ERRO] não consegui carregar o piloto v2 de {p}"),
+        }
+    }
     if let Some(ref p) = piloto_formula_path {
         match piloto_linear::PilotoLinear::carregar(p) {
             Some(pl) => {

@@ -54,6 +54,8 @@ pub struct GpuCtx {
     /// PILOTO POR FÓRMULA: quando presente, o ser 0 é dirigido pelo controlador
     /// ridge (X = debug do cérebro pós-KAN/CfC, mesma fonte do --observar).
     pub piloto_formula: Option<crate::piloto_linear::PilotoLinear>,
+    /// PILOTO v2 (não-linear). Mesma posição no tick, mesmo X.
+    pub piloto_forja: Option<crate::piloto_forja::PilotoForja>,
     /// M4: pesos do maestro por ser (n×16), preenchidos pelo main por geração.
     pub gates_w: Vec<f32>,
     /// M4: último gate aplicado ao ser 0 (telemetria [neuromod] do main).
@@ -257,6 +259,7 @@ impl GpuCtx {
             cell_size: world.cell_size,
             percept, brain, slow, obs_writer: None, fiacao_custo: Vec::new(),
             piloto_formula: None,
+            piloto_forja: None,
             gates_w: Vec::new(), ultimo_gate: [1.0; 4],
             slow_samples: Vec::new(),
             last_intents: Vec::new(),
@@ -993,6 +996,22 @@ impl GpuCtx {
         // bit-a-bit iguais aos do campeão nos primeiros 576 ticks enquanto o
         // intent gravado já diferia em 0,60 desde o tick 0. Achado por auditoria
         // adversarial; o teste `piloto_entra_antes_da_fisica` trava a ordem.
+        if self.piloto_forja.is_some() && brain_fires && !intents.is_empty() {
+            let (_l1_raw, cfc_in, kan_in) = self.brain.download_debug();
+            let mut x = [0.0f32; 192];
+            x[..96].copy_from_slice(&cfc_in[..96]);
+            let n_kan = kan_in.len().min(96);
+            x[96..96 + n_kan].copy_from_slice(&kan_in[..n_kan]);
+            if let Some(pf) = self.piloto_forja.as_mut() {
+                if let Some(y) = pf.agir_com_portao(&x) {
+                    let mut v = intents[0];
+                    v[0] = y[0]; v[1] = y[1]; v[2] = y[2];
+                    intents[0] = v;
+                    self.last_intents[0] = v;
+                }
+            }
+        }
+
         // MARCA-ORDEM-PILOTO (lida pelo teste piloto_entra_antes_da_fisica)
         if self.piloto_formula.is_some() && brain_fires && !intents.is_empty() {
             let (_l1_raw, cfc_in, kan_in) = self.brain.download_debug();

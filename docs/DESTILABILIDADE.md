@@ -324,3 +324,17 @@ chegam ao nível do portão (~6500 m), 2 ficam no meio. **5 de 12 alcançam ≥9
 portão não é dramaticamente melhor que um sorteio de sorte — ele converte uma moeda em
 certeza. Num campeão que precisa ser reproduzível, é isso que importa; num paper de
 "olha como o portão é inteligente", não seria suficiente.
+
+## PILOTO v2 (não-linear) — PREDIÇÃO REGISTRADA antes de rodar
+
+Pergunta única: o erro por tick 0,1794 (pirâmide n=1024 + arctanh) fica ABAIXO do
+limiar em que o erro deixa de acumular em malha fechada? O v1 (0,2620) não ficava —
+1027 m, 15,6% do campeão, na própria pista de treino.
+
+**Predição:** o v2 melhora mas NÃO dirige — espero entre 20% e 60% do campeão em 9001.
+Razão: a queda de erro se concentra no acelerador e no volante; o freio, que é o eixo
+por onde a fuga acontece, ainda erra 0,292 (contra 0,137 do volante). Se der ≥70%, a
+tese de destilação ressuscita e eu estava errado sobre o mecanismo da fuga.
+
+Barra de sucesso real, a que importa: o híbrido tem de bater o CÉREBRO SOZINHO
+(6592 m em 9001, 5932 m em 9007) — não o clone v1.
