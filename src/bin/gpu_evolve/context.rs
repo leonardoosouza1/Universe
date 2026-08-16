@@ -51,6 +51,10 @@ pub struct GpuCtx {
     /// mudam no meio). Preenchido pelo main a cada aplicação de genomas; drenado
     /// da vida por tick quando CUSTO_FIACAO > 0. Vazio = sem custo.
     pub fiacao_custo: Vec<f32>,
+    /// M4: pesos do maestro por ser (n×16), preenchidos pelo main por geração.
+    pub gates_w: Vec<f32>,
+    /// M4: último gate aplicado ao ser 0 (telemetria [neuromod] do main).
+    pub ultimo_gate: [f32; 4],
     /// Metade LENTA do cérebro (System 2): CfC-64 → Dense → Dense, 1 tick a cada 8.
     /// Estava ausente de todo o caminho GPU — `grep slow src/gpu/` voltava vazio — o que
     /// significa que "portar o cérebro para a GPU" tinha na verdade portado só a metade
@@ -156,7 +160,9 @@ impl GpuCtx {
         // caber em GL antigo, e a RX 6750 XT anuncia bem mais. Pedir 12 dá folga para os
         // próximos dois buffers sem voltar aqui a cada binding novo; se algum adaptador
         // não suportar, `request_device` falha na abertura em vez de corromper dado.
-        limits.max_storage_buffers_per_shader_stage = 12;
+        // M4 (buf_gates, binding 13) estourou os 12 — subido para 16 (RX 6750 XT
+        // anuncia bem mais; medido: 12 era teto de config, não de silício).
+        limits.max_storage_buffers_per_shader_stage = 16;
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("iara-evolve"),
@@ -247,6 +253,7 @@ impl GpuCtx {
             grid_size: world.size as u32,
             cell_size: world.cell_size,
             percept, brain, slow, obs_writer: None, fiacao_custo: Vec::new(),
+            gates_w: Vec::new(), ultimo_gate: [1.0; 4],
             slow_samples: Vec::new(),
             last_intents: Vec::new(),
             brain_skip: 1,
@@ -840,6 +847,29 @@ impl GpuCtx {
             self.last_intents.clone()
         };
         let slow_out = self.slow.read_outputs(n);
+        // ── M4: MAESTRO DE REGIÕES (ver REGIOES_CEREBRAIS.md, spec M4) ─────────
+        // gate_b = 1 + 0,5·tanh(w·slow_out + b), atenuado pela RESERVA da região;
+        // usar o gate longe de 1,0 GASTA reserva (burnout), que repõe com τ=30 s.
+        if NEUROMOD_REGIOES.load(Ordering::Relaxed)
+            && !self.gates_w.is_empty() && slow_out.len() == n
+        {
+            let dt_nm = 1.0f32 / 64.0;
+            let mut flat: Vec<f32> = Vec::with_capacity(n * 4);
+            for i in 0..n {
+                let so = slow_out[i];
+                let w = &self.gates_w[i * 16..(i + 1) * 16];
+                for b in 0..4 {
+                    let z = w[b * 4] * so[0] + w[b * 4 + 1] * so[1] + w[b * 4 + 2] * so[2] + w[b * 4 + 3];
+                    let g_raw = 1.0 + 0.5 * z.tanh();
+                    let r = &mut states[i].nm_reserva[b];
+                    let uso = (g_raw - 1.0).abs();
+                    *r = (*r + ((1.0 - *r) / 30.0 - 0.5 * uso * *r) * dt_nm).clamp(0.0, 1.0);
+                    flat.push(1.0 + (g_raw - 1.0) * *r);
+                }
+            }
+            self.ultimo_gate = [flat[0], flat[1], flat[2], flat[3]];
+            self.brain.upload_gates(&flat, n);
+        }
         // Falha silenciosa é o risco aqui: se `read_outputs` devolver vazio, o consumo
         // cai em `unwrap_or([0;3])` e o lento fica inerte sem nenhum sinal de erro.
         {

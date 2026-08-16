@@ -178,6 +178,7 @@ pub struct BrainGpu {
     /// COPIA O PADRÃO de `buf_cfc`: read_write, residente, resetado em
     /// spawn/entre gerações via `reset_cfc` (mesmo método, estendido).
     buf_neuron_mem: wgpu::Buffer,   // f32 × (cap × NEURON_MEM_PER_SER)  — residente
+    buf_gates: wgpu::Buffer,        // f32 × (cap × 4) — M4: gate por região, 1,0 = neutro
 
     /// Buffer de debug temporário: exporta l1_raw + inputs CfC/KAN para ser 0.
     /// Layout: [l1_raw[0..95], cfc_in[0..95], kan_in[96..222]] = 319 f32
@@ -263,6 +264,7 @@ impl BrainGpu {
                 storage_entry(10, true),        // buf_tau     (read, banco de τ por canal)
                 storage_entry(11, true),        // buf_neuron_meta (read, P1.7 — alfa/período/limiar/ativação)
                 storage_entry(12, false),       // buf_neuron_mem  (read_write, P1.7 — memória EMA residente)
+                storage_entry(13, true),        // buf_gates (read, M4 — gate por região, 4 f32/ser)
             ],
         });
 
@@ -387,6 +389,12 @@ impl BrainGpu {
                  | wgpu::BufferUsages::COPY_DST
                  | wgpu::BufferUsages::COPY_SRC, // reset por-ser via write_buffer + eventual diagnóstico
         });
+        // M4: gates começam NEUTROS (1,0) — flag off nunca escreve de novo.
+        let buf_gates = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brain-gates"),
+            contents: bytemuck::cast_slice(&vec![1.0f32; capacity * 4]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         // Readback: MAP_READ separado (não pode combinar com STORAGE em wgpu).
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -430,6 +438,7 @@ impl BrainGpu {
             buf_tau,
             buf_neuron_meta,
             buf_neuron_mem,
+            buf_gates,
             out_beta: OUT_BETA_PADRAO,
             out_gain: OUT_GAIN_PADRAO,
             norm_l2_by_std: false,
@@ -581,6 +590,13 @@ impl BrainGpu {
             let base = s * CFC_SLOTS_PER_SER;
             vals[base..base + 96].to_vec()  // só o state, sem o counter
         }).collect()
+    }
+
+    /// M4: sobe os gates por região (4 f32/ser). Chamado 1×/8 ticks pelo tick()
+    /// quando --neuromod-regioes está ligado; nunca chamado = neutro 1,0.
+    pub fn upload_gates(&self, gates: &[f32], n: usize) {
+        debug_assert_eq!(gates.len(), n * 4);
+        self.queue.write_buffer(&self.buf_gates, 0, bytemuck::cast_slice(gates));
     }
 
     // ── DOWNLOAD DO BUFFER DE DEBUG (diagnóstico) ─────────────────────────
@@ -760,6 +776,7 @@ impl BrainGpu {
                 wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 11, resource: self.buf_neuron_meta.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 12, resource: self.buf_neuron_mem.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 13, resource: self.buf_gates.as_entire_binding() },
             ],
         });
 
@@ -894,6 +911,7 @@ impl BrainGpu {
                 wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 11, resource: self.buf_neuron_meta.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 12, resource: self.buf_neuron_mem.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 13, resource: self.buf_gates.as_entire_binding() },
             ],
         });
 

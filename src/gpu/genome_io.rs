@@ -79,6 +79,8 @@ pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     for p in &genome.neuron_period_l1 { f.write_all(&p.to_le_bytes())?; }
     for t in &genome.neuron_threshold_l1 { f.write_all(&t.to_le_bytes())?; }
     for a in &genome.neuron_activation { f.write_all(&a.to_le_bytes())?; }
+    // M4: gates do maestro (16 f32) — bloco opcional, sempre por último.
+    for a in &genome.gates_w { f.write_all(&a.to_le_bytes())?; }
     Ok(())
 }
 
@@ -172,14 +174,21 @@ pub fn load_genome(path: &str) -> Option<Genome> {
         vec![0.0; n_l1]
     };
     let neuron_activation = if bytes.len() >= off + (n_l1 + n_l2) * 4 {
-        read_at(&bytes, off, n_l1 + n_l2)
+        let v = read_at(&bytes, off, n_l1 + n_l2); off += (n_l1 + n_l2) * 4; v
     } else {
         vec![0.0; n_l1 + n_l2]
+    };
+    // M4: gates do maestro (opcional; genoma antigo → zeros = gates neutros 1,0).
+    let gates_w = if bytes.len() >= off + 16 * 4 {
+        read_at(&bytes, off, 16)
+    } else {
+        vec![0.0; 16]
     };
 
     Some(Genome {
         l1, l2, kan_knots, slow, tau, sensors,
         neuron_alpha, neuron_period_l1, neuron_threshold_l1, neuron_activation,
+        gates_w,
     })
 }
 

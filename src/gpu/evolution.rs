@@ -171,6 +171,10 @@ pub struct Genome {
     /// o espelho GPU. Nasce 0.0 (tanh = idêntico a hoje). Layout: `[0..96)`=L1,
     /// `[96..144)`=L2.
     pub neuron_activation: Vec<f32>,
+    /// M4 (REGIOES_CEREBRAIS.md): pesos do maestro — 4 gates de região × (3 saídas
+    /// do cérebro lento + bias) = 16 f32. gate_b = 1 + 0,5·tanh(w·slow_out + b).
+    /// Herdável e mutado como o lento. Bloco OPCIONAL no disco (genome_io).
+    pub gates_w: Vec<f32>,
 }
 
 /// Neurônios de L1 e L2 herdáveis pelos mecanismos de P1.7 — mesmos números de
@@ -522,6 +526,7 @@ impl Genome {
         Self {
             l1, l2, kan_knots, slow, tau, sensors,
             neuron_alpha, neuron_period_l1, neuron_threshold_l1, neuron_activation,
+            gates_w: vec![0.0; 16],
         }
     }
 
@@ -596,6 +601,7 @@ impl Genome {
         Self {
             l1, l2, kan_knots, slow, tau, sensors,
             neuron_alpha, neuron_period_l1, neuron_threshold_l1, neuron_activation,
+            gates_w: vec![0.0; 16],
         }
     }
 
@@ -843,6 +849,13 @@ pub fn evolve(
         }
         // Mutação do lento. σ maior porque são mil pesos contra vinte e seis mil do
         // rápido — com a mesma taxa o lento receberia perturbação praticamente nula.
+        // M4: gates do maestro mutam como o lento (poucos pesos → σ do lento).
+        for w in filho.gates_w.iter_mut() {
+            if rng.f32() < params.p_mutate * 4.0 {
+                *w += rng.gauss() * params.sigma * 2.0;
+                *w = w.clamp(-2.0, 2.0);
+            }
+        }
         for w in filho.slow.iter_mut() {
             if rng.f32() < params.p_mutate * 3.0 {
                 *w += rng.gauss() * params.sigma * 1.5;

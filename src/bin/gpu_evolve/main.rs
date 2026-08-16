@@ -178,6 +178,7 @@ fn avaliar_held_out(
             shift_cooldown: 0.0,
             shift_up_prev: 0.0,
             shift_down_prev: 0.0,
+            nm_reserva: [1.0; 4],
             joy_tick: 0.0,
             joy_streak: 0.0,
             edge_row6: 0.0,
@@ -604,6 +605,8 @@ fn main() {
                 // E-REG2 (M2): semeia τ por BLOCO (mesmos 4 blocos do M3) — reflexo
                 // curto na parede/estrada, longo no associativo. Função segue tempo?
                 "--tau-semeado" => { tau_semeado = true; }
+                // M4: maestro de regiões (lento→gates com reserva). Ver statics.rs.
+                "--neuromod-regioes" => { NEUROMOD_REGIOES.store(true, Ordering::Relaxed); }
                 // Laboratório de observação: grava a cadeia neural do ser 0 por tick
                 // (394 f32/linha, ver context.rs). Usar com --retomar --gens 1.
                 "--observar"  => { i += 1; if i < args.len() { observar_path = Some(args[i].clone()); } }
@@ -1122,6 +1125,9 @@ fn main() {
                 ctx.fiacao_custo.clear();
             }
         }
+        if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
+            ctx.gates_w = genomes.iter().flat_map(|g| g.gates_w.iter().copied()).collect();
+        }
         ctx.upload_engines(&engines);
         // Banco de τ: vai separado porque τ vive no genoma, não no `SovereignEngine`.
         // Uma vez por geração, como os pesos — τ é herdado e fixo na vida do ser.
@@ -1225,6 +1231,7 @@ fn main() {
                 shift_cooldown: 0.0,
                 shift_up_prev: 0.0,
                 shift_down_prev: 0.0,
+            nm_reserva: [1.0; 4],
                 joy_tick: 0.0,
                 joy_streak: 0.0,
                 edge_row6: 0.0,
@@ -1802,6 +1809,11 @@ fn main() {
             let (odm, prm) = (od[od.len()/2], pr[pr.len()/2]);
             println!("  [pista] hodômetro {:.0} m · progresso {:.0} m · aproveitamento {:.0}%",
                      odm, prm, if odm > 1.0 { 100.0 * prm / odm } else { 0.0 });
+        }
+        if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
+            println!("  [neuromod] gates ser0 [visão,parede,corpo,assoc] = [{:.2},{:.2},{:.2},{:.2}] · reserva [{:.2},{:.2},{:.2},{:.2}]",
+                ctx.ultimo_gate[0], ctx.ultimo_gate[1], ctx.ultimo_gate[2], ctx.ultimo_gate[3],
+                states[0].nm_reserva[0], states[0].nm_reserva[1], states[0].nm_reserva[2], states[0].nm_reserva[3]);
         }
         println!("  [veloc] mediana {:.2} m/s ({:.1} km/h) | pico {:.1} m/s | marcha máx {} | vida média {:.0}% da geração",
                      vmed, vmed * 3.6,

@@ -334,6 +334,12 @@ const NEURON_META_L2_ACTIVATION_OFF: u32 = 432u;
 const NEURON_MEM_PER_SER: u32 = 144u;
 @group(0) @binding(12) var<storage, read_write> buf_neuron_mem: array<f32>;
 
+// M4 (REGIOES_CEREBRAIS.md): gate multiplicativo por REGIÃO — 4 f32 por ser
+// (blocos de 24 neurônios de L1: visão/parede/corpo/associativo), escrito pela
+// CPU a partir do cérebro lento + reserva. 1,0 = neutro (flag off ou reserva
+// esgotada). Aplicado na ATIVAÇÃO de L1 antes da quantização pra L2 e do bypass.
+@group(0) @binding(13) var<storage, read>      buf_gates:  array<f32>;
+
 // ── MEMÓRIA DE WORKGROUP ──────────────────────────────────────────────────────
 
 var<workgroup> w_kan: array<i32, 223>;  // pós-KAN, pré-CfC: todos os canais
@@ -736,7 +742,10 @@ fn main(
         let activation_off: bool = (off & 8u) != 0u;
         let act_id: u32 = select(u32(act_raw + 0.5), 0u, activation_off);
         let activated: f32 = apply_activation(act_id, v_eff);
-        w_l1a[tid] = i32(clamp(activated * 127.0, -127.0, 127.0));
+        // M4: gate multiplicativo da REGIÃO deste neurônio (bloco = tid/24).
+        // 1,0 = neutro (flag off). Aplicado ANTES da quantização → afeta L2 E bypass.
+        let gate: f32 = buf_gates[being * 4u + tid / 24u];
+        w_l1a[tid] = i32(clamp(activated * gate * 127.0, -127.0, 127.0));
     }
 
     workgroupBarrier();

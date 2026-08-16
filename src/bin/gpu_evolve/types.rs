@@ -89,4 +89,7 @@ pub struct BeingState {
     /// 0→1 do sinal, não enquanto segurado).
     pub shift_up_prev:      f32,
     pub shift_down_prev:    f32,
+    /// M4: reserva de neuromodulador por REGIÃO (4 blocos), ∈[0,1]. Começa cheia;
+    /// usar gate ≠ 1,0 drena (a·|g−1|·R), repõe (1−R)/τ. Ver REGIOES_CEREBRAIS.md.
+    pub nm_reserva:         [f32; 4],
 }

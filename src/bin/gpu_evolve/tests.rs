@@ -50,6 +50,8 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
     original.neuron_threshold_l1[0] = 0.321;
     let ultimo_limiar = original.neuron_threshold_l1.len() - 1;
     original.neuron_threshold_l1[ultimo_limiar] = 0.654;
+    original.gates_w[0] = 0.777;   // M4: marca fora do neutro (0.0)
+    original.gates_w[15] = -0.555;
     original.neuron_activation[0] = 2.0;
     let ultima_ativacao = original.neuron_activation.len() - 1;
     original.neuron_activation[ultima_ativacao] = 3.0;
@@ -77,6 +79,8 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
         "limiar por neurônio (P1.7, mecanismo 2) não sobreviveu ao disco");
     assert_eq!(lido.neuron_activation, original.neuron_activation,
         "ativação por neurônio (P1.7, mecanismo 3) não sobreviveu ao disco");
+    assert_eq!(lido.gates_w, original.gates_w,
+        "M4: gates do maestro não sobreviveram ao disco");
 }
 
 /// Genoma gravado por uma versão antiga (sem lento nem τ) ainda carrega.

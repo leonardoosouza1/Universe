@@ -120,6 +120,10 @@ pub static CUSTO_RPM: AtomicF32 = AtomicF32::new();
 /// Peso forte em fio longo encarece → seleção puxa cada neurônio pra perto do
 /// que ele escuta; regiões emergem (ou a tese falha — Q medido decide). 0 = off.
 pub static CUSTO_FIACAO: AtomicF32 = AtomicF32::new();
+/// M4: liga o maestro — cérebro lento → 4 gates de região com RESERVA finita
+/// (doc-09 §6.2). gate_b = 1 + 0,5·tanh(Σ w·slow_out + b) atenuado pela reserva;
+/// usar o gate longe de 1,0 GASTA reserva (repõe devagar) → burnout mensurável.
+pub static NEUROMOD_REGIOES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// E-REG1b: custo de fiação só na CAUDA — top-N conexões mais fortes por neurônio
 /// (0 = todas, como E-REG1). Motivo (negativo do E-REG1 com mecanismo): a média
 /// sobre 18k pesos tem variância interindividual ≈ 0 (dist 0,2491 vs 0,2493 ≈
