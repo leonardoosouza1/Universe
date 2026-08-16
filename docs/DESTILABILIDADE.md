@@ -252,3 +252,23 @@ O ponto 3 é o controle que separa "cobertura real" de "limiar mais permissivo":
 quantil 0,99 é calculado no próprio conjunto de treino, então um conjunto mais
 heterogêneo tem limiar MAIOR por construção. Sem esse controle, qualquer queda de
 abstenção seria artefato do limiar, não cobertura.
+
+## Controle do portão — PREDIÇÃO REGISTRADA (antes de olhar os dados)
+
+Escrito antes de abrir qualquer CSV do diretório `controle/`. A forja registrou a
+predição espelhada do lado deles no mesmo momento (malha aberta vs fechada).
+
+1. **O portão bate o aleatório na mesma dose**, em ambas as pistas — margem grande
+   em 9001 (≥2× os metros do aleatório) porque lá a dose é baixa (5,5%) e o resgate
+   precisa cair exatamente nos ticks de fuga.
+2. **Mecanismo previsto, e é o que separa as duas hipóteses**: a abstenção do portão
+   vem em BLOCOS CONTÍGUOS (o estado sai do domínio e fica fora por um trecho),
+   enquanto a aleatória vem em ticks ISOLADOS. Um tick solto de cérebro não tira um
+   carro parado do lugar; um bloco tira. Previsão numérica: comprimento MEDIANO de
+   sequência de abstenção ≥ 4 ticks no portão contra ≈ 1 no aleatório.
+3. **Se o aleatório empatar**: a lei degrada para "o órgão precisa respirar X% do
+   tempo, tanto faz quando" — mais barata de implementar e menos bonita. Qualquer
+   desfecho paga, mas os dois dizem coisas MUITO diferentes sobre o que o cérebro faz.
+4. Dose 0,200 (bem acima da medida) serve de terceiro ponto: se o aleatório só
+   funciona com dose alta, a curva dose-resposta separa "escolher bem" de "intervir
+   muito".
