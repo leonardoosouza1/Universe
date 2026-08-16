@@ -22,6 +22,25 @@ pub struct PilotoLinear {
     h_a: Vec<f32>,    // estado EMA alpha[0], [192]
     h_b: Vec<f32>,    // estado EMA alpha[1], [192]
     iniciado: bool,
+    // ── PORTÃO DE ABSTENÇÃO (v2) ────────────────────────────────────────────
+    // Medido em E-PIL1 (2026-08-16): na única pista NOVA em que os dois seres
+    // ficaram na pista (9007), o clone caiu para 10% do campeão — freio médio
+    // 0,56 contra 0,00 do campeão, volante 0,10 contra 0,59, velocidade por
+    // quarto de corrida 8,8 → 0,3 → 0,1 → 0,1 m/s. Mecanismo: fora do que viu,
+    // o linear EXTRAPOLA sem limite justo no eixo que ele ajusta pior (freio,
+    // erro 0,45); freio alto → carro para → estado ainda mais estranho → trava
+    // para sempre. Não é ruído: é o modo de falha de extrapolação linear.
+    //
+    // Conserto: guardar 512 linhas de referência do treino; se a distância² ao
+    // vizinho mais próximo passar do quantil 0,99 do treino, o piloto ABSTÉM-SE
+    // e quem decide naquele tick é o CÉREBRO (que continua rodando de qualquer
+    // forma). Fallback melhor que o "frear/reduzir marcha" da spec — frear é
+    // exatamente o que trava. Vira córtex + reflexo forjado com portão.
+    refs: Vec<f32>,       // [n_ref × 192] achatado, no espaço padronizado
+    n_ref: usize,
+    thr_abster: f32,      // limiar em distância AO QUADRADO
+    pub abstencoes: u64,  // telemetria: quantos ticks o cérebro reassumiu
+    pub decisoes: u64,
 }
 
 impl PilotoLinear {
@@ -65,13 +84,59 @@ impl PilotoLinear {
                       w.len(), mu.len(), y_mu_v.len(), alphas_v.len());
             return None;
         }
+        // Escalar (não-array). `arr` procura o próximo '[', que num campo escalar
+        // pertence a OUTRA chave — devolveria número errado ou nada, e o limiar
+        // caía em INFINITO: o portão existia e nunca disparava, em silêncio.
+        // Pego em 2026-08-16 (o log dizia "portão ativo" com "limiar inf" e
+        // 0,0% de abstenção). Erro silencioso é o pior modo de falha aqui.
+        let escalar = |chave: &str| -> Option<f32> {
+            let i = s.find(&format!("\"{chave}\""))?;
+            let resto = &s[i + chave.len() + 2..];
+            let j = resto.find(':')? + 1;
+            let fim = resto[j..].find(|c| c == ',' || c == '}').unwrap_or(resto.len() - j) + j;
+            resto[j..fim].trim().trim_matches('"').parse().ok()
+        };
+        // Blocos do portão: opcionais (piloto.json antigo continua carregando).
+        let refs = arr("refs").unwrap_or_default();
+        let c = mu.len() / 3;
+        let n_ref = if c > 0 { refs.len() / c } else { 0 };
+        let thr_abster = escalar("thr_abster").unwrap_or(f32::INFINITY);
+        if n_ref > 0 {
+            if !thr_abster.is_finite() {
+                eprintln!("[ERRO] piloto com {n_ref} referências mas SEM limiar legível \
+                           (thr_abster) — o portão nunca abstém. Corrija o JSON.");
+            }
+            println!("  [piloto] portão de abstenção ativo: {n_ref} referências, limiar dist² {thr_abster:.1}");
+        }
         Some(PilotoLinear {
             w, mu, sd,
             y_mu: [y_mu_v[0], y_mu_v[1], y_mu_v[2]],
             y_sd: [y_sd_v[0], y_sd_v[1], y_sd_v[2]],
             alphas: [alphas_v[0], alphas_v[1]],
             h_a: Vec::new(), h_b: Vec::new(), iniciado: false,
+            refs, n_ref, thr_abster, abstencoes: 0, decisoes: 0,
         })
+    }
+
+    /// O estado atual está DENTRO do que o piloto viu? Distância² ao vizinho mais
+    /// próximo das referências, no espaço padronizado do bloco cru. Sem referências
+    /// (piloto.json v1) devolve sempre `true` — comportamento antigo preservado.
+    fn conhece(&self, x: &[f32]) -> bool {
+        if self.n_ref == 0 { return true; }
+        let c = self.n_entradas();
+        let mut melhor = f32::MAX;
+        for r in 0..self.n_ref {
+            let base = r * c;
+            let mut d2 = 0.0f32;
+            for i in 0..c {
+                let z = (x[i] - self.mu[i]) / self.sd[i];
+                let dd = z - self.refs[base + i];
+                d2 += dd * dd;
+                if d2 >= melhor { break; }   // poda: já perdeu para o melhor até aqui
+            }
+            if d2 < melhor { melhor = d2; }
+        }
+        melhor <= self.thr_abster
     }
 
     pub fn n_entradas(&self) -> usize { self.mu.len() / 3 }
@@ -79,6 +144,16 @@ impl PilotoLinear {
     /// Um tick: x = os 192 canais COMO O L1 RECEBE (pós-KAN+CfC — mesmo X do solve).
     /// Devolve [acelerador, volante, freio] na MESMA convenção do intent do cérebro
     /// (pós-tanh, pré kan_eval) — o chamador aplica o resto do pipeline normal.
+    /// Como `agir`, mas com PORTÃO: devolve `None` quando o estado está fora do
+    /// que o piloto viu (o chamador deixa o cérebro decidir aquele tick). Os EMAs
+    /// continuam sendo atualizados mesmo na abstenção — o piloto segue "assistindo"
+    /// para não voltar com memória velha quando o estado retornar ao conhecido.
+    pub fn agir_com_portao(&mut self, x: &[f32]) -> Option<[f32; 3]> {
+        let dentro = self.conhece(x);
+        let y = self.agir(x);
+        if dentro { self.decisoes += 1; Some(y) } else { self.abstencoes += 1; None }
+    }
+
     pub fn agir(&mut self, x: &[f32]) -> [f32; 3] {
         let c = self.n_entradas();
         debug_assert_eq!(x.len(), c, "piloto: X com {} canais, esperava {c}", x.len());
@@ -149,6 +224,24 @@ mod tests {
         pl.agir(&[0.0, 0.0]);
         // h_a após [1,0]: inicia 1.0; tick 2: 0.8*1.0+0.2*0.0=0.8
         assert!((pl.h_a[0] - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn portao_le_limiar_escalar_e_abstem() {
+        // Regressão do bug do limiar INFINITO: `thr_abster` é escalar, e o parser
+        // de array pegava o '[' de outra chave. Com o limiar lido, um estado longe
+        // das referências tem de ABSTER (None) e um estado em cima delas, decidir.
+        let p = std::env::temp_dir().join("piloto_portao.json");
+        let mut j = json_teste(2);
+        j = j.replace("\"lam\": 1.0", "\"refs\": [[0,0]], \"thr_abster\": 1.0, \"lam\": 1.0");
+        assert_eq!(j.matches("thr_abster").count(), 1);
+        std::fs::write(&p, &j).unwrap();
+        let mut pl = PilotoLinear::carregar(p.to_str().unwrap()).unwrap();
+        assert_eq!(pl.n_ref, 1);
+        assert!((pl.thr_abster - 1.0).abs() < 1e-6, "limiar lido = {}", pl.thr_abster);
+        assert!(pl.agir_com_portao(&[0.2, 0.0]).is_some(), "perto da referência: decide");
+        assert!(pl.agir_com_portao(&[9.0, 9.0]).is_none(), "longe: abstém");
+        assert_eq!((pl.decisoes, pl.abstencoes), (1, 1));
     }
 
     #[test]

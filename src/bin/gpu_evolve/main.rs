@@ -127,6 +127,37 @@ use universe::gpu::physics::{pos_of, make_physics_state};
 ///   CHEIA (`n_ticks`) para medir se o corpo/cérebro navega a pista reservada, não
 ///   se a população sobrevive com o orçamento de fôlego calibrado para o TREINO.
 ///
+/// Direção de largada em um waypoint, à prova do FECHAMENTO DO LAÇO.
+///
+/// A lista de waypoints repete o primeiro ponto no fim para fechar o circuito
+/// (`world.rs`, `waypoints.push(waypoints[0])`). Nascer nesse último índice dava
+/// `wp == wp_next` → `dx = dz = 0` → com o antigo `.max(1e-6)` o versor saía
+/// `[0,0,0]`: orientação DEGENERADA. Efeito medido em 2026-08-16 (pista 8200,
+/// `--largada-aleatoria` sorteou wi=105/106): velocidade EXATAMENTE 0,00 a
+/// corrida inteira com acelerador 0,4-0,6 aplicado e RPM girando, hodômetro 0 m,
+/// 48/48 mortos e `fitness 2377..2377 · valores distintos 1/48` — uma geração
+/// inteira de SELEÇÃO CEGA. Reproduzido em 10 s com `--seed 405` (wi=105) contra
+/// `--seed 285` (wi=50, normal: 19/48 notas distintas, mortalidade 0%).
+///
+/// Conserto: procurar adiante (com wrap) o primeiro waypoint REALMENTE distinto.
+/// Nunca devolve versor nulo em pista válida; se a pista inteira for um ponto só,
+/// devolve [1,0,0] e avisa — melhor um ser andando em linha reta que 48 pinos.
+fn frente_do_waypoint(wps: &[bevy::math::Vec2], wi: usize) -> [f32; 3] {
+    let n = wps.len();
+    let wp = wps[wi];
+    for passo in 1..n {
+        let cand = wps[(wi + passo) % n];
+        let dx = cand.x - wp.x;
+        let dz = cand.y - wp.y;
+        let len = (dx * dx + dz * dz).sqrt();
+        if len > 1e-3 {
+            return [dx / len, 0.0, dz / len];
+        }
+    }
+    eprintln!("[AVISO] largada degenerada: todos os {n} waypoints coincidem com o índice {wi}");
+    [1.0, 0.0, 0.0]
+}
+
 /// Retorna a MEDIANA da fitness held-out entre os seres que terminaram VIVOS
 /// (`life_left > 0`) — item 3 da TAREFA ("razão usa mediana dos vivos"). Se
 /// ninguém sobreviver, cai para a mediana de TODOS (avisado via `eprintln!`) em
@@ -156,11 +187,7 @@ fn avaliar_held_out(
     let mut states: Vec<BeingState> = (0..n_seres).map(|i| {
         let wi = if same_start { 0 } else { (i * n_wp / n_seres).min(n_wp - 1) };
         let wp = world_ho.waypoints_world[wi];
-        let wp_next = world_ho.waypoints_world[(wi + 1).min(n_wp - 1)];
-        let dx = wp_next.x - wp.x;
-        let dz = wp_next.y - wp.y;
-        let len = (dx * dx + dz * dz).sqrt().max(1e-6);
-        let fwd = [dx / len, 0.0, dz / len];
+        let fwd = frente_do_waypoint(&world_ho.waypoints_world, wi);
         let pos = [wp.x, 0.0, wp.y];
         BeingState {
             phys: make_physics_state(pos, fwd),
@@ -1259,6 +1286,21 @@ fn main() {
         // ── Estado inicial dos seres ────────────────────────────────────────────
         // Distribui ao longo dos waypoints (diversidade de posição inicial).
         let n_wp = world.waypoints_world.len();
+        // D2: waypoint da GERAÇÃO (mesmo para todos os seres — comparável). Calculado
+        // FORA do laço para poder ir ao log: sem ele no log, a geração morta de
+        // 2026-08-16 exigiu uma sonda dedicada para descobrir que a largada era o
+        // waypoint duplicado do fechamento (ver `frente_do_waypoint`).
+        let wi_gen = {
+            let h = (gen_abs as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(pop_seed)
+                .wrapping_mul(0xFF51AFD7ED558CCD);
+            ((h >> 17) as usize) % n_wp
+        };
+        if largada_aleatoria {
+            let wp = world.waypoints_world[wi_gen];
+            println!("  [largada] gen {gen_abs:4} nasce no wp {wi_gen}/{n_wp} \
+                      (arco ≈ {:.0} m) em ({:.0},{:.0})",
+                     wi_gen as f64 * lap_dist / n_wp as f64, wp.x, wp.y);
+        }
         let mut states: Vec<BeingState> = (0..n_seres).map(|i| {
             // Onde cada ser nasce.
             //
@@ -1276,17 +1318,12 @@ fn main() {
             // D2: com --largada-aleatoria, o waypoint da GERAÇÃO vem de hash(gen,seed)
             // — todos os seres da gen largam do mesmo lugar (comparável), mas o lugar
             // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
-            let wi = if largada_aleatoria {
-                let h = (gen_abs as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(pop_seed)
-                    .wrapping_mul(0xFF51AFD7ED558CCD);
-                ((h >> 17) as usize) % n_wp
-            } else if same_start { 0 } else { (i * n_wp / n_seres).min(n_wp - 1) };
+            let wi = if largada_aleatoria { wi_gen } else if same_start { 0 }
+                     else { (i * n_wp / n_seres).min(n_wp - 1) };
             let wp = world.waypoints_world[wi];
-            let wp_next = world.waypoints_world[(wi + 1) % n_wp];
-            let dx = wp_next.x - wp.x;
-            let dz = wp_next.y - wp.y;
-            let len = (dx*dx + dz*dz).sqrt().max(1e-6);
-            let fwd = [dx / len, 0.0, dz / len];
+            // Ver `frente_do_waypoint`: o último waypoint REPETE o primeiro, e o
+            // versor ingênuo saía nulo ali — geração inteira imóvel e seleção cega.
+            let fwd = frente_do_waypoint(&world.waypoints_world, wi);
             let pos = [wp.x, 0.0, wp.y];
             BeingState {
                 phys: make_physics_state(pos, fwd),
@@ -1930,6 +1967,16 @@ fn main() {
             let (odm, prm) = (od[od.len()/2], pr[pr.len()/2]);
             println!("  [pista] hodômetro {:.0} m · progresso {:.0} m · aproveitamento {:.0}%",
                      odm, prm, if odm > 1.0 { 100.0 * prm / odm } else { 0.0 });
+        }
+        // Telemetria do portão do piloto: quanto da corrida o CÉREBRO reassumiu.
+        // É a medida direta de "onde a fórmula não sabe" — e o número que diz se o
+        // domínio destilado cobre a pista nova (ver E-PIL1 em docs/DESTILABILIDADE.md).
+        if let Some(pl) = ctx.piloto_formula.as_ref() {
+            let tot = pl.decisoes + pl.abstencoes;
+            if tot > 0 {
+                println!("  [piloto] fórmula decidiu {} ticks · cérebro reassumiu {} ({:.1}%)",
+                         pl.decisoes, pl.abstencoes, 100.0 * pl.abstencoes as f64 / tot as f64);
+            }
         }
         if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
             println!("  [neuromod] gates ser0 [visão,parede,corpo,assoc] = [{:.2},{:.2},{:.2},{:.2}] · reserva [{:.2},{:.2},{:.2},{:.2}]",

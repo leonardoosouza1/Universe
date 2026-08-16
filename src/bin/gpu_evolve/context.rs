@@ -1194,11 +1194,16 @@ impl GpuCtx {
             let n_kan = kan_in.len().min(96);
             x[96..96 + n_kan].copy_from_slice(&kan_in[..n_kan]);
             if let Some(pl) = self.piloto_formula.as_mut() {
-                let y = pl.agir(&x);
-                let mut v = intents[0];
-                v[0] = y[0]; v[1] = y[1]; v[2] = y[2];
-                intents[0] = v;
-                self.last_intents[0] = v;
+                // Com portão (piloto_gated.json): fora do domínio conhecido o piloto
+                // ABSTÉM-SE e a decisão daquele tick fica com o cérebro, que já rodou.
+                // Sem referências no arquivo, `agir_com_portao` nunca abstém — o
+                // comportamento do v1 fica idêntico (ver piloto_linear.rs).
+                if let Some(y) = pl.agir_com_portao(&x) {
+                    let mut v = intents[0];
+                    v[0] = y[0]; v[1] = y[1]; v[2] = y[2];
+                    intents[0] = v;
+                    self.last_intents[0] = v;
+                }
             }
         }
         if self.obs_writer.is_some() && brain_fires {
