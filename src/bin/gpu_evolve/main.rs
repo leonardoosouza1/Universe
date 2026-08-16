@@ -576,6 +576,11 @@ fn main() {
                 "--width"     => { i += 1; if i < args.len() { track_width   = args[i].parse().unwrap_or(18.0); } }
                 "--fitness"   => { i += 1; if i < args.len() { modo_fitness = args[i].clone(); } }
                 "--steer-alpha"=>{ i += 1; if i < args.len() { steer_alpha = args[i].parse().unwrap_or(0.5); } }
+                // Regra de três do combustível: tanque = f(volta da pista) × k. Ver statics.rs.
+                "--fuel-auto" => { i += 1; if i < args.len() {
+                    FUEL_AUTO_K.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    fuel_on = true;
+                } }
                 "--fuel"      => { fuel_on = true; }
                 "--fuel-tank" => { i += 1; if i < args.len() { fuel_tank = args[i].parse().unwrap_or(1.0); fuel_on = true; } }
                 "--refuel-lap-only" => { setor_paga = false; }
@@ -1048,6 +1053,13 @@ fn main() {
             ctx.reload_world(&world);
             world_seed_atual = seed_gen;
             lap_dist = world.lap_distance as f64;
+            let k = FUEL_AUTO_K.load(Ordering::Relaxed);
+            if k > 0.0 {
+                // Regra de três (ver FUEL_AUTO_K): X = L/18,75 × 0,003 × k.
+                let x = (lap_dist as f32 / 18.75) * 0.003 * k;
+                FUEL_TANK.store(x, Ordering::Relaxed);
+                println!("  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.3} (k={k})");
+            }
         }
         println!("  [pista] gen {:4} usa seed={} ({} wp, volta={:.0}m)",
                  gen_abs, seed_gen, world.waypoints_world.len(), lap_dist);
