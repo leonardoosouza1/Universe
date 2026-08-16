@@ -102,6 +102,50 @@ desempenho, não EXIGÊNCIA.
 5. **Piloto v2 não-linear** (aviso (c) da forja): forja_auto nos mesmos X/Y. Se o não-linear
    também não ganhar muito, é mais uma prova de que o gargalo é o MUNDO, não o controlador.
 
+## VEREDITO CORRIGIDO (fiação consertada, 2026-08-16) — a destilação v1 FALHA
+
+Números com o piloto REALMENTE no motor, corridas em diretório limpo, simulador
+verificado determinístico (3 corridas idênticas, 48/48 seres bit-a-bit):
+
+| corrida | ser0 | % do campeão | vel média | parado | cérebro reassumiu |
+|---|---|---|---|---|---|
+| campeão em 9001 (treino) | 6592 m | 100% | 22,2 | 8,2% | — |
+| **clone puro em 9001** | **1027 m** | **15,6%** | 3,7 | 77,9% | — |
+| clone + portão em 9001 | 6771 m | **102,7%** | 22,8 | 7,6% | 5,5% |
+| campeão em 9007 (nova) | 5932 m | 100% | 20,4 | 6,6% | — |
+| clone puro em 9007 | 2559 m | 43,1% | 9,0 | 35,1% | — |
+| clone + portão em 9007 | 4203 m | 70,9% | 14,7 | 13,8% | 23,4% |
+
+**A tese "evolução vira refino" FALHA na v1.** Um controlador linear resolvido sobre
+20 mil pares (sentiu→fez) não dirige nem na pista em que foi ajustado: 15,6% do
+campeão, 78% do tempo parado. O erro por tick de 0,26 (held-out honesto) COMPÕE em
+malha fechada — cada desvio leva a um estado um pouco menos visitado, e o eixo de
+menor resolução (freio) escapa primeiro. É exatamente a armadilha "rajada/deriva"
+que a própria spec listou; ela não apareceu antes porque a fiação com bug fazia o
+campeão dirigir.
+
+**Achado que sobrevive e vale mais que o original: o portão.** Com o mesmo clone
+ruim, devolver ao cérebro os ticks em que a fórmula não reconhece o estado leva de
+15,6% para 102,7% (treino) e de 43,1% para 70,9% (pista nova). A taxa de devolução é
+a medida direta de "onde a fórmula não sabe": **5,5% dos ticks na pista conhecida,
+23,4% na nova**.
+
+**Controle obrigatório em andamento** (`--portao-aleatorio p`, implementado agora):
+abstenção na MESMA dose mas ignorando o estado. Sem ele não dá para distinguir
+"o portão escolhe os ticks certos" de "qualquer respiro do cérebro na mesma taxa
+salvaria". Resultado entra aqui — e se o aleatório empatar, o portão é decoração.
+
+---
+
+## HISTÓRICO — a versão anterior deste veredito (fiação com bug)
+
+O que está abaixo foi medido com o override do piloto chegando só ao canal de
+memória (ver aviso no topo). Fica registrado porque o FATO observado continua
+estranho e testável: contaminar UM canal de memória (ch120) com um sinal linear
+derivado do próprio replay levou o campeão de 6592 a 7156 m in-distribution e o
+destruiu (600 m) em pista nova. Se replicar com fiação limpa, é neuromodulação
+acidental — linha EXP10/neuromod, não destilação.
+
 ## E-PIL1 — VEREDITO: o clone NÃO generaliza, e o conserto mede o cérebro
 
 **Predição registrada antes falhou nos dois braços — o que saiu é melhor.**
