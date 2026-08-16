@@ -262,3 +262,17 @@ sistema NÃO pode encher de novo (em 2026-08-11 chegou a 340 MB livres e matou b
 - Rascunho pesado: `/media/llm-data/scratch/`
 - Em bateria longa, gravar replay só de gen 0/meio/última (lição de 2026-08-11: replay
   de toda gen × 16 corridas = 31 GB).
+
+---
+
+## ESPAÇO EM DISCO — VIGILÂNCIA OBRIGATÓRIA (Leonardo, 2026-08-16)
+
+> Medido: /media/llm-data chegou a 100% (803 MB livres) com baterias rodando.
+
+1. **Alvo permanente: 20-30 GB livres** em /media/llm-data. TODO ciclo de
+   vigília começa com `df -h /media/llm-data`; abaixo de 20 GB → rodar
+   `~/projects/LLM/tools/limpeza-dados.sh --real` (tem modo agressivo automático).
+2. **Bateria concluída com veredito REGISTRADO nos docs = dados descartáveis**:
+   replays somem (agressivo), ficam .bin da linhagem + run.log.
+3. Antes de LANÇAR bateria nova: estimar o que ela gera (gens × ~30 MB × seres
+   gravados) e conferir que cabe SEM furar o alvo.
