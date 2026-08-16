@@ -272,3 +272,41 @@ predição espelhada do lado deles no mesmo momento (malha aberta vs fechada).
 4. Dose 0,200 (bem acima da medida) serve de terceiro ponto: se o aleatório só
    funciona com dose alta, a curva dose-resposta separa "escolher bem" de "intervir
    muito".
+
+## Controle do portão — VEREDITO: o portão vale, e o mecanismo é a CONTIGUIDADE
+
+Dose casada, sorteios independentes (`--portao-semente`), campeão = 100%.
+
+| pista 9001 (dose 5,5%) | metros | % |
+|---|---|---|
+| portão | 6771 | 102,7% |
+| aleatório (4 sorteios) | 909 · 3838 · 1070 · 7132 → **3237 ± 2532** | 49,1% |
+
+O aleatório não empata: ele é LOTERIA. Um sorteio deu 7132 (foi esse que apareceu na
+primeira rodada e me fez escrever "empatou"), outro deu 909. A média é metade do portão,
+com desvio do tamanho da própria média.
+
+**O mecanismo, medido pela telemetria nova de contiguidade:**
+
+| corrida | abstenções | blocos | média/bloco | maior bloco |
+|---|---|---|---|---|
+| portão 9001 | 1109 (5,5%) | 247 | 4,5 | **345 ticks (5,4 s)** |
+| aleatório 9001 | 1100 (5,5%) | 1099 | 1,0 | 2 |
+| portão 9007 | 4682 (23,4%) | 514 | 9,1 | **1227 ticks** |
+| aleatório 9007 | 4680 (23,4%) | 4600 | 1,0 | 2 |
+
+**O portão não ganha escolhendo ticks avulsos melhores. Ganha entregando o volante por
+TRECHOS INTEIROS quando o estado está fundo fora do domínio.** Piscadas de 1-2 ticks não
+tiram um carro de uma excursão; um bloco de 5 segundos tira.
+
+Minha predição registrada dizia "mediana de bloco ≥4 no portão contra ≈1 no aleatório".
+A mediana é 1 nos DOIS — a maioria das abstenções do portão também é avulsa. **Errei na
+mediana; o que separa é a CAUDA.** Registro o erro porque ele muda o desenho: quem for
+implementar isso deve olhar o maior bloco, não o típico.
+
+**Reformulação da lei** (mandada para a sessão-forja): não é "o órgão precisa respirar X%
+do tempo" nem "o portão escolhe o tick certo" — é **o órgão precisa poder ASSUMIR e
+SEGURAR**. A unidade de resgate é o trecho, não o tick.
+
+Ressalva honesta: +1,4 desvios com n=4 na pista de treino e +0,3 na pista nova. Oito
+sorteios a mais estão rodando; o efeito a acompanhar é o TAMANHO (2,1×), não o σ.
