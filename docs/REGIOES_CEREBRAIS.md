@@ -232,3 +232,17 @@ a empate de novo. Morta aos 33/60 (não queimar GPU com braço inócuo). Rodada 
 em ~100 s sem volta; quem raste, seca. 2×2 relançado (maestro × controle).
 Lição repetida do próprio projeto: "combustível só cria incentivo se puder
 faltar" (o comentário do FUEL_TANK já avisava).
+
+## Energia rodada 2 — dose IMPOSSÍVEL por construção (2026-08-16, 18 gens até shutdown)
+
+Canário dos idênticos: mediana 1875 m cravada nos 4 braços = ponto onde o tanque
+0,30 seca (~100 s). Erro de desenho MEU (regra 4 pela metade): calculei "seca em
+100 s" sem checar "volta cabe em 100 s por pista" — na 9001 exigiria 29 m/s de
+média (impossível) → ninguém reabastece → colapso (0,5-1,1 ≥1V/gen, vida 28%,
+2 promoções). M4×ctrl ilegível no afogamento. PC desligado matou os processos.
+
+Rodada 3 (aguardando liberação de GPU): tanque 0,25 + refuel por SETOR — aperto
+contínuo sempre viável (cada setor ≈ +80 s de alcance; rodada 1 falhou por
+tanque GRANDE+setor, não pelo setor). Teto por pista conferido: setor médio
+25-122 m, alcançável em qualquer velocidade > 2 m/s. Predição: secos caem
+gen a gen (aprendem gestão), completagem ≥70% do sem-fuel, e M4 ganha alvo.
