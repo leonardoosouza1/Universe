@@ -222,3 +222,13 @@ Mesma corrida determinística do replay que ele viu: ANTES encalha no tick 9574,
 163 s parado, morre; DEPOIS anda até o tick 20000, 0 s parado, vida cheia,
 48/48 voltas duplas (era 44/48). Ré re-disparada em <5 s alonga (até 4×) e
 ALTERNA o volante (o bug era sair reto de volta pro mesmo canto).
+
+## Energia rodada 1 — dose inócua, corrigida no ato (2026-08-16)
+
+fuel-tank 0,60 + refuel por SETOR: tanque mediano ficou em 0,57-0,59 (não morde;
+6-8/48 secos) — o refuel repunha mais do que o gasto, mundo não mudou, M4 rumo
+a empate de novo. Morta aos 33/60 (não queimar GPU com braço inócuo). Rodada 2
+(energia2): tanque 0,30 + refuel SÓ POR VOLTA COMPLETA — teto calculado: seca
+em ~100 s sem volta; quem raste, seca. 2×2 relançado (maestro × controle).
+Lição repetida do próprio projeto: "combustível só cria incentivo se puder
+faltar" (o comentário do FUEL_TANK já avisava).
