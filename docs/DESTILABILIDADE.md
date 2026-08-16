@@ -1,5 +1,33 @@
 # Destilabilidade — o que o clone que venceu o campeão significa
 
+> ## ⚠ CORREÇÃO GRAVE (2026-08-16, auditoria adversarial) — TUDO ABAIXO ESTÁ SOB REVISÃO
+>
+> O override do piloto estava aplicado em `intents[0]` **depois** de `phys_states` já
+> ter sido montado (`context.rs`: montagem na linha 989, `.collect()` em 1178, override
+> em 1190, física em 1302). Nessa ordem o comando da fórmula **nunca chegava ao motor**:
+> o único caminho que restava era `mem0` (linha 1328), ou seja UM canal de percepção
+> (ch120, família memória). Prova que matou: os comandos aplicados ao carro foram
+> bit-a-bit iguais aos do campeão nos 576 primeiros ticks, enquanto o intent gravado já
+> diferia em 0,60 desde o tick 0 — e a divergência começou exatamente no tick seguinte
+> ao primeiro em que `clip(intent0, 0, 1)` mudou.
+>
+> **O que as corridas mediram de fato: o cérebro campeão com um canal de memória
+> contaminado pela fórmula.** Não "o clone dirigindo". Isso atinge o 108,6%, o colapso
+> de 10% em pista nova e os 100,2% com portão — todos os três.
+>
+> Achado por agente cético dedicado a derrubar o resultado (o padrão de workflow
+> adversarial do projeto pagou o próprio custo aqui). Ordem consertada, teste de
+> regressão `piloto_entra_antes_da_fisica` trava a posição lendo o próprio fonte, e a
+> bateria inteira foi relançada — agora com controle de DETERMINISMO (duas corridas
+> idênticas) porque o mesmo cético mostrou que os 47 "controles de graça" mudaram entre
+> corridas (um deles −5915 m). Os números corrigidos entram abaixo quando fecharem.
+>
+> Lição de método, sem atenuante: eu tinha declarado "divergência verificada, o override
+> chega ao motor exatamente como resolvido" apoiado em ver a velocidade divergir no tick
+> 577. Divergir prova que ALGO mudou, não que mudou pelo caminho que eu supus. O teste
+> certo era comparar o comando APLICADO (throttle/steer/brake na física) com o intent
+> gravado — dois campos que eu já tinha no obs.f32 e não cruzei.
+
 > Leonardo (2026-08-16): *"então ele saiu melhor que o campeão, o que aprendemos com isso
 > além do ruído? Como podemos aplicar isso já no projeto, o que isso fez em si no projeto"*
 
@@ -153,3 +181,30 @@ provado com controle pareado: wi=105 saiu de `0 m / 1 nota distinta / 100% morto
 para `1327 m / 46 notas / 0% mortos`, e wi=50 (controle) ficou **idêntico ao de
 antes** — mudança cirúrgica. O log agora imprime `[largada] gen N nasce no wp k/n`;
 sem isso o diagnóstico exigiu uma sonda dedicada.
+
+## E-PIL2 — "caderno misto" (transferência da sessão-forja) — PREDIÇÃO REGISTRADA
+
+A forja mediu 4× que **cobertura vence aglomeração**: roteador de especialistas perdeu
+para um caderno ÚNICO com dados misturados (código CE 2,128 roteado vs 1,563 misto,
+apesar de 99% de acerto no roteamento; centros especializados aglomeram e interpolam
+mal na borda). O análogo aqui: em vez de um piloto por tipo de pista, um piloto só com
+os ticks de VÁRIAS pistas.
+
+Desenho: piloto-A = só 9001 (o atual) · piloto-M = 9001 + 9003 (as duas pistas de
+treino do campeão), mesmas features, mesmo portão (quantil 0,99 das refs do conjunto
+correspondente). Avaliação em 9007 (nova, o único mapa em que os dois seres ficam na
+pista) e em 9001 (controle in-distribution).
+
+**Predições, antes de rodar:**
+1. A abstenção do piloto-M em 9007 cai abaixo dos 9,4% do piloto-A — é a medida direta
+   de cobertura, e é o que "misturar" deveria comprar.
+2. Metros em 9007 ficam ≥ os do piloto-A (5944 m); se caírem, a mistura DILUIU a
+   política em vez de cobrir, e a lei da forja não transfere para controle contínuo.
+3. Em 9001 a abstenção do piloto-M ≥ a do piloto-A (1,6%): mais referências de outra
+   pista não podem tornar a pista de casa mais familiar — se cair, o limiar está
+   frouxo e a métrica de cobertura não significa nada.
+
+O ponto 3 é o controle que separa "cobertura real" de "limiar mais permissivo": o
+quantil 0,99 é calculado no próprio conjunto de treino, então um conjunto mais
+heterogêneo tem limiar MAIOR por construção. Sem esse controle, qualquer queda de
+abstenção seria artefato do limiar, não cobertura.

@@ -979,6 +979,41 @@ impl GpuCtx {
 
         if intents.len() != n { return false; }
 
+        // ── PILOTO POR FÓRMULA ────────────────────────────────────────────────
+        // Substitui a DECISÃO do ser 0 mantendo percepção+KAN+CfC vivos. Lê pelo
+        // mesmo canal do `--observar` (download_debug) → X idêntico ao do solve.
+        //
+        // ATENÇÃO À POSIÇÃO — este bloco TEM de vir antes da montagem de
+        // `phys_states`. Ele estava DEPOIS (logo após o `.collect()`), e nessa
+        // ordem o override não chegava ao motor: `phys_states` já tinha sido
+        // montado com o intent do CÉREBRO, e a única coisa que a fórmula ainda
+        // tocava era `mem0` (canal de percepção 120), no fim do tick. Resultado:
+        // as corridas de 2026-08-16 mediram o campeão com UM canal de memória
+        // contaminado, não o clone dirigindo — os comandos aplicados eram
+        // bit-a-bit iguais aos do campeão nos primeiros 576 ticks enquanto o
+        // intent gravado já diferia em 0,60 desde o tick 0. Achado por auditoria
+        // adversarial; o teste `piloto_entra_antes_da_fisica` trava a ordem.
+        // MARCA-ORDEM-PILOTO (lida pelo teste piloto_entra_antes_da_fisica)
+        if self.piloto_formula.is_some() && brain_fires && !intents.is_empty() {
+            let (_l1_raw, cfc_in, kan_in) = self.brain.download_debug();
+            let mut x = [0.0f32; 192];
+            x[..96].copy_from_slice(&cfc_in[..96]);
+            let n_kan = kan_in.len().min(96);
+            x[96..96 + n_kan].copy_from_slice(&kan_in[..n_kan]);
+            if let Some(pl) = self.piloto_formula.as_mut() {
+                // Com portão (piloto_gated.json): fora do domínio conhecido o piloto
+                // ABSTÉM-SE e a decisão daquele tick fica com o cérebro, que já rodou.
+                // Sem referências no arquivo, `agir_com_portao` nunca abstém — o
+                // comportamento do v1 fica idêntico (ver piloto_linear.rs).
+                if let Some(y) = pl.agir_com_portao(&x) {
+                    let mut v = intents[0];
+                    v[0] = y[0]; v[1] = y[1]; v[2] = y[2];
+                    intents[0] = v;
+                    self.last_intents[0] = v;
+                }
+            }
+        }
+
         // ── KAN eval inline (idêntico ao gpu_loop.rs) ─────────────────────────
         // Deduplicado (E3): usa universe::kan::eval_knots — mesma fórmula que era
         // reimplementada aqui e em gpu_loop.rs como closure local.
@@ -986,6 +1021,7 @@ impl GpuCtx {
             universe::kan::eval_knots(kan_knots, out_idx, x)
         };
 
+        // MARCA-ORDEM-FISICA (lida pelo teste piloto_entra_antes_da_fisica)
         let mut phys_states: Vec<PhysicsStateGpu> = (0..n).map(|i| {
             let mut s = states[i].phys;
             let intent = &intents[i];
@@ -1185,27 +1221,9 @@ impl GpuCtx {
         //    l1_raw(96)   acumulador L1 pré-tanh,
         //    intent(96)   final_intent pós-tanh (0..48=L2, 48..96=bypass)] = 394 f32.
         // Só quando o cérebro disparou (senão a linha repetiria a decisão anterior).
-        // PILOTO POR FÓRMULA: substitui a decisão do ser 0 mantendo percepção+KAN+CfC.
-        // Mesmo canal de leitura do --observar (download_debug) → X idêntico ao do solve.
-        if self.piloto_formula.is_some() && brain_fires && !intents.is_empty() {
-            let (_l1_raw, cfc_in, kan_in) = self.brain.download_debug();
-            let mut x = [0.0f32; 192];
-            x[..96].copy_from_slice(&cfc_in[..96]);
-            let n_kan = kan_in.len().min(96);
-            x[96..96 + n_kan].copy_from_slice(&kan_in[..n_kan]);
-            if let Some(pl) = self.piloto_formula.as_mut() {
-                // Com portão (piloto_gated.json): fora do domínio conhecido o piloto
-                // ABSTÉM-SE e a decisão daquele tick fica com o cérebro, que já rodou.
-                // Sem referências no arquivo, `agir_com_portao` nunca abstém — o
-                // comportamento do v1 fica idêntico (ver piloto_linear.rs).
-                if let Some(y) = pl.agir_com_portao(&x) {
-                    let mut v = intents[0];
-                    v[0] = y[0]; v[1] = y[1]; v[2] = y[2];
-                    intents[0] = v;
-                    self.last_intents[0] = v;
-                }
-            }
-        }
+        // O bloco do PILOTO POR FÓRMULA já rodou lá em cima (antes de `phys_states`),
+        // então `intents[0]` aqui já é a decisão da fórmula — o obs.f32 grava o que
+        // de fato foi ao motor.
         if self.obs_writer.is_some() && brain_fires {
             let (l1_raw, cfc_in, kan_in) = self.brain.download_debug();
             let p = &phys_states[0];
@@ -1381,5 +1399,40 @@ impl GpuCtx {
         // válida, silenciosamente errados.
         let wps: Vec<(f32, f32)> = world.waypoints_world.iter().map(|p| (p.x, p.y)).collect();
         self.track_curvatura = CurvaturaPista::medir(&wps);
+    }
+}
+
+#[cfg(test)]
+mod testes_ordem {
+    /// TRAVA DE ORDEM: o override do piloto TEM de acontecer antes da montagem de
+    /// `phys_states`, senão o comando da fórmula não chega ao motor — ele fica só
+    /// no `intents`, que depois disso só alimenta `mem0` (canal de percepção 120).
+    ///
+    /// Esse foi um erro REAL (2026-08-16): o bloco estava depois do `.collect()` e
+    /// a bateria inteira mediu o campeão com um canal de memória contaminado,
+    /// acreditando estar medindo o clone dirigindo. Achado por auditoria
+    /// adversarial; a evidência que matou foi "comandos aplicados bit-a-bit
+    /// idênticos aos do campeão nos 576 primeiros ticks enquanto o intent gravado
+    /// já diferia em 0,60 desde o tick 0".
+    ///
+    /// O teste lê o PRÓPRIO fonte: é a única forma de travar ordem entre dois
+    /// trechos do mesmo tick sem montar uma GPU no teste.
+    #[test]
+    fn piloto_entra_antes_da_fisica() {
+        let fonte = include_str!("context.rs");
+        // As marcas são montadas em RUNTIME: escritas literalmente aqui, o
+        // `include_str!` do próprio teste casaria consigo mesmo (o teste passou a
+        // contar 3 ocorrências de si próprio na primeira tentativa).
+        let m_piloto = format!("MARCA-{}-PILOTO", "ORDEM");
+        let m_phys   = format!("MARCA-{}-FISICA", "ORDEM");
+        let i_piloto = fonte.find(&m_piloto).expect("marca do piloto sumiu");
+        let i_phys   = fonte.find(&m_phys).expect("marca da física sumiu");
+        assert!(
+            i_piloto < i_phys,
+            "REGRESSÃO: o override do piloto (byte {i_piloto}) está DEPOIS da \
+             montagem de phys_states (byte {i_phys}) — a fórmula não chega ao motor."
+        );
+        // E só pode existir UM bloco de override (havia dois durante o conserto).
+        assert_eq!(fonte.matches(&m_piloto).count(), 1, "marca do piloto duplicada no código");
     }
 }

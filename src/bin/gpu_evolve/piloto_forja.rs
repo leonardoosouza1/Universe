@@ -29,8 +29,16 @@
 //! - distâncias: `(512+512) × 192 = 196 608` mult (mesmo número de sub e add)
 //! - `2048` exponenciais
 //! - leitura de W: `2048 × 3 = 6 144` MAC
-//! - **total ≈ 202 752 mult/tick**. A 64 Hz = **12,98 M mult/s** no CPU do host —
-//!   desprezível (o v1 gastava 576×3 = 1 728 mult/tick, ~118× menos, mas errava 46% mais).
+//! - **total ≈ 202 752 mult/tick** (`mult_por_tick()` devolve esse número, conferido
+//!   no teste). A 64 Hz = **12,98 M mult/s** (o v1 gastava 576×3 = 1 728 mult/tick,
+//!   117× menos, mas errava 46% mais).
+//! - MEDIDO, não estimado: **143,8 µs/tick** (5 000 ticks em 718,8 ms, 6 956 ticks/s,
+//!   `rustc -O` sem `target-cpu=native`, Ryzen 7 5800X3D, 1 thread). Isso é **0,92% do
+//!   orçamento de um tick a 64 Hz** (15 625 µs) para UM ser — é a conta que autoriza
+//!   chamar de desprezível, e vale para o uso do v1 (o piloto dirige o ser 0, o resto
+//!   segue o cérebro). Dirigir a POPULAÇÃO inteira NÃO é de graça: 200 seres × 143,8 µs
+//!   = 28,8 ms/tick, quase o dobro do orçamento. Para isso, a base tem de ir para a GPU.
+//! - `carregar` (parse do JSON de 4,1 MB): **14,1 ms**, uma vez.
 //! - memória residente: `(512+512)×192×4 B = 786 KB` de centros + 24 KB de W.
 //! - SEM ESTADO: `agir` é função pura de `x` (o v1 carregava 2 EMAs). Isso é o que
 //!   permite chamá-lo fora de ordem, repetir um tick, ou testá-lo linha a linha.
