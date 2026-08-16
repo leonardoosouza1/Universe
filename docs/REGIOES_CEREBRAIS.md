@@ -172,3 +172,34 @@ segue tempo: confirmada no eixo "estrutura temporal é selecionável e estável"
   AGORA É O CÉREBRO DO LABORATÓRIO (obs.f32+genoma+replay atualizados): dá pra
   VER os blocos no painel Cérebro (região parede/estrada disparando na curva,
   corpo no limitador, associativo integrando).
+
+## m23 (M2+M3) — VEREDITO FINAL: VENCE EM TODA A LINHA (2026-08-15)
+
+| semente | M3 puro | m23 completo |
+|---|---|---|
+| s77 | 29,2/gen · 842 ≥2V | 31,0/gen · 1273 ≥2V |
+| s31 | 0,9/gen (presa) | 8,3/gen, acelerando (med final 5245-5412) |
+| s113 | — | 31,8/gen aos 44/80 |
+
+O τ certo por região ABAIXA o vale da travessia: s31 (presa no M3) atravessa no
+m23 — "padrão de semente" refinado: era profundidade de vale, não defeito da
+semente. Campeão m23-s77 avaliado puro: med 7032 m (2,40V) · 47/48 ≥1V ·
+44/48 ≥2V — MELHOR avaliação pura do projeto. Folhas L1: 23/96 agrupadas nos
+blocos (menos que M3 36/96 — τ heterogêneo redistribui parte da especialização
+pro TEMPO em vez do espaço; medir isso vira pergunta do M4). Lab atualizado
+para este cérebro.
+
+## M4 — SPEC (escrever antes de codar; implementar na próxima vaga dupla)
+
+Neuromodulação POR REGIÃO: o cérebro lento (16→3, hoje out-beta=0 no treino)
+ganha 4 saídas de GATE, uma por bloco, com RESERVA finita (doc-09 §6.2):
+  gate_b ∈ [0,5, 1,5] multiplicativo sobre a ATIVAÇÃO dos 24 neurônios do bloco b
+  reserva_b: dR = (R_max − R)/τ_repor − a·|gate_b−1|·R  (usar custa; repõe devagar)
+Implementação mínima: shader brain.wgsl multiplica l1_ativação do bloco pelo
+gate lido de buffer novo (4 f32/ser, escrito pelo lento 1×/8 ticks); pesos do
+lento→gates herdáveis (slow já é herdado). Flags: --neuromod-regioes (off).
+Predições a registrar no lançamento: (a) ganho vs m23 em pista com MUDANÇA de
+regime (rodízio curta↔retão: gate deve alternar blocos); (b) ablação do gate
+(congelar em 1,0) remove o ganho; (c) reserva esgota sob uso contínuo
+(assinatura de burnout no obs) — é o enxerto 1 do plano neuromod realizado
+sobre o cérebro REGIONALIZADO, onde gate por bloco tem alvo de verdade.
