@@ -143,3 +143,13 @@ Reportar: metros de cada um, held-out do solve, e ONDE o clone se perde
 
 Resultados → `/media/llm-data/universe-runs/piloto-formula/RESULTADO.md` e
 me avisem na sessão-forja que eu cruzo com a bateria A/B/C.
+
+---
+
+## RESULTADO (2026-08-16): clone 7156 m = 108,6% do campeão (6592 m mesma métrica)
+
+Destilação FUNCIONA e o aluno supera o professor ruidoso (como na forja):
+menos tempo parado (5,5% vs 8,2%), 1 encalhe em 20k ticks. Volante do piloto
+dominado por ch121 (família MEMÓRIA) — o linear se apoia no que percepção+CfC
+já derivou, não na visão crua. Detalhes, sanidades e comandos:
+/media/llm-data/universe-runs/piloto-formula/RESULTADO.md
