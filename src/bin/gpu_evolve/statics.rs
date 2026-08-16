@@ -131,6 +131,11 @@ pub static NEUROMOD_REGIOES: std::sync::atomic::AtomicBool = std::sync::atomic::
 /// Recalculado A CADA troca de pista — a dose escala com o mundo, nunca mais
 /// impossível-por-construção (rodada 2) nem inócua (rodada 1). 0 = desligado.
 pub static FUEL_AUTO_K: AtomicF32 = AtomicF32::new();
+/// D4 (ESCADA_DIFICULDADE.md): DANO OCULTO acumulado — RPM alto e parede
+/// degradam o corpo DENTRO da vida (throttle ×(1−0,5·dano), direção ×(1−0,3·dano)),
+/// sem canal sensorial direto. É o estado lento oculto do EXP10 — o regime onde
+/// o maestro M4 tem teto alto. 0 = desligado; 1 = escala padrão dos acúmulos.
+pub static DANO_ESCALA: AtomicF32 = AtomicF32::new();
 /// E-REG1b: custo de fiação só na CAUDA — top-N conexões mais fortes por neurônio
 /// (0 = todas, como E-REG1). Motivo (negativo do E-REG1 com mecanismo): a média
 /// sobre 18k pesos tem variância interindividual ≈ 0 (dist 0,2491 vs 0,2493 ≈

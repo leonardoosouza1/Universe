@@ -99,4 +99,8 @@ pub struct BeingState {
     pub re_falhas:          u8,
     /// Segundos desde a última SAÍDA de ré (para detectar re-encalhe rápido).
     pub re_desde_saida:     f32,
+    /// D4: dano acumulado ∈[0,1] — envelhecimento do corpo dentro da vida.
+    /// Acumula por RPM alto e parede; degrada acelerador/direção; SEM sensor
+    /// direto (oculto). Zera no respawn. Ver ESCADA_DIFICULDADE.md.
+    pub dano:               f32,
 }

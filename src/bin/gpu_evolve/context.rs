@@ -1082,6 +1082,23 @@ impl GpuCtx {
                 if s.current_gear <= 1 { s.current_gear = 2; }
                 if s.current_gear > 2 && speed_now < 3.0 { s.current_gear -= 1; }
             }
+            // ── D4: DANO OCULTO (ver DANO_ESCALA em statics.rs) ───────────────
+            // Acumula por giro alto e parede; degrada acelerador e direção. Aplicado
+            // DEPOIS dos ramos de comando (afeta o que chega à física, inclusive na
+            // ré) e ANTES do câmbio (rpm de leitura não muda no mesmo tick).
+            let dano_escala = DANO_ESCALA.load(Ordering::Relaxed);
+            if dano_escala > 0.0 && states[i].life_left > 0.0 {
+                let rpm_frac = states[i].phys.current_rpm / states[i].phys.max_rpm.max(1.0);
+                let mut inc = 0.0f32;
+                if rpm_frac > 0.9 { inc += 0.00015 * ((rpm_frac - 0.9) / 0.1).min(1.5); }
+                if states[i].dist_wall_f.min(states[i].dist_wall_l.min(states[i].dist_wall_r)) < 3.0 {
+                    inc += 0.0004;
+                }
+                states[i].dano = (states[i].dano + inc * dano_escala).min(1.0);
+                let d = states[i].dano;
+                s.throttle = s.throttle * (1.0 - 0.5 * d);
+                s.steer    = s.steer    * (1.0 - 0.3 * d);
+            }
             // ── CÂMBIO (paridade com motor.rs:2451-2494) ──────────────────────
             // A física deste pipeline SEMPRE teve caixa de 6 marchas (gear_ratio em
             // physics_power_*.wgsl move a força), mas nada aqui subia de marcha: só o

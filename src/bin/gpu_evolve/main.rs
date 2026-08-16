@@ -181,6 +181,7 @@ fn avaliar_held_out(
             nm_reserva: [1.0; 4],
             re_falhas: 0,
             re_desde_saida: 999.0,
+            dano: 0.0,
             joy_tick: 0.0,
             joy_streak: 0.0,
             edge_row6: 0.0,
@@ -366,6 +367,7 @@ fn main() {
     /// Todos os seres nascem no mesmo ponto. Torna a fitness comparável entre indivíduos
     /// — sem isso ela mede a largada, não o cérebro.
     let mut same_start = false;
+    let mut largada_aleatoria = false;
     /// Ticks de vida ganhos por METRO avançado. 0 = vida dada de graça (comportamento antigo).
     ///
     /// Medido: com vida fixa, a população converge para RASTEJAR — 2,2 m/s de média com
@@ -572,6 +574,14 @@ fn main() {
                 } }
                 "--stag-life-drain" => { i += 1; if i < args.len() { stag_life = args[i].parse().unwrap_or(0); } }
                 "--same-start"=> { same_start = true; }
+                // D2 (ESCADA_DIFICULDADE.md): largada num waypoint ALEATÓRIO por geração
+                // (o MESMO para todos os seres da gen — comparável; derivado da seed da
+                // gen). Mata a decoração de traçado sem reintroduzir o ruído de largada.
+                "--largada-aleatoria" => { largada_aleatoria = true; same_start = true; }
+                // D4: dano oculto (0=off; 1=escala padrão). Ver ESCADA_DIFICULDADE.md.
+                "--dano" => { i += 1; if i < args.len() {
+                    DANO_ESCALA.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                } }
                 "--life-earn" => { i += 1; if i < args.len() { life_earn     = args[i].parse().unwrap_or(0.0); } }
                 "--width"     => { i += 1; if i < args.len() { track_width   = args[i].parse().unwrap_or(18.0); } }
                 "--fitness"   => { i += 1; if i < args.len() { modo_fitness = args[i].clone(); } }
@@ -1215,9 +1225,16 @@ fn main() {
             // seleção sobre RUÍDO: o campeão não sabia dar volta, tinha nascido no lugar
             // certo. Como na geração seguinte ele nasce noutro ponto, não há nada a herdar,
             // e por isso o número de completadores nunca cresce.
-            let wi = if same_start { 0 } else { (i * n_wp / n_seres).min(n_wp - 1) };
+            // D2: com --largada-aleatoria, o waypoint da GERAÇÃO vem de hash(gen,seed)
+            // — todos os seres da gen largam do mesmo lugar (comparável), mas o lugar
+            // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
+            let wi = if largada_aleatoria {
+                let h = (gen_abs as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(pop_seed)
+                    .wrapping_mul(0xFF51AFD7ED558CCD);
+                ((h >> 17) as usize) % n_wp
+            } else if same_start { 0 } else { (i * n_wp / n_seres).min(n_wp - 1) };
             let wp = world.waypoints_world[wi];
-            let wp_next = world.waypoints_world[(wi + 1).min(n_wp - 1)];
+            let wp_next = world.waypoints_world[(wi + 1) % n_wp];
             let dx = wp_next.x - wp.x;
             let dz = wp_next.y - wp.y;
             let len = (dx*dx + dz*dz).sqrt().max(1e-6);
@@ -1248,6 +1265,7 @@ fn main() {
             nm_reserva: [1.0; 4],
             re_falhas: 0,
             re_desde_saida: 999.0,
+            dano: 0.0,
                 joy_tick: 0.0,
                 joy_streak: 0.0,
                 edge_row6: 0.0,
