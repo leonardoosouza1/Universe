@@ -51,6 +51,9 @@ pub struct GpuCtx {
     /// mudam no meio). Preenchido pelo main a cada aplicação de genomas; drenado
     /// da vida por tick quando CUSTO_FIACAO > 0. Vazio = sem custo.
     pub fiacao_custo: Vec<f32>,
+    /// PILOTO POR FÓRMULA: quando presente, o ser 0 é dirigido pelo controlador
+    /// ridge (X = debug do cérebro pós-KAN/CfC, mesma fonte do --observar).
+    pub piloto_formula: Option<crate::piloto_linear::PilotoLinear>,
     /// M4: pesos do maestro por ser (n×16), preenchidos pelo main por geração.
     pub gates_w: Vec<f32>,
     /// M4: último gate aplicado ao ser 0 (telemetria [neuromod] do main).
@@ -253,6 +256,7 @@ impl GpuCtx {
             grid_size: world.size as u32,
             cell_size: world.cell_size,
             percept, brain, slow, obs_writer: None, fiacao_custo: Vec::new(),
+            piloto_formula: None,
             gates_w: Vec::new(), ultimo_gate: [1.0; 4],
             slow_samples: Vec::new(),
             last_intents: Vec::new(),
@@ -848,7 +852,7 @@ impl GpuCtx {
             }
         }
 
-        let intents = if brain_fires {
+        let mut intents = if brain_fires {
             let v = self.brain.read_intent_after_submit(n);
             if v.len() == n { self.last_intents = v.clone(); }
             v
@@ -1181,6 +1185,22 @@ impl GpuCtx {
         //    l1_raw(96)   acumulador L1 pré-tanh,
         //    intent(96)   final_intent pós-tanh (0..48=L2, 48..96=bypass)] = 394 f32.
         // Só quando o cérebro disparou (senão a linha repetiria a decisão anterior).
+        // PILOTO POR FÓRMULA: substitui a decisão do ser 0 mantendo percepção+KAN+CfC.
+        // Mesmo canal de leitura do --observar (download_debug) → X idêntico ao do solve.
+        if self.piloto_formula.is_some() && brain_fires && !intents.is_empty() {
+            let (_l1_raw, cfc_in, kan_in) = self.brain.download_debug();
+            let mut x = [0.0f32; 192];
+            x[..96].copy_from_slice(&cfc_in[..96]);
+            let n_kan = kan_in.len().min(96);
+            x[96..96 + n_kan].copy_from_slice(&kan_in[..n_kan]);
+            if let Some(pl) = self.piloto_formula.as_mut() {
+                let y = pl.agir(&x);
+                let mut v = intents[0];
+                v[0] = y[0]; v[1] = y[1]; v[2] = y[2];
+                intents[0] = v;
+                self.last_intents[0] = v;
+            }
+        }
         if self.obs_writer.is_some() && brain_fires {
             let (l1_raw, cfc_in, kan_in) = self.brain.download_debug();
             let p = &phys_states[0];

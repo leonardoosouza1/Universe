@@ -56,6 +56,7 @@ mod pistas;
 mod tests;
 mod fantasma;
 mod escada;
+mod piloto_linear;
 
 use statics::*;
 use context::GpuCtx;
@@ -378,6 +379,7 @@ fn main() {
     let mut vento_z:     f32 = 0.0;
     let mut fantasma_on = false;
     let mut escada_on   = false;
+    let mut piloto_formula_path: Option<String> = None;
     /// Ticks de vida ganhos por METRO avançado. 0 = vida dada de graça (comportamento antigo).
     ///
     /// Medido: com vida fixa, a população converge para RASTEJAR — 2,2 m/s de média com
@@ -604,6 +606,9 @@ fn main() {
                 "--fantasma" => { fantasma_on = true; }
                 // ESCADA completa (controlador automático de dificuldade; ver escada.rs).
                 "--escada" => { escada_on = true; }
+                // PILOTO POR FÓRMULA (PILOTO_POR_FORMULA.md): ser 0 dirigido pelo
+                // controlador ridge destilado do replay do campeão.
+                "--piloto-formula" => { i += 1; if i < args.len() { piloto_formula_path = Some(args[i].clone()); } }
                 "--life-earn" => { i += 1; if i < args.len() { life_earn     = args[i].parse().unwrap_or(0.0); } }
                 "--width"     => { i += 1; if i < args.len() { track_width   = args[i].parse().unwrap_or(18.0); } }
                 "--fitness"   => { i += 1; if i < args.len() { modo_fitness = args[i].clone(); } }
@@ -806,6 +811,15 @@ fn main() {
         }
     };
     ctx.brain_skip = brain_skip;
+    if let Some(ref p) = piloto_formula_path {
+        match piloto_linear::PilotoLinear::carregar(p) {
+            Some(pl) => {
+                println!("  [piloto-formula] ser 0 dirigido pela fórmula ({} entradas)", pl.n_entradas());
+                ctx.piloto_formula = Some(pl);
+            }
+            None => { eprintln!("ERRO: --piloto-formula não carregou {p}"); std::process::exit(1); }
+        }
+    }
     if ruido_sigma > 0.0 || ruido_drop > 0.0 {
         ctx.brain.set_ruido(ruido_sigma, ruido_drop);
         println!("  [ruido] D3: sigma={ruido_sigma} dropout={ruido_drop}");
