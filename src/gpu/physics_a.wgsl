@@ -91,6 +91,11 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
+    // D5: espelho do clima (ver physics.rs). a usa só o vento.
+    clima_mu:   f32,
+    vento_x:    f32,
+    vento_z:    f32,
+    clima_freq: f32,
 }
 
 @group(0) @binding(0) var<uniform>             params: WorldParams;
@@ -145,6 +150,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // === FASE 1: reset forces ===
     var forces = vec3<f32>(0.0, -GRAVITY * c.mass, 0.0);
+    // D5: vento lateral constante (N). Default 0 = inalterado.
+    forces.x += params.vento_x;
+    forces.z += params.vento_z;
 
     // === FASE 2: suspensão + carga normal ===
     let speed = length(c.vel);

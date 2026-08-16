@@ -122,10 +122,25 @@ pub struct BrainParams {
     /// não importa o que a mutação tenha gravado. Ver `brain.wgsl::Params` para
     /// a semântica completa por bit.
     pub mech_off_mask: u32,
-    /// Padding: mantém o uniform buffer em múltiplo de 16 bytes (8 campos × 4
-    /// bytes = 32), mesma convenção do struct original (4 × 4 = 16). Zero
-    /// determinístico via `bytemuck::Zeroable`, nunca lido pelo shader.
     _pad1: u32,
+    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — ruído sensorial: desvio-padrão do
+    /// ruído gaussiano aproximado somado a CADA canal da sensory_wave, POR
+    /// TICK, em unidades de canal i8 (-127..127). Ex.: `sigma=6` ≈ 5% da faixa
+    /// (127 = amplitude de um lado). Aplicado ANTES do KAN, na leitura da onda
+    /// (ver `brain.wgsl::apply_sensor_noise`). `0.0` (padrão) = nenhum ruído,
+    /// comportamento idêntico ao histórico.
+    pub noise_sigma: f32,
+    /// D3 — falha de canal (dropout sensorial): probabilidade `[0,1]` de o
+    /// canal ser ZERADO neste tick ("sensor não respondeu"), sorteada por
+    /// canal por tick via hash determinístico (mesmo padrão do denoise do
+    /// CfC, `brain.wgsl::apply_sensor_noise`). `0.0` (padrão) = nenhum canal
+    /// falha, comportamento idêntico ao histórico.
+    pub dropout_prob: f32,
+    /// Padding: mantém o uniform buffer em múltiplo de 16 bytes (12 campos ×
+    /// 4 bytes = 48, mesma convenção do struct original — 8×4=32). Zero
+    /// determinístico via `bytemuck::Zeroable`, nunca lido pelo shader.
+    _pad2: u32,
+    _pad3: u32,
 }
 
 // ── INPUT POR SER ─────────────────────────────────────────────────────────────
@@ -205,6 +220,18 @@ pub struct BrainGpu {
     /// do ganho/tanh. Ver `BrainParams::norm_l2_by_std`. Padrão `false` —
     /// idêntico ao comportamento histórico (sem normalização).
     pub norm_l2_by_std: bool,
+
+    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — desvio-padrão do ruído sensorial,
+    /// em unidades de canal i8. Ver `BrainParams::noise_sigma`. Padrão `0.0`
+    /// — idêntico ao comportamento histórico (sem ruído). Só `bind_and_dispatch`
+    /// lê este campo (mesmo contrato de `out_beta`/`out_gain`); `forward()`
+    /// sempre usa `0.0` hardcoded, o caminho de equivalência CPU/GPU.
+    pub noise_sigma: f32,
+
+    /// D3 — probabilidade de falha (dropout) por canal por tick. Ver
+    /// `BrainParams::dropout_prob`. Padrão `0.0` — idêntico ao comportamento
+    /// histórico (nenhum canal falha). Mesmo contrato de `noise_sigma` acima.
+    pub dropout_prob: f32,
 
     /// P1.7 — braço de controle por mecanismo (`gpu_evolve --sem-*`). Padrão
     /// `false` nos quatro: os mecanismos LEEM o genoma normalmente (que nasce
@@ -442,6 +469,8 @@ impl BrainGpu {
             out_beta: OUT_BETA_PADRAO,
             out_gain: OUT_GAIN_PADRAO,
             norm_l2_by_std: false,
+            noise_sigma: 0.0,
+            dropout_prob: 0.0,
             mem_off: false,
             period_off: false,
             threshold_off: false,
@@ -553,6 +582,25 @@ impl BrainGpu {
             | ((self.period_off as u32) << 1)
             | ((self.threshold_off as u32) << 2)
             | ((self.activation_off as u32) << 3)
+    }
+
+    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — ajusta ruído sensorial (σ) e
+    /// probabilidade de falha de canal (dropout) para os PRÓXIMOS dispatches.
+    ///
+    /// Não existe buffer separado para "re-upload": `bind_and_dispatch` cria um
+    /// uniform buffer novo a cada chamada a partir de `self.noise_sigma` /
+    /// `self.dropout_prob` (mesmo contrato de `out_beta`/`out_gain`/
+    /// `norm_l2_by_std`, que também são campos públicos sem setter dedicado —
+    /// ver `gpu_evolve/main.rs: ctx.brain.out_beta = ...`). Aqui expomos um
+    /// método porque os dois parâmetros de D3 sempre se movem juntos (a escada
+    /// aperta os dois como um único degrau).
+    ///
+    /// `sigma`: desvio-padrão do ruído por canal, em unidades de canal i8
+    /// (-127..127) — ex. `6.0` ≈ 5% da faixa de um lado (127). `0.0` desliga.
+    /// `dropout`: probabilidade `[0,1]` de um canal zerar no tick. `0.0` desliga.
+    pub fn set_ruido(&mut self, sigma: f32, dropout: f32) {
+        self.noise_sigma = sigma;
+        self.dropout_prob = dropout;
     }
 
     // ── DOWNLOAD DO ESTADO CFC (diagnóstico) ──────────────────────────────
@@ -749,6 +797,12 @@ impl BrainGpu {
             // `self.mech_off_mask`.
             mech_off_mask: 0b1111,
             _pad1: 0,
+            // D3: forward() nunca expõe ruído sensorial — mesmo contrato acima,
+            // sempre 0.0 (comportamento histórico, sem ruído/dropout).
+            noise_sigma: 0.0,
+            dropout_prob: 0.0,
+            _pad2: 0,
+            _pad3: 0,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-params"),
@@ -887,6 +941,13 @@ impl BrainGpu {
             norm_l2_by_std: if self.norm_l2_by_std { 1 } else { 0 },
             mech_off_mask: self.mech_off_mask(),
             _pad1: 0,
+            // D3 (ESCADA_DIFICULDADE.md): ruído sensorial + dropout de canal.
+            // Lido de `self.*` a cada chamada — `set_ruido` só atualiza estes
+            // campos, o upload acontece aqui, no próximo dispatch.
+            noise_sigma: self.noise_sigma,
+            dropout_prob: self.dropout_prob,
+            _pad2: 0,
+            _pad3: 0,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("brain-params-chain"),

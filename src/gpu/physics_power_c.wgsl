@@ -80,6 +80,13 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
+    // D5 (ESCADA_DIFICULDADE.md — clima). Mirror consistente com physics_power_a/b.wgsl
+    // e com WorldParams em physics.rs. Este é o único kernel do trio POWER que computa
+    // força de pneu real (mu_base, abaixo) — é onde clima_mu/clima_freq têm efeito.
+    clima_mu:    f32,
+    vento_x:     f32,
+    vento_z:     f32,
+    clima_freq:  f32,
 }
 
 @group(0) @binding(0) var<uniform>             params:  WorldParams;
@@ -113,6 +120,17 @@ fn gear_ratio(g: u32) -> f32 {
         case 3u:{return 2.6;} case 4u:{return 1.9;} case 5u:{return 1.45;}
         default:{return 1.15;}
     }
+}
+
+// D5 — μ local por posição (idêntica em physics_power_a/b/c.wgsl, por consistência).
+// freq=0 (default) → sin(0)=0, termo posicional zera → mu_local = clima_mu*0.5+0.5,
+// CONSTANTE em toda a pista (sem variação espacial = "μ uniforme" do spec). E com
+// clima_mu=1.0 (seco, default) o fator (1-clima_mu) zera e mu_local=1.0 SEMPRE,
+// qualquer freq — é o que garante bit-idêntico com o comportamento pré-D5.
+fn mu_local_at(pos: vec3<f32>) -> f32 {
+    return params.clima_mu
+        + (1.0 - params.clima_mu) * 0.5
+        * (1.0 + sin(pos.x * params.clima_freq) * cos(pos.z * params.clima_freq));
 }
 
 @compute @workgroup_size(64)
@@ -219,7 +237,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let forward_vel=dot(c.vel,fwd); let lateral_vel=dot(c.vel,c.lat);
     let wheel_long_pos=array<f32,4>(hwb,hwb,-hwb,-hwb);
     let wheel_lat_pos=array<f32,4>(-htw,htw,-htw,htw);
-    let mu_base=c.mu_peak*c.terrain_grip*c.env_grip;
+    // D5 — clima: mu_local_at(pos) = 1.0 sempre que clima_mu=1.0 (default), qualquer
+    // freq. Ponto único de contato (mu_base) — igual ao ponto único análogo em
+    // physics_b.wgsl:128 no pipeline vivo.
+    let mu_local=mu_local_at(c.pos);
+    let mu_base=c.mu_peak*c.terrain_grip*c.env_grip*mu_local;
     let lsd_speed_gate=clamp(speed/5.0,0.0,1.0);
 
     // Loop completo COM Pacejka (atan, atan2, sin, length(vec2))

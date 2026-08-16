@@ -111,6 +111,11 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
+    // D5: espelho do clima (layout do uniform; c não consome).
+    clima_mu:   f32,
+    vento_x:    f32,
+    vento_z:    f32,
+    clima_freq: f32,
 }
 
 @group(0) @binding(0) var<uniform>             params:  WorldParams;

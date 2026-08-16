@@ -237,6 +237,21 @@ struct Params {
     // `gpu::evolution::tests::genoma_novo_tem_mecanismos_p17_neutros`.
     mech_off_mask:     u32,
     _pad1:             u32,
+    // D3 (docs/ESCADA_DIFICULDADE.md) — ruído sensorial: desvio-padrão do ruído
+    // gaussiano aproximado somado a CADA canal da sensory_wave, POR TICK, em
+    // unidades de canal i8 (-127..127). Ex.: sigma=6 ≈ 5% da faixa de um lado
+    // (127). Aplicado ANTES do KAN, na ETAPA 0A (ver `apply_sensor_noise`).
+    // 0.0 (padrão) = nenhum ruído, comportamento idêntico ao histórico.
+    noise_sigma:       f32,
+    // D3 — falha de canal (dropout sensorial): probabilidade [0,1] de o canal
+    // ser ZERADO neste tick ("sensor não respondeu"), sorteada por canal por
+    // tick via hash determinístico (mesmo padrão do denoise do CfC abaixo).
+    // 0.0 (padrão) = nenhum canal falha, comportamento idêntico ao histórico.
+    dropout_prob:      f32,
+    // Padding: mantém o uniform em múltiplo de 16 bytes (12 campos × 4 = 48,
+    // mesma convenção do struct original — 8×4=32). Espelha `BrainParams` no host.
+    _pad2:             u32,
+    _pad3:             u32,
 }
 
 // ── BINDINGS ──────────────────────────────────────────────────────────────────
@@ -443,6 +458,83 @@ fn neuron_mem_gain(alfa: f32) -> f32 {
     return sqrt((1.0 + alfa) / max(1.0 - alfa, NEURON_MEM_GAIN_EPS));
 }
 
+// ── D3 (docs/ESCADA_DIFICULDADE.md): ruído sensorial + falha de canal ─────────
+//
+// Aplicado na ETAPA 0A, ANTES do KAN (`kan_filter_int`) — simula sensor
+// ruidoso/instável na leitura da onda, antes de qualquer processamento neural
+// (o filtro KAN e o CfC recebem o sinal já degradado, igual a um sensor real).
+//
+// # Hash determinístico — mesmo padrão do CfC denoise acima
+// (`h = counter*2654435761u + i`, hash de Knuth, wrapping u32 — Rust
+// `wrapping_mul`/`wrapping_add` == WGSL u32 que wrap por padrão).
+//
+// Estendido com `being * 40503u`: o CfC denoise usa só `counter*prime + canal`
+// porque ali o counter já é POR-SER (lido de buf_cfc[being*97+96]) — mas aqui
+// precisamos do MESMO counter para os 223 canais de um ser dentro do MESMO
+// dispatch, então lemos o counter UMA VEZ (`sensor_counter`, ver ETAPA 0A) — e
+// ele é idêntico entre seres na mesma geração (todos incrementam 1/tick em
+// lockstep). Sem o termo `being`, dois seres diferentes veriam o MESMO
+// ruído no MESMO canal no MESMO tick — degenerescência que o CfC denoise não
+// tem (seu counter já é lido do buf_cfc DAQUELE ser). `40503u` é só outro
+// multiplicador ímpar grande (não precisa ser primo do Knuth) para misturar
+// `being` sem colidir com o termo de canal.
+//
+// Depende de (tick via sensor_counter, being, canal) — replay determinístico
+// preservado: mesma semente + mesma sequência de ticks ⇒ mesmo ruído.
+//
+// # Gaussiano aproximado
+//
+// Soma de 3 uniformes(0,1) independentes (3 hashes encadeados, cada um
+// extraindo os bits [8..31] do hash — mesma extração de `f32(h>>8u)/16777216.0`
+// que o CfC denoise já usa) menos a média 1,5, escalado por 2:
+//
+//   Var(U(0,1)) = 1/12  ⇒  Var(soma de 3) = 3/12 = 0,25  ⇒  desvio = 0,5
+//   (soma - 1,5) tem média 0, desvio 0,5 → ×2 normaliza para desvio ≈ 1,0
+//
+// Aproximação por CLT (Teorema Central do Limite) com poucos termos — NÃO é
+// gaussiana exata (para isso precisaria de ~12 termos, truque clássico
+// Irwin-Hall onde a soma de 12 U(0,1) já tem desvio exatamente 1 sem escalar),
+// mas 3 termos já quebra a forma retangular de um único uniforme e dá uma
+// distribuição em sino, suficiente para simular ruído de sensor. Documentado,
+// não escondido: NÃO é Box-Muller (custaria log/sin/cos por canal por tick ×
+// 223 canais × N seres — caro demais para o ganho de fidelidade).
+//
+// `noise_sigma` está em UNIDADES DE CANAL i8 (-127..127): sigma=6 ≈ 5% da
+// faixa de um lado (127 = amplitude, não os 254 de ponta a ponta).
+//
+// # Dropout (falha de canal)
+//
+// Hash separado (`counter+7u`, mesma mistura de being/canal) para não
+// correlacionar o sorteio de queda com o sorteio de ruído acima — um canal
+// pode cair mesmo em tick/being/canal onde o ruído sorteou perto de zero, e
+// vice-versa. Sensor "falhou": o canal sai ZERADO para o resto do pipeline
+// (KAN vê 0 → axioma 1 do kan_filter_int já trata raw==0 como "sem direção").
+fn apply_sensor_noise(raw_i32: i32, being: u32, ch: u32, counter: u32) -> i32 {
+    var v: i32 = raw_i32;
+
+    if params.noise_sigma > 0.0 {
+        let h0: u32 = counter * 2654435761u + being * 40503u + ch;  // hash de Knuth + being + canal
+        let h1: u32 = h0 * 2654435761u + 1u;                         // 2º estágio encadeado
+        let h2: u32 = h1 * 2654435761u + 1u;                         // 3º estágio encadeado
+        let u0: f32 = f32(h0 >> 8u) / 16777216.0;                    // uniforme [0,1)
+        let u1: f32 = f32(h1 >> 8u) / 16777216.0;
+        let u2: f32 = f32(h2 >> 8u) / 16777216.0;
+        let gauss_approx: f32 = (u0 + u1 + u2 - 1.5) * 2.0;           // média 0, desvio ≈1,0
+        let noisy: f32 = f32(v) + gauss_approx * params.noise_sigma;
+        v = i32(clamp(noisy, -127.0, 127.0));
+    }
+
+    if params.dropout_prob > 0.0 {
+        let hd: u32 = (counter + 7u) * 2654435761u + being * 40503u + ch;  // hash independente do de ruído
+        let ud: f32 = f32(hd >> 8u) / 16777216.0;
+        if ud < params.dropout_prob {
+            v = 0;  // sensor falhou: canal zerado neste tick
+        }
+    }
+
+    return v;
+}
+
 // ── KERNEL PRINCIPAL ──────────────────────────────────────────────────────────
 
 @compute @workgroup_size(128)
@@ -459,6 +551,13 @@ fn main(
 
     let wave_base: u32 = being * WAVE;
     let kan_base:  u32 = being * WAVE * KAN_KNOTS;
+
+    // D3 (docs/ESCADA_DIFICULDADE.md) — contador do ser, o MESMO usado pelo
+    // denoise do CfC (buf_cfc[being*97+96]), lido AQUI (ETAPA 0A) — ou seja,
+    // ANTES do incremento que a ETAPA 0B faz mais abaixo. Os 223 canais dos
+    // dois passes desta etapa usam este MESMO valor: hash determinístico por
+    // (tick, being, canal) via `apply_sensor_noise`, ver a doc da função.
+    let sensor_counter: u32 = bitcast<u32>(buf_cfc[being * 97u + 96u]);
 
     // ─────────────────────────────────────────────────────────────────────────
     // ETAPA 0A: KAN per-channel (SensoryPreFilter::apply, kan.rs:72-79)
@@ -497,6 +596,9 @@ fn main(
         } else {
             raw_i32 = buf_wave[wave_base + ch];
         }
+        // D3: ruído sensorial + falha de canal, ANTES do KAN. No-op quando
+        // noise_sigma==0 e dropout_prob==0 (comportamento histórico).
+        raw_i32 = apply_sensor_noise(raw_i32, being, ch, sensor_counter);
         w_kan[ch] = kan_filter_int(raw_i32, kan_base + ch * KAN_KNOTS);
     }
     // Pass 2: canais 128..222 (95 canais, 128-127=1 canal a mais que threads 0..94)
@@ -512,6 +614,8 @@ fn main(
             } else {
                 raw_i32 = buf_wave[wave_base + ch];
             }
+            // D3: mesmo tratamento do Pass 1 — ver comentário acima.
+            raw_i32 = apply_sensor_noise(raw_i32, being, ch, sensor_counter);
             w_kan[ch] = kan_filter_int(raw_i32, kan_base + ch * KAN_KNOTS);
         }
     }

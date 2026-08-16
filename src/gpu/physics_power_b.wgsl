@@ -79,6 +79,15 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
+    // D5 (ESCADA_DIFICULDADE.md — clima). Mirror consistente com physics_power_a/c.wgsl
+    // e com WorldParams em physics.rs. Este kernel (FASE_POWER_B) tem "force = 0" por
+    // construção (comentário no topo do arquivo: "só torque de tração", sem Pacejka) —
+    // não há força de pneu real aqui para multiplicar por μ. Campos disponíveis mas
+    // sem consumidor, mesma situação de physics_power_a.wgsl.
+    clima_mu:    f32,
+    vento_x:     f32,
+    vento_z:     f32,
+    clima_freq:  f32,
 }
 
 @group(0) @binding(0) var<uniform>             params:  WorldParams;
@@ -112,6 +121,15 @@ fn gear_ratio(g: u32) -> f32 {
         case 3u:{return 2.6;} case 4u:{return 1.9;} case 5u:{return 1.45;}
         default:{return 1.15;}
     }
+}
+
+// D5 — μ local por posição (idêntica em physics_power_a/b/c.wgsl, por consistência).
+// Ver comentário completo em physics_power_a.wgsl. Sem consumidor neste kernel
+// (force=0 por construção — comentário no topo do arquivo).
+fn mu_local_at(pos: vec3<f32>) -> f32 {
+    return params.clima_mu
+        + (1.0 - params.clima_mu) * 0.5
+        * (1.0 + sin(pos.x * params.clima_freq) * cos(pos.z * params.clima_freq));
 }
 
 @compute @workgroup_size(64)

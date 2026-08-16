@@ -78,6 +78,14 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
+    // D5 (ESCADA_DIFICULDADE.md — clima). Mirror consistente com physics_power_b/c.wgsl
+    // e com WorldParams em physics.rs. Este kernel (FASE_POWER_A) não calcula força de
+    // pneu nem integra velocidade — nada aqui CONSOME estes campos, só ficam disponíveis
+    // para o dia em que a fase A ganhar um cálculo de contato/vento real.
+    clima_mu:    f32,
+    vento_x:     f32,
+    vento_z:     f32,
+    clima_freq:  f32,
 }
 
 @group(0) @binding(0) var<uniform>             params:  WorldParams;
@@ -114,6 +122,17 @@ fn gear_ratio(g: u32) -> f32 {
         case 3u:{return 2.6;}  case 4u:{return 1.9;} case 5u:{return 1.45;}
         default:{return 1.15;}
     }
+}
+
+// D5 — μ local por posição (idêntica em physics_power_a/b/c.wgsl, por consistência).
+// freq=0 (default) → sin(0)=0, termo posicional zera → mu_local = clima_mu*0.5+0.5,
+// CONSTANTE em toda a pista (sem variação espacial = "μ uniforme" do spec). E com
+// clima_mu=1.0 (seco, default) o fator (1-clima_mu) zera e mu_local=1.0 SEMPRE,
+// qualquer freq — é o que garante bit-idêntico com o comportamento pré-D5.
+fn mu_local_at(pos: vec3<f32>) -> f32 {
+    return params.clima_mu
+        + (1.0 - params.clima_mu) * 0.5
+        * (1.0 + sin(pos.x * params.clima_freq) * cos(pos.z * params.clima_freq));
 }
 
 @compute @workgroup_size(64)

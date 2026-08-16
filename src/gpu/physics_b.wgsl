@@ -99,6 +99,11 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
+    // D5 (escada): clima — ver physics.rs::set_clima. Defaults neutros.
+    clima_mu:   f32,
+    vento_x:    f32,
+    vento_z:    f32,
+    clima_freq: f32,
 }
 
 @group(0) @binding(0) var<uniform>             params: WorldParams;
@@ -125,7 +130,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let htw     = c.track_width * 0.5;
     let fwd_vel = dot(c.vel, fwd);
     let lat_vel = dot(c.vel, c.lat);
-    let mu_base = c.mu_peak * c.terrain_grip * c.env_grip;
+    // D5: μ local por posição (trechos escorregadios determinísticos). freq=0 → 1,0.
+    var mu_local: f32 = 1.0;
+    if (params.clima_freq > 0.0) {
+        mu_local = params.clima_mu + (1.0 - params.clima_mu) * 0.5
+                   * (1.0 + sin(c.pos.x * params.clima_freq) * cos(c.pos.z * params.clima_freq));
+    } else if (params.clima_mu < 1.0) {
+        mu_local = params.clima_mu;
+    }
+    let mu_base = c.mu_peak * c.terrain_grip * c.env_grip * mu_local;
     let lsd_gate= clamp(speed / 5.0, 0.0, 1.0);
     let dtq     = m.drive_torque;
     let aqua    = c.aquaplaning;

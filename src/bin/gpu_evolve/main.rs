@@ -54,6 +54,8 @@ mod painel;
 mod pistas;
 #[cfg(test)]
 mod tests;
+mod fantasma;
+mod escada;
 
 use statics::*;
 use context::GpuCtx;
@@ -368,6 +370,14 @@ fn main() {
     /// — sem isso ela mede a largada, não o cérebro.
     let mut same_start = false;
     let mut largada_aleatoria = false;
+    let mut ruido_sigma: f32 = 0.0;
+    let mut ruido_drop:  f32 = 0.0;
+    let mut clima_mu:    f32 = 1.0;
+    let mut clima_freq:  f32 = 0.0;
+    let mut vento_x:     f32 = 0.0;
+    let mut vento_z:     f32 = 0.0;
+    let mut fantasma_on = false;
+    let mut escada_on   = false;
     /// Ticks de vida ganhos por METRO avançado. 0 = vida dada de graça (comportamento antigo).
     ///
     /// Medido: com vida fixa, a população converge para RASTEJAR — 2,2 m/s de média com
@@ -582,6 +592,18 @@ fn main() {
                 "--dano" => { i += 1; if i < args.len() {
                     DANO_ESCALA.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                 } }
+                // D3: ruído sensorial (σ em unidades i8; 6 ≈ 5% da faixa) + prob de falha.
+                "--ruido-sensorial" => { i += 1; if i < args.len() { ruido_sigma = args[i].parse().unwrap_or(0.0); } }
+                "--ruido-dropout"   => { i += 1; if i < args.len() { ruido_drop  = args[i].parse().unwrap_or(0.0); } }
+                // D5: clima — μ base (<1 = escorregadio), freq espacial, vento N.
+                "--clima"      => { i += 1; if i < args.len() { clima_mu = args[i].parse().unwrap_or(1.0); } }
+                "--clima-freq" => { i += 1; if i < args.len() { clima_freq = args[i].parse().unwrap_or(0.0); } }
+                "--vento"      => { i += 1; if i + 1 < args.len() {
+                    vento_x = args[i].parse().unwrap_or(0.0); i += 1; vento_z = args[i].parse().unwrap_or(0.0); } }
+                // D6: fantasma do campeão anterior (bônus de vida por estar à frente).
+                "--fantasma" => { fantasma_on = true; }
+                // ESCADA completa (controlador automático de dificuldade; ver escada.rs).
+                "--escada" => { escada_on = true; }
                 "--life-earn" => { i += 1; if i < args.len() { life_earn     = args[i].parse().unwrap_or(0.0); } }
                 "--width"     => { i += 1; if i < args.len() { track_width   = args[i].parse().unwrap_or(18.0); } }
                 "--fitness"   => { i += 1; if i < args.len() { modo_fitness = args[i].clone(); } }
@@ -784,6 +806,18 @@ fn main() {
         }
     };
     ctx.brain_skip = brain_skip;
+    if ruido_sigma > 0.0 || ruido_drop > 0.0 {
+        ctx.brain.set_ruido(ruido_sigma, ruido_drop);
+        println!("  [ruido] D3: sigma={ruido_sigma} dropout={ruido_drop}");
+    }
+    if clima_mu < 1.0 || vento_x != 0.0 || vento_z != 0.0 {
+        ctx.phys_gpu.set_clima(clima_mu, vento_x, vento_z, clima_freq);
+        println!("  [clima] D5: mu={clima_mu} freq={clima_freq} vento=({vento_x},{vento_z}) N");
+    }
+    // Estado da escada/fantasma (vivem no laço de gerações).
+    let mut escada_ctl = if escada_on { Some(escada::Escada::padrao()) } else { None };
+    let mut fantasma_atual: fantasma::Fantasma = fantasma::Fantasma::default();
+    let mut hist_med_escada: Vec<f64> = Vec::new();
     if CAMBIO_CURRICULO.load(Ordering::Relaxed) {
         // O valor de --cambio-teto vira o MÁXIMO; o teto vivo começa em 2 (≡ travado).
         CAMBIO_TETO_MAX.store(CAMBIO_TETO.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -1297,6 +1331,8 @@ fn main() {
         // também não adianta: repetir um trecho não rende checkpoint nenhum. Assim o único
         // caminho para subir na fitness é AVANÇAR no traçado.
         let mut checkpoint: Vec<u32> = vec![0; n_seres];
+        // D6: cruzamentos (setor, tick) por ser — vira o fantasma da próxima gen.
+        let mut cruzamentos: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n_seres];
         // Portais de recompensa NAS CURVAS, não em intervalos iguais.
         //
         // Leonardo: *"cada curva dá combustível, logo eles vão aprender fazer curva"*.
@@ -1497,6 +1533,15 @@ fn main() {
                     let esperado = checkpoint[i] % total.max(1);
                     if setor == esperado {
                         checkpoint[i] += 1;
+                        // D6: registra o cruzamento p/ virar fantasma da próxima gen; e
+                        // se há fantasma ativo, paga o bônus de estar à frente (moeda
+                        // cruzada: VIDA; assimétrico — atrás não perde, ver fantasma.rs).
+                        cruzamentos[i].push((checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32));
+                        if fantasma_on {
+                            let v = fantasma_atual.vantagem(checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32);
+                            states[i].life_left = (states[i].life_left
+                                + fantasma_atual.bonus_vida(v) as f64).min(life_cap() as f64);
+                        }
                         // REABASTECE A CADA SETOR, não só ao fechar volta.
                         //
                         // Reabastecer por volta é recompensa esparsa com ZERO acertos: só
@@ -1674,6 +1719,34 @@ fn main() {
         let t_gen_s = t_gen.elapsed().as_secs_f64();
 
         hist_med.push(r.dist_med);
+        // D6: o melhor da geração vira o fantasma da próxima.
+        if fantasma_on || escada_ctl.is_some() {
+            let best_i = fitness.iter().enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i).unwrap_or(0);
+            fantasma_atual = fantasma::Fantasma::gravar(&cruzamentos[best_i]);
+        }
+        // ESCADA: avalia a dose do mundo e sobe/segura/recua degraus (escada.rs).
+        if let Some(ctl) = escada_ctl.as_mut() {
+            hist_med_escada.push(r.dist_med);
+            let promo_pct = r.n_ge1v as f32 / n_seres as f32;
+            let recuperou = hist_med_escada.len() >= 15
+                && r.dist_med >= hist_med_escada[hist_med_escada.len() - 15] * 0.8;
+            let veredito = ctl.avaliar(promo_pct, r.mortality, recuperou);
+            match &veredito {
+                escada::Veredito::Sobe(d) | escada::Veredito::Rece(d) => {
+                    match d {
+                        escada::Degrau::FuelK(k) => { FUEL_AUTO_K.store(*k, Ordering::Relaxed); }
+                        escada::Degrau::Ruido(sig) => { ctx.brain.set_ruido(*sig, 0.02); }
+                        escada::Degrau::Dano(e) => { DANO_ESCALA.store(*e, Ordering::Relaxed); }
+                        escada::Degrau::Clima(mu) => { ctx.phys_gpu.set_clima(*mu, 0.0, 0.0, 0.03); }
+                        escada::Degrau::Fantasma => { fantasma_on = true; }
+                    }
+                }
+                escada::Veredito::Mantem => {}
+            }
+            println!("{}", ctl.descrever());
+        }
         hist_lap.push(lap_dist);
         hist_max.push(r.dist_max);
 

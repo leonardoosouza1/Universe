@@ -282,6 +282,13 @@ struct MidState2 {
 }
 
 /// Parâmetros globais do mundo (uniform buffer).
+///
+/// D5 (ESCADA_DIFICULDADE.md — clima) acrescentou 4 campos ao final: `clima_mu`,
+/// `vento_x`, `vento_z`, `clima_freq`. Apêndice seguro — os kernels vivos
+/// (`physics_a/b/c.wgsl`) declaram um `WorldParams` mais curto (16 bytes) e
+/// `min_binding_size: None` (ver `uniform_entry` em `core.rs`) permite buffer
+/// maior que o binding declarado no shader: eles continuam lendo só os 16
+/// bytes originais, byte-idêntico ao comportamento anterior a este commit.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct WorldParams {
@@ -289,6 +296,17 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
+    /// D5 — multiplicador global de grip: 1.0 = seco (default, bit-idêntico ao
+    /// comportamento pré-D5), 0.7 = chuva. Consumido em `physics_power_c.wgsl`
+    /// (único kernel do trio POWER que computa força de pneu).
+    clima_mu:    f32,
+    /// D5 — vento lateral constante (N) aplicado ao corpo, eixo mundo X. Default 0.
+    vento_x:     f32,
+    /// D5 — vento lateral constante (N) aplicado ao corpo, eixo mundo Z. Default 0.
+    vento_z:     f32,
+    /// D5 — frequência espacial da variação de μ. 0 = μ espacialmente uniforme
+    /// (default). >0 = trechos escorregadios determinísticos por posição.
+    clima_freq:  f32,
 }
 
 // ============================================================
@@ -329,6 +347,14 @@ pub struct PhysicsGpu {
     pub adapter: String,
     grid_size:   u32,
     cell_size:   f32,
+    /// D5 — clima: ver `set_clima`. Default 1.0 = seco, sem efeito (bit-idêntico).
+    clima_mu:    f32,
+    /// D5 — vento lateral constante (N), eixo mundo X. Default 0.0.
+    vento_x:     f32,
+    /// D5 — vento lateral constante (N), eixo mundo Z. Default 0.0.
+    vento_z:     f32,
+    /// D5 — frequência espacial de μ. Default 0.0 = uniforme.
+    clima_freq:  f32,
 }
 
 impl PhysicsGpu {
@@ -566,7 +592,32 @@ impl PhysicsGpu {
             adapter: name,
             grid_size: grid_size as u32,
             cell_size,
+            // D5 — defaults = comportamento pré-clima, bit-idêntico.
+            clima_mu:   1.0,
+            vento_x:    0.0,
+            vento_z:    0.0,
+            clima_freq: 0.0,
         })
+    }
+
+    /// D5 (ESCADA_DIFICULDADE.md) — ajusta clima: aderência (μ) global/por-trecho +
+    /// vento lateral constante. Escrito no `WorldParams` (uniform) a cada `step()`.
+    ///
+    /// - `mu`: multiplicador de grip. 1.0 = seco (default, sem efeito). 0.7 = chuva.
+    /// - `vento_x`/`vento_z`: força lateral constante (N) no corpo, eixos mundo X/Z.
+    ///   Default 0.0 = sem vento.
+    /// - `freq`: frequência espacial da variação de μ. 0.0 (default) = μ uniforme
+    ///   (`clima_mu` aplicado igual em toda a pista). >0.0 = μ varia por posição
+    ///   (trechos escorregadios determinísticos — ver `mu_local_at` no shader).
+    ///
+    /// Chamar com `(1.0, 0.0, 0.0, 0.0)` restaura o default — bit-idêntico ao
+    /// comportamento anterior à existência deste método (nunca chamado = já é
+    /// o default do construtor).
+    pub fn set_clima(&mut self, mu: f32, vento_x: f32, vento_z: f32, freq: f32) {
+        self.clima_mu = mu;
+        self.vento_x = vento_x;
+        self.vento_z = vento_z;
+        self.clima_freq = freq;
     }
 
     /// Troca grade/heightmap para uma pista NOVA sem recriar buffer, bind group nem
@@ -602,6 +653,10 @@ impl PhysicsGpu {
             n_beings:  n as u32,
             cell_size: self.cell_size,
             _pad:      0.0,
+            clima_mu:    self.clima_mu,
+            vento_x:     self.vento_x,
+            vento_z:     self.vento_z,
+            clima_freq:  self.clima_freq,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("physics-params"),
@@ -707,6 +762,8 @@ impl PhysicsGpu {
         let params = WorldParams {
             grid_size: self.grid_size, n_beings: n as u32,
             cell_size: self.cell_size, _pad: 0.0,
+            clima_mu: self.clima_mu, vento_x: self.vento_x,
+            vento_z: self.vento_z, clima_freq: self.clima_freq,
         };
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("physics-params-raw"),

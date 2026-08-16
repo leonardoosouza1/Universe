@@ -43,3 +43,26 @@ Bateria única longa (200+ gens): começa D1(k=1,4)+D2; cada promoção-de-mundo
 degrau a degrau, corpo antes de pista, como o câmbio. Telemetria [escada] por
 gen com o degrau ativo. Reprovar = recuar um degrau (histerese, lição do
 currículo por população).
+
+## Integração concluída (2026-08-16) + correções de registro
+
+- 4 agentes paralelos (posse disjunta) entregaram D3/D5/D6/controlador; fiação
+  em main.rs feita pelo orquestrador. Flags: --ruido-sensorial σ, --ruido-dropout,
+  --clima mu, --clima-freq, --vento x z, --fantasma, --escada (controlador
+  automático completo: FuelK→Ruído→Dano→Clima→Fantasma com histerese).
+- CORREÇÃO DE REGISTRO (honestidade): physics_power_*.wgsl é a ferramenta de
+  BISSECÇÃO do crash ACO, não o pipeline vivo (vivo = physics_a/b/c.wgsl).
+  Isso derruba minha citação anterior de "térmica do pneu implementada" — o
+  vivo faz PASSTHROUGH da temperatura; o ch70 "variando" na bateria de 139 era
+  o sinal PÓS-CfC (denoise + dinâmica do filtro sobre entrada constante), não
+  o sensor. O clima D5 foi portado por MIM para o pipeline vivo (μ no grip do
+  kernel B, vento no somatório do A, espelhos de layout no C). Térmica de pneu
+  REAL (CPU-side, sem risco ACO) fica na fila junto do degrau Clima — sem ela
+  o μ variável não é sentível pelo ch70.
+- Comando da bateria-escada (quando a GPU for liberada):
+  gpu_evolve --seres 48 --gens 200 --ticks 20000 --fitness centro --width 28
+    --same-start --life-earn 12 --life-cap 8000 --out-beta 0.0 --sem-buracos
+    --ativacao --retomar --retomar-mix 0.85 --pistas 9001,8005,8200,9003
+    --trocar-ao-completar 4 --seed {77,31} --cambio auto --cambio-teto 6
+    --custo-rpm 2.0 --mascara-regioes --tau-semeado --largada-aleatoria
+    --fuel-auto 1.4 --escada --out /media/llm-data/universe-runs/escada-s{N}
