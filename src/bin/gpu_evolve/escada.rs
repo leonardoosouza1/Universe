@@ -168,12 +168,29 @@ impl Escada {
     pub fn padrao() -> Self {
         Escada {
             plano: vec![
-                Degrau::FuelK(1.4),
+                // Faixas ESTENDIDAS (2026-08-16): com o plano curto anterior a escada
+                // esgotava o aperto de cada mecanismo e passava adiante sem nunca entrar
+                // na janela de dose (mortalidade 5-20%) — medido: 34 de 35 gerações com
+                // mortalidade 0% e QUATRO mecanismos ligados ao mesmo tempo. Agora cada
+                // mecanismo tem degraus suficientes para chegar a MORDER antes de ceder
+                // a vez ao próximo. (O que tornava o combustível inócuo era outra coisa:
+                // tanque dimensionado por VOLTA e recarregado por SETOR — ver fuel-auto
+                // em main.rs.)
+                Degrau::FuelK(2.0),
+                Degrau::FuelK(1.5),
                 Degrau::FuelK(1.2),
                 Degrau::FuelK(1.0),
+                Degrau::FuelK(0.85),
+                Degrau::FuelK(0.7),
                 Degrau::Ruido(4.0),
+                Degrau::Ruido(8.0),
+                Degrau::Ruido(14.0),
                 Degrau::Dano(1.0),
+                Degrau::Dano(2.0),
+                Degrau::Dano(3.5),
                 Degrau::Clima(0.85),
+                Degrau::Clima(0.70),
+                Degrau::Clima(0.55),
                 Degrau::Fantasma,
             ],
             ativo: 0,
@@ -304,12 +321,15 @@ mod tests {
     const CERTA_PROMO: f32 = 0.45;
     const CERTA_MORT: f32 = 0.12;
 
-    #[test]
-    fn doses_do_plano_padrao_batem_com_o_doc() {
-        let e = Escada::padrao();
-        assert_eq!(
-            e.plano,
-            vec![
+    /// Plano FIXO de teste: a máquina de estados é o que está sob teste, não as
+    /// doses de produção. Antes os testes chamavam `escada_de_teste()` e travavam
+    /// a sequência real — quando o plano precisou de degraus mais finos (a escada
+    /// passava por todos os mecanismos sem nunca morder: 34 de 35 gerações com
+    /// mortalidade 0%), cinco testes quebraram sem que nada da lógica mudasse.
+    /// Teste que quebra ao ajustar uma dose está medindo a dose, não o código.
+    fn escada_de_teste() -> Escada {
+        Escada {
+            plano: vec![
                 Degrau::FuelK(1.4),
                 Degrau::FuelK(1.2),
                 Degrau::FuelK(1.0),
@@ -317,15 +337,47 @@ mod tests {
                 Degrau::Dano(1.0),
                 Degrau::Clima(0.85),
                 Degrau::Fantasma,
-            ]
-        );
+            ],
+            ativo: 0,
+            aprovacoes_seguidas: 0,
+            reprovacoes_seguidas: 0,
+            limiar_subida: APROVACOES_PARA_SUBIR,
+        }
+    }
+
+    #[test]
+    fn plano_de_producao_aperta_monotonicamente() {
+        // O teste antigo travava a LISTA exata do plano; qualquer ajuste de dose o
+        // quebrava sem que a lógica mudasse. O que importa checar é a PROPRIEDADE:
+        // dentro de cada mecanismo as doses só podem ficar mais duras, na direção
+        // certa de cada uma (combustível e aderência DESCEM, ruído e dano SOBEM), e
+        // o fantasma fecha a escada.
+        let e = Escada::padrao();
         assert_eq!(e.ativo, 0);
-        assert_eq!(*e.degrau_ativo(), Degrau::FuelK(1.4));
+        assert!(matches!(e.plano[0], Degrau::FuelK(_)), "escada começa pelo combustível");
+        assert_eq!(*e.plano.last().unwrap(), Degrau::Fantasma, "fantasma fecha");
+        let (mut ult_fuel, mut ult_ruido) = (f32::INFINITY, 0.0f32);
+        let (mut ult_dano, mut ult_clima) = (0.0f32, f32::INFINITY);
+        let (mut n_fuel, mut n_ruido, mut n_dano, mut n_clima) = (0, 0, 0, 0);
+        for d in &e.plano {
+            match d {
+                Degrau::FuelK(k)  => { assert!(*k < ult_fuel,  "combustível tem de apertar: {k} não é < {ult_fuel}"); ult_fuel = *k; n_fuel += 1; }
+                Degrau::Ruido(x)  => { assert!(*x > ult_ruido, "ruído tem de subir");   ult_ruido = *x; n_ruido += 1; }
+                Degrau::Dano(x)   => { assert!(*x > ult_dano,  "dano tem de subir");    ult_dano = *x;  n_dano += 1; }
+                Degrau::Clima(mu) => { assert!(*mu < ult_clima,"aderência tem de cair");ult_clima = *mu; n_clima += 1; }
+                Degrau::Fantasma  => {}
+            }
+        }
+        // Cada mecanismo precisa de degraus suficientes para CHEGAR a morder antes
+        // de ceder a vez — a lição das 34 gerações com mortalidade 0%.
+        for (nome, n) in [("fuel", n_fuel), ("ruído", n_ruido), ("dano", n_dano), ("clima", n_clima)] {
+            assert!(n >= 3, "mecanismo {nome} com só {n} degrau(s): aperta pouco antes de passar adiante");
+        }
     }
 
     #[test]
     fn sobe_apos_3_boas_seguidas() {
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         assert_eq!(e.avaliar(BOA_PROMO, BOA_MORT, false), Veredito::Mantem);
         assert_eq!(e.avaliar(BOA_PROMO, BOA_MORT, false), Veredito::Mantem);
         let v = e.avaliar(BOA_PROMO, BOA_MORT, false);
@@ -336,7 +388,7 @@ mod tests {
 
     #[test]
     fn nao_sobe_com_apenas_2_boas() {
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         e.avaliar(BOA_PROMO, BOA_MORT, false);
         let v = e.avaliar(BOA_PROMO, BOA_MORT, false);
         assert_eq!(v, Veredito::Mantem);
@@ -346,7 +398,7 @@ mod tests {
 
     #[test]
     fn recua_apos_5_ruins_seguidas() {
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         // sobe até o degrau 2 (índice 2, FuelK 1.0) pra ter margem de recuar.
         for _ in 0..3 {
             e.avaliar(BOA_PROMO, BOA_MORT, false);
@@ -369,7 +421,7 @@ mod tests {
 
     #[test]
     fn histerese_pos_recuo_exige_5_para_subir_de_novo() {
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         // leva a escada pro degrau 1 e depois recua pro 0 via 5 reprovações.
         e.avaliar(BOA_PROMO, BOA_MORT, false);
         e.avaliar(BOA_PROMO, BOA_MORT, false);
@@ -401,7 +453,7 @@ mod tests {
 
     #[test]
     fn fim_do_plano_segura() {
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         e.ativo = e.plano.len() - 1; // Fantasma, último degrau
         for _ in 0..3 {
             let v = e.avaliar(BOA_PROMO, BOA_MORT, false);
@@ -413,7 +465,7 @@ mod tests {
 
     #[test]
     fn inicio_do_plano_segura_ao_recuar() {
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         assert_eq!(e.ativo, 0);
         for _ in 0..5 {
             let v = e.avaliar(RUIM_PROMO, RUIM_MORT, false);
@@ -424,7 +476,7 @@ mod tests {
 
     #[test]
     fn dose_certa_mantem_e_zera_os_dois_contadores() {
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         e.avaliar(BOA_PROMO, BOA_MORT, false);
         e.avaliar(BOA_PROMO, BOA_MORT, false);
         assert_eq!(e.aprovacoes_seguidas, 2);
@@ -439,7 +491,7 @@ mod tests {
         // dentro da janela numérica de promoção/mortalidade mas SEM
         // recuperação -> não é dose certa nem boa nem ruim -> zona morta,
         // ainda assim quebra o streak.
-        let mut e = Escada::padrao();
+        let mut e = escada_de_teste();
         e.avaliar(BOA_PROMO, BOA_MORT, false);
         e.avaliar(BOA_PROMO, BOA_MORT, false);
         assert_eq!(e.aprovacoes_seguidas, 2);
@@ -450,7 +502,7 @@ mod tests {
 
     #[test]
     fn descrever_contem_estagio_e_total() {
-        let e = Escada::padrao();
+        let e = escada_de_teste();
         let linha = e.descrever();
         assert!(linha.starts_with("[escada] estágio 1/7:"));
         assert!(linha.contains("FuelK") == false); // usa o Display, não o Debug

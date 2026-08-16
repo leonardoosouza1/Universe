@@ -43,7 +43,15 @@ pub struct PilotoLinear {
     pub decisoes: u64,
     /// Controle: probabilidade FIXA de abstenção (flag --portao-aleatorio).
     pub prob_aleatoria: f32,
+    /// Semente do sorteio do controle (--portao-semente).
+    pub semente: u64,
     contador: u64,
+    /// Comprimento das SEQUÊNCIAS contíguas de abstenção. É o que separa "o portão
+    /// escolhe os ticks certos" de "o cérebro só precisa respirar": um tick solto de
+    /// cérebro não tira um carro parado do lugar, um bloco tira. Predição registrada
+    /// antes do controle: mediana ≥ 4 no portão contra ≈ 1 no aleatório.
+    pub seqs: Vec<u32>,
+    seq_atual: u32,
 }
 
 impl PilotoLinear {
@@ -118,7 +126,8 @@ impl PilotoLinear {
             alphas: [alphas_v[0], alphas_v[1]],
             h_a: Vec::new(), h_b: Vec::new(), iniciado: false,
             refs, n_ref, thr_abster, abstencoes: 0, decisoes: 0,
-            prob_aleatoria: 0.0, contador: 0,
+            prob_aleatoria: 0.0, semente: 0, contador: 0,
+            seqs: Vec::new(), seq_atual: 0,
         })
     }
 
@@ -160,15 +169,38 @@ impl PilotoLinear {
         // "tomar fôlego de vez em quando". PRNG por contador: determinístico.
         if self.prob_aleatoria > 0.0 {
             self.contador = self.contador.wrapping_add(1);
-            let h = self.contador.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
+            // Semente própria (--portao-semente): sorteios INDEPENDENTES na mesma dose,
+            // para medir a variância corrida-a-corrida. Sem ela, todo run repete o mesmo
+            // sorteio e três "réplicas" seriam a mesma coisa (o erro das 3 sementes que
+            // eram a mesma população, CLAUDE.md gap 6).
+            let h = (self.contador ^ self.semente.wrapping_mul(0xD6E8_FEB8_6659_FD93))
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
             let u = ((h >> 40) as f32) / 16_777_216.0;   // [0,1)
             let y = self.agir(x);
-            return if u >= self.prob_aleatoria { self.decisoes += 1; Some(y) }
-                   else { self.abstencoes += 1; None };
+            return if u >= self.prob_aleatoria {
+                self.decisoes += 1; self.fecha_seq(); Some(y)
+            } else {
+                self.abstencoes += 1; self.seq_atual += 1; None
+            };
         }
         let dentro = self.conhece(x);
         let y = self.agir(x);
-        if dentro { self.decisoes += 1; Some(y) } else { self.abstencoes += 1; None }
+        if dentro {
+            self.decisoes += 1; self.fecha_seq(); Some(y)
+        } else {
+            self.abstencoes += 1; self.seq_atual += 1; None
+        }
+    }
+
+    fn fecha_seq(&mut self) {
+        if self.seq_atual > 0 { self.seqs.push(self.seq_atual); self.seq_atual = 0; }
+    }
+
+    /// (mediana, máxima, quantidade) das sequências contíguas de abstenção.
+    pub fn estat_seqs(&self) -> (f32, u32, usize) {
+        if self.seqs.is_empty() { return (0.0, 0, 0); }
+        let mut v = self.seqs.clone(); v.sort_unstable();
+        (v[v.len() / 2] as f32, *v.last().unwrap(), v.len())
     }
 
     pub fn agir(&mut self, x: &[f32]) -> [f32; 3] {

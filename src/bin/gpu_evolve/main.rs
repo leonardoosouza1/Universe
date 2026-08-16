@@ -142,6 +142,27 @@ use universe::gpu::physics::{pos_of, make_physics_state};
 /// Conserto: procurar adiante (com wrap) o primeiro waypoint REALMENTE distinto.
 /// Nunca devolve versor nulo em pista válida; se a pista inteira for um ponto só,
 /// devolve [1,0,0] e avisa — melhor um ser andando em linha reta que 48 pinos.
+/// Tanque pela regra de três do Leonardo, no denominador CERTO: o intervalo de
+/// REABASTECIMENTO (um setor), não a volta inteira.
+///
+/// Dois bugs foram pagos aqui em 2026-08-16, e os dois eram invisíveis no log:
+/// 1. a conta usava a VOLTA (`L/18,75 × 0,003 × k`) enquanto o reabastecimento
+///    acontece a cada setor (24 por volta) — tanque ~12× maior que o intervalo em
+///    que é recarregado, logo NUNCA prendia;
+/// 2. a conta só rodava na TROCA de pista, então em corrida de pista única (e na
+///    primeira geração de qualquer bateria) `--fuel-auto k` não fazia nada: k=2,0,
+///    1,0 e 0,7 davam resultado IDÊNTICO (1923 m, mortalidade 0%) — o canário de
+///    números iguais pegou.
+/// Juntos explicam por que a bateria-escada teve 34 de 35 gerações com mortalidade
+/// 0% mesmo com combustível, ruído, dano e clima ligados.
+///
+/// k = 1,0 significa "exatamente o necessário para alcançar o próximo setor a
+/// 18,75 m/s a fundo" (consumo 0,006/s). Quem for mais devagar que isso seca.
+fn tanque_por_setor(lap_dist: f64, k: f32) -> f32 {
+    let setor_m = lap_dist as f32 / N_CHECKPOINTS as f32;
+    (setor_m / 18.75) * 0.006 * k
+}
+
 fn frente_do_waypoint(wps: &[bevy::math::Vec2], wi: usize) -> [f32; 3] {
     let n = wps.len();
     let wp = wps[wi];
@@ -408,6 +429,7 @@ fn main() {
     let mut escada_on   = false;
     let mut piloto_formula_path: Option<String> = None;
     let mut portao_aleatorio: f32 = 0.0;
+    let mut portao_semente: u64 = 0;
     /// Ticks de vida ganhos por METRO avançado. 0 = vida dada de graça (comportamento antigo).
     ///
     /// Medido: com vida fixa, a população converge para RASTEJAR — 2,2 m/s de média com
@@ -641,6 +663,7 @@ fn main() {
                 // piloto_linear.rs). Responde "o portão escolhe bem ou qualquer
                 // intervenção do cérebro na mesma taxa já bastaria?".
                 "--portao-aleatorio" => { i += 1; if i < args.len() { portao_aleatorio = args[i].parse().unwrap_or(0.0); } }
+                "--portao-semente" => { i += 1; if i < args.len() { portao_semente = args[i].parse().unwrap_or(0); } }
                 "--life-earn" => { i += 1; if i < args.len() { life_earn     = args[i].parse().unwrap_or(0.0); } }
                 "--width"     => { i += 1; if i < args.len() { track_width   = args[i].parse().unwrap_or(18.0); } }
                 "--fitness"   => { i += 1; if i < args.len() { modo_fitness = args[i].clone(); } }
@@ -856,6 +879,7 @@ fn main() {
                 println!("  [piloto-formula] ser 0 dirigido pela fórmula ({} entradas)", pl.n_entradas());
                 let mut pl = pl;
                 pl.prob_aleatoria = portao_aleatorio;
+                pl.semente = portao_semente;
                 if portao_aleatorio > 0.0 {
                     println!("  [piloto] CONTROLE: portão ALEATÓRIO com p={portao_aleatorio:.3} (ignora o estado)");
                 }
@@ -908,6 +932,17 @@ fn main() {
     FUEL_ON.store(fuel_on, Ordering::Relaxed);
     REFUEL_LAPS.store(refuel_laps, Ordering::Relaxed);
     FUEL_TANK.store(fuel_tank.max(0.01), Ordering::Relaxed);
+    // A pista INICIAL também precisa do tanque calculado — sem isto `--fuel-auto`
+    // só valia a partir da primeira TROCA de pista (ver `tanque_por_setor`).
+    {
+        let k = FUEL_AUTO_K.load(Ordering::Relaxed);
+        if k > 0.0 {
+            let x = tanque_por_setor(world.lap_distance as f64, k);
+            FUEL_TANK.store(x, Ordering::Relaxed);
+            println!("  [fuel-auto] pista inicial (volta {:.0} m) → tanque {x:.4} (k={k})",
+                     world.lap_distance);
+        }
+    }
     SETOR_PAGA.store(setor_paga, Ordering::Relaxed);
     AUDITAR.store(auditar_visao, Ordering::Relaxed);
     PORTAL_CURVA.store(portal_curva, Ordering::Relaxed);
@@ -1157,10 +1192,28 @@ fn main() {
             lap_dist = world.lap_distance as f64;
             let k = FUEL_AUTO_K.load(Ordering::Relaxed);
             if k > 0.0 {
-                // Regra de três (ver FUEL_AUTO_K): X = L/18,75 × 0,003 × k.
-                let x = (lap_dist as f32 / 18.75) * 0.003 * k;
+                // REGRA DE TRÊS, AGORA NO DENOMINADOR CERTO (conserto de 2026-08-16).
+                //
+                // Era X = L/18,75 × 0,003 × k — tanque dimensionado para uma VOLTA
+                // inteira. Só que o reabastecimento acontece a cada SETOR
+                // (SETOR_PAGA, ver o bloco de checkpoint), e são 24 setores por volta:
+                // o tanque saía ~12× maior que o intervalo em que é recarregado, e
+                // por isso NUNCA prendia. Medição que expôs: 34 de 35 gerações da
+                // bateria-escada com mortalidade 0% mesmo com combustível apertado
+                // até k=1,0, ruído, dano e clima LIGADOS ao mesmo tempo.
+                //
+                // Conta: setor = L/24 ≈ 122 m; a 18,75 m/s são 6,5 s; consumo
+                // (0,002 + 0,004·thr²)/s ≈ 0,006/s a fundo → 0,039 por setor. Com
+                // tanque de volta (0,468 em 9001) sobrava para 12 setores.
+                //
+                // Agora k=1,0 significa "exatamente o necessário para alcançar o
+                // próximo setor na velocidade típica" — um número que MORDE, e a
+                // escada aperta a partir daí. Quem for mais devagar que o típico
+                // fica sem combustível: é essa a pressão que faltava.
+                let x = tanque_por_setor(lap_dist, k);
                 FUEL_TANK.store(x, Ordering::Relaxed);
-                println!("  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.3} (k={k})");
+                println!("  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.4} \
+                          (k={k}; 1,0 = alcança o próximo setor a 18,75 m/s)");
             }
         }
         println!("  [pista] gen {:4} usa seed={} ({} wp, volta={:.0}m)",
@@ -1993,6 +2046,8 @@ fn main() {
             if tot > 0 {
                 println!("  [piloto] fórmula decidiu {} ticks · cérebro reassumiu {} ({:.1}%)",
                          pl.decisoes, pl.abstencoes, 100.0 * pl.abstencoes as f64 / tot as f64);
+                let (med, mx, q) = pl.estat_seqs();
+                println!("  [piloto] sequências de abstenção: {q} blocos · mediana {med:.0} ticks · maior {mx}");
             }
         }
         if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
