@@ -266,17 +266,24 @@ impl PilotoForja {
     /// (pós-`tanh`, pré `kan_eval`/clamps) — mesma assinatura e mesmo ponto de entrega
     /// do `PilotoLinear::agir`.
     pub fn agir(&mut self, x: &[f32]) -> [f32; 3] {
-        debug_assert_eq!(x.len(), self.c, "piloto-forja: X com {} canais, esperava {}", x.len(), self.c);
+        let c = self.c;
+        let n_feat = self.n_feat;
+        debug_assert_eq!(x.len(), c, "piloto-forja: X com {} canais, esperava {c}", x.len());
+        // Desestruturação para emprestar `grupos` (só leitura) e `z`/`d2`/`phi`
+        // (escrita) ao mesmo tempo — `for g in &self.grupos { self.d2[..] = .. }`
+        // não compila, os dois empréstimos seriam do mesmo `self`.
+        let PilotoForja { mu, sd, grupos, w, z, d2, phi, y_mu, y_sd,
+                          ultima_soma_phi, saturacoes_z, .. } = self;
 
-        // 1. padroniza
+        // 1. padroniza (com saturação anti-NaN — ver doc do módulo)
         let mut saturou = false;
-        for j in 0..self.c {
-            let v = (x[j] - self.mu[j]) / self.sd[j];
+        for j in 0..c {
+            let v = (x[j] - mu[j]) / sd[j];
             let v = if v.is_finite() { v } else { 0.0 };
             if v > Z_MAX || v < -Z_MAX { saturou = true; }
-            self.z[j] = v.clamp(-Z_MAX, Z_MAX);
+            z[j] = v.clamp(-Z_MAX, Z_MAX);
         }
-        if saturou { self.saturacoes_z += 1; }
+        if saturou { *saturacoes_z += 1; }
 
         // 2+3. distâncias e lentes. O laço externo é o GRUPO e o interno é a LENTE:
         //      é isso que produz [dg/sg0 ‖ dg/sg1 ‖ df/sf0 ‖ df/sf1], a ordem das
@@ -284,42 +291,42 @@ impl PilotoForja {
         //      do grupo (é daí que a pirâmide sai barata: 1024 distâncias, 2048 features).
         let mut p = 0usize;
         let mut soma = 0.0f32;
-        for g in &self.grupos {
+        for g in grupos.iter() {
             for a in 0..g.n {
-                let base = a * self.c;
+                let base = a * c;
                 let mut d = 0.0f32;
-                for j in 0..self.c {
-                    let dd = self.z[j] - g.centros[base + j];
+                for j in 0..c {
+                    let dd = z[j] - g.centros[base + j];
                     d += dd * dd;
                 }
-                self.d2[a] = d;
+                d2[a] = d;
             }
             for &inv in &g.inv2s2 {
                 for a in 0..g.n {
-                    let v = (-self.d2[a] * inv).exp();
-                    self.phi[p] = v;
+                    let v = (-d2[a] * inv).exp();
+                    phi[p] = v;
                     soma += v;
                     p += 1;
                 }
             }
         }
-        debug_assert_eq!(p, self.n_feat);
-        self.ultima_soma_phi = soma;
+        debug_assert_eq!(p, n_feat);
+        *ultima_soma_phi = soma;
 
         // 4. phi @ W
         let mut pre = [0.0f32; 3];
-        for i in 0..self.n_feat {
-            let f = self.phi[i];
-            pre[0] += f * self.w[i * 3];
-            pre[1] += f * self.w[i * 3 + 1];
-            pre[2] += f * self.w[i * 3 + 2];
+        for i in 0..n_feat {
+            let f = phi[i];
+            pre[0] += f * w[i * 3];
+            pre[1] += f * w[i * 3 + 1];
+            pre[2] += f * w[i * 3 + 2];
         }
 
         // 5. desnormaliza e tanh (W prevê a PRÉ-ativação — ver doc do módulo)
         [
-            (pre[0] * self.y_sd[0] + self.y_mu[0]).tanh(),
-            (pre[1] * self.y_sd[1] + self.y_mu[1]).tanh(),
-            (pre[2] * self.y_sd[2] + self.y_mu[2]).tanh(),
+            (pre[0] * y_sd[0] + y_mu[0]).tanh(),
+            (pre[1] * y_sd[1] + y_mu[1]).tanh(),
+            (pre[2] * y_sd[2] + y_mu[2]).tanh(),
         ]
     }
 
@@ -525,17 +532,21 @@ mod tests {
                     assert_eq!(x.len(), p.n_entradas(), "tick {tick}: X com {} canais", x.len());
                     assert_eq!(esperado.len(), 3);
                     let y = p.agir(&x);
+                    let mut pior = 0.0f32;
                     for k in 0..3 {
-                        assert!((y[k] - esperado[k]).abs() <= tol,
-                                "tick {tick} ação {k}: rust {} vs python {} (dif {:.3e} > tol {tol:.0e})",
-                                y[k], esperado[k], (y[k] - esperado[k]).abs());
+                        let dif = (y[k] - esperado[k]).abs();
+                        assert!(dif <= tol,
+                                "tick {tick} ação {k}: rust {} vs python {} (dif {dif:.3e} > tol {tol:.0e})",
+                                y[k], esperado[k]);
+                        if dif > pior { pior = dif; }
                     }
                     // Σφ medida no dump: 287,9 … 936,7. Fora disso, algo mudou.
                     assert!(p.ultima_soma_phi > 280.0 && p.ultima_soma_phi < 940.0,
                             "tick {tick}: Σφ = {} fora da faixa medida [287,9 ; 936,7]", p.ultima_soma_phi);
                     assert_eq!(p.saturacoes_z, 0, "tick {tick}: z saturou em dado do próprio dump");
                     conferidos += 1;
-                    println!("  tick {tick}: [{:.6}, {:.6}, {:.6}]  Σφ={:.2}  ✓",
+                    println!("  tick {tick}: rust [{:.7}, {:.7}, {:.7}]  Σφ={:.2}  \
+                              maior dif vs python(f64) = {pior:.2e}  (tol {tol:.0e}) ✓",
                              y[0], y[1], y[2], p.ultima_soma_phi);
                 }
                 _ => {}

@@ -136,3 +136,20 @@ O 108,6% é UMA corrida de cada lado. Dois agentes céticos foram postos para de
 (assimetria de comparação, métrica `voltas`=0 vs `pct_volta`=244%, variância entre corridas,
 e se o override é híbrido com câmbio/ré). Veredito deles entra aqui antes de qualquer uso do
 número como base de decisão.
+
+## Bug colhido de graça pela bateria (2026-08-16)
+
+A escada rodou 4 gerações e a de índice 2 saiu `med=0m max=0m morto=100%` com
+`fitness 2377..2377 · valores distintos 1/48` (o próprio log gritou SELEÇÃO CEGA).
+Não era a pista: a gen 3 na MESMA pista rendeu 7474 m. Era a largada — a lista de
+waypoints fecha o laço repetindo o primeiro ponto (`world.rs:1214`), e
+`--largada-aleatoria` sorteou justo esse índice: `wp == wp_next` → versor `[0,0,0]`
+→ orientação degenerada, velocidade EXATAMENTE 0,00 com acelerador 0,4-0,6 aplicado
+e RPM girando. Probabilidade 1/n_wp por geração ≈ 1% — numa bateria de 200 gerações,
+~2 gerações inteiras viravam sorteio puro.
+
+Consertado em `frente_do_waypoint()` (procura adiante o primeiro waypoint distinto),
+provado com controle pareado: wi=105 saiu de `0 m / 1 nota distinta / 100% mortos`
+para `1327 m / 46 notas / 0% mortos`, e wi=50 (controle) ficou **idêntico ao de
+antes** — mudança cirúrgica. O log agora imprime `[largada] gen N nasce no wp k/n`;
+sem isso o diagnóstico exigiu uma sonda dedicada.
