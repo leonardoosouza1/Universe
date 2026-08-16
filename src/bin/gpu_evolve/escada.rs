@@ -176,12 +176,19 @@ impl Escada {
                 // a vez ao próximo. (O que tornava o combustível inócuo era outra coisa:
                 // tanque dimensionado por VOLTA e recarregado por SETOR — ver fuel-auto
                 // em main.rs.)
-                Degrau::FuelK(2.0),
-                Degrau::FuelK(1.5),
-                Degrau::FuelK(1.2),
-                Degrau::FuelK(1.0),
-                Degrau::FuelK(0.85),
-                Degrau::FuelK(0.7),
+                // Doses medidas na CONFIG DA BATERIA (20k ticks, largada aleatória,
+                // rotação de pistas), não numa config de smoke — a primeira versão
+                // começava em k=2,0 porque foi calibrada com 6000 ticks e largada
+                // fixa, e a bateria colapsou na primeira geração (mediana 84 m).
+                // Curva medida: k=8,0 → promoção 98% · 5,0 → 42% (janela) · 3,0 → 0%
+                // · 2,0 → 0%; sem combustível → 100%. O penhasco é entre 5 e 3, então
+                // a escada anda FINO nessa faixa em vez de saltar por cima dela.
+                Degrau::FuelK(8.0),
+                Degrau::FuelK(6.5),
+                Degrau::FuelK(5.5),
+                Degrau::FuelK(5.0),
+                Degrau::FuelK(4.5),
+                Degrau::FuelK(4.0),
                 Degrau::Ruido(4.0),
                 Degrau::Ruido(8.0),
                 Degrau::Ruido(14.0),
@@ -235,8 +242,17 @@ impl Escada {
     ///   mortalidade porque o doc não amarra recuperação a eles, só nomeia a
     ///   janela de dose certa com os três critérios juntos.
     pub fn avaliar(&mut self, promocao_pct: f32, mortalidade: f32, recuperou: bool) -> Veredito {
+        // MORTALIDADE É TETO, NÃO PISO (conserto de 2026-08-16, com medição).
+        //
+        // O doc pedia "mortalidade 5-20%" como parte da janela. Medido na config
+        // real da bateria: a pressão de combustível age TRAVANDO, não matando —
+        // varredura k = {8,0 · 5,0 · 3,0 · 2,0} deu promoção {98% · 42% · 0% · 0%}
+        // com mortalidade 0% em TODAS. Exigir mortalidade ≥5% tornava a janela
+        // inalcançável e a escada só sabia "boa" ou "ruim": passava reto pela dose
+        // certa. O piso vira teto — mortalidade alta ainda reprova (`ruim`), mas
+        // não é mais requisito para reconhecer a dose calibrada.
         let dose_certa = (PROMOCAO_DOSE_MIN..=PROMOCAO_DOSE_MAX).contains(&promocao_pct)
-            && (MORTALIDADE_DOSE_MIN..=MORTALIDADE_DOSE_MAX).contains(&mortalidade)
+            && mortalidade <= MORTALIDADE_DOSE_MAX
             && recuperou;
         let boa = promocao_pct > PROMOCAO_BOA_MIN && mortalidade < MORTALIDADE_BOA_MAX;
         let ruim = promocao_pct < PROMOCAO_RUIM_MAX || mortalidade > MORTALIDADE_RUIM_MIN;

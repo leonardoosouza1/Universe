@@ -66,3 +66,52 @@ currículo por população).
     --trocar-ao-completar 4 --seed {77,31} --cambio auto --cambio-teto 6
     --custo-rpm 2.0 --mascara-regioes --tau-semeado --largada-aleatoria
     --fuel-auto 1.4 --escada --out /media/llm-data/universe-runs/escada-s{N}
+
+## CANÁRIO PERMANENTE: pressão nova PROVA que diferencia dose antes da bateria
+
+> Nasceu de um erro caro (2026-08-16) e a sessão-forja adotou o mesmo canário no
+> lado do Qwen no mesmo dia, depois de ele explicar uma anomalia deles em 10 min.
+
+**Regra:** antes de qualquer bateria com um mecanismo de pressão novo, rodar a
+varredura de dose e mostrar que doses diferentes produzem números DIFERENTES —
+incluindo o braço com o mecanismo DESLIGADO. Dose que não diferencia não é pressão
+fraca: é pressão desligada.
+
+**E a varredura tem de rodar na CONFIG DA BATERIA.** Calibrei a primeira vez com
+6000 ticks, largada fixa e pista única; na bateria real (20k ticks, largada
+aleatória, rotação) a mesma dose colapsou a população na primeira geração
+(mediana 84 m). Config de smoke serve pra provar que o mecanismo LIGA, não pra
+escolher a dose.
+
+### O que o canário pegou aqui (dois bugs, ambos mudos no log)
+
+1. **Denominador errado**: tanque dimensionado por VOLTA e recarregado por SETOR
+   (24 por volta) — ~12× folgado, nunca prendia.
+2. **Nunca aplicado**: a conta só rodava na TROCA de pista; em pista única e na
+   primeira geração `--fuel-auto` não fazia efeito nenhum.
+
+Sintoma que denunciou: `k = 2,0`, `1,0` e `0,7` deram resultado IDÊNTICO (1923 m),
+igual ao controle sem combustível. E a consequência silenciosa: **34 de 35
+gerações da bateria-escada com mortalidade 0% mesmo com combustível, ruído, dano
+e clima LIGADOS ao mesmo tempo.**
+
+### Curva de dose do combustível (config real da bateria, 2026-08-16)
+
+| k | tanque | mediana | promoção |
+|---|---|---|---|
+| desligado | — | 7665 m | 100% |
+| 8,0 | 0,312 | 7640 m | 98% |
+| **5,0** | 0,195 | 1442 m | **42% — dentro da janela 30-60%** |
+| 3,0 | 0,117 | 813 m | 0% |
+| 2,0 | 0,078 | 450 m | 0% |
+
+Penhasco entre 5 e 3: o plano da escada agora anda fino nessa faixa
+(8,0 → 6,5 → 5,5 → 5,0 → 4,5 → 4,0) em vez de saltar por cima dela.
+
+### Correção do critério: mortalidade é TETO, não piso
+
+O doc pedia "mortalidade 5-20%" como parte da janela de dose certa. Medido: esta
+pressão age TRAVANDO, não matando — mortalidade 0% em toda a varredura, enquanto a
+promoção varia de 98% a 0%. Exigir mortalidade ≥5% tornava a janela inalcançável e
+a escada só enxergava "boa" ou "ruim", passando reto pela dose calibrada.
+`avaliar()` agora usa mortalidade só como teto.
