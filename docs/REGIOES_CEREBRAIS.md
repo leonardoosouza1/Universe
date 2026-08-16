@@ -203,3 +203,22 @@ regime (rodízio curta↔retão: gate deve alternar blocos); (b) ablação do ga
 (congelar em 1,0) remove o ganho; (c) reserva esgota sob uso contínuo
 (assinatura de burnout no obs) — é o enxerto 1 do plano neuromod realizado
 sobre o cérebro REGIONALIZADO, onde gate por bloco tem alvo de verdade.
+
+## M4 — VEREDITO: mecanismo vivo, performance EMPATE (2026-08-16)
+
+60 gens × 2 sementes × controle pareado: M4 42,9/42,1 vs ctrl 41,6/42,3 por gen
+— empate estatístico. Gates evoluíram (1,05/0,97/1,05/0,95), burnout real
+(reservas 0,25-0,65). Mecanismo do empate = o previsto pela pesquisa neuromod:
+sem ESTADOS LENTOS no corpo (fome/dano oculto), não há regime pra o maestro
+reger (G teto baixo; EXP10: neuromod paga com corpo interoceptivo). Resposta:
+bateria ENERGIA-FINITA 2×2 (fuel-tank 0,6 que ACABA × maestro on/off, mesmas
+pistas com mudança de regime). Predição: com energia escassa, M4 > ctrl
+(gerir reserva de energia é exatamente um estado lento); se empatar de novo,
+o maestro fica documentado como "pronto e aguardando mundo mais rico" (F-C).
+
+## Anti-encalhe escalonado — PROVADO no cenário do Leonardo (2026-08-16)
+
+Mesma corrida determinística do replay que ele viu: ANTES encalha no tick 9574,
+163 s parado, morre; DEPOIS anda até o tick 20000, 0 s parado, vida cheia,
+48/48 voltas duplas (era 44/48). Ré re-disparada em <5 s alonga (até 4×) e
+ALTERNA o volante (o bug era sair reto de volta pro mesmo canto).

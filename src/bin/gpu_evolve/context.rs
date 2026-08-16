@@ -593,9 +593,19 @@ impl GpuCtx {
                         && speed < revcfg::TRIGGER_SPEED_MAX_MS
                         && stag > revcfg::STAGNATION_TICKS
                     {
-                        states[i].reverse_timer = revcfg::MIN_DURATION_S;
+                        // Anti-encalhe ESCALONADO (ver doc em types.rs::re_falhas):
+                        // re-encalhe em <5 s = a ré anterior não escapou → dobra a
+                        // duração (até 3×) e o volante alterna de lado durante a ré.
+                        if states[i].re_desde_saida < 5.0 {
+                            states[i].re_falhas = states[i].re_falhas.saturating_add(1);
+                        } else {
+                            states[i].re_falhas = 0;
+                        }
+                        let escala = 1.0 + (states[i].re_falhas.min(4) as f32) * 0.75;
+                        states[i].reverse_timer = revcfg::MIN_DURATION_S * escala;
                         states[i].stagnation_ticks = 0;
                     }
+                    states[i].re_desde_saida += dt;
                 }
                 // Decremento e saída de ré.
                 {
@@ -604,6 +614,7 @@ impl GpuCtx {
                         let nr = rev - dt;
                         if fwd_dist > revcfg::EXIT_CLEAR_M || nr > revcfg::MAX_DURATION_S {
                             states[i].reverse_timer = 0.0;
+                            states[i].re_desde_saida = 0.0;
                             states[i].post_reverse_lockout = revcfg::POST_LOCKOUT_S;
                         } else {
                             states[i].reverse_timer = nr.max(0.0);
@@ -1026,8 +1037,11 @@ impl GpuCtx {
 
             if is_reversing {
                 // Ré ativa: override completo, pedal fixo 0.75, gear=0.
+                // Volante ALTERNA de lado a cada ré re-disparada (re_falhas ímpar =
+                // esquerda) — sair reto devolvia o carro ao MESMO canto (medido).
                 s.throttle  = universe::config::iara::reverse_maneuver::PEDAL;
-                s.steer     = 0.0;
+                s.steer     = if states[i].re_falhas == 0 { 0.0 }
+                              else if states[i].re_falhas % 2 == 1 { -0.6 } else { 0.6 };
                 s.brake_cmd = 0.0;
                 s.current_gear = 0;
             } else if in_lockout {

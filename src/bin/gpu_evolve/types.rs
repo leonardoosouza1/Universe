@@ -92,4 +92,11 @@ pub struct BeingState {
     /// M4: reserva de neuromodulador por REGIÃO (4 blocos), ∈[0,1]. Começa cheia;
     /// usar gate ≠ 1,0 drena (a·|g−1|·R), repõe (1−R)/τ. Ver REGIOES_CEREBRAIS.md.
     pub nm_reserva:         [f32; 4],
+    /// Anti-encalhe escalonado (2026-08-16): nº de rés re-disparadas em sequência
+    /// curta. Medido no campeão m23: ré→sai cedo→lockout→engancha de novo, loop de
+    /// 10k ticks no MESMO canto (obs tick 9574+). Cada falha alonga a ré e alterna
+    /// o lado do volante (quebra a simetria do canto).
+    pub re_falhas:          u8,
+    /// Segundos desde a última SAÍDA de ré (para detectar re-encalhe rápido).
+    pub re_desde_saida:     f32,
 }
