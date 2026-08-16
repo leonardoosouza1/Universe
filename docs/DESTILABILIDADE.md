@@ -308,5 +308,19 @@ implementar isso deve olhar o maior bloco, não o típico.
 do tempo" nem "o portão escolhe o tick certo" — é **o órgão precisa poder ASSUMIR e
 SEGURAR**. A unidade de resgate é o trecho, não o tick.
 
-Ressalva honesta: +1,4 desvios com n=4 na pista de treino e +0,3 na pista nova. Oito
-sorteios a mais estão rodando; o efeito a acompanhar é o TAMANHO (2,1×), não o σ.
+### n=12: o efeito ENCOLHEU, como manda a lição de replicação
+
+Sorteios (pista 9001, dose 5,5%): 909 · 932 · 1070 · 1070 · 3838 · 3847 · 5536 · 6318 ·
+6387 · 6783 · 7132 · 7189 → **4251 ± 2526**. Portão 6771 = **1,59× a média** (+1,0σ).
+
+O tamanho do efeito caiu de 2,1× (n=4) para 1,59× (n=12) — exatamente o padrão que a
+lição `feedback_replicacao_vs_sigma` manda seguir: acompanhar o EFEITO conforme n cresce,
+não o σ. Registro para não repetir o erro de cravar o número da amostra pequena.
+
+E a distribuição é BIMODAL, não ruidosa: 4 de 12 sorteios falham feio (~1000 m), 6 de 12
+chegam ao nível do portão (~6500 m), 2 ficam no meio. **5 de 12 alcançam ≥90% do portão.**
+
+**Enunciado honesto:** o resgate aleatório funciona em cerca de metade das corridas. O
+portão não é dramaticamente melhor que um sorteio de sorte — ele converte uma moeda em
+certeza. Num campeão que precisa ser reproduzível, é isso que importa; num paper de
+"olha como o portão é inteligente", não seria suficiente.
