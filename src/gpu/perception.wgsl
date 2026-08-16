@@ -95,7 +95,15 @@ struct Params {
     grid_size:  u32,    // 320
     n_beings:   u32,    // 60
     cell_size:  f32,    // 3.0 m
-    _pad:       f32,
+    // VISÃO PERIFÉRICA REAL (flag --visao-periferica-real, 0=off preserva o legado).
+    // Medido em 2026-08-16: ch128-143 (Fóvea HD) e ch144-159 (Periférica HD) eram
+    // BIT-A-BIT idênticos em 100% dos ticks — 16 dos 192 canais (8,3% da banda
+    // sensorial) carregando zero informação nova, e o ser sem NENHUMA visão
+    // periférica de fato. O bloco P era cópia literal do O (mesmas 126 colunas,
+    // mesmas rows, mesmo max-pool); o porte para GPU replicou fielmente o motor.rs.
+    // Com a flag: a fóvea vira o miolo (dobro de resolução angular no centro) e a
+    // periférica vira as bordas — informação que nunca existiu.
+    perif_real: f32,
 }
 
 // Pose de um ser no tick atual.
@@ -878,9 +886,14 @@ fn main(
     // Slots distintos: ch 0-15 (BLOCOS A/B) vs ch 128-143 (HD Fóvea) — sem conflito.
     if tid < 16u {
         let bin = tid;
-        let cols_per_bin: u32 = RETINA_COLS / 16u; // 7 cols/bin (126/16 = 7, última bin = 8)
-        let lo = bin * cols_per_bin;
-        let hi: u32 = select(lo + cols_per_bin, RETINA_COLS, bin == 15u);
+        // Legado: 16 bins sobre TODAS as colunas. Com perif_real: 16 bins sobre o
+        // MIOLO (25%..75% das colunas) — mesma contagem de bins, metade do ângulo,
+        // logo o dobro de resolução angular no centro.
+        let fov_lo0: u32 = select(0u, RETINA_COLS / 4u, params.perif_real > 0.5);
+        let fov_hi0: u32 = select(RETINA_COLS, (RETINA_COLS * 3u) / 4u, params.perif_real > 0.5);
+        let cols_per_bin: u32 = (fov_hi0 - fov_lo0) / 16u;
+        let lo = fov_lo0 + bin * cols_per_bin;
+        let hi: u32 = select(lo + cols_per_bin, fov_hi0, bin == 15u);
         var mx: i32 = -128;
         for (var row = 0u; row < RETINA_ROWS; row++) {
             for (var col = lo; col < hi; col++) {
@@ -901,9 +914,19 @@ fn main(
     // ─────────────────────────────────────────────────────────────────────────
     if tid >= 16u && tid < 32u {
         let bin = tid - 16u;
-        let cols_per_bin: u32 = RETINA_COLS / 16u;
-        let lo = bin * cols_per_bin;
-        let hi: u32 = select(lo + cols_per_bin, RETINA_COLS, bin == 15u);
+        // Legado: cópia exata do bloco O (o bug). Com perif_real: 8 bins na borda
+        // ESQUERDA (0..25%) e 8 na DIREITA (75%..100%) — o campo que o ser não via.
+        var lo: u32; var hi: u32;
+        if params.perif_real > 0.5 {
+            let q: u32 = RETINA_COLS / 4u;
+            let passo: u32 = max(q / 8u, 1u);
+            if bin < 8u { lo = bin * passo; } else { lo = (RETINA_COLS - q) + (bin - 8u) * passo; }
+            hi = min(lo + passo, RETINA_COLS);
+        } else {
+            let cols_per_bin: u32 = RETINA_COLS / 16u;
+            lo = bin * cols_per_bin;
+            hi = select(lo + cols_per_bin, RETINA_COLS, bin == 15u);
+        }
         var mx: i32 = -128;
         for (var row = 0u; row < RETINA_ROWS; row++) {
             for (var col = lo; col < hi; col++) {

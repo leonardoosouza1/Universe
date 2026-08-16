@@ -103,13 +103,19 @@ pub struct PosePerception {
 }
 
 /// Parâmetros uniformes do kernel — layout deve bater exatamente com `Params` em percepcao.wgsl.
+/// Liga a visão periférica REAL (flag `--visao-periferica-real`). Off por padrão:
+/// percepção nova entra atrás de flag, com A/B pareado (regra do projeto).
+pub static PERIF_REAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParamsGpu {
     grid_size: u32,
     n_beings:  u32,
     cell_size: f32,
-    _pad:      f32,
+    /// 1.0 = visão periférica REAL (ver perception.wgsl). 0.0 = legado (a periférica
+    /// era cópia bit-a-bit da fóvea — 16 canais redundantes de 192).
+    perif_real: f32,
 }
 
 /// Número de f32 no buffer de estado temporal por ser.
@@ -627,7 +633,7 @@ impl PerceptionGpu {
             grid_size: self.grid_size,
             n_beings:  n as u32,
             cell_size: self.cell_size,
-            _pad:      0.0,
+            perif_real: if PERIF_REAL.load(std::sync::atomic::Ordering::Relaxed) { 1.0 } else { 0.0 },
         };
         let buf_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("percep-params"),
@@ -999,7 +1005,7 @@ impl PerceptionGpu {
             grid_size: self.grid_size,
             n_beings:  n as u32,
             cell_size: self.cell_size,
-            _pad:      0.0,
+            perif_real: if PERIF_REAL.load(std::sync::atomic::Ordering::Relaxed) { 1.0 } else { 0.0 },
         };
         let buf_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("percep-params-chain"),

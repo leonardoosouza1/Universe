@@ -41,6 +41,9 @@ pub struct PilotoLinear {
     thr_abster: f32,      // limiar em distância AO QUADRADO
     pub abstencoes: u64,  // telemetria: quantos ticks o cérebro reassumiu
     pub decisoes: u64,
+    /// Controle: probabilidade FIXA de abstenção (flag --portao-aleatorio).
+    pub prob_aleatoria: f32,
+    contador: u64,
 }
 
 impl PilotoLinear {
@@ -115,6 +118,7 @@ impl PilotoLinear {
             alphas: [alphas_v[0], alphas_v[1]],
             h_a: Vec::new(), h_b: Vec::new(), iniciado: false,
             refs, n_ref, thr_abster, abstencoes: 0, decisoes: 0,
+            prob_aleatoria: 0.0, contador: 0,
         })
     }
 
@@ -149,6 +153,19 @@ impl PilotoLinear {
     /// continuam sendo atualizados mesmo na abstenção — o piloto segue "assistindo"
     /// para não voltar com memória velha quando o estado retornar ao conhecido.
     pub fn agir_com_portao(&mut self, x: &[f32]) -> Option<[f32; 3]> {
+        // CONTROLE DO PORTÃO (--portao-aleatorio p): abstém com probabilidade p
+        // FIXA, ignorando o estado. Sem este controle não dá para saber se o portão
+        // escolhe os ticks CERTOS ou se qualquer intervenção do cérebro na mesma
+        // dose já salvaria a corrida — a diferença entre "sabe que não sabe" e
+        // "tomar fôlego de vez em quando". PRNG por contador: determinístico.
+        if self.prob_aleatoria > 0.0 {
+            self.contador = self.contador.wrapping_add(1);
+            let h = self.contador.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
+            let u = ((h >> 40) as f32) / 16_777_216.0;   // [0,1)
+            let y = self.agir(x);
+            return if u >= self.prob_aleatoria { self.decisoes += 1; Some(y) }
+                   else { self.abstencoes += 1; None };
+        }
         let dentro = self.conhece(x);
         let y = self.agir(x);
         if dentro { self.decisoes += 1; Some(y) } else { self.abstencoes += 1; None }

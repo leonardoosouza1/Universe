@@ -407,6 +407,7 @@ fn main() {
     let mut fantasma_on = false;
     let mut escada_on   = false;
     let mut piloto_formula_path: Option<String> = None;
+    let mut portao_aleatorio: f32 = 0.0;
     /// Ticks de vida ganhos por METRO avançado. 0 = vida dada de graça (comportamento antigo).
     ///
     /// Medido: com vida fixa, a população converge para RASTEJAR — 2,2 m/s de média com
@@ -636,6 +637,10 @@ fn main() {
                 // PILOTO POR FÓRMULA (PILOTO_POR_FORMULA.md): ser 0 dirigido pelo
                 // controlador ridge destilado do replay do campeão.
                 "--piloto-formula" => { i += 1; if i < args.len() { piloto_formula_path = Some(args[i].clone()); } }
+                // Controle do portão: abstenção ALEATÓRIA na mesma dose (ver
+                // piloto_linear.rs). Responde "o portão escolhe bem ou qualquer
+                // intervenção do cérebro na mesma taxa já bastaria?".
+                "--portao-aleatorio" => { i += 1; if i < args.len() { portao_aleatorio = args[i].parse().unwrap_or(0.0); } }
                 "--life-earn" => { i += 1; if i < args.len() { life_earn     = args[i].parse().unwrap_or(0.0); } }
                 "--width"     => { i += 1; if i < args.len() { track_width   = args[i].parse().unwrap_or(18.0); } }
                 "--fitness"   => { i += 1; if i < args.len() { modo_fitness = args[i].clone(); } }
@@ -676,6 +681,13 @@ fn main() {
                 // E-REG2 (M2): semeia τ por BLOCO (mesmos 4 blocos do M3) — reflexo
                 // curto na parede/estrada, longo no associativo. Função segue tempo?
                 "--tau-semeado" => { tau_semeado = true; }
+                // Visão periférica REAL: ch144-159 deixam de ser cópia bit-a-bit da
+                // fóvea e passam a olhar as bordas da retina (ver perception.wgsl).
+                // Off por padrão — muda a DISTRIBUIÇÃO de entrada, então campeão
+                // antigo precisa de A/B pareado, não de fé.
+                "--visao-periferica-real" => {
+                    universe::gpu::perception::PERIF_REAL.store(true, Ordering::Relaxed);
+                }
                 // M4: maestro de regiões (lento→gates com reserva). Ver statics.rs.
                 "--neuromod-regioes" => { NEUROMOD_REGIOES.store(true, Ordering::Relaxed); }
                 // Laboratório de observação: grava a cadeia neural do ser 0 por tick
@@ -842,6 +854,11 @@ fn main() {
         match piloto_linear::PilotoLinear::carregar(p) {
             Some(pl) => {
                 println!("  [piloto-formula] ser 0 dirigido pela fórmula ({} entradas)", pl.n_entradas());
+                let mut pl = pl;
+                pl.prob_aleatoria = portao_aleatorio;
+                if portao_aleatorio > 0.0 {
+                    println!("  [piloto] CONTROLE: portão ALEATÓRIO com p={portao_aleatorio:.3} (ignora o estado)");
+                }
                 ctx.piloto_formula = Some(pl);
             }
             None => { eprintln!("ERRO: --piloto-formula não carregou {p}"); std::process::exit(1); }
