@@ -289,7 +289,9 @@ pub const SENSOR_DEFAULTS: [f32; N_SENSOR_GENES] = [
 ///   função `curv_at_d` (equivalente WGSL) não distingue "qual" distância é qual, só lê
 ///   o valor recebido, então a evolução pode redistribuir os três livremente.
 pub const SENSOR_RANGES: [(f32, f32); N_SENSOR_GENES] = [
-    (0.523598776, 1.483529864), // fov_half_rad: 30°..85° em radianos
+    // 30°..85° in radians. The lower bound is exactly FRAC_PI_6, so use the constant
+    // rather than a rounded literal; the upper bound has no named constant.
+    (std::f32::consts::FRAC_PI_6, 1.483529864), // fov_half_rad
     (20.0, 120.0),               // wall_range_m
     (15.0, 100.0),                // lat_range_m
     (15.0, 80.0),                 // curv_near_m
@@ -780,14 +782,15 @@ pub fn evolve(
         // Box-Muller N(0,1).
         fn gauss(&mut self) -> f32 {
             if let Some(v) = self.spare.take() { return v; }
-            loop {
-                let u1 = self.f32().max(1e-7_f32);
-                let u2 = self.f32();
-                let r = (-2.0 * u1.ln()).sqrt();
-                let theta = std::f32::consts::TAU * u2;
-                self.spare = Some(r * theta.sin());
-                return r * theta.cos();
-            }
+            // No rejection loop here: `u1` is clamped away from zero, so the first
+            // draw is always valid. The `loop` this used to sit in never iterated
+            // twice and clippy reported it as dead structure.
+            let u1 = self.f32().max(1e-7_f32);
+            let u2 = self.f32();
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = std::f32::consts::TAU * u2;
+            self.spare = Some(r * theta.sin());
+            r * theta.cos()
         }
     }
     // `Rng` implementa `GenoRng` para `mutate_sensors` poder receber UMA referência
@@ -1140,6 +1143,11 @@ mod tests {
             let g = Genome::random(seed);
             for &(ch, _) in DEAD_L1_INPUTS {
                 if ch + 1 < SENSORY_WAVE_SIZE {
+                    // `0 * SENSORY_WAVE_SIZE` is written out on purpose: it names the
+                    // L1 neuron being indexed, and reads in parallel with the other
+                    // rows. Clippy calls it `erasing_op`; collapsing it would hide
+                    // which neuron this is.
+                    #[allow(clippy::erasing_op)]
                     let vizinho = g.l1[0 * SENSORY_WAVE_SIZE + (ch + 1)];
                     assert_ne!(vizinho, 0.0, "seed {seed}: canal vizinho ch{} não deveria ter sido zerado", ch + 1);
                 }

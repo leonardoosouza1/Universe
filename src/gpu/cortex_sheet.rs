@@ -60,6 +60,10 @@ const N_MOTOR: usize = 3;
 // τ mínimo e máximo do banco log-espaçado (em segundos).
 // gamma ≈ 1.6 ms → delta ≈ 318 ms (doc §5.3)
 const TAU_MIN: f32 = 0.0016;  // 1.6 ms — banda gamma
+// Clippy sees 0.318 and reports it as an approximation of `FRAC_1_PI` (0.31831).
+// That is a numeric coincidence, not the meaning: this is 318 ms, the delta band,
+// and replacing it with the constant would tie a physiological time constant to π.
+#[allow(clippy::approx_constant)]
 const TAU_MAX: f32 = 0.318;   // 318 ms — banda delta
 
 // ── Uniform struct espelhando WGSL ────────────────────────────────────────────

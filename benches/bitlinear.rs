@@ -7,8 +7,10 @@ use universe::specialist::SpecialistBrain;
 fn make_layer(input_dim: usize, output_dim: usize, seed: u64) -> BitLinear {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut layer = BitLinear::new(input_dim, output_dim);
+    // BitLinear became CortexLayer and now stores f32 weights at runtime (ternary
+    // survives only on disk, in the genome). The old -1..=1 i8 draw no longer typechecks.
     for w in layer.weights.iter_mut() {
-        *w = rng.random_range(-1i8..=1i8);
+        *w = rng.random_range(-1.0f32..=1.0f32);
     }
     layer.weight_scale = 0.5;
     layer
@@ -67,12 +69,15 @@ fn bench_swarm_tick(c: &mut Criterion) {
 
 fn bench_specialist(c: &mut Criterion) {
     let mut brain = SpecialistBrain::new();
+    // SpecialistBrain moved from BitLinear to FloatLinear layers and this benchmark
+    // was never updated, so it stopped compiling (f32 weights, and no `weight_scale`
+    // field). `cargo build` does not build benches, which is why it rotted unnoticed;
+    // `cargo clippy --all-targets` in CI is what surfaced it.
     let mut rng = StdRng::seed_from_u64(0xC0FFEE);
     for b in [&mut brain.steer, &mut brain.throttle, &mut brain.brake] {
         for w in b.weights.iter_mut() {
-            *w = rng.random_range(-1i8..=1i8);
+            *w = rng.random_range(-0.5f32..=0.5f32);
         }
-        b.weight_scale = 0.5;
     }
     let input = make_input(128, 0xBEEF);
     let mut g = c.benchmark_group("bitlinear/specialist_3x32");

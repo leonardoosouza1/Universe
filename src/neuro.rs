@@ -586,6 +586,9 @@ mod testes_priming {
     }
 
     #[test]
+    // `0 * stride` names the motor neuron being asserted on, matching the rows
+    // above and below; clippy reads it as `erasing_op`.
+    #[allow(clippy::erasing_op)]
     fn ablar_priming_zera_so_as_posicoes_certas() {
         // exercita a aritmética de índice sem depender do OnceLock global
         let stride = 223;

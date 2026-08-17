@@ -24,6 +24,10 @@ use super::settings::{RaceSettings, DevSettings};
 /// Aqui a chamada é esparsa e por peso, então guardar estado entre chamadas exigiria
 /// carregar o par junto do RNG sem ganho mensurável.
 #[inline]
+// The protected zone is disabled by setting its size to zero (see the constant and
+// the measurement that motivated it), which makes `idx < PROTECTED_ZONE_SIZE`
+// constant. The guards stay so the mechanism can be switched back on.
+#[allow(clippy::absurd_extreme_comparisons)]
 fn gauss(rng: &mut impl rand::Rng) -> f32 {
     let u1 = rng.random::<f32>().max(1e-7);
     let u2 = rng.random::<f32>();
@@ -71,6 +75,12 @@ const PROTECTED_ZONE_SIZE: usize = 0;
 ///
 /// Layout: weights[output * SWS + input_channel]
 /// Motor neurons: 0=throttle, 1=steer, 2=brake (via L2 diagonal → final_intent).
+// `0 * SWS` and the `idx < PROTECTED_ZONE_SIZE` guards below are deliberate: the row
+// index names the motor neuron (and rhymes with `1 * SWS` / `2 * SWS`), and the
+// protected zone is switched off by setting its size to zero, which makes those
+// comparisons constant. Both read as defects to clippy and to a first-time reader;
+// the reasons are at the constant definition above.
+#[allow(clippy::erasing_op, clippy::absurd_extreme_comparisons)]
 fn initialize_fast_weights_random() -> Vec<f32> {
     let mut rng = rand::rng();
     let mut weights = vec![0.0f32; SWS * L1_NEURONS];
@@ -120,6 +130,10 @@ fn initialize_fast_weights_random() -> Vec<f32> {
 
     // === MOTOR NEURON 0: THROTTLE ===
     // Sparse: flow_alignment + curvature throttle-cut. No random noise.
+    //
+    // `0 * SWS` is deliberate and stays: the row index names the motor neuron and
+    // lines up with `1 * SWS` (steer) and `2 * SWS` (brake) below. Clippy flags it
+    // as `erasing_op`; folding it away would make the three blocks stop rhyming.
     weights[0 * SWS + 64] = 5.0;   // flow_alignment → throttle boost
     weights[0 * SWS + 79] = -6.0;  // curv 70m → cut throttle (curve ahead)
     weights[0 * SWS + 78] = -4.0;  // curv 40m → cut throttle (curve imminent)
@@ -150,6 +164,10 @@ fn initialize_fast_weights_random() -> Vec<f32> {
 
 /// Spawna carros no índice `[idx_start..idx_end)`. Permite spawn em blocos entre frames
 /// (evita freeze de spawn de 2000 entidades em 1 frame).
+// The protected zone is disabled by setting its size to zero (see the constant and
+// the measurement that motivated it), which makes `idx < PROTECTED_ZONE_SIZE`
+// constant. The guards stay so the mechanism can be switched back on.
+#[allow(clippy::absurd_extreme_comparisons)]
 pub fn spawn_swarm(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,

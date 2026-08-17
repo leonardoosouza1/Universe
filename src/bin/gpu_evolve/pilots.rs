@@ -94,7 +94,9 @@ pub fn fan_ray_d_min(
     let (pxp, pzp) = (-fz, fx); // perpendicular esquerda
     let k15 = 0.9659_f32; let s15 = 0.2588_f32;
     let k30 = 0.8660_f32; let s30 = 0.5000_f32;
-    let k45 = 0.7071_f32; let s45 = 0.7071_f32;
+    // cos(45°) = sin(45°) = 1/sqrt(2); use the constant instead of a 4-digit literal.
+    let k45 = std::f32::consts::FRAC_1_SQRT_2;
+    let s45 = std::f32::consts::FRAC_1_SQRT_2;
     let d0   = raio(px, pz, fx, fz, 30.0, voxel_at);
     let dl15 = raio(px, pz, fx*k15 + pxp*s15, fz*k15 + pzp*s15, 30.0, voxel_at);
     let dr15 = raio(px, pz, fx*k15 - pxp*s15, fz*k15 - pzp*s15, 30.0, voxel_at);
