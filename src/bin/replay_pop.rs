@@ -1,21 +1,22 @@
-//! OBSERVATÓRIO DA POPULAÇÃO — todos os seres, quadro a quadro, contra a pista real.
+//! POPULATION OBSERVATORY — every being, frame by frame, against the real track.
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo: *"quando eu pedir para observar era para OBSERVAR MESMO, cada detalhe, até um
-//! PEIDO se o modelo pudesse soltar, para sempre ter em mãos DADOS REAIS para comparar e
-//! validar."*
+//! Leonardo (translated): *"when I ask to observe, it means REALLY OBSERVE, every detail,
+//! even a FART if the model could let one out, so I always have REAL DATA in hand to
+//! compare and validate."*
 //!
-//! O `replay_diag` olha UM ser. Isso responde "o que o campeão faz", nunca "por que só 2 de
-//! 60 passam". As duas perguntas são diferentes e a segunda é a que importa: se todos
-//! falham no MESMO ponto, é o mundo; se falham em pontos diferentes, é o cérebro.
+//! `replay_diag` looks at ONE being. That answers "what the champion does", never "why
+//! only 2 of 60 pass". The two questions are different and the second is the one that
+//! matters: if everyone fails at the SAME point, it is the world; if they fail at
+//! different points, it is the brain.
 //!
-//! Este binário lê o replay inteiro e cruza cada ser com a geometria do circuito,
-//! reconstruída da `world_seed`. Sem renderizar, sem interpretar figura, sem achismo.
+//! This binary reads the whole replay and crosses each being with the circuit geometry,
+//! rebuilt from `world_seed`. No rendering, no figure interpretation, no guesswork.
 //!
-//! # Uso
+//! # Usage
 //!
-//!   replay_pop --replay telemetry/<corrida>/gen0029.replay [--width 28] [--csv saida.csv]
+//!   replay_pop --replay telemetry/<race>/gen0029.replay [--width 28] [--csv output.csv]
 
 use bevy::math::Vec2;
 use std::collections::BTreeMap;
@@ -23,7 +24,7 @@ use std::path::PathBuf;
 use universe::replay::ReplayReader;
 use universe::world::{VoxelType, VoxelWorld};
 
-/// Tudo que dá para saber de um ser a partir do replay + geometria.
+/// Everything one can know about a being from the replay + geometry.
 struct Perfil {
     id: usize,
     progresso: f32,
@@ -35,7 +36,7 @@ struct Perfil {
     volante_desvio: f32,
     veloc_media: f32,
     veloc_max: f32,
-    /// Onde o progresso parou de subir — o ponto de desistência.
+    /// Where progress stopped rising — the give-up point.
     travou_em: f32,
     corr_curva: f32,
 }
@@ -71,14 +72,14 @@ fn main() {
         i += 1;
     }
     let Some(path) = path else {
-        eprintln!("uso: replay_pop --replay <arquivo.replay> [--width 28] [--csv saida.csv]");
+        eprintln!("usage: replay_pop --replay <file.replay> [--width 28] [--csv output.csv]");
         std::process::exit(2);
     };
 
     let mut reader = match ReplayReader::open(&path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("não abriu {}: {e}", path.display());
+            eprintln!("could not open {}: {e}", path.display());
             std::process::exit(1);
         }
     };
@@ -91,14 +92,14 @@ fn main() {
     let lap = world.lap_distance;
 
     let vivos: Vec<usize> = (0..todos.len()).filter(|&i| !todos[i].is_empty()).collect();
-    println!("=== POPULAÇÃO: {} ===", path.display());
+    println!("=== POPULATION: {} ===", path.display());
     println!(
-        "{} seres gravados · volta {lap:.0} m · pista {width:.0} m\n",
+        "{} beings recorded · lap {lap:.0} m · track {width:.0} m\n",
         vivos.len()
     );
     if vivos.is_empty() {
-        println!("Nenhum ser no replay. Se a corrida é antiga, ela gravava só o líder —");
-        println!("regrave com o binário atual para ter a população inteira.");
+        println!("No being in the replay. If the race is old, it recorded only the leader —");
+        println!("re-record with the current binary to get the whole population.");
         return;
     }
 
@@ -176,7 +177,7 @@ fn main() {
 
     println!(
         "{:>4} {:>9} {:>6} {:>7} {:>6} {:>6} {:>8} {:>7} {:>7} {:>7}",
-        "ser", "progr(m)", "%volta", "travou", "parado", "ré", "volante", "±", "v.méd", "corr"
+        "being", "prog(m)", "%lap", "stuck", "still", "rev", "steer", "±", "v.avg", "corr"
     );
     println!("{:-<80}", "");
     for p in perfis.iter().take(12) {
@@ -195,17 +196,17 @@ fn main() {
         );
     }
     if perfis.len() > 12 {
-        println!("{:>4} … e mais {}", "", perfis.len() - 12);
+        println!("{:>4} … and {} more", "", perfis.len() - 12);
     }
 
-    // ── Onde a população trava ──────────────────────────────────────────────
-    // A pergunta que só a população responde: todos falham no MESMO lugar (o mundo tem um
-    // obstáculo) ou em lugares diferentes (é competência individual)?
+    // ── Where the population gets stuck ─────────────────────────────────────
+    // The question only the population answers: does everyone fail at the SAME place (the
+    // world has an obstacle) or at different places (it is individual competence)?
     let mut histo: BTreeMap<usize, usize> = BTreeMap::new();
     for p in &perfis {
         *histo.entry(p.setor_final).or_insert(0) += 1;
     }
-    println!("\n── ONDE CADA UM PAROU (setor de 24) ──");
+    println!("\n── WHERE EACH ONE STOPPED (sector of 24) ──");
     let total = perfis.len();
     for (setor, n) in &histo {
         let metros = *setor as f32 * lap / 24.0;
@@ -213,7 +214,7 @@ fn main() {
             .take((*n * 40 / total).max(1))
             .collect();
         println!(
-            "  setor {:>2} (~{:>5.0} m) {:>3} seres  {}",
+            "  sector {:>2} (~{:>5.0} m) {:>3} beings {}",
             setor, metros, n, barra
         );
     }
@@ -224,27 +225,27 @@ fn main() {
         .unwrap();
     let frac = 100.0 * n_moda as f32 / total as f32;
     println!(
-        "\n  {:.0}% da população para no setor {} (~{:.0} m).",
+        "\n  {:.0}% of the population stops at sector {} (~{:.0} m).",
         frac,
         setor_moda,
         setor_moda as f32 * lap / 24.0
     );
     if frac > 60.0 {
-        println!("  ⇒ MESMO ponto para quase todos: é o MUNDO que barra ali, não competência.");
+        println!("  ⇒ SAME point for almost all: it is the WORLD blocking there, not competence.");
         descrever(&world, setor_moda as f32 * lap / 24.0);
     } else {
-        println!("  ⇒ pontos espalhados: a diferença é de COMPETÊNCIA entre indivíduos.");
+        println!("  ⇒ scattered points: the difference is COMPETENCE between individuals.");
     }
 
-    // ── Agregados da população ──────────────────────────────────────────────
+    // ── Population aggregates ───────────────────────────────────────────────
     let med = |f: &dyn Fn(&Perfil) -> f32| -> f32 {
         let mut v: Vec<f32> = perfis.iter().map(f).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         v[v.len() / 2]
     };
-    println!("\n── MEDIANAS DA POPULAÇÃO ({} seres) ──", total);
+    println!("\n── POPULATION MEDIANS ({} beings) ──", total);
     println!(
-        "  progresso {:.0} m ({:.1}% da volta) · parado {:.0}% · ré {:.0}% · fora da pista {:.0}%",
+        "  progress {:.0} m ({:.1}% of the lap) · still {:.0}% · reverse {:.0}% · off track {:.0}%",
         med(&|p| p.progresso),
         100.0 * med(&|p| p.progresso) / lap,
         med(&|p| p.parado_pct),
@@ -252,7 +253,7 @@ fn main() {
         med(&|p| p.fora_pct)
     );
     println!(
-        "  volante {:+.2} (±{:.2}) · velocidade {:.2} m/s · correlação com a curva {:+.2}",
+        "  steering {:+.2} (±{:.2}) · speed {:.2} m/s · correlation with the corner {:+.2}",
         med(&|p| p.volante_medio),
         med(&|p| p.volante_desvio),
         med(&|p| p.veloc_media),
@@ -283,7 +284,7 @@ fn main() {
         }
         match std::fs::write(&cp, linhas) {
             Ok(_) => println!("\nCSV: {}", cp.display()),
-            Err(e) => eprintln!("\nfalhou ao escrever CSV: {e}"),
+            Err(e) => eprintln!("\nfailed to write CSV: {e}"),
         }
     }
 }
@@ -310,11 +311,11 @@ fn descrever(world: &VoxelWorld, at: f32) {
     let v2 = (c - b).normalize_or_zero();
     let ang = v1.dot(v2).clamp(-1.0, 1.0).acos().to_degrees();
     let lado = if v1.x * v2.y - v1.y * v2.x > 0.0 {
-        "direita"
+        "right"
     } else {
-        "esquerda"
+        "left"
     };
-    println!("  Geometria ali: {ang:.0}° para a {lado} (waypoint {idx}).");
+    println!("  Geometry there: {ang:.0}° to the {lado} (waypoint {idx}).");
 }
 
 fn curvatura(world: &VoxelWorld, p: Vec2, ahead: f32) -> f32 {

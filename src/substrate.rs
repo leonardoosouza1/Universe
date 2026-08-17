@@ -1,128 +1,128 @@
-//! # Substrate — a engine metafísica generalizada
+//! # Substrate — the generalized metaphysical engine
 //!
-//! Este módulo formaliza a tese do projeto: **a simulação não é um jogo com IA
-//! em cima. É um mundo físico onde percepção, instinto e afeto são propriedades
-//! emergentes do substrato.**
+//! This module formalizes the project's thesis: **the simulation is not a game with AI
+//! on top. It is a physical world where perception, instinct and affect are emergent
+//! properties of the substrate.**
 //!
-//! Hoje o único experimento instanciado é uma corrida (`Racer` + `VoxelWorld` +
-//! `pista`). Amanhã pode ser um organismo forrageando campos de energia, uma
-//! formiga navegando feromônios, ou qualquer outra cognição situada em um campo.
+//! Today the only instantiated experiment is a race (`Racer` + `VoxelWorld` +
+//! `pista`). Tomorrow it can be an organism foraging energy fields, an ant
+//! navigating pheromones, or any other cognition situated in a field.
 //!
-//! A engine gráfica (Bevy) **renderiza** o substrato — ela não o *simula*. O
-//! substrato vive nos dados (voxels, sinapses de dor, pesos ternários); o GPU
-//! só traduz esses dados para fótons que batem na retina humana. O carro também
-//! tem uma retina — mas a dele é um DDA raycast sobre o mesmo campo de voxels.
-//! Humano e agente veem o MESMO mundo pelo MESMO mecanismo físico: luz refletida
-//! do campo de energia.
+//! The graphics engine (Bevy) **renders** the substrate — it does not *simulate* it. The
+//! substrate lives in the data (voxels, pain synapses, ternary weights); the GPU
+//! only translates that data into photons that hit the human retina. The car also
+//! has a retina — but its retina is a DDA raycast over the same voxel field.
+//! Human and agent see the SAME world through the SAME physical mechanism: light
+//! reflected off the energy field.
 //!
-//! ## As três abstrações
+//! ## The three abstractions
 //!
-//! - [`World`] — o campo físico. Voxels, luz, feromônios, gradientes. Resposta
-//!   única pra pergunta "o que existe em (x, y, z)?".
-//! - [`Percept`] — o recorte do mundo que um agente consegue captar. Retina
-//!   binocular DDA, campo escalar de cheiro, pressão local, temperatura.
-//! - [`Agent`] — um corpo situado. Percebe, sente (dor/afeto), decide, age.
-//!   O que distingue agentes é a *forma de perceber* e a *ética ternária* de
-//!   decidir — não "qual jogo ele joga".
+//! - [`World`] — the physical field. Voxels, light, pheromones, gradients. The single
+//!   answer to the question "what exists at (x, y, z)?".
+//! - [`Percept`] — the slice of the world an agent can capture. Binocular DDA
+//!   retina, scalar smell field, local pressure, temperature.
+//! - [`Agent`] — a situated body. It perceives, feels (pain/affect), decides, acts.
+//!   What distinguishes agents is the *way of perceiving* and the *ternary ethics* of
+//!   deciding — not "which game it plays".
 //!
-//! ## Por que ternário (BitLinear 1.58-bit) pertence aqui
+//! ## Why ternary (BitLinear 1.58-bit) belongs here
 //!
-//! Pesos ternários colapsam magnitudes em `{-1, 0, +1}`. Isso não é otimização —
-//! é uma **ética discreta**: cada neurônio responde à pergunta "em relação a
-//! este estímulo, sou a favor, neutro, ou contra?". Não há "48.3% a favor".
-//! Agentes neste substrato decidem por votação categórica.
+//! Ternary weights collapse magnitudes into `{-1, 0, +1}`. That is not an optimization —
+//! it is a **discrete ethics**: each neuron answers the question "with respect to
+//! this stimulus, am I in favor, neutral, or against?". There is no "48.3% in favor".
+//! Agents on this substrate decide by categorical voting.
 //!
-//! ## Priming (axiomas a priori)
+//! ## Priming (a priori axioms)
 //!
-//! Antes da evolução, cada agente nasce com estruturas mínimas de sobrevivência
-//! (A1..A15 na corrida: "parede à esquerda → vira direita"). Isto é Kant
-//! aplicado: existem formas a priori do entendimento que precedem a experiência.
-//! Sem o priming, a aleatoriedade inicial extermina a população antes da
-//! seleção operar.
+//! Before evolution, each agent is born with minimal survival structures
+//! (A1..A15 in the race: "wall on the left → turn right"). This is applied
+//! Kant: there are a priori forms of the understanding that precede experience.
+//! Without priming, initial randomness exterminates the population before
+//! selection can operate.
 
 use bevy::prelude::Vec3;
 
-/// O campo físico. Responde "o que existe aqui?" para qualquer ponto.
+/// The physical field. Answers "what exists here?" for any point.
 ///
-/// Implementações concretas: [`crate::world::VoxelWorld`] (pista com asfalto,
-/// grama, parede). Futuros: `PheromoneField`, `ResourceField`, `SemanticSpace`.
+/// Concrete implementations: [`crate::world::VoxelWorld`] (track with asphalt,
+/// grass, wall). Future ones: `PheromoneField`, `ResourceField`, `SemanticSpace`.
 pub trait World {
-    /// Tipo da "matéria" deste mundo (ex: [`crate::world::VoxelType`]).
+    /// Type of this world's "matter" (e.g. [`crate::world::VoxelType`]).
     type Substance;
 
-    /// Amostra o mundo em um ponto 3D.
+    /// Samples the world at a 3D point.
     fn sample_at(&self, pos: Vec3) -> Self::Substance;
 
-    /// Gradiente local — direção "natural" do fluxo neste ponto. Na corrida é
-    /// o vetor da pista; em um mundo de cheiro seria o gradiente de feromônio.
+    /// Local gradient — the "natural" flow direction at this point. In the race it is
+    /// the track vector; in a smell world it would be the pheromone gradient.
     fn flow_at(&self, pos: Vec3) -> Vec3;
 }
 
-/// O recorte sensorial que um agente extrai do mundo.
+/// The sensory slice an agent extracts from the world.
 ///
-/// Implementações concretas: retina binocular DDA (2×32 pixels, FOV dual-scale),
-/// sensores laterais, fluxo óptico. O importante: **todo `Percept` é derivado
-/// do `World` pelo mesmo mecanismo físico** — fótons, campos, colisões.
+/// Concrete implementations: binocular DDA retina (2×32 pixels, dual-scale FOV),
+/// lateral sensors, optical flow. What matters: **every `Percept` is derived
+/// from the `World` by the same physical mechanism** — photons, fields, collisions.
 pub trait Percept {
-    /// Projeta o percept no vetor de entrada do cérebro (canais 0..N).
-    /// Por convenção, inteiros com sinal de 8 bits; o instinct_layer ternário
-    /// quantiza tudo ao entrar.
+    /// Projects the percept onto the brain's input vector (channels 0..N).
+    /// By convention, signed 8-bit integers; the ternary instinct_layer
+    /// quantizes everything on entry.
     fn project(&self) -> &[i8];
 }
 
-/// Um corpo situado no mundo. Percebe, sofre, decide, age.
+/// A body situated in the world. It perceives, suffers, decides, acts.
 ///
-/// Implementações concretas: [`crate::simulation::Racer`]. Futuros: Forager,
-/// Predator, Writer (um agente que percebe um espaço semântico e emite tokens).
+/// Concrete implementations: [`crate::simulation::Racer`]. Future ones: Forager,
+/// Predator, Writer (an agent that perceives a semantic space and emits tokens).
 ///
-/// ## Contrato de ciclo
+/// ## Cycle contract
 ///
-/// Cada tick, o harness externo (Bevy ECS) chama:
+/// Each tick, the external harness (Bevy ECS) calls:
 ///
-/// 1. `perceive(world)` — agente amostra campo → sensory_wave
-/// 2. O brain faz: `sensory_wave → instinct_layer (ternário) → intent`
-/// 3. `act(intent)` — agente aplica forças no mundo via physics
-/// 4. `feel(delta)` — agente atualiza dor/joy/fitness a partir do que aconteceu
+/// 1. `perceive(world)` — agent samples the field → sensory_wave
+/// 2. The brain does: `sensory_wave → instinct_layer (ternary) → intent`
+/// 3. `act(intent)` — agent applies forces to the world via physics
+/// 4. `feel(delta)` — agent updates pain/joy/fitness from what happened
 pub trait Agent {
     type Intent;
     type Affect;
 
-    /// Aposição: o agente olha para o mundo e extrai seu percept.
+    /// Apposition: the agent looks at the world and extracts its percept.
     fn perceive<W: World>(&mut self, world: &W);
 
-    /// Volição: o agente transduz percept em intenção motora.
+    /// Volition: the agent transduces percept into motor intent.
     fn decide(&mut self) -> Self::Intent;
 
-    /// Sofrimento/Prazer: o agente integra feedback afetivo do passo anterior.
-    /// Na corrida: `joy_integral` cresce com flow state, `pain_memories`
-    /// marcam colisões. Este sinal é o DRIVER da seleção evolucionária —
-    /// fitness é a pegada afetiva da vida.
+    /// Suffering/Pleasure: the agent integrates affective feedback from the previous step.
+    /// In the race: `joy_integral` grows with flow state, `pain_memories`
+    /// mark collisions. This signal is the DRIVER of evolutionary selection —
+    /// fitness is the affective footprint of a life.
     fn feel(&mut self, affect: Self::Affect);
 }
 
-/// Marco filosófico — não é usado em runtime, mas é o manifesto do projeto.
+/// Philosophical landmark — not used at runtime, but it is the project's manifesto.
 ///
-/// Nenhum dos axiomas abaixo é "opinião do programador". São *invariantes*
-/// do substrato que definem o que é possível observar nele.
+/// None of the axioms below is "the programmer's opinion". They are *invariants*
+/// of the substrate that define what can be observed in it.
 pub mod axioms {
-    /// A1 — **Tudo é campo.** Não existe "objeto" fundamental; apenas regiões
-    /// do voxel field com propriedades distintas (parede = alta densidade,
-    /// grama = atrito alto, asfalto = baixa resistência).
+    /// A1 — **Everything is field.** There is no fundamental "object"; only regions
+    /// of the voxel field with distinct properties (wall = high density,
+    /// grass = high friction, asphalt = low resistance).
     pub const FIELD_PRIMACY: &str = "World is a field, not a scene.";
 
-    /// A2 — **Perceber é colidir com luz.** O agente não recebe Vec3 ground-truth;
-    /// recebe fótons que ricocheteiam no campo e batem em uma retina.
+    /// A2 — **To perceive is to collide with light.** The agent does not receive a
+    /// ground-truth Vec3; it receives photons that ricochet off the field and hit a retina.
     pub const PERCEPTION_IS_COLLISION: &str = "To see is to be hit by light.";
 
-    /// A3 — **Decisão é votação ternária.** Cada peso é um voto categórico.
-    /// Não há gradientes contínuos de preferência — há {contra, neutro, a favor}.
+    /// A3 — **Decision is ternary voting.** Each weight is a categorical vote.
+    /// There are no continuous preference gradients — there is {against, neutral, in favor}.
     pub const ETHICS_IS_TERNARY: &str = "To decide is to vote -1, 0, or +1.";
 
-    /// A4 — **Fitness é afeto integrado no tempo.** Evolução seleciona não
-    /// "quem chegou mais longe" mas "quem acumulou mais alegria e menos dor".
+    /// A4 — **Fitness is affect integrated over time.** Evolution selects not
+    /// "who got the farthest" but "who accumulated the most joy and the least pain".
     pub const FITNESS_IS_AFFECT: &str = "Fitness is felt life, integrated.";
 
-    /// A5 — **Instintos precedem experiência.** O priming A1..A15 é a estrutura
-    /// a priori sem a qual a aleatoriedade extermina a população.
+    /// A5 — **Instincts precede experience.** The A1..A15 priming is the a priori
+    /// structure without which randomness exterminates the population.
     pub const A_PRIORI_PRIMING: &str = "Instincts come before experience.";
 }

@@ -1,35 +1,35 @@
-//! Teste de paridade CPU × GPU do CfC de percepção (`retina_digest.wgsl` vs
+//! CPU × GPU parity test of the perception CfC (`retina_digest.wgsl` vs
 //! `iara_cfc::CfcCell::step`, via `RetinaPerception`).
 //!
-//! # Por que `#[ignore]`
+//! # Why `#[ignore]`
 //!
-//! Este projeto não roda compute real de GPU dentro de `cargo test` (grep por
-//! `RetinaGpu::new`/`PerceptionGpu::new` dentro de `#[cfg(test)]` no resto do crate
-//! não acha nenhum) — os kernels são validados por binários manuais (`gpu_validate`,
-//! `pista_check`). Este teste seria o primeiro a abrir um `wgpu::Device` dentro de
-//! `cargo test`, o que quebraria em máquinas/CI sem GPU. Fica `#[ignore]` para não
-//! travar `cargo test --release --lib`; roda explicitamente com:
+//! This project does not run real GPU compute inside `cargo test` (grep for
+//! `RetinaGpu::new`/`PerceptionGpu::new` inside `#[cfg(test)]` in the rest of the crate
+//! finds none) — the kernels are validated by manual binaries (`gpu_validate`,
+//! `pista_check`). This test would be the first to open a `wgpu::Device` inside
+//! `cargo test`, which would break on machines/CI without a GPU. It stays `#[ignore]` so
+//! it does not block `cargo test --release --lib`; run explicitly with:
 //!
 //! ```text
 //! HSA_OVERRIDE_GFX_VERSION=10.3.0 ROCR_VISIBLE_DEVICES=0 \
 //!   cargo test --release --lib -- --ignored retina_digest_parity
 //! ```
 //!
-//! # O que ele prova
+//! # What it proves
 //!
-//! Roda `RetinaDigestGpu` por N ticks com retinas sintéticas (variadas, incluindo
-//! parede nas colunas centrais) e compara, tick a tick:
-//! - ch192-207 (canal do CfC) contra a mesma fórmula calculada na CPU a partir do
-//!   estado hidden ANTERIOR (preserva a defasagem de 1 tick documentada no kernel);
-//! - `min_wall_ahead`/`edge_row6`/`edge_row7` contra a lógica que existia em
-//!   `context.rs` antes desta migração (reproduzida aqui só como oráculo de teste —
-//!   não é uma segunda cópia de produção, é o "antes" contra o "depois").
+//! Runs `RetinaDigestGpu` for N ticks with synthetic retinas (varied, including
+//! a wall in the central columns) and compares, tick by tick:
+//! - ch192-207 (the CfC channel) against the same formula computed on the CPU from the
+//!   PREVIOUS hidden state (preserves the 1-tick lag documented in the kernel);
+//! - `min_wall_ahead`/`edge_row6`/`edge_row7` against the logic that existed in
+//!   `context.rs` before this migration (reproduced here only as a test oracle —
+//!   it is not a second production copy, it is the "before" against the "after").
 //!
-//! O estado recorrente h em si (`pipeline.state.h` da CPU vs `cfc_state` da GPU) é
-//! validado INDIRETAMENTE: qualquer divergência na recorrência aparece nos canais do
-//! tick SEGUINTE, porque `h_new` desta iteração vira o "h antigo" lido no próximo
-//! dispatch — um teste de vários ticks encadeados pega divergência acumulada que um
-//! teste de tick único não pegaria.
+//! The recurrent state h itself (CPU's `pipeline.state.h` vs GPU's `cfc_state`) is
+//! validated INDIRECTLY: any divergence in the recurrence shows up in the channels of the
+//! NEXT tick, because this iteration's `h_new` becomes the "old h" read in the next
+//! dispatch — a test of several chained ticks catches accumulated divergence that a
+//! single-tick test would not.
 
 use super::RetinaDigestGpu;
 use crate::config::iara::vision::{RETINA_COLS, RETINA_TOTAL};
@@ -40,11 +40,11 @@ use crate::perception::RetinaPerception;
 const N_BEINGS: usize = 2;
 const N_TICKS: usize = 4;
 
-/// Gera uma retina sintética determinística (packed `dist_mm<<8|material`), variando
-/// por `(being, tick)` para exercer o CfC com entradas diferentes tick a tick — sem
-/// isso, `h` convergiria trivialmente e o teste não pegaria erro de recorrência.
-/// Inclui parede (material=2) nas colunas centrais [42,84) em alguns pixels para
-/// exercer o caminho de `min_wall_ahead`.
+/// Generates a deterministic synthetic retina (packed `dist_mm<<8|material`), varying
+/// by `(being, tick)` to exercise the CfC with different inputs tick by tick — without
+/// that, `h` would converge trivially and the test would not catch recurrence errors.
+/// Includes a wall (material=2) in the central columns [42,84) in some pixels to
+/// exercise the `min_wall_ahead` path.
 fn synthetic_retina(being: usize, tick: usize) -> Vec<u32> {
     let mut out = Vec::with_capacity(RETINA_TOTAL);
     let seed = (being as u32)
@@ -58,8 +58,8 @@ fn synthetic_retina(being: usize, tick: usize) -> Vec<u32> {
             .wrapping_mul(0x9E3779B1);
         let dist_mm = (h % 60_000) as u32; // 0..60 m
         let col = j % RETINA_COLS;
-        // Força parede nas colunas centrais em ~1/4 dos pixels dessa faixa, perto
-        // (< 20 m), para que min_wall_ahead tenha um valor real para comparar.
+        // Forces a wall in the central columns in ~1/4 of the pixels of that band, close
+        // (< 20 m), so min_wall_ahead has a real value to compare.
         let material: u32 = if col >= RETINA_COLS / 3 && col < 2 * RETINA_COLS / 3 && (h % 4) == 0 {
             2
         } else {
@@ -75,10 +75,10 @@ fn synthetic_retina(being: usize, tick: usize) -> Vec<u32> {
     out
 }
 
-/// Oráculo de teste: reproduz a lógica que `context.rs::tick()` fazia ANTES desta
-/// migração (min_wall_ahead + edge_row6/7 a partir da retina física crua). Não é
-/// código de produção — existe só para o teste ter um "antes" independente do WGSL
-/// para comparar contra o "depois".
+/// Test oracle: reproduces the logic that `context.rs::tick()` did BEFORE this
+/// migration (min_wall_ahead + edge_row6/7 from the raw physical retina). It is not
+/// production code — it exists only so the test has a "before" independent of the WGSL
+/// to compare against the "after".
 fn cpu_wall_and_edges(retina_packed: &[u32]) -> (f32, f32, f32) {
     let mut min_wall_ahead = f32::MAX;
     let mut retina_i8 = vec![0i8; RETINA_TOTAL];
@@ -107,8 +107,8 @@ fn cpu_wall_and_edges(retina_packed: &[u32]) -> (f32, f32, f32) {
     (min_wall_ahead, edge[0], edge[1])
 }
 
-/// Oráculo de teste: mesma fórmula de conversão hidden→canal copiada em
-/// `retina_digest.wgsl` (aproximação x/(1+|x|), NÃO tanh exato — ver doc do kernel).
+/// Test oracle: the same hidden→channel conversion formula copied in
+/// `retina_digest.wgsl` (approximation x/(1+|x|), NOT exact tanh — see the kernel doc).
 fn channel_from_hidden(h: &[f32]) -> [i8; 16] {
     let mut out = [0i8; 16];
     for (i, &hi) in h.iter().enumerate() {
@@ -153,10 +153,10 @@ async fn open_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 }
 
 #[test]
-#[ignore = "abre GPU real — rodar manualmente: cargo test --release --lib -- --ignored retina_digest_parity"]
+#[ignore = "opens a real GPU — run manually: cargo test --release --lib -- --ignored retina_digest_parity"]
 fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
     let Some((device, queue)) = pollster::block_on(open_device()) else {
-        eprintln!("[retina_digest_parity] sem GPU disponível — teste pulado");
+        eprintln!("[retina_digest_parity] no GPU available — test skipped");
         return;
     };
 
@@ -168,14 +168,14 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    // P1.8: `output` (buf_output_shared) continua um parâmetro obrigatório de
-    // `bind_and_dispatch` — o bind group layout é compartilhado com
-    // `perception.rs` — mas o kernel NÃO escreve mais em ch192-207 dele (achado
-    // "ch192-207 aliasa pro PRÓXIMO ser", corrigido: os 16 valores agora vão
-    // para `extra_out[3..19]`, ver comparação abaixo). `buf_output` só precisa
-    // existir e ser do tamanho certo pro bind group não falhar — não há mais
-    // leitura de corrupção pra fazer aqui, então nenhum readback dele é
-    // necessário neste teste.
+    // P1.8: `output` (buf_output_shared) remains a mandatory parameter of
+    // `bind_and_dispatch` — the bind group layout is shared with
+    // `perception.rs` — but the kernel NO longer writes into its ch192-207 (finding
+    // "ch192-207 aliases into the NEXT being", fixed: the 16 values now go
+    // to `extra_out[3..19]`, see the comparison below). `buf_output` only needs
+    // to exist and be the right size so the bind group does not fail — there is no
+    // corruption read to do here anymore, so no readback of it is
+    // needed in this test.
     let bytes_output = (N_BEINGS * WAVE_U32S * 4) as u64;
     let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("test-output"),
@@ -186,8 +186,8 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
         mapped_at_creation: false,
     });
 
-    // Oráculo CPU: mesma seed fixa que RetinaDigestGpu::new() usa internamente para
-    // subir os pesos — os dois lados partem dos MESMOS pesos de CfC.
+    // CPU oracle: same fixed seed that RetinaDigestGpu::new() uses internally to
+    // upload the weights — both sides start from the SAME CfC weights.
     let mut cpu_percept: Vec<RetinaPerception> =
         (0..N_BEINGS).map(|_| RetinaPerception::new()).collect();
 
@@ -201,7 +201,7 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
         }
         queue.write_buffer(&buf_retina, 0, bytemuck::cast_slice(&retina_data));
 
-        // Canal esperado ANTES de avançar o CfC — o kernel escreve com o h "velho".
+        // Expected channel BEFORE advancing the CfC — the kernel writes with the "old" h.
         let expected_channels: Vec<[i8; 16]> = cpu_percept
             .iter()
             .map(|p| channel_from_hidden(&p.pipeline.state.h))
@@ -220,17 +220,17 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
         queue.submit(Some(enc.finish()));
         device.poll(wgpu::Maintain::Wait);
 
-        // ── Lê extra_out: min_wall_ahead/edge_row6/edge_row7 (slots 0-2) e o
-        // estado CfC squashed "ch192-207" (slots 3-18, achado P1.8 — deixou de
-        // aliasar em `buf_output` e passou a viver aqui, espaço próprio por ser) ──
+        // ── Reads extra_out: min_wall_ahead/edge_row6/edge_row7 (slots 0-2) and the
+        // squashed CfC state "ch192-207" (slots 3-18, finding P1.8 — it stopped
+        // aliasing into `buf_output` and now lives here, its own space per being) ──
         let extra = digest.read_after_submit(&device, N_BEINGS, bytes_extra);
         for being in 0..N_BEINGS {
             let (want_wall, want_e6, want_e7) = cpu_wall_and_edges(&retinas_per_being[being]);
             let row = extra[being];
             let (got_wall, got_e6, got_e7) = (row[0], row[1], row[2]);
-            // min_wall_ahead: se nenhuma parede qualificou, os dois lados usam
-            // sentinelas GRANDES mas DIFERENTES (f32::MAX vs 1e9) — só comparamos
-            // o valor exato quando uma parede real foi encontrada.
+            // min_wall_ahead: if no wall qualified, the two sides use LARGE but
+            // DIFFERENT sentinels (f32::MAX vs 1e9) — we only compare
+            // the exact value when a real wall was found.
             if want_wall < 1.0e8 {
                 assert!(
                     (got_wall - want_wall).abs() < 0.01,
@@ -239,7 +239,7 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
             } else {
                 assert!(
                     got_wall > 1.0e8,
-                    "tick={tick} being={being} esperava sentinela, GPU={got_wall}"
+                    "tick={tick} being={being} expected sentinel, GPU={got_wall}"
                 );
             }
             assert!(
@@ -255,14 +255,14 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
                 let want = expected_channels[being][ci] as f32;
                 assert!(
                     (got - want).abs() <= 1.0,
-                    "tick={tick} being={being} ch192+{ci} (agora extra_out[{}]): GPU={got} CPU={want} (h_old={:?})",
+                    "tick={tick} being={being} ch192+{ci} (now extra_out[{}]): GPU={got} CPU={want} (h_old={:?})",
                     3 + ci,
                     cpu_percept[being].pipeline.state.h
                 );
             }
         }
 
-        // ── Avança o CfC da CPU para o próximo tick (mesma retina que a GPU viu) ──
+        // ── Advances the CPU's CfC to the next tick (same retina the GPU saw) ──
         for being in 0..N_BEINGS {
             let mut retina_i8 = vec![0i8; RETINA_TOTAL];
             for (j, &packed) in retinas_per_being[being].iter().enumerate() {

@@ -201,8 +201,8 @@ impl RetinaPerception {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Import local do módulo de teste: `cargo fix` remove imports do escopo do
-    // arquivo quando só os testes os usam, porque analisa sem `cfg(test)`.
+    // Test-module-local import: `cargo fix` removes imports from the file
+    // scope when only the tests use them, because it analyzes without `cfg(test)`.
     use crate::config::iara::vision::RETINA_TOTAL;
 
     #[test]

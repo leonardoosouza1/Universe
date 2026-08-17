@@ -11,15 +11,15 @@ use crate::types::SplineNode;
 use std::sync::RwLock;
 
 /// Tier 6.8 — Mirror neurons / observational learning.
-/// Estado GLOBAL (process-wide): média de retina do campeão da geração anterior
-/// + última ação motora conhecida (throttle, steer). Populado pelo pipeline no
-/// fim da gen (quando há coroação). Cada SovereignEngine consulta aqui via
-/// `SovereignEngine::champion_snapshot()`. Sem lock contention significativo —
-/// leitura simples por frame, escrita 1× por gen.
+/// GLOBAL (process-wide) state: retina mean of the previous generation's champion
+/// + last known motor action (throttle, steer). Populated by the pipeline at the
+/// end of the gen (when there is a coronation). Each SovereignEngine queries it via
+/// `SovereignEngine::champion_snapshot()`. No significant lock contention —
+/// simple read per frame, written 1× per gen.
 static CHAMPION_RETINA_MEAN: RwLock<Option<[f32; RETINA_TOTAL]>> = RwLock::new(None);
 static CHAMPION_ACTION: RwLock<Option<[f32; 2]>> = RwLock::new(None);
 
-/// Atualiza o snapshot global do campeão (chamado pelo pipeline no fim da gen).
+/// Updates the global champion snapshot (called by the pipeline at the end of the gen).
 pub fn set_global_champion_snapshot(retina_mean: [f32; RETINA_TOTAL], action: [f32; 2]) {
     if let Ok(mut g) = CHAMPION_RETINA_MEAN.write() {
         *g = Some(retina_mean);
@@ -29,34 +29,34 @@ pub fn set_global_champion_snapshot(retina_mean: [f32; RETINA_TOTAL], action: [f
     }
 }
 
-/// Córtex estratégico — cérebro LENTO com arquitetura CfC + Dense f32.
-/// Roda a cada N ticks (subsampling), integra contexto e emite ações motoras diretas.
+/// Strategic cortex — SLOW brain whose architecture is CfC + Dense f32.
+/// Runs every N ticks (subsampling), integrates context and emits direct motor actions.
 ///
-/// Arquitetura:
+/// Architecture:
 ///   input[48] → normalize [-1,1] → CfC(64, dim-expansion) → relu
 ///   → Dense1(64→16) → relu → Dense2(16→3) → tanh → [throttle, steer, brake]
 ///
-/// SlowBrain mantém temporal state via CfC, permitindo aprendizado contínuo
-/// de padrões contextuais (risco, fadiga, etc) sem ternário quantizado.
+/// SlowBrain keeps temporal state via the CfC, allowing continuous learning
+/// of contextual patterns (risk, fatigue, etc.) without quantized ternary.
 ///
-/// Output de 3 dims: [throttle, steer, brake] em [-1,1] (brake em [0,1]).
+/// 3-dim output: [throttle, steer, brake] in [-1,1] (brake in [0,1]).
 pub struct SlowBrain {
-    pub cfc: CfCCell,       // 64 canais com memória temporal
+    pub cfc: CfCCell,       // 64 channels with temporal memory
     pub dense1: DenseLayer, // 64 → 16
     pub dense2: DenseLayer, // 16 → 3 (throttle, steer, brake)
-    pub output: [f32; 3],   // [throttle, steer, brake] held entre ticks
+    pub output: [f32; 3],   // [throttle, steer, brake] held between ticks
     pub tick_counter: u32,
-    pub tick_interval: u32, // roda 1× a cada N ticks
+    pub tick_interval: u32, // runs 1× every N ticks
 }
 
 impl SlowBrain {
     pub fn new() -> Self {
-        // Init simétrico σ=0.1. Usava um LCG escrito à mão cujo mapeamento final era
-        // `x/2^31 - 1.0`, que devolve [-1,0) e não [-1,1): TODOS os 1024 pesos do dense1
-        // e os 48 do dense2 nasciam negativos. Uma camada de sinal único é um somador,
-        // então as três saídas viravam a mesma soma (correlação +0,9999, PC1 = 100% da
-        // variância) e nunca positivas — `throttle_cap` ficava preso em 1,0. Medido em
-        // `src/bin/slow_probe.rs`; agora vem de `rng::Lcg`, que tem teste de simetria.
+        // Symmetric init σ=0.1. It used a hand-written LCG whose final mapping was
+        // `x/2^31 - 1.0`, which returns [-1,0) and not [-1,1): ALL 1024 dense1 weights
+        // and the 48 of dense2 were born negative. A single-sign layer is an adder,
+        // so the three outputs became the same sum (correlation +0.9999, PC1 = 100% of the
+        // variance) and never positive — `throttle_cap` stayed stuck at 1.0. Measured in
+        // `src/bin/slow_probe.rs`; it now comes from `rng::Lcg`, which has a symmetry test.
         let mut dense1 = DenseLayer::new(64, 16);
         let mut rng = crate::rng::Lcg::new(0xDEAD_BEEF);
         for w in dense1.weights.iter_mut() {
@@ -81,24 +81,24 @@ impl SlowBrain {
             dense2,
             output: [0.0; 3],
             tick_counter: 0,
-            tick_interval: 8, // roda 1× a cada 8 ticks (~8Hz @ 64Hz)
+            tick_interval: 8, // runs 1× every 8 ticks (~8Hz @ 64Hz)
         }
     }
 
-    /// Injeta entrada agregada de 48 dimensões (normalizada em [-1, 1]).
-    /// Só recomputa se for tick de "córtex". Realiza forward completo:
-    /// 1. Expande input[48] → cfc_input[64] (padding com zeros)
-    /// 2. CfC(64) com memória temporal
+    /// Injects the 48-dimension aggregated input (normalized in [-1, 1]).
+    /// Only recomputes on a "cortex" tick. Performs the full forward:
+    /// 1. Expands input[48] → cfc_input[64] (zero padding)
+    /// 2. CfC(64) with temporal memory
     /// 3. Dense1(64→16) → relu
     /// 4. Dense2(16→3) → tanh
-    /// Salva resultado em output[3].
+    /// Stores the result in output[3].
     pub fn tick(&mut self, input: &[i8; 48], dt: f32) {
         self.tick_counter = self.tick_counter.wrapping_add(1);
         if self.tick_counter % self.tick_interval != 0 {
             return;
         }
 
-        // Expande input[48] → cfc_input[64] com padding zeros
+        // Expands input[48] → cfc_input[64] with zero padding
         let mut cfc_input = [0i8; 64];
         cfc_input[..48].copy_from_slice(input);
 
@@ -106,7 +106,7 @@ impl SlowBrain {
         let mut cfc_out = [0i8; 64];
         self.cfc.update(&cfc_input, &mut cfc_out, dt);
 
-        // Converte output CfC para f32 [-1, 1]
+        // Converts CfC output to f32 [-1, 1]
         let mut cfc_f32 = [0.0f32; 64];
         for i in 0..64 {
             cfc_f32[i] = (cfc_out[i] as f32) / 127.0;
@@ -126,8 +126,8 @@ impl SlowBrain {
         }
     }
 
-    /// Retorna weights agregados (Dense1 + Dense2) para compatibilidade com DNA.
-    /// Total: (64×16) + 16 + (16×3) + 3 = 1024 + 16 + 48 + 3 = 1091 pesos.
+    /// Returns aggregated weights (Dense1 + Dense2) for DNA compatibility.
+    /// Total: (64×16) + 16 + (16×3) + 3 = 1024 + 16 + 48 + 3 = 1091 weights.
     pub fn all_weights(&self) -> Vec<f32> {
         let mut all = Vec::new();
         all.extend_from_slice(&self.dense1.weights);
@@ -137,11 +137,11 @@ impl SlowBrain {
         all
     }
 
-    /// Carrega weights agregados.
+    /// Loads aggregated weights.
     ///
-    /// Falha explicitamente se o tamanho não bater — a versão anterior ignorava
-    /// divergências silenciosamente, causando corrupção em cascata: quando um bloco
-    /// não cabia, o offset não avançava e o bloco seguinte lia dados do lugar errado.
+    /// Fails explicitly if the size does not match — the previous version silently
+    /// ignored divergences, causing cascading corruption: when a block
+    /// did not fit, the offset did not advance and the next block read data from the wrong place.
     pub fn set_all_weights(&mut self, weights: &[f32]) {
         let d1_w_size = self.dense1.weights.len();
         let d1_b_size = self.dense1.bias.len();
@@ -151,7 +151,7 @@ impl SlowBrain {
         assert_eq!(
             weights.len(),
             expected,
-            "slow_brain espera {} valores ({}w+{}b+{}w+{}b), recebeu {}",
+            "slow_brain expects {} values ({}w+{}b+{}w+{}b), got {}",
             expected,
             d1_w_size,
             d1_b_size,
@@ -178,34 +178,34 @@ impl SlowBrain {
     }
 }
 
-/// Motor cognitivo reduzido ao essencial: percepção ternária (instinto),
-/// córtex lento (contexto), metabolismo (custo de processamento) e ressonância
-/// cardíaca (sinal de coerência que dispara mielinização).
+/// Cognitive engine reduced to the essential: ternary perception (instinct),
+/// slow cortex (context), metabolism (processing cost) and heart
+/// resonance (coherence signal that triggers myelination).
 ///
-/// Tier 2.1 ATIVO: CfCCell (64→64, dim-preserving) pré-processa a fatia de
-/// retina do sensory_wave [0..64] antes do BitLinear. Isso dá MEMÓRIA TEMPORAL
-/// — cada pixel retiniano carrega histórico filtrado, permitindo detecção de
-/// movimento (parede se aproxima vs parede estática).
+/// Tier 2.1 ACTIVE: CfCCell (64→64, dim-preserving) pre-processes the retina
+/// slice of the sensory_wave [0..64] before the BitLinear. That gives TEMPORAL MEMORY
+/// — each retinal pixel carries filtered history, enabling motion
+/// detection (approaching wall vs static wall).
 ///
-/// Design: retina pre-processor (dim-preserving), escolhido sobre "channel
-/// remap" para não quebrar priming axiomático existente em spawn.rs (canais
-/// 64-127 do sensory_wave permanecem intocados). Ver melhorias/02-cerebro-dormente.md§2.1.
+/// Design: retina pre-processor (dim-preserving), chosen over "channel
+/// remap" so as not to break the existing axiomatic priming in spawn.rs (sensory_wave
+/// channels 64-127 remain untouched). See melhorias/02-cerebro-dormente.md§2.1.
 ///
-/// `cfc_state` é RUNTIME-ONLY — não persiste em .dna v3 (reset a cada spawn).
+/// `cfc_state` is RUNTIME-ONLY — it does not persist in .dna v3 (reset on every spawn).
 pub struct SovereignEngine {
     pub metabolism: Metabolism,
     pub instinct_layer: BitLinear, // 192 → 96 (Layer 1, sensory mixing)
-    pub cortex_l2: crate::float_layers::FloatLinear, // 96 → 48 (Layer 2, composição AND/OR)
+    pub cortex_l2: crate::float_layers::FloatLinear, // 96 → 48 (Layer 2, AND/OR composition)
     pub slow_brain: SlowBrain,
     pub heart_resonance: ResonantNode,
     pub cfc_state: CfCCell,
-    /// Tier 2.2: KAN per-channel pré-filtro (128 splines × 16 coeffs).
-    /// Aplicado ANTES do CfC — cada canal tem curva de resposta própria.
-    /// Init identity (coeffs=1.0) → output ≈ input no gen 0.
+    /// Tier 2.2: KAN per-channel pre-filter (128 splines × 16 coeffs).
+    /// Applied BEFORE the CfC — each channel has its own response curve.
+    /// Init identity (coeffs=1.0) → output ≈ input at gen 0.
     pub kan_filters: SensoryPreFilter,
     /// Tier 2.4: per-output-neuron phase-coherence tracker (dopamine-gated Hebbian).
-    /// Incrementa para os top-K neurônios que disparam forte após cada forward;
-    /// decay 0.99/tick; reset em evento de mielinização. RUNTIME-only.
+    /// Increments for the top-K neurons that fire strongly after each forward;
+    /// decay 0.99/tick; reset on a myelination event. RUNTIME-only.
     pub resonance_coherence: [f32; 96],
     pub current_time: f32,
     pub active_actions: Vec<SplineNode>,
@@ -214,18 +214,18 @@ pub struct SovereignEngine {
     // ------------------------------------------------------------------
     // Tier 6.8 — Mirror neurons (per-instance override + cached snapshot)
     // ------------------------------------------------------------------
-    /// Snapshot retina do campeão da gen anterior (média dos 16 frames do
-    /// retina_history do winner). Opcional: quando None, o engine cai no global
-    /// CHAMPION_RETINA_MEAN. Permite override local (ex: testes, spawn com DNA).
+    /// Retina snapshot of the previous gen's champion (mean of the 16 frames of the
+    /// winner's retina_history). Optional: when None, the engine falls back to the global
+    /// CHAMPION_RETINA_MEAN. Allows a local override (e.g. tests, spawn with DNA).
     pub champion_retina_snapshot: Option<[f32; RETINA_TOTAL]>,
-    /// Última ação motora conhecida do campeão (throttle, steer).
+    /// Last known motor action of the champion (throttle, steer).
     pub champion_action: Option<[f32; 2]>,
     // ------------------------------------------------------------------
     // Tier 6.1 — Predictive coding (brain-free baseline)
     // ------------------------------------------------------------------
-    /// Previsão da retina para o próximo tick. EMA simples sobre retina real.
-    /// Erro de predição = |current - predicted| (L1 médio) alimenta curiosity
-    /// como drive intrínseco. RUNTIME-only.
+    /// Retina prediction for the next tick. Simple EMA over the real retina.
+    /// Prediction error = |current - predicted| (mean L1) feeds curiosity
+    /// as an intrinsic drive. RUNTIME-only.
     pub predicted_retina: [f32; RETINA_TOTAL],
     // ------------------------------------------------------------------
     // Trinity (Gate + Reflex + Sentinel) — Task 4 wiring
@@ -242,20 +242,20 @@ pub struct SovereignEngine {
     /// Provides temporal visual features alongside the manual pooling in motor.rs.
     pub retina_perception: RetinaPerception,
     // ------------------------------------------------------------------
-    // Fadiga de SAÍDA (output fatigue, espelho de OUT_ALPHA/OUT_BETA em brain.wgsl)
+    // OUTPUT fatigue (mirror of OUT_ALPHA/OUT_BETA in brain.wgsl)
     // ------------------------------------------------------------------
-    /// Estado lento da fadiga de saída por canal (96 slots = 48 L2 + 48 bypass).
+    /// Slow per-channel output-fatigue state (96 slots = 48 L2 + 48 bypass).
     ///
-    /// Mecanismo idêntico ao brain.wgsl etapa 2:
+    /// Mechanism identical to brain.wgsl stage 2:
     ///   out_fat[j] += OUT_ALPHA * (|raw[j]| - out_fat[j]) * dt
     ///   intent[j]  = tanh(sign(raw[j]) * max(0, |raw[j]| - OUT_BETA * out_fat[j]))
     ///
-    /// OUT_ALPHA = 4.0, OUT_BETA = 0.85 — mesmos valores do shader.
-    ///   τ ≈ 0.25 s (sobe em ~16 ticks para 63% do alvo); rápido o suficiente
-    ///   para quebrar saturação antes de ~10 ticks sem engessar sinal variado.
+    /// OUT_ALPHA = 4.0, OUT_BETA = 0.85 — same values as the shader.
+    ///   τ ≈ 0.25 s (rises in ~16 ticks to 63% of the target); fast enough
+    ///   to break saturation before ~10 ticks without freezing a varying signal.
     ///
-    /// Estado RUNTIME-ONLY: resetado em spawn/death junto com cfc_state.
-    /// Não persiste em .dna — ser recém-nascido começa sem fadiga de saída.
+    /// RUNTIME-ONLY state: reset on spawn/death together with cfc_state.
+    /// Does not persist in .dna — a newborn being starts with no output fatigue.
     pub out_fatigue: [f32; 96],
 }
 
@@ -264,9 +264,9 @@ impl SovereignEngine {
         Self {
             metabolism: Metabolism::new(),
             instinct_layer: BitLinear::new(SENSORY_WAVE_SIZE, 96),
-            // Identidade + perturbação simétrica. Com o LCG quebrado a perturbação era
-            // toda negativa (média -0,025 × 96 entradas = viés DC de -2,4 por saída),
-            // um modo comum somado a TODAS as unidades antes de qualquer aprendizado.
+            // Identity + symmetric perturbation. With the broken LCG the perturbation was
+            // all negative (mean -0.025 × 96 inputs = DC bias of -2.4 per output),
+            // a common mode added to ALL units before any learning.
             cortex_l2: {
                 let mut l = crate::float_layers::FloatLinear::new(96, 48);
                 let mut r = crate::rng::Lcg::new(0xC0DE_CAFE);
@@ -375,9 +375,9 @@ impl SovereignEngine {
         };
         let mut sentinel_iv = sentinel_out.soft_proposal;
 
-        // ABLAÇÃO DE VIA (ver `neuro.rs`): zera a intenção DEPOIS do portão, não os pesos.
-        // Assim o portão continua vendo o mesmo mundo e distribuindo os mesmos pesos — o que
-        // se mede é a falta da via, não uma mudança de comportamento do misturador.
+        // PATHWAY ABLATION (see `neuro.rs`): zeroes the intent AFTER the gate, not the weights.
+        // That way the gate keeps seeing the same world and distributing the same weights — what
+        // is measured is the absence of the pathway, not a behaviour change of the mixer.
         let zero = IntentVec {
             throttle: 0.0,
             steer: 0.0,
@@ -400,8 +400,8 @@ impl SovereignEngine {
             brake: w[0] * cortex_iv.brake + w[1] * reflex_iv.brake + w[2] * sentinel_iv.brake,
         };
 
-        // O veto DURO só cai na ablação total. Na suave ele fica: sem veto o carro bate nos
-        // primeiros segundos e o número mediria "morreu cedo", não a contribuição da via.
+        // The HARD veto only drops on total ablation. On the soft one it stays: without a veto the car
+        // crashes within the first seconds and the number would measure "died early", not the pathway's contribution.
         let veto_ativo = match crate::neuro::ablada() {
             crate::neuro::Via::SentinelaTotal => None,
             _ => sentinel_out.hard_veto,
@@ -424,8 +424,8 @@ impl SovereignEngine {
         ]
     }
 
-    /// Tier 6.8 — consulta o snapshot do campeão: prefere override local,
-    /// senão lê do global process-wide. Retorna None se nada foi setado.
+    /// Tier 6.8 — queries the champion snapshot: prefers the local override,
+    /// otherwise reads the process-wide global. Returns None if nothing was set.
     pub fn champion_snapshot(&self) -> Option<([f32; RETINA_TOTAL], [f32; 2])> {
         let retina = self
             .champion_retina_snapshot
@@ -442,10 +442,10 @@ impl SovereignEngine {
 
         if !self.metabolism.can_process() {
             // Tier 2.3 — Sleep consolidation hook (single call site).
-            // Quando adenosine >= 1.0 (trigger de sleep) e ainda não consolidamos
-            // neste ciclo, drena episodic_buffer pra dentro do slow_brain via
-            // Hebbian ternário. Guard sleep_consolidated é resetado em update()
-            // quando adenosine cai abaixo de 0.5 (acordado o suficiente).
+            // When adenosine >= 1.0 (sleep trigger) and we have not yet consolidated
+            // this cycle, drains episodic_buffer into the slow_brain via
+            // ternary Hebbian. The sleep_consolidated guard is reset in update()
+            // when adenosine falls below 0.5 (awake enough).
             if self.metabolism.adenosine >= 1.0 && !self.metabolism.sleep_consolidated {
                 let _episodes: Vec<_> = self.metabolism.episodic_buffer.drain(..).collect();
                 // Tier 6.2 LITE — Sleep consolidation disabled for new SlowBrain architecture.
@@ -460,14 +460,14 @@ impl SovereignEngine {
             return;
         }
 
-        // 0a. KAN PRE-FILTER (Tier 2.2): spline per-channel aplicado em TODOS
-        //     os 128 canais ANTES do CfC. Cada canal aprende curva própria
-        //     (log p/ wall_distance, sat p/ speed, step p/ grass, etc).
-        //     Init identity (coeffs=1.0) → comportamento ≈ pré-KAN no gen 0.
-        // ABLAÇÃO POR SENTIDO (ver `neuro.rs`): zera o grupo de canais ANTES do KAN, do CfC
-        // e de tudo mais. Assim a ablação significa "este sentido não existe" e não "este
-        // sentido chega distorcido" — se fosse depois do filtro, o KAN já teria misturado o
-        // canal ablado com os outros e o número mediria outra coisa.
+        // 0a. KAN PRE-FILTER (Tier 2.2): per-channel spline applied to ALL
+        //     128 channels BEFORE the CfC. Each channel learns its own curve
+        //     (log for wall_distance, sat for speed, step for grass, etc.).
+        //     Init identity (coeffs=1.0) → behaviour ≈ pre-KAN at gen 0.
+        // SENSE ABLATION (see `neuro.rs`): zeroes the channel group BEFORE the KAN, the CfC
+        // and everything else. That way the ablation means "this sense does not exist" and not "this
+        // sense arrives distorted" — if it came after the filter, the KAN would already have mixed the
+        // ablated channel with the others and the number would measure something else.
         let mut onda_ablada = [0i8; SENSORY_WAVE_SIZE];
         let sensory_wave: &[i8] = if matches!(crate::neuro::ablada(), crate::neuro::Via::Sentido(_))
         {
@@ -482,7 +482,7 @@ impl SovereignEngine {
         let mut kan_wave = [0i8; SENSORY_WAVE_SIZE];
         self.kan_filters.apply(sensory_wave, &mut kan_wave);
 
-        // 0b. CfC PRE-PROCESSOR: filtra retina [0..96] com memória temporal.
+        // 0b. CfC PRE-PROCESSOR: filters retina [0..96] with temporal memory.
         let mut filtered_wave = [0i8; SENSORY_WAVE_SIZE];
         filtered_wave.copy_from_slice(&kan_wave);
         let mut filtered_retina = [0i8; 96];
@@ -490,11 +490,11 @@ impl SovereignEngine {
             .update(&kan_wave[0..96], &mut filtered_retina, delta_t);
         filtered_wave[0..96].copy_from_slice(&filtered_retina);
 
-        // Tier 6.1 — Predictive coding como drive primário (brain-free baseline).
-        // Compara retina atual (pós-KAN+CfC, normalizada [-1,1]) com a predição
-        // do tick anterior. Erro L1 médio vira drive intrínseco (curiosity hook).
-        // Predição p/ próximo tick = EMA (0.7 * prev + 0.3 * current) — baseline
-        // sem cérebro; substituível por rede preditiva no futuro (Dreamer-like).
+        // Tier 6.1 — Predictive coding as the primary drive (brain-free baseline).
+        // Compares the current retina (post-KAN+CfC, normalized [-1,1]) with the previous
+        // tick's prediction. Mean L1 error becomes an intrinsic drive (curiosity hook).
+        // Prediction for the next tick = EMA (0.7 * prev + 0.3 * current) — brainless
+        // baseline; replaceable by a predictive network in the future (Dreamer-like).
         let mut current_retina_f = [0.0f32; RETINA_TOTAL];
         for j in 0..RETINA_TOTAL {
             current_retina_f[j] = if j < filtered_retina.len() {
@@ -510,7 +510,7 @@ impl SovereignEngine {
         let prediction_error = err_acc / RETINA_TOTAL as f32;
         self.metabolism.prediction_error = prediction_error;
         self.metabolism.apply_prediction_error(prediction_error);
-        // EMA update p/ próximo tick.
+        // EMA update for the next tick.
         for j in 0..RETINA_TOTAL {
             self.predicted_retina[j] = 0.7 * self.predicted_retina[j] + 0.3 * current_retina_f[j];
         }
@@ -523,41 +523,41 @@ impl SovereignEngine {
         }
         let l2_raw = self.cortex_l2.forward(&l1_act);
 
-        // Fadiga de saída — espelho exato do brain.wgsl etapa 2 (OUT_ALPHA/OUT_BETA).
+        // Output fatigue — exact mirror of brain.wgsl stage 2 (OUT_ALPHA/OUT_BETA).
         //
-        // Quebra ponto fixo de saída: intent[0] saturado em +1.0 desde tick 10.
-        // A fadiga de input do CfC age no state recorrente, mas não alcança L2/bypass.
+        // Breaks the output fixed point: intent[0] saturated at +1.0 since tick 10.
+        // The CfC's input fatigue acts on the recurrent state, but does not reach L2/bypass.
         //
-        // Equação por canal j (mesma que o shader, mesma ordem de operações):
+        // Per-channel equation for j (same as the shader, same operation order):
         //   out_fat[j] += OUT_ALPHA * (|raw[j]| - out_fat[j]) * dt
         //   intent[j]  = tanh(sign(raw) * max(0, |raw[j]| - OUT_BETA * out_fat[j]))
         //
-        // O encolhimento age sobre a MAGNITUDE. A forma anterior subtraía direto
-        // (`raw - OUT_BETA*out_fat`) e era assimétrica, porque `out_fat` rastreia
-        // |raw|: com raw negativo sustentado ela SOMAVA em módulo e empurrava para
-        // -0,999, enquanto com raw positivo atenuava para 0,15·raw. A fadiga, que
-        // deveria ser neutra, enviesava a população inteira para baixo.
+        // The shrinkage acts on the MAGNITUDE. The previous form subtracted directly
+        // (`raw - OUT_BETA*out_fat`) and was asymmetric, because `out_fat` tracks
+        // |raw|: with sustained negative raw it ADDED in modulus and pushed towards
+        // -0.999, while with positive raw it attenuated to 0.15·raw. The fatigue, which
+        // should be neutral, biased the whole population downward.
         //
-        // OUT_ALPHA = 4.0: τ ≈ 0.25 s (63% do alvo em ~16 ticks @ 64 Hz).
-        //   Suficientemente rápido para agir antes do ponto fixo se consolidar
-        //   (~10 ticks), sem engessar sinal que varia normalmente entre ticks.
-        // OUT_BETA = 0.85: em regime permanente (out_fat → |raw|), intent →
-        //   tanh(|raw| × 0.15). Com |raw| = 3.8: tanh(0.57) ≈ 0.54 < 0.90 ✓.
+        // OUT_ALPHA = 4.0: τ ≈ 0.25 s (63% of the target in ~16 ticks @ 64 Hz).
+        //   Fast enough to act before the fixed point consolidates
+        //   (~10 ticks), without freezing a signal that normally varies between ticks.
+        // OUT_BETA = 0.85: at steady state (out_fat → |raw|), intent →
+        //   tanh(|raw| × 0.15). With |raw| = 3.8: tanh(0.57) ≈ 0.54 < 0.90 ✓.
         const OUT_ALPHA: f32 = 4.0;
         const OUT_BETA: f32 = 0.85;
 
         let mut final_intent = [0.0f32; 96];
-        // Canais 0..48: via L2 (val * 2.0 como no shader: acc * 2/127 * 127 = acc * 2)
+        // Channels 0..48: via L2 (val * 2.0 as in the shader: acc * 2/127 * 127 = acc * 2)
         for (j, &val) in l2_raw.iter().enumerate().take(48) {
             let raw = val * 2.0;
-            // Atualiza fadiga ANTES de aplicar (mesma ordem do shader):
+            // Updates fatigue BEFORE applying (same order as the shader):
             self.out_fatigue[j] += OUT_ALPHA * (raw.abs() - self.out_fatigue[j]) * delta_t;
             let adapted = raw.signum() * (raw.abs() - OUT_BETA * self.out_fatigue[j]).max(0.0);
             final_intent[j] = adapted.tanh();
         }
-        // Canais 48..96: bypass de L1 (l1_raw[48..96] × 2.0).
-        // Itera l1_raw[48..96] com índice k de 0..48; j = 48+k.
-        // NOTA: não usar enumerate().skip(48) pois k começaria em 48 e j=96 estouraria.
+        // Channels 48..96: L1 bypass (l1_raw[48..96] × 2.0).
+        // Iterates l1_raw[48..96] with index k from 0..48; j = 48+k.
+        // NOTE: do not use enumerate().skip(48) since k would start at 48 and j=96 would overflow.
         for (k, &val) in l1_raw[48..96].iter().enumerate() {
             let j = 48 + k; // k ∈ [0,48), j ∈ [48,96)
             let raw = val * 2.0;
@@ -568,14 +568,14 @@ impl SovereignEngine {
         self.final_intent = final_intent.to_vec();
 
         // 1b. Tier 6.8 — Mirror neurons / observational learning.
-        //     Compara a retina filtrada atual (pós-KAN+CfC) com a média retiniana
-        //     do campeão da gen anterior via cosine similarity. Se > 0.8, injeta
-        //     a ação motora do campeão (throttle, steer) como soft bias em
-        //     final_intent[0..2] com peso MIRROR_W=0.05. Imitação sem sinal
-        //     supervisionado: quando o racer se encontra em estado perceptivo
-        //     parecido com o do campeão, puxa levemente sua saída na direção do
-        //     que deu certo. Conta disparos em metabolism.mirror_activation_count
-        //     (fitness hook pode ler pra bonificar imitação efetiva).
+        //     Compares the current filtered retina (post-KAN+CfC) with the retinal mean
+        //     of the previous gen's champion via cosine similarity. If > 0.8, injects
+        //     the champion's motor action (throttle, steer) as a soft bias into
+        //     final_intent[0..2] with weight MIRROR_W=0.05. Imitation without a supervised
+        //     signal: when the racer finds itself in a perceptual state
+        //     similar to the champion's, it gently pulls its output towards
+        //     what worked. Counts firings in metabolism.mirror_activation_count
+        //     (a fitness hook can read it to reward effective imitation).
         if let Some((champ_retina, champ_action)) = self.champion_snapshot() {
             let mut dot = 0.0f32;
             let mut norm_a = 0.0f32;
@@ -602,19 +602,19 @@ impl SovereignEngine {
             }
         }
 
-        // 2. Ressonância + Kuramoto credit assignment (Tier 2.4).
-        //    Fire-together-wire-together com GATE dopaminérgico (Izhikevich 2007).
-        //    - Per-neuron coherence tracker soma quando neurônio top-K dispara forte.
-        //    - Decay 0.99/tick (esquecimento passivo).
-        //    - Mielinização dispara SÓ quando (a) há pelo menos 1 neurônio winner
-        //      (coherence > 0.95) E (b) dopamina > +0.1 (surpresa positiva = RPE).
-        //    - Dopamina < -0.1 → SKIP (punição: não consolida pathway ativo).
-        //    - Reset dos winners após evento; cap 10.0 preservado em layers.rs.
-        //    - Heart resonance mantido como gate secundário de plausibilidade global.
+        // 2. Resonance + Kuramoto credit assignment (Tier 2.4).
+        //    Fire-together-wire-together with a dopaminergic GATE (Izhikevich 2007).
+        //    - Per-neuron coherence tracker adds up when a top-K neuron fires strongly.
+        //    - Decay 0.99/tick (passive forgetting).
+        //    - Myelination fires ONLY when (a) there is at least 1 winner neuron
+        //      (coherence > 0.95) AND (b) dopamine > +0.1 (positive surprise = RPE).
+        //    - Dopamine < -0.1 → SKIP (punishment: does not consolidate the active pathway).
+        //    - Winners reset after the event; cap 10.0 preserved in layers.rs.
+        //    - Heart resonance kept as a secondary gate of global plausibility.
         self.heart_resonance.synchronize(target_phase, delta_t);
         let heart_coherence = self.heart_resonance.get_coherence(target_phase);
 
-        // Decay global + top-K reinforcement em final_intent.
+        // Global decay + top-K reinforcement on final_intent.
         const TOP_K: usize = 8;
         const COHERENCE_GAIN: f32 = 0.12;
         const COHERENCE_DECAY: f32 = 0.99;
@@ -625,11 +625,11 @@ impl SovereignEngine {
         for c in self.resonance_coherence.iter_mut() {
             *c *= COHERENCE_DECAY;
         }
-        // Top-K por |intent| (neurônios que mais fortemente dispararam).
+        // Top-K by |intent| (the neurons that fired most strongly).
         let mut ranked: [(usize, f32); 64] = std::array::from_fn(|i| (i, final_intent[i].abs()));
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         for &(idx, mag) in ranked.iter().take(TOP_K) {
-            // Ganho proporcional à intensidade de fogo (saturado em 1.0).
+            // Gain proportional to firing intensity (saturated at 1.0).
             self.resonance_coherence[idx] =
                 (self.resonance_coherence[idx] + COHERENCE_GAIN * mag.min(1.0)).min(1.0);
         }
@@ -642,29 +642,29 @@ impl SovereignEngine {
 
         let dopamine = self.metabolism.dopamine;
         if winners > 0 && dopamine > DOPAMINE_POSITIVE && heart_coherence > 0.5 {
-            // Dopamine-gated Hebbian: consolida pathways coerentes + recompensados.
+            // Dopamine-gated Hebbian: consolidates coherent + rewarded pathways.
             let lr_mod = self.metabolism.learning_modulation();
             let factor = heart_coherence * lr_mod * dopamine.min(1.0);
             self.instinct_layer.myelinate(factor);
-            // Reset winners pra evitar mielinização repetida do mesmo subset.
+            // Reset winners to avoid repeated myelination of the same subset.
             for c in self.resonance_coherence.iter_mut() {
                 if *c > COHERENCE_FIRE_THRESHOLD {
                     *c = 0.0;
                 }
             }
         } else if dopamine < DOPAMINE_NEGATIVE {
-            // Punição: limpa coerência acumulada dos pathways recém-ativos
-            // (evita consolidar movimento errado — credit misassignment).
+            // Punishment: clears accumulated coherence of the recently active pathways
+            // (avoids consolidating a wrong move — credit misassignment).
             for &(idx, _) in ranked.iter().take(TOP_K) {
                 self.resonance_coherence[idx] *= 0.5;
             }
         }
 
-        // 3. Custo Metabólico
-        // FIX CRÍTICO: era `0.002 / delta_t` (cost per tick = 0.12 @ 60Hz). A adenosina
-        // atingia 1.0 em ~130ms → trigger_sleep → brain ignorava sensores por ~18s.
-        // Isso explicava raw_steer congelado nos brain traces: o cérebro estava DORMINDO.
-        // Correto: custo proporcional a delta_t (acumula ~0.002/s = exausto em ~500s).
+        // 3. Metabolic cost
+        // CRITICAL FIX: it was `0.002 / delta_t` (cost per tick = 0.12 @ 60Hz). Adenosine
+        // reached 1.0 in ~130ms → trigger_sleep → the brain ignored sensors for ~18s.
+        // That explained the frozen raw_steer in the brain traces: the brain was SLEEPING.
+        // Correct: cost proportional to delta_t (accumulates ~0.002/s = exhausted in ~500s).
         self.metabolism.accumulate_fatigue(0.002 * delta_t);
         self.metabolism.update(delta_t);
     }

@@ -96,7 +96,7 @@ fn update_hud(
     });
 
     commands.entity(ui_entity).with_children(|p| {
-        // --- PAINEL DEV (ESQUERDA) ---
+        // --- DEV PANEL (LEFT) ---
         p.spawn((
             Node {
                 position_type: PositionType::Absolute,
@@ -110,9 +110,9 @@ fn update_hud(
         )).with_children(|dev_panel| {
             dev_panel.spawn((Text::new("IARA DEV CTRL"), TextFont { font_size: 18.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 1.0))));
             dev_panel.spawn((Text::new(format!("GEN: {}", race.generation)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
-            dev_panel.spawn((Text::new(format!("🏆 RECORDE: {:.1}m", race.global_best_distance)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::srgb(1.0, 0.84, 0.0))));
+            dev_panel.spawn((Text::new(format!("🏆 RECORD: {:.1}m", race.global_best_distance)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::srgb(1.0, 0.84, 0.0))));
 
-            // Botões Reset
+            // Reset buttons
             dev_panel.spawn(Node { margin: UiRect::vertical(Val::Px(5.0)), flex_direction: FlexDirection::Column, ..default() }).with_children(|reset_box| {
                 reset_box.spawn((
                     Button,
@@ -136,7 +136,7 @@ fn update_hud(
                 )).with_children(|b| { b.spawn((Text::new("BACK TO MENU"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::WHITE))); });
             });
 
-            // Controles de Parâmetros
+            // Parameter controls
             let params = [
                 ("MUTATION", dev.mutation_rate, DevAction::MutDown, DevAction::MutUp),
                 ("SPEED/AMP", dev.wave_amplitude, DevAction::AmpDown, DevAction::AmpUp),
@@ -161,7 +161,7 @@ fn update_hud(
             }
         });
 
-        // --- LEADERBOARD (DIREITA) ---
+        // --- LEADERBOARD (RIGHT) ---
         p.spawn(Node {
             position_type: PositionType::Absolute,
             right: Val::Px(10.0),
@@ -179,7 +179,7 @@ fn update_hud(
                 .with_children(|btn| {
                     btn.spawn((Text::new(format!("#{:02} {} | LAP:{}", i+1, r.name, r.total_laps)), TextFont { font_size: 13.0, ..default() }, TextColor(color)));
                     btn.spawn((Text::new(format!("{:.1} km/h", r.amplitude * 3.6)), TextFont { font_size: 11.0, ..default() }, TextColor(color)));
-                    // Barras de pedais mini (Acelera verde em cima, Freio vermelho embaixo)
+                    // Mini pedal bars (green throttle on top, red brake below)
                     btn.spawn(Node { width: Val::Percent(100.0), height: Val::Px(2.0), margin: UiRect::vertical(Val::Px(1.0)), ..default() }).with_children(|bar_box| {
                         bar_box.spawn(Node { width: Val::Percent(r.memory[0] * 100.0), height: Val::Percent(100.0), ..default() }).insert(BackgroundColor(Color::srgb(0.0, 0.8, 0.0)));
                     });
@@ -191,8 +191,8 @@ fn update_hud(
             }
         });
 
-        // --- TELEMETRY (ESQUERDA INFERIOR) ---
-        // Se o usuário não clicou em ninguém, espiona o Líder (1º colocado)
+        // --- TELEMETRY (BOTTOM LEFT) ---
+        // If the user clicked no one, spy on the Leader (1st place)
         let selected = race.selected_racer.unwrap_or_else(|| {
             sorted.first().map(|(e, _, _, _, _)| *e).unwrap_or(Entity::PLACEHOLDER)
         });
@@ -208,9 +208,9 @@ fn update_hud(
                     ..default()
                 }).insert(BackgroundColor(Color::srgba(0.05, 0.08, 0.12, 0.95)))
                 .with_children(|panel| {
-                    panel.spawn((Text::new(format!("CÓRTEX CLONE: {} [{}]", r.name, r.car_model)), TextFont { font_size: 16.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 0.8))));
+                    panel.spawn((Text::new(format!("CORTEX CLONE: {} [{}]", r.name, r.car_model)), TextFont { font_size: 16.0, ..default() }, TextColor(Color::srgb(0.0, 1.0, 0.8))));
 
-                    // --- NOVOS DADOS NUMÉRICOS (TELEMETRIA VEICULAR) ---
+                    // --- NEW NUMERIC DATA (VEHICLE TELEMETRY) ---
                     panel.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, margin: UiRect::vertical(Val::Px(4.0)), ..default() })
                         .with_children(|stats_row| {
                             let speed = r.amplitude * 3.6;
@@ -228,23 +228,23 @@ fn update_hud(
                                     _ => "?",
                                 };
                                 col1.spawn((Text::new(format!("VEL: {:.0} km/h", speed)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
-                                col1.spawn((Text::new(format!("MARCHA: {}", gear_label)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
+                                col1.spawn((Text::new(format!("GEAR: {}", gear_label)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
                                 col1.spawn((Text::new(format!("RPM: {:.0}", eng_comp.current_rpm)), TextFont { font_size: 14.0, ..default() }, TextColor(if eng_comp.current_rpm > eng_comp.max_rpm * 0.9 { Color::srgb(1.0, 0.0, 0.0) } else { Color::WHITE })));
                                 col1.spawn((Text::new(format!("TRQ: {:.0} Nm", eng_comp.max_torque * eng_comp.throttle)), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE)));
                             });
 
                             stats_row.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|col2| {
-                                col2.spawn((Text::new(format!("PNEU: {:.0}°C", r.tire_temp * 100.0)), TextFont { font_size: 14.0, ..default() }, TextColor(tire_color)));
+                                col2.spawn((Text::new(format!("TIRE: {:.0}°C", r.tire_temp * 100.0)), TextFont { font_size: 14.0, ..default() }, TextColor(tire_color)));
                                 col2.spawn((Text::new(format!("MTR PWR: {:.0}%", r.engine_power * 100.0)), TextFont { font_size: 14.0, ..default() }, TextColor(if r.engine_power < 0.5 { Color::srgb(1.0, 0.5, 0.0) } else { Color::WHITE })));
-                                col2.spawn((Text::new(format!("GRAMA: {:.1}s", r.grass_time)), TextFont { font_size: 14.0, ..default() }, TextColor(if r.grass_time > 0.0 { Color::srgb(1.0, 0.0, 0.0) } else { Color::WHITE })));
+                                col2.spawn((Text::new(format!("GRASS: {:.1}s", r.grass_time)), TextFont { font_size: 14.0, ..default() }, TextColor(if r.grass_time > 0.0 { Color::srgb(1.0, 0.0, 0.0) } else { Color::WHITE })));
                             });
                         });
 
-                    // Arrays de Vida e Pedais
+                    // Life and pedal arrays
                     let pedals = [
-                        ("HP (Integridade Estrutural)", (r.hp / 100.0).clamp(0.0, 1.0), Color::srgb(0.0, 0.6, 1.0)),
-                        ("THROTTLE (Aceleração)", r.memory[0], Color::srgb(0.0, 1.0, 0.0)),
-                        ("BRAKE (Freio)", r.memory[2], Color::srgb(1.0, 0.0, 0.0))
+                        ("HP (Structural Integrity)", (r.hp / 100.0).clamp(0.0, 1.0), Color::srgb(0.0, 0.6, 1.0)),
+                        ("THROTTLE (Acceleration)", r.memory[0], Color::srgb(0.0, 1.0, 0.0)),
+                        ("BRAKE (Braking)", r.memory[2], Color::srgb(1.0, 0.0, 0.0))
                     ];
                     for (label, val, col) in pedals {
                         panel.spawn(Node {
@@ -254,7 +254,7 @@ fn update_hud(
                             ..default()
                         }).with_children(|row| {
                             row.spawn((Text::new(label), TextFont { font_size: 11.0, ..default() })).insert(Node { width: Val::Px(160.0), ..default() });
-                            // Track (Fundo da barra para visibilidade 0%)
+                            // Track (bar background for 0% visibility)
                             row.spawn((
                                 Node {
                                     width: Val::Percent(100.0), height: Val::Percent(80.0),
@@ -262,7 +262,7 @@ fn update_hud(
                                 },
                                 BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.1)),
                             )).with_children(|track| {
-                                // Barra de valor colorida
+                                // Colored value bar
                                 track.spawn((
                                     Node {
                                         width: Val::Percent(val * 100.0), height: Val::Percent(100.0),
@@ -274,14 +274,14 @@ fn update_hud(
                         });
                     }
 
-                    // Volante (Steer) - Maior e mais claro
+                    // Steering wheel (Steer) - Bigger and clearer
                     panel.spawn(Node { width: Val::Percent(100.0), height: Val::Px(20.0), margin: UiRect::vertical(Val::Px(5.0)), align_items: AlignItems::Center, ..default() }).with_children(|bar| {
-                        bar.spawn((Text::new("VOLANTE"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::srgb(0.9, 0.9, 0.9)))).insert(Node { width: Val::Px(140.0), ..default() });
+                        bar.spawn((Text::new("STEERING"), TextFont { font_size: 12.0, ..default() }, TextColor(Color::srgb(0.9, 0.9, 0.9)))).insert(Node { width: Val::Px(140.0), ..default() });
                         let steer_val = (r.memory[1] + 1.0) / 2.0; // -1 to 1 => 0 to 1
                         bar.spawn(Node { width: Val::Percent(100.0), height: Val::Px(12.0), border: UiRect::all(Val::Px(1.0)), ..default() }).insert(BorderColor(Color::srgb(0.3, 0.3, 0.3))).insert(BackgroundColor(Color::srgb(0.1, 0.1, 0.1))).with_children(|bg| {
-                            // Centro do volante
+                            // Steering-wheel center
                             bg.spawn(Node { width: Val::Px(2.0), height: Val::Percent(100.0), left: Val::Percent(50.0), position_type: PositionType::Absolute, ..default() }).insert(BackgroundColor(Color::srgb(0.5, 0.5, 0.5)));
-                            // Posição atual
+                            // Current position
                             bg.spawn(Node {
                                 width: Val::Px(6.0), height: Val::Percent(100.0),
                                 left: Val::Percent(steer_val * 98.0), position_type: PositionType::Absolute,
@@ -313,7 +313,7 @@ fn update_hud(
                         });
                     });
 
-                    // Retina Visual (LIDAR) — downsampled pra render (32×256→8×64 na UI)
+                    // Visual retina (LIDAR) — downsampled for render (32×256→8×64 in the UI)
                     use crate::config::iara::vision::{RETINA_ROWS, RETINA_COLS};
                     let ds = 4;  // downsample: skip every 4 pixels
                     let ds_rows = (RETINA_ROWS + ds - 1) / ds;
@@ -357,7 +357,7 @@ fn update_hud(
                 });
             }
 
-        // --- MODAL DE CONFIRMAÇÃO ---
+        // --- CONFIRMATION MODAL ---
         if race.show_confirm_modal {
             p.spawn((
                 Node {
@@ -375,13 +375,13 @@ fn update_hud(
                     border: UiRect::all(Val::Px(2.0)),
                     ..default()
                 }).insert(BorderColor(Color::srgb(0.8, 0.2, 0.2))).insert(BackgroundColor(Color::srgb(0.1, 0.1, 0.15))).with_children(|box_ui| {
-                    box_ui.spawn((Text::new("⚠️ CUIDADO: HARD RESET GENÉTICO ⚠️"), TextFont { font_size: 20.0, ..default() }, TextColor(Color::srgb(1.0, 0.3, 0.3))));
-                    box_ui.spawn((Text::new("Isso vai DELETAR o arquivo CHAMPION.dna do seu HD\ne todos os pilotos vão perder sua experiência passada.\nVocê tem certeza?"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))).insert(Node { margin: UiRect::vertical(Val::Px(15.0)), ..default() });
+                    box_ui.spawn((Text::new("⚠️ WARNING: GENETIC HARD RESET ⚠️"), TextFont { font_size: 20.0, ..default() }, TextColor(Color::srgb(1.0, 0.3, 0.3))));
+                    box_ui.spawn((Text::new("This will DELETE the CHAMPION.dna file from your HD\nand every pilot will lose their past experience.\nAre you sure?"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))).insert(Node { margin: UiRect::vertical(Val::Px(15.0)), ..default() });
                     box_ui.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceEvenly, margin: UiRect::top(Val::Px(20.0)), ..default() }).with_children(|row| {
                         row.spawn((Button, Node { width: Val::Px(160.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(Color::srgb(0.7, 0.1, 0.1)), DevButton { action: DevAction::HardResetConfirm }))
-                            .with_children(|btn| { btn.spawn((Text::new("SIM, DELETAR TUDO"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))); });
+                            .with_children(|btn| { btn.spawn((Text::new("YES, DELETE EVERYTHING"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))); });
                         row.spawn((Button, Node { width: Val::Px(140.0), height: Val::Px(40.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(Color::srgb(0.3, 0.4, 0.3)), DevButton { action: DevAction::HardResetCancel }))
-                            .with_children(|btn| { btn.spawn((Text::new("CANCELAR"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))); });
+                            .with_children(|btn| { btn.spawn((Text::new("CANCEL"), TextFont { font_size: 14.0, ..default() }, TextColor(Color::WHITE))); });
                     });
                 });
             });

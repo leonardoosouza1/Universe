@@ -1,24 +1,24 @@
-//! Arnês de validação GPU × CPU — cada subsistema isolado, com tabela honesta.
+//! GPU × CPU validation harness — each subsystem isolated, with an honest table.
 //!
-//! # Por que este binário existe
+//! # Why this binary exists
 //!
-//! A regra inegociável do GPU_PLANO.md: "Um caminho GPU que diverge em silêncio
-//! invalida todo experimento já medido." Este binário é a barreira. Ele compara
-//! cada kernel GPU com a implementação CPU correspondente e imprime o veredito
-//! COM O NÚMERO que o sustenta — nunca "OK" sem evidência.
+//! The non-negotiable rule from GPU_PLANO.md: "A GPU path that diverges in silence
+//! invalidates every experiment already measured." This binary is the barrier. It compares
+//! each GPU kernel with the corresponding CPU implementation and prints the verdict
+//! WITH THE NUMBER that supports it — never "OK" without evidence.
 //!
-//! # Como usar
+//! # How to use
 //!
 //! ```text
 //! env -u DISPLAY ./target/release/gpu_valida
 //! env -u DISPLAY ./target/release/gpu_valida --retina --nucleo --cerebro --fisica --percepcao
 //! ```
 //!
-//! # Tolerâncias declaradas (GPU_PLANO.md)
+//! # Declared tolerances (GPU_PLANO.md)
 //!
-//! - retina (i8 codificada): diferença ≤ 1 (arredondamento de float na quantização).
-//! - floats de uma passada (física, intenção): ≤ 2 ULP ou erro relativo ≤ 1e-5.
-//! - estado acumulado por N ticks: deriva medida e DECLARADA, não assumida zero.
+//! - retina (encoded i8): difference ≤ 1 (float rounding in quantization).
+//! - single-pass floats (physics, intent): ≤ 2 ULP or relative error ≤ 1e-5.
+//! - state accumulated over N ticks: drift measured and DECLARED, not assumed zero.
 
 use bevy::math::{Vec2, Vec3};
 use universe::config::iara::vision::RETINA_TOTAL;
@@ -26,34 +26,34 @@ use universe::gpu::core::{CoreGpu, PosGpu};
 use universe::gpu::{Pose, RetinaGpu};
 use universe::world::VoxelWorld;
 
-/// Executa `f()` num processo filho (fork). Retorna `true` se o filho terminou com exit 0,
-/// `false` se morreu por sinal (ex: SIGSEGV=139) ou com exit != 0.
+/// Runs `f()` in a child process (fork). Returns `true` if the child exited with exit 0,
+/// `false` if it died by signal (e.g. SIGSEGV=139) or with exit != 0.
 ///
-/// Usado para isolar crashes de driver GPU que chegam como SIGSEGV e não podem ser
-/// capturados por std::panic::catch_unwind.
+/// Used to isolate GPU driver crashes that arrive as SIGSEGV and cannot be
+/// caught by std::panic::catch_unwind.
 ///
-/// A saída do filho vai para stdout/stderr normalmente (fd são herdados).
+/// The child's output goes to stdout/stderr normally (fds are inherited).
 #[cfg(unix)]
 fn run_in_child<F: FnOnce()>(f: F) -> bool {
     use std::io::Write;
     unsafe {
         let pid = libc::fork();
         if pid < 0 {
-            // fork falhou — executa no processo atual (sem isolamento)
+            // fork failed — run in the current process (no isolation)
             let _ =
-                std::io::stderr().write_all(b"  AVISO: fork() falhou, sem isolamento de crash.\n");
+                std::io::stderr().write_all(b"  WARNING: fork() failed, no crash isolation.\n");
             f();
             return true;
         }
         if pid == 0 {
-            // Filho: executa e sai
+            // Child: run and exit
             f();
             libc::_exit(0);
         }
-        // Pai: aguarda o filho
+        // Parent: waits for the child
         let mut status: libc::c_int = 0;
         libc::waitpid(pid, &mut status, 0);
-        // WIFEXITED e WEXITSTATUS — filho saiu normalmente com 0
+        // WIFEXITED and WEXITSTATUS — child exited normally with 0
         if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
             true
         } else {
@@ -64,14 +64,14 @@ fn run_in_child<F: FnOnce()>(f: F) -> bool {
 
 #[cfg(not(unix))]
 fn run_in_child<F: FnOnce()>(f: F) -> bool {
-    // Em não-unix, sem fork — executa diretamente (sem isolamento)
+    // On non-unix, no fork — run directly (no isolation)
     f();
     true
 }
 
-// ── ParamsGpu local (idêntico ao layout interno de RetinaGpu/NucleoGpu) ─────
-// O tipo interno de mod.rs é privado. Este é uma cópia local usada só aqui.
-// CRÍTICO: manter em sincronia com mod.rs::ParamsGpu e retina.wgsl::Params.
+// ── Local ParamsGpu (identical to the internal layout of RetinaGpu/NucleoGpu) ─────
+// The internal type in mod.rs is private. This is a local copy used only here.
+// CRITICAL: keep in sync with mod.rs::ParamsGpu and retina.wgsl::Params.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LocalParamsGpu {
@@ -82,27 +82,27 @@ struct LocalParamsGpu {
     pitches: [[f32; 4]; 4],
 }
 
-/// Fadiga de saída — referência CPU do validador.
+/// Output fatigue — the validator's CPU reference.
 ///
-/// Estava com a fórmula ANTIGA (`raw - beta·fat`, subtração com sinal) enquanto
-/// `engine.rs` e `brain.wgsl` já tinham migrado para o encolhimento sobre a magnitude.
-/// Um validador com gabarito velho é pior que nenhum: ele APROVA a divergência que
-/// deveria pegar, porque compara os dois lados contra a mesma referência errada.
+/// It had the OLD formula (`raw - beta·fat`, signed subtraction) while
+/// `engine.rs` and `brain.wgsl` had already migrated to shrinkage over the magnitude.
+/// A validator with a stale oracle is worse than none: it APPROVES the divergence it
+/// should catch, because it compares both sides against the same wrong reference.
 fn adapta_saida(raw: f32, out_fat: f32) -> f32 {
-    const OUT_BETA: f32 = 0.85; // espelha engine.rs e brain.wgsl
+    const OUT_BETA: f32 = 0.85; // mirrors engine.rs and brain.wgsl
     (raw.signum() * (raw.abs() - OUT_BETA * out_fat).max(0.0)).tanh()
 }
 
 fn main() {
-    // SEGFAULT FIX (física): múltiplos ICDs Vulkan (intel_hasvk, lvp, nouveau, asahi,
-    // radeon, virtio…) causam segfault ao carregar um ICD incompatível com a GPU AMD.
-    // VK_ICD_FILENAMES DEVE ser setado ANTES do primeiro wgpu::Instance::new —
-    // o Vulkan loader carrega as libs de ICD uma única vez de forma global.
-    // Setar dentro de validate_physics() é tarde demais: o loader já foi invocado em
+    // SEGFAULT FIX (physics): multiple Vulkan ICDs (intel_hasvk, lvp, nouveau, asahi,
+    // radeon, virtio…) cause a segfault when loading an ICD incompatible with the AMD GPU.
+    // VK_ICD_FILENAMES MUST be set BEFORE the first wgpu::Instance::new —
+    // the Vulkan loader loads the ICD libs once, globally.
+    // Setting it inside validate_physics() is too late: the loader was already invoked in
     // validate_retina() / validate_nucleo() / validate_brain().
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
     if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
-        // safety: thread única, nenhum outro código wgpu rodando ainda
+        // safety: single thread, no other wgpu code running yet
         unsafe {
             std::env::set_var("VK_ICD_FILENAMES", icd_radeon);
         }
@@ -118,14 +118,14 @@ fn main() {
 
     let world = VoxelWorld::new(9001, 18.0);
     println!(
-        "mundo: {}x{} celulas · {:.0} m · volta {:.0} m",
+        "world: {}x{} cells · {:.0} m · lap {:.0} m",
         world.size,
         world.size,
         world.size as f32 * world.cell_size,
         world.lap_distance,
     );
 
-    // 48 posturas espalhadas pela pista
+    // 48 poses spread along the track
     let mut poses = Vec::new();
     let n_wp = world.waypoints_world.len();
     for k in 0..48usize {
@@ -143,21 +143,21 @@ fn main() {
     print_table_header();
 
     // ==========================================================================
-    // SECAO 1: RETINA
+    // SECTION 1: RETINA
     // ==========================================================================
     if quer_retina {
         println!("[RETINA]");
         let gpu = match RetinaGpu::new(&world, poses.len().max(64)) {
             Some(g) => g,
             None => {
-                println!("  NAO MEDIDO — sem GPU utilizavel.");
-                print_table_row("retina (i8 legado)", 0, 0, -1, false);
+                println!("  NOT MEASURED — no usable GPU.");
+                print_table_row("retina (legacy i8)", 0, 0, -1, false);
                 println!();
-                // continua para as outras secoes
+                // continue to the other sections
                 return;
             }
         };
-        println!("  GPU: {}  ·  {} seres", gpu.adapter, poses.len());
+        println!("  GPU: {}  ·  {} beings", gpu.adapter, poses.len());
 
         let saida_gpu = gpu.render_legacy(&poses);
         let mut total = 0usize;
@@ -182,7 +182,7 @@ fn main() {
             }
         }
         println!(
-            "  comparados={total}  identicos={iguais} ({:.4}%)  max_dif={maxdif}",
+            "  compared={total}  identical={iguais} ({:.4}%)  max_dif={maxdif}",
             iguais as f64 / total as f64 * 100.0
         );
 
@@ -205,38 +205,38 @@ fn main() {
         }
         let t_cpu = t1.elapsed().as_secs_f64() / reps as f64;
         println!(
-            "  CPU={:.2}ms  GPU={:.2}ms  aceleracao={:.1}x",
+            "  CPU={:.2}ms  GPU={:.2}ms  speedup={:.1}x",
             t_cpu * 1000.0,
             t_gpu * 1000.0,
             t_cpu / t_gpu
         );
 
-        print_table_row("retina (i8 legado)", total, iguais, maxdif, maxdif <= 1);
+        print_table_row("retina (legacy i8)", total, iguais, maxdif, maxdif <= 1);
         println!();
     }
 
     // ==========================================================================
-    // SECAO 2: NUCLEO
+    // SECTION 2: CORE
     // ==========================================================================
     if quer_nucleo {
-        println!("[NUCLEO]");
+        println!("[CORE]");
         let n_beings = poses.len();
         let core = match CoreGpu::new(&world, n_beings.max(64)) {
             Some(n) => n,
             None => {
-                println!("  NAO MEDIDO — sem GPU.");
+                println!("  NOT MEASURED — no GPU.");
                 print_table_row("core (cfc zeros)", 0, 0, -1, false);
-                print_table_row("nucleo (tick n seres)", 0, 0, -1, false);
+                print_table_row("core (tick n beings)", 0, 0, -1, false);
                 println!();
                 return;
             }
         };
-        println!("  GPU: {}  ·  capacidade={}", core.adapter, core.capacity);
+        println!("  GPU: {}  ·  capacity={}", core.adapter, core.capacity);
 
-        // Pesos de validação SIMÉTRICOS. Antes vinham do LCG quebrado, todos em
-        // [-1,0): a equivalência CPU/GPU continuava válida (os dois lados liam os
-        // mesmos pesos), mas era uma distribuição degenerada — um bug de sinal no
-        // kernel teria menos chance de aparecer.
+        // SYMMETRIC validation weights. They used to come from the broken LCG, all in
+        // [-1,0): the CPU/GPU equivalence remained valid (both sides read the
+        // same weights), but it was a degenerate distribution — a sign bug in the
+        // kernel would have had less chance to show up.
         let mut rng = universe::rng::Lcg::new(0xDEAD_C0DE);
         let mut nf = move || rng.symmetric();
         let w1: Vec<f32> = (0..n_beings * CoreGpu::w1_total()).map(|_| nf()).collect();
@@ -259,7 +259,7 @@ fn main() {
                 }
             }
         }
-        println!("  CfC inicial: {cfc_zeros}/{cfc_total} zeros  max_abs={cfc_max:.2e}");
+        println!("  initial CfC: {cfc_zeros}/{cfc_total} zeros  max_abs={cfc_max:.2e}");
         print_table_row(
             "core (cfc zeros)",
             cfc_total,
@@ -289,7 +289,7 @@ fn main() {
             })
             .collect();
         let intents = core.tick(&poses_gpu, bytemuck::bytes_of(&params), n_beings);
-        println!("  tick: {} intents (esperado: {})", intents.len(), n_beings);
+        println!("  tick: {} intents (expected: {})", intents.len(), n_beings);
         print_table_row(
             "core (tick n beings)",
             n_beings,
@@ -301,91 +301,91 @@ fn main() {
     }
 
     // ==========================================================================
-    // SECAO 3: CEREBRO
+    // SECTION 3: BRAIN
     //
-    // Canais NAO comparados:
-    //   - metabolism (can_process, adenosine): estado Bevy, fica na CPU.
-    //     Engines recem-criados: adenosine=0, energy=1 → can_process=true → seguro.
-    //   - mirror neurons: champion_snapshot=None em engines novos → nao disparam.
-    //   - resonance_coherence: dopamine=0 no tick 0 → nao dispara.
-    //   - Trinity + axiom_policy: executam na CPU apos o forward.
-    //   - drift CfC 100 ticks: NAO MEDIDO — CerebroGpu nao expoe baixar_cfc().
+    // Channels NOT compared:
+    //   - metabolism (can_process, adenosine): Bevy state, stays on the CPU.
+    //     Freshly created engines: adenosine=0, energy=1 → can_process=true → safe.
+    //   - mirror neurons: champion_snapshot=None on new engines → they do not fire.
+    //   - resonance_coherence: dopamine=0 at tick 0 → does not fire.
+    //   - Trinity + axiom_policy: run on the CPU after the forward.
+    //   - CfC drift 100 ticks: NOT MEASURED — CerebroGpu does not expose baixar_cfc().
     // ==========================================================================
     if quer_cerebro {
-        println!("[CEREBRO]");
+        println!("[BRAIN]");
         validate_brain();
         println!();
     }
 
     // ==========================================================================
-    // SECAO 4: FISICA
+    // SECTION 4: PHYSICS
     //
-    // Canais NAO comparados:
-    //   - orientacao (fwd/lat pos rotate_y): fica na CPU (transform Bevy).
-    //   - hash espacial inter-seres (drafting): fica na CPU.
-    //   - troca de marcha manual: processada antes de serializar.
+    // Channels NOT compared:
+    //   - orientation (fwd/lat after rotate_y): stays on the CPU (Bevy transform).
+    //   - inter-being spatial hash (drafting): stays on the CPU.
+    //   - manual gear change: processed before serializing.
     //
-    // Canais comparados: vel[3], av_y, pos[3], wheels[4x2], rpm, engine/oil_temp, is_stalled.
+    // Channels compared: vel[3], av_y, pos[3], wheels[4x2], rpm, engine/oil_temp, is_stalled.
     //
-    // A replica CPU foi necessaria porque as funcoes de fisica (reset_forces,
-    // suspension_and_load_system, etc.) sao sistemas Bevy privados que requerem
-    // Query<...>, Res<Time>, Res<VoxelWorldResource> — nao chamáveis diretamente.
-    // A replica reproduz INTENCIONALMENTE os bugs documentados em fisica.wgsl:
-    //   a) aero drag aplicado duas vezes (fase powertrain + integration)
-    //   b) yaw_inertia = mass*(wheel_base/2)^2 (ponto de massa, simplificado)
-    //   c) split_left nao clampeado [0,1] com LSD alto
+    // The CPU replica was needed because the physics functions (reset_forces,
+    // suspension_and_load_system, etc.) are private Bevy systems that require
+    // Query<...>, Res<Time>, Res<VoxelWorldResource> — not directly callable.
+    // The replica INTENTIONALLY reproduces the bugs documented in fisica.wgsl:
+    //   a) aero drag applied twice (powertrain phase + integration)
+    //   b) yaw_inertia = mass*(wheel_base/2)^2 (point mass, simplified)
+    //   c) split_left not clamped [0,1] with high LSD
     // ==========================================================================
     if quer_fisica {
-        println!("[FISICA]");
-        // SEGFAULT GUARD: o driver RADV crasha ao compilar physics.wgsl em alguns sistemas.
-        // Rodamos a secao de fisica em processo filho para isolar o crash do processo principal.
-        // Se o filho morrer com SIGSEGV/139, imprimimos NAO MEDIDO em vez de derrubar tudo.
+        println!("[PHYSICS]");
+        // SEGFAULT GUARD: the RADV driver crashes compiling physics.wgsl on some systems.
+        // We run the physics section in a child process to isolate the crash from the main process.
+        // If the child dies with SIGSEGV/139, we print NOT MEASURED instead of taking everything down.
         let fisica_ok = run_in_child(|| validate_physics(&world));
         if !fisica_ok {
-            println!("  NAO MEDIDO — segfault no driver ao criar PhysicsGpu (physics.wgsl).");
-            println!("  Diagnóstico: o driver RADV crasha ao compilar o shader de física.");
-            println!("  Fix planejado: simplificar physics.wgsl ou atualizar o driver Mesa.");
-            print_table_row("fisica (1 passo 6 cen)", 0, 0, -1, false);
-            print_table_row("fisica (deriva 100 passos)", 0, 0, -1, false);
+            println!("  NOT MEASURED — driver segfault while creating PhysicsGpu (physics.wgsl).");
+            println!("  Diagnosis: the RADV driver crashes compiling the physics shader.");
+            println!("  Planned fix: simplify physics.wgsl or update the Mesa driver.");
+            print_table_row("physics (1 step 6 scen)", 0, 0, -1, false);
+            print_table_row("physics (drift 100 steps)", 0, 0, -1, false);
         }
         println!();
     }
 
     // ==========================================================================
-    // SECAO 5: PERCEPCAO
+    // SECTION 5: PERCEPTION
     //
-    // Canais EXCLUIDOS da comparacao (documentados em percepcao.rs e percepcao.wgsl):
-    //   ch 0-15       : pool legado (retina binocular — nao disponivel neste binario)
-    //   ch 21-27, 98  : motion per-row (visual_cortex anterior — temporal)
+    // Channels EXCLUDED from the comparison (documented in percepcao.rs and percepcao.wgsl):
+    //   ch 0-15       : legacy pool (binocular retina — not available in this binary)
+    //   ch 21-27, 98  : motion per-row (earlier visual_cortex — temporal)
     //   ch 29-31,33-35: edge density (temporal)
-    //   ch 44-51      : wall_imminent + trapped (motor.rs sobrescreve)
-    //   ch 52-55      : depth_per_row (motor.rs sobrescreve)
-    //   ch 60-63      : agent_state slot (motor.rs zera depois)
-    //   ch 64-75      : telemetria proprioceptiva (RPM, vel, temp, drafting)
-    //   ch 78-81      : curvatura + lane offset (ch 81 = racing_line.half_width)
-    //   ch 82         : urgencia frontal (GPU=dist, CPU=TTC — diverge por design)
-    //   ch 83-84      : fluxo optico hemisférico (visual_cortex anterior)
-    //   ch 85-89      : wall EMA, slip, corpo, proximity, re
-    //   ch 90-93      : dark-center (calculado sobre retina binocular)
+    //   ch 44-51      : wall_imminent + trapped (motor.rs overwrites)
+    //   ch 52-55      : depth_per_row (motor.rs overwrites)
+    //   ch 60-63      : agent_state slot (motor.rs zeroes it later)
+    //   ch 64-75      : proprioceptive telemetry (RPM, vel, temp, drafting)
+    //   ch 78-81      : curvature + lane offset (ch 81 = racing_line.half_width)
+    //   ch 82         : frontal urgency (GPU=dist, CPU=TTC — diverges by design)
+    //   ch 83-84      : hemispheric optical flow (earlier visual_cortex)
+    //   ch 85-89      : wall EMA, slip, body, proximity, re
+    //   ch 90-93      : dark-center (computed over the binocular retina)
     //   ch 99-100     : motion/edge rows 6-7 (temporal)
-    //   ch 101-127    : misc motor.rs (curvatura 260/350m, approach, racing line, etc.)
-    //   ch 128+       : pool legado HD + CfC percepcao (temporal)
+    //   ch 101-127    : misc motor.rs (curvature 260/350m, approach, racing line, etc.)
+    //   ch 128+       : legacy HD pool + perception CfC (temporal)
     //
-    // Canais COMPARADOS: 16-20, 24-28, 32-43, 48-59, 76-77, 94-97.
+    // Channels COMPARED: 16-20, 24-28, 32-43, 48-59, 76-77, 94-97.
     // ==========================================================================
     if quer_percepcao {
-        println!("[PERCEPCAO]");
+        println!("[PERCEPTION]");
         validate_perception(&world, &poses);
         println!();
     }
 
     println!("---");
-    println!("NAO MEDIDO = readback nao exposto publicamente, nao que passou.");
-    println!("PASS so aparece com o numero que o sustenta.");
+    println!("NOT MEASURED = readback not publicly exposed, not that it passed.");
+    println!("PASS only appears with the number that supports it.");
 }
 
 // ============================================================================
-// CEREBRO
+// BRAIN
 // ============================================================================
 
 fn validate_brain() {
@@ -394,7 +394,7 @@ fn validate_brain() {
     use universe::engine::SovereignEngine;
     use universe::gpu::brain::{BrainGpu, BrainInput};
 
-    // CerebroGpu precisa de Arc<Device>. Criamos device proprio para esta secao.
+    // CerebroGpu needs Arc<Device>. We create our own device for this section.
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -403,20 +403,20 @@ fn validate_brain() {
     })) {
         Some(a) => a,
         None => {
-            println!("  NAO MEDIDO — sem adaptador GPU.");
-            print_table_row("cerebro (forward 1 tick)", 0, 0, -1, false);
-            print_table_row("cerebro (drift CfC 100t)", 0, 0, -1, false);
+            println!("  NOT MEASURED — no GPU adapter.");
+            print_table_row("brain (forward 1 tick)", 0, 0, -1, false);
+            print_table_row("brain (drift CfC 100t)", 0, 0, -1, false);
             return;
         }
     };
-    // CerebroGpu precisa de storage buffers por shader stage:
+    // CerebroGpu needs storage buffers per shader stage:
     //   buf_wave(1), buf_kan(2), buf_l1w(3), buf_l2w(4), buf_intent(5),
     //   buf_cfc(6), buf_debug(7), buf_percept(8), buf_fatigue(9), buf_tau(10) = 10 storage.
-    // Comentário antigo parava em 9 (buf_tau, o banco de τ por canal, foi adicionado
-    // depois em src/gpu/brain.rs e este arquivo nunca foi atualizado — mesma classe de
-    // bug de limite desatualizado já achada e corrigida em gpu_loop.rs no E3). Usamos
-    // 12 (mesmo valor de context.rs/gpu_loop.rs) para dar folga a bindings futuros.
-    // downlevel_defaults() tem max=4, insuficiente.
+    // The old comment stopped at 9 (buf_tau, the per-channel τ bank, was added
+    // later in src/gpu/brain.rs and this file was never updated — same class of
+    // stale-limit bug already found and fixed in gpu_loop.rs in E3). We use
+    // 12 (same value as context.rs/gpu_loop.rs) to leave headroom for future bindings.
+    // downlevel_defaults() has max=4, insufficient.
     let mut limits = wgpu::Limits::downlevel_defaults();
     limits.max_storage_buffers_per_shader_stage = 12;
     let (device_raw, queue_raw) = match pollster::block_on(adapter.request_device(
@@ -430,9 +430,9 @@ fn validate_brain() {
     )) {
         Ok(p) => p,
         Err(e) => {
-            println!("  NAO MEDIDO — request_device: {e}");
-            print_table_row("cerebro (forward 1 tick)", 0, 0, -1, false);
-            print_table_row("cerebro (drift CfC 100t)", 0, 0, -1, false);
+            println!("  NOT MEASURED — request_device: {e}");
+            print_table_row("brain (forward 1 tick)", 0, 0, -1, false);
+            print_table_row("brain (drift CfC 100t)", 0, 0, -1, false);
             return;
         }
     };
@@ -443,13 +443,13 @@ fn validate_brain() {
     let n = 4usize;
     let cap = n.max(8);
     let brain = BrainGpu::new(Arc::clone(&device), Arc::clone(&queue), nome.clone(), cap);
-    println!("  GPU: {}  · {} seres", nome, n);
+    println!("  GPU: {}  · {} beings", nome, n);
 
-    // LCG determinístico para preencher pesos: semente fixa garante
-    // que CPU e GPU recebem EXATAMENTE os mesmos valores.
-    // Sem isto, instinct_layer começa com zeros e o teste compara 0 vs 0 (vácuo).
-    // Simétrico: o mapeamento antigo devolvia [-1,0)·0,1, ou seja pesos de validação
-    // exclusivamente negativos — comparação válida, distribuição degenerada.
+    // Deterministic LCG to fill the weights: a fixed seed guarantees
+    // that CPU and GPU receive EXACTLY the same values.
+    // Without this, instinct_layer starts as zeros and the test compares 0 vs 0 (vacuous).
+    // Symmetric: the old mapping returned [-1,0)·0.1, i.e. exclusively negative
+    // validation weights — a valid comparison, a degenerate distribution.
     let lcg_next = |s: &mut u64| -> f32 {
         let mut r = universe::rng::Lcg::new(*s);
         let v = r.symmetric() * 0.1;
@@ -459,7 +459,7 @@ fn validate_brain() {
         v
     };
 
-    // Engines para a GPU: preenchidos com pesos pseudo-aleatórios
+    // Engines for the GPU: filled with pseudo-random weights
     let mut engines: Vec<SovereignEngine> = (0..n).map(|_| SovereignEngine::new()).collect();
     {
         let mut rng: u64 = 0xBEEF_F00D_1234_5678;
@@ -467,11 +467,11 @@ fn validate_brain() {
             for w in eng.instinct_layer.weights.iter_mut() {
                 *w = lcg_next(&mut rng);
             }
-            eng.cfc_state.reset(); // garante estado zero = identico ao estado inicial GPU
+            eng.cfc_state.reset(); // ensures zero state = identical to the GPU initial state
         }
     }
 
-    // Snapshot dos pesos L1 para replicar nos engines de CPU (mesma semente, mesma ordem)
+    // Snapshot of the L1 weights to replicate in the CPU engines (same seed, same order)
     let l1_snapshots: Vec<Vec<f32>> = engines
         .iter()
         .map(|e| e.instinct_layer.weights.clone())
@@ -479,12 +479,12 @@ fn validate_brain() {
 
     let mag_cpu_l1: f32 =
         l1_snapshots[0].iter().map(|v| v.abs()).sum::<f32>() / l1_snapshots[0].len() as f32;
-    println!("  |pesos L1| medio (ser 0): {mag_cpu_l1:.4e}  (>0 = pesos reais, nao zeros)");
+    println!("  mean |L1 weights| (being 0): {mag_cpu_l1:.4e}  (>0 = real weights, not zeros)");
 
     let eng_refs: Vec<&SovereignEngine> = engines.iter().collect();
     brain.upload_weights(&eng_refs);
 
-    // Wave deterministico com valores variados (nao zeros)
+    // Deterministic wave with varied values (not zeros)
     let mut waves: Vec<[i8; SENSORY_WAVE_SIZE]> = Vec::with_capacity(n);
     for s in 0..n {
         let mut w = [0i8; SENSORY_WAVE_SIZE];
@@ -507,56 +507,56 @@ fn validate_brain() {
         .collect();
     let intent_gpu = brain.forward(&inputs, dt);
 
-    // Lê estado CfC da GPU pós-forward (para diagnóstico por camada)
+    // Reads the GPU CfC state post-forward (for per-layer diagnostics)
     let cfc_gpu = brain.download_cfc_state(n);
 
-    // Lê buffer de debug: l1_raw, cfc_inputs e kan_inputs para ser 0 diretamente da GPU
+    // Reads the debug buffer: l1_raw, cfc_inputs and kan_inputs for being 0 straight from the GPU
     let (l1_raw_gpu, cfc_in_gpu, kan_in_gpu) = brain.download_debug();
 
-    // Lê fadiga de saída: verifica se out_fat está sendo acumulado (debug)
+    // Reads output fatigue: checks whether out_fat is being accumulated (debug)
     {
-        let fat = brain.download_fatigue(1); // só ser 0
+        let fat = brain.download_fatigue(1); // being 0 only
         // Slots [96..192] = output fatigue (slots [0..48] = L2, [48..96] = bypass)
         let out_fat_max = fat[96..192].iter().cloned().fold(0.0f32, f32::max);
         let out_fat_nonzero = fat[96..192].iter().filter(|&&v| v.abs() > 1e-6).count();
-        println!("  [DIAGNÓSTICO FADIGA SAÍDA — ser 0, tick 1]");
+        println!("  [OUTPUT FATIGUE DIAGNOSTIC — being 0, tick 1]");
         println!(
-            "  out_fat: max={:.4e}  canais_não_zero={}/96",
+            "  out_fat: max={:.4e}  nonzero_channels={}/96",
             out_fat_max, out_fat_nonzero
         );
         println!(
             "  out_fat[0] (throttle L2 ch0) = {:.4e}",
             fat.get(96).copied().unwrap_or(0.0)
         );
-        // Com OUT_ALPHA=2.0, dt=1/64: out_fat[0] deve ser ~2.0 * |l2_raw[0]| * 0.015625
-        // Qualquer valor > 0 confirma que o mecanismo está sendo executado.
+        // With OUT_ALPHA=2.0, dt=1/64: out_fat[0] should be ~2.0 * |l2_raw[0]| * 0.015625
+        // Any value > 0 confirms the mechanism is being executed.
         if out_fat_nonzero == 0 {
-            println!("  AVISO: out_fat todos zero — fadiga de saída pode não estar ativa!");
+            println!("  WARNING: out_fat all zero — output fatigue may not be active!");
         }
     }
 
-    // CPU: replica explícita por camada (sem execute_cycle) para diagnóstico preciso.
-    // Usa os mesmos pesos enviados para a GPU e o mesmo wave deterministico.
-    // Cada etapa é explicitamente calculada para podermos comparar camada por camada.
+    // CPU: explicit per-layer replica (no execute_cycle) for precise diagnostics.
+    // Uses the same weights sent to the GPU and the same deterministic wave.
+    // Each step is explicitly computed so we can compare layer by layer.
     use universe::cfc::CfCCell;
 
-    // Diagnóstico camada por camada para o ser 0 apenas (representativo)
+    // Per-layer diagnostics for being 0 only (representative)
     {
         let s = 0usize;
         let wave0 = &waves[s];
         let eng0 = &engines[s];
 
-        // ETAPA KAN: aplica spline por canal (identidade com coeffs=1.0)
+        // KAN STEP: applies the per-channel spline (identity with coeffs=1.0)
         let mut kan_wave0 = [0i8; SENSORY_WAVE_SIZE];
         eng0.kan_filters.apply(wave0.as_slice(), &mut kan_wave0);
 
-        // ETAPA CfC: atualiza state[0..96] usando kan_wave0[0..96] como input
+        // CfC STEP: updates state[0..96] using kan_wave0[0..96] as input
         let mut cfc_cpu = CfCCell::new(96);
-        cfc_cpu.reset(); // estado zero = identico ao GPU
+        cfc_cpu.reset(); // zero state = identical to the GPU
         let mut filtered_retina0 = [0i8; 96];
         cfc_cpu.update(&kan_wave0[0..96], &mut filtered_retina0, dt);
 
-        // Compara CfC state: CPU vs GPU
+        // Compare CfC state: CPU vs GPU
         let cfc_state_gpu = &cfc_gpu[s];
         let mut cfc_max_dif = 0.0f32;
         let mut cfc_mismatch = 0usize;
@@ -571,8 +571,8 @@ fn validate_brain() {
                 cfc_mismatch += 1;
             }
         }
-        // Compara filtered_retina (saida CfC quantizada) CPU vs o que a GPU calcularia
-        // (tanh(state) * 127, arredondado para i8)
+        // Compare filtered_retina (quantized CfC output) CPU vs what the GPU would compute
+        // (tanh(state) * 127, rounded to i8)
         let mut fr_max_dif = 0i32;
         for i in 0..96 {
             let cpu_fr = filtered_retina0[i] as i32;
@@ -584,12 +584,12 @@ fn validate_brain() {
             }
         }
 
-        // ETAPA L1: forward com filtered_wave = [filtered_retina0(0..96), kan_wave0(96..222)]
+        // L1 STEP: forward with filtered_wave = [filtered_retina0(0..96), kan_wave0(96..222)]
         let mut filtered_wave0 = [0i8; SENSORY_WAVE_SIZE];
         filtered_wave0.copy_from_slice(kan_wave0.as_slice());
         filtered_wave0[0..96].copy_from_slice(&filtered_retina0);
 
-        // L1 manual (replica BitLinear::forward)
+        // Manual L1 (replicates BitLinear::forward)
         let l1w = &eng0.instinct_layer.weights;
         let norm = 1.0_f32 / 127.0;
         let mut l1_raw0 = vec![0.0f32; 96];
@@ -602,7 +602,7 @@ fn validate_brain() {
             l1_raw0[j] = acc * norm;
         }
 
-        // ETAPA L2 (nos primeiros 48 do final_intent)
+        // L2 STEP (first 48 of final_intent)
         let mut l1_act0 = [0i8; 96];
         for i in 0..96 {
             l1_act0[i] = ((l1_raw0[i].tanh() * 127.0).clamp(-127.0, 127.0)) as i8;
@@ -618,26 +618,26 @@ fn validate_brain() {
             l2_raw0[j] = acc * norm;
         }
 
-        // final_intent esperado pela CPU (camada por camada) — INCLUI fadiga de saída.
-        // Replica exatamente o que o shader faz em brain.wgsl (etapa 2).
+        // final_intent expected by the CPU (layer by layer) — INCLUDES output fatigue.
+        // Replicates exactly what the shader does in brain.wgsl (step 2).
         //
-        // Parâmetros espelho dos do shader (manter em sincronia com brain.wgsl):
+        // Mirror parameters of the shader's (keep in sync with brain.wgsl):
         const OUT_ALPHA_CPU: f32 = 4.0;
         const OUT_BETA_CPU: f32 = 0.85;
         //
-        // Estado inicial de out_fat: zeros (mesmo que o buffer GPU no primeiro tick).
-        // A fadiga é ATUALIZADA antes de ser aplicada (= comportamento do shader):
+        // Initial out_fat state: zeros (same as the GPU buffer on the first tick).
+        // Fatigue is UPDATED before being applied (= shader behavior):
         //   out_fat += OUT_ALPHA * (|raw| - out_fat) * dt
-        //   intent  = tanh(raw - OUT_BETA * out_fat_novo)
+        //   intent  = tanh(raw - OUT_BETA * out_fat_new)
         let mut fi_cpu_manual = [0.0f32; 96];
         for j in 0..48 {
-            let raw = l2_raw0[j] * 2.0; // l2_raw como no shader (×2/127 × 127 = ×2)
-            // out_fat parte de zero: atualiza primeiro, depois aplica
+            let raw = l2_raw0[j] * 2.0; // l2_raw as in the shader (×2/127 × 127 = ×2)
+            // out_fat starts from zero: update first, then apply
             let out_fat = 0.0f32 + OUT_ALPHA_CPU * (raw.abs() - 0.0f32) * dt;
             fi_cpu_manual[j] = adapta_saida(raw, out_fat);
         }
         for j in 48..96 {
-            let raw = l1_raw0[j] * 2.0; // bypass: raw_bp como no shader (×2)
+            let raw = l1_raw0[j] * 2.0; // bypass: raw_bp as in the shader (×2)
             let out_fat = 0.0f32 + OUT_ALPHA_CPU * (raw.abs() - 0.0f32) * dt;
             fi_cpu_manual[j] = adapta_saida(raw, out_fat);
         }
@@ -659,17 +659,17 @@ fn validate_brain() {
             }
         }
 
-        println!("  [DIAGNÓSTICO CAMADA A CAMADA — ser 0]");
-        println!("  KAN: state identidade (coeffs=1.0) — sem divergencia esperada");
+        println!("  [LAYER-BY-LAYER DIAGNOSTIC — being 0]");
+        println!("  KAN: identity state (coeffs=1.0) — no divergence expected");
         println!("  CfC state max_dif={cfc_max_dif:.4e}  mismatches(>5e-4)={cfc_mismatch}/96");
-        println!("  CfC filtered_retina max_dif_i8={fr_max_dif}  (0=identico)");
+        println!("  CfC filtered_retina max_dif_i8={fr_max_dif}  (0=identical)");
         println!(
             "  final_intent (CPU-manual vs GPU) max_dif={fi_max_dif:.4e}  mismatches={fi_mismatch}/96"
         );
         if let Some((d, c, g, dif)) = fi_worst {
-            println!("    pior: dim={d}  cpu_manual={c:.6}  gpu={g:.6}  dif={dif:.4e}");
+            println!("    worst: dim={d}  cpu_manual={c:.6}  gpu={g:.6}  dif={dif:.4e}");
         }
-        // Compara final_intent[0] diretamente: calcula L2 de L1 vs GPU
+        // Compare final_intent[0] directly: computes L2 from L1 vs GPU
         let fi_l2_cpu = fi_cpu_manual[0];
         let fi_l2_gpu = fi_gpu0[0];
         println!(
@@ -683,8 +683,8 @@ fn validate_brain() {
             (fi_bypass_cpu - fi_bypass_gpu).abs()
         );
 
-        // Comparação DIRETA de l1_raw: CPU manual vs buffer de debug da GPU
-        // (sem inversão via bypass — buf_debug[0..96] = w_l1r exportado diretamente)
+        // DIRECT l1_raw comparison: manual CPU vs GPU debug buffer
+        // (no inversion via bypass — buf_debug[0..96] = w_l1r exported directly)
         let mut l1r_direct_max = 0.0f32;
         let mut l1r_direct_worst = 0usize;
         let mut l1a_direct_mismatches = 0usize;
@@ -703,15 +703,15 @@ fn validate_brain() {
             }
         }
         println!(
-            "  L1 raw DIRETO (buf_debug): max_dif={l1r_direct_max:.4e}  pior_j={l1r_direct_worst}"
+            "  L1 raw DIRECT (buf_debug): max_dif={l1r_direct_max:.4e}  worst_j={l1r_direct_worst}"
         );
         println!(
             "    cpu={:.6}  gpu={:.6}",
             l1_raw0[l1r_direct_worst], l1_raw_gpu[l1r_direct_worst]
         );
-        println!("  L1 act mismatches (i8 diferente): {l1a_direct_mismatches}/96");
+        println!("  L1 act mismatches (different i8): {l1a_direct_mismatches}/96");
 
-        // Mostra L1 raw j=21 (maior divergência no resultado final) diretamente
+        // Shows L1 raw j=21 (largest divergence in the final result) directly
         let l1r21_cpu = l1_raw0[21];
         let l1r21_gpu_direct = l1_raw_gpu[21];
         let l1a21_cpu = l1_act0[21] as i32;
@@ -721,19 +721,19 @@ fn validate_brain() {
             (l1r21_cpu - l1r21_gpu_direct).abs()
         );
         println!(
-            "  l1_act[21]: cpu={l1a21_cpu}  gpu={l1a21_gpu}  → mesmo i8? {}",
+            "  l1_act[21]: cpu={l1a21_cpu}  gpu={l1a21_gpu}  → same i8? {}",
             l1a21_cpu == l1a21_gpu
         );
 
-        // Verifica se os inputs CfC e KAN na GPU são idênticos aos da CPU.
-        // NOTA: buf_debug[192..287] = w_kan[96..191] (96 valores escritos por threads 0..95).
-        //       buf_debug[287..319] = w_kan[192..222] NÃO escrito (zeros). Comparar apenas 96 valores.
+        // Checks whether the CfC and KAN inputs on the GPU are identical to the CPU's.
+        // NOTE: buf_debug[192..287] = w_kan[96..191] (96 values written by threads 0..95).
+        //       buf_debug[287..319] = w_kan[192..222] NOT written (zeros). Compare only 96 values.
         let mut cfc_in_max_dif = 0i32;
         let mut cfc_in_worst = 0usize;
         let mut kan_in_max_dif = 0i32;
         let mut kan_in_worst = 0usize;
         for i in 0..96 {
-            let cpu_v = filtered_wave0[i] as i32; // CfC output (parte 0..96)
+            let cpu_v = filtered_wave0[i] as i32; // CfC output (part 0..96)
             let gpu_v = cfc_in_gpu[i] as i32;
             let d = (cpu_v - gpu_v).abs();
             if d > cfc_in_max_dif {
@@ -741,10 +741,10 @@ fn validate_brain() {
                 cfc_in_worst = i;
             }
         }
-        // Compara apenas os 96 primeiros canais KAN (96..191), que foram escritos no buf_debug
+        // Compare only the first 96 KAN channels (96..191), which were written to buf_debug
         for i in 0..96 {
-            let cpu_v = filtered_wave0[96 + i] as i32; // KAN output para canal 96+i
-            let gpu_v = kan_in_gpu[i] as i32; // w_kan[96+i] da GPU
+            let cpu_v = filtered_wave0[96 + i] as i32; // KAN output for channel 96+i
+            let gpu_v = kan_in_gpu[i] as i32; // w_kan[96+i] from the GPU
             let d = (cpu_v - gpu_v).abs();
             if d > kan_in_max_dif {
                 kan_in_max_dif = d;
@@ -756,57 +756,57 @@ fn validate_brain() {
         );
         if cfc_in_max_dif > 0 {
             println!(
-                "    CfC pior ch={cfc_in_worst}  cpu={}  gpu={}",
+                "    CfC worst ch={cfc_in_worst}  cpu={}  gpu={}",
                 filtered_wave0[cfc_in_worst] as i32, cfc_in_gpu[cfc_in_worst] as i32
             );
         }
         if kan_in_max_dif > 0 {
             println!(
-                "    KAN pior ch={}  cpu={}  gpu={}",
+                "    KAN worst ch={}  cpu={}  gpu={}",
                 96 + kan_in_worst,
                 filtered_wave0[96 + kan_in_worst] as i32,
                 kan_in_gpu[kan_in_worst] as i32
             );
         }
         println!(
-            "    (0=inputs identicos em ambas faixas → divergencia em l1_raw vem de matmul FP ≤1e-5)"
+            "    (0=identical inputs in both ranges → divergence in l1_raw comes from FP matmul ≤1e-5)"
         );
         println!();
     }
 
-    // CPU: execute_cycle em engines com MESMOS pesos dos engines de GPU.
-    // CRITICO: reusar l1_snapshots para garantir identidade de pesos CPU vs GPU.
-    // Para engines novos (tick 0, dopamine=0, champion_snapshot=None), as partes
-    // de mirror neurons / resonance nao alteram final_intent. Comparacao e valida.
+    // CPU: execute_cycle on engines with the SAME weights as the GPU engines.
+    // CRITICAL: reuse l1_snapshots to guarantee weight identity CPU vs GPU.
+    // For new engines (tick 0, dopamine=0, champion_snapshot=None), the mirror
+    // neuron / resonance parts do not alter final_intent. Comparison is valid.
     //
-    // execute_cycle agora inclui a fadiga de saída (OUT_ALPHA/OUT_BETA) em engine.rs,
-    // espelhando brain.wgsl. Não há mais recálculo manual aqui — o teste compara
-    // engine.execute_cycle() contra a GPU diretamente, sem gambiarra no meio.
+    // execute_cycle now includes the output fatigue (OUT_ALPHA/OUT_BETA) in engine.rs,
+    // mirroring brain.wgsl. There is no manual recomputation here anymore — the test
+    // compares engine.execute_cycle() against the GPU directly, no hack in between.
     let intent_cpu: Vec<Vec<f32>> = waves
         .iter()
         .enumerate()
         .map(|(s, w)| {
             let mut cpu_eng = SovereignEngine::new();
-            // Aplica os mesmos pesos L1 que foram para a GPU
+            // Applies the same L1 weights that went to the GPU
             cpu_eng
                 .instinct_layer
                 .weights
                 .copy_from_slice(&l1_snapshots[s]);
             cpu_eng.cfc_state.reset();
-            // out_fatigue já é [0.0; 96] no new() — idêntico ao estado GPU pós reset_cfc.
+            // out_fatigue is already [0.0; 96] in new() — identical to the GPU state after reset_cfc.
             cpu_eng.execute_cycle(w.as_slice(), 0.0, dt);
             cpu_eng.final_intent.clone()
         })
         .collect();
 
-    // Magnitude do sinal CPU (deve ser >0 com pesos reais)
+    // Magnitude of the CPU signal (must be >0 with real weights)
     let mag_intent: f32 = intent_cpu
         .iter()
         .flat_map(|v| v.iter())
         .map(|v| v.abs())
         .sum::<f32>()
         / (n * intent_cpu.first().map(|v| v.len()).unwrap_or(1)).max(1) as f32;
-    println!("  |final_intent| medio na CPU: {mag_intent:.4e}  (PASS com zero e falso-positivo)");
+    println!("  mean |final_intent| on the CPU: {mag_intent:.4e}  (PASS with zero is a false positive)");
 
     let tol = 5e-4_f32;
     let mut comp_total = 0usize;
@@ -840,33 +840,33 @@ fn validate_brain() {
     }
     piores.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
     println!(
-        "  forward 1 tick: {comp_total} campos  {comp_iguais} dentro tol ({:.4}%)",
+        "  forward 1 tick: {comp_total} fields  {comp_iguais} within tol ({:.4}%)",
         comp_iguais as f64 / comp_total.max(1) as f64 * 100.0
     );
     println!("  max_abs={comp_maxabs:.2e}  max_rel={comp_maxrel:.2e}  tol<={tol:.2e}");
     if !piores.is_empty() {
         for (s, d, c, g, dif) in piores.iter().take(5) {
-            println!("    ser={s} dim={d}  cpu={c:.6}  gpu={g:.6}  dif={dif:.2e}");
+            println!("    being={s} dim={d}  cpu={c:.6}  gpu={g:.6}  dif={dif:.2e}");
         }
     }
     let c_pass = comp_maxabs <= tol;
     print_table_row(
-        "cerebro (forward 1 tick)",
+        "brain (forward 1 tick)",
         comp_total,
         comp_iguais,
         (comp_maxabs * 1e6) as i32,
         c_pass,
     );
 
-    // ── Drift CfC: 100 ticks acumulados ──────────────────────────────────────
-    // Mede quanto o estado CfC da GPU deriva em relação à CPU após N ticks.
-    // Um drift crescente indica bug recorrente no kernel (ex: decay errado, noise diferente).
-    // Aqui comparamos state[0..96] de cada ser após cada tick.
-    println!("  [DRIFT CFC — 100 ticks, {} seres]", n);
+    // ── CfC drift: 100 accumulated ticks ──────────────────────────────────────
+    // Measures how much the GPU CfC state drifts relative to the CPU after N ticks.
+    // Growing drift indicates a recurring kernel bug (e.g. wrong decay, different noise).
+    // Here we compare state[0..96] of each being after each tick.
+    println!("  [CFC DRIFT — 100 ticks, {} beings]", n);
     {
         use universe::cfc::CfCCell;
 
-        // Estado CfC CPU: um CfCCell por ser, começando em zero (igual ao GPU)
+        // CPU CfC state: one CfCCell per being, starting at zero (same as the GPU)
         let mut cfc_cpus: Vec<CfCCell> = (0..n)
             .map(|_| {
                 let mut c = CfCCell::new(96);
@@ -875,7 +875,7 @@ fn validate_brain() {
             })
             .collect();
 
-        // GPU: resetar CfC de todos os seres para zero antes do loop
+        // GPU: reset the CfC of every being to zero before the loop
         for s in 0..n {
             brain.reset_cfc(s);
         }
@@ -883,7 +883,7 @@ fn validate_brain() {
         let mut drift_max_per_tick: Vec<f32> = Vec::with_capacity(100);
 
         for tick in 0..100usize {
-            // GPU: um forward com os mesmos waves determinísticos
+            // GPU: one forward with the same deterministic waves
             let inputs_loop: Vec<BrainInput<'_>> = engines
                 .iter()
                 .zip(waves.iter())
@@ -894,19 +894,19 @@ fn validate_brain() {
                 .collect();
             let _ = brain.forward(&inputs_loop, dt);
 
-            // CPU: atualiza CfC manualmente (mesma entrada que o GPU recebe)
+            // CPU: updates the CfC manually (same input the GPU receives)
             for s in 0..n {
                 let wave_s = &waves[s];
                 let eng_s = &engines[s];
-                // KAN (identidade, coeffs=1.0, mas aplicar mesmo assim para fidelidade)
+                // KAN (identity, coeffs=1.0, but apply anyway for fidelity)
                 let mut kan_wave = [0i8; SENSORY_WAVE_SIZE];
                 eng_s.kan_filters.apply(wave_s.as_slice(), &mut kan_wave);
-                // CfC atualiza com os primeiros 96 canais pós-KAN
+                // CfC updates with the first 96 post-KAN channels
                 let mut filtered = [0i8; 96];
                 cfc_cpus[s].update(&kan_wave[0..96], &mut filtered, dt);
             }
 
-            // Comparar state CfC GPU vs CPU neste tick
+            // Compare GPU vs CPU CfC state at this tick
             let cfc_states_gpu = brain.download_cfc_state(n);
             let mut tick_max = 0.0f32;
             for s in 0..n {
@@ -932,11 +932,11 @@ fn validate_brain() {
         );
         let drift_pass = d100 < 1e-3;
         println!(
-            "  veredito: {} (limiar 1e-3)",
+            "  verdict: {} (threshold 1e-3)",
             if drift_pass { "PASS" } else { "FAIL" }
         );
         print_table_row(
-            "cerebro (drift CfC 100t)",
+            "brain (drift CfC 100t)",
             100,
             if drift_pass { 100 } else { 0 },
             (dmax * 1e6) as i32,
@@ -946,7 +946,7 @@ fn validate_brain() {
 }
 
 // ============================================================================
-// FISICA
+// PHYSICS
 // ============================================================================
 
 fn validate_physics(world: &VoxelWorld) {
@@ -957,9 +957,9 @@ fn validate_physics(world: &VoxelWorld) {
         match PhysicsGpu::new(&grid_u8, &world.height_map, world.size, world.cell_size, 16) {
             Some(g) => g,
             None => {
-                println!("  NAO MEDIDO — sem GPU.");
-                print_table_row("fisica (1 passo 6 cen)", 0, 0, -1, false);
-                print_table_row("fisica (deriva 100 passos)", 0, 0, -1, false);
+                println!("  NOT MEASURED — no GPU.");
+                print_table_row("physics (1 step 6 scen)", 0, 0, -1, false);
+                print_table_row("physics (drift 100 steps)", 0, 0, -1, false);
                 return;
             }
         };
@@ -975,7 +975,7 @@ fn validate_physics(world: &VoxelWorld) {
         };
     }
 
-    // 6 cenários
+    // 6 scenarios
     let mut cen_cpu: Vec<PhysicsStateGpu> = Vec::new();
     let mut cen_names: Vec<&str> = Vec::new();
     {
@@ -994,7 +994,7 @@ fn validate_physics(world: &VoxelWorld) {
         for wh in e0.wheels.iter_mut() {
             wh[0] = w;
         }
-        push!("vel_media", e0);
+        push!("medium_speed", e0);
 
         let mut e1 = base!(dt, fl);
         e1.vel = [10.0, 0.0, 0.0];
@@ -1005,7 +1005,7 @@ fn validate_physics(world: &VoxelWorld) {
         for wh in e1.wheels.iter_mut() {
             wh[0] = w;
         }
-        push!("acelerando", e1);
+        push!("accelerating", e1);
 
         let mut e2 = base!(dt, fl);
         e2.vel = [15.0, 0.0, 2.0];
@@ -1018,7 +1018,7 @@ fn validate_physics(world: &VoxelWorld) {
         for wh in e2.wheels.iter_mut() {
             wh[0] = w;
         }
-        push!("em_curva", e2);
+        push!("cornering", e2);
 
         let mut e3 = base!(dt, fl);
         e3.vel = [25.0, 0.0, 5.0];
@@ -1032,14 +1032,14 @@ fn validate_physics(world: &VoxelWorld) {
         e3.wheels[2][0] = w;
         e3.wheels[4][0] = w * 1.4;
         e3.wheels[6][0] = w * 1.4;
-        push!("derrapando", e3);
+        push!("drifting", e3);
 
         let mut e4 = base!(dt, fl_ns);
         e4.vel = [3.0, 0.0, 0.0];
         e4.current_rpm = 0.0;
         e4.current_gear = 2;
         e4.is_stalled = 1;
-        push!("motor_travado", e4);
+        push!("stalled_engine", e4);
 
         let mut e5 = base!(dt, fl);
         e5.vel = [1.0, 0.0, 0.0];
@@ -1050,10 +1050,10 @@ fn validate_physics(world: &VoxelWorld) {
         for wh in e5.wheels.iter_mut() {
             wh[0] = w;
         }
-        push!("freando", e5);
+        push!("braking", e5);
     }
 
-    // CPU: replica das 5 fases
+    // CPU: replica of the 5 phases
     let results_cpu: Vec<PhysicsStateGpu> = cen_cpu
         .iter()
         .map(|e| physics_step_cpu(*e, world))
@@ -1063,14 +1063,14 @@ fn validate_physics(world: &VoxelWorld) {
     let mut gpu_states: Vec<PhysicsStateGpu> = cen_cpu.clone();
     let ok_g = phys_gpu.step(&mut gpu_states);
     if !ok_g {
-        println!("  NAO MEDIDO — passo() retornou false.");
-        print_table_row("fisica (1 passo 6 cen)", 0, 0, -1, false);
-        print_table_row("fisica (deriva 100 passos)", 0, 0, -1, false);
+        println!("  NOT MEASURED — step() returned false.");
+        print_table_row("physics (1 step 6 scen)", 0, 0, -1, false);
+        print_table_row("physics (drift 100 steps)", 0, 0, -1, false);
         return;
     }
 
     let n_cen = cen_names.len();
-    println!("  1 passo: {n_cen} cenarios, dt={dt:.4}s");
+    println!("  1 step: {n_cen} scenarios, dt={dt:.4}s");
 
     let tol_abs = 1e-3_f32;
     let tol_rel = 1e-2_f32;
@@ -1111,7 +1111,7 @@ fn validate_physics(world: &VoxelWorld) {
         cmp!(c, "current_rpm", cp.current_rpm, gp.current_rpm);
         cmp!(c, "engine_temp", cp.engine_temp, gp.engine_temp);
         cmp!(c, "oil_temp", cp.oil_temp, gp.oil_temp);
-        // is_stalled exato
+    // is_stalled exact
         total += 1;
         if cp.is_stalled == gp.is_stalled {
             iguais += 1;
@@ -1134,34 +1134,34 @@ fn validate_physics(world: &VoxelWorld) {
 
     piores.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
     println!(
-        "  comparados={total}  identicos={iguais} ({:.4}%)  max_abs={maxabs:.4e}  max_rel={maxrel:.4e}",
+        "  compared={total}  identical={iguais} ({:.4}%)  max_abs={maxabs:.4e}  max_rel={maxrel:.4e}",
         iguais as f64 / total.max(1) as f64 * 100.0
     );
     if !piores.is_empty() {
-        println!("  DIVERGENCIAS (ate 5):");
+        println!("  DIVERGENCES (up to 5):");
         for (c, campo, cpu_v, gpu_v, d) in piores.iter().take(5) {
             println!(
-                "    cen={c}({}) campo={campo}  cpu={cpu_v:.6}  gpu={gpu_v:.6}  dif={d:.4e}",
+                "    cen={c}({}) field={campo}  cpu={cpu_v:.6}  gpu={gpu_v:.6}  dif={d:.4e}",
                 cen_names[*c]
             );
         }
     }
-    // VEREDITO: usa critério DUAL (abs OU rel) igual ao da contagem de `iguais`.
-    // Antes usava só `maxabs <= tol_abs`, que marcava FALHA quando max_abs=3.39e-3
-    // (> tol_abs=1e-3) mesmo com 162/162 idênticos pelo critério dual — rótulo enganoso.
-    // A tolerância real (tol_abs=1e-3, tol_rel=1e-2) NÃO foi afrouxada; só o veredito
-    // final foi alinhado com o mesmo critério usado em cada campo individualmente.
+    // VERDICT: uses the DUAL criterion (abs OR rel), same as the `iguais` count.
+    // It used to use only `maxabs <= tol_abs`, which flagged FAILURE when max_abs=3.39e-3
+    // (> tol_abs=1e-3) even with 162/162 identical under the dual criterion — a misleading label.
+    // The actual tolerance (tol_abs=1e-3, tol_rel=1e-2) was NOT loosened; only the final
+    // verdict was aligned with the same criterion used on each individual field.
     let fisica_pass = iguais == total;
     print_table_row(
-        "fisica (1 passo 6 cen)",
+        "physics (1 step 6 scen)",
         total,
         iguais,
         (maxabs * 1e4) as i32,
         fisica_pass,
     );
 
-    // Deriva 100 passos
-    println!("  [DERIVA 100 PASSOS — cenario vel_media]");
+    // Drift 100 steps
+    println!("  [DRIFT 100 STEPS — medium_speed scenario]");
     let mut ec = base!(dt, fl);
     ec.vel = [20.0, 0.0, 0.0];
     ec.current_rpm = 4000.0;
@@ -1210,21 +1210,21 @@ fn validate_physics(world: &VoxelWorld) {
         "  drift t=10:{d10:.4e}  t=50:{d50:.4e}  t=100:{d100:.4e}  max:{dmax:.4e}  ratio:{ratio:.1}x"
     );
     if let Some(t) = divergiu {
-        println!("  AVISO: deriva>1.0 no tick {t}");
+        println!("  WARNING: drift>1.0 at tick {t}");
     } else {
         println!(
-            "  crescimento {:.0}x — {}",
+            "  growth {:.0}x — {}",
             ratio,
             if ratio < 50.0 {
-                "sub-linear (arredondamento FP)"
+                "sub-linear (FP rounding)"
             } else {
-                "supra-linear (investigar)"
+                "supra-linear (investigate)"
             }
         );
     }
     let drift_pass = d100 < 0.5 && divergiu.is_none();
     print_table_row(
-        "fisica (deriva 100 passos)",
+        "physics (drift 100 steps)",
         100,
         if drift_pass { 100 } else { 0 },
         (d100 * 1000.0) as i32,
@@ -1232,7 +1232,7 @@ fn validate_physics(world: &VoxelWorld) {
     );
 }
 
-// Replica das 5 fases de physics.rs — ver comentario no cabecalho da secao FISICA.
+// Replica of the 5 phases of physics.rs — see the comment at the header of the PHYSICS section.
 fn physics_step_cpu(
     mut e: universe::gpu::physics::PhysicsStateGpu,
     world: &VoxelWorld,
@@ -1241,11 +1241,11 @@ fn physics_step_cpu(
     let mass = e.mass;
     let speed = v3len(e.vel);
 
-    // FASE 1: reset_forces
+    // PHASE 1: reset_forces
     let mut forces = [0.0f32, -9.81 * mass, 0.0f32];
     let mut torques = [0.0f32; 3]; // [0]=yaw_inertia stash, [1]=yaw_torque
 
-    // FASE 2: suspension_and_load
+    // PHASE 2: suspension_and_load
     let hw = e.wheel_base * 0.5;
     let ht = e.track_width * 0.5;
     let offsets: [[f32; 3]; 4] = [
@@ -1306,7 +1306,7 @@ fn physics_step_cpu(
         }
     }
 
-    // FASE 3: powertrain_and_tire
+    // PHASE 3: powertrain_and_tire
     let fwd_v = v3dot(e.vel, e.fwd);
     let lat_v = v3dot(e.vel, e.lat);
     let gears = [-3.5f32, 0.0, 3.8, 2.6, 1.9, 1.45, 1.15];
@@ -1431,8 +1431,8 @@ fn physics_step_cpu(
         forces[2] -= e.fwd[2] * fwd_v.signum() * eb;
     }
 
-    // Grip: GPU usa c.terrain_grip do estado (setado pelo host antes do dispatch).
-    // CPU replica usa o mesmo valor — NAO recomputa do voxel (evita divergencia em Grass).
+    // Grip: the GPU uses c.terrain_grip from the state (set by the host before the dispatch).
+    // The CPU replica uses the same value — it does NOT recompute from the voxel (avoids divergence on Grass).
     let tg = e.terrain_grip;
     let eg_ = e.env_grip;
     let di: &[usize] = match e.drivetrain {
@@ -1542,10 +1542,10 @@ fn physics_step_cpu(
     torques[0] = yi;
     torques[1] = tyaw;
 
-    // FASE 4: colisao parcial — a GPU (fisica.wgsl linhas 681-686) faz um "ground clamp"
-    // baseado em heightmap ANTES da integracao: se pos.y < height_at(pos.x,pos.z)+0.5,
-    // sobe pos.y e zera vel.y negativa. Sem isso o carro começa abaixo do terreno e
-    // recebe impulso upward.
+    // PHASE 4: partial collision — the GPU (fisica.wgsl lines 681-686) does a heightmap-based
+    // "ground clamp" BEFORE integration: if pos.y < height_at(pos.x,pos.z)+0.5,
+    // it raises pos.y and zeroes negative vel.y. Without this the car starts below the
+    // terrain and receives an upward impulse.
     let ground_y_c = world.get_height_at(e.pos[0], e.pos[2]) + 0.5;
     if e.pos[1] < ground_y_c {
         e.pos[1] = ground_y_c;
@@ -1554,8 +1554,8 @@ fn physics_step_cpu(
         }
     }
 
-    // FASE 5: integration
-    // Aero drag aplicado SEGUNDA VEZ (bug replicado — fisica.wgsl nota 7)
+    // PHASE 5: integration
+    // Aero drag applied a SECOND TIME (replicated bug — fisica.wgsl note 7)
     let a2 = if en_aero {
         0.5 * 1.225 * e.drag_coeff * fa * speed.powi(2)
     } else {
@@ -1601,7 +1601,7 @@ fn physics_step_cpu(
 }
 
 // ============================================================================
-// PERCEPCAO
+// PERCEPTION
 // ============================================================================
 
 fn validate_perception(world: &VoxelWorld, poses_in: &[Pose]) {
@@ -1611,24 +1611,24 @@ fn validate_perception(world: &VoxelWorld, poses_in: &[Pose]) {
     let retina = match RetinaGpu::new(world, poses_in.len().max(64)) {
         Some(g) => g,
         None => {
-            println!("  NAO MEDIDO — sem GPU.");
-            print_table_row("percepcao (canais portados)", 0, 0, -1, false);
+            println!("  NOT MEASURED — no GPU.");
+            print_table_row("perception (ported channels)", 0, 0, -1, false);
             return;
         }
     };
     let n = poses_in.len();
-    println!("  GPU: {}  · {} seres", retina.adapter, n);
+    println!("  GPU: {}  · {} beings", retina.adapter, n);
 
     let perception = match PerceptionGpu::new(retina.device(), retina.queue(), world, n.max(64)) {
         Some(p) => p,
         None => {
-            println!("  NAO MEDIDO — PercepcaoGpu::novo() falhou.");
-            print_table_row("percepcao (canais portados)", 0, 0, -1, false);
+            println!("  NOT MEASURED — PerceptionGpu::new() failed.");
+            print_table_row("perception (ported channels)", 0, 0, -1, false);
             return;
         }
     };
 
-    // Gera retina fisica (input do kernel)
+    // Generates the physical retina (kernel input)
     let _ret = retina.render(poses_in);
 
     let percep_poses: Vec<PosePerception> = poses_in
@@ -1653,12 +1653,12 @@ fn validate_perception(world: &VoxelWorld, poses_in: &[Pose]) {
     );
     let wave_cpu = perception_cpu(world, poses_in);
 
-    // Canais excluidos (ver cabecalho da secao 5)
+    // Excluded channels (see the section 5 header)
     let excl: std::collections::HashSet<usize> = {
         let mut s = std::collections::HashSet::new();
         for c in 0..=15 {
             s.insert(c);
-        } // pool legado
+        } // legacy pool
         for c in 21..=27 {
             s.insert(c);
         } // motion per-row
@@ -1673,23 +1673,23 @@ fn validate_perception(world: &VoxelWorld, poses_in: &[Pose]) {
         } // wall_imminent, trapped, depth
         for c in 60..=75 {
             s.insert(c);
-        } // agent_state, telemetria
+        } // agent_state, telemetry
         for c in 78..=93 {
             s.insert(c);
-        } // curvatura, urgencia, fluxo, corpo
+        } // curvature, urgency, flow, body
         for c in 99..=127 {
             s.insert(c);
         } // misc motor.rs
         for c in 128..SENSORY_WAVE_SIZE {
             s.insert(c);
-        } // HD + CfC percepcao
+        } // HD + perception CfC
         s
     };
 
-    println!("  Canais comparados: 16-20, 24-28, 32-43, 48-59, 76-77, 94-97");
-    // Nota: ch56-59 foram corrigidos (2026-08-04) — de 4× material_code para
-    // material+lookahead 3m/8m/20m. Divergência medida: 2/48 poses (ser 18 e 21,
-    // que estão em Hole enquanto a frente retorna ao Road).
+    println!("  Channels compared: 16-20, 24-28, 32-43, 48-59, 76-77, 94-97");
+    // Note: ch56-59 were fixed (2026-08-04) — from 4× material_code to
+    // material+lookahead 3m/8m/20m. Measured divergence: 2/48 poses (beings 18 and 21,
+    // which are on Hole while the road ahead returns to Road).
 
     let mut total = 0usize;
     let mut iguais = 0usize;
@@ -1721,17 +1721,17 @@ fn validate_perception(world: &VoxelWorld, poses_in: &[Pose]) {
     }
     piores.sort_by(|a, b| b.4.cmp(&a.4));
     println!(
-        "  comparados={total}  identicos={iguais} ({:.4}%)  max_dif={maxdif}",
+        "  compared={total}  identical={iguais} ({:.4}%)  max_dif={maxdif}",
         iguais as f64 / total.max(1) as f64 * 100.0
     );
     if !piores.is_empty() {
-        println!("  DIVERGENCIAS (ate 5):");
+        println!("  DIVERGENCES (up to 5):");
         for (s, ch, c, g, d) in piores.iter().take(5) {
-            println!("    ser={s} ch={ch}  cpu={c}  gpu={g}  dif={d}");
+            println!("    being={s} ch={ch}  cpu={c}  gpu={g}  dif={d}");
         }
     }
     print_table_row(
-        "percepcao (canais portados)",
+        "perception (ported channels)",
         total,
         iguais,
         maxdif,
@@ -1744,12 +1744,12 @@ fn perception_cpu(
     world: &VoxelWorld,
     poses_in: &[Pose],
 ) -> Vec<[i8; universe::config::iara::brain::SENSORY_WAVE_SIZE]> {
-    // Onda legada tinha 223 canais; a atual tem 192 (SENSORY_WAVE_SIZE). A assinatura
-    // ficou hardcoded em 223 enquanto o corpo já usava SENSORY_WAVE_SIZE=192 — mesma
-    // classe de bug de "literal legado nunca atualizado" documentada no CLAUDE.md do
-    // projeto. Corrigido para usar a constante canônica (bug pré-existente, não
-    // introduzido por E1-E5; corrigido aqui porque o E6 exige build verde de todos
-    // os bins vivos listados).
+    // The legacy wave had 223 channels; the current one has 192 (SENSORY_WAVE_SIZE). The
+    // signature stayed hardcoded at 223 while the body already used SENSORY_WAVE_SIZE=192 —
+    // same class of "legacy literal never updated" bug documented in the project's
+    // CLAUDE.md. Fixed to use the canonical constant (pre-existing bug, not
+    // introduced by E1-E5; fixed here because E6 requires a green build of all
+    // live bins listed).
     use universe::config::iara::brain::SENSORY_WAVE_SIZE;
     use universe::world::VoxelType;
 
@@ -1813,8 +1813,8 @@ fn perception_cpu(
 
         // ch 32-39: wall_curvature_fov
         // GPU (percepcao.wgsl): cross * 127.0 clamped to [-127,127] → i32
-        // NOTA: ch32 é sobrescrito por motor.rs (c180) no runtime completo.
-        // No gpu_valida excluimos ch32 da comparacao (excl set).
+        // NOTE: ch32 is overwritten by motor.rs (c180) in the full runtime.
+        // In gpu_valida we exclude ch32 from the comparison (excl set).
         for a in 0..8 {
             let d = yd(a);
             let dist = 10.0 + a as f32 * 1.5;
@@ -1854,10 +1854,10 @@ fn perception_cpu(
             w[48 + step] = ((h1 - h0) * 50.0 + bank * 40.0 + rp * 30.0).clamp(-127.0, 127.0) as i8;
         }
 
-        // ch 56-59: material atual + lookahead (atualizado 2026-08-04).
-        // ANTES: 4× o mesmo material_code — duplicata exata, variância zero.
-        // DEPOIS: ch56=atual, ch57=3m, ch58=8m, ch59=20m à frente.
-        // Deve ser equivalente à GPU (perception.wgsl BLOCO H atualizado).
+        // ch 56-59: current material + lookahead (updated 2026-08-04).
+        // BEFORE: 4× the same material_code — exact duplicate, zero variance.
+        // AFTER: ch56=current, ch57=3m, ch58=8m, ch59=20m ahead.
+        // Must be equivalent to the GPU (perception.wgsl BLOCK H updated).
         let enc_mat = |vox: VoxelType| -> i8 {
             match vox {
                 VoxelType::Road => 0,
@@ -1871,20 +1871,20 @@ fn perception_cpu(
         w[58] = enc_mat(world.get_voxel_at(pos.x + f3.x * 8.0, pos.z + f3.z * 8.0));
         w[59] = enc_mat(world.get_voxel_at(pos.x + f3.x * 20.0, pos.z + f3.z * 20.0));
 
-        // ch 76-77: dist lateral (expandido 15m → 40m, paridade com perception.wgsl).
-        // CONTA: 40 m ÷ 28 m/s = 1.43 s de antecipação; oráculo atualizado para 40m.
+        // ch 76-77: lateral dist (expanded 15m → 40m, parity with perception.wgsl).
+        // MATH: 40 m ÷ 28 m/s = 1.43 s of anticipation; oracle updated to 40m.
         //
-        // Convenção do shader perception.wgsl BLOCO J:
-        //   lp = (-fwd_z, fwd_x) = esquerda → ch76
-        //   -lp = (fwd_z, -fwd_x) = direita  → ch77
-        // Em termos do rgt deste oráculo (rgt = (-fwd.y, fwd.x) = lp):
-        //   ch76 = esquerda = rgt
-        //   ch77 = direita  = Vec2::new(-rgt.x, -rgt.y)
-        // (oráculo antigo tinha os pares trocados — corrigido aqui)
+        // Convention of the perception.wgsl shader BLOCK J:
+        //   lp = (-fwd_z, fwd_x) = left → ch76
+        //   -lp = (fwd_z, -fwd_x) = right  → ch77
+        // In terms of this oracle's rgt (rgt = (-fwd.y, fwd.x) = lp):
+        //   ch76 = left = rgt
+        //   ch77 = right  = Vec2::new(-rgt.x, -rgt.y)
+        // (the old oracle had the pairs swapped — fixed here)
         let ls = [1.0f32, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 33.0, 40.0];
         for (off, dir2d) in [(0u32, rgt), (1u32, Vec2::new(-rgt.x, -rgt.y))] {
-            let mut dmin = 40.0f32; // sentinela = livre (sem parede em 40m)
-            // Replica exatamente o shader: para na PRIMEIRA amostra que encontra Wall/Hole.
+            let mut dmin = 40.0f32; // sentinel = free (no wall within 40m)
+            // Replicates the shader exactly: stops at the FIRST sample that finds Wall/Hole.
             for &sd in &ls {
                 if matches!(
                     world.get_voxel_at(pos.x + dir2d.x * sd, pos.z + dir2d.y * sd),
@@ -1897,7 +1897,7 @@ fn perception_cpu(
             w[76 + off as usize] = (dmin / 40.0 * 127.0).clamp(0.0, 127.0) as i8;
         }
 
-        // ch 94-97: whiskers diagonais
+        // ch 94-97: diagonal whiskers
         let angs = [-60.0f32, -30.0, 30.0, 60.0];
         let ws2 = [1.0f32, 3.0, 5.0, 7.0, 10.0];
         for (wi, &ang) in angs.iter().enumerate() {
@@ -1995,7 +1995,7 @@ fn state_base(dt: f32, flags: u32) -> universe::gpu::physics::PhysicsStateGpu {
 fn print_table_header() {
     println!(
         "{:<38} {:>11} {:>11} {:>10}  {}",
-        "subsistema", "comparados", "identicos", "max_dif", "veredito"
+        "subsystem", "compared", "identical", "max_dif", "verdict"
     );
     println!("{}", "-".repeat(90));
 }
@@ -2003,15 +2003,15 @@ fn print_table_header() {
 fn print_table_row(nome: &str, total: usize, iguais: usize, max_dif: i32, ok: bool) {
     if max_dif < 0 {
         println!(
-            "{:<38} {:>11} {:>11} {:>10}  NAO MEDIDO",
+            "{:<38} {:>11} {:>11} {:>10}  NOT MEASURED",
             nome, "—", "—", "—"
         );
     } else {
         let pct = iguais as f64 / total.max(1) as f64 * 100.0;
         let verd = if ok {
-            format!("PASS  ({pct:.4}% identicos, max_dif={max_dif})")
+            format!("PASS  ({pct:.4}% identical, max_dif={max_dif})")
         } else {
-            format!("FALHA  (max_dif={max_dif}, {pct:.4}% identicos)")
+            format!("FAIL  (max_dif={max_dif}, {pct:.4}% identical)")
         };
         println!(
             "{:<38} {:>11} {:>11} {:>10}  {}",

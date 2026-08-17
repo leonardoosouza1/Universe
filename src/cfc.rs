@@ -1,44 +1,45 @@
 /// IARA v2101 - CfC (Closed-form Continuous-time) Cell
 /// Based on Codex v2101 - Liquid Neural Networks for Temporal Flow
 ///
-/// Tier 2.1: usado como PRE-PROCESSOR da retina (dim-preserving: 64→64).
-/// Fornece memória temporal entre frames — organismo detecta movimento
-/// ("parede se aproxima" vs "parede estática") ao invés de reagir apenas
-/// ao frame atual.
+/// Tier 2.1: used as a PRE-PROCESSOR of the retina (dim-preserving: 64→64).
+/// Provides temporal memory between frames — the organism detects motion
+/// ("wall approaching" vs "static wall") instead of reacting only to the
+/// current frame.
 ///
-/// Update rule (por canal, in-place):
+/// Update rule (per channel, in-place):
 ///   state[i] = state[i] * exp(-decay_rate * dt) + input[i] * gain * dt
 ///   filtered[i] = tanh(state[i])
 ///
-/// State é CLAMPED em [-clamp_range, +clamp_range] pra evitar blow-up
-/// (failure mode documentado em melhorias/02-cerebro-dormente.md§2.1).
+/// State is CLAMPED to [-clamp_range, +clamp_range] to avoid blow-up
+/// (failure mode documented in melhorias/02-cerebro-dormente.md§2.1).
 
-/// Constante de tempo mais RÁPIDA admitida, em segundos.
+/// FASTEST admitted time constant, in seconds.
 ///
-/// 25 ms ≈ 1,6 tick a 64 Hz. Abaixo disso o canal só reproduz o passo de integração e
-/// τ deixa de significar algo — é o piso de Nyquist do simulador, não uma escolha de gosto.
+/// 25 ms ≈ 1.6 ticks at 64 Hz. Below that the channel merely reproduces the integration
+/// step and τ stops meaning anything — it is the simulator's Nyquist floor, not a matter
+/// of taste.
 pub const TAU_MIN_S: f32 = 0.025;
-/// Constante de tempo mais LENTA admitida, em segundos.
+/// SLOWEST admitted time constant, in seconds.
 ///
-/// 4 s é o dobro do τ único que o cérebro usava, para que a faixa contenha o valor antigo
-/// com folga dos dois lados e o controle não fique numa borda.
+/// 4 s is double the single τ the brain used to have, so the range contains the old value
+/// with slack on both sides and the control does not sit on an edge.
 pub const TAU_MAX_S: f32 = 4.0;
 
-/// Taxa de decaimento uniforme herdada (s⁻¹): τ = 2,0 s em todos os canais.
+/// Inherited uniform decay rate (s⁻¹): τ = 2.0 s on every channel.
 pub const DECAY_DEFAULT: f32 = 0.5;
-/// Ganho em regime permanente. 2,0 reproduz o par antigo (input_gain 1,0 ÷ decay 0,5).
+/// Steady-state gain. 2.0 reproduces the old pair (input_gain 1.0 ÷ decay 0.5).
 pub const DC_GAIN_DEFAULT: f32 = 2.0;
 
-/// Sorteia taxas de decaimento log-uniformes em [1/TAU_MAX_S, 1/TAU_MIN_S] — o "banco de τ".
+/// Draws log-uniform decay rates in [1/TAU_MAX_S, 1/TAU_MIN_S] — the "τ bank".
 ///
-/// Log-uniforme, e não uniforme, porque a grandeza que importa é a ORDEM DE GRANDEZA da
-/// memória. Sorteio uniforme em `d ∈ [0,25; 40]` colocaria metade dos canais abaixo de
-/// τ = 50 ms: seriam 48 canais quase idênticos e nenhum contexto. Em log a faixa fica
-/// coberta por década.
+/// Log-uniform, not uniform, because the quantity that matters is the ORDER OF MAGNITUDE
+/// of the memory. A uniform draw over `d ∈ [0.25; 40]` would put half the channels below
+/// τ = 50 ms: 48 nearly identical channels and no context. In log the range gets covered
+/// per decade.
 ///
-/// É a mesma inicialização que Perez-Nieves et al. (2021, Nature Comms) reportam como a
-/// distribuição ótima aprendida em redes de disparo, e é a forma que a evolução do saci
-/// escolheu sozinha quando teve liberdade ([1, 17, 120, 2000, 20000]).
+/// It is the same initialisation Perez-Nieves et al. (2021, Nature Comms) report as the
+/// optimal distribution learned in spiking networks, and the form saci's evolution chose
+/// on its own when given freedom ([1, 17, 120, 2000, 20000]).
 pub fn log_uniform_decays(seed: u64, n: usize) -> Vec<f32> {
     let mut rng = crate::rng::Lcg::new(seed);
     let lo = (1.0 / TAU_MAX_S).ln();
@@ -52,47 +53,49 @@ pub fn log_uniform_decays(seed: u64, n: usize) -> Vec<f32> {
 pub struct CfCCell {
     pub hidden_size: usize,
     pub state: Vec<f32>,
-    /// Taxa de decaimento POR CANAL, em s⁻¹ — o inverso da constante de tempo (τ = 1/d).
+    /// PER-CHANNEL decay rate, in s⁻¹ — the inverse of the time constant (τ = 1/d).
     ///
-    /// Era um escalar único. Virou vetor por duas medidas nossas: TER escalas de tempo
-    /// variadas é selecionado (banco de τ, 40× contra 5,3× do controle) e no saci a
-    /// evolução escolheu sozinha [1, 17, 120, 2000, 20000] pagando +2,1pp. Trocar τ com o
-    /// regime é que NÃO paga (+0,11%) — por isso aqui τ é herdado e fixo na vida do ser,
-    /// não modulado em tempo real.
+    /// It used to be a single scalar. It became a vector because of two of our own
+    /// measurements: HAVING varied time scales is selected for (τ bank, 40× against the
+    /// control's 5.3×) and in saci evolution chose [1, 17, 120, 2000, 20000] on its own,
+    /// paying +2.1pp. Swapping τ with the regime is what does NOT pay (+0.11%) — which is
+    /// why τ here is inherited and fixed for the being's life, not modulated in real time.
     ///
-    /// O que estava em jogo: com um τ só, o ser tinha 2,0 s de memória em TODOS os canais,
-    /// inclusive parede, curvatura e velocidade. A 15 m/s um filtro de 2 s entrega ao
-    /// volante a percepção de 30 m atrás — a curva inteira. Andar rápido ficava punido
-    /// pelo próprio cérebro.
+    /// What was at stake: with a single τ, the being had 2.0 s of memory on ALL channels,
+    /// including wall, curvature and speed. At 15 m/s a 2 s filter delivers to the
+    /// steering wheel the perception of 30 m behind — the whole curve. Driving fast was
+    /// punished by the being's own brain.
     pub decay_rates: Vec<f32>,
-    /// Ganho em regime permanente, IGUAL para todo canal, independente de τ.
+    /// Steady-state gain, EQUAL for every channel, independent of τ.
     ///
-    /// Sem isto o experimento morreria por artefato em vez de medir τ: em
-    /// `s = s·e^{-d·dt} + x·g·dt` com `g` fixo o estacionário é `x·g/d`, então um canal de
-    /// τ=25 ms sai 80× mais fraco que um de 2 s. A evolução descartaria o rápido por ser
-    /// MUDO, não por ser rápido. Com `g·dt = G·(1 - e^{-d·dt})` o estacionário é `x·G`
-    /// para qualquer τ, e a única diferença entre canais passa a ser a memória.
+    /// Without this the experiment would die from an artefact instead of measuring τ: in
+    /// `s = s·e^{-d·dt} + x·g·dt` with fixed `g` the steady state is `x·g/d`, so a
+    /// τ=25 ms channel comes out 80× weaker than a 2 s one. Evolution would discard the
+    /// fast one for being MUTE, not for being fast. With `g·dt = G·(1 - e^{-d·dt})` the
+    /// steady state is `x·G` for any τ, and the only difference between channels becomes
+    /// the memory.
     pub dc_gain: f32,
     pub clamp_range: f32,
     /// Denoising noise magnitude (byte-lab transfer: SSM_NOISE=0.15 fixed exposure bias).
     /// Injects small perturbations in state to make creatures robust to self-induced drift.
     pub denoise_mag: f32,
     denoise_counter: u32,
-    /// Fadiga adaptativa por canal (spike-frequency adaptation).
+    /// Per-channel adaptive fatigue (spike-frequency adaptation).
     ///
-    /// Estado lento que sobe quando |state[i]| é alto, subtrai do input efetivo
-    /// quebrando realimentação positiva e evitando ponto fixo irreversível.
+    /// A slow state that rises when |state[i]| is high and is subtracted from the
+    /// effective input, breaking positive feedback and avoiding an irreversible fixed
+    /// point.
     ///
-    /// Equação por canal i:
+    /// Equation per channel i:
     ///   fatigue[i] += alpha * (|state[i]| - fatigue[i]) * dt
-    ///   x_efetivo = x - beta * fatigue[i]
+    ///   x_effective = x - beta * fatigue[i]
     ///
-    /// alpha=0.3: τ ≈ 3.3s ≈ 210 ticks @ 64Hz (sobe devagar, não confunde ruído de tick).
-    /// beta=0.4: com fatigue=1.8 subtrai 0.72 do input [-1,1] — suficiente para quebrar saturaçao.
+    /// alpha=0.3: τ ≈ 3.3s ≈ 210 ticks @ 64Hz (rises slowly, does not mistake tick noise).
+    /// beta=0.4: with fatigue=1.8 it subtracts 0.72 from the [-1,1] input — enough to break saturation.
     pub fatigue: Vec<f32>,
-    /// Parâmetro alpha da fadiga (velocidade de integração). Padrão: 0.3.
+    /// Fatigue alpha parameter (integration speed). Default: 0.3.
     pub fatigue_alpha: f32,
-    /// Parâmetro beta da fadiga (força da subtração). Padrão: 0.4.
+    /// Fatigue beta parameter (subtraction strength). Default: 0.4.
     pub fatigue_beta: f32,
 }
 
@@ -101,46 +104,48 @@ impl CfCCell {
         Self {
             hidden_size,
             state: vec![0.0; hidden_size],
-            decay_rates: vec![DECAY_DEFAULT; hidden_size], // τ = 2,0 s, o valor herdado
+            decay_rates: vec![DECAY_DEFAULT; hidden_size], // τ = 2.0 s, the inherited value
             dc_gain: DC_GAIN_DEFAULT,
             clamp_range: 2.0,
             denoise_mag: 0.10, // byte-lab validated: 15% noise fixes exposure bias
             denoise_counter: 0,
             fatigue: vec![0.0; hidden_size],
-            fatigue_alpha: 1.0, // τ ≈ 1s @ 64Hz — sobe em ~64 ticks para 63% do alvo
-            // β=0.4: com o encolhimento suave o ponto fixo de entrada máxima sustentada
-            // é s = 2(1 - β·s) ⇒ s = 2/(1+2β). Com β=0.4 dá s=1.111 (saída 102/127, o
-            // canal continua informando); com β=0.8 dá s=0.769 (saída 82) e o CfC deixa
-            // de passar sinal sustentado, quebrando `update_stabilizes_on_constant_input`.
-            // 0.4 é o valor que a documentação deste arquivo sempre declarou — o código
-            // tinha ido para 0.8 sem atualizar nem o comentário nem o teste. Segue como
-            // parâmetro de varredura, não como constante sagrada.
+            fatigue_alpha: 1.0, // τ ≈ 1s @ 64Hz — rises to 63% of the target in ~64 ticks
+            // β=0.4: with the soft shrinkage the fixed point for a sustained maximum input
+            // is s = 2(1 - β·s) ⇒ s = 2/(1+2β). With β=0.4 that gives s=1.111 (output
+            // 102/127, the channel keeps informing); with β=0.8 it gives s=0.769 (output
+            // 82) and the CfC stops passing sustained signal, breaking
+            // `update_stabilizes_on_constant_input`. 0.4 is the value this file's
+            // documentation always declared — the code had drifted to 0.8 without updating
+            // either the comment or the test. It remains a sweep parameter, not a sacred
+            // constant.
             fatigue_beta: 0.4,
         }
     }
 
-    /// Reseta o estado temporal (chamado em spawn/death do racer).
+    /// Resets the temporal state (called on racer spawn/death).
     pub fn reset(&mut self) {
         for s in self.state.iter_mut() {
             *s = 0.0;
         }
-        // Zera fadiga junto com o estado — ser recém-nascido começa sem fadiga acumulada.
+        // Zero the fatigue along with the state — a newborn being starts with no
+        // accumulated fatigue.
         for f in self.fatigue.iter_mut() {
             *f = 0.0;
         }
         self.denoise_counter = 0; // Deterministic denoising start per creature
     }
 
-    /// Substitui as constantes de tempo (uma por canal, em s⁻¹).
+    /// Replaces the time constants (one per channel, in s⁻¹).
     ///
-    /// Silenciosamente ignora comprimento errado seria a receita de um bug mudo — daí o
-    /// assert: um vetor curto deixaria metade dos canais no τ antigo e a condição
-    /// "heterogênea" seria meia-heterogênea sem ninguém notar.
+    /// Silently ignoring a wrong length would be the recipe for a mute bug — hence the
+    /// assert: a short vector would leave half the channels at the old τ and the
+    /// "heterogeneous" condition would be half-heterogeneous with nobody noticing.
     pub fn set_decay_rates(&mut self, d: &[f32]) {
         assert_eq!(
             d.len(),
             self.hidden_size,
-            "decay_rates tem que cobrir todos os canais"
+            "decay_rates must cover every channel"
         );
         self.decay_rates.copy_from_slice(d);
     }
@@ -152,12 +157,13 @@ impl CfCCell {
         self.denoise_counter = seed;
     }
 
-    /// Update dim-preserving: recebe input i8 [hidden_size], atualiza state,
-    /// escreve filtered i8 [hidden_size] = tanh(state) * 127.
-    /// Input e output em i8 pra respeitar o pipeline ternário do BitLinear.
+    /// Dim-preserving update: takes input i8 [hidden_size], updates state,
+    /// writes filtered i8 [hidden_size] = tanh(state) * 127.
+    /// Input and output in i8 to respect BitLinear's ternary pipeline.
     ///
-    /// Inclui fadiga adaptativa (spike-frequency adaptation): subtrai beta*fatigue[i]
-    /// do input efetivo antes de aplicar o CfC, quebrando pontos fixos de saturação.
+    /// Includes adaptive fatigue (spike-frequency adaptation): subtracts
+    /// beta*fatigue[i] from the effective input before applying the CfC, breaking
+    /// saturation fixed points.
     pub fn update(&mut self, input: &[i8], output: &mut [i8], dt: f32) {
         debug_assert_eq!(input.len(), self.hidden_size);
         debug_assert_eq!(output.len(), self.hidden_size);
@@ -172,26 +178,26 @@ impl CfCCell {
         let beta = self.fatigue_beta;
         for i in 0..self.hidden_size {
             let x_raw = (input[i] as f32) / 127.0;
-            // Fadiga adaptativa por LIMIAR SUAVE — atenua, nunca inverte.
+            // Adaptive fatigue as a SOFT THRESHOLD — it attenuates, never inverts.
             //
-            // A forma anterior era `x = x_raw - beta * fatigue`, subtração crua. Ela
-            // quebra os dois contratos que definem um CfC, e os testes deste arquivo
-            // pegaram os dois:
-            //   · sem entrada nenhuma, a fadiga integra |state| e passa a EMPURRAR o
-            //     estado para o negativo — o filtro cria sinal do nada;
-            //   · com +127 sustentado a fadiga chega a ~1,8 e subtrai 1,44 de x=1,0,
-            //     então uma entrada positiva constante produz saída NEGATIVA.
-            // O comentário original registrava a inversão ("input efetivo negativo")
-            // como se fosse recurso.
+            // The previous form was `x = x_raw - beta * fatigue`, a raw subtraction. It
+            // breaks the two contracts that define a CfC, and this file's tests caught
+            // both:
+            //   · with no input at all, the fatigue integrates |state| and starts PUSHING
+            //     the state negative — the filter creates signal out of nothing;
+            //   · with a sustained +127 the fatigue reaches ~1.8 and subtracts 1.44 from
+            //     x=1.0, so a constant positive input produces a NEGATIVE output.
+            // The original comment recorded the inversion ("negative effective input") as
+            // if it were a feature.
             //
-            // Adaptação por frequência de disparo atenua a resposta, não troca o sinal
-            // dela. `sign(x)·max(0, |x| - beta·fat)` é o encolhimento suave — o mesmo
-            // operador da Lei do Garimpo e do OMP, aqui no eixo do tempo: só passa o que
-            // excede o custo acumulado.
+            // Spike-frequency adaptation attenuates the response, it does not flip its
+            // sign. `sign(x)·max(0, |x| - beta·fat)` is the soft shrinkage — the same
+            // operator as the Prospecting Law and OMP, here on the time axis: only what
+            // exceeds the accumulated cost passes.
             let threshold = beta * self.fatigue[i];
             let x = x_raw.signum() * (x_raw.abs() - threshold).max(0.0);
-            // τ por canal. `gain_dt` sai do MESMO decaimento para manter ganho DC = dc_gain
-            // em qualquer τ (ver doc de `dc_gain`) — um `exp`, nenhum transcendente extra.
+            // Per-channel τ. `gain_dt` comes from the SAME decay to keep DC gain = dc_gain
+            // at any τ (see the `dc_gain` doc) — one `exp`, no extra transcendental.
             let decay = (-self.decay_rates[i] * dt).exp();
             let gain_dt = dc_gain * (1.0 - decay);
             let mut s = self.state[i] * decay + x * gain_dt;
@@ -213,7 +219,8 @@ impl CfCCell {
             } else if s < -clamp {
                 s = -clamp;
             }
-            // Atualiza fadiga: filtro passa-baixa sobre |state| (spike-frequency adaptation).
+            // Update the fatigue: a low-pass filter over |state| (spike-frequency
+            // adaptation).
             // fat += alpha * (|s| - fat) * dt
             self.fatigue[i] += alpha * (s.abs() - self.fatigue[i]) * dt;
             self.state[i] = s;
@@ -222,9 +229,9 @@ impl CfCCell {
         }
     }
 
-    /// Legacy API (mantida pra não quebrar imports experimentais).
+    /// Legacy API (kept so experimental imports do not break).
     ///
-    /// Decai cada canal pelo SEU τ — antes era um decaimento único para todos.
+    /// Decays each channel by ITS OWN τ — it used to be a single decay for all.
     pub fn flow(&mut self, dt: f32) -> Vec<f32> {
         for (s, &d) in self.state.iter_mut().zip(self.decay_rates.iter()) {
             *s *= (-d * dt).exp();
@@ -249,12 +256,13 @@ mod tests {
         cfc.denoise_mag = 0.0; // disable noise for deterministic test
         let input = [127i8, 0, -127, 64];
         let mut out = [0i8; 4];
-        // 600 passos de 1/60s → 10s virtuais, bem acima do time-constant 1/decay=2s.
+        // 600 steps of 1/60s → 10 virtual seconds, well above the time constant
+        // 1/decay=2s.
         for _ in 0..600 {
             cfc.update(&input, &mut out, 1.0 / 60.0);
         }
-        // Steady state: s = x * gain / decay_rate = x * 1.0 / 0.5 = 2x, clamped em ±2.
-        // tanh(2) ≈ 0.964 → ≈122 para +127, -122 para -127.
+        // Steady state: s = x * gain / decay_rate = x * 1.0 / 0.5 = 2x, clamped to ±2.
+        // tanh(2) ≈ 0.964 → ≈122 for +127, -122 for -127.
         assert!(
             out[0] > 100,
             "sustained +127 input should drive filtered high ({})",

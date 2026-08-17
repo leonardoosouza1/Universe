@@ -1,46 +1,46 @@
-/// Critério medido para decidir se um cérebro merece crescer.
+/// Measured criterion to decide whether a brain deserves to grow.
 ///
-/// Duas condições (ambas precisam ser verdadeiras para justificar crescimento):
+/// Two conditions (both must hold to justify growth):
 ///
-/// (A) SATURAÇÃO — Participation Ratio (PR) das ativações da camada.
-///     PR = (Σλ_i)² / Σλ_i²  onde λ_i são autovalores da covariância.
-///     PR ≈ largura ⇒ todas as dimensões em uso (saturado, pode valer crescer).
-///     PR << largura ⇒ dimensões ociosas (crescer é só espaço desperdiçado).
+/// (A) SATURATION — Participation Ratio (PR) of the layer's activations.
+///     PR = (Σλ_i)² / Σλ_i²  where λ_i are eigenvalues of the covariance.
+///     PR ≈ width ⇒ all dimensions in use (saturated, growing may be worth it).
+///     PR << width ⇒ idle dimensions (growing is just wasted space).
 ///
-/// (B) GANHO REAL — Lei do Garimpo do ecossistema IARA:
-///     Escolhendo o melhor de M alternativas de ruído puro, o máximo esperado é
-///     σ·√(2·ln M). Um ganho de fitness só é real se exceder esse limiar.
+/// (B) REAL GAIN — Prospecting Law ("Lei do Garimpo") of the IARA ecosystem:
+///     Picking the best of M alternatives of pure noise, the expected maximum is
+///     σ·√(2·ln M). A fitness gain is only real if it exceeds this threshold.
 
-/// Veredito de crescimento, com razão discriminada.
+/// Growth verdict, with the reason broken out.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
-    /// Crescer é justificado: capacidade saturada E ganho excede ruído de busca.
+    /// Growing is justified: capacity saturated AND gain exceeds search noise.
     Grow,
-    /// Há dimensões ociosas — crescer desperdiça memória/computação.
+    /// There are idle dimensions — growing wastes memory/compute.
     WastedSpace,
-    /// Capacidade saturada mas o ganho não excede o limiar do Garimpo.
+    /// Capacity saturated but the gain does not exceed the Prospecting threshold.
     GainNotReal,
-    /// Amostras insuficientes para estimar a covariância com confiança
-    /// (exige pelo menos `width + 1` amostras).
+    /// Insufficient samples to estimate the covariance with confidence
+    /// (requires at least `width + 1` samples).
     InsufficientData,
 }
 
 // ---------------------------------------------------------------------------
-// Jacobi cíclico para autovalores de matriz simétrica NxN (sem dependências).
+// Cyclic Jacobi for eigenvalues of a symmetric NxN matrix (no dependencies).
 // ---------------------------------------------------------------------------
 
-/// Retorna os N autovalores de uma matriz simétrica NxN (linha-maior).
-/// Usa Jacobi cíclico: gira todos os pares (i,j) i<j em sequência,
-/// repetindo até que a norma fora-da-diagonal seja < tol ou max_iter seja atingido.
-/// Para matrizes pequenas (<= 32×32) converge em dezenas de sweeps.
+/// Returns the N eigenvalues of a symmetric NxN matrix (row-major).
+/// Uses cyclic Jacobi: rotates every pair (i,j) i<j in sequence,
+/// repeating until the off-diagonal norm is < tol or max_iter is reached.
+/// For small matrices (<= 32×32) it converges in dozens of sweeps.
 fn jacobi_eigenvalues(mat: &[f32], n: usize) -> Vec<f32> {
     assert_eq!(mat.len(), n * n);
-    let mut a: Vec<f32> = mat.to_vec(); // cópia mutável
+    let mut a: Vec<f32> = mat.to_vec(); // mutable copy
     let tol = 1e-9_f32;
     let max_sweeps = 500;
 
     for _ in 0..max_sweeps {
-        // Norma de Frobenius fora-da-diagonal ao quadrado
+        // Squared off-diagonal Frobenius norm
         let mut off = 0.0f32;
         for i in 0..n {
             for j in (i + 1)..n {
@@ -51,7 +51,7 @@ fn jacobi_eigenvalues(mat: &[f32], n: usize) -> Vec<f32> {
             break;
         }
 
-        // Um sweep: gira todos os pares (p, q) com p < q
+        // One sweep: rotates every pair (p, q) with p < q
         for p in 0..n {
             for q in (p + 1)..n {
                 let app = a[p * n + p];
@@ -60,7 +60,7 @@ fn jacobi_eigenvalues(mat: &[f32], n: usize) -> Vec<f32> {
                 if apq.abs() < 1e-15 {
                     continue;
                 }
-                // Ângulo de rotação de Jacobi
+                // Jacobi rotation angle
                 let theta = 0.5 * (aqq - app) / apq;
                 let t = if theta >= 0.0 {
                     1.0 / (theta + (1.0 + theta * theta).sqrt())
@@ -71,14 +71,14 @@ fn jacobi_eigenvalues(mat: &[f32], n: usize) -> Vec<f32> {
                 let s = t * c;
                 let tau = s / (1.0 + c);
 
-                // Atualiza diagonal
+                // Update diagonal
                 let dpp = t * apq;
                 a[p * n + p] -= dpp;
                 a[q * n + q] += dpp;
                 a[p * n + q] = 0.0;
                 a[q * n + p] = 0.0;
 
-                // Atualiza linhas/colunas r != p, r != q
+                // Update rows/columns r != p, r != q
                 for r in 0..n {
                     if r == p || r == q {
                         continue;
@@ -96,21 +96,21 @@ fn jacobi_eigenvalues(mat: &[f32], n: usize) -> Vec<f32> {
         }
     }
 
-    // Diagonal = autovalores
+    // Diagonal = eigenvalues
     (0..n).map(|i| a[i * n + i]).collect()
 }
 
 // ---------------------------------------------------------------------------
-// API pública
+// Public API
 // ---------------------------------------------------------------------------
 
-/// Calcula o Participation Ratio das ativações de uma camada.
+/// Computes the Participation Ratio of a layer's activations.
 ///
-/// `activations`: linhas = amostras no tempo, colunas = unidades da camada.
-/// Centraliza cada coluna, computa covariância empírica, extrai autovalores,
-/// devolve PR = (Σλ_i)² / Σλ_i².
+/// `activations`: rows = samples over time, columns = layer units.
+/// Centers each column, computes the empirical covariance, extracts eigenvalues,
+/// returns PR = (Σλ_i)² / Σλ_i².
 ///
-/// Retorna `None` se há amostras insuficientes (T <= width) ou width == 0.
+/// Returns `None` if there are insufficient samples (T <= width) or width == 0.
 pub fn participation_ratio(activations: &[Vec<f32>]) -> Option<f32> {
     let t = activations.len();
     if t == 0 {
@@ -118,11 +118,11 @@ pub fn participation_ratio(activations: &[Vec<f32>]) -> Option<f32> {
     }
     let width = activations[0].len();
     if width == 0 || t <= width {
-        // Precisa de mais amostras do que dimensões para covariância bem definida
+        // Needs more samples than dimensions for a well-defined covariance
         return None;
     }
 
-    // Médias por coluna
+    // Per-column means
     let mut mean = vec![0.0f32; width];
     for row in activations.iter() {
         for (j, &v) in row.iter().enumerate() {
@@ -134,8 +134,8 @@ pub fn participation_ratio(activations: &[Vec<f32>]) -> Option<f32> {
         *m *= inv_t;
     }
 
-    // Matriz de covariância empírica (width × width), divisão por T (não T-1)
-    // para PR ser exatamente `width` quando todas as colunas são iid igual variância.
+    // Empirical covariance matrix (width × width), divided by T (not T-1)
+    // so PR is exactly `width` when all columns are iid with equal variance.
     let mut cov = vec![0.0f32; width * width];
     for row in activations.iter() {
         for i in 0..width {
@@ -153,23 +153,23 @@ pub fn participation_ratio(activations: &[Vec<f32>]) -> Option<f32> {
 
     let eigenvalues = jacobi_eigenvalues(&cov, width);
 
-    // Apenas autovalores positivos (ruído numérico pode produzir levemente negativos)
+    // Positive eigenvalues only (numeric noise can produce slightly negative ones)
     let lambdas: Vec<f32> = eigenvalues.iter().map(|&v| v.max(0.0)).collect();
 
     let sum1: f32 = lambdas.iter().sum();
     let sum2: f32 = lambdas.iter().map(|v| v * v).sum();
 
     if sum2 < 1e-30 {
-        // Todas as ativações constantes — posto zero, PR = 1 por convenção
+        // All activations constant — rank zero, PR = 1 by convention
         return Some(1.0);
     }
 
     Some(sum1 * sum1 / sum2)
 }
 
-/// Saturação = PR / largura da camada, em [0, 1].
-/// 1.0 ⇒ todas as dimensões ativamente usadas (saturado).
-/// 0.0 ⇒ posto efetivo próximo de 1 (uma dimensão domina tudo).
+/// Saturation = PR / layer width, in [0, 1].
+/// 1.0 ⇒ all dimensions actively used (saturated).
+/// 0.0 ⇒ effective rank close to 1 (one dimension dominates everything).
 pub fn saturation(activations: &[Vec<f32>], width: usize) -> Option<f32> {
     if width == 0 {
         return None;
@@ -177,9 +177,9 @@ pub fn saturation(activations: &[Vec<f32>], width: usize) -> Option<f32> {
     participation_ratio(activations).map(|pr| (pr / width as f32).min(1.0))
 }
 
-/// Limiar do Garimpo: ganho esperado do melhor de M amostras de ruído puro N(0, σ²).
-/// Fórmula: σ · √(2 · ln M).
-/// Se σ == 0 ou M <= 1, retorna 0.0 (nenhum ganho é "real" a checar).
+/// Prospecting threshold: expected gain of the best of M samples of pure N(0, σ²) noise.
+/// Formula: σ · √(2 · ln M).
+/// If σ == 0 or M <= 1, returns 0.0 (no gain is "real" to check).
 pub fn search_noise_threshold(sigma: f32, m_alternatives: usize) -> f32 {
     if sigma <= 0.0 || m_alternatives <= 1 {
         return 0.0;
@@ -187,15 +187,15 @@ pub fn search_noise_threshold(sigma: f32, m_alternatives: usize) -> f32 {
     sigma * (2.0 * (m_alternatives as f32).ln()).sqrt()
 }
 
-/// Combina condição (A) saturação e condição (B) limiar do Garimpo num veredito único.
+/// Combines condition (A) saturation and condition (B) Prospecting threshold into one verdict.
 ///
-/// Parâmetros:
-/// - `activations`: histórico de ativações da camada a avaliar.
-/// - `width`: largura nominal da camada (número de unidades).
-/// - `saturation_threshold`: PR/largura acima do qual dizemos que está saturada (ex: 0.85).
-/// - `fitness_gain`: melhoria de fitness observada após as M avaliações.
-/// - `fitness_sigma`: desvio padrão do fitness na população.
-/// - `m_alternatives`: número total de variantes avaliadas (pop × gerações).
+/// Parameters:
+/// - `activations`: activation history of the layer under evaluation.
+/// - `width`: nominal layer width (number of units).
+/// - `saturation_threshold`: PR/width above which we call it saturated (e.g. 0.85).
+/// - `fitness_gain`: fitness improvement observed after the M evaluations.
+/// - `fitness_sigma`: standard deviation of fitness in the population.
+/// - `m_alternatives`: total number of variants evaluated (pop × generations).
 pub fn growth_verdict(
     activations: &[Vec<f32>],
     width: usize,
@@ -204,18 +204,18 @@ pub fn growth_verdict(
     fitness_sigma: f32,
     m_alternatives: usize,
 ) -> Verdict {
-    // Amostras insuficientes para estimar PR
+    // Insufficient samples to estimate PR
     let sat = match saturation(activations, width) {
         Some(s) => s,
         None => return Verdict::InsufficientData,
     };
 
-    // (A) capacidade saturada?
+    // (A) capacity saturated?
     if sat < saturation_threshold {
         return Verdict::WastedSpace;
     }
 
-    // (B) ganho excede limiar do Garimpo?
+    // (B) gain exceeds the Prospecting threshold?
     let threshold = search_noise_threshold(fitness_sigma, m_alternatives);
     if fitness_gain <= threshold {
         return Verdict::GainNotReal;
@@ -225,43 +225,43 @@ pub fn growth_verdict(
 }
 
 // ---------------------------------------------------------------------------
-// Testes unitários com dados sintéticos de propriedade conhecida
+// Unit tests with synthetic data of known properties
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Constrói T amostras onde todas as colunas são múltiplos da coluna 0.
-    /// Posto efetivo = 1 ⇒ PR deve ser ≈ 1.
+    /// Builds T samples where every column is a multiple of column 0.
+    /// Effective rank = 1 ⇒ PR must be ≈ 1.
     #[test]
     fn pr_rank1_matrix() {
         let t = 100usize;
         let width = 4usize;
-        // Coluna j = (j+1) * coluna 0; coluna 0 varia de -1 a 1 linearmente.
+        // Column j = (j+1) * column 0; column 0 varies from -1 to 1 linearly.
         let activations: Vec<Vec<f32>> = (0..t)
             .map(|i| {
                 let base = (i as f32 / (t - 1) as f32) * 2.0 - 1.0; // [-1, 1]
                 (0..width).map(|j| base * (j + 1) as f32).collect()
             })
             .collect();
-        let pr = participation_ratio(&activations).expect("deve ter PR");
-        // Posto 1 ⇒ PR = 1
+        let pr = participation_ratio(&activations).expect("must have PR");
+        // Rank 1 ⇒ PR = 1
         assert!(
             (pr - 1.0).abs() < 0.05,
-            "PR de matriz posto-1 deve ser ≈ 1, obteve {}",
+            "PR of a rank-1 matrix must be ≈ 1, got {}",
             pr
         );
     }
 
-    /// k colunas independentes com variância igual ⇒ PR = k.
+    /// k independent columns with equal variance ⇒ PR = k.
     #[test]
     fn pr_independent_equal_variance() {
         let t = 500usize;
         let width = 6usize;
-        // Sinal determinístico ortogonal: coluna j = sin(2π·j·i/T)
-        // Para T grande e frequências diferentes são aproximadamente ortogonais.
-        // Usamos frequências primas para garantir ortogonalidade empírica.
+        // Deterministic orthogonal signal: column j = sin(2π·j·i/T)
+        // For large T and different frequencies they are approximately orthogonal.
+        // We use prime frequencies to guarantee empirical orthogonality.
         let freqs: [f32; 6] = [1.0, 2.0, 3.0, 5.0, 7.0, 11.0];
         let activations: Vec<Vec<f32>> = (0..t)
             .map(|i| {
@@ -271,23 +271,23 @@ mod tests {
                     .collect()
             })
             .collect();
-        let pr = participation_ratio(&activations).expect("deve ter PR");
-        // Senos ortogonais de mesma amplitude ⇒ PR ≈ width = 6
+        let pr = participation_ratio(&activations).expect("must have PR");
+        // Orthogonal sines of equal amplitude ⇒ PR ≈ width = 6
         assert!(
             (pr - width as f32).abs() < 0.5,
-            "PR de sinais ortogonais de igual variância deve ser ≈ {}, obteve {}",
+            "PR of orthogonal equal-variance signals must be ≈ {}, got {}",
             width,
             pr
         );
     }
 
-    /// Espectro decaindo (autovalores λ_i ∝ 1/i) ⇒ 1 < PR < k.
+    /// Decaying spectrum (eigenvalues λ_i ∝ 1/i) ⇒ 1 < PR < k.
     #[test]
     fn pr_decaying_spectrum_between_1_and_k() {
         let t = 300usize;
         let width = 5usize;
-        // Constrói ativações cujas colunas têm variâncias 1, 1/2, 1/3, 1/4, 1/5
-        // e são ortogonais (frequências distintas).
+        // Builds activations whose columns have variances 1, 1/2, 1/3, 1/4, 1/5
+        // and are orthogonal (distinct frequencies).
         let freqs: [f32; 5] = [1.0, 2.0, 3.0, 5.0, 7.0];
         let scales: [f32; 5] = [
             1.0,
@@ -307,42 +307,42 @@ mod tests {
                     .collect()
             })
             .collect();
-        let pr = participation_ratio(&activations).expect("deve ter PR");
+        let pr = participation_ratio(&activations).expect("must have PR");
         assert!(
             pr > 1.0 && pr < width as f32,
-            "PR com espectro decaindo deve estar entre 1 e {}, obteve {}",
+            "PR with a decaying spectrum must lie between 1 and {}, got {}",
             width,
             pr
         );
     }
 
-    /// garimpo_threshold cresce estritamente com M.
+    /// garimpo_threshold grows strictly with M.
     #[test]
     fn search_noise_grows_with_m() {
         let sigma = 1.0;
         let t10 = search_noise_threshold(sigma, 10);
         let t100 = search_noise_threshold(sigma, 100);
         let t1000 = search_noise_threshold(sigma, 1000);
-        assert!(t10 < t100, "limiar deve crescer: {} < {}", t10, t100);
-        assert!(t100 < t1000, "limiar deve crescer: {} < {}", t100, t1000);
+        assert!(t10 < t100, "threshold must grow: {} < {}", t10, t100);
+        assert!(t100 < t1000, "threshold must grow: {} < {}", t100, t1000);
     }
 
-    /// garimpo_threshold = 0 quando σ = 0.
+    /// garimpo_threshold = 0 when σ = 0.
     #[test]
     fn search_noise_zero_when_sigma_zero() {
         assert_eq!(search_noise_threshold(0.0, 1000), 0.0);
     }
 
-    /// garimpo_threshold = 0 quando M <= 1.
+    /// garimpo_threshold = 0 when M <= 1.
     #[test]
     fn search_noise_zero_when_m_one() {
         assert_eq!(search_noise_threshold(1.5, 1), 0.0);
     }
 
-    /// InsufficientData quando há poucas amostras (T <= width).
+    /// InsufficientData when there are few samples (T <= width).
     #[test]
     fn verdict_insufficient_data() {
-        // width = 4, mas só 3 amostras
+        // width = 4, but only 3 samples
         let activations: Vec<Vec<f32>> = vec![
             vec![1.0, 2.0, 3.0, 4.0],
             vec![2.0, 3.0, 4.0, 5.0],
@@ -352,10 +352,10 @@ mod tests {
         assert_eq!(v, Verdict::InsufficientData);
     }
 
-    /// WastedSpace quando PR está muito abaixo da largura.
+    /// WastedSpace when PR is far below the width.
     #[test]
     fn verdict_wasted_space() {
-        // Posto 1 ⇒ saturação ≈ 1/4 = 0.25, abaixo de 0.85
+        // Rank 1 ⇒ saturation ≈ 1/4 = 0.25, below 0.85
         let t = 100usize;
         let width = 4usize;
         let activations: Vec<Vec<f32>> = (0..t)
@@ -368,10 +368,10 @@ mod tests {
         assert_eq!(v, Verdict::WastedSpace);
     }
 
-    /// GainNotReal quando capacidade saturada mas ganho abaixo do limiar.
+    /// GainNotReal when capacity is saturated but gain is below the threshold.
     #[test]
     fn verdict_gain_not_real() {
-        // Sinais ortogonais ⇒ PR ≈ width (saturado)
+        // Orthogonal signals ⇒ PR ≈ width (saturated)
         let t = 500usize;
         let width = 4usize;
         let freqs: [f32; 4] = [1.0, 2.0, 3.0, 5.0];
@@ -383,12 +383,12 @@ mod tests {
                     .collect()
             })
             .collect();
-        // sigma=1, M=100 ⇒ limiar = √(2·ln100) ≈ 3.03; gain=1.0 < 3.03
+        // sigma=1, M=100 ⇒ threshold = √(2·ln100) ≈ 3.03; gain=1.0 < 3.03
         let v = growth_verdict(&activations, width, 0.85, 1.0, 1.0, 100);
         assert_eq!(v, Verdict::GainNotReal);
     }
 
-    /// Grow quando saturado E ganho acima do limiar.
+    /// Grow when saturated AND gain above the threshold.
     #[test]
     fn verdict_grow() {
         let t = 500usize;
@@ -402,12 +402,12 @@ mod tests {
                     .collect()
             })
             .collect();
-        // sigma=1, M=100 ⇒ limiar ≈ 3.03; gain=10.0 > 3.03
+        // sigma=1, M=100 ⇒ threshold ≈ 3.03; gain=10.0 > 3.03
         let v = growth_verdict(&activations, width, 0.85, 10.0, 1.0, 100);
         assert_eq!(v, Verdict::Grow);
     }
 
-    /// Valor numérico conhecido do limiar do Garimpo.
+    /// Known numeric value of the Prospecting threshold.
     #[test]
     fn search_noise_threshold_known_value() {
         // σ=1, M=e ⇒ √(2·ln e) = √2 ≈ 1.4142
@@ -416,13 +416,13 @@ mod tests {
         let expected = (2.0 * (2.0_f32).ln()).sqrt();
         assert!(
             (threshold - expected).abs() < 1e-4,
-            "esperado {}, obteve {}",
+            "expected {}, got {}",
             expected,
             threshold
         );
     }
 
-    /// saturation() retorna None quando width=0.
+    /// saturation() returns None when width=0.
     #[test]
     fn saturation_none_on_zero_width() {
         let activations: Vec<Vec<f32>> = vec![vec![]];

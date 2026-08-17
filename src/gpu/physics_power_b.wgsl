@@ -1,6 +1,6 @@
-// Bissecção FASE_POWER parte B: motor + loop de pneus SIMPLIFICADO (sem atan/Pacejka complexo).
-// Inclui: arrays wheel_torques/brake_pw, loop de 4 rodas com cos/sin, mas force = 0.
-// Objetivo: verificar se o crash é nos arrays adicionais ou no cálculo Pacejka.
+// FASE_POWER bisection part B: engine + SIMPLIFIED tire loop (no atan/complex Pacejka).
+// Includes: wheel_torques/brake_pw arrays, 4-wheel loop with cos/sin, but force = 0.
+// Goal: verify whether the crash is in the additional arrays or in the Pacejka computation.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -79,11 +79,11 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
-    // D5 (ESCADA_DIFICULDADE.md — clima). Mirror consistente com physics_power_a/c.wgsl
-    // e com WorldParams em physics.rs. Este kernel (FASE_POWER_B) tem "force = 0" por
-    // construção (comentário no topo do arquivo: "só torque de tração", sem Pacejka) —
-    // não há força de pneu real aqui para multiplicar por μ. Campos disponíveis mas
-    // sem consumidor, mesma situação de physics_power_a.wgsl.
+    // D5 (ESCADA_DIFICULDADE.md — weather). Mirror consistent with physics_power_a/c.wgsl
+    // and with WorldParams in physics.rs. This kernel (FASE_POWER_B) has "force = 0" by
+    // construction (comment at the top of the file: "traction torque only", no Pacejka) —
+    // there is no real tire force here to multiply by μ. Fields available but
+    // with no consumer, same situation as physics_power_a.wgsl.
     clima_mu:    f32,
     vento_x:     f32,
     vento_z:     f32,
@@ -123,9 +123,9 @@ fn gear_ratio(g: u32) -> f32 {
     }
 }
 
-// D5 — μ local por posição (idêntica em physics_power_a/b/c.wgsl, por consistência).
-// Ver comentário completo em physics_power_a.wgsl. Sem consumidor neste kernel
-// (force=0 por construção — comentário no topo do arquivo).
+// D5 — local μ per position (identical in physics_power_a/b/c.wgsl, for consistency).
+// See the full comment in physics_power_a.wgsl. No consumer in this kernel
+// (force=0 by construction — comment at the top of the file).
 fn mu_local_at(pos: vec3<f32>) -> f32 {
     return params.clima_mu
         + (1.0 - params.clima_mu) * 0.5
@@ -218,8 +218,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         dto=dtq;
     }
 
-    // PARTE B: loop de pneus com distribuição de torque + frenos, MAS sem Pacejka/atan
-    // (slip/force = 0, só integra omega)
+    // PART B: tire loop with torque distribution + brakes, BUT no Pacejka/atan
+    // (slip/force = 0, only integrates omega)
     var wheel_torques = array<f32,4>(0.0,0.0,0.0,0.0);
     switch c.drivetrain {
         case 0u:{wheel_torques[0]=dtq*0.5;wheel_torques[1]=dtq*0.5;}
@@ -237,11 +237,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (speed<15.0){max_steer_deg=35.0;}else{max_steer_deg=max(35.0-(speed-15.0)*0.4,12.0);}
     let max_steer_rad=max_steer_deg*0.017453292519943295;
 
-    // Loop de pneus: apenas cos/sin do esterço + integração de omega SEM cálculo de força
+    // Tire loop: only cos/sin of the steering + omega integration WITHOUT force computation
     for (var i:u32=0u;i<4u;i++){
         let ws=select(0.0,c.steer*max_steer_rad,i<2u);
         let cs=cos(ws);let ss=sin(ws);
-        // Integração de omega sem force (force = 0 → só torque de tração)
+        // Omega integration without force (force = 0 → traction torque only)
         var no=omegas[i]+(wheel_torques[i]/c.wheel_inertia)*dt_safe;
         let brk=brake_pw[i];
         if (brk>0.0){
@@ -252,7 +252,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             else if (no<0.0){no+=(ab/c.wheel_inertia)*dt_safe;}
         }
         omegas[i]=no;
-        // Pequeno uso de cs/ss para que não sejam otimizados fora
+        // Small use of cs/ss so they are not optimized away
         slip_ratios[i]=cs*0.001;
         slip_angles[i]=ss*0.001;
     }

@@ -1,26 +1,26 @@
-// ── MAPA DE ALOCAÇÃO CORTICAL EMERGENTE ────────────────────────────────────────
+// ── EMERGENT CORTICAL ALLOCATION MAP ───────────────────────────────────────────
 //
-// Testa a predição P1 do NEUROMOD_PREDICOES.md:
-//   "A fronteira entre 'visual' e 'auditivo' não é desenhada.
-//    Ela é onde a correlação cruzada cai."
+// Tests prediction P1 from NEUROMOD_PREDICOES.md:
+//   "The boundary between 'visual' and 'auditory' is not drawn.
+//    It is where the cross-correlation drops."
 //
-// # Entrada: SINTÉTICA (declarado honestamente)
+// # Input: SYNTHETIC (honestly declared)
 //
-// Usamos entrada sintética com duas modalidades DISTINGUÍVEIS:
-//   Modalidade A: canais 0..=111  — bloco senoidal, fase 0
-//   Modalidade B: canais 112..=222 — bloco senoidal, fase π/2 (descorrelacionado)
+// We use synthetic input with two DISTINGUISHABLE modalities:
+//   Modality A: channels 0..=111  — sinusoidal block, phase 0
+//   Modality B: channels 112..=222 — sinusoidal block, phase π/2 (decorrelated)
 //
-// Isso é o controle mínimo para que Hebb possa segregar territórios.
-// A predição é REFUTADA se nenhuma segregação emergir mesmo com este input ideal.
+// This is the minimal control so that Hebb can segregate territories.
+// The prediction is REFUTED if no segregation emerges even with this ideal input.
 //
-// # Critério de refutação (P1, NEUROMOD_PREDICOES.md)
+// # Refutation criterion (P1, NEUROMOD_PREDICOES.md)
 //
-//   razão = correlação_intra_região / correlação_entre_regiões
-//   REFUTADO se razão < 3.0
+//   ratio = intra_region_correlation / inter_region_correlation
+//   REFUTED if ratio < 3.0
 //
-// # Limite de ticks: máximo 20 (instrução do usuário — evolução rodando em background).
+// # Tick limit: maximum 20 (user instruction — evolution running in background).
 //
-// # Uso
+// # Usage
 //
 //   cd ~/projects/LLM/Universe
 //   nice -n 19 cargo build --release -j 2 --bin cortex_map && \
@@ -30,19 +30,19 @@ use std::sync::Arc;
 
 use universe::gpu::cortex_sheet::{CortexSheet, SHEET_H, SHEET_N, SHEET_W};
 
-// Tamanho real da folha — constantes públicas de cortex_sheet.rs
+// Actual sheet size — public constants from cortex_sheet.rs
 const N_INPUTS: usize = 223;
-const N_TICKS: usize = 20; // máximo permitido (evolução em background)
-const N_SERES: usize = 1; // 1 ser é suficiente para o mapa de alocação
-const ATIVO_LIMIAR: f32 = 0.05; // limiar de atividade média → "ativo" (P2)
-const SILENTE_LIMIAR: f32 = 0.01; // limiar de atividade média → "silente" (P2)
+const N_TICKS: usize = 20; // maximum allowed (evolution in background)
+const N_SERES: usize = 1; // 1 being is enough for the allocation map
+const ATIVO_LIMIAR: f32 = 0.05; // mean-activity threshold → "active" (P2)
+const SILENTE_LIMIAR: f32 = 0.01; // mean-activity threshold → "silent" (P2)
 
-// Canais de cada modalidade (sintético)
-const MOD_A_END: usize = 111; // canais 0..=111 → modalidade A (N=112)
-const MOD_B_START: usize = 112; // canais 112..=222 → modalidade B (N=111)
+// Channels of each modality (synthetic)
+const MOD_A_END: usize = 111; // channels 0..=111 → modality A (N=112)
+const MOD_B_START: usize = 112; // channels 112..=222 → modality B (N=111)
 
 fn main() {
-    // ── Garante ICD Vulkan único (previne SIGSEGV do loader com múltiplos ICDs) ──
+    // ── Ensure a single Vulkan ICD (prevents loader SIGSEGV with multiple ICDs) ──
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
     if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
         unsafe {
@@ -50,7 +50,7 @@ fn main() {
         }
     }
 
-    // ── Abre device wgpu ─────────────────────────────────────────────────────
+    // ── Open wgpu device ─────────────────────────────────────────────────────
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
         ..Default::default()
@@ -60,7 +60,7 @@ fn main() {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .expect("Nenhum adapter Vulkan encontrado");
+    .expect("No Vulkan adapter found");
 
     let name = adapter.get_info().name.clone();
     eprintln!("[cortex_map] Adapter: {name}");
@@ -77,50 +77,50 @@ fn main() {
         },
         None,
     ))
-    .expect("Falha ao criar device");
+    .expect("Failed to create device");
 
     let device = Arc::new(raw_device);
     let queue = Arc::new(raw_queue);
 
-    // ── Cria a folha cortical com 1 ser ──────────────────────────────────────
+    // ── Create the cortical sheet with 1 being ───────────────────────────────
     let cortex = CortexSheet::new(Arc::clone(&device), Arc::clone(&queue), N_SERES);
-    let taus = cortex.tau_bank(); // τ por unidade (CPU, sem GPU)
+    let taus = cortex.tau_bank(); // τ per unit (CPU, no GPU)
 
     println!("\n╔══════════════════════════════════════════════════════════════════╗");
-    println!("║  CORTEX MAP — MAPA DE ALOCAÇÃO EMERGENTE (P1, P2, P6)           ║");
+    println!("║  CORTEX MAP — EMERGENT ALLOCATION MAP (P1, P2, P6)              ║");
     println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
-    println!("AVISO: entrada SINTÉTICA com 2 modalidades descorrelacionadas.");
-    println!("  Modalidade A = canais  0-111  (seno, fase 0)");
-    println!("  Modalidade B = canais 112-222 (seno, fase π/2, descorrelacionado de A)");
-    println!("  N_TICKS = {N_TICKS} (máximo — evolução em background)");
+    println!("WARNING: SYNTHETIC input with 2 decorrelated modalities.");
+    println!("  Modality A = channels  0-111  (sine, phase 0)");
+    println!("  Modality B = channels 112-222 (sine, phase π/2, decorrelated from A)");
+    println!("  N_TICKS = {N_TICKS} (maximum — evolution in background)");
     println!("  N_SERES = {N_SERES}");
     println!();
 
-    // ── Acumulador de ativações ao longo dos ticks (para atividade média) ────
-    // Soma ativações absolutas por unidade ao longo dos ticks.
-    // Usamos f64 para precisão ao acumular 20 valores.
+    // ── Activation accumulator across ticks (for mean activity) ──────────────
+    // Sums absolute activations per unit across ticks.
+    // We use f64 for precision when accumulating 20 values.
     let mut act_accum: Vec<f64> = vec![0.0; SHEET_N];
     let mut act_sum_prev = 0.0_f32;
 
-    // ── Loop de ticks ─────────────────────────────────────────────────────────
+    // ── Tick loop ─────────────────────────────────────────────────────────────
     for tick in 0..N_TICKS {
-        // Constrói wave sintético:
-        //   Modalidade A (canais 0-111): sin(2π × k/112 + φ_tick) × 100
-        //   Modalidade B (canais 112-222): cos(2π × (k-112)/111 + φ_tick) × 100
-        // As duas modalidades têm variância similar mas são descorrelacionadas
-        // entre si (uma é sin, a outra cos da mesma frequência → correlação ≈ 0).
-        let phase_tick = (tick as f32) * 0.3; // fase temporal lenta (varia entre ticks)
+        // Builds the synthetic wave:
+        //   Modality A (channels 0-111): sin(2π × k/112 + φ_tick) × 100
+        //   Modality B (channels 112-222): cos(2π × (k-112)/111 + φ_tick) × 100
+        // The two modalities have similar variance but are decorrelated
+        // from each other (one is sin, the other cos of the same frequency → correlation ≈ 0).
+        let phase_tick = (tick as f32) * 0.3; // slow temporal phase (varies across ticks)
 
         let mut waves: Vec<[i8; 223]> = Vec::with_capacity(N_SERES);
         {
             let mut w = [0i8; 223];
             for k in 0..N_INPUTS {
                 let v: f32 = if k <= MOD_A_END {
-                    // Modalidade A: seno puro com frequência espacial k/112
+                    // Modality A: pure sine with spatial frequency k/112
                     (2.0 * std::f32::consts::PI * k as f32 / 112.0 + phase_tick).sin() * 100.0
                 } else {
-                    // Modalidade B: cosseno (descorrelacionado de A por π/2)
+                    // Modality B: cosine (decorrelated from A by π/2)
                     let kk = k - MOD_B_START;
                     (2.0 * std::f32::consts::PI * kk as f32 / 111.0 + phase_tick).cos() * 100.0
                 };
@@ -130,7 +130,7 @@ fn main() {
         }
         cortex.upload_wave(&waves, N_SERES);
 
-        // Encoder único: afference → hebb → motor → readback
+        // Single encoder: afference → hebb → motor → readback
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("cortex-map-tick"),
         });
@@ -142,11 +142,11 @@ fn main() {
         queue.submit(Some(enc.finish()));
         device.poll(wgpu::Maintain::Wait);
 
-        // Lê ativações e acumula
+        // Reads activations and accumulates
         let stats = cortex.read_act_stats(N_SERES);
-        // act_sum para o próximo tick Hebb: Σ|a_j| do ser 0.
-        // Estimativa: usamos mean × SHEET_N × 0.5 (subestimado, mas suficiente
-        // para o kernel Hebb ter a normalização na ordem correta de grandeza).
+        // act_sum for the next Hebb tick: Σ|a_j| of being 0.
+        // Estimate: we use mean × SHEET_N × 0.5 (underestimated, but enough
+        // for the Hebb kernel to have the normalization in the right order of magnitude).
         act_sum_prev = stats[0].2.abs() * SHEET_N as f32;
 
         if tick == 0 || tick == N_TICKS - 1 {
@@ -157,49 +157,49 @@ fn main() {
             );
         }
 
-        // Acumula |ativação| por unidade para calcular atividade média depois
-        // Precisamos fazer readback das ativações brutas por unidade.
-        // read_act_stats retorna estatísticas agregadas, não as 1024 ativações individuais.
-        // Usamos o desvio padrão como proxy de atividade, mas o ideal é ter
-        // as ativações individuais. Lemos o buf_act_rb via a interface disponível.
-        // Como não há API pública para ler o buf_act_rb por unidade, usamos
-        // a técnica de leitura de ativações individuais implementada abaixo.
-        // Acumulamos act_sum_prev como proxy de atividade total da folha.
-        // Para P2/P6 precisamos das 1024 ativações individuais — lemos via read_act_raw.
+        // Accumulates |activation| per unit to compute mean activity later
+        // We need to read back the raw activations per unit.
+        // read_act_stats returns aggregate statistics, not the 1024 individual activations.
+        // We use the standard deviation as an activity proxy, but the ideal is to have
+        // the individual activations. We read buf_act_rb via the available interface.
+        // Since there is no public API to read buf_act_rb per unit, we use
+        // the individual-activation reading technique implemented below.
+        // We accumulate act_sum_prev as a proxy for total sheet activity.
+        // For P2/P6 we need the 1024 individual activations — read via read_act_raw.
         let raw_acts = cortex.read_act_raw(N_SERES);
         for (u, &a) in raw_acts[0..SHEET_N].iter().enumerate() {
             act_accum[u] += (a as f64).abs();
         }
     }
 
-    // ── Atividade média por unidade ──────────────────────────────────────────
+    // ── Mean activity per unit ───────────────────────────────────────────────
     let act_mean: Vec<f32> = act_accum
         .iter()
         .map(|&s| (s / N_TICKS as f64) as f32)
         .collect();
 
-    // Verifica se há atividade real ou tudo é zero
+    // Checks whether there is real activity or everything is zero
     let act_max = act_mean.iter().cloned().fold(0.0_f32, f32::max);
     if act_max < 1e-6 {
-        println!("NÃO MEDIDO: todas as ativações médias são zero.");
-        println!("Motivo: a folha não recebeu sinal após {} ticks.", N_TICKS);
-        println!("Verificar: (1) upload_wave correto? (2) kernel afference rodou?");
-        println!("(3) buf_afw inicializado em 1.0 mas gaussiana EPS pode estar filtrando tudo.");
+        println!("NOT MEASURED: all mean activations are zero.");
+        println!("Reason: the sheet received no signal after {} ticks.", N_TICKS);
+        println!("Check: (1) upload_wave correct? (2) did the afference kernel run?");
+        println!("(3) buf_afw initialized at 1.0 but the EPS gaussian may be filtering everything.");
         return;
     }
 
-    // ── Para cada unidade, qual modalidade domina? ────────────────────────────
-    // Usamos a prova mais direta disponível sem buf_afw readback:
-    // Rodamos 2 ticks extras — um com só modalidade A ativa, outro com só B ativa.
-    // A diferença de ativação revela qual modalidade domina cada unidade.
+    // ── For each unit, which modality dominates? ──────────────────────────────
+    // We use the most direct proof available without buf_afw readback:
+    // We run 2 extra ticks — one with only modality A active, another with only B active.
+    // The activation difference reveals which modality dominates each unit.
     //
-    // Nota: buf_afw não tem API de readback público neste codebase.
-    // Esta abordagem via resposta diferencial é equivalente e mais direta.
+    // Note: buf_afw has no public readback API in this codebase.
+    // This differential-response approach is equivalent and more direct.
 
-    println!("── Calculando dominância de modalidade via resposta diferencial ──");
-    println!("   (sem readback de buf_afw — usando diferença de ativação por modalidade)");
+    println!("── Computing modality dominance via differential response ──");
+    println!("   (no buf_afw readback — using per-modality activation difference)");
 
-    // Tick A: só modalidade A ativa (B = 0)
+    // Tick A: only modality A active (B = 0)
     let mut waves_a: Vec<[i8; 223]> = Vec::with_capacity(N_SERES);
     {
         let mut w = [0i8; 223];
@@ -207,7 +207,7 @@ fn main() {
             let v = (2.0 * std::f32::consts::PI * k as f32 / 112.0 + 0.5).sin() * 100.0;
             w[k] = v.clamp(-127.0, 127.0) as i8;
         }
-        // canais 112-222 ficam em 0 → modalidade B silenciada
+        // channels 112-222 stay at 0 → modality B silenced
         waves_a.push(w);
     }
     cortex.upload_wave(&waves_a, N_SERES);
@@ -215,14 +215,14 @@ fn main() {
         label: Some("cortex-map-probe-a"),
     });
     cortex.dispatch_afference(&mut enc_a, N_SERES, (N_TICKS + 0) as u32);
-    // Sem Hebb neste tick de sondagem — só mede resposta
+    // No Hebb on this probe tick — only measures response
     cortex.copy_for_readback(&mut enc_a, N_SERES);
     queue.submit(Some(enc_a.finish()));
     device.poll(wgpu::Maintain::Wait);
     let acts_a = cortex.read_act_raw(N_SERES);
     let resp_a: Vec<f32> = acts_a[..SHEET_N].to_vec();
 
-    // Tick B: só modalidade B ativa (A = 0)
+    // Tick B: only modality B active (A = 0)
     let mut waves_b: Vec<[i8; 223]> = Vec::with_capacity(N_SERES);
     {
         let mut w = [0i8; 223];
@@ -231,7 +231,7 @@ fn main() {
             let v = (2.0 * std::f32::consts::PI * kk as f32 / 111.0 + 0.5).cos() * 100.0;
             w[k] = v.clamp(-127.0, 127.0) as i8;
         }
-        // canais 0-111 ficam em 0 → modalidade A silenciada
+        // channels 0-111 stay at 0 → modality A silenced
         waves_b.push(w);
     }
     cortex.upload_wave(&waves_b, N_SERES);
@@ -245,7 +245,7 @@ fn main() {
     let acts_b = cortex.read_act_raw(N_SERES);
     let resp_b: Vec<f32> = acts_b[..SHEET_N].to_vec();
 
-    // Dominância por unidade: A se resp_a > resp_b, B se resp_b > resp_a, '?' se igual
+    // Dominance per unit: A if resp_a > resp_b, B if resp_b > resp_a, '?' if equal
     let dominance: Vec<u8> = (0..SHEET_N)
         .map(|u| {
             let da = resp_a[u].abs();
@@ -253,14 +253,14 @@ fn main() {
             if (da - db).abs() < 1e-6 {
                 2u8
             }
-            // indefinido
+            // undefined
             else if da > db {
                 0u8
             }
-            // modalidade A domina
+            // modality A dominates
             else {
                 1u8
-            } // modalidade B domina
+            } // modality B dominates
         })
         .collect();
 
@@ -270,23 +270,23 @@ fn main() {
 
     println!();
     println!("══════════════════════════════════════════════════");
-    println!("  MAPA DE ALOCAÇÃO 32×32 (emergente, NÃO hardcoded)");
+    println!("  32×32 ALLOCATION MAP (emergent, NOT hardcoded)");
     println!("══════════════════════════════════════════════════");
-    println!("  A = modalidade A domina | B = modalidade B domina | ? = indefinido");
+    println!("  A = modality A dominates | B = modality B dominates | ? = undefined");
     println!();
 
-    // Verifica se o mapa é homogêneo (todas as unidades iguais → DENUNCIA)
+    // Checks whether the map is homogeneous (all units equal → FLAG IT)
     let all_same = n_a == SHEET_N || n_b == SHEET_N || n_indef == SHEET_N;
     if all_same {
         println!(
-            "ATENÇÃO: todas as unidades mostram a mesma dominância ({}/{}/{} A/B/?)",
+            "ATTENTION: all units show the same dominance ({}/{}/{} A/B/?)",
             n_a, n_b, n_indef
         );
-        println!("Isso é EVIDÊNCIA CONTRA segregação — o mapa é HOMOGÊNEO.");
+        println!("This is EVIDENCE AGAINST segregation — the map is HOMOGENEOUS.");
         println!();
     }
 
-    // Imprime mapa 32×32 em ASCII
+    // Prints 32×32 map in ASCII
     for row in 0..SHEET_H {
         print!("  ");
         for col in 0..SHEET_W {
@@ -302,33 +302,33 @@ fn main() {
     }
     println!();
     println!(
-        "  Contagem: A={n_a} ({:.1}%)  B={n_b} ({:.1}%)  ?={n_indef} ({:.1}%)",
+        "  Count: A={n_a} ({:.1}%)  B={n_b} ({:.1}%)  ?={n_indef} ({:.1}%)",
         n_a as f32 / SHEET_N as f32 * 100.0,
         n_b as f32 / SHEET_N as f32 * 100.0,
         n_indef as f32 / SHEET_N as f32 * 100.0
     );
 
-    // ── FRONTEIRA: correlação cruzada entre unidades vizinhas ─────────────────
-    // Para cada unidade, calculamos a correlação de Pearson entre seu vetor
-    // de resposta (resp_a[u], resp_b[u]) e o de seus 4 vizinhos (NSEW).
+    // ── BOUNDARY: cross-correlation between neighboring units ─────────────────
+    // For each unit, we compute the Pearson correlation between its response
+    // vector (resp_a[u], resp_b[u]) and that of its 4 neighbors (NSEW).
     //
-    // Vetor de característica por unidade: [resp_a, resp_b]
-    // Correlação entre unidades i e j:
+    // Feature vector per unit: [resp_a, resp_b]
+    // Correlation between units i and j:
     //   r(i,j) = cos_sim([resp_a_i, resp_b_i], [resp_a_j, resp_b_j])
     //          = (rA_i*rA_j + rB_i*rB_j) / (|v_i| × |v_j|)
     //
-    // "Gradiente de correlação" em u = 1 - média(correlações com vizinhos).
-    // Valor alto = fronteira. Valor baixo = interior de região.
+    // "Correlation gradient" at u = 1 - mean(correlations with neighbors).
+    // High value = boundary. Low value = region interior.
 
     println!("══════════════════════════════════════════════════");
-    println!("  MAPA DE FRONTEIRA — gradiente de correlação 32×32");
-    println!("  '.' = interior de região (alta correlação com vizinhos)");
-    println!("  '|' ou '-' = borda detectada (correlação cai)");
-    println!("  '#' = fronteira forte (correlação < 0.5 com vizinhos)");
+    println!("  BOUNDARY MAP — 32×32 correlation gradient");
+    println!("  '.' = region interior (high correlation with neighbors)");
+    println!("  '|' or '-' = edge detected (correlation drops)");
+    println!("  '#' = strong boundary (correlation < 0.5 with neighbors)");
     println!("══════════════════════════════════════════════════");
     println!();
 
-    // Norma do vetor de resposta por unidade
+    // Norm of the response vector per unit
     let norms: Vec<f32> = (0..SHEET_N)
         .map(|u| {
             (resp_a[u] * resp_a[u] + resp_b[u] * resp_b[u])
@@ -337,7 +337,7 @@ fn main() {
         })
         .collect();
 
-    // Correlação com vizinhos (4-conectividade)
+    // Correlation with neighbors (4-connectivity)
     let neighbor_corr: Vec<f32> = (0..SHEET_N)
         .map(|u| {
             let row = u / SHEET_W;
@@ -345,28 +345,28 @@ fn main() {
             let mut sum_r = 0.0_f32;
             let mut cnt = 0u32;
 
-            // Norte
+            // North
             if row > 0 {
                 let j = u - SHEET_W;
                 let dot = resp_a[u] * resp_a[j] + resp_b[u] * resp_b[j];
                 sum_r += dot / (norms[u] * norms[j]);
                 cnt += 1;
             }
-            // Sul
+            // South
             if row < SHEET_H - 1 {
                 let j = u + SHEET_W;
                 let dot = resp_a[u] * resp_a[j] + resp_b[u] * resp_b[j];
                 sum_r += dot / (norms[u] * norms[j]);
                 cnt += 1;
             }
-            // Oeste
+            // West
             if col > 0 {
                 let j = u - 1;
                 let dot = resp_a[u] * resp_a[j] + resp_b[u] * resp_b[j];
                 sum_r += dot / (norms[u] * norms[j]);
                 cnt += 1;
             }
-            // Leste
+            // East
             if col < SHEET_W - 1 {
                 let j = u + 1;
                 let dot = resp_a[u] * resp_a[j] + resp_b[u] * resp_b[j];
@@ -378,37 +378,37 @@ fn main() {
         })
         .collect();
 
-    // Limiar de fronteira: correlação com vizinhos < 0.7 é suspeito de fronteira
+    // Boundary threshold: correlation with neighbors < 0.7 is suspected boundary
     for row in 0..SHEET_H {
         print!("  ");
         for col in 0..SHEET_W {
             let u = row * SHEET_W + col;
             let r = neighbor_corr[u];
             let c = if r >= 0.9 {
-                '.' // interior — alta correlação com vizinhos
+                '.' // interior — high correlation with neighbors
             } else if r >= 0.7 {
-                ',' // zona de transição
+                ',' // transition zone
             } else if r >= 0.5 {
-                'o' // fronteira moderada
+                'o' // moderate boundary
             } else {
-                '#' // fronteira forte
+                '#' // strong boundary
             };
             print!("{c}");
         }
-        // Imprime o valor médio de correlação da linha para referência
+        // Prints the row's mean correlation value for reference
         let row_mean: f32 = (0..SHEET_W)
             .map(|col| neighbor_corr[row * SHEET_W + col])
             .sum::<f32>()
             / SHEET_W as f32;
-        println!("  corr_vizinhos={:.3}", row_mean);
+        println!("  neighbor_corr={:.3}", row_mean);
     }
     println!();
 
-    // ── CRITÉRIO DE REFUTAÇÃO P1 ──────────────────────────────────────────────
-    // Correlação INTRA-região: média de r entre pares (u,j) onde dominance[u]==dominance[j].
-    // Correlação ENTRE-regiões: média de r entre pares (u,j) onde dominance[u]!=dominance[j].
+    // ── P1 REFUTATION CRITERION ───────────────────────────────────────────────
+    // INTRA-region correlation: mean r over pairs (u,j) where dominance[u]==dominance[j].
+    // INTER-region correlation: mean r over pairs (u,j) where dominance[u]!=dominance[j].
     //
-    // Amostramos pares de VIZINHOS (4-conectividade) para eficiência.
+    // We sample NEIGHBOR pairs (4-connectivity) for efficiency.
 
     let mut intra_sum = 0.0_f64;
     let mut intra_cnt = 0u64;
@@ -420,14 +420,14 @@ fn main() {
         let col = u % SHEET_W;
         let du = dominance[u];
 
-        // Vizinhos leste e sul (evita contar o par duas vezes)
+        // East and south neighbors (avoids counting the pair twice)
         let neighbors: &[Option<usize>] = &[
-            if col < SHEET_W - 1 { Some(u + 1) } else { None }, // leste
+            if col < SHEET_W - 1 { Some(u + 1) } else { None }, // east
             if row < SHEET_H - 1 {
                 Some(u + SHEET_W)
             } else {
                 None
-            }, // sul
+            }, // south
         ];
 
         for &nb_opt in neighbors {
@@ -436,7 +436,7 @@ fn main() {
             let r = dot / (norms[u] * norms[j]);
             let dj = dominance[j];
 
-            // Ignora pares indefinidos nas estatísticas de refutação
+            // Ignores undefined pairs in the refutation statistics
             if du == 2 || dj == 2 {
                 continue;
             }
@@ -451,8 +451,8 @@ fn main() {
         }
     }
 
-    // Coleta correlações intra para calcular média com mais pares (não-vizinhos)
-    // Para maior robustez, amostramos também pares diagonais e de distância 2.
+    // Collects intra correlations to compute the mean with more pairs (non-neighbors)
+    // For more robustness, we also sample diagonal and distance-2 pairs.
     for u in 0..SHEET_N {
         let row = u / SHEET_W;
         let col = u % SHEET_W;
@@ -461,7 +461,7 @@ fn main() {
             continue;
         }
 
-        // Diagonal SE e NE (distância √2)
+        // SE and NE diagonal (distance √2)
         let diag_neighbors: &[Option<usize>] = &[
             if col < SHEET_W - 1 && row < SHEET_H - 1 {
                 Some(u + SHEET_W + 1)
@@ -493,42 +493,42 @@ fn main() {
     }
 
     println!("══════════════════════════════════════════════════");
-    println!("  TESTE DA PREDIÇÃO P1 — CRITÉRIO DE REFUTAÇÃO");
+    println!("  PREDICTION P1 TEST — REFUTATION CRITERION");
     println!("══════════════════════════════════════════════════");
 
     if intra_cnt == 0 || inter_cnt == 0 {
         println!();
-        println!("NÃO MEDIDO: não há pares suficientes para calcular correlações.");
-        println!("  pares intra: {intra_cnt}  pares inter: {inter_cnt}");
+        println!("NOT MEASURED: not enough pairs to compute correlations.");
+        println!("  intra pairs: {intra_cnt}  inter pairs: {inter_cnt}");
         println!(
-            "  Causa provável: segregação não ocorreu ({}/{}/{} A/B/?) ou",
+            "  Likely cause: segregation did not occur ({}/{}/{} A/B/?) or",
             n_a, n_b, n_indef
         );
-        println!("  N_TICKS={N_TICKS} insuficiente para Hebb convergir.");
-        println!("  Predição P1 NÃO TESTADA (sem dados).");
+        println!("  N_TICKS={N_TICKS} insufficient for Hebb to converge.");
+        println!("  Prediction P1 NOT TESTED (no data).");
     } else {
         let corr_intra = (intra_sum / intra_cnt as f64) as f32;
         let corr_inter = (inter_sum / inter_cnt as f64) as f32;
         let razao = if corr_inter.abs() > 1e-8 {
             (corr_intra / corr_inter).abs()
         } else {
-            // corr_inter ≈ 0: regiões completamente descorrelacionadas — bom sinal
-            // Razão formalmente infinita; reportamos como ">100 (inter≈0)"
+            // corr_inter ≈ 0: completely decorrelated regions — good sign
+            // Ratio formally infinite; we report it as ">100 (inter≈0)"
             f32::INFINITY
         };
 
         println!();
         println!(
-            "  pares intra-região:  {intra_cnt:6}  corr_intra = {:+.4}",
+            "  intra-region pairs:  {intra_cnt:6}  corr_intra = {:+.4}",
             corr_intra
         );
         println!(
-            "  pares entre-regiões: {inter_cnt:6}  corr_inter = {:+.4}",
+            "  inter-region pairs: {inter_cnt:6}  corr_inter = {:+.4}",
             corr_inter
         );
         println!();
         println!(
-            "  razão = |corr_intra / corr_inter| = {}",
+            "  ratio = |corr_intra / corr_inter| = {}",
             if razao.is_infinite() {
                 ">100 (inter≈0)".to_string()
             } else {
@@ -540,56 +540,56 @@ fn main() {
         let threshold = 3.0_f32;
         if razao >= threshold || corr_inter.abs() < 0.01 {
             println!(
-                "  ✓ PREDIÇÃO P1 CONFIRMADA — razão {:.2}× ≥ limiar {:.0}×",
+                "  ✓ PREDICTION P1 CONFIRMED — ratio {:.2}× ≥ threshold {:.0}×",
                 if razao.is_infinite() { 999.0 } else { razao },
                 threshold
             );
-            println!("    Fronteira emerge onde correlação cruzada cai.");
+            println!("    Boundary emerges where cross-correlation drops.");
             if corr_intra < 0.6 {
                 println!(
-                    "  RESSALVA: corr_intra={:.4} < 0.6 previsto no doc.",
+                    "  CAVEAT: corr_intra={:.4} < 0.6 predicted in the doc.",
                     corr_intra
                 );
                 println!(
-                    "    Segregação existe mas fraca — N_TICKS={N_TICKS} pode ser insuficiente."
+                    "    Segregation exists but is weak — N_TICKS={N_TICKS} may be insufficient."
                 );
             }
         } else if razao < 1.5 {
             println!(
-                "  ✗ PREDIÇÃO P1 REFUTADA — razão {:.2}× < limiar {:.0}×",
+                "  ✗ PREDICTION P1 REFUTED — ratio {:.2}× < threshold {:.0}×",
                 razao, threshold
             );
             println!(
-                "    Correlação intra-região NÃO é significativamente maior que entre-regiões."
+                "    Intra-region correlation is NOT significantly higher than inter-region."
             );
             println!(
-                "    Hebb com {} ticks não segregou as modalidades.",
+                "    Hebb with {} ticks did not segregate the modalities.",
                 N_TICKS
             );
             println!(
-                "    Hipóteses: (1) ETA=0.005 muito pequeno para {} ticks.",
+                "    Hypotheses: (1) ETA=0.005 too small for {} ticks.",
                 N_TICKS
             );
             println!(
-                "               (2) σ²=64 muito grande — modalidades não se separam espacialmente."
+                "               (2) σ²=64 too large — modalities do not separate spatially."
             );
-            println!("               (3) A predição requer muito mais ticks que o permitido.");
+            println!("               (3) The prediction requires far more ticks than allowed.");
         } else {
             println!(
-                "  ~ PREDIÇÃO P1 INCONCLUSIVA — razão {:.2}× (entre 1.5× e {:.0}×)",
+                "  ~ PREDICTION P1 INCONCLUSIVE — ratio {:.2}× (between 1.5× and {:.0}×)",
                 razao, threshold
             );
-            println!("    Há tendência de segregação mas abaixo do critério formal de 3×.");
+            println!("    There is a segregation trend but below the formal 3× criterion.");
         }
     }
 
-    // ── BANCO DE τ: spread dos τ ativos vs silentes (P2) ─────────────────────
+    // ── τ BANK: spread of active vs silent τ (P2) ────────────────────────────
     println!();
     println!("══════════════════════════════════════════════════");
-    println!("  BANCO DE τ — ESPALHAMENTO (P2)");
+    println!("  τ BANK — SPREAD (P2)");
     println!("══════════════════════════════════════════════════");
 
-    // Classifica unidades em ativas, silentes, intermediárias
+    // Classifies units into active, silent, intermediate
     let mut tau_ativas: Vec<f32> = Vec::new();
     let mut tau_silentes: Vec<f32> = Vec::new();
 
@@ -605,30 +605,30 @@ fn main() {
 
     println!();
     println!(
-        "  Limiar ativo:   >{:.3}   n_ativas   = {}",
+        "  Active threshold:   >{:.3}   n_active   = {}",
         ATIVO_LIMIAR,
         tau_ativas.len()
     );
     println!(
-        "  Limiar silente: <{:.3}   n_silentes = {}",
+        "  Silent threshold: <{:.3}   n_silent = {}",
         SILENTE_LIMIAR,
         tau_silentes.len()
     );
 
     if tau_ativas.is_empty() || tau_silentes.is_empty() {
         println!();
-        println!("  NÃO MEDIDO: não há unidades suficientes em uma das categorias.");
-        println!("  act_max global = {:.6}", act_max);
-        println!("  Causa: {N_TICKS} ticks insuficientes para polarizar a folha.");
-        println!("  Histograma de atividade média:");
+        println!("  NOT MEASURED: not enough units in one of the categories.");
+        println!("  global act_max = {:.6}", act_max);
+        println!("  Cause: {N_TICKS} ticks insufficient to polarize the sheet.");
+        println!("  Mean activity histogram:");
         let buckets = [0.001_f32, 0.01, 0.05, 0.1, 0.3, 0.5, 1.0];
         for (i, &thr) in buckets.iter().enumerate() {
             let lo = if i == 0 { 0.0 } else { buckets[i - 1] };
             let cnt = act_mean.iter().filter(|&&a| a >= lo && a < thr).count();
-            println!("    [{:.3}, {:.3}): {:4} unidades", lo, thr, cnt);
+            println!("    [{:.3}, {:.3}): {:4} units", lo, thr, cnt);
         }
         let n_above = act_mean.iter().filter(|&&a| a >= 0.5).count();
-        println!("    [0.500, ∞):   {:4} unidades", n_above);
+        println!("    [0.500, ∞):   {:4} units", n_above);
     } else {
         tau_ativas.sort_by(|a, b| a.partial_cmp(b).unwrap());
         tau_silentes.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -638,20 +638,20 @@ fn main() {
 
         println!();
         println!(
-            "  τ_ativas:   min={:.2}ms  max={:.1}ms  spread={:.1}×",
+            "  τ_active:   min={:.2}ms  max={:.1}ms  spread={:.1}×",
             tau_ativas[0] * 1000.0,
             tau_ativas.last().unwrap() * 1000.0,
             spread_ativo
         );
         println!(
-            "  τ_silentes: min={:.2}ms  max={:.1}ms  spread={:.1}×",
+            "  τ_silent: min={:.2}ms  max={:.1}ms  spread={:.1}×",
             tau_silentes[0] * 1000.0,
             tau_silentes.last().unwrap() * 1000.0,
             spread_silente
         );
         println!();
 
-        // Histograma das unidades ativas por banda (doc §5.3)
+        // Histogram of active units per band (doc §5.3)
         let (mut ng, mut nb, mut na, mut nth, mut nd) = (0u32, 0u32, 0u32, 0u32, 0u32);
         for &t in &tau_ativas {
             let f = 1.0 / (2.0 * std::f32::consts::PI * t);
@@ -668,7 +668,7 @@ fn main() {
             }
         }
         let n_at = tau_ativas.len() as f32;
-        println!("  Histograma de τ das unidades ATIVAS (bandas doc §5.3):");
+        println!("  τ histogram of ACTIVE units (bands doc §5.3):");
         println!(
             "    gamma (>30Hz, τ<5.3ms):   {:4} ({:.1}%)",
             ng,
@@ -696,43 +696,43 @@ fn main() {
         );
         println!();
 
-        // Predição P2: spread_ativo > 10×
+        // Prediction P2: spread_ativo > 10×
         if spread_ativo > 10.0 {
             println!(
-                "  ✓ P2 CONFIRMADA: spread_ativo={:.1}× > 10× (doc prevê >10× nos campeões)",
+                "  ✓ P2 CONFIRMED: spread_ativo={:.1}× > 10× (doc predicts >10× in champions)",
                 spread_ativo
             );
         } else if spread_ativo > 5.0 {
             println!(
-                "  ~ P2 INCONCLUSIVA: spread_ativo={:.1}× (entre 5× e 10×)",
+                "  ~ P2 INCONCLUSIVE: spread_ativo={:.1}× (between 5× and 10×)",
                 spread_ativo
             );
         } else {
             println!(
-                "  ✗ P2 REFUTADA: spread_ativo={:.1}× < 5× — banco de τ concentrado numa faixa estreita",
+                "  ✗ P2 REFUTED: spread_ativo={:.1}× < 5× — τ bank concentrated in a narrow range",
                 spread_ativo
             );
         }
 
-        // Universe mediu 40× nos campeões vs 5.3× no controle — comparamos
-        println!("  Universe campeão (referência): 40×  controle aleatório: 5,3×");
+        // Universe measured 40× in champions vs 5.3× in the control — we compare
+        println!("  Universe champion (reference): 40×  random control: 5.3×");
         if spread_ativo > 5.3 {
-            println!("  > controle aleatório (ok, folha não é ruído puro)");
+            println!("  > random control (ok, sheet is not pure noise)");
         } else {
-            println!("  ≤ controle aleatório (folha não explora banco de τ melhor que ruído)");
+            println!("  ≤ random control (sheet does not exploit the τ bank better than noise)");
         }
     }
 
-    // ── SANIDADE ALOMÉTRICA (P6 / doc §1.2) ─────────────────────────────────
-    // Contagem: unidades ativas com τ > 100ms (análogo a córtex)
-    //           vs unidades ativas com τ < 10ms (análogo a cerebelo/tronco)
-    // Razão prevista: ~1:4 (córtex:cerebelo) = ~0.25
-    // Fora de [0.5/4, 4×4] = [0.125, 16] → calibração errada
+    // ── ALLOMETRIC SANITY (P6 / doc §1.2) ───────────────────────────────────
+    // Count: active units with τ > 100ms (analogous to cortex)
+    //        vs active units with τ < 10ms (analogous to cerebellum/brainstem)
+    // Predicted ratio: ~1:4 (cortex:cerebellum) = ~0.25
+    // Outside [0.5/4, 4×4] = [0.125, 16] → wrong calibration
 
     println!();
     println!("══════════════════════════════════════════════════");
-    println!("  SANIDADE ALOMÉTRICA (P6 / doc §1.2)");
-    println!("  Unidades ativas: τ>100ms (córtex) vs τ<10ms (tronco/cerebelo)");
+    println!("  ALLOMETRIC SANITY (P6 / doc §1.2)");
+    println!("  Active units: τ>100ms (cortex) vs τ<10ms (brainstem/cerebellum)");
     println!("══════════════════════════════════════════════════");
 
     let n_cortex: usize = (0..SHEET_N)
@@ -743,66 +743,66 @@ fn main() {
         .count();
 
     println!();
-    println!("  Unidades ativas com τ > 100ms (córtex): {n_cortex}");
-    println!("  Unidades ativas com τ <  10ms (tronco):  {n_tronco}");
+    println!("  Active units with τ > 100ms (cortex): {n_cortex}");
+    println!("  Active units with τ <  10ms (brainstem):  {n_tronco}");
 
     if n_tronco == 0 {
         println!();
-        println!("  NÃO MEDIDO: n_tronco = 0. Impossível calcular razão.");
+        println!("  NOT MEASURED: n_tronco = 0. Impossible to compute ratio.");
         println!(
-            "  Causa provável: atividade muito baixa nas {} primeiras unidades (τ curto).",
+            "  Likely cause: very low activity in the first {} units (short τ).",
             n_tronco
         );
-        println!("  As unidades de τ curto (γ) integram rápido mas também decaem rápido —");
-        println!("  com N_TICKS={N_TICKS} e sinal lento, podem estar persistentemente silentes.");
+        println!("  Short-τ units (γ) integrate fast but also decay fast —");
+        println!("  with N_TICKS={N_TICKS} and a slow signal, they may be persistently silent.");
     } else {
         let razao_alometrica = n_cortex as f32 / n_tronco as f32;
-        println!("  Razão córtex/tronco = {:.2}", razao_alometrica);
-        println!("  Fato conservado em mamíferos: ~1:4 = ~0.25 (doc §1.2)");
+        println!("  Cortex/brainstem ratio = {:.2}", razao_alometrica);
+        println!("  Conserved fact in mammals: ~1:4 = ~0.25 (doc §1.2)");
         println!();
 
         if razao_alometrica < 0.5 {
             println!(
-                "  ✗ FORA DA FAIXA: razão {:.2} < 0.5 — muito pouco córtex ativo.",
+                "  ✗ OUT OF RANGE: ratio {:.2} < 0.5 — too little active cortex.",
                 razao_alometrica
             );
-            println!("    Calibração errada: unidades lentas (τ longo) insuficientemente ativas.");
+            println!("    Wrong calibration: slow units (long τ) insufficiently active.");
             println!(
-                "    Possível causa: {N_TICKS} ticks insuficientes para integração lenta convergir."
+                "    Possible cause: {N_TICKS} ticks insufficient for slow integration to converge."
             );
         } else if razao_alometrica > 16.0 {
             println!(
-                "  ✗ FORA DA FAIXA: razão {:.2} > 16 — tronco completamente silente.",
+                "  ✗ OUT OF RANGE: ratio {:.2} > 16 — brainstem completely silent.",
                 razao_alometrica
             );
-            println!("    Calibração errada: unidades rápidas (τ curto) não respondem ao input.");
-            println!("    Possível causa: input sintético varia lentamente → τ curto já decaiu.");
+            println!("    Wrong calibration: fast units (short τ) do not respond to the input.");
+            println!("    Possible cause: synthetic input varies slowly → short τ already decayed.");
         } else {
             println!(
-                "  ✓ NA FAIXA BIOLÓGICA [0.5, 16]: razão {:.2}",
+                "  ✓ IN THE BIOLOGICAL RANGE [0.5, 16]: ratio {:.2}",
                 razao_alometrica
             );
             if (razao_alometrica - 0.25).abs() < 0.20 {
-                println!("    Próxima do alvo mamífero 1:4 = 0.25 ← sanidade alométrica OK");
+                println!("    Close to the mammal target 1:4 = 0.25 ← allometric sanity OK");
             } else {
                 println!(
-                    "    Dentro da faixa mas desviada de 0.25 — aceitável para folha sintética."
+                    "    Within range but deviated from 0.25 — acceptable for a synthetic sheet."
                 );
             }
         }
     }
 
-    // ── SUMÁRIO FINAL ─────────────────────────────────────────────────────────
+    // ── FINAL SUMMARY ─────────────────────────────────────────────────────────
     println!();
     println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║  SUMÁRIO DOS RESULTADOS (cortex_map)                            ║");
+    println!("║  RESULTS SUMMARY (cortex_map)                                   ║");
     println!("╠══════════════════════════════════════════════════════════════════╣");
-    println!("║  Entrada: SINTÉTICA (2 modalidades descorrelacionadas)          ║");
-    println!("║  Ticks rodados: {N_TICKS:2}  |  Seres: {N_SERES:2}  |  Folha: 32×32=1024     ║");
+    println!("║  Input: SYNTHETIC (2 decorrelated modalities)                   ║");
+    println!("║  Ticks run: {N_TICKS:2}  |  Beings: {N_SERES:2}  |  Sheet: 32×32=1024     ║");
     println!("║  GPU: {:<59}║", &name[..name.len().min(59)]);
     println!("╠══════════════════════════════════════════════════════════════════╣");
     println!(
-        "║  [Mapa acima] A={n_a:4} ({:.1}%)  B={n_b:4} ({:.1}%)  ?={n_indef:4} ({:.1}%){}║",
+        "║  [Map above] A={n_a:4} ({:.1}%)  B={n_b:4} ({:.1}%)  ?={n_indef:4} ({:.1}%){}║",
         n_a as f32 / SHEET_N as f32 * 100.0,
         n_b as f32 / SHEET_N as f32 * 100.0,
         n_indef as f32 / SHEET_N as f32 * 100.0,
@@ -810,7 +810,7 @@ fn main() {
     );
     println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
-    println!("NOTA: {N_TICKS} ticks é o limite de segurança (evolução em background).");
-    println!("      Para segregação robusta, o doc prevê 5.000+ ticks com 30+ seres.");
-    println!("      Um resultado inconclusivo aqui NÃO refuta P1 — apenas NÃO a confirma.");
+    println!("NOTE: {N_TICKS} ticks is the safety limit (evolution in background).");
+    println!("      For robust segregation, the doc predicts 5.000+ ticks with 30+ beings.");
+    println!("      An inconclusive result here does NOT refute P1 — it just does NOT confirm it.");
 }

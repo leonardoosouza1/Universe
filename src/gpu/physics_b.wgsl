@@ -1,13 +1,13 @@
-// Kernel B: loop de pneus (Pacejka) — deliberadamente enxuto para caber nos registradores.
+// Kernel B: tyre loop (Pacejka) — deliberately lean to fit in the registers.
 //
-// Causa raiz do crash original: o shader physics_b.wgsl combinava pneus + colisão + integração
-// num único kernel com ~30 variáveis locais por iteração Pacejka somadas a 5 arrays de 4
-// floats cada (om, tire_temps, slip_ratios, slip_angles, nl) — total ~70 f32 + vec3 forces
-// + torques_y + demais. O compilador ACO/NIR da RDNA2 não consegue spill-ear para memória
-// local e crasha com SIGSEGV.
+// Root cause of the original crash: the physics_b.wgsl shader combined tyres + collision + integration
+// in a single kernel with ~30 local variables per Pacejka iteration added to 5 arrays of 4
+// floats each (om, tire_temps, slip_ratios, slip_angles, nl) — total ~70 f32 + vec3 forces
+// + torques_y + the rest. RDNA2's ACO/NIR compiler cannot spill to local
+// memory and crashes with SIGSEGV.
 //
-// Solução: extrair SOMENTE o loop Pacejka para este kernel. A saída (MidState2, 64 bytes)
-// carrega forças + torques + omegas atualizadas + slip para o Kernel C completar.
+// Solution: extract ONLY the Pacejka loop into this kernel. The output (MidState2, 64 bytes)
+// carries forces + torques + updated omegas + slip for Kernel C to finish.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -61,7 +61,7 @@ struct CarInput {
     _pad_dt:         f32,
 }
 
-// Buffer intermediário do Kernel A — mesmo layout de physics_a.wgsl
+// Kernel A's intermediate buffer — same layout as physics_a.wgsl
 struct MidState {
     normal_loads:    vec4<f32>,  // 16
     susp_comps:      vec4<f32>,  // 16
@@ -83,14 +83,14 @@ struct MidState {
     // Total: 128 bytes
 }
 
-// Buffer intermediário do Kernel B — produzido aqui, consumido pelo Kernel C.
-// Mantém MÍNIMO necessário para a integração. 64 bytes, stride=64.
+// Kernel B's intermediate buffer — produced here, consumed by Kernel C.
+// Keeps the MINIMUM needed for the integration. 64 bytes, stride=64.
 struct MidState2 {
-    forces:      vec3<f32>,   // 12  — forças de pneu + forças parciais do Kernel A
-    torques_y:   f32,         //  4  — torque yaw acumulado
-    omegas:      vec4<f32>,   // 16  — omegas atualizados pós-frenagem
-    slip_r:      vec4<f32>,   // 16  — slip ratios (para atualizar wheels na saída)
-    slip_a:      vec4<f32>,   // 16  — slip angles (idem)
+    forces:      vec3<f32>,   // 12  — tyre forces + partial forces from Kernel A
+    torques_y:   f32,         //  4  — accumulated yaw torque
+    omegas:      vec4<f32>,   // 16  — omegas updated post-braking
+    slip_r:      vec4<f32>,   // 16  — slip ratios (to update wheels on output)
+    slip_a:      vec4<f32>,   // 16  — slip angles (same)
     // Total: 64 bytes
 }
 
@@ -99,7 +99,7 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
-    // D5 (escada): clima — ver physics.rs::set_clima. Defaults neutros.
+    // D5 (ladder): climate — see physics.rs::set_clima. Neutral defaults.
     clima_mu:   f32,
     vento_x:    f32,
     vento_z:    f32,
@@ -107,8 +107,8 @@ struct WorldParams {
 }
 
 @group(0) @binding(0) var<uniform>             params: WorldParams;
-@group(0) @binding(1) var<storage, read>       grid:   array<u32>;  // não usado neste kernel, mas mantido para layout uniforme
-@group(0) @binding(2) var<storage, read>       hmap:   array<f32>;  // idem
+@group(0) @binding(1) var<storage, read>       grid:   array<u32>;  // not used in this kernel, kept for uniform layout
+@group(0) @binding(2) var<storage, read>       hmap:   array<f32>;  // same
 @group(0) @binding(3) var<storage, read>       input:  array<CarInput>;
 @group(0) @binding(4) var<storage, read>       mid:    array<MidState>;
 @group(0) @binding(5) var<storage, read_write> mid2:   array<MidState2>;
@@ -130,7 +130,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let htw     = c.track_width * 0.5;
     let fwd_vel = dot(c.vel, fwd);
     let lat_vel = dot(c.vel, c.lat);
-    // D5: μ local por posição (trechos escorregadios determinísticos). freq=0 → 1,0.
+    // D5: local μ by position (deterministic slippery stretches). freq=0 → 1.0.
     var mu_local: f32 = 1.0;
     if (params.clima_freq > 0.0) {
         mu_local = params.clima_mu + (1.0 - params.clima_mu) * 0.5
@@ -143,16 +143,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dtq     = m.drive_torque;
     let aqua    = c.aquaplaning;
 
-    // Carrega forças parciais do Kernel A (gravidade + suspensão + aero)
+    // Loads the partial forces from Kernel A (gravity + suspension + aero)
     var forces    = m.forces;
     var torques_y = m.torques_y;
 
-    // Posições das rodas
+    // Wheel positions
     let wlp = array<f32,4>(hwb, hwb, -hwb, -hwb);
     let wtp = array<f32,4>(-htw, htw, -htw, htw);
 
-    // Distribuição de torque — idêntico ao Kernel B antigo
-    // Usa omegas de MidState (já atualizados pelo starter no Kernel A)
+    // Torque distribution — identical to the old Kernel B
+    // Uses MidState's omegas (already updated by the starter in Kernel A)
     var wt = array<f32,4>(0.0, 0.0, 0.0, 0.0);
     switch c.drivetrain {
         case 0u: { wt[0]=dtq*0.5; wt[1]=dtq*0.5; }
@@ -173,16 +173,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     else              { msd = max(35.0 - (speed-15.0)*0.4, 12.0); }
     let msr = msd * 0.017453292519943295;
 
-    // Omegas mutable (lidos do MidState, atualizados pelo loop)
+    // Mutable omegas (read from MidState, updated by the loop)
     var om  = array<f32,4>(m.omegas.x, m.omegas.y, m.omegas.z, m.omegas.w);
-    var sr4 = array<f32,4>(0.0, 0.0, 0.0, 0.0);  // slip ratios de saída
-    var sa4 = array<f32,4>(0.0, 0.0, 0.0, 0.0);  // slip angles de saída
+    var sr4 = array<f32,4>(0.0, 0.0, 0.0, 0.0);  // output slip ratios
+    var sa4 = array<f32,4>(0.0, 0.0, 0.0, 0.0);  // output slip angles
 
-    // --- Loop Pacejka: 4 rodas ---
-    // ATENÇÃO: variáveis por iteração deliberadamente mínimas para reduzir pressão
-    // de registradores. Cada variável usada uma vez, sem retenção entre iterações.
+    // --- Pacejka loop: 4 wheels ---
+    // ATTENTION: per-iteration variables deliberately minimal to reduce register
+    // pressure. Each variable used once, no retention between iterations.
 
-    // Roda 0 (FL)
+    // Wheel 0 (FL)
     {
         let i = 0u;
         let load = max(m.normal_loads.x, 10.0);
@@ -221,7 +221,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         torques_y += chla*wlp[i]*aqua + chl*wtp[i]*0.005*lsd_gate;
     }
 
-    // Roda 1 (FR)
+    // Wheel 1 (FR)
     {
         let i = 1u;
         let load = max(m.normal_loads.y, 10.0);
@@ -260,7 +260,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         torques_y += chla*wlp[i]*aqua + chl*wtp[i]*0.005*lsd_gate;
     }
 
-    // Roda 2 (RL)
+    // Wheel 2 (RL)
     {
         let i = 2u;
         let load = max(m.normal_loads.z, 10.0);
@@ -270,7 +270,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let wls = om[i] * c.wheel_radius;
         let rfwd = fwd_vel + c.av_y * wtp[i];
         let rlat = lat_vel - c.av_y * wlp[i];
-        // Rodas traseiras: sem esterçamento (select retorna 0.0 quando i >= 2)
+        // Rear wheels: no steering (select returns 0.0 when i >= 2)
         let cs  = 1.0; let ss = 0.0;
         let cf  = rfwd; let cl = rlat;
         let vr  = max(abs(wls), max(abs(cf), 0.5));
@@ -297,7 +297,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         torques_y += flal*wlp[i]*aqua + fll*wtp[i]*0.005*lsd_gate;
     }
 
-    // Roda 3 (RR)
+    // Wheel 3 (RR)
     {
         let i = 3u;
         let load = max(m.normal_loads.w, 10.0);
@@ -307,7 +307,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let wls = om[i] * c.wheel_radius;
         let rfwd = fwd_vel + c.av_y * wtp[i];
         let rlat = lat_vel - c.av_y * wlp[i];
-        // Rodas traseiras: sem esterçamento
+        // Rear wheels: no steering
         let cs  = 1.0; let ss = 0.0;
         let cf  = rfwd; let cl = rlat;
         let vr  = max(abs(wls), max(abs(cf), 0.5));
@@ -334,7 +334,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         torques_y += flal*wlp[i]*aqua + fll*wtp[i]*0.005*lsd_gate;
     }
 
-    // Escreve MidState2 para o Kernel C
+    // Writes MidState2 for Kernel C
     var m2: MidState2;
     m2.forces   = forces;
     m2.torques_y= torques_y;

@@ -1,134 +1,135 @@
-//! Esparsidade contextual — *quem* dispara para *esta* situação.
+//! Contextual sparsity — *who* fires for *this* situation.
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo, entregando o protocolo de esparsidade contextual: *"você está tentando achar
-//! algo que calcule o valor do peso do neurônio, né? Por que não tenta de outras formas, e
-//! para cada tipo de parte do cérebro?"*
+//! Leonardo, delivering the contextual-sparsity protocol: *"you are trying to find
+//! something that computes the value of the neuron's weight, right? Why not try other ways,
+//! and for each kind of brain part?"*
 //!
-//! A pergunta que eu vinha perseguindo — *qual neurônio importa* — está **refutada** no
-//! documento dele (§5): com os 8 neurônios mais "importantes" de 128 o desempenho fica
-//! PIOR que o baseline; é preciso ~50% deles para chegar perto do total. A informação é
-//! distribuída. Selecionar subconjunto fixo não funciona; o que funciona é projetar.
+//! The question I had been chasing — *which neuron matters* — is **refuted** in his
+//! document (§5): with the 8 most "important" neurons out of 128 the performance is
+//! WORSE than the baseline; ~50% of them are needed to get close to the total. The
+//! information is distributed. Selecting a fixed subset does not work; what works is projecting.
 //!
-//! Os nossos próprios números já diziam isso e eu não li assim: atenção uniforme
-//! (0,52-0,66% por canal), rank efetivo 75/96, zero neurônios surdos ou mudos.
+//! Our own numbers already said this and I did not read them that way: uniform attention
+//! (0.52-0.66% per channel), effective rank 75/96, zero deaf or mute neurons.
 //!
-//! A distinção que salva a análise, e que dá nome a este módulo:
+//! The distinction that saves the analysis, and that names this module:
 //!
-//! · **esparsidade estática** — quais neurônios são globalmente importantes → NÃO existe
-//! · **esparsidade contextual** — quais disparam *para este tick* → existe e é explorável
+//! · **static sparsity** — which neurons are globally important → does NOT exist
+//! · **contextual sparsity** — which ones fire *for this tick* → exists and is exploitable
 //!
-//! # A régua muda com a aritmética
+//! # The ruler changes with the arithmetic
 //!
-//! O cérebro tem seis partes com naturezas numéricas distintas, e medir todas com a mesma
-//! régua foi o erro anterior (valor singular aplicado ao cérebro inteiro):
+//! The brain has six parts with distinct numeric natures, and measuring them all with the
+//! same ruler was the previous mistake (singular value applied to the whole brain):
 //!
-//! | parte | aritmética | o que perguntar |
+//! | part | arithmetic | what to ask |
 //! |---|---|---|
-//! | KAN sensorial | inteira (i32) | quantos knots saíram da identidade |
-//! | CfC | inteira + `decay = exp(-d·dt)` diagonal | persistência por τ, zona morta |
-//! | L1 | pesos f32 × entrada i8 ÷127 | ganho σ_max, esparsidade contextual |
-//! | L2 | f32 puro | esparsidade, saturação |
-//! | bypass L1→saída | f32, pula L2 | metade da saída não passa por L2 |
-//! | banco de τ | f32 com semântica de TEMPO | distribuição log, correlação com persistência |
+//! | sensory KAN | integer (i32) | how many knots left the identity |
+//! | CfC | integer + diagonal `decay = exp(-d·dt)` | persistence per τ, dead zone |
+//! | L1 | f32 weights × i8 input ÷127 | σ_max gain, contextual sparsity |
+//! | L2 | pure f32 | sparsity, saturation |
+//! | L1→output bypass | f32, skips L2 | half the output does not go through L2 |
+//! | τ bank | f32 with TIME semantics | log distribution, correlation with persistence |
 //!
-//! # Os quatro experimentos
+//! # The four experiments
 //!
-//! Traduzidos do protocolo (E1-E4), na ordem de execução que ele define — E2 primeiro
-//! porque, se a esparsidade real for baixa, o resto perde sentido.
+//! Translated from the protocol (E1-E4), in the execution order he defines — E2 first
+//! because, if the real sparsity is low, the rest loses meaning.
 //!
-//! **Armadilha nº 1 do protocolo, respeitada aqui:** a não-linearidade é `tanh`, que não
-//! zera exatamente. O limiar é parâmetro explícito e **sempre reportado** junto do
-//! resultado; `sensibilidade_ao_limiar` mede quanto a conclusão depende dele.
+//! **Trap #1 of the protocol, respected here:** the non-linearity is `tanh`, which never
+//! zeroes exactly. The threshold is an explicit parameter and is **always reported** next
+//! to the result; `sensibilidade_ao_limiar` measures how much the conclusion depends on it.
 
 use crate::math::stats;
 
-/// Fração de neurônios ativos por amostra, e a distribuição dessa fração.
+/// Fraction of neurons active per sample, and the distribution of that fraction.
 ///
-/// E2 do protocolo. Responde: o cérebro é esparso de verdade?
+/// E2 of the protocol. Answers: is the brain truly sparse?
 #[derive(Debug, Clone)]
 pub struct Esparsidade {
     pub camada: String,
-    /// Limiar usado — SEMPRE reportado junto, porque muda todos os números.
+    /// Threshold used — ALWAYS reported alongside, because it changes all the numbers.
     pub limiar: f32,
-    /// Média da fração ativa por tick (0..1).
+    /// Mean of the active fraction per tick (0..1).
     pub fracao_ativa_media: f32,
-    /// Desvio da fração ativa entre ticks — variação indica que o conjunto ativo responde
-    /// ao contexto; constante indica que dispara sempre o mesmo tanto.
+    /// Deviation of the active fraction across ticks — variation indicates the active set
+    /// responds to context; constant indicates it always fires the same amount.
     pub fracao_ativa_sigma: f32,
     pub p5: f32,
     pub p95: f32,
-    /// Fração de amostras em que a camada estava saturada (|h| > 0,99) — o oposto de
-    /// esparsa. L2 mediu 57,5% aqui, o que é defeito, não esparsidade.
+    /// Fraction of samples in which the layer was saturated (|h| > 0.99) — the opposite of
+    /// sparse. L2 measured 57.5% here, which is a defect, not sparsity.
     pub saturacao_media: f32,
 }
 
-/// Quanto o conjunto ativo persiste entre ticks consecutivos.
+/// How much the active set persists across consecutive ticks.
 ///
-/// E1 do protocolo — a ideia potencialmente nova. No nosso caso há previsão teórica: o
-/// CfC é literalmente um estado com inércia (`s = s·decay + x·gain`), então canais de τ
-/// longo devem persistir mais que os de τ curto. Se isso aparecer, é a primeira validação
-/// empírica de que o banco de τ faz o que promete.
+/// E1 of the protocol — the potentially new idea. In our case there is a theoretical
+/// prediction: the CfC is literally a state with inertia (`s = s·decay + x·gain`), so
+/// long-τ channels should persist more than short-τ ones. If that shows up, it is the first
+/// empirical validation that the τ bank does what it promises.
 #[derive(Debug, Clone)]
 pub struct Persistencia {
     pub camada: String,
     pub limiar: f32,
-    /// |A[t] ∩ A[t-1]| / |A[t]| — média sobre os ticks.
+    /// |A[t] ∩ A[t-1]| / |A[t]| — mean over the ticks.
     pub persistencia: f32,
-    /// Mesmo cálculo contra uma amostra ALEATÓRIA (não adjacente). É o baseline
-    /// obrigatório: sem ele, persistência alta pode ser só "a camada dispara sempre".
+    /// Same computation against a RANDOM (non-adjacent) sample. It is the mandatory
+    /// baseline: without it, high persistence can just be "the layer always fires".
     pub baseline_aleatorio: f32,
-    /// `persistencia - baseline`. Critério de refutação do protocolo: abaixo de 10 pontos,
-    /// a ideia do preditor incremental morre.
+    /// `persistencia - baseline`. The protocol's refutation criterion: below 10 points,
+    /// the incremental-predictor idea dies.
     pub ganho_temporal: f32,
-    /// Fração média do conjunto ativo que MUDA por tick — o que um preditor incremental
-    /// precisaria adivinhar.
+    /// Mean fraction of the active set that CHANGES per tick — what an incremental
+    /// predictor would need to guess.
     pub churn: f32,
 }
 
-/// Excesso de co-ativação sobre a independência estatística.
+/// Excess of co-activation over statistical independence.
 ///
-/// E3 do protocolo. É a base empírica para dividir o cérebro em regiões: os grupos devem
-/// SAIR daqui (clusters de neurônios que disparam juntos), não de desenho a priori.
+/// E3 of the protocol. It is the empirical basis for dividing the brain into regions: the
+/// groups must COME OUT of here (clusters of neurons that fire together), not from a priori
+/// design.
 #[derive(Debug, Clone)]
 pub struct CoAtivacao {
     pub camada: String,
     pub limiar: f32,
-    /// P(i e j ativos) média entre pares.
+    /// Mean P(i and j active) across pairs.
     pub coativacao_media: f32,
-    /// P(i)·P(j) média — o que se esperaria se cada um decidisse sozinho.
+    /// Mean P(i)·P(j) — what would be expected if each decided on its own.
     pub esperado_independente: f32,
-    /// Diferença. Positivo = existe estrutura de grupo.
+    /// Difference. Positive = group structure exists.
     pub excesso: f32,
-    /// Os pares mais acoplados: (i, j, excesso).
+    /// The most coupled pairs: (i, j, excess).
     pub pares_fortes: Vec<(usize, usize, f32)>,
 }
 
-/// Distribuição de frequência de ativação por neurônio.
+/// Distribution of activation frequency per neuron.
 ///
-/// E4 do protocolo. Cauda longa = poucos neurônios quentes carregam quase tudo.
+/// E4 of the protocol. Long tail = a few hot neurons carry almost everything.
 #[derive(Debug, Clone)]
 pub struct QuenteFrio {
     pub camada: String,
     pub limiar: f32,
-    /// Frequência de ativação de cada neurônio (0..1), ordem original.
+    /// Activation frequency of each neuron (0..1), original order.
     pub frequencia: Vec<f32>,
-    /// Quantos neurônios cobrem 80% de todas as ativações.
+    /// How many neurons cover 80% of all activations.
     pub neuronios_para_80pct: usize,
-    /// Neurônios que nunca dispararam.
+    /// Neurons that never fired.
     pub nunca_ativos: usize,
-    /// Neurônios que dispararam em mais de 95% dos ticks — sempre ligados são viés, não
-    /// sensor: não carregam informação sobre o contexto.
+    /// Neurons that fired in more than 95% of ticks — always-on ones are bias, not
+    /// sensor: they carry no information about the context.
     pub sempre_ativos: usize,
 }
 
-/// Máscara binária de atividade: `|h| > limiar`.
+/// Binary activity mask: `|h| > threshold`.
 fn mascara(amostra: &[f32], limiar: f32) -> Vec<bool> {
     amostra.iter().map(|v| v.abs() > limiar).collect()
 }
 
-/// E2 — esparsidade real por camada.
+/// E2 — real sparsity per layer.
 pub fn esparsidade(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> Esparsidade {
     let mut fracoes: Vec<f32> = Vec::with_capacity(amostras.len());
     let mut saturacoes: Vec<f32> = Vec::with_capacity(amostras.len());
@@ -153,11 +154,11 @@ pub fn esparsidade(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> Esparsid
     }
 }
 
-/// E1 — persistência temporal do conjunto ativo.
+/// E1 — temporal persistence of the active set.
 ///
-/// `passo_aleatorio` define o deslocamento usado como baseline: comparar A[t] com
-/// A[t + passo] em vez de A[t-1]. Um passo grande o bastante para não haver correlação
-/// temporal, mas dentro da mesma corrida (mesma distribuição).
+/// `passo_aleatorio` defines the offset used as baseline: comparing A[t] with
+/// A[t + step] instead of A[t-1]. A step large enough that there is no temporal
+/// correlation, but within the same run (same distribution).
 pub fn persistencia(
     camada: &str,
     amostras: &[Vec<f32>],
@@ -180,7 +181,7 @@ pub fn persistencia(
         let n_a = a.iter().filter(|x| **x).count();
         if n_a == 0 {
             return None;
-        } // sem conjunto ativo, a razão é indefinida
+        } // with no active set, the ratio is undefined
         let inter = a.iter().zip(b).filter(|(x, y)| **x && **y).count();
         Some(inter as f32 / n_a as f32)
     };
@@ -211,10 +212,10 @@ pub fn persistencia(
     }
 }
 
-/// E3 — co-ativação acima da independência.
+/// E3 — co-activation above independence.
 ///
-/// Custo O(n² · amostras); com n=96 e milhares de amostras é barato o bastante para rodar
-/// offline. `max_pares` limita só o relatório dos pares fortes.
+/// Cost O(n² · samples); with n=96 and thousands of samples it is cheap enough to run
+/// offline. `max_pares` only limits the report of strong pairs.
 pub fn coativacao(
     camada: &str,
     amostras: &[Vec<f32>],
@@ -235,7 +236,7 @@ pub fn coativacao(
     let mascaras: Vec<Vec<bool>> = amostras.iter().map(|a| mascara(a, limiar)).collect();
     let total = mascaras.len() as f32;
 
-    // Marginais: P(i ativo).
+    // Marginals: P(i active).
     let marginal: Vec<f32> = (0..n)
         .map(|i| {
             mascaras
@@ -285,7 +286,7 @@ pub fn coativacao(
     }
 }
 
-/// E4 — neurônios quentes e frios.
+/// E4 — hot and cold neurons.
 pub fn quente_frio(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> QuenteFrio {
     let n = amostras.first().map_or(0, |a| a.len());
     let total = amostras.len().max(1) as f32;
@@ -299,7 +300,7 @@ pub fn quente_frio(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> QuenteFr
         })
         .collect();
 
-    // Quantos neurônios cobrem 80% de TODAS as ativações (não 80% dos neurônios).
+    // How many neurons cover 80% of ALL activations (not 80% of the neurons).
     let mut ord: Vec<f32> = frequencia.clone();
     ord.sort_by(|a, b| b.partial_cmp(a).unwrap());
     let soma: f32 = ord.iter().sum();
@@ -324,11 +325,11 @@ pub fn quente_frio(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> QuenteFr
     }
 }
 
-/// Quanto a conclusão depende do limiar escolhido.
+/// How much the conclusion depends on the chosen threshold.
 ///
-/// Armadilha nº 1 do protocolo: com `tanh` nada zera exatamente, então o limiar é uma
-/// escolha, e escolha que muda o resultado precisa ser exposta. Devolve a fração ativa
-/// para cada limiar testado.
+/// Trap #1 of the protocol: with `tanh` nothing zeroes exactly, so the threshold is a
+/// choice, and a choice that changes the result must be exposed. Returns the active
+/// fraction for each tested threshold.
 pub fn sensibilidade_ao_limiar(amostras: &[Vec<f32>], limiares: &[f32]) -> Vec<(f32, f32)> {
     limiares
         .iter()
@@ -348,7 +349,7 @@ mod tests {
     fn esparsidade_conta_acima_do_limiar() {
         let a = amostras_fixas(&[&[1.0, 0.0, 0.0, 0.0], &[1.0, 1.0, 0.0, 0.0]]);
         let e = esparsidade("t", &a, 0.5);
-        // 1/4 e 2/4 → média 0,375.
+        // 1/4 and 2/4 → mean 0.375.
         assert!((e.fracao_ativa_media - 0.375).abs() < 1e-5);
     }
 
@@ -364,12 +365,12 @@ mod tests {
     fn persistencia_zero_quando_conjunto_alterna() {
         let a = amostras_fixas(&[&[1.0, 0.0], &[0.0, 1.0], &[1.0, 0.0], &[0.0, 1.0]]);
         let p = persistencia("t", &a, 0.5, 2);
-        assert!(p.persistencia < 1e-5, "persistência foi {}", p.persistencia);
+        assert!(p.persistencia < 1e-5, "persistence was {}", p.persistencia);
     }
 
-    /// O baseline é o que separa "persiste" de "dispara sempre". Uma camada com TODOS os
-    /// neurônios sempre ativos tem persistência 1,0 — e baseline 1,0 também, então ganho
-    /// temporal zero. Sem o baseline, essa camada pareceria o caso ideal.
+    /// The baseline is what separates "persists" from "always fires". A layer with ALL
+    /// neurons always active has persistence 1.0 — and baseline 1.0 too, so temporal
+    /// gain zero. Without the baseline, that layer would look like the ideal case.
     #[test]
     fn ganho_temporal_zero_quando_tudo_sempre_ativo() {
         let a = amostras_fixas(&[&[1.0, 1.0], &[1.0, 1.0], &[1.0, 1.0], &[1.0, 1.0]]);
@@ -377,14 +378,14 @@ mod tests {
         assert!((p.persistencia - 1.0).abs() < 1e-5);
         assert!(
             p.ganho_temporal.abs() < 1e-5,
-            "ganho foi {}",
+            "gain was {}",
             p.ganho_temporal
         );
     }
 
     #[test]
     fn coativacao_detecta_par_acoplado() {
-        // 0 e 1 sempre juntos; 2 independente.
+        // 0 and 1 always together; 2 independent.
         let a = amostras_fixas(&[
             &[1.0, 1.0, 0.0],
             &[0.0, 0.0, 1.0],
@@ -392,7 +393,7 @@ mod tests {
             &[0.0, 0.0, 0.0],
         ]);
         let c = coativacao("t", &a, 0.5, 5);
-        assert!(c.excesso > 0.0, "excesso foi {}", c.excesso);
+        assert!(c.excesso > 0.0, "excess was {}", c.excesso);
         assert!(c.pares_fortes.iter().any(|(i, j, _)| *i == 0 && *j == 1));
     }
 
@@ -400,8 +401,8 @@ mod tests {
     fn quente_frio_separa_sempre_de_nunca() {
         let a = amostras_fixas(&[&[1.0, 0.0, 0.5], &[1.0, 0.0, 0.0], &[1.0, 0.0, 0.9]]);
         let q = quente_frio("t", &a, 0.4);
-        assert_eq!(q.sempre_ativos, 1); // neurônio 0
-        assert_eq!(q.nunca_ativos, 1); // neurônio 1
+        assert_eq!(q.sempre_ativos, 1); // neuron 0
+        assert_eq!(q.nunca_ativos, 1); // neuron 1
     }
 
     #[test]
@@ -410,7 +411,7 @@ mod tests {
         let s = sensibilidade_ao_limiar(&a, &[0.01, 0.45, 0.95]);
         assert!(
             s[0].1 >= s[1].1 && s[1].1 >= s[2].1,
-            "fração deveria cair: {s:?}"
+            "fraction should fall: {s:?}"
         );
     }
 }

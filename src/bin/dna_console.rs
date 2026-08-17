@@ -1,23 +1,23 @@
 // Tier 6.10 — Genetic Engineering Console
-// REPL interativo para inspecionar e editar .dna ternários diretamente em disco.
-// Zero deps no simulador em runtime — opera exclusivamente sobre arquivos.
+// Interactive REPL to inspect and edit ternary .dna files directly on disk.
+// Zero deps on the simulator at runtime — operates exclusively on files.
 //
-// Uso: cargo run --release --bin dna_console
-// Depois: dna> load CHAMPION.dna  /  info  /  heatmap fast  /  quit
+// Usage: cargo run --release --bin dna_console
+// Then: dna> load CHAMPION.dna  /  info  /  heatmap fast  /  quit
 //
-// Comandos implementados (versão simplificada):
-//   load <path>                        — carrega .dna no slot atual
-//   save <path>                        — salva slot atual (escrita atômica)
-//   info                               — sumário header + densidade por camada
-//   show <layer> <from> <to>           — dump de pesos no intervalo [from, to)
-//   set <layer> <idx> <value>          — edita peso único (valor em {-1,0,1})
-//   set range <layer> <from> <to> <v>  — edita bulk
-//   mutate <rate>                      — flip aleatório de N% pesos (rate 0..1)
-//   zero <layer>                       — zera camada inteira
-//   scale <layer> <value>              — ajusta weight_scale
-//   heatmap <layer>                    — ASCII heatmap estilo dna_view
-//   help                               — lista comandos
-//   quit | exit                        — sai
+// Implemented commands (simplified version):
+//   load <path>                        — loads .dna into the current slot
+//   save <path>                        — saves current slot (atomic write)
+//   info                               — header summary + density per layer
+//   show <layer> <from> <to>           — weight dump in the range [from, to)
+//   set <layer> <idx> <value>          — edits a single weight (value in {-1,0,1})
+//   set range <layer> <from> <to> <v>  — bulk edit
+//   mutate <rate>                      — random flip of N% weights (rate 0..1)
+//   zero <layer>                       — zeroes the whole layer
+//   scale <layer> <value>              — adjusts weight_scale
+//   heatmap <layer>                    — ASCII heatmap in dna_view style
+//   help                               — lists commands
+//   quit | exit                        — exits
 //
 // <layer> ∈ {fast, slow}
 
@@ -39,14 +39,14 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════");
     println!("🧬 DNA CONSOLE — Tier 6.10 Genetic Engineering REPL");
     println!("═══════════════════════════════════════════════════════════════");
-    println!("Digite `help` para listar comandos, `quit` pra sair.");
+    println!("Type `help` to list commands, `quit` to exit.");
     println!();
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut slot: Option<Slot> = None;
 
-    // Loop REPL linha-a-linha.
+    // Line-by-line REPL loop.
     let mut handle = stdin.lock();
     loop {
         print!("dna> ");
@@ -59,7 +59,7 @@ fn main() {
             } // EOF
             Ok(_) => {}
             Err(e) => {
-                eprintln!("erro lendo stdin: {}", e);
+                eprintln!("error reading stdin: {}", e);
                 break;
             }
         }
@@ -76,7 +76,7 @@ fn main() {
                 if let Some(ref s) = slot {
                     if s.dirty {
                         println!(
-                            "⚠  slot com edições não salvas (last-loaded: {}). Saindo mesmo assim.",
+                            "⚠  slot has unsaved edits (last-loaded: {}). Exiting anyway.",
                             s.source_path
                         );
                     }
@@ -86,13 +86,13 @@ fn main() {
             "help" | "?" => print_help(),
             "load" => {
                 if args.len() != 1 {
-                    println!("uso: load <path>");
+                    println!("usage: load <path>");
                     continue;
                 }
                 match load_champion_dna(args[0]) {
                     Some(dna) => {
                         println!(
-                            "✔ carregado {} (v{}, gen {}, {} pesos fast / {} slow)",
+                            "✔ loaded {} (v{}, gen {}, {} fast weights / {} slow)",
                             args[0],
                             dna.version,
                             dna.generation,
@@ -106,57 +106,57 @@ fn main() {
                         });
                     }
                     None => println!(
-                        "❌ falha ao carregar {} (inexistente ou corrompido)",
+                        "❌ failed to load {} (missing or corrupted)",
                         args[0]
                     ),
                 }
             }
             "save" => {
                 if args.len() != 1 {
-                    println!("uso: save <path>");
+                    println!("usage: save <path>");
                     continue;
                 }
                 let Some(s) = slot.as_mut() else {
-                    println!("nenhum DNA no slot; use `load` primeiro");
+                    println!("no DNA in the slot; use `load` first");
                     continue;
                 };
                 match atomic_save(args[0], &s.dna) {
                     Ok(()) => {
-                        println!("✔ salvo em {}", args[0]);
+                        println!("✔ saved to {}", args[0]);
                         s.dirty = false;
                     }
-                    Err(e) => println!("❌ erro salvando: {}", e),
+                    Err(e) => println!("❌ error saving: {}", e),
                 }
             }
             "info" => {
                 let Some(s) = slot.as_ref() else {
-                    println!("nenhum DNA no slot");
+                    println!("no DNA in the slot");
                     continue;
                 };
                 print_info(&s.dna, &s.source_path, s.dirty);
             }
             "show" => {
                 if args.len() != 3 {
-                    println!("uso: show <fast|slow> <from> <to>");
+                    println!("usage: show <fast|slow> <from> <to>");
                     continue;
                 }
                 let Some(s) = slot.as_ref() else {
-                    println!("nenhum DNA no slot");
+                    println!("no DNA in the slot");
                     continue;
                 };
                 let Some(layer) = pick_layer(&s.dna, args[0]) else {
-                    println!("layer inválida (use fast|slow)");
+                    println!("invalid layer (use fast|slow)");
                     continue;
                 };
                 let (from, to) = match (args[1].parse::<usize>(), args[2].parse::<usize>()) {
                     (Ok(a), Ok(b)) => (a, b),
                     _ => {
-                        println!("from/to devem ser usize");
+                        println!("from/to must be usize");
                         continue;
                     }
                 };
                 if from >= layer.len() || to > layer.len() || from >= to {
-                    println!("intervalo inválido (layer tem {} pesos)", layer.len());
+                    println!("invalid range (layer has {} weights)", layer.len());
                     continue;
                 }
                 print!("[{}..{})", from, to);
@@ -171,7 +171,7 @@ fn main() {
             }
             "set" => {
                 let Some(s) = slot.as_mut() else {
-                    println!("nenhum DNA no slot");
+                    println!("no DNA in the slot");
                     continue;
                 };
                 // set range <layer> <from> <to> <value>
@@ -181,29 +181,29 @@ fn main() {
                     .unwrap_or(false)
                 {
                     if args.len() != 5 {
-                        println!("uso: set range <fast|slow> <from> <to> <value>");
+                        println!("usage: set range <fast|slow> <from> <to> <value>");
                         continue;
                     }
                     let Some(value) = parse_ternary(args[4]) else {
-                        println!("value deve ser -1, 0 ou 1");
+                        println!("value must be -1, 0 or 1");
                         continue;
                     };
                     let (from, to) = match (args[2].parse::<usize>(), args[3].parse::<usize>()) {
                         (Ok(a), Ok(b)) => (a, b),
                         _ => {
-                            println!("from/to devem ser usize");
+                            println!("from/to must be usize");
                             continue;
                         }
                     };
                     let layer = match pick_layer_mut(&mut s.dna, args[1]) {
                         Some(l) => l,
                         None => {
-                            println!("layer inválida");
+                            println!("invalid layer");
                             continue;
                         }
                     };
                     if from >= layer.len() || to > layer.len() || from >= to {
-                        println!("intervalo inválido (layer tem {} pesos)", layer.len());
+                        println!("invalid range (layer has {} weights)", layer.len());
                         continue;
                     }
                     for w in &mut layer[from..to] {
@@ -216,30 +216,30 @@ fn main() {
                 // set <layer> <idx> <value>
                 if args.len() != 3 {
                     println!(
-                        "uso: set <fast|slow> <idx> <value>  OU  set range <layer> <from> <to> <value>"
+                        "usage: set <fast|slow> <idx> <value>  OR  set range <layer> <from> <to> <value>"
                     );
                     continue;
                 }
                 let Some(value) = parse_ternary(args[2]) else {
-                    println!("value deve ser -1, 0 ou 1");
+                    println!("value must be -1, 0 or 1");
                     continue;
                 };
                 let idx: usize = match args[1].parse() {
                     Ok(i) => i,
                     Err(_) => {
-                        println!("idx inválido");
+                        println!("invalid idx");
                         continue;
                     }
                 };
                 let layer = match pick_layer_mut(&mut s.dna, args[0]) {
                     Some(l) => l,
                     None => {
-                        println!("layer inválida");
+                        println!("invalid layer");
                         continue;
                     }
                 };
                 if idx >= layer.len() {
-                    println!("idx fora do range (layer tem {} pesos)", layer.len());
+                    println!("idx out of range (layer has {} weights)", layer.len());
                     continue;
                 }
                 let old = layer[idx];
@@ -249,22 +249,22 @@ fn main() {
             }
             "mutate" => {
                 if args.len() != 1 {
-                    println!("uso: mutate <rate 0..1>");
+                    println!("usage: mutate <rate 0..1>");
                     continue;
                 }
                 let Some(s) = slot.as_mut() else {
-                    println!("nenhum DNA no slot");
+                    println!("no DNA in the slot");
                     continue;
                 };
                 let rate: f32 = match args[0].parse() {
                     Ok(r) => r,
                     Err(_) => {
-                        println!("rate inválido");
+                        println!("invalid rate");
                         continue;
                     }
                 };
                 if !(0.0..=1.0).contains(&rate) {
-                    println!("rate deve estar em [0,1]");
+                    println!("rate must be in [0,1]");
                     continue;
                 }
                 let fast_flips = random_flip(&mut s.dna.fast_weights, rate, 0xC0FFEE);
@@ -281,17 +281,17 @@ fn main() {
             }
             "zero" => {
                 if args.len() != 1 {
-                    println!("uso: zero <fast|slow>");
+                    println!("usage: zero <fast|slow>");
                     continue;
                 }
                 let Some(s) = slot.as_mut() else {
-                    println!("nenhum DNA no slot");
+                    println!("no DNA in the slot");
                     continue;
                 };
                 let layer = match pick_layer_mut(&mut s.dna, args[0]) {
                     Some(l) => l,
                     None => {
-                        println!("layer inválida");
+                        println!("invalid layer");
                         continue;
                     }
                 };
@@ -300,21 +300,21 @@ fn main() {
                     *w = 0;
                 }
                 s.dirty = true;
-                println!("✔ zerou {} pesos em {}", n, args[0]);
+                println!("✔ zeroed {} weights in {}", n, args[0]);
             }
             "scale" => {
                 if args.len() != 2 {
-                    println!("uso: scale <fast|slow> <value>");
+                    println!("usage: scale <fast|slow> <value>");
                     continue;
                 }
                 let Some(s) = slot.as_mut() else {
-                    println!("nenhum DNA no slot");
+                    println!("no DNA in the slot");
                     continue;
                 };
                 let value: f32 = match args[1].parse() {
                     Ok(v) => v,
                     Err(_) => {
-                        println!("value inválido");
+                        println!("invalid value");
                         continue;
                     }
                 };
@@ -330,7 +330,7 @@ fn main() {
                         println!("✔ slow_scale: {:.6} → {:.6}", old, value);
                     }
                     _ => {
-                        println!("layer inválida");
+                        println!("invalid layer");
                         continue;
                     }
                 }
@@ -338,11 +338,11 @@ fn main() {
             }
             "heatmap" => {
                 if args.len() != 1 {
-                    println!("uso: heatmap <fast|slow>");
+                    println!("usage: heatmap <fast|slow>");
                     continue;
                 }
                 let Some(s) = slot.as_ref() else {
-                    println!("nenhum DNA no slot");
+                    println!("no DNA in the slot");
                     continue;
                 };
                 match args[0].to_lowercase().as_str() {
@@ -361,12 +361,12 @@ fn main() {
                             8,
                             DNA_SLOW_SIZE,
                         ),
-                        None => println!("⚠ slow_weights ausente neste DNA"),
+                        None => println!("⚠ slow_weights missing in this DNA"),
                     },
-                    _ => println!("layer inválida"),
+                    _ => println!("invalid layer"),
                 }
             }
-            other => println!("comando desconhecido: `{}` (tente `help`)", other),
+            other => println!("unknown command: `{}` (try `help`)", other),
         }
     }
 
@@ -374,18 +374,18 @@ fn main() {
 }
 
 fn print_help() {
-    println!("comandos:");
-    println!("  load <path>                        carrega .dna no slot");
-    println!("  save <path>                        salva slot (atomic)");
-    println!("  info                               sumário do slot atual");
-    println!("  show <fast|slow> <from> <to>       dump de pesos");
-    println!("  set <fast|slow> <idx> <-1|0|1>     edita um peso");
-    println!("  set range <layer> <from> <to> <v>  edita bulk");
-    println!("  mutate <rate>                      flip aleatório (0..1)");
-    println!("  zero <fast|slow>                   zera camada");
-    println!("  scale <fast|slow> <value>          ajusta weight_scale");
+    println!("commands:");
+    println!("  load <path>                        loads .dna into the slot");
+    println!("  save <path>                        saves the slot (atomic)");
+    println!("  info                               summary of the current slot");
+    println!("  show <fast|slow> <from> <to>       weight dump");
+    println!("  set <fast|slow> <idx> <-1|0|1>     edits one weight");
+    println!("  set range <layer> <from> <to> <v>  bulk edit");
+    println!("  mutate <rate>                      random flip (0..1)");
+    println!("  zero <fast|slow>                   zeroes the layer");
+    println!("  scale <fast|slow> <value>          adjusts weight_scale");
     println!("  heatmap <fast|slow>                ASCII heatmap");
-    println!("  quit | exit                        sai");
+    println!("  quit | exit                        exits");
 }
 
 fn print_info(d: &DnaPayload, src: &str, dirty: bool) {
@@ -393,7 +393,7 @@ fn print_info(d: &DnaPayload, src: &str, dirty: bool) {
     println!(
         "📋 slot <- {} {}",
         src,
-        if dirty { "(DIRTY — não salvo)" } else { "" }
+        if dirty { "(DIRTY — not saved)" } else { "" }
     );
     println!("  version       : v{}", d.version);
     println!("  generation    : {}", d.generation);
@@ -406,13 +406,13 @@ fn print_info(d: &DnaPayload, src: &str, dirty: bool) {
     if let Some(ref sw) = d.slow_weights {
         print_density("slow", sw);
     } else {
-        println!("  slow          : ausente (legacy v1)");
+        println!("  slow          : missing (legacy v1)");
     }
 }
 
 fn print_density(label: &str, weights: &[i8]) {
     if weights.is_empty() {
-        println!("  {:<14}: vazio", label);
+        println!("  {:<14}: empty", label);
         return;
     }
     let (mut n, mut z, mut p) = (0i64, 0i64, 0i64);
@@ -427,7 +427,7 @@ fn print_density(label: &str, weights: &[i8]) {
     }
     let t = weights.len() as f32;
     println!(
-        "  {:<14}: {} pesos | -1:{:5} ({:.1}%)  0:{:5} ({:.1}%)  +1:{:5} ({:.1}%)  densidade {:.1}%",
+        "  {:<14}: {} weights | -1:{:5} ({:.1}%)  0:{:5} ({:.1}%)  +1:{:5} ({:.1}%)  density {:.1}%",
         label,
         weights.len(),
         n,
@@ -465,7 +465,7 @@ fn parse_ternary(s: &str) -> Option<i8> {
     }
 }
 
-// LCG determinístico para flips — evita depender de rand em um binário-utilitário.
+// Deterministic LCG for flips — avoids depending on rand in a utility binary.
 fn random_flip(weights: &mut [i8], rate: f32, seed_bias: u64) -> usize {
     let mut state: u64 = seed_bias
         .wrapping_mul(0x9E3779B97F4A7C15)
@@ -477,7 +477,7 @@ fn random_flip(weights: &mut [i8], rate: f32, seed_bias: u64) -> usize {
             .wrapping_add(1442695040888963407);
         let r = ((state >> 32) as u32) as f32 / u32::MAX as f32;
         if r < rate {
-            // Escolhe novo valor ternário ≠ atual.
+            // Picks a new ternary value ≠ the current one.
             state = state
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
@@ -496,11 +496,11 @@ fn random_flip(weights: &mut [i8], rate: f32, seed_bias: u64) -> usize {
     flips
 }
 
-// Escrita atômica: escreve em <path>.tmp e depois rename. Evita corrupção se o
-// processo morrer no meio da serialização. Reutiliza save_champion_dna.
+// Atomic write: writes to <path>.tmp and then renames. Avoids corruption if the
+// process dies mid-serialization. Reuses save_champion_dna.
 fn atomic_save(path: &str, d: &DnaPayload) -> io::Result<()> {
     let tmp = format!("{}.tmp", path);
-    // slow_weights pode estar ausente em DNAs legacy v1; materializa zeros.
+    // slow_weights may be missing in legacy v1 DNAs; materializes zeros.
     let slow_ref: Vec<i8> = match d.slow_weights.as_ref() {
         Some(s) => s.clone(),
         None => vec![0i8; DNA_SLOW_SIZE],
@@ -523,12 +523,12 @@ fn atomic_save(path: &str, d: &DnaPayload) -> io::Result<()> {
 fn heatmap(title: &str, weights: &[i8], inputs: usize, neurons: usize, expected: usize) {
     println!("─────────────────────────────────────────────────────────────────");
     println!("🔹 {}", title);
-    println!("  esperado: {}  real: {}", expected, weights.len());
+    println!("  expected: {}  actual: {}", expected, weights.len());
     if weights.is_empty() {
-        println!("  ⚠ vazio");
+        println!("  ⚠ empty");
         return;
     }
-    println!("  legenda: '-'=inibe  '.'=mudo  '+'=excita");
+    println!("  legend: '-'=inhibits  '.'=mute  '+'=excites");
     let samples = neurons.min(16);
     for n in 0..samples {
         print!("  N{:02} │", n);
@@ -547,11 +547,11 @@ fn heatmap(title: &str, weights: &[i8], inputs: usize, neurons: usize, expected:
         println!();
     }
     if samples < neurons {
-        println!("  … ({} neurônios adicionais omitidos)", neurons - samples);
+        println!("  … ({} additional neurons omitted)", neurons - samples);
     }
 }
 
-// Silencia unused import (File/Path só aparecem via save_champion_dna, mas o trait
-// Write é usado diretamente no flush do prompt).
+// Silences unused import (File/Path only appear via save_champion_dna, but the Write
+// trait is used directly in the prompt flush).
 #[allow(dead_code)]
 fn _keep_imports(_f: File, _p: &Path) {}

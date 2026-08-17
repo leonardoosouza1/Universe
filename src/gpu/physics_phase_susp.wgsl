@@ -1,6 +1,6 @@
-// Fase de bissecção: shader mínimo + FASE 2 (suspensão + carga normal).
-// Inclui: arrays var<private>, loops, acesso ao heightmap, downforce.
-// Não inclui: powertrain, pneus, colisão, integração.
+// Bisection phase: minimal shader + PHASE 2 (suspension + normal load).
+// Includes: var<private> arrays, loops, heightmap access, downforce.
+// Does not include: powertrain, tires, collision, integration.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -129,7 +129,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let half_wb = c.wheel_base * 0.5;
     let half_tw = c.track_width * 0.5;
 
-    // Arrays locais var<private> — esta é a parte suspeita
+    // Local var<private> arrays — this is the suspect part
     var wheel_offsets: array<vec3<f32>, 4>;
     wheel_offsets[0] = fwd * half_wb - rgt * half_tw;
     wheel_offsets[1] = fwd * half_wb + rgt * half_tw;
@@ -171,10 +171,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Saída: usa normal_loads[0] como proxy no av_y para verificar que o cálculo rodou
+    // Output: uses normal_loads[0] as a proxy in av_y to verify the computation ran
     var out: CarOutput;
     out.vel          = c.vel;
-    out.av_y         = normal_loads[0]; // proxy para verificar resultado da suspensão
+    out.av_y         = normal_loads[0]; // proxy to verify the suspension result
     out.pos          = c.pos;
     out._pad_pos     = 0.0;
     out.fwd          = c.fwd;
@@ -193,7 +193,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var i: u32 = 0u; i < 8u; i++) {
         out.wheels[i] = c.wheels[i];
     }
-    // Guarda normal_load nas rodas
+    // Store normal_load in the wheels
     for (var i: u32 = 0u; i < 4u; i++) {
         out.wheels[i * 2u].w = normal_loads[i];
         out.wheels[i * 2u + 1u].y = susp_comps[i];

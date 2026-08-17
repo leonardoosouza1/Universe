@@ -1,63 +1,64 @@
-//! PILOTO POR FÓRMULA (PILOTO_POR_FORMULA.md, handoff da sessão-forja).
+//! FORMULA PILOT (PILOTO_POR_FORMULA.md, handoff from the forge session).
 //!
-//! Controlador RESOLVIDO por ridge (sem gradiente) sobre os pares (sentiu→fez)
-//! do replay do campeão. Substitui a DECISÃO (L1→L2→motor) mantendo o
-//! pré-processamento vivo (percepção+KAN+CfC — o X do solve é pós-CfC de
-//! propósito, ver meta.json do dump). Runtime: 2 EMAs de estado + 1 matvec
-//! [576×3] por tick — desprezível.
+//! Controller SOLVED by ridge (no gradient) over the (sensed→did) pairs from
+//! the champion's replay. It replaces the DECISION (L1→L2→motor) while keeping
+//! the live pre-processing (perception+KAN+CfC — the solve's X is post-CfC on
+//! purpose, see the dump's meta.json). Runtime: 2 state EMAs + 1 matvec
+//! [576×3] per tick — negligible.
 //!
-//! Uso: `--piloto-formula <piloto.json>` → o ser 0 é dirigido pela fórmula
-//! (via download_debug, mesmo canal do --observar); os demais seguem o cérebro.
-//! A validação compara metros do ser 0 contra o campeão original e o mediano.
+//! Usage: `--piloto-formula <piloto.json>` → being 0 is driven by the formula
+//! (via download_debug, the same channel as --observar); the others follow the brain.
+//! Validation compares being 0's metres against the original champion and the median.
 
 use std::io::Read;
 
 pub struct PilotoLinear {
-    w: Vec<f32>,  // [576 × 3] row-major (linha = feature, coluna = ação)
+    w: Vec<f32>,  // [576 × 3] row-major (row = feature, column = action)
     mu: Vec<f32>, // [576]
     sd: Vec<f32>, // [576]
     y_mu: [f32; 3],
     y_sd: [f32; 3],
     alphas: [f32; 2],
-    h_a: Vec<f32>, // estado EMA alpha[0], [192]
-    h_b: Vec<f32>, // estado EMA alpha[1], [192]
+    h_a: Vec<f32>, // EMA state alpha[0], [192]
+    h_b: Vec<f32>, // EMA state alpha[1], [192]
     iniciado: bool,
-    // ── PORTÃO DE ABSTENÇÃO (v2) ────────────────────────────────────────────
-    // Medido em E-PIL1 (2026-08-16): na única pista NOVA em que os dois seres
-    // ficaram na pista (9007), o clone caiu para 10% do campeão — freio médio
-    // 0,56 contra 0,00 do campeão, volante 0,10 contra 0,59, velocidade por
-    // quarto de corrida 8,8 → 0,3 → 0,1 → 0,1 m/s. Mecanismo: fora do que viu,
-    // o linear EXTRAPOLA sem limite justo no eixo que ele ajusta pior (freio,
-    // erro 0,45); freio alto → carro para → estado ainda mais estranho → trava
-    // para sempre. Não é ruído: é o modo de falha de extrapolação linear.
+    // ── ABSTENTION GATE (v2) ────────────────────────────────────────────────
+    // Measured in E-PIL1 (2026-08-16): on the only NEW track where both beings
+    // stayed on the track (9007), the clone fell to 10% of the champion — mean
+    // brake 0.56 against the champion's 0.00, steering 0.10 against 0.59, speed
+    // per race quarter 8.8 → 0.3 → 0.1 → 0.1 m/s. Mechanism: outside what it
+    // saw, the linear model EXTRAPOLATES without bound precisely on the axis it
+    // fits worst (brake, error 0.45); high brake → car stops → state gets even
+    // stranger → locked forever. It is not noise: it is the failure mode of
+    // linear extrapolation.
     //
-    // Conserto: guardar 512 linhas de referência do treino; se a distância² ao
-    // vizinho mais próximo passar do quantil 0,99 do treino, o piloto ABSTÉM-SE
-    // e quem decide naquele tick é o CÉREBRO (que continua rodando de qualquer
-    // forma). Fallback melhor que o "frear/reduzir marcha" da spec — frear é
-    // exatamente o que trava. Vira córtex + reflexo forjado com portão.
-    refs: Vec<f32>, // [n_ref × 192] achatado, no espaço padronizado
+    // Fix: keep 512 reference rows from training; if the distance² to the
+    // nearest neighbour exceeds the training 0.99 quantile, the pilot ABSTAINS
+    // and the BRAIN (which keeps running anyway) decides that tick. A better
+    // fallback than the spec's "brake/downshift" — braking is exactly what
+    // locks up. It becomes cortex + forged reflex with a gate.
+    refs: Vec<f32>, // [n_ref × 192] flattened, in the standardised space
     n_ref: usize,
-    thr_abster: f32,     // limiar em distância AO QUADRADO
-    pub abstencoes: u64, // telemetria: quantos ticks o cérebro reassumiu
+    thr_abster: f32,     // threshold in SQUARED distance
+    pub abstencoes: u64, // telemetry: how many ticks the brain took back over
     pub decisoes: u64,
-    /// Controle: probabilidade FIXA de abstenção (flag --portao-aleatorio).
+    /// Control: FIXED abstention probability (flag --portao-aleatorio).
     pub prob_aleatoria: f32,
-    /// Semente do sorteio do controle (--portao-semente).
+    /// Seed of the control's draw (--portao-semente).
     pub semente: u64,
     contador: u64,
-    /// Comprimento das SEQUÊNCIAS contíguas de abstenção. É o que separa "o portão
-    /// escolhe os ticks certos" de "o cérebro só precisa respirar": um tick solto de
-    /// cérebro não tira um carro parado do lugar, um bloco tira. Predição registrada
-    /// antes do controle: mediana ≥ 4 no portão contra ≈ 1 no aleatório.
+    /// Length of the contiguous abstention SEQUENCES. It is what separates "the gate
+    /// picks the right ticks" from "the brain just needs to breathe": one loose brain
+    /// tick does not move a stopped car, a block does. Prediction recorded before the
+    /// control: median ≥ 4 for the gate against ≈ 1 for the random one.
     pub seqs: Vec<u32>,
     seq_atual: u32,
 }
 
 impl PilotoLinear {
-    /// Carrega o piloto.json gravado pelo solve (formato do PILOTO_POR_FORMULA.md).
-    /// Parser JSON mínimo e dependência-zero: extrai os arrays por chave. O arquivo
-    /// é gerado por nós (numpy → json.dump), formato estável.
+    /// Loads the piloto.json written by the solve (PILOTO_POR_FORMULA.md format).
+    /// Minimal, zero-dependency JSON parser: it extracts the arrays by key. The file
+    /// is generated by us (numpy → json.dump), a stable format.
     pub fn carregar(path: &str) -> Option<PilotoLinear> {
         let mut s = String::new();
         std::fs::File::open(path)
@@ -67,7 +68,7 @@ impl PilotoLinear {
         let arr = |chave: &str| -> Option<Vec<f32>> {
             let i = s.find(&format!("\"{chave}\""))?;
             let a = s[i..].find('[')? + i;
-            // W é [[...],[...],...] — pega até o colchete que FECHA o nível de abertura.
+            // W is [[...],[...],...] — take up to the bracket that CLOSES the opening level.
             let mut nivel = 0i32;
             let mut fim = a;
             for (k, c) in s[a..].char_indices() {
@@ -109,7 +110,7 @@ impl PilotoLinear {
             || alphas_v.len() != 2
         {
             eprintln!(
-                "[piloto-formula] formato inesperado: W={} mu={} y_mu={} alphas={}",
+                "[piloto-formula] unexpected format: W={} mu={} y_mu={} alphas={}",
                 w.len(),
                 mu.len(),
                 y_mu_v.len(),
@@ -117,11 +118,11 @@ impl PilotoLinear {
             );
             return None;
         }
-        // Escalar (não-array). `arr` procura o próximo '[', que num campo escalar
-        // pertence a OUTRA chave — devolveria número errado ou nada, e o limiar
-        // caía em INFINITO: o portão existia e nunca disparava, em silêncio.
-        // Pego em 2026-08-16 (o log dizia "portão ativo" com "limiar inf" e
-        // 0,0% de abstenção). Erro silencioso é o pior modo de falha aqui.
+        // Scalar (non-array). `arr` looks for the next '[', which in a scalar field
+        // belongs to ANOTHER key — it would return a wrong number or nothing, and the
+        // threshold fell back to INFINITY: the gate existed and never fired, silently.
+        // Caught on 2026-08-16 (the log said "gate active" with "threshold inf" and
+        // 0.0% abstention). A silent error is the worst failure mode here.
         let escalar = |chave: &str| -> Option<f32> {
             let i = s.find(&format!("\"{chave}\""))?;
             let resto = &s[i + chave.len() + 2..];
@@ -132,7 +133,7 @@ impl PilotoLinear {
                 + j;
             resto[j..fim].trim().trim_matches('"').parse().ok()
         };
-        // Blocos do portão: opcionais (piloto.json antigo continua carregando).
+        // Gate blocks: optional (an old piloto.json still loads).
         let refs = arr("refs").unwrap_or_default();
         let c = mu.len() / 3;
         let n_ref = if c > 0 { refs.len() / c } else { 0 };
@@ -140,12 +141,12 @@ impl PilotoLinear {
         if n_ref > 0 {
             if !thr_abster.is_finite() {
                 eprintln!(
-                    "[ERRO] piloto com {n_ref} referências mas SEM limiar legível \
-                           (thr_abster) — o portão nunca abstém. Corrija o JSON."
+                    "[ERROR] pilot with {n_ref} references but NO readable threshold \
+                           (thr_abster) — the gate never abstains. Fix the JSON."
                 );
             }
             println!(
-                "  [piloto] portão de abstenção ativo: {n_ref} referências, limiar dist² {thr_abster:.1}"
+                "  [piloto] abstention gate active: {n_ref} references, dist² threshold {thr_abster:.1}"
             );
         }
         Some(PilotoLinear {
@@ -171,9 +172,10 @@ impl PilotoLinear {
         })
     }
 
-    /// O estado atual está DENTRO do que o piloto viu? Distância² ao vizinho mais
-    /// próximo das referências, no espaço padronizado do bloco cru. Sem referências
-    /// (piloto.json v1) devolve sempre `true` — comportamento antigo preservado.
+    /// Is the current state INSIDE what the pilot saw? Squared distance to the
+    /// nearest neighbour among the references, in the standardised space of the raw
+    /// block. Without references (piloto.json v1) it always returns `true` — the old
+    /// behaviour preserved.
     fn conhece(&self, x: &[f32]) -> bool {
         if self.n_ref == 0 {
             return true;
@@ -189,7 +191,7 @@ impl PilotoLinear {
                 d2 += dd * dd;
                 if d2 >= melhor {
                     break;
-                } // poda: já perdeu para o melhor até aqui
+                } // prune: it already lost to the best so far
             }
             if d2 < melhor {
                 melhor = d2;
@@ -202,25 +204,27 @@ impl PilotoLinear {
         self.mu.len() / 3
     }
 
-    /// Um tick: x = os 192 canais COMO O L1 RECEBE (pós-KAN+CfC — mesmo X do solve).
-    /// Devolve [acelerador, volante, freio] na MESMA convenção do intent do cérebro
-    /// (pós-tanh, pré kan_eval) — o chamador aplica o resto do pipeline normal.
-    /// Como `agir`, mas com PORTÃO: devolve `None` quando o estado está fora do
-    /// que o piloto viu (o chamador deixa o cérebro decidir aquele tick). Os EMAs
-    /// continuam sendo atualizados mesmo na abstenção — o piloto segue "assistindo"
-    /// para não voltar com memória velha quando o estado retornar ao conhecido.
+    /// One tick: x = the 192 channels AS L1 RECEIVES THEM (post-KAN+CfC — the solve's
+    /// same X). Returns [throttle, steering, brake] in the SAME convention as the
+    /// brain's intent (post-tanh, pre kan_eval) — the caller applies the rest of the
+    /// normal pipeline.
+    /// Like `agir`, but with a GATE: returns `None` when the state is outside what
+    /// the pilot saw (the caller lets the brain decide that tick). The EMAs keep
+    /// being updated even during abstention — the pilot keeps "watching" so it does
+    /// not come back with stale memory when the state returns to known territory.
     pub fn agir_com_portao(&mut self, x: &[f32]) -> Option<[f32; 3]> {
-        // CONTROLE DO PORTÃO (--portao-aleatorio p): abstém com probabilidade p
-        // FIXA, ignorando o estado. Sem este controle não dá para saber se o portão
-        // escolhe os ticks CERTOS ou se qualquer intervenção do cérebro na mesma
-        // dose já salvaria a corrida — a diferença entre "sabe que não sabe" e
-        // "tomar fôlego de vez em quando". PRNG por contador: determinístico.
+        // GATE CONTROL (--portao-aleatorio p): abstains with a FIXED probability p,
+        // ignoring the state. Without this control there is no telling whether the
+        // gate picks the RIGHT ticks or whether any brain intervention at the same
+        // dose would already save the race — the difference between "knows it does
+        // not know" and "catching its breath now and then". Counter-based PRNG:
+        // deterministic.
         if self.prob_aleatoria > 0.0 {
             self.contador = self.contador.wrapping_add(1);
-            // Semente própria (--portao-semente): sorteios INDEPENDENTES na mesma dose,
-            // para medir a variância corrida-a-corrida. Sem ela, todo run repete o mesmo
-            // sorteio e três "réplicas" seriam a mesma coisa (o erro das 3 sementes que
-            // eram a mesma população, CLAUDE.md gap 6).
+            // Own seed (--portao-semente): INDEPENDENT draws at the same dose, to
+            // measure race-to-race variance. Without it every run repeats the same
+            // draw and three "replicas" would be the same thing (the mistake of the
+            // 3 seeds that were the same population, CLAUDE.md gap 6).
             let h = (self.contador ^ self.semente.wrapping_mul(0xD6E8_FEB8_6659_FD93))
                 .wrapping_mul(0x9E37_79B9_7F4A_7C15)
                 ^ 0xD1B5_4A32_D192_ED03;
@@ -256,7 +260,7 @@ impl PilotoLinear {
         }
     }
 
-    /// (mediana, máxima, quantidade) das sequências contíguas de abstenção.
+    /// (median, maximum, count) of the contiguous abstention sequences.
     pub fn estat_seqs(&self) -> (f32, u32, usize) {
         if self.seqs.is_empty() {
             return (0.0, 0, 0);
@@ -268,7 +272,7 @@ impl PilotoLinear {
 
     pub fn agir(&mut self, x: &[f32]) -> [f32; 3] {
         let c = self.n_entradas();
-        debug_assert_eq!(x.len(), c, "piloto: X com {} canais, esperava {c}", x.len());
+        debug_assert_eq!(x.len(), c, "pilot: X with {} channels, expected {c}", x.len());
         if !self.iniciado {
             self.h_a = x.to_vec();
             self.h_b = x.to_vec();
@@ -280,7 +284,7 @@ impl PilotoLinear {
             self.h_b[i] = a1 * self.h_b[i] + (1.0 - a1) * x[i];
         }
         let mut y = [0.0f32; 3];
-        // feats = [x, h_a, h_b] normalizado; W row-major [feature][acao]
+        // feats = [x, h_a, h_b] normalised; W row-major [feature][action]
         for (bloco, vals) in [
             (0usize, x),
             (1, self.h_a.as_slice()),
@@ -307,7 +311,7 @@ mod tests {
     use super::*;
 
     fn json_teste(c: usize) -> String {
-        // W identidade-ish: só o bloco cru (features 0..c) com peso 1 na ação 0.
+        // Identity-ish W: only the raw block (features 0..c) with weight 1 on action 0.
         let mut w = vec![vec![0.0f32; 3]; c * 3];
         w[0][0] = 1.0;
         let linhas: Vec<String> = w
@@ -326,10 +330,10 @@ mod tests {
     fn carrega_e_age() {
         let p = std::env::temp_dir().join("piloto_teste.json");
         std::fs::write(&p, json_teste(4)).unwrap();
-        let mut pl = PilotoLinear::carregar(p.to_str().unwrap()).expect("carregar");
+        let mut pl = PilotoLinear::carregar(p.to_str().unwrap()).expect("load");
         assert_eq!(pl.n_entradas(), 4);
         let y = pl.agir(&[0.5, 0.0, 0.0, 0.0]);
-        // feature 0 → ação 0 com peso 1: y0 = 0.5
+        // feature 0 → action 0 with weight 1: y0 = 0.5
         assert!((y[0] - 0.5).abs() < 1e-5, "y0={}", y[0]);
         assert_eq!(y[1], 0.0);
     }
@@ -341,15 +345,16 @@ mod tests {
         let mut pl = PilotoLinear::carregar(p.to_str().unwrap()).unwrap();
         pl.agir(&[1.0, 0.0]);
         pl.agir(&[0.0, 0.0]);
-        // h_a após [1,0]: inicia 1.0; tick 2: 0.8*1.0+0.2*0.0=0.8
+        // h_a after [1,0]: starts at 1.0; tick 2: 0.8*1.0+0.2*0.0=0.8
         assert!((pl.h_a[0] - 0.8).abs() < 1e-5);
     }
 
     #[test]
     fn portao_le_limiar_escalar_e_abstem() {
-        // Regressão do bug do limiar INFINITO: `thr_abster` é escalar, e o parser
-        // de array pegava o '[' de outra chave. Com o limiar lido, um estado longe
-        // das referências tem de ABSTER (None) e um estado em cima delas, decidir.
+        // Regression for the INFINITE-threshold bug: `thr_abster` is a scalar, and
+        // the array parser grabbed another key's '['. With the threshold read, a
+        // state far from the references must ABSTAIN (None) and a state right on
+        // top of them, decide.
         let p = std::env::temp_dir().join("piloto_portao.json");
         let mut j = json_teste(2);
         j = j.replace(
@@ -362,14 +367,14 @@ mod tests {
         assert_eq!(pl.n_ref, 1);
         assert!(
             (pl.thr_abster - 1.0).abs() < 1e-6,
-            "limiar lido = {}",
+            "threshold read = {}",
             pl.thr_abster
         );
         assert!(
             pl.agir_com_portao(&[0.2, 0.0]).is_some(),
-            "perto da referência: decide"
+            "near the reference: decides"
         );
-        assert!(pl.agir_com_portao(&[9.0, 9.0]).is_none(), "longe: abstém");
+        assert!(pl.agir_com_portao(&[9.0, 9.0]).is_none(), "far: abstains");
         assert_eq!((pl.decisoes, pl.abstencoes), (1, 1));
     }
 

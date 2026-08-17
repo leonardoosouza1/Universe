@@ -1,83 +1,83 @@
-// ── FOLHA CORTICAL EQUIPOTENTE — HOST RUST ────────────────────────────────────
+// ── EQUIPOTENT CORTICAL SHEET — RUST HOST ─────────────────────────────────────
 //
-// Gerencia os 4 kernels da folha cortical emergente:
+// Manages the 4 kernels of the emergent cortical sheet:
 //
-//   Kernel A (afference):   injeta sensory_wave com viés gaussiano + ondas espontâneas
-//   Kernel B (hebb):        plasticidade hebbiana com normalização subtrativa
-//   Kernel C (motor):       projeta ativações → [throttle, steer, brake]
+//   Kernel A (afference):   injects sensory_wave with gaussian bias + spontaneous waves
+//   Kernel B (hebb):        hebbian plasticity with subtractive normalization
+//   Kernel C (motor):       projects activations → [throttle, steer, brake]
 //
-// # Como plugar no gpu_loop
+// # How to plug into gpu_loop
 //
-//   1. Adicionar `cortex: CortexSheet` ao struct `GpuLoop`.
-//   2. Em `GpuLoop::new()`, chamar `CortexSheet::new(Arc::clone(&device), Arc::clone(&queue), cap)`.
-//   3. No início de cada tick, chamar `cortex.upload_wave(&queue, &wave_data[..n])`.
-//   4. Adicionar os dispatches ao encoder ANTES do readback:
+//   1. Add `cortex: CortexSheet` to the `GpuLoop` struct.
+//   2. In `GpuLoop::new()`, call `CortexSheet::new(Arc::clone(&device), Arc::clone(&queue), cap)`.
+//   3. At the start of every tick, call `cortex.upload_wave(&queue, &wave_data[..n])`.
+//   4. Add the dispatches to the encoder BEFORE the readback:
 //
 //      cortex.dispatch_afference(&mut enc, n, tick);
-//      cortex.dispatch_hebb(&mut enc, &queue, n);   // lê buf_act pós-afference
+//      cortex.dispatch_hebb(&mut enc, &queue, n);   // reads buf_act post-afference
 //      cortex.dispatch_motor(&mut enc, n);
 //
-//   5. Após submit+poll, chamar `cortex.read_motor(&device, &queue)` para obter
-//      [throttle, steer, brake] por ser.
+//   5. After submit+poll, call `cortex.read_motor(&device, &queue)` to obtain
+//      [throttle, steer, brake] per being.
 //
-// # Anatomia dos buffers
+// # Buffer anatomy
 //
-//   buf_wave:  i32[cap × 223]          sensory_wave por ser (sobre-escrito por tick)
-//   buf_tau:   f32[cap × 1024]         constantes de tempo, log-espaçadas, por unidade
-//   buf_state: f32[cap × 1024]         estado EMA residente entre ticks
-//   buf_act:   f32[cap × 1024]         ativação tanh(state), escrita a cada tick
-//   buf_afw:   f32[cap × 1024 × 223]   pesos hebbians de aferência (lernt)
-//   buf_mw:    f32[cap × 1024 × 3]     pesos motores (throttle/steer/brake)
-//   buf_motor: f32[cap × 3]            saída motora [−1,1]
+//   buf_wave:  i32[cap × 223]          sensory_wave per being (overwritten every tick)
+//   buf_tau:   f32[cap × 1024]         time constants, log-spaced, per unit
+//   buf_state: f32[cap × 1024]         EMA state resident between ticks
+//   buf_act:   f32[cap × 1024]         tanh(state) activation, written every tick
+//   buf_afw:   f32[cap × 1024 × 223]   hebbian afference weights (learnt)
+//   buf_mw:    f32[cap × 1024 × 3]     motor weights (throttle/steer/brake)
+//   buf_motor: f32[cap × 3]            motor output [−1,1]
 //
-// # Tamanhos (cap=60)
-//   buf_afw: 60 × 1024 × 223 × 4 = ~55 MB  (maior buffer — VRAM)
+// # Sizes (cap=60)
+//   buf_afw: 60 × 1024 × 223 × 4 = ~55 MB  (largest buffer — VRAM)
 //   buf_tau: 60 × 1024 × 4 = ~246 KB
 //   buf_act: 60 × 1024 × 4 = ~246 KB
 //
-// # Prova de atividade heterogênea
-//   Ver `CortexSheet::read_act_stats`: retorna (min, max, mean, std) das 1024
-//   ativações de um ser. Se min == max → folha degenerada. Heterogeneidade real
-//   aparece como std > 0.01 e max-min > 0.1 após os primeiros ticks.
+// # Proof of heterogeneous activity
+//   See `CortexSheet::read_act_stats`: returns (min, max, mean, std) of the 1024
+//   activations of one being. If min == max → degenerate sheet. Real heterogeneity
+//   shows up as std > 0.01 and max-min > 0.1 after the first ticks.
 
 use std::borrow::Cow;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-// ── Constantes de layout ──────────────────────────────────────────────────────
+// ── Layout constants ──────────────────────────────────────────────────────────
 
-/// Dimensão da folha cortical: 32 × 32 unidades.
+/// Cortical sheet dimension: 32 × 32 units.
 pub const SHEET_W: usize = 32;
 pub const SHEET_H: usize = 32;
-pub const SHEET_N: usize = SHEET_W * SHEET_H; // 1024 unidades
+pub const SHEET_N: usize = SHEET_W * SHEET_H; // 1024 units
 
-/// Canais de entrada sensoriais.
+/// Sensory input channels.
 const N_INPUTS: usize = 223;
 
-/// Saídas motoras: throttle=0, steer=1, brake=2.
+/// Motor outputs: throttle=0, steer=1, brake=2.
 const N_MOTOR: usize = 3;
 
-// τ mínimo e máximo do banco log-espaçado (em segundos).
+// Minimum and maximum τ of the log-spaced bank (in seconds).
 // gamma ≈ 1.6 ms → delta ≈ 318 ms (doc §5.3)
-const TAU_MIN: f32 = 0.0016; // 1.6 ms — banda gamma
+const TAU_MIN: f32 = 0.0016; // 1.6 ms — gamma band
 // Clippy sees 0.318 and reports it as an approximation of `FRAC_1_PI` (0.31831).
 // That is a numeric coincidence, not the meaning: this is 318 ms, the delta band,
 // and replacing it with the constant would tie a physiological time constant to π.
 #[allow(clippy::approx_constant)]
-const TAU_MAX: f32 = 0.318; // 318 ms — banda delta
+const TAU_MAX: f32 = 0.318; // 318 ms — delta band
 
-// ── Uniform struct espelhando WGSL ────────────────────────────────────────────
+// ── Uniform struct mirroring WGSL ─────────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParamsAfference {
     n_beings: u32,
     tick: u32,
-    // fat_beta: força de inibição da fadiga adaptativa (mecanismo 1). 0.0=desligado.
-    // Vem do campo CortexSheet::fat_beta, configurável via arg --fat-beta.
+    // fat_beta: inhibition strength of the adaptive fatigue (mechanism 1). 0.0=off.
+    // Comes from the CortexSheet::fat_beta field, configurable via the --fat-beta arg.
     fat_beta: f32,
-    // div_sigma: ganho da normalização divisiva (mecanismo 2). 0.0=desligado.
-    // Vem do campo CortexSheet::div_sigma, configurável via arg --div-sigma.
+    // div_sigma: gain of the divisive normalization (mechanism 2). 0.0=off.
+    // Comes from the CortexSheet::div_sigma field, configurable via the --div-sigma arg.
     div_sigma: f32,
 }
 
@@ -99,7 +99,7 @@ struct ParamsMotor {
     _pad1: u32,
 }
 
-// ── Helpers de bind group layout ─────────────────────────────────────────────
+// ── Bind group layout helpers ────────────────────────────────────────────────
 
 fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -127,71 +127,71 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-// ── Contexto da folha cortical ────────────────────────────────────────────────
+// ── Cortical sheet context ────────────────────────────────────────────────────
 
-/// Folha cortical equipotente: 1024 unidades por ser, organização emergente.
+/// Equipotent cortical sheet: 1024 units per being, emergent organization.
 pub struct CortexSheet {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 
-    // Pipelines dos 3 kernels
+    // Pipelines of the 3 kernels
     pipeline_aff: wgpu::ComputePipeline,
     pipeline_hebb: wgpu::ComputePipeline,
     pipeline_motor: wgpu::ComputePipeline,
 
-    // Layouts de bind group
+    // Bind group layouts
     layout_aff: wgpu::BindGroupLayout,
     layout_hebb: wgpu::BindGroupLayout,
     layout_motor: wgpu::BindGroupLayout,
 
-    // Buffers persistentes
-    buf_wave: wgpu::Buffer,  // i32 × (cap × N_INPUTS) — sobre-escrito por tick
-    buf_tau: wgpu::Buffer,   // f32 × (cap × SHEET_N)  — constante após init
-    buf_state: wgpu::Buffer, // f32 × (cap × SHEET_N)  — estado EMA residente
-    buf_act: wgpu::Buffer,   // f32 × (cap × SHEET_N)  — ativação após kernel A
-    buf_afw: wgpu::Buffer,   // f32 × (cap × SHEET_N × N_INPUTS) — pesos hebbians
-    buf_mw: wgpu::Buffer,    // f32 × (cap × SHEET_N × N_MOTOR) — pesos motores
-    buf_motor: wgpu::Buffer, // f32 × (cap × N_MOTOR)  — saída motora
-    // Fadiga adaptativa por unidade (spike-frequency adaptation — anti-saturação)
-    // Cresce quando |act| é alto por muitos ticks; subtrai do net_input quebrando ponto fixo.
-    buf_fat: wgpu::Buffer, // f32 × (cap × SHEET_N)  — estado lento de fadiga
+    // Persistent buffers
+    buf_wave: wgpu::Buffer,  // i32 × (cap × N_INPUTS) — overwritten every tick
+    buf_tau: wgpu::Buffer,   // f32 × (cap × SHEET_N)  — constant after init
+    buf_state: wgpu::Buffer, // f32 × (cap × SHEET_N)  — resident EMA state
+    buf_act: wgpu::Buffer,   // f32 × (cap × SHEET_N)  — activation after kernel A
+    buf_afw: wgpu::Buffer,   // f32 × (cap × SHEET_N × N_INPUTS) — hebbian weights
+    buf_mw: wgpu::Buffer,    // f32 × (cap × SHEET_N × N_MOTOR) — motor weights
+    buf_motor: wgpu::Buffer, // f32 × (cap × N_MOTOR)  — motor output
+    // Adaptive fatigue per unit (spike-frequency adaptation — anti-saturation)
+    // Grows when |act| stays high for many ticks; subtracts from net_input, breaking the fixed point.
+    buf_fat: wgpu::Buffer, // f32 × (cap × SHEET_N)  — slow fatigue state
 
-    // Buffer de readback para leitura CPU do estado e saída motora
+    // Readback buffers for CPU reads of the state and the motor output
     buf_motor_rb: wgpu::Buffer,
     buf_act_rb: wgpu::Buffer,
 
-    /// Capacidade máxima de seres
+    /// Maximum being capacity
     pub capacity: usize,
 
-    /// fat_beta: força de inibição da fadiga adaptativa (mecanismo 1).
-    /// 0.0 = desligado (folha SATURADA), 1.2 = valor original forte.
-    /// Passado para o shader via uniform a cada dispatch_afference.
+    /// fat_beta: inhibition strength of the adaptive fatigue (mechanism 1).
+    /// 0.0 = off (SATURATED sheet), 1.2 = original strong value.
+    /// Passed to the shader via uniform on every dispatch_afference.
     pub fat_beta: f32,
 
-    /// div_sigma: ganho da normalização divisiva por vizinhança (mecanismo 2).
-    /// 0.0 = desligado, 2.0 = valor original forte.
-    /// Passado para o shader via uniform a cada dispatch_afference.
+    /// div_sigma: gain of the divisive normalization over the neighborhood (mechanism 2).
+    /// 0.0 = off, 2.0 = original strong value.
+    /// Passed to the shader via uniform on every dispatch_afference.
     pub div_sigma: f32,
 
-    /// Cache dos τ do ser 0 (última atualização via set_tau_cache).
-    /// None = padrão homogêneo (antes do primeiro genoma carregado).
-    /// Evita readback GPU→CPU a cada chamada de tau_bank().
+    /// Cache of being 0's τ (last updated via set_tau_cache).
+    /// None = homogeneous default (before the first genome is loaded).
+    /// Avoids a GPU→CPU readback on every tau_bank() call.
     tau_cache: Option<Vec<f32>>,
 }
 
 impl CortexSheet {
-    /// Cria nova folha cortical para `capacity` seres.
+    /// Creates a new cortical sheet for `capacity` beings.
     ///
-    /// Os τ são sorteados log-linearmente entre TAU_MIN e TAU_MAX, usando o
-    /// índice da unidade como semente — reprodutível e sem rótulo de região.
+    /// The τ are drawn log-linearly between TAU_MIN and TAU_MAX, using the
+    /// unit index as seed — reproducible and with no region label.
     ///
-    /// Os pesos buf_afw começam em 1.0 (prior gaussiano puro, sem aprendizado).
-    /// Os pesos buf_mw começam com pequenos valores aleatórios (semente 0xBEEF).
+    /// The buf_afw weights start at 1.0 (pure gaussian prior, no learning).
+    /// The buf_mw weights start with small random values (seed 0xBEEF).
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, capacity: usize) -> Self {
         let cap = capacity.max(1);
 
-        // ── Compilar shaders ─────────────────────────────────────────────────
-        // Cada kernel em arquivo separado — previne SIGSEGV do ACO em shaders >1050 linhas.
+        // ── Compile shaders ──────────────────────────────────────────────────
+        // Each kernel in its own file — prevents the ACO SIGSEGV in shaders >1050 lines.
         let mod_aff = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cortex-afference"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("cortex_sheet.wgsl"))),
@@ -213,11 +213,11 @@ impl CortexSheet {
             entries: &[
                 uniform_entry(0),        // params
                 storage_entry(1, true),  // buf_wave (read)
-                storage_entry(2, false), // buf_afw  (read_write — lido para prior)
+                storage_entry(2, false), // buf_afw  (read_write — read for the prior)
                 storage_entry(3, false), // buf_state (read_write)
                 storage_entry(4, true),  // buf_tau  (read)
-                storage_entry(5, false), // buf_act  (read_write — lê vizinhos t-1, escreve t)
-                storage_entry(6, false), // buf_fat  (read_write — fadiga adaptativa)
+                storage_entry(5, false), // buf_act  (read_write — reads neighbors t-1, writes t)
+                storage_entry(6, false), // buf_fat  (read_write — adaptive fatigue)
             ],
         });
 
@@ -225,7 +225,7 @@ impl CortexSheet {
         let layout_hebb = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cortex-hebb-layout"),
             entries: &[
-                uniform_entry(0),        // params (inclui act_sum)
+                uniform_entry(0),        // params (includes act_sum)
                 storage_entry(1, true),  // buf_act  (read)
                 storage_entry(2, true),  // buf_wave (read)
                 storage_entry(3, false), // buf_afw  (read_write)
@@ -287,7 +287,7 @@ impl CortexSheet {
 
         // ── Buffers ──────────────────────────────────────────────────────────
 
-        // buf_wave: i32 por canal por ser (sobre-escrito por tick)
+        // buf_wave: i32 per channel per being (overwritten every tick)
         let buf_wave = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cortex-wave"),
             size: (cap * N_INPUTS * 4) as u64,
@@ -295,10 +295,10 @@ impl CortexSheet {
             mapped_at_creation: false,
         });
 
-        // buf_tau: log-espaçado entre TAU_MIN e TAU_MAX, determinístico por índice.
-        // MUTÁVEL (COPY_DST): o genoma pode injetar τ por parte via write_buffer,
-        // permitindo divisão bipartite por cronograma neurogenético sem recompilar o shader.
-        // τ_i = TAU_MIN × (TAU_MAX/TAU_MIN)^(i/(SHEET_N−1)) — valor padrão homogêneo.
+        // buf_tau: log-spaced between TAU_MIN and TAU_MAX, deterministic per index.
+        // MUTABLE (COPY_DST): the genome can inject τ per part via write_buffer,
+        // enabling a bipartite split by neurogenetic schedule without recompiling the shader.
+        // τ_i = TAU_MIN × (TAU_MAX/TAU_MIN)^(i/(SHEET_N−1)) — homogeneous default value.
         let tau_data = default_tau_homogeneous(cap);
         let buf_tau = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cortex-tau"),
@@ -306,7 +306,7 @@ impl CortexSheet {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // buf_state: zeros (estado EMA inicial)
+        // buf_state: zeros (initial EMA state)
         let state_zeros: Vec<f32> = vec![0.0; cap * SHEET_N];
         let buf_state = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cortex-state"),
@@ -316,7 +316,7 @@ impl CortexSheet {
                 | wgpu::BufferUsages::COPY_DST,
         });
 
-        // buf_act: zeros (ativação inicial)
+        // buf_act: zeros (initial activation)
         let buf_act = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cortex-act"),
             size: (cap * SHEET_N * 4) as u64,
@@ -326,9 +326,9 @@ impl CortexSheet {
             mapped_at_creation: false,
         });
 
-        // buf_fat: fadiga adaptativa por unidade — inicializada em zeros.
-        // Cresce com |act| sustentado; decai quando a unidade silencia.
-        // Tamanho: cap × SHEET_N × 4 bytes (~246 KB @ cap=60)
+        // buf_fat: adaptive fatigue per unit — initialized to zeros.
+        // Grows with sustained |act|; decays when the unit goes silent.
+        // Size: cap × SHEET_N × 4 bytes (~246 KB @ cap=60)
         let fat_zeros: Vec<f32> = vec![0.0f32; cap * SHEET_N];
         let buf_fat = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cortex-fat"),
@@ -336,8 +336,8 @@ impl CortexSheet {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // buf_afw: inicializa em 1.0 (prior gaussiano puro — sem viés hebbiano inicial)
-        // Tamanho: cap × SHEET_N × N_INPUTS × 4 bytes ≈ 55 MB @ cap=60
+        // buf_afw: initialized to 1.0 (pure gaussian prior — no initial hebbian bias)
+        // Size: cap × SHEET_N × N_INPUTS × 4 bytes ≈ 55 MB @ cap=60
         let afw_ones: Vec<f32> = vec![1.0; cap * SHEET_N * N_INPUTS];
         let buf_afw = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cortex-afw"),
@@ -345,17 +345,17 @@ impl CortexSheet {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // buf_mw: pesos motores inicializados com pseudo-ruído pequeno (hash de índice)
-        // Sem zeros — zeros tornam o motor surdo ao estado inicial da folha.
+        // buf_mw: motor weights initialized with small pseudo-noise (index hash)
+        // No zeros — zeros make the motor deaf to the sheet's initial state.
         let mw_data: Vec<f32> = (0..cap)
             .flat_map(|ser| {
                 (0..SHEET_N).flat_map(move |u| {
                     (0..N_MOTOR).map(move |m| {
-                        // Hash de Knuth para gerar ±pequeno valor inicial
+                        // Knuth hash to generate a ±small initial value
                         let h: u32 = ((ser as u32) * 1000003u32)
                             .wrapping_add((u as u32) * 2654435761u32)
                             .wrapping_add(m as u32 * 16777619u32);
-                        // Mapeia [0, 2^32) → [−0.1, 0.1]
+                        // Maps [0, 2^32) → [−0.1, 0.1]
                         let norm = (h as f32 / u32::MAX as f32) - 0.5;
                         norm * 0.2 // amplitude ±0.1
                     })
@@ -368,7 +368,7 @@ impl CortexSheet {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // buf_motor: saída [throttle, steer, brake] por ser
+        // buf_motor: [throttle, steer, brake] output per being
         let buf_motor = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cortex-motor"),
             size: (cap * N_MOTOR * 4) as u64,
@@ -376,7 +376,7 @@ impl CortexSheet {
             mapped_at_creation: false,
         });
 
-        // Readback buffers (MAP_READ separado — wgpu exige)
+        // Readback buffers (separate MAP_READ — wgpu requires it)
         let buf_motor_rb = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cortex-motor-rb"),
             size: (cap * N_MOTOR * 4) as u64,
@@ -391,7 +391,7 @@ impl CortexSheet {
         });
 
         eprintln!(
-            "[cortex_sheet] Folha 32×32={} unidades × {} seres | τ ∈ [{:.1}ms, {:.0}ms]",
+            "[cortex_sheet] Sheet 32×32={} units × {} beings | τ ∈ [{:.1}ms, {:.0}ms]",
             SHEET_N,
             cap,
             TAU_MIN * 1000.0,
@@ -423,32 +423,32 @@ impl CortexSheet {
             buf_act_rb,
             buf_fat,
             capacity: cap,
-            // Valores padrão: inibição FORTE (comportamento original).
-            // Pode ser sobrescrito via CortexSheet::set_inhibition() antes do primeiro tick.
+            // Default values: STRONG inhibition (original behavior).
+            // Can be overridden via CortexSheet::set_inhibition() before the first tick.
             fat_beta: 1.2,
             div_sigma: 2.0,
-            tau_cache: None, // preenchido por set_tau_cache() após primeiro genoma
+            tau_cache: None, // filled by set_tau_cache() after the first genome
         }
     }
 
-    /// Configura os parâmetros de inibição anti-saturação em tempo de execução.
+    /// Configures the anti-saturation inhibition parameters at runtime.
     ///
-    /// Deve ser chamado ANTES do primeiro dispatch_afference de uma nova varredura.
-    /// Os valores são passados para o shader via uniform a cada dispatch — sem recompilação.
+    /// Must be called BEFORE the first dispatch_afference of a new sweep.
+    /// The values are passed to the shader via uniform on every dispatch — no recompilation.
     ///
-    /// - fat_beta=0.0, div_sigma=0.0 → folha SATURADA (baseline da varredura).
-    /// - fat_beta=1.2, div_sigma=2.0 → inibição FORTE (valor original medido).
+    /// - fat_beta=0.0, div_sigma=0.0 → SATURATED sheet (sweep baseline).
+    /// - fat_beta=1.2, div_sigma=2.0 → STRONG inhibition (original measured value).
     pub fn set_inhibition(&mut self, fat_beta: f32, div_sigma: f32) {
         self.fat_beta = fat_beta;
         self.div_sigma = div_sigma;
     }
 
-    // ── Upload da sensory_wave ────────────────────────────────────────────────
+    // ── sensory_wave upload ───────────────────────────────────────────────────
 
-    /// Sobe o sensory_wave de `n` seres para a GPU.
+    /// Uploads the sensory_wave of `n` beings to the GPU.
     ///
-    /// `waves`: slice de arrays i8, um por ser, N_INPUTS elementos cada.
-    /// Converte i8 → i32 (sign-extended) para o shader.
+    /// `waves`: slice of i8 arrays, one per being, N_INPUTS elements each.
+    /// Converts i8 → i32 (sign-extended) for the shader.
     pub fn upload_wave(&self, waves: &[[i8; 223]], n: usize) {
         let n = n.min(self.capacity).min(waves.len());
         let data: Vec<i32> = waves[..n]
@@ -459,14 +459,14 @@ impl CortexSheet {
             .write_buffer(&self.buf_wave, 0, bytemuck::cast_slice(&data));
     }
 
-    // ── Dispatch dos kernels (adicionados ao encoder externo) ─────────────────
+    // ── Kernel dispatches (added to the external encoder) ─────────────────────
 
-    /// Dispatch do Kernel A (aferência + EMA + ativação).
-    /// Grava em buf_state e buf_act.
+    /// Dispatch of Kernel A (afference + EMA + activation).
+    /// Writes to buf_state and buf_act.
     /// dispatch: (SHEET_N/32, n_beings, 1) = (32, n, 1)
     ///
-    /// fat_beta e div_sigma são lidos de self (configurados via set_inhibition).
-    /// Isso permite varredura paramétrica sem recompilar o shader.
+    /// fat_beta and div_sigma are read from self (configured via set_inhibition).
+    /// This allows a parametric sweep without recompiling the shader.
     pub fn dispatch_afference(&self, enc: &mut wgpu::CommandEncoder, n: usize, tick: u32) {
         let n = n.min(self.capacity) as u32;
         let params = ParamsAfference {
@@ -526,13 +526,13 @@ impl CortexSheet {
         pass.dispatch_workgroups(SHEET_N as u32 / 32, n, 1);
     }
 
-    /// Dispatch do Kernel B (plasticidade hebbiana).
+    /// Dispatch of Kernel B (hebbian plasticity).
     ///
-    /// IMPORTANTE: deve ser chamado APÓS `dispatch_afference` ter sido adicionado
-    /// ao mesmo encoder (ou ao encoder submetido anteriormente), pois lê buf_act.
+    /// IMPORTANT: must be called AFTER `dispatch_afference` has been added
+    /// to the same encoder (or to the previously submitted encoder), since it reads buf_act.
     ///
-    /// `act_sum`: Σ_j |act_j| do tick anterior (ou 0.0 no tick 0).
-    /// Para o tick 0, act_sum=0 → only Hebb sem normalização (ok).
+    /// `act_sum`: Σ_j |act_j| of the previous tick (or 0.0 at tick 0).
+    /// For tick 0, act_sum=0 → Hebb only, no normalization (ok).
     pub fn dispatch_hebb(&self, enc: &mut wgpu::CommandEncoder, n: usize, tick: u32, act_sum: f32) {
         let n = n.min(self.capacity) as u32;
         let params = ParamsHebb {
@@ -580,8 +580,8 @@ impl CortexSheet {
         pass.dispatch_workgroups(SHEET_N as u32 / 32, n, 1);
     }
 
-    /// Dispatch do Kernel C (projeção motora).
-    /// Lê buf_act, escreve buf_motor.
+    /// Dispatch of Kernel C (motor projection).
+    /// Reads buf_act, writes buf_motor.
     pub fn dispatch_motor(&self, enc: &mut wgpu::CommandEncoder, n: usize, tick: u32) {
         let n = n.min(self.capacity) as u32;
         let params = ParamsMotor {
@@ -625,11 +625,11 @@ impl CortexSheet {
         });
         pass.set_pipeline(&self.pipeline_motor);
         pass.set_bind_group(0, &bg, &[]);
-        // 1 workgroup por ser, workgroup_size(64)
+        // 1 workgroup per being, workgroup_size(64)
         pass.dispatch_workgroups(n, 1, 1);
     }
 
-    /// Adiciona cópias de readback ao encoder (para leitura CPU após submit).
+    /// Adds readback copies to the encoder (for CPU reads after submit).
     pub fn copy_for_readback(&self, enc: &mut wgpu::CommandEncoder, n: usize) {
         let n = n.min(self.capacity);
         // Motor output: n × 3 × 4 bytes
@@ -640,7 +640,7 @@ impl CortexSheet {
             0,
             (n * N_MOTOR * 4) as u64,
         );
-        // Act (para estatísticas): n × SHEET_N × 4 bytes
+        // Act (for statistics): n × SHEET_N × 4 bytes
         enc.copy_buffer_to_buffer(
             &self.buf_act,
             0,
@@ -650,10 +650,10 @@ impl CortexSheet {
         );
     }
 
-    // ── Leituras CPU (pós submit+poll) ───────────────────────────────────────
+    // ── CPU reads (post submit+poll) ─────────────────────────────────────────
 
-    /// Lê [throttle, steer, brake] de todos os seres após submit+poll.
-    /// Retorna Vec de len n, cada elemento = [throttle, steer, brake].
+    /// Reads [throttle, steer, brake] of every being after submit+poll.
+    /// Returns a Vec of len n, each element = [throttle, steer, brake].
     pub fn read_motor(&self, n: usize) -> Vec<[f32; 3]> {
         let n = n.min(self.capacity);
         let bytes = (n * N_MOTOR * 4) as u64;
@@ -676,14 +676,14 @@ impl CortexSheet {
         result
     }
 
-    /// Lê as ativações da folha para diagnóstico de heterogeneidade.
+    /// Reads the sheet activations for heterogeneity diagnostics.
     ///
-    /// Retorna estatísticas por ser: (min, max, mean, std) das 1024 ativações.
-    /// Prova real: std > 0.01 e (max − min) > 0.1 após tick > 5.
+    /// Returns per-being statistics: (min, max, mean, std) of the 1024 activations.
+    /// Real proof: std > 0.01 and (max − min) > 0.1 after tick > 5.
     ///
-    /// # Prova de não-fabricação
-    /// Os valores são lidos diretamente do buf_act_rb (MAP_READ da GPU).
-    /// Cada unidade tem τ diferente → decai em ritmo diferente → min ≠ max.
+    /// # Non-fabrication proof
+    /// The values are read directly from buf_act_rb (GPU MAP_READ).
+    /// Each unit has a different τ → decays at a different rate → min ≠ max.
     pub fn read_act_stats(&self, n: usize) -> Vec<(f32, f32, f32, f32)> {
         let n = n.min(self.capacity);
         let bytes = (n * SHEET_N * 4) as u64;
@@ -733,12 +733,12 @@ impl CortexSheet {
         stats
     }
 
-    /// Lê as ativações brutas (1024 valores por ser) após submit+poll.
+    /// Reads the raw activations (1024 values per being) after submit+poll.
     ///
-    /// Retorna Vec<f32> com n × SHEET_N valores: [ser0_unit0, ..., ser0_unit1023, ser1_unit0, ...].
+    /// Returns a Vec<f32> with n × SHEET_N values: [ser0_unit0, ..., ser0_unit1023, ser1_unit0, ...].
     ///
-    /// Usado por cortex_map para calcular dominância de modalidade via diferença de resposta
-    /// e para acumular atividade média por unidade ao longo dos ticks.
+    /// Used by cortex_map to compute modality dominance via response difference
+    /// and to accumulate mean activity per unit across ticks.
     pub fn read_act_raw(&self, n: usize) -> Vec<f32> {
         let n = n.min(self.capacity);
         let total = n * SHEET_N;
@@ -760,39 +760,39 @@ impl CortexSheet {
         result
     }
 
-    // ── Acesso aos buffers para carga de genoma ──────────────────────────────
+    // ── Buffer access for genome loading ─────────────────────────────────────
 
-    /// Referência ao buf_afw (pesos hebbians de aferência) para write_buffer externo.
-    /// Layout: ser × SHEET_N × N_INPUTS f32. Usado pelo cortex_evolve para injetar
-    /// pesos iniciais do genoma antes de cada geração.
+    /// Reference to buf_afw (hebbian afference weights) for external write_buffer.
+    /// Layout: being × SHEET_N × N_INPUTS f32. Used by cortex_evolve to inject
+    /// the genome's initial weights before each generation.
     pub fn buf_afw_ref(&self) -> &wgpu::Buffer {
         &self.buf_afw
     }
 
-    /// Referência ao buf_mw (pesos motores) para write_buffer externo.
-    /// Layout: ser × SHEET_N × N_MOTOR f32.
+    /// Reference to buf_mw (motor weights) for external write_buffer.
+    /// Layout: being × SHEET_N × N_MOTOR f32.
     pub fn buf_mw_ref(&self) -> &wgpu::Buffer {
         &self.buf_mw
     }
 
-    /// Referência ao buf_state (estado EMA) para reset entre gerações.
-    /// Layout: ser × SHEET_N f32. Escrever zeros reseta a folha.
+    /// Reference to buf_state (EMA state) for reset between generations.
+    /// Layout: being × SHEET_N f32. Writing zeros resets the sheet.
     pub fn buf_state_ref(&self) -> &wgpu::Buffer {
         &self.buf_state
     }
 
-    /// Referência ao buf_fat (fadiga adaptativa) para reset entre gerações.
-    /// Layout: ser × SHEET_N f32. Escrever zeros reseta a fadiga acumulada.
-    /// DEVE ser resetado junto com buf_state para evitar que fadiga residual
-    /// de uma geração penalize o início da próxima (viés de inicialização).
+    /// Reference to buf_fat (adaptive fatigue) for reset between generations.
+    /// Layout: being × SHEET_N f32. Writing zeros resets the accumulated fatigue.
+    /// MUST be reset together with buf_state to prevent residual fatigue from
+    /// one generation penalizing the start of the next (initialization bias).
     pub fn buf_fat_ref(&self) -> &wgpu::Buffer {
         &self.buf_fat
     }
 
-    /// Retorna o τ de cada unidade do ser 0 (para inspeção do banco de τ).
+    /// Returns the τ of each unit of being 0 (for τ bank inspection).
     ///
-    /// Retorna a cópia em cache (gerada na CPU junto com os dados carregados por genoma).
-    /// Se nenhum genoma foi carregado, retorna o padrão log-espaçado homogêneo.
+    /// Returns the cached copy (generated on the CPU together with the genome-loaded data).
+    /// If no genome was loaded, returns the homogeneous log-spaced default.
     pub fn tau_bank(&self) -> Vec<f32> {
         if let Some(ref cache) = self.tau_cache {
             cache.clone()
@@ -801,26 +801,26 @@ impl CortexSheet {
         }
     }
 
-    /// Referência ao buf_tau (constante de tempo) para write_buffer externo.
-    /// Layout: ser × SHEET_N f32.
-    /// Usado pelo cortex_evolve para injetar τ por parte conforme o cronograma do genoma.
+    /// Reference to buf_tau (time constants) for external write_buffer.
+    /// Layout: being × SHEET_N f32.
+    /// Used by cortex_evolve to inject τ per part according to the genome's schedule.
     pub fn buf_tau_ref(&self) -> &wgpu::Buffer {
         &self.buf_tau
     }
 
-    /// Atualiza o cache de τ do ser 0 (para que tau_bank() reflita o genoma carregado).
+    /// Updates the τ cache of being 0 (so tau_bank() reflects the loaded genome).
     ///
-    /// Deve ser chamado sempre que buf_tau for atualizado via write_buffer.
-    /// O cache evita readback GPU→CPU a cada inspeção.
+    /// Must be called whenever buf_tau is updated via write_buffer.
+    /// The cache avoids a GPU→CPU readback on every inspection.
     pub fn set_tau_cache(&mut self, taus_ser0: Vec<f32>) {
         self.tau_cache = Some(taus_ser0);
     }
 }
 
-// ── Funções auxiliares de cronograma bipartite ────────────────────────────────
+// ── Bipartite schedule helper functions ───────────────────────────────────────
 
-/// Gera τ homogêneo log-espaçado (padrão sem genoma).
-/// Retorna cap × SHEET_N valores f32.
+/// Generates homogeneous log-spaced τ (default without a genome).
+/// Returns cap × SHEET_N f32 values.
 pub fn default_tau_homogeneous(cap: usize) -> Vec<f32> {
     let log_ratio = (TAU_MAX / TAU_MIN).ln();
     (0..cap)
@@ -833,75 +833,75 @@ pub fn default_tau_homogeneous(cap: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Calcula a divisão bipartite pelo cronograma neurogenético.
+/// Computes the bipartite split by the neurogenetic schedule.
 ///
-/// Modelo de Finlay & Darlington (1995): N_parte ∝ 2^((t_fim − t_início) × taxa).
-/// Partes (ordem fixa de início/fim):
-///   - cerebelo: início=0.35, fim=0.80  → faixa rápida (gamma/beta)
-///   - córtex:   início=0.55, fim=1.00 + schedule_ext → faixa lenta (theta/delta)
+/// Finlay & Darlington (1995) model: N_part ∝ 2^((t_end − t_start) × rate).
+/// Parts (fixed start/end order):
+///   - cerebellum: start=0.35, end=0.80  → fast band (gamma/beta)
+///   - cortex:     start=0.55, end=1.00 + schedule_ext → slow band (theta/delta)
 ///
-/// `schedule_ext` é o único parâmetro evoluível (extensão da janela cortical).
-/// Clampado em [0.0, 0.5] — valores maiores que 0.5 distorcem além do plausível.
+/// `schedule_ext` is the only evolvable parameter (extension of the cortical window).
+/// Clamped to [0.0, 0.5] — values above 0.5 distort beyond the plausible.
 ///
-/// Retorna: (n_cerebelo, n_cortex, taus_por_unidade[SHEET_N]).
+/// Returns: (n_cerebellum, n_cortex, taus_per_unit[SHEET_N]).
 ///
-/// Distribuição de τ:
-///   - cerebelo (unidades 0..n_cerebelo-1): τ ∈ [TAU_MIN, TAU_MID]  (gamma+beta)
-///   - córtex   (unidades n_cerebelo..SHEET_N-1): τ ∈ [TAU_MID, TAU_MAX] (theta+delta)
+/// τ distribution:
+///   - cerebellum (units 0..n_cerebellum-1): τ ∈ [TAU_MIN, TAU_MID]  (gamma+beta)
+///   - cortex     (units n_cerebellum..SHEET_N-1): τ ∈ [TAU_MID, TAU_MAX] (theta+delta)
 ///
-/// Teste de sanidade: razão córtex/cerebelo deve estar em [0.15, 0.40] (≈1:4 biológico).
-/// A proporção EMERGE do schedule_ext, não é imposta.
+/// Sanity test: cortex/cerebellum ratio must be in [0.15, 0.40] (≈1:4 biological).
+/// The proportion EMERGES from schedule_ext, it is not imposed.
 pub fn compute_bipart_schedule(schedule_ext: f32) -> (usize, usize, Vec<f32>) {
-    // Parâmetros do cronograma (Finlay & Darlington §2 do doc)
-    // FAIXA ABERTA ATÉ 2,0. Estava travada em 0,5, o que limitava o córtex a ~30% e
-    // impedia a evolução de sequer TESTAR córtex-pesado.
+    // Schedule parameters (Finlay & Darlington §2 of the doc)
+    // RANGE OPENED UP TO 2.0. It was locked at 0.5, which limited the cortex to ~30% and
+    // prevented evolution from even TESTING cortex-heavy configurations.
     //
-    // Motivo para abrir: a razão 1:4 (80% cerebelo) é o fato conservado em MAMÍFEROS, e
-    // mamífero tem centenas de músculos com controle motor fino. **Nosso corpo é um carro com
-    // TRÊS atuadores** (acelerador, esterço, freio). O achado N1 deste ecossistema — "o corpo
-    // dita a arquitetura", correlação +0,972 — prevê que a proporção ótima acompanha o corpo,
-    // não a biologia de outro corpo.
+    // Reason to open it: the 1:4 ratio (80% cerebellum) is the fact conserved in MAMMALS, and
+    // a mammal has hundreds of muscles with fine motor control. **Our body is a car with
+    // THREE actuators** (throttle, steering, brake). The N1 finding of this ecosystem — "the body
+    // dictates the architecture", correlation +0.972 — predicts that the optimal proportion follows
+    // the body, not the biology of another body.
     //
-    // Medido: bipartite 1:4 ficou ABAIXO da folha homogênea (med10 110 m contra 164 m,
-    // max10 727 m contra 886 m). Com 80% das unidades em τ curto (1,6–12 ms), sobra pouca
-    // integração de trajetória longa — que é justamente o que quebrou a parede antes.
+    // Measured: 1:4 bipartite came in BELOW the homogeneous sheet (med10 110 m vs 164 m,
+    // max10 727 m vs 886 m). With 80% of the units at short τ (1.6–12 ms), little long-trajectory
+    // integration is left — which is exactly what broke the wall before.
     let ext = schedule_ext.clamp(0.0, 2.0_f32);
-    let taxa: f32 = 4.0; // expoente de proliferação (log2 da expansão por unidade de tempo)
+    let taxa: f32 = 4.0; // proliferation exponent (log2 of the expansion per unit of time)
 
-    // Duração de cada parte no cronograma calibrado para razão 1:4 biológica:
-    //   ext=0.0  →  córtex=20.0%, cerebelo=80.0%  (razão 1:4 exata)
-    //   ext=0.1  →  córtex=24.8%, cerebelo=75.2%
-    //   ext=0.3  →  córtex=36.5%, cerebelo=63.5%
-    //   ext=0.5  →  córtex=50.0%, cerebelo=50.0%
+    // Duration of each part in the schedule calibrated for the 1:4 biological ratio:
+    //   ext=0.0  →  cortex=20.0%, cerebellum=80.0%  (exact 1:4 ratio)
+    //   ext=0.1  →  cortex=24.8%, cerebellum=75.2%
+    //   ext=0.3  →  cortex=36.5%, cerebellum=63.5%
+    //   ext=0.5  →  cortex=50.0%, cerebellum=50.0%
     //
-    // Fórmula: dur_cb e dur_cx satisfazem 2^(dur_cb−dur_cx)=4 quando ext=0.
+    // Formula: dur_cb and dur_cx satisfy 2^(dur_cb−dur_cx)=4 when ext=0.
     // → dur_cb = dur_cx + 2/taxa = 0.45 + 0.50 = 0.95
-    let dur_cerebelo = 0.95_f32; // calibrado: cerebelo=80% com ext=0
-    let dur_cortex = 0.45_f32 + ext; // córtex=20% com ext=0
+    let dur_cerebelo = 0.95_f32; // calibrated: cerebellum=80% with ext=0
+    let dur_cortex = 0.45_f32 + ext; // cortex=20% with ext=0
 
-    // N relativo: 2^(dur × taxa) — "late equals large"
+    // Relative N: 2^(dur × rate) — "late equals large"
     let k_cerebelo = (dur_cerebelo * taxa).exp2();
     let k_cortex = (dur_cortex * taxa).exp2();
     let k_total = k_cerebelo + k_cortex;
 
-    // N absoluto: proporção × SHEET_N (mínimo 1 cada)
+    // Absolute N: proportion × SHEET_N (minimum 1 each)
     let n_cerebelo = ((k_cerebelo / k_total) * SHEET_N as f32).round() as usize;
     let n_cerebelo = n_cerebelo.clamp(1, SHEET_N - 1);
     let n_cortex = SHEET_N - n_cerebelo;
 
-    // Distribuição de τ por parte:
-    //   cerebelo → τ ∈ [TAU_MIN, TAU_MID]  (gamma/beta: 1.6 ms – 12 ms)
-    //   córtex   → τ ∈ [TAU_MID, TAU_MAX]  (theta/delta: 12 ms – 318 ms)
+    // τ distribution per part:
+    //   cerebellum → τ ∈ [TAU_MIN, TAU_MID]  (gamma/beta: 1.6 ms – 12 ms)
+    //   cortex     → τ ∈ [TAU_MID, TAU_MAX]  (theta/delta: 12 ms – 318 ms)
     //
-    // TAU_MID é o ponto de corte entre beta e alpha (≈12 ms = 1/(2π·13Hz))
-    const TAU_MID: f32 = 0.012; // 12 ms — fronteira beta/alpha (doc §5.3)
+    // TAU_MID is the cut point between beta and alpha (≈12 ms = 1/(2π·13Hz))
+    const TAU_MID: f32 = 0.012; // 12 ms — beta/alpha boundary (doc §5.3)
 
     let log_r_cb = (TAU_MID / TAU_MIN).ln();
     let log_r_cx = (TAU_MAX / TAU_MID).ln();
 
     let mut taus = vec![0.0_f32; SHEET_N];
 
-    // Cerebelo: primeiras n_cerebelo unidades — τ curto (gamma/beta)
+    // Cerebellum: first n_cerebelo units — short τ (gamma/beta)
     for i in 0..n_cerebelo {
         let t = if n_cerebelo > 1 {
             i as f32 / (n_cerebelo as f32 - 1.0)
@@ -910,7 +910,7 @@ pub fn compute_bipart_schedule(schedule_ext: f32) -> (usize, usize, Vec<f32>) {
         };
         taus[i] = TAU_MIN * (log_r_cb * t).exp();
     }
-    // Córtex: unidades restantes — τ longo (theta/delta)
+    // Cortex: remaining units — long τ (theta/delta)
     for i in 0..n_cortex {
         let t = if n_cortex > 1 {
             i as f32 / (n_cortex as f32 - 1.0)

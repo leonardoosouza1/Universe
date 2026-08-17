@@ -1,11 +1,11 @@
-// Kernel A: suspensão + motor (sem pneus, sem colisão, sem integração).
-// Produz um buffer intermediário que o Kernel B vai consumir.
+// Kernel A: suspension + engine (no tires, no collision, no integration).
+// Produces an intermediate buffer that Kernel B will consume.
 //
-// Divisão motivada por pressão de registradores no RADV NAVI22 (ACO): o shader completo
-// com Pacejka + todos os arrays locais causa SIGSEGV no compilador.
-// Kernel A usa ~80 f32 locais; Kernel B usa ~90 f32 locais. Ambos estão abaixo do limiar.
+// Split motivated by register pressure on RADV NAVI22 (ACO): the full shader
+// with Pacejka + all the local arrays SIGSEGVs the compiler.
+// Kernel A uses ~80 local f32; Kernel B uses ~90 local f32. Both are below the threshold.
 
-// --- entrada original ---
+// --- original input ---
 struct CarInput {
     vel:        vec3<f32>,
     av_y:       f32,
@@ -58,14 +58,14 @@ struct CarInput {
     _pad_dt:         f32,
 }
 
-// --- buffer intermediário produzido pelo Kernel A e consumido pelo Kernel B ---
-// Contém: resultado parcial de suspensão + estado de motor
+// --- intermediate buffer produced by Kernel A and consumed by Kernel B ---
+// Contains: partial suspension result + engine state
 struct MidState {
-    // Carga normal por roda (N) — calculada pela suspensão
+    // Normal load per wheel (N) — computed by the suspension
     normal_loads:    vec4<f32>,   // [FL, FR, RL, RR]
-    susp_comps:      vec4<f32>,   // compressão atual da mola [m]
-    prev_comps:      vec4<f32>,   // compressão no tick anterior (para damping)
-    // Estado de motor pós-kernel A
+    susp_comps:      vec4<f32>,   // current spring compression [m]
+    prev_comps:      vec4<f32>,   // compression at the previous tick (for damping)
+    // Engine state after kernel A
     current_rpm:     f32,
     drive_torque:    f32,
     drive_torque_out:f32,
@@ -74,13 +74,13 @@ struct MidState {
     starter_timer:   f32,
     engine_temp:     f32,
     oil_temp:        f32,
-    // Omega das rodas (pode ser modificada pelo starter)
+    // Wheel omegas (may be modified by the starter)
     omegas:          vec4<f32>,
-    // Força resultante parcial (gravidade + suspensão + aero + rolling + engine brake)
-    // O Kernel B adiciona as forças de pneu e completa a integração.
+    // Partial resulting force (gravity + suspension + aero + rolling + engine brake)
+    // Kernel B adds the tire forces and completes the integration.
     forces:          vec3<f32>,
     _pad_f:          f32,
-    // Acumulador de torque yaw (pneus adicionarão mais no Kernel B)
+    // Yaw torque accumulator (tires will add more in Kernel B)
     torques_y:       f32,
     yaw_inertia:     f32,
     _pad2:           vec2<f32>,
@@ -91,7 +91,7 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
-    // D5: espelho do clima (ver physics.rs). a usa só o vento.
+    // D5: climate mirror (see physics.rs). Kernel A uses only the wind.
     clima_mu:   f32,
     vento_x:    f32,
     vento_z:    f32,
@@ -148,13 +148,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c = input[being];
     let dt_safe = max(c.dt, 0.001);
 
-    // === FASE 1: reset forces ===
+    // === PHASE 1: reset forces ===
     var forces = vec3<f32>(0.0, -GRAVITY * c.mass, 0.0);
-    // D5: vento lateral constante (N). Default 0 = inalterado.
+    // D5: constant lateral wind (N). Default 0 = unchanged.
     forces.x += params.vento_x;
     forces.z += params.vento_z;
 
-    // === FASE 2: suspensão + carga normal ===
+    // === PHASE 2: suspension + normal load ===
     let speed = length(c.vel);
     let aero_down = select(0.0, 3.0*speed*speed, flag(c.config_flags,3u));
     let dpw = aero_down * 0.25;
@@ -189,7 +189,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var i:u32=0u;i<4u;i++) { nl[i]=pw; }
     }
 
-    // === FASE 3a: motor (sem loop de pneus) ===
+    // === PHASE 3a: engine (no tire loop) ===
     let gratio       = gear_ratio(c.current_gear);
     let total_ratio  = gratio * FINAL_DRIVE;
     let tra          = abs(total_ratio);
@@ -201,7 +201,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var engine_temp   = c.engine_temp;
     var oil_temp      = c.oil_temp;
 
-    // Omegas — podem ser zeradas pelo starter
+    // Omegas — may be zeroed by the starter
     var om0=c.wheels[0].x; var om1=c.wheels[2].x;
     var om2=c.wheels[4].x; var om3=c.wheels[6].x;
 
@@ -258,7 +258,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (rr>1.0){tm=0.0;} else if (rr<0.2){tm*=rr/0.2;}
         tm=clamp(tm,0.0,1.0);
         var tcs=1.0;
-        // TCS usa slip_ratios[2] e [3] — lê diretamente de c.wheels (não de arrays locais)
+        // TCS uses slip_ratios[2] and [3] — reads directly from c.wheels (not from local arrays)
         if (flag(c.config_flags,4u) && c.drivetrain==1u) {
             let sa=(max(c.wheels[4].y,0.0)+max(c.wheels[6].y,0.0))*0.5;
             if (sa>0.15) { tcs=1.0-clamp((sa-0.15)*5.0,0.0,0.9); }
@@ -268,7 +268,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         dto=dtq;
     }
 
-    // === FASE 3b: aero + rolling + engine brake (sem pneus) ===
+    // === PHASE 3b: aero + rolling + engine brake (no tires) ===
     forces += c.wind * c.mass * 0.5;
     if (flag(c.config_flags,2u)) {
         let drag_mag=0.5*RHO_AR*speed*speed*c.drag_coeff*FRONTAL_AREA;
@@ -289,7 +289,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let yaw_inertia = c.mass*(hwb*hwb);
 
-    // === Escreve buffer intermediário ===
+    // === Writes the intermediate buffer ===
     var m: MidState;
     m.normal_loads = vec4<f32>(nl[0],nl[1],nl[2],nl[3]);
     m.susp_comps   = vec4<f32>(sc[0],sc[1],sc[2],sc[3]);
@@ -305,7 +305,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     m.omegas       = vec4<f32>(om0,om1,om2,om3);
     m.forces       = forces;
     m._pad_f       = 0.0;
-    m.torques_y    = 0.0;  // pneus adicionarão no Kernel B
+    m.torques_y    = 0.0;  // tires will add in Kernel B
     m.yaw_inertia  = yaw_inertia;
     m._pad2        = vec2<f32>(0.0,0.0);
     mid[being] = m;

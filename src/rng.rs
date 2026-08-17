@@ -1,28 +1,28 @@
-//! Gerador determinístico único do projeto.
+//! The project's single deterministic generator.
 //!
-//! # Por que este arquivo existe
+//! # Why this file exists
 //!
-//! O mesmo LCG estava escrito à mão em 7 lugares (`engine.rs` ×4, `gpu_validate.rs` ×2,
-//! `dna_genesis.rs` ×1) e **todos com o mesmo erro de sinal**:
+//! The same LCG was hand-written in 7 places (`engine.rs` ×4, `gpu_validate.rs` ×2,
+//! `dna_genesis.rs` ×1) and **all with the same sign error**:
 //!
 //! ```text
 //! ((seed >> 33) as f32 / (1u64 << 31) as f32) - 1.0
 //! //  \_____ 31 bits _____/   \__ 2^31 __/
-//! //  o quociente já está em [0,1) — subtrair 1 dá [-1,0), nunca positivo
+//! //  the quotient is already in [0,1) — subtracting 1 gives [-1,0), never positive
 //! ```
 //!
-//! Faltava o `* 2.0`. Consequência medida em `slow_probe`: **1024/1024 pesos do
-//! `dense1` e 48/48 do `dense2` nasciam negativos**, o que transforma cada camada num
-//! somador de sinal fixo — as três saídas do cérebro lento viravam a MESMA soma
-//! (correlação +0,9999, primeira componente principal explicando 100% da variância) e
-//! nunca positivas, deixando `throttle_cap` travado em 1,0 permanentemente.
+//! The `* 2.0` was missing. Consequence measured in `slow_probe`: **1024/1024 weights of
+//! `dense1` and 48/48 of `dense2` were born negative**, which turns each layer into a
+//! fixed-sign adder — the three outputs of the slow brain became the SAME sum
+//! (correlation +0.9999, first principal component explaining 100% of the variance) and
+//! never positive, leaving `throttle_cap` stuck at 1.0 permanently.
 //!
-//! Um bug de sinal copiado 7 vezes é o argumento para ter isto num lugar só: agora
-//! existe um teste que falha se a simetria quebrar de novo.
+//! A sign bug copied 7 times is the argument for having this in one place: now there is
+//! a test that fails if the symmetry ever breaks again.
 
-/// LCG de 64 bits (constantes de Knuth/PCG), determinístico e sem dependência externa.
-/// Usado onde a reprodutibilidade importa mais que a qualidade estatística: inicialização
-/// de pesos, ruído de denoise, fixtures de teste.
+/// 64-bit LCG (Knuth/PCG constants), deterministic and with no external dependency.
+/// Used where reproducibility matters more than statistical quality: weight
+/// initialization, denoise noise, test fixtures.
 #[derive(Clone, Debug)]
 pub struct Lcg {
     state: u64,
@@ -42,19 +42,19 @@ impl Lcg {
         self.state
     }
 
-    /// Uniforme em `[0, 1)`.
+    /// Uniform in `[0, 1)`.
     #[inline]
     pub fn uniform(&mut self) -> f32 {
         (self.next_u64() >> 33) as f32 / (1u64 << 31) as f32
     }
 
-    /// Uniforme em `[-1, 1)` — **média zero**. É esta que a inicialização de pesos quer.
+    /// Uniform in `[-1, 1)` — **zero mean**. This is the one weight initialization wants.
     #[inline]
     pub fn symmetric(&mut self) -> f32 {
         self.uniform() * 2.0 - 1.0
     }
 
-    /// Normal(0, 1) por Box-Muller. Estava copiada 4× em `spawn.rs`, sempre igual.
+    /// Normal(0, 1) via Box-Muller. Was copied 4× in `spawn.rs`, always identical.
     #[inline]
     pub fn gaussian(&mut self) -> f32 {
         let u1 = self.uniform().max(1e-7);
@@ -62,13 +62,13 @@ impl Lcg {
         (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
     }
 
-    /// `true` com probabilidade `p`.
+    /// `true` with probability `p`.
     #[inline]
     pub fn bernoulli(&mut self, p: f32) -> bool {
         self.uniform() < p
     }
 
-    /// Vetor de pesos simétricos com escala `sigma`. Atalho para o caso mais comum.
+    /// Vector of symmetric weights with scale `sigma`. Shortcut for the most common case.
     pub fn weights(&mut self, n: usize, sigma: f32) -> Vec<f32> {
         (0..n).map(|_| self.symmetric() * sigma).collect()
     }
@@ -78,8 +78,8 @@ impl Lcg {
 mod tests {
     use super::*;
 
-    /// O teste que o projeto não tinha. Ele falha com o idioma antigo (`- 1.0` sem o
-    /// `* 2.0`), que é exatamente como o bug sobreviveu a 7 cópias.
+    /// The test the project did not have. It fails with the old idiom (`- 1.0` without
+    /// the `* 2.0`), which is exactly how the bug survived 7 copies.
     #[test]
     fn symmetric_covers_both_signs() {
         let mut r = Lcg::new(0xDEAD_BEEF);
@@ -87,10 +87,10 @@ mod tests {
         let positives = samples.iter().filter(|&&v| v > 0.0).count();
         assert!(
             (4_000..6_000).contains(&positives),
-            "init assimétrico: {positives}/10000 positives — o bug de sinal voltou"
+            "asymmetric init: {positives}/10000 positives — the sign bug is back"
         );
         let mean = samples.iter().sum::<f32>() / samples.len() as f32;
-        assert!(mean.abs() < 0.05, "média {mean} longe de zero");
+        assert!(mean.abs() < 0.05, "mean {mean} far from zero");
     }
 
     #[test]
@@ -98,21 +98,21 @@ mod tests {
         let mut r = Lcg::new(7);
         for _ in 0..10_000 {
             let v = r.uniform();
-            assert!((0.0..1.0).contains(&v), "uniform fora de [0,1): {v}");
+            assert!((0.0..1.0).contains(&v), "uniform outside [0,1): {v}");
         }
     }
 
     #[test]
     fn symmetric_has_uniform_variance() {
-        // Var(U[-1,1]) = 1/3. Com o bug ([-1,0)) daria 1/12 — foi por isso que o teste
-        // do DCT em dna_genesis.rs passava por motivo errado.
+        // Var(U[-1,1]) = 1/3. With the bug ([-1,0)) it would give 1/12 — which is why
+        // the DCT test in dna_genesis.rs passed for the wrong reason.
         let mut r = Lcg::new(99);
         let a: Vec<f32> = (0..50_000).map(|_| r.symmetric()).collect();
         let m = a.iter().sum::<f32>() / a.len() as f32;
         let var = a.iter().map(|v| (v - m).powi(2)).sum::<f32>() / a.len() as f32;
         assert!(
             (var - 1.0 / 3.0).abs() < 0.02,
-            "variância {var}, esperado 1/3"
+            "variance {var}, expected 1/3"
         );
     }
 
@@ -122,8 +122,8 @@ mod tests {
         let a: Vec<f32> = (0..50_000).map(|_| r.gaussian()).collect();
         let m = a.iter().sum::<f32>() / a.len() as f32;
         let sd = (a.iter().map(|v| (v - m).powi(2)).sum::<f32>() / a.len() as f32).sqrt();
-        assert!(m.abs() < 0.03, "média {m}");
-        assert!((sd - 1.0).abs() < 0.05, "desvio {sd}");
+        assert!(m.abs() < 0.03, "mean {m}");
+        assert!((sd - 1.0).abs() < 0.05, "stddev {sd}");
     }
 
     #[test]

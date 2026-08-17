@@ -1,24 +1,24 @@
-//! Ferramenta de análise de impacto: dado um símbolo, lista TUDO que depende dele
-//! consultando o grafo de código em `.code-review-graph/graph.db`.
+//! Impact-analysis tool: given a symbol, lists EVERYTHING that depends on it
+//! by querying the code graph in `.code-review-graph/graph.db`.
 //!
-//! # Uso
-//!   cargo run --bin impact -- <nome_do_simbolo> [--depth N] [--graph /caminho/graph.db]
+//! # Usage
+//!   cargo run --bin impact -- <symbol_name> [--depth N] [--graph /path/graph.db]
 //!
-//! # Exemplos
+//! # Examples
 //!   cargo run --bin impact -- save_champion_dna
 //!   cargo run --bin impact -- MorphoGenes --depth 3
 //!   cargo run --bin impact -- DNA_FAST_SIZE --depth 2
 //!
-//! # Como funciona
-//! Delega as queries ao `python3` (que tem sqlite3 built-in), sem depender de
-//! `rusqlite` como dependência Cargo. O BFS transitivo é feito em Rust.
+//! # How it works
+//! Delegates the queries to `python3` (which has sqlite3 built-in), without depending on
+//! `rusqlite` as a Cargo dependency. The transitive BFS is done in Rust.
 //!
-//! # Pré-requisito
-//! python3 no PATH (padrão no Ubuntu 22+).
+//! # Prerequisite
+//! python3 on PATH (default on Ubuntu 22+).
 //!
-//! # Sobre o graph.db
-//! O banco pode estar desatualizado (nomes antigos como `cerebro.rs` → `brain.rs`).
-//! Use como ponto de partida; confirme no código com grep.
+//! # About graph.db
+//! The database may be outdated (old names like `cerebro.rs` → `brain.rs`).
+//! Use it as a starting point; confirm in the code with grep.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
@@ -28,8 +28,8 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
-        eprintln!("Uso: impact <nome_do_simbolo> [--depth N] [--graph /caminho/graph.db]");
-        eprintln!("Exemplos:");
+        eprintln!("Usage: impact <symbol_name> [--depth N] [--graph /path/graph.db]");
+        eprintln!("Examples:");
         eprintln!("  impact save_champion_dna");
         eprintln!("  impact MorphoGenes --depth 3");
         eprintln!("  impact DNA_FAST_SIZE");
@@ -52,24 +52,24 @@ fn main() {
                 i += 2;
             }
             other => {
-                eprintln!("Argumento ignorado: {}", other);
+                eprintln!("Argument ignored: {}", other);
                 i += 1;
             }
         }
     }
 
-    // Verifica python3
+    // Checks python3
     if Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("Erro: python3 não encontrado no PATH.");
+        eprintln!("Error: python3 not found on PATH.");
         process::exit(2);
     }
 
-    println!("=== ANÁLISE DE IMPACTO: '{}' ===", symbol_needle);
-    println!("Banco: {}", db_path);
-    println!("Profundidade máxima: {}", max_depth);
+    println!("=== IMPACT ANALYSIS: '{}' ===", symbol_needle);
+    println!("Database: {}", db_path);
+    println!("Maximum depth: {}", max_depth);
     println!();
 
-    // 1. Encontra nós correspondentes.
+    // 1. Finds matching nodes.
     let seed_nodes = py_query(
         &db_path,
         &format!(
@@ -82,13 +82,13 @@ fn main() {
     );
 
     if seed_nodes.is_empty() {
-        println!("Nenhum nó encontrado com '{}' no grafo.", symbol_needle);
-        println!("Dica: graph.db pode estar desatualizado.");
+        println!("No node found with '{}' in the graph.", symbol_needle);
+        println!("Hint: graph.db may be outdated.");
         println!("Use: grep -rn '{}' src/ --include='*.rs'", symbol_needle);
         return;
     }
 
-    println!("Nós correspondentes a '{}':", symbol_needle);
+    println!("Nodes matching '{}':", symbol_needle);
     for row in &seed_nodes {
         let parts: Vec<&str> = row.splitn(3, '\t').collect();
         if parts.len() == 3 {
@@ -102,7 +102,7 @@ fn main() {
     }
     println!();
 
-    // 2. BFS nos dependentes transitivos.
+    // 2. BFS over the transitive dependents.
     let seed_qnames: Vec<String> = seed_nodes
         .iter()
         .filter_map(|r| r.split('\t').next().map(|s| s.to_string()))
@@ -111,13 +111,13 @@ fn main() {
     let dependents = bfs_dependents(&db_path, &seed_qnames, max_depth);
 
     if dependents.is_empty() {
-        println!("Nenhum dependente encontrado.");
-        println!("O símbolo pode ser leaf ou o graph.db está desatualizado.");
+        println!("No dependents found.");
+        println!("The symbol may be a leaf, or graph.db is outdated.");
         return;
     }
 
-    // 3. Agrupa por tipo de aresta.
-    println!("Quem é afetado se '{}' mudar:", symbol_needle);
+    // 3. Groups by edge kind.
+    println!("Who is affected if '{}' changes:", symbol_needle);
     println!("{:-<70}", "");
 
     let mut by_kind: HashMap<String, Vec<(String, String, usize)>> = HashMap::new();
@@ -149,7 +149,7 @@ fn main() {
 
     for kind in &shown {
         let items = &by_kind[kind];
-        println!("\n  ── {} ({} dependentes) ──", kind, items.len());
+        println!("\n  ── {} ({} dependents) ──", kind, items.len());
         let mut sorted = items.clone();
         sorted.sort_by_key(|(_, _, d)| *d);
         for (qname, file, depth) in &sorted {
@@ -163,18 +163,18 @@ fn main() {
     }
 
     println!();
-    println!("Total de dependentes únicos: {}", dependents.len());
+    println!("Total unique dependents: {}", dependents.len());
     println!();
-    println!("Legenda:");
-    println!("  [d1] depende DIRETAMENTE do símbolo alvo");
-    println!("  [d2] depende de algo que depende do alvo");
-    println!("  [dN] alcance transitivo N");
+    println!("Legend:");
+    println!("  [d1] depends DIRECTLY on the target symbol");
+    println!("  [d2] depends on something that depends on the target");
+    println!("  [dN] transitive reach N");
     println!();
-    println!("AVISO: graph.db gerado estaticamente — pode estar desatualizado.");
-    println!("Use 'grep -rn <simbolo> src/ --include=*.rs' para confirmar.");
+    println!("WARNING: graph.db is generated statically — it may be outdated.");
+    println!("Use 'grep -rn <symbol> src/ --include=*.rs' to confirm.");
 }
 
-// ── BFS transitivo ────────────────────────────────────────────────────────────
+// ── Transitive BFS ────────────────────────────────────────────────────────────
 
 fn bfs_dependents(
     db: &str,
@@ -190,7 +190,7 @@ fn bfs_dependents(
             continue;
         }
 
-        // Quem aponta para `target`?
+        // Who points to `target`?
         let sql = format!(
             "SELECT e.source_qualified, COALESCE(n.file_path,''), e.kind \
              FROM edges e \
@@ -223,9 +223,9 @@ fn bfs_dependents(
 
 // ── Python sqlite3 bridge ─────────────────────────────────────────────────────
 
-/// Executa SQL via python3 (sqlite3 built-in) e retorna linhas separadas por '\t'.
+/// Runs SQL via python3 (sqlite3 built-in) and returns rows separated by '\t'.
 fn py_query(db: &str, sql: &str) -> Vec<String> {
-    // Python script inline para fazer a query.
+    // Inline Python script to run the query.
     let script = format!(
         r#"
 import sqlite3, sys
@@ -247,7 +247,7 @@ except Exception as e:
         Ok(o) => {
             if !o.stderr.is_empty() {
                 let err = String::from_utf8_lossy(&o.stderr);
-                eprintln!("Aviso py_query: {}", err.trim());
+                eprintln!("py_query warning: {}", err.trim());
             }
             String::from_utf8_lossy(&o.stdout)
                 .lines()
@@ -256,24 +256,24 @@ except Exception as e:
                 .collect()
         }
         Err(e) => {
-            eprintln!("Erro ao executar python3: {}", e);
+            eprintln!("Error running python3: {}", e);
             vec![]
         }
     }
 }
 
-/// Escapa aspas simples para SQL (dobra-as).
+/// Escapes single quotes for SQL (doubles them).
 fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-/// Converte string Rust para literal Python (aspas triplas para segurança).
+/// Converts a Rust string into a Python literal (triple quotes for safety).
 fn python_str_literal(s: &str) -> String {
-    // Usa aspas triplas para evitar problemas com newlines e aspas simples no SQL.
+    // Uses triple quotes to avoid problems with newlines and single quotes in the SQL.
     format!("\"\"\"{}\"\"\"", s.replace("\"\"\"", "\\\"\\\"\\\""))
 }
 
-// ── Helpers de formatação ─────────────────────────────────────────────────────
+// ── Formatting helpers ────────────────────────────────────────────────────────
 
 fn abbrev_path(path: &str) -> String {
     if path.contains("/Universe/src/") {

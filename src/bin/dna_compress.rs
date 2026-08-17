@@ -16,15 +16,15 @@ fn main() {
         println!("  🧬 DNA V4 Universal Compressor");
         println!("═══════════════════════════════════════════════════");
         println!();
-        println!("Uso:");
-        println!("  dna_compress compress <input> <output.dna>    Comprime qualquer arquivo");
-        println!("  dna_compress decompress <input.dna> <output>  Reconstrói arquivo original");
-        println!("  dna_compress analyze <input>                  Analisa sem comprimir");
+        println!("Usage:");
+        println!("  dna_compress compress <input> <output.dna>    Compresses any file");
+        println!("  dna_compress decompress <input.dna> <output>  Rebuilds the original file");
+        println!("  dna_compress analyze <input>                  Analyzes without compressing");
         println!(
-            "  dna_compress tensor-svd <input.bin> <rows> <cols> <rank> <out.dna> Decompõe tensor massivo"
+            "  dna_compress tensor-svd <input.bin> <rows> <cols> <rank> <out.dna> Decomposes a massive tensor"
         );
         println!(
-            "  dna_compress tensor-svd-restore <input.dna> <out.bin>        Restabelece tamanho original (lossy)"
+            "  dna_compress tensor-svd-restore <input.dna> <out.bin>        Restores the original size (lossy)"
         );
         return;
     }
@@ -32,14 +32,14 @@ fn main() {
     match args[1].as_str() {
         "compress" => {
             if args.len() < 4 {
-                eprintln!("Faltando: <input> <output.dna>");
+                eprintln!("Missing: <input> <output.dna>");
                 return;
             }
             cmd_compress(&args[2], &args[3]);
         }
         "decompress" => {
             if args.len() < 4 {
-                eprintln!("Faltando: <input.dna> <output>");
+                eprintln!("Missing: <input.dna> <output>");
                 return;
             }
             cmd_decompress(&args[2], &args[3]);
@@ -49,7 +49,7 @@ fn main() {
         }
         "tensor-svd" => {
             if args.len() < 7 {
-                eprintln!("Faltando: <input.bin> <rows> <cols> <rank> <out.dna>");
+                eprintln!("Missing: <input.bin> <rows> <cols> <rank> <out.dna>");
                 return;
             }
             let rows: usize = args[3].parse().unwrap();
@@ -59,18 +59,18 @@ fn main() {
         }
         "tensor-svd-restore" => {
             if args.len() < 4 {
-                eprintln!("Faltando: <input.dna> <out.bin>");
+                eprintln!("Missing: <input.dna> <out.bin>");
                 return;
             }
             cmd_tensor_svd_restore(&args[2], &args[3]);
         }
-        _ => eprintln!("Comando desconhecido: {}", args[1]),
+        _ => eprintln!("Unknown command: {}", args[1]),
     }
 }
 
 fn cmd_tensor_svd(input: &str, rows: usize, cols: usize, rank: usize, output: &str) {
     let t0 = Instant::now();
-    let data = fs::read(input).expect("Falha ao ler arquivo");
+    let data = fs::read(input).expect("Failed to read file");
     let read_time = t0.elapsed();
 
     println!("═══════════════════════════════════════════════════════════");
@@ -85,20 +85,20 @@ fn cmd_tensor_svd(input: &str, rows: usize, cols: usize, rank: usize, output: &s
     let factorize_time = t1.elapsed();
 
     println!(
-        "  Fatoração SVD concluída em {:.1}ms",
+        "  SVD factorization completed in {:.1}ms",
         factorize_time.as_secs_f64() * 1000.0
     );
 
     let t_rmse = Instant::now();
     let rmse = iara_genesis::neural::svd::compute_rmse_bf16(&data, &ltr);
     println!(
-        "  Validation RMSE: {:.5} (tempo val: {:.1}ms)",
+        "  Validation RMSE: {:.5} (val time: {:.1}ms)",
         rmse,
         t_rmse.elapsed().as_secs_f64() * 1000.0
     );
 
     println!("───────────────────────────────────────────────────────────");
-    println!("  ⚡ Inferência Direta (Liquid Weights)");
+    println!("  ⚡ Direct Inference (Liquid Weights)");
     let dummy_input = vec![1.0_f32; cols];
     let t_inf = Instant::now();
     let _y = ltr.forward_pass(&dummy_input);
@@ -106,11 +106,11 @@ fn cmd_tensor_svd(input: &str, rows: usize, cols: usize, rank: usize, output: &s
     let orig_flops = rows * cols * 2;
     let new_flops = (rank * cols * 2) + (rows * rank * 2);
     println!(
-        "  -> Completada em {:.2}ms sem descompressão!",
+        "  -> Completed in {:.2}ms without decompression!",
         inf_time.as_secs_f64() * 1000.0
     );
     println!(
-        "  -> Complexidade: Caiu de {} FLOPs para {} FLOPs ({:.1}% economia)",
+        "  -> Complexity: Dropped from {} FLOPs to {} FLOPs ({:.1}% saving)",
         orig_flops,
         new_flops,
         (1.0 - (new_flops as f64 / orig_flops as f64)) * 100.0
@@ -119,7 +119,7 @@ fn cmd_tensor_svd(input: &str, rows: usize, cols: usize, rank: usize, output: &s
     // Save as DNA V4
     let mut genesis = GenesisPayload::new();
 
-    // Encapsulando matriz A [rows * rank] e matriz B [rank * cols]
+    // Encapsulating matrix A [rows * rank] and matrix B [rank * cols]
     let mut payload = Vec::new();
     payload.extend_from_slice(&(rows as u32).to_le_bytes());
     payload.extend_from_slice(&(cols as u32).to_le_bytes());
@@ -136,7 +136,7 @@ fn cmd_tensor_svd(input: &str, rows: usize, cols: usize, rank: usize, output: &s
     dna_bytes.extend_from_slice(&genesis.to_bytes());
 
     let t2 = Instant::now();
-    fs::write(output, &dna_bytes).expect("Falha ao escrever DNA");
+    fs::write(output, &dna_bytes).expect("Failed to write DNA");
     let write_time = t2.elapsed();
 
     let ratio = data.len() as f64 / dna_bytes.len() as f64;
@@ -149,19 +149,19 @@ fn cmd_tensor_svd(input: &str, rows: usize, cols: usize, rank: usize, output: &s
         dna_bytes.len() as f64 / 1e6
     );
     println!("  Ratio:    {:.2}×", ratio);
-    println!("  Economia: {:.1}% da VRAM", saving);
+    println!("  Saving:   {:.1}% of VRAM", saving);
     println!("───────────────────────────────────────────────────────────");
 }
 
 fn cmd_tensor_svd_restore(input: &str, output: &str) {
     let t0 = Instant::now();
-    let dna_bytes = fs::read(input).expect("Falha ao ler arquivo DNA");
+    let dna_bytes = fs::read(input).expect("Failed to read DNA file");
 
     // Parse DNA V4 format to get TSVD chunk
-    let genesis = GenesisPayload::from_bytes(&dna_bytes[6..]).expect("Falha Parse Genesis");
+    let genesis = GenesisPayload::from_bytes(&dna_bytes[6..]).expect("Genesis parse failure");
     let chunk = genesis
         .find_chunk(b"TSVD")
-        .expect("Não é um Tensor SVD DNA");
+        .expect("Not a Tensor SVD DNA");
 
     let mut payload = chunk.data.as_slice();
     let rows = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
@@ -181,45 +181,45 @@ fn cmd_tensor_svd_restore(input: &str, output: &str) {
     };
 
     println!("═══════════════════════════════════════════════════════════");
-    println!("  🧠 DNA V4 SVD Tensor Extractor (Volta ao Original)");
+    println!("  🧠 DNA V4 SVD Tensor Extractor (Back to the Original)");
     println!("═══════════════════════════════════════════════════════════");
     println!("  Shape:    [{} x {}] via Rank {}", rows, cols, rank);
     println!(
-        "  Massa:    {:.1} MB recuperada do DNA",
+        "  Mass:     {:.1} MB recovered from the DNA",
         (rows * cols * 2) as f64 / 1e6
     );
 
     let t_inf = Instant::now();
-    // Reconstrução: M = A * B.
+    // Reconstruction: M = A * B.
     let out_bytes = ltr.decode_full_tensor();
 
-    fs::write(output, &out_bytes).expect("Erro ao escrever Matrix Restabelecida");
+    fs::write(output, &out_bytes).expect("Error writing restored matrix");
     println!(
-        "  -> Completado em {:.1}ms",
+        "  -> Completed in {:.1}ms",
         t_inf.elapsed().as_secs_f64() * 1000.0
     );
     println!(
-        "  Output escrito em: {} ({:.1} MB)",
+        "  Output written to: {} ({:.1} MB)",
         output,
         fs::metadata(output).unwrap().len() as f64 / 1e6
     );
 }
 
 fn cmd_analyze(input: &str) {
-    let data = fs::read(input).expect("Falha ao ler arquivo");
+    let data = fs::read(input).expect("Failed to read file");
     let total = data.len();
     let block_size = DEFAULT_BLOCK_SIZE;
     let num_blocks = (total + block_size - 1) / block_size;
 
     println!("═══════════════════════════════════════════════════════════");
-    println!("  🔬 Análise Espectral: {}", input);
-    println!("  Tamanho: {} bytes ({:.1} MB)", total, total as f64 / 1e6);
-    println!("  Blocos:  {} × {} bytes", num_blocks, block_size);
+    println!("  🔬 Spectral Analysis: {}", input);
+    println!("  Size:    {} bytes ({:.1} MB)", total, total as f64 / 1e6);
+    println!("  Blocks:  {} × {} bytes", num_blocks, block_size);
     println!("═══════════════════════════════════════════════════════════");
     println!();
     println!(
         "  {:>6}  {:>7}  {:>6}  {:>6}  {:>6}  {:<10}",
-        "Bloco", "Entropy", "Zeros%", "Rough", "Period", "Motor"
+        "Block", "Entropy", "Zeros%", "Rough", "Period", "Motor"
     );
     println!("  ──────  ───────  ──────  ──────  ──────  ──────────");
 
@@ -273,22 +273,22 @@ fn cmd_analyze(input: &str) {
                 motor_name
             );
         } else if i == 20 {
-            println!("  ... ({} blocos omitidos) ...", num_blocks - 25);
+            println!("  ... ({} blocks omitted) ...", num_blocks - 25);
         }
     }
 
     println!();
-    println!("  Resumo de motores:");
-    println!("    ZERO (custo 0):       {:>5} blocos", motor_counts[0]);
-    println!("    BRLE (RLE bytes):     {:>5} blocos", motor_counts[1]);
-    println!("    DELT (delta coding):  {:>5} blocos", motor_counts[2]);
-    println!("    DFTS (Fourier):       {:>5} blocos", motor_counts[3]);
-    println!("    LITL (literal):       {:>5} blocos", motor_counts[4]);
+    println!("  Motor summary:");
+    println!("    ZERO (cost 0):        {:>5} blocks", motor_counts[0]);
+    println!("    BRLE (RLE bytes):     {:>5} blocks", motor_counts[1]);
+    println!("    DELT (delta coding):  {:>5} blocks", motor_counts[2]);
+    println!("    DFTS (Fourier):       {:>5} blocks", motor_counts[3]);
+    println!("    LITL (literal):       {:>5} blocks", motor_counts[4]);
 }
 
 fn cmd_compress(input: &str, output: &str) {
     let t0 = Instant::now();
-    let data = fs::read(input).expect("Falha ao ler arquivo");
+    let data = fs::read(input).expect("Failed to read file");
     let read_time = t0.elapsed();
 
     println!("═══════════════════════════════════════════════════════════");
@@ -300,7 +300,7 @@ fn cmd_compress(input: &str, output: &str) {
     let result = compress_universal(&data, DEFAULT_BLOCK_SIZE);
     let compress_time = t1.elapsed();
 
-    // Empacotar no formato DNA V4
+    // Pack into the DNA V4 format
     let payload_data = serialize_payload(&result, DEFAULT_BLOCK_SIZE as u32);
     let mut genesis = GenesisPayload::new();
     genesis.add_chunk(Chunk::new(*b"UCMP", payload_data));
@@ -311,7 +311,7 @@ fn cmd_compress(input: &str, output: &str) {
     dna_bytes.extend_from_slice(&genesis.to_bytes());
 
     let t2 = Instant::now();
-    fs::write(output, &dna_bytes).expect("Falha ao escrever DNA");
+    fs::write(output, &dna_bytes).expect("Failed to write DNA");
     let write_time = t2.elapsed();
 
     let ratio = data.len() as f64 / dna_bytes.len() as f64;
@@ -323,42 +323,42 @@ fn cmd_compress(input: &str, output: &str) {
         dna_bytes.len() as f64 / 1e6
     );
     println!("───────────────────────────────────────────────────────────");
-    println!("  Blocos:     {}", result.block_count);
+    println!("  Blocks:     {}", result.block_count);
     println!("  Ratio:      {:.2}×", ratio);
-    println!("  Economia:   {:.1}%", saving);
+    println!("  Saving:     {:.1}%", saving);
     println!("───────────────────────────────────────────────────────────");
-    println!("  Motores usados:");
+    println!("  Motors used:");
     println!(
-        "    ZERO: {:>5} blocos (custo zero)",
+        "    ZERO: {:>5} blocks (zero cost)",
         result.motor_stats.zero_blocks
     );
     println!(
-        "    BRLE: {:>5} blocos (RLE)",
+        "    BRLE: {:>5} blocks (RLE)",
         result.motor_stats.rle_blocks
     );
     println!(
-        "    DELT: {:>5} blocos (delta)",
+        "    DELT: {:>5} blocks (delta)",
         result.motor_stats.delta_blocks
     );
     println!(
-        "    DFTS: {:>5} blocos (Fourier)",
+        "    DFTS: {:>5} blocks (Fourier)",
         result.motor_stats.fourier_blocks
     );
     println!(
-        "    LITL: {:>5} blocos (literal)",
+        "    LITL: {:>5} blocks (literal)",
         result.motor_stats.literal_blocks
     );
     println!("───────────────────────────────────────────────────────────");
     println!(
-        "  Tempo leitura:    {:>8.1}ms",
+        "  Read time:        {:>8.1}ms",
         read_time.as_secs_f64() * 1000.0
     );
     println!(
-        "  Tempo compressão: {:>8.1}ms",
+        "  Compression time: {:>8.1}ms",
         compress_time.as_secs_f64() * 1000.0
     );
     println!(
-        "  Tempo escrita:    {:>8.1}ms",
+        "  Write time:       {:>8.1}ms",
         write_time.as_secs_f64() * 1000.0
     );
     println!("═══════════════════════════════════════════════════════════");
@@ -366,32 +366,32 @@ fn cmd_compress(input: &str, output: &str) {
 
 fn cmd_decompress(input: &str, output: &str) {
     let t0 = Instant::now();
-    let dna_bytes = fs::read(input).expect("Falha ao ler DNA");
+    let dna_bytes = fs::read(input).expect("Failed to read DNA");
 
     if dna_bytes.len() < 6 || &dna_bytes[0..4] != DNA_MAGIC {
-        eprintln!("❌ Não é um arquivo DNA V4 válido");
+        eprintln!("❌ Not a valid DNA V4 file");
         return;
     }
 
     let version = u16::from_le_bytes(dna_bytes[4..6].try_into().unwrap());
     if version != 4 {
-        eprintln!("❌ Versão DNA não suportada: v{}", version);
+        eprintln!("❌ Unsupported DNA version: v{}", version);
         return;
     }
 
-    let genesis = GenesisPayload::from_bytes(&dna_bytes[6..]).expect("Falha ao ler GenesisPayload");
+    let genesis = GenesisPayload::from_bytes(&dna_bytes[6..]).expect("Failed to read GenesisPayload");
 
     let ucmp = genesis
         .find_chunk(b"UCMP")
-        .expect("Chunk UCMP não encontrado — não é um DNA comprimido universal");
+        .expect("UCMP chunk not found — not a universally compressed DNA");
 
-    let blocks = deserialize_payload(&ucmp.data).expect("Falha ao deserializar blocos comprimidos");
+    let blocks = deserialize_payload(&ucmp.data).expect("Failed to deserialize compressed blocks");
 
     let t1 = Instant::now();
     let restored = decompress_universal(&blocks);
     let decompress_time = t1.elapsed();
 
-    fs::write(output, &restored).expect("Falha ao escrever arquivo");
+    fs::write(output, &restored).expect("Failed to write file");
 
     println!("═══════════════════════════════════════════════════════════");
     println!("  🧬 DNA V4 Universal Decompressor");
@@ -406,9 +406,9 @@ fn cmd_decompress(input: &str, output: &str) {
         output,
         restored.len() as f64 / 1e6
     );
-    println!("  Blocos descomprimidos: {}", blocks.len());
+    println!("  Decompressed blocks: {}", blocks.len());
     println!(
-        "  Tempo total: {:.1}ms (leitura) + {:.1}ms (descompressão)",
+        "  Total time: {:.1}ms (read) + {:.1}ms (decompression)",
         t0.elapsed().as_secs_f64() * 1000.0 - decompress_time.as_secs_f64() * 1000.0,
         decompress_time.as_secs_f64() * 1000.0
     );

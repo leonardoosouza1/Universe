@@ -1,5 +1,5 @@
-// Fase de bissecção: suspensão + FASE 3 (powertrain + pneus + aero).
-// A fase mais complexa: switch, loops com Pacejka (atan/sin), arrays grandes.
+// Bisection phase: suspension + PHASE 3 (powertrain + tires + aero).
+// The most complex phase: switch, loops with Pacejka (atan/sin), large arrays.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -139,7 +139,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dt_safe = max(c.dt, 0.001);
     let speed = length(c.vel);
 
-    // --- Suspensão (fase 2) ---
+    // --- Suspension (phase 2) ---
     let aero_downforce = select(0.0, 3.0 * speed * speed, flag(c.config_flags, 3u));
     let dpw = aero_downforce * 0.25;
     let static_load = c.mass * GRAVITY / 4.0;
@@ -177,7 +177,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var i: u32 = 0u; i < 4u; i++) { normal_loads[i] = pw; }
     }
 
-    // --- Fase 3: powertrain + pneus ---
+    // --- Phase 3: powertrain + tires ---
     let forward_dir = fwd;
     let lateral_dir = c.lat;
     let forward_vel = dot(c.vel, forward_dir);
@@ -371,7 +371,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     forces  -= lateral_dir * total_lat_force;
 
     var out: CarOutput;
-    out.vel          = forces / c.mass; // força resultante como proxy
+    out.vel          = forces / c.mass; // resultant force as proxy
     out.av_y         = total_yaw_torque;
     out.pos          = c.pos;
     out._pad_pos     = 0.0;

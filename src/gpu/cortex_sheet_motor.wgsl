@@ -1,16 +1,16 @@
-// ── FOLHA CORTICAL EQUIPOTENTE — KERNEL C: PROJEÇÃO MOTORA ───────────────────
+// ── EQUIPOTENT CORTICAL SHEET — KERNEL C: MOTOR PROJECTION ───────────────────
 //
-// Projeta as ativações da folha para [throttle, steer, brake].
+// Projects the sheet's activations to [throttle, steer, brake].
 //
-// PRINCÍPIO: quais unidades projetam para o motor NÃO é escolhido à mão.
-// Usamos os pesos buf_mw (motor weights), que começam em zeros distribuídos
-// aleatoriamente e são aprendidos/evoluídos. As unidades com maior |peso
-// acumulado| dominam automaticamente a saída motora.
+// PRINCIPLE: which units project to the motor is NOT chosen by hand.
+// We use the buf_mw weights (motor weights), which start at randomly
+// distributed zeros and are learned/evolved. The units with the largest
+// |accumulated weight| automatically dominate the motor output.
 //
-// buf_mw: f32[SHEET_N × 3] por ser. Layout: ser*SHEET_N*3 + unidade*3 + motor_idx.
+// buf_mw: f32[SHEET_N × 3] per being. Layout: ser*SHEET_N*3 + unit*3 + motor_idx.
 // motor_idx: 0=throttle, 1=steer, 2=brake.
 //
-// Saída: buf_motor[ser*3 + idx] = tanh(Σ_i mw[i,idx] * act[i])
+// Output: buf_motor[ser*3 + idx] = tanh(Σ_i mw[i,idx] * act[i])
 
 const SHEET_N:   u32 = 1024u;
 const N_MOTOR:   u32 = 3u;  // throttle=0, steer=1, brake=2
@@ -23,18 +23,18 @@ struct Params {
 }
 
 @group(0) @binding(0) var<uniform>             params:    Params;
-// Ativações da folha: f32 por unidade por ser. Layout: ser*SHEET_N + unidade.
+// Sheet activations: f32 per unit per being. Layout: ser*SHEET_N + unit.
 @group(0) @binding(1) var<storage, read>       buf_act:   array<f32>;
-// Pesos de projeção motora: f32. Layout: ser*SHEET_N*3 + unidade*3 + motor_idx.
+// Motor projection weights: f32. Layout: ser*SHEET_N*3 + unit*3 + motor_idx.
 @group(0) @binding(2) var<storage, read>       buf_mw:    array<f32>;
-// Saída motora: f32[3] por ser. Layout: ser*3 + motor_idx.
+// Motor output: f32[3] per being. Layout: ser*3 + motor_idx.
 @group(0) @binding(3) var<storage, read_write> buf_motor: array<f32>;
 
-// LDS para redução paralela de 3 motores
+// LDS for the parallel reduction of the 3 motors
 var<workgroup> wg_motor: array<f32, 3>;
 
-// ── Kernel C: 1 workgroup por ser, 64 threads ─────────────────────────────────
-// Cada thread acumula SHEET_N/64 unidades para os 3 motores.
+// ── Kernel C: 1 workgroup per being, 64 threads ───────────────────────────────
+// Each thread accumulates SHEET_N/64 units for the 3 motors.
 
 @compute @workgroup_size(64, 1, 1)
 fn motor(
@@ -47,7 +47,7 @@ fn motor(
 
     if being >= params.n_beings { return; }
 
-    // Inicializa acumuladores no LDS (tid 0)
+    // Initializes accumulators in LDS (tid 0)
     if tid == 0u {
         wg_motor[0] = 0.0;
         wg_motor[1] = 0.0;
@@ -55,7 +55,7 @@ fn motor(
     }
     workgroupBarrier();
 
-    // Acumulação local por thread (SHEET_N/64 = 16 unidades)
+    // Local accumulation per thread (SHEET_N/64 = 16 units)
     var acc_t: f32 = 0.0;  // throttle
     var acc_s: f32 = 0.0;  // steer
     var acc_b: f32 = 0.0;  // brake
@@ -72,8 +72,8 @@ fn motor(
         acc_b = acc_b + buf_mw[row + 2u] * a;
     }
 
-    // Redução via thread 0 (suficientemente simples — 64 acumulações)
-    // Para o RDNA2 / WGSL, sem atomicAdd<f32> nativo, usamos tid 0 como master.
+    // Reduction via thread 0 (simple enough — 64 accumulations)
+    // On RDNA2 / WGSL, without native atomicAdd<f32>, we use tid 0 as the master.
     if tid == 0u {
         var sum_t: f32 = 0.0;
         var sum_s: f32 = 0.0;
@@ -85,7 +85,7 @@ fn motor(
             sum_s = sum_s + buf_mw[row + 1u] * a;
             sum_b = sum_b + buf_mw[row + 2u] * a;
         }
-        // tanh para saturar saída em (-1, 1)
+        // tanh to saturate the output in (-1, 1)
         let motor_base: u32 = being * N_MOTOR;
         buf_motor[motor_base + 0u] = tanh(sum_t);
         buf_motor[motor_base + 1u] = tanh(sum_s);

@@ -1,49 +1,49 @@
-//! Laço de simulação 100% residente na GPU.
+//! Simulation loop 100% resident on the GPU.
 //!
-//! # O problema que este binário resolve
+//! # The problem this binary solves
 //!
-//! O laço da CPU (`motor.rs`) foi instrumentado com GPUs peça a peça:
-//!   retina GPU → submit + poll(Wait) → readback → percepção GPU → submit + poll(Wait) → ...
-//! Cada peça fazia seu próprio round-trip host↔GPU. Resultado medido: ligar percepção GPU
-//! deixou o tick MAIS LENTO (6,61 ms contra 6,25 ms), porque os round-trips custam mais do
-//! que o paralelismo ganhou.
+//! The CPU loop (`motor.rs`) was instrumented with GPUs piece by piece:
+//!   GPU retina → submit + poll(Wait) → readback → GPU perception → submit + poll(Wait) → ...
+//! Each piece did its own host↔GPU round-trip. Measured result: enabling GPU perception
+//! made the tick SLOWER (6.61 ms versus 6.25 ms), because the round-trips cost more than
+//! the parallelism gained.
 //!
-//! A correção: **um encoder, todos os dispatches, um submit, um readback**.
+//! The fix: **one encoder, all dispatches, one submit, one readback**.
 //!
-//! # Pipeline por tick
+//! # Pipeline per tick
 //!
 //!   poses_cpu (2 kB) → write_buffer
 //!   encoder {
-//!     dispatch retina   (105.840 threads, 1654 wg × 64)
-//!     dispatch percepção (60 threads, 60 wg × 1)
-//!     dispatch cérebro   (60 threads, 60 wg × 1)
+//!     dispatch retina    (105.840 threads, 1654 wg × 64)
+//!     dispatch perception (60 threads, 60 wg × 1)
+//!     dispatch brain      (60 threads, 60 wg × 1)
 //!     copy buf_intent → buf_intent_readback
 //!   }
-//!   queue.submit(encoder)                ← UM submit
-//!   device.poll(Wait)                    ← UM bloqueio
-//!   ler buf_intent_readback (960 bytes)  ← intent[60] → física CPU
-//!   física CPU (state[60]) → próximas poses
+//!   queue.submit(encoder)                ← ONE submit
+//!   device.poll(Wait)                    ← ONE block
+//!   read buf_intent_readback (960 bytes) ← intent[60] → CPU physics
+//!   CPU physics (state[60]) → next poses
 //!
-//! # O que fica na CPU (e por quê)
+//! # What stays on the CPU (and why)
 //!
-//! 1. **Física**: `PhysicsGpu` abre device próprio para isolar crashes ACO/NIR
-//!    do driver RADV NAVI22 (bissecção `fisica_bisect` documentada em physics.rs).
-//!    Portá-la para o device compartilhado exigiria reescrever a inicialização —
-//!    trabalho separado. Por ora: `step()` roda no device próprio após o readback.
-//!    O estado dos corpos (pos/vel) fica em `Vec<PhysicsStateGpu>` na CPU.
+//! 1. **Physics**: `PhysicsGpu` opens its own device to isolate ACO/NIR crashes
+//!    of the RADV NAVI22 driver (bisection `fisica_bisect` documented in physics.rs).
+//!    Porting it to the shared device would require rewriting the initialization —
+//!    separate work. For now: `step()` runs on its own device after the readback.
+//!    Body state (pos/vel) stays in `Vec<PhysicsStateGpu>` on the CPU.
 //!
-//! 2. **Canais temporais do sensory_wave** (≈40 canais de 223): wall_ema, approach_rate,
-//!    visual_cortex, racing_line, comp_stress — dependem de estado per-ser acumulado
-//!    entre ticks. Para o laço todo-GPU esses canais ficam a ZERO neste binário.
-//!    O modelo cerebral ainda se move (física integra intenção), mas sem esses canais
-//!    a qualidade de navegação é inferior ao motor.rs completo.
+//! 2. **Temporal channels of sensory_wave** (≈40 channels of 223): wall_ema, approach_rate,
+//!    visual_cortex, racing_line, comp_stress — they depend on per-being state accumulated
+//!    between ticks. For the all-GPU loop these channels stay at ZERO in this binary.
+//!    The brain model still moves (physics integrates intent), but without these channels
+//!    navigation quality is inferior to the full motor.rs.
 //!
-//! # Sanidade
+//! # Sanity
 //!
-//! Os seres TÊM de se mover. Se a distância percorrida for zero, o laço está quebrado
-//! mesmo sem erro. O binário imprime distância percorrida por alguns seres.
+//! The beings MUST move. If the distance travelled is zero, the loop is broken
+//! even with no error. The binary prints distance travelled for a few beings.
 //!
-//! # Uso
+//! # Usage
 //!
 //!   cd ~/projects/LLM/Universe
 //!   env -u DISPLAY ./target/release/gpu_loop
@@ -69,114 +69,115 @@ use universe::simulation::racing_line::RacingLine;
 use universe::visao::pitch;
 use universe::world::VoxelWorld;
 
-// ─── Tipos/helpers deduplicados (E3, REFACTOR_PLAN §2.3) ─────────────────────
+// ─── Deduplicated types/helpers (E3, REFACTOR_PLAN §2.3) ─────────────────────
 // RetinaParamsGpu/PoseRaw/uniform_entry/storage_entry/pos_of/make_physics_state
-// eram cópias idênticas às de gpu_evolve.rs e cortex_evolve.rs — unificadas em
-// src/gpu/retina_types.rs, src/gpu/core.rs e src/gpu/physics.rs.
+// were identical copies of the ones in gpu_evolve.rs and cortex_evolve.rs — unified in
+// src/gpu/retina_types.rs, src/gpu/core.rs and src/gpu/physics.rs.
 use universe::gpu::core::{storage_entry, uniform_entry};
 use universe::gpu::physics::{make_physics_state, pos_of};
 use universe::gpu::retina_types::{PoseRaw, RetinaParamsGpu};
 
-// ─── Estado de um ser para o laço (CPU-side, posição física) ─────────────────
+// ─── State of one being for the loop (CPU-side, physical position) ───────────
 
 struct BeingState {
-    /// Estado de física completo (reside na CPU pois PhysicsGpu tem device próprio).
+    /// Full physics state (resides on the CPU because PhysicsGpu has its own device).
     phys: PhysicsStateGpu,
-    /// Steer suavizado do tick anterior — replica motor.rs (prev_steer_mem * 0.50 + new * 0.50).
-    /// Sem esse filtro, o modelo pode emitir steer=1 no tick 0 → slip_angle≈90° no pneu dianteiro,
-    /// força longitudinal=0, carro gira no lugar mesmo com throttle=1.
+    /// Smoothed steer from the previous tick — replicates motor.rs (prev_steer_mem * 0.50 + new * 0.50).
+    /// Without this filter, the model can emit steer=1 at tick 0 → slip_angle≈90° on the front tire,
+    /// longitudinal force=0, the car spins in place even with throttle=1.
     prev_steer: f32,
-    /// Contador de ticks em que speed < 0.5 m/s — replica stagnation do motor.rs (linha 2221).
-    /// Quando atinge 32 ticks (0.5s), ativa modo de escape: throttle=0.3 por 64 ticks.
+    /// Counter of ticks with speed < 0.5 m/s — replicates motor.rs stagnation (line 2221).
+    /// When it reaches 32 ticks (0.5s), activates escape mode: throttle=0.3 for 64 ticks.
     stagnation_ticks: u32,
-    /// Contador de ticks restantes no modo de escape (throttle forçado = 0.3).
+    /// Counter of ticks remaining in escape mode (forced throttle = 0.3).
     escape_ticks: u32,
-    /// Tempo restante em manobra de ré de emergência (s).
-    /// Replica racer.reverse_timer do motor.rs (simulation/motor.rs L2174).
-    /// > 0 enquanto em ré; decrementa por dt; ch89 = 127 quando > 0.
+    /// Time remaining in emergency reverse maneuver (s).
+    /// Replicates racer.reverse_timer from motor.rs (simulation/motor.rs L2174).
+    /// > 0 while reversing; decrements by dt; ch89 = 127 while > 0.
     reverse_timer: f32,
-    /// Cooldown pós-ré (s). Enquanto > 0, limita aceleração a 0.8 e bloqueia nova ré.
-    /// Replica racer.post_reverse_lockout do motor.rs (L2182: POST_REVERSE_LOCKOUT=0.6).
+    /// Post-reverse cooldown (s). While > 0, caps acceleration at 0.8 and blocks a new reverse.
+    /// Replicates racer.post_reverse_lockout from motor.rs (L2182: POST_REVERSE_LOCKOUT=0.6).
     post_reverse_lockout: f32,
 }
 
-// pos_of() e make_physics_state() agora vêm de universe::gpu::physics (dedup E3, ver
-// o `use` no início do arquivo) — eram cópias idênticas às de gpu_evolve.rs/cortex_evolve.rs.
+// pos_of() and make_physics_state() now come from universe::gpu::physics (dedup E3, see
+// the `use` at the top of the file) — they were identical copies of gpu_evolve.rs/cortex_evolve.rs.
 
-// ─── Contexto unificado: retina + percepção + cérebro no mesmo device ─────────
+// ─── Unified context: retina + perception + brain on the same device ─────────
 
 struct GpuLoop {
-    /// Só para o diagnóstico imprimir uma vez, no primeiro tick.
+    /// Only so the diagnostic prints once, at the first tick.
     diag_feito: bool,
     diag_fis: bool,
-    // Device compartilhado por retina + percepção + cérebro.
-    // Arc porque BrainGpu exige Arc<Device> na assinatura.
+    // Device shared by retina + perception + brain.
+    // Arc because BrainGpu requires Arc<Device> in its signature.
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     adapter_name: String,
 
     // ── Retina ────────────────────────────────────────────────────────────────
-    // RetinaGpu tem device próprio por valor — reutilizamos seus buffers mas
-    // chamamos dispatch_into() para gravar no encoder externo.
-    // PROBLEMA: RetinaGpu::new() abre device próprio. Para o laço encadeado,
-    // replicamos o essencial da retina aqui usando o device compartilhado.
+    // RetinaGpu has its own device by value — we reuse its buffers but
+    // call dispatch_into() to record into the external encoder.
+    // PROBLEM: RetinaGpu::new() opens its own device. For the chained loop,
+    // we replicate the essentials of the retina here using the shared device.
     pipeline_retina: wgpu::ComputePipeline,
     layout_retina: wgpu::BindGroupLayout,
     buf_grid: wgpu::Buffer,
     buf_poses_retina: wgpu::Buffer,
-    buf_retina_out: wgpu::Buffer, // VRAM, alimenta percepção direto
-    // buf_retina_readback NÃO alocado — não fazemos readback da retina no laço
+    buf_retina_out: wgpu::Buffer, // VRAM, feeds perception directly
+    // buf_retina_readback NOT allocated — we do no retina readback in the loop
     grid_size: u32,
     cell_size: f32,
 
-    // ── Percepção ─────────────────────────────────────────────────────────────
+    // ── Perception ────────────────────────────────────────────────────────────
     percept: PerceptionGpu,
 
-    // ── Cérebro ───────────────────────────────────────────────────────────────
+    // ── Brain ─────────────────────────────────────────────────────────────────
     brain: BrainGpu,
 
-    // ── Racing line (cópia para cálculo CPU por tick) ─────────────────────────
-    // A projeção na racing_line é calculada pela CPU antes de cada dispatch e
-    // injetada em buf_temporal[10-15] via update_racing_line_temporal().
-    // Mantemos uma cópia local para evitar lifetimes com VoxelWorld.
+    // ── Racing line (copy for per-tick CPU computation) ───────────────────────
+    // The projection onto the racing_line is computed by the CPU before each dispatch
+    // and injected into buf_temporal[10-15] via update_racing_line_temporal().
+    // We keep a local copy to avoid lifetimes with VoxelWorld.
     racing_line: RacingLine,
 
-    // ── Grade de voxels na CPU (cópia da grade do mundo) ─────────────────────
-    // Necessária para calcular dist_l/r/f na CPU antes do dispatch do kernel temporal.
-    // O compilador ACO do RADV travava ao compilar loops sobre storage buffers em WGSL
-    // (o BLOCO T original tinha LAT_SAMPLES e FWD_SAMPLES loops sobre `grid`).
-    // Solução: CPU faz o cálculo e injeta em buf_temporal[16-18] via update_dist_temporal().
-    // Custo: Vec<u32> de 320×320×4 = ~410 KB na heap — negligível.
+    // ── Voxel grid on the CPU (copy of the world's grid) ─────────────────────
+    // Needed to compute dist_l/r/f on the CPU before the temporal kernel dispatch.
+    // The RADV ACO compiler hung while compiling loops over storage buffers in WGSL
+    // (the original BLOCK T had LAT_SAMPLES and FWD_SAMPLES loops over `grid`).
+    // Solution: the CPU does the computation and injects into buf_temporal[16-18] via
+    // update_dist_temporal().
+    // Cost: Vec<u32> of 320×320×4 = ~410 KB on the heap — negligible.
     grid_cpu: Vec<u32>,
     grid_size_cpu: u32,
     cell_size_cpu: f32,
 
-    // ── Física ────────────────────────────────────────────────────────────────
-    // Device SEPARADO por isolamento de crash ACO/NIR (ver physics.rs:14).
-    // O estado físico (PhysicsStateGpu) fica na CPU; sobe a cada tick via
-    // write_buffer no device da física, desce via readback.
+    // ── Physics ───────────────────────────────────────────────────────────────
+    // SEPARATE device for ACO/NIR crash isolation (see physics.rs:14).
+    // The physical state (PhysicsStateGpu) stays on the CPU; goes up each tick via
+    // write_buffer on the physics device, comes down via readback.
     phys_gpu: PhysicsGpu,
 
     // ── KAN output head ───────────────────────────────────────────────────────
-    // Knots para spline de saída (throttle, steer, brake). Carregados do CHAMPION.dna
-    // uma vez; usados em cada tick para converter intent raw → pedal físico real.
-    // Sem este passo: intent[1]=0.985 → steer=0.985 → slip_angle=90° → sem tração.
-    // Com KAN tanh default: eval(1, 0.985) ≈ 0.71, evoluído pode ser mais conservador.
+    // Knots for the output spline (throttle, steer, brake). Loaded from CHAMPION.dna
+    // once; used each tick to convert raw intent → real physical pedal.
+    // Without this step: intent[1]=0.985 → steer=0.985 → slip_angle=90° → no traction.
+    // With default KAN tanh: eval(1, 0.985) ≈ 0.71, an evolved one can be more conservative.
     kan_knots: [[f32; universe::kan::KAN_OUT_KNOTS]; 3],
 
-    // ── CfC de percepção (ch 192-207) ────────────────────────────────────────
-    // Um RetinaPerception por ser, com estado recorrente residente na CPU entre ticks.
-    // Pesos: semente fixa 0xCAFE_BABE_DEAD_BEEF (idênticos ao motor.rs L1626).
-    // Por tick: lê buf_retina_out via readback → roda CfC → injeta hidden em temporal[33-48].
+    // ── Perception CfC (ch 192-207) ──────────────────────────────────────────
+    // One RetinaPerception per being, with recurrent state resident on the CPU between ticks.
+    // Weights: fixed seed 0xCAFE_BABE_DEAD_BEEF (identical to motor.rs L1626).
+    // Per tick: reads buf_retina_out via readback → runs CfC → injects hidden into temporal[33-48].
     percept_cfc: Vec<RetinaPerception>,
 
-    // Buffer MAP_READ para readback da retina (423 KB @ 60 seres).
-    // Necessário para rodar o CfC de percepção na CPU com a retina atual.
-    // buf_retina_out tem COPY_SRC; buf_retina_readback tem MAP_READ + COPY_DST.
-    // O copy (buffer_to_buffer) é adicionado ao encoder ANTES do submit.
+    // MAP_READ buffer for retina readback (423 KB @ 60 beings).
+    // Needed to run the perception CfC on the CPU with the current retina.
+    // buf_retina_out has COPY_SRC; buf_retina_readback has MAP_READ + COPY_DST.
+    // The copy (buffer_to_buffer) is added to the encoder BEFORE the submit.
     buf_retina_readback: wgpu::Buffer,
 
-    // ── Metadados ─────────────────────────────────────────────────────────────
+    // ── Metadata ──────────────────────────────────────────────────────────────
     capacity: usize,
 }
 
@@ -187,8 +188,8 @@ impl GpuLoop {
         capacity: usize,
         kan_knots: [[f32; universe::kan::KAN_OUT_KNOTS]; 3],
     ) -> Option<Self> {
-        // ── Garante que só um ICD Vulkan é carregado ──────────────────────────
-        // Múltiplos ICDs (intel_hasvk, lvp, radeon...) causam SIGSEGV no loader.
+        // ── Ensure only one Vulkan ICD is loaded ──────────────────────────────
+        // Multiple ICDs (intel_hasvk, lvp, radeon...) cause SIGSEGV in the loader.
         let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
         if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
             unsafe {
@@ -196,9 +197,9 @@ impl GpuLoop {
             }
         }
 
-        // ── Abre device compartilhado ─────────────────────────────────────────
+        // ── Open shared device ────────────────────────────────────────────────
         // compute-only: compatible_surface = None.
-        // max_storage_buffers_per_shader_stage = 8: percepção usa 7 bindings.
+        // max_storage_buffers_per_shader_stage = 8: perception uses 7 bindings.
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
@@ -210,17 +211,17 @@ impl GpuLoop {
         }))?;
         let name = adapter.get_info().name.clone();
         let mut limits = wgpu::Limits::downlevel_defaults();
-        // Cérebro usa 10 storage buffers: bindings 1-9 mais o `buf_tau` (banco de τ) —
-        // mesma contagem documentada em gpu_evolve/context.rs::GpuCtx::new(). O valor
-        // "9" aqui estava desatualizado (comentário mentiroso: dizia que binding 9 era
-        // o máximo, mas `create_bind_group_layout(brain-layout)` já pedia 10 bindings
-        // e o wgpu abortava com "Too many bindings of type StorageBuffers... limit is
-        // 9, count was 10"). Achado ao rodar `gpu_loop` para validar o E3 (dedup de
-        // uniform_entry/storage_entry/kan_eval) — corrigido aqui na mesma sessão, não
-        // é um "próximo passo".
-        // Pedir 12 dá a mesma folga de gpu_evolve.rs para os próximos buffers sem
-        // voltar aqui a cada binding novo; se o adaptador não suportar, `request_device`
-        // falha na abertura em vez de corromper dado.
+        // The brain uses 10 storage buffers: bindings 1-9 plus `buf_tau` (τ bank) —
+        // same count documented in gpu_evolve/context.rs::GpuCtx::new(). The value
+        // "9" here was outdated (lying comment: it said binding 9 was the maximum,
+        // but `create_bind_group_layout(brain-layout)` already asked for 10 bindings
+        // and wgpu aborted with "Too many bindings of type StorageBuffers... limit is
+        // 9, count was 10"). Found while running `gpu_loop` to validate E3 (dedup of
+        // uniform_entry/storage_entry/kan_eval) — fixed here in the same session, not
+        // a "next step".
+        // Asking for 12 gives the same headroom as gpu_evolve.rs for the next buffers
+        // without coming back here for every new binding; if the adapter does not
+        // support it, `request_device` fails at open instead of corrupting data.
         limits.max_storage_buffers_per_shader_stage = 12;
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -237,17 +238,17 @@ impl GpuLoop {
 
         let cap = capacity.max(1);
 
-        // ── Buffers estáticos do mundo ────────────────────────────────────────
-        // grade: 320×320 u32. Compartilhada por retina e percepção.
+        // ── Static world buffers ──────────────────────────────────────────────
+        // grid: 320×320 u32. Shared by retina and perception.
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("loop-grid"),
             contents: bytemuck::cast_slice(&grid_u32),
-            // COPY_SRC não necessário — só retina e percepção lêem.
+            // COPY_SRC not needed — only retina and perception read it.
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // ── Buffers da retina ─────────────────────────────────────────────────
+        // ── Retina buffers ────────────────────────────────────────────────────
         // poses_retina: cap × PoseRaw (8 × f32 = 32 bytes).
         let buf_poses_retina = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("loop-poses-retina"),
@@ -255,8 +256,8 @@ impl GpuLoop {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // retina_out: cap × RETINA_TOTAL × 4 bytes. Alimenta percepção na VRAM.
-        // COPY_SRC para inspecionar se necessário.
+        // retina_out: cap × RETINA_TOTAL × 4 bytes. Feeds perception in VRAM.
+        // COPY_SRC to inspect if necessary.
         let buf_retina_out = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("loop-retina-out"),
             size: (cap * RETINA_TOTAL * 4) as u64,
@@ -264,7 +265,7 @@ impl GpuLoop {
             mapped_at_creation: false,
         });
 
-        // ── Pipeline da retina ─────────────────────────────────────────────────
+        // ── Retina pipeline ───────────────────────────────────────────────────
         // retina.wgsl: binding 0=params(uniform), 1=grid(storage), 2=poses(storage), 3=saida(storage).
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("loop-retina"),
@@ -276,7 +277,7 @@ impl GpuLoop {
                 uniform_entry(0),
                 storage_entry(1, true),  // grid
                 storage_entry(2, true),  // poses
-                storage_entry(3, false), // saida
+                storage_entry(3, false), // output
             ],
         });
         let pl_retina = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -293,27 +294,27 @@ impl GpuLoop {
             cache: None,
         });
 
-        // ── Percepção ─────────────────────────────────────────────────────────
-        // PerceptionGpu::new recebe &wgpu::Device (Arc<Device> implementa Deref).
-        eprintln!("[gpu_loop] Criando PerceptionGpu...");
+        // ── Perception ────────────────────────────────────────────────────────
+        // PerceptionGpu::new takes &wgpu::Device (Arc<Device> implements Deref).
+        eprintln!("[gpu_loop] Creating PerceptionGpu...");
         let percept = PerceptionGpu::new(&device, &queue, world, cap)?;
         eprintln!("[gpu_loop] PerceptionGpu OK");
 
-        // ── Cérebro ───────────────────────────────────────────────────────────
-        // BrainGpu aceita Arc<Device> diretamente.
+        // ── Brain ─────────────────────────────────────────────────────────────
+        // BrainGpu accepts Arc<Device> directly.
         let brain = BrainGpu::new(Arc::clone(&device), Arc::clone(&queue), name.clone(), cap);
 
-        // Sobe pesos dos engines para o buffer do cérebro.
+        // Uploads the engines' weights to the brain buffer.
         let eng_refs: Vec<&SovereignEngine> = engines.iter().take(cap).collect();
         brain.upload_weights(&eng_refs);
 
-        // ── Física — MESMO dispositivo que o resto ───────────────────────────
-        // Ela nasceu com device próprio para isolar o crash do compilador ACO do RADV
-        // (`physics.rs`: a fase Pacejka estourava o alocador de registradores). Esse crash
-        // foi resolvido dividindo em três kernels, então o isolamento perdeu a razão — e
-        // passou a ATRAPALHAR: com dois `wgpu::Device` na mesma GPU o laço travava no
-        // primeiro tick, sem erro e sem saída. Um device só destrava e é o que permite
-        // encadear os quatro dispatches num `CommandEncoder` único.
+        // ── Physics — SAME device as everything else ─────────────────────────
+        // It was born with its own device to isolate the RADV ACO compiler crash
+        // (`physics.rs`: the Pacejka phase blew up the register allocator). That crash
+        // was solved by splitting into three kernels, so the isolation lost its reason — and
+        // started to HURT: with two `wgpu::Device` on the same GPU the loop hung on the
+        // first tick, no error and no output. A single device unblocks it and is what allows
+        // chaining the four dispatches into a single `CommandEncoder`.
         let grid_u8: Vec<u8> = world.grid.iter().map(|v| *v as u8).collect();
         let phys_gpu = PhysicsGpu::new_shared(
             Arc::clone(&device),
@@ -326,9 +327,9 @@ impl GpuLoop {
             cap,
         )?;
 
-        // ── Buffer de readback da retina (para CfC de percepção na CPU) ────────
-        // cap × RETINA_TOTAL × 4 bytes. Cópia de buf_retina_out após o dispatch.
-        // Permite rodar RetinaPerception na CPU sem nenhuma alteração no shader.
+        // ── Retina readback buffer (for the perception CfC on the CPU) ─────────
+        // cap × RETINA_TOTAL × 4 bytes. Copy of buf_retina_out after the dispatch.
+        // Allows running RetinaPerception on the CPU with no shader change at all.
         let retina_readback_bytes = (cap * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
         let buf_retina_readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("loop-retina-readback"),
@@ -337,25 +338,25 @@ impl GpuLoop {
             mapped_at_creation: false,
         });
 
-        // ── CfC de percepção — um por ser, com estado recorrente na CPU ────────
-        // Pesos inicializados com semente fixa 0xCAFE_BABE_DEAD_BEEF (mesmo motor.rs).
-        // Estado recorrente (hidden[16]) residirá aqui entre ticks.
-        // Ao contrário do motor.rs que usa retina_binocular (u8 convertida de raw),
-        // aqui usamos a retina GPU (u32 packed) convertida para i8 na leitura.
+        // ── Perception CfC — one per being, with recurrent state on the CPU ────
+        // Weights initialized with fixed seed 0xCAFE_BABE_DEAD_BEEF (same as motor.rs).
+        // Recurrent state (hidden[16]) will reside here between ticks.
+        // Unlike motor.rs which uses retina_binocular (u8 converted from raw),
+        // here we use the GPU retina (packed u32) converted to i8 on read.
         let percept_cfc: Vec<RetinaPerception> =
             (0..cap).map(|_| RetinaPerception::new()).collect();
 
         println!(
-            "GpuLoop: adapter={} · cap={} seres · retina+percepção+cérebro+física NO MESMO device",
+            "GpuLoop: adapter={} · cap={} beings · retina+perception+brain+physics ON THE SAME device",
             name, cap
         );
         println!(
-            "  CfC percepção (ch192-207): {} seres × 16 hidden = {} f32 na CPU",
+            "  perception CfC (ch192-207): {} beings × 16 hidden = {} f32 on the CPU",
             cap,
             cap * 16
         );
-        println!("  ch83-84 (fluxo hemisférico): ligado no kernel motion");
-        println!("  ch89 (reverse_timer): ligado via temporal[32]");
+        println!("  ch83-84 (hemispheric flow): enabled in the motion kernel");
+        println!("  ch89 (reverse_timer): enabled via temporal[32]");
 
         Some(Self {
             diag_feito: false,
@@ -373,7 +374,7 @@ impl GpuLoop {
             percept,
             brain,
             racing_line: world.racing_line.clone(),
-            // Cópia da grade para cálculo CPU de dist_l/r/f (temporal[16-18]).
+            // Copy of the grid for CPU computation of dist_l/r/f (temporal[16-18]).
             grid_cpu: grid_u32,
             grid_size_cpu: world.size as u32,
             cell_size_cpu: world.cell_size,
@@ -385,24 +386,24 @@ impl GpuLoop {
         })
     }
 
-    /// Executa um tick completo para N seres.
+    /// Runs one full tick for N beings.
     ///
-    /// # Fluxo de dados
+    /// # Data flow
     ///
-    ///   poses_fisicas (CPU) →[poses_retina]→ GPU
+    ///   physical poses (CPU) →[poses_retina]→ GPU
     ///   encoder {
-    ///     retina   → buf_retina_out (VRAM)
-    ///     percepção ← buf_retina_out (VRAM sem readback)
+    ///     retina    → buf_retina_out (VRAM)
+    ///     perception ← buf_retina_out (VRAM without readback)
     ///             → buf_percept_out (VRAM)
-    ///     cérebro  ← buf_percept_out (lido via wave escrito na memória)
+    ///     brain    ← buf_percept_out (read via the wave written to memory)
     ///             → buf_intent (VRAM) + copy → buf_intent_readback
     ///   }
-    ///   submit + poll(Wait)         ← UM round-trip
-    ///   ler buf_intent_readback     ← intent[n]
-    ///   atualizar throttle/steer/brake em states[n]
-    ///   phys_gpu.step(states[n])   ← física no device isolado
+    ///   submit + poll(Wait)         ← ONE round-trip
+    ///   read buf_intent_readback    ← intent[n]
+    ///   update throttle/steer/brake in states[n]
+    ///   phys_gpu.step(states[n])   ← physics on the isolated device
     ///
-    /// Retorna `true` se bem-sucedido.
+    /// Returns `true` on success.
     fn tick(
         &mut self,
         states: &mut Vec<BeingState>,
@@ -415,9 +416,9 @@ impl GpuLoop {
             return false;
         }
 
-        // ── 1. Converte estados físicos para poses da retina ──────────────────
+        // ── 1. Convert physical states to retina poses ────────────────────────
         // PoseRaw: [pos.x, pos.y, pos.z, gaze_yaw] + [fwd.x, fwd.z, right.x, right.z]
-        // A retina usa coordenadas do mundo; gaze_yaw = 0 (sem desvio lateral).
+        // The retina uses world coordinates; gaze_yaw = 0 (no lateral deviation).
         let pose_raw_data: Vec<PoseRaw> = (0..n)
             .map(|i| {
                 let p = &states[i].phys;
@@ -433,7 +434,7 @@ impl GpuLoop {
             bytemuck::cast_slice(&pose_raw_data),
         );
 
-        // ── 2. Poses para percepção (formato diferente: PosePerception) ───────
+        // ── 2. Poses for perception (different format: PosePerception) ────────
         let poses_percept: Vec<PosePerception> = (0..n)
             .map(|i| {
                 let p = &states[i].phys;
@@ -441,7 +442,7 @@ impl GpuLoop {
                     pos_x: p.pos[0],
                     pos_y: p.pos[1],
                     pos_z: p.pos[2],
-                    phase: 0.0, // heading absoluto — zero pois não temos racer.phase aqui
+                    phase: 0.0, // absolute heading — zero since we have no racer.phase here
                     fwd_x: p.fwd[0],
                     fwd_z: p.fwd[2],
                     rgt_x: p.lat[0],
@@ -450,21 +451,22 @@ impl GpuLoop {
             })
             .collect();
 
-        // ── 3a. Pré-computa distâncias laterais/frontais na CPU → buf_temporal[16-18] ──
-        // O compilador ACO do RADV travava ao compilar os loops LAT_SAMPLES e FWD_SAMPLES
-        // sobre o storage buffer `grid` em WGSL (workgroup_size=1, pattern com `break`).
-        // Solução: CPU replica o mesmo algoritmo e injeta os 3 valores via update_dist_temporal().
-        // Custo: N × (6+6+10) = N×22 consultas à grade CPU (hash O(1) por célula). Negligível.
+        // ── 3a. Precompute lateral/frontal distances on the CPU → buf_temporal[16-18] ──
+        // The RADV ACO compiler hung while compiling the LAT_SAMPLES and FWD_SAMPLES loops
+        // over the `grid` storage buffer in WGSL (workgroup_size=1, pattern with `break`).
+        // Solution: the CPU replicates the same algorithm and injects the 3 values via
+        // update_dist_temporal().
+        // Cost: N × (6+6+10) = N×22 CPU grid queries (O(1) hash per cell). Negligible.
         {
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
-            // Amostras laterais: expandidas de 27m → 40m (conta: 40/28 m/s = 1.43 s antecipação).
-            // Normaliza por 40.0 no temporal_wgsl. Default 40.0 = livre (nenhuma parede no alcance).
+            // Lateral samples: expanded from 27m → 40m (math: 40/28 m/s = 1.43 s anticipation).
+            // Normalized by 40.0 in temporal_wgsl. Default 40.0 = free (no wall in range).
             let lat_samp = [1.0_f32, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 33.0, 40.0];
-            // Amostras frontais: mesmas do BLOCO T original
+            // Frontal samples: same as the original BLOCK T
             let fwd_samp = [3.0_f32, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0];
 
-            // Função inline: voxel em coordenadas mundo (identical a voxel_at() no WGSL).
+            // Inline function: voxel in world coordinates (identical to voxel_at() in the WGSL).
             let voxel_at = |wx: f32, wz: f32| -> u32 {
                 let xi = (wx / cs).round() as i32;
                 let yi = (wz / cs).round() as i32;
@@ -472,7 +474,7 @@ impl GpuLoop {
                 if xi >= 0 && xi < n && yi >= 0 && yi < n {
                     self.grid_cpu[(yi as usize) * gs + (xi as usize)]
                 } else {
-                    2u32 // Wall fora da grade
+                    2u32 // Wall outside the grid
                 }
             };
 
@@ -481,13 +483,13 @@ impl GpuLoop {
                 let p = &states[i].phys;
                 let (px, pz) = (p.pos[0], p.pos[2]);
                 let (fx, fz) = (p.fwd[0], p.fwd[2]);
-                // Perpendicular esquerda: (-fwd_z, fwd_x) no plano XZ.
-                // Replicamos exatamente o BLOCO T: perp_x = -fwd_z, perp_z = fwd_x.
+                // Left perpendicular: (-fwd_z, fwd_x) in the XZ plane.
+                // We replicate BLOCK T exactly: perp_x = -fwd_z, perp_z = fwd_x.
                 let perp_x = -fz;
                 let perp_z = fx;
 
-                // Distância lateral esquerda: pos - perp*sd (idem ao BLOCO T original)
-                // Default 40.0 = livre (sem parede no alcance de 40m).
+                // Left lateral distance: pos - perp*sd (same as the original BLOCK T)
+                // Default 40.0 = free (no wall within 40m range).
                 let mut dist_l = 40.0_f32;
                 for &sd in &lat_samp {
                     if voxel_at(px - perp_x * sd, pz - perp_z * sd) == 2u32 {
@@ -495,7 +497,7 @@ impl GpuLoop {
                         break;
                     }
                 }
-                // Distância lateral direita: pos + perp*sd
+                // Right lateral distance: pos + perp*sd
                 let mut dist_r = 40.0_f32;
                 for &sd in &lat_samp {
                     if voxel_at(px + perp_x * sd, pz + perp_z * sd) == 2u32 {
@@ -503,7 +505,7 @@ impl GpuLoop {
                         break;
                     }
                 }
-                // Distância frontal
+                // Frontal distance
                 let mut dist_f = 50.0_f32;
                 for &sd in &fwd_samp {
                     let v = voxel_at(px + fx * sd, pz + fz * sd);
@@ -514,67 +516,67 @@ impl GpuLoop {
                 }
                 dist_vals.push([dist_l, dist_r, dist_f]);
             }
-            // Injeta em buf_temporal[16-18] ANTES do dispatch da percepção temporal.
+            // Injects into buf_temporal[16-18] BEFORE the temporal perception dispatch.
             self.percept
                 .update_dist_temporal(&self.queue, &dist_vals[..n]);
         }
 
-        // ── 3b. Pré-computa racing_line na CPU e injeta em buf_temporal[10-15] ──
-        // A projeção O(N_points) na racing_line foi movida para a CPU porque o
-        // compilador ACO/NIR do RADV crashava ao compilar loops sobre storage buffers
-        // de comprimento variável em WGSL. Custo CPU: N × O(N_points) com busca local
-        // = ~60 × 64 iterações = 3840 operações. Negligível vs 0.63ms/tick de GPU.
+        // ── 3b. Precompute racing_line on the CPU and inject into buf_temporal[10-15] ──
+        // The O(N_points) projection onto the racing_line was moved to the CPU because the
+        // RADV ACO/NIR compiler crashed while compiling loops over variable-length storage
+        // buffers in WGSL. CPU cost: N × O(N_points) with local search
+        // = ~60 × 64 iterations = 3840 operations. Negligible vs 0.63ms/tick of GPU.
         //
-        // Campos temporais [10-15]:
+        // Temporal fields [10-15]:
         //  [10] cpu_line_off_norm = offset / half_width, [-1,1]
-        //  [11] cpu_d_off         = (prev_off - off) / hw × 8, [-1,1]  (derivada)
+        //  [11] cpu_d_off         = (prev_off - off) / hw × 8, [-1,1]  (derivative)
         //  [12] cpu_la_off        = lookahead_offset(5m) / hw, [-1,1]
-        //  [13] cpu_fwd_norm      = fwd_dist / (hw*3), [0,1]  (usa dist_l=max da grade)
+        //  [13] cpu_fwd_norm      = fwd_dist / (hw*3), [0,1]  (uses dist_l=max of the grid)
         //  [14] cpu_corridor      = (dist_l+dist_r) / (hw*4), [0,1]
         //  [15] cpu_whisker_norm  = min(dist_l,dist_r) / (hw*1.5), [0,1]
         //
-        // prev_off para o cálculo de d_off é lido do campo [8] do temporal.
-        // Neste binário não fazemos readback do temporal (custo), então estimamos
-        // prev_off = line_off_norm atual do tick anterior via lookup simples.
-        // Guardamos em prev_rl_off (Vec<f32> alocado 1× por corrida, ver abaixo).
-        // NOTA: d_off mede taxa de mudança de desvio — "estou me afastando da linha
-        //       mais rápido do que estava?". Ganho 8× pq delta por tick é ~0.01.
+        // prev_off for the d_off computation is read from field [8] of the temporal.
+        // In this binary we do no temporal readback (cost), so we estimate
+        // prev_off = current line_off_norm from the previous tick via simple lookup.
+        // We store it in prev_rl_off (Vec<f32> allocated 1× per run, see below).
+        // NOTE: d_off measures the rate of change of deviation — "am I drifting away from
+        //       the line faster than I was?". Gain 8× because the per-tick delta is ~0.01.
         {
             let hw = self.racing_line.half_width.max(1.0);
             let hw3 = hw * 3.0;
             let hw4 = hw * 4.0;
             let hw15 = hw * 1.5;
-            // Calcula valores e acumula num Vec temporário por tick.
+            // Computes values and accumulates them in a temporary Vec per tick.
             let mut racing_vals: Vec<[f32; 6]> = Vec::with_capacity(n);
             for i in 0..n {
                 let p = &states[i].phys;
                 let pos2d = bevy::math::Vec2::new(p.pos[0], p.pos[2]);
                 let fwd2d = bevy::math::Vec2::new(p.fwd[0], p.fwd[2]);
 
-                // Projeção na racing_line: desvio lateral assinado (m), clamped ±hw.
+                // Projection onto the racing_line: signed lateral deviation (m), clamped ±hw.
                 let line_off = self.racing_line.lateral_offset_from_line(pos2d, fwd2d);
                 let off_norm = (line_off / hw).clamp(-1.0, 1.0);
 
-                // Lookahead 5m à frente na linha ideal.
+                // Lookahead 5m ahead on the ideal line.
                 let la = self.racing_line.lookahead_offset(pos2d, 5.0);
                 let la_norm = (la / hw).clamp(-1.0, 1.0);
 
-                // Distâncias laterais aproximadas (substitui grade — precisa de world aqui,
-                // mas não temos referência ao world neste método. Usamos half_width como
-                // proxy conservador: corredor = hw de cada lado = corredor cheio = 1.0).
-                // TODO: para distâncias reais, fazer readback da grade ou passar world ref.
-                // Por agora: fwd_norm=0.5 (distância frontal desconhecida), corridor=0.8 (livre).
-                // O kernel WGSL calculou dist_l/r na grade — esses campos são complementares.
-                let cpu_fwd_norm = 0.5_f32; // desconhecido sem readback da grade
-                let cpu_corridor = 0.8_f32; // livre (conservador)
-                let cpu_whisker_norm = 0.7_f32; // livre (conservador)
+                // Approximate lateral distances (replaces the grid — needs world here,
+                // but we have no reference to world in this method. We use half_width as
+                // a conservative proxy: corridor = hw on each side = full corridor = 1.0).
+                // TODO: for real distances, do a grid readback or pass a world ref.
+                // For now: fwd_norm=0.5 (frontal distance unknown), corridor=0.8 (free).
+                // The WGSL kernel computed dist_l/r on the grid — these fields are complementary.
+                let cpu_fwd_norm = 0.5_f32; // unknown without grid readback
+                let cpu_corridor = 0.8_f32; // free (conservative)
+                let cpu_whisker_norm = 0.7_f32; // free (conservative)
 
-                // d_off: derivada do desvio. Precisamos do prev_off. Usamos off_norm
-                // atual como prev pra este tick; no próximo tick a diferença será real.
-                // (No GPU, o temporal[8] guarda prev_line_offset_n do tick anterior.)
-                // Aqui não temos o valor anterior sem readback. Passamos 0 para d_off,
-                // que dá sinal neutro. Motor.rs usa a versão completa com estado real.
-                let cpu_d_off = 0.0_f32; // sem estado anterior disponível neste binário
+                // d_off: derivative of the deviation. We need prev_off. We use the current
+                // off_norm as prev for this tick; next tick the difference will be real.
+                // (On the GPU, temporal[8] stores prev_line_offset_n from the previous tick.)
+                // Here we have no previous value without readback. We pass 0 for d_off,
+                // which gives a neutral signal. Motor.rs uses the full version with real state.
+                let cpu_d_off = 0.0_f32; // no previous state available in this binary
 
                 racing_vals.push([
                     off_norm,
@@ -585,26 +587,26 @@ impl GpuLoop {
                     cpu_whisker_norm,
                 ]);
             }
-            // Injeta em buf_temporal[10-15] ANTES do dispatch da percepção.
+            // Injects into buf_temporal[10-15] BEFORE the perception dispatch.
             self.percept
                 .update_racing_line_temporal(&self.queue, &racing_vals[..n]);
         }
 
-        // ── 3c. Telemetria proprioceptiva → buf_temporal[20-31] ───────────────
-        // Canais 64-75 do sensory_wave: speed, alignment, RPM, gear, tire_temp, etc.
-        // Esses canais estão no top-30 de pesos do CHAMPION.dna mas eram ZERO no gpu_loop
-        // porque o shader espacial não tem acesso ao estado físico (reside na CPU).
-        // O shader temporal lê temporal[20-31] e faz atomicOr em ch64-75 do buf_output.
+        // ── 3c. Proprioceptive telemetry → buf_temporal[20-31] ────────────────
+        // Channels 64-75 of the sensory_wave: speed, alignment, RPM, gear, tire_temp, etc.
+        // These channels are in the top-30 weights of CHAMPION.dna but were ZERO in gpu_loop
+        // because the spatial shader has no access to the physical state (resides on the CPU).
+        // The temporal shader reads temporal[20-31] and does atomicOr on ch64-75 of buf_output.
         //
-        // Canais críticos confirmados por inspeção do SRLE tag do DNA:
-        //   ch64 (alignment)   — modelo sabe se está alinhado com a pista
-        //   ch65 (speed m/s)   — MAIS CRÍTICO: modelo sabe se está andando
-        //   ch68 (RPM ratio)   — sabe se motor está solicitado
-        //   ch69 (gear)        — contexto de marcha para decisão de shift
-        //   ch70 (tire_temp)   — temperatura dos pneus (grip)
-        //   ch73 (on_grass)    — dor de grama → reduz throttle (ch73 era -128 no motor.rs)
+        // Critical channels confirmed by inspecting the DNA's SRLE tag:
+        //   ch64 (alignment)   — the model knows whether it is aligned with the track
+        //   ch65 (speed m/s)   — MOST CRITICAL: the model knows whether it is moving
+        //   ch68 (RPM ratio)   — knows whether the engine is under load
+        //   ch69 (gear)        — gear context for the shift decision
+        //   ch70 (tire_temp)   — tire temperature (grip)
+        //   ch73 (on_grass)    — grass pain → reduces throttle (ch73 was -128 in motor.rs)
         {
-            // Função aux inline: voxel atual do ser (para detectar grama).
+            // Inline aux function: the being's current voxel (to detect grass).
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
             let voxel_at_cpu = |wx: f32, wz: f32| -> u32 {
@@ -622,26 +624,26 @@ impl GpuLoop {
             for i in 0..n {
                 let p = &states[i].phys;
 
-                // [1] speed: magnitude do vetor velocidade no plano XZ (ignoramos Y=vert.)
+                // [1] speed: magnitude of the velocity vector in the XZ plane (we ignore Y=vert.)
                 let speed_m_s = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
 
-                // [0] alignment: cos(ângulo entre heading fwd e tangente da pista).
-                // A racing_line devolve o tangent unit vector no ponto mais próximo.
-                // Aqui usamos o produto escalar fwd·tangent como proxy de alinhamento.
-                // Tangente = fwd do ser rotacionado pelo desvio angular da racing_line.
-                // Aproximação simples: usamos a projection da velocidade no heading.
-                // dot(vel_xz, fwd_xz) / (|vel| + ε) → 1 = alinhado, -1 = contra-mão.
+                // [0] alignment: cos(angle between the fwd heading and the track tangent).
+                // The racing_line returns the tangent unit vector at the closest point.
+                // Here we use the dot product fwd·tangent as an alignment proxy.
+                // Tangent = the being's fwd rotated by the racing_line's angular deviation.
+                // Simple approximation: we use the projection of the velocity onto the heading.
+                // dot(vel_xz, fwd_xz) / (|vel| + ε) → 1 = aligned, -1 = wrong way.
                 let vel_dot_fwd = p.vel[0] * p.fwd[0] + p.vel[2] * p.fwd[2];
                 let alignment = if speed_m_s > 0.1 {
                     (vel_dot_fwd / speed_m_s).clamp(-1.0, 1.0)
                 } else {
-                    1.0 // parado = assume alinhado (sem ruído de direção)
+                    1.0 // stopped = assume aligned (no direction noise)
                 };
 
-                // [2] lateral velocity: dot(vel, lat) — positivo = deriva para direita
+                // [2] lateral velocity: dot(vel, lat) — positive = drifting to the right
                 let lat_vel = p.vel[0] * p.lat[0] + p.vel[2] * p.lat[2];
 
-                // [3] HP: sem tracker de dano, assume cheio (127 no canal).
+                // [3] HP: no damage tracker, assume full (127 on the channel).
                 let hp_frac = 1.0_f32;
 
                 // [4] RPM ratio
@@ -651,32 +653,32 @@ impl GpuLoop {
                     0.0
                 };
 
-                // [5] gear (f32 para o WGSL — multiplicado por 20 no shader)
+                // [5] gear (f32 for the WGSL — multiplied by 20 in the shader)
                 let gear = p.current_gear as f32;
 
-                // [6] tire_temp_norm: wheels tem layout [part_a, part_b] alternados por eixo.
-                // part_b[0] = tire_temp (graus C). Calcula média das 4 rodas.
-                // wheels[j*2+1] = part_b do eixo j (j=0..3 = FR, FL, RR, RL).
+                // [6] tire_temp_norm: wheels has layout [part_a, part_b] alternating per axle.
+                // part_b[0] = tire_temp (degrees C). Computes the average of the 4 wheels.
+                // wheels[j*2+1] = part_b of axle j (j=0..3 = FR, FL, RR, RL).
                 let tire_temp_sum: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum();
                 let tire_temp_norm = (tire_temp_sum / 4.0 / 120.0).clamp(0.0, 1.0);
 
-                // [7] downforce: não calculamos dinamicamente. Zero por ora.
+                // [7] downforce: we do not compute it dynamically. Zero for now.
                 let downforce_norm = 0.0_f32;
 
-                // [8] in_draft: não detectamos slipstream. Zero.
+                // [8] in_draft: we do not detect slipstream. Zero.
                 let in_draft = 0.0_f32;
 
-                // [9] on_grass: voxel atual. VoxelType: Grass=0, Road=1, Wall=2, Hole=3.
-                // Grama = 0 (todo o fundo do mapa antes de ser pavimentado).
+                // [9] on_grass: current voxel. VoxelType: Grass=0, Road=1, Wall=2, Hole=3.
+                // Grass = 0 (the whole map background before being paved).
                 let voxel = voxel_at_cpu(p.pos[0], p.pos[2]);
                 let on_grass = if voxel == 0u32 { 1.0_f32 } else { 0.0 };
 
-                // [10] steer_abs: |steer| como proxy de steer_limit.
-                // No motor.rs steer_limit = ângulo máximo disponível (depende da geometria).
-                // Aqui usamos |steer_cmd| como sinal de que está virando.
+                // [10] steer_abs: |steer| as a proxy for steer_limit.
+                // In motor.rs steer_limit = maximum available angle (depends on the geometry).
+                // Here we use |steer_cmd| as a signal that it is turning.
                 let steer_abs = p.steer.abs().clamp(0.0, 1.0);
 
-                // [11] wetness: sem weather dinâmico. Zero.
+                // [11] wetness: no dynamic weather. Zero.
                 let wetness = 0.0_f32;
 
                 prop_vals.push([
@@ -698,29 +700,29 @@ impl GpuLoop {
                 .update_proprioception_temporal(&self.queue, &prop_vals[..n]);
         }
 
-        // ── 3d. reverse_timer (ch 89) e CfC de percepção (ch 192-207) ──────────
-        // Lógica de ré IDÊNTICA ao motor.rs (simulation/motor.rs L2177-2235):
-        //   Trigger: parede frontal <3m E ambas laterais bloqueadas (<4m)
-        //            E speed<1.5 m/s E stagnation>60 ticks E sem lockout pós-ré.
-        //   Duração: 0.4s (REVERSE_MIN) capped em 1.5s (REVERSE_MAX).
-        //   Exit: parede frontal > 2.5m (REVERSE_EXIT_CLEAR) ou timeout.
-        //   Pós-ré: lockout de 0.6s onde throttle é capeado em 0.8.
+        // ── 3d. reverse_timer (ch 89) and perception CfC (ch 192-207) ──────────
+        // Reverse logic IDENTICAL to motor.rs (simulation/motor.rs L2177-2235):
+        //   Trigger: frontal wall <3m AND both laterals blocked (<4m)
+        //            AND speed<1.5 m/s AND stagnation>60 ticks AND no post-reverse lockout.
+        //   Duration: 0.4s (REVERSE_MIN) capped at 1.5s (REVERSE_MAX).
+        //   Exit: frontal wall > 2.5m (REVERSE_EXIT_CLEAR) or timeout.
+        //   Post-reverse: 0.6s lockout where throttle is capped at 0.8.
         //
-        // CfC de percepção: usa retina do tick T-1 (lida no readback após submit T-1).
-        // Atraso de 1 tick é aceitável — motor.rs também usa visual_cortex anterior.
+        // Perception CfC: uses the retina from tick T-1 (read in the readback after submit T-1).
+        // A 1-tick delay is acceptable — motor.rs also uses the previous visual_cortex.
         {
-            // Deduplicado (E3, REFACTOR_PLAN.md §2.3) para
-            // universe::config::iara::reverse_maneuver. TRIGGER_DIST_M=4.0 (não 3.0):
-            // este arquivo já usava `fwd_dist < 4.0` de propósito (ver comentário no
-            // gatilho abaixo) — a constante local `REVERSE_TRIGGER_DIST=3.0` nunca era
-            // lida (warning `never used`), só citada em comentário. `gpu_evolve.rs`
-            // tinha o MESMO padrão (constante morta em 3.0, literal usado em 4.0) — o
-            // valor canônico único abaixo é o que os três binários já rodavam de fato.
+            // Deduplicated (E3, REFACTOR_PLAN.md §2.3) into
+            // universe::config::iara::reverse_maneuver. TRIGGER_DIST_M=4.0 (not 3.0):
+            // this file already used `fwd_dist < 4.0` on purpose (see the comment at the
+            // trigger below) — the local constant `REVERSE_TRIGGER_DIST=3.0` was never
+            // read (`never used` warning), only quoted in a comment. `gpu_evolve.rs`
+            // had the SAME pattern (dead constant at 3.0, literal used at 4.0) — the
+            // single canonical value below is what the three binaries were actually running.
             use universe::config::iara::reverse_maneuver as revcfg;
 
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
-            // Função inline para consultar voxel (mesma do bloco 3a).
+            // Inline function to query a voxel (same as in block 3a).
             let voxel_at = |wx: f32, wz: f32| -> u32 {
                 let xi = (wx / cs).round() as i32;
                 let yi = (wz / cs).round() as i32;
@@ -737,16 +739,16 @@ impl GpuLoop {
                 let p = &states[i].phys;
                 let speed = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
 
-                // Mede distâncias para o trigger (replica motor.rs L2202-2220):
-                //   fwd_dist = menor distância frontal a Wall/Hole (cap 30m)
-                //   lat_l_check = dist lat esq até Wall/Hole (<4m = bloqueado)
-                //   lat_r_check = idem direito
+                // Measures distances for the trigger (replicates motor.rs L2202-2220):
+                //   fwd_dist = smallest frontal distance to Wall/Hole (cap 30m)
+                //   lat_l_check = left lateral distance to Wall/Hole (<4m = blocked)
+                //   lat_r_check = same on the right
                 let (fx, fz) = (p.fwd[0], p.fwd[2]);
                 let perp_x = -fz;
                 let perp_z = fx; // left perpendicular
                 let (px, pz) = (p.pos[0], p.pos[2]);
 
-                // Distância frontal (amostras de 1m a 10m como no motor.rs)
+                // Frontal distance (samples from 1m to 10m as in motor.rs)
                 let mut fwd_dist = 30.0_f32;
                 for sd in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
                     let v = voxel_at(px + fx * sd, pz + fz * sd);
@@ -756,7 +758,7 @@ impl GpuLoop {
                     }
                 }
 
-                // Distâncias laterais (amostras 1m a 10m como no motor.rs)
+                // Lateral distances (samples 1m to 10m as in motor.rs)
                 let mut lat_l = 10.0_f32;
                 let mut lat_r = 10.0_f32;
                 for sd in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
@@ -775,21 +777,22 @@ impl GpuLoop {
                 }
                 let both_blocked = lat_l < 4.0 && lat_r < 4.0;
 
-                // Decrementa lockout pós-ré.
+                // Decrements the post-reverse lockout.
                 if states[i].post_reverse_lockout > 0.0 {
                     states[i].post_reverse_lockout = (states[i].post_reverse_lockout - dt).max(0.0);
                 }
 
-                // Trigger: parede frontal <4m + speed<1.5 + stagnation>60 + sem lockout.
-                // NOTA: removemos a condição `both_blocked` do motor.rs por uma razão importante:
-                // o CHAMPION foi treinado com a lógica do motor.rs onde ré aciona ANTES de ficar
-                // preso contra uma só parede. Quando lat_r está livre mas lat_l+fwd bloqueados,
-                // o modelo emite throttle negativo (sinalizando intenção de ré) — esse sinal deve
-                // ativar a ré. Sem isso, throttle negativo é clippado para zero e o carro trava.
-                // Além disso: o motor.rs usa `forward_wall_dist` que é calculado diferente
-                // (com probes mais longos) — nosso fwd_dist pode ser mais restritivo. Por isso
-                // o gatilho usa 4.0 m (`revcfg::TRIGGER_DIST_M`), mais permissivo que os 3.0 m
-                // que uma leitura ingênua de motor.rs sugeriria.
+                // Trigger: frontal wall <4m + speed<1.5 + stagnation>60 + no lockout.
+                // NOTE: we removed motor.rs's `both_blocked` condition for an important reason:
+                // the CHAMPION was trained with the motor.rs logic where reverse triggers BEFORE
+                // getting stuck against a single wall. When lat_r is free but lat_l+fwd blocked,
+                // the model emits negative throttle (signaling reverse intent) — that signal must
+                // activate the reverse. Without this, negative throttle is clipped to zero and the
+                // car gets stuck.
+                // Also: motor.rs uses `forward_wall_dist`, which is computed differently
+                // (with longer probes) — our fwd_dist can be more restrictive. That is why
+                // the trigger uses 4.0 m (`revcfg::TRIGGER_DIST_M`), more permissive than the 3.0 m
+                // a naive reading of motor.rs would suggest.
                 {
                     let rev = states[i].reverse_timer;
                     let stag = states[i].stagnation_ticks;
@@ -805,12 +808,12 @@ impl GpuLoop {
                     }
                 }
 
-                // Decrementa reverse_timer e verifica condição de saída da ré.
+                // Decrements reverse_timer and checks the reverse exit condition.
                 {
                     let rev = states[i].reverse_timer;
                     if rev > 0.0 {
                         let new_rev = rev - dt;
-                        // Sai da ré se: frontal ficou livre (>2.5m) ou timeout máximo.
+                        // Exits reverse if: front is clear (>2.5m) or maximum timeout.
                         if fwd_dist > revcfg::EXIT_CLEAR_M || new_rev > revcfg::MAX_DURATION_S {
                             states[i].reverse_timer = 0.0;
                             states[i].post_reverse_lockout = revcfg::POST_LOCKOUT_S;
@@ -820,11 +823,11 @@ impl GpuLoop {
                     }
                 }
 
-                // Lê hidden do CfC de percepção (estado do tick T-1, atualizado no readback).
+                // Reads the perception CfC hidden (state of tick T-1, updated in the readback).
                 let cfc_ref = &self.percept_cfc[i];
                 let hidden = &cfc_ref.pipeline.state.h; // &Vec<f32>, len=16
 
-                // Monta [reverse_timer, cfc_hidden[0..15]] para injetar em temporal[32-48].
+                // Builds [reverse_timer, cfc_hidden[0..15]] to inject into temporal[32-48].
                 let mut val = [0.0f32; 17];
                 val[0] = states[i].reverse_timer;
                 for j in 0..16 {
@@ -836,7 +839,7 @@ impl GpuLoop {
                 .update_extra_temporal(&self.queue, &extra_vals[..n]);
         }
 
-        // ── 4. Encoder único ──────────────────────────────────────────────────
+        // ── 4. Single encoder ─────────────────────────────────────────────────
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -844,7 +847,7 @@ impl GpuLoop {
             });
 
         // ── 4a. Retina ────────────────────────────────────────────────────────
-        // Params uniform para a retina (16 + 64 bytes = 80 bytes).
+        // Uniform params for the retina (16 + 64 bytes = 80 bytes).
         let mut pitches_arr = [[0.0f32; 4]; 4];
         for row in 0..RETINA_ROWS {
             pitches_arr[row / 4][row % 4] = pitch(row);
@@ -885,11 +888,11 @@ impl GpuLoop {
                 },
             ],
         });
-        // ── 4a-PRE: preserva retina do tick anterior ANTES da retina escrever ─────
-        // copy_retina_prev copia buf_retina_out (tick t-1) → buf_retina_prev.
-        // Isso DEVE acontecer antes do dispatch da retina (que sobrescreve buf_retina_out).
-        // No tick 0: buf_retina_prev = zeros → motion = |frame_real - 0| = frame_real (ok).
-        // Nos ticks seguintes: buf_retina_prev = frame do tick t-1 → motion = delta real.
+        // ── 4a-PRE: preserves the previous tick's retina BEFORE the retina writes ─
+        // copy_retina_prev copies buf_retina_out (tick t-1) → buf_retina_prev.
+        // This MUST happen before the retina dispatch (which overwrites buf_retina_out).
+        // At tick 0: buf_retina_prev = zeros → motion = |real_frame - 0| = real_frame (ok).
+        // On subsequent ticks: buf_retina_prev = frame of tick t-1 → motion = real delta.
         self.percept
             .copy_retina_prev(&mut enc, &self.buf_retina_out);
         {
@@ -899,19 +902,19 @@ impl GpuLoop {
             });
             pass.set_pipeline(&self.pipeline_retina);
             pass.set_bind_group(0, &bg_retina, &[]);
-            // 64 threads/workgroup: 2 waves de 32 no RDNA2 (wave32 = tamanho correto).
-            // Total threads = n × RETINA_TOTAL. Para 60 seres: 60×1764 = 105.840 threads.
+            // 64 threads/workgroup: 2 waves of 32 on RDNA2 (wave32 = the correct size).
+            // Total threads = n × RETINA_TOTAL. For 60 beings: 60×1764 = 105.840 threads.
             // Workgroups = ceil(105.840 / 64) = 1.654.
             let total = (n * RETINA_TOTAL) as u32;
             pass.dispatch_workgroups(total.div_ceil(64), 1, 1);
         }
-        // Encerrar pass_retina insere barreira global de memória:
-        // buf_retina_out é visível para o próximo dispatch (percepção).
+        // Ending pass_retina inserts a global memory barrier:
+        // buf_retina_out is visible to the next dispatch (perception).
 
-        // ── 4b. Percepção ─────────────────────────────────────────────────────
-        // bind_and_dispatch grava no encoder SEM submit.
-        // Lê buf_retina_out diretamente da VRAM — zero readback.
-        // Salva bytes_percept para o readback diagnóstico (IARA_DIAG quando travado).
+        // ── 4b. Perception ────────────────────────────────────────────────────
+        // bind_and_dispatch records into the encoder WITHOUT submit.
+        // Reads buf_retina_out directly from VRAM — zero readback.
+        // Saves bytes_percept for the diagnostic readback (IARA_DIAG when stuck).
         let bytes_percept = self.percept.bind_and_dispatch(
             &mut enc,
             &self.device,
@@ -919,31 +922,31 @@ impl GpuLoop {
             &poses_percept[..n],
             &self.buf_retina_out,
         );
-        // Após encerrar o pass de percepção, buf_percept_out está pronto na VRAM.
-        // O cérebro lê esse buffer DIRETAMENTE via binding 8 (use_percept_direct=1),
-        // sem nenhum readback intermediário CPU. O elo percepção→cérebro existe agora.
-        // IMPORTANTE: atomicOr escreve u32 em buf_percept_out; o brain.wgsl lê u32
-        // sem atomics (o pass de percepção já terminou — barreiras de workgroup garantem).
+        // After the perception pass ends, buf_percept_out is ready in VRAM.
+        // The brain reads that buffer DIRECTLY via binding 8 (use_percept_direct=1),
+        // with no intermediate CPU readback. The perception→brain link exists now.
+        // IMPORTANT: atomicOr writes u32 into buf_percept_out; brain.wgsl reads u32
+        // without atomics (the perception pass has already ended — workgroup barriers guarantee it).
 
-        // ── 4c. Cérebro ───────────────────────────────────────────────────────
-        // bind_and_dispatch com buf_percept = Some(...) ativa use_percept_direct=1.
-        // O shader lê o wave diretamente de buf_percept_out (56 u32 por ser),
-        // desempacota i8 two's-complement em linha, e aplica KAN+CfC+L1+L2.
-        // wave_data_i32 é ignorado neste path (passamos slice vazio).
+        // ── 4c. Brain ─────────────────────────────────────────────────────────
+        // bind_and_dispatch with buf_percept = Some(...) enables use_percept_direct=1.
+        // The shader reads the wave directly from buf_percept_out (56 u32 per being),
+        // unpacks i8 two's-complement inline, and applies KAN+CfC+L1+L2.
+        // wave_data_i32 is ignored on this path (we pass an empty slice).
         let bytes_intent = self.brain.bind_and_dispatch(
             &mut enc,
             n,
-            &[], // ignorado: use_percept_direct=1
+            &[], // ignored: use_percept_direct=1
             dt,
-            Some(self.percept.buf_output()), // elo percepção→cérebro via VRAM
+            Some(self.percept.buf_output()), // perception→brain link via VRAM
         );
 
-        // ── 4d-extra. Cópia retina → buf_retina_readback (para CfC percepção) ──
-        // Adicionamos no encoder a cópia buf_retina_out → buf_retina_readback.
-        // Isso permite, após o poll(Wait), mapear buf_retina_readback e rodar o
-        // CfC de percepção na CPU com a retina DO TICK ATUAL (t). No próximo tick
-        // (t+1), o estado atualizado do CfC será injetado em temporal[33-48].
-        // Custo: ~423 KB de cópia intra-GPU (DMA, ~2 μs) + readback PCIe (~50 μs).
+        // ── 4d-extra. Copy retina → buf_retina_readback (for the perception CfC) ──
+        // We add to the encoder the copy buf_retina_out → buf_retina_readback.
+        // This allows, after poll(Wait), mapping buf_retina_readback and running the
+        // perception CfC on the CPU with the retina OF THE CURRENT TICK (t). At the next
+        // tick (t+1), the updated CfC state will be injected into temporal[33-48].
+        // Cost: ~423 KB of intra-GPU copy (DMA, ~2 μs) + PCIe readback (~50 μs).
         let retina_copy_bytes = (n * RETINA_TOTAL * 4) as u64;
         enc.copy_buffer_to_buffer(
             &self.buf_retina_out,
@@ -953,30 +956,30 @@ impl GpuLoop {
             retina_copy_bytes,
         );
 
-        // ── 4e. Submit único ──────────────────────────────────────────────────
-        // Todos os dispatches (retina, percepção, cérebro) + cópia retina readback
-        // num único command buffer → UM DMA de submit para o driver.
+        // ── 4e. Single submit ─────────────────────────────────────────────────
+        // All dispatches (retina, perception, brain) + retina readback copy
+        // in a single command buffer → ONE submit DMA to the driver.
         self.queue.submit(Some(enc.finish()));
 
-        // ── 5. Poll único — bloqueia até todos os kernels terminarem ──────────
-        // Este é o único round-trip por tick.
+        // ── 5. Single poll — blocks until all kernels finish ──────────────────
+        // This is the only round-trip per tick.
         self.device.poll(wgpu::Maintain::Wait);
 
-        // ── 6. Leitura do intent (960 bytes para 60 seres) ────────────────────
+        // ── 6. Intent read (960 bytes for 60 beings) ──────────────────────────
         let intents = self.brain.read_intent_after_submit(n);
 
-        // ── 6b. Readback da retina e atualização do CfC de percepção ──────────
-        // Lemos buf_retina_readback (copiado no encoder 4d-extra), rodamos o CfC
-        // de percepção para cada ser, e atualizamos o estado interno do CfC (h).
-        // No PRÓXIMO tick, update_extra_temporal() lerá self.percept_cfc[i].pipeline.cfc.h
-        // e injetará em temporal[33-48] para o shader escrever ch192-207.
+        // ── 6b. Retina readback and perception CfC update ─────────────────────
+        // We read buf_retina_readback (copied in encoder 4d-extra), run the perception
+        // CfC for each being, and update the CfC's internal state (h).
+        // At the NEXT tick, update_extra_temporal() will read self.percept_cfc[i].pipeline.cfc.h
+        // and inject it into temporal[33-48] for the shader to write ch192-207.
         //
-        // Formato buf_retina_readback: N × RETINA_TOTAL u32 packed (mm<<8 | mat).
-        // RetinaPerception::perceive() aceita &[i8] (distância quantizada -127..127).
-        // A conversão usa a codificação legada do motor.rs (codificacao_legada equivalente):
-        //   mat=0 (grass) → moderado
-        //   mat=1 (road)  → negativo
-        //   mat=2 (wall)  → positivo alto
+        // buf_retina_readback format: N × RETINA_TOTAL packed u32 (mm<<8 | mat).
+        // RetinaPerception::perceive() accepts &[i8] (quantized distance -127..127).
+        // The conversion uses motor.rs's legacy encoding (codificacao_legada equivalent):
+        //   mat=0 (grass) → moderate
+        //   mat=1 (road)  → negative
+        //   mat=2 (wall)  → high positive
         //   mat=3 (hole)  → 127
         {
             let slice = self.buf_retina_readback.slice(0..retina_copy_bytes);
@@ -984,16 +987,16 @@ impl GpuLoop {
             slice.map_async(wgpu::MapMode::Read, move |r| {
                 let _ = tx.send(r);
             });
-            // Poll pós-mapeamento: o submit já foi processado pelo poll acima,
-            // mas o callback do map_async precisa de um poll para ser servido.
+            // Post-mapping poll: the submit was already processed by the poll above,
+            // but the map_async callback needs a poll to be served.
             self.device.poll(wgpu::Maintain::Wait);
             let _ = rx.recv();
 
             let retina_data = slice.get_mapped_range();
             let retina_u32: &[u32] = bytemuck::cast_slice(&retina_data);
 
-            // Para cada ser: converte pixels u32 → i8 e roda o CfC de percepção.
-            // O hidden atualizado será usado no PRÓXIMO tick via temporal[33-48].
+            // For each being: converts u32 pixels → i8 and runs the perception CfC.
+            // The updated hidden will be used at the NEXT tick via temporal[33-48].
             for i in 0..n {
                 let base = i * RETINA_TOTAL;
                 let mut retina_i8 = vec![0i8; RETINA_TOTAL];
@@ -1002,14 +1005,14 @@ impl GpuLoop {
                     let dist_mm = (packed >> 8) as f32;
                     let dist_m = dist_mm / 1000.0;
                     let mat = packed & 0xFF;
-                    // Replica codificacao_legada() do motor.rs:
-                    //   wall (2): curva 127→55→0 (≤30m → 55, ≤120m → 0 linear)
-                    //   road (1): -128..0 (mais perto = mais negativo)
-                    //   grass(0): ~40 fixo
-                    //   hole (3): 127 (perigo máximo)
+                    // Replicates codificacao_legada() from motor.rs:
+                    //   wall (2): curve 127→55→0 (≤30m → 55, ≤120m → 0 linear)
+                    //   road (1): -128..0 (closer = more negative)
+                    //   grass(0): ~40 fixed
+                    //   hole (3): 127 (maximum danger)
                     let v: f32 = match mat {
                         2 => {
-                            // wall: positivo alto perto, decai à distância
+                            // wall: high positive when close, decays with distance
                             if dist_m <= 30.0 {
                                 127.0 - (127.0 - 55.0) * (dist_m / 30.0)
                             } else {
@@ -1017,17 +1020,17 @@ impl GpuLoop {
                             }
                         }
                         1 => {
-                            // road: negativo (mais perto = mais negativo)
+                            // road: negative (closer = more negative)
                             -128.0 + (dist_m.min(80.0) / 80.0) * 128.0
                         }
-                        0 => 40.0,  // grass: valor moderado fixo
-                        _ => 127.0, // hole (mat=3): perigo máximo
+                        0 => 40.0,  // grass: fixed moderate value
+                        _ => 127.0, // hole (mat=3): maximum danger
                     };
                     retina_i8[j] = v.clamp(-127.0, 127.0) as i8;
                 }
-                // Roda o CfC de percepção (atualiza estado recorrente interno).
-                // perceive() retorna PerceptionOutput com hidden[0..16] atualizado.
-                // O próximo tick lerá self.percept_cfc[i].pipeline.cfc.h diretamente.
+                // Runs the perception CfC (updates the internal recurrent state).
+                // perceive() returns PerceptionOutput with hidden[0..16] updated.
+                // The next tick will read self.percept_cfc[i].pipeline.cfc.h directly.
                 self.percept_cfc[i].perceive(&retina_i8);
             }
 
@@ -1035,11 +1038,11 @@ impl GpuLoop {
             self.buf_retina_readback.unmap();
         }
 
-        // ── DIAGNÓSTICO: onde o sinal morre? ──────────────────────────────────
-        // Os kernels validam 100% isolados (gpu_validate), mas no laço o intent sai zero e
-        // ninguém anda. Então o defeito está na LIGAÇÃO, não na matemática. Estes três
-        // números dizem em qual elo: wave da percepção, intent do cérebro, ou comando que
-        // chega na física. Só imprime no primeiro tick, para não poluir.
+        // ── DIAGNOSTIC: where does the signal die? ────────────────────────────
+        // The kernels validate 100% in isolation (gpu_validate), but in the loop the intent
+        // comes out zero and nobody moves. So the defect is in the LINKAGE, not the math.
+        // These three numbers say in which link: perception wave, brain intent, or the command
+        // that reaches physics. Only prints on the first tick, to avoid clutter.
         if std::env::var("IARA_DIAG").is_ok() && (!self.diag_feito || tick_idx % 500 == 0) {
             self.diag_feito = true;
             let int_nz = intents
@@ -1052,7 +1055,7 @@ impl GpuLoop {
                 .flat_map(|a| a.iter())
                 .fold(0.0f32, |m, v| m.max(v.abs()));
             eprintln!(
-                "[DIAG t={}] intent: {}/{} nao-zero, |max|={:.6}",
+                "[DIAG t={}] intent: {}/{} non-zero, |max|={:.6}",
                 tick_idx,
                 int_nz,
                 intents.len() * 96,
@@ -1063,35 +1066,35 @@ impl GpuLoop {
                 tick_idx,
                 &intents[0][0..3.min(intents[0].len())]
             );
-            // ser 0 estado completo
+            // being 0 full state
             if !states.is_empty() {
                 let p = &states[0].phys;
                 let speed = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
                 eprintln!(
-                    "[DIAG t={}] ser0 speed={:.2}m/s rpm={:.0} gear={}",
+                    "[DIAG t={}] being0 speed={:.2}m/s rpm={:.0} gear={}",
                     tick_idx, speed, p.current_rpm, p.current_gear
                 );
             }
         }
-        // ── DIAGNÓSTICO DE TRAVAMENTO: lê o sensory_wave quando ser0 está parado ──
-        // Quando IARA_DIAG=1 e ser0 está a < 0.5 m/s, faz readback manual do buf_percept_out
-        // via um buffer temporário MAP_READ, imprime canais críticos para identificar o travamento.
-        // Um submit+poll separado é necessário porque o buf_readback da percepção pode estar
-        // mapeado ou não, dependendo do fluxo. Usamos o buf_output direto (COPY_SRC).
+        // ── STALL DIAGNOSTIC: reads the sensory_wave when being0 is stopped ───
+        // When IARA_DIAG=1 and being0 is at < 0.5 m/s, does a manual readback of buf_percept_out
+        // via a temporary MAP_READ buffer, prints critical channels to identify the stall.
+        // A separate submit+poll is needed because the perception's buf_readback may or may not
+        // be mapped, depending on the flow. We use buf_output directly (COPY_SRC).
         if std::env::var("IARA_DIAG").is_ok() && tick_idx % 200 == 0 && !states.is_empty() {
             let p = &states[0].phys;
             let speed0 = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
-            // Só quando travado para não adicionar latência no laço quente.
+            // Only when stuck, to avoid adding latency to the hot loop.
             if speed0 < 0.5 && bytes_percept > 0 {
-                // Cria buffer temporário MAP_READ para 1 ser apenas (56 u32 = 224 bytes).
-                let diag_bytes = (1 * 56 * 4) as u64; // 1 ser × 56 u32 × 4 bytes
+                // Creates a temporary MAP_READ buffer for 1 being only (56 u32 = 224 bytes).
+                let diag_bytes = (1 * 56 * 4) as u64; // 1 being × 56 u32 × 4 bytes
                 let buf_wave_diag = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("diag-wave"),
                     size: diag_bytes,
                     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                // Copia buf_output[ser0] → buf_wave_diag via encoder separado.
+                // Copies buf_output[being0] → buf_wave_diag via a separate encoder.
                 let mut enc_diag =
                     self.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1107,7 +1110,7 @@ impl GpuLoop {
                 self.queue.submit(Some(enc_diag.finish()));
                 self.device.poll(wgpu::Maintain::Wait);
 
-                // Map e lê.
+                // Maps and reads.
                 let slice_w = buf_wave_diag.slice(0..diag_bytes);
                 let (tx_w, rx_w) = std::sync::mpsc::channel();
                 slice_w.map_async(wgpu::MapMode::Read, move |r| {
@@ -1118,7 +1121,7 @@ impl GpuLoop {
 
                 let wave_data = slice_w.get_mapped_range();
                 let words_w: &[u32] = bytemuck::cast_slice(&wave_data);
-                // Desempacota i8 do ser 0 (base=0).
+                // Unpacks i8 of being 0 (base=0).
                 let mut w = [0i8; 223];
                 for ch in 0..223usize {
                     let word = words_w[ch / 4];
@@ -1127,9 +1130,9 @@ impl GpuLoop {
                 drop(wave_data);
                 buf_wave_diag.unmap();
 
-                // Imprime canais críticos do travamento.
+                // Prints the critical stall channels.
                 eprintln!(
-                    "[WAVE t={}] TRAVADO pos=({:.0},{:.0}) speed={:.2}m/s",
+                    "[WAVE t={}] STUCK pos=({:.0},{:.0}) speed={:.2}m/s",
                     tick_idx, p.pos[0], p.pos[2], speed0
                 );
                 eprintln!(
@@ -1166,24 +1169,24 @@ impl GpuLoop {
         }
         if intents.len() != n {
             eprintln!(
-                "  ERRO: readback do intent retornou {} em vez de {}",
+                "  ERROR: intent readback returned {} instead of {}",
                 intents.len(),
                 n
             );
             return false;
         }
 
-        // ── 7. Aplica intenção e roda física ──────────────────────────────────
-        // intent[s][0] = throttle, [1] = steer, [2] = brake — logits brutos do L2.
-        // O motor.rs aplica kan_out.eval(out_idx, raw) antes de passar à física.
-        // Sem o KAN: intent[1]=0.985 → steer=0.985 → slip_angle=90° → sem tração.
-        // Além disso, replica o smoothing temporal do steer (motor.rs L1925):
+        // ── 7. Applies intent and runs physics ────────────────────────────────
+        // intent[s][0] = throttle, [1] = steer, [2] = brake — raw logits from L2.
+        // motor.rs applies kan_out.eval(out_idx, raw) before passing to physics.
+        // Without the KAN: intent[1]=0.985 → steer=0.985 → slip_angle=90° → no traction.
+        // Also replicates the temporal steer smoothing (motor.rs L1925):
         //   steer_raw = prev_steer * 0.50 + new_steer * 0.50
-        // Isso amortece o steer de tick para tick e evita reversão abrupta ±1 winner-take-all.
-        // Deduplicado (E3, REFACTOR_PLAN.md §2.3): usa universe::kan::eval_knots em vez
-        // de reimplementar a fórmula do B-spline aqui (era cópia idêntica da closure de
-        // gpu_evolve.rs, e o comentário só AFIRMAVA ser idêntica a KanOutputHead::eval()
-        // sem compartilhar o código de fato).
+        // This damps steer from tick to tick and avoids abrupt ±1 winner-take-all reversal.
+        // Deduplicated (E3, REFACTOR_PLAN.md §2.3): uses universe::kan::eval_knots instead
+        // of reimplementing the B-spline formula here (it was an identical copy of the
+        // gpu_evolve.rs closure, and the comment only CLAIMED to be identical to
+        // KanOutputHead::eval() without actually sharing the code).
         let kan_eval_fn = |out_idx: usize, x: f32| -> f32 {
             universe::kan::eval_knots(&self.kan_knots, out_idx, x)
         };
@@ -1191,92 +1194,92 @@ impl GpuLoop {
             .map(|i| {
                 let mut s = states[i].phys;
                 let intent = &intents[i];
-                // Aplica KAN de saída (replica motor.rs L1873-L1926).
+                // Applies the output KAN (replicates motor.rs L1873-L1926).
                 let thr_kan = kan_eval_fn(0, intent[0]).max(0.0); // throttle ≥ 0
                 let steer_kan = kan_eval_fn(1, intent[1]);
                 let brk_kan = kan_eval_fn(2, intent[2]).max(0.0); // brake ≥ 0
-                // Smoothing temporal do steer (50/50): amortece reversão abrupta.
+                // Temporal steer smoothing (50/50): damps abrupt reversal.
                 let steer_smooth =
                     (states[i].prev_steer * 0.50 + steer_kan * 0.50).clamp(-1.0, 1.0);
 
                 let is_reversing = states[i].reverse_timer > 0.0;
                 let in_lockout = states[i].post_reverse_lockout > 0.0;
 
-                // motor.rs L1950: anula brake quando speed < 2.0 m/s (evita travar carro parado).
-                // Sem isso: modelo emite brake=0.98 + throttle=0.90 → ambos se anulam → speed=0
-                // para sempre. O modelo aprendeu que "parado + parede" → brake alto, mas a física
-                // do motor.rs já anula o brake baixo speed para dar chance ao throttle.
+                // motor.rs L1950: cancels brake when speed < 2.0 m/s (avoids locking a stopped car).
+                // Without this: the model emits brake=0.98 + throttle=0.90 → both cancel out → speed=0
+                // forever. The model learned that "stopped + wall" → high brake, but motor.rs's physics
+                // already cancels the brake at low speed to give the throttle a chance.
                 let speed_now = (s.vel[0].powi(2) + s.vel[2].powi(2)).sqrt();
                 let brk_final = if speed_now < 2.0 { 0.0 } else { brk_kan };
 
                 if is_reversing {
-                    // RÉ ATIVA: override COMPLETO do intent neural (motor.rs L2325-2339).
-                    // Durante ré: pedal fixo de 0.75, steer=0 (backup reto), brake=0.
-                    // O modelo NÃO controla o carro em ré — foi treinado com esse override.
-                    // Force-shift para gear=0 (Reverse): shift_req = -1 repetido até gear=0.
-                    // A física desce 1 marcha por tick quando throttle > 0 e gear > 0 na ré.
-                    // Replicamos forçando current_gear = 0 diretamente (mesma semântica que shift_req).
-                    s.throttle = universe::config::iara::reverse_maneuver::PEDAL; // pedal de recuo fixo
-                    s.steer = 0.0; // backup reto (sem risco de girar para outra parede)
-                    s.brake_cmd = 0.0; // sem freio (o pedal reverso acelera a ré)
-                    s.current_gear = 0; // gear 0 = Reverse (convenção do physics.wgsl)
+                    // ACTIVE REVERSE: COMPLETE override of the neural intent (motor.rs L2325-2339).
+                    // During reverse: fixed pedal of 0.75, steer=0 (straight backup), brake=0.
+                    // The model does NOT control the car in reverse — it was trained with this override.
+                    // Force-shift to gear=0 (Reverse): shift_req = -1 repeated until gear=0.
+                    // Physics drops 1 gear per tick when throttle > 0 and gear > 0 in reverse.
+                    // We replicate it by forcing current_gear = 0 directly (same semantics as shift_req).
+                    s.throttle = universe::config::iara::reverse_maneuver::PEDAL; // fixed reverse pedal
+                    s.steer = 0.0; // straight backup (no risk of turning into another wall)
+                    s.brake_cmd = 0.0; // no brake (the reverse pedal accelerates the reverse)
+                    s.current_gear = 0; // gear 0 = Reverse (physics.wgsl convention)
                 } else if in_lockout {
-                    // PÓS-RÉ LOCKOUT: throttle capeado em 0.8 para aceleração suave ao reiniciar.
-                    // Replica motor.rs L2331-2332: pedal = (intent * safety_cap).min(0.8).
+                    // POST-REVERSE LOCKOUT: throttle capped at 0.8 for smooth acceleration on restart.
+                    // Replicates motor.rs L2331-2332: pedal = (intent * safety_cap).min(0.8).
                     s.throttle = thr_kan.min(0.8);
                     s.steer = steer_smooth;
                     s.brake_cmd = brk_final;
-                    // Auto-clutch: se saiu da ré (gear=0) volta para 1ª marcha (gear=2 = 1ª).
-                    // Motor.rs L2294-2296: se current_gear <= 1 e não em ré → shift_req = +1.
+                    // Auto-clutch: if it left reverse (gear=0), returns to 1st gear (gear=2 = 1st).
+                    // Motor.rs L2294-2296: if current_gear <= 1 and not reversing → shift_req = +1.
                     if s.current_gear <= 1 {
                         s.current_gear = 2;
                     }
                 } else if states[i].escape_ticks > 0 {
-                    // ESCAPE DE ESTAGNAÇÃO: modelo está parado por 0.5s sem ré.
-                    // Replica motor.rs stagnation escape: throttle=0.3 mínimo, brake=0.
-                    // O steer continua sendo do modelo para manter a navegação.
-                    // Sem isso: modelo emite throttle=0 em curvas apertadas e fica no idle
-                    // do motor (0.07 m/s eterno). O CHAMPION foi treinado esperando essa âncora.
-                    s.throttle = 0.3f32.max(thr_kan); // mínimo 0.3, respeita se modelo quer mais
+                    // STAGNATION ESCAPE: the model has been stopped for 0.5s with no reverse.
+                    // Replicates motor.rs stagnation escape: throttle=0.3 minimum, brake=0.
+                    // Steer remains the model's to keep navigating.
+                    // Without this: the model emits throttle=0 in tight corners and stays at engine
+                    // idle (0.07 m/s forever). The CHAMPION was trained expecting this anchor.
+                    s.throttle = 0.3f32.max(thr_kan); // minimum 0.3, respects if the model wants more
                     s.steer = steer_smooth;
-                    s.brake_cmd = 0.0; // zera freio para o throttle mínimo ter efeito
+                    s.brake_cmd = 0.0; // zeroes the brake so the minimum throttle has effect
                     if s.current_gear <= 1 {
                         s.current_gear = 2;
                     }
                 } else {
-                    // MODO NORMAL: intent neural completo.
+                    // NORMAL MODE: full neural intent.
                     s.throttle = thr_kan;
                     s.steer = steer_smooth;
                     s.brake_cmd = brk_final;
-                    // Auto-clutch: sai de gear 0/1 para 2 (1ª marcha) quando não em ré.
+                    // Auto-clutch: leaves gear 0/1 for 2 (1st gear) when not reversing.
                     if s.current_gear <= 1 {
                         s.current_gear = 2;
                     }
-                    // Guardian Anti-Stall: se parado em marcha alta (>2), desce para 2.
+                    // Guardian Anti-Stall: if stopped in a high gear (>2), drops to 2.
                     if s.current_gear > 2 && speed_now < 3.0 {
                         s.current_gear -= 1;
                     }
 
-                    // AUTO-SHIFT POR RPM — replica motor.rs L2303-2309 (linhas 2303, 2307).
-                    // CAUSA RAIZ DO BUG: sem este bloco o carro fica preso em gear=3 (2ª marcha).
-                    // Com gear=3 e max_rpm=8500, o limitador (`tm=0` quando `rr>1`) corta o torque
-                    // assim que RPM > max_rpm — o carro satura em ~8 m/s e decai para 0.17 m/s.
-                    // O modelo foi treinado no motor.rs que tem auto-shift → espera que as marchas
-                    // troquem por RPM, não por decisão do cérebro.
+                    // AUTO-SHIFT BY RPM — replicates motor.rs L2303-2309 (lines 2303, 2307).
+                    // ROOT CAUSE OF THE BUG: without this block the car gets stuck in gear=3 (2nd gear).
+                    // With gear=3 and max_rpm=8500, the limiter (`tm=0` when `rr>1`) cuts torque
+                    // as soon as RPM > max_rpm — the car saturates at ~8 m/s and decays to 0.17 m/s.
+                    // The model was trained on motor.rs which has auto-shift → it expects gears
+                    // to change by RPM, not by a brain decision.
                     //
-                    // Embreagem colada (is_clutch_engaged no motor.rs):
+                    // Engaged clutch (is_clutch_engaged in motor.rs):
                     //   wheel_ratio ≈ 12 - (gear-2)*2 → gear=3 → ratio=8
-                    //   wheel_rpm = speed * ratio * 30 → a 8 m/s: 8 * 8 * 30 = 1920 > 1200 → colada
-                    //   (conservador: usamos speed > 3 m/s E gear >= 2 como proxy)
-                    // Upshift: rpm > 85% max_rpm E marcha < 6ª E shift_timer=0
-                    // Downshift: rpm < 30% max_rpm E marcha > 2ª E speed > 3 m/s E shift_timer=0
+                    //   wheel_rpm = speed * ratio * 30 → at 8 m/s: 8 * 8 * 30 = 1920 > 1200 → engaged
+                    //   (conservative: we use speed > 3 m/s AND gear >= 2 as a proxy)
+                    // Upshift: rpm > 85% max_rpm AND gear < 6th AND shift_timer=0
+                    // Downshift: rpm < 30% max_rpm AND gear > 2nd AND speed > 3 m/s AND shift_timer=0
                     if s.shift_timer <= 0.0 && s.current_gear >= 2 && speed_now > 3.0 {
                         if s.current_rpm > s.max_rpm * 0.85 && s.current_gear < 6 {
-                            // Sobe marcha: timer de 150ms (motor.rs usa 150ms)
+                            // Upshift: 150ms timer (motor.rs uses 150ms)
                             s.current_gear += 1;
                             s.shift_timer = 0.15;
                         } else if s.current_rpm < s.max_rpm * 0.30 && s.current_gear > 2 {
-                            // Desce marcha: evita afogamento em marcha longa sem velocidade
+                            // Downshift: avoids choking in a long gear without speed
                             s.current_gear -= 1;
                             s.shift_timer = 0.15;
                         }
@@ -1286,81 +1289,81 @@ impl GpuLoop {
                 s
             })
             .collect();
-        // Salva steer suavizado e atualiza stagnation para o próximo tick.
+        // Saves the smoothed steer and updates stagnation for the next tick.
         for i in 0..n {
-            // Ao sair da ré, reseta prev_steer para 0 para evitar salto brusco no steer
-            // na retomada: ao voltar ao modo normal, o smooth começa de 0 (reto), não de
-            // qualquer valor que o modelo estava emitindo durante a ré.
+            // On leaving reverse, resets prev_steer to 0 to avoid an abrupt steer jump
+            // on resumption: on returning to normal mode, the smooth starts from 0 (straight),
+            // not from whatever the model was emitting during reverse.
             if states[i].reverse_timer > 0.0 {
-                states[i].prev_steer = 0.0; // backup reto → suaviza a retomada
+                states[i].prev_steer = 0.0; // straight backup → smooths the resumption
             } else {
                 states[i].prev_steer = phys_states[i].steer;
             }
-            // Atualiza stagnation: conta ticks com speed < 1.5 m/s.
-            // Threshold = 1.5 m/s idêntico ao motor.rs L2220 (speed < 1.5 para trigger de ré).
+            // Updates stagnation: counts ticks with speed < 1.5 m/s.
+            // Threshold = 1.5 m/s identical to motor.rs L2220 (speed < 1.5 for the reverse trigger).
             let speed = (phys_states[i].vel[0].powi(2) + phys_states[i].vel[2].powi(2)).sqrt();
             if speed < 1.5 {
                 states[i].stagnation_ticks += 1;
             } else {
                 states[i].stagnation_ticks = 0;
             }
-            // Ativa escape de estagnação quando parado por 0.5s (32 ticks).
-            // O CHAMPION foi treinado com o motor.rs que tem curvature_governor + slow brain +
-            // stagnation escape — mecanismos externos que fazem o carro sair de curvas apertadas.
-            // Sem eles, o modelo emite throttle=0 + brake=0 em curvas e fica no idle (0.07 m/s).
-            // O escape não fabrica velocidade: só impede que throttle=0 eterno trave o carro;
-            // o ser ainda navega com steer do modelo. Desativável com IARA_NO_ESCAPE=1.
-            // DESLIGADO POR PADRÃO. O escape força `throttle = 0,3` e zera o freio do modelo
-            // — sobrepõe a decisão do cérebro. Medido em 50.000 ticks: COM escape
-            // `dist_max = 1744 m`, SEM escape `650 m`. **2,7× do resultado vinha da muleta.**
-            // Um número que depende dela não mede pilotagem, e a meta é medir pilotagem.
-            // `IARA_ESCAPE=1` reativa para comparar.
+            // Activates the stagnation escape when stopped for 0.5s (32 ticks).
+            // The CHAMPION was trained with motor.rs which has curvature_governor + slow brain +
+            // stagnation escape — external mechanisms that get the car out of tight corners.
+            // Without them, the model emits throttle=0 + brake=0 in corners and stays at idle (0.07 m/s).
+            // The escape does not fabricate speed: it only prevents eternal throttle=0 from locking
+            // the car; the being still navigates with the model's steer. Disable with IARA_NO_ESCAPE=1.
+            // OFF BY DEFAULT. The escape forces `throttle = 0.3` and zeroes the model's brake
+            // — it overrides the brain's decision. Measured over 50.000 ticks: WITH escape
+            // `dist_max = 1744 m`, WITHOUT escape `650 m`. **2.7× of the result came from the crutch.**
+            // A number that depends on it does not measure driving, and the goal is to measure driving.
+            // `IARA_ESCAPE=1` re-enables it for comparison.
             if std::env::var("IARA_ESCAPE").is_ok() {
-                // 32 ticks = 0.5s parado → ativa escape.
-                // 128 ticks = 2s de throttle mínimo 0.3 — suficiente para contornar a maioria das
-                // curvas apertadas da pista seed=9001 onde o CHAMPION fica em idle sem slow brain.
+                // 32 ticks = 0.5s stopped → activates escape.
+                // 128 ticks = 2s of minimum throttle 0.3 — enough to get around most of the
+                // tight corners of track seed=9001 where the CHAMPION idles without the slow brain.
                 if states[i].stagnation_ticks >= 32 && states[i].escape_ticks == 0 {
-                    states[i].escape_ticks = 64; // 1s de throttle=0.3 mínimo
+                    states[i].escape_ticks = 64; // 1s of minimum throttle=0.3
                     states[i].stagnation_ticks = 0;
                 }
             }
-            // Decrementa escape.
+            // Decrements the escape.
             if states[i].escape_ticks > 0 {
                 states[i].escape_ticks -= 1;
             }
         }
 
-        // Física roda no device isolado (PhysicsGpu tem device próprio).
-        // DIAGNÓSTICO: o cérebro manda acelerador 0,99 e o carro não anda. Aqui se vê se a
-        // física recebe o comando e o que ela devolve — carga nas rodas zero significa carro
-        // sem contato com o solo, e aí não há tração por mais torque que o motor faça.
+        // Physics runs on the isolated device (PhysicsGpu has its own device).
+        // DIAGNOSTIC: the brain sends throttle 0.99 and the car does not move. Here you see
+        // whether physics receives the command and what it returns — zero wheel load means a car
+        // with no ground contact, and then there is no traction no matter how much torque the engine makes.
         let diag = std::env::var("IARA_DIAG").is_ok() && !self.diag_fis;
         if diag {
             self.diag_fis = true;
             let a = &phys_states[0];
             eprintln!(
-                "[FIS-ANTES] thr={:.3} brk={:.3} str={:.3} rpm={:.0} gear={} vel={:?} pos_y={:.3}",
+                "[PHYS-BEFORE] thr={:.3} brk={:.3} str={:.3} rpm={:.0} gear={} vel={:?} pos_y={:.3}",
                 a.throttle, a.brake_cmd, a.steer, a.current_rpm, a.current_gear, a.vel, a.pos[1]
             );
-            eprintln!("[FIS-ANTES] wheels={:?}", &a.wheels[..4]);
+            eprintln!("[PHYS-BEFORE] wheels={:?}", &a.wheels[..4]);
         }
 
-        // step() escreve estado atualizado de volta em phys_states[i].
+        // step() writes the updated state back into phys_states[i].
         let ok_fis = self.phys_gpu.step(&mut phys_states);
         if diag {
             let a = &phys_states[0];
             eprintln!(
-                "[FIS-DEPOIS] ok={} vel={:?} pos_y={:.3} rpm={:.0} torque={:.1}",
+                "[PHYS-AFTER] ok={} vel={:?} pos_y={:.3} rpm={:.0} torque={:.1}",
                 ok_fis, a.vel, a.pos[1], a.current_rpm, a.drive_torque_out
             );
-            eprintln!("[FIS-DEPOIS] wheels={:?}", &a.wheels[..4]);
+            eprintln!("[PHYS-AFTER] wheels={:?}", &a.wheels[..4]);
         }
         if !ok_fis {
-            eprintln!("  ERRO: phys_gpu.step() falhou (n={} > capacidade?)", n);
+            eprintln!("  ERROR: phys_gpu.step() failed (n={} > capacity?)", n);
             return false;
         }
 
-        // Atualiza estados na CPU + rotação de yaw (idem gpu_evolve.rs).
+        // Updates CPU states + yaw rotation (same as gpu_evolve.rs).
         for i in 0..n {
             states[i].phys = phys_states[i];
             let theta = states[i].phys.av_y * dt;
@@ -1383,15 +1386,15 @@ impl GpuLoop {
             states[i].phys.lat[2] /= ln_;
         }
 
-        // ── 8. Atualiza memory0 no estado temporal da GPU ─────────────────────
-        // memory0 = throttle intencional do tick atual, clamped em [0,1].
-        // O kernel de percepção no PRÓXIMO tick vai ler este valor como ch 120.
-        // Chamada APÓS a física para garantir que o throttle final é o que chegou
-        // nos pneus (não um valor pre-física).
-        // Custo: N × 4 bytes de write_buffer = 240 bytes @ 60 seres — negligível.
+        // ── 8. Updates memory0 in the GPU temporal state ──────────────────────
+        // memory0 = intentional throttle of the current tick, clamped to [0,1].
+        // The perception kernel at the NEXT tick will read this value as ch 120.
+        // Called AFTER physics to guarantee the final throttle is what reached
+        // the tires (not a pre-physics value).
+        // Cost: N × 4 bytes of write_buffer = 240 bytes @ 60 beings — negligible.
         let memory0_vals: Vec<f32> = (0..n)
             .map(|i| {
-                intents[i][0].clamp(0.0, 1.0) // mesmo clamp do throttle físico
+                intents[i][0].clamp(0.0, 1.0) // same clamp as the physical throttle
             })
             .collect();
         self.percept.update_memory0(&self.queue, &memory0_vals[..n]);
@@ -1400,11 +1403,11 @@ impl GpuLoop {
     }
 }
 
-// ─── Ponto de entrada ─────────────────────────────────────────────────────────
+// ─── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
-    // Força ICD Vulkan da Radeon antes de qualquer wgpu::Instance::new.
-    // Múltiplos ICDs causam SIGSEGV no loader (visto em gpu_validate.rs).
+    // Forces the Radeon Vulkan ICD before any wgpu::Instance::new.
+    // Multiple ICDs cause SIGSEGV in the loader (seen in gpu_validate.rs).
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
     if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
         unsafe {
@@ -1412,10 +1415,10 @@ fn main() {
         }
     }
 
-    // ── Parsing de args ────────────────────────────────────────────────────────
+    // ── Args parsing ──────────────────────────────────────────────────────────
     let args: Vec<String> = std::env::args().collect();
     let mut n_seres: usize = 60;
-    let mut n_ticks: usize = 20_000; // 20.000 ticks = 312,5s @ 64Hz ≈ 5 min de simulação
+    let mut n_ticks: usize = 20_000; // 20.000 ticks = 312.5s @ 64Hz ≈ 5 min of simulation
     {
         let mut i = 1;
         while i < args.len() {
@@ -1437,19 +1440,19 @@ fn main() {
             i += 1;
         }
     }
-    println!("=== gpu_loop: {} seres, {} ticks ===", n_seres, n_ticks);
-    println!("  Laço: retina+percepção+cérebro+física — um device só");
+    println!("=== gpu_loop: {} beings, {} ticks ===", n_seres, n_ticks);
+    println!("  Loop: retina+perception+brain+physics — one single device");
     println!();
 
-    // ── Mundo ─────────────────────────────────────────────────────────────────
+    // ── World ─────────────────────────────────────────────────────────────────
     let t0 = Instant::now();
-    // Pista: mesma seed/largura do gpu_validate para garantir que CHAMPION.dna é
-    // testado na pista em que foi validado. O CHAMPION foi evoluído em pistas rotativas,
-    // mas a validação canônica usa seed=9001, track_width=18m (gpu_validate.rs).
-    // Com 14m o CHAMPION colidia com a parede após ~200 ticks (steer treinado para pista maior).
+    // Track: same seed/width as gpu_validate to guarantee CHAMPION.dna is
+    // tested on the track it was validated on. The CHAMPION was evolved on rotating tracks,
+    // but the canonical validation uses seed=9001, track_width=18m (gpu_validate.rs).
+    // With 14m the CHAMPION collided with the wall after ~200 ticks (steer trained for a wider track).
     let world = VoxelWorld::new(9001, 18.0);
     println!(
-        "mundo: {}×{} · {} waypoints · volta {:.0} m  [{:.0} ms]",
+        "world: {}×{} · {} waypoints · lap {:.0} m  [{:.0} ms]",
         world.size,
         world.size,
         world.waypoints_world.len(),
@@ -1457,19 +1460,19 @@ fn main() {
         t0.elapsed().as_secs_f64() * 1000.0,
     );
 
-    // ── Engines: carrega CHAMPION.dna se existir, senão pesos aleatórios ────────
-    // SovereignEngine::new() inicializa TODOS os pesos com 0.0 (layers.rs:32),
-    // o que produz intent == 0 → nenhum movimento. É necessário carregar um DNA
-    // real para que o cérebro emita intenção não-nula.
-    // Sem CHAMPION.dna: os seres não se movem por decisão — saída do L1 é zero
-    // (pesos nulos × qualquer wave = 0). O programa avisa e sai com erro.
+    // ── Engines: loads CHAMPION.dna if it exists, otherwise random weights ─────
+    // SovereignEngine::new() initializes ALL weights with 0.0 (layers.rs:32),
+    // which produces intent == 0 → no movement. A real DNA must be loaded
+    // for the brain to emit non-null intent.
+    // Without CHAMPION.dna: the beings do not move by decision — the L1 output is zero
+    // (null weights × any wave = 0). The program warns and exits with an error.
     let t1 = Instant::now();
     let dna_opt = load_champion_dna("CHAMPION.dna");
     let engines: Vec<SovereignEngine> = (0..n_seres)
         .map(|_| {
             let mut eng = SovereignEngine::new();
             if let Some(ref dna) = dna_opt {
-                // Carrega pesos L1: cortex_raw (i8, 63.5-scaled) ou fast_weights (i8, 63.5-scaled).
+                // Loads L1 weights: cortex_raw (i8, 63.5-scaled) or fast_weights (i8, 63.5-scaled).
                 let w: Vec<f32> = if let Some(ref cr) = dna.cortex_raw {
                     cr.iter().map(|&b| b as f32 / 63.5).collect()
                 } else {
@@ -1477,7 +1480,7 @@ fn main() {
                 };
                 let n_l1 = eng.instinct_layer.weights.len().min(w.len());
                 eng.instinct_layer.weights[..n_l1].copy_from_slice(&w[..n_l1]);
-                // Carrega pesos L2 se presentes no DNA.
+                // Loads L2 weights if present in the DNA.
                 if let Some(ref l2) = dna.cortex_l2_raw {
                     let w2: Vec<f32> = l2.iter().map(|&b| b as f32 / 63.5).collect();
                     let n_l2 = eng.cortex_l2.weights.len().min(w2.len());
@@ -1487,9 +1490,9 @@ fn main() {
             eng
         })
         .collect();
-    // KAN output knots do CHAMPION — usado em GpuLoop::tick() via self.kan_knots.
-    // Motor.rs aplica kan_out.eval(out_idx, raw) antes de usar throttle/steer/brake.
-    // Sem o KAN: intent raw≈1 → steer físico=1 → slip_angle=90° → nenhuma tração.
+    // CHAMPION's KAN output knots — used in GpuLoop::tick() via self.kan_knots.
+    // Motor.rs applies kan_out.eval(out_idx, raw) before using throttle/steer/brake.
+    // Without the KAN: raw intent≈1 → physical steer=1 → slip_angle=90° → no traction.
     // KAN_OUT_KNOTS = 12 (kan.rs:85), KAN_OUT_DOMAIN = 2.0 (kan.rs:86).
     use universe::kan::KAN_OUT_KNOTS;
     let kan_knots: [[f32; KAN_OUT_KNOTS]; 3] = dna_opt
@@ -1498,39 +1501,39 @@ fn main() {
         .unwrap_or_else(universe::evolution::dna_genesis::default_kan_knots);
 
     let dna_status = if dna_opt.is_some() {
-        "CHAMPION.dna carregado — pesos reais"
+        "CHAMPION.dna loaded — real weights"
     } else {
-        "CHAMPION.dna nao encontrado — pesos ZEROS (seres nao se moverão por decisão própria)"
+        "CHAMPION.dna not found — ZERO weights (beings will not move by their own decision)"
     };
     println!(
-        "engines criados: {} seres · {}  [{:.0} ms]",
+        "engines created: {} beings · {}  [{:.0} ms]",
         n_seres,
         dna_status,
         t1.elapsed().as_secs_f64() * 1000.0
     );
 
-    // ── Contexto GPU ──────────────────────────────────────────────────────────
+    // ── GPU context ───────────────────────────────────────────────────────────
     let t2 = Instant::now();
     let mut ctx = match GpuLoop::new(&world, &engines, n_seres, kan_knots) {
         Some(c) => c,
         None => {
-            eprintln!("ERRO: sem GPU utilizavel. Abortando.");
+            eprintln!("ERROR: no usable GPU. Aborting.");
             std::process::exit(1);
         }
     };
     println!(
-        "GpuLoop pronto  [{:.0} ms]",
+        "GpuLoop ready  [{:.0} ms]",
         t2.elapsed().as_secs_f64() * 1000.0
     );
     println!();
 
-    // ── Estado inicial dos seres ───────────────────────────────────────────────
-    // Distribui seres ao longo dos waypoints da pista.
+    // ── Initial being states ───────────────────────────────────────────────────
+    // Distributes beings along the track's waypoints.
     let n_wp = world.waypoints_world.len();
     let mut states: Vec<BeingState> = (0..n_seres)
         .map(|i| {
             let wp = world.waypoints_world[(i * n_wp / n_seres).min(n_wp - 1)];
-            // Forward = direção para o próximo waypoint.
+            // Forward = direction to the next waypoint.
             let wp_next = world.waypoints_world[((i * n_wp / n_seres) + 1).min(n_wp - 1)];
             let dx = wp_next.x - wp.x;
             let dz = wp_next.y - wp.y;
@@ -1548,37 +1551,37 @@ fn main() {
         })
         .collect();
 
-    // ── Odômetro acumulado por ser ─────────────────────────────────────────────
-    // Usamos integração de velocidade * dt (mais preciso que euclidiana entre pontos
-    // esparsos quando a pista tem curvas fechadas). A distância euclidiana entre ticks
-    // subestima a trajetória real; a integral de |vel| * dt = percurso real.
-    // Voltas: distância acumulada / lap_distance.
-    // HETEROGENEIDADE é a garantia de movimento genuíno: seres em situações
-    // diferentes (waypoint diferente, pista diferente) TÊM de dar números diferentes.
+    // ── Accumulated odometer per being ─────────────────────────────────────────
+    // We use integration of speed * dt (more precise than euclidean between sparse
+    // points when the track has tight corners). The euclidean distance between ticks
+    // underestimates the real trajectory; the integral of |vel| * dt = real path.
+    // Laps: accumulated distance / lap_distance.
+    // HETEROGENEITY is the guarantee of genuine movement: beings in different
+    // situations (different waypoint, different track) MUST yield different numbers.
     let lap_dist = world.lap_distance;
-    println!("volta = {:.0} m  (comprimento total da pista)", lap_dist);
+    println!("lap = {:.0} m  (total track length)", lap_dist);
 
     let mut dist_acum: Vec<f64> = vec![0.0; n_seres];
     let mut pos_prev: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
 
-    // ── Aquecimento (1 tick descartado para forçar compilação JIT de shaders) ─
-    println!("Aquecendo (1 tick JIT)...");
+    // ── Warm-up (1 discarded tick to force shader JIT compilation) ────────────
+    println!("Warming up (1 JIT tick)...");
     let _ = ctx.tick(&mut states, &engines, n_seres, 1.0 / 64.0, 0);
 
-    // ── Laço principal ────────────────────────────────────────────────────────
-    println!("Rodando {} ticks com {} seres...", n_ticks, n_seres);
+    // ── Main loop ─────────────────────────────────────────────────────────────
+    println!("Running {} ticks with {} beings...", n_ticks, n_seres);
     let dt = 1.0_f32 / 64.0;
 
     let t_loop = Instant::now();
     for tick_i in 0..n_ticks {
         let ok = ctx.tick(&mut states, &engines, n_seres, dt, tick_i + 1);
         if !ok {
-            eprintln!("ERRO no tick {} — abortando.", tick_i);
+            eprintln!("ERROR at tick {} — aborting.", tick_i);
             break;
         }
-        // Acumula odômetro: distância euclidiana entre pos[t-1] e pos[t].
-        // Com dt=1/64s e velocidade típica de 20-40 m/s, o passo é ~0.3-0.6m —
-        // pequeno o suficiente para que a euclidiana ≈ arclength (erro < 0.1%).
+        // Accumulates the odometer: euclidean distance between pos[t-1] and pos[t].
+        // With dt=1/64s and typical speed of 20-40 m/s, the step is ~0.3-0.6m —
+        // small enough that euclidean ≈ arclength (error < 0.1%).
         for i in 0..n_seres {
             let p1 = pos_of(&states[i].phys);
             let dx = (p1[0] - pos_prev[i][0]) as f64;
@@ -1586,7 +1589,7 @@ fn main() {
             dist_acum[i] += (dx * dx + dz * dz).sqrt();
             pos_prev[i] = p1;
         }
-        // Checkpoint de progresso a cada 1000 ticks (~15,6s de simulação)
+        // Progress checkpoint every 1000 ticks (~15.6s of simulation)
         if (tick_i + 1) % 1000 == 0 {
             let max_d = dist_acum.iter().cloned().fold(0.0_f64, f64::max);
             let med_d = {
@@ -1596,7 +1599,7 @@ fn main() {
             };
             let max_voltas = max_d / lap_dist as f64;
             println!(
-                "  tick {:5}: dist_max={:.0}m ({:.2}V)  dist_med={:.0}m ({:.2}V)",
+                "  tick {:5}: dist_max={:.0}m ({:.2}L)  dist_med={:.0}m ({:.2}L)",
                 tick_i + 1,
                 max_d,
                 max_voltas,
@@ -1607,17 +1610,17 @@ fn main() {
     }
     let elapsed_loop = t_loop.elapsed().as_secs_f64();
 
-    // ── Resultados ────────────────────────────────────────────────────────────
+    // ── Results ───────────────────────────────────────────────────────────────
     let ms_tick = elapsed_loop * 1000.0 / n_ticks as f64;
     println!();
-    println!("=== RESULTADO ===");
+    println!("=== RESULT ===");
     println!("  ticks: {}", n_ticks);
-    println!("  seres: {}", n_seres);
-    println!("  tempo total: {:.1} ms", elapsed_loop * 1000.0);
-    println!("  ms/tick (laço todo-GPU+temporais): {:.3} ms", ms_tick);
+    println!("  beings: {}", n_seres);
+    println!("  total time: {:.1} ms", elapsed_loop * 1000.0);
+    println!("  ms/tick (all-GPU loop + temporals): {:.3} ms", ms_tick);
     println!();
 
-    // ── Distâncias finais e voltas ─────────────────────────────────────────────
+    // ── Final distances and laps ───────────────────────────────────────────────
     let dist_max = dist_acum.iter().cloned().fold(0.0_f64, f64::max);
     let dist_med = {
         let mut v = dist_acum.clone();
@@ -1628,27 +1631,27 @@ fn main() {
     let voltas_med = dist_med / lap_dist as f64;
     let n_voltas_completas = dist_acum.iter().filter(|&&d| d >= lap_dist as f64).count();
 
-    println!("=== DISTÂNCIAS E VOLTAS em {} ticks ===", n_ticks);
+    println!("=== DISTANCES AND LAPS in {} ticks ===", n_ticks);
     println!("  lap_distance: {:.0} m", lap_dist);
     println!(
-        "  dist_max:     {:.0} m  ({:.2} voltas)",
+        "  dist_max:     {:.0} m  ({:.2} laps)",
         dist_max, voltas_max
     );
     println!(
-        "  dist_med:     {:.0} m  ({:.2} voltas)",
+        "  dist_med:     {:.0} m  ({:.2} laps)",
         dist_med, voltas_med
     );
     println!(
-        "  seres com ≥1 volta completa: {}/{}",
+        "  beings with ≥1 complete lap: {}/{}",
         n_voltas_completas, n_seres
     );
     println!();
 
-    // ── Top performers (prova de heterogeneidade) ─────────────────────────────
-    // Ordena todos os seres por distância decrescente e mostra os top 12.
+    // ── Top performers (heterogeneity proof) ──────────────────────────────────
+    // Sorts all beings by decreasing distance and shows the top 12.
     let mut ordem: Vec<usize> = (0..n_seres).collect();
     ordem.sort_by(|&a, &b| dist_acum[b].partial_cmp(&dist_acum[a]).unwrap());
-    println!("=== TOP 12 SERES POR DISTÂNCIA (heterogeneidade) ===");
+    println!("=== TOP 12 BEINGS BY DISTANCE (heterogeneity) ===");
     let n_amostras = n_seres.min(12);
     let mut algum_se_moveu = false;
     for &i in ordem.iter().take(n_amostras) {
@@ -1657,14 +1660,14 @@ fn main() {
         let vel = states[i].phys.vel;
         let speed = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
         println!(
-            "  ser[{:2}]: dist={:.1}m ({:.2}V)  speed={:.2}m/s  pos=({:.0},{:.0})  {}",
+            "  being[{:2}]: dist={:.1}m ({:.2}L)  speed={:.2}m/s  pos=({:.0},{:.0})  {}",
             i,
             dist,
             voltas,
             speed,
             states[i].phys.pos[0],
             states[i].phys.pos[2],
-            if dist > 10.0 { "OK" } else { "PARADO!" }
+            if dist > 10.0 { "OK" } else { "STOPPED!" }
         );
         if dist > 10.0 {
             algum_se_moveu = true;
@@ -1672,30 +1675,30 @@ fn main() {
     }
     println!();
     if algum_se_moveu {
-        println!("  SERES SE MOVERAM — canais temporais funcionais.");
+        println!("  BEINGS MOVED — temporal channels functional.");
     } else {
-        println!("  NENHUM SER SE MOVEU — laço quebrado ou pesos nulos.");
+        println!("  NO BEING MOVED — broken loop or null weights.");
     }
 
-    // ── Canais temporais portados neste commit ────────────────────────────────
+    // ── Temporal channels ported in this commit ───────────────────────────────
     println!();
-    println!("=== CANAIS TEMPORAIS PORTADOS PARA A GPU ===");
-    println!("  85: wall_ema_l      (EMA dist lateral esq, ~0.5s meia-vida)");
-    println!("  86: wall_ema_r      (EMA dist lateral dir)");
-    println!("  88: proximity_sustain (segundos raspando parede, cap 3s)");
-    println!("  102: approach_rate_l  (dDist_l/dt em m/s, ±30m/s)");
+    println!("=== TEMPORAL CHANNELS PORTED TO THE GPU ===");
+    println!("  85: wall_ema_l      (EMA of left lateral dist, ~0.5s half-life)");
+    println!("  86: wall_ema_r      (EMA of right lateral dist)");
+    println!("  88: proximity_sustain (seconds scraping the wall, cap 3s)");
+    println!("  102: approach_rate_l  (dDist_l/dt in m/s, ±30m/s)");
     println!("  103: approach_rate_r");
-    println!("  104: approach_rate_f  (frontal via sonda grade)");
-    println!("  105: TTC_min          (tempo até colisão, 0=iminente, 127=seguro)");
+    println!("  104: approach_rate_f  (frontal via grid probe)");
+    println!("  105: TTC_min          (time to collision, 0=imminent, 127=safe)");
     println!("  106: delta_dist_l ±15m/s");
     println!("  107: delta_dist_r");
-    println!("  108: racing_line_offset (desvio lat da linha ideal, ±127)");
-    println!("  109: d/dt(line_offset)  (ganho 8×)");
-    println!("  110: lookahead_offset 5m à frente na linha ideal");
-    println!("  118: fwd_dist / half_width (generalização por largura de pista)");
+    println!("  108: racing_line_offset (lat deviation from the ideal line, ±127)");
+    println!("  109: d/dt(line_offset)  (gain 8×)");
+    println!("  110: lookahead_offset 5m ahead on the ideal line");
+    println!("  118: fwd_dist / half_width (generalization by track width)");
     println!("  119: corridor_lat / half_width");
-    println!("  120: memory0 (throttle intencional anterior)");
+    println!("  120: memory0 (previous intentional throttle)");
     println!("  123: whisker_min / half_width");
     println!();
-    println!("=== FIM ===");
+    println!("=== END ===");
 }

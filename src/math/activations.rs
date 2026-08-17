@@ -1,32 +1,32 @@
-/// Funções de ativação e helpers de clamp — tudo puramente escalar, sem alocação.
+/// Activation functions and clamp helpers — all purely scalar, no allocation.
 ///
-/// Estas funções refletem as fórmulas documentadas em MATH_INVENTORY.md §1.1.
-/// As versões GPU (WGSL) usam as mesmas fórmulas; alterações aqui devem ser
-/// espelhadas nos shaders correspondentes (contrariamente às regras E1-E3, não
-/// toque os .wgsl — este módulo serve como referência do host).
+/// These functions mirror the formulas documented in MATH_INVENTORY.md §1.1.
+/// The GPU (WGSL) versions use the same formulas; changes here must be
+/// mirrored in the corresponding shaders (contrary to rules E1-E3, do not
+/// touch the .wgsl — this module serves as the host reference).
 
-/// Sigmoid padrão: σ(x) = 1 / (1 + e^{-x}).
+/// Standard sigmoid: σ(x) = 1 / (1 + e^{-x}).
 ///
-/// Usada historicamente em gating e normalização de probabilidade.
-/// Para o CfC o não-linear primário é `tanh`, não sigmoid.
+/// Historically used in gating and probability normalization.
+/// For the CfC the primary non-linearity is `tanh`, not sigmoid.
 #[inline]
 pub fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Tangente hiperbólica — não-linear padrão do CfC e do BitLinear.
+/// Hyperbolic tangent — the default non-linearity of the CfC and the BitLinear.
 ///
-/// Mapeamento: [-∞, +∞] → (-1, +1).
-/// A 64 Hz com estado clamped em [-2, 2]: tanh(±2) ≈ ±0.964 → ±122/127.
+/// Mapping: [-∞, +∞] → (-1, +1).
+/// At 64 Hz with state clamped in [-2, 2]: tanh(±2) ≈ ±0.964 → ±122/127.
 #[inline]
 pub fn tanh(x: f32) -> f32 {
     x.tanh()
 }
 
-/// Aproximação rápida de tanh: x / (1 + |x|).
+/// Fast tanh approximation: x / (1 + |x|).
 ///
-/// Erro < 2% para |x| < 3. Usada pelo shader perception_temporal.wgsl (F42).
-/// NÃO usar onde precisão é exigida; motor.rs e cfc.rs usam tanh exato.
+/// Error < 2% for |x| < 3. Used by the perception_temporal.wgsl shader (F42).
+/// Do NOT use where precision is required; motor.rs and cfc.rs use exact tanh.
 #[inline]
 pub fn tanh_approx(x: f32) -> f32 {
     x / (1.0 + x.abs())
@@ -38,69 +38,69 @@ pub fn relu(x: f32) -> f32 {
     x.max(0.0)
 }
 
-/// Leaky ReLU: max(alpha * x, x) com alpha < 1.
+/// Leaky ReLU: max(alpha * x, x) with alpha < 1.
 ///
-/// alpha = 0.01 é o padrão para manter gradiente mínimo em regiões negativas.
+/// alpha = 0.01 is the default to keep a minimal gradient in negative regions.
 #[inline]
 pub fn leaky_relu(x: f32, alpha: f32) -> f32 {
     if x >= 0.0 { x } else { alpha * x }
 }
 
-/// Clamp simétrico em [-limit, +limit].
+/// Symmetric clamp in [-limit, +limit].
 #[inline]
 pub fn clamp_sym(x: f32, limit: f32) -> f32 {
     x.clamp(-limit, limit)
 }
 
-/// Converte estado f32 para i8 via tanh, multiplicando por 127.
+/// Converts f32 state to i8 via tanh, multiplying by 127.
 ///
-/// Fórmula: `clamp(tanh(x) * 127, -127, 127) as i8`.
-/// Usada pelo CfC (F07) e pelo BitLinear (F10).
+/// Formula: `clamp(tanh(x) * 127, -127, 127) as i8`.
+/// Used by the CfC (F07) and by the BitLinear (F10).
 #[inline]
 pub fn state_to_i8(x: f32) -> i8 {
     (x.tanh() * 127.0).clamp(-127.0, 127.0) as i8
 }
 
-/// Encolhimento suave (soft-thresholding): sign(x) * max(0, |x| - threshold).
+/// Soft-thresholding: sign(x) * max(0, |x| - threshold).
 ///
-/// Idêntico ao operador da Lei do Garimpo no eixo temporal.
-/// Usado na fadiga adaptativa do CfC (F03): atenua sem inverter o sinal.
+/// Identical to the Lei do Garimpo (mining law) operator on the time axis.
+/// Used in the CfC's adaptive fatigue (F03): attenuates without inverting the sign.
 #[inline]
 pub fn soft_threshold(x: f32, threshold: f32) -> f32 {
     x.signum() * (x.abs() - threshold).max(0.0)
 }
 
-/// Epsilon de segurança para a normalização por desvio de `out_stage` — evita
-/// dividir por um desvio ~0 no início do treino (pesos recém-sorteados, os 48
-/// `l2_raw` ainda quase todos ~0). Mesmo valor que `NORM_EPS` em `brain.wgsl`.
+/// Safety epsilon for `out_stage`'s deviation normalization — avoids
+/// dividing by a ~0 deviation at the start of training (freshly drawn weights, the 48
+/// `l2_raw` still almost all ~0). Same value as `NORM_EPS` in `brain.wgsl`.
 pub const OUT_STAGE_NORM_EPS: f32 = 1e-3;
 
-/// Estágio de saída da ETAPA 2 do cérebro — espelha `brain.wgsl` (linhas da
-/// ETAPA 2, P1.5 em `docs/PLANO_EVOLUCAO.md`) e `engine.rs` (~497-515):
-/// normalização opcional por desvio → ganho de saída → fadiga adaptativa
+/// Output stage of the brain's STAGE 2 — mirrors `brain.wgsl` (the STAGE 2
+/// lines, P1.5 in `docs/PLANO_EVOLUCAO.md`) and `engine.rs` (~497-515):
+/// optional deviation normalization → output gain → adaptive fatigue
 /// (soft-threshold) → tanh.
 ///
-/// # Parâmetros
-/// - `raw_pregain`: `l2_raw` ou `l1_raw[bypass]` ANTES de qualquer ganho — a
-///   mesma grandeza que `float_layers::forward`/`w_l1r` devolvem (`acc/127`,
-///   sem o `2.0` histórico).
-/// - `l2_std`: `Some(desvio)` liga a normalização por escala (P1.5, item 3);
-///   `None` é o padrão — comportamento idêntico ao histórico, sem tocar num
-///   bit do resultado. Quando `Some`, o desvio é o de
-///   `math::stats::population_std_dev` sobre os 48 `raw_pregain` do MESMO ser
-///   (só faz sentido para a via de L2, não para o bypass — ver comentário na
-///   ETAPA 2 do shader).
-/// - `out_gain`: ganho de saída (P1.5, item 2) — `2.0` reproduz exatamente o
-///   hardcode histórico (`OUT_GAIN_PADRAO` em `gpu/brain.rs`).
-/// - `out_beta`, `out_fat`: fadiga de saída — `out_fat` é o estado JÁ
-///   ATUALIZADO neste tick (o chamador atualiza `out_fat` ANTES de chamar esta
-///   função, mesma ordem que o shader e `engine.rs` seguem).
+/// # Parameters
+/// - `raw_pregain`: `l2_raw` or `l1_raw[bypass]` BEFORE any gain — the
+///   same quantity that `float_layers::forward`/`w_l1r` return (`acc/127`,
+///   without the historical `2.0`).
+/// - `l2_std`: `Some(deviation)` turns on scale normalization (P1.5, item 3);
+///   `None` is the default — behaviour identical to the historical one, without touching a
+///   bit of the result. When `Some`, the deviation is that of
+///   `math::stats::population_std_dev` over the 48 `raw_pregain` of the SAME being
+///   (only makes sense for the L2 pathway, not for the bypass — see the comment in
+///   the shader's STAGE 2).
+/// - `out_gain`: output gain (P1.5, item 2) — `2.0` reproduces exactly the
+///   historical hardcode (`OUT_GAIN_PADRAO` in `gpu/brain.rs`).
+/// - `out_beta`, `out_fat`: output fatigue — `out_fat` is the state ALREADY
+///   UPDATED this tick (the caller updates `out_fat` BEFORE calling this
+///   function, same order the shader and `engine.rs` follow).
 ///
-/// # Contrato de equivalência (testado abaixo)
-/// Com `l2_std=None` e `out_gain=OUT_GAIN_PADRAO` (2.0), esta função reproduz
-/// EXATAMENTE `tanh(sign(raw*2.0) * max(0, |raw*2.0| - out_beta*out_fat))` — a
-/// fórmula que `brain.wgsl`/`engine.rs` tinham antes de `out_gain` virar
-/// parâmetro.
+/// # Equivalence contract (tested below)
+/// With `l2_std=None` and `out_gain=OUT_GAIN_PADRAO` (2.0), this function reproduces
+/// EXACTLY `tanh(sign(raw*2.0) * max(0, |raw*2.0| - out_beta*out_fat))` — the
+/// formula `brain.wgsl`/`engine.rs` had before `out_gain` became a
+/// parameter.
 #[inline]
 pub fn out_stage(
     raw_pregain: f32,
@@ -119,7 +119,7 @@ pub fn out_stage(
 }
 
 // ---------------------------------------------------------------------------
-// Testes unitários
+// Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -131,7 +131,7 @@ mod tests {
         let s = sigmoid(0.0);
         assert!(
             (s - 0.5).abs() < 1e-6,
-            "sigmoid(0) deve ser 0.5, obteve {}",
+            "sigmoid(0) must be 0.5, got {}",
             s
         );
     }
@@ -149,24 +149,24 @@ mod tests {
 
     #[test]
     fn tanh_simetrico() {
-        // tanh é ímpar: tanh(-x) = -tanh(x)
+        // tanh is odd: tanh(-x) = -tanh(x)
         let x = 1.234_f32;
         assert!((tanh(-x) + tanh(x)).abs() < 1e-6);
     }
 
     #[test]
     fn tanh_approx_erro_pequeno_perto_de_zero() {
-        // x/(1+|x|) é acurada perto de x=0 (erro abaixo de 2% para |x| ≤ 0.1).
-        // Para |x| > 0.1 o erro cresce rapidamente: é uma aproximação de primeira
-        // ordem, útil em shaders (sem exp) mas imprecisa em geral.
-        // Veja MATH_INVENTORY.md F42: perception_temporal.wgsl usa esta forma.
+        // x/(1+|x|) is accurate near x=0 (error below 2% for |x| ≤ 0.1).
+        // For |x| > 0.1 the error grows quickly: it is a first-order
+        // approximation, useful in shaders (no exp) but imprecise in general.
+        // See MATH_INVENTORY.md F42: perception_temporal.wgsl uses this form.
         for xi in [-0.1_f32, -0.05, 0.0, 0.05, 0.1] {
             let approx = tanh_approx(xi);
             let exact = xi.tanh();
             let err = (approx - exact).abs();
             assert!(
                 err < 0.015,
-                "tanh_approx({}) erro={} perto de zero",
+                "tanh_approx({}) error={} near zero",
                 xi,
                 err
             );
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn tanh_approx_mesmo_sinal_que_tanh() {
-        // A aproximação nunca deve inverter o sinal
+        // The approximation must never invert the sign
         for xi in [-3.0_f32, -1.0, 0.0, 1.0, 3.0] {
             let approx = tanh_approx(xi);
             let exact = xi.tanh();
@@ -183,7 +183,7 @@ mod tests {
                 assert_eq!(
                     approx.signum(),
                     exact.signum(),
-                    "tanh_approx({}) trocou sinal: approx={} exact={}",
+                    "tanh_approx({}) flipped sign: approx={} exact={}",
                     xi,
                     approx,
                     exact
@@ -204,7 +204,7 @@ mod tests {
         let out = leaky_relu(-10.0, alpha);
         assert!(
             (out - (-0.1)).abs() < 1e-6,
-            "leaky_relu(-10, 0.01) deve ser -0.1, obteve {}",
+            "leaky_relu(-10, 0.01) must be -0.1, got {}",
             out
         );
     }
@@ -237,8 +237,8 @@ mod tests {
             "soft_threshold(0.5, 0.3) = {}",
             out
         );
-        // sinal não deve inverter
-        assert!(out >= 0.0, "sinal negativo para entrada positiva!");
+        // the sign must not invert
+        assert!(out >= 0.0, "negative sign for positive input!");
     }
 
     #[test]
@@ -249,25 +249,25 @@ mod tests {
             "soft_threshold(-0.5, 0.3) = {}",
             out
         );
-        assert!(out <= 0.0, "sinal positivo para entrada negativa!");
+        assert!(out <= 0.0, "positive sign for negative input!");
     }
 
     #[test]
     fn soft_threshold_abaixo_do_limiar_e_zero() {
         let out = soft_threshold(0.1, 0.5);
-        assert_eq!(out, 0.0, "abaixo do limiar deve ser zero");
+        assert_eq!(out, 0.0, "below the threshold it must be zero");
     }
 
-    // ── out_stage (P1.5: ganho de saída parametrizável + normalização opcional) ──
+    // ── out_stage (P1.5: parameterizable output gain + optional normalization) ──
 
-    /// Requisito da tarefa (docs/PLANO_EVOLUCAO.md P1.5, item 5): "o ganho vira
-    /// parâmetro e o valor 2.0 reproduz exatamente a saída anterior". Compara
-    /// `out_stage` com `out_gain=OUT_GAIN_PADRAO` contra a fórmula histórica
-    /// hardcoded (`raw = l2_raw_pregain * 2.0`) que `brain.wgsl`/`engine.rs`
-    /// tinham ANTES desta sessão — bit a bit, não só "próximo".
+    /// Task requirement (docs/PLANO_EVOLUCAO.md P1.5, item 5): "the gain becomes a
+    /// parameter and the value 2.0 reproduces the previous output exactly". Compares
+    /// `out_stage` with `out_gain=OUT_GAIN_PADRAO` against the historical hardcoded
+    /// formula (`raw = l2_raw_pregain * 2.0`) that `brain.wgsl`/`engine.rs`
+    /// had BEFORE this session — bit for bit, not just "close".
     #[test]
     fn out_stage_ganho_padrao_reproduz_formula_historica_exatamente() {
-        const OUT_GAIN_PADRAO: f32 = 2.0; // gpu::brain::OUT_GAIN_PADRAO (evita depender de wgpu aqui)
+        const OUT_GAIN_PADRAO: f32 = 2.0; // gpu::brain::OUT_GAIN_PADRAO (avoids depending on wgpu here)
         for raw_pregain in [-1.8_f32, -0.31, 0.0, 0.42, 1.05, 3.7] {
             for out_beta in [0.0_f32, 0.85] {
                 for out_fat in [0.0_f32, 0.12, 1.9] {
@@ -279,17 +279,17 @@ mod tests {
                     assert_eq!(
                         novo, historico,
                         "raw_pregain={raw_pregain} out_beta={out_beta} out_fat={out_fat}: \
-                         novo={novo} histórico={historico}"
+                         new={novo} historical={historico}"
                     );
                 }
             }
         }
     }
 
-    /// `l2_std=None` e `l2_std=Some(1.0)` devem ser idênticos — dividir por 1.0
-    /// é matematicamente um no-op; confirma que a normalização OFF (`None`, o
-    /// padrão da flag `--norm-l2-por-desvio` desligada) não introduz nenhuma
-    /// escala espúria.
+    /// `l2_std=None` and `l2_std=Some(1.0)` must be identical — dividing by 1.0
+    /// is mathematically a no-op; confirms that normalization OFF (`None`, the
+    /// default of the `--norm-l2-por-desvio` flag being off) introduces no
+    /// spurious scale.
     #[test]
     fn out_stage_norm_none_e_std_um_sao_identicos() {
         let a = out_stage(0.73, None, 2.0, 0.85, 0.3);
@@ -297,53 +297,53 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    /// Com a normalização LIGADA, o resultado rescala pela amplitude: dividir
-    /// por um desvio maior ATENUA o sinal antes do ganho — é o efeito que P1.5
-    /// persegue contra a saturação (a escala de l2_raw cresce com a mutação ao
-    /// longo das gerações; dividir pelo próprio desvio neutraliza esse
-    /// crescimento antes do tanh).
+    /// With normalization ON, the result rescales by amplitude: dividing
+    /// by a larger deviation ATTENUATES the signal before the gain — the effect P1.5
+    /// pursues against saturation (the scale of l2_raw grows with mutation over
+    /// the generations; dividing by its own deviation neutralizes that
+    /// growth before the tanh).
     #[test]
     fn out_stage_norm_ligada_atenua_por_desvio_maior() {
-        // out_beta=0 (sem fadiga) isola o efeito da normalização.
+        // out_beta=0 (no fatigue) isolates the normalization effect.
         let sem_norm = out_stage(4.0, None, 1.0, 0.0, 0.0);
         let com_norm = out_stage(4.0, Some(2.0), 1.0, 0.0, 0.0);
         assert_eq!(sem_norm, 4.0f32.tanh());
         assert_eq!(com_norm, 2.0f32.tanh()); // 4.0/2.0 = 2.0
         assert!(
             com_norm.abs() < sem_norm.abs(),
-            "normalização deveria atenuar, não amplificar aqui"
+            "normalization should attenuate, not amplify here"
         );
     }
 
-    /// O denominador nunca cai abaixo de `OUT_STAGE_NORM_EPS` — um desvio ~0
-    /// (início do treino, pesos quase todos mudos) não deve fazer a saída
-    /// explodir numericamente.
+    /// The denominator never falls below `OUT_STAGE_NORM_EPS` — a ~0 deviation
+    /// (start of training, weights almost all mute) must not make the output
+    /// blow up numerically.
     #[test]
     fn out_stage_norm_com_desvio_quase_zero_nao_explode() {
         let out = out_stage(0.001, Some(0.0), 2.0, 0.0, 0.0);
         assert!(
             out.is_finite(),
-            "saída não-finita com desvio quase zero: {out}"
+            "non-finite output with near-zero deviation: {out}"
         );
         assert!(
             out.abs() <= 1.0,
-            "tanh deve saturar em [-1,1], obteve {out}"
+            "tanh must saturate in [-1,1], got {out}"
         );
     }
 
-    /// `math::stats::population_std_dev` alimentando `out_stage` end-to-end:
-    /// dado o vetor de 48 l2_raw de um ser hipotético saturado, a normalização
-    /// deve reduzir a fração de canais saturados (|tanh|>0.9) em relação ao
-    /// mesmo vetor sem normalizar — a hipótese central de P1.5, verificada na
-    /// matemática pura (sem GPU).
+    /// `math::stats::population_std_dev` feeding `out_stage` end-to-end:
+    /// given the vector of 48 l2_raw of a hypothetical saturated being, normalization
+    /// must reduce the fraction of saturated channels (|tanh|>0.9) relative to the
+    /// same vector without normalizing — P1.5's central hypothesis, verified in
+    /// pure math (no GPU).
     #[test]
     fn out_stage_com_population_std_dev_reduz_saturacao() {
         use crate::math::stats::population_std_dev;
-        // 48 valores simulando l2_raw crescido (weights maiores após várias
-        // gerações de mutação) — a maioria perto de 3.0, com leve variação.
+        // 48 values simulating grown l2_raw (larger weights after several
+        // generations of mutation) — most near 3.0, with slight variation.
         let l2_raw: Vec<f32> = (0..48).map(|i| 2.8 + 0.05 * (i as f32 % 5.0)).collect();
         let std = population_std_dev(&l2_raw);
-        assert!(std > 0.0, "desvio deveria ser > 0 para vetor não-constante");
+        assert!(std > 0.0, "deviation should be > 0 for a non-constant vector");
 
         let sat_sem_norm = l2_raw
             .iter()
@@ -355,7 +355,7 @@ mod tests {
             .count();
         assert!(
             sat_com_norm <= sat_sem_norm,
-            "normalização deveria reduzir (ou manter) saturação: sem={sat_sem_norm} com={sat_com_norm}"
+            "normalization should reduce (or keep) saturation: without={sat_sem_norm} with={sat_com_norm}"
         );
     }
 }

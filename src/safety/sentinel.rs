@@ -80,7 +80,7 @@ impl Sentinel {
             });
             return out;
         }
-        // FCA mais sensível pra pistas estreitas: 0.6s + 25kmh (era 0.3s + 15kmh).
+        // FCA more sensitive for narrow tracks: 0.6s + 25kmh (was 0.3s + 15kmh).
         if s.ttc_forward < 0.6 && s.speed_kmh > 25.0 {
             out.flags |= SafetyFlags::FCA;
             out.hard_veto = Some(IntentVec {
@@ -130,8 +130,8 @@ impl Sentinel {
 
         // ----- Tier 2 SOFT proposals -----
         // DRIFT PERMISSION: slip threshold 0.4 → 0.65, current_thr 0.5 → 0.7.
-        // Permite cars deslizar em apex sem TCS cortar throttle imediato.
-        // Mutação aprende "drift = mais speed na curva". Sem tunar net.
+        // Lets cars slide at the apex without the TCS cutting throttle immediately.
+        // Mutation learns "drift = more speed in the curve". No net tuning.
         if s.slip_avg > 0.65 && s.current_thr > 0.7 {
             out.flags |= SafetyFlags::TCS;
             prop.throttle -= 0.4;
@@ -140,7 +140,7 @@ impl Sentinel {
             out.flags |= SafetyFlags::AQUA;
             prop.throttle -= 0.3;
         }
-        // CornerLim mais cedo — pistas tight precisam pre-brake antes da curva.
+        // CornerLim earlier — tight tracks need pre-braking before the curve.
         if s.curv25 > 18.0 && s.speed_kmh > 40.0 {
             out.flags |= SafetyFlags::CORNER_LIM;
             prop.brake += 0.3;
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn tcs_cuts_throttle_on_slip() {
-        // Acima do limiar de derrapagem: o TCS tem de agir.
+        // Above the slip threshold: the TCS must act.
         let mut s = base_state();
         s.slip_avg = 0.7;
         s.current_thr = 0.8;
@@ -232,19 +232,19 @@ mod tests {
         assert!(out.soft_proposal.throttle < 0.0);
     }
 
-    /// A permissão de derrapagem é intencional (limiares subiram de 0,4/0,5 para
-    /// 0,65/0,7) para o ser poder deslizar no ápice sem o TCS cortar o acelerador na
-    /// hora. Esse limite não tinha teste: a mudança silenciou os dois testes acima e
-    /// ninguém percebeu, porque a suíte já estava vermelha. Este fixa a fronteira.
+    /// The drift permission is intentional (thresholds went up from 0.4/0.5 to
+    /// 0.65/0.7) so the being can slide at the apex without the TCS cutting the throttle
+    /// on the spot. That limit had no test: the change silenced the two tests above and
+    /// nobody noticed, because the suite was already red. This one pins the boundary.
     #[test]
     fn tcs_allows_drift_below_threshold() {
         let mut s = base_state();
         s.slip_avg = 0.5;
-        s.current_thr = 0.8; // derrapagem moderada, acelerador alto
+        s.current_thr = 0.8; // moderate slip, high throttle
         let out = Sentinel::evaluate(&s);
         assert!(
             !out.flags.contains(SafetyFlags::TCS),
-            "TCS não deve cortar em derrapagem de ápice (slip 0,5 < limiar 0,65)"
+            "TCS must not cut on apex drift (slip 0.5 < threshold 0.65)"
         );
     }
 
@@ -274,7 +274,7 @@ mod tests {
         // Combined throttle delta would be -0.7 + -0.4 + -0.3 = -1.4, must clamp to -1.0.
         let mut s = base_state();
         s.yaw_rate = 2.0;
-        s.slip_avg = 0.7; // acima do limiar de derrapagem (0,65)
+        s.slip_avg = 0.7; // above the slip threshold (0.65)
         s.current_thr = 0.8;
         s.rain = 0.8;
         s.speed_kmh = 50.0;

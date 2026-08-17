@@ -1,93 +1,93 @@
-/// Limiares nomeados para análise de ativações e saúde do modelo.
+/// Named thresholds for activation analysis and model health.
 ///
-/// TODOS os limiares do sistema devem ser definidos aqui, com documentação
-/// explicando por que o valor foi escolhido. Nenhum arquivo externo deve usar
-/// literais numéricos para estas grandezas — importe as constantes deste módulo.
+/// ALL of the system's thresholds must be defined here, with documentation
+/// explaining why the value was chosen. No external file should use
+/// numeric literals for these quantities — import this module's constants.
 ///
-/// Fonte: REFACTOR_PLAN.md §E1 (seção thresholds.rs) e análise empírica dos
-/// experimentos Universe (sessões 2026-04-xx a 2026-08-13).
+/// Source: REFACTOR_PLAN.md §E1 (thresholds.rs section) and empirical analysis of the
+/// Universe experiments (sessions 2026-04-xx to 2026-08-13).
 
-/// Fração de saturação da capacidade acima da qual o modelo está "saturado".
+/// Capacity saturation fraction above which the model is "saturated".
 ///
-/// PR/largura > SATURATION_WARN → o cérebro está usando >85% das dimensões;
-/// crescer pode ser justificado (segunda condição: ganho real via Lei do Garimpo).
+/// PR/width > SATURATION_WARN → the brain is using >85% of the dimensions;
+/// growing may be justified (second condition: real gain via the Lei do Garimpo).
 ///
-/// 0.85 = 85% — escolhido em `brain_capacity.rs::growth_verdict` como limiar
-/// padrão de `saturation_threshold`.
+/// 0.85 = 85% — chosen in `brain_capacity.rs::growth_verdict` as the default
+/// `saturation_threshold`.
 pub const SATURATION_WARN: f32 = 0.85;
 
-/// Limiar para considerar um neurônio "morto" (sem ativação).
+/// Threshold to consider a neuron "dead" (no activation).
 ///
-/// |h| < DEAD_EPS por TODOS os ticks na janela de observação → neurônio morto.
-/// 1e-4 é escolhido para ser acima do ruído de ponto flutuante (1e-7) mas abaixo
-/// de qualquer ativação genuína (mínimo observado de canais vivos: ~0.01).
+/// |h| < DEAD_EPS for ALL ticks in the observation window → dead neuron.
+/// 1e-4 is chosen to sit above floating-point noise (1e-7) but below
+/// any genuine activation (minimum observed on live channels: ~0.01).
 pub const DEAD_EPS: f32 = 1e-4;
 
-/// Raio espectral máximo permitido para W_rec sem acionar alarme.
+/// Maximum spectral radius allowed for W_rec without triggering an alarm.
 ///
-/// |λ_max| > SPECTRAL_MAX → dinâmica recorrente potencialmente instável.
-/// 1.0 é o limiar teórico (echo-state networks, condição de echo-state property).
-/// Na prática, como W_rec da GPU opera com CfC (decaimento explícito), valores
-/// levemente acima de 1.0 são absorvidos pelo decaimento, mas o alarme serve de
-/// aviso para investigação.
+/// |λ_max| > SPECTRAL_MAX → potentially unstable recurrent dynamics.
+/// 1.0 is the theoretical threshold (echo-state networks, echo-state property condition).
+/// In practice, since the GPU's W_rec operates with a CfC (explicit decay), values
+/// slightly above 1.0 are absorbed by the decay, but the alarm serves as a
+/// warning for investigation.
 pub const SPECTRAL_MAX: f32 = 1.0;
 
-/// Alvo do maior valor singular de L1 na INICIALIZAÇÃO do genoma (P0.5,
-/// `gpu::evolution::Genome::random`) — mesma grandeza que `SPECTRAL_MAX` audita depois
-/// do fato (`analysis::activation::spectral_summary`), agora usada como ALVO de
-/// nascimento em vez de limiar de alarme.
+/// Target for L1's largest singular value at genome INITIALIZATION (P0.5,
+/// `gpu::evolution::Genome::random`) — the same quantity `SPECTRAL_MAX` audits after
+/// the fact (`analysis::activation::spectral_summary`), now used as a birth
+/// TARGET instead of an alarm threshold.
 ///
-/// Motivação: 4 corridas independentes de `Genome::random` com σ=0.30 i.i.d. cru
-/// mediram ganho espectral de L1 em ~7.0 (7.101/7.050/7.048/6.983 —
-/// `docs/PLANO_EVOLUCAO.md` §P0.5). A teoria de echo-state networks pede
-/// `|λ_max| <= ~1` para dinâmica de entrada estável; a 7× o sinal sensorial é
-/// amplificado antes mesmo da primeira mutação, e a evolução mede-se sempre
-/// carregando esse viés de fundo (o campeão observado ficou 99,25% igual ao sorteio
-/// inicial — cosseno 0.9925 — sinal de que a seleção empurra o init ruim, não conserta).
+/// Motivation: 4 independent runs of `Genome::random` with raw i.i.d. σ=0.30
+/// measured L1's spectral gain at ~7.0 (7.101/7.050/7.048/6.983 —
+/// `docs/PLANO_EVOLUCAO.md` §P0.5). Echo-state network theory asks for
+/// `|λ_max| <= ~1` for stable input dynamics; at 7× the sensory signal is
+/// amplified even before the first mutation, and evolution is always measured
+/// carrying that background bias (the observed champion stayed 99.25% equal to the
+/// initial draw — cosine 0.9925 — a sign that selection pushes the bad init along, not fixes it).
 ///
-/// 1.0 == `SPECTRAL_MAX` por definição (o alarme dispara ACIMA do que a init MIRA),
-/// mas mantida como constante separada: as duas grandezas significam coisas diferentes
-/// (limiar de alarme pós-fato vs. alvo de nascimento) e uma mudança futura numa não
-/// deve acoplar silenciosamente a outra.
+/// 1.0 == `SPECTRAL_MAX` by definition (the alarm fires ABOVE what the init AIMS at),
+/// but kept as a separate constant: the two quantities mean different things
+/// (post-hoc alarm threshold vs. birth target) and a future change in one must
+/// not silently couple to the other.
 pub const SPECTRAL_INIT_TARGET: f32 = 1.0;
 
-/// Se verdadeiro, qualquer NaN detectado nas ativações aborta a análise.
+/// If true, any NaN detected in the activations aborts the analysis.
 ///
-/// NaN em ativações = bug grave (divisão por zero, overflow de gradiente, etc.).
-/// Manter em `true` em produção — custo de detecção é O(n) por análise.
+/// NaN in activations = serious bug (division by zero, gradient overflow, etc.).
+/// Keep at `true` in production — detection cost is O(n) per analysis.
 pub const NAN_ABORT: bool = true;
 
-/// SNR mínimo aceitável da quantização i8 (em dB).
+/// Minimum acceptable SNR of the i8 quantization (in dB).
 ///
-/// SNR < SNR_I8_MIN → pesos mal distribuídos (fora do range [-2, 2]) ou
-/// quantização introduzindo muito ruído.
-/// 6.0 dB = razão sinal/ruído de 4:1 — abaixo disso o modelo pode ter
-/// comportamento imprevisível após quantização para i8.
+/// SNR < SNR_I8_MIN → poorly distributed weights (outside the [-2, 2] range) or
+/// quantization introducing too much noise.
+/// 6.0 dB = signal/noise ratio of 4:1 — below that the model may behave
+/// unpredictably after quantization to i8.
 pub const SNR_I8_MIN: f32 = 6.0;
 
-/// Fração de neurônios mortos acima da qual dispara alarme.
+/// Fraction of dead neurons above which the alarm fires.
 ///
-/// Mais de 20% mortos → problema de inicialização, vanishing gradient ou
-/// taxa de mutação muito alta. Validado empiricamente: modelos saudáveis
-/// têm < 5% de neurônios mortos após algumas gerações.
+/// More than 20% dead → initialization problem, vanishing gradient or
+/// mutation rate too high. Empirically validated: healthy models
+/// have < 5% dead neurons after a few generations.
 pub const DEAD_NEURONS_WARN_PCT: f32 = 20.0;
 
-/// Fração de neurônios saturados acima da qual dispara alarme.
+/// Fraction of saturated neurons above which the alarm fires.
 ///
-/// |h| > 0.99 em > 30% dos ticks → o canal está preso num extremo e
-/// não transporta informação gradiente útil.
+/// |h| > 0.99 in > 30% of ticks → the channel is stuck at an extreme and
+/// carries no useful gradient information.
 pub const SATURATED_NEURONS_WARN_PCT: f32 = 30.0;
 
-/// Entropia mínima da política (distribuição steer/throttle/brake).
+/// Minimum entropy of the policy (steer/throttle/brake distribution).
 ///
-/// Entropia < POLICY_ENTROPY_MIN → o agente está tomando quase sempre a
-/// mesma ação (volante cravado, freio constante, etc.).
-/// 0.5 nats é suficientemente baixo para capturar colapso sem gerar falsos
-/// positivos em manobras legítimas sustentadas.
+/// Entropy < POLICY_ENTROPY_MIN → the agent is taking almost always the
+/// same action (locked steering, constant braking, etc.).
+/// 0.5 nats is low enough to capture collapse without generating false
+/// positives on legitimate sustained maneuvers.
 pub const POLICY_ENTROPY_MIN: f32 = 0.5;
 
 // ---------------------------------------------------------------------------
-// Testes unitários — verificam que os valores estão na faixa esperada.
+// Unit tests — verify the values are in the expected range.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -98,7 +98,7 @@ mod tests {
     fn saturation_warn_entre_zero_e_um() {
         assert!(
             SATURATION_WARN > 0.0 && SATURATION_WARN < 1.0,
-            "SATURATION_WARN deve estar em (0, 1), valor = {}",
+            "SATURATION_WARN must be in (0, 1), value = {}",
             SATURATION_WARN
         );
     }
@@ -107,7 +107,7 @@ mod tests {
     fn dead_eps_positivo_e_pequeno() {
         assert!(
             DEAD_EPS > 0.0 && DEAD_EPS < 0.01,
-            "DEAD_EPS deve ser pequeno e positivo, valor = {}",
+            "DEAD_EPS must be small and positive, value = {}",
             DEAD_EPS
         );
     }
@@ -116,7 +116,7 @@ mod tests {
     fn spectral_max_positivo() {
         assert!(
             SPECTRAL_MAX > 0.0,
-            "SPECTRAL_MAX deve ser positivo, valor = {}",
+            "SPECTRAL_MAX must be positive, value = {}",
             SPECTRAL_MAX
         );
     }
@@ -125,13 +125,13 @@ mod tests {
     fn spectral_init_target_positivo_e_igual_ao_alarme() {
         assert!(
             SPECTRAL_INIT_TARGET > 0.0,
-            "SPECTRAL_INIT_TARGET deve ser positivo, valor = {}",
+            "SPECTRAL_INIT_TARGET must be positive, value = {}",
             SPECTRAL_INIT_TARGET
         );
-        // Por definição documentada: o alarme dispara acima do que a init mira.
+        // By documented definition: the alarm fires above what the init aims at.
         assert_eq!(
             SPECTRAL_INIT_TARGET, SPECTRAL_MAX,
-            "alvo de init e limiar de alarme deveriam coincidir numericamente por definição"
+            "init target and alarm threshold should coincide numerically by definition"
         );
     }
 
@@ -139,7 +139,7 @@ mod tests {
     fn snr_min_positivo() {
         assert!(
             SNR_I8_MIN > 0.0,
-            "SNR_I8_MIN deve ser positivo, valor = {}",
+            "SNR_I8_MIN must be positive, value = {}",
             SNR_I8_MIN
         );
     }

@@ -1,40 +1,44 @@
-//! MAPA DA POPULAÇÃO — todas as gerações, todos os seres, contra a geometria da pista.
+//! POPULATION MAP — every generation, every being, against the track geometry.
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo: *"no replay eles nem viram a curva. Queria algo que eu fosse ver cada geração,
-//! não só um replay. Preciso visualizar cada detalhe... gerar frames antes das mortes para
-//! você ver onde eles estão indo e onde estão batendo, mais métricas das pistas, curvas e
-//! afins. Você tem tudo na mão mas não faz."*
+//! Leonardo (translated): *"in the replay they don't even turn into the corner. I wanted
+//! something to see every generation, not just one replay. I need to visualize every
+//! detail... generate frames before the deaths so you can see where they are heading and
+//! where they crash, plus more track metrics, corners and the like. You have it all in
+//! your hands but you don't do it."*
 //!
-//! Ele estava certo em tudo. Eu vinha afirmando "eles chegam na curva e param" sem NUNCA
-//! ter medido se eles viravam o volante ali. Ele abriu o mapa e viu que não viram.
+//! He was right about everything. I had been claiming "they reach the corner and stop"
+//! without EVER measuring whether they turned the wheel there. He opened the map and saw
+//! they don't turn.
 //!
-//! O que fecha essa lacuna é uma grandeza que já estava gravada e eu não usava: `yaw_rate`.
-//! Com ela dá para comparar, por quadro, o que a PISTA EXIGE contra o que o CARRO FAZ:
+//! What closes that gap is a quantity that was already recorded and I was not using:
+//! `yaw_rate`. With it we can compare, per frame, what the TRACK DEMANDS against what the
+//! CAR DOES:
 //!
-//!   ω_exigido = v · κ        (κ = curvatura local do traçado, 1/raio)
-//!   ω_real    = yaw_rate     (gravado no quadro)
+//!   ω_demanded = v · κ        (κ = local curvature of the racing line, 1/radius)
+//!   ω_real     = yaw_rate     (recorded in the frame)
 //!
-//! Se `ω_real ≈ 0` enquanto `ω_exigido` cresce, o ser não vira — e isso deixa de ser
-//! impressão visual e vira número.
+//! If `ω_real ≈ 0` while `ω_demanded` grows, the being does not turn — and that stops
+//! being a visual impression and becomes a number.
 //!
-//! # Saída
+//! # Output
 //!
-//! Um viewer + um JSON por geração, carregado sob demanda. Isso permite abrir 30 gerações
-//! sem gerar um HTML de 100 MB: o navegador busca só a geração que está sendo olhada.
+//! A viewer + one JSON per generation, loaded on demand. That allows opening 30
+//! generations without producing a 100 MB HTML: the browser fetches only the generation
+//! being looked at.
 //!
-//! # Uso
+//! # Usage
 //!
-//!   replay_mapa --dir <pasta com gen*.replay> [--width 28] [--saida /tmp/replay_srv]
-//!   replay_mapa --replay <um.replay>          # ainda funciona, gera uma geração só
+//!   replay_mapa --dir <folder with gen*.replay> [--width 28] [--saida /tmp/replay_srv]
+//!   replay_mapa --replay <one.replay>          # still works, produces a single generation
 
 use bevy::math::Vec2;
 use std::path::{Path, PathBuf};
 use universe::replay::ReplayReader;
 use universe::world::{VoxelType, VoxelWorld};
 
-/// Quantos quadros antes da morte marcar como "agonia" — o trecho que interessa olhar.
+/// How many frames before death to mark as "agony" — the stretch worth looking at.
 const QUADROS_DE_AGONIA: usize = 24;
 
 fn main() {
@@ -99,19 +103,19 @@ fn main() {
     }
     if arquivos.is_empty() {
         eprintln!(
-            "uso: replay_mapa --dir <pasta com gen*.replay> [--width 28] [--saida /tmp/replay_srv]"
+            "usage: replay_mapa --dir <folder with gen*.replay> [--width 28] [--saida /tmp/replay_srv]"
         );
         std::process::exit(2);
     }
 
     if let Err(e) = std::fs::create_dir_all(&saida) {
-        eprintln!("não criou {}: {e}", saida.display());
+        eprintln!("could not create {}: {e}", saida.display());
         std::process::exit(1);
     }
 
-    // Geometria: reconstruída UMA vez da semente do primeiro replay. Todas as gerações da
-    // mesma corrida rodam o mesmo mundo, então recalcular por geração seria desperdício —
-    // mas se a semente divergir entre arquivos isso é um erro grave e precisa gritar.
+    // Geometry: rebuilt ONCE from the first replay's seed. Every generation of the same
+    // race runs the same world, so recomputing per generation would be waste — but if the
+    // seed diverges between files that is a serious error and must scream.
     let semente0 = ReplayReader::open(&arquivos[0])
         .map(|r| r.header.world_seed)
         .unwrap_or(0);
@@ -122,29 +126,30 @@ fn main() {
     let pista = Pista::medir(&world, width);
 
     println!(
-        "pista: volta {:.0} m · {} waypoints · raio mínimo {:.1} m (setor {})",
+        "track: lap {:.0} m · {} waypoints · minimum radius {:.1} m (sector {})",
         pista.lap, pista.n, pista.raio_min, pista.setor_do_raio_min
     );
 
-    // ── UM MUNDO POR GERAÇÃO ──────────────────────────────────────────────────
+    // ── ONE WORLD PER GENERATION ──────────────────────────────────────────────
     //
-    // Antes, a pista do PRIMEIRO arquivo era desenhada para a corrida inteira. Isso valia
-    // enquanto toda corrida tinha uma pista só. Com o currículo (`--pistas` + troca por
-    // mérito), uma corrida atravessa 8 geometrias: as trajetórias das gerações posteriores
-    // eram desenhadas sobre a pista errada e apareciam como se o ser tivesse saído do
-    // traçado — o que levou o Leonardo a perguntar "eles não seguem a pista, ou ela mudou?".
-    // Ela mudou. O viewer é que não sabia.
+    // Before, the FIRST file's track was drawn for the whole race. That held while every
+    // race had a single track. With the curriculum (`--pistas` + merit-based switching),
+    // one race crosses 8 geometries: the trajectories of the later generations were drawn
+    // over the wrong track and looked as if the being had left the racing line — which led
+    // Leonardo to ask "do they not follow the track, or did it change?".
+    // It changed. The viewer just didn't know.
     //
-    // Cache por semente porque construir um VoxelWorld não é barato e o currículo repete
-    // pistas ao reiniciar o ciclo.
+    // Cache by seed because building a VoxelWorld is not cheap and the curriculum repeats
+    // tracks when the cycle restarts.
     let mut mundos: std::collections::HashMap<u64, (VoxelWorld, Pista)> =
         std::collections::HashMap::new();
     mundos.insert(semente0, (world, pista.clone()));
 
     let mut resumo = Vec::new();
-    // Semente da pista de CADA geração — o HTML desenhava a pista da semente 0 para
-    // todas as gens (Leonardo viu trajetórias "em outra pista" na g39: currículo tinha
-    // trocado 9001→9003 e o desenho ficou na 9001). Agora o JS troca o traçado por gen.
+    // Track seed of EACH generation — the HTML used to draw the seed-0 track for every
+    // gen (Leonardo saw trajectories "on another track" at g39: the curriculum had
+    // switched 9001→9003 and the drawing stayed on 9001). Now the JS swaps the racing
+    // line per gen.
     let mut gen_seeds: Vec<u64> = Vec::new();
     for (g, arq) in arquivos.iter().enumerate() {
         let semente_gen = ReplayReader::open(arq)
@@ -158,7 +163,7 @@ fn main() {
             };
             let p = Pista::medir(&w, width);
             println!(
-                "  (pista nova: semente {semente_gen} · volta {:.0} m · raio mínimo {:.1} m)",
+                "  (new track: seed {semente_gen} · lap {:.0} m · minimum radius {:.1} m)",
                 p.lap, p.raio_min
             );
             (w, p)
@@ -167,16 +172,16 @@ fn main() {
             Some((json, linha)) => {
                 let alvo = saida.join(format!("g{g:04}.json"));
                 if let Err(e) = std::fs::write(&alvo, json) {
-                    eprintln!("não gravou {}: {e}", alvo.display());
+                    eprintln!("could not write {}: {e}", alvo.display());
                 }
                 println!("  g{g:04} {}", linha.texto);
                 resumo.push(linha);
             }
-            None => eprintln!("  g{g:04} ilegível: {}", arq.display()),
+            None => eprintln!("  g{g:04} unreadable: {}", arq.display()),
         }
     }
     if resumo.is_empty() {
-        eprintln!("nenhuma geração legível");
+        eprintln!("no readable generation");
         std::process::exit(1);
     }
 
@@ -188,21 +193,21 @@ fn main() {
         std::fs::read(&alvo).unwrap_or_default(),
     )
     .ok();
-    println!("\n→ {} ({} gerações)", alvo.display(), resumo.len());
+    println!("\n→ {} ({} generations)", alvo.display(), resumo.len());
 }
 
-// ── GEOMETRIA DA PISTA ────────────────────────────────────────────────────────
+// ── TRACK GEOMETRY ────────────────────────────────────────────────────────────
 
-/// Métrica do traçado, medida uma vez. Tudo derivado dos waypoints reais.
+/// Racing-line metrics, measured once. Everything derived from the real waypoints.
 #[derive(Clone)]
 struct Pista {
     lap: f32,
     n: usize,
-    /// (x, z) de cada waypoint.
+    /// (x, z) of each waypoint.
     pts: Vec<(f32, f32)>,
-    /// Curvatura em 1/m por waypoint (κ = Δângulo / Δcomprimento).
+    /// Curvature in 1/m per waypoint (κ = Δangle / Δlength).
     kappa: Vec<f32>,
-    /// Distância acumulada ao longo do eixo, por waypoint.
+    /// Accumulated distance along the axis, per waypoint.
     arco: Vec<f32>,
     raio_min: f32,
     setor_do_raio_min: usize,
@@ -220,8 +225,8 @@ impl Pista {
             arco[i] = arco[i - 1] + d;
         }
 
-        // κ pelo ângulo entre segmentos consecutivos, dividido pelo comprimento médio.
-        // É a definição discreta de curvatura; nada estimado.
+        // κ from the angle between consecutive segments, divided by the mean length.
+        // It is the discrete definition of curvature; nothing estimated.
         let mut kappa = vec![0.0f32; n];
         for i in 0..n {
             let a = pts[(i + n - 1) % n];
@@ -231,7 +236,7 @@ impl Pista {
             let v2 = (c.0 - b.0, c.1 - b.1);
             let l1 = (v1.0 * v1.0 + v1.1 * v1.1).sqrt().max(1e-3);
             let l2 = (v2.0 * v2.0 + v2.1 * v2.1).sqrt().max(1e-3);
-            // Ângulo COM SINAL (produto vetorial 2D): positivo = curva para um lado.
+            // SIGNED angle (2D cross product): positive = curve to one side.
             let cross = v1.0 * v2.1 - v1.1 * v2.0;
             let dot = v1.0 * v2.0 + v1.1 * v2.1;
             let ang = cross.atan2(dot);
@@ -259,7 +264,7 @@ impl Pista {
         }
     }
 
-    /// Waypoint mais próximo de um ponto — busca completa, chamada fora do laço quente.
+    /// Closest waypoint to a point — full search, called outside the hot loop.
     fn wp_mais_perto(&self, x: f32, z: f32) -> usize {
         let mut melhor = 0usize;
         let mut best = f32::MAX;
@@ -274,16 +279,16 @@ impl Pista {
     }
 }
 
-// ── PROCESSAMENTO DE UMA GERAÇÃO ──────────────────────────────────────────────
+// ── PROCESSING OF ONE GENERATION ──────────────────────────────────────────────
 
 struct LinhaResumo {
     texto: String,
     avanco_max: f32,
     avanco_med: f32,
     mortes_por_setor: Vec<u32>,
-    /// |ω_real| / |ω_exigido| na zona de curva — 1,0 = obedece, 0 = não vira.
+    /// |ω_real| / |ω_demanded| in the corner zone — 1.0 = obeys, 0 = does not turn.
     obediencia: f32,
-    /// Fração dos quadros em curva com o giro no sentido certo. 0,50 = acaso.
+    /// Fraction of in-corner frames with the yaw in the correct direction. 0.50 = chance.
     sentido: f32,
     vel_media_vivos: f32,
     n_mortos: usize,
@@ -296,13 +301,13 @@ fn processar(
     passo: usize,
 ) -> Option<(String, LinhaResumo)> {
     let mut reader = ReplayReader::open(arq).ok()?;
-    // O chamador agora entrega o mundo da semente CERTA para cada geração. Se ainda assim
-    // divergir, é bug de quem chamou — desenhar trajetória sobre a geometria errada produz
-    // exatamente o falso "o ser saiu da pista" que este `assert` existe para impedir.
+    // The caller now delivers the world of the RIGHT seed for each generation. If it still
+    // diverges, that is the caller's bug — drawing a trajectory over the wrong geometry
+    // produces exactly the false "the being left the track" this `assert` exists to prevent.
     debug_assert_eq!(
         reader.header.world_seed,
         pista_semente(world),
-        "replay da semente {} sendo desenhado sobre a pista da semente {}",
+        "replay of seed {} being drawn over the track of seed {}",
         reader.header.world_seed,
         pista_semente(world)
     );
@@ -324,8 +329,8 @@ fn processar(
             continue;
         }
 
-        // Índice de morte: assinatura que o simulador escreve em quem perdeu a vida
-        // (gpu_evolve.rs:843 — throttle=0, freio=1, volante=0).
+        // Death index: signature the simulator writes onto whoever lost their life
+        // (gpu_evolve.rs:843 — throttle=0, brake=1, steering=0).
         let i_morte = fr
             .iter()
             .position(|f| f.final_thr == 0.0 && f.final_brk == 1.0 && f.final_str == 0.0);
@@ -334,7 +339,7 @@ fn processar(
         }
         let fim = i_morte.unwrap_or(fr.len());
 
-        // Avanço LÍQUIDO monotônico (mesma conta do replay_obs, não amplitude).
+        // Monotonic NET progress (same computation as replay_obs, not amplitude).
         let mut prog = 0.0f32;
         let mut prog_ant = world.get_track_progress(fr[0].pos[0], fr[0].pos[2]);
         let mut pico = 0.0f32;
@@ -352,36 +357,37 @@ fn processar(
         }
         avancos.push(pico);
 
-        // Onde morreu, em setor.
+        // Where it died, by sector.
         if let Some(im) = i_morte {
             let f = &fr[im.min(fr.len() - 1)];
             let wp = pista.wp_mais_perto(f.pos[0], f.pos[2]);
             mortes_setor[(wp * 24 / pista.n).min(23)] += 1;
         }
 
-        // Quadros: posição, velocidade, comandos, ω real e ω exigido.
+        // Frames: position, speed, commands, real ω and demanded ω.
         let mut plano: Vec<String> = Vec::new();
         for (k, f) in fr.iter().enumerate().step_by(passo) {
             let morto = k >= fim;
             let wp = pista.wp_mais_perto(f.pos[0], f.pos[2]);
             let k_local = pista.kappa[wp];
-            // O que a pista EXIGE: ω = v · κ (rad/s). O que o carro FAZ: yaw_rate gravado.
+            // What the track DEMANDS: ω = v · κ (rad/s). What the car DOES: recorded yaw_rate.
             let w_exig = f.speed * k_local;
             let w_real = f.yaw_rate;
             let mat = world.material_at(Vec2::new(f.pos[0], f.pos[2]));
             let fora = !matches!(mat, VoxelType::Road);
 
-            // Obediência COM SINAL. A versão anterior usava |ω_real|/|ω_exig| e dava 1,8
-            // — como se girassem quase o dobro do necessário. Era artefato: magnitude sem
-            // sinal faz TREMOR ALEATÓRIO parecer obediência de sobra. Medido com sinal, a
-            // projeção do giro no sentido da curva é 0,019 rad/s contra 0,418 exigidos, e a
-            // correlação entre exigido e real é −0,01. Eles giram; não giram PARA a curva.
+            // SIGNED obedience. The previous version used |ω_real|/|ω_exig| and gave 1.8
+            // — as if they yawed almost twice what was needed. It was an artefact: unsigned
+            // magnitude makes RANDOM JITTER look like obedience to spare. Measured with sign,
+            // the projection of the yaw onto the corner direction is 0.019 rad/s against
+            // 0.418 demanded, and the correlation between demanded and real is −0.01.
+            // They yaw; they do not yaw TOWARD the corner.
             if !morto && w_exig.abs() > 0.03 && f.speed > 1.0 {
-                // AGREGADO, não média de razões. Razão por quadro (`w_real/w_exig`) é
-                // dominada pelos quadros de κ pequeno, onde o denominador quase zera e um
-                // tremor qualquer vira razão enorme; a média disso deu +1,14 enquanto a
-                // projeção real era 0,045. O quociente de somas pesa cada quadro pela
-                // exigência dele, que é o que a pergunta quer.
+                // AGGREGATE, not a mean of ratios. The per-frame ratio (`w_real/w_exig`) is
+                // dominated by the small-κ frames, where the denominator nearly zeroes and
+                // any jitter becomes a huge ratio; the mean of that gave +1.14 while the
+                // real projection was 0.045. The quotient of sums weighs each frame by its
+                // demand, which is what the question wants.
                 soma_proj += (w_real * w_exig.signum()) as f64;
                 soma_exig += w_exig.abs() as f64;
                 if w_real.signum() == w_exig.signum() {
@@ -428,7 +434,7 @@ fn processar(
     } else {
         0.0
     };
-    // 0,50 = acaso. Acima disso o giro segue a curva mais do que não segue.
+    // 0.50 = chance. Above that the yaw follows the corner more than it does not.
     let sentido = if n_obed > 0 {
         n_sentido as f32 / n_obed as f32
     } else {
@@ -442,8 +448,8 @@ fn processar(
 
     let json = format!("{{\"seres\":[{}]}}", seres_json.join(","));
     let texto = format!(
-        "avanço mediano {avanco_med:6.0} m · máx {avanco_max:6.0} m · mortos {n_mortos:2} · \
-         obediência {obediencia:+.3} · sentido certo {:.0}% · v {vel_media:.1} m/s",
+        "median progress {avanco_med:6.0} m · max {avanco_max:6.0} m · dead {n_mortos:2} · \
+         obedience {obediencia:+.3} · correct direction {:.0}% · v {vel_media:.1} m/s",
         100.0 * sentido,
     );
 
@@ -464,7 +470,7 @@ fn processar(
 
 fn pista_semente(_w: &VoxelWorld) -> u64 {
     0
-} // placeholder: a checagem real é por corrida
+} // placeholder: the real check is per race
 
 // ── VIEWER ────────────────────────────────────────────────────────────────────
 
@@ -476,7 +482,7 @@ fn gerar_html(
     passo: usize,
     width: f32,
 ) -> String {
-    // Uma geometria por SEMENTE; o JS escolhe pela semente da geração em foco.
+    // One geometry per SEED; the JS picks by the seed of the generation in focus.
     let pistas: String = {
         let mut out = String::from("{");
         for (seed, (_, p)) in mundos {

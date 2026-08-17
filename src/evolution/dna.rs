@@ -2,35 +2,35 @@ use std::fs::File;
 use std::io::{Read, Write};
 
 // ============================================================================
-// TIER 6.6 — WEIGHT SCARS (trauma imutabilidade)
+// TIER 6.6 — WEIGHT SCARS (trauma immutability)
 // ----------------------------------------------------------------------------
-// Quando um organismo morre em CATÁSTROFE (Batida frontal com HP→0), uma fração
-// dos pesos NÃO-ZEROS (proxy de "pesos ativos naquele momento") é marcada como
-// "scar tissue" — bloqueada para mutação por N gerações.
+// When an organism dies in a CATASTROPHE (frontal crash with HP→0), a fraction
+// of the NON-ZERO weights (proxy for "weights active at that moment") is marked
+// as "scar tissue" — blocked from mutation for N generations.
 //
-// - `scar_mask[i]` = TTL u8: 0 = livre, >0 = travado (decrementa a cada gen).
-// - Scars sobrevivem transição de geração via EliteDna.
-// - Não entra no .dna v3 (runtime-only por enquanto). Documentado p/ v4.
+// - `scar_mask[i]` = TTL u8: 0 = free, >0 = locked (decrements each gen).
+// - Scars survive the generation transition via EliteDna.
+// - Not part of .dna v3 (runtime-only for now). Documented for v4.
 //
-// Versão simplificada (v1): snapshot proxy — ativos ≈ não-zeros. Versão completa
-// (v2, futura) usaria last_activation_mask do BitLinear após um forward real.
+// Simplified version (v1): proxy snapshot — active ≈ non-zero. The full version
+// (v2, future) would use the BitLinear's last_activation_mask after a real forward.
 // ============================================================================
-pub const SCAR_TTL_INITIAL: u8 = 5; // trava por 5 gerações
-pub const SCAR_FRACTION: f32 = 0.10; // 10% dos pesos não-zero viram scar
+pub const SCAR_TTL_INITIAL: u8 = 5; // locks for 5 generations
+pub const SCAR_FRACTION: f32 = 0.10; // 10% of the non-zero weights become scars
 pub const SCAR_CATASTROPHE_LABEL: &str = "BATIDA";
 
 // ============================================================================
-// TIER 6.3 LITE — MORPHOLOGICAL CO-EVOLUTION (genes corporais)
+// TIER 6.3 LITE — MORPHOLOGICAL CO-EVOLUTION (body genes)
 // ----------------------------------------------------------------------------
-// 4 parâmetros de carroceria co-evoluem com o cérebro. Por ora só são
-// ARMAZENADOS (no DNA e no Racer) e mutacionam junto das elites; o wiring
-// físico fica pra follow-up.
+// 4 body parameters co-evolve with the brain. For now they are only
+// STORED (in the DNA and in the Racer) and mutate along with the elites; the
+// physical wiring is left for a follow-up.
 //   - mass      (kg)     [700, 1400]  default 1000
 //   - wheelbase (m)      [1.5, 3.0]   default 2.5
 //   - downforce (coef)   [0.5, 2.0]   default 1.0
 //   - grip_mult (coef)   [0.8, 1.2]   default 1.0
-// Mutação: 5% de chance por gen por gene, ruído gaussiano σ = 5% do range,
-// clamp nos limites.
+// Mutation: 5% chance per gen per gene, Gaussian noise σ = 5% of the range,
+// clamp at the bounds.
 // ============================================================================
 pub const MORPHO_MASS_MIN: f32 = 700.0;
 pub const MORPHO_MASS_MAX: f32 = 1400.0;
@@ -40,8 +40,8 @@ pub const MORPHO_DOWNFORCE_MIN: f32 = 0.5;
 pub const MORPHO_DOWNFORCE_MAX: f32 = 2.0;
 pub const MORPHO_GRIP_MIN: f32 = 0.8;
 pub const MORPHO_GRIP_MAX: f32 = 1.2;
-pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% por gene por gen
-pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% do range
+pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% per gene per gen
+pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% of the range
 pub const MORPHO_BYTES: usize = 16; // 4 × f32 LE
 
 #[derive(Clone, Copy, Debug)]
@@ -90,7 +90,7 @@ impl MorphoGenes {
         Some(out.sanitized())
     }
 
-    /// Clamp nos ranges (+ proteção contra NaN/Inf vinda de arquivo corrompido).
+    /// Clamp to the ranges (+ protection against NaN/Inf coming from a corrupted file).
     pub fn sanitized(mut self) -> Self {
         let default = Self::default();
         if !self.mass.is_finite() {
@@ -116,13 +116,13 @@ impl MorphoGenes {
         self
     }
 
-    /// Muta cada gene independentemente com probabilidade MORPHO_MUTATION_RATE.
-    /// Ruído gaussiano (Box-Muller) com σ = MORPHO_SIGMA_FRAC × (max - min).
-    /// `rng01` deve retornar f32 uniforme em [0, 1).
+    /// Mutates each gene independently with probability MORPHO_MUTATION_RATE.
+    /// Gaussian noise (Box-Muller) with σ = MORPHO_SIGMA_FRAC × (max - min).
+    /// `rng01` must return a uniform f32 in [0, 1).
     pub fn mutate<R: FnMut() -> f32>(&mut self, mut rng01: R) {
         #[inline]
         fn gauss(rng01: &mut impl FnMut() -> f32) -> f32 {
-            // Box-Muller com clamp pra evitar ln(0).
+            // Box-Muller with a clamp to avoid ln(0).
             let u1 = rng01().max(1e-7);
             let u2 = rng01();
             (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
@@ -156,21 +156,21 @@ pub struct EliteDna {
     pub slow_weights: Vec<i8>,
     pub slow_scale: f32,
     pub fitness: f32,
-    /// Runtime-only. Comprimento == fast_weights.len(). TTL por peso (0 = livre).
+    /// Runtime-only. Length == fast_weights.len(). TTL per weight (0 = free).
     pub scar_mask: Vec<u8>,
-    // --- Tier 4.2: Epigenética parcial (runtime-only, não serializa em .dna) ---
-    /// Média de cortisol do organismo ao longo da sua vida (trauma baseline).
+    // --- Tier 4.2: Partial epigenetics (runtime-only, not serialized in .dna) ---
+    /// Mean cortisol of the organism over its lifetime (trauma baseline).
     pub cortisol_mean: f32,
-    /// Média de dopamina (RPE) do organismo (mood baseline).
+    /// Mean dopamine (RPE) of the organism (mood baseline).
     pub dopamine_mean: f32,
-    /// Média de curiosidade do organismo (tendência exploratória).
+    /// Mean curiosity of the organism (exploratory tendency).
     pub curiosity_mean: f32,
-    // --- Tier 6.3 LITE: morphological co-evolution (serializado em .dna v3.1) ---
+    // --- Tier 6.3 LITE: morphological co-evolution (serialized in .dna v3.1) ---
     pub morpho: MorphoGenes,
 }
 
-/// Marca ~SCAR_FRACTION dos pesos NÃO-ZERO em `fast_weights` com scar TTL.
-/// Determinístico via seed (deriva de fast_weights.iter().sum); retorna nº de scars criados.
+/// Marks ~SCAR_FRACTION of the NON-ZERO weights in `fast_weights` with a scar TTL.
+/// Deterministic via seed (derived from fast_weights.iter().sum); returns the number of scars created.
 pub fn apply_catastrophic_scars(
     scar_mask: &mut Vec<u8>,
     fast_weights: &[i8],
@@ -179,7 +179,7 @@ pub fn apply_catastrophic_scars(
     if scar_mask.len() != fast_weights.len() {
         *scar_mask = vec![0u8; fast_weights.len()];
     }
-    // Lista de índices não-zero
+    // List of non-zero indices
     let nonzero_idx: Vec<usize> = fast_weights
         .iter()
         .enumerate()
@@ -189,7 +189,7 @@ pub fn apply_catastrophic_scars(
         return 0;
     }
     let target = ((nonzero_idx.len() as f32) * SCAR_FRACTION).ceil() as usize;
-    // Seleção pseudo-aleatória via LCG simples com seed_bias (determinismo por DNA).
+    // Pseudo-random selection via a simple LCG with seed_bias (determinism per DNA).
     let mut state: u64 = seed_bias
         .wrapping_mul(0x9E3779B97F4A7C15)
         .wrapping_add(0xDEADBEEF);
@@ -200,7 +200,7 @@ pub fn apply_catastrophic_scars(
             .wrapping_add(1442695040888963407);
         let pick = (state >> 32) as usize % nonzero_idx.len();
         let idx = nonzero_idx[pick];
-        // Só conta se o peso não estava já scarred (refresh também estende TTL).
+        // Only counts if the weight was not already scarred (a refresh also extends the TTL).
         if scar_mask[idx] == 0 {
             scars_created += 1;
         }
@@ -209,8 +209,8 @@ pub fn apply_catastrophic_scars(
     scars_created
 }
 
-/// Decrementa TTLs de todos os scars em 1 (chamado a cada gen boundary).
-/// Retorna nº de scars ainda ativos após decremento.
+/// Decrements the TTLs of every scar by 1 (called at each gen boundary).
+/// Returns the number of scars still active after the decrement.
 pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
     let mut still_active = 0usize;
     for ttl in scar_mask.iter_mut() {
@@ -227,7 +227,7 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
 // ============================================================================
 // DNA FILE FORMAT v3 (+ v3.1 morpho tail)
 // ----------------------------------------------------------------------------
-// Layout core (little-endian, 8478 bytes) + opcional tail morpho (+16B = 8494):
+// Core layout (little-endian, 8478 bytes) + optional morpho tail (+16B = 8494):
 //   magic[4]     = b"IARA"
 //   version:u16  = 3
 //   generation:u32
@@ -241,9 +241,9 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
 //   [TIER 6.3 LITE tail, +16B] morpho: mass:f32 | wheelbase:f32 | downforce:f32 | grip_mult:f32
 //
 // Backward-compat:
-//   - legacy v1 (8196B) e v2 (8456B): sem magic, carregados com metadata zerada.
-//   - v3 antigo (8478B, sem tail morpho): MorphoGenes::default().
-//   - v3.1 (8494B): decodifica os 16 bytes finais.
+//   - legacy v1 (8196B) and v2 (8456B): no magic, loaded with zeroed metadata.
+//   - old v3 (8478B, no morpho tail): MorphoGenes::default().
+//   - v3.1 (8494B): decodes the final 16 bytes.
 // ============================================================================
 pub const DNA_MAGIC: &[u8; 4] = b"IARA";
 pub const DNA_VERSION: u16 = 3;
@@ -321,7 +321,7 @@ impl HypernetSeed {
         Some(Self { coeffs, active })
     }
 
-    /// Expande os 64 coeffs em 2048 pesos ternários via basis sin-product fixa.
+    /// Expands the 64 coeffs into 2048 ternary weights via a fixed sin-product basis.
     pub fn expand(&self) -> [i8; HYPERNET_EXPAND_SIZE] {
         let mut out = [0i8; HYPERNET_EXPAND_SIZE];
         for i in 0..HYPERNET_EXPAND_SIZE {
@@ -340,7 +340,7 @@ impl HypernetSeed {
         out
     }
 
-    /// 2% chance de flip do active por gen. Se ativo, ruído gaussiano σ=0.05 nos coeffs.
+    /// 2% chance of flipping `active` per gen. If active, Gaussian noise σ=0.05 on the coeffs.
     pub fn mutate<R: FnMut() -> f32>(&mut self, mut rng01: R) {
         #[inline]
         fn gauss(rng01: &mut impl FnMut() -> f32) -> f32 {
@@ -372,9 +372,9 @@ pub struct DnaPayload {
     pub track_width: f32,
     pub fitness: f32,
     pub version: u16,
-    // --- Tier 6.3 LITE: defaults pra arquivos antigos sem tail morpho ---
+    // --- Tier 6.3 LITE: defaults for old files with no morpho tail ---
     pub morpho: MorphoGenes,
-    // --- Tier 6.4 LITE: hypernet seed (inactive default p/ backward-compat) ---
+    // --- Tier 6.4 LITE: hypernet seed (inactive default for backward-compat) ---
     pub hypernet: HypernetSeed,
 }
 
@@ -483,10 +483,10 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             return None;
         }
         let slow_weights: Vec<i8> = buf[slow_start..slow_end].iter().map(|&b| b as i8).collect();
-        // SANITIZAÇÃO: DNAs antigos podem ter scales astronômicos (bug myelinate
-        // sem cap pré-fix). Clamp em [1e-4, 10] — valores fora disso indicam
-        // corrupção runtime, não pesos válidos. Força recalibração na próxima
-        // quantize() via abs_mean dos pesos ternários.
+        // SANITIZATION: old DNAs may carry astronomical scales (pre-fix myelinate
+        // bug with no cap). Clamp to [1e-4, 10] — values outside that indicate
+        // runtime corruption, not valid weights. Forces recalibration at the next
+        // quantize() via the abs_mean of the ternary weights.
         let fast_scale = if fast_scale_raw.is_finite() {
             fast_scale_raw.clamp(1e-4, 10.0)
         } else {
@@ -497,13 +497,13 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
         } else {
             1.0
         };
-        // --- Tier 6.3 LITE: tail opcional de morpho (backward-compat c/ v3 antigo) ---
+        // --- Tier 6.3 LITE: optional morpho tail (backward-compat with old v3) ---
         let morpho = if buf.len() >= slow_end + MORPHO_BYTES {
             MorphoGenes::from_le_bytes(&buf[slow_end..slow_end + MORPHO_BYTES]).unwrap_or_default()
         } else {
             MorphoGenes::default()
         };
-        // --- Tier 6.4 LITE: tail opcional de hypernet (backward-compat) ---
+        // --- Tier 6.4 LITE: optional hypernet tail (backward-compat) ---
         let hypernet_start = slow_end + MORPHO_BYTES;
         let hypernet = if buf.len() >= hypernet_start + HYPERNET_BYTES {
             HypernetSeed::from_le_bytes(&buf[hypernet_start..hypernet_start + HYPERNET_BYTES])
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn legacy_v3_without_morpho_loads_with_default() {
-        // Simula um arquivo v3 salvo pre-tier-6.3 (8478 bytes, sem morpho tail).
+        // Simulates a v3 file saved pre-tier-6.3 (8478 bytes, no morpho tail).
         let (fast, slow) = sample_weights(3);
         let path = std::env::temp_dir().join("iara_test_v3_legacy.dna");
         let mut f = std::fs::File::create(&path).unwrap();
@@ -697,98 +697,98 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // TESTE DE EQUIVALÊNCIA CROSS-MÓDULO (REDE DE PROTEÇÃO CRÍTICA)
+    // CROSS-MODULE EQUIVALENCE TEST (CRITICAL SAFETY NET)
     // ────────────────────────────────────────────────────────────────────────
-    // Garante que um arquivo salvo por dna.rs::save_champion_dna é legível
-    // por dna_genesis::load_champion_dna (o loader ativo em produção).
+    // Guarantees that a file saved by dna.rs::save_champion_dna is readable
+    // by dna_genesis::load_champion_dna (the loader active in production).
     //
-    // A duplicação de dna.rs vs dna_genesis.rs é PERIGOSA: se os layouts
-    // divergirem, salvar pelo caminho errado corrompe DNAs em silêncio.
+    // The dna.rs vs dna_genesis.rs duplication is DANGEROUS: if the layouts
+    // diverge, saving through the wrong path corrupts DNAs in silence.
     //
-    // POR QUE ESSA DIVERGÊNCIA EXISTE (não remover sem ler):
-    //   - dna.rs tem save_champion_dna_full() que escreve formato V3 flat.
-    //   - dna_genesis.rs tem save_champion_dna_full() que delega ao V4 TLV
+    // WHY THIS DIVERGENCE EXISTS (do not remove without reading):
+    //   - dna.rs has save_champion_dna_full() which writes the flat V3 format.
+    //   - dna_genesis.rs has save_champion_dna_full() which delegates to V4 TLV
     //     via compress_organism() (iara_genesis).
-    //   - dna.rs::save produz um arquivo V3 (8494-8755 bytes, magic+flat).
-    //   - dna_genesis::load lê V3 como legacy path (version != 4) — funciona.
-    //   - dna_genesis::save_champion_dna_v7 produz arquivo V8 (TLV iara_genesis).
-    //   - dna.rs::load NÃO conhece o formato V8 TLV — é o loader ANTIGO.
+    //   - dna.rs::save produces a V3 file (8494-8755 bytes, magic+flat).
+    //   - dna_genesis::load reads V3 as the legacy path (version != 4) — works.
+    //   - dna_genesis::save_champion_dna_v7 produces a V8 file (TLV iara_genesis).
+    //   - dna.rs::load does NOT know the V8 TLV format — it is the OLD loader.
     //
-    // FONTE DE VERDADE: dna_genesis.rs é a única implementação ativa.
-    // dna.rs deve ser mantido APENAS para backward-compat de leitura de
-    // arquivos legacy V1/V2/V3 que existam em disco.
+    // SOURCE OF TRUTH: dna_genesis.rs is the only active implementation.
+    // dna.rs must be kept ONLY for backward-compat reading of legacy
+    // V1/V2/V3 files that exist on disk.
     //
-    // NÃO remova dna.rs sem garantir que o legacy path de V3/V1/V2 ainda
-    // esteja em dna_genesis.rs (ele já está — ver load_champion_dna lá).
+    // Do NOT remove dna.rs without guaranteeing that the V3/V1/V2 legacy path
+    // is still in dna_genesis.rs (it already is — see load_champion_dna there).
     // ────────────────────────────────────────────────────────────────────────
 
-    /// 1. dna.rs salva um V3; dna_genesis carrega — pesos devem bater.
+    /// 1. dna.rs saves a V3; dna_genesis loads it — weights must match.
     #[test]
     fn dna_legacy_writer_readable_by_genesis_loader() {
         let (fast, slow) = sample_weights(7);
         let path = std::env::temp_dir().join("iara_cross_module_legacy.dna");
         let path_s = path.to_str().unwrap();
 
-        // Salva pelo caminho LEGADO (dna.rs) — produz V3 flat.
+        // Saves through the LEGACY path (dna.rs) — produces flat V3.
         save_champion_dna(path_s, &fast, 0.25, &slow, 0.125, 10, 42, 14.0, 123.4)
-            .expect("dna.rs::save deve funcionar");
+            .expect("dna.rs::save must work");
 
-        // Carrega pelo caminho ATIVO (dna_genesis) — deve conseguir ler o V3.
+        // Loads through the ACTIVE path (dna_genesis) — must be able to read the V3.
         let loaded = crate::evolution::dna_genesis::load_champion_dna(path_s)
-            .expect("dna_genesis::load deve ler arquivo V3 salvo por dna.rs");
+            .expect("dna_genesis::load must read a V3 file saved by dna.rs");
 
-        // Metadados devem ser preservados.
-        assert_eq!(loaded.generation, 10, "generation divergiu entre módulos");
-        assert_eq!(loaded.seed, 42, "seed divergiu entre módulos");
+        // Metadata must be preserved.
+        assert_eq!(loaded.generation, 10, "generation diverged between modules");
+        assert_eq!(loaded.seed, 42, "seed diverged between modules");
         assert!(
             (loaded.track_width - 14.0).abs() < 1e-4,
-            "track_width divergiu"
+            "track_width diverged"
         );
-        assert!((loaded.fitness - 123.4).abs() < 1e-2, "fitness divergiu");
+        assert!((loaded.fitness - 123.4).abs() < 1e-2, "fitness diverged");
         assert!(
             (loaded.fast_scale - 0.25).abs() < 1e-4,
-            "fast_scale divergiu"
+            "fast_scale diverged"
         );
         assert!(
             (loaded.slow_scale - 0.125).abs() < 1e-4,
-            "slow_scale divergiu"
+            "slow_scale diverged"
         );
         assert_eq!(
             loaded.fast_weights, fast,
-            "fast_weights divergiram entre módulos"
+            "fast_weights diverged between modules"
         );
         assert_eq!(
             loaded.slow_weights.as_deref().unwrap(),
             slow.as_slice(),
-            "slow_weights divergiram entre módulos"
+            "slow_weights diverged between modules"
         );
 
         let _ = std::fs::remove_file(path);
     }
 
-    /// 2. Constantes de tamanho de DNA em dna.rs devem casar com os LEGACY
-    ///    de dna_genesis.rs (se divergirem, o parser legacy quebra).
+    /// 2. DNA size constants in dna.rs must match the LEGACY ones in
+    ///    dna_genesis.rs (if they diverge, the legacy parser breaks).
     #[test]
     fn dna_size_constants_match_genesis_legacy() {
-        // dna.rs define DNA_FAST_SIZE = 128*64 = 8192 (legado).
-        // dna_genesis.rs define DNA_FAST_SIZE_LEGACY = 128*64 = 8192.
-        // Se alguém mudar um e não o outro, o parser V3 flat vai ler bytes errados.
+        // dna.rs defines DNA_FAST_SIZE = 128*64 = 8192 (legacy).
+        // dna_genesis.rs defines DNA_FAST_SIZE_LEGACY = 128*64 = 8192.
+        // If someone changes one and not the other, the flat V3 parser reads wrong bytes.
         assert_eq!(
             DNA_FAST_SIZE,
             crate::config::iara::genetics::DNA_FAST_SIZE_LEGACY,
-            "DNA_FAST_SIZE em dna.rs != DNA_FAST_SIZE_LEGACY em config — \
-             isso quebraria o parser legacy V3"
+            "DNA_FAST_SIZE in dna.rs != DNA_FAST_SIZE_LEGACY in config — \
+             this would break the legacy V3 parser"
         );
         assert_eq!(
             DNA_SLOW_SIZE,
             crate::config::iara::genetics::DNA_SLOW_SIZE_LEGACY,
-            "DNA_SLOW_SIZE em dna.rs != DNA_SLOW_SIZE_LEGACY em config — \
-             isso quebraria o parser legacy V3"
+            "DNA_SLOW_SIZE in dna.rs != DNA_SLOW_SIZE_LEGACY in config — \
+             this would break the legacy V3 parser"
         );
     }
 
-    /// 3. MorphoGenes::to_le_bytes / from_le_bytes em dna.rs devem ser
-    ///    bit-a-bit idênticos aos de dna_genesis.rs.
+    /// 3. MorphoGenes::to_le_bytes / from_le_bytes in dna.rs must be
+    ///    bit-for-bit identical to dna_genesis.rs's.
     #[test]
     fn morpho_bytes_identical_across_modules() {
         let m_dna = MorphoGenes {
@@ -798,33 +798,33 @@ mod tests {
             grip_mult: 1.0,
         };
 
-        // Serializa via dna.rs.
+        // Serializes via dna.rs.
         let bytes_dna = m_dna.to_le_bytes();
 
-        // Desserializa via dna_genesis.rs.
+        // Deserializes via dna_genesis.rs.
         let m_genesis = crate::evolution::dna_genesis::MorphoGenes::from_le_bytes(&bytes_dna)
-            .expect("dna_genesis deve desserializar bytes de dna.rs");
+            .expect("dna_genesis must deserialize bytes from dna.rs");
 
         assert!(
             (m_dna.mass - m_genesis.mass).abs() < 1e-4,
-            "MorphoGenes.mass diverge: {} vs {}",
+            "MorphoGenes.mass diverges: {} vs {}",
             m_dna.mass,
             m_genesis.mass
         );
         assert!(
             (m_dna.wheelbase - m_genesis.wheelbase).abs() < 1e-5,
-            "MorphoGenes.wheelbase diverge"
+            "MorphoGenes.wheelbase diverges"
         );
         assert!(
             (m_dna.downforce - m_genesis.downforce).abs() < 1e-5,
-            "MorphoGenes.downforce diverge"
+            "MorphoGenes.downforce diverges"
         );
         assert!(
             (m_dna.grip_mult - m_genesis.grip_mult).abs() < 1e-5,
-            "MorphoGenes.grip_mult diverge"
+            "MorphoGenes.grip_mult diverges"
         );
 
-        // E vice-versa: serializa via dna_genesis, desserializa via dna.
+        // And vice versa: serialize via dna_genesis, deserialize via dna.
         let m_gen2 = crate::evolution::dna_genesis::MorphoGenes {
             mass: 900.0,
             wheelbase: 2.8,
@@ -833,14 +833,14 @@ mod tests {
         };
         let bytes_gen2 = m_gen2.to_le_bytes();
         let m_back = MorphoGenes::from_le_bytes(&bytes_gen2)
-            .expect("dna.rs deve desserializar bytes de dna_genesis");
+            .expect("dna.rs must deserialize bytes from dna_genesis");
         assert!(
             (m_gen2.mass - m_back.mass).abs() < 1e-4,
-            "round-trip invertido falhou"
+            "inverted round-trip failed"
         );
     }
 
-    /// 4. HypernetSeed::to_le_bytes / from_le_bytes devem ser idênticos.
+    /// 4. HypernetSeed::to_le_bytes / from_le_bytes must be identical.
     #[test]
     fn hypernet_bytes_identical_across_modules() {
         let mut h_dna = HypernetSeed::default();
@@ -851,7 +851,7 @@ mod tests {
         // dna.rs → dna_genesis.
         let bytes = h_dna.to_le_bytes();
         let h_gen = crate::evolution::dna_genesis::HypernetSeed::from_le_bytes(&bytes)
-            .expect("dna_genesis deve ler HypernetSeed de dna.rs");
+            .expect("dna_genesis must read a HypernetSeed from dna.rs");
         assert_eq!(h_gen.active, h_dna.active);
         assert!((h_gen.coeffs[0] - h_dna.coeffs[0]).abs() < 1e-5);
         assert!((h_gen.coeffs[1] - h_dna.coeffs[1]).abs() < 1e-5);

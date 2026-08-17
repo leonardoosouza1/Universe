@@ -1,64 +1,64 @@
-// ── CÉREBRO LENTO NA GPU — host Rust ──────────────────────────────────────────
+// ── SLOW BRAIN ON THE GPU — Rust host ─────────────────────────────────────────
 //
-// Hospeda SlowBrain (CfC-64 → Dense1(64→16) → Dense2(16→3)) na GPU para que o
-// caminho GPU tenha ambos os cérebros (rápido: brain.rs + lento: este arquivo).
+// Hosts SlowBrain (CfC-64 → Dense1(64→16) → Dense2(16→3)) on the GPU so the
+// GPU path has both brains (fast: brain.rs + slow: this file).
 //
-// # Por que dois kernels em vez de um
+// # Why two kernels instead of one
 //
-// RADV/ACO trava em shaders grandes neste projeto (histórico de crashes silenciosos
-// com kernels > ~200 linhas de corpo). O SlowBrain tem três etapas com barreiras
-// entre elas (CfC → Dense1 → Dense2). Com 64 threads e workgroup único isso
-// funcionaria em um kernel, mas ficaria > 150 linhas de corpo. Dividimos em
-// dois kernels encadeados no mesmo CommandEncoder:
-//   Kernel A (run_cfc):   atualiza estado CfC → salva s em buf_state
-//   Kernel B (run_dense): lê s, recalcula tanh, Dense1 + Dense2 → output
-// Um único submit para os dois.
+// RADV/ACO crashes on large shaders in this project (history of silent crashes
+// with kernels > ~200 body lines). SlowBrain has three stages with barriers
+// between them (CfC → Dense1 → Dense2). With 64 threads and a single workgroup this
+// would work in one kernel, but it would exceed 150 body lines. We split it into
+// two kernels chained in the same CommandEncoder:
+//   Kernel A (run_cfc):   updates the CfC state → saves s in buf_state
+//   Kernel B (run_dense): reads s, recomputes tanh, Dense1 + Dense2 → output
+// A single submit for both.
 //
-// # Buffers residentes
+// # Resident buffers
 //
 //   buf_state:   [STATE_PER_SER × cap f32] — cfc_state, fatigue, counter,
-//                tick_counter, output[3]. Inicializado em zeros.
-//   buf_weights: [WEIGHTS_PER_SER × cap f32] — Dense1+Dense2, upload por spawn.
-//   buf_input:   [INPUT_SIZE × cap i32] — input por tick (48 canais i8 sign-extended).
-//   buf_output:  [3 × cap f32] — saída por tick, lida pelo host.
-//   buf_readback: [3 × cap f32] — MAP_READ separado (wgpu exige).
+//                tick_counter, output[3]. Initialized to zeros.
+//   buf_weights: [WEIGHTS_PER_SER × cap f32] — Dense1+Dense2, uploaded per spawn.
+//   buf_input:   [INPUT_SIZE × cap i32] — input per tick (48 sign-extended i8 channels).
+//   buf_output:  [3 × cap f32] — output per tick, read by the host.
+//   buf_readback: [3 × cap f32] — separate MAP_READ (wgpu requires it).
 //
-// # Contagem de slots em STATE_PER_SER = 133 f32
+// # Slot count in STATE_PER_SER = 133 f32
 //   [0..64)    cfc_state
 //   [64..128)  cfc_fatigue
 //   [128]      counter (u32 bitcast)
 //   [129]      tick_counter (u32 bitcast)
 //   [130..133) output[3]
 //
-// # Pesos em WEIGHTS_PER_SER = 1091 f32
+// # Weights in WEIGHTS_PER_SER = 1091 f32
 //   [0..1024)    dense1.weights (64×16)
 //   [1024..1040) dense1.bias   (16)
 //   [1040..1088) dense2.weights (16×3)
 //   [1088..1091) dense2.bias   (3)
-//   Ordem idêntica a SlowBrain::all_weights() (engine.rs) — DNA round-trip correto.
+//   Same order as SlowBrain::all_weights() (engine.rs) — correct DNA round-trip.
 //
-// # map_async → poll → recv (ordem obrigatória)
+// # map_async → poll → recv (mandatory order)
 //
-// Deadlock documentado neste projeto: poll(Wait) ANTES de map_async não serve o
-// callback. O poll tem de vir DEPOIS do pedido de mapeamento. Veja brain.rs:710
-// para o histórico. Todo readback aqui segue a ordem: map_async → poll → recv.
+// Deadlock documented in this project: poll(Wait) BEFORE map_async does not serve the
+// callback. The poll must come AFTER the mapping request. See brain.rs:710
+// for the history. Every readback here follows the order: map_async → poll → recv.
 
 use std::borrow::Cow;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-// ── DIMENSÕES ────────────────────────────────────────────────────────────────
+// ── DIMENSIONS ───────────────────────────────────────────────────────────────
 
 const INPUT_SIZE: usize = 48;
 const CFC_SIZE: usize = 64;
 const D2_OUT: usize = 3;
 const OUTPUT_DIM: usize = D2_OUT;
 
-/// Slots de estado por ser (f32):
+/// State slots per being (f32):
 ///   cfc_state[64] + cfc_fatigue[64] + counter(1) + tick_counter(1) + output[3] = 133
 const STATE_PER_SER: usize = CFC_SIZE + CFC_SIZE + 1 + 1 + D2_OUT; // 133
 
-/// Pesos por ser (f32). Ordem espelha SlowBrain::all_weights():
+/// Weights per being (f32). Order mirrors SlowBrain::all_weights():
 ///   dense1.weights(1024) + dense1.bias(16) + dense2.weights(48) + dense2.bias(3) = 1091
 const WEIGHTS_PER_SER: usize = 1024 + 16 + 48 + 3; // 1091
 
@@ -73,40 +73,40 @@ struct SlowBrainParams {
     _pad1: u32,
 }
 
-// ── CONTEXTO PERSISTENTE ──────────────────────────────────────────────────────
+// ── PERSISTENT CONTEXT ────────────────────────────────────────────────────────
 
-/// Contexto GPU do SlowBrain. Vive durante toda a geração.
+/// SlowBrain GPU context. Lives for the whole generation.
 ///
-/// Invariante: todos os buffers suportam até `capacity` seres.
+/// Invariant: every buffer supports up to `capacity` beings.
 pub struct SlowBrainGpu {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 
-    // Dois pipelines — dois kernels encadeados no mesmo CommandEncoder.
+    // Two pipelines — two kernels chained in the same CommandEncoder.
     pipeline_cfc: wgpu::ComputePipeline,
     pipeline_dense: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
 
-    // Buffers residentes
-    buf_state: wgpu::Buffer, // f32 × (cap × STATE_PER_SER) — residente, zeros init
-    buf_weights: wgpu::Buffer, // f32 × (cap × WEIGHTS_PER_SER) — upload por spawn
-    buf_input: wgpu::Buffer, // i32 × (cap × INPUT_SIZE) — escrito por tick ou pela colheita
-    // Pipeline de COLHEITA: preenche buf_input a partir da onda sensorial que já
-    // está na GPU, evitando um readback por tick só para escolher 48 de 223 canais.
+    // Resident buffers
+    buf_state: wgpu::Buffer, // f32 × (cap × STATE_PER_SER) — resident, zeros init
+    buf_weights: wgpu::Buffer, // f32 × (cap × WEIGHTS_PER_SER) — uploaded per spawn
+    buf_input: wgpu::Buffer, // i32 × (cap × INPUT_SIZE) — written per tick or by the gather
+    // GATHER pipeline: fills buf_input from the sensory wave that is already
+    // on the GPU, avoiding a readback per tick just to pick 48 of 223 channels.
     pipeline_gather: wgpu::ComputePipeline,
     layout_gather: wgpu::BindGroupLayout,
-    buf_output: wgpu::Buffer, // f32 × (cap × OUTPUT_DIM) — lido por tick (COPY_SRC)
+    buf_output: wgpu::Buffer, // f32 × (cap × OUTPUT_DIM) — read per tick (COPY_SRC)
     buf_readback: wgpu::Buffer, // f32 × (cap × OUTPUT_DIM) — MAP_READ
 
-    /// Capacidade máxima (número de seres suportado com estes buffers).
+    /// Maximum capacity (number of beings supported with these buffers).
     pub capacity: usize,
 }
 
 impl SlowBrainGpu {
-    /// Cria o contexto compartilhando device/queue com o BrainGpu (retina/cérebro).
+    /// Creates the context sharing device/queue with BrainGpu (retina/brain).
     ///
-    /// Receber Arc<Device/Queue> evita abrir um segundo dispositivo Vulkan para o
-    /// mesmo hardware — o mesmo padrão de brain.rs:128.
+    /// Receiving Arc<Device/Queue> avoids opening a second Vulkan device for the
+    /// same hardware — the same pattern as brain.rs:128.
     pub fn new_shared(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, capacity: usize) -> Self {
         // ── Shader ─────────────────────────────────────────────────────────
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -114,16 +114,16 @@ impl SlowBrainGpu {
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("slow_brain.wgsl"))),
         });
 
-        // ── Bind group layout (um único layout para os dois kernels) ────────
-        // Ambos os kernels usam o mesmo set de bindings — separar layouts seria
-        // desnecessário e criaria dois bind groups por dispatch.
+        // ── Bind group layout (a single layout for both kernels) ────────────
+        // Both kernels use the same set of bindings — separate layouts would be
+        // unnecessary and would create two bind groups per dispatch.
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("slow-brain-layout"),
             entries: &[
                 uniform_entry(0),        // params
                 storage_entry(1, true),  // buf_input   (read)
                 storage_entry(2, true),  // buf_weights (read)
-                storage_entry(3, false), // buf_state   (read_write, residente)
+                storage_entry(3, false), // buf_state   (read_write, resident)
                 storage_entry(4, false), // buf_output  (read_write)
             ],
         });
@@ -156,18 +156,18 @@ impl SlowBrainGpu {
 
         // ── Buffers ─────────────────────────────────────────────────────────
 
-        // Estado residente: zeros = estado inicial correto (CfCCell::new zerados).
+        // Resident state: zeros = correct initial state (CfCCell::new zeroed).
         let bytes_state = (capacity * STATE_PER_SER * 4) as u64;
         let state_zeros: Vec<u8> = vec![0u8; bytes_state as usize];
         let buf_state = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("slow-state"),
             contents: &state_zeros,
             usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST  // para reset em reset_being()
-                    | wgpu::BufferUsages::COPY_SRC, // para diagnóstico (se necessário)
+                    | wgpu::BufferUsages::COPY_DST  // for reset in reset_being()
+                    | wgpu::BufferUsages::COPY_SRC, // for diagnostics (if needed)
         });
 
-        // Pesos: alocados mas não inicializados até upload_weights().
+        // Weights: allocated but not initialized until upload_weights().
         let bytes_weights = (capacity * WEIGHTS_PER_SER * 4) as u64;
         let buf_weights = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("slow-weights"),
@@ -176,10 +176,10 @@ impl SlowBrainGpu {
             mapped_at_creation: false,
         });
 
-        // Input: i32 × INPUT_SIZE × cap — escrito a cada tick.
+        // Input: i32 × INPUT_SIZE × cap — written every tick.
         let bytes_input = (capacity * INPUT_SIZE * 4) as u64;
-        // Módulo e pipeline da colheita — shader separado para manter cada kernel
-        // pequeno (RADV/ACO trava em shaders grandes neste projeto).
+        // Gather module and pipeline — separate shader to keep each kernel
+        // small (RADV/ACO crashes on large shaders in this project).
         let module_gather = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("slow-gather"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("slow_gather.wgsl"))),
@@ -213,8 +213,8 @@ impl SlowBrainGpu {
             mapped_at_creation: false,
         });
 
-        // Output: f32 × OUTPUT_DIM × cap — escrito pelo kernel B.
-        // COPY_SRC para copiar para buf_readback no mesmo encoder.
+        // Output: f32 × OUTPUT_DIM × cap — written by kernel B.
+        // COPY_SRC to copy into buf_readback in the same encoder.
         let bytes_output = (capacity * OUTPUT_DIM * 4) as u64;
         let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("slow-output"),
@@ -223,7 +223,7 @@ impl SlowBrainGpu {
             mapped_at_creation: false,
         });
 
-        // Readback: MAP_READ não pode combinar com STORAGE em wgpu.
+        // Readback: MAP_READ cannot be combined with STORAGE in wgpu.
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("slow-readback"),
             size: bytes_output,
@@ -248,21 +248,21 @@ impl SlowBrainGpu {
         }
     }
 
-    // ── UPLOAD DE PESOS ────────────────────────────────────────────────────────
+    // ── WEIGHT UPLOAD ──────────────────────────────────────────────────────────
 
-    /// Sobe pesos de `n_beings` SlowBrains para a GPU.
+    /// Uploads the weights of `n_beings` SlowBrains to the GPU.
     ///
-    /// Chamar em spawn e após evolução. Ordem dos pesos: all_weights() de cada ser.
-    /// Layout: ser0[1091 f32] ser1[1091 f32] ...
+    /// Call on spawn and after evolution. Weight order: all_weights() of each being.
+    /// Layout: being0[1091 f32] being1[1091 f32] ...
     ///
-    /// `weights`: saída concatenada de SlowBrain::all_weights() para cada ser,
+    /// `weights`: concatenated output of SlowBrain::all_weights() for each being,
     /// total = n_beings × 1091 f32.
     pub fn upload_weights(&self, weights: &[f32], n_beings: usize) {
         let n = n_beings.min(self.capacity);
         let expected = n * WEIGHTS_PER_SER;
         let actual = weights.len().min(expected);
-        // Escrita direta: SoA já está na ordem correta se o caller concatenou
-        // all_weights() de cada ser na ordem certa.
+        // Direct write: the SoA is already in the correct order if the caller
+        // concatenated all_weights() of each being in the right order.
         self.queue.write_buffer(
             &self.buf_weights,
             0,
@@ -270,25 +270,25 @@ impl SlowBrainGpu {
         );
     }
 
-    // ── DISPATCH (por tick) ────────────────────────────────────────────────────
+    // ── DISPATCH (per tick) ────────────────────────────────────────────────────
 
-    /// Grava os dois kernels num CommandEncoder externo (sem submit).
+    /// Records the two kernels into an external CommandEncoder (no submit).
     ///
-    /// # Contrato
+    /// # Contract
     ///
-    /// 1. Antes: subir input via `queue.write_buffer(&buf_input, ...)` ou usar
-    ///    `upload_input()` (método conveniente abaixo).
-    /// 2. Chamar este método para gravar os dois dispatches.
-    /// 3. No mesmo encoder: `enc.copy_buffer_to_buffer(buf_output→buf_readback)`.
+    /// 1. Before: upload the input via `queue.write_buffer(&buf_input, ...)` or use
+    ///    `upload_input()` (convenience method below).
+    /// 2. Call this method to record both dispatches.
+    /// 3. In the same encoder: `enc.copy_buffer_to_buffer(buf_output→buf_readback)`.
     /// 4. `queue.submit(enc.finish())`.
     /// 5. `device.poll(Wait)`.
-    /// 6. `read_outputs(n_beings)` para ler o resultado.
+    /// 6. `read_outputs(n_beings)` to read the result.
     ///
-    /// Retorna bytes_output para o copy subsequente.
-    /// Preenche `buf_input` colhendo 48 canais da onda sensorial que já está na GPU.
+    /// Returns bytes_output for the subsequent copy.
+    /// Fills `buf_input` by gathering 48 channels of the sensory wave already on the GPU.
     ///
-    /// Alternativa a `upload_input`, para o caminho `gpu_evolve`, onde a onda nunca
-    /// desce para a CPU. Deve ser encadeado ANTES de `dispatch` no mesmo encoder.
+    /// Alternative to `upload_input`, for the `gpu_evolve` path, where the wave never
+    /// comes down to the CPU. Must be chained BEFORE `dispatch` in the same encoder.
     pub fn dispatch_gather(
         &self,
         enc: &mut wgpu::CommandEncoder,
@@ -387,7 +387,7 @@ impl SlowBrainGpu {
             ],
         });
 
-        // Kernel A: CfC — 1 workgroup por ser, 64 threads por workgroup
+        // Kernel A: CfC — 1 workgroup per being, 64 threads per workgroup
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("pass-slow-cfc"),
@@ -398,9 +398,9 @@ impl SlowBrainGpu {
             pass.dispatch_workgroups(n as u32, 1, 1);
         }
 
-        // Kernel B: Dense — mesmo bind group, encadeado no mesmo encoder.
-        // Não há barreira explícita necessária aqui porque os dois dispatches no
-        // mesmo encoder já garantem a ordem de execução em wgpu/Vulkan.
+        // Kernel B: Dense — same bind group, chained in the same encoder.
+        // No explicit barrier is needed here because two dispatches in the
+        // same encoder already guarantee execution order in wgpu/Vulkan.
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("pass-slow-dense"),
@@ -413,18 +413,18 @@ impl SlowBrainGpu {
 
         let bytes_output = (n * OUTPUT_DIM * 4) as u64;
 
-        // Copia output para readback no mesmo encoder (DMA sem round-trip).
+        // Copies output to readback in the same encoder (DMA, no round-trip).
         enc.copy_buffer_to_buffer(&self.buf_output, 0, &self.buf_readback, 0, bytes_output);
 
         bytes_output
     }
 
-    // ── UPLOAD DE INPUT (conveniente) ─────────────────────────────────────────
+    // ── INPUT UPLOAD (convenience) ────────────────────────────────────────────
 
-    /// Converte input i8 de cada ser para i32 (sign-extended) e sobe para a GPU.
+    /// Converts each being's i8 input to i32 (sign-extended) and uploads to the GPU.
     ///
-    /// `inputs`: slice de n_beings × 48 bytes (i8 como bytes, cast para i32 aqui).
-    /// Chamar ANTES de `dispatch()` ou antes do submit do encoder externo.
+    /// `inputs`: slice of n_beings × 48 bytes (i8 as bytes, cast to i32 here).
+    /// Call BEFORE `dispatch()` or before the external encoder's submit.
     pub fn upload_input(&self, inputs: &[[i8; INPUT_SIZE]], n_beings: usize) {
         let n = n_beings.min(self.capacity).min(inputs.len());
         let mut data: Vec<i32> = Vec::with_capacity(n * INPUT_SIZE);
@@ -437,15 +437,15 @@ impl SlowBrainGpu {
             .write_buffer(&self.buf_input, 0, bytemuck::cast_slice(&data));
     }
 
-    // ── LEITURA DOS OUTPUTS ────────────────────────────────────────────────────
+    // ── OUTPUT READ ────────────────────────────────────────────────────────────
 
-    /// Lê os outputs do buf_readback após device.poll(Wait).
+    /// Reads the outputs from buf_readback after device.poll(Wait).
     ///
-    /// DEVE ser chamado depois que o encoder que continha `dispatch()` foi submetido
-    /// e `device.poll(Wait)` retornou. Segue a ordem obrigatória:
+    /// MUST be called after the encoder that contained `dispatch()` was submitted
+    /// and `device.poll(Wait)` returned. Follows the mandatory order:
     ///   map_async → poll(Wait) → recv → get_mapped_range
     ///
-    /// (poll ANTES de map_async é o deadlock silencioso documentado em brain.rs:710)
+    /// (poll BEFORE map_async is the silent deadlock documented in brain.rs:710)
     pub fn read_outputs(&self, n_beings: usize) -> Vec<[f32; OUTPUT_DIM]> {
         let n = n_beings.min(self.capacity);
         if n == 0 {
@@ -456,12 +456,12 @@ impl SlowBrainGpu {
         let slice = self.buf_readback.slice(0..bytes);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        // map_async registra o callback — poll(Wait) abaixo vai servi-lo.
+        // map_async registers the callback — poll(Wait) below will serve it.
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
 
-        // poll DEPOIS do map_async: sem isso o callback nunca é servido.
+        // poll AFTER map_async: without this the callback is never served.
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
@@ -481,13 +481,13 @@ impl SlowBrainGpu {
         result
     }
 
-    // ── CONVENIÊNCIA: dispatch + submit + poll + read (tudo-em-um) ────────────
+    // ── CONVENIENCE: dispatch + submit + poll + read (all-in-one) ─────────────
 
-    /// Executa o ciclo completo: upload input → dispatch → submit → poll → read.
+    /// Runs the full cycle: upload input → dispatch → submit → poll → read.
     ///
-    /// Equivalente ao `BrainGpu::forward()` — submete seu próprio encoder.
-    /// Use quando o SlowBrain é o único kernel a dispatchar neste tick.
-    /// Para encadeamento com outros kernels, prefira `dispatch()` + submit externo.
+    /// Equivalent to `BrainGpu::forward()` — submits its own encoder.
+    /// Use when the SlowBrain is the only kernel to dispatch this tick.
+    /// For chaining with other kernels, prefer `dispatch()` + external submit.
     pub fn forward(
         &self,
         inputs: &[[i8; INPUT_SIZE]],
@@ -513,12 +513,12 @@ impl SlowBrainGpu {
         self.read_outputs(n)
     }
 
-    // ── RESET DE ESTADO PARA UM SER ────────────────────────────────────────────
+    // ── STATE RESET FOR ONE BEING ──────────────────────────────────────────────
 
-    /// Zera o estado CfC, a fadiga e os contadores do ser `idx`.
+    /// Zeroes the CfC state, the fatigue and the counters of being `idx`.
     ///
-    /// Equivale a `CfCCell::reset()` + reinício do tick_counter + limpeza do output.
-    /// Chamado em spawn/death — ser recém-nascido começa sem estado acumulado.
+    /// Equivalent to `CfCCell::reset()` + restarting tick_counter + clearing the output.
+    /// Called on spawn/death — a newborn being starts with no accumulated state.
     pub fn reset_being(&self, idx: usize) {
         if idx >= self.capacity {
             return;
@@ -529,19 +529,19 @@ impl SlowBrainGpu {
     }
 }
 
-// ── RECURSO BEVY ──────────────────────────────────────────────────────────────
+// ── BEVY RESOURCE ─────────────────────────────────────────────────────────────
 
-/// Recurso Bevy que mantém o contexto do SlowBrain GPU entre ticks.
+/// Bevy resource keeping the SlowBrain GPU context between ticks.
 ///
-/// Padrão idêntico ao BrainGpuRes (brain.rs): `ctx: Option<SlowBrainGpu>`,
-/// criado/recriado se a capacidade for insuficiente.
+/// Identical pattern to BrainGpuRes (brain.rs): `ctx: Option<SlowBrainGpu>`,
+/// created/recreated if the capacity is insufficient.
 #[derive(bevy::prelude::Resource, Default)]
 pub struct SlowBrainGpuRes {
     pub ctx: Option<SlowBrainGpu>,
 }
 
 impl SlowBrainGpuRes {
-    /// Devolve contexto válido, criando se necessário. None = sem GPU utilizável.
+    /// Returns a valid context, creating one if needed. None = no usable GPU.
     pub fn get_or_create(
         &mut self,
         device: Arc<wgpu::Device>,
@@ -589,9 +589,9 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-// ── COMO EXTRAIR PESOS DE SlowBrain (referência para o caller) ────────────────
+// ── HOW TO EXTRACT SlowBrain WEIGHTS (reference for the caller) ───────────────
 //
-// Para fazer upload_weights(weights, n):
+// To call upload_weights(weights, n):
 //
 //   let mut all_weights: Vec<f32> = Vec::new();
 //   for engine in engines[..n].iter() {
@@ -599,22 +599,22 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
 //   }
 //   slow_brain_gpu.upload_weights(&all_weights, n);
 //
-// all_weights() retorna (engine.rs:125-132):
+// all_weights() returns (engine.rs:125-132):
 //   dense1.weights[1024] ++ dense1.bias[16] ++ dense2.weights[48] ++ dense2.bias[3]
-// = 1091 f32, mesma ordem do buf_weights aqui.
+// = 1091 f32, same order as buf_weights here.
 //
-// ── DIVERGÊNCIA GPU×CPU ESPERADA ─────────────────────────────────────────────
+// ── EXPECTED GPU×CPU DIVERGENCE ──────────────────────────────────────────────
 //
-// - CfC (64 ops de exp/tanh/hash): ≤ 1 ULP por canal. Drift entre ticks acumulável
-//   mas determinístico (hash idêntico ao cfc.rs).
-// - Dense1 matmul (64 FMA): < 1e-5 por neurônio. Mesmo padrão que brain.wgsl L1.
-// - Dense2 matmul (16 FMA): < 1e-6 por neurônio (16× menos termos que L1).
-// - tanh saídas: ≤ 1 ULP.
+// - CfC (64 exp/tanh/hash ops): ≤ 1 ULP per channel. Drift between ticks can
+//   accumulate but is deterministic (hash identical to cfc.rs).
+// - Dense1 matmul (64 FMA): < 1e-5 per neuron. Same pattern as brain.wgsl L1.
+// - Dense2 matmul (16 FMA): < 1e-6 per neuron (16× fewer terms than L1).
+// - tanh outputs: ≤ 1 ULP.
 //
-// A verificação do tick_counter é determinística: o ser N roda no mesmo tick
-// na GPU e na CPU se tick_interval=8 e os contadores começaram em 0.
+// The tick_counter verification is deterministic: being N runs on the same tick
+// on the GPU and on the CPU if tick_interval=8 and the counters started at 0.
 //
-// ── O QUE NÃO RODEI ─────────────────────────────────────────────────────────
+// ── WHAT I DID NOT RUN ──────────────────────────────────────────────────────
 //
-// A GPU está ocupada (constraint da tarefa). Não executei nada na GPU.
-// Compilação foi verificada pelo cargo build (ver saída no relatório final).
+// The GPU was busy (task constraint). Nothing was executed on the GPU.
+// Compilation was verified by cargo build (see output in the final report).

@@ -1,61 +1,62 @@
-//! Alocação neural por ABLAÇÃO — quanto cada via do cérebro realmente carrega.
+//! Neural allocation by ABLATION — how much each brain pathway really carries.
 //!
-//! O cérebro do carro já é feito de partes com pesos explícitos de mistura
-//! (`engine.rs` `decide()`: `w[0]·córtex + w[1]·reflexo + w[2]·sentinela`), mais a via
-//! lenta que **modula** o resto em `motor.rs` (agressão, teto de acelerador, viés de
-//! esterço). O que não existia era medir o quanto cada parte contribui.
+//! The car's brain is already made of parts with explicit mixing weights
+//! (`engine.rs` `decide()`: `w[0]·cortex + w[1]·reflex + w[2]·sentinel`), plus the
+//! slow pathway that **modulates** the rest in `motor.rs` (aggression, throttle
+//! ceiling, steering bias). What did not exist was measuring how much each part
+//! contributes.
 //!
-//! # Por que ABLAÇÃO e não o peso do portão
+//! # Why ABLATION and not the gate weight
 //!
-//! O peso do portão diz o quanto uma via é USADA. Não diz o quanto ela SERVE. Uma via pode
-//! receber peso alto e não estar dizendo nada — e o inverso também acontece.
+//! The gate weight says how much a pathway is USED. It does not say how much it SERVES. A
+//! pathway can receive high weight while saying nothing — and the reverse also happens.
 //!
-//! Isto não é conjectura: foi medido na bancada em Python (`~/projects/LLM/novo/exp14`).
-//! Genes moduladores derivaram até b=−1,67 e c=8,02 **enquanto a ablação daqueles mesmos
-//! genes custava exatamente +0,0%**. Genes vagueiam livres justamente quando são invisíveis
-//! à seleção, então qualquer estatística sobre o genoma (variância, magnitude, peso do
-//! portão) mede deriva junto com função. A ablação não: ela é pareada dentro do mesmo
-//! indivíduo e pergunta a única coisa que importa — *quanto se perde sem isto?*
+//! This is not conjecture: it was measured on the Python bench (`~/projects/LLM/novo/exp14`).
+//! Modulator genes drifted all the way to b=−1.67 and c=8.02 **while ablating those very
+//! genes cost exactly +0.0%**. Genes wander freely precisely when they are invisible to
+//! selection, so any statistic over the genome (variance, magnitude, gate weight)
+//! measures drift together with function. Ablation does not: it is paired within the same
+//! individual and asks the only thing that matters — *how much is lost without this?*
 //!
-//! Por isso este módulo grava as duas coisas lado a lado. **A distância entre USO e
-//! CONTRIBUIÇÃO é o resultado**, não um detalhe de diagnóstico.
+//! That is why this module records both things side by side. **The distance between USE and
+//! CONTRIBUTION is the result**, not a diagnostic detail.
 //!
-//! # A predição arriscada que este experimento testa
+//! # The risky prediction this experiment tests
 //!
-//! Em 2026-07-30 a bancada Python mediu, num mundo de sobrevivência com regimes ocultos,
-//! que modular a constante de tempo tem teto realizável de **+0,11%** contra os 24,20% que
-//! a forma fechada prometia. O diagnóstico: naquele mundo o objetivo é de TAXA (que fração
-//! do tempo ficar escondido), e filtrar melhora o INSTANTE, que ali não valia nada.
+//! On 2026-07-30 the Python bench measured, in a survival world with hidden regimes,
+//! that modulating the time constant has a realizable ceiling of **+0.11%** against the 24.20%
+//! the closed form promised. The diagnosis: in that world the objective is a RATE (what fraction
+//! of the time to stay hidden), and filtering improves the INSTANT, which was worth nothing there.
 //!
-//! Corrida é o caso oposto: frear na curva 40 m tarde demais é batida, e nenhuma taxa média
-//! correta salva. Se a leitura estiver certa, **a via lenta tem de custar caro aqui** — bem
-//! mais que os ~0% que custou lá. Se não custar, a explicação "taxa vs instante" cai e o
-//! resultado passa a ser sobre modulação em geral, não sobre o tipo de tarefa.
+//! Racing is the opposite case: braking 40 m too late into a corner is a crash, and no correct
+//! average rate saves you. If that reading is right, **the slow pathway has to cost dearly here** — far
+//! more than the ~0% it cost there. If it does not, the "rate vs instant" explanation falls and the
+//! result becomes about modulation in general, not about the type of task.
 //!
-//! # ⚠️ COLISÃO DE CANAIS NO `sensory_wave` (bug do simulador, não deste módulo)
+//! # ⚠️ CHANNEL COLLISION IN `sensory_wave` (simulator bug, not this module's)
 //!
-//! Três escritores gravam nos mesmos canais dentro de `update_racers`, no mesmo frame, e o
-//! último vence:
+//! Three writers store into the same channels inside `update_racers`, in the same frame, and the
+//! last one wins:
 //!
-//! | ordem | linha | escreve | canais |
+//! | order | line | writes | channels |
 //! |---|---|---|---|
-//! | 1 | `motor.rs:561` | distância de parede, 8 ângulos | 16–23 |
-//! | 2 | `motor.rs:579` | largura de obstáculo, 8 ângulos | 24–31 |
-//! | 3 | `motor.rs:676` | movimento por linha da retina | **21–27** |
-//! | 4 | `motor.rs:1413` | curvatura a 20 m | **20** |
+//! | 1 | `motor.rs:561` | wall distance, 8 angles | 16–23 |
+//! | 2 | `motor.rs:579` | obstacle width, 8 angles | 24–31 |
+//! | 3 | `motor.rs:676` | motion per retina row | **21–27** |
+//! | 4 | `motor.rs:1413` | curvature at 20 m | **20** |
 //!
-//! Sobra: parede só nos canais 16–19 e largura só nos 28–31 — **metade do leque de sensores
-//! de parede é calculada e descartada todo frame**. O comentário de layout em `motor.rs:519`
-//! descreve o que se pretendia, não o que acontece.
+//! What survives: wall only on channels 16–19 and width only on 28–31 — **half the fan of wall
+//! sensors is computed and discarded every frame**. The layout comment at `motor.rs:519`
+//! describes what was intended, not what happens.
 //!
-//! Os grupos aqui refletem o que SOBREVIVE, não o que o comentário promete. Consertar de
-//! verdade (mover os escritores para a faixa livre 192–222) recupera 8 canais de informação
-//! real, mas muda os índices e obriga a retreinar o campeão — decisão de projeto, não
-//! conserto silencioso.
+//! The groups here reflect what SURVIVES, not what the comment promises. Truly fixing it
+//! (moving the writers to the free range 192–222) recovers 8 channels of real
+//! information, but changes the indices and forces retraining the champion — a design
+//! decision, not a silent fix.
 //!
-//! # Uso
+//! # Usage
 //!
-//! Um processo por via ablada (o `universe-lab` já roda variantes em paralelo):
+//! One process per ablated pathway (`universe-lab` already runs variants in parallel):
 //!
 //! ```text
 //! ./target/release/universe-lab --spec lab_specs/alocacao.json --gens 30
@@ -64,84 +65,84 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// As vias do cérebro que podem ser desligadas independentemente.
+/// The brain pathways that can be switched off independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Via {
-    /// Linha de base: nada desligado. É contra ela que todo custo é medido.
+    /// Baseline: nothing switched off. Every cost is measured against it.
     Nenhuma,
-    /// Córtex: `instinct_layer` → `cortex_l2` → `final_intent[0..3]`. A via lenta-mas-rica.
+    /// Cortex: `instinct_layer` → `cortex_l2` → `final_intent[0..3]`. The slow-but-rich pathway.
     Cortex,
-    /// Reflexo: `SpecialistBrain`, três BitLinear esparsos de 32→1 com canais fixos.
+    /// Reflex: `SpecialistBrain`, three sparse 32→1 BitLinears with fixed channels.
     Reflexo,
-    /// Sentinela, só a proposta SUAVE. O veto duro continua ativo de propósito — sem ele o
-    /// carro bate nos primeiros segundos e o número mediria "morreu cedo", não "a via
-    /// sentinela contribui tanto".
+    /// Sentinel, SOFT proposal only. The hard veto stays active on purpose — without it the
+    /// car crashes within the first seconds and the number would measure "died early", not
+    /// "the sentinel pathway contributes this much".
     SentinelaSuave,
-    /// Sentinela inteira, veto duro incluído. Cara e informativa, mas domina as outras.
+    /// Whole sentinel, hard veto included. Expensive and informative, but it dominates the others.
     SentinelaTotal,
-    /// Via lenta: `SlowBrain` (CfC 64 → Dense 16 → 3). NÃO age direto — modula agressão,
-    /// teto de acelerador e viés de esterço. É o análogo exato do M2 da bancada Python.
+    /// Slow pathway: `SlowBrain` (CfC 64 → Dense 16 → 3). Does NOT act directly — it modulates
+    /// aggression, throttle ceiling and steering bias. The exact analogue of M2 on the Python bench.
     Lenta,
-    /// Autoridade do cérebro sobre o CÂMBIO (`final_intent[3]` e `[4]`).
+    /// The brain's authority over the GEARBOX (`final_intent[3]` and `[4]`).
     ///
-    /// A caixa em si continua funcionando: auto-upshift a 85% do RPM, auto-downshift abaixo
-    /// de 30%, guardião anti-afogamento. O que se desliga é só a SOBREPOSIÇÃO neural, que em
-    /// `motor.rs:2107` é o último `else if` — ou seja, só decide na faixa que as regras
-    /// automáticas deixam.
+    /// The gearbox itself keeps working: auto-upshift at 85% of RPM, auto-downshift below
+    /// 30%, anti-stall guardian. What gets switched off is only the neural OVERRIDE, which in
+    /// `motor.rs:2107` is the last `else if` — that is, it only decides within the band the
+    /// automatic rules leave open.
     ///
-    /// É a pergunta do Leonardo posta como medição: *"assim o modelo tem mais parâmetros ou
-    /// pior, não sei"*. Se o custo desta ablação for ~0, dar o câmbio ao cérebro não paga, e
-    /// acrescentar mais detalhe de motor não vai dar a ele mais o que decidir — vai dar mais
-    /// o que a regra automática decide sozinha.
+    /// It is Leonardo's question posed as a measurement: *"this way the model has more parameters or
+    /// worse, I don't know"*. If the cost of this ablation is ~0, giving the gearbox to the brain does
+    /// not pay, and adding more engine detail will not give it more to decide — it will give
+    /// more for the automatic rule to decide on its own.
     Marcha,
-    /// SENTIDO ablado: zera um grupo de canais do `sensory_wave` na ENTRADA, antes de tudo.
+    /// Ablated SENSE: zeroes a group of `sensory_wave` channels at the INPUT, before everything.
     ///
-    /// Responde "como a visão afeta o modelo" com a mesma medida das vias. É necessário
-    /// porque o mapa de pesos NÃO responde: medido no campeão, o peso por canal é
-    /// praticamente idêntico entre os seis grupos (9,5 a 10,7), e a fatia da visão (35,4%)
-    /// é exatamente a fração de canais que ela ocupa (80/223). A alocação de pesos é
-    /// indistinguível de uniforme — então só a ablação separa o que é escutado do que é
-    /// usado.
+    /// Answers "how vision affects the model" with the same measure as the pathways. It is needed
+    /// because the weight map does NOT answer it: measured on the champion, the per-channel weight is
+    /// practically identical across the six groups (9.5 to 10.7), and vision's share (35.4%)
+    /// is exactly the fraction of channels it occupies (80/223). The weight allocation is
+    /// indistinguishable from uniform — so only ablation separates what is listened to from what is
+    /// used.
     Sentido(Sentido),
-    /// O PRIMING escrito à mão nos 3 neurônios motores (`spawn.rs:64-90`).
+    /// The hand-written PRIMING on the 3 motor neurons (`spawn.rs:64-90`).
     ///
-    /// Esta é a pergunta que a tabela de ablação abre e não responde: o córtex carrega
-    /// **94,7%**, mas os neurônios motores 0, 1 e 2 nascem com 15 pesos ESCRITOS À MÃO
-    /// (curvatura a 70 m → freio +10,0; a 120 m → esterço +8,0; e por aí). Todos eles
-    /// aparecem SATURADOS no campeão treinado, ou seja, sobreviveram intactos à evolução.
+    /// This is the question the ablation table opens and does not answer: the cortex carries
+    /// **94.7%**, but motor neurons 0, 1 and 2 are born with 15 HAND-WRITTEN weights
+    /// (curvature at 70 m → brake +10.0; at 120 m → steering +8.0; and so on). All of them
+    /// appear SATURATED in the trained champion, i.e. they survived evolution intact.
     ///
-    /// Ablar só esses 15 pesos, deixando o resto do córtex de pé, separa duas coisas que a
-    /// ablação do córtex inteiro confunde:
+    /// Ablating only those 15 weights, leaving the rest of the cortex standing, separates two things
+    /// that ablating the whole cortex conflates:
     ///
-    /// - custo ≈ o do córtex inteiro (94,7%) -> **o "cérebro" são as regras escritas à mão**,
-    ///   e a evolução é decoração
-    /// - custo bem menor -> a evolução construiu algo em cima do priming, e vale medir o quê
+    /// - cost ≈ that of the whole cortex (94.7%) -> **the "brain" is the hand-written rules**,
+    ///   and evolution is decoration
+    /// - much lower cost -> evolution built something on top of the priming, and it is worth measuring what
     ///
-    /// É o mesmo raciocínio de sempre: separar o que herdou do que aprendeu.
+    /// It is the same reasoning as always: separating what was inherited from what was learned.
     Priming,
 }
 
-/// As 15 sinapses do priming esparso (`spawn.rs:64-90`), como (neurônio, canal).
+/// The 15 synapses of the sparse priming (`spawn.rs:64-90`), as (neuron, channel).
 pub const PRIMING: [(usize, usize); 15] = [
     (0, 64),
     (0, 79),
-    (0, 78), // acelerador
+    (0, 78), // throttle
     (1, 80),
     (1, 32),
     (1, 79),
     (1, 78),
     (1, 20),
-    (1, 81), // esterço
+    (1, 81), // steering
     (1, 90),
     (1, 91),
     (1, 92),
-    (1, 93), // rastreador de asfalto
+    (1, 93), // asphalt tracker
     (2, 79),
-    (2, 78), // freio
+    (2, 78), // brake
 ];
 
-/// Zera as sinapses do priming, se a ablação pedir. Chamado uma vez, quando o cérebro é
-/// montado — não a cada frame, porque são pesos e não sinais.
+/// Zeroes the priming synapses, if the ablation asks for it. Called once, when the brain is
+/// assembled — not every frame, because these are weights, not signals.
 pub fn ablar_priming(pesos: &mut [f32], stride: usize) {
     if ablada() != Via::Priming {
         return;
@@ -154,8 +155,8 @@ pub fn ablar_priming(pesos: &mut [f32], stride: usize) {
     }
 }
 
-/// Grupos de canais do `sensory_wave`, das faixas onde eles são ESCRITOS
-/// (`motor.rs:455-524` e `480-513`).
+/// Channel groups of the `sensory_wave`, from the ranges where they are WRITTEN
+/// (`motor.rs:455-524` and `480-513`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sentido {
     Visao,
@@ -171,8 +172,8 @@ impl Sentido {
         match self {
             Sentido::Visao => &[(0, 15), (128, 191)],
             Sentido::Curvatura => &[(20, 20), (32, 39), (78, 80)],
-            // 16-19 e 28-31 apenas: os canais 20-27 são SOBRESCRITOS depois (ver a nota
-            // sobre colisão de canais no topo deste módulo)
+            // 16-19 and 28-31 only: channels 20-27 are OVERWRITTEN later (see the note
+            // about channel collision at the top of this module)
             Sentido::Paredes => &[(16, 19), (28, 31), (76, 77), (94, 97), (114, 115)],
             Sentido::PistaAFrente => &[(40, 55), (90, 93), (108, 110), (118, 119)],
             Sentido::Corpo => &[(56, 75), (124, 125)],
@@ -204,9 +205,9 @@ impl Sentido {
     }
 }
 
-/// Zera os canais do sentido ablado, se houver. Chamado no início do ciclo, sobre o
-/// `sensory_wave` cru — antes do KAN, do CfC e de tudo mais, para que a ablação seja
-/// "este sentido não existe" e não "este sentido chega distorcido".
+/// Zeroes the channels of the ablated sense, if any. Called at the start of the cycle, on the
+/// raw `sensory_wave` — before the KAN, the CfC and everything else, so that the ablation means
+/// "this sense does not exist" and not "this sense arrives distorted".
 pub fn ablar_sentido(onda: &mut [i8]) {
     if let Via::Sentido(s) = ablada() {
         for &(a, b) in s.faixas() {
@@ -251,32 +252,32 @@ impl Via {
     }
 }
 
-/// Como os neurônios MOTORES nascem. Separa duas coisas que o priming atual mistura.
+/// How the MOTOR neurons are born. Separates two things the current priming mixes.
 ///
-/// O comentário de `spawn.rs:38` explica o problema que o priming resolve:
+/// The comment at `spawn.rs:38` explains the problem the priming solves:
 ///
 /// > *"With N(0,0.1) random weights, each motor neuron sums ~110 random ternary inputs that
 /// > **drown the curvature signal (SNR ≈ 0.26)**"*
 ///
-/// Ou seja, o priming faz DUAS coisas ao mesmo tempo:
+/// That is, the priming does TWO things at the same time:
 ///
-/// 1. **esparsidade** — o neurônio motor conecta a poucos canais. É um *prior arquitetural*,
-///    e é o que resolve o SNR.
-/// 2. **quais canais** — curvatura a 70 m → freio, a 120 m → esterço. É *conhecimento
-///    humano injetado*.
+/// 1. **sparsity** — the motor neuron connects to few channels. It is an *architectural prior*,
+///    and it is what solves the SNR.
+/// 2. **which channels** — curvature at 70 m → brake, at 120 m → steering. That is *injected
+///    human knowledge*.
 ///
-/// Tirar as duas juntas mede "sem priming" e não responde a pergunta interessante. Separadas,
-/// dá para perguntar: **a evolução acha sozinha os canais que o humano escolheu?**
+/// Removing both together measures "without priming" and does not answer the interesting
+/// question. Separated, one can ask: **does evolution find on its own the channels the human chose?**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nascimento {
-    /// Esparso E com os canais escolhidos à mão. O que existe hoje.
+    /// Sparse AND with hand-picked channels. What exists today.
     Primado,
-    /// Esparso, mas com canais SORTEADOS. Mantém o prior arquitetural (SNR tratável) e
-    /// devolve a escolha do conteúdo à evolução. É esta a condição de "independente".
+    /// Sparse, but with RANDOMLY DRAWN channels. Keeps the architectural prior (tractable SNR) and
+    /// gives the content choice back to evolution. This is the "independent" condition.
     EsparsoAleatorio,
-    /// Denso e aleatório, como os neurônios de característica. É a condição que o comentário
-    /// do `spawn.rs` descreve como afogada — serve de piso, para saber quanto a esparsidade
-    /// sozinha vale.
+    /// Dense and random, like the feature neurons. It is the condition the `spawn.rs` comment
+    /// describes as drowned — serves as the floor, to know how much sparsity
+    /// alone is worth.
     Denso,
 }
 
@@ -290,9 +291,9 @@ impl Nascimento {
     }
     pub fn nome(&self) -> &'static str {
         match self {
-            Nascimento::Primado => "primado (canais escolhidos à mão)",
-            Nascimento::EsparsoAleatorio => "esparso com canais sorteados (independente)",
-            Nascimento::Denso => "denso aleatório (piso)",
+            Nascimento::Primado => "primed (hand-picked channels)",
+            Nascimento::EsparsoAleatorio => "sparse with randomly drawn channels (independent)",
+            Nascimento::Denso => "dense random (floor)",
         }
     }
 }
@@ -308,36 +309,36 @@ pub fn nascimento() -> Nascimento {
     *NASCIMENTO.get().unwrap_or(&Nascimento::Primado)
 }
 
-/// Quantas conexões cada neurônio motor recebe no modo esparso — o mesmo número que o
-/// priming à mão usa (3 no acelerador, 10 no esterço, 2 no freio), para que a comparação
-/// isole a ESCOLHA dos canais e não a quantidade deles.
+/// How many connections each motor neuron receives in sparse mode — the same number the
+/// hand priming uses (3 on throttle, 10 on steering, 2 on brake), so the comparison
+/// isolates the CHOICE of channels and not their quantity.
 pub fn n_conexoes_motor(neuronio: usize) -> usize {
     PRIMING.iter().filter(|&&(n, _)| n == neuronio).count()
 }
 
-/// Fração da população que nasce na faixa de mutação destrutiva (σ 0,08–0,20).
+/// Fraction of the population born in the destructive mutation band (σ 0.08–0.20).
 ///
-/// A mutação é ESTRATIFICADA por slot (`spawn.rs:431`): os 5 primeiros são quase clones
-/// (σ≈0,006), depois σ sobe em degraus, e do slot 30 em diante (metade de 60) σ vai a
-/// 0,08–0,20. Medido nos relatórios de geração:
+/// Mutation is STRATIFIED by slot (`spawn.rs:431`): the first 5 are near-clones
+/// (σ≈0.006), then σ climbs in steps, and from slot 30 onward (half of 60) σ goes to
+/// 0.08–0.20. Measured in the generation reports:
 ///
 /// ```text
-/// GEN 1: NET max 3022 · p90 2924 · median 701 · wall_mean 0,03s
-/// GEN 2: NET max 2474 · p90 2341 · median   0 · wall_mean 0,00s
+/// GEN 1: NET max 3022 · p90 2924 · median 701 · wall_mean 0.03s
+/// GEN 2: NET max 2474 · p90 2341 · median   0 · wall_mean 0.00s
 /// ```
 ///
-/// **A mediana é ZERO.** Metade da população não sai do lugar — e `wall_mean = 0,00s` mostra
-/// que não é batida nem parede: é a mutação destruindo o genoma. A população efetiva é 30.
+/// **The median is ZERO.** Half the population goes nowhere — and `wall_mean = 0.00s` shows
+/// it is neither a crash nor a wall: it is mutation destroying the genome. The effective population is 30.
 ///
-/// Este parâmetro existe para MEDIR qual fração vale: exploração demais desperdiça metade do
-/// orçamento, exploração de menos estagna. Não há razão a priori para que 0,50 seja o ponto.
+/// This parameter exists to MEASURE which fraction pays: too much exploration wastes half the
+/// budget, too little stagnates. There is no a priori reason for 0.50 to be the point.
 static FRACAO_EXPLORADORA: OnceLock<f32> = OnceLock::new();
 
 pub fn definir_fracao_exploradora(f: f32) {
     let _ = FRACAO_EXPLORADORA.set(f.clamp(0.0, 1.0));
 }
 
-/// Fração padrão: 0,50 — os slots 30..59 de 60, como está em `spawn.rs` hoje.
+/// Default fraction: 0.50 — slots 30..59 of 60, as written in `spawn.rs` today.
 pub const FRACAO_EXPLORADORA_PADRAO: f32 = 0.50;
 
 #[inline]
@@ -349,11 +350,11 @@ pub fn fracao_exploradora() -> f32 {
 
 static ABLADA: OnceLock<Via> = OnceLock::new();
 
-/// Fixa a via ablada deste processo. Chamado uma vez no arranque, a partir de `LabParams`.
+/// Pins this process's ablated pathway. Called once at startup, from `LabParams`.
 ///
-/// É global de processo de propósito: o `universe-lab` já roda cada variante num processo
-/// separado, então não há o que confundir, e evita arrastar o parâmetro por dentro de todos
-/// os sistemas do Bevy só para servir a um experimento.
+/// It is process-global on purpose: `universe-lab` already runs each variant in a
+/// separate process, so there is nothing to confuse, and it avoids threading the parameter
+/// through all of Bevy's systems just to serve one experiment.
 pub fn definir_ablacao(via: Via) {
     let _ = ABLADA.set(via);
 }
@@ -364,14 +365,14 @@ pub fn ablada() -> Via {
 }
 
 // ---------------------------------------------------------------------------------------
-// USO das vias — os pesos do portão, acumulados. Contraparte de comparação da ablação.
+// USE of the pathways — the gate weights, accumulated. The ablation's comparison counterpart.
 // ---------------------------------------------------------------------------------------
 
-/// Acumuladores em ponto fixo (×1e6) para poderem ser atômicos e sem trava, já que o
-/// `decide()` roda para milhares de carros por tick.
+/// Fixed-point accumulators (×1e6) so they can be atomic and lock-free, since
+/// `decide()` runs for thousands of cars per tick.
 static USO: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 static USO_N: AtomicU64 = AtomicU64::new(0);
-/// Quantas vezes o veto duro da sentinela sobrepôs a mistura inteira.
+/// How many times the sentinel's hard veto overrode the whole mix.
 static VETOS: AtomicU64 = AtomicU64::new(0);
 
 const ESCALA: f64 = 1_000_000.0;
@@ -389,7 +390,7 @@ pub fn registrar_veto() {
     VETOS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Média dos pesos do portão desde a última chamada de [`zerar_uso`].
+/// Mean of the gate weights since the last call to [`zerar_uso`].
 pub fn uso_medio() -> ([f32; 3], u64, u64) {
     let n = USO_N.load(Ordering::Relaxed).max(1);
     let m = [
@@ -413,94 +414,94 @@ pub fn zerar_uso() {
 }
 
 // ---------------------------------------------------------------------------------------
-// O QUE A SINAPSE DIZ — dicionário dos canais sensoriais
+// WHAT THE SYNAPSE SAYS — dictionary of the sensory channels
 // ---------------------------------------------------------------------------------------
 
-/// Nome legível do canal de entrada `ch` do `sensory_wave`.
+/// Human-readable name of input channel `ch` of the `sensory_wave`.
 ///
-/// Uma sinapse é uma aresta `canal → neurônio`. Sem saber o que o canal mede, "peso 10.0 na
-/// posição 79" não diz nada; com o nome, vira "*curvatura a 70 m → freio, forte*", que é uma
-/// frase sobre o comportamento do carro.
+/// A synapse is an edge `channel → neuron`. Without knowing what the channel measures, "weight 10.0 at
+/// position 79" says nothing; with the name, it becomes "*curvature at 70 m → brake, strong*", which is a
+/// sentence about the car's behaviour.
 ///
-/// Os nomes saem de onde os canais são ESCRITOS (`simulation/motor.rs`) e do priming
-/// esparso (`evolution/spawn.rs`), não de suposição. Canal sem origem localizada devolve
-/// `None` de propósito: um nome inventado num relatório de interpretabilidade é pior que
-/// índice cru, porque parece conhecimento.
+/// The names come from where the channels are WRITTEN (`simulation/motor.rs`) and from the sparse
+/// priming (`evolution/spawn.rs`), not from guesswork. A channel without a located origin returns
+/// `None` on purpose: an invented name in an interpretability report is worse than a raw
+/// index, because it looks like knowledge.
 pub fn canal_nome(ch: usize) -> Option<&'static str> {
     Some(match ch {
-        // 0..15: pooling da retina por ZONA (motor.rs:455-478)
-        0..=7 => "visão zona LONGE (~80 m, curvas distantes)",
-        8..=15 => "visão zona PERTO (~20 m, obstáculos)",
-        // 16..63: canais semânticos, layout em motor.rs:515-524
-        16..=19 => "distância de parede por ângulo (4 de 8 — ver colisão de canais)",
-        20 => "curvatura a 20 m (SOBRESCREVE parede do ângulo 4)",
-        21..=27 => "movimento por linha da retina (SOBRESCREVE parede 5-7 e largura 0-3)",
-        28..=31 => "largura do obstáculo por ângulo (4 de 8 — ver colisão de canais)",
-        32..=39 => "curvatura do fluxo por ângulo",
-        40..=47 => "pista à frente PERTO (5–40 m)",
-        48..=55 => "pista à frente LONGE (45–150 m)",
-        56..=59 => "material do solo e atrito",
-        60..=63 => "estado do agente (rota de escape)",
-        64 => "alinhamento com o fluxo da pista",
-        65 => "velocidade",
-        66 => "velocidade lateral (derrapagem)",
-        67 => "integridade (hp)",
-        68 => "giro do motor (rpm)",
-        69 => "marcha",
-        70 => "temperatura dos pneus",
+        // 0..15: retina pooling by ZONE (motor.rs:455-478)
+        0..=7 => "vision FAR zone (~80 m, distant corners)",
+        8..=15 => "vision NEAR zone (~20 m, obstacles)",
+        // 16..63: semantic channels, layout at motor.rs:515-524
+        16..=19 => "wall distance per angle (4 of 8 — see channel collision)",
+        20 => "curvature at 20 m (OVERWRITES wall at angle 4)",
+        21..=27 => "motion per retina row (OVERWRITES wall 5-7 and width 0-3)",
+        28..=31 => "obstacle width per angle (4 of 8 — see channel collision)",
+        32..=39 => "flow curvature per angle",
+        40..=47 => "track ahead NEAR (5–40 m)",
+        48..=55 => "track ahead FAR (45–150 m)",
+        56..=59 => "ground material and friction",
+        60..=63 => "agent state (escape route)",
+        64 => "alignment with track flow",
+        65 => "speed",
+        66 => "lateral speed (drift)",
+        67 => "integrity (hp)",
+        68 => "engine revs (rpm)",
+        69 => "gear",
+        70 => "tyre temperature",
         71 => "downforce",
-        72 => "vácuo (draft)",
-        73 => "está na grama",
-        74 => "limite de esterço na velocidade atual",
-        75 => "pista molhada",
-        76 => "distância da parede à esquerda",
-        77 => "distância da parede à direita",
-        78 => "curvatura a 40 m (com sinal)",
-        79 => "curvatura a 70 m (com sinal)",
-        80 => "curvatura a 120 m (com sinal)",
-        81 => "desvio lateral do centro da pista",
-        82 => "1/tempo-até-colisão",
-        83 => "movimento no campo esquerdo",
-        84 => "movimento no campo direito",
-        90..=93 => "rastreador do centro escuro (asfalto)",
-        94 => "bigode +30°",
-        95 => "bigode −30°",
-        96 => "bigode +60°",
-        97 => "bigode −60°",
-        98 => "movimento na linha 7 da retina",
-        102 => "taxa de aproximação à esquerda",
-        103 => "taxa de aproximação à direita",
-        104 => "taxa de aproximação à frente",
-        105 => "tempo-até-colisão mínimo",
-        106 => "aproximação esquerda (ganho fino)",
-        107 => "aproximação direita (ganho fino)",
-        108 => "desvio da linha de corrida",
-        109 => "variação do desvio da linha",
-        110 => "antecipação da linha de corrida",
-        114 => "aproximação de parede à esquerda",
-        115 => "aproximação de parede à direita",
-        116 => "aproximação na fóvea",
-        117 => "movimento absoluto na fóvea",
-        118 => "espaço livre à frente",
-        119 => "largura do corredor",
-        124 => "está rodando (spin)",
-        125 => "estresse do conjunto",
-        // 128..191: canais visuais de alta resolução (motor.rs:480-513)
-        128..=143 => "fóvea HD (max-pool volumétrico)",
-        144..=159 => "periférica HD",
-        160..=191 => "linha do horizonte, pixel cru",
+        72 => "slipstream (draft)",
+        73 => "is on grass",
+        74 => "steering limit at current speed",
+        75 => "wet track",
+        76 => "distance to left wall",
+        77 => "distance to right wall",
+        78 => "curvature at 40 m (signed)",
+        79 => "curvature at 70 m (signed)",
+        80 => "curvature at 120 m (signed)",
+        81 => "lateral deviation from track centre",
+        82 => "1/time-to-collision",
+        83 => "motion in the left field",
+        84 => "motion in the right field",
+        90..=93 => "dark-centre tracker (asphalt)",
+        94 => "whisker +30°",
+        95 => "whisker −30°",
+        96 => "whisker +60°",
+        97 => "whisker −60°",
+        98 => "motion on retina row 7",
+        102 => "approach rate on the left",
+        103 => "approach rate on the right",
+        104 => "approach rate ahead",
+        105 => "minimum time-to-collision",
+        106 => "left approach (fine gain)",
+        107 => "right approach (fine gain)",
+        108 => "racing-line deviation",
+        109 => "racing-line deviation delta",
+        110 => "racing-line anticipation",
+        114 => "wall approach on the left",
+        115 => "wall approach on the right",
+        116 => "approach in the fovea",
+        117 => "absolute motion in the fovea",
+        118 => "free space ahead",
+        119 => "corridor width",
+        124 => "is spinning",
+        125 => "chassis stress",
+        // 128..191: high-resolution visual channels (motor.rs:480-513)
+        128..=143 => "HD fovea (volumetric max-pool)",
+        144..=159 => "HD peripheral",
+        160..=191 => "horizon line, raw pixel",
         _ => return None,
     })
 }
 
-/// Papel do neurônio de saída da camada 1. Os três primeiros são motores por construção
-/// (`spawn.rs`: recebem só o priming esparso); do 3 em diante são de característica.
+/// Role of the output neuron of layer 1. The first three are motor by construction
+/// (`spawn.rs`: they receive only the sparse priming); from 3 onward they are feature neurons.
 pub fn neuronio_papel(n: usize) -> &'static str {
     match n {
-        0 => "MOTOR acelerador",
-        1 => "MOTOR esterço",
-        2 => "MOTOR freio",
-        _ => "característica",
+        0 => "MOTOR throttle",
+        1 => "MOTOR steering",
+        2 => "MOTOR brake",
+        _ => "feature",
     }
 }
 
@@ -513,8 +514,8 @@ mod testes {
         assert_eq!(Via::de_str("cortex"), Via::Cortex);
         assert_eq!(Via::de_str("  LENTA "), Via::Lenta);
         assert_eq!(Via::de_str("sentinela_total"), Via::SentinelaTotal);
-        // qualquer coisa que não seja uma via conhecida NÃO pode ablar nada por engano:
-        // uma grafia errada no spec viraria silenciosamente um experimento sem linha de base
+        // anything that is not a known pathway must NOT ablate anything by mistake:
+        // a typo in the spec would silently become an experiment with no baseline
         assert_eq!(Via::de_str("cortez"), Via::Nenhuma);
         assert_eq!(Via::de_str(""), Via::Nenhuma);
     }
@@ -541,7 +542,7 @@ mod testes_sentido {
 
     #[test]
     fn os_grupos_nao_se_sobrepoem_e_cobrem_o_que_dizem() {
-        // sobreposição faria a soma dos custos de ablação contar canal duas vezes
+        // overlap would make the sum of ablation costs count a channel twice
         let todos = [
             Sentido::Visao,
             Sentido::Curvatura,
@@ -555,14 +556,14 @@ mod testes_sentido {
             for &(a, b) in s.faixas() {
                 for ch in a..=b {
                     if let Some(outro) = visto.insert(ch, s.nome()) {
-                        panic!("canal {ch} está em '{}' e em '{}'", outro, s.nome());
+                        panic!("channel {ch} is in '{}' and in '{}'", outro, s.nome());
                     }
                 }
             }
         }
-        // a visão tem de ser o maior grupo (retina zonal + HD): 16 + 64 = 80 canais
+        // vision has to be the largest group (zonal retina + HD): 16 + 64 = 80 channels
         let n_visao: usize = Sentido::Visao.faixas().iter().map(|(a, b)| b - a + 1).sum();
-        assert_eq!(n_visao, 80, "faixas da visão mudaram");
+        assert_eq!(n_visao, 80, "vision ranges changed");
     }
 
     #[test]
@@ -570,23 +571,23 @@ mod testes_sentido {
         assert_eq!(Via::de_str("visao"), Via::Sentido(Sentido::Visao));
         assert_eq!(Via::de_str("cortex"), Via::Cortex);
         assert_eq!(Via::de_str("visão"), Via::Sentido(Sentido::Visao));
-        // grafia errada NÃO pode virar ablação silenciosa de outra coisa
+        // a typo must NOT become a silent ablation of something else
         assert_eq!(Via::de_str("visaoo"), Via::Nenhuma);
     }
 
     #[test]
     fn ablar_zera_so_o_grupo_pedido() {
-        // como ABLADA é OnceLock e este binário de teste pode já tê-lo fixado, o teste
-        // exercita a função de faixas diretamente, que é o que decide o que some
+        // since ABLADA is a OnceLock and this test binary may have already pinned it, the test
+        // exercises the range function directly, which is what decides what disappears
         let mut onda = [42i8; 223];
         for &(a, b) in Sentido::Curvatura.faixas() {
             for ch in a..=b {
                 onda[ch] = 0;
             }
         }
-        assert_eq!(onda[79], 0, "curvatura a 70 m tinha de sumir");
-        assert_eq!(onda[0], 42, "a retina não podia ser tocada");
-        assert_eq!(onda[64], 42, "o alinhamento de fluxo não podia ser tocado");
+        assert_eq!(onda[79], 0, "curvature at 70 m had to disappear");
+        assert_eq!(onda[0], 42, "the retina could not be touched");
+        assert_eq!(onda[64], 42, "the flow alignment could not be touched");
     }
 }
 
@@ -596,16 +597,16 @@ mod testes_priming {
 
     #[test]
     fn as_15_sinapses_batem_com_spawn_rs() {
-        // se alguém mexer no priming de spawn.rs sem mexer aqui, a ablação passa a medir
-        // outra coisa em silêncio. Este teste é o alarme.
+        // if someone changes the priming in spawn.rs without changing here, the ablation starts
+        // silently measuring something else. This test is the alarm.
         assert_eq!(PRIMING.len(), 15);
-        // os três neurônios motores, e SÓ eles
+        // the three motor neurons, and ONLY them
         assert!(PRIMING.iter().all(|&(n, _)| n < 3));
-        // o freio depende das duas sondas de curvatura curtas — é o que segura a hairpin
+        // the brake depends on the two short curvature probes — it is what holds the hairpin
         assert!(PRIMING.contains(&(2, 79)) && PRIMING.contains(&(2, 78)));
-        // o esterço tem as quatro do rastreador de asfalto
+        // steering has the four from the asphalt tracker
         for ch in 90..94 {
-            assert!(PRIMING.contains(&(1, ch)), "faltou o canal {ch} no esterço");
+            assert!(PRIMING.contains(&(1, ch)), "channel {ch} missing on steering");
         }
     }
 
@@ -614,7 +615,7 @@ mod testes_priming {
     // above and below; clippy reads it as `erasing_op`.
     #[allow(clippy::erasing_op)]
     fn ablar_priming_zera_so_as_posicoes_certas() {
-        // exercita a aritmética de índice sem depender do OnceLock global
+        // exercises the index arithmetic without depending on the global OnceLock
         let stride = 223;
         let mut pesos = vec![1.0f32; 3 * stride];
         for &(neu, ch) in PRIMING.iter() {
@@ -623,22 +624,22 @@ mod testes_priming {
         assert_eq!(
             pesos[2 * stride + 79],
             0.0,
-            "freio/curvatura 70 m tinha de sumir"
+            "brake/curvature 70 m had to disappear"
         );
         assert_eq!(
             pesos[0 * stride + 64],
             0.0,
-            "acelerador/fluxo tinha de sumir"
+            "throttle/flow had to disappear"
         );
         assert_eq!(
             pesos[1 * stride + 100],
             1.0,
-            "canal não primado não podia ser tocado"
+            "non-primed channel could not be touched"
         );
         assert_eq!(
             pesos[2 * stride + 64],
             1.0,
-            "canal 64 só é primado no neurônio 0"
+            "channel 64 is only primed on neuron 0"
         );
         assert_eq!(pesos.iter().filter(|&&w| w == 0.0).count(), 15);
     }
@@ -650,19 +651,19 @@ mod testes_nascimento {
 
     #[test]
     fn a_quantidade_de_conexoes_bate_com_o_priming() {
-        // o modo "esparso aleatório" tem de dar aos motores a MESMA quantidade de conexões
-        // do priming à mão — senão a comparação mede quantidade, não escolha de canal
+        // the "sparse random" mode has to give the motors the SAME number of connections
+        // as the hand priming — otherwise the comparison measures quantity, not channel choice
         assert_eq!(
             n_conexoes_motor(0),
             3,
-            "acelerador: fluxo + curvatura 70 + curvatura 40"
+            "throttle: flow + curvature 70 + curvature 40"
         );
         assert_eq!(
             n_conexoes_motor(1),
             10,
-            "esterço: 6 curvaturas/offset + 4 do asfalto"
+            "steering: 6 curvatures/offset + 4 from the asphalt"
         );
-        assert_eq!(n_conexoes_motor(2), 2, "freio: curvatura 70 e 40");
+        assert_eq!(n_conexoes_motor(2), 2, "brake: curvature 70 and 40");
         assert_eq!(
             n_conexoes_motor(0) + n_conexoes_motor(1) + n_conexoes_motor(2),
             PRIMING.len()
@@ -678,7 +679,7 @@ mod testes_nascimento {
         );
         assert_eq!(Nascimento::de_str("denso"), Nascimento::Denso);
         assert_eq!(Nascimento::de_str(""), Nascimento::Primado);
-        // grafia errada cai no comportamento ATUAL, não num modo experimental silencioso
+        // a typo falls back to the CURRENT behaviour, not to a silent experimental mode
         assert_eq!(Nascimento::de_str("esparsoo"), Nascimento::Primado);
     }
 }
@@ -687,7 +688,7 @@ mod testes_nascimento {
 mod testes_fracao {
     use super::*;
 
-    /// Réplica da aritmética de `spawn.rs`, para poder testá-la sem montar o mundo.
+    /// Replica of the `spawn.rs` arithmetic, so it can be tested without assembling the world.
     fn faixa(i: usize, n_pop: usize, frac: f32) -> &'static str {
         let ini = ((1.0 - frac) * n_pop as f32) as usize;
         if i >= ini {
@@ -703,8 +704,8 @@ mod testes_fracao {
 
     #[test]
     fn o_padrao_reproduz_a_estratificacao_original() {
-        // com 60 slots e fração 0,50 tem de dar exatamente os limites que estavam
-        // escritos à mão em spawn.rs: clones 0-4, pequeno 5-14, médio 15-29, explora 30+
+        // with 60 slots and fraction 0.50 it has to give exactly the limits that were
+        // hand-written in spawn.rs: clones 0-4, small 5-14, medium 15-29, explore 30+
         let (n, f) = (60usize, 0.50f32);
         assert_eq!(faixa(0, n, f), "clone");
         assert_eq!(faixa(4, n, f), "clone");
@@ -723,24 +724,24 @@ mod testes_fracao {
         assert_eq!(
             n_explora(0.50),
             30,
-            "o padrão sacrifica metade da população"
+            "the default sacrifices half the population"
         );
         assert_eq!(n_explora(0.25), 15);
         assert_eq!(n_explora(0.10), 6);
-        // e a ordem tem de ser monotônica — menos fração, menos exploradores
+        // and the order has to be monotonic — smaller fraction, fewer explorers
         assert!(n_explora(0.10) < n_explora(0.25));
         assert!(n_explora(0.25) < n_explora(0.50));
     }
 
     #[test]
     fn os_primeiros_slots_sao_sempre_clones() {
-        // o slot 0 é o campeão puro (simple_elitism); ele NUNCA pode cair na faixa
-        // destrutiva, senão a linhagem se perde a cada geração
+        // slot 0 is the pure champion (simple_elitism); it can NEVER fall into the
+        // destructive band, or the lineage is lost every generation
         for f in [0.10f32, 0.25, 0.50, 0.75] {
             assert_eq!(
                 faixa(0, 60, f),
                 "clone",
-                "fração {f} pôs o slot 0 fora dos clones"
+                "fraction {f} put slot 0 outside the clones"
             );
         }
     }

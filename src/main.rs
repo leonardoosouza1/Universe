@@ -9,8 +9,8 @@ use universe::ui_menu::MenuPlugin;
 use universe::world::{VoxelWorld, VoxelWorldResource};
 use universe::{AppState, HeadlessMode, SimulationEntity};
 
-/// UI auto-start: pula menu e entra em Simulation direto.
-/// Ativa quando `--seed N` passa em modo não-headless.
+/// UI auto-start: skips the menu and enters Simulation directly.
+/// Activates when `--seed N` is passed in non-headless mode.
 #[derive(Resource, Clone, Copy)]
 pub struct UiAutoStart(pub bool);
 
@@ -56,8 +56,8 @@ fn main() {
         .position(|a| a == "--experiment-name")
         .and_then(|i| args.get(i + 1))
         .map(|s| s.to_string());
-    // FIX UI vs headless: flags persistem em universe_config.json. UI carrega
-    // mesma config que último headless training → DNA e pista combinam.
+    // FIX UI vs headless: flags persist in universe_config.json. The UI loads the
+    // same config as the last headless training → DNA and track match.
     let final_no_holes = no_holes || config.no_holes;
     let final_easy = easy_track || config.easy_track;
     if final_no_holes {
@@ -68,7 +68,7 @@ fn main() {
         universe::world::EASY_TRACK.store(true, std::sync::atomic::Ordering::Relaxed);
         println!("📏 EASY TRACK validation (oval-friendly)");
     }
-    // Persiste se CLI passou — próximo run UI herda automatic.
+    // Persists if the CLI passed it — the next UI run inherits it automatically.
     if no_holes {
         config.no_holes = true;
     }
@@ -100,7 +100,7 @@ fn main() {
             seed, w
         );
     } else if let Some(w) = width_override {
-        // Apenas largura override sem seed — aplica em current track.
+        // Width-only override without seed — applies to the current track.
         if let Some(t) = config.tracks.get_mut(config.selected_track_index) {
             t.track_width = w;
         }
@@ -127,30 +127,30 @@ fn main() {
         lab_params.experiment_name = name;
     }
 
-    // Ablação de via (ver `neuro.rs`). Fixada uma vez, no arranque, e global de processo: o
-    // `universe-lab` roda cada variante num processo separado, então não há o que confundir.
-    // Impresso SEMPRE, inclusive na linha de base — um experimento de ablação em que não se
-    // vê qual via caiu é um experimento sem rótulo.
+    // Pathway ablation (see `neuro.rs`). Fixed once, at startup, and process-global: the
+    // `universe-lab` runs each variant in a separate process, so there is nothing to confuse.
+    // ALWAYS printed, including on the baseline — an ablation experiment where you cannot
+    // see which pathway went down is an unlabeled experiment.
     let via = universe::neuro::Via::de_str(&lab_params.via_ablada);
     universe::neuro::definir_ablacao(via);
     if !lab_params.via_ablada.trim().is_empty() && via == universe::neuro::Via::Nenhuma {
         eprintln!(
-            "⚠️  via_ablada=\"{}\" não é uma via conhecida — rodando SEM ablação. \
-                   Vias: cortex · reflexo · sentinela · sentinela_total · lenta",
+            "⚠️  via_ablada=\"{}\" is not a known pathway — running WITHOUT ablation. \
+                   Pathways: cortex · reflexo · sentinela · sentinela_total · lenta",
             lab_params.via_ablada
         );
     }
-    println!("🧠 via ablada: {}", via.nome());
+    println!("🧠 ablated pathway: {}", via.nome());
 
-    // Modo de nascimento dos neurônios motores (ver `neuro::Nascimento`). Impresso sempre:
-    // um experimento sobre independência do modelo em que não se vê como ele nasceu é um
-    // experimento sem rótulo.
+    // Birth mode of the motor neurons (see `neuro::Nascimento`). Always printed:
+    // an experiment about model independence where you cannot see how it was born is an
+    // unlabeled experiment.
     let nasc = universe::neuro::Nascimento::de_str(&lab_params.nascimento);
     universe::neuro::definir_nascimento(nasc);
-    println!("🌱 nascimento dos motores: {}", nasc.nome());
+    println!("🌱 motor birth mode: {}", nasc.nome());
 
-    // Parâmetros da visão (ver `visao.rs`). Zero = mantém o padrão, para que nenhum
-    // experimento antigo mude de comportamento por omissão.
+    // Vision parameters (see `visao.rs`). Zero = keeps the default, so that no
+    // old experiment changes behavior by omission.
     let vp = universe::visao::Params {
         alcance_m: if lab_params.visao_alcance_m > 0.0 {
             lab_params.visao_alcance_m
@@ -164,24 +164,24 @@ fn main() {
         },
     };
     universe::visao::definir(vp);
-    // Fração da população na faixa de mutação destrutiva (ver `neuro.rs`). Medido: com o
-    // padrão de 0,50 a MEDIANA da população é ZERO metros — metade não sai do lugar, e
-    // `wall_mean = 0,00s` mostra que não é batida: é a mutação destruindo o genoma.
+    // Fraction of the population in the destructive-mutation band (see `neuro.rs`). Measured:
+    // with the default of 0.50 the population MEDIAN is ZERO meters — half never leaves the
+    // spot, and `wall_mean = 0,00s` shows it is not crashing: it is mutation destroying the genome.
     let fexp = if lab_params.fracao_exploradora > 0.0 {
         lab_params.fracao_exploradora
     } else {
         universe::neuro::FRACAO_EXPLORADORA_PADRAO
     };
     universe::neuro::definir_fracao_exploradora(fexp);
-    println!("🎲 fração exploradora (σ alto): {:.0}%", fexp * 100.0);
+    println!("🎲 explorer fraction (high σ): {:.0}%", fexp * 100.0);
     println!(
-        "👁  visão: alcance {:.1} m · abertura {:.0}° · cega acima de {:.1} m/s",
+        "👁  vision: range {:.1} m · aperture {:.0}° · blind above {:.1} m/s",
         vp.alcance_m,
         vp.fov_deg,
         universe::visao::velocidade_cega(vp.alcance_m, 11.4)
     );
 
-    // Tier 5.3: ativa rotação de pistas via CLI (`--rotate`) ou env (UNIVERSE_ROTATE=1).
+    // Tier 5.3: enables track rotation via CLI (`--rotate`) or env (UNIVERSE_ROTATE=1).
     let rotate_flag = args.iter().any(|a| a == "--rotate")
         || std::env::var("UNIVERSE_ROTATE")
             .ok()
@@ -207,28 +207,28 @@ fn main() {
         gens_target,
     });
     app.insert_resource(lab_params.clone());
-    // UI auto-start quando --seed passou em modo não-headless.
+    // UI auto-start when --seed was passed in non-headless mode.
     app.insert_resource(UiAutoStart(seed_override.is_some() && !headless));
     if headless {
-        // HEADLESS DE VERDADE — sem janela, sem GPU, sem swap chain.
+        // TRULY HEADLESS — no window, no GPU, no swap chain.
         //
-        // Antes, `--headless` só passava `visible: false` e ainda criava janela real no X.
-        // Duas consequências medidas:
+        // Before, `--headless` only passed `visible: false` and still created a real X window.
+        // Two measured consequences:
         //
-        //   1. As DUAS corridas do A/B de nicho morreram no mesmo panic —
-        //      `Couldn't get swap chain texture ... swap chain has been lost`, em
-        //      `bevy_render::view::window::prepare_windows` — aos 27 e 28 de 30 gerações.
-        //      Corrida de dias é impossível assim, e são dias que a evolução exige: 1000
-        //      gerações custam 2,4 dias, e as raposas de Belyaev viraram dóceis em 60.
-        //   2. Prendia a simulação a um display X existente (`xvfb-run` não resolvia).
+        //   1. BOTH runs of the niche A/B died in the same panic —
+        //      `Couldn't get swap chain texture ... swap chain has been lost`, in
+        //      `bevy_render::view::window::prepare_windows` — at 27 and 28 of 30 generations.
+        //      A days-long run is impossible like that, and days are what evolution demands: 1000
+        //      generations cost 2.4 days, and Belyaev's foxes became tame in 60.
+        //   2. It tied the simulation to an existing X display (`xvfb-run` did not solve it).
         //
-        // Nada em headless usa GPU: não existe um único `.wgsl` no repositório nem pipeline
-        // de compute, e a retina (`world::render_binocular_retina`) é raycast DDA em CPU
-        // sobre voxels, paralelizado por rayon. A janela era peso morto que derrubava tudo.
+        // Nothing in headless uses the GPU: there is not a single `.wgsl` in the repository nor a
+        // compute pipeline, and the retina (`world::render_binocular_retina`) is a CPU DDA raycast
+        // over voxels, parallelized by rayon. The window was dead weight that took everything down.
         //
-        // `backends: None` faz o wgpu não criar dispositivo; os tipos de asset (Mesh,
-        // StandardMaterial) seguem registrados como DADOS, que é o único uso que o código
-        // headless faz deles.
+        // `backends: None` makes wgpu not create a device; the asset types (Mesh,
+        // StandardMaterial) remain registered as DATA, which is the only use the headless
+        // code makes of them.
         app.add_plugins(
             DefaultPlugins
                 .build()
@@ -248,7 +248,7 @@ fn main() {
                     ..default()
                 }),
         );
-        // Sem Winit não há laço de eventos: o ScheduleRunner passa a bombear os frames.
+        // Without Winit there is no event loop: the ScheduleRunner takes over pumping the frames.
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
             std::time::Duration::ZERO,
         ));
@@ -314,8 +314,8 @@ fn main() {
                     &lab_copy,
                 )
             },
-            // Replay writer (novo formato 128 bytes/frame) — iniciado no começo de cada
-            // geração pelo motor.rs quando lab.record_replay = true.
+            // Replay writer (new 128 bytes/frame format) — started at the beginning of each
+            // generation by motor.rs when lab.record_replay = true.
             replay_writer: None,
         })
         .insert_resource(DevSettings::default())
@@ -368,7 +368,7 @@ fn headless_autostart(
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     if ui_auto.0 {
-        println!("🎮 UI AUTO-START | --seed passou em modo gráfico, entrando direto na simulação");
+        println!("🎮 UI AUTO-START | --seed passed in graphical mode, entering the simulation directly");
         next_state.set(AppState::Simulation);
         return;
     }
@@ -498,12 +498,12 @@ fn setup_scene(
 ) {
     let current_track = config.current_track();
 
-    // Atualizar o mundo voxel com a seed do track selecionado
-    // Mesmo bônus de +4m que gen 2+ usa quando champion_distance == 0.
+    // Update the voxel world with the selected track's seed
+    // Same +4m bonus that gen 2+ uses when champion_distance == 0.
     let world = VoxelWorld::new(current_track.seed, current_track.track_width + 4.0);
     world_res.0 = world;
 
-    // Atualizar RaceSettings
+    // Update RaceSettings
     race.seed = current_track.seed;
     race.generation = 1;
 
@@ -514,23 +514,23 @@ fn setup_scene(
             color: Color::srgb(1.0, 0.96, 0.88),
             ..default()
         },
-        bevy::pbr::VolumetricLight, // god rays do sol via VolumetricFog
+        bevy::pbr::VolumetricLight, // sun god rays via VolumetricFog
         Transform::from_xyz(360.0, 600.0, 240.0).looking_at(Vec3::new(360.0, 0.0, 360.0), Vec3::Y),
         SimulationEntity,
     ));
 
     commands.insert_resource(AmbientLight {
         brightness: 180.0,
-        color: Color::srgb(0.65, 0.78, 0.95), // azul céu indireto
+        color: Color::srgb(0.65, 0.78, 0.95), // indirect sky blue
         ..default()
     });
 
     let world = &world_res.0;
     let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
 
-    // Registra os IDs em race.world_entities para que o evolution_pipeline possa
-    // despawnar estas 3 meshes no fim da geração. Sem isso, cada reset criaria
-    // uma pista NOVA sobreposta à anterior (efeito "duas pistas").
+    // Registers the IDs in race.world_entities so the evolution_pipeline can
+    // despawn these 3 meshes at the end of the generation. Without this, each reset
+    // would create a NEW track overlaid on the previous one ("two tracks" effect).
     let road_e = commands
         .spawn((
             Mesh3d(meshes.add(r_mesh)),
@@ -562,7 +562,7 @@ fn setup_scene(
         .spawn((
             Mesh3d(meshes.add(w_mesh)),
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.92, 0.93, 0.95), // concreto branco F1
+                base_color: Color::srgb(0.92, 0.93, 0.95), // F1 white concrete
                 perceptual_roughness: 0.55,
                 metallic: 0.0,
                 reflectance: 0.3,
@@ -578,7 +578,7 @@ fn setup_scene(
     let scenery_entities =
         universe::scenery::spawn_scenery(&mut commands, &mut meshes, &mut materials);
     world_entities.extend(scenery_entities);
-    // Streetlights ao longo da pista + buildings INSIDE the track loop interior (cidade).
+    // Streetlights along the track + buildings INSIDE the track loop interior (city).
     let track_dec = universe::scenery::spawn_track_decorations(
         &mut commands,
         &mut meshes,
@@ -588,6 +588,6 @@ fn setup_scene(
     world_entities.extend(track_dec);
     race.world_entities = world_entities;
 
-    // Spawn batched — não bloqueia frame inicial. drain_spawn_queue consome progressivamente.
+    // Batched spawn — does not block the initial frame. drain_spawn_queue consumes progressively.
     race.pending_spawn = Some((0, config.swarm_count));
 }

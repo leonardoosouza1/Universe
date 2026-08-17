@@ -1,7 +1,7 @@
-// Shader mínimo de bissecção — mesmos structs e bind group de physics.wgsl,
-// mas o kernel só COPIA a entrada para a saída (sem nenhuma computação).
-// Se este shader crashar, o problema é o layout/struct/bind group.
-// Se rodar, adicionamos fases progressivamente.
+// Minimal bisection shader — same structs and bind group as physics.wgsl,
+// but the kernel only COPIES the input to the output (no computation at all).
+// If this shader crashes, the problem is the layout/struct/bind group.
+// If it runs, we add phases progressively.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -88,8 +88,8 @@ struct WorldParams {
 @group(0) @binding(3) var<storage, read>       input:   array<CarInput>;
 @group(0) @binding(4) var<storage, read_write> output:  array<CarOutput>;
 
-// Kernel mínimo: só copia vel, av_y, pos, fwd, lat e wheels da entrada para a saída.
-// Sem loops com var<private> arrays, sem branches complexas, sem funções auxiliares.
+// Minimal kernel: only copies vel, av_y, pos, fwd, lat and wheels from input to output.
+// No loops with var<private> arrays, no complex branches, no helper functions.
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let being = gid.x;

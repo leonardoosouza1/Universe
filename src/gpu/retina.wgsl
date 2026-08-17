@@ -1,51 +1,51 @@
-// RETINA NA GPU — devolve FÍSICA, não julgamento.
+// RETINA ON THE GPU — returns PHYSICS, not judgment.
 //
-// 14 linhas × 126 colunas × N seres = 1764·N raios independentes por tick. Com 60 seres são
-// 105.840 marchas DDA, todas sem dependência entre si: o formato canônico de trabalho para
-// GPU. Na CPU isso custava 57% de todo o tempo de simulação (2440 amostras de PERF), contra
-// 14% do cérebro. Medido aqui: 40,5× mais rápido que a CPU de uma thread.
+// 14 rows × 126 columns × N beings = 1764·N independent rays per tick. With 60 beings that is
+// 105,840 DDA marches, all with no dependency between them: the canonical work format for a
+// GPU. On the CPU this cost 57% of the entire simulation time (2440 PERF samples), versus
+// 14% for the brain. Measured here: 40.5× faster than a single-thread CPU.
 //
-// # O que este kernel devolve, e por quê
+// # What this kernel returns, and why
 //
-// Duas saídas por pixel: **distância em metros** e **material**. Cru. É o que um lidar
-// entrega e é o que a natureza entrega — fótons da coisa opaca mais próxima.
+// Two outputs per pixel: **distance in meters** and **material**. Raw. It is what a lidar
+// delivers and what nature delivers — photons from the nearest opaque thing.
 //
-// A versão anterior devolvia um único `i8` por pixel, produzido por uma curva de salência
-// escrita à mão. Medido, ela:
+// The previous version returned a single `i8` per pixel, produced by a hand-written
+// salience curve. Measured, it:
 //
-//   * normalizava por 1200 m num raio que a geometria trava em 33,3 m (a linha 0 aponta para
-//     baixo com pitch −0,012 e bate no CHÃO ali; o código então descarta qualquer parede mais
-//     distante). Resultado: **Road usava 4 dos 256 valores, Grass usava 3**;
-//   * punha Wall no topo da escala (127..53) e Road no fundo (−125..−128), e o consumo é por
-//     `max`-pool — então **a pista desaparecia de qualquer bin que tivesse uma parede**. Havia
-//     um rastreador separado (canais 90-93) procurando o MÍNIMO só para recuperar o que o
-//     max-pool apagava: remendo em cima de viés.
+//   * normalized by 1200 m on a ray that geometry caps at 33.3 m (row 0 points
+//     downward with pitch −0.012 and hits the GROUND there; the code then discards any wall
+//     farther away). Result: **Road used 4 of the 256 values, Grass used 3**;
+//   * put Wall at the top of the scale (127..53) and Road at the bottom (−125..−128), and consumption is by
+//     `max`-pool — so **the track disappeared from any bin that had a wall**. There was
+//     a separate tracker (channels 90-93) looking for the MINIMUM just to recover what the
+//     max-pool erased: a patch on top of bias.
 //
-// Leonardo: *"a rede precisa se virar, a gente só dá as informações"*. Então a decisão de o
-// que importa sai daqui e vai para a evolução, que é onde a tese diz que ela pertence.
+// Leonardo: *"the network has to fend for itself, we only provide the information"*. So the decision of
+// what matters leaves here and goes to evolution, which is where the thesis says it belongs.
 //
-// A codificação antiga continua reconstruível no host (`legacy_encoding`) para que a
-// equivalência com a CPU siga demonstrável e a comparação física × codificada seja possível.
+// The old encoding remains reconstructible on the host (`legacy_encoding`) so that the
+// equivalence with the CPU stays demonstrable and the physical × encoded comparison stays possible.
 
 struct Params {
     grid_size:  u32,
     n_beings:    u32,
     cell_size:  f32,
     fov_half:   f32,
-    pitches:    array<vec4<f32>, 4>,  // 14 pitches em 4 vec4
+    pitches:    array<vec4<f32>, 4>,  // 14 pitches in 4 vec4
 }
 
 struct Pose {
-    pos_gaze: vec4<f32>,   // xyz posição, w gaze_yaw
+    pos_gaze: vec4<f32>,   // xyz position, w gaze_yaw
     dirs:     vec4<f32>,   // forward.xz, right.xz
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> grid: array<u32>;
 @group(0) @binding(2) var<storage, read> poses: array<Pose>;
-// Empacotado: bits 0-7 = material, bits 8-31 = distância em MILÍMETROS.
-// Milímetro cabe folgado (alcance máximo 1200 m = 1.200.000 mm > 2^24? não: 2^24 = 16,7M, cabe)
-// e evita um segundo buffer e uma segunda cópia de volta.
+// Packed: bits 0-7 = material, bits 8-31 = distance in MILLIMETERS.
+// Millimeters fit comfortably (max range 1200 m = 1,200,000 mm > 2^24? no: 2^24 = 16.7M, it fits)
+// and avoid a second buffer and a second copy back.
 @group(0) @binding(3) var<storage, read_write> output: array<u32>;
 
 const RETINA_ROWS: u32 = 14u;
@@ -55,14 +55,14 @@ const TAN_K: f32 = 1.25;
 const EYE_HEIGHT: f32 = 0.4;
 
 fn voxel_at(wx: f32, wz: f32) -> u32 {
-    // A CPU usa `.round()`, NÃO `.floor()` — trocar desloca a leitura em meia célula.
+    // The CPU uses `.round()`, NOT `.floor()` — switching shifts the read by half a cell.
     let x = i32(round(wx / params.cell_size));
     let y = i32(round(wz / params.cell_size));
     let n = i32(params.grid_size);
     if (x >= 0 && x < n && y >= 0 && y < n) {
         return grid[u32(y * n + x)];
     }
-    return 2u; // fora da grade é Wall, igual à CPU
+    return 2u; // outside the grid is Wall, same as the CPU
 }
 
 @compute @workgroup_size(64)
@@ -88,7 +88,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let normalized_i = (f32(col) / (f32(RETINA_COLS) - 1.0)) * 2.0 - 1.0;
     var yaw_angle: f32;
     if (row == 0u) {
-        // Fóvea: deformação por tangente, densa no centro.
+        // Fovea: tangent warp, dense at the center.
         yaw_angle = (tan(normalized_i * TAN_K) / tan(TAN_K)) * params.fov_half + gaze;
     } else {
         yaw_angle = normalized_i * params.fov_half;
@@ -143,8 +143,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {
             d = ((f32(map_y) - ray_start.y + f32(1 - step_y) / 2.0) / ray_dir.y) * params.cell_size;
         }
-        // O chão intercepta antes da parede: é isso que trava a visão em 33,3 m na linha 0.
-        // Continua valendo, porque é GEOMETRIA, não julgamento de salência.
+        // The ground intercepts before the wall: this is what caps vision at 33.3 m on row 0.
+        // Still holds, because it is GEOMETRY, not salience judgment.
         if (dir_y < -0.001 && d > dist_to_ground) {
             hit_dist = dist_to_ground;
             hit_voxel = voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);

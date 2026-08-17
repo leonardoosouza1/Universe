@@ -1,36 +1,36 @@
-//! VALIDAÇÃO DA VISÃO POR OBJETO — o ser enxerga o que está na frente dele?
+//! PER-OBJECT VISION VALIDATION — does the being see what is in front of it?
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo: *"seria bom a gente ter alguma forma de validar se o modelo enxerga realmente
-//! as coisas — se enxerga uma parede, se enxerga o chão, se enxerga algo que a gente
-//! coloque. A partir de um evento em que a visão bate naquele objeto, a gente calcula se
-//! ele realmente está enxergando. Pra avaliar: poxa, o modelo vai tão bem sem buraco, mas
-//! com o buraco não dá — beleza, porque ele satura aqui, ou porque só enxerga quando está
-//! muito em cima."*
+//! Leonardo: *"it would be good to have some way of validating whether the model really
+//! sees things — whether it sees a wall, whether it sees the ground, whether it sees
+//! something we place. From an event where the vision hits that object, we compute
+//! whether it is really seeing it. To evaluate: gee, the model does so well without the
+//! hole, but with the hole it can't — fine, is it because it saturates here, or because
+//! it only sees when it is right on top of it."*
 //!
-//! O A/B de 2026-08-13 mostrou o problema com números: mesma semente, mesmo genoma, um
-//! único flag de diferença. Com buracos a população travou em 1.076 m por 20 gerações e
-//! **zero** dos 48 seres deu uma volta. Sem buracos, mediana 3.189 m e **25 de 48**
-//! completaram. Os buracos ficam em 1.087 m — onze metros depois da parede.
+//! The 2026-08-13 A/B showed the problem in numbers: same seed, same genome, a single
+//! flag of difference. With holes the population stalled at 1.076 m for 20 generations
+//! and **zero** of the 48 beings completed a lap. Without holes, median 3.189 m and
+//! **25 of 48** completed. The holes sit at 1.087 m — eleven metres past the wall.
 //!
-//! Isso não prova que o ser é cego para o buraco; prova que ele morre lá. Este binário
-//! separa as duas coisas medindo a **curva de detecção**: aproxima um observador do objeto
-//! metro a metro e responde, para cada distância, quantos pixels da retina o encontram e
-//! com que valor codificado. Se o buraco só aparece a 8 m, nenhum cérebro desvia a 6 m/s —
-//! e o defeito é de codificação, não de comportamento.
+//! That does not prove the being is blind to the hole; it proves it dies there. This
+//! binary separates the two things by measuring the **detection curve**: it walks an
+//! observer towards the object metre by metre and answers, for each distance, how many
+//! retina pixels find it and with what encoded value. If the hole only appears at 8 m,
+//! no brain swerves at 6 m/s — and the defect is in the encoding, not the behaviour.
 //!
-//! # O que ele mede
+//! # What it measures
 //!
-//! Replica o DDA de `retina.wgsl` (que para em `v==2u` Parede ou `v==3u` Buraco) e a
-//! `legacy_encoding()` de `perception.wgsl`, e reporta por distância:
+//! It replicates the DDA of `retina.wgsl` (which stops at `v==2u` Wall or `v==3u` Hole)
+//! and the `legacy_encoding()` of `perception.wgsl`, and reports per distance:
 //!
-//! · **pixels** que atingiram o alvo (de `RETINA_COLS` × linhas amostradas)
-//! · **valor i8** codificado — o número que o cérebro realmente recebe
-//! · **contraste** contra o fundo daquela mesma coluna sem o objeto
-//! · **ambiguidade**: se o valor colide com o de outro material a outra distância
+//! · **pixels** that hit the target (out of `RETINA_COLS` × sampled rows)
+//! · **encoded i8 value** — the number the brain actually receives
+//! · **contrast** against the background of that same column without the object
+//! · **ambiguity**: whether the value collides with another material's at another distance
 //!
-//! # Uso
+//! # Usage
 //!
 //!   visao_check [--seed 9001] [--width 28] [--alvo buraco|parede] [--de 120] [--ate 2]
 
@@ -38,11 +38,11 @@ use bevy::math::Vec2;
 use universe::config::iara::vision::{RETINA_COLS, RETINA_ROWS};
 use universe::world::{VoxelType, VoxelWorld};
 
-/// Codificação legada, réplica exata de `perception.wgsl:251`.
+/// Legacy encoding, an exact replica of `perception.wgsl:251`.
 ///
-/// Mantida aqui (e não importada) porque o original vive em WGSL: qualquer divergência
-/// entre as duas é justamente o tipo de bug que esta ferramenta existe para expor. Se
-/// alguém mexer no shader e esquecer daqui, o teste `encoding_bate_com_o_shader` quebra.
+/// Kept here (rather than imported) because the original lives in WGSL: any divergence
+/// between the two is precisely the kind of bug this tool exists to expose. If someone
+/// touches the shader and forgets this copy, the test `encoding_bate_com_o_shader` breaks.
 fn legacy_encoding(d: f32, mat: VoxelType) -> i32 {
     let depth_fade = (d / 1200.0).clamp(0.0, 1.0);
     let v = match mat {
@@ -64,13 +64,13 @@ fn legacy_encoding(d: f32, mat: VoxelType) -> i32 {
     v.clamp(-128.0, 127.0) as i32
 }
 
-/// Um raio de visão: anda pelo mundo até bater em Parede ou Buraco, como o DDA do shader.
+/// One vision ray: walks the world until it hits a Wall or a Hole, like the shader's DDA.
 ///
-/// Devolve `(distância, material)` do primeiro obstáculo, ou `None` se o raio percorreu o
-/// alcance inteiro sem encontrar nada — o caso "céu aberto" que satura o canal.
+/// Returns the first obstacle's `(distance, material)`, or `None` if the ray covered the
+/// whole range without finding anything — the "open sky" case that saturates the channel.
 fn raio(world: &VoxelWorld, origem: Vec2, dir: Vec2, alcance: f32) -> Option<(f32, VoxelType)> {
-    // Passo de meio voxel: fino o bastante para não pular um alvo de 2×2 células, barato o
-    // bastante para varrer 120 m em microssegundos.
+    // Half-voxel step: fine enough not to skip a 2×2-cell target, cheap enough to sweep
+    // 120 m in microseconds.
     let passo = world.cell_size * 0.5;
     let mut d = passo;
     while d < alcance {
@@ -128,10 +128,11 @@ fn main() {
         VoxelType::Hole
     };
 
-    // Acha o primeiro alvo do tipo pedido caminhando pelo eixo da pista, e guarda o ponto
-    // do EIXO onde ele aparece — é de lá que o ser chega, então é de lá que a visão importa.
+    // Finds the first target of the requested type by walking the track axis, and stores
+    // the AXIS point where it appears — that is where the being arrives from, so that is
+    // where the vision matters.
     let wps = &world.waypoints_world;
-    let mut alvo_pos: Option<(Vec2, Vec2, f32)> = None; // (ponto do alvo, direção da pista, arco)
+    let mut alvo_pos: Option<(Vec2, Vec2, f32)> = None; // (target point, track direction, arc)
     {
         let mut arco = 0.0f32;
         let mut wp = 0usize;
@@ -142,7 +143,7 @@ fn main() {
             let seg = (b - a).length().max(0.001);
             let p = a + (b - a) * (t / seg);
             let dir = (b - a) / seg;
-            // Varre a largura da pista: o buraco não fica no eixo necessariamente.
+            // Sweeps the track's width: the hole is not necessarily on the axis.
             let nrm = Vec2::new(-dir.y, dir.x);
             for off in [-12.0f32, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0] {
                 if world.material_at(p + nrm * off) == alvo_tipo {
@@ -163,29 +164,29 @@ fn main() {
     }
 
     let Some((alvo_ponto, dir_pista, arco_alvo)) = alvo_pos else {
-        println!("Nenhum '{alvo}' encontrado nos primeiros 3000 m da semente {seed}.");
+        println!("No '{alvo}' found within the first 3000 m of seed {seed}.");
         return;
     };
 
     let fov = universe::visao::fov_deg().to_radians();
     println!(
-        "VALIDAÇÃO DA VISÃO · semente {seed} · pista {width:.0} m · FOV {:.0}° · retina {RETINA_COLS}×{RETINA_ROWS}",
+        "VISION VALIDATION · seed {seed} · track {width:.0} m · FOV {:.0}° · retina {RETINA_COLS}×{RETINA_ROWS}",
         fov.to_degrees()
     );
     println!(
-        "Alvo: {alvo} em {arco_alvo:.0} m do início ({:.0}, {:.0})\n",
+        "Target: {alvo} at {arco_alvo:.0} m from the start ({:.0}, {:.0})\n",
         alvo_ponto.x, alvo_ponto.y
     );
     println!(
         "{:>6} {:>8} {:>9} {:>9} {:>10}  {}",
-        "dist", "pixels", "valor i8", "fundo i8", "contraste", "veredito"
+        "dist", "pixels", "i8 value", "bg i8", "contrast", "verdict"
     );
     println!("{}", "-".repeat(74));
 
     let mut primeira_deteccao: Option<f32> = None;
     let mut d = de;
     while d >= ate {
-        // Observador no eixo, a `d` metros antes do alvo, olhando na direção da pista.
+        // Observer on the axis, `d` metres before the target, looking along the track.
         let obs = alvo_ponto - dir_pista * d;
         let frente = dir_pista;
         let lat = Vec2::new(-frente.y, frente.x);
@@ -194,7 +195,7 @@ fn main() {
         let mut valor_alvo: Option<i32> = None;
         let mut valor_fundo: Option<i32> = None;
 
-        // Varre as colunas da retina (o eixo horizontal é o que enxerga obstáculo lateral).
+        // Sweeps the retina columns (the horizontal axis is what sees a lateral obstacle).
         for col in 0..RETINA_COLS {
             let frac = (col as f32 + 0.5) / RETINA_COLS as f32 - 0.5; // -0.5 .. +0.5
             let ang = frac * fov;
@@ -221,13 +222,13 @@ fn main() {
         let vf = valor_fundo.unwrap_or(-128);
         let contraste = (va - vf).abs();
         let veredito = if pixels_no_alvo == 0 {
-            "INVISÍVEL"
+            "INVISIBLE"
         } else if contraste < 10 {
-            "← confunde com o fundo"
+            "← blends into the background"
         } else if pixels_no_alvo == 1 {
-            "1 pixel só (frágil)"
+            "1 pixel only (fragile)"
         } else {
-            "visível"
+            "visible"
         };
         println!("{d:6.0} {pixels_no_alvo:8} {va:9} {vf:9} {contraste:10}  {veredito}");
 
@@ -237,19 +238,20 @@ fn main() {
     println!("\n{}", "-".repeat(74));
     match primeira_deteccao {
         Some(dist) => {
-            // O que importa não é ver, é ver A TEMPO. A 6 m/s (velocidade medida na
-            // bateria de 2026-08-13) cada metro de antecipação vale 1/6 s de reação.
+            // What matters is not seeing, it is seeing IN TIME. At 6 m/s (the speed
+            // measured in the 2026-08-13 battery) every metre of anticipation is worth
+            // 1/6 s of reaction.
             for v in [4.0f32, 6.0, 10.0] {
                 println!(
-                    "  a {v:.0} m/s o ser tem {:.1} s desde a primeira detecção até o impacto",
+                    "  at {v:.0} m/s the being has {:.1} s from first detection to impact",
                     dist / v
                 );
             }
-            println!("\n  Primeira detecção a {dist:.0} m.");
+            println!("\n  First detection at {dist:.0} m.");
         }
         None => println!(
-            "  O alvo NUNCA foi detectado em nenhuma distância testada.\n\
-                          \x20 O ser é literalmente cego para este objeto — nenhum cérebro o evita."
+            "  The target was NEVER detected at any tested distance.\n\
+                          \x20 The being is literally blind to this object — no brain avoids it."
         ),
     }
 }
@@ -258,28 +260,28 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Ancora os números da tabela de codificação. Se alguém mexer em `legacy_encoding` no
-    /// shader e não aqui, este teste denuncia a divergência.
+    /// Anchors the numbers of the encoding table. If someone touches `legacy_encoding` in
+    /// the shader and not here, this test reports the divergence.
     #[test]
     fn encoding_bate_com_o_shader() {
         assert_eq!(legacy_encoding(0.0, VoxelType::Wall), 127);
         assert_eq!(legacy_encoding(0.0, VoxelType::Hole), 90);
         assert_eq!(legacy_encoding(50.0, VoxelType::Hole), 60);
-        // A saturação que motivou esta ferramenta: além de 50 m o buraco é uma constante.
+        // The saturation that motivated this tool: past 50 m the hole is a constant.
         assert_eq!(
             legacy_encoding(50.0, VoxelType::Hole),
             legacy_encoding(200.0, VoxelType::Hole)
         );
     }
 
-    /// A ambiguidade medida: buraco longe tem o mesmo valor que parede a meia distância.
+    /// The measured ambiguity: a distant hole has the same value as a wall at mid distance.
     #[test]
     fn buraco_longe_colide_com_parede_media() {
         let buraco_60m = legacy_encoding(60.0, VoxelType::Hole);
         let parede_28m = legacy_encoding(28.0, VoxelType::Wall);
         assert!(
             (buraco_60m - parede_28m).abs() <= 3,
-            "buraco a 60 m = {buraco_60m}, parede a 28 m = {parede_28m}"
+            "hole at 60 m = {buraco_60m}, wall at 28 m = {parede_28m}"
         );
     }
 }

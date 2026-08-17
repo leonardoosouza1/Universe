@@ -1,21 +1,21 @@
-//! `pistas` — mede a dificuldade REAL de cada pista, em vez de confiar no rótulo.
+//! `pistas` — measures the REAL difficulty of each track, instead of trusting the label.
 //!
-//! As pistas de `world.rs` vêm rotuladas nos comentários como EASY / MEDIUM / HARD /
-//! VERY HARD / EXTREME, e o `TrackProfile` tem um campo `complexity` — que **nunca é lido
-//! por ninguém** (só escrito em `config.rs`, `main.rs` e `ui_menu.rs`). Ou seja: a
-//! dificuldade do currículo hoje é julgamento humano, não medida.
+//! The tracks in `world.rs` come labeled in the comments as EASY / MEDIUM / HARD /
+//! VERY HARD / EXTREME, and `TrackProfile` has a `complexity` field — which is **never read
+//! by anyone** (only written in `config.rs`, `main.rs` and `ui_menu.rs`). In other words:
+//! today's curriculum difficulty is human judgment, not measurement.
 //!
-//! A física dá o eixo certo, e não é a largura. Da varredura de largura medida em
-//! 2026-07-30: alargar a pista de 8 para 24 m muda a distância percorrida em 27% e a
-//! MORTALIDADE de 58/60 para 33/60 — largura compra margem de erro, não velocidade. O que
-//! manda é o RAIO DA CURVA MAIS FECHADA:
+//! Physics gives the right axis, and it is not the width. From the width sweep measured on
+//! 2026-07-30: widening the track from 8 to 24 m changes the distance travelled by 27% and
+//! the MORTALITY from 58/60 to 33/60 — width buys margin for error, not speed. What rules
+//! is the RADIUS OF THE TIGHTEST CURVE:
 //!
-//!     v_curva  = sqrt(μ·g·r)                     teto de aderência
-//!     d_freio  = (v_reta² − v_curva²) / (2·μ·g)  distância para chegar nele
+//!     v_curva  = sqrt(μ·g·r)                     grip ceiling
+//!     d_freio  = (v_reta² − v_curva²) / (2·μ·g)  distance to reach it
 //!
-//! e `d_freio` decide **qual sonda de curvatura ainda chega a tempo** — 20, 40, 70 ou 120 m.
-//! É essa a demanda cognitiva de verdade: quanto mais fechada a curva, mais cedo é preciso
-//! decidir, e mais ruidosa é a informação disponível naquele horizonte.
+//! and `d_freio` decides **which curvature probe still arrives in time** — 20, 40, 70 or 120 m.
+//! That is the true cognitive demand: the tighter the curve, the earlier the decision must
+//! be made, and the noisier the information available at that horizon.
 //!
 //! ```text
 //! cargo run --release --bin pistas
@@ -24,10 +24,10 @@
 use bevy::math::Vec2;
 use universe::world::track_waypoints_for_seed;
 
-const CELULA: f32 = 3.0; // metros por célula (world.rs:57)
+const CELULA: f32 = 3.0; // meters per cell (world.rs:57)
 const G: f32 = 9.81;
 const MU: f32 = 1.0;
-/// As quatro sondas de curvatura do carro (canais 20, 78, 79, 80).
+/// The car's four curvature probes (channels 20, 78, 79, 80).
 const SONDAS: [f32; 4] = [20.0, 40.0, 70.0, 120.0];
 
 struct Medida {
@@ -51,14 +51,14 @@ fn medir(wps: &[Vec2]) -> Medida {
         }
         let a = (p[i] - p[i - 1]).normalize_or_zero();
         let b = (p[i + 1] - p[i]).normalize_or_zero();
-        let ang = a.dot(b).clamp(-1.0, 1.0).acos(); // radianos
+        let ang = a.dot(b).clamp(-1.0, 1.0).acos(); // radians
         if ang.to_degrees() < 1.0 {
-            continue; // reta
+            continue; // straight
         }
         n_curvas += 1;
         ang_max = ang_max.max(ang.to_degrees());
-        // raio pela aproximação de arco, usando o MENOR dos dois segmentos que formam a
-        // curva: é ele que limita o quanto dá para abrir a trajetória
+        // radius by the arc approximation, using the SMALLER of the two segments that form
+        // the curve: it is the one that limits how much the trajectory can be widened
         let seg_menor = (p[i] - p[i - 1]).length().min((p[i + 1] - p[i]).length());
         let r = seg_menor / ang;
         r_min = r_min.min(r);
@@ -71,37 +71,38 @@ fn medir(wps: &[Vec2]) -> Medida {
     }
 }
 
-/// Qual sonda ainda chega a tempo para frear de `v_reta` até a curva de raio `r`.
+/// Which probe still arrives in time to brake from `v_reta` down to the curve of radius `r`.
 fn sonda_necessaria(r: f32, v_reta: f32, largura: f32) -> (f32, f32, String) {
     let v_curva = (MU * G * (r + largura / 2.0)).sqrt();
     if v_reta <= v_curva {
-        return (v_curva, 0.0, "nenhuma — dá para passar sem frear".into());
+        return (v_curva, 0.0, "none — passes without braking".into());
     }
     let d = (v_reta * v_reta - v_curva * v_curva) / (2.0 * MU * G);
     let s = SONDAS
         .iter()
         .find(|&&x| x >= d)
         .map(|x| format!("{x:.0} m"))
-        .unwrap_or_else(|| "NENHUMA — cega".into());
+        .unwrap_or_else(|| "NONE — blind".into());
     (v_curva, d, s)
 }
 
-/// A demanda REAL de antecipação da pista, curva a curva.
+/// The track's REAL anticipation demand, curve by curve.
 ///
-/// Supor uma velocidade de reta fixa é frouxo: o que decide é quanto o trecho ANTERIOR
-/// deixou acelerar. Uma curva fechada logo depois de outra curva fechada é fácil (já se
-/// chega devagar); a mesma curva no fim de uma reta longa é o caso duro. Aqui se percorre a
-/// pista acumulando velocidade nas retas com a mesma aderência que segura as curvas, e
-/// reporta-se a curva de MAIOR exigência, não a de menor raio.
+/// Assuming a fixed straight-line speed is sloppy: what decides is how much the PREVIOUS
+/// stretch allowed accelerating. A tight curve right after another tight curve is easy (one
+/// already arrives slowly); the same curve at the end of a long straight is the hard case.
+/// Here the track is traversed accumulating speed on the straights with the same grip that
+/// holds the curves, and the curve of HIGHEST demand is reported, not the one with the
+/// smallest radius.
 fn demanda_maxima(p: &[Vec2], largura: f32, v_teto_carro: f32) -> (usize, f32, f32, f32) {
     let n = p.len();
-    let mut v = v_teto_carro; // começa otimista; a primeira curva corrige
+    let mut v = v_teto_carro; // starts optimistic; the first curve corrects it
     let (mut pior_i, mut pior_d, mut pior_r, mut pior_v) = (0usize, 0.0f32, 0.0f32, 0.0f32);
-    // duas voltas: a primeira acerta a velocidade de entrada de cada trecho, a segunda mede
+    // two laps: the first settles the entry speed of each stretch, the second measures
     for volta in 0..2 {
         for i in 1..n - 1 {
             let seg_ant = (p[i] - p[i - 1]).length();
-            // acelera na reta com a mesma aderência disponível (limite otimista)
+            // accelerates on the straight with the same available grip (optimistic limit)
             v = (v * v + 2.0 * MU * G * seg_ant).sqrt().min(v_teto_carro);
             let a = (p[i] - p[i - 1]).normalize_or_zero();
             let b = (p[i + 1] - p[i]).normalize_or_zero();
@@ -119,7 +120,7 @@ fn demanda_maxima(p: &[Vec2], largura: f32, v_teto_carro: f32) -> (usize, f32, f
                     pior_r = r;
                     pior_v = v;
                 }
-                v = v_curva; // sai da curva no limite dela
+                v = v_curva; // exits the curve at its limit
             }
         }
     }
@@ -127,7 +128,7 @@ fn demanda_maxima(p: &[Vec2], largura: f32, v_teto_carro: f32) -> (usize, f32, f
 }
 
 fn main() {
-    // seeds com traçado escrito à mão em world.rs, mais alguns procedurais para comparar
+    // seeds with hand-written layout in world.rs, plus some procedural ones to compare
     let seeds: [(u64, &str); 8] = [
         (123, "Dubai Oval"),
         (64, "Interlagos Gateway"),
@@ -136,16 +137,16 @@ fn main() {
         (768, "Nurburgring Hills"),
         (256, "Monaco Tight"),
         (1024, "Suzuka Crossing"),
-        (42, "semente do campeão"),
+        (42, "champion's seed"),
     ];
     let largura = 14.0_f32;
-    let v_reta = 30.0_f32; // TETO do carro, m/s — a velocidade real de cada trecho é calculada
+    let v_reta = 30.0_f32; // car's CEILING, m/s — each stretch's real speed is computed
 
-    println!("DIFICULDADE MEDIDA DAS PISTAS (largura {largura:.0} m · reta a {v_reta:.0} m/s)\n");
-    println!("O rótulo EASY/HARD dos comentários é julgamento; isto aqui é conta.\n");
+    println!("MEASURED TRACK DIFFICULTY (width {largura:.0} m · straight at {v_reta:.0} m/s)\n");
+    println!("The EASY/HARD label in the comments is judgment; this here is arithmetic.\n");
     println!(
         "{:<22} {:>8} {:>7} {:>7} {:>8} {:>9} {:>9}  {}",
-        "pista", "compr.", "curvas", "r_min", "r da pior", "v entrada", "d_freio", "sonda exigida"
+        "track", "length", "curves", "r_min", "worst r", "entry v", "d_freio", "required probe"
     );
     println!("{}", "-".repeat(104));
 
@@ -164,9 +165,9 @@ fn main() {
             .map(|x| format!("{x:.0} m"))
             .unwrap_or_else(|| {
                 if d_real > 0.0 {
-                    "NENHUMA — cega".into()
+                    "NONE — blind".into()
                 } else {
-                    "nenhuma — não precisa frear".into()
+                    "none — no braking needed".into()
                 }
             });
         linhas.push((
@@ -177,16 +178,16 @@ fn main() {
             ),
         ));
     }
-    linhas.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap()); // do mais fácil ao mais difícil
+    linhas.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap()); // from easiest to hardest
     for (_, l) in &linhas {
         println!("{l}");
     }
     println!("{}", "-".repeat(104));
     println!(
-        "\nOrdenado pela DEMANDA DE ANTECIPAÇÃO (distância de frenagem exigida na pior curva),"
+        "\nSorted by ANTICIPATION DEMAND (braking distance required at the worst curve),"
     );
     println!(
-        "não pelo raio mínimo: a mesma curva é fácil depois de outra curva e dura no fim de uma reta."
+        "not by minimum radius: the same curve is easy after another curve and hard at the end of a straight."
     );
     if std::env::args().any(|a| a == "--curriculo") {
         let v = std::env::args()
@@ -197,26 +198,27 @@ fn main() {
         curriculo(largura, v);
         return;
     }
-    println!("Quando a sonda exigida passa de 40 m, o carro PRECISA da leitura de 70/120 m —");
-    println!("que é a mais antecipada e a mais ruidosa. É aí que o cérebro passa a importar.");
+    println!("When the required probe exceeds 40 m, the car NEEDS the 70/120 m reading —");
+    println!("which is the most anticipated and the noisiest. That is where the brain starts to matter.");
 }
 
 // ---------------------------------------------------------------------------------------
-// CURRÍCULO: uma rampa de dificuldade medida, não rotulada
+// CURRICULUM: a ramp of measured difficulty, not a labeled one
 // ---------------------------------------------------------------------------------------
 
-/// Monta uma sequência de pistas cuja demanda de antecipação sobe degrau a degrau, cobrindo
-/// as quatro sondas do carro. É o que falta hoje: as pistas à mão vivem todas na faixa da
-/// sonda de 20 m, e as procedurais pulam direto para 40 m — platô e abismo, sem rampa.
+/// Builds a sequence of tracks whose anticipation demand climbs step by step, covering the
+/// car's four probes. It is what is missing today: the hand-made tracks all live in the
+/// 20 m probe range, and the procedural ones jump straight to 40 m — plateau and abyss,
+/// no ramp.
 fn curriculo(largura: f32, v_teto: f32) {
     use universe::pista_gen::{SONDAS, gerar};
     println!(
-        "\n\n=== CURRÍCULO GERADO (largura {largura:.0} m · teto do carro {v_teto:.0} m/s) ==="
+        "\n\n=== GENERATED CURRICULUM (width {largura:.0} m · car ceiling {v_teto:.0} m/s) ==="
     );
-    println!("cada degrau exige uma sonda mais longa que o anterior\n");
+    println!("each step requires a longer probe than the previous one\n");
     println!(
         "{:>7} {:>9} {:>8} {:>8} {:>9} {:>9}  {}",
-        "degrau", "semente", "compr.", "curvas", "r_min", "d_freio", "exige"
+        "step", "seed", "length", "curves", "r_min", "d_freio", "requires"
     );
     println!("{}", "-".repeat(84));
 
@@ -248,15 +250,15 @@ fn curriculo(largura: f32, v_teto: f32) {
                 "{:>7} {:>9} {:>50}",
                 degrau + 1,
                 "—",
-                format!("NÃO ACHEI pista com d_freio em [{lo:.0}, {hi:.0}] m")
+                format!("FOUND NO track with d_freio in [{lo:.0}, {hi:.0}] m")
             );
         }
     }
     println!("{}", "-".repeat(84));
-    println!("\n{achados}/4 degraus preenchidos. As sondas do carro estão a {SONDAS:?} m.");
+    println!("\n{achados}/4 steps filled. The car's probes are at {SONDAS:?} m.");
     if achados < 4 {
-        println!("Degrau vazio NÃO é falha do gerador: pode ser que a geometria não alcance");
-        println!("aquela demanda com o teto de velocidade atual — e aí o caminho é motor/marcha");
-        println!("(reta mais rápida), não curva mais fechada. Ver a conta em pista_gen.rs.");
+        println!("An empty step is NOT a generator failure: the geometry may not reach");
+        println!("that demand with the current speed ceiling — and then the path is engine/gear");
+        println!("(faster straight), not tighter curve. See the arithmetic in pista_gen.rs.");
     }
 }

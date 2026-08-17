@@ -1,23 +1,23 @@
-//! Analisador de replays quadro a quadro.
+//! Frame-by-frame replay analyzer.
 //!
-//! # Uso
+//! # Usage
 //!
-//!   # Perfil de velocidade + eventos críticos de UM replay:
+//!   # Speed profile + critical events of ONE replay:
 //!   ./replay_analyze --replay champion_motor.replay
 //!
-//!   # Diff entre dois caminhos (motor.rs vs cortex_evolve):
+//!   # Diff between two paths (motor.rs vs cortex_evolve):
 //!   ./replay_analyze --replay-a champion_motor.replay --replay-b champion_cortex.replay
 //!
-//!   # Gerar HTML player (pista + player interativo):
+//!   # Generate HTML player (track + interactive player):
 //!   ./replay_analyze --replay champion_motor.replay --html replay.html
 //!
-//!   # Mostrar todos os eventos de um campeão (being_idx=0):
+//!   # Show all events of a champion (being_idx=0):
 //!   ./replay_analyze --replay champion_motor.replay --events
 //!
-//! # Saídas
+//! # Outputs
 //!
-//! Sem --html: texto puro (Markdown-ish) para análise direta no terminal.
-//! Com --html: arquivo HTML autocontido que Leonardo abre no browser.
+//! Without --html: plain text (Markdown-ish) for direct analysis in the terminal.
+//! With --html: self-contained HTML file that Leonardo opens in the browser.
 
 use std::path::PathBuf;
 use universe::replay::{
@@ -28,12 +28,12 @@ use universe::replay::{
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // --- Parse simples de args ---
+    // --- Simple arg parsing ---
     let mut replay_path: Option<PathBuf> = None;
     let mut replay_a: Option<PathBuf> = None;
     let mut replay_b: Option<PathBuf> = None;
     let mut html_output: Option<PathBuf> = None;
-    // Largura da pista, só para desenho — não muda o traçado dos waypoints.
+    // Track width, drawing only — does not change the waypoint layout.
     let mut track_width: f32 = 18.0;
     let mut show_events = false;
     let mut n_sections: usize = 20;
@@ -80,18 +80,18 @@ fn main() {
         i += 1;
     }
 
-    // --- Modo diff A vs B ---
+    // --- Diff mode A vs B ---
     if let (Some(pa), Some(pb)) = (replay_a, replay_b) {
         run_diff(&pa, &pb, html_output.as_deref(), n_sections);
         return;
     }
 
-    // --- Modo single replay ---
+    // --- Single replay mode ---
     let path = match replay_path {
         Some(p) => p,
         None => {
             eprintln!(
-                "USO: replay_analyze --replay <arquivo.replay> [--html saida.html] [--events]"
+                "USAGE: replay_analyze --replay <file.replay> [--html output.html] [--events]"
             );
             eprintln!(
                 "     replay_analyze --replay-a <A.replay> --replay-b <B.replay> [--html diff.html]"
@@ -110,7 +110,7 @@ fn main() {
     );
 }
 
-// ── Análise de replay único ──────────────────────────────────────────────────
+// ── Single replay analysis ──────────────────────────────────────────────────
 
 fn run_single(
     path: &std::path::Path,
@@ -123,21 +123,21 @@ fn run_single(
     let mut reader = match ReplayReader::open(path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("ERRO ao abrir {}: {}", path.display(), e);
+            eprintln!("ERROR opening {}: {}", path.display(), e);
             std::process::exit(1);
         }
     };
 
     let hdr = reader.header;
     let source_name = if hdr.source == SOURCE_MOTOR {
-        "motor.rs (caminho original)"
+        "motor.rs (original path)"
     } else {
-        "cortex_evolve (folha cortical)"
+        "cortex_evolve (cortical leaf)"
     };
 
     println!("=== REPLAY: {} ===", path.display());
-    println!("Fonte:        {}", source_name);
-    println!("Seres:        {}", hdr.n_beings);
+    println!("Source:       {}", source_name);
+    println!("Beings:       {}", hdr.n_beings);
     println!("Tick rate:    {} Hz", hdr.tick_rate);
     println!("World seed:   {}", hdr.world_seed);
     println!();
@@ -145,7 +145,7 @@ fn run_single(
     let frames = reader.frames_of(being_idx);
     if frames.is_empty() {
         eprintln!(
-            "NENHUM frame para being_idx={}. Verifique o arquivo.",
+            "NO frames for being_idx={}. Check the file.",
             being_idx
         );
         std::process::exit(1);
@@ -153,7 +153,7 @@ fn run_single(
 
     println!("--- Being {} ({} frames) ---", being_idx, frames.len());
 
-    // Estatísticas gerais
+    // General statistics
     let arc_max = frames
         .iter()
         .map(|f| f.arc_prog)
@@ -167,7 +167,7 @@ fn run_single(
     let ticks_total = frames.last().map(|f| f.tick).unwrap_or(0);
     let tempo_virtual = ticks_total as f32 / hdr.tick_rate;
 
-    // Quanto o governor interveio
+    // How much the governor intervened
     let gov_count = frames
         .iter()
         .filter(|f| (f.intent_thr - f.final_thr).abs() > 0.05)
@@ -176,23 +176,23 @@ fn run_single(
     let ecas_count = frames.iter().filter(|f| f.safety_flags & 0x04 != 0).count();
     let rev_count = frames.iter().filter(|f| f.safety_flags & 0x08 != 0).count();
 
-    println!("Arco total:   {:.1} m ({} voltas)", arc_max, laps);
+    println!("Total arc:    {:.1} m ({} laps)", arc_max, laps);
     println!(
-        "Tempo virtual:{:.1} s ({} ticks)",
+        "Virtual time: {:.1} s ({} ticks)",
         tempo_virtual, ticks_total
     );
     println!(
-        "Vel máx:      {:.1} m/s ({:.0} km/h)",
+        "Max speed:    {:.1} m/s ({:.0} km/h)",
         speed_max,
         speed_max * 3.6
     );
     println!(
-        "Vel média:    {:.1} m/s ({:.0} km/h)",
+        "Mean speed:   {:.1} m/s ({:.0} km/h)",
         speed_avg,
         speed_avg * 3.6
     );
     println!();
-    println!("=== INTERVENÇÃO EXTERNA ===");
+    println!("=== EXTERNAL INTERVENTION ===");
     println!(
         "Governor (|thr_raw - thr_final| > 0.05): {} frames = {:.1}%",
         gov_count,
@@ -215,16 +215,16 @@ fn run_single(
     );
     println!();
 
-    // --- Perfil de velocidade por seção ---
+    // --- Speed profile per section ---
     if let Some(profiles) = section_profile(&frames, n_sections) {
-        println!("=== PERFIL DE VELOCIDADE ({} seções) ===", n_sections);
+        println!("=== SPEED PROFILE ({} sections) ===", n_sections);
         println!(
             "{:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-            "Arco", "AvgSpd", "MaxSpd", "MinSpd", "TmEst", "Gov%", "GOV_N"
+            "Arc", "AvgSpd", "MaxSpd", "MinSpd", "TmEst", "Gov%", "GOV_N"
         );
         println!("{}", "-".repeat(65));
 
-        // Ordena cópia por tempo estimado (decrescente = onde perde mais)
+        // Sorts a copy by estimated time (descending = where the most is lost)
         let mut worst: Vec<usize> = (0..profiles.len()).collect();
         worst.sort_by(|&a, &b| {
             profiles[b]
@@ -252,11 +252,11 @@ fn run_single(
         }
 
         println!();
-        println!("=== TOP-5 SEÇÕES MAIS LENTAS (onde perde mais tempo) ===");
+        println!("=== TOP-5 SLOWEST SECTIONS (where the most time is lost) ===");
         for &wi in worst.iter().take(5) {
             let p = &profiles[wi];
             println!(
-                "  Arco {:.0}m–{:.0}m: avg {:.1} m/s, gov {:.0}%, est {:.2}s perdidos",
+                "  Arc {:.0}m–{:.0}m: avg {:.1} m/s, gov {:.0}%, est {:.2}s lost",
                 p.arc_start,
                 p.arc_end,
                 p.avg_speed,
@@ -267,12 +267,12 @@ fn run_single(
         println!();
     }
 
-    // --- Eventos críticos ---
+    // --- Critical events ---
     if show_events {
         let events = detect_events(&frames);
-        println!("=== EVENTOS CRÍTICOS ({} total) ===", events.len());
+        println!("=== CRITICAL EVENTS ({} total) ===", events.len());
         for ev in events.iter().take(50) {
-            // limita a 50 pra não inundar
+            // caps at 50 to avoid flooding
             print!(
                 "  tick={:>5} arc={:>7.1}m spd={:>5.1}  ",
                 ev.tick, ev.arc, ev.speed
@@ -295,7 +295,7 @@ fn run_single(
                 }
                 universe::replay::EventKind::Reversing => println!("REVERSING"),
                 universe::replay::EventKind::SpeedDrop { delta } => {
-                    println!("SPEED_DROP -{:.1} m/s em 10 frames", delta)
+                    println!("SPEED_DROP -{:.1} m/s in 10 frames", delta)
                 }
                 universe::replay::EventKind::NeuralSaturation { dims } => {
                     println!("NEURAL_SATURACAO {} dims", dims)
@@ -303,22 +303,22 @@ fn run_single(
             }
         }
         if events.len() > 50 {
-            println!("  ... e mais {} eventos", events.len() - 50);
+            println!("  ... and {} more events", events.len() - 50);
         }
         println!();
     }
 
-    // --- Gerar HTML ---
+    // --- Generate HTML ---
     if let Some(html_path) = html_out {
-        // Pista REAL, reconstruída da semente do mundo guardada no cabeçalho.
+        // REAL track, rebuilt from the world seed stored in the header.
         //
-        // Antes desenhávamos o próprio caminho do ser como se fosse a pista. Com o ser
-        // fazendo 357 m de uma volta de 2.928 m, o "mapa" era uma diagonal — e não era
-        // mapa nenhum. O `world_seed` sempre esteve no arquivo; bastava usá-lo.
+        // Before, we drew the being's own path as if it were the track. With the being
+        // doing 357 m of a 2.928 m lap, the "map" was a diagonal — and it was no
+        // map at all. The `world_seed` was always in the file; it only had to be used.
         //
-        // A largura não é gravada (só a semente), e ela não altera o traçado dos
-        // waypoints — só a espessura da faixa dirigível. Por isso `--width` aqui é
-        // cosmético e o traçado sai correto com o padrão.
+        // The width is not recorded (only the seed), and it does not change the waypoint
+        // layout — only the thickness of the drivable strip. That is why `--width` here is
+        // cosmetic and the layout comes out correct with the default.
         let track: Vec<[f32; 2]> = {
             let mundo = universe::world::VoxelWorld::new(reader.header.world_seed, track_width);
             mundo.waypoints_world.iter().map(|p| [p.x, p.y]).collect()
@@ -326,17 +326,17 @@ fn run_single(
 
         let all_frames = reader.all_frames();
         let labels: Vec<&str> = (0..all_frames.len())
-            .map(|i| if i == 0 { "Campeão" } else { "Ser" })
+            .map(|i| if i == 0 { "Champion" } else { "Being" })
             .collect();
 
         match generate_html_player(&track, &all_frames, &labels, html_path) {
-            Ok(_) => println!("HTML gerado: {}", html_path.display()),
-            Err(e) => eprintln!("ERRO ao gerar HTML: {}", e),
+            Ok(_) => println!("HTML generated: {}", html_path.display()),
+            Err(e) => eprintln!("ERROR generating HTML: {}", e),
         }
     }
 }
 
-// ── Diff entre dois replays ──────────────────────────────────────────────────
+// ── Diff between two replays ─────────────────────────────────────────────────
 
 fn run_diff(
     path_a: &std::path::Path,
@@ -347,14 +347,14 @@ fn run_diff(
     let mut ra = match ReplayReader::open(path_a) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("ERRO A: {}", e);
+            eprintln!("ERROR A: {}", e);
             std::process::exit(1);
         }
     };
     let mut rb = match ReplayReader::open(path_b) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("ERRO B: {}", e);
+            eprintln!("ERROR B: {}", e);
             std::process::exit(1);
         }
     };
@@ -392,17 +392,17 @@ fn run_diff(
     let laps_a = frames_a.last().map(|f| f.laps).unwrap_or(0);
     let laps_b = frames_b.last().map(|f| f.laps).unwrap_or(0);
 
-    println!("Arco A:   {:.1}m ({} voltas)", arc_a, laps_a);
-    println!("Arco B:   {:.1}m ({} voltas)", arc_b, laps_b);
+    println!("Arc A:    {:.1}m ({} laps)", arc_a, laps_a);
+    println!("Arc B:    {:.1}m ({} laps)", arc_b, laps_b);
     println!(
-        "Vantagem: {:+.1}m ({:+} voltas) em favor de {}",
+        "Advantage: {:+.1}m ({:+} laps) in favor of {}",
         arc_a - arc_b,
         laps_a as i32 - laps_b as i32,
         if arc_a >= arc_b { "A" } else { "B" }
     );
     println!();
 
-    // Intervenção em cada caminho
+    // Intervention on each path
     let gov_a = frames_a
         .iter()
         .filter(|f| (f.intent_thr - f.final_thr).abs() > 0.05)
@@ -411,7 +411,7 @@ fn run_diff(
         .iter()
         .filter(|f| (f.intent_thr - f.final_thr).abs() > 0.05)
         .count();
-    println!("=== INTERVENÇÃO DO GOVERNOR ===");
+    println!("=== GOVERNOR INTERVENTION ===");
     println!(
         "A ({:>14}): {} frames = {:.1}%",
         src_a,
@@ -426,12 +426,12 @@ fn run_diff(
     );
     println!();
 
-    // Diff frame a frame
+    // Frame-by-frame diff
     let diffs = diff_replays(&frames_a, &frames_b);
     if diffs.is_empty() {
-        println!("Nenhum diff calculado (frames vazios).");
+        println!("No diff computed (empty frames).");
     } else {
-        // Divergência média e máxima de posição
+        // Mean and maximum position divergence
         let pos_avg: f32 = diffs.iter().map(|d| d.pos_diverge).sum::<f32>() / diffs.len() as f32;
         let pos_max = diffs
             .iter()
@@ -453,16 +453,16 @@ fn run_diff(
         let str_diff_avg: f32 =
             diffs.iter().map(|d| d.steer_diff.abs()).sum::<f32>() / diffs.len() as f32;
 
-        println!("=== DIVERGÊNCIA DE TRAJETÓRIA ===");
-        println!("Distância média A vs B:  {:.1}m", pos_avg);
+        println!("=== TRAJECTORY DIVERGENCE ===");
+        println!("Mean distance A vs B:    {:.1}m", pos_avg);
         println!(
-            "Distância máxima:        {:.1}m (em arco {:.0}m)",
+            "Maximum distance:        {:.1}m (at arc {:.0}m)",
             pos_max, pos_max_arc
         );
         println!();
-        println!("=== DIFERENÇA DE COMANDOS (A - B) ===");
+        println!("=== COMMAND DIFFERENCE (A - B) ===");
         println!(
-            "Vel média A: {:.1} m/s  |  B: {:.1} m/s  |  delta: {:+.1} m/s",
+            "Mean speed A: {:.1} m/s  |  B: {:.1} m/s  |  delta: {:+.1} m/s",
             spd_avg_a,
             spd_avg_b,
             spd_avg_a - spd_avg_b
@@ -471,7 +471,7 @@ fn run_diff(
         println!("Steer abs avg diff: {:.3}", str_diff_avg);
         println!();
 
-        // Top-10 frames com maior divergência de posição
+        // Top-10 frames with the largest position divergence
         let mut sorted: Vec<usize> = (0..diffs.len()).collect();
         sorted.sort_by(|&a, &b| {
             diffs[b]
@@ -480,10 +480,10 @@ fn run_diff(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        println!("=== TOP-10 PONTOS DE MAIOR DIVERGÊNCIA ===");
+        println!("=== TOP-10 POINTS OF LARGEST DIVERGENCE ===");
         println!(
             "{:>8} {:>10} {:>8} {:>8} {:>8} {:>8}",
-            "Arco", "PosDiv(m)", "SpdA", "SpdB", "ThrDiff", "StrDiff"
+            "Arc", "PosDiv(m)", "SpdA", "SpdB", "ThrDiff", "StrDiff"
         );
         println!("{}", "-".repeat(55));
         for &si in sorted.iter().take(10) {
@@ -495,14 +495,14 @@ fn run_diff(
         }
         println!();
 
-        // Perfil de velocidade por seção para ambos
-        println!("=== PERFIL COMPARATIVO POR SEÇÃO ===");
+        // Speed profile per section for both
+        println!("=== COMPARATIVE PROFILE PER SECTION ===");
         let prof_a = section_profile(&frames_a, n_sections);
         let prof_b = section_profile(&frames_b, n_sections);
         if let (Some(pa), Some(pb)) = (prof_a, prof_b) {
             println!(
                 "{:>8} {:>10} {:>10} {:>10}",
-                "Arco", "SpdA(m/s)", "SpdB(m/s)", "Delta"
+                "Arc", "SpdA(m/s)", "SpdB(m/s)", "Delta"
             );
             println!("{}", "-".repeat(45));
             let n = pa.len().min(pb.len());
@@ -528,7 +528,7 @@ fn run_diff(
         let all_a = ra.all_frames();
         let all_b = rb.all_frames();
 
-        // Intercala seres: A primeiro, B segundo (índice 0 = campeão A, índice n = campeão B)
+        // Interleaves beings: A first, B second (index 0 = champion A, index n = champion B)
         let mut combined = all_a.clone();
         for frames in all_b {
             combined.push(frames);
@@ -546,8 +546,8 @@ fn run_diff(
         let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
 
         match generate_html_player(&track, &combined, &label_refs, html_path) {
-            Ok(_) => println!("HTML diff gerado: {}", html_path.display()),
-            Err(e) => eprintln!("ERRO ao gerar HTML: {}", e),
+            Ok(_) => println!("HTML diff generated: {}", html_path.display()),
+            Err(e) => eprintln!("ERROR generating HTML: {}", e),
         }
     }
 }

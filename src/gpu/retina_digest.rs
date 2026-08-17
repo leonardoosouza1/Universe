@@ -1,38 +1,38 @@
-//! # RetinaDigestGpu — host Rust para `retina_digest.wgsl`
+//! # RetinaDigestGpu — Rust host for `retina_digest.wgsl`
 //!
-//! Substitui o readback de 340 KB/tick (retina inteira) + laço Rust que produzia, por
-//! ser, o estado do CfC de percepção (ch192-207), `min_wall_ahead` e `edge_row6/7` —
-//! ver o cabeçalho de `retina_digest.wgsl` para a motivação completa e a equação.
+//! Replaces the 340 KB/tick readback (whole retina) + Rust loop that produced, per
+//! being, the perception CfC state (ch192-207), `min_wall_ahead` and `edge_row6/7` —
+//! see the header of `retina_digest.wgsl` for the full motivation and the equation.
 //!
-//! # Uso esperado (context.rs::tick())
+//! # Expected usage (context.rs::tick())
 //!
 //! ```text
-//! 1. retina.dispatch                              ← escreve buf_retina_out (tick t)
-//! 2. percept.bind_and_dispatch(...)                ← clear_buffer(buf_output) + canais 0-191
-//! 3. retina_digest.bind_and_dispatch(enc, ...)     ← DEPOIS do clear acima; escreve
+//! 1. retina.dispatch                              ← writes buf_retina_out (tick t)
+//! 2. percept.bind_and_dispatch(...)                ← clear_buffer(buf_output) + channels 0-191
+//! 3. retina_digest.bind_and_dispatch(enc, ...)     ← AFTER the clear above; writes
 //!                                                     extra_out (min_wall/edge6/edge7 +
-//!                                                     ch192-207, P1.8: NÃO MAIS em
-//!                                                     buf_output — ver achado no
-//!                                                     cabeçalho de retina_digest.wgsl)
-//! 4. brain.bind_and_dispatch(...)                  ← lê buf_output (canais 0-191)
+//!                                                     ch192-207, P1.8: NO LONGER into
+//!                                                     buf_output — see the finding in
+//!                                                     the header of retina_digest.wgsl)
+//! 4. brain.bind_and_dispatch(...)                  ← reads buf_output (channels 0-191)
 //! 5. queue.submit + device.poll(Wait)
-//! 6. retina_digest.read_after_submit(...)          ← EXTRA_OUT_STRIDE floats/ser, não 1764
+//! 6. retina_digest.read_after_submit(...)          ← EXTRA_OUT_STRIDE floats/being, not 1764
 //! ```
 //!
-//! # P1.8 — ch192-207 não aliasa mais no `buf_output` do próximo ser
+//! # P1.8 — ch192-207 no longer aliases into the next being's `buf_output`
 //!
-//! Até P1.8, o passo 3 escrevia os 16 valores do estado CfC em `buf_output` nos
-//! índices 192-207 — só que `buf_output` tem EXATAMENTE 48 words (192 bytes) por
-//! ser, sem folga, então esse índice caía no INÍCIO do bloco do PRÓXIMO ser
-//! (corrompendo, via atomicOr, os canais 0-15 dele — FAR/NEAR pool, lidos de
-//! verdade por `brain.wgsl`). Como `brain.wgsl` nunca lê índice ≥ 192 de qualquer
-//! forma (`const WAVE: u32 = 192u`), os 16 valores nunca influenciavam a rede —
-//! só corrompiam o ser vizinho. Agora vão para `extra_out[3..19]`, espaço próprio
-//! por ser. Ver o cabeçalho de `retina_digest.wgsl` para a evidência completa.
+//! Until P1.8, step 3 wrote the 16 CfC state values into `buf_output` at
+//! indices 192-207 — but `buf_output` has EXACTLY 48 words (192 bytes) per
+//! being, with no slack, so that index landed at the START of the NEXT being's
+//! block (corrupting, via atomicOr, its channels 0-15 — FAR/NEAR pool, actually
+//! read by `brain.wgsl`). Since `brain.wgsl` never reads index ≥ 192 anyway
+//! (`const WAVE: u32 = 192u`), the 16 values never influenced the network —
+//! they only corrupted the neighboring being. They now go to `extra_out[3..19]`,
+//! each being's own space. See the header of `retina_digest.wgsl` for the full evidence.
 //!
-//! `buf_output_shared` é o MESMO `buf_output` de `PerceptionGpu` — este módulo não o
-//! possui, só recebe a referência a cada dispatch (igual ao padrão de
-//! `bind_and_dispatch` em `perception.rs`, que recebe `buf_retina_fisica` por fora).
+//! `buf_output_shared` is the SAME `buf_output` as `PerceptionGpu`'s — this module does
+//! not own it, it only receives the reference at each dispatch (same pattern as
+//! `bind_and_dispatch` in `perception.rs`, which receives `buf_retina_fisica` from outside).
 
 use std::borrow::Cow;
 
@@ -43,7 +43,7 @@ use crate::perception::RetinaPerception;
 
 use super::core::{storage_entry, uniform_entry};
 
-/// Uniform do kernel — layout deve bater com `Params` em `retina_digest.wgsl`.
+/// Kernel uniform — layout must match `Params` in `retina_digest.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParamsGpu {
@@ -53,45 +53,45 @@ struct ParamsGpu {
     _pad2: u32,
 }
 
-/// Contexto de compute persistente para o kernel `retina_digest.wgsl`.
+/// Persistent compute context for the `retina_digest.wgsl` kernel.
 ///
-/// Criado uma vez por corrida. Compartilha o `device`/`queue` do resto do
-/// `gpu_evolve` — nunca abre um segundo dispositivo (mesma regra de `PerceptionGpu`).
+/// Created once per race. Shares the `device`/`queue` of the rest of
+/// `gpu_evolve` — never opens a second device (same rule as `PerceptionGpu`).
 pub struct RetinaDigestGpu {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
-    /// Pesos do CfC de percepção, achatados via `math::cfc_perception::flat_weights`.
-    /// Buffer ÚNICO, compartilhado por todos os seres — os pesos são fixos e idênticos
-    /// para toda a população (ver doc de `flat_weights`). Upado uma vez em `new()`.
+    /// Perception CfC weights, flattened via `math::cfc_perception::flat_weights`.
+    /// SINGLE buffer, shared by all beings — the weights are fixed and identical
+    /// for the whole population (see the `flat_weights` doc). Uploaded once in `new()`.
     buf_cfc_weights: wgpu::Buffer,
-    /// Estado recorrente do CfC (h), `capacity × CFC_HIDDEN` f32. RESIDENTE na VRAM
-    /// entre ticks — nunca desce no laço quente. Zerado por `reset()` entre gerações.
+    /// Recurrent CfC state (h), `capacity × CFC_HIDDEN` f32. RESIDENT in VRAM
+    /// between ticks — never comes down in the hot loop. Zeroed by `reset()` between generations.
     buf_cfc_state: wgpu::Buffer,
-    /// Saída pequena por ser: `[min_wall_ahead, edge_row6, edge_row7]`.
+    /// Small per-being output: `[min_wall_ahead, edge_row6, edge_row7]`.
     buf_extra_out: wgpu::Buffer,
-    /// Buffer MAP_READ espelhando `buf_extra_out` — separado porque STORAGE|MAP_READ
-    /// é inválido em wgpu (mesmo padrão de `PerceptionGpu::buf_readback`).
+    /// MAP_READ buffer mirroring `buf_extra_out` — separate because STORAGE|MAP_READ
+    /// is invalid in wgpu (same pattern as `PerceptionGpu::buf_readback`).
     buf_extra_readback: wgpu::Buffer,
     pub capacity: usize,
 }
 
-/// Número de f32 por ser no buffer `extra_out`:
-/// `[min_wall_ahead, edge_row6, edge_row7, ch192..ch207(16, estado CfC squashed)]`.
+/// Number of f32 per being in the `extra_out` buffer:
+/// `[min_wall_ahead, edge_row6, edge_row7, ch192..ch207(16, squashed CfC state)]`.
 ///
-/// P1.8: cresceu de 3 para 19 — os 16 últimos slots são o estado CfC de percepção
-/// que antes aliasava (via `write_channel`) para o `buf_output` do PRÓXIMO ser (ver
-/// achado no cabeçalho deste arquivo e de `retina_digest.wgsl`). `read_after_submit`
-/// devolve o array completo; `context.rs` hoje só consome `[0]`/`[1]`/`[2]`
-/// (min_wall_ahead/edge_row6/edge_row7) — `[3..19]` fica disponível pra quem
-/// precisar (ex.: religar como sensor de verdade em `brain.wgsl`, fora do escopo
-/// deste conserto).
+/// P1.8: grew from 3 to 19 — the last 16 slots are the perception CfC state
+/// that previously aliased (via `write_channel`) into the NEXT being's `buf_output` (see
+/// the finding in this file's header and in `retina_digest.wgsl`). `read_after_submit`
+/// returns the full array; `context.rs` today only consumes `[0]`/`[1]`/`[2]`
+/// (min_wall_ahead/edge_row6/edge_row7) — `[3..19]` remains available to whoever
+/// needs it (e.g. re-wiring it as a true sensor in `brain.wgsl`, out of scope
+/// for this fix).
 pub const EXTRA_OUT_STRIDE: usize = 19;
 
 impl RetinaDigestGpu {
-    /// Cria o contexto e sobe os pesos do CfC uma única vez.
+    /// Creates the context and uploads the CfC weights a single time.
     ///
-    /// `device`/`queue` são emprestados do dono do device (mesmo padrão de
-    /// `PerceptionGpu::new`) — nunca cria um segundo dispositivo wgpu.
+    /// `device`/`queue` are borrowed from the device owner (same pattern as
+    /// `PerceptionGpu::new`) — never creates a second wgpu device.
     pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, capacity: usize) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("retina-digest"),
@@ -102,10 +102,10 @@ impl RetinaDigestGpu {
             label: Some("retina-digest-layout"),
             entries: &[
                 uniform_entry(0),        // params
-                storage_entry(1, true),  // retina física (read)
+                storage_entry(1, true),  // physical retina (read)
                 storage_entry(2, true),  // cfc_weights (read)
-                storage_entry(3, false), // cfc_state (read_write, persistente)
-                storage_entry(4, false), // output — MESMO buf_output da percepção (atomicOr)
+                storage_entry(3, false), // cfc_state (read_write, persistent)
+                storage_entry(4, false), // output — SAME buf_output as perception's (atomicOr)
                 storage_entry(5, false), // extra_out (read_write)
             ],
         });
@@ -123,13 +123,13 @@ impl RetinaDigestGpu {
             cache: None,
         });
 
-        // ── Pesos do CfC — buffer único, achatado, upado uma vez ──────────────────
-        // RetinaPerception::new() usa seed FIXA (0xCAFE_BABE_DEAD_BEEF) — todos os
-        // seres do gpu_evolve compartilham os mesmos pesos de CfC de percepção (ver
-        // achado em math/cfc_perception.rs). Se isso mudar (perception_weights
-        // plugado no Genome), este upload precisa virar per-being — o teste
-        // `duas_instancias_tem_os_mesmos_pesos` em cfc_perception.rs quebra primeiro
-        // e avisa quem estiver mexendo aqui.
+        // ── CfC weights — single buffer, flattened, uploaded once ─────────────────
+        // RetinaPerception::new() uses a FIXED seed (0xCAFE_BABE_DEAD_BEEF) — all
+        // gpu_evolve beings share the same perception CfC weights (see the
+        // finding in math/cfc_perception.rs). If that changes (perception_weights
+        // plugged into the Genome), this upload must become per-being — the test
+        // `duas_instancias_tem_os_mesmos_pesos` in cfc_perception.rs breaks first
+        // and warns whoever is touching this.
         let weights = flat_weights(&RetinaPerception::new().pipeline.cfc);
         debug_assert_eq!(weights.len(), CFC_WEIGHTS_LEN);
         let buf_cfc_weights = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -173,19 +173,19 @@ impl RetinaDigestGpu {
         }
     }
 
-    /// Grava o dispatch no `CommandEncoder` externo, SEM submit nem poll — mesmo
-    /// contrato de `PerceptionGpu::bind_and_dispatch`.
+    /// Records the dispatch into the external `CommandEncoder`, WITHOUT submit or poll —
+    /// same contract as `PerceptionGpu::bind_and_dispatch`.
     ///
-    /// # Pré-condições (ordem no encoder)
+    /// # Preconditions (order in the encoder)
     ///
-    /// 1. `buf_retina_fisica` já foi escrito pelo dispatch da retina NESTE tick.
-    /// 2. `buf_output_shared` já foi zerado (`enc.clear_buffer`) — isso acontece
-    ///    dentro de `PerceptionGpu::bind_and_dispatch`, então este método deve ser
-    ///    chamado DEPOIS dele no mesmo encoder. Escrever antes do clear perderia os
-    ///    canais 192-207 (o clear apagaria o que este kernel gravou).
+    /// 1. `buf_retina_fisica` was already written by the retina dispatch THIS tick.
+    /// 2. `buf_output_shared` was already zeroed (`enc.clear_buffer`) — that happens
+    ///    inside `PerceptionGpu::bind_and_dispatch`, so this method must be
+    ///    called AFTER it in the same encoder. Writing before the clear would lose
+    ///    channels 192-207 (the clear would erase what this kernel wrote).
     ///
-    /// Retorna os bytes de `extra_out` preenchidos (para o `copy_buffer_to_buffer`
-    /// que o chamador grava a seguir, ou já grava aqui — ver corpo).
+    /// Returns the bytes of `extra_out` filled in (for the `copy_buffer_to_buffer`
+    /// the caller records next, or records here already — see the body).
     pub fn bind_and_dispatch(
         &self,
         enc: &mut wgpu::CommandEncoder,
@@ -250,7 +250,7 @@ impl RetinaDigestGpu {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            // workgroup_size(1): 1 thread por ser — mesmo padrão de perception_temporal.wgsl.
+            // workgroup_size(1): 1 thread per being — same pattern as perception_temporal.wgsl.
             pass.dispatch_workgroups(n as u32, 1, 1);
         }
 
@@ -262,16 +262,16 @@ impl RetinaDigestGpu {
             0,
             bytes_extra,
         );
-        let _ = queue; // reservado para simetria com PerceptionGpu::bind_and_dispatch (uniform via write_buffer futuro)
+        let _ = queue; // reserved for symmetry with PerceptionGpu::bind_and_dispatch (future uniform via write_buffer)
         bytes_extra
     }
 
-    /// Lê `extra_out` de volta — chamar DEPOIS de `queue.submit` + `device.poll(Wait)`
-    /// do encoder que continha `bind_and_dispatch`. Mesmo padrão de
-    /// `PerceptionGpu::read_after_submit` (map_async → poll(Wait) → recv — NUNCA na
-    /// ordem inversa, é o deadlock documentado duas vezes nesta base).
+    /// Reads `extra_out` back — call AFTER the `queue.submit` + `device.poll(Wait)`
+    /// of the encoder that contained `bind_and_dispatch`. Same pattern as
+    /// `PerceptionGpu::read_after_submit` (map_async → poll(Wait) → recv — NEVER in
+    /// the reverse order, that is the deadlock documented twice in this codebase).
     ///
-    /// Retorna `[min_wall_ahead, edge_row6, edge_row7]` por ser.
+    /// Returns `[min_wall_ahead, edge_row6, edge_row7]` per being.
     pub fn read_after_submit(
         &self,
         device: &wgpu::Device,
@@ -294,13 +294,13 @@ impl RetinaDigestGpu {
         let data = slice.get_mapped_range();
         let floats: &[f32] = bytemuck::cast_slice(&data);
         let mut out = vec![[0.0f32; EXTRA_OUT_STRIDE]; n];
-        // P1.8: copia a linha INTEIRA (`EXTRA_OUT_STRIDE`=19 floats), não só os 3
-        // primeiros — bug introduzido e pego na hora por
-        // `retina_digest_bate_com_cpu_ao_longo_de_varios_ticks` (--ignored): com o
-        // loop antigo hardcoded em [0],[1],[2], os slots [3..19) (ch192-207) ficavam
-        // sempre no `0.0` de inicialização do `Vec`, nunca no valor real escrito
-        // pela GPU. Registro aqui porque é exatamente a classe de erro (índice
-        // hardcoded que não acompanha o stride) que este projeto já pagou caro antes.
+        // P1.8: copies the WHOLE row (`EXTRA_OUT_STRIDE`=19 floats), not just the first
+        // 3 — bug introduced and caught on the spot by
+        // `retina_digest_bate_com_cpu_ao_longo_de_varios_ticks` (--ignored): with the
+        // old loop hardcoded to [0],[1],[2], slots [3..19) (ch192-207) always stayed
+        // at the `Vec`'s initialization `0.0`, never at the real value written
+        // by the GPU. Recorded here because it is exactly the class of error (a
+        // hardcoded index that does not follow the stride) this project has paid dearly for before.
         for i in 0..n {
             let base = i * EXTRA_OUT_STRIDE;
             out[i].copy_from_slice(&floats[base..base + EXTRA_OUT_STRIDE]);
@@ -311,13 +311,13 @@ impl RetinaDigestGpu {
         out
     }
 
-    /// Zera o estado recorrente do CfC para os primeiros `n` seres.
+    /// Zeroes the recurrent CfC state for the first `n` beings.
     ///
-    /// Chamado entre gerações (mesmo ponto onde `context.rs::reset_cfc` antes recriava
-    /// `RetinaPerception::new()` por ser). Usa `write_buffer` — sem encoder, mesmo
-    /// padrão de `BrainGpu::reset_cfc`. CRÍTICO: esquecer isto reintroduz o bug
-    /// documentado em 2026-08-11 (filho herdando estado CfC do pai, reavaliação do
-    /// elite não-determinística).
+    /// Called between generations (same spot where `context.rs::reset_cfc` used to recreate
+    /// `RetinaPerception::new()` per being). Uses `write_buffer` — no encoder, same
+    /// pattern as `BrainGpu::reset_cfc`. CRITICAL: forgetting this reintroduces the bug
+    /// documented on 2026-08-11 (child inheriting the parent's CfC state, non-deterministic
+    /// elite re-evaluation).
     pub fn reset(&self, queue: &wgpu::Queue, n: usize) {
         let n = n.min(self.capacity);
         if n == 0 {
@@ -332,17 +332,17 @@ impl RetinaDigestGpu {
 mod tests {
     use super::*;
 
-    /// `EXTRA_OUT_STRIDE` é o contrato com `context.rs` — mudar sem atualizar os dois
-    /// lados quebra em silêncio (lê lixo do próximo ser). Trava o valor aqui.
-    /// P1.8: 3→19 (16 slots novos para o estado CfC que deixou de aliasar em
-    /// `buf_output` — ver doc da constante).
+    /// `EXTRA_OUT_STRIDE` is the contract with `context.rs` — changing it without updating
+    /// both sides breaks silently (reads garbage from the next being). Locks the value here.
+    /// P1.8: 3→19 (16 new slots for the CfC state that stopped aliasing into
+    /// `buf_output` — see the constant's doc).
     #[test]
     fn extra_out_stride_e_dezenove() {
         assert_eq!(EXTRA_OUT_STRIDE, 19);
     }
 }
 
-// ─── Parte 2: parity CPU vs GPU — marcado #[ignore] (ver módulo `retina_digest_parity`) ──
+// ─── Part 2: CPU vs GPU parity — marked #[ignore] (see the `retina_digest_parity` module) ──
 #[cfg(test)]
 #[path = "retina_digest_parity_test.rs"]
 mod retina_digest_parity_test;

@@ -1,33 +1,33 @@
-//! Observatório completo de uma corrida GPU — valide o que aconteceu sem depender de relatos.
+//! Full observatory of a GPU race — validate what happened without relying on reports.
 //!
-//! # Saídas
+//! # Outputs
 //!
-//!   STDOUT         — mapa ASCII + tabela por-ser + perfis de velocidade ASCII + histogramas
-//!   telemetry/gpu_run/summary.txt      — cópia completa do STDOUT
-//!   telemetry/gpu_run/trajectories.csv — tick,ser,x,z,speed,throttle,steer,brake (cada SAMPLE_EVERY ticks)
-//!   telemetry/gpu_run/accel_diag.txt   — aceleração medida vs teórica (ser 0, primeiros 200 ticks)
-//!   telemetry/gpu_run/replay_<ts>.bin  — replay binário (posição, intent, sensores por tick amostrado)
+//!   STDOUT         — ASCII map + per-being table + ASCII speed profiles + histograms
+//!   telemetry/gpu_run/summary.txt      — full copy of STDOUT
+//!   telemetry/gpu_run/trajectories.csv — tick,ser,x,z,speed,throttle,steer,brake (every SAMPLE_EVERY ticks)
+//!   telemetry/gpu_run/accel_diag.txt   — measured vs theoretical acceleration (being 0, first 200 ticks)
+//!   telemetry/gpu_run/replay_<ts>.bin  — binary replay (position, intent, sensors per sampled tick)
 //!
-//! # Uso
+//! # Usage
 //!
 //!   cd ~/projects/LLM/Universe
 //!   env -u DISPLAY ./target/release/gpu_report
 //!   env -u DISPLAY ./target/release/gpu_report --seres 10 --ticks 3000
 //!   env -u DISPLAY ./target/release/gpu_report --replay telemetry/gpu_run/replay_<ts>.bin --ser 0
 //!
-//! # Variáveis de ambiente
+//! # Environment variables
 //!
-//!   IARA_DIAG=1   — canais temporais do ser0 quando travado (a cada 200 ticks)
-//!   IARA_ESCAPE=1 — habilita escape de estagnação (throttle=0.3 mínimo, interfere na pilotagem)
+//!   IARA_DIAG=1   — temporal channels of being 0 when stuck (every 200 ticks)
+//!   IARA_ESCAPE=1 — enables stagnation escape (throttle=0.3 minimum, interferes with driving)
 //!
-//! # Regras de honestidade
+//! # Honesty rules
 //!
-//!   - Nenhum número é impresso sem o dado que o sustenta.
-//!   - Se todos os seres apresentam o MESMO valor numérico, o relatório DENUNCIA o fato:
-//!     pode ser valor injetado/bug, não heterogeneidade real.
-//!   - Seres com distância < 1 m são marcados como PARADO — não como "em movimento lento".
-//!   - NÃO MEDIDO é escrito onde há lacuna real (ex.: arc-length quando racing_line vazia).
-//!   - NUNCA imprime veredito sem o número que o sustenta.
+//!   - No number is printed without the data that backs it.
+//!   - If every being shows the SAME numeric value, the report DENOUNCES the fact:
+//!     it may be an injected value/bug, not real heterogeneity.
+//!   - Beings with distance < 1 m are marked as PARADO — not as "moving slowly".
+//!   - NÃO MEDIDO (not measured) is written where there is a real gap (e.g. arc-length when racing_line is empty).
+//!   - NEVER prints a verdict without the number that backs it.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -52,45 +52,45 @@ use universe::simulation::racing_line::RacingLine;
 use universe::visao::pitch;
 use universe::world::VoxelWorld;
 
-// ─── Parâmetros de configuração ───────────────────────────────────────────────
+// ─── Configuration parameters ────────────────────────────────────────────────
 
-/// Amostragem de trajetória: grava posição + pedais de TODOS os seres a cada N ticks.
+/// Trajectory sampling: records position + pedals of ALL beings every N ticks.
 const SAMPLE_EVERY: usize = 50;
 
-/// Largura do mapa ASCII em colunas de terminal (76 = cabe em 80 colunas com margem).
+/// ASCII map width in terminal columns (76 = fits in 80 columns with margin).
 const ASCII_COLS: usize = 76;
 
-/// Seres cujo perfil de velocidade é impresso como gráfico ASCII.
+/// Beings whose speed profile is printed as an ASCII chart.
 const PERFIL_N_SERES: usize = 3;
 
-/// Largura do gráfico ASCII de velocidade (colunas).
+/// Width of the ASCII speed chart (columns).
 const PERFIL_COLS: usize = 60;
 
-/// Altura do gráfico ASCII de velocidade (linhas).
+/// Height of the ASCII speed chart (lines).
 const PERFIL_ROWS: usize = 12;
 
-/// Número de bins no histograma de velocidade e distância.
+/// Number of bins in the speed and distance histograms.
 const HIST_BINS: usize = 10;
 
-/// Resolução do mapa de calor ASCII (células do mapa, não voxels).
-/// Com grid 320 e ASCII_COLS=76, step=4 → 80 células.
+/// Resolution of the ASCII heatmap (map cells, not voxels).
+/// With grid 320 and ASCII_COLS=76, step=4 → 80 cells.
 const HEATMAP_COLS: usize = 76;
 
-/// Intensidade mínima de hits para aparecer no mapa de calor
-/// (filtra ruído de seres que passaram rapidamente).
+/// Minimum hit intensity to appear on the heatmap
+/// (filters noise from beings that passed through quickly).
 const HEATMAP_MIN_HITS: usize = 2;
 
-/// Ticks em torno do travamento que capturamos para análise neural.
-/// Capturamos os últimos STUCK_WINDOW ticks antes do travamento.
+/// Ticks around the stall that we capture for neural analysis.
+/// We capture the last STUCK_WINDOW ticks before the stall.
 const STUCK_WINDOW: usize = 5;
 
-/// Limiar de saturação de um canal de intent: |v| > SAT_THRESH.
+/// Saturation threshold of an intent channel: |v| > SAT_THRESH.
 const SAT_THRESH: f32 = 0.90;
 
-/// Número de ticks consecutivos com canal saturado para acionar alerta.
+/// Number of consecutive ticks with a saturated channel to trigger an alert.
 const SAT_MIN_TICKS: usize = 10;
 
-// ─── Tipos locais (espelham gpu_loop.rs) ─────────────────────────────────────
+// ─── Local types (mirror gpu_loop.rs) ────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -135,7 +135,7 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// Estado por-ser na CPU (física + controladores auxiliares).
+/// Per-being state on the CPU (physics + auxiliary controllers).
 struct BeingState {
     phys: PhysicsStateGpu,
     prev_steer: f32,
@@ -150,7 +150,7 @@ fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] {
 }
 
 fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
-    // Carga normal estática = massa × g / 4 rodas (1350 kg como no gpu_loop.rs).
+    // Static normal load = mass × g / 4 wheels (1350 kg as in gpu_loop.rs).
     let normal_load = 1350.0 * 9.81 / 4.0;
     let wheel = WheelGpu::from_cpu(0.0, 0.0, 0.0, normal_load, 60.0, 0.0, 0.0);
     let lat = [fwd[2], 0.0, -fwd[0]];
@@ -167,7 +167,7 @@ fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
             wheel.part_a,
             wheel.part_b,
         ],
-        // Y=0 nasce abaixo do solo; a fase de colisão levanta para height_at+0.5.
+        // Y=0 spawns below the ground; the collision phase lifts it to height_at+0.5.
         pos: [start[0], start[1].max(0.5), start[2]],
         _pad_pos: 0.0,
         fwd,
@@ -181,7 +181,7 @@ fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
         brake_cmd: 0.0,
         steer: 0.0,
         drive_torque_out: 0.0,
-        // Gear 3 = 2ª marcha (convenção: 0=ré, 1=neutro, 2=1ª, 3=2ª …).
+        // Gear 3 = 2nd gear (convention: 0=reverse, 1=neutral, 2=1st, 3=2nd …).
         current_gear: 3,
         shift_timer: 0.0,
         is_stalled: 0,
@@ -219,8 +219,8 @@ fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
 }
 
 // ─── GpuLoop ─────────────────────────────────────────────────────────────────
-// Idêntico ao gpu_loop.rs — mantido aqui para que este binário seja autônomo
-// e não dependa de alterações no arquivo principal enquanto outro agente trabalha.
+// Identical to gpu_loop.rs — kept here so this binary is self-contained
+// and does not depend on changes to the main file while another agent works.
 
 struct GpuLoop {
     diag_feito: bool,
@@ -255,7 +255,7 @@ impl GpuLoop {
         capacity: usize,
         kan_knots: [[f32; universe::kan::KAN_OUT_KNOTS]; 3],
     ) -> Option<Self> {
-        // Garante que apenas o ICD Radeon é carregado (múltiplos ICDs → SIGSEGV).
+        // Ensures only the Radeon ICD is loaded (multiple ICDs → SIGSEGV).
         let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
         if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
             unsafe {
@@ -274,7 +274,7 @@ impl GpuLoop {
         }))?;
         let name = adapter.get_info().name.clone();
         let mut limits = wgpu::Limits::downlevel_defaults();
-        // Cérebro usa 9 storage buffers (bindings 1-9); percepção usa 7 (max dos dois = 9).
+        // Brain uses 9 storage buffers (bindings 1-9); perception uses 7 (max of the two = 9).
         limits.max_storage_buffers_per_shader_stage = 9;
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -390,8 +390,8 @@ impl GpuLoop {
         })
     }
 
-    /// Um tick completo — idêntico ao GpuLoop::tick() de gpu_loop.rs.
-    /// Retorna (ok, pedais[n]) onde pedais[i] = [throttle, steer, brake] final enviado à física.
+    /// One full tick — identical to GpuLoop::tick() in gpu_loop.rs.
+    /// Returns (ok, pedals[n]) where pedals[i] = final [throttle, steer, brake] sent to physics.
     fn tick(
         &mut self,
         states: &mut Vec<BeingState>,
@@ -404,7 +404,7 @@ impl GpuLoop {
             return (false, vec![]);
         }
 
-        // 1. Poses retina
+        // 1. Retina poses
         let pose_raw_data: Vec<PoseRaw> = (0..n)
             .map(|i| {
                 let p = &states[i].phys;
@@ -420,7 +420,7 @@ impl GpuLoop {
             bytemuck::cast_slice(&pose_raw_data),
         );
 
-        // 2. Poses percepção
+        // 2. Perception poses
         let poses_percept: Vec<PosePerception> = (0..n)
             .map(|i| {
                 let p = &states[i].phys;
@@ -437,11 +437,11 @@ impl GpuLoop {
             })
             .collect();
 
-        // 3a. Distâncias laterais e frontais (CPU) → temporal[16-18]
+        // 3a. Lateral and frontal distances (CPU) → temporal[16-18]
         {
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
-            // Amostras laterais expandidas de 27m → 40m (conta: 40/28 m/s = 1.43 s antecipação).
+            // Lateral samples expanded from 27m → 40m (math: 40/28 m/s = 1.43 s anticipation).
             let lat_samp = [1.0f32, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 33.0, 40.0];
             let fwd_samp = [3.0f32, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0];
             let voxel_at = |wx: f32, wz: f32| -> u32 {
@@ -461,7 +461,7 @@ impl GpuLoop {
                 let (fx, fz) = (p.fwd[0], p.fwd[2]);
                 let perp_x = -fz;
                 let perp_z = fx;
-                let mut dist_l = 40.0f32; // default = livre (sem parede em 40m)
+                let mut dist_l = 40.0f32; // default = clear (no wall within 40m)
                 for &sd in &lat_samp {
                     if voxel_at(px - perp_x * sd, pz - perp_z * sd) == 2u32 {
                         dist_l = sd;
@@ -507,7 +507,7 @@ impl GpuLoop {
                 .update_racing_line_temporal(&self.queue, &racing_vals[..n]);
         }
 
-        // 3c. Propriocepção → temporal[20-31]
+        // 3c. Proprioception → temporal[20-31]
         {
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
@@ -561,7 +561,7 @@ impl GpuLoop {
                 .update_proprioception_temporal(&self.queue, &prop_vals[..n]);
         }
 
-        // 3d. reverse_timer + CfC percepção → temporal[32-48]
+        // 3d. reverse_timer + perception CfC → temporal[32-48]
         {
             const REVERSE_MIN_DURATION: f32 = 0.4;
             const REVERSE_MAX_DURATION: f32 = 1.5;
@@ -636,7 +636,7 @@ impl GpuLoop {
                 .update_extra_temporal(&self.queue, &extra_vals[..n]);
         }
 
-        // 4. Encoder único (retina → percepção → cérebro)
+        // 4. Single encoder (retina → perception → brain)
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -697,7 +697,7 @@ impl GpuLoop {
             pass.dispatch_workgroups(total.div_ceil(64), 1, 1);
         }
 
-        // 4b. Percepção
+        // 4b. Perception
         self.percept.bind_and_dispatch(
             &mut enc,
             &self.device,
@@ -706,11 +706,11 @@ impl GpuLoop {
             &self.buf_retina_out,
         );
 
-        // 4c. Cérebro
+        // 4c. Brain
         self.brain
             .bind_and_dispatch(&mut enc, n, &[], dt, Some(self.percept.buf_output()));
 
-        // 4d. Cópia retina → readback (para CfC de percepção na CPU)
+        // 4d. Retina copy → readback (for the perception CfC on the CPU)
         let retina_copy_bytes = (n * RETINA_TOTAL * 4) as u64;
         enc.copy_buffer_to_buffer(
             &self.buf_retina_out,
@@ -720,14 +720,14 @@ impl GpuLoop {
             retina_copy_bytes,
         );
 
-        // 4e. Submit único
+        // 4e. Single submit
         self.queue.submit(Some(enc.finish()));
         self.device.poll(wgpu::Maintain::Wait);
 
-        // 5. Leitura do intent
+        // 5. Intent read
         let intents = self.brain.read_intent_after_submit(n);
 
-        // 6. Readback retina → CfC percepção
+        // 6. Retina readback → perception CfC
         {
             let slice = self.buf_retina_readback.slice(0..retina_copy_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
@@ -770,7 +770,7 @@ impl GpuLoop {
             return (false, vec![]);
         }
 
-        // 7. Aplica intent + física
+        // 7. Apply intent + physics
         const REVERSE_PEDAL: f32 = 0.75;
         let kan_eval_fn = |out_idx: usize, x: f32| -> f32 {
             let xc = x.clamp(-2.0, 2.0);
@@ -797,7 +797,7 @@ impl GpuLoop {
                 let is_reversing = states[i].reverse_timer > 0.0;
                 let in_lockout = states[i].post_reverse_lockout > 0.0;
                 let speed_now = (s.vel[0].powi(2) + s.vel[2].powi(2)).sqrt();
-                // Anula brake quando speed < 2 m/s (evita travar carro parado — mesmo que motor.rs).
+                // Cancels brake when speed < 2 m/s (avoids locking a stopped car — same as motor.rs).
                 let brk_final = if speed_now < 2.0 { 0.0 } else { brk_kan };
                 if is_reversing {
                     s.throttle = REVERSE_PEDAL;
@@ -870,14 +870,14 @@ impl GpuLoop {
     }
 }
 
-// ─── Render ASCII do mapa da pista ────────────────────────────────────────────
+// ─── ASCII render of the track map ───────────────────────────────────────────
 
-/// Símbolos: `#` = wall, `.` = road, ` ` = grass, `S` = pos inicial, `F` = pos final, `T` = travado
+/// Symbols: `#` = wall, `.` = road, ` ` = grass, `S` = start pos, `F` = final pos, `T` = stuck
 fn render_ascii_track(
     world: &VoxelWorld,
     pos_ini: &[[f32; 3]],
     pos_fin: &[[f32; 3]],
-    stuck: &[[f32; 3]], // posições onde seres ficaram travados
+    stuck: &[[f32; 3]], // positions where beings got stuck
     cols: usize,
 ) -> Vec<String> {
     let gs = world.size; // 320
@@ -885,7 +885,7 @@ fn render_ascii_track(
     let cols_real = gs / step;
     let rows_real = gs / step;
 
-    // Tipo dominante por célula display (wall > road > grass).
+    // Dominant type per display cell (wall > road > grass).
     let mut grid_disp = vec![0u8; cols_real * rows_real];
     for row in 0..rows_real {
         for col in 0..cols_real {
@@ -914,11 +914,11 @@ fn render_ascii_track(
         }
     }
 
-    // Marcadores: T (travado) sobrescrito por S (início) sobrescrito por F (fim).
-    // Ordem de prioridade: F > S > T (mais informativo no display).
+    // Markers: T (stuck) overwritten by S (start) overwritten by F (finish).
+    // Priority order: F > S > T (most informative on the display).
     let mut markers: std::collections::HashMap<(usize, usize), char> = Default::default();
 
-    // Converte coordenada mundo → célula display
+    // Converts world coordinate → display cell
     let world_to_disp = |wx: f32, wz: f32| -> (usize, usize) {
         let col = ((wx / world.cell_size) as usize / step).min(cols_real.saturating_sub(1));
         let row = ((wz / world.cell_size) as usize / step).min(rows_real.saturating_sub(1));
@@ -957,10 +957,10 @@ fn render_ascii_track(
     lines
 }
 
-// ─── Arc-length na racing_line ────────────────────────────────────────────────
+// ─── Arc-length on the racing_line ───────────────────────────────────────────
 
-/// Arc-length do ponto mais próximo da racing_line à posição `pos`.
-/// Retorna -1.0 quando a racing_line está vazia (NÃO MEDIDO).
+/// Arc-length of the racing_line point closest to position `pos`.
+/// Returns -1.0 when the racing_line is empty (NOT MEASURED).
 fn arc_progress(rl: &RacingLine, pos: [f32; 3]) -> f32 {
     if rl.points.is_empty() {
         return -1.0;
@@ -978,11 +978,11 @@ fn arc_progress(rl: &RacingLine, pos: [f32; 3]) -> f32 {
     best_arc
 }
 
-// ─── Gráfico ASCII de velocidade × tick ───────────────────────────────────────
+// ─── ASCII chart of speed × tick ─────────────────────────────────────────────
 
-/// Renderiza série temporal de velocidade `vals` (m/s) como gráfico ASCII.
-/// `rows` = altura do gráfico; `cols` = largura.
-/// Retorna vetor de strings (linhas).
+/// Renders the speed time series `vals` (m/s) as an ASCII chart.
+/// `rows` = chart height; `cols` = width.
+/// Returns a vector of strings (lines).
 fn ascii_velocity_chart(
     vals: &[(usize, f32)],
     rows: usize,
@@ -990,13 +990,13 @@ fn ascii_velocity_chart(
     titulo: &str,
 ) -> Vec<String> {
     if vals.is_empty() {
-        return vec![format!("[{} — sem dados]", titulo)];
+        return vec![format!("[{} — no data]", titulo)];
     }
 
     let v_max = vals.iter().map(|&(_, v)| v).fold(0.0f32, f32::max);
     let v_max = if v_max < 0.01 { 1.0 } else { v_max };
 
-    // Comprime série temporal para `cols` colunas (média em cada bloco).
+    // Compresses the time series to `cols` columns (average per block).
     let n = vals.len();
     let step = (n / cols).max(1);
     let n_cols = n / step;
@@ -1008,10 +1008,10 @@ fn ascii_velocity_chart(
         compressed.push(avg);
     }
 
-    // Constrói grade de caracteres: rows linhas × n_cols colunas.
+    // Builds the character grid: rows lines × n_cols columns.
     let mut grid = vec![vec![' '; n_cols]; rows];
     for (c, &v) in compressed.iter().enumerate() {
-        // Quantas linhas a preencher de baixo para cima.
+        // How many lines to fill from bottom to top.
         let filled = ((v / v_max) * (rows as f32)).round() as usize;
         let filled = filled.min(rows);
         for r in (rows - filled)..rows {
@@ -1020,14 +1020,14 @@ fn ascii_velocity_chart(
     }
 
     let mut lines = Vec::with_capacity(rows + 4);
-    // Cabeçalho com título
+    // Header with title
     lines.push(format!(
         "  {} (max={:.1} m/s = {:.0} km/h)",
         titulo,
         v_max,
         v_max * 3.6
     ));
-    // Eixo Y (topo = v_max, base = 0)
+    // Y axis (top = v_max, bottom = 0)
     for (r, row) in grid.iter().enumerate() {
         let y_val = v_max * (1.0 - r as f32 / rows as f32);
         let label = if r == 0 || r == rows / 2 || r == rows - 1 {
@@ -1038,7 +1038,7 @@ fn ascii_velocity_chart(
         let row_str: String = row.iter().collect();
         lines.push(format!("{}{}", label, row_str));
     }
-    // Eixo X
+    // X axis
     lines.push(format!("     +{}", "-".repeat(n_cols)));
     let t_max = vals.last().map(|&(t, _)| t).unwrap_or(0);
     lines.push(format!(
@@ -1049,20 +1049,20 @@ fn ascii_velocity_chart(
     lines
 }
 
-// ─── Histograma ASCII ─────────────────────────────────────────────────────────
+// ─── ASCII histogram ─────────────────────────────────────────────────────────
 
-/// Histograma de N bins impresso como barras horizontais.
+/// N-bin histogram printed as horizontal bars.
 fn ascii_histogram(vals: &[f64], bins: usize, label: &str) -> Vec<String> {
     if vals.is_empty() {
-        return vec![format!("[{}: sem dados]", label)];
+        return vec![format!("[{}: no data]", label)];
     }
     let v_min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
     let v_max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     if (v_max - v_min).abs() < 1e-9 {
-        // Todos iguais — sinal de bug.
+        // All equal — sign of a bug.
         return vec![
-            format!("  {}: TODOS OS VALORES IGUAIS ({:.3})", label, v_min),
-            format!("  ⚠ Se isso for inesperado, suspeite de valor injetado ou bug."),
+            format!("  {}: ALL VALUES EQUAL ({:.3})", label, v_min),
+            format!("  ⚠ If this is unexpected, suspect an injected value or a bug."),
         ];
     }
     let range = v_max - v_min;
@@ -1093,9 +1093,9 @@ fn ascii_histogram(vals: &[f64], bins: usize, label: &str) -> Vec<String> {
     lines
 }
 
-// ─── Detecção de homogeneidade suspeita ───────────────────────────────────────
+// ─── Suspicious homogeneity detection ────────────────────────────────────────
 
-/// Retorna `Some(msg)` se todos os valores em `vals` são iguais (bug suspeito).
+/// Returns `Some(msg)` if every value in `vals` is equal (suspected bug).
 fn check_homogeneidade(vals: &[f64], nome: &str) -> Option<String> {
     if vals.len() < 2 {
         return None;
@@ -1104,7 +1104,7 @@ fn check_homogeneidade(vals: &[f64], nome: &str) -> Option<String> {
     let all_same = vals.iter().all(|&v| (v - first).abs() < 1e-6);
     if all_same {
         Some(format!(
-            "⚠ ALERTA: todos os {} seres têm {}={:.6} — suspeite de valor injetado ou bug de pilotagem!",
+            "⚠ ALERT: all {} beings have {}={:.6} — suspect an injected value or a driving bug!",
             vals.len(),
             nome,
             first
@@ -1114,11 +1114,11 @@ fn check_homogeneidade(vals: &[f64], nome: &str) -> Option<String> {
     }
 }
 
-// ─── Mapa de calor ASCII ──────────────────────────────────────────────────────
+// ─── ASCII heatmap ───────────────────────────────────────────────────────────
 
-/// Renderiza mapa de calor sobreposto à pista ASCII.
-/// `heat_grid[row][col]` = número de frames de seres naquela célula display.
-/// Intensidade: espaço=0, `.`=1-4, `+`=5-9, `o`=10-19, `O`=20-49, `*`=50-99, `@`=>=100.
+/// Renders the heatmap overlaid on the ASCII track.
+/// `heat_grid[row][col]` = number of being frames in that display cell.
+/// Intensity: space=0, `.`=1-4, `+`=5-9, `o`=10-19, `O`=20-49, `*`=50-99, `@`=>=100.
 fn render_heatmap(
     world: &VoxelWorld,
     heat_grid: &[Vec<usize>],
@@ -1130,7 +1130,7 @@ fn render_heatmap(
     let cols_real = gs / step;
     let rows_real = gs / step;
 
-    // Tipo dominante por célula display (wall > road > grass).
+    // Dominant type per display cell (wall > road > grass).
     let mut grid_disp = vec![0u8; cols_real * rows_real];
     for row in 0..rows_real {
         for col in 0..cols_real {
@@ -1159,7 +1159,7 @@ fn render_heatmap(
         }
     }
 
-    // Marcadores de posição de travamento (prioridade máxima)
+    // Stall-position markers (highest priority)
     let world_to_disp = |wx: f32, wz: f32| -> (usize, usize) {
         let col = ((wx / world.cell_size) as usize / step).min(cols_real.saturating_sub(1));
         let row = ((wz / world.cell_size) as usize / step).min(rows_real.saturating_sub(1));
@@ -1173,10 +1173,10 @@ fn render_heatmap(
 
     let mut lines = Vec::with_capacity(rows_real + 4);
     lines.push(format!(
-        "  Intensidade: '.'=1-4  '+'=5-9  'o'=10-19  'O'=20-49  '*'=50-99  '@'=>=100  'X'=travamento"
+        "  Intensity: '.'=1-4  '+'=5-9  'o'=10-19  'O'=20-49  '*'=50-99  '@'=>=100  'X'=stall"
     ));
     lines.push(format!(
-        "  (fundo: '#'=wall  espaço=grass  células sem tráfego = road vazia)"
+        "  (background: '#'=wall  space=grass  cells without traffic = empty road)"
     ));
 
     for row in 0..rows_real {
@@ -1188,7 +1188,7 @@ fn render_heatmap(
                 0
             };
 
-            // Sinal de travamento tem prioridade
+            // Stall marker takes priority
             if stuck_marks.contains(&(row, col)) {
                 line.push('X');
                 continue;
@@ -1228,11 +1228,11 @@ fn render_heatmap(
     lines
 }
 
-/// Acumula posições de todos os seres em cada tick para o mapa de calor.
-/// Retorna grid[row][col] = contagem de frames.
+/// Accumulates the positions of all beings at each tick for the heatmap.
+/// Returns grid[row][col] = frame count.
 fn build_heatmap(
     world: &VoxelWorld,
-    frames: &[(f32, f32)], // (x, z) de cada frame amostrado
+    frames: &[(f32, f32)], // (x, z) of each sampled frame
     cols: usize,
 ) -> Vec<Vec<usize>> {
     let gs = world.size;
@@ -1249,9 +1249,9 @@ fn build_heatmap(
     grid
 }
 
-// ─── Análise de estado neural no instante de falha ───────────────────────────
+// ─── Neural-state analysis at the instant of failure ─────────────────────────
 
-/// Snapshot de intent+sensores no instante de travamento.
+/// Snapshot of intent+sensors at the instant of stalling.
 struct StuckBrainSnapshot {
     ser: usize,
     #[allow(dead_code)]
@@ -1262,23 +1262,23 @@ struct StuckBrainSnapshot {
     dist_f: f32,
 }
 
-/// Analisa snapshots de intent no instante de travamento.
-/// Retorna relatório textual.
+/// Analyzes intent snapshots at the instant of stalling.
+/// Returns a textual report.
 fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
 
     if snapshots.is_empty() {
-        lines.push("  Nenhum snapshot de travamento capturado.".to_string());
+        lines.push("  No stall snapshot captured.".to_string());
         return lines;
     }
 
     let n = snapshots.len();
     lines.push(format!(
-        "  Snapshots capturados: {} (um por ser travado)",
+        "  Snapshots captured: {} (one per stuck being)",
         n
     ));
 
-    // 1. Dimensões saturadas por snapshot
+    // 1. Saturated dimensions per snapshot
     let mut total_sat_dims = 0usize;
     let mut sat_counts_per_dim = vec![0usize; n_canais];
 
@@ -1300,11 +1300,11 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
 
     let avg_sat = total_sat_dims as f32 / n as f32;
     lines.push(format!(
-        "  Dims saturadas (|v|>{:.2}) por ser no travamento: {:.1} em media ({} total em {} seres x {} dims)",
+        "  Saturated dims (|v|>{:.2}) per being at stall: {:.1} on average ({} total across {} beings x {} dims)",
         SAT_THRESH, avg_sat, total_sat_dims, n, n_canais
     ));
 
-    // Canais saturados em TODOS os seres (sinal de ponto fixo / valor injetado)
+    // Channels saturated in ALL beings (sign of a fixed point / injected value)
     let mut universal: Vec<usize> = Vec::new();
     let mut majoritario: Vec<usize> = Vec::new();
     for ch in 0..n_canais {
@@ -1318,24 +1318,24 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
 
     if !universal.is_empty() {
         lines.push(format!(
-            "  ALERTA PONTO FIXO: canais saturados em TODOS os {} seres: {:?}",
+            "  FIXED-POINT ALERT: channels saturated in ALL {} beings: {:?}",
             n, universal
         ));
         lines.push(
-            "    -> Indicio de ponto fixo ou valor injetado — cerebro parou de variar.".to_string(),
+            "    -> Sign of a fixed point or injected value — brain stopped varying.".to_string(),
         );
     } else if !majoritario.is_empty() {
         lines.push(format!(
-            "  ALERTA: Canais saturados em >50% dos seres ({}/{}): {:?}",
+            "  ALERT: Channels saturated in >50% of beings ({}/{}): {:?}",
             n, n, majoritario
         ));
     } else {
         lines.push(format!(
-            "  OK: Sem canal universalmente saturado — heterogeneidade confirmada."
+            "  OK: No universally saturated channel — heterogeneity confirmed."
         ));
     }
 
-    // 2. Estado estático? Compara intent entre snapshots
+    // 2. Static state? Compares intent between snapshots
     if n >= 2 {
         let mut max_diff = 0.0f32;
         for ch in 0..n_canais {
@@ -1354,20 +1354,20 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
         }
         if max_diff < 0.01 {
             lines.push(format!(
-                "  ALERTA ESTADO IDENTICO ENTRE SERES (max_diff={:.4}): possivel ponto fixo global.",
+                "  IDENTICAL-STATE-ACROSS-BEINGS ALERT (max_diff={:.4}): possible global fixed point.",
                 max_diff
             ));
         } else {
             lines.push(format!(
-                "  OK: Intent varia entre seres (max_diff entre canais={:.3}) — estados distintos.",
+                "  OK: Intent varies across beings (max_diff across channels={:.3}) — distinct states.",
                 max_diff
             ));
         }
     }
 
-    // 3. Dados sensoriais no travamento: VE a parede ou nao?
+    // 3. Sensory data at stall: does it SEE the wall or not?
     lines.push(String::new());
-    lines.push("  === CANAIS SENSORIAIS NO TRAVAMENTO ===".to_string());
+    lines.push("  === SENSORY CHANNELS AT STALL ===".to_string());
     lines.push(format!(
         "  {:>4}  {:>6}  {:>6}  {:>6}  {:>8}  {:>8}  {:>8}",
         "ser", "dist_l", "dist_r", "dist_f", "int[0]", "int[1]", "int[2]"
@@ -1400,16 +1400,16 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
     }
 
     lines.push(String::new());
-    lines.push(format!("  === VEREDITO SENSORIAL ({} seres) ===", n));
+    lines.push(format!("  === SENSORY VERDICT ({} beings) ===", n));
     lines.push(format!(
-        "  Ve parede (dist_f<5m): {}/{} ({:.0}%)",
+        "  Sees wall (dist_f<5m): {}/{} ({:.0}%)",
         n_ve_parede,
         n,
         100.0 * n_ve_parede as f32 / n as f32
     ));
     if n_ve_parede > 0 {
         lines.push(format!(
-            "    -> Reage (freia/vira/solta gas): {}/{} ({:.0}%)  — NAO reage: {}/{}",
+            "    -> Reacts (brakes/steers/lifts throttle): {}/{} ({:.0}%)  — does NOT react: {}/{}",
             n_reage,
             n_ve_parede,
             100.0 * n_reage as f32 / n_ve_parede as f32,
@@ -1418,38 +1418,38 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
         ));
     }
     lines.push(format!(
-        "  NAO ve parede (dist_f>=5m mas travado): {}/{} ({:.0}%)",
+        "  Does NOT see wall (dist_f>=5m but stuck): {}/{} ({:.0}%)",
         n_nao_ve,
         n,
         100.0 * n_nao_ve as f32 / n as f32
     ));
 
-    // Veredito final
+    // Final verdict
     if n_ve_parede > 0 && n_ve_nao_reage > n_reage {
         lines.push(format!(
-            "  *** DIAGNOSTICO: ser VE a parede ({} casos) mas NAO reage ({} nao-reage vs {} reage) -> falha no controle/intent. ***",
+            "  *** DIAGNOSIS: being SEES the wall ({} cases) but does NOT react ({} non-react vs {} react) -> control/intent failure. ***",
             n_ve_parede, n_ve_nao_reage, n_reage
         ));
     } else if n_nao_ve > n_ve_parede {
         lines.push(format!(
-            "  *** DIAGNOSTICO: ser NAO VE a parede ({} vs {} que ve) -> range sensor limitado ou esterco satura antes. ***",
+            "  *** DIAGNOSIS: being does NOT SEE the wall ({} vs {} that see it) -> limited sensor range or steering saturates first. ***",
             n_nao_ve, n_ve_parede
         ));
     } else if n_ve_parede > 0 && n_reage >= n_ve_nao_reage {
         lines.push(format!(
-            "  *** DIAGNOSTICO: ser ve ({}) E reage ({}) mas trava — possivel inercia/fisica. ***",
+            "  *** DIAGNOSIS: being sees ({}) AND reacts ({}) but stalls — possible inertia/physics. ***",
             n_ve_parede, n_reage
         ));
     } else {
         lines.push(
-            "  *** DIAGNOSTICO: padrao misto — analisar individualmente acima. ***".to_string(),
+            "  *** DIAGNOSIS: mixed pattern — analyze individually above. ***".to_string(),
         );
     }
 
     lines
 }
 
-// ─── Acumulador de saturacao persistente ─────────────────────────────────────
+// ─── Persistent saturation accumulator ───────────────────────────────────────
 
 struct SatTracker {
     sat_ticks: Vec<Vec<usize>>,
@@ -1476,7 +1476,7 @@ impl SatTracker {
                 self.sat_ticks[ser][ch] += 1;
                 if self.sat_ticks[ser][ch] == SAT_MIN_TICKS {
                     let alerta = format!(
-                        "  SATURACAO: ser[{}] intent[{}]={:+.3} saturado por >={} ticks consecutivos (tick {})",
+                        "  SATURATION: being[{}] intent[{}]={:+.3} saturated for >={} consecutive ticks (tick {})",
                         ser, ch, v, SAT_MIN_TICKS, tick
                     );
                     self.alertas.push(alerta);
@@ -1488,7 +1488,7 @@ impl SatTracker {
     }
 }
 
-// ─── Auto-diagnostico ─────────────────────────────────────────────────────────
+// ─── Self-diagnosis ──────────────────────────────────────────────────────────
 
 fn auto_diagnostico(
     stuck_positions: &[Option<[f32; 3]>],
@@ -1502,11 +1502,11 @@ fn auto_diagnostico(
 
     let n_travados: usize = stuck_positions.iter().filter(|p| p.is_some()).count();
     if n_travados == 0 {
-        diags.push("  OK: Nenhum ser travou (>100 ticks parado).".to_string());
+        diags.push("  OK: No being stalled (>100 ticks stopped).".to_string());
         return diags;
     }
 
-    // 1. Cluster de travamento: gargalo de pista vs falha cerebral distribuida
+    // 1. Stall cluster: track bottleneck vs distributed brain failure
     let gs = world.size;
     let step = (gs / cols).max(1);
     let cols_real = gs / step;
@@ -1526,28 +1526,28 @@ fn auto_diagnostico(
     let frac_gargalo = max_cell as f32 / n_travados.max(1) as f32;
 
     diags.push(format!(
-        "  Travamentos: {}/{} seres em {} celulas distintas (max_densidade={} seres/celula, {:.0}% no pior ponto)",
+        "  Stalls: {}/{} beings in {} distinct cells (max_density={} beings/cell, {:.0}% at the worst spot)",
         n_travados, n_seres, n_cells, max_cell, 100.0 * frac_gargalo
     ));
 
     if frac_gargalo > 0.5 {
         diags.push(format!(
-            "  GARGALO DE PISTA: {:.0}% dos seres travaram na mesma regiao — curva especifica ou parede pontual.",
+            "  TRACK BOTTLENECK: {:.0}% of beings stalled in the same region — a specific corner or localized wall.",
             100.0 * frac_gargalo
         ));
     } else if n_cells >= n_travados.saturating_sub(2) {
         diags.push(format!(
-            "  FALHA CEREBRAL DISTRIBUIDA: {} seres em {} celulas diferentes — nao e um ponto fixo da pista.",
+            "  DISTRIBUTED BRAIN FAILURE: {} beings in {} different cells — not a fixed track spot.",
             n_travados, n_cells
         ));
     } else {
         diags.push(format!(
-            "  Padrao misto: {} pontos de travamento para {} seres.",
+            "  Mixed pattern: {} stall spots for {} beings.",
             n_cells, n_travados
         ));
     }
 
-    // 2. Intent identicos entre seres? (valor injetado)
+    // 2. Identical intents across beings? (injected value)
     let intents_validos: Vec<&Vec<f32>> = all_intents_at_stuck
         .iter()
         .filter_map(|o| o.as_ref())
@@ -1572,12 +1572,12 @@ fn auto_diagnostico(
         let frac_id = n_canais_identicos as f32 / n_ch as f32;
         if frac_id > 0.8 {
             diags.push(format!(
-                "  ALERTA VALORES IDENTICOS: {}/{} canais de intent IGUAIS entre seres no travamento ({:.0}%) — suspeite de valor injetado.",
+                "  IDENTICAL-VALUES ALERT: {}/{} intent channels EQUAL across beings at stall ({:.0}%) — suspect an injected value.",
                 n_canais_identicos, n_ch, 100.0 * frac_id
             ));
         } else {
             diags.push(format!(
-                "  OK: Intent diverso no travamento: {}/{} canais diferem ({:.0}% variando).",
+                "  OK: Diverse intent at stall: {}/{} channels differ ({:.0}% varying).",
                 n_ch - n_canais_identicos,
                 n_ch,
                 100.0 * (1.0 - frac_id)
@@ -1585,7 +1585,7 @@ fn auto_diagnostico(
         }
     }
 
-    // 3. Dist frontal media no travamento
+    // 3. Mean frontal distance at stall
     let dists_f: Vec<f32> = all_dist_at_stuck
         .iter()
         .filter_map(|o| *o)
@@ -1596,29 +1596,29 @@ fn auto_diagnostico(
         let perto = dists_f.iter().filter(|&&d| d < 5.0).count();
         let longe = dists_f.iter().filter(|&&d| d >= 5.0).count();
         diags.push(format!(
-            "  Dist frontal no travamento: avg={:.1}m  perto(<5m)={}  longe(>=5m)={}",
+            "  Frontal dist at stall: avg={:.1}m  near(<5m)={}  far(>=5m)={}",
             avg_df, perto, longe
         ));
         if perto > longe {
             diags.push(
-                "  -> Maioria PERTO da parede — parede visivel. Ver VEREDITO SENSORIAL."
+                "  -> Majority NEAR the wall — wall visible. See SENSORY VERDICT."
                     .to_string(),
             );
         } else {
-            diags.push("  -> Maioria LONGE da parede — possivel travamento em trecho aberto (velocidade nula).".to_string());
+            diags.push("  -> Majority FAR from the wall — possible stall on an open stretch (zero speed).".to_string());
         }
     } else {
         diags.push(
-            "  Dist frontal no travamento: NAO MEDIDO (snapshots nao disponiveis).".to_string(),
+            "  Frontal dist at stall: NOT MEASURED (snapshots unavailable).".to_string(),
         );
     }
 
     diags
 }
 
-// ─── Replay: escrita e leitura ────────────────────────────────────────────────
+// ─── Replay: writing and reading ─────────────────────────────────────────────
 
-/// Frame de replay por ser por tick amostrado.
+/// Replay frame per being per sampled tick.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ReplayFrame {
@@ -1641,7 +1641,7 @@ struct ReplayFrame {
     _pad: f32,
 }
 
-/// Cabecalho do arquivo de replay.
+/// Replay file header.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ReplayHeader {
@@ -1683,27 +1683,27 @@ fn load_and_print_replay(path: &str, ser_target: usize) {
     let data = match fs::read(path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Erro ao ler {}: {}", path, e);
+            eprintln!("Error reading {}: {}", path, e);
             return;
         }
     };
     let hdr_size = std::mem::size_of::<ReplayHeader>();
     if data.len() < hdr_size {
-        eprintln!("Arquivo de replay muito pequeno.");
+        eprintln!("Replay file too small.");
         return;
     }
     let header: ReplayHeader = *bytemuck::from_bytes(&data[..hdr_size]);
     if header.magic != REPLAY_MAGIC {
-        eprintln!("Magic invalido: {:08x}", header.magic);
+        eprintln!("Invalid magic: {:08x}", header.magic);
         return;
     }
 
     println!("=== REPLAY: {} ===", path);
     println!(
-        "versao={} n_seres={} n_ticks={} sample_every={} seed={}",
+        "version={} n_seres={} n_ticks={} sample_every={} seed={}",
         header.version, header.n_seres, header.n_ticks, header.sample_every, header.seed
     );
-    println!("Exibindo ser={}", ser_target);
+    println!("Displaying being={}", ser_target);
     println!();
 
     let frame_size = std::mem::size_of::<ReplayFrame>();
@@ -1786,13 +1786,13 @@ fn load_and_print_replay(path: &str, ser_target: usize) {
         prev_z = frame.z;
     }
     println!();
-    println!("=== FIM DO REPLAY ===");
+    println!("=== END OF REPLAY ===");
 }
 
-// ─── Ponto de entrada ─────────────────────────────────────────────────────────
+// ─── Entry point ─────────────────────────────────────────────────────────────
 
 fn main() {
-    // Força ICD Radeon antes de qualquer wgpu::Instance (múltiplos ICDs → SIGSEGV).
+    // Forces the Radeon ICD before any wgpu::Instance (multiple ICDs → SIGSEGV).
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
     if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
         unsafe {
@@ -1803,7 +1803,7 @@ fn main() {
     // ── Args ──────────────────────────────────────────────────────────────────
     let args: Vec<String> = std::env::args().collect();
     let mut n_seres: usize = 60;
-    let mut n_ticks: usize = 3_000; // 3000 ticks ≈ 47 s de simulação @ 64Hz
+    let mut n_ticks: usize = 3_000; // 3000 ticks ≈ 47 s of simulation @ 64Hz
     let mut replay_path: Option<String> = None;
     let mut replay_ser: usize = 0;
     {
@@ -1840,17 +1840,17 @@ fn main() {
         }
     }
 
-    // ── Modo replay: carrega e exibe arquivo existente, sem rodar simulação ──
+    // ── Replay mode: loads and displays an existing file, without running the simulation ──
     if let Some(ref rpath) = replay_path {
         load_and_print_replay(rpath, replay_ser);
         return;
     }
 
-    // ── Buffer de saída — tudo vai para stdout E para o arquivo summary ────────
-    // Usamos um Vec<String> acumulado e no final gravamos tudo de uma vez.
+    // ── Output buffer — everything goes to stdout AND to the summary file ──────
+    // We accumulate into a Vec<String> and write everything at once at the end.
     let mut report: Vec<String> = Vec::new();
-    // rln! — imprime no stdout E acumula no Vec para salvar em summary.txt.
-    // A versão sem argumento grava uma linha em branco.
+    // rln! — prints to stdout AND accumulates into the Vec to save in summary.txt.
+    // The no-argument version writes a blank line.
     macro_rules! rln {
         () => {{
             println!();
@@ -1868,36 +1868,36 @@ fn main() {
         }};
     }
 
-    rln!("=== GPU_REPORT: OBSERVATÓRIO DE CORRIDA ===");
-    rln!("data: 2026-08-03");
+    rln!("=== GPU_REPORT: RACE OBSERVATORY ===");
+    rln!("date: 2026-08-03");
     rln!(
-        "seres: {}   ticks: {}   dt: {:.6} s   amostragem: a cada {} ticks",
+        "beings: {}   ticks: {}   dt: {:.6} s   sampling: every {} ticks",
         n_seres,
         n_ticks,
         1.0 / 64.0f32,
         SAMPLE_EVERY
     );
 
-    // ── Diretório de saída ─────────────────────────────────────────────────────
+    // ── Output directory ───────────────────────────────────────────────────────
     let out_dir = "telemetry/gpu_run";
-    fs::create_dir_all(out_dir).expect("criar telemetry/gpu_run");
+    fs::create_dir_all(out_dir).expect("create telemetry/gpu_run");
 
-    // ── Mundo ─────────────────────────────────────────────────────────────────
+    // ── World ─────────────────────────────────────────────────────────────────
     let t0 = Instant::now();
-    // seed=9001 + largura=18m: mesmos valores do gpu_validate e gpu_loop canônico.
+    // seed=9001 + width=18m: same values as canonical gpu_validate and gpu_loop.
     let world = VoxelWorld::new(9001, 18.0);
     let lap_dist = world.lap_distance;
 
     rln!();
-    rln!("=== MAPA DA PISTA ===");
+    rln!("=== TRACK MAP ===");
     rln!(
-        "seed: 9001   largura: 18 m   grade: {}×{} células de {:.1} m",
+        "seed: 9001   width: 18 m   grid: {}×{} cells of {:.1} m",
         world.size,
         world.size,
         world.cell_size
     );
     rln!(
-        "volta: {:.1} m   waypoints: {}",
+        "lap: {:.1} m   waypoints: {}",
         lap_dist,
         world.waypoints_world.len()
     );
@@ -1915,7 +1915,7 @@ fn main() {
         world.size * world.size
     );
     rln!(
-        "  [{:.0} ms para gerar o mundo]",
+        "  [{:.0} ms to generate the world]",
         t0.elapsed().as_secs_f64() * 1000.0
     );
 
@@ -1951,9 +1951,9 @@ fn main() {
     rln!(
         "DNA: {}",
         if dna_opt.is_some() {
-            "CHAMPION.dna carregado — pesos REAIS"
+            "CHAMPION.dna loaded — REAL weights"
         } else {
-            "SEM CHAMPION.dna — pesos ZEROS (seres nao se moverão por decisão própria)"
+            "NO CHAMPION.dna — ZERO weights (beings will not move by their own decision)"
         }
     );
 
@@ -1962,7 +1962,7 @@ fn main() {
     let mut ctx = match GpuLoop::new(&world, &engines, n_seres, kan_knots) {
         Some(c) => c,
         None => {
-            eprintln!("ERRO: sem GPU utilizavel.");
+            eprintln!("ERROR: no usable GPU.");
             std::process::exit(1);
         }
     };
@@ -1972,7 +1972,7 @@ fn main() {
         t_gpu.elapsed().as_secs_f64() * 1000.0
     );
 
-    // ── Estado inicial ─────────────────────────────────────────────────────────
+    // ── Initial state ─────────────────────────────────────────────────────────
     let n_wp = world.waypoints_world.len();
     let mut states: Vec<BeingState> = (0..n_seres)
         .map(|i| {
@@ -1996,72 +1996,72 @@ fn main() {
 
     let pos_inicial: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
 
-    // ── Acumuladores ──────────────────────────────────────────────────────────
+    // ── Accumulators ──────────────────────────────────────────────────────────
     let dt = 1.0_f32 / 64.0;
     let mut dist_acum: Vec<f64> = vec![0.0; n_seres];
     let mut pos_prev: Vec<[f32; 3]> = pos_inicial.clone();
     let mut speed_max: Vec<f32> = vec![0.0; n_seres];
     let mut speed_sum: Vec<f64> = vec![0.0; n_seres];
     let mut ticks_vivo: Vec<usize> = vec![0; n_seres];
-    // Posição onde cada ser ficou travado pela última vez (speed < 0.5 m/s por > 100 ticks).
+    // Position where each being last got stuck (speed < 0.5 m/s for > 100 ticks).
     let mut stuck_pos: Vec<Option<[f32; 3]>> = vec![None; n_seres];
     let mut stuck_acum: Vec<usize> = vec![0; n_seres];
 
-    // Trajetórias: Vec por ser, cada entrada = (tick, x, z, speed, throttle, steer, brake).
+    // Trajectories: Vec per being, each entry = (tick, x, z, speed, throttle, steer, brake).
     let mut traj: Vec<Vec<(usize, f32, f32, f32, f32, f32, f32)>> = vec![vec![]; n_seres];
 
-    // Série temporal de velocidade dos primeiros PERFIL_N_SERES seres (para gráfico).
-    // Armazenada como Vec<(tick, speed_m_s)>.
+    // Speed time series of the first PERFIL_N_SERES beings (for the chart).
+    // Stored as Vec<(tick, speed_m_s)>.
     let mut vel_series: Vec<Vec<(usize, f32)>> = vec![vec![]; PERFIL_N_SERES.min(n_seres)];
 
-    // Diagnóstico de aceleração: ser 0, primeiros 200 ticks.
+    // Acceleration diagnostic: being 0, first 200 ticks.
     let mut accel_diag: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
     let mut speed_prev0 = 0.0f32;
 
-    // ── Acumuladores novos: mapa de calor, replay, neural ────────────────────
+    // ── New accumulators: heatmap, replay, neural ────────────────────────────
 
-    // Mapa de calor: todas as posições (x,z) de todos os seres em ticks amostrados.
+    // Heatmap: all (x,z) positions of all beings at sampled ticks.
     let mut heatmap_frames: Vec<(f32, f32)> = Vec::new();
 
-    // Replay: frames amostrados a cada REPLAY_SAMPLE_EVERY ticks.
+    // Replay: frames sampled every REPLAY_SAMPLE_EVERY ticks.
     let mut replay_frames: Vec<ReplayFrame> = Vec::new();
 
-    // Distâncias laterais/frontais por ser por tick (injetadas na percepção).
-    // Guardamos apenas os últimos STUCK_WINDOW ticks antes de cada travamento.
-    // dist_window[i] = ring buffer de (tick, dist_l, dist_r, dist_f).
+    // Lateral/frontal distances per being per tick (injected into perception).
+    // We keep only the last STUCK_WINDOW ticks before each stall.
+    // dist_window[i] = ring buffer of (tick, dist_l, dist_r, dist_f).
     const DIST_WINDOW: usize = 10;
     let mut dist_window: Vec<std::collections::VecDeque<(usize, f32, f32, f32)>> = (0..n_seres)
         .map(|_| std::collections::VecDeque::with_capacity(DIST_WINDOW + 1))
         .collect();
 
-    // Intent no travamento: capturado quando stuck_acum[i] == 100.
-    // Guardamos o intent e as distâncias do momento do travamento.
+    // Intent at stall: captured when stuck_acum[i] == 100.
+    // We keep the intent and the distances from the moment of the stall.
     let mut stuck_intent: Vec<Option<Vec<f32>>> = vec![None; n_seres];
     let mut stuck_dist: Vec<Option<[f32; 3]>> = vec![None; n_seres];
 
-    // Rastreador de saturação persistente: alerta quando canal saturado por >=SAT_MIN_TICKS.
-    // SENSORY_WAVE_SIZE = 223 (dimensões de intent).
+    // Persistent-saturation tracker: alerts when a channel is saturated for >=SAT_MIN_TICKS.
+    // SENSORY_WAVE_SIZE = 223 (intent dimensions).
     use universe::config::iara::brain::L1_NEURONS;
     let mut sat_tracker = SatTracker::new(n_seres, L1_NEURONS);
 
-    // Último intent lido por ser (para snapshot de travamento).
+    // Last intent read per being (for the stall snapshot).
     let mut last_intent: Vec<Vec<f32>> = vec![vec![0.0f32; L1_NEURONS]; n_seres];
 
-    // Ultimo tick em que capturamos distâncias (para replay).
+    // Last tick at which we captured distances (for the replay).
     let mut last_dist: Vec<[f32; 3]> = vec![[15.0, 15.0, 50.0]; n_seres];
 
-    // ── Aquecimento ───────────────────────────────────────────────────────────
+    // ── Warm-up ───────────────────────────────────────────────────────────────
     rln!();
-    rln!("Aquecendo (1 tick JIT)...");
+    rln!("Warming up (1 JIT tick)...");
     ctx.tick(&mut states, &engines, n_seres, dt, 0);
-    // Reseta após aquecimento
+    // Resets after warm-up
     for i in 0..n_seres {
         pos_prev[i] = pos_of(&states[i].phys);
     }
 
-    // ── Laço principal ────────────────────────────────────────────────────────
+    // ── Main loop ─────────────────────────────────────────────────────────────
     rln!(
-        "Rodando {} ticks ({:.1} s simulados @ 64 Hz)...",
+        "Running {} ticks ({:.1} s simulated @ 64 Hz)...",
         n_ticks,
         n_ticks as f32 / 64.0
     );
@@ -2070,21 +2070,21 @@ fn main() {
     for tick_i in 0..n_ticks {
         let (ok, pedals) = ctx.tick(&mut states, &engines, n_seres, dt, tick_i + 1);
         if !ok {
-            eprintln!("ERRO no tick {}", tick_i);
+            eprintln!("ERROR at tick {}", tick_i);
             break;
         }
 
-        // Lê intent da GPU a cada tick para análise neural.
-        // read_intent_after_submit é barato: o buffer já está pronto (poll(Wait) no tick).
+        // Reads intent from the GPU every tick for neural analysis.
+        // read_intent_after_submit is cheap: the buffer is already ready (poll(Wait) in the tick).
         let intents_now = ctx.brain.read_intent_after_submit(n_seres);
 
-        // Recalcula distâncias para este tick (reutiliza a lógica do tick).
-        // Apenas salva no window — cálculo já foi feito dentro do tick().
-        // Reutilizamos a posição atual + grade para recomputar.
+        // Recomputes distances for this tick (reuses the tick's logic).
+        // Only saves into the window — the computation was already done inside tick().
+        // We reuse the current position + grid to recompute.
         {
             let gs = ctx.grid_size_cpu as usize;
             let cs = ctx.cell_size_cpu;
-            // Amostras laterais expandidas de 27m → 40m (conta: 40/28 m/s = 1.43 s antecipação).
+            // Lateral samples expanded from 27m → 40m (math: 40/28 m/s = 1.43 s anticipation).
             let lat_samp = [1.0f32, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 33.0, 40.0];
             let fwd_samp = [3.0f32, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0];
             let voxel_at = |wx: f32, wz: f32| -> u32 {
@@ -2126,7 +2126,7 @@ fn main() {
                     }
                 }
                 last_dist[i] = [dist_l, dist_r, dist_f];
-                // Janela deslizante de distâncias (últimos DIST_WINDOW ticks).
+                // Sliding window of distances (last DIST_WINDOW ticks).
                 if dist_window[i].len() >= DIST_WINDOW {
                     dist_window[i].pop_front();
                 }
@@ -2134,7 +2134,7 @@ fn main() {
             }
         }
 
-        // Atualiza last_intent e sat_tracker com o intent deste tick.
+        // Updates last_intent and sat_tracker with this tick's intent.
         for i in 0..n_seres {
             if i < intents_now.len() {
                 last_intent[i]
@@ -2147,7 +2147,7 @@ fn main() {
             }
         }
 
-        // Acumula estatísticas por ser
+        // Accumulates per-being statistics
         for i in 0..n_seres {
             let p1 = pos_of(&states[i].phys);
             let dx = (p1[0] - pos_prev[i][0]) as f64;
@@ -2163,13 +2163,13 @@ fn main() {
             speed_sum[i] += spd as f64;
             ticks_vivo[i] += 1;
 
-            // Detecção de travamento: > 100 ticks consecutivos com speed < 0.5 m/s.
+            // Stall detection: > 100 consecutive ticks with speed < 0.5 m/s.
             if spd < 0.5 {
                 stuck_acum[i] += 1;
                 if stuck_acum[i] == 100 {
-                    // Marco o local onde ficou travado.
+                    // Mark the spot where it got stuck.
                     stuck_pos[i] = Some(p1);
-                    // Captura intent e distâncias no momento do travamento.
+                    // Captures intent and distances at the moment of the stall.
                     if stuck_intent[i].is_none() {
                         stuck_intent[i] = Some(last_intent[i].clone());
                         stuck_dist[i] = Some(last_dist[i]);
@@ -2180,7 +2180,7 @@ fn main() {
             }
         }
 
-        // Amostragem de trajetória a cada SAMPLE_EVERY ticks
+        // Trajectory sampling every SAMPLE_EVERY ticks
         if (tick_i + 1) % SAMPLE_EVERY == 0 {
             for i in 0..n_seres {
                 let p = &states[i].phys;
@@ -2190,7 +2190,7 @@ fn main() {
             }
         }
 
-        // Mapa de calor: posições de todos os seres a cada SAMPLE_EVERY ticks.
+        // Heatmap: positions of all beings every SAMPLE_EVERY ticks.
         if (tick_i + 1) % SAMPLE_EVERY == 0 {
             for i in 0..n_seres {
                 let p = &states[i].phys;
@@ -2198,7 +2198,7 @@ fn main() {
             }
         }
 
-        // Replay: frames a cada REPLAY_SAMPLE_EVERY ticks (= SAMPLE_EVERY).
+        // Replay: frames every REPLAY_SAMPLE_EVERY ticks (= SAMPLE_EVERY).
         if (tick_i + 1) % REPLAY_SAMPLE_EVERY == 0 {
             for i in 0..n_seres {
                 let p = &states[i].phys;
@@ -2232,13 +2232,13 @@ fn main() {
             }
         }
 
-        // Série de velocidade para os primeiros PERFIL_N_SERES seres (toda tick)
+        // Speed series for the first PERFIL_N_SERES beings (every tick)
         for i in 0..vel_series.len() {
             let spd = (states[i].phys.vel[0].powi(2) + states[i].phys.vel[2].powi(2)).sqrt();
             vel_series[i].push((tick_i + 1, spd));
         }
 
-        // Diagnóstico de aceleração (ser 0, primeiros 200 ticks)
+        // Acceleration diagnostic (being 0, first 200 ticks)
         if tick_i < 200 {
             let spd0 = (states[0].phys.vel[0].powi(2) + states[0].phys.vel[2].powi(2)).sqrt();
             let accel = (spd0 - speed_prev0) / dt;
@@ -2247,11 +2247,11 @@ fn main() {
             speed_prev0 = spd0;
         }
 
-        // Checkpoint a cada 1000 ticks
+        // Checkpoint every 1000 ticks
         if (tick_i + 1) % 1000 == 0 {
             let max_d = dist_acum.iter().cloned().fold(0.0f64, f64::max);
             rln!(
-                "  tick {:5}: dist_max={:.0} m ({:.2} voltas)",
+                "  tick {:5}: dist_max={:.0} m ({:.2} laps)",
                 tick_i + 1,
                 max_d,
                 max_d / lap_dist as f64
@@ -2261,15 +2261,15 @@ fn main() {
 
     let elapsed_loop = t_loop.elapsed().as_secs_f64();
     rln!(
-        "Laço concluído: {:.1} ms total, {:.3} ms/tick",
+        "Loop finished: {:.1} ms total, {:.3} ms/tick",
         elapsed_loop * 1000.0,
         elapsed_loop * 1000.0 / n_ticks as f64
     );
 
-    // ── Posições finais ────────────────────────────────────────────────────────
+    // ── Final positions ────────────────────────────────────────────────────────
     let pos_final: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
 
-    // ── Ranking por distância ──────────────────────────────────────────────────
+    // ── Ranking by distance ────────────────────────────────────────────────────
     let mut ordem: Vec<usize> = (0..n_seres).collect();
     ordem.sort_by(|&a, &b| dist_acum[b].partial_cmp(&dist_acum[a]).unwrap());
 
@@ -2283,32 +2283,32 @@ fn main() {
     let n_moveu = dist_acum.iter().filter(|&&d| d > 1.0).count();
     let n_travados = stuck_pos.iter().filter(|p| p.is_some()).count();
 
-    // ── Verificações de sanidade ───────────────────────────────────────────────
+    // ── Sanity checks ──────────────────────────────────────────────────────────
     let mut alertas: Vec<String> = Vec::new();
 
-    // Todos com a mesma distância?
+    // Everyone with the same distance?
     if let Some(msg) = check_homogeneidade(&dist_acum, "distancia") {
         alertas.push(msg);
     }
-    // Todos com a mesma velocidade máxima?
+    // Everyone with the same top speed?
     let vmax_f64: Vec<f64> = speed_max.iter().map(|&v| v as f64).collect();
     if let Some(msg) = check_homogeneidade(&vmax_f64, "speed_max") {
         alertas.push(msg);
     }
-    // Nenhum se moveu?
+    // Nobody moved?
     if n_moveu == 0 {
         alertas.push(format!(
-            "⚠ CRÍTICO: NENHUM ser percorreu > 1 m — laço quebrado ou pesos nulos."
+            "⚠ CRITICAL: NO being covered > 1 m — broken loop or zero weights."
         ));
     } else if n_moveu < n_seres / 2 {
         alertas.push(format!(
-            "⚠ Apenas {}/{} seres se moveram > 1 m.",
+            "⚠ Only {}/{} beings moved > 1 m.",
             n_moveu, n_seres
         ));
     }
 
-    // ── Mapa ASCII ────────────────────────────────────────────────────────────
-    // Mostra posições iniciais e finais dos top-N seres + posições de travamento.
+    // ── ASCII map ─────────────────────────────────────────────────────────────
+    // Shows start and final positions of the top-N beings + stall positions.
     let n_mark = n_seres.min(15);
     let top_ini: Vec<[f32; 3]> = ordem.iter().take(n_mark).map(|&i| pos_inicial[i]).collect();
     let top_fin: Vec<[f32; 3]> = ordem.iter().take(n_mark).map(|&i| pos_final[i]).collect();
@@ -2318,12 +2318,12 @@ fn main() {
 
     rln!();
     rln!(
-        "=== MAPA ASCII DA PISTA (seed=9001, escala {}:1) ===",
+        "=== ASCII TRACK MAP (seed=9001, scale {}:1) ===",
         world.size / ASCII_COLS
     );
-    rln!("Legenda: '#'=wall  '.'=road  ' '=grass  'S'=pos_inicial  'F'=pos_final  'T'=travado");
+    rln!("Legend: '#'=wall  '.'=road  ' '=grass  'S'=start_pos  'F'=final_pos  'T'=stuck");
     rln!(
-        "(top {} seres marcados; 'T' = travado por >100 ticks = {:.1} s)",
+        "(top {} beings marked; 'T' = stuck for >100 ticks = {:.1} s)",
         n_mark,
         100.0 / 64.0
     );
@@ -2333,20 +2333,20 @@ fn main() {
     }
     rln!();
 
-    // ── MAPA DE CALOR ─────────────────────────────────────────────────────────
-    // Densidade de seres por célula ao longo de toda a corrida (posições amostradas).
+    // ── HEATMAP ───────────────────────────────────────────────────────────────
+    // Being density per cell over the whole race (sampled positions).
     rln!(
-        "=== MAPA DE CALOR (densidade de seres por celula, {} amostras, 'X'=travamento) ===",
+        "=== HEATMAP (being density per cell, {} samples, 'X'=stall) ===",
         heatmap_frames.len()
     );
-    rln!("Onde os seres passaram MAIS tempo — identifica gargalos de pista.");
+    rln!("Where the beings spent the MOST time — identifies track bottlenecks.");
     {
         let hg = build_heatmap(&world, &heatmap_frames, HEATMAP_COLS);
         let hm_lines = render_heatmap(&world, &hg, HEATMAP_COLS, &stuck_vec);
         for line in &hm_lines {
             rln!("{}", line);
         }
-        // Sumário do mapa de calor: top-5 células mais quentes.
+        // Heatmap summary: top-5 hottest cells.
         let mut cell_heat: Vec<((usize, usize), usize)> = hg
             .iter()
             .enumerate()
@@ -2355,9 +2355,9 @@ fn main() {
             .collect();
         cell_heat.sort_by(|a, b| b.1.cmp(&a.1));
         rln!();
-        rln!("  Top-5 celulas mais quentes (linha,col display → hits):");
+        rln!("  Top-5 hottest cells (display row,col → hits):");
         for &((r, c), hits) in cell_heat.iter().take(5) {
-            // Converter para coordenadas mundo
+            // Convert to world coordinates
             let gs = world.size;
             let step = (gs / HEATMAP_COLS).max(1);
             let wx = (c * step) as f32 * world.cell_size;
@@ -2374,9 +2374,9 @@ fn main() {
     }
     rln!();
 
-    // ── ESTADO NEURAL NO TRAVAMENTO ───────────────────────────────────────────
-    rln!("=== NEURÔNIOS NO TRAVAMENTO (intent no tick t=100 de estagnacao) ===");
-    rln!("  Pergunta: cerebro TRAVADO (ponto fixo) ou REAGINDO mas preso?");
+    // ── NEURAL STATE AT STALL ─────────────────────────────────────────────────
+    rln!("=== NEURONS AT STALL (intent at stagnation tick t=100) ===");
+    rln!("  Question: brain STUCK (fixed point) or REACTING but trapped?");
     {
         let snapshots: Vec<StuckBrainSnapshot> = (0..n_seres)
             .filter_map(|i| {
@@ -2384,7 +2384,7 @@ fn main() {
                 let dist = stuck_dist[i]?;
                 Some(StuckBrainSnapshot {
                     ser: i,
-                    tick: 0, // tick exato varia; marcado como "no travamento"
+                    tick: 0, // exact tick varies; marked as "at stall"
                     intent,
                     dist_l: dist[0],
                     dist_r: dist[1],
@@ -2400,20 +2400,20 @@ fn main() {
     }
     rln!();
 
-    // ── ALERTAS DE SATURAÇÃO PERSISTENTE ─────────────────────────────────────
+    // ── PERSISTENT SATURATION ALERTS ─────────────────────────────────────────
     rln!(
-        "=== ALERTAS DE SATURACAO PERSISTENTE (|v|>{:.2} por >={} ticks) ===",
+        "=== PERSISTENT SATURATION ALERTS (|v|>{:.2} for >={} ticks) ===",
         SAT_THRESH,
         SAT_MIN_TICKS
     );
     rln!(
-        "  Saturacao persistente = canal travado no mesmo sentido por muitos ticks = reflexo fixo."
+        "  Persistent saturation = channel locked in the same direction for many ticks = fixed reflex."
     );
     if sat_tracker.alertas.is_empty() {
-        rln!("  Nenhuma saturacao persistente detectada.");
+        rln!("  No persistent saturation detected.");
     } else {
         rln!(
-            "  {} alertas (primeiros 20 mostrados):",
+            "  {} alerts (first 20 shown):",
             sat_tracker.alertas.len()
         );
         for a in sat_tracker.alertas.iter().take(20) {
@@ -2421,16 +2421,16 @@ fn main() {
         }
         if sat_tracker.alertas.len() > 20 {
             rln!(
-                "  ... e mais {} alertas omitidos.",
+                "  ... and {} more alerts omitted.",
                 sat_tracker.alertas.len() - 20
             );
         }
     }
     rln!();
 
-    // ── AUTO-DIAGNÓSTICO ─────────────────────────────────────────────────────
-    rln!("=== AUTO-DIAGNOSTICO ===");
-    rln!("  Checagem automatica de padroes suspeitos:");
+    // ── SELF-DIAGNOSIS ───────────────────────────────────────────────────────
+    rln!("=== SELF-DIAGNOSIS ===");
+    rln!("  Automatic check for suspicious patterns:");
     {
         let diags = auto_diagnostico(
             &stuck_pos,
@@ -2446,17 +2446,17 @@ fn main() {
     }
     rln!();
 
-    // ── Alertas de sanidade ────────────────────────────────────────────────────
+    // ── Sanity alerts ──────────────────────────────────────────────────────────
     if !alertas.is_empty() {
-        rln!("=== ALERTAS DE SANIDADE ===");
+        rln!("=== SANITY ALERTS ===");
         for a in &alertas {
             rln!("{}", a);
         }
         rln!();
     }
 
-    // ── Resumo geral ──────────────────────────────────────────────────────────
-    rln!("=== RESUMO GERAL ===");
+    // ── Overall summary ───────────────────────────────────────────────────────
+    rln!("=== OVERALL SUMMARY ===");
     rln!(
         "  ticks: {}   dt: {:.6} s   tempo_sim: {:.1} s",
         n_ticks,
@@ -2464,26 +2464,26 @@ fn main() {
         n_ticks as f32 * dt
     );
     rln!(
-        "  dist_max: {:.1} m  ({:.2} voltas)",
+        "  dist_max: {:.1} m  ({:.2} laps)",
         dist_max,
         dist_max / lap_dist as f64
     );
     rln!(
-        "  dist_med: {:.1} m  ({:.2} voltas)",
+        "  dist_med: {:.1} m  ({:.2} laps)",
         dist_med,
         dist_med / lap_dist as f64
     );
-    rln!("  seres com >= 1 volta completa: {}/{}", n_volltas, n_seres);
-    rln!("  seres que se moveram (> 1 m): {}/{}", n_moveu, n_seres);
+    rln!("  beings with >= 1 full lap: {}/{}", n_volltas, n_seres);
+    rln!("  beings that moved (> 1 m): {}/{}", n_moveu, n_seres);
     rln!(
-        "  seres travados (>100 ticks parado): {}/{}",
+        "  stuck beings (>100 ticks stopped): {}/{}",
         n_travados,
         n_seres
     );
     rln!();
 
-    // ── Tabela por ser ────────────────────────────────────────────────────────
-    rln!("=== TABELA POR SER (ordenado por distância) ===");
+    // ── Per-being table ───────────────────────────────────────────────────────
+    rln!("=== PER-BEING TABLE (sorted by distance) ===");
     rln!(
         "{:>4} {:>8} {:>6} {:>10} {:>10} {:>10} {:>10} {:>7} {:>7} {:>8} {:>8}",
         "ser",
@@ -2536,13 +2536,13 @@ fn main() {
     }
     rln!();
 
-    // ── Perfis de velocidade ASCII (3 seres) ──────────────────────────────────
-    rln!("=== PERFIS DE VELOCIDADE (seres 0, 1, 2 — tick × m/s) ===");
+    // ── ASCII speed profiles (3 beings) ───────────────────────────────────────
+    rln!("=== SPEED PROFILES (beings 0, 1, 2 — tick × m/s) ===");
     rln!(
-        "(série amostrada a cada tick; comprimida para {} colunas ASCII)",
+        "(series sampled every tick; compressed to {} ASCII columns)",
         PERFIL_COLS
     );
-    rln!("Serve para ver se o ser acelera, aonde perde velocidade e padrão de frenagem.");
+    rln!("Useful to see whether the being accelerates, where it loses speed, and its braking pattern.");
     rln!();
     for (idx, ser_idx) in (0..vel_series.len()).enumerate() {
         let titulo = format!(
@@ -2556,22 +2556,22 @@ fn main() {
         rln!();
     }
 
-    // ── Histogramas ───────────────────────────────────────────────────────────
-    rln!("=== HISTOGRAMA DE DISTÂNCIAS (m) ===");
-    let hist_lines = ascii_histogram(&dist_acum, HIST_BINS, "distancia percorrida");
+    // ── Histograms ────────────────────────────────────────────────────────────
+    rln!("=== DISTANCE HISTOGRAM (m) ===");
+    let hist_lines = ascii_histogram(&dist_acum, HIST_BINS, "distance covered");
     for line in hist_lines {
         rln!("{}", line);
     }
     rln!();
 
-    rln!("=== HISTOGRAMA DE VELOCIDADE MÁXIMA (m/s) ===");
-    let hist_vmax = ascii_histogram(&vmax_f64, HIST_BINS, "vmax por ser");
+    rln!("=== TOP SPEED HISTOGRAM (m/s) ===");
+    let hist_vmax = ascii_histogram(&vmax_f64, HIST_BINS, "vmax per being");
     for line in hist_vmax {
         rln!("{}", line);
     }
     rln!();
 
-    // Histograma de velocidade média
+    // Mean speed histogram
     let vmed_f64: Vec<f64> = (0..n_seres)
         .map(|i| {
             if ticks_vivo[i] > 0 {
@@ -2581,28 +2581,28 @@ fn main() {
             }
         })
         .collect();
-    rln!("=== HISTOGRAMA DE VELOCIDADE MÉDIA (m/s) ===");
-    let hist_vmed = ascii_histogram(&vmed_f64, HIST_BINS, "vmed por ser");
+    rln!("=== MEAN SPEED HISTOGRAM (m/s) ===");
+    let hist_vmed = ascii_histogram(&vmed_f64, HIST_BINS, "vmed per being");
     for line in hist_vmed {
         rln!("{}", line);
     }
     rln!();
 
-    // ── Grava trajectories.csv ─────────────────────────────────────────────────
+    // ── Writes trajectories.csv ────────────────────────────────────────────────
     let traj_path = format!("{}/trajectories.csv", out_dir);
     {
         let mut f = fs::File::create(&traj_path).expect("trajectories.csv");
-        // Colunas: tick, ser, x, z, speed_m_s, throttle, steer, brake
+        // Columns: tick, ser, x, z, speed_m_s, throttle, steer, brake
         writeln!(f, "tick,ser,x,z,speed_m_s,throttle,steer,brake").unwrap();
         for i in 0..n_seres {
-            // Registra posição inicial (tick=0)
+            // Records starting position (tick=0)
             writeln!(
                 f,
                 "0,{},{:.2},{:.2},0.000,0.000,0.000,0.000",
                 i, pos_inicial[i][0], pos_inicial[i][2]
             )
             .unwrap();
-            // Amostras do laço
+            // Loop samples
             for &(tick, x, z, spd, thr, str_, brk) in &traj[i] {
                 writeln!(
                     f,
@@ -2614,33 +2614,33 @@ fn main() {
         }
     }
     rln!(
-        "CSV gravado: {} ({} linhas)",
+        "CSV written: {} ({} lines)",
         traj_path,
         traj.iter().map(|t| t.len()).sum::<usize>() + n_seres
     );
 
-    // ── Grava accel_diag.txt ───────────────────────────────────────────────────
+    // ── Writes accel_diag.txt ──────────────────────────────────────────────────
     let accel_path = format!("{}/accel_diag.txt", out_dir);
     {
         let mut f = fs::File::create(&accel_path).expect("accel_diag.txt");
         writeln!(
             f,
-            "=== DIAGNÓSTICO DE ACELERAÇÃO (ser 0, primeiros 200 ticks) ==="
+            "=== ACCELERATION DIAGNOSTIC (being 0, first 200 ticks) ==="
         )
         .unwrap();
         writeln!(f).unwrap();
         writeln!(
             f,
-            "Parâmetros: mass=1350 kg  max_torque=620 Nm  wheel_radius=0.33 m"
+            "Parameters: mass=1350 kg  max_torque=620 Nm  wheel_radius=0.33 m"
         )
         .unwrap();
-        writeln!(f, "  gear=3 (2a marcha)  mu_peak=1.6").unwrap();
+        writeln!(f, "  gear=3 (2nd gear)  mu_peak=1.6").unwrap();
         let normal_load = 1350.0f64 * 9.81 / 4.0;
         let mu = 1.6f64;
         let accel_max = mu * normal_load * 2.0 / 1350.0;
         writeln!(
             f,
-            "  F_grip_2rodas = {:.0} N  =>  a_max_teo = {:.2} m/s^2",
+            "  F_grip_2wheels = {:.0} N  =>  a_max_theo = {:.2} m/s^2",
             mu * normal_load * 2.0,
             accel_max
         )
@@ -2648,7 +2648,7 @@ fn main() {
         writeln!(f).unwrap();
         writeln!(
             f,
-            "{:>5} {:>7} {:>9} {:>9} {:>7} {:>7}  nota",
+            "{:>5} {:>7} {:>9} {:>9} {:>7} {:>7}  note",
             "tick", "t(s)", "v(m/s)", "a(m/s2)", "thr", "brk"
         )
         .unwrap();
@@ -2656,9 +2656,9 @@ fn main() {
             let nota = if thr < 0.05 {
                 "throttle_zero"
             } else if brk > 0.3 {
-                "freando"
+                "braking"
             } else if spd < 0.05 {
-                "parado"
+                "stopped"
             } else if accel > accel_max as f32 * 0.7 {
                 "ACCEL_OK"
             } else {
@@ -2689,24 +2689,24 @@ fn main() {
             .fold(0.0f32, f32::max);
         writeln!(
             f,
-            "vmax0 nos primeiros 200 ticks: {:.1} m/s = {:.0} km/h",
+            "vmax0 in the first 200 ticks: {:.1} m/s = {:.0} km/h",
             vmax0,
             vmax0 * 3.6
         )
         .unwrap();
         writeln!(
             f,
-            "amax0 medida: {:.2} m/s^2  (teo: {:.2} m/s^2  = {:.0}%)",
+            "amax0 measured: {:.2} m/s^2  (theo: {:.2} m/s^2  = {:.0}%)",
             amax0,
             accel_max,
             amax0 as f64 / accel_max * 100.0
         )
         .unwrap();
     }
-    rln!("Diagnóstico de aceleração: {}", accel_path);
+    rln!("Acceleration diagnostic: {}", accel_path);
 
-    // ── Grava replay binário ───────────────────────────────────────────────────
-    // Nome inclui timestamp para não sobrescrever corridas anteriores.
+    // ── Writes binary replay ───────────────────────────────────────────────────
+    // Name includes a timestamp so previous races are not overwritten.
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -2714,14 +2714,14 @@ fn main() {
     let replay_path_out = format!("{}/replay_{}.bin", out_dir, ts);
     match save_replay(&replay_path_out, n_seres, n_ticks, &replay_frames) {
         Ok(_) => rln!(
-            "Replay gravado: {} ({} frames)",
+            "Replay written: {} ({} frames)",
             replay_path_out,
             replay_frames.len()
         ),
-        Err(e) => rln!("ERRO ao gravar replay: {}", e),
+        Err(e) => rln!("ERROR writing replay: {}", e),
     }
 
-    // ── Grava summary.txt (cópia completa do relatório) ───────────────────────
+    // ── Writes summary.txt (full copy of the report) ──────────────────────────
     let summary_path = format!("{}/summary.txt", out_dir);
     {
         let mut f = fs::File::create(&summary_path).expect("summary.txt");
@@ -2729,22 +2729,22 @@ fn main() {
             writeln!(f, "{}", line).unwrap();
         }
     }
-    println!("Relatório completo gravado: {}", summary_path);
+    println!("Full report written: {}", summary_path);
 
-    // ── Linha final de sanidade ────────────────────────────────────────────────
+    // ── Final sanity line ──────────────────────────────────────────────────────
     println!();
-    println!("=== FIM DO RELATÓRIO ===");
-    println!("Telemetria em: {}/", out_dir);
-    println!("  summary.txt        — cópia completa do relatório acima");
+    println!("=== END OF REPORT ===");
+    println!("Telemetry in: {}/", out_dir);
+    println!("  summary.txt        — full copy of the report above");
     println!(
-        "  trajectories.csv   — tick,ser,x,z,speed,throttle,steer,brake (a cada {} ticks)",
+        "  trajectories.csv   — tick,ser,x,z,speed,throttle,steer,brake (every {} ticks)",
         SAMPLE_EVERY
     );
-    println!("  accel_diag.txt     — aceleração medida vs teórica (ser 0, 200 ticks)");
-    println!("  replay_<ts>.bin    — replay binário; ver com --replay <arquivo> --ser N");
+    println!("  accel_diag.txt     — measured vs theoretical acceleration (being 0, 200 ticks)");
+    println!("  replay_<ts>.bin    — binary replay; view with --replay <file> --ser N");
     if !alertas.is_empty() {
         println!();
-        println!("ALERTAS ATIVOS: {}", alertas.len());
+        println!("ACTIVE ALERTS: {}", alertas.len());
         for a in &alertas {
             println!("  {}", a);
         }
@@ -2752,7 +2752,7 @@ fn main() {
     if !sat_tracker.alertas.is_empty() {
         println!();
         println!(
-            "SATURACOES PERSISTENTES: {} (ver secao ALERTAS DE SATURACAO no relatório)",
+            "PERSISTENT SATURATIONS: {} (see PERSISTENT SATURATION ALERTS section in the report)",
             sat_tracker.alertas.len()
         );
     }

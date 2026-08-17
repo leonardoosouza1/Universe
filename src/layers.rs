@@ -1,9 +1,9 @@
 /// IARA v2101 - SOVEREIGN BIT-LINEAR (BitNet 1.58-bit)
 /// "The End of MatMul": 100% Science, Zero Legacy.
 
-/// Abstração de forward ternário — permite swap entre backends
-/// (BitLinear atual, BitLinearPacked 2-bit, BitLinearGpu HIPRTC)
-/// sem mexer em `SovereignEngine`. Ver `melhorias/gpu-roadmap.md`.
+/// Ternary-forward abstraction — allows swapping between backends
+/// (current BitLinear, BitLinearPacked 2-bit, BitLinearGpu HIPRTC)
+/// without touching `SovereignEngine`. See `melhorias/gpu-roadmap.md`.
 pub trait BrainForward {
     fn forward_i8(&self, input: &[i8]) -> Vec<f32>;
     fn myelinate(&mut self, factor: f32);
@@ -17,10 +17,10 @@ pub trait BrainForward {
 /// Backward-compat: API surface preserved (weights, weight_scale, forward,
 /// quantize, set_scale, myelinate). Field type changed Vec<i8> → Vec<f32>.
 pub struct BitLinear {
-    /// Float weights — qualquer valor real (-2..2 típico). Antes ternary {-1,0,1}.
+    /// Float weights — any real value (-2..2 typical). Previously ternary {-1,0,1}.
     pub weights: Vec<f32>,
-    /// Scale legacy field — kept para API compat. Forward NÃO multiplica scale
-    /// (peso já absorve magnitude). Save quantization usa pra DNA backward-compat.
+    /// Legacy scale field — kept for API compat. Forward does NOT multiply by scale
+    /// (the weight already absorbs magnitude). Save quantization uses it for DNA backward-compat.
     pub weight_scale: f32,
     pub input_dim: usize,
     pub output_dim: usize,
@@ -36,7 +36,7 @@ impl BitLinear {
         }
     }
 
-    /// Forward f32 — output = Σ (w * input/127). Mais expressivo que ternary.
+    /// f32 forward — output = Σ (w * input/127). More expressive than ternary.
     pub fn forward(&self, input: &[i8]) -> Vec<f32> {
         let mut output = vec![0.0_f32; self.output_dim];
         let norm_factor = 1.0 / 127.0;
@@ -51,25 +51,25 @@ impl BitLinear {
         output
     }
 
-    /// Myelinate: no-op em f32 runtime. Antes ternary cortex precisava boost de
-    /// scale pra contrabalançar quantização. Agora pesos são contínuos —
-    /// multiplicar tudo cumulativamente satura em ±2 e mata o cérebro
-    /// (forward vira "porta": output constante = mesma decisão sempre).
-    /// weight_scale field mantida por API compat mas só atualiza pra log.
+    /// Myelinate: no-op in f32 runtime. Previously the ternary cortex needed a
+    /// scale boost to counterbalance quantization. Now weights are continuous —
+    /// multiplying everything cumulatively saturates at ±2 and kills the brain
+    /// (forward becomes a "gate": constant output = same decision always).
+    /// weight_scale field kept for API compat but only updated for logging.
     pub fn myelinate(&mut self, factor: f32) {
         let f = (1.0 + factor * 0.005).min(1.05);
         self.weight_scale = (self.weight_scale * f).min(10.0); // legacy log only
     }
 
-    /// Quantize: agora apenas COPIA o latent f32 nas weights (sem ternarizar).
-    /// API name kept para back-compat; semantics evoluíram pra "set weights from latent".
+    /// Quantize: now just COPIES the f32 latent into the weights (no ternarizing).
+    /// API name kept for back-compat; semantics evolved to "set weights from latent".
     pub fn quantize(&mut self, full_precision: &[f32]) {
         let n = full_precision.len().min(self.weights.len());
         self.weights[..n].copy_from_slice(&full_precision[..n]);
-        // ABLAÇÃO DO PRIMING (ver `neuro.rs`): aplicada AQUI porque `quantize` é o ponto
-        // ÚNICO por onde os pesos entram nesta camada — vale para o cérebro aleatório
-        // inicial, para o campeão carregado do DNA e para os membros do pool de elite.
-        // Zerar noutro lugar deixaria algum desses caminhos passar com o priming intacto.
+        // PRIMING ABLATION (see `neuro.rs`): applied HERE because `quantize` is the
+        // SINGLE point through which weights enter this layer — it holds for the initial
+        // random brain, for the champion loaded from DNA and for the elite-pool members.
+        // Zeroing anywhere else would let one of those paths through with the priming intact.
         crate::neuro::ablar_priming(&mut self.weights, self.input_dim);
         // Update legacy scale field as abs_mean (still used by some DNA paths).
         let abs_mean: f32 = full_precision.iter().map(|w| w.abs()).sum::<f32>()
@@ -81,14 +81,14 @@ impl BitLinear {
         self.weight_scale = scale;
     }
 
-    /// Quantize f32 weights to i8 for DNA disk. Scale 63.5 cobre range [-2.0, 2.0]
-    /// (clamp do mutation) sem saturar. Antes 127 saturava metade do range.
+    /// Quantize f32 weights to i8 for DNA disk. Scale 63.5 covers range [-2.0, 2.0]
+    /// (the mutation clamp) without saturating. Previously 127 saturated half the range.
     pub fn quantize_for_save(&self) -> Vec<i8> {
-        // `.round()` antes do corte: `as i8` trunca PARA ZERO, o que encolhe toda
-        // magnitude sistematicamente (0,5 → 31,75 → 31 → 0,48819). Num laço evolutivo,
-        // que salva e recarrega o campeão a cada geração, isso é decaimento acumulado
-        // dos pesos, não ruído simétrico. Arredondar deixa o erro em ±0,5/63,5 ≈ 1/127,
-        // que é a precisão que o teste deste arquivo sempre declarou esperar.
+        // `.round()` before the cut: `as i8` truncates TOWARD ZERO, which shrinks every
+        // magnitude systematically (0.5 → 31.75 → 31 → 0.48819). In an evolutionary loop,
+        // which saves and reloads the champion every generation, that is accumulated
+        // weight decay, not symmetric noise. Rounding leaves the error at ±0.5/63.5 ≈ 1/127,
+        // which is the precision the test in this file has always declared to expect.
         self.weights
             .iter()
             .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8)

@@ -1,31 +1,31 @@
-//! DIAGNÓSTICO DE COMPORTAMENTO a partir do replay — sem renderizar nada.
+//! BEHAVIOUR DIAGNOSIS from the replay — without rendering anything.
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo, olhando o mapa recém-consertado: *"agora que você tem o html, dá até para
-//! debugar, dá para usar os dados que alimentam o html, nem precisa renderizar e validar,
-//! só ler e comparar: se sai da pista, se bate, se dá ré."*
+//! Leonardo, looking at the freshly fixed map: *"now that you have the html, you can even
+//! debug, you can use the data that feeds the html, no need to render and validate,
+//! just read and compare: whether it leaves the track, crashes, reverses."*
 //!
-//! Está certo, e muda o ciclo. Até aqui eu julgava o comportamento por médias de geração
-//! (mediana, máximo, mortalidade), que dizem QUANTO mas nunca ONDE nem POR QUÊ. O replay
-//! guarda posição e velocidade por quadro, e a geometria da pista é reconstruível da
-//! `world_seed` que já está no cabeçalho. Cruzando os dois sai a verdade por quadro:
-//! em que ponto do traçado ele saiu, quanto tempo passou na grama, onde parou.
+//! He is right, and it changes the cycle. Until now I judged behaviour by generation
+//! averages (median, maximum, mortality), which say HOW MUCH but never WHERE nor WHY. The
+//! replay stores position and speed per frame, and the track geometry is reconstructible
+//! from the `world_seed` already in the header. Crossing the two yields the per-frame
+//! truth: at which point of the layout it left, how long it spent on grass, where it stopped.
 //!
-//! Foi assim que os dois últimos bugs apareceram — o mapa que era o rastro do próprio ser,
-//! e a fitness de hodômetro que não exigia seguir a pista. Nenhum dos dois aparecia em
-//! média alguma.
+//! That is how the last two bugs surfaced — the map that was the being's own trail,
+//! and the odometer fitness that did not require following the track. Neither appeared in
+//! any average.
 //!
-//! # Uso
+//! # Usage
 //!
-//!   replay_diag --replay telemetry/<corrida>/gen0011.replay [--width 28]
+//!   replay_diag --replay telemetry/<race>/gen0011.replay [--width 28]
 
 use bevy::math::Vec2;
 use std::path::PathBuf;
 use universe::replay::ReplayReader;
-use universe::world::{VoxelType, VoxelWorld}; // mesmo tipo que `world.rs` usa (via bevy::prelude)
+use universe::world::{VoxelType, VoxelWorld}; // same type `world.rs` uses (via bevy::prelude)
 
-/// Um episódio contíguo fora da pista.
+/// One contiguous off-track episode.
 struct Excursion {
     start_tick: u32,
     end_tick: u32,
@@ -57,43 +57,43 @@ fn main() {
         i += 1;
     }
     let Some(path) = path else {
-        eprintln!("uso: replay_diag --replay <arquivo.replay> [--width 28]");
+        eprintln!("usage: replay_diag --replay <file.replay> [--width 28]");
         std::process::exit(2);
     };
 
     let mut reader = match ReplayReader::open(&path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("não abriu {}: {e}", path.display());
+            eprintln!("failed to open {}: {e}", path.display());
             std::process::exit(1);
         }
     };
     let seed = reader.header.world_seed;
     let frames = reader.all_frames();
     let Some(fr) = frames.first() else {
-        eprintln!("replay sem quadros");
+        eprintln!("replay has no frames");
         std::process::exit(1);
     };
     if fr.is_empty() {
-        eprintln!("replay sem quadros");
+        eprintln!("replay has no frames");
         std::process::exit(1);
     }
 
-    // O construtor do mundo despeja 129 waypoints no stdout. Útil uma vez, ruído em
-    // toda chamada — silencia enquanto constrói.
+    // The world constructor dumps 129 waypoints to stdout. Useful once, noise on
+    // every call — silence it while building.
     let world = {
         let _mudo = universe::world::silence_map_diag();
         VoxelWorld::new(seed, width)
     };
     let lap = world.lap_distance;
 
-    println!("=== DIAGNÓSTICO: {} ===", path.display());
+    println!("=== DIAGNOSIS: {} ===", path.display());
     println!(
-        "mundo semente {seed} · pista {width:.0} m · volta {lap:.0} m · {} quadros\n",
+        "world seed {seed} · track {width:.0} m · lap {lap:.0} m · {} frames\n",
         fr.len()
     );
 
-    // ── Varredura por quadro ────────────────────────────────────────────────
+    // ── Per-frame sweep ─────────────────────────────────────────────────────
     let mut on_road = 0usize;
     let mut on_grass = 0usize;
     let mut on_wall = 0usize;
@@ -101,9 +101,9 @@ fn main() {
     let mut stopped = 0usize;
     let mut excursions: Vec<Excursion> = Vec::new();
     let mut cur: Option<Excursion> = None;
-    // Avanço LÍQUIDO monotônico, não amplitude. `max - min` conta um ser que recua
-    // cruzando a linha (14m→2900m) como '99,5% da volta' — falso. Mesmo bug já
-    // corrigido no replay_obs; o replay_diag ainda tinha a versão antiga.
+    // Monotonic NET progress, not amplitude. `max - min` counts a being that backs up
+    // across the line (14m→2900m) as '99.5% of the lap' — false. Same bug already
+    // fixed in replay_obs; replay_diag still had the old version.
     let mut prog_liq = 0.0f32;
     let mut prog_pico = 0.0f32;
     let mut prog_ant = world.get_track_progress(fr[0].pos[0], fr[0].pos[2]);
@@ -126,8 +126,8 @@ fn main() {
         speed_sum += f.speed as f64;
         speed_max = speed_max.max(f.speed);
 
-        // Marcha à ré: velocidade projetada no sentido de avanço é negativa.
-        // `fwd` no quadro é (x, z) já normalizado.
+        // Reverse gear: velocity projected on the forward direction is negative.
+        // `fwd` in the frame is (x, z), already normalized.
         if f.gear == 0 {
             reversing += 1;
         }
@@ -150,7 +150,7 @@ fn main() {
             }
         };
 
-        // Profundidade da saída: distância até o eixo da pista menos a meia-largura.
+        // Excursion depth: distance to the track centerline minus the half-width.
         let depth = distance_to_centerline(&world, p) - width / 2.0;
 
         if fora {
@@ -179,37 +179,37 @@ fn main() {
     let n = fr.len() as f32;
     let pct = |c: usize| 100.0 * c as f32 / n;
 
-    println!("── ONDE O SER PASSOU O TEMPO ──");
-    println!("  na pista:   {:5.1}%  ({} quadros)", pct(on_road), on_road);
+    println!("── WHERE THE BEING SPENT ITS TIME ──");
+    println!("  on track:   {:5.1}%  ({} frames)", pct(on_road), on_road);
     println!(
-        "  na grama:   {:5.1}%  ({} quadros)",
+        "  on grass:   {:5.1}%  ({} frames)",
         pct(on_grass),
         on_grass
     );
-    println!("  em parede:  {:5.1}%  ({} quadros)", pct(on_wall), on_wall);
-    println!("  parado (<0,5 m/s): {:5.1}%", pct(stopped));
-    println!("  marcha à ré:       {:5.1}%", pct(reversing));
+    println!("  in wall:    {:5.1}%  ({} frames)", pct(on_wall), on_wall);
+    println!("  stopped (<0.5 m/s): {:5.1}%", pct(stopped));
+    println!("  reverse gear:       {:5.1}%", pct(reversing));
 
-    println!("\n── AVANÇO NO CIRCUITO ──");
+    println!("\n── PROGRESS AROUND THE CIRCUIT ──");
     let span = prog_pico.max(0.0);
     println!(
-        "  progresso alcançado: {:.0} m de {:.0} m ({:.1}% da volta)",
+        "  progress reached: {:.0} m of {:.0} m ({:.1}% of the lap)",
         span,
         lap,
         100.0 * span / lap
     );
     println!(
-        "  velocidade média {:.2} m/s ({:.1} km/h) · máxima {:.2} m/s ({:.1} km/h)",
+        "  mean speed {:.2} m/s ({:.1} km/h) · max {:.2} m/s ({:.1} km/h)",
         speed_sum / fr.len() as f64,
         speed_sum / fr.len() as f64 * 3.6,
         speed_max,
         speed_max * 3.6
     );
 
-    // ── O ser TENTA virar? ─────────────────────────────────────────────────
-    // Todos param no mesmo ponto do traçado (~265 m, onde a curva passa de 10° para 18°).
-    // Isto separa as duas explicações: volante em zero = não manda virar; volante no
-    // batente sem o carro girar = manda e o corpo não obedece.
+    // ── Does the being TRY to turn? ────────────────────────────────────────
+    // They all stop at the same point of the layout (~265 m, where the curve goes from 10° to 18°).
+    // This separates the two explanations: steering at zero = not commanding a turn; steering at
+    // full lock without the car rotating = commands it and the body does not obey.
     {
         let mut str_abs: Vec<f32> = fr.iter().map(|f| f.final_str.abs()).collect();
         str_abs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -219,51 +219,51 @@ fn main() {
         let quieto = str_abs.iter().filter(|&&v| v < 0.05).count();
         let mut thr: Vec<f32> = fr.iter().map(|f| f.final_thr).collect();
         thr.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!("\n── COMANDOS ──");
+        println!("\n── COMMANDS ──");
         println!(
-            "  volante |x|: mediana {:.2} · p90 {:.2} · no batente {:.0}% · quase zero {:.0}%",
+            "  steering |x|: median {:.2} · p90 {:.2} · at full lock {:.0}% · near zero {:.0}%",
             med,
             p90,
             pct(saturado),
             pct(quieto)
         );
-        println!("  acelerador: mediana {:.2}", thr[thr.len() / 2]);
-        // O SINAL decide entre "corrige para os dois lados" e "vive torto".
-        // Volante cravado num lado + acelerador constante = círculo, e círculo dentro de
-        // uma pista larga não conta como sair da pista nem como bater: some de todas as
-        // métricas agregadas e só aparece no progresso que para de subir.
+        println!("  throttle: median {:.2}", thr[thr.len() / 2]);
+        // The SIGN decides between "corrects to both sides" and "lives crooked".
+        // Steering pinned to one side + constant throttle = circle, and a circle inside a
+        // wide track counts neither as leaving the track nor as crashing: it vanishes from
+        // every aggregate metric and only shows in the progress that stops climbing.
         let assinado: Vec<f32> = fr.iter().map(|f| f.final_str).collect();
         let media_ass = assinado.iter().sum::<f32>() / assinado.len() as f32;
         let esq = assinado.iter().filter(|&&v| v < -0.05).count();
         let dir = assinado.iter().filter(|&&v| v > 0.05).count();
         println!(
-            "  volante com sinal: média {:+.2} · esquerda {:.0}% · direita {:.0}%",
+            "  signed steering: mean {:+.2} · left {:.0}% · right {:.0}%",
             media_ass,
             pct(esq),
             pct(dir)
         );
         if media_ass.abs() > 0.3 && (pct(esq) > 80.0 || pct(dir) > 80.0) {
-            println!("  ⇒ VOLANTE CRAVADO num lado só: o ser anda em CÍRCULO, não em curva.");
-            println!("    Círculo dentro de pista larga não sai do traçado nem bate —");
-            println!("    some de toda métrica agregada e só aparece no progresso parado.");
+            println!("  ⇒ STEERING PINNED to one side only: the being drives in a CIRCLE, not a curve.");
+            println!("    A circle inside a wide track neither leaves the layout nor crashes —");
+            println!("    it vanishes from every aggregate metric and only shows as stalled progress.");
         }
 
         if med < 0.05 && p90 < 0.2 {
-            println!("  ⇒ o volante fica PARADO: o cérebro não está mandando virar.");
+            println!("  ⇒ the steering stays STILL: the brain is not commanding a turn.");
         } else if pct(saturado) > 30.0 {
             println!(
-                "  ⇒ volante no batente {:.0}% do tempo: manda virar e não resolve.",
+                "  ⇒ steering at full lock {:.0}% of the time: commands a turn and it does not resolve.",
                 pct(saturado)
             );
         }
     }
 
-    // ── O volante RESPONDE à pista? ────────────────────────────────────────
+    // ── Does the steering RESPOND to the track? ────────────────────────────
     //
-    // Tirar o alisamento (`--steer-alpha 1.0`) não mudou nada: 265 m e +0,40 de média nos
-    // dois casos. Então o comando constante vem do cérebro, não do filtro. Resta separar
-    // "não enxerga a curva" de "enxerga e não usa": se o volante não correlaciona com a
-    // curvatura do traçado à frente, ele não está dirigindo — está segurando.
+    // Removing the smoothing (`--steer-alpha 1.0`) changed nothing: 265 m and +0.40 mean in
+    // both cases. So the constant command comes from the brain, not the filter. What remains is
+    // separating "does not see the curve" from "sees it and does not use it": if the steering
+    // does not correlate with the layout curvature ahead, it is not driving — it is holding.
     {
         let mut cur: Vec<f32> = Vec::with_capacity(fr.len());
         let mut st: Vec<f32> = Vec::with_capacity(fr.len());
@@ -278,30 +278,30 @@ fn main() {
         if cur.len() > 30 {
             let r = correlacao(&cur, &st);
             let var_st = variancia(&st);
-            println!("\n── O VOLANTE SEGUE A PISTA? ──");
-            println!("  correlação volante × curvatura 25 m à frente: {:+.3}", r);
-            println!("  variância do volante: {:.4}", var_st);
+            println!("\n── DOES THE STEERING FOLLOW THE TRACK? ──");
+            println!("  correlation steering × curvature 25 m ahead: {:+.3}", r);
+            println!("  steering variance: {:.4}", var_st);
             if r.abs() < 0.15 {
-                println!("  ⇒ NÃO segue: o comando é praticamente independente do traçado.");
-                println!("    O ser não está dirigindo, está segurando o volante numa posição.");
+                println!("  ⇒ does NOT follow: the command is practically independent of the layout.");
+                println!("    The being is not driving, it is holding the wheel in one position.");
             } else if r > 0.3 {
                 println!(
-                    "  ⇒ segue a curvatura — o problema é de amplitude ou de timing, não de leitura."
+                    "  ⇒ follows the curvature — the problem is amplitude or timing, not reading."
                 );
             }
         }
     }
 
-    println!("\n── SAÍDAS DE PISTA ({}) ──", excursions.len());
+    println!("\n── TRACK EXCURSIONS ({}) ──", excursions.len());
     if excursions.is_empty() {
-        println!("  nenhuma — ficou no traçado o tempo todo.");
+        println!("  none — stayed on the layout the whole time.");
     } else {
-        // A PRIMEIRA saída é a que importa: é onde a competência acaba. As seguintes já
-        // acontecem com o ser perdido, então descrevem a deriva, não a falha.
+        // The FIRST excursion is the one that matters: it is where the competence ends. The
+        // following ones already happen with the being lost, so they describe the drift, not the failure.
         for (k, e) in excursions.iter().take(6).enumerate() {
             let dur = (e.end_tick - e.start_tick) as f32 / 64.0;
             println!(
-                "  {}. tick {:>6}–{:<6} ({:5.1}s) · aos {:.0} m da volta ({:.0}%) · até {:.1} m fora",
+                "  {}. tick {:>6}–{:<6} ({:5.1}s) · at {:.0} m of the lap ({:.0}%) · up to {:.1} m off",
                 k + 1,
                 e.start_tick,
                 e.end_tick,
@@ -312,42 +312,42 @@ fn main() {
             );
         }
         if excursions.len() > 6 {
-            println!("  … e mais {}", excursions.len() - 6);
+            println!("  … and {} more", excursions.len() - 6);
         }
 
         let e = &excursions[0];
         println!(
-            "\n  A PRIMEIRA saída é o diagnóstico: o ser dirigiu bem até {:.0} m",
+            "\n  The FIRST excursion is the diagnosis: the being drove well up to {:.0} m",
             e.at_progress
         );
         println!(
-            "  ({:.0}% da volta) e ali deixou o traçado.",
+            "  ({:.0}% of the lap) and left the layout there.",
             100.0 * e.at_progress / lap
         );
         descrever_curva(&world, e.at_progress);
     }
 
-    // Veredito curto, para não precisar interpretar as tabelas toda vez.
-    println!("\n── VEREDITO ──");
+    // Short verdict, so the tables do not need interpreting every time.
+    println!("\n── VERDICT ──");
     if pct(on_road) < 50.0 {
-        println!("  Passa mais tempo FORA da pista do que nela. O objetivo não está exigindo");
-        println!("  seguir o traçado, ou ele não consegue — olhe a primeira saída acima.");
+        println!("  Spends more time OFF the track than on it. The objective is not requiring");
+        println!("  following the layout, or it cannot — look at the first excursion above.");
     } else if pct(stopped) > 30.0 {
         println!(
-            "  Fica parado {:.0}% do tempo. O gargalo é ANDAR, não navegar.",
+            "  Stays stopped {:.0}% of the time. The bottleneck is MOVING, not navigating.",
             pct(stopped)
         );
     } else if span < lap * 0.5 {
         println!(
-            "  Fica na pista mas só cobre {:.0}% da volta: trava num ponto específico.",
+            "  Stays on track but only covers {:.0}% of the lap: gets stuck at a specific point.",
             100.0 * span / lap
         );
     } else {
-        println!("  Segue o traçado e cobre boa parte da volta.");
+        println!("  Follows the layout and covers a good part of the lap.");
     }
 }
 
-/// Distância até o eixo da pista, pelo waypoint mais próximo.
+/// Distance to the track centerline, via the nearest waypoint.
 fn distance_to_centerline(world: &VoxelWorld, p: Vec2) -> f32 {
     world
         .waypoints_world
@@ -356,14 +356,14 @@ fn distance_to_centerline(world: &VoxelWorld, p: Vec2) -> f32 {
         .fold(f32::MAX, f32::min)
 }
 
-/// Descreve a curvatura no ponto onde o ser saiu — reta e curva fechada falham por
-/// motivos diferentes, e a tabela sozinha não distingue.
+/// Describes the curvature at the point where the being left — straight and tight curve fail
+/// for different reasons, and the table alone does not distinguish them.
 fn descrever_curva(world: &VoxelWorld, at_progress: f32) {
     let wps = &world.waypoints_world;
     if wps.len() < 3 {
         return;
     }
-    // Acha o waypoint cujo progresso acumulado está mais perto do ponto de saída.
+    // Finds the waypoint whose accumulated progress is closest to the exit point.
     let mut acc = 0.0f32;
     let mut idx = 0usize;
     for i in 0..wps.len() - 1 {
@@ -381,19 +381,19 @@ fn descrever_curva(world: &VoxelWorld, at_progress: f32) {
     let v2 = (c - b).normalize_or_zero();
     let ang = v1.dot(v2).clamp(-1.0, 1.0).acos().to_degrees();
     let tipo = if ang > 45.0 {
-        "CURVA FECHADA"
+        "TIGHT CURVE"
     } else if ang > 15.0 {
-        "curva"
+        "curve"
     } else {
-        "reta"
+        "straight"
     };
-    println!("  Geometria ali: {tipo} ({ang:.0}° entre os segmentos, waypoint {idx}).");
+    println!("  Geometry there: {tipo} ({ang:.0}° between segments, waypoint {idx}).");
 }
 
-/// Curvatura assinada do traçado `ahead` metros à frente do ponto `p`.
+/// Signed curvature of the layout `ahead` meters in front of point `p`.
 ///
-/// Positiva = a pista vira à direita. Serve de "resposta certa" contra a qual comparar o
-/// comando do volante, sem depender de nenhum canal sensorial do cérebro.
+/// Positive = the track turns right. Serves as the "correct answer" against which to compare
+/// the steering command, without depending on any of the brain's sensory channels.
 fn curvatura_a_frente(world: &VoxelWorld, p: Vec2, ahead: f32) -> f32 {
     let wps = &world.waypoints_world;
     if wps.len() < 4 {
@@ -408,7 +408,7 @@ fn curvatura_a_frente(world: &VoxelWorld, p: Vec2, ahead: f32) -> f32 {
             i0 = i;
         }
     }
-    // Anda pela lista até acumular `ahead` metros.
+    // Walks the list until accumulating `ahead` meters.
     let mut acc = 0.0;
     let mut i = i0;
     while acc < ahead && i + 1 < wps.len() {
@@ -423,7 +423,7 @@ fn curvatura_a_frente(world: &VoxelWorld, p: Vec2, ahead: f32) -> f32 {
     let c = wps[i + 1];
     let v1 = (b - a).normalize_or_zero();
     let v2 = (c - b).normalize_or_zero();
-    // Produto vetorial em 2D dá o SENTIDO da curva.
+    // The 2D cross product gives the DIRECTION of the curve.
     v1.x * v2.y - v1.y * v2.x
 }
 

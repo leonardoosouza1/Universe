@@ -28,9 +28,9 @@ impl Plugin for EvolutionPlugin {
     }
 }
 
-/// Tamanho do bloco de spawn por frame. 2000 carros / 150 = ~14 frames ≈ 233ms @ 60fps.
-/// Ajustável: maior = termina spawn mais rápido mas stutter maior cada frame; menor = suave
-/// mas demora. 150 equilibra: ~3-4ms/frame de overhead, sem percepção de travada.
+/// Spawn block size per frame. 2000 cars / 150 = ~14 frames ≈ 233ms @ 60fps.
+/// Tunable: larger = spawn finishes faster but bigger stutter each frame; smaller = smooth
+/// but slow. 150 balances it: ~3-4ms/frame of overhead, no perceptible hitch.
 const SPAWN_BATCH_SIZE: usize = 150;
 
 fn drain_spawn_queue(

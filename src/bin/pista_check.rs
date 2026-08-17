@@ -1,21 +1,22 @@
-//! VALIDAÇÃO DA PISTA — a pista é dirigível, ou o mapa está quebrado?
+//! TRACK VALIDATION — is the track drivable, or is the map broken?
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo: *"ou vc errou, o mapa é bugado para o modelo. Sério, tem algo de errado. O
-//! modelo consegue fazer tudo — vira, vê, pensa — mas não vira a curva."*
+//! Leonardo: *"either you got it wrong, or the map is bugged for the model. Seriously,
+//! something is wrong. The model can do everything — it turns, sees, thinks — but it does
+//! not take the curve."*
 //!
-//! Todo controlador testado para entre 255 e 271 m: o cérebro evoluído, um piloto
-//! geométrico com a racing line, um piloto sensorial de raios de parede, e o mesmo piloto
-//! com o sinal invertido. Quatro controladores independentes parando no mesmo ponto não é
-//! coincidência de controle — é propriedade do mundo.
+//! Every controller tested stops between 255 and 271 m: the evolved brain, a geometric
+//! pilot with the racing line, a sensory pilot using wall rays, and the same pilot
+//! with the signal inverted. Four independent controllers stopping at the same point is not
+//! a control coincidence — it is a property of the world.
 //!
-//! Este binário não simula nada. Ele CAMINHA pelo eixo da pista metro a metro e pergunta
-//! ao mesmo `VoxelWorld` que o simulador usa: o que tem aqui? A pista continua? Qual a
-//! largura livre? Se houver parede atravessada no meio da estrada em 270 m, acabou a
-//! investigação.
+//! This binary simulates nothing. It WALKS along the track axis meter by meter and asks
+//! the same `VoxelWorld` the simulator uses: what is here? Does the track continue? What is the
+//! free width? If there is a wall across the middle of the road at 270 m, the
+//! investigation is over.
 //!
-//! # Uso
+//! # Usage
 //!
 //!   pista_check [--width 28] [--ate 600] [--seed 9001]
 
@@ -61,14 +62,14 @@ fn main() {
     let n = wps.len();
 
     println!(
-        "PISTA semente {seed} · largura declarada {width:.0} m · volta {:.0} m · {n} waypoints\n",
+        "TRACK seed {seed} · declared width {width:.0} m · lap {:.0} m · {n} waypoints\n",
         world.lap_distance
     );
 
-    // Caminha pelo EIXO, interpolando entre waypoints, e mede em cada metro:
-    //   · o material sob o eixo (tem de ser Road; qualquer outra coisa é buraco no traçado)
-    //   · a largura livre para cada lado até encontrar parede
-    //   · o raio da curva local
+    // Walks along the AXIS, interpolating between waypoints, and measures at each meter:
+    //   · the material under the axis (it must be Road; anything else is a hole in the layout)
+    //   · the free width on each side until a wall is found
+    //   · the local curve radius
     let mut arco = 0.0f32;
     let mut wp = 0usize;
     let mut t = 0.0f32;
@@ -76,7 +77,7 @@ fn main() {
 
     println!(
         "{:>6} {:>8} {:>7} {:>7} {:>7}  {}",
-        "arco", "material", "esq", "dir", "raio", ""
+        "arc", "material", "left", "right", "radius", ""
     );
     println!("{}", "-".repeat(62));
 
@@ -86,7 +87,7 @@ fn main() {
         let seg = (b - a).length().max(0.001);
         let p = a + (b - a) * (t / seg);
 
-        // Normal ao eixo, para medir a largura livre dos dois lados.
+        // Normal to the axis, to measure the free width on both sides.
         let dir_seg = (b - a) / seg;
         let nrm = Vec2::new(-dir_seg.y, dir_seg.x);
 
@@ -105,7 +106,7 @@ fn main() {
         let esq = livre(1.0);
         let dir = livre(-1.0);
 
-        // Raio local pelo ângulo entre os segmentos vizinhos.
+        // Local radius from the angle between neighboring segments.
         let raio = if wp > 0 && wp + 1 < n {
             let v1 = wps[wp] - wps[wp - 1];
             let v2 = wps[wp + 1] - wps[wp];
@@ -119,16 +120,16 @@ fn main() {
             99999.0
         };
 
-        // Só imprime o que interessa: a cada 10 m, e SEMPRE quando há defeito.
+        // Only prints what matters: every 10 m, and ALWAYS when there is a defect.
         let defeito = !matches!(mat, VoxelType::Road) || esq + dir < width * 0.5;
         if defeito {
             problemas += 1;
         }
         if arco as u32 % 10 == 0 || defeito {
             let marca = if !matches!(mat, VoxelType::Road) {
-                "  ← EIXO FORA DA PISTA"
+                "  ← AXIS OFF THE TRACK"
             } else if esq + dir < width * 0.5 {
-                "  ← ESTRANGULAMENTO"
+                "  ← BOTTLENECK"
             } else {
                 ""
             };
@@ -151,14 +152,14 @@ fn main() {
         }
     }
 
-    // ── O QUE O SER REALMENTE PERCEBE ─────────────────────────────────────
+    // ── WHAT THE BEING ACTUALLY PERCEIVES ─────────────────────────────────
     //
-    // Leonardo: *"ele tem que perceber a curva, a visão dele tem que ver literalmente."*
+    // Leonardo: *"it has to perceive the curve, its vision has to literally see it."*
     //
-    // Fidelidade não basta. Um sensor perfeito de um valor CONSTANTE entrega zero bit de
-    // informação, e foi assim que eu confundi correlação 1,000 com "eles enxergam". Aqui
-    // reproduzo o raio frontal exatamente como `gpu_evolve.rs` o calcula — sondas de 1 a
-    // 10 m, padrão 30,0 quando nada é encontrado — e reporto quantas vezes ele SATURA.
+    // Fidelity is not enough. A perfect sensor of a CONSTANT value delivers zero bits of
+    // information, and that is how I mistook correlation 1.000 for "they can see". Here I
+    // reproduce the frontal ray exactly as `gpu_evolve.rs` computes it — probes from 1 to
+    // 10 m, default 30.0 when nothing is found — and report how many times it SATURATES.
     {
         let mut arco = 0.0f32;
         let mut wp = 0usize;
@@ -172,11 +173,11 @@ fn main() {
             let seg = (b - a).length().max(0.001);
             let p = a + (b - a) * (t / seg);
             let f = (b - a) / seg;
-            // O SENSOR CERTO. A versão anterior media as sondas de 1 a 10 m, que são o
-            // gatilho da MARCHA À RÉ em `gpu_evolve.rs:573` — não a visão. A visão do ser
-            // está em `perception.wgsl:373`: oito amostras até 60 m. Medir o sensor errado
-            // e concluir "o ser é cego" é exatamente o erro que este arquivo existe para
-            // não deixar acontecer.
+            // The RIGHT SENSOR. The previous version measured the 1 to 10 m probes, which are the
+            // REVERSE-GEAR trigger in `gpu_evolve.rs:573` — not vision. The being's vision
+            // is in `perception.wgsl:373`: eight samples up to 60 m. Measuring the wrong sensor
+            // and concluding "the being is blind" is exactly the mistake this file exists to
+            // prevent from happening.
             let mut fwd = 60.0f32;
             for sd in [3.0f32, 8.0, 15.0, 25.0, 35.0, 45.0, 52.0, 60.0] {
                 if !matches!(world.material_at(p + f * sd), VoxelType::Road) {
@@ -198,15 +199,15 @@ fn main() {
         }
         let media = vals.iter().sum::<f32>() / tot.max(1) as f32;
         let dp = (vals.iter().map(|v| (v - media).powi(2)).sum::<f32>() / tot.max(1) as f32).sqrt();
-        println!("\n── O QUE A VISÃO FRONTAL ENTREGA (carro no eixo, perception.wgsl) ──");
+        println!("\n── WHAT THE FRONTAL VISION DELIVERS (car on the axis, perception.wgsl) ──");
         println!(
-            "  saturado em 60,0 m: {:.1}% dos pontos ({sat} de {tot})",
+            "  saturated at 60.0 m: {:.1}% of the points ({sat} of {tot})",
             100.0 * sat as f32 / tot.max(1) as f32
         );
-        println!("  média {media:.1} m · desvio padrão {dp:.2} m");
+        println!("  mean {media:.1} m · standard deviation {dp:.2} m");
         if dp < 0.5 {
             println!(
-                "  → VARIÂNCIA NULA: o canal é constante. O ser é cego para a curva por\n                      \x20    este sensor, por mais fiel que ele seja."
+                "  → NULL VARIANCE: the channel is constant. The being is blind to the curve through\n                      \x20    this sensor, however faithful it may be."
             );
         }
     }
@@ -214,14 +215,14 @@ fn main() {
     println!("\n{}", "-".repeat(62));
     if problemas == 0 {
         println!(
-            "Nenhum defeito: o eixo está sobre asfalto e a largura livre é coerente\n\
-                  em todo o trecho examinado. A pista é dirigível — o problema não é o mapa."
+            "No defects: the axis is on asphalt and the free width is coherent\n\
+                  across the whole examined stretch. The track is drivable — the problem is not the map."
         );
     } else {
         println!(
-            "{problemas} pontos com defeito no trecho examinado.\n\
-                  Eixo fora da pista ou estrangulamento significa que NENHUM controlador\n\
-                  passaria — a investigação de controle estava perseguindo a coisa errada."
+            "{problemas} points with defects in the examined stretch.\n\
+                  Axis off the track or a bottleneck means that NO controller\n\
+                  would pass — the control investigation was chasing the wrong thing."
         );
     }
 }

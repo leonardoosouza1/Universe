@@ -13,7 +13,7 @@ impl KanAxiomFilter {
         }
     }
 
-    /// Axiomatic Pulse Filtering: "A máquina é fisicamente incapaz do impossível."
+    /// Axiomatic Pulse Filtering: "The machine is physically incapable of the impossible."
     /// This filter uses splines to smooth the 1.58-bit ternary output.
     pub fn filter_pulse(&self, raw_signal: f32) -> f32 {
         // 1. Axiom 1: Velocity Persistence (Zero signals should be ignored)
@@ -40,21 +40,21 @@ impl KanAxiomFilter {
 }
 
 /// Tier 2.2 — KAN per-channel SENSORY PRE-FILTER.
-/// Um spline independente por canal de input (128 canais). Cada canal aprende
-/// sua curva de resposta ótima (log, saturação, step, sigmoid, linear…).
+/// One independent spline per input channel (128 channels). Each channel learns
+/// its optimal response curve (log, saturation, step, sigmoid, linear…).
 ///
-/// Posição no pipeline (ANTES do CfC):
+/// Position in the pipeline (BEFORE the CfC):
 ///   raw_input[128] → KAN per-channel → filtered[128]
 ///                                       ↓ [0..64]
-///                                       → CfC (memória temporal)
+///                                       → CfC (temporal memory)
 ///                                       ↓
 ///                                       → BitLinear(128→64)
 ///
-/// Init identity-ish: todos os coeffs = 1.0 → `filter_pulse(x) = x` (mantém
-/// comportamento pré-KAN; zero regressão esperada no gen 0).
+/// Identity-ish init: all coeffs = 1.0 → `filter_pulse(x) = x` (keeps the
+/// pre-KAN behavior; zero regression expected at gen 0).
 ///
-/// RUNTIME-ONLY: não persiste em .dna v3. Coeffs compartilhados no spawn,
-/// evoluem via adaptação futura (reward-modulated). Ver
+/// RUNTIME-ONLY: does not persist in .dna v3. Coeffs shared at spawn,
+/// evolve via future adaptation (reward-modulated). See
 /// melhorias/02-cerebro-dormente.md §2.2.
 pub struct SensoryPreFilter {
     pub filters: Vec<KanAxiomFilter>,
@@ -69,8 +69,8 @@ impl SensoryPreFilter {
         Self { filters }
     }
 
-    /// Aplica spline por canal. Mantém quantização ternária i8 no output.
-    /// `filter_pulse` já trata zero-signal (axiom 1): |x| < 0.001 → 0.
+    /// Applies the spline per channel. Keeps ternary i8 quantization in the output.
+    /// `filter_pulse` already handles zero-signal (axiom 1): |x| < 0.001 → 0.
     pub fn apply(&self, raw_input: &[i8], output: &mut [i8]) {
         let n = raw_input.len().min(output.len()).min(self.filters.len());
         for i in 0..n {
@@ -82,25 +82,26 @@ impl SensoryPreFilter {
 }
 
 /// KAN output head — per-output B-spline on raw action logits.
-/// WHY: substitui clamp duro no throttle/steer/brake (que produz zig-zag ±1 saturado)
-/// por curva suave aprendível. Inputs esperados em [-2, 2] (pré-clamp); outputs em [-1, 1].
+/// WHY: replaces the hard clamp on throttle/steer/brake (which produces saturated ±1
+/// zig-zag) with a smooth learnable curve. Expected inputs in [-2, 2] (pre-clamp);
+/// outputs in [-1, 1].
 pub const KAN_OUT_KNOTS: usize = 12;
-pub const KAN_OUT_DOMAIN: f32 = 2.0; // domínio [-DOMAIN, +DOMAIN]
+pub const KAN_OUT_DOMAIN: f32 = 2.0; // domain [-DOMAIN, +DOMAIN]
 
-/// Avalia spline linear-interpolado (B-spline grau 1) direto sobre uma matriz crua
-/// de knots — mesma matemática de `KanOutputHead::eval`, mas sem exigir o wrapper
-/// struct. Existe porque `Genome::kan_knots` (gpu/evolution.rs) e os binários GPU
-/// (`gpu_evolve`, `gpu_loop`) carregam os knots como `[[f32; KAN_OUT_KNOTS]; 3]` cru,
-/// não como `KanOutputHead`.
+/// Evaluates the linearly-interpolated spline (degree-1 B-spline) directly on a raw
+/// knot matrix — same math as `KanOutputHead::eval`, but without requiring the wrapper
+/// struct. It exists because `Genome::kan_knots` (gpu/evolution.rs) and the GPU
+/// binaries (`gpu_evolve`, `gpu_loop`) carry the knots as raw
+/// `[[f32; KAN_OUT_KNOTS]; 3]`, not as `KanOutputHead`.
 ///
-/// Deduplicado (E3, REFACTOR_PLAN.md §2.3): existiam DUAS reimplementações
-/// byte-idênticas desta fórmula como closures locais em `gpu_evolve.rs` e
-/// `gpu_loop.rs` (esta última já comentava "idêntico ao KanOutputHead::eval()" sem
-/// de fato compartilhar código) — fonte de verdade única agora.
+/// Deduplicated (E3, REFACTOR_PLAN.md §2.3): there were TWO byte-identical
+/// reimplementations of this formula as local closures in `gpu_evolve.rs` and
+/// `gpu_loop.rs` (the latter already commented "identical to KanOutputHead::eval()"
+/// without actually sharing code) — single source of truth now.
 #[inline]
 pub fn eval_knots(knots: &[[f32; KAN_OUT_KNOTS]; 3], out_idx: usize, x: f32) -> f32 {
     let out_idx = out_idx.min(2);
-    // mapeia x em [-DOMAIN, +DOMAIN] pra índice [0, KAN_OUT_KNOTS-1]
+    // maps x in [-DOMAIN, +DOMAIN] to index [0, KAN_OUT_KNOTS-1]
     let xc = x.clamp(-KAN_OUT_DOMAIN, KAN_OUT_DOMAIN);
     let u = (xc + KAN_OUT_DOMAIN) / (2.0 * KAN_OUT_DOMAIN); // [0,1]
     let fpos = u * ((KAN_OUT_KNOTS - 1) as f32);
@@ -114,43 +115,43 @@ pub fn eval_knots(knots: &[[f32; KAN_OUT_KNOTS]; 3], out_idx: usize, x: f32) -> 
 
 #[derive(Clone, Debug)]
 pub struct KanOutputHead {
-    /// Ordem: [throttle, steer, brake] × KAN_OUT_KNOTS nós cada.
+    /// Order: [throttle, steer, brake] × KAN_OUT_KNOTS knots each.
     pub knots: [[f32; KAN_OUT_KNOTS]; 3],
 }
 
 impl KanOutputHead {
-    /// Default identity-like: knots linearmente espalhados + sigmoid suave no extremo.
+    /// Default identity-like: linearly spread knots + smooth sigmoid at the extremes.
     pub fn new() -> Self {
         let mut knots = [[0.0f32; KAN_OUT_KNOTS]; 3];
         for out in 0..3 {
             for k in 0..KAN_OUT_KNOTS {
-                // x em [-DOMAIN, +DOMAIN]
+                // x in [-DOMAIN, +DOMAIN]
                 let t = (k as f32) / ((KAN_OUT_KNOTS - 1) as f32); // [0,1]
                 let x = -KAN_OUT_DOMAIN + t * (2.0 * KAN_OUT_DOMAIN);
-                // sigmoid suave mapeada em [-1, 1]: tanh(x * 0.9) aproxima identidade no meio
-                // e satura gradualmente nos extremos — elimina o "degrau" do clamp(±1).
+                // smooth sigmoid mapped to [-1, 1]: tanh(x * 0.9) approximates identity in the
+                // middle and saturates gradually at the extremes — removes the clamp(±1) "step".
                 knots[out][k] = (x * 0.9).tanh();
             }
         }
         Self { knots }
     }
 
-    /// Avalia spline linear-interpolado (B-spline grau 1) no output `out_idx` com input `x`.
-    /// Output sempre em [-1, 1].
+    /// Evaluates the linearly-interpolated spline (degree-1 B-spline) on output `out_idx`
+    /// with input `x`. Output always in [-1, 1].
     #[inline]
     pub fn eval(&self, out_idx: usize, x: f32) -> f32 {
         eval_knots(&self.knots, out_idx, x)
     }
 
-    /// Mutação leve dos knots — chamada pelo spawn.rs quando o filho herda a head.
-    /// `rate` = prob de perturbar cada knot; sigma fixo baixo (0.05) preserva suavidade.
+    /// Light knot mutation — called by spawn.rs when the child inherits the head.
+    /// `rate` = probability of perturbing each knot; low fixed sigma (0.05) preserves smoothness.
     pub fn mutate_spline_knots<R: FnMut() -> f32>(&mut self, mut rng01: R, rate: f32) {
-        // v11: sigma 0.05 → 0.025 (metade) pra reduzir drift cumulativo em 200+ gens.
+        // v11: sigma 0.05 → 0.025 (half) to reduce cumulative drift over 200+ gens.
         let sigma = 0.025f32;
         for out in 0..3 {
             for k in 0..KAN_OUT_KNOTS {
                 if rng01() < rate {
-                    // Box-Muller barato via soma de 4 uniformes (std~0.58), escala por sigma.
+                    // Cheap Box-Muller via sum of 4 uniforms (std~0.58), scaled by sigma.
                     let u: f32 = (0..4).map(|_| rng01() - 0.5).sum();
                     self.knots[out][k] = (self.knots[out][k] + u * sigma).clamp(-1.0, 1.0);
                 }
@@ -179,8 +180,8 @@ mod tests {
         let mut out = [0i8; 128];
         pre.apply(&input, &mut out);
         for i in 0..128 {
-            // coeffs = 1.0 → output ≈ input (±1 por quantização).
-            // Zero-signal: |x/127| < 0.001 (i.e. input==0) → 0 (igual ao input==0 de qualquer jeito).
+            // coeffs = 1.0 → output ≈ input (±1 from quantization).
+            // Zero-signal: |x/127| < 0.001 (i.e. input==0) → 0 (same as input==0 anyway).
             let diff = (out[i] as i32 - input[i] as i32).abs();
             assert!(
                 diff <= 1,

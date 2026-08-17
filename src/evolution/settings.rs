@@ -16,7 +16,7 @@ pub struct RaceSettings {
     pub best_slow_scale: f32,
     pub best_gate_weights: Option<Vec<f32>>,
     pub best_gate_bias: Option<Vec<f32>>,
-    pub best_reflex_weights: Option<Vec<f32>>, // f32 runtime; quantize só ao salvar TRIN no DNA
+    pub best_reflex_weights: Option<Vec<f32>>, // f32 runtime; quantize only when saving TRIN into the DNA
     pub selected_racer: Option<Entity>,
     pub world_entities: Vec<Entity>,
     pub should_reset: bool,
@@ -27,54 +27,56 @@ pub struct RaceSettings {
     pub death_markers: Vec<Vec3>,
     pub global_best_distance: f32,
     pub global_best_position: Option<Vec3>,
-    pub champion_distance: f32, // Distância do DNA salvo em CHAMPION.dna (só muda quando DNA é coroado)
-    pub best_ever_dist: f32,    // Protege contra regressão — só atualiza com 10% melhoria
-    pub elite_pool: Vec<EliteDna>, // Top-5 DNAs da última geração (tournament pool)
-    // Niching: cluster id paralelo a elite_pool (mesmo índice). Populado por
-    // evolution_pipeline após clustering por BehaviorFingerprint (Hamming ≤ 8).
-    // Usado por spawn.rs em tournament para rejeitar pares do mesmo cluster.
+    pub champion_distance: f32, // Distance of the DNA saved in CHAMPION.dna (only changes when a DNA is crowned)
+    pub best_ever_dist: f32,    // Guards against regression — only updates with a 10% improvement
+    pub elite_pool: Vec<EliteDna>, // Top-5 DNAs of the last generation (tournament pool)
+    // Niching: cluster id parallel to elite_pool (same index). Populated by
+    // evolution_pipeline after clustering by BehaviorFingerprint (Hamming ≤ 8).
+    // Used by spawn.rs in tournaments to reject pairs from the same cluster.
     pub elite_clusters: Vec<usize>,
-    pub champion_path: Vec<Vec3>, // Traçado do último campeão (spawn → última posição)
-    pub champion_net_dist: f32,   // Distância NET do último campeão (para label do traçado)
-    pub gens_since_crown: u32,    // Gens consecutivas sem coroar — destrava threshold se > N
-    /// Fração da POPULAÇÃO que fechou ≥1 volta na geração anterior.
-    /// Rege o currículo de ambiente (ver `pipeline::decide_next_env_level_pop`). Antes ele
-    /// era regido pela distância do CAMPEÃO, e um único carro de sorte levava os 60 para um
-    /// nível em que a aderência cai a 0,33 e a frenagem exigida (130 m) passa do alcance do
-    /// sensor mais longo (120 m) — cegueira, não dificuldade.
+    pub champion_path: Vec<Vec3>, // Path of the last champion (spawn → last position)
+    pub champion_net_dist: f32,   // NET distance of the last champion (for the path label)
+    pub gens_since_crown: u32,    // Consecutive gens without crowning — unlocks the threshold if > N
+    /// Fraction of the POPULATION that completed ≥1 lap in the previous generation.
+    /// Governs the environment curriculum (see `pipeline::decide_next_env_level_pop`). It
+    /// used to be governed by the CHAMPION's distance, and a single lucky car took all 60
+    /// to a level where grip drops to 0.33 and the required braking (130 m) exceeds the
+    /// range of the longest sensor (120 m) — blindness, not difficulty.
     pub frac_completou_volta: f32,
-    /// Quanto a pista está estreitada em relação à largura cheia, em metros.
-    /// Persiste entre gerações e anda no máximo 0,25 m por vez, nos dois sentidos — pode
-    /// ALARGAR de volta quando a população não sustenta. Ver o currículo de largura em
-    /// `pipeline.rs`, que antes era dirigido pela distância do campeão.
+    /// How much the track is narrowed relative to full width, in metres.
+    /// Persists across generations and moves at most 0.25 m at a time, in both
+    /// directions — it can WIDEN back when the population cannot sustain it. See the
+    /// width curriculum in `pipeline.rs`, which used to be driven by the champion's
+    /// distance.
     pub estreitamento: f32,
-    pub last_gen_path: Vec<Vec3>, // Traçado do melhor da última gen (refresca sempre)
-    pub last_gen_net: f32,        // NET do melhor da última gen
-    pub last_gen_was_grid: bool,  // true se o melhor nasceu na largada (elegível pra coroar)
-    pub is_validation_gen: bool,  // próxima gen roda env fixo (level 0); só valida DNA sem ruído
-    pub gens_until_validation: u32, // conta até próxima validation (default: cada 3 gens)
-    pub env_level: u8,            // nível curricular aplicado na gen atual (0..=3)
-    // Batched spawn: evita freeze ao spawnar N carros de uma vez. Cada gen seta
-    // Some((0, swarm_count)); drain_spawn_queue consome em blocos de SPAWN_BATCH_SIZE
-    // por frame até virar None. Sim continua rodando entre batches — UI fica responsiva.
+    pub last_gen_path: Vec<Vec3>, // Path of the last gen's best (always refreshed)
+    pub last_gen_net: f32,        // NET of the last gen's best
+    pub last_gen_was_grid: bool,  // true if the best was born on the grid (eligible for crowning)
+    pub is_validation_gen: bool,  // next gen runs a fixed env (level 0); only validates the DNA without noise
+    pub gens_until_validation: u32, // counts down to the next validation (default: every 3 gens)
+    pub env_level: u8,            // curriculum level applied in the current gen (0..=3)
+    // Batched spawn: avoids a freeze when spawning N cars at once. Each gen sets
+    // Some((0, swarm_count)); drain_spawn_queue consumes it in blocks of SPAWN_BATCH_SIZE
+    // per frame until it becomes None. The sim keeps running between batches — the UI
+    // stays responsive.
     pub pending_spawn: Option<(usize, usize)>,
-    // Tier 1.2 — histórico de fitness média (últimas 100 gens) pra emergency brake.
+    // Tier 1.2 — mean-fitness history (last 100 gens) for the emergency brake.
     pub fitness_history: VecDeque<f32>,
-    // Tier 1.2 — se > 0, próximas N gens usam axiom_strength mínimo 0.5 (socorro).
+    // Tier 1.2 — if > 0, the next N gens use a minimum axiom_strength of 0.5 (rescue).
     pub axiom_boost_counter: u32,
-    // Tier 1.3 — Axiom como prior externo (potential-based shaping, Ng-Harada-Russell 1999).
-    // axiom_policy() em motor.rs soma bias aditivo ao output do brain escalado por este valor.
-    // Atualizado pela spawn.rs a cada gen com a mesma curva de decay: (1.0 - gen/50).max(0),
-    // elevado a 0.5 se axiom_boost_counter > 0. Consumido por update_racers após execute_cycle.
+    // Tier 1.3 — Axiom as an external prior (potential-based shaping, Ng-Harada-Russell 1999).
+    // axiom_policy() in motor.rs adds an additive bias to the brain's output scaled by this value.
+    // Updated by spawn.rs every gen with the same decay curve: (1.0 - gen/50).max(0),
+    // raised to 0.5 if axiom_boost_counter > 0. Consumed by update_racers after execute_cycle.
     pub current_axiom_strength: f32,
-    // Tier 6.3/6.4 — morpho + hypernet do champion atual, persistidos via save_champion_dna_full.
+    // Tier 6.3/6.4 — morpho + hypernet of the current champion, persisted via save_champion_dna_full.
     pub current_morpho: MorphoGenes,
     pub current_hypernet: HypernetSeed,
-    // Telemetry: gravação de dados por geração (NDJSON stats + binary replay)
+    // Telemetry: per-generation data recording (NDJSON stats + binary replay)
     pub telemetry: super::telemetry::TelemetryWriter,
-    /// Escritor do novo formato de replay (128 bytes/frame) — gravado quando
-    /// lab.record_replay=true. None = sem gravação. Aberto no início de cada geração
-    /// e fechado (flush) no final pelo evolution_pipeline.
+    /// Writer of the new replay format (128 bytes/frame) — recorded when
+    /// lab.record_replay=true. None = no recording. Opened at the start of each
+    /// generation and closed (flushed) at the end by the evolution_pipeline.
     pub replay_writer: Option<crate::replay::ReplayWriter>,
 }
 
@@ -87,7 +89,7 @@ pub struct DevSettings {
     /// Toggle visual gizmos: champion path, waypoint pillars, flag, last-gen path.
     /// Hotkey G (toggle). Default ON for dev, can hide for clean racing-game look.
     pub show_gizmos: bool,
-    /// Toggle vision cones (fovea raycast verde) on selected racer. KeyH.
+    /// Toggle vision cones (green fovea raycast) on selected racer. KeyH.
     pub show_vision: bool,
 }
 

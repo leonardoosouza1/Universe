@@ -1,11 +1,11 @@
-// Fase de bissecção: kernel COMPLETO (todas as 4 fases).
-// Se este crashar depois das fases anteriores passarem, o problema é a fase de colisão+integração,
-// ou simplesmente o shader ficar grande demais para o compilador RADV otimizar.
-// Este arquivo é idêntico a physics.wgsl — apenas renomeia a entry point para "main".
+// Bisection phase: FULL kernel (all 4 phases).
+// If this one crashes after the previous phases pass, the problem is the collision+integration
+// phase, or simply the shader getting too large for the RADV compiler to optimize.
+// This file is identical to physics.wgsl — it only renames the entry point to "main".
 
-// NOTA: este arquivo É uma cópia de physics.wgsl com o mesmo entry point.
-// Se o shader mínimo e as fases 2+3 passarem mas este crashar, a causa é
-// a fase 4 (colisão com voxel_at) ou o tamanho total do shader.
+// NOTE: this file IS a copy of physics.wgsl with the same entry point.
+// If the minimal shader and phases 2+3 pass but this one crashes, the cause is
+// phase 4 (collision with voxel_at) or the total shader size.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -332,7 +332,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     forces+=-lateral_dir*total_lat_force;
     torques_y+=total_yaw_torque;
     let yaw_inertia=c.mass*(half_wb*half_wb);
-    // FASE 4: colisão
+    // PHASE 4: collision
     var vel_col=c.vel;var pos_col=c.pos;var av_y_col=c.av_y;
     var probe_pts: array<vec3<f32>,4>;
     probe_pts[0]=c.pos+fwd*half_wb;probe_pts[1]=c.pos-fwd*half_wb;
@@ -355,7 +355,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let ground_y_c=height_at(c.pos.x,c.pos.z)+0.5;
     if (pos_col.y<ground_y_c){pos_col.y=ground_y_c;vel_col.y=max(vel_col.y,0.0);}
-    // FASE 5: integração
+    // PHASE 5: integration
     let speed_int=length(vel_col);
     var drag_force_int=vec3<f32>(0.0);
     if (flag(c.config_flags,2u)){

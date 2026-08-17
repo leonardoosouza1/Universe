@@ -7,8 +7,8 @@ pub mod racing_line;
 pub use racer::{PainSynapse, Racer, Skidmark};
 pub use racing_line::RacingLine;
 
-/// Label para ordering de sistemas — necessário porque update_racers tem muitos parâmetros
-/// e o Bevy 0.16 não aceita referências diretas à função além do limite de tupla.
+/// Label for system ordering — needed because update_racers has many parameters
+/// and Bevy 0.16 does not accept direct references to the function beyond the tuple limit.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UpdateRacersSet;
 
@@ -16,24 +16,24 @@ pub struct RacerPlugin;
 
 impl Plugin for RacerPlugin {
     fn build(&self, app: &mut App) {
-        // Contexto de GPU da retina — vive entre ticks (recriar por tick anularia o ganho).
+        // Retina GPU context — lives across ticks (recreating per tick would cancel the gain).
         app.init_resource::<crate::gpu::RetinaGpuRes>();
-        // Contexto de GPU da percepção — compartilha device/queue da retina.
-        // Criado sob demanda quando lab.gpu_core=true; Default é None (zero overhead se desligado).
+        // Perception GPU context — shares the retina's device/queue.
+        // Created on demand when lab.gpu_core=true; Default is None (zero overhead if off).
         app.init_resource::<crate::gpu::perception::PerceptionGpuRes>();
-        // Contexto de GPU do cérebro — forward pass neural na GPU.
-        // Criado sob demanda quando lab.gpu_core=true.
+        // Brain GPU context — neural forward pass on the GPU.
+        // Created on demand when lab.gpu_core=true.
         app.init_resource::<crate::gpu::brain::BrainGpuRes>();
-        // Contexto de GPU da física — 3 kernels encadeados (A→B→C) na GPU.
-        // Criado sob demanda quando lab.gpu_core=true.
+        // Physics GPU context — 3 chained kernels (A→B→C) on the GPU.
+        // Created on demand when lab.gpu_core=true.
         app.init_resource::<crate::gpu::physics::PhysicsGpuRes>();
-        // Motor → FixedUpdate antes da física: brain e physics sincronizados.
-        // Time_scale agora escala Virtual → Bevy roda N substeps de FixedUpdate por frame
-        // real. Brain tick N× POR frame (antes só 1×), sem tunneling em time_scale alto.
-        // Tier 5.4: tick_npcs_system roda ANTES de update_racers via set label.
-        // update_racers tem 17 parâmetros — o Bevy 0.16 não aceita before/in_set em
-        // fn items além de certo limite. Solução: label em tick_npcs_system e ordering
-        // sobre o set, garantindo NPC→racer sem tocar na assinatura da fn pesada.
+        // Motor → FixedUpdate before physics: brain and physics synchronized.
+        // Time_scale now scales Virtual → Bevy runs N FixedUpdate substeps per real
+        // frame. Brain ticks N× PER frame (before only 1×), no tunneling at high time_scale.
+        // Tier 5.4: tick_npcs_system runs BEFORE update_racers via set label.
+        // update_racers has 17 parameters — Bevy 0.16 does not accept before/in_set on
+        // fn items beyond a certain limit. Solution: label on tick_npcs_system and ordering
+        // over the set, guaranteeing NPC→racer without touching the heavy fn's signature.
         app.configure_sets(FixedUpdate, UpdateRacersSet);
         app.add_systems(
             FixedUpdate,
@@ -50,7 +50,7 @@ impl Plugin for RacerPlugin {
 }
 
 /// KeyG toggles dev gizmos (track pillars, paths, flags) for clean racing-game look.
-/// KeyH toggles vision cones (fovea raycast verde no carro selecionado).
+/// KeyH toggles vision cones (green fovea raycast on the selected car).
 fn toggle_gizmos_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut dev: ResMut<crate::evolution::DevSettings>,
@@ -75,8 +75,8 @@ fn toggle_gizmos_system(
     }
 }
 
-/// Tier 5.4 — Avança todos os NPCs obstáculos um passo de dt por tick fixed.
-/// No-op se `env.npcs` vazio (gate curricular) ou mundo sem waypoints.
+/// Tier 5.4 — Advances all obstacle NPCs one dt step per fixed tick.
+/// No-op if `env.npcs` is empty (curricular gate) or the world has no waypoints.
 fn tick_npcs_system(
     mut env: ResMut<crate::environment::EnvironmentalState>,
     world: Res<crate::world::VoxelWorldResource>,
@@ -126,7 +126,7 @@ fn camera_system(
         race.is_free_cam = !race.is_free_cam;
     }
 
-    // Ler os movimentos do mouse para não acumular
+    // Read the mouse movements so they do not accumulate
     let mut mouse_delta = Vec2::ZERO;
     for ev in motion_evr.read() {
         if mouse_btn.pressed(MouseButton::Right) {
@@ -169,18 +169,18 @@ fn camera_system(
                 cam_t.translation += move_dir.normalize() * speed * dt;
             }
 
-            // Rotação com o Mouse (Segurando Botão Direito)
+            // Rotation with the Mouse (Holding Right Button)
             if mouse_delta.length_squared() > 0.0 {
                 let yaw = -mouse_delta.x * 0.003;
                 let pitch = -mouse_delta.y * 0.003;
 
-                // Rotaciona Yaw (global Y) - usamos rotação ao redor do Y do mundo para não bugar o horizonte
+                // Rotates Yaw (global Y) - we rotate around the world's Y so the horizon does not glitch
                 cam_t.rotate_axis(Dir3::Y, yaw);
-                // Rotaciona Pitch (local X)
+                // Rotates Pitch (local X)
                 cam_t.rotate_local_x(pitch);
             }
 
-            // Mantendo fallback para as setas do teclado
+            // Keeping a fallback for the keyboard arrows
             if keys.pressed(KeyCode::ArrowLeft) {
                 cam_t.rotate_axis(Dir3::Y, 2.0 * dt);
             }
@@ -207,7 +207,7 @@ fn camera_system(
             if let Some(e) = target {
                 if let Ok((_, _, t)) = racer_query.get(e) {
                     // Cinematic chase: behind car along -forward, slightly above, looks at point ahead.
-                    // camera_distance: 10..400. Mapped: <=80 = chase atrás, >80 = top-down legacy.
+                    // camera_distance: 10..400. Mapped: <=80 = chase behind, >80 = top-down legacy.
                     let chase = race.camera_distance <= 80.0;
                     let goal = if chase {
                         // forward = right() per existing convention (see motor.rs:376)
@@ -223,7 +223,7 @@ fn camera_system(
                         .translation
                         .lerp(goal, if chase { 0.10 } else { 0.05 });
                     let look_target = if chase {
-                        // Aponta 12m à frente do carro pra leve antecipação cinematográfica.
+                        // Points 12m ahead of the car for slight cinematic anticipation.
                         let fwd = t.right().as_vec3();
                         t.translation + fwd * 12.0 + Vec3::Y * 0.5
                     } else {

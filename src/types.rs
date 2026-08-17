@@ -1,7 +1,7 @@
 /// IARA v2100 - Proprietary Data Structures in Rust
-/// Based on Codex Part 6: Ontologia de Dados
+/// Based on Codex Part 6: "Ontologia de Dados" (Data Ontology)
 
-/// Ternary logic for the "Lago de 2-Bits" (-1, 0, 1)
+/// Ternary logic for the "Lago de 2-Bits" (the two-bit lake) (-1, 0, 1)
 /// 0 is homeostasis (rest), 1 is positive acceleration, -1 is negative acceleration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TernaryState {
@@ -11,7 +11,7 @@ pub enum TernaryState {
 }
 
 /// Replaces media arrays. Stores raw frequencies (audio/video) after Wavelet Transform.
-/// Part of the "Prisma de Ingestão".
+/// Part of the "Prisma de Ingestão" (Ingestion Prism).
 #[derive(Debug, Clone)]
 pub struct WaveformTensor {
     pub frequencies: Vec<f32>, // Decomposed frequencies

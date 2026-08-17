@@ -1,55 +1,56 @@
-//! Métricas de ativação por neurônio + guardas de runtime (E4).
+//! Per-neuron activation metrics + runtime guards (E4).
 //!
-//! REFACTOR_PLAN.md §E4 / MATH_INVENTORY.md lacunas 1-4, 6, 12: o projeto tinha ZERO
-//! visibilidade sobre o que acontece DENTRO do cérebro rápido (L1=96, L2=48) — só a
-//! saída final (`final_intent`) e as 3 saídas do lento (`participation_ratio` em
-//! `main.rs`). Este módulo fecha essa lacuna: recebe amostras já lidas da GPU (o
-//! caller, `gpu_evolve/context.rs`, é quem sabe como ler `buf_cfc`/`buf_intent`) e
-//! devolve estatística por neurônio + alarmes prontos para o relatório.
+//! REFACTOR_PLAN.md §E4 / MATH_INVENTORY.md gaps 1-4, 6, 12: the project had ZERO
+//! visibility into what happens INSIDE the fast brain (L1=96, L2=48) — only the final
+//! output (`final_intent`) and the 3 outputs of the slow one (`participation_ratio` in
+//! `main.rs`). This module closes that gap: it receives samples already read from the
+//! GPU (the caller, `gpu_evolve/context.rs`, is the one that knows how to read
+//! `buf_cfc`/`buf_intent`) and returns per-neuron statistics + alarms ready for the
+//! report.
 //!
-//! # Por que não duplicar os limiares aqui
+//! # Why the thresholds are not duplicated here
 //!
-//! O REFACTOR_PLAN original propunha um `pub mod thresholds` LOCAL a este arquivo.
-//! O E1 já criou `crate::math::thresholds` com os mesmos limiares (nomes diferentes,
-//! mesma função) — ter dois lugares com o "limiar de neurônio morto" é exatamente o
-//! tipo de duplicidade que gera divergência silenciosa (um lugar muda, o outro não).
-//! Este módulo importa `math::thresholds` como fonte única.
+//! The original REFACTOR_PLAN proposed a `pub mod thresholds` LOCAL to this file.
+//! E1 already created `crate::math::thresholds` with the same thresholds (different
+//! names, same function) — having two places with the "dead neuron threshold" is
+//! exactly the kind of duplication that produces silent divergence (one place changes,
+//! the other does not). This module imports `math::thresholds` as the single source.
 //!
-//! # Dois cortes, dois níveis
+//! # Two cutoffs, two levels
 //!
-//! Há uma distinção que vale a pena deixar explícita porque os nomes são parecidos:
-//! - `DEAD_EPS`/`SATURATION_CUTOFF` — corte POR AMOSTRA (este `h` neste tick está
-//!   morto/saturado?). Produz `NeuronStats::dead_pct`/`saturated_pct`, uma fração
-//!   contínua por neurônio.
-//! - `DEAD_NEURONS_WARN_PCT`/`SATURATED_NEURONS_WARN_PCT` — corte POR CAMADA (que
-//!   fração dos NEURÔNIOS da camada está consistentemente morta/saturada?). Um
-//!   neurônio só entra nessa contagem se sua própria fração por-amostra passar de
-//!   `NEURON_DEAD_CLASSIFY_PCT`/`NEURON_SATURATED_CLASSIFY_PCT` (ver comentário nas
-//!   constantes) — não acumular os dois níveis faria QUALQUER neurônio que morresse
-//!   uma vez, mesmo que raro, contar como "morto" na fração da camada.
+//! There is a distinction worth making explicit because the names are similar:
+//! - `DEAD_EPS`/`SATURATION_CUTOFF` — PER-SAMPLE cutoff (is this `h` at this tick
+//!   dead/saturated?). Produces `NeuronStats::dead_pct`/`saturated_pct`, a continuous
+//!   fraction per neuron.
+//! - `DEAD_NEURONS_WARN_PCT`/`SATURATED_NEURONS_WARN_PCT` — PER-LAYER cutoff (what
+//!   fraction of the layer's NEURONS is consistently dead/saturated?). A neuron only
+//!   enters that count if its own per-sample fraction exceeds
+//!   `NEURON_DEAD_CLASSIFY_PCT`/`NEURON_SATURATED_CLASSIFY_PCT` (see the comment on
+//!   the constants) — not stacking the two levels would make ANY neuron that died
+//!   once, however rarely, count as "dead" in the layer fraction.
 
 use crate::math::{linalg, quant, stats, thresholds};
 
-/// Bins do histograma agregado da camada (REFACTOR_PLAN.md §E4: "histograma 32 bins").
+/// Bins of the layer's aggregated histogram (REFACTOR_PLAN.md §E4: "32-bin histogram").
 pub const HISTOGRAM_BINS: usize = 32;
 
-/// Corte de saturação POR AMOSTRA: |h| > 0.99 é considerado saturado.
+/// PER-SAMPLE saturation cutoff: |h| > 0.99 is considered saturated.
 ///
-/// Distinto de `thresholds::SATURATED_NEURONS_WARN_PCT` (fração da CAMADA saturada
-/// que dispara alarme). `tanh(2.65) ≈ 0.99` — MATH_INVENTORY.md lacuna 3.
+/// Distinct from `thresholds::SATURATED_NEURONS_WARN_PCT` (fraction of the LAYER
+/// saturated that triggers an alarm). `tanh(2.65) ≈ 0.99` — MATH_INVENTORY.md gap 3.
 const SATURATION_CUTOFF: f32 = 0.99;
 
-/// Um neurônio só entra na contagem de "neurônios mortos da camada" se estiver
-/// morto em pelo menos esta fração das amostras — não a primeira vez que passa por
-/// zero. 90% é conservador: mesmo um canal que "descansa" boa parte do tempo (ex.:
-/// detector de evento raro) sobra fora desta classificação.
+/// A neuron only enters the "dead neurons of the layer" count if it is dead in at
+/// least this fraction of the samples — not the first time it crosses zero. 90% is
+/// conservative: even a channel that "rests" much of the time (e.g. a rare-event
+/// detector) stays out of this classification.
 const NEURON_DEAD_CLASSIFY_PCT: f32 = 90.0;
-/// Idem para saturação: neurônio preso no teto em ≥90% das amostras.
+/// Same for saturation: a neuron stuck at the ceiling in ≥90% of the samples.
 const NEURON_SATURATED_CLASSIFY_PCT: f32 = 90.0;
 
-/// Estatísticas de um neurônio, coletadas sobre uma janela de amostras (ver
-/// `collect_activation_stats` para a semântica exata de "amostra" — mistura tempo e
-/// população, não é uma trajetória de ser único).
+/// Statistics of one neuron, collected over a window of samples (see
+/// `collect_activation_stats` for the exact semantics of "sample" — it mixes time and
+/// population, it is not a single-being trajectory).
 #[derive(Debug, Clone)]
 pub struct NeuronStats {
     pub neuron_id: usize,
@@ -58,36 +59,36 @@ pub struct NeuronStats {
     pub p5: f32,
     pub p50: f32,
     pub p95: f32,
-    /// Fração de amostras com `|h| < DEAD_EPS` — 0.0 a 100.0.
+    /// Fraction of samples with `|h| < DEAD_EPS` — 0.0 to 100.0.
     pub dead_pct: f32,
-    /// Fração de amostras com `|h| > 0.99` — 0.0 a 100.0.
+    /// Fraction of samples with `|h| > 0.99` — 0.0 to 100.0.
     pub saturated_pct: f32,
-    /// SNR de quantizar este neurônio para i8 em escala de ativação (127), em dB.
+    /// SNR of quantizing this neuron to i8 at activation scale (127), in dB.
     pub snr_i8: f32,
 }
 
-/// Estatísticas agregadas de uma camada inteira.
+/// Aggregated statistics of a whole layer.
 #[derive(Debug, Clone)]
 pub struct LayerStats {
     pub layer_name: String,
-    /// Número de linhas de amostra usadas (após descartar NaN/Inf).
+    /// Number of sample rows used (after discarding NaN/Inf).
     pub n_samples: usize,
     pub neurons: Vec<NeuronStats>,
-    /// Maior valor singular dos pesos de entrada da camada (0.0 se `w_rec` não foi
-    /// fornecido). Ver `collect_activation_stats` para como é calculado a partir de
-    /// uma matriz retangular (L1 não é quadrada: 192→96).
-    /// `None` quando a camada nao teve matriz de pesos entregue — nao confundir com zero.
+    /// Largest singular value of the layer's input weights (0.0 if `w_rec` was not
+    /// provided). See `collect_activation_stats` for how it is computed from a
+    /// rectangular matrix (L1 is not square: 192→96).
+    /// `None` when the layer had no weight matrix delivered — not to be confused with zero.
     pub spectral_radius: Option<f32>,
-    /// Rank efetivo (95% da energia espectral) dos mesmos pesos. 0 se `w_rec` ausente.
-    /// `None` quando nao medido (ver [`Self::spectral_radius`]).
+    /// Effective rank (95% of the spectral energy) of the same weights. 0 if `w_rec` absent.
+    /// `None` when not measured (see [`Self::spectral_radius`]).
     pub effective_rank: Option<usize>,
-    /// Entropia da política (nats), só quando `policy_actions` foi passado.
+    /// Policy entropy (nats), only when `policy_actions` was passed.
     pub policy_entropy: Option<f32>,
-    /// Histograma agregado (todas as amostras de todos os neurônios), 32 bins.
+    /// Aggregated histogram (all samples of all neurons), 32 bins.
     pub histogram: Vec<u32>,
 }
 
-/// Tipo de violação de limiar.
+/// Kind of threshold violation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlarmKind {
     DeadNeurons,
@@ -98,7 +99,7 @@ pub enum AlarmKind {
     PolicyEntropyLow,
 }
 
-/// Alarme: violação de limiar detectada nesta geração.
+/// Alarm: threshold violation detected this generation.
 #[derive(Debug, Clone)]
 pub struct ActivationAlarm {
     pub layer: String,
@@ -107,12 +108,12 @@ pub struct ActivationAlarm {
     pub threshold: f32,
 }
 
-/// Espectro de valores singulares de `w` (`n_neurons × in_dim`, linha-maior) via
-/// Gram + Jacobi: raio espectral (maior valor singular, por power-iteration — barato
-/// e é o que interessa para o alarme de instabilidade) e rank efetivo (precisa do
-/// espectro inteiro, por isso o Jacobi completo).
+/// Singular-value spectrum of `w` (`n_neurons × in_dim`, row-major) via
+/// Gram + Jacobi: spectral radius (largest singular value, by power iteration — cheap
+/// and it is what matters for the instability alarm) and effective rank (needs the
+/// whole spectrum, hence the full Jacobi).
 ///
-/// Retorna `(0.0, 0)` se `w` não tiver o formato esperado.
+/// Returns `(0.0, 0)` if `w` does not have the expected shape.
 fn spectral_summary(w: &[f32], n_neurons: usize) -> (f32, usize) {
     if n_neurons == 0 || w.is_empty() || w.len() % n_neurons != 0 {
         return (0.0, 0);
@@ -121,11 +122,11 @@ fn spectral_summary(w: &[f32], n_neurons: usize) -> (f32, usize) {
     if in_dim == 0 {
         return (0.0, 0);
     }
-    // `linalg::largest_singular_value` já faz gram+power-iteration+sqrt (fonte única —
-    // é a MESMA conta que `gpu::evolution::Genome::random` usa pra normalizar na
-    // inicialização, P0.5). O rank efetivo precisa do espectro inteiro, então o Gram
-    // é recomputado aqui uma vez a mais para `eigenvalues_symmetric`; matrizes de L1
-    // (96×192) tornam isso desprezível frente ao custo do resto do relatório.
+    // `linalg::largest_singular_value` already does gram+power-iteration+sqrt (single
+    // source — it is the SAME computation that `gpu::evolution::Genome::random` uses to
+    // normalize at initialization, P0.5). The effective rank needs the whole spectrum,
+    // so the Gram is recomputed here one extra time for `eigenvalues_symmetric`; L1
+    // matrices (96×192) make that negligible next to the cost of the rest of the report.
     let spectral_radius = linalg::largest_singular_value(w, n_neurons, in_dim);
     let gram = linalg::gram_matrix(w, n_neurons, in_dim);
     let eigs = linalg::eigenvalues_symmetric(&gram, n_neurons);
@@ -136,13 +137,13 @@ fn spectral_summary(w: &[f32], n_neurons: usize) -> (f32, usize) {
     (spectral_radius, effective_rank)
 }
 
-/// Entropia de Shannon (nats) da distribuição conjunta de (throttle, steer, brake),
-/// binada em 5×5×5 = 125 células sobre `[0,1] × [-1,1] × [0,1]`.
+/// Shannon entropy (nats) of the joint distribution of (throttle, steer, brake),
+/// binned into 5×5×5 = 125 cells over `[0,1] × [-1,1] × [0,1]`.
 ///
-/// Binar as TRÊS saídas juntas (não uma entropia por canal) é intencional: um
-/// volante cravado com acelerador variando ainda seria "baixa entropia" para o que
-/// importa (o carro faz sempre a mesma curva), e olhar só o canal do volante
-/// esconderia isso se as outras duas variassem.
+/// Binning the THREE outputs together (not one entropy per channel) is intentional: a
+/// pinned steering wheel with a varying throttle would still be "low entropy" for what
+/// matters (the car always takes the same turn), and looking only at the steering
+/// channel would hide that if the other two varied.
 fn policy_entropy_nats(actions: &[[f32; 3]]) -> f32 {
     const BINS: usize = 5;
     if actions.is_empty() {
@@ -164,28 +165,29 @@ fn policy_entropy_nats(actions: &[[f32; 3]]) -> f32 {
     h
 }
 
-/// Coleta estatísticas de ativação de um conjunto de amostras.
+/// Collects activation statistics from a set of samples.
 ///
-/// `samples[k]` é uma linha de `n_neurons` valores — CADA LINHA pode vir de um ser
-/// diferente e/ou de um tick diferente. Este módulo não distingue as duas coisas: a
-/// estatística por neurônio (média, percentis, %morto, %saturado) é sobre o
-/// CONJUNTO de amostras, misturando população e tempo, no mesmo espírito de como
-/// `[lento]` (main.rs) já mede `participation_ratio` sobre amostras de vários seres
-/// em vários ticks. Linhas com NaN/Inf são descartadas ANTES de chegar aqui (ver
-/// guarda de runtime em `gpu_evolve/context.rs::tick()`), então esta função assume
-/// que `samples` já está limpo — mas ainda audita e reporta um alarme se algo
-/// escapou (camada de defesa dupla, custo desprezível).
+/// `samples[k]` is a row of `n_neurons` values — EACH ROW may come from a different
+/// being and/or a different tick. This module does not distinguish the two: the
+/// per-neuron statistics (mean, percentiles, %dead, %saturated) are over the SET of
+/// samples, mixing population and time, in the same spirit in which `[lento]`
+/// (main.rs) already measures `participation_ratio` over samples of several beings at
+/// several ticks. Rows with NaN/Inf are discarded BEFORE getting here (see the runtime
+/// guard in `gpu_evolve/context.rs::tick()`), so this function assumes `samples` is
+/// already clean — but it still audits and reports an alarm if something slipped
+/// through (double layer of defence, negligible cost).
 ///
-/// `w_rec`: pesos de entrada da camada, linha-maior `[n_neurons × in_dim]` (o nome
-/// "recorrente" é herança do REFACTOR_PLAN original — L1 não é recorrente no sentido
-/// de RNN, mas a soma "CfC(canais 0..96) ++ KAN(canais 96..192) → L1" faz o mesmo
-/// papel que W_rec faria numa análise de estabilidade: é a matriz cujo maior valor
-/// singular decide se o sinal amplifica ou atenua). `None` quando a camada não tem
-/// pesos de entrada acessíveis aqui (ex.: SlowBrain, cujo `W` mora só na GPU).
+/// `w_rec`: the layer's input weights, row-major `[n_neurons × in_dim]` (the name
+/// "recurrent" is inherited from the original REFACTOR_PLAN — L1 is not recurrent in
+/// the RNN sense, but the sum "CfC(channels 0..96) ++ KAN(channels 96..192) → L1"
+/// plays the same role W_rec would in a stability analysis: it is the matrix whose
+/// largest singular value decides whether the signal amplifies or attenuates). `None`
+/// when the layer has no input weights accessible here (e.g. SlowBrain, whose `W`
+/// lives only on the GPU).
 ///
-/// `policy_actions`: (throttle, steer, brake) por amostra, na MESMA ordem/stride das
-/// linhas de `samples` — usado só para `policy_entropy`; passe `None` para camadas
-/// que não são a saída motora.
+/// `policy_actions`: (throttle, steer, brake) per sample, in the SAME order/stride as
+/// the rows of `samples` — used only for `policy_entropy`; pass `None` for layers that
+/// are not the motor output.
 pub fn collect_activation_stats(
     layer_name: &str,
     samples: &[Vec<f32>],
@@ -195,9 +197,9 @@ pub fn collect_activation_stats(
 ) -> (LayerStats, Vec<ActivationAlarm>) {
     let mut alarms: Vec<ActivationAlarm> = Vec::new();
 
-    // Defesa dupla: qualquer NaN/Inf que tenha escapado do filtro do caller é
-    // reportado (alarme) e a linha é excluída da estatística — sem isto uma única
-    // amostra ruim contaminaria mean/percentile/histogram da camada inteira.
+    // Double defence: any NaN/Inf that slipped past the caller's filter is reported
+    // (alarm) and the row is excluded from the statistics — without this a single bad
+    // sample would contaminate the whole layer's mean/percentile/histogram.
     let mut clean: Vec<&Vec<f32>> = Vec::with_capacity(samples.len());
     let mut n_nan_rows = 0usize;
     for row in samples {
@@ -263,11 +265,12 @@ pub fn collect_activation_stats(
 
     let histogram = stats::histogram(&all_vals, HISTOGRAM_BINS);
 
-    // `None` = a camada nao teve matriz de pesos entregue a analise. Isso NAO e o mesmo
-    // que "raio espectral zero": antes este ramo devolvia (0.0, 0) e o relatorio imprimia
-    // "raio_espectral=0.000 rank_efetivo=0/48", que se le como colapso total da camada.
-    // Custou uma conclusao invertida em 2026-08-13 (L2 parecia morta e estava apenas nao
-    // medida). Ausencia de medida agora viaja como Option ate o relatorio, que imprime n/a.
+    // `None` = the layer had no weight matrix delivered to the analysis. That is NOT the
+    // same as "zero spectral radius": this branch used to return (0.0, 0) and the report
+    // printed "raio_espectral=0.000 rank_efetivo=0/48", which reads as total collapse of
+    // the layer. It cost an inverted conclusion on 2026-08-13 (L2 looked dead when it was
+    // merely unmeasured). Absence of measurement now travels as an Option all the way to
+    // the report, which prints n/a.
     let (spectral_radius, effective_rank) = match w_rec {
         Some(w) => {
             let (r, k) = spectral_summary(w, n_neurons);
@@ -284,7 +287,7 @@ pub fn collect_activation_stats(
         }
     });
 
-    // ── Alarmes de camada (fração de NEURÔNIOS, não de amostras — ver doc do módulo) ──
+    // ── Layer alarms (fraction of NEURONS, not of samples — see the module doc) ──
     if n_neurons > 0 {
         let dead_frac_layer = 100.0
             * neurons
@@ -316,8 +319,9 @@ pub fn collect_activation_stats(
         }
     }
 
-    // So alarma sobre o que foi de fato medido: camada sem matriz entregue nao gera
-    // alarme nenhum (nem falso positivo de "zero", nem falso negativo silencioso).
+    // Only alarms about what was actually measured: a layer with no matrix delivered
+    // raises no alarm at all (neither a false positive of "zero", nor a silent false
+    // negative).
     if let Some(sr) = spectral_radius {
         if sr > thresholds::SPECTRAL_MAX {
             alarms.push(ActivationAlarm {
@@ -372,11 +376,11 @@ pub fn collect_activation_stats(
     )
 }
 
-/// Imprime relatório de stats para stderr (não bloqueia, não tranca Mutex — cada
-/// chamada só lê os `Vec`/`struct` que já foram montados por `collect_activation_stats`).
+/// Prints the stats report to stderr (does not block, does not lock a Mutex — each
+/// call only reads the `Vec`/`struct` already assembled by `collect_activation_stats`).
 pub fn print_stats_report(stats: &LayerStats, alarms: &[ActivationAlarm]) {
     eprintln!(
-        "[ativacao:{}] amostras={} neuronios={} raio_espectral={} rank_efetivo={} entropia_politica={}",
+        "[ativacao:{}] samples={} neurons={} spectral_radius={} effective_rank={} policy_entropy={}",
         stats.layer_name,
         stats.n_samples,
         stats.neurons.len(),
@@ -387,7 +391,7 @@ pub fn print_stats_report(stats: &LayerStats, alarms: &[ActivationAlarm]) {
         stats
             .effective_rank
             .map(|k| format!("{k}/{}", stats.neurons.len()))
-            .unwrap_or_else(|| "n/a (pesos nao entregues)".to_string()),
+            .unwrap_or_else(|| "n/a (weights not delivered)".to_string()),
         stats
             .policy_entropy
             .map(|v| format!("{v:.3}"))
@@ -395,14 +399,14 @@ pub fn print_stats_report(stats: &LayerStats, alarms: &[ActivationAlarm]) {
     );
     for a in alarms {
         eprintln!(
-            "[ativacao] ALARME {} {:?}: valor={:.3} limiar={:.3}",
+            "[ativacao] ALARM {} {:?}: value={:.3} threshold={:.3}",
             a.layer, a.kind, a.value, a.threshold,
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Testes unitários
+// Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -415,7 +419,7 @@ mod tests {
 
     #[test]
     fn neuronio_morto_detectado() {
-        // 3 neurônios, 10 amostras: neurônio 0 sempre ~0 (morto), 1 e 2 variam.
+        // 3 neurons, 10 samples: neuron 0 always ~0 (dead), 1 and 2 vary.
         let mut samples = Vec::new();
         for i in 0..10 {
             let t = i as f32 / 9.0;
@@ -424,7 +428,7 @@ mod tests {
         let (stats, _alarms) = collect_activation_stats("teste", &samples, None, 3, None);
         assert!(
             stats.neurons[0].dead_pct > 99.0,
-            "neurônio 0 devia estar ~100% morto, {}",
+            "neuron 0 should be ~100% dead, {}",
             stats.neurons[0].dead_pct
         );
         assert!(stats.neurons[1].dead_pct < 50.0);
@@ -440,7 +444,7 @@ mod tests {
         assert!(stats.neurons[0].saturated_pct > 99.0);
         assert!(
             alarms.iter().any(|a| a.kind == AlarmKind::Saturated),
-            "camada com 1/2 neurônios saturados (50% > 30% warn) devia alarmar: {:?}",
+            "a layer with 1/2 saturated neurons (50% > 30% warn) should alarm: {:?}",
             alarms
         );
     }
@@ -455,7 +459,7 @@ mod tests {
         let (stats, alarms) = collect_activation_stats("teste", &samples, None, 2, None);
         assert_eq!(
             stats.n_samples, 2,
-            "a linha com NaN deve ser excluída da contagem"
+            "the row with NaN must be excluded from the count"
         );
         assert!(alarms.iter().any(|a| a.kind == AlarmKind::NanDetected));
     }
@@ -470,8 +474,8 @@ mod tests {
 
     #[test]
     fn spectral_summary_matriz_ortogonal_normalizada() {
-        // W = I (4×4): valores singulares todos = 1.0 → raio espectral = 1.0,
-        // rank efetivo = 4 (energia espalhada igualmente).
+        // W = I (4×4): singular values all = 1.0 → spectral radius = 1.0,
+        // effective rank = 4 (energy spread equally).
         let n = 4usize;
         let mut w = vec![0.0f32; n * n];
         for i in 0..n {
@@ -480,27 +484,27 @@ mod tests {
         let (sr, er) = spectral_summary(&w, n);
         assert!(
             (sr - 1.0).abs() < 0.05,
-            "raio espectral esperado ~1.0, obteve {sr}"
+            "expected spectral radius ~1.0, got {sr}"
         );
         assert_eq!(er, n);
     }
 
     #[test]
     fn spectral_summary_matriz_retangular_nao_quadrada() {
-        // W (2×4): duas linhas idênticas ortogonais a duas colunas de zero.
-        // rows=2 < cols=4 — testa o caminho "L1 não é quadrada" (192→96 na prática).
+        // W (2×4): two identical rows orthogonal to two zero columns.
+        // rows=2 < cols=4 — tests the "L1 is not square" path (192→96 in practice).
         let w = vec![2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0];
         let (sr, er) = spectral_summary(&w, 2);
         assert!(
             (sr - 3.0).abs() < 0.05,
-            "maior valor singular esperado 3.0, obteve {sr}"
+            "expected largest singular value 3.0, got {sr}"
         );
         assert_eq!(er, 2);
     }
 
     #[test]
     fn spectral_radius_alto_dispara_alarme() {
-        // Uma linha com norma 10 garante valor singular > SPECTRAL_MAX(1.0).
+        // A row with norm 10 guarantees a singular value > SPECTRAL_MAX(1.0).
         let mut w = vec![0.0f32; 3 * 3];
         w[0] = 10.0;
         let samples = vec![linha(&[0.0, 0.0, 0.0])];
@@ -523,18 +527,18 @@ mod tests {
         let (stats, alarms) = collect_activation_stats("L2", &samples, None, 1, Some(&acoes));
         let pe = stats
             .policy_entropy
-            .expect("deve calcular entropia quando policy_actions é Some");
+            .expect("must compute entropy when policy_actions is Some");
         assert!(
             pe < 0.05,
-            "ação constante deve ter entropia ~0, obteve {pe}"
+            "a constant action must have entropy ~0, got {pe}"
         );
         assert!(alarms.iter().any(|a| a.kind == AlarmKind::PolicyEntropyLow));
     }
 
     #[test]
     fn entropia_politica_alta_com_acao_uniforme() {
-        // Varre throttle/steer/brake por toda a faixa — entropia deve ficar bem
-        // acima do limiar (POLICY_ENTROPY_MIN = 0.5 nats).
+        // Sweeps throttle/steer/brake across the whole range — entropy must stay well
+        // above the threshold (POLICY_ENTROPY_MIN = 0.5 nats).
         let mut acoes = Vec::new();
         for i in 0..5 {
             for j in 0..5 {
@@ -551,7 +555,7 @@ mod tests {
         let pe = stats.policy_entropy.unwrap();
         assert!(
             pe > thresholds::POLICY_ENTROPY_MIN,
-            "125 ações distintas uniformes devem ter entropia > {}, obteve {}",
+            "125 uniform distinct actions must have entropy > {}, got {}",
             thresholds::POLICY_ENTROPY_MIN,
             pe
         );
@@ -571,7 +575,7 @@ mod tests {
     fn sem_w_rec_raio_e_rank_ficam_zero() {
         let samples = vec![linha(&[0.1, 0.2])];
         let (stats, alarms) = collect_activation_stats("SlowBrain", &samples, None, 2, None);
-        // Sem matriz entregue: ausencia de medida, nao zero (ver doc do campo).
+        // No matrix delivered: absence of measurement, not zero (see the field doc).
         assert_eq!(stats.spectral_radius, None);
         assert_eq!(stats.effective_rank, None);
         assert!(

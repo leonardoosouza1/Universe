@@ -1,15 +1,15 @@
-//! Bissecção do segfault no driver RADV ao compilar physics.wgsl.
+//! Bisection of the segfault in the RADV driver when compiling physics.wgsl.
 //!
-//! Método: shader mínimo (só copia) → adicionar fases uma a uma → a fase que crasha é a culpada.
+//! Method: minimal shader (copy only) → add phases one by one → the phase that crashes is the culprit.
 //!
-//! Uso:
+//! Usage:
 //!   VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json env -u DISPLAY ./target/release/fisica_bisect
 
 use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
-// Layout idêntico a PhysicsStateGpu — copiado aqui para o binário ser self-contained.
+// Layout identical to PhysicsStateGpu — copied here so the binary is self-contained.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CarInput {
@@ -98,7 +98,7 @@ struct WorldParams {
     _pad: f32,
 }
 
-// Cria um estado de carro realista para teste
+// Creates a realistic car state for testing
 fn make_car() -> CarInput {
     let mut c = CarInput::zeroed();
     c.vel = [20.0, 0.0, 0.0];
@@ -134,7 +134,7 @@ fn make_car() -> CarInput {
     c.terrain_grip = 1.0;
     c.env_grip = 1.0;
     c.aquaplaning = 1.0;
-    c.config_flags = 0b111111; // todos os flags
+    c.config_flags = 0b111111; // all flags
     c.dt = 1.0 / 60.0;
     let omega = 20.0_f32 / 0.33;
     for w in c.wheels.iter_mut() {
@@ -143,10 +143,10 @@ fn make_car() -> CarInput {
     c
 }
 
-// Serializa com stride=368
+// Serializes with stride=368
 fn serialize(cars: &[CarInput]) -> Vec<u8> {
     let sz = std::mem::size_of::<CarInput>();
-    assert_eq!(sz, 360, "Tamanho errado: {sz}");
+    assert_eq!(sz, 360, "Wrong size: {sz}");
     let mut buf = vec![0u8; cars.len() * STRIDE];
     for (i, c) in cars.iter().enumerate() {
         let dst = &mut buf[i * STRIDE..i * STRIDE + sz];
@@ -155,18 +155,18 @@ fn serialize(cars: &[CarInput]) -> Vec<u8> {
     buf
 }
 
-/// Tenta compilar e executar um shader WGSL. Retorna true se passou, false se crashou.
-/// Executa em processo filho para isolar SIGSEGV.
+/// Tries to compile and run a WGSL shader. Returns true if it passed, false if it crashed.
+/// Runs in a child process to isolate SIGSEGV.
 fn test_shader(name: &str, wgsl: &'static str) -> bool {
-    println!("  [BISECT] testando shader: {name}");
+    println!("  [BISECT] testing shader: {name}");
     let ok = unsafe {
         let pid = libc::fork();
         if pid == 0 {
-            // Filho: tenta usar o shader
+            // Child: tries to use the shader
             match run_shader(wgsl) {
                 Ok(_) => libc::_exit(0),
                 Err(e) => {
-                    eprintln!("    erro: {e}");
+                    eprintln!("    error: {e}");
                     libc::_exit(1);
                 }
             }
@@ -178,7 +178,7 @@ fn test_shader(name: &str, wgsl: &'static str) -> bool {
     if ok {
         println!("  [BISECT] {name}: OK");
     } else {
-        println!("  [BISECT] {name}: CRASH (segfault ou erro)");
+        println!("  [BISECT] {name}: CRASH (segfault or error)");
     }
     ok
 }
@@ -193,9 +193,9 @@ fn run_shader(wgsl: &str) -> Result<Vec<CarOutput>, String> {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .ok_or("sem adaptador")?;
+    .ok_or("no adapter")?;
 
-    println!("    adaptador: {}", adapter.get_info().name);
+    println!("    adapter: {}", adapter.get_info().name);
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
@@ -208,7 +208,7 @@ fn run_shader(wgsl: &str) -> Result<Vec<CarOutput>, String> {
     ))
     .map_err(|e| format!("request_device: {e}"))?;
 
-    // Compila o shader — este é o passo que pode crashar
+    // Compiles the shader — this is the step that can crash
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("bisect-shader"),
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(wgsl)),
@@ -238,7 +238,7 @@ fn run_shader(wgsl: &str) -> Result<Vec<CarOutput>, String> {
         cache: None,
     });
 
-    // Dados de teste: 4 carros, grade 10x10 plana
+    // Test data: 4 cars, flat 10x10 grid
     let n = 4usize;
     let cars: Vec<CarInput> = (0..n).map(|_| make_car()).collect();
     let grid_u32: Vec<u32> = vec![1u32; 10 * 10]; // Road = 1
@@ -363,7 +363,7 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
 }
 
 fn main() {
-    // Forçar ICD Radeon para evitar conflito com outros ICDs (intel_hasvk, lvp, etc.)
+    // Force the Radeon ICD to avoid conflicts with other ICDs (intel_hasvk, lvp, etc.)
     if std::env::var("VK_ICD_FILENAMES").is_err() {
         unsafe {
             std::env::set_var(
@@ -373,172 +373,172 @@ fn main() {
         }
     }
 
-    // Primeiro testa a SOLUCAO ATUAL: 3 kernels (A, B pneus, C integração)
-    println!("=== SOLUCAO TRIPLE-KERNEL (physics_a + physics_b + physics_c) ===");
+    // First tests the CURRENT SOLUTION: 3 kernels (A, B tyres, C integration)
+    println!("=== TRIPLE-KERNEL SOLUTION (physics_a + physics_b + physics_c) ===");
     println!();
 
-    let ok_a = test_shader_a("KERNEL_A (suspensao + motor + aero)");
+    let ok_a = test_shader_a("KERNEL_A (suspension + engine + aero)");
     if !ok_a {
-        println!("  KERNEL_A falhou — diagnostico adicional necessario.");
+        println!("  KERNEL_A failed — additional diagnosis needed.");
     } else {
-        let ok_b = test_shader_b("KERNEL_B (pneus Pacejka) + KERNEL_C (integracao)");
+        let ok_b = test_shader_b("KERNEL_B (Pacejka tyres) + KERNEL_C (integration)");
         if ok_b {
             println!();
-            println!("SUCESSO: kernels A, B e C compilam e executam sem crash.");
-            println!("A solucao triple-kernel funciona nesta GPU/driver.");
+            println!("SUCCESS: kernels A, B and C compile and run without crashing.");
+            println!("The triple-kernel solution works on this GPU/driver.");
             return;
         } else {
             println!();
-            println!("KERNEL_B/C FALHOU — investigar bisect abaixo.");
+            println!("KERNEL_B/C FAILED — investigate the bisect below.");
         }
     }
 
-    // Bisect de diagnóstico (somente se a solução dual-kernel falhou)
+    // Diagnostic bisect (only if the dual-kernel solution failed)
     println!();
-    println!("=== BISSECCAO DO SHADER DE FISICA (diagnostico) ===");
+    println!("=== PHYSICS SHADER BISECTION (diagnostics) ===");
     println!();
 
-    // Passo 1: shader mínimo (só copia) com mesmo layout de bind group
+    // Step 1: minimal shader (copy only) with the same bind group layout
     let ok_minimal = test_shader(
-        "MINIMO (so copia)",
+        "MINIMO (copy only)",
         include_str!("../gpu/physics_minimal.wgsl"),
     );
 
     if !ok_minimal {
         println!();
-        println!("RESULTADO: o shader MINIMO ja crasha.");
+        println!("RESULT: the MINIMAL shader already crashes.");
         println!(
-            "Causa: o problema esta no layout de bind group, nos structs, ou no tamanho dos buffers."
+            "Cause: the problem is in the bind group layout, the structs, or the buffer sizes."
         );
-        println!("Nao eh o codigo de computacao — eh a declaracao dos structs ou bindings.");
+        println!("It is not the compute code — it is the declaration of the structs or bindings.");
         return;
     }
 
-    // Passo 2: shader com fase de suspensão adicionada
+    // Step 2: shader with the suspension phase added
     let ok_susp = test_shader(
-        "FASE_SUSP (suspensao + carga normal)",
+        "FASE_SUSP (suspension + normal load)",
         include_str!("../gpu/physics_phase_susp.wgsl"),
     );
 
     if !ok_susp {
         println!();
-        println!("RESULTADO: crash na FASE_SUSP (suspensão + carga normal).");
+        println!("RESULT: crash in FASE_SUSP (suspension + normal load).");
         println!(
-            "Causa provável: arrays var<private> de tamanho 4 (wheel_offsets, normal_loads, etc.)"
+            "Probable cause: var<private> arrays of size 4 (wheel_offsets, normal_loads, etc.)"
         );
-        println!("ou acesso ao heightmap com indexação dinâmica.");
+        println!("or heightmap access with dynamic indexing.");
         return;
     }
 
-    // Passo 2b: fase de motor SEM pneus (para isolar sub-causa)
+    // Step 2b: engine phase WITHOUT tyres (to isolate the sub-cause)
     let ok_power_a = test_shader(
-        "FASE_POWER_A (motor+RPM sem pneus)",
+        "FASE_POWER_A (engine+RPM without tyres)",
         include_str!("../gpu/physics_power_a.wgsl"),
     );
     if !ok_power_a {
         println!();
-        println!("RESULTADO: crash na FASE_POWER_A (motor sem pneus).");
+        println!("RESULT: crash in FASE_POWER_A (engine without tyres).");
         println!(
-            "Causa provável: muitos arrays var<private> ao mesmo tempo (omegas/tire_temps/slip_ratios/slip_angles + nloads/scomp)."
+            "Probable cause: many var<private> arrays at once (omegas/tire_temps/slip_ratios/slip_angles + nloads/scomp)."
         );
         println!(
-            "Pressão de registradores: ~14 arrays × 4 floats = 56 f32 locais além dos demais."
+            "Register pressure: ~14 arrays × 4 floats = 56 local f32s besides the rest."
         );
         return;
     }
 
-    // Passo 2c: loop de pneus SEM Pacejka (só cos/sin + omega integration)
+    // Step 2c: tyre loop WITHOUT Pacejka (only cos/sin + omega integration)
     let ok_power_b = test_shader(
-        "FASE_POWER_B (pneus sem Pacejka)",
+        "FASE_POWER_B (tyres without Pacejka)",
         include_str!("../gpu/physics_power_b.wgsl"),
     );
     if !ok_power_b {
         println!();
-        println!("RESULTADO: crash na FASE_POWER_B (loop de pneus sem Pacejka).");
-        println!("Causa: a simples adição do loop de pneus com arrays adicionais explode");
-        println!("a pressão de registradores — o compilador ACO/NIR não consegue spill.");
-        println!("Solução: separar em múltiplos kernels (um por fase).");
+        println!("RESULT: crash in FASE_POWER_B (tyre loop without Pacejka).");
+        println!("Cause: merely adding the tyre loop with additional arrays explodes");
+        println!("register pressure — the ACO/NIR compiler cannot spill.");
+        println!("Solution: split into multiple kernels (one per phase).");
         return;
     }
 
-    // Passo 2d: Pacejka isolado (motor + pneus com atan/atan2/sin + Kamm — SEM aero)
+    // Step 2d: isolated Pacejka (engine + tyres with atan/atan2/sin + Kamm — WITHOUT aero)
     let ok_power_c = test_shader(
-        "FASE_POWER_C (Pacejka + Kamm sem aero)",
+        "FASE_POWER_C (Pacejka + Kamm without aero)",
         include_str!("../gpu/physics_power_c.wgsl"),
     );
     if !ok_power_c {
         println!();
-        println!("RESULTADO: crash na FASE_POWER_C (Pacejka sem aero).");
+        println!("RESULT: crash in FASE_POWER_C (Pacejka without aero).");
         println!(
-            "Causa confirmada: os floats adicionais do cálculo Pacejka (f_long/f_lat/sa/sr/vr/comb/scale)"
+            "Confirmed cause: the additional floats of the Pacejka computation (f_long/f_lat/sa/sr/vr/comb/scale)"
         );
         println!(
-            "somados com todos os outros arrays locais excedem a capacidade de registradores do ACO."
+            "added to all the other local arrays exceed the ACO's register capacity."
         );
         println!(
-            "O compilador ACO RDNA2 não faz spill para memória local automaticamente neste caso."
+            "The ACO RDNA2 compiler does not spill to local memory automatically in this case."
         );
         return;
     }
 
-    // Passo 3: fase de powertrain COMPLETA (com pneus + Pacejka + aero)
+    // Step 3: FULL powertrain phase (with tyres + Pacejka + aero)
     let ok_power = test_shader(
-        "FASE_POWER (powertrain + pneus + Pacejka + aero)",
+        "FASE_POWER (powertrain + tyres + Pacejka + aero)",
         include_str!("../gpu/physics_phase_power.wgsl"),
     );
 
     if !ok_power {
         println!();
-        println!("RESULTADO: crash na FASE_POWER (powertrain + pneus).");
-        println!("Causa provável: switch statement com drivetrain, loop grande de 4 rodas,");
-        println!("ou cálculo Pacejka (atan/sin aninhados).");
+        println!("RESULT: crash in FASE_POWER (powertrain + tyres).");
+        println!("Probable cause: switch statement with drivetrain, big 4-wheel loop,");
+        println!("or the Pacejka computation (nested atan/sin).");
         return;
     }
 
-    // Passo 4: colisão + integração
+    // Step 4: collision + integration
     let ok_integ = test_shader(
-        "FASE_INTEG (colisao + integracao)",
+        "FASE_INTEG (collision + integration)",
         include_str!("../gpu/physics_phase_integ.wgsl"),
     );
 
     if !ok_integ {
         println!();
-        println!("RESULTADO: crash na FASE_INTEG (colisao + integracao).");
+        println!("RESULT: crash in FASE_INTEG (collision + integration).");
         println!(
-            "Causa provável: loop de 4 probe points com voxel_at(), ou cálculo de yaw damping."
+            "Probable cause: 4-probe-point loop with voxel_at(), or the yaw damping computation."
         );
         return;
     }
 
-    // Se chegou aqui, o shader completo deveria funcionar — mas sabemos que não funciona.
-    // Isto seria um crash de compilação no link/otimização final, não numa fase isolada.
+    // If we got here, the full shader should work — but we know it does not.
+    // This would be a compilation crash in the final link/optimization, not in an isolated phase.
     println!();
     println!(
-        "RESULTADO: todas as fases isoladas rodam. O crash ocorre somente com o shader COMPLETO."
+        "RESULT: all isolated phases run. The crash happens only with the FULL shader."
     );
-    println!("Causa provável: o compilador ACO/NIR do RADV não suporta o tamanho total do shader.");
-    println!("Solução: dividir em múltiplos kernels (um por fase).");
+    println!("Probable cause: the RADV ACO/NIR compiler does not support the shader's total size.");
+    println!("Solution: split into multiple kernels (one per phase).");
 
-    // Testa os dois kernels A e B da solução dual-kernel
+    // Tests the two kernels A and B of the dual-kernel solution
     println!();
-    println!("=== TESTANDO SOLUCAO DUAL-KERNEL (physics_a.wgsl + physics_b.wgsl) ===");
+    println!("=== TESTING DUAL-KERNEL SOLUTION (physics_a.wgsl + physics_b.wgsl) ===");
     println!();
 
-    let ok_a = test_shader_a("KERNEL_A (suspensao + motor + aero)");
+    let ok_a = test_shader_a("KERNEL_A (suspension + engine + aero)");
     if !ok_a {
-        println!("  KERNEL_A falhou — o shader de kernel A crasha o driver.");
+        println!("  KERNEL_A failed — the kernel A shader crashes the driver.");
         return;
     }
 
-    let ok_b = test_shader_b("KERNEL_B (pneus + colisao + integracao)");
+    let ok_b = test_shader_b("KERNEL_B (tyres + collision + integration)");
     if !ok_b {
-        println!("  KERNEL_B falhou — mesmo com kernel A separado, o kernel B crasha.");
+        println!("  KERNEL_B failed — even with kernel A separate, kernel B crashes.");
         return;
     }
 
     println!();
-    println!("SUCESSO: ambos os kernels A e B compilam sem crash.");
-    println!("A solução dual-kernel funciona nesta GPU/driver.");
+    println!("SUCCESS: both kernels A and B compile without crashing.");
+    println!("The dual-kernel solution works on this GPU/driver.");
 }
 
 /// Testa o Kernel A (physics_a.wgsl) que tem 5 bindings: params, grid, hmap, input, mid.
@@ -627,8 +627,8 @@ fn run_shader_a() -> Result<Vec<MidState>, String> {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .ok_or("sem adaptador")?;
-    println!("    adaptador: {}", adapter.get_info().name);
+    .ok_or("no adapter")?;
+    println!("    adapter: {}", adapter.get_info().name);
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("bisect-a"),
@@ -783,8 +783,8 @@ fn run_shader_b() -> Result<Vec<CarOutput>, String> {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .ok_or("sem adaptador")?;
-    println!("    adaptador: {}", adapter.get_info().name);
+    .ok_or("no adapter")?;
+    println!("    adapter: {}", adapter.get_info().name);
 
     let mut lim = wgpu::Limits::downlevel_defaults();
     lim.max_storage_buffers_per_shader_stage = 8;

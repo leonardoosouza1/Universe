@@ -1,47 +1,49 @@
-//! GENOMA VIEWER — anatomia detalhada do cérebro salvo (`evolve_best_gen*.bin`).
+//! GENOME VIEWER — detailed anatomy of the saved brain (`evolve_best_gen*.bin`).
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo: *"quando eu te pedir pra mostrar algum dado técnico, tem que ser detalhado —
-//! gráfico, como está o agrupamento, como está a distribuição desses neurônios."*
+//! Leonardo: *"when I ask you to show me some technical data, it has to be detailed —
+//! a chart, what the clustering looks like, what the distribution of those neurons looks
+//! like."*
 //!
-//! O `dna_view` original lê o formato `.dna` (TLV ternário, 128×64) do caminho Bevy. O
-//! caminho de evolução na GPU salva outro formato — `UGEN` v2, com L1 de 192×96, L2 de
-//! 96×48, knots KAN, cérebro lento e banco de τ. Este binário lê ESSE formato e responde
-//! o que o relatório de três linhas do `--ativacao` não responde: **onde** está a
-//! competência dentro do cérebro.
+//! The original `dna_view` reads the `.dna` format (ternary TLV, 128×64) of the Bevy
+//! path. The GPU evolution path saves another format — `UGEN` v2, with a 192×96 L1, a
+//! 96×48 L2, KAN knots, slow brain and τ bank. This binary reads THAT format and answers
+//! what the three-line report of `--ativacao` does not: **where** the competence lives
+//! inside the brain.
 //!
-//! O relatório de ativação mede o cérebro RODANDO (precisa de GPU e de um mundo). Este
-//! mede o cérebro PARADO — só os pesos, sem simular nada. As duas leituras se cobrem: um
-//! neurônio pode ter peso grande e nunca disparar, e é essa diferença que interessa.
+//! The activation report measures the brain RUNNING (needs a GPU and a world). This one
+//! measures the brain AT REST — only the weights, simulating nothing. The two readings
+//! cover each other: a neuron can have a large weight and never fire, and that difference
+//! is what matters.
 //!
-//! # O que mostra
+//! # What it shows
 //!
-//! · distribuição dos pesos por camada, com histograma ASCII
-//! · **agrupamento por canal sensorial** — qual grupo de sentidos alimenta mais o cérebro,
-//!   usando os nomes reais do registro `Channel` (não índices soltos)
-//! · **perfil por neurônio** — quais estão mortos, quais dominam, quanta entrada recebem
-//! · heatmap de L1 e L2
-//! · banco de τ: distribuição das escalas de tempo (o "banco de relógios" do cérebro)
+//! · weight distribution per layer, with an ASCII histogram
+//! · **grouping by sensory channel** — which group of senses feeds the brain the most,
+//!   using the real names from the `Channel` registry (not loose indices)
+//! · **per-neuron profile** — which are dead, which dominate, how much input they receive
+//! · L1 and L2 heatmap
+//! · τ bank: distribution of the time scales (the brain's "bank of clocks")
 //!
-//! # Uso
+//! # Usage
 //!
-//!   genoma_view <caminho.bin> [--top 20] [--heatmap]
+//!   genoma_view <path.bin> [--top 20] [--heatmap]
 
 use universe::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
-// `name_for` e fn livre do modulo: cobre os 192 indices, enquanto o enum `Channel` so
-// tem variante para os canais nomeados individualmente.
+// `name_for` is a free fn of the module: covers all 192 indices, while the `Channel`
+// enum only has variants for the individually named channels.
 use universe::math::stats;
 use universe::perception::channels::name_for;
 
 const MAGIC: &[u8; 4] = b"UGEN";
 
-/// Genoma para exibição. Preenchido pelo parser CANÔNICO (`universe::gpu::genome_io`).
+/// Genome for display. Filled by the CANONICAL parser (`universe::gpu::genome_io`).
 ///
-/// A réplica de leitura que vivia aqui quebrou em silêncio quando os blocos
-/// P1.6/P1.7 entraram no formato: "τ = últimos 96 floats do arquivo" passou a ler
-/// `neuron_activation` — e o campeão real (τ espalha 3,2× no log de treino)
-/// aparecia como "monotemporal 0,0×". Parser duplicado nunca mais.
+/// The read replica that used to live here broke silently when the P1.6/P1.7
+/// blocks entered the format: "τ = last 96 floats of the file" started reading
+/// `neuron_activation` — and the real champion (τ spreads 3.2× in the training log)
+/// showed up as "monotemporal 0.0×". Never a duplicated parser again.
 struct Genoma {
     versao: u32,
     l1: Vec<f32>,
@@ -52,7 +54,7 @@ struct Genoma {
 }
 
 fn carregar(path: &str) -> Option<Genoma> {
-    // Sniff só para EXIBIR a versão; a leitura em si é do parser canônico.
+    // Sniff only to DISPLAY the version; the actual read is done by the canonical parser.
     let versao = std::fs::read(path)
         .ok()
         .map(|b| {
@@ -64,8 +66,8 @@ fn carregar(path: &str) -> Option<Genoma> {
         })
         .unwrap_or(0);
     let g = universe::gpu::genome_io::load_genome(path)?;
-    // `Genome.tau` guarda a taxa d (s⁻¹); exibição converte para τ = 1/d adiante,
-    // idêntico ao que era antes (o campo já vinha como d no formato).
+    // `Genome.tau` stores the rate d (s⁻¹); display converts to τ = 1/d further on,
+    // identical to what it was before (the field already came as d in the format).
     let kan: Vec<f32> = g.kan_knots.iter().flat_map(|r| r.iter().copied()).collect();
     Some(Genoma {
         versao,
@@ -77,10 +79,10 @@ fn carregar(path: &str) -> Option<Genoma> {
     })
 }
 
-/// Histograma ASCII — a "forma" da distribuição, que média e desvio escondem.
+/// ASCII histogram — the "shape" of the distribution, which mean and deviation hide.
 fn histograma(vals: &[f32], bins: usize, largura: usize) {
     if vals.is_empty() {
-        println!("    (vazio)");
+        println!("    (empty)");
         return;
     }
     let h = stats::histogram(vals, bins);
@@ -100,27 +102,27 @@ fn histograma(vals: &[f32], bins: usize, largura: usize) {
 
 fn resumo(nome: &str, w: &[f32]) {
     if w.is_empty() {
-        println!("  {nome}: ausente");
+        println!("  {nome}: absent");
         return;
     }
-    // `percentile` ordena no lugar, entao trabalha sobre copia mutavel.
+    // `percentile` sorts in place, so work on a mutable copy.
     let mut abs: Vec<f32> = w.iter().map(|x| x.abs()).collect();
     let media = stats::mean(w);
     let sigma = stats::std_dev(w);
     let mortos = abs.iter().filter(|&&x| x < 0.01).count();
     let fortes = abs.iter().filter(|&&x| x > 1.0).count();
     println!(
-        "  {nome}: {} pesos · média {media:+.4} · σ {sigma:.4} · |w|max {:.3}",
+        "  {nome}: {} weights · mean {media:+.4} · σ {sigma:.4} · |w|max {:.3}",
         w.len(),
         abs.iter().cloned().fold(0.0, f32::max)
     );
     println!(
-        "    quase-zero (|w|<0.01): {mortos} ({:.1}%) · fortes (|w|>1.0): {fortes} ({:.1}%)",
+        "    near-zero (|w|<0.01): {mortos} ({:.1}%) · strong (|w|>1.0): {fortes} ({:.1}%)",
         mortos as f32 * 100.0 / w.len() as f32,
         fortes as f32 * 100.0 / w.len() as f32
     );
     println!(
-        "    percentis |w|: p50 {:.3} · p90 {:.3} · p99 {:.3}",
+        "    |w| percentiles: p50 {:.3} · p90 {:.3} · p99 {:.3}",
         stats::percentile(&mut abs, 50.0),
         stats::percentile(&mut abs, 90.0),
         stats::percentile(&mut abs, 99.0)
@@ -130,7 +132,7 @@ fn resumo(nome: &str, w: &[f32]) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).cloned().unwrap_or_else(|| {
-        eprintln!("uso: genoma_view <caminho.bin> [--top N] [--heatmap]");
+        eprintln!("usage: genoma_view <path.bin> [--top N] [--heatmap]");
         std::process::exit(1);
     });
     let mut top = 20usize;
@@ -145,9 +147,9 @@ fn main() {
                 top = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(20);
             }
             "--heatmap" => heatmap = true,
-            // Leonardo: "eu quero realmente poder ver, tipo, quem conversa com quem, quais
-            // grupos são" — texto nao mostra topologia. `--html` escreve uma pagina
-            // autocontida com o grafo do cerebro.
+            // Leonardo: "I really want to be able to see, like, who talks to whom, what
+            // the groups are" — text does not show topology. `--html` writes a
+            // self-contained page with the brain graph.
             "--html" => {
                 i += 1;
                 html_out = args.get(i).cloned();
@@ -162,15 +164,15 @@ fn main() {
     }
 
     let Some(g) = carregar(&path) else {
-        eprintln!("falha ao ler {path}");
+        eprintln!("failed to read {path}");
         std::process::exit(1);
     };
 
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("🧬 GENOMA — {path}");
+    println!("🧬 GENOME — {path}");
     println!("═══════════════════════════════════════════════════════════════════");
     println!(
-        "  formato UGEN v{} · L1 {}×{} · L2 {}×{} · KAN {} · lento {} · τ {}",
+        "  format UGEN v{} · L1 {}×{} · L2 {}×{} · KAN {} · slow {} · τ {}",
         g.versao,
         SENSORY_WAVE_SIZE,
         L1_NEURONS,
@@ -182,21 +184,21 @@ fn main() {
     );
     println!();
 
-    println!("─── DISTRIBUIÇÃO DOS PESOS ────────────────────────────────────────");
-    resumo("L1 (sensorial → rápido)", &g.l1);
-    resumo("L2 (rápido → motor)", &g.l2);
-    resumo("lento (modulação)", &g.slow);
-    println!("\n  forma de L1:");
+    println!("─── WEIGHT DISTRIBUTION ───────────────────────────────────────────");
+    resumo("L1 (sensory → fast)", &g.l1);
+    resumo("L2 (fast → motor)", &g.l2);
+    resumo("slow (modulation)", &g.slow);
+    println!("\n  shape of L1:");
     histograma(&g.l1, 16, 40);
 
-    // ── AGRUPAMENTO POR SENTIDO ────────────────────────────────────────────
+    // ── GROUPING BY SENSE ──────────────────────────────────────────────────
     //
-    // A pergunta que importa não é "qual peso é maior", é "de qual SENTIDO o cérebro
-    // depende". Somando |w| de todos os neurônios por canal de entrada sai o orçamento
-    // de atenção do cérebro — e canal com soma ~0 é sentido que ele aprendeu a ignorar,
-    // seja porque é inútil, seja porque está quebrado (foi assim que os canais mortos
-    // apareceram na auditoria de 2026-08-11).
-    println!("\n─── ORÇAMENTO DE ATENÇÃO POR CANAL SENSORIAL ──────────────────────");
+    // The question that matters is not "which weight is larger", it is "which SENSE the
+    // brain depends on". Summing |w| of all neurons per input channel yields the brain's
+    // attention budget — and a channel with sum ~0 is a sense it learned to ignore,
+    // either because it is useless or because it is broken (that is how the dead channels
+    // showed up in the 2026-08-11 audit).
+    println!("\n─── ATTENTION BUDGET PER SENSORY CHANNEL ──────────────────────────");
     let mut por_canal: Vec<(usize, f32)> = (0..SENSORY_WAVE_SIZE)
         .map(|ch| {
             let soma: f32 = (0..L1_NEURONS)
@@ -211,7 +213,7 @@ fn main() {
     let total: f32 = por_canal.iter().map(|(_, s)| s).sum::<f32>().max(1e-6);
     por_canal.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-    println!("  os {top} canais mais atendidos:");
+    println!("  the {top} best-served channels:");
     for (ch, soma) in por_canal.iter().take(top) {
         let pct = soma * 100.0 / total;
         let barra = "▁▂▃▄▅▆▇█"
@@ -226,7 +228,7 @@ fn main() {
         .map(|(c, _)| *c)
         .collect();
     println!(
-        "\n  canais praticamente ignorados (<0,05% da atenção): {}",
+        "\n  practically ignored channels (<0.05% of attention): {}",
         ignorados.len()
     );
     if !ignorados.is_empty() {
@@ -234,15 +236,15 @@ fn main() {
         println!("    {}", amostra.join(" "));
     }
 
-    // ── PERFIL POR NEURÔNIO ────────────────────────────────────────────────
-    println!("\n─── PERFIL DOS {L1_NEURONS} NEURÔNIOS DE L1 ──────────────────────────────");
+    // ── PER-NEURON PROFILE ─────────────────────────────────────────────────
+    println!("\n─── PROFILE OF THE {L1_NEURONS} L1 NEURONS ───────────────────────────────");
     let mut perfil: Vec<(usize, f32, f32)> = (0..L1_NEURONS)
         .map(|n| {
             let ini = n * SENSORY_WAVE_SIZE;
             let fim = (ini + SENSORY_WAVE_SIZE).min(g.l1.len());
             let fatia = &g.l1[ini.min(g.l1.len())..fim];
             let soma: f32 = fatia.iter().map(|w| w.abs()).sum();
-            // Saída: quanto este neurônio pesa em L2 — mede se alguém o escuta.
+            // Output: how much this neuron weighs in L2 — measures whether anyone listens to it.
             let saida: f32 = (0..L2_NEURONS)
                 .map(|j| g.l2.get(j * L1_NEURONS + n).map_or(0.0, |w| w.abs()))
                 .sum();
@@ -258,13 +260,13 @@ fn main() {
         .iter()
         .filter(|(_, e, _)| *e < 0.05 * entrada_media)
         .count();
-    println!("  entrada média por neurônio: {entrada_media:.2}");
-    println!("  SURDOS (quase não recebem entrada): {surdos}");
-    println!("  MUDOS (L2 quase não os escuta):     {mudos}");
+    println!("  mean input per neuron: {entrada_media:.2}");
+    println!("  DEAF (receive almost no input): {surdos}");
+    println!("  MUTE (L2 barely listens to them): {mudos}");
     perfil.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
-    println!("\n  os 10 neurônios mais influentes (por peso de saída em L2):");
+    println!("\n  the 10 most influential neurons (by output weight in L2):");
     for (n, ent, sai) in perfil.iter().take(10) {
-        // De qual canal cada um mais depende — dá o "papel" do neurônio.
+        // Which channel each depends on the most — gives the neuron's "role".
         let dom = (0..SENSORY_WAVE_SIZE)
             .max_by(|&a, &b| {
                 let wa = g.l1.get(n * SENSORY_WAVE_SIZE + a).map_or(0.0, |w| w.abs());
@@ -273,18 +275,18 @@ fn main() {
             })
             .unwrap_or(0);
         println!(
-            "    N{n:02}  entrada {ent:6.2}  saída {sai:6.2}  ← escuta sobretudo ch{dom} ({})",
+            "    N{n:02}  input {ent:6.2}  output {sai:6.2}  ← listens mostly to ch{dom} ({})",
             name_for(dom)
         );
     }
 
-    // ── BANCO DE τ ─────────────────────────────────────────────────────────
+    // ── τ BANK ─────────────────────────────────────────────────────────────
     if !g.tau.is_empty() {
-        println!("\n─── BANCO DE τ (escalas de tempo do CfC) ──────────────────────────");
+        println!("\n─── τ BANK (CfC time scales) ──────────────────────────────────────");
         let mut t = g.tau.clone();
         t.sort_by(|a, b| a.partial_cmp(b).unwrap());
         println!(
-            "  {} canais · taxa d [{:.3}, {:.3}] s⁻¹ · τ = 1/d [{:.3}, {:.3}] s",
+            "  {} channels · rate d [{:.3}, {:.3}] s⁻¹ · τ = 1/d [{:.3}, {:.3}] s",
             t.len(),
             t[0],
             t[t.len() - 1],
@@ -294,16 +296,16 @@ fn main() {
         let mut t90 = t.clone();
         let mut t10 = t.clone();
         println!(
-            "  espalhamento p90/p10: {:.1}× (1,0 = população monotemporal)",
+            "  p90/p10 spread: {:.1}× (1.0 = monotemporal population)",
             stats::percentile(&mut t90, 90.0) / stats::percentile(&mut t10, 10.0).max(1e-6)
         );
-        println!("\n  forma:");
+        println!("\n  shape:");
         histograma(&t, 12, 34);
     }
 
     if heatmap {
-        println!("\n─── HEATMAP L2 (48 motores × 96 neurônios) ────────────────────────");
-        println!("  + forte positivo · - forte negativo · · fraco · . nulo");
+        println!("\n─── L2 HEATMAP (48 motors × 96 neurons) ───────────────────────────");
+        println!("  + strong positive · - strong negative · · weak · . null");
         for j in 0..L2_NEURONS.min(48) {
             let linha: String = (0..L1_NEURONS)
                 .map(

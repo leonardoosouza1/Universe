@@ -1,19 +1,19 @@
 pub mod channels;
-/// Módulo de percepção sensorial — retina e canais (E2).
+/// Sensory perception module — retina and channels (E2).
 ///
-/// # Estrutura
+/// # Structure
 ///
-/// - `retina` — adaptador da retina sobre iara-perception (movido de `src/perception.rs`)
-/// - `channels` — registro canônico dos 192 canais da onda sensorial
+/// - `retina` — retina adapter over iara-perception (moved from `src/perception.rs`)
+/// - `channels` — canonical registry of the 192 sensory-wave channels
 ///
-/// Os callers que usavam `use crate::perception::RetinaPerception;` continuam
-/// funcionando via reexport abaixo.
+/// Callers that used `use crate::perception::RetinaPerception;` keep
+/// working via the reexport below.
 pub mod retina;
 
-// Reexporta tudo que os callers externos esperam do módulo original.
+// Reexports everything external callers expect from the original module.
 // Callers: src/engine.rs, src/bin/cortex_evolve.rs, src/bin/gpu_loop.rs,
 //          src/bin/gpu_report.rs, src/bin/gpu_evolve.rs
 pub use retina::*;
 
-// Reexporta os símbolos principais de channels para conveniência.
+// Reexports the main channels symbols for convenience.
 pub use channels::{Channel, ChannelSource, N_CHANNELS, name_for, source_for};

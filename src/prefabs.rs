@@ -26,7 +26,7 @@ pub fn spawn_porsche_911_gt3(
                 wheel_base: 2.507,
                 cg_height: 0.40,
                 track_width: 1.55,
-                lsd_lock_ratio: 0.6, // Porsche tem LSD agressivo
+                lsd_lock_ratio: 0.6, // Porsche has an aggressive LSD
                 brake_torque_max: 15000.0,
             },
             EngineComponent {
@@ -42,7 +42,7 @@ pub fn spawn_porsche_911_gt3(
                 manual_shift_req: 0,
                 is_stalled: false,
                 starter_timer: 0.0,
-                flywheel_inertia: 0.12, // Flat-6 leve
+                flywheel_inertia: 0.12, // Light flat-6
                 engine_temp: 60.0,
                 oil_temp: 50.0,
             },
@@ -98,7 +98,7 @@ pub fn spawn_ferrari_296_gt3(
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
-            flywheel_inertia: 0.15, // Turbo V6 mais pesado
+            flywheel_inertia: 0.15, // Heavier turbo V6
             engine_temp: 60.0,
             oil_temp: 50.0,
         });
@@ -178,7 +178,7 @@ pub fn spawn_aston_vantage_gt3(
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
-            flywheel_inertia: 0.16, // V8 pesado
+            flywheel_inertia: 0.16, // Heavy V8
             engine_temp: 60.0,
             oil_temp: 50.0,
         });
@@ -218,7 +218,7 @@ pub fn spawn_audi_r8_lms_gt3(
             manual_shift_req: 0,
             is_stalled: false,
             starter_timer: 0.0,
-            flywheel_inertia: 0.18, // V10 pesado
+            flywheel_inertia: 0.18, // Heavy V10
             engine_temp: 60.0,
             oil_temp: 50.0,
         });

@@ -1,22 +1,22 @@
-//! OBSERVATÓRIO COMPLETO — cada detalhe de cada ser, contra a pista real.
+//! FULL OBSERVATORY — every detail of every being, against the real track.
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo: *"quero mais dados para observar, até para você. Colocar os modelos em grupos,
-//! seleção, avanços, quais modelos usam mais acelerador, qual bateu mais e por quê.
-//! Literalmente observar o máximo que puder para ver cada detalhe de todo mundo."*
+//! Leonardo: *"I want more data to observe, even for you. Put the models into groups,
+//! selection, progress, which models use more throttle, which crashed the most and why.
+//! Literally observe as much as you can to see every detail of everyone."*
 //!
-//! O `replay_diag` olha um ser; o `replay_pop` resume a população. Este vai ao fundo: mede
-//! 20 grandezas por ser, agrupa os seres por COMPORTAMENTO (não por desempenho), e conta
-//! onde e como cada grupo falha.
+//! `replay_diag` looks at one being; `replay_pop` summarizes the population. This one goes
+//! deep: measures 20 quantities per being, groups the beings by BEHAVIOUR (not by
+//! performance), and tells where and how each group fails.
 //!
-//! Tudo aqui é derivado de dado gravado ou da geometria reconstruída da `world_seed`.
-//! Nada é estimado.
+//! Everything here is derived from recorded data or from the geometry reconstructed from
+//! the `world_seed`. Nothing is estimated.
 //!
-//! # Uso
+//! # Usage
 //!
-//!   replay_obs --replay <arquivo.replay> [--width 28] [--grupos 4] [--csv obs.csv]
-//!   replay_obs --replay <a> --contra <b>     # compara duas gerações (o que avançou)
+//!   replay_obs --replay <file.replay> [--width 28] [--grupos 4] [--csv obs.csv]
+//!   replay_obs --replay <a> --contra <b>     # compares two generations (what progressed)
 
 use bevy::math::Vec2;
 use std::collections::BTreeMap;
@@ -24,35 +24,35 @@ use std::path::PathBuf;
 use universe::replay::{ReplayFrame, ReplayReader};
 use universe::world::{VoxelType, VoxelWorld};
 
-/// Retrato completo de um ser. Cada campo sai de dado gravado ou de geometria.
+/// Full portrait of one being. Every field comes from recorded data or from geometry.
 #[derive(Clone)]
 struct Retrato {
     id: usize,
-    // Resultado
+    // Result
     progresso: f32,
     setor_final: usize,
     voltas: u32,
-    // Uso dos controles
+    // Control usage
     thr_medio: f32,
-    thr_cheio_pct: f32, // acelerador > 0,9
-    thr_zero_pct: f32,  // acelerador < 0,1
-    brk_pct: f32,       // freio acionado
-    str_medio: f32,     // COM sinal: viés de direção
+    thr_cheio_pct: f32, // throttle > 0.9
+    thr_zero_pct: f32,  // throttle < 0.1
+    brk_pct: f32,       // brake applied
+    str_medio: f32,     // WITH sign: steering bias
     str_desvio: f32,
-    str_invers_s: f32, // inversões de volante por segundo — jitter
-    // Movimento
+    str_invers_s: f32, // steering reversals per second — jitter
+    // Movement
     vel_media: f32,
     vel_max: f32,
-    vel_alta_pct: f32, // acima de 10 m/s
+    vel_alta_pct: f32, // above 10 m/s
     parado_pct: f32,
     re_pct: f32,
-    // Falhas
-    batidas: usize, // quedas bruscas de velocidade junto à parede
+    // Failures
+    batidas: usize, // sharp speed drops next to the wall
     fora_pct: f32,
     episodios_parado: usize,
-    // Relação com a pista
+    // Relation to the track
     corr_curva: f32,
-    desvio_eixo: f32, // distância média ao eixo da pista
+    desvio_eixo: f32, // mean distance to the track centerline
     grupo: usize,
 }
 
@@ -102,7 +102,7 @@ fn main() {
     }
     let Some(path) = path else {
         eprintln!(
-            "uso: replay_obs --replay <arquivo> [--width 28] [--grupos 4] [--csv obs.csv] [--contra outro.replay]"
+            "usage: replay_obs --replay <file> [--width 28] [--grupos 4] [--csv obs.csv] [--contra other.replay]"
         );
         std::process::exit(2);
     };
@@ -110,16 +110,16 @@ fn main() {
     let (mut retratos, world, lap) = match carregar(&path, width) {
         Some(t) => t,
         None => {
-            eprintln!("replay vazio ou ilegível: {}", path.display());
+            eprintln!("replay empty or unreadable: {}", path.display());
             std::process::exit(1);
         }
     };
 
     agrupar(&mut retratos, k_grupos);
 
-    println!("=== OBSERVATÓRIO: {} ===", path.display());
+    println!("=== OBSERVATORY: {} ===", path.display());
     println!(
-        "{} seres · volta {lap:.0} m · pista {width:.0} m\n",
+        "{} beings · lap {lap:.0} m · track {width:.0} m\n",
         retratos.len()
     );
 
@@ -140,7 +140,7 @@ fn main() {
     }
 }
 
-// ── COLETA ────────────────────────────────────────────────────────────────────
+// ── COLLECTION ────────────────────────────────────────────────────────────────
 
 fn carregar(path: &PathBuf, width: f32) -> Option<(Vec<Retrato>, VoxelWorld, f32)> {
     let mut reader = ReplayReader::open(path).ok()?;
@@ -173,12 +173,12 @@ fn retratar(id: usize, fr: &[ReplayFrame], world: &VoxelWorld, lap: f32, width: 
     let mut vmax = 0.0f32;
     let mut str_v: Vec<f32> = Vec::with_capacity(fr.len());
     let mut curv_v: Vec<f32> = Vec::with_capacity(fr.len());
-    // Progresso LÍQUIDO PARA FRENTE, acumulado com tratamento do cruzamento de linha.
+    // NET FORWARD progress, accumulated with line-crossing handling.
     //
-    // A primeira versão usava `max - min` das posições visitadas, o que é AMPLITUDE, não
-    // avanço: um ser que recua cruzando a linha ao contrário vai de 14 m para 2900 m e
-    // marcava "2914 m — 99,5% da volta". Quatro seres apareceram assim, e com eles o
-    // agrupamento elegeu como líder o grupo de acelerador 0,04 e 80% parado.
+    // The first version used `max - min` of visited positions, which is AMPLITUDE, not
+    // progress: a being that backs up across the line the wrong way goes from 14 m to 2900 m
+    // and scored "2914 m — 99.5% of the lap". Four beings appeared like that, and with them
+    // the clustering elected as leader the group with throttle 0.04 and 80% stopped.
     let mut prog_liq = 0.0f32;
     let mut prog_ant = world.get_track_progress(fr[0].pos[0], fr[0].pos[2]);
     let mut prog_pico = 0.0f32;
@@ -224,9 +224,9 @@ fn retratar(id: usize, fr: &[ReplayFrame], world: &VoxelWorld, lap: f32, width: 
             fora += 1;
         }
 
-        // Batida: perda brusca de velocidade (>6 m/s entre quadros de 1/16 s) — só é
-        // possível contra geometria, não por frenagem. É o proxy honesto que o dado
-        // gravado permite; não há flag de colisão no quadro.
+        // Crash: sharp speed loss (>6 m/s between 1/16 s frames) — only possible
+        // against geometry, not by braking. It is the honest proxy the recorded data
+        // allows; there is no collision flag in the frame.
         if ultima_vel - f.speed > 6.0 {
             batidas += 1;
         }
@@ -268,9 +268,9 @@ fn retratar(id: usize, fr: &[ReplayFrame], world: &VoxelWorld, lap: f32, width: 
         0.0
     };
 
-    // Quadros a 16 Hz (1 a cada 4 ticks de 64 Hz).
+    // Frames at 16 Hz (1 every 4 ticks of 64 Hz).
     let segundos = n / 16.0;
-    // O PICO do avanço líquido: o quanto ele chegou a andar para frente, sem crédito por recuar.
+    // The PEAK of net progress: how far it actually got forward, no credit for backing up.
     let span = prog_pico.max(0.0);
 
     Retrato {
@@ -299,13 +299,13 @@ fn retratar(id: usize, fr: &[ReplayFrame], world: &VoxelWorld, lap: f32, width: 
     }
 }
 
-// ── AGRUPAMENTO POR COMPORTAMENTO ─────────────────────────────────────────────
+// ── GROUPING BY BEHAVIOUR ─────────────────────────────────────────────────────
 
-/// k-médias sobre o ESTILO de pilotagem, não sobre o resultado.
+/// k-means over the driving STYLE, not the result.
 ///
-/// Agrupar por distância percorrida só reordena o ranking. Agrupar por COMO o ser dirige
-/// (acelerador, volante, freio, jitter) revela se a população tem estratégias distintas ou
-/// se é uma monocultura com ruído — que é a pergunta que o `med/max = 0,97` levantou.
+/// Grouping by distance covered only reorders the ranking. Grouping by HOW the being drives
+/// (throttle, steering, brake, jitter) reveals whether the population has distinct strategies
+/// or is a monoculture with noise — which is the question `med/max = 0.97` raised.
 fn agrupar(r: &mut [Retrato], k: usize) {
     if r.len() < k || k < 2 {
         return;
@@ -322,7 +322,7 @@ fn agrupar(r: &mut [Retrato], k: usize) {
     };
     const D: usize = 6;
 
-    // Normaliza cada dimensão para não deixar a de maior escala dominar a distância.
+    // Normalizes each dimension so the largest-scale one does not dominate the distance.
     let mut mn = [f32::MAX; D];
     let mut mx = [f32::MIN; D];
     for x in r.iter() {
@@ -342,7 +342,7 @@ fn agrupar(r: &mut [Retrato], k: usize) {
         o
     };
 
-    // Sementes espalhadas pelo índice — determinístico, sem RNG.
+    // Seeds spread by index — deterministic, no RNG.
     let mut centros: Vec<[f32; D]> = (0..k).map(|c| norm(&r[c * r.len() / k])).collect();
     for _ in 0..25 {
         let mut soma = vec![[0.0f32; D]; k];
@@ -374,26 +374,26 @@ fn agrupar(r: &mut [Retrato], k: usize) {
     }
 }
 
-// ── RELATÓRIOS ────────────────────────────────────────────────────────────────
+// ── REPORTS ───────────────────────────────────────────────────────────────────
 
 fn tabela_individual(r: &[Retrato], lap: f32) {
     let mut v: Vec<&Retrato> = r.iter().collect();
     v.sort_by(|a, b| b.progresso.partial_cmp(&a.progresso).unwrap());
-    println!("── CADA SER (ordenado por progresso) ──");
+    println!("── EACH BEING (sorted by progress) ──");
     println!(
         "{:>4} {:>3} {:>8} {:>6} {:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>6} {:>5} {:>6}",
-        "ser",
+        "being",
         "gr",
         "progr",
-        "%vlt",
+        "%lap",
         "thr",
         "thr100",
-        "freio",
-        "volante",
+        "brake",
+        "steer",
         "±",
-        "v.méd",
-        "parado",
-        "bat",
+        "v.avg",
+        "stop",
+        "crsh",
         "corr"
     );
     println!("{:-<95}", "");
@@ -416,16 +416,16 @@ fn tabela_individual(r: &[Retrato], lap: f32) {
         );
     }
     if v.len() > 16 {
-        println!("{:>4} … e mais {}", "", v.len() - 16);
+        println!("{:>4} … and {} more", "", v.len() - 16);
     }
 }
 
 fn resumo_grupos(r: &[Retrato], lap: f32, k: usize) {
-    println!("\n── GRUPOS DE COMPORTAMENTO ──");
-    println!("(agrupados por COMO dirigem, não por quanto avançam)");
+    println!("\n── BEHAVIOUR GROUPS ──");
+    println!("(grouped by HOW they drive, not by how far they get)");
     println!(
         "{:>3} {:>4} {:>8} {:>6} {:>7} {:>6} {:>6} {:>6} {:>5} {:>6}",
-        "gr", "n", "progr", "thr", "volante", "±", "v.méd", "parado", "bat", "invers/s"
+        "gr", "n", "progr", "thr", "steer", "±", "v.avg", "stop", "crsh", "rev/s"
     );
     println!("{:-<80}", "");
     for g in 0..k {
@@ -448,8 +448,8 @@ fn resumo_grupos(r: &[Retrato], lap: f32, k: usize) {
             a(&|x| x.str_invers_s)
         );
     }
-    // O grupo que mais avança é o que a seleção vai copiar — vale saber o que ele faz
-    // de diferente, porque é isso que a próxima geração inteira vai imitar.
+    // The group that progresses most is the one selection will copy — worth knowing what it
+    // does differently, because that is what the whole next generation will imitate.
     let melhor = (0..k)
         .filter(|g| r.iter().any(|x| x.grupo == *g))
         .max_by(|a, b| {
@@ -469,19 +469,19 @@ fn resumo_grupos(r: &[Retrato], lap: f32, k: usize) {
         let m: Vec<&Retrato> = r.iter().filter(|x| x.grupo == g).collect();
         let a = |f: &dyn Fn(&Retrato) -> f32| m.iter().map(|x| f(x)).sum::<f32>() / m.len() as f32;
         println!(
-            "\n  Grupo líder: {} ({} seres, {:.0} m médios)",
+            "\n  Leading group: {} ({} beings, {:.0} m mean)",
             g,
             m.len(),
             a(&|x| x.progresso)
         );
         println!(
-            "  Estilo: acelerador {:.2} · volante {:+.2} · {:.1} inversões/s · parado {:.0}%",
+            "  Style: throttle {:.2} · steering {:+.2} · {:.1} reversals/s · stopped {:.0}%",
             a(&|x| x.thr_medio),
             a(&|x| x.str_medio),
             a(&|x| x.str_invers_s),
             a(&|x| x.parado_pct)
         );
-        println!("  A próxima geração vai ser cópia disto — é este estilo que a seleção premia.");
+        println!("  The next generation will be a copy of this — this is the style selection rewards.");
     }
     let _ = lap;
 }
@@ -491,14 +491,14 @@ fn onde_param(r: &[Retrato], world: &VoxelWorld, lap: f32) {
     for x in r {
         *h.entry(x.setor_final).or_insert(0) += 1;
     }
-    println!("\n── ONDE CADA UM PAROU (24 setores) ──");
+    println!("\n── WHERE EACH ONE STOPPED (24 sectors) ──");
     let total = r.len();
     for (s, n) in &h {
         let barra: String = std::iter::repeat('█')
             .take((*n * 40 / total).max(1))
             .collect();
         println!(
-            "  setor {:>2} (~{:>5.0} m) {:>3}  {}",
+            "  sector {:>2} (~{:>5.0} m) {:>3}  {}",
             s,
             *s as f32 * lap / 24.0,
             n,
@@ -508,16 +508,16 @@ fn onde_param(r: &[Retrato], world: &VoxelWorld, lap: f32) {
     if let Some((sm, nm)) = h.iter().max_by_key(|(_, n)| **n).map(|(s, n)| (*s, *n)) {
         let frac = 100.0 * nm as f32 / total as f32;
         println!(
-            "\n  {:.0}% para no setor {} (~{:.0} m).",
+            "\n  {:.0}% stop in sector {} (~{:.0} m).",
             frac,
             sm,
             sm as f32 * lap / 24.0
         );
         if frac > 60.0 {
-            println!("  ⇒ MESMO ponto para quase todos: barreira do MUNDO, não competência.");
+            println!("  ⇒ the SAME point for almost everyone: a WORLD barrier, not competence.");
             descrever(world, sm as f32 * lap / 24.0);
         } else {
-            println!("  ⇒ espalhado: a diferença é de COMPETÊNCIA entre indivíduos.");
+            println!("  ⇒ spread out: the difference is COMPETENCE between individuals.");
         }
     }
 }
@@ -525,61 +525,61 @@ fn onde_param(r: &[Retrato], world: &VoxelWorld, lap: f32) {
 fn quem_bate(r: &[Retrato]) {
     let mut v: Vec<&Retrato> = r.iter().filter(|x| x.batidas > 0).collect();
     v.sort_by_key(|x| std::cmp::Reverse(x.batidas));
-    println!("\n── QUEM MAIS BATE (queda de velocidade > 6 m/s entre quadros) ──");
+    println!("\n── WHO CRASHES MOST (speed drop > 6 m/s between frames) ──");
     if v.is_empty() {
-        println!("  ninguém: nenhuma perda brusca de velocidade.");
+        println!("  nobody: no sharp speed loss.");
         return;
     }
     for x in v.iter().take(6) {
         println!(
-            "  ser {:>3}: {:>3} batidas · vel máx {:>5.1} · volante {:+.2}(±{:.2}) · fora da pista {:.0}% · progresso {:.0} m",
+            "  being {:>3}: {:>3} crashes · max spd {:>5.1} · steering {:+.2}(±{:.2}) · off track {:.0}% · progress {:.0} m",
             x.id, x.batidas, x.vel_max, x.str_medio, x.str_desvio, x.fora_pct, x.progresso
         );
     }
-    // Bater se correlaciona com correr, ou com dirigir mal? A resposta muda o que fazer.
+    // Does crashing correlate with racing, or with driving badly? The answer changes what to do.
     let vel: Vec<f32> = r.iter().map(|x| x.vel_media).collect();
     let bat: Vec<f32> = r.iter().map(|x| x.batidas as f32).collect();
     println!(
-        "\n  correlação batidas × velocidade média: {:+.2}",
+        "\n  correlation crashes × mean speed: {:+.2}",
         correlacao(&vel, &bat)
     );
     let prog: Vec<f32> = r.iter().map(|x| x.progresso).collect();
     println!(
-        "  correlação batidas × progresso:         {:+.2}",
+        "  correlation crashes × progress:         {:+.2}",
         correlacao(&prog, &bat)
     );
-    println!("  (positiva com progresso = quem tenta mais, bate mais — bater é custo de tentar)");
+    println!("  (positive with progress = who tries more, crashes more — crashing is the cost of trying)");
 }
 
 fn quem_acelera(r: &[Retrato]) {
     let mut v: Vec<&Retrato> = r.iter().collect();
     v.sort_by(|a, b| b.thr_medio.partial_cmp(&a.thr_medio).unwrap());
-    println!("\n── ACELERADOR ──");
+    println!("\n── THROTTLE ──");
     println!(
-        "  mais fundo: ser {} ({:.2} médio, {:.0}% no fundo, {:.0} m)",
+        "  heaviest foot: being {} ({:.2} mean, {:.0}% floored, {:.0} m)",
         v[0].id, v[0].thr_medio, v[0].thr_cheio_pct, v[0].progresso
     );
     let u = v[v.len() - 1];
     println!(
-        "  mais leve:  ser {} ({:.2} médio, {:.0}% solto, {:.0} m)",
+        "  lightest foot: being {} ({:.2} mean, {:.0}% released, {:.0} m)",
         u.id, u.thr_medio, u.thr_zero_pct, u.progresso
     );
     let thr: Vec<f32> = r.iter().map(|x| x.thr_medio).collect();
     let prog: Vec<f32> = r.iter().map(|x| x.progresso).collect();
     let vel: Vec<f32> = r.iter().map(|x| x.vel_media).collect();
     println!(
-        "  correlação acelerador × progresso:  {:+.2}",
+        "  correlation throttle × progress:  {:+.2}",
         correlacao(&thr, &prog)
     );
     println!(
-        "  correlação acelerador × velocidade: {:+.2}",
+        "  correlation throttle × speed: {:+.2}",
         correlacao(&thr, &vel)
     );
-    println!("  (acelerador alto sem velocidade alta = pedal no fundo contra alguma coisa)");
+    println!("  (high throttle without high speed = pedal floored against something)");
 }
 
 fn comparar_geracoes(antes: &[Retrato], agora: &[Retrato], lap: f32, pa: &PathBuf, pb: &PathBuf) {
-    println!("\n── AVANÇO ENTRE GERAÇÕES ──");
+    println!("\n── PROGRESS BETWEEN GENERATIONS ──");
     println!("  {}  →  {}", pa.display(), pb.display());
     let m = |v: &[Retrato], f: &dyn Fn(&Retrato) -> f32| {
         let mut a: Vec<f32> = v.iter().map(f).collect();
@@ -587,16 +587,16 @@ fn comparar_geracoes(antes: &[Retrato], agora: &[Retrato], lap: f32, pa: &PathBu
         a[a.len() / 2]
     };
     let linhas: [(&str, &dyn Fn(&Retrato) -> f32); 6] = [
-        ("progresso (m)", &|x: &Retrato| x.progresso),
-        ("velocidade", &|x: &Retrato| x.vel_media),
-        ("acelerador", &|x: &Retrato| x.thr_medio),
-        ("volante médio", &|x: &Retrato| x.str_medio),
-        ("parado %", &|x: &Retrato| x.parado_pct),
-        ("batidas", &|x: &Retrato| x.batidas as f32),
+        ("progress (m)", &|x: &Retrato| x.progresso),
+        ("speed", &|x: &Retrato| x.vel_media),
+        ("throttle", &|x: &Retrato| x.thr_medio),
+        ("mean steering", &|x: &Retrato| x.str_medio),
+        ("stopped %", &|x: &Retrato| x.parado_pct),
+        ("crashes", &|x: &Retrato| x.batidas as f32),
     ];
     println!(
         "  {:<16} {:>9} {:>9} {:>9}",
-        "métrica", "antes", "agora", "Δ"
+        "metric", "before", "now", "Δ"
     );
     for (nome, f) in linhas {
         let a = m(antes, f);
@@ -642,12 +642,12 @@ batidas,fora_pct,episodios_parado,corr_curva,desvio_eixo\n",
         ));
     }
     match std::fs::write(cp, s) {
-        Ok(_) => println!("\nCSV com 23 colunas por ser: {}", cp.display()),
-        Err(e) => eprintln!("\nfalhou ao escrever CSV: {e}"),
+        Ok(_) => println!("\nCSV with 23 columns per being: {}", cp.display()),
+        Err(e) => eprintln!("\nfailed to write CSV: {e}"),
     }
 }
 
-// ── GEOMETRIA ─────────────────────────────────────────────────────────────────
+// ── GEOMETRY ──────────────────────────────────────────────────────────────────
 
 fn dist_eixo(world: &VoxelWorld, p: Vec2) -> f32 {
     world
@@ -679,11 +679,11 @@ fn descrever(world: &VoxelWorld, at: f32) {
     let v2 = (c - b).normalize_or_zero();
     let ang = v1.dot(v2).clamp(-1.0, 1.0).acos().to_degrees();
     let lado = if v1.x * v2.y - v1.y * v2.x > 0.0 {
-        "direita"
+        "right"
     } else {
-        "esquerda"
+        "left"
     };
-    println!("  Geometria ali: {ang:.0}° para a {lado} (waypoint {idx}).");
+    println!("  Geometry there: {ang:.0}° to the {lado} (waypoint {idx}).");
 }
 
 fn curvatura(world: &VoxelWorld, p: Vec2, ahead: f32) -> f32 {

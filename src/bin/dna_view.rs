@@ -1,5 +1,5 @@
-// DNA viewer — dump header + weight stats + heatmap ASCII do .dna ternário.
-// Uso: cargo run --release --bin dna_view [CAMINHO.dna]
+// DNA viewer — dump header + weight stats + ASCII heatmap of the ternary .dna.
+// Usage: cargo run --release --bin dna_view [PATH.dna]
 // Default: ./CHAMPION.dna
 
 use universe::evolution::dna_genesis::{DNA_FAST_SIZE, DNA_SLOW_SIZE, load_champion_dna};
@@ -15,7 +15,7 @@ fn main() {
         Some(d) => d,
         None => {
             eprintln!(
-                "❌ Falha ao carregar {}. Arquivo inexistente ou corrompido.",
+                "❌ Failed to load {}. File missing or corrupted.",
                 path
             );
             std::process::exit(1);
@@ -45,13 +45,13 @@ fn main() {
         );
         println!("─────────────────────────────────────────────────────────────────");
         println!("🚀 V4 GENERATIVE COMPRESSION");
-        println!("  codec base    : {}", report.codec_used);
+        println!("  base codec    : {}", report.codec_used);
         println!(
-            "  ratio final   : {:.1}:1 ({} bytes originais → {} bytes V4)",
+            "  final ratio   : {:.1}:1 ({} original bytes → {} V4 bytes)",
             report.ratio, report.original_size, report.compressed_size
         );
-        println!("  fidelid. fast : {:.1}%", report.fast_accuracy * 100.0);
-        println!("  fidelid. slow : {:.1}%", report.slow_accuracy * 100.0);
+        println!("  fast fidelity : {:.1}%", report.fast_accuracy * 100.0);
+        println!("  slow fidelity : {:.1}%", report.slow_accuracy * 100.0);
         println!("  tree splines  : {} corrections", report.tree_corrections);
         println!("─────────────────────────────────────────────────────────────────");
         println!();
@@ -76,7 +76,7 @@ fn main() {
         let max_abs = sf.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
         println!("  total         : {}", total);
         println!(
-            "  ativos        : {} ({:.1}%)  neg={} pos={}",
+            "  active        : {} ({:.1}%)  neg={} pos={}",
             nonzero,
             nonzero as f32 * 100.0 / total as f32,
             neg,
@@ -85,7 +85,7 @@ fn main() {
         println!("  |w|_mean      : {:.4}", mean_abs);
         println!("  |w|_max       : {:.4}", max_abs);
         println!();
-        println!("  heatmap (8 neurônios × 32 inputs):");
+        println!("  heatmap (8 neurons × 32 inputs):");
         for n in 0..8 {
             let off = n * 32;
             let row: String = (0..32)
@@ -114,7 +114,7 @@ fn main() {
             DNA_SLOW_SIZE,
         );
     } else {
-        println!("⚠  slow_weights ausente (DNA legacy v1).");
+        println!("⚠  slow_weights missing (legacy v1 DNA).");
     }
 
     println!();
@@ -126,13 +126,13 @@ fn main() {
         println!();
         f32_input_channel_stats(craw, 128, 64);
     } else {
-        println!("⚠  Sem CRAW chunk (DNA pré-V6) — análise canal usa fast_weights ternary legacy");
+        println!("⚠  No CRAW chunk (pre-V6 DNA) — channel analysis uses legacy ternary fast_weights");
         input_channel_stats(&dna.fast_weights, 128, 64);
     }
 }
 
 fn cortex_f32_stats(craw: &[i8]) {
-    // Dequantize i8 / 63.5 → f32 (scale do save).
+    // Dequantize i8 / 63.5 → f32 (the save's scale).
     let weights: Vec<f32> = craw.iter().map(|&w| w as f32 / 63.5).collect();
     let n = weights.len() as f32;
     let mean: f32 = weights.iter().sum::<f32>() / n;
@@ -160,12 +160,12 @@ fn cortex_f32_stats(craw: &[i8]) {
     println!("  mean / std    : {:.4} / {:.4}", mean, std);
     println!("  range         : [{:.4}, {:.4}]", min, max);
     println!(
-        "  dead (|w|<.01): {} ({:.1}%) — neurônios mortos / canais ignorados",
+        "  dead (|w|<.01): {} ({:.1}%) — dead neurons / ignored channels",
         dead_count,
         dead_count as f32 * 100.0 / n
     );
     println!(
-        "  saturated     : {} ({:.1}%) — peso |w|>1.5 (clamp ±2 limite)",
+        "  saturated     : {} ({:.1}%) — weight |w|>1.5 (clamp ±2 limit)",
         sat_count,
         sat_count as f32 * 100.0 / n
     );
@@ -177,8 +177,8 @@ fn f32_input_channel_stats(craw: &[i8], inputs: usize, neurons: usize) {
     }
     let weights: Vec<f32> = craw.iter().map(|&w| w as f32 / 63.5).collect();
 
-    // Por canal: soma absoluta de pesos cross-neurons (importance) +
-    // count de neurônios que polarizam fortemente (>0.3 abs).
+    // Per channel: absolute sum of weights cross-neurons (importance) +
+    // count of neurons that polarize strongly (>0.3 abs).
     let mut ch_stats: Vec<(usize, f32, usize, f32)> = (0..inputs)
         .map(|c| {
             let mut sum_abs = 0.0_f32;
@@ -198,8 +198,8 @@ fn f32_input_channel_stats(craw: &[i8], inputs: usize, neurons: usize) {
         })
         .collect();
 
-    // TOP 25 canais usados (maior |w| médio cross-neurons).
-    println!("  TOP 25 canais MAIS USADOS (peso médio absoluto cross-neurons):");
+    // TOP 25 channels in use (highest mean |w| cross-neurons).
+    println!("  TOP 25 MOST USED channels (mean absolute weight cross-neurons):");
     println!(
         "  {:>4} {:>9} {:>8} {:>8}  bar",
         "ch", "|w|_mean", "|polariz|", "|w|_max"
@@ -221,7 +221,7 @@ fn f32_input_channel_stats(craw: &[i8], inputs: usize, neurons: usize) {
     }
 
     println!();
-    println!("  20 canais MUDOS (rede ignora — peso médio < 0.01):");
+    println!("  20 MUTE channels (the network ignores them — mean weight < 0.01):");
     let mut silent = ch_stats.clone();
     silent.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let mut shown = 0;
@@ -231,7 +231,7 @@ fn f32_input_channel_stats(craw: &[i8], inputs: usize, neurons: usize) {
         }
         if *mw > 0.05 {
             break;
-        } // só mostra realmente mudos
+        } // only show the truly mute ones
         println!(
             "  {:>4} {:>9.4} max={:.3}  {}",
             ch,
@@ -246,11 +246,11 @@ fn f32_input_channel_stats(craw: &[i8], inputs: usize, neurons: usize) {
 fn dump_layer(title: &str, weights: &[i8], inputs: usize, neurons: usize, expected_size: usize) {
     println!("─────────────────────────────────────────────────────────────────");
     println!("🔹 {}", title);
-    println!("  tamanho esperado : {} pesos", expected_size);
-    println!("  tamanho real     : {} pesos", weights.len());
+    println!("  expected size    : {} weights", expected_size);
+    println!("  actual size      : {} weights", weights.len());
 
     if weights.is_empty() {
-        println!("  ⚠  vazio");
+        println!("  ⚠  empty");
         return;
     }
 
@@ -267,36 +267,36 @@ fn dump_layer(title: &str, weights: &[i8], inputs: usize, neurons: usize, expect
         }
     }
     let total = weights.len() as f32;
-    println!("  distribuição:");
+    println!("  distribution:");
     println!(
-        "    -1 (inibitório) : {:5} ({:.1}%)",
+        "    -1 (inhibitory) : {:5} ({:.1}%)",
         n_neg,
         n_neg as f32 * 100.0 / total
     );
     println!(
-        "     0 (mudo)       : {:5} ({:.1}%)",
+        "     0 (mute)       : {:5} ({:.1}%)",
         n_zero,
         n_zero as f32 * 100.0 / total
     );
     println!(
-        "    +1 (excitatório): {:5} ({:.1}%)",
+        "    +1 (excitatory) : {:5} ({:.1}%)",
         n_pos,
         n_pos as f32 * 100.0 / total
     );
 
     let active_frac = (n_neg + n_pos) as f32 / total;
     println!(
-        "  densidade ativa  : {:.1}% (sparsity {:.1}%)",
+        "  active density   : {:.1}% (sparsity {:.1}%)",
         active_frac * 100.0,
         (1.0 - active_frac) * 100.0
     );
 
     println!();
     println!(
-        "  heatmap por neurônio ({} neurônios × {} inputs):",
+        "  heatmap per neuron ({} neurons × {} inputs):",
         neurons, inputs
     );
-    println!("  legenda: '-'=inibe  '.'=mudo  '+'=excita");
+    println!("  legend: '-'=inhibits  '.'=mute  '+'=excites");
     let samples = neurons.min(16);
     for n in 0..samples {
         print!("  N{:02} │", n);
@@ -315,7 +315,7 @@ fn dump_layer(title: &str, weights: &[i8], inputs: usize, neurons: usize, expect
         println!();
     }
     if samples < neurons {
-        println!("  … ({} neurônios adicionais omitidos)", neurons - samples);
+        println!("  … ({} additional neurons omitted)", neurons - samples);
     }
 }
 
@@ -343,7 +343,7 @@ fn input_channel_stats(weights: &[i8], inputs: usize, neurons: usize) {
     ch_activity.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     println!();
-    println!("  TOP 20 canais mais ativos:");
+    println!("  TOP 20 most active channels:");
     println!(
         "  {:>5} {:>8} {:>6} {:>6}  bar",
         "ch", "active%", "neg", "pos"
@@ -363,7 +363,7 @@ fn input_channel_stats(weights: &[i8], inputs: usize, neurons: usize) {
     }
 
     println!();
-    println!("  20 canais MUDOS (menor ativação = rede ignora):");
+    println!("  20 MUTE channels (lowest activation = the network ignores them):");
     let mut silent = ch_activity.clone();
     silent.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     for (ch, active, neg, pos) in silent.iter().take(20) {
@@ -380,8 +380,8 @@ fn input_channel_stats(weights: &[i8], inputs: usize, neurons: usize) {
 
 fn channel_label(ch: usize) -> &'static str {
     match ch {
-        0..=7 => "  ← fóvea pooled (8 bins center-dense)",
-        8..=15 => "  ← periférica pooled (8 bins)",
+        0..=7 => "  ← fovea pooled (8 bins center-dense)",
+        8..=15 => "  ← peripheral pooled (8 bins)",
         16 => "  ← yaw_rate",
         17 => "  ← pitch_rate",
         18 => "  ← roll_rate",
@@ -391,8 +391,8 @@ fn channel_label(ch: usize) -> &'static str {
         40..=43 => "  ← open_right_width × 4",
         44..=47 => "  ← wall_imminent × 4",
         60..=63 => "  ← BEST_ESCAPE direction × 4",
-        64 => "  ← alinhamento c/ pista",
-        65 => "  ← velocidade",
+        64 => "  ← alignment with track",
+        65 => "  ← speed",
         66 => "  ← lateral_vel (drift)",
         67 => "  ← hp",
         68 => "  ← rpm_ratio",
@@ -407,10 +407,10 @@ fn channel_label(ch: usize) -> &'static str {
         78..=79 => "  ← curv40m signed dup",
         80 => "  ← curv100m signed",
         81 => "  ← lane_offset",
-        82 => "  ← ttc_inv (colisão iminente)",
+        82 => "  ← ttc_inv (imminent collision)",
         83..=84 => "  ← motion L/R (optic flow)",
-        85 => "  ← wall_ema_L (proximidade)",
-        86 => "  ← wall_ema_R (proximidade)",
+        85 => "  ← wall_ema_L (proximity)",
+        86 => "  ← wall_ema_R (proximity)",
         87 => "  ← slip_signal",
         88 => "  ← proximity_sustain",
         89 => "  ← reverse_state",
@@ -419,7 +419,7 @@ fn channel_label(ch: usize) -> &'static str {
         108..=110 => "  ← racing_line offset/derivative/lookahead",
         120..=122 => "  ← memory (last action)",
         124 => "  ← spinning",
-        125 => "  ← stress competitivo",
+        125 => "  ← competitive stress",
         126..=127 => "  ← joy tick/streak",
         _ => "",
     }

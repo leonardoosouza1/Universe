@@ -1,67 +1,67 @@
-//! Cérebros Especialistas — 3 BitLinear pequenos (32→1) coordenados.
+//! Specialist Brains — 3 small coordinated BitLinear (32→1).
 //!
-//! Inspirado no SwarmBrain do SACI-Trader (5 CfC workers + SwarmCoordinator).
-//! Ver `melhorias/specialist-brains.md`.
+//! Inspired by SACI-Trader's SwarmBrain (5 CfC workers + SwarmCoordinator).
+//! See `melhorias/specialist-brains.md`.
 //!
-//! Status: **skeleton**. Ainda não conectado ao `SovereignEngine`. A integração
-//! runtime exige:
-//!   1) Roteamento de sub-slices de `sensory_wave` por cérebro (masks por canal).
-//!   2) Refactor de `spawn.rs::build_priming_weights` pra gerar priming por brain.
-//!   3) DNA v4 codec: salvar 3 blobs ternários + 3 scales.
-//!   4) Crossover semântico (pai A → Steer, pai B → Brake).
+//! Status: **skeleton**. Not yet connected to `SovereignEngine`. Runtime
+//! integration requires:
+//!   1) Routing of `sensory_wave` sub-slices per brain (per-channel masks).
+//!   2) Refactor of `spawn.rs::build_priming_weights` to generate priming per brain.
+//!   3) DNA v4 codec: save 3 ternary blobs + 3 scales.
+//!   4) Semantic crossover (parent A → Steer, parent B → Brake).
 //!
-//! Este módulo existe pra bloquear o API e permitir micro-benchmark comparativo
-//! com o monolítico 128→64 atual.
+//! This module exists to lock down the API and allow a comparative micro-benchmark
+//! against the current 128→64 monolith.
 
 use crate::float_layers::FloatLinear;
 use crate::layers::BrainForward;
 
-/// Máscara de canais de input por especialista (32 ints, cada 0..127).
-/// Define QUAIS canais do sensory_wave[128] vão pra cada cérebro.
-/// Escolhidos a partir do mapa de canais em `motor.rs` e do priming em `spawn.rs`.
+/// Input channel mask per specialist (32 ints, each 0..127).
+/// Defines WHICH channels of sensory_wave[128] go to each brain.
+/// Chosen from the channel map in `motor.rs` and the priming in `spawn.rs`.
 pub const STEER_CHANNELS: [usize; 32] = [
-    // fóvea center (3,4) — retina frontal
-    3, 4, // periférica bins (8..16)
-    8, 9, 10, 11, 12, 13, 14, 15, // deriva, curvatura, slip, whiskers
-    66, 78, 79, 80, 87, 94, 95, 96, 97, // lane_offset, fluxo óptico, memória parede
-    81, 83, 84, 85, 86, // gaze tracker + dark center (4 duplicatas cada)
+    // fovea center (3,4) — frontal retina
+    3, 4, // peripheral bins (8..16)
+    8, 9, 10, 11, 12, 13, 14, 15, // drift, curvature, slip, whiskers
+    66, 78, 79, 80, 87, 94, 95, 96, 97, // lane_offset, optical flow, wall memory
+    81, 83, 84, 85, 86, // gaze tracker + dark center (4 duplicates each)
     90, 91, 92, 93, 98, 99, 100, 101,
 ];
 
 pub const THROTTLE_CHANNELS: [usize; 32] = [
-    // fluxo (64), fóvea (3,4), road-hints (67, 76, 77)
-    64, 65, 3, 4, 67, 76, 77, // grass, comp-stress, TTC, prox sustentada
-    73, 125, 82, 88, // velocidade (65), speed_limit (74)
-    74, // periférica para gatear em ambiente fechado
-    8, 11, 12, 15, // memória, curvatura
-    85, 86, 78, 79, 80, // whiskers próximos (corta throttle)
-    94, 95, 96, 97, // retina fóvea bins 0..1 (extremos)
-    0, 1, 2, 5, // padding canais de telemetria
+    // flow (64), fovea (3,4), road-hints (67, 76, 77)
+    64, 65, 3, 4, 67, 76, 77, // grass, comp-stress, TTC, sustained prox
+    73, 125, 82, 88, // speed (65), speed_limit (74)
+    74, // peripheral to gate in enclosed environments
+    8, 11, 12, 15, // memory, curvature
+    85, 86, 78, 79, 80, // near whiskers (cuts throttle)
+    94, 95, 96, 97, // retina fovea bins 0..1 (extremes)
+    0, 1, 2, 5, // padding telemetry channels
     68, 69, 70,
 ];
 
 pub const BRAKE_CHANNELS: [usize; 32] = [
-    // TTC (82) — sinal primário
+    // TTC (82) — primary signal
     82, // whiskers (94..97)
-    94, 95, 96, 97, // prox sustentada, memória parede
-    88, 85, 86, // fóvea centro (parede iminente)
-    3, 4, // periférica center
-    11, 12, // slip, curvatura (pre-brake em curva)
-    87, 78, 79, 80, // velocidade
+    94, 95, 96, 97, // sustained prox, wall memory
+    88, 85, 86, // fovea center (imminent wall)
+    3, 4, // peripheral center
+    11, 12, // slip, curvature (pre-brake in curve)
+    87, 78, 79, 80, // speed
     65, // retina bins
-    0, 1, 2, 5, 6, 7, // whiskers extras e mem
+    0, 1, 2, 5, 6, 7, // extra whiskers and mem
     67, 73, // padding
     68, 69, 70, 71, 72, 83, 84,
 ];
 
-/// Gate (coordinator) — 3 inputs (outputs dos 3 cérebros) + contexto slow → 1 peso cada.
-/// Papel: modulação (não substituição). Similar a SACI SwarmCoordinator.policy_head.
+/// Gate (coordinator) — 3 inputs (outputs of the 3 brains) + slow context → 1 weight each.
+/// Role: modulation (not replacement). Similar to SACI SwarmCoordinator.policy_head.
 pub const GATE_DIM: usize = 8;
 
-/// Swarm de 3 especialistas. F32 runtime (FloatLinear) — gradiente smooth permite
-/// composição AND ("rápido E vai virar = freia"). Quantize ternário só no disco
-/// (TRIN chunk DNA = i8×96, dequantize ao carregar). Decisão: f32 onde precisa
-/// continuum, ternary onde precisa trilema discreto (genes futuros).
+/// Swarm of 3 specialists. F32 runtime (FloatLinear) — smooth gradient allows
+/// AND composition ("fast AND about to turn = brake"). Ternary quantize only on
+/// disk (TRIN DNA chunk = i8×96, dequantize on load). Decision: f32 where a
+/// continuum is needed, ternary where a discrete trilemma is needed (future genes).
 pub struct SpecialistBrain {
     pub steer: FloatLinear,    // 32 → 1
     pub throttle: FloatLinear, // 32 → 1
@@ -77,7 +77,7 @@ impl SpecialistBrain {
         }
     }
 
-    /// Extrai sub-slice de 32 canais a partir do sensory_wave completo.
+    /// Extracts a 32-channel sub-slice from the full sensory_wave.
     fn gather(input: &[i8], channels: &[usize; 32]) -> [i8; 32] {
         let mut out = [0i8; 32];
         for (i, &ch) in channels.iter().enumerate() {
@@ -88,8 +88,8 @@ impl SpecialistBrain {
         out
     }
 
-    /// Forward unificado. Output compatível com BitLinear 128→64 atual
-    /// nas 3 primeiras saídas: [throttle, steer, brake].
+    /// Unified forward. Output compatible with the current BitLinear 128→64
+    /// in the first 3 outputs: [throttle, steer, brake].
     pub fn forward_specialist(&self, input: &[i8]) -> [f32; 3] {
         let s_in = Self::gather(input, &STEER_CHANNELS);
         let t_in = Self::gather(input, &THROTTLE_CHANNELS);

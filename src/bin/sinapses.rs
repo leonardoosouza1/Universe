@@ -1,13 +1,13 @@
-//! `sinapses` — lê um `.dna` e conta o que aquele cérebro aprendeu, em frases.
+//! `sinapses` — reads a `.dna` and tells what that brain has learned, in sentences.
 //!
-//! Uma sinapse é uma aresta `canal sensorial → neurônio`. O peso sozinho é um número numa
-//! posição; com o nome do canal e o papel do neurônio vira uma frase sobre comportamento:
-//! *"curvatura a 70 m → freio, +10.3"* é uma regra de pilotagem que dá para discutir.
+//! A synapse is an edge `sensory channel → neuron`. The weight alone is a number in a
+//! position; with the channel name and the neuron's role it becomes a sentence about
+//! behavior: *"curvature at 70 m → brake, +10.3"* is a driving rule one can discuss.
 //!
-//! Comparando dois `.dna` (`--contra`), o programa mostra o que MUDOU: quais sinapses
-//! nasceram, quais morreram e quais engrossaram. É a leitura mais próxima de "quando esta
-//! sinapse foi gerada" que se consegue sem mudar o formato do arquivo — e sem mexer no
-//! formato, DNAs antigos continuam carregando.
+//! Comparing two `.dna` files (`--contra`), the program shows what CHANGED: which synapses
+//! were born, which died and which thickened. It is the closest reading of "when was this
+//! synapse generated" one can get without changing the file format — and without touching
+//! the format, old DNAs keep loading.
 //!
 //! ```text
 //! cargo run --release --bin sinapses -- CHAMPION.dna
@@ -19,9 +19,9 @@ use universe::config::iara::brain::SENSORY_WAVE_SIZE as SWS;
 use universe::evolution::dna_genesis;
 use universe::neuro::{canal_nome, neuronio_papel};
 
-/// Abaixo disto a sinapse é considerada ausente. O priming esparso nasce em ±3.0 a ±10.0 e
-/// a mutação gaussiana anda em σ≈0.02–0.08, então 0.25 separa "conexão" de "ruído de deriva"
-/// com folga de uma ordem de grandeza dos dois lados.
+/// Below this the synapse is considered absent. Sparse priming is born at ±3.0 to ±10.0 and
+/// the gaussian mutation walks at σ≈0.02–0.08, so 0.25 separates "connection" from "drift
+/// noise" with an order of magnitude of headroom on both sides.
 const LIMIAR: f32 = 0.25;
 
 struct Sinapse {
@@ -32,19 +32,20 @@ struct Sinapse {
 
 fn ler(caminho: &str) -> Result<(Vec<f32>, u32, f32), String> {
     let dna = dna_genesis::load_champion_dna(caminho)
-        .ok_or_else(|| format!("não consegui ler {caminho} (formato não reconhecido?)"))?;
-    // MESMA PREFERÊNCIA DE `spawn.rs:142`: o chunk CRAW carrega os pesos i8 de verdade
-    // (±127 → ±2.0); `fast_weights` no v8 é a versão TERNÁRIA {-1,0,+1} do compressor, que
-    // dividida por 63.5 daria ±0.016 e faria todo cérebro parecer vazio. Ler a fonte errada
-    // aqui não dá erro — dá um relatório silenciosamente falso, que é pior.
+        .ok_or_else(|| format!("could not read {caminho} (unrecognized format?)"))?;
+    // SAME PREFERENCE AS `spawn.rs:142`: the CRAW chunk carries the real i8 weights
+    // (±127 → ±2.0); `fast_weights` in v8 is the compressor's TERNARY {-1,0,+1} version,
+    // which divided by 63.5 would give ±0.016 and make every brain look empty. Reading the
+    // wrong source here does not raise an error — it produces a silently false report,
+    // which is worse.
     let crus: &Vec<i8> = dna.cortex_raw.as_ref().unwrap_or(&dna.fast_weights);
     if crus.is_empty() {
-        return Err(format!("{caminho} não tem pesos da camada 1"));
+        return Err(format!("{caminho} has no layer-1 weights"));
     }
     if dna.cortex_raw.is_none() {
         eprintln!(
-            "⚠️  {caminho} não tem chunk CRAW — lendo `fast_weights`, que no v8 é \
-                   TERNÁRIO. Os pesos vão parecer ~64× menores do que são."
+            "⚠️  {caminho} has no CRAW chunk — reading `fast_weights`, which in v8 is \
+                   TERNARY. The weights will look ~64× smaller than they are."
         );
     }
     let w = crus.iter().map(|w| *w as f32 / 63.5).collect();
@@ -79,20 +80,20 @@ fn fortes(pesos: &[f32], filtro_neuronio: Option<usize>) -> Vec<Sinapse> {
 fn frase(s: &Sinapse) -> String {
     let canal = canal_nome(s.canal)
         .map(|n| n.to_string())
-        // canal sem origem localizada no código fica explícito como desconhecido: inventar
-        // um nome num relatório de interpretabilidade é pior que mostrar o índice cru
-        .unwrap_or_else(|| format!("canal {} (sem nome mapeado)", s.canal));
-    // O i8 do DNA trava o peso em ±2.0 (127/63.5), então "saturada" não é um adjetivo de
-    // ênfase: é a informação de que aquela conexão bateu no TETO DO ARMAZENAMENTO e o valor
-    // verdadeiro pode ser maior. O priming nasce em ±3.0 a ±10.0 — tudo isso vira ±2.0 no
-    // disco. Chamar isso de "forte" esconderia um limite do formato.
+        // a channel with no located origin in the code stays explicitly unknown: inventing
+        // a name in an interpretability report is worse than showing the raw index
+        .unwrap_or_else(|| format!("channel {} (no mapped name)", s.canal));
+    // The DNA's i8 caps the weight at ±2.0 (127/63.5), so "saturated" is not an adjective
+    // of emphasis: it is the information that this connection hit the STORAGE CEILING and
+    // the true value may be larger. Priming is born at ±3.0 to ±10.0 — all of that becomes
+    // ±2.0 on disk. Calling that "strong" would hide a limit of the format.
     let forca = match s.peso.abs() {
-        p if p >= 1.98 => "SATURADA",
-        p if p >= 1.20 => "muito forte",
-        p if p >= 0.60 => "forte",
-        _ => "média",
+        p if p >= 1.98 => "SATURATED",
+        p if p >= 1.20 => "very strong",
+        p if p >= 0.60 => "strong",
+        _ => "medium",
     };
-    let sentido = if s.peso >= 0.0 { "excita" } else { "inibe" };
+    let sentido = if s.peso >= 0.0 { "excites" } else { "inhibits" };
     format!(
         "  {:>+8.2}  {:<11} {:<7} {:<38} → n{:<3} {}",
         s.peso,
@@ -110,7 +111,7 @@ fn main() {
         Some(a) if !a.starts_with("--") => a.clone(),
         _ => {
             eprintln!(
-                "uso: sinapses <arquivo.dna> [--contra outro.dna] \
+                "usage: sinapses <file.dna> [--contra other.dna] \
                        [--neuronio N] [--top K]"
             );
             std::process::exit(2);
@@ -143,14 +144,14 @@ fn main() {
 
     if args.iter().any(|a| a == "--priming") {
         println!("=== {arquivo} ===");
-        println!("gerado na geração {geracao} · fitness {fitness:.0}");
+        println!("generated at generation {geracao} · fitness {fitness:.0}");
         compara_priming(&pesos);
         return;
     }
 
     if args.iter().any(|a| a == "--mapa") {
         println!("=== {arquivo} ===");
-        println!("gerado na geração {geracao} · fitness {fitness:.0}");
+        println!("generated at generation {geracao} · fitness {fitness:.0}");
         mapa(&pesos);
         return;
     }
@@ -158,15 +159,15 @@ fn main() {
     let ss = fortes(&pesos, filtro);
     let motoras = ss.iter().filter(|s| s.neuronio < 3).count();
     println!("=== {arquivo} ===");
-    println!("gerado na geração {geracao} · fitness {fitness:.0}");
+    println!("generated at generation {geracao} · fitness {fitness:.0}");
     println!(
-        "{} sinapses acima de |{LIMIAR}| em {} pesos ({:.1}% do total) · {} nos 3 neurônios motores",
+        "{} synapses above |{LIMIAR}| out of {} weights ({:.1}% of the total) · {} on the 3 motor neurons",
         ss.len(),
         pesos.len(),
         ss.len() as f32 / pesos.len() as f32 * 100.0,
         motoras
     );
-    println!("\nAS {top} MAIS FORTES\n");
+    println!("\nTHE {top} STRONGEST\n");
     for s in ss.iter().take(top) {
         println!("{}", frase(s));
     }
@@ -181,14 +182,14 @@ fn main() {
         };
         if p2.len() != pesos.len() {
             eprintln!(
-                "\n⚠️  os dois DNAs têm tamanhos diferentes ({} vs {}) — não dá para \
-                       parear sinapse a sinapse",
+                "\n⚠️  the two DNAs have different sizes ({} vs {}) — cannot \
+                       pair synapse by synapse",
                 pesos.len(),
                 p2.len()
             );
             std::process::exit(1);
         }
-        println!("\n=== O QUE MUDOU DE {outro} (gen {ger2}) PARA {arquivo} (gen {geracao}) ===\n");
+        println!("\n=== WHAT CHANGED FROM {outro} (gen {ger2}) TO {arquivo} (gen {geracao}) ===\n");
         let (mut nasceram, mut morreram, mut mudaram) = (vec![], vec![], vec![]);
         for i in 0..pesos.len() {
             let (a, b) = (p2[i], pesos[i]);
@@ -210,15 +211,15 @@ fn main() {
         morreram.sort_by(|x, y| y.peso.abs().partial_cmp(&x.peso.abs()).unwrap());
         mudaram.sort_by(|x, y| y.1.abs().partial_cmp(&x.1.abs()).unwrap());
 
-        println!("NASCERAM ({}):", nasceram.len());
+        println!("BORN ({}):", nasceram.len());
         for s in nasceram.iter().take(10) {
             println!("{}", frase(s));
         }
-        println!("\nMORRERAM ({}):", morreram.len());
+        println!("\nDIED ({}):", morreram.len());
         for s in morreram.iter().take(10) {
             println!("{}", frase(s));
         }
-        println!("\nENGROSSARAM OU AFINARAM ({}):", mudaram.len());
+        println!("\nTHICKENED OR THINNED ({}):", mudaram.len());
         for (s, d) in mudaram.iter().take(10) {
             println!("{}   (Δ {:+.2})", frase(s), d);
         }
@@ -226,24 +227,24 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------------------
-// MAPA DO CÉREBRO — onde estão os neurônios e o que cada um escuta
+// BRAIN MAP — where the neurons are and what each one listens to
 // ---------------------------------------------------------------------------------------
 
-/// Grupos sensoriais, para saber quanto de cada sentido o cérebro consome.
-/// As faixas vêm de onde os canais são ESCRITOS (`motor.rs:455-524, 480-513`).
+/// Sensory groups, to know how much of each sense the brain consumes.
+/// The ranges come from where the channels are WRITTEN (`motor.rs:455-524, 480-513`).
 const GRUPOS: [(&str, &[(usize, usize)]); 6] = [
-    ("VISÃO (retina)", &[(0, 15), (128, 191)]),
-    ("curvatura à frente", &[(20, 20), (32, 39), (78, 80)]),
+    ("VISION (retina)", &[(0, 15), (128, 191)]),
+    ("curvature ahead", &[(20, 20), (32, 39), (78, 80)]),
     (
-        "paredes e bigodes",
+        "walls and whiskers",
         &[(16, 31), (76, 77), (94, 97), (114, 115)],
     ),
     (
-        "pista à frente",
+        "track ahead",
         &[(40, 55), (90, 93), (108, 110), (118, 119)],
     ),
-    ("telemetria do corpo", &[(56, 75), (124, 125)]),
-    ("movimento e TTC", &[(82, 84), (98, 107), (116, 117)]),
+    ("body telemetry", &[(56, 75), (124, 125)]),
+    ("motion and TTC", &[(82, 84), (98, 107), (116, 117)]),
 ];
 
 fn grupo_de(canal: usize) -> &'static str {
@@ -252,15 +253,15 @@ fn grupo_de(canal: usize) -> &'static str {
             return nome;
         }
     }
-    "não classificado"
+    "unclassified"
 }
 
-/// Quanto de cada sentido o cérebro consome, e onde ele guarda essa escuta.
+/// How much of each sense the brain consumes, and where it keeps that listening.
 fn mapa(pesos: &[f32]) {
     let n_neuronios = pesos.len() / SWS;
 
-    println!("\n=== QUANTO DE CADA SENTIDO O CÉREBRO CONSOME ===");
-    println!("soma de |peso| por grupo sensorial, sobre as {n_neuronios} unidades da camada 1\n");
+    println!("\n=== HOW MUCH OF EACH SENSE THE BRAIN CONSUMES ===");
+    println!("sum of |weight| per sensory group, over the {n_neuronios} units of layer 1\n");
     let total: f32 = pesos.iter().map(|w| w.abs()).sum();
     let mut linhas: Vec<(f32, String)> = GRUPOS
         .iter()
@@ -274,11 +275,11 @@ fn mapa(pesos: &[f32]) {
                     }
                 }
             }
-            // por canal, senão um grupo grande parece importante só por ser grande
+            // per channel, otherwise a large group looks important just for being large
             (
                 soma / n_canais.max(1) as f32,
                 format!(
-                    "{:<22} {:>7} canais {:>9.1} total {:>9.2} por canal {:>7.1}%",
+                    "{:<22} {:>7} channels {:>9.1} total {:>9.2} per channel {:>7.1}%",
                     nome,
                     n_canais,
                     soma,
@@ -292,11 +293,11 @@ fn mapa(pesos: &[f32]) {
     for (_, l) in &linhas {
         println!("  {l}");
     }
-    println!("\n  Ordenado por peso POR CANAL — senão um grupo grande pareceria importante");
-    println!("  só por ter muitos canais. A coluna '%' é a fatia do total, para comparar.");
+    println!("\n  Sorted by weight PER CHANNEL — otherwise a large group would look important");
+    println!("  just for having many channels. The '%' column is the share of the total, for comparison.");
 
-    println!("\n=== O QUE CADA NEURÔNIO ESCUTA ===");
-    println!("para cada unidade: o grupo que domina sua entrada e o canal mais forte\n");
+    println!("\n=== WHAT EACH NEURON LISTENS TO ===");
+    println!("for each unit: the group that dominates its input and the strongest channel\n");
     let mut por_grupo: std::collections::BTreeMap<&str, usize> = Default::default();
     for neu in 0..n_neuronios {
         let fatia = &pesos[neu * SWS..(neu + 1) * SWS];
@@ -318,40 +319,40 @@ fn mapa(pesos: &[f32]) {
                 .map(|(i, w)| (i, *w))
                 .unwrap_or((0, 0.0));
             println!(
-                "  n{:<3} {:<14} domina: {:<22} mais forte: {:>+6.2} {}",
+                "  n{:<3} {:<14} dominates: {:<22} strongest: {:>+6.2} {}",
                 neu,
                 neuronio_papel(neu),
                 dono,
                 melhor_w,
-                canal_nome(melhor_ch).unwrap_or("(sem nome)")
+                canal_nome(melhor_ch).unwrap_or("(no name)")
             );
         }
     }
-    println!("\n  DISTRIBUIÇÃO das {n_neuronios} unidades por sentido dominante:");
+    println!("\n  DISTRIBUTION of the {n_neuronios} units by dominant sense:");
     let mut v: Vec<_> = por_grupo.into_iter().collect();
     v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     for (g, n) in v {
         let barra = "█".repeat((n * 40 / n_neuronios.max(1)).max(1));
-        println!("    {:<22} {:>3} unidades  {}", g, n, barra);
+        println!("    {:<22} {:>3} units  {}", g, n, barra);
     }
 }
 
 // ---------------------------------------------------------------------------------------
-// A EVOLUÇÃO ACHA O QUE O HUMANO ESCREVEU?
+// DOES EVOLUTION FIND WHAT THE HUMAN WROTE?
 // ---------------------------------------------------------------------------------------
 
-/// Compara o cérebro com as 15 sinapses do priming à mão (`neuro::PRIMING`).
+/// Compares the brain with the 15 hand-written priming synapses (`neuro::PRIMING`).
 ///
-/// A pergunta é a da independência: se um cérebro nasce SEM o priming (modo `esparso`) e
-/// mesmo assim converge para as mesmas conexões, então o humano só adiantou o que a
-/// evolução acharia sozinha. Se converge para outras, a evolução tem um caminho próprio —
-/// e vale ver qual. Se não converge para nada, o priming era o cérebro.
+/// The question is one of independence: if a brain is born WITHOUT the priming (`esparso`
+/// mode) and still converges to the same connections, then the human only anticipated what
+/// evolution would find on its own. If it converges to others, evolution has a path of its
+/// own — and it is worth seeing which. If it converges to nothing, the priming was the brain.
 fn compara_priming(pesos: &[f32]) {
     use universe::neuro::PRIMING;
-    println!("\n=== O QUE O HUMANO ESCREVEU vs O QUE ESTE CÉREBRO TEM ===\n");
+    println!("\n=== WHAT THE HUMAN WROTE vs WHAT THIS BRAIN HAS ===\n");
     println!(
         "{:>4} {:>7} {:>9}  {:<44} {}",
-        "n", "canal", "peso aqui", "canal", "veredito"
+        "n", "channel", "weight here", "channel", "verdict"
     );
     println!("{}", "-".repeat(92));
     let mut presentes = 0;
@@ -359,29 +360,29 @@ fn compara_priming(pesos: &[f32]) {
         let w = pesos.get(neu * SWS + ch).copied().unwrap_or(0.0);
         let veredito = if w.abs() >= 1.0 {
             presentes += 1;
-            "PRESENTE e forte"
+            "PRESENT and strong"
         } else if w.abs() >= LIMIAR {
             presentes += 1;
-            "presente, fraca"
+            "present, weak"
         } else {
-            "ausente"
+            "absent"
         };
         println!(
             "{:>4} {:>7} {:>+9.2}  {:<44} {}",
             neu,
             ch,
             w,
-            canal_nome(ch).unwrap_or("(sem nome)"),
+            canal_nome(ch).unwrap_or("(no name)"),
             veredito
         );
     }
     println!("{}", "-".repeat(92));
     println!(
-        "  {presentes}/{} das sinapses escritas à mão estão neste cérebro",
+        "  {presentes}/{} of the hand-written synapses are in this brain",
         PRIMING.len()
     );
 
-    // e o que ele tem NOS MOTORES que o humano NÃO escreveu
+    // and what it has ON THE MOTORS that the human did NOT write
     let mut proprias: Vec<(usize, usize, f32)> = Vec::new();
     for neu in 0..3 {
         for ch in 0..SWS {
@@ -393,7 +394,7 @@ fn compara_priming(pesos: &[f32]) {
     }
     proprias.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
     println!(
-        "\n  CONEXÕES MOTORAS QUE O HUMANO NÃO ESCREVEU: {}",
+        "\n  MOTOR CONNECTIONS THE HUMAN DID NOT WRITE: {}",
         proprias.len()
     );
     for (neu, ch, w) in proprias.iter().take(10) {
@@ -402,10 +403,10 @@ fn compara_priming(pesos: &[f32]) {
             w,
             neu,
             neuronio_papel(*neu),
-            canal_nome(*ch).unwrap_or("(sem nome)")
+            canal_nome(*ch).unwrap_or("(no name)")
         );
     }
     if proprias.is_empty() {
-        println!("    (nenhuma — os motores só têm o que veio de fábrica)");
+        println!("    (none — the motors only have what came from the factory)");
     }
 }

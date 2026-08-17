@@ -1,19 +1,20 @@
-/// Núcleo matemático puro — sem dependências de GPU, Bevy ou wgpu.
+/// Pure math core — no GPU, Bevy or wgpu dependencies.
 ///
-/// Todos os submódulos exportam funções puras (sem estado global, sem I/O).
-/// São a base para os módulos de análise (E4) e podem ser testados de forma
-/// determinística offline.
+/// Every submodule exports pure functions (no global state, no I/O).
+/// They are the base for the analysis modules (E4) and can be tested
+/// deterministically offline.
 ///
-/// Organização:
-/// - `activations` — funções de ativação e helpers de clamp
-/// - `stats`       — média, variância, percentis, histograma
+/// Organisation:
+/// - `activations` — activation functions and clamp helpers
+/// - `stats`       — mean, variance, percentiles, histogram
 /// - `quant`       — encode/decode i8↔f32, BF16↔F32, SNR
-/// - `linalg`      — participation_ratio, raio espectral, rank efetivo
-/// - `laws`        — Lei do Garimpo, custo AIC/RIC
-/// - `thresholds`  — limiares nomeados para uso nos módulos de análise
-/// - `cfc_perception` — ponte canônica para `iara_cfc::CfcCell` (CfC de percepção),
-///   espelhada por `gpu/retina_digest.wgsl`. Único lugar deste crate com o layout de
-///   buffer do CfC — não reimplementa a equação (mora na crate `iara-cfc`).
+/// - `linalg`      — participation_ratio, spectral radius, effective rank
+/// - `laws`        — Prospecting Law, AIC/RIC cost
+/// - `thresholds`  — named thresholds for use in the analysis modules
+/// - `cfc_perception` — canonical bridge to `iara_cfc::CfcCell` (the perception CfC),
+///   mirrored by `gpu/retina_digest.wgsl`. The only place in this crate with the CfC
+///   buffer layout — it does not reimplement the equation (that lives in the
+///   `iara-cfc` crate).
 pub mod activations;
 pub mod cfc_perception;
 pub mod laws;

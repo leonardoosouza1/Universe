@@ -72,7 +72,7 @@ fn setup_menu(mut commands: Commands, config: Res<UniverseConfig>) {
             MenuEntity,
         ))
         .with_children(|root| {
-            // Título
+            // Title
             root.spawn((
                 Text::new("UNIVERSE - LAB CONTROL"),
                 TextFont {
@@ -90,7 +90,7 @@ fn setup_menu(mut commands: Commands, config: Res<UniverseConfig>) {
                 ..default()
             })
             .with_children(|container| {
-                // Coluna Esquerda: Tracks
+                // Left column: Tracks
                 container
                     .spawn(Node {
                         width: Val::Percent(40.0),
@@ -174,7 +174,7 @@ fn setup_menu(mut commands: Commands, config: Res<UniverseConfig>) {
                         });
                     });
 
-                // Coluna Direita: Physics & Swarm
+                // Right column: Physics & Swarm
                 container
                     .spawn(Node {
                         width: Val::Percent(60.0),
@@ -339,7 +339,7 @@ fn setup_menu(mut commands: Commands, config: Res<UniverseConfig>) {
                     });
             });
 
-            // Botão Start
+            // Start button
             root.spawn((
                 Button,
                 Node {
@@ -355,7 +355,7 @@ fn setup_menu(mut commands: Commands, config: Res<UniverseConfig>) {
             ))
             .with_children(|b| {
                 b.spawn((
-                    Text::new("INICIAR SIMULAÇÃO"),
+                    Text::new("START SIMULATION"),
                     TextFont {
                         font_size: 24.0,
                         ..default()
@@ -490,9 +490,9 @@ fn handle_button_hover(
                 );
             }
             Interaction::None => {
-                // O sync_menu_ui cuidará das cores base para toggles e tracks.
-                // Para botões genéricos, poderíamos armazenar a cor original,
-                // mas para este lab, o sync resolve a maioria.
+                // sync_menu_ui will take care of the base colors for toggles and tracks.
+                // For generic buttons we could store the original color,
+                // but for this lab the sync handles most cases.
             }
             _ => {}
         }

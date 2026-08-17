@@ -20,7 +20,7 @@ impl RepoMiner {
     }
 
     /// Update hunger based on the error/uncertainty of the engine.
-    /// Axiom: "Sinal de Fome (Hunger Trigger): Mestre LNN detecta alta incerteza."
+    /// Axiom: "Hunger Signal (Hunger Trigger): Master LNN detects high uncertainty."
     pub fn monitor_uncertainty(&mut self, uncertainty: f32) {
         self.hunger_level += uncertainty * 0.1;
 
@@ -35,7 +35,7 @@ impl RepoMiner {
         self.hunger_level = 0.0; // Satiated
     }
 
-    /// Mielinização force: Returns a boost factor if knowledge is fresh
+    /// Myelination force: Returns a boost factor if knowledge is fresh
     pub fn get_learning_boost(&self) -> f32 {
         if self.hunger_level < 0.1 { 1.5 } else { 1.0 }
     }

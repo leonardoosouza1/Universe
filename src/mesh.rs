@@ -1,5 +1,5 @@
-/// IARA v2101 - Ternary Mesh (Lago de 2-bits) with SIMD-style Bitwise Propagation
-/// Based on Codex Part 1 & 5: Hardware de Padaria Optimization
+/// IARA v2101 - Ternary Mesh ("Lago de 2-bits", the two-bit lake) with SIMD-style Bitwise Propagation
+/// Based on Codex Part 1 & 5: "Hardware de Padaria" (Bakery Hardware) Optimization
 
 pub struct TernaryMesh {
     /// Each u64 represents 32 nodes (2 bits per node).
@@ -28,7 +28,7 @@ impl TernaryMesh {
     }
 
     /// SIMD Bit-Packing Optimization: Propagate energy using bitwise XOR/AND
-    /// Axiom: "Resolvendo 16 nós de ressonância simultaneamente em um único ciclo de clock."
+    /// Axiom: "Solving 16 resonance nodes simultaneously in a single clock cycle."
     pub fn bitwise_propagate(&mut self) {
         for i in 0..self.states.len() {
             let current = self.states[i];

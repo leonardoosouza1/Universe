@@ -8,23 +8,23 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-/// Agrupa os dois contextos de GPU (retina + percepção) num único SystemParam.
+/// Groups the two GPU contexts (retina + perception) into a single SystemParam.
 ///
-/// O Bevy 0.16 impõe limite de 16 parâmetros por sistema; update_racers já estava
-/// no limite com 16. Ao empacotar os dois recursos GPU neste wrapper, voltamos a 16
-/// parâmetros sem perder acesso mutável a nenhum dos dois.
+/// Bevy 0.16 enforces a 16-parameter limit per system; update_racers was already
+/// at the limit with 16. By packing the two GPU resources into this wrapper, we
+/// return to 16 parameters without losing mutable access to either of them.
 #[derive(SystemParam)]
 pub(super) struct GpuContexts<'w> {
-    /// Contexto de GPU da retina — vive entre ticks. Criado em `simulation/mod.rs`.
+    /// Retina GPU context — lives across ticks. Created in `simulation/mod.rs`.
     pub retina: ResMut<'w, crate::gpu::RetinaGpuRes>,
-    /// Contexto de GPU da percepção — compartilha device/queue da retina.
-    /// Criado sob demanda quando lab.gpu_core=true.
+    /// Perception GPU context — shares the retina's device/queue.
+    /// Created on demand when lab.gpu_core=true.
     pub percept: ResMut<'w, crate::gpu::perception::PerceptionGpuRes>,
 }
 
 // --- Tier 6.5: Time Dilation metrics (process-wide) ---
-// Contam brain firings vs skips acumulados desde boot. Logados 1x/gen
-// em pipeline (acesso via getters). Zero overhead (atomic relaxed).
+// Count brain firings vs skips accumulated since boot. Logged 1x/gen
+// in pipeline (accessed via getters). Zero overhead (atomic relaxed).
 pub(crate) static TIME_DILATION_FIRES: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TIME_DILATION_SKIPS: AtomicU64 = AtomicU64::new(0);
 
@@ -35,27 +35,27 @@ pub fn time_dilation_metrics() -> (u64, u64) {
     )
 }
 
-/// Tier 1.3 — Axiom como prior externo (Ng-Harada-Russell 1999 potential-based shaping).
+/// Tier 1.3 — Axiom as external prior (Ng-Harada-Russell 1999 potential-based shaping).
 ///
-/// Política procedural que espelha os 17-18 axiomas de priming usados em
-/// `build_priming_weights()` (spawn.rs). Retorna bias aditivo para cada um dos
-/// 64 outputs do instinct_layer — é somado a `final_intent` após o forward do
-/// brain, escalado por `race.current_axiom_strength` (decay 1.0→0.0 ao longo
-/// de 50 gens). Teorema NHR: bias potencial-based não altera policy ótima,
-/// apenas acelera convergência.
+/// Procedural policy mirroring the 17-18 priming axioms used in
+/// `build_priming_weights()` (spawn.rs). Returns an additive bias for each of the
+/// 64 outputs of the instinct_layer — it is added to `final_intent` after the
+/// brain's forward pass, scaled by `race.current_axiom_strength` (decay 1.0→0.0
+/// over 50 gens). NHR theorem: potential-based bias does not change the optimal
+/// policy, it only accelerates convergence.
 ///
-/// Layout dos outputs (iguais ao priming block):
-///   0 = accel/throttle, 1 = steer (+direita / -esquerda), 2 = brake.
+/// Output layout (same as the priming block):
+///   0 = accel/throttle, 1 = steer (+right / -left), 2 = brake.
 ///
-/// Canais de input consultados:
-///   32..37  = perif. esquerda (A1 wall-left)        42..53 = centro (A4 wall-front)
-///   58..63  = perif. direita  (A2 wall-right)       46..49 = centro exato (A4d/A7 brake)
-///   64      = alinhamento fluxo (A3)                73     = grass pain (A5)
-///   66      = deriva lateral (A8)                   78..80 = curvatura (A9)
-///   81      = lane offset (A10)                     82     = colision urgency (A11)
-///   83,84   = fluxo óptico (A12)                    85,86  = parede memória L/R (A13)
+/// Input channels consulted:
+///   32..37  = left periphery (A1 wall-left)         42..53 = center (A4 wall-front)
+///   58..63  = right periphery (A2 wall-right)       46..49 = exact center (A4d/A7 brake)
+///   64      = flow alignment (A3)                   73     = grass pain (A5)
+///   66      = lateral drift (A8)                    78..80 = curvature (A9)
+///   81      = lane offset (A10)                     82     = collision urgency (A11)
+///   83,84   = optical flow (A12)                    85,86  = wall memory L/R (A13)
 ///   87      = slip angle (A14)                      88     = proximity sustain (A15)
-///   90..93  = dark-center tracker (A16)             94..97 = whiskers diagonais (A17)
+///   90..93  = dark-center tracker (A16)             94..97 = diagonal whiskers (A17)
 ///   98..101 = gaze tracker (A18)                  108 = racing-line offset (A21)
 /// Builds a 32-dim i8 input slice for the reflex SpecialistBrain by sampling key sensory channels.
 /// Conservative subset — enough for a simple safety-aware reflex.
@@ -74,70 +74,70 @@ fn axiom_policy(
     lab: &crate::lab::LabParams,
 ) -> [f32; 96] {
     let mut bias = [0.0f32; 96];
-    let WALL_T: i8 = lab.wall_t_threshold; // ~0.31 normalizado — parede próxima mas não encostada
+    let WALL_T: i8 = lab.wall_t_threshold; // ~0.31 normalized — wall close but not touching
 
-    // A1: parede esquerda (perif bins 8..11) → steer direita (+)
+    // A1: left wall (periph bins 8..11) → steer right (+)
     let wall_l: i32 = (8..12).map(|i| inputs[i] as i32).sum();
     if wall_l > WALL_T as i32 * 2 {
         bias[1] += lab.axiom_wall_avoidance;
     }
-    // A2: parede direita (perif bins 12..15) → steer esquerda (-)
+    // A2: right wall (periph bins 12..15) → steer left (-)
     let wall_r: i32 = (12..16).map(|i| inputs[i] as i32).sum();
     if wall_r > WALL_T as i32 * 2 {
         bias[1] -= lab.axiom_wall_avoidance;
     }
-    // A3: alinhamento com fluxo (64) → acelera
+    // A3: alignment with flow (64) → accelerate
     bias[0] += (inputs[64] as f32 / 127.0) * 0.15;
-    // A4: parede no centro (perif bins 10..13 = centro da periférica) → corta throttle
+    // A4: wall at center (periph bins 10..13 = center of the periphery) → cut throttle
     let wall_c: i32 = (10..14).map(|i| inputs[i] as i32).sum();
     if wall_c > WALL_T as i32 * 2 {
         bias[0] -= 0.25;
     }
-    // A4d/A7: fóvea centro (bins 3..5) → brake forte (parede direto à frente)
+    // A4d/A7: fovea center (bins 3..5) → strong brake (wall straight ahead)
     let wall_front: i32 = (3..6).map(|i| inputs[i] as i32).sum();
     if wall_front > WALL_T as i32 * 2 {
         bias[2] += 0.30;
     }
-    // A5: dor de grama (73) → reduz throttle
+    // A5: grass pain (73) → reduce throttle
     if inputs[73] > WALL_T {
         bias[0] -= 0.15;
     }
-    // A8: deriva lateral (66) → contra-steer
+    // A8: lateral drift (66) → counter-steer
     bias[1] -= (inputs[66] as f32 / 127.0) * 0.10;
-    // A9: curvatura antecipada (78/79/80). FIX v3: sinal estava invertido.
-    // cross(forward, flow_ahead) xz-plane: + = curva à DIREITA. Steer + = direita.
-    // v4: boost coeffs 0.08/0.18/0.06 → 0.20/0.40/0.25 pra romper plateau do 1º corner
-    // (330m). Lookahead 10/25/50m cria steering preditivo em vez de reativo.
+    // A9: anticipated curvature (78/79/80). FIX v3: sign was inverted.
+    // cross(forward, flow_ahead) xz-plane: + = curve to the RIGHT. Steer + = right.
+    // v4: boost coeffs 0.08/0.18/0.06 → 0.20/0.40/0.25 to break the 1st-corner plateau
+    // (330m). Lookahead 10/25/50m creates predictive steering instead of reactive.
     bias[1] += (inputs[78] as f32 / 127.0) * 0.20;
-    bias[1] += (inputs[79] as f32 / 127.0) * 0.32; // v5: 0.40→0.32 (menos overshoot)
+    bias[1] += (inputs[79] as f32 / 127.0) * 0.32; // v5: 0.40→0.32 (less overshoot)
     bias[1] += (inputs[80] as f32 / 127.0) * 0.25;
-    // v5: pre-brake só em curva SEVERA (threshold) em vez de proporcional sempre.
+    // v5: pre-brake only on a SEVERE curve (threshold) instead of always proportional.
     // Tested 0.20 → regressed (305m swing, 15.4 bleeds). 0.10 is sweet spot.
     let curv_mag = ((inputs[79] as f32).abs() + (inputs[80] as f32).abs()) / 254.0;
     bias[0] -= curv_mag * 0.10; // Stable at 0.10; aggressive cut causes volatility
-    // A10: lane offset (81) — valor positivo = mais espaço à direita ⇒ estou à ESQUERDA ⇒
-    // preciso virar pra DIREITA = steer positivo. Coef boostado 0.08→0.22 (v2) pra virar
-    // o sinal primário de centralização em pistas narrow.
+    // A10: lane offset (81) — positive value = more space to the right ⇒ I'm on the LEFT ⇒
+    // I need to turn RIGHT = positive steer. Coef boosted 0.08→0.22 (v2) to become
+    // the primary centering signal on narrow tracks.
     bias[1] += (inputs[81] as f32 / 127.0) * 0.22;
-    // A11: urgência de colisão (82) → freia + corta motor
+    // A11: collision urgency (82) → brake + cut engine
     bias[2] += (inputs[82] as f32 / 127.0) * 0.20;
     bias[0] -= (inputs[82] as f32 / 127.0) * 0.12;
-    // A12: fluxo óptico L/R (83/84) → steer anti-aproximação
+    // A12: optical flow L/R (83/84) → anti-approach steer
     bias[1] += (inputs[83] as f32 / 127.0) * 0.08;
     bias[1] -= (inputs[84] as f32 / 127.0) * 0.08;
-    // A13: parede memória L/R (85/86)
+    // A13: wall memory L/R (85/86)
     bias[1] += (inputs[85] as f32 / 127.0) * 0.12;
     bias[1] -= (inputs[86] as f32 / 127.0) * 0.12;
-    // A14: slip angle (87) → contra-volante. v5: 0.08→0.20 (estabilizar saída de curva).
+    // A14: slip angle (87) → counter-steer. v5: 0.08→0.20 (stabilize corner exit).
     bias[1] += (inputs[87] as f32 / 127.0) * 0.20;
-    // A15: proximidade sustentada (88) → corta throttle
+    // A15: sustained proximity (88) → cut throttle
     if inputs[88] > WALL_T {
         bias[0] -= 0.12;
     }
-    // A16: dark-center tracker (90..93) → siga o escuro (centro de pista)
+    // A16: dark-center tracker (90..93) → follow the dark (track center)
     let dark_center: i32 = (90..94).map(|i| inputs[i] as i32).sum();
     bias[1] += (dark_center as f32 / (127.0 * 4.0)) * lab.axiom_dark_center;
-    // A17: whiskers diagonais (94..97) — parede perto em diagonal
+    // A17: diagonal whiskers (94..97) — wall close on a diagonal
     //   94 = FL 30°, 95 = FR 30°, 96 = FL 60°, 97 = FR 60°
     if inputs[94] > WALL_T {
         bias[1] += lab.axiom_whisker;
@@ -157,19 +157,19 @@ fn axiom_policy(
         bias[1] -= lab.axiom_whisker * 0.80;
         bias[2] += lab.axiom_whisker * 0.53;
     }
-    // A18: gaze tracker — DESATIVADO em axiom_policy.
-    // Canais 98-101 NÃO contêm gaze: ch98=motion_norm (sempre ≥0 → bias RIGHT),
-    // ch101-102=curvature lookahead. Isso causava virada pra direita sistemática.
-    // O dark-center A16 (ch 90-93) já faz o papel de seguir a pista.
+    // A18: gaze tracker — DISABLED in axiom_policy.
+    // Channels 98-101 do NOT contain gaze: ch98=motion_norm (always ≥0 → bias RIGHT),
+    // ch101-102=curvature lookahead. This caused a systematic rightward turn.
+    // The dark-center A16 (ch 90-93) already plays the track-following role.
     // let gaze: i32 = (98..102).map(|i| inputs[i] as i32).sum();
     // bias[1] += (gaze as f32 / (127.0 * 4.0)) * 0.25;
 
-    // A19 REVERTIDO v6b: testado em 200 gens — champion peak 621m vs v5 736m.
-    // Anti-stall forçava throttle em estados pós-curva que não deveriam acelerar.
-    // Decay window 20→40 e rate 0.95→0.98 MANTIDOS (pipeline.rs).
+    // A19 REVERTED v6b: tested over 200 gens — champion peak 621m vs v5 736m.
+    // Anti-stall forced throttle in post-curve states that should not accelerate.
+    // Decay window 20→40 and rate 0.95→0.98 KEPT (pipeline.rs).
 
-    // A20: drift commit — slip alto + curvatura alta à frente + velocidade mínima →
-    // compromete com throttle em vez de amarelar. Canais: 87 slip, |79|+|80|/254 curv, 65 speed.
+    // A20: drift commit — high slip + high curvature ahead + minimum speed →
+    // commit with throttle instead of chickening out. Channels: 87 slip, |79|+|80|/254 curv, 65 speed.
     let slip_abs = (inputs[87] as f32 / 127.0).abs();
     let curv_mag_a20 = ((inputs[79] as f32).abs() + (inputs[80] as f32).abs()) / 254.0;
     let speed_norm = (inputs[65] as f32 / 127.0).abs();
@@ -178,13 +178,13 @@ fn axiom_policy(
         bias[2] -= 0.15;
     }
 
-    // A21: racing line follow. Canal 108 = lateral offset signed (positivo =
-    // carro à ESQUERDA da linha ideal → precisa steer pra DIREITA pra fechar).
-    // Convenção casa com A10 (canal 81): positivo → bias[1] positivo (steer +right).
-    // Axiom decay (race.current_axiom_strength) é aplicado no call site, então
-    // aqui só semeamos o prior. v13: 0.35→0.20 (HOLE=5181 em v12, overcorrection
-    // pro apex puxava carro pra fora em curva fechada).
-    // v14: 0.20→0.26 pra narrow tracks — precision on centerline critical
+    // A21: racing line follow. Channel 108 = signed lateral offset (positive =
+    // car to the LEFT of the ideal line → needs to steer RIGHT to close the gap).
+    // Convention matches A10 (channel 81): positive → positive bias[1] (steer +right).
+    // Axiom decay (race.current_axiom_strength) is applied at the call site, so
+    // here we only seed the prior. v13: 0.35→0.20 (HOLE=5181 in v12, overcorrection
+    // toward the apex pulled the car outward in a tight curve).
+    // v14: 0.20→0.26 for narrow tracks — precision on centerline critical
     const CH_LINE: usize = 108;
     let line_err = inputs[CH_LINE] as f32 / 127.0;
     bias[1] += line_err * 0.26;
@@ -196,15 +196,15 @@ fn axiom_policy(
     bias[1] += (inputs[101] as f32 / 127.0) * 0.12; // 260m far horizon
     bias[1] += (inputs[102] as f32 / 127.0) * 0.06; // 350m ultra-far (stabilize)
 
-    // A-TTC: coefs reduzidos drasticamente pra debug
+    // A-TTC: coefs drastically reduced for debug
     let ttc_norm = inputs[105] as f32 / 127.0;
     if ttc_norm > 0.85 {
-        // threshold aumentado — só em perigo CRÍTICO
-        bias[2] += ttc_norm * 0.15; // brake muito fraco
-        bias[0] -= ttc_norm * 0.05; // throttle cut muito fraco
+        // threshold raised — only in CRITICAL danger
+        bias[2] += ttc_norm * 0.15; // very weak brake
+        bias[0] -= ttc_norm * 0.05; // very weak throttle cut
     }
 
-    // A-Depth: desabilitado — sempre 0
+    // A-Depth: disabled — always 0
     let _depth_near_px = (inputs[52] as f32 + inputs[53] as f32) / (2.0 * 127.0);
     // if depth_near_px > 0.3 { bias[0] -= depth_near_px * 0.15; }
 
@@ -272,9 +272,9 @@ pub(super) fn update_racers(
     let vdt = dt;
     let world = &world_res.0;
 
-    // --- REPLAY WRITER: abre arquivo no início de cada geração ---
-    // Cria telemetry/gen_<N>/motor.replay na primeira vez que update_racers roda por geração.
-    // O flush/close acontece no evolution_pipeline quando race.generation incrementa.
+    // --- REPLAY WRITER: opens the file at the start of each generation ---
+    // Creates telemetry/gen_<N>/motor.replay the first time update_racers runs per generation.
+    // The flush/close happens in evolution_pipeline when race.generation increments.
     if race.replay_writer.is_none() {
         let dir = std::path::PathBuf::from(format!("telemetry/gen_{}", race.generation));
         let _ = std::fs::create_dir_all(&dir);
@@ -287,25 +287,25 @@ pub(super) fn update_racers(
             race.seed,
         ) {
             Ok(w) => race.replay_writer = Some(w),
-            Err(e) => eprintln!("[replay] Falha ao abrir {:?}: {}", path, e),
+            Err(e) => eprintln!("[replay] Failed to open {:?}: {}", path, e),
         }
     }
 
     // --- TOGGLE GIZMOS (KeyG) ---
-    // Wrap todo o bloco de gizmos visuais (flag, paths, pilares) em dev.show_gizmos.
-    // Permite limpar UI pra "modo jogo" quando jogador quer só dirigir.
+    // Wrap the entire visual gizmos block (flag, paths, pillars) in dev.show_gizmos.
+    // Allows clearing the UI for "game mode" when the player just wants to drive.
     if dev.show_gizmos {
-        // --- RENDERIZAR MARCO-ZERO (A BANDEIRA DO CAMPEÃO GLOBAL) ---
+        // --- RENDER MARKER-ZERO (THE GLOBAL CHAMPION'S FLAG) ---
         if let Some(flag_pos) = race.global_best_position {
-            // Haste de 15 metros cravada no chão
+            // 15-meter pole staked into the ground
             gizmos.line(
                 flag_pos,
                 flag_pos + Vec3::Y * 15.0,
                 Color::srgb(1.0, 0.84, 0.0),
             );
-            // Globo/Bandeira dourada no topo
+            // Golden globe/flag at the top
             gizmos.sphere(flag_pos + Vec3::Y * 15.0, 2.0, Color::srgb(1.0, 0.84, 0.0));
-            // Anel no chão para visibilidade de longe
+            // Ring on the ground for visibility from afar
             gizmos.circle(
                 Isometry3d::new(flag_pos, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
                 5.0,
@@ -313,7 +313,7 @@ pub(super) fn update_racers(
             );
         }
 
-        // --- TRAÇADO DO ÚLTIMO CAMPEÃO (magenta, persiste até ser superado) ---
+        // --- LAST CHAMPION'S PATH (magenta, persists until surpassed) ---
         if race.champion_path.len() >= 2 {
             let path = &race.champion_path;
             let y_off = Vec3::Y * 1.5;
@@ -321,19 +321,19 @@ pub(super) fn update_racers(
                 gizmos.line(w[0] + y_off, w[1] + y_off, Color::srgba(1.0, 0.2, 0.9, 0.9));
             }
             if let Some(&start) = path.first() {
-                gizmos.sphere(start + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.84, 0.0)); // 👑 dourado
+                gizmos.sphere(start + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.84, 0.0)); // 👑 gold
                 gizmos.line(start, start + Vec3::Y * 12.0, Color::srgb(1.0, 0.84, 0.0));
             }
             if let Some(&end) = path.last() {
-                gizmos.sphere(end + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.1, 0.1)); // 🔴 fim
+                gizmos.sphere(end + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.1, 0.1)); // 🔴 end
                 gizmos.line(end, end + Vec3::Y * 12.0, Color::srgb(1.0, 0.1, 0.1));
             }
         }
 
-        // --- TRAÇADO DO MELHOR DA ÚLTIMA GERAÇÃO ---
-        // 🔵 CIANO = grid-spawn (elegível pra coroação — se for maior que magenta, vira campeão)
-        // 🟠 LARANJA = distributed spawn (NÃO coroa — é só especialista de um trecho)
-        // Assim se a laranja passa a magenta, você sabe que é fake progress.
+        // --- BEST OF THE LAST GENERATION'S PATH ---
+        // 🔵 CYAN = grid-spawn (eligible for coronation — if it beats magenta, it becomes champion)
+        // 🟠 ORANGE = distributed spawn (does NOT crown — just a specialist of one stretch)
+        // So if orange passes magenta, you know it's fake progress.
         if race.last_gen_path.len() >= 2 {
             let path = &race.last_gen_path;
             let y_off = Vec3::Y * 0.6;
@@ -359,34 +359,34 @@ pub(super) fn update_racers(
             }
         }
 
-        // --- RENDERIZAR WAYPOINTS/CHECKPOINTS DA PISTA ---
-        // Decima: pista procedural tem 100+ waypoints (Catmull-Rom). Mostrar todos
-        // = 100+ pilares atravessando paredes (gizmos drawn on top). Mostrar só 1 em
-        // cada 8 (densidade dos anchors originais) e altura reduzida pra 3m.
+        // --- RENDER TRACK WAYPOINTS/CHECKPOINTS ---
+        // Decimate: the procedural track has 100+ waypoints (Catmull-Rom). Showing all
+        // = 100+ pillars crossing through walls (gizmos drawn on top). Show only 1 in
+        // every 8 (density of the original anchors) and height reduced to 3m.
         let wps = &world.waypoints_world;
-        let stride = (wps.len() / 18).max(1); // ~14-18 pilares
+        let stride = (wps.len() / 18).max(1); // ~14-18 pillars
         for i in (0..wps.len()).step_by(stride) {
             let wp = Vec3::new(wps[i].x, 0.5, wps[i].y);
 
-            // Pilar de checkpoint (3m de altura, fino).
+            // Checkpoint pillar (3m tall, thin).
             let pillar_color = if i == 0 {
-                Color::srgb(0.0, 1.0, 0.3) // Verde = Largada/Chegada
+                Color::srgb(0.0, 1.0, 0.3) // Green = Start/Finish
             } else {
-                Color::srgba(0.0, 0.7, 1.0, 0.5) // Ciano sutil
+                Color::srgba(0.0, 0.7, 1.0, 0.5) // Subtle cyan
             };
             gizmos.line(wp, wp + Vec3::Y * 3.0, pillar_color);
             gizmos.sphere(wp + Vec3::Y * 3.5, 0.8, pillar_color);
         }
     } // end dev.show_gizmos
 
-    // --- PRÉ-CÁLCULO (Primeiro passo read-only sobre a mesma query) ---
+    // --- PRE-COMPUTATION (First read-only pass over the same query) ---
     let mut best_score = -10000.0;
     let mut current_best = race.selected_racer.unwrap_or(Entity::PLACEHOLDER);
     let mut racer_positions: Vec<(Entity, Vec3, Vec3)> = Vec::new();
 
     for (e, r, t, _, _, _) in query.iter() {
-        // Atualiza a Bandeira do Campeão Global se este piloto superou a marca de todos os tempos
-        // Somado com 0.05 para evitar micro-atualizações visuais
+        // Update the Global Champion's Flag if this pilot beat the all-time mark
+        // 0.05 added to avoid visual micro-updates
         if r.track_progress > race.global_best_distance + 0.05 {
             race.global_best_distance = r.track_progress;
             race.global_best_position = Some(t.translation);
@@ -408,41 +408,41 @@ pub(super) fn update_racers(
         }
     }
 
-    // --- PARALELO: PRECOMPUTA RETINAS DE TODOS CARROS VIVOS ---
-    // Retina = 64 raycasts DDA × 2000 carros = 128k rays/tick. Em time_scale=10 são
-    // ~10 substeps/frame real → 1.28M rays/frame. Pesado mesmo paralelizado via rayon.
+    // --- PARALLEL: PRECOMPUTE RETINAS OF ALL LIVING CARS ---
+    // Retina = 64 DDA raycasts × 2000 cars = 128k rays/tick. At time_scale=10 that's
+    // ~10 substeps/real frame → 1.28M rays/frame. Heavy even parallelized via rayon.
     //
-    // Otimização: cache + skip. Recomputa retina só a cada RETINA_SKIP ticks.
-    // RETINA_SKIP auto-calculado em config baseado em RETINA_ROWS×COLS pra evitar CPU bottleneck.
-    // Carro a 60 m/s se desloca ~3m entre recomputes — tolerável pra percepção (walls 3m).
+    // Optimization: cache + skip. Recompute retina only every RETINA_SKIP ticks.
+    // RETINA_SKIP auto-computed in config based on RETINA_ROWS×COLS to avoid CPU bottleneck.
+    // A car at 60 m/s moves ~3m between recomputes — tolerable for perception (walls 3m).
     let retina_skip = crate::config::iara::vision::RETINA_SKIP;
     *retina_tick_counter = retina_tick_counter.wrapping_add(1);
     let recompute_retinas = (*retina_tick_counter % retina_skip) == 0;
 
     let t_retina = std::time::Instant::now();
 
-    // --- RETINA + PERCEPÇÃO ENCADEADAS (gpu_core=true) ou retina isolada (gpu_core=false) ---
+    // --- RETINA + PERCEPTION CHAINED (gpu_core=true) or retina alone (gpu_core=false) ---
     //
-    // Antes (problema): dois encoders independentes:
+    // Before (problem): two independent encoders:
     //   1. retina: encoder + submit + poll(Wait)  → ~5 ms/tick
-    //   2. percepção: encoder + submit + poll(Wait) → +0,76 ms/tick desnecessários
+    //   2. perception: encoder + submit + poll(Wait) → +0.76 ms/tick unnecessary
     //
-    // Depois (solução): UM único encoder para retina → percepção:
-    //   1. dispatch_into(enc, ...)          ← grava retina no encoder externo
-    //   2. bind_and_dispatch(enc, ...)      ← grava percepção no MESMO encoder
-    //   3. queue.submit(enc.finish())       ← UM submit
-    //   4. device.poll(Wait)               ← UM bloqueio
-    //   5. read_legacy_after_submit(n)     ← lê retina (já no readback via copy no encoder)
-    //   6. read_after_submit(n, bytes)     ← lê percepção (idem)
+    // After (solution): ONE single encoder for retina → perception:
+    //   1. dispatch_into(enc, ...)          ← records retina into the external encoder
+    //   2. bind_and_dispatch(enc, ...)      ← records perception into the SAME encoder
+    //   3. queue.submit(enc.finish())       ← ONE submit
+    //   4. device.poll(Wait)               ← ONE block
+    //   5. read_legacy_after_submit(n)     ← reads retina (already in readback via copy in the encoder)
+    //   6. read_after_submit(n, bytes)     ← reads perception (likewise)
     //
-    // Economia estimada: ~0,76 ms/tick eliminados (encoder overhead + poll extra da percepção).
-    // O poll da retina é obrigatório de qualquer forma — não adicionamos latência.
+    // Estimated saving: ~0.76 ms/tick eliminated (encoder overhead + perception's extra poll).
+    // The retina poll is mandatory anyway — we add no latency.
     //
-    // Fallback: se gpu_core=false ou GPU indisponível, cai na CPU sem panic.
+    // Fallback: if gpu_core=false or GPU unavailable, falls back to CPU without panic.
 
     let forcar_cpu = std::env::var("IARA_RETINA_CPU").is_ok();
 
-    // Coleta seres vivos e suas poses (compartilhado entre caminhos GPU e CPU).
+    // Collect living beings and their poses (shared between GPU and CPU paths).
     let retina_inputs: Vec<(Entity, Vec3, Vec3, Vec3)> = if recompute_retinas {
         query
             .iter()
@@ -453,13 +453,13 @@ pub(super) fn update_racers(
         Vec::new()
     };
 
-    // percept_waves: preenchido pelo caminho encadeado (gpu_core=true) ou fica None.
+    // percept_waves: filled by the chained path (gpu_core=true) or stays None.
     let mut percept_waves: Option<
         HashMap<Entity, [i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]>,
     > = None;
 
     let retinas: HashMap<Entity, [i8; RETINA_TOTAL]> = if recompute_retinas {
-        // ── Caminho GPU encadeado (retina → percepção, UM submit) ────────────────
+        // ── Chained GPU path (retina → perception, ONE submit) ──────────────────
         let resultado_gpu: Option<(
             Vec<[i8; RETINA_TOTAL]>,
             Option<Vec<[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]>>,
@@ -469,9 +469,9 @@ pub(super) fn update_racers(
             let poses: Vec<crate::gpu::Pose> = retina_inputs
                 .iter()
                 .map(|&(_, pos, fwd, right)| crate::gpu::Pose {
-                    // O `+0.4` do chamador é PRESERVADO de propósito: junto com o `+0.4` de
-                    // dentro do kernel dá o mesmo olho que a CPU sempre usou (1,3 m com o
-                    // carro em y=0,5). Documentado em visao.rs — conserto é experimento à parte.
+                    // The caller's `+0.4` is PRESERVED on purpose: together with the `+0.4`
+                    // inside the kernel it yields the same eye the CPU always used (1.3 m with
+                    // the car at y=0.5). Documented in visao.rs — fixing it is a separate experiment.
                     pos: pos + Vec3::Y * 0.4,
                     forward: Vec2::new(fwd.x, fwd.z),
                     right: Vec2::new(right.x, right.z),
@@ -480,9 +480,9 @@ pub(super) fn update_racers(
                 .collect();
 
             if lab.gpu_core {
-                // ── Encadeamento: retina → percepção num único encoder ────────────
-                // Monta poses de percepção (phase + forward/right). Mesma ordem que
-                // retina_inputs, para que índice do ser bata com índice no buf_output.
+                // ── Chaining: retina → perception in a single encoder ─────────────
+                // Builds perception poses (phase + forward/right). Same order as
+                // retina_inputs, so the being's index matches the index in buf_output.
                 let poses_percept: Vec<crate::gpu::perception::PosePerception> = query
                     .iter()
                     .filter(|(_, r, _, _, _, _)| !r.is_dead)
@@ -499,8 +499,8 @@ pub(super) fn update_racers(
                     .collect();
 
                 let sig = crate::gpu::world_signature(world);
-                // get_or_create empresta device/queue da retina (sem segundo VkDevice).
-                // Percepção só está disponível se a retina GPU está presente.
+                // get_or_create borrows the retina's device/queue (no second VkDevice).
+                // Perception is only available if the GPU retina is present.
                 let n_alive = retina_inputs.len();
                 let percept_ok = gpu
                     .percept
@@ -508,18 +508,18 @@ pub(super) fn update_racers(
                     .is_some();
 
                 if percept_ok {
-                    // Cria o encoder com o device da retina (dispatch_into usa self.device/queue
-                    // internamente — sem parâmetros extras, sem conflito de borrow).
+                    // Creates the encoder with the retina's device (dispatch_into uses self.device/queue
+                    // internally — no extra parameters, no borrow conflict).
                     let mut enc = retina_ctx
                         .device()
                         .create_command_encoder(&Default::default());
 
-                    // dispatch retina → enc (sem submit); usa self.device/queue internamente.
+                    // dispatch retina → enc (no submit); uses self.device/queue internally.
                     let n_dispatched = retina_ctx.dispatch_into(&mut enc, &poses);
 
-                    // dispatch percepção → enc (sem submit); percepção usa buf_output da retina que
-                    // já está no encoder como fonte — a barreira implícita de pipeline do wgpu garante
-                    // que o compute pass anterior (retina) termine antes deste começar.
+                    // dispatch perception → enc (no submit); perception uses the retina's buf_output
+                    // already in the encoder as its source — wgpu's implicit pipeline barrier guarantees
+                    // the previous compute pass (retina) finishes before this one starts.
                     let pctx = gpu.percept.ctx.as_ref().unwrap();
                     let bytes_percept = pctx.bind_and_dispatch(
                         &mut enc,
@@ -529,25 +529,25 @@ pub(super) fn update_racers(
                         retina_ctx.output_buffer(),
                     );
 
-                    // UM submit para os dois dispatches. UM poll — elimina o
-                    // poll extra que custava ~0,76 ms/tick na percepção anterior.
+                    // ONE submit for both dispatches. ONE poll — eliminates the
+                    // extra poll that cost ~0.76 ms/tick in the previous perception.
                     retina_ctx.queue().submit(Some(enc.finish()));
                     retina_ctx.device().poll(wgpu::Maintain::Wait);
 
-                    // Lê retina (buf_readback já foi copiado no encoder pelo dispatch_into).
+                    // Reads retina (buf_readback was already copied in the encoder by dispatch_into).
                     let retina_legada = retina_ctx.read_legacy_after_submit(n_dispatched);
 
-                    // Lê percepção (buf_readback já foi copiado no encoder pelo bind_and_dispatch).
+                    // Reads perception (buf_readback was already copied in the encoder by bind_and_dispatch).
                     let waves = pctx.read_after_submit(retina_ctx.device(), n_alive, bytes_percept);
 
                     if retina_legada.len() == n_alive && waves.len() == n_alive {
                         Some((retina_legada, Some(waves)))
                     } else {
-                        // Divergência de tamanho: mortes entre iters — fallback sem percepção.
+                        // Size divergence: deaths between iters — fallback without perception.
                         Some((retina_legada, None))
                     }
                 } else {
-                    // Percepção GPU indisponível — retina sozinha com submit próprio.
+                    // GPU perception unavailable — retina alone with its own submit.
                     let saida = retina_ctx.render_legacy(&poses);
                     if saida.len() == retina_inputs.len() {
                         let conv: Vec<[i8; RETINA_TOTAL]> = saida
@@ -565,8 +565,8 @@ pub(super) fn update_racers(
                     }
                 }
             } else {
-                // gpu_core=false — retina GPU normal (encoder próprio), sem percepção GPU.
-                // RETINA NA GPU. Medido: 57% do tempo de simulação estava aqui. 31,7× vs CPU.
+                // gpu_core=false — normal GPU retina (own encoder), no GPU perception.
+                // RETINA ON THE GPU. Measured: 57% of simulation time was here. 31.7× vs CPU.
                 let saida = retina_ctx.render_legacy(&poses);
                 if saida.len() == retina_inputs.len() {
                     let conv: Vec<[i8; RETINA_TOTAL]> = saida
@@ -589,7 +589,7 @@ pub(super) fn update_racers(
 
         match resultado_gpu {
             Some((retina_legada, waves)) => {
-                // Associa percept_waves às entidades (mesma ordem de retina_inputs).
+                // Associates percept_waves with entities (same order as retina_inputs).
                 if let Some(w) = waves {
                     let entities_alive: Vec<Entity> =
                         retina_inputs.iter().map(|&(e, _, _, _)| e).collect();
@@ -598,7 +598,7 @@ pub(super) fn update_racers(
                             Some(entities_alive.iter().copied().zip(w.into_iter()).collect());
                     }
                 }
-                // Retinas mapeadas por entity.
+                // Retinas mapped by entity.
                 retina_inputs
                     .iter()
                     .zip(retina_legada.into_iter())
@@ -606,8 +606,8 @@ pub(super) fn update_racers(
                     .collect()
             }
             None => {
-                // Fallback CPU — retina paralela via rayon.
-                // `IARA_RETINA_CPU=1` força este caminho para comparação A/B.
+                // CPU fallback — parallel retina via rayon.
+                // `IARA_RETINA_CPU=1` forces this path for A/B comparison.
                 retina_inputs
                     .par_iter()
                     .map(|&(e, pos, fwd, right)| {
@@ -620,7 +620,7 @@ pub(super) fn update_racers(
             }
         }
     } else {
-        // Reuso: pega visual_cortex (retina do último recompute) de cada carro.
+        // Reuse: takes visual_cortex (retina from the last recompute) of each car.
         query
             .iter()
             .filter(|(_, r, _, _, _, _)| !r.is_dead)
@@ -628,15 +628,15 @@ pub(super) fn update_racers(
             .collect()
     };
 
-    // Tempo acumulado: retina + percepção encadeadas somam no mesmo slot.
+    // Accumulated time: chained retina + perception add into the same slot.
     perf_accum.1 += t_retina.elapsed().as_secs_f64();
-    // percept_waves já foi preenchido acima quando gpu_core=true e encadeamento funcionou.
-    // O slot perf_accum.2 (percepção/inject) continua sendo contabilizado no loop por-ser abaixo.
+    // percept_waves was already filled above when gpu_core=true and chaining worked.
+    // The perf_accum.2 slot (perception/inject) keeps being accounted in the per-being loop below.
 
-    // --- PRECOMPUTA RANK + SPATIAL HASH (elimina O(N²) do loop principal) ---
-    // Antes: cada carro sortava todos (O(N log N) × N) + scan comp_stress/draft O(N) × N
-    //      = ~4M ops/tick pra 2000 carros. Agora: 1 sort O(N log N) + lookup O(1).
-    //   Spatial hash 20m cells: query vizinhos retorna só 9 células (média ~8 carros cada).
+    // --- PRECOMPUTE RANK + SPATIAL HASH (eliminates O(N²) from the main loop) ---
+    // Before: each car sorted everyone (O(N log N) × N) + comp_stress/draft scan O(N) × N
+    //      = ~4M ops/tick for 2000 cars. Now: 1 sort O(N log N) + O(1) lookup.
+    //   Spatial hash 20m cells: neighbor query returns only 9 cells (avg ~8 cars each).
     let mut rank_sorted: Vec<(Entity, f32)> =
         racer_positions.iter().map(|&(e, p, _)| (e, p.x)).collect();
     rank_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -662,7 +662,7 @@ pub(super) fn update_racers(
                 engine_comp.throttle = 0.0;
             }
             if let Some(body) = opt_body.as_mut() {
-                body.velocity *= 0.95_f32.powf(dt * 60.0); // Atrito forte: para em ~2s
+                body.velocity *= 0.95_f32.powf(dt * 60.0); // Strong friction: stops in ~2s
                 body.angular_velocity *= 0.9_f32.powf(dt * 60.0);
                 if body.velocity.length() < 0.5 {
                     body.velocity = Vec3::ZERO;
@@ -671,21 +671,21 @@ pub(super) fn update_racers(
             continue;
         }
 
-        // Grace tick-based: imune a time_scale. ~600 frames = 10s reais @ 60Hz.
+        // Tick-based grace: immune to time_scale. ~600 frames = 10 real seconds @ 60Hz.
         racer.grace_ticks = racer.grace_ticks.saturating_add(1);
-        // race_time em SEGUNDOS VIRTUAIS: a 8x time_scale, 1s real = 8s virtuais aqui.
-        // É o relógio que o USUÁRIO vê na tela. Punições de grace usam isto.
+        // race_time in VIRTUAL SECONDS: at 8x time_scale, 1 real second = 8 virtual seconds here.
+        // It is the clock the USER sees on screen. Grace punishments use this.
         racer.race_time += vdt;
 
         let pos = transform.translation;
         let flow = world.get_flow_at(pos.x, pos.z);
         let track_phase = flow.y.atan2(flow.x);
 
-        // --- 1. VISÃO DINÂMICA (COM CICLO DIA/NOITE) ---
-        // Quando gpu_core=true e percept_waves está disponível, começa com os canais
-        // computados pela GPU (percepção WGSL). A CPU então sobrescreve POR CIMA
-        // os canais temporais/inter-seres documentados em gpu/perception.rs:CANAIS_NA_CPU.
-        // Quando gpu_core=false ou GPU indisponível, começa em zeros como antes.
+        // --- 1. DYNAMIC VISION (WITH DAY/NIGHT CYCLE) ---
+        // When gpu_core=true and percept_waves is available, starts with the channels
+        // computed by the GPU (WGSL perception). The CPU then overwrites ON TOP
+        // the temporal/inter-being channels documented in gpu/perception.rs:CANAIS_NA_CPU.
+        // When gpu_core=false or GPU unavailable, starts at zeros as before.
         let mut sensory_wave: [i8; crate::config::iara::brain::SENSORY_WAVE_SIZE] =
             if let Some(ref pw) = percept_waves {
                 pw.get(&entity)
@@ -695,17 +695,17 @@ pub(super) fn update_racers(
                 [0i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]
             };
 
-        // --- VISÃO BIOLÓGICA ESTEREOSCÓPICA (Fóvea Dupla) ---
+        // --- STEREOSCOPIC BIOLOGICAL VISION (Double Fovea) ---
         let forward = transform.right().as_vec3();
         let right = transform.back().as_vec3();
 
-        // Retina FIXA forward (sacádica desativada). Dado precomputado PARALELAMENTE acima
-        // via rayon par_iter — este loop serial apenas consome o resultado por entidade.
+        // Retina FIXED forward (saccade disabled). Data precomputed IN PARALLEL above
+        // via rayon par_iter — this serial loop only consumes the per-entity result.
         let _ = (forward, right);
         let retina_binocular = *retinas.get(&entity).unwrap_or(&[-128i8; RETINA_TOTAL]);
-        // RETINA POOLED — Volumétrico: max-pool across ALL rows para cada bin.
-        // Se houver parede em QUALQUER camada de profundidade, o cérebro sabe.
-        // Retina HD v2: FOV_BINS adaptados dinamicamente (8 bins, contínuos sem gaps)
+        // POOLED RETINA — Volumetric: max-pool across ALL rows for each bin.
+        // If there is a wall at ANY depth layer, the brain knows.
+        // Retina HD v2: FOV_BINS adapted dynamically (8 bins, continuous with no gaps)
         let c = RETINA_COLS;
         let cols_per_fov_bin = c / 8;
         let fov_bins: [(usize, usize); 8] = [
@@ -716,7 +716,7 @@ pub(super) fn update_racers(
             (4 * cols_per_fov_bin, 5 * cols_per_fov_bin),
             (5 * cols_per_fov_bin, 6 * cols_per_fov_bin),
             (6 * cols_per_fov_bin, 7 * cols_per_fov_bin),
-            (7 * cols_per_fov_bin, c), // Última bin pega até o final pra cobrir resto
+            (7 * cols_per_fov_bin, c), // Last bin reaches the end to cover the remainder
         ];
         // === ZONE-BASED POOLING (ch 0-15): preserve depth + curve shape ===
         // FAR zone (ch 0-7): pool rows 0-4 (~80m ahead, distant curves)
@@ -749,8 +749,8 @@ pub(super) fn update_racers(
             }
             sensory_wave[8 + bin] = per_max;
         }
-        // --- HD VISUAL CHANNELS (128..191) — Alta resolução para o cérebro expandido ---
-        // ch 128..143: Fóvea HD (16 bins × 4 cols, max-pool volumétrico)
+        // --- HD VISUAL CHANNELS (128..191) — High resolution for the expanded brain ---
+        // ch 128..143: HD Fovea (16 bins × 4 cols, volumetric max-pool)
         let cols_per_bin_hd = RETINA_COLS / 16;
         for bin in 0..16usize {
             let lo = bin * cols_per_bin_hd;
@@ -766,7 +766,7 @@ pub(super) fn update_racers(
             }
             sensory_wave[128 + bin] = fov_max;
         }
-        // ch 144..159: Periférica HD (16 bins × 4 cols, uniform)
+        // ch 144..159: HD Periphery (16 bins × 4 cols, uniform)
         let cols_per_bin_hd = RETINA_COLS / 16;
         for bin in 0..16usize {
             let lo = bin * cols_per_bin_hd;
@@ -804,8 +804,8 @@ pub(super) fn update_racers(
 
         // Helper: YAW-swept direction for a given angle index (0..8).
         // Sweeps ±50° (covering inner 100° of 120° FOV), left→right.
-        // FIX: antigo código variava PITCH em vez de YAW — todos os 8 sensores
-        // olhavam na mesma direção lateral. Agora varre horizontalmente.
+        // FIX: the old code varied PITCH instead of YAW — all 8 sensors
+        // looked in the same lateral direction. Now it sweeps horizontally.
         let fov_half_rad: f32 = 50.0_f32.to_radians(); // ±50° lateral sweep
         let yaw_dir = |angle_idx: usize| -> Vec2 {
             let frac = (angle_idx as f32 - 3.5) / 3.5; // -1.0 (left) → +1.0 (right)
@@ -922,18 +922,18 @@ pub(super) fn update_racers(
         }
 
         // --- ch 56-63: ground_material + material lookahead ---
-        // ch 56: material no ponto atual (Road=0, Grass=64, Wall=100, Hole=-127)
-        // ch 57: material a 3m à frente   — anticipa transição de superfície iminente
-        // ch 58: material a 8m à frente   — horizonte médio (complementa road_ahead NEAR)
-        // ch 59: material a 20m à frente  — horizonte longo (complementa road_ahead FAR)
+        // ch 56: material at the current point (Road=0, Grass=64, Wall=100, Hole=-127)
+        // ch 57: material 3m ahead   — anticipates imminent surface transition
+        // ch 58: material 8m ahead   — medium horizon (complements road_ahead NEAR)
+        // ch 59: material 20m ahead  — long horizon (complements road_ahead FAR)
         //
-        // ANTES: ch 57, 58, 59 eram cópias exatas de ch 56 (material_code).
-        // Variância medida (120 amostras, 2026-08-04): cor(56,57)=1.0 — duplicata exata.
-        // DEPOIS: cada canal olha uma distância distinta à frente, dando 4 informações
-        // temporalmente separadas de mudança de superfície.
+        // BEFORE: ch 57, 58, 59 were exact copies of ch 56 (material_code).
+        // Measured variance (120 samples, 2026-08-04): cor(56,57)=1.0 — exact duplicate.
+        // AFTER: each channel looks at a distinct distance ahead, giving 4 temporally
+        // separated pieces of surface-change information.
         //
-        // IMPACTO: invalida DNA treinado (canais 57-59 mudam de semântica).
-        // Atualizar oráculo CPU em gpu_validate --percepcao (ch 48-59 comparados).
+        // IMPACT: invalidates trained DNA (channels 57-59 change semantics).
+        // Update the CPU oracle in gpu_validate --percepcao (ch 48-59 compared).
         let material_encode = |vox: VoxelType| -> i8 {
             match vox {
                 VoxelType::Road => 0,
@@ -943,8 +943,8 @@ pub(super) fn update_racers(
             }
         };
         let current_voxel = world.get_voxel_at(pos.x, pos.z);
-        sensory_wave[56] = material_encode(current_voxel); // posição atual
-        // lookaheads: amostra a frente ao longo do vetor forward
+        sensory_wave[56] = material_encode(current_voxel); // current position
+        // lookaheads: sample ahead along the forward vector
         let probe_3m = pos + forward * 3.0;
         let probe_8m = pos + forward * 8.0;
         let probe_20m = pos + forward * 20.0;
@@ -958,9 +958,9 @@ pub(super) fn update_racers(
             sensory_wave[60 + i] = 0;
         }
 
-        // Motion per-row: estrutura vertical de movimento (complementa ch 83/84 hemisférico).
-        // Row 0 (near pitch) + high motion = objeto próximo se movendo = urgente.
-        // Row 7 (far pitch) + motion = curva distante.
+        // Motion per-row: vertical motion structure (complements hemispheric ch 83/84).
+        // Row 0 (near pitch) + high motion = nearby object moving = urgent.
+        // Row 7 (far pitch) + motion = distant curve.
         for row in 0..RETINA_ROWS {
             let motion_sum: i32 = (0..RETINA_COLS)
                 .map(|col| {
@@ -969,7 +969,7 @@ pub(super) fn update_racers(
                     (cur - prev).abs()
                 })
                 .sum();
-            // Max teórico: 255 * 126 = 32130
+            // Theoretical max: 255 * 126 = 32130
             let motion_norm = ((motion_sum as f32 / 8000.0) * 127.0).min(127.0) as i8;
             if row < 7 {
                 sensory_wave[21 + row] = motion_norm; // ch 21-27 = rows 0-6
@@ -978,8 +978,8 @@ pub(super) fn update_racers(
             }
         }
 
-        // Edge density per-row: detecta boundaries via gradiente horizontal (simplified Sobel).
-        // Alta density = road edge, wall boundary, lane marking.
+        // Edge density per-row: detects boundaries via horizontal gradient (simplified Sobel).
+        // High density = road edge, wall boundary, lane marking.
         for row in 0..RETINA_ROWS {
             let edge_sum: i32 = (0..RETINA_COLS - 1)
                 .map(|col| {
@@ -988,7 +988,7 @@ pub(super) fn update_racers(
                     (a - b).abs()
                 })
                 .sum();
-            // Max teórico: 255 * 125 = 31875
+            // Theoretical max: 255 * 125 = 31875
             let edge_norm = ((edge_sum as f32 / 6000.0) * 127.0).min(127.0) as i8;
             let slot: usize = match row {
                 0 => 29,
@@ -1004,12 +1004,12 @@ pub(super) fn update_racers(
             sensory_wave[slot] = edge_norm;
         }
 
-        // --- SACCADE COM MEMÓRIA: média ponderada de pixels escuros + hold se cego ---
-        // Usa TODOS os pixels escuros (valor negativo = road) no setor frontal (±60°),
-        // pondera por "quão escuro" e calcula centroide angular. Se NADA está escuro
-        // (tudo parede/grama = visão bloqueada), MANTÉM o gaze anterior — é a memória
-        // de "a pista estava pra direita há pouco, continua indo pra lá pra encontrar".
-        // 180°/32 pixels ≈ 5.625°/pixel. ±60° ⇒ índices 6..26.
+        // --- SACCADE WITH MEMORY: weighted average of dark pixels + hold if blind ---
+        // Uses ALL dark pixels (negative value = road) in the frontal sector (±60°),
+        // weights by "how dark" and computes the angular centroid. If NOTHING is dark
+        // (all wall/grass = vision blocked), KEEPS the previous gaze — it's the memory
+        // of "the track was to the right a moment ago, keep going there to find it".
+        // 180°/32 pixels ≈ 5.625°/pixel. ±60° ⇒ indices 6..26.
         let per_fov = std::f32::consts::PI;
         let mut dark_angle_sum: f32 = 0.0;
         let mut dark_weight_sum: f32 = 0.0;
@@ -1023,37 +1023,37 @@ pub(super) fn update_racers(
                 dark_weight_sum += strength;
             }
         }
-        // Saccade/gaze_yaw DESATIVADO (user feedback: "problema é o foco").
-        // Mantemos dark_center abaixo como priming de steer (canais 90-93) —
-        // ele já carrega o sinal "pista vai pra lá, vira pra lá" sem girar o olho.
+        // Saccade/gaze_yaw DISABLED (user feedback: "problema é o foco" [the problem is focus]).
+        // We keep dark_center below as steer priming (channels 90-93) —
+        // it already carries the "track goes there, turn there" signal without rotating the eye.
         racer.gaze_yaw = 0.0;
         // Channels 98-100: motion/edge now computed above
         sensory_wave[101] = 0;
         let _ = (dark_angle_sum, dark_weight_sum, per_fov);
 
-        // --- DARK-CENTER TRACKER (Canais 90-93): "Center the Black" — 4 variantes ---
-        // Centro de massa angular dos pixels ESCUROS (pista) na retina.
-        // Positivo = pista vai pra direita → steer RIGHT.
-        // Negativo = pista vai pra esquerda → steer LEFT.
+        // --- DARK-CENTER TRACKER (Channels 90-93): "Center the Black" — 4 variants ---
+        // Angular center of mass of the DARK pixels (track) in the retina.
+        // Positive = track goes right → steer RIGHT.
+        // Negative = track goes left → steer LEFT.
         //
-        // ANTES (2026-08-04): 4× o mesmo centroide de row 3 — duplicata exata (corr=1.0).
-        // A razão original era "voto quádruplo na rede ternária", mas o runtime migrou
-        // para F32 e a duplicação não tem mais utilidade — 3 canais eram desperdício.
+        // BEFORE (2026-08-04): 4× the same row-3 centroid — exact duplicate (corr=1.0).
+        // The original reason was "quadruple vote in the ternary network", but the runtime
+        // migrated to F32 and the duplication is no longer useful — 3 channels were waste.
         //
-        // DEPOIS: 4 janelas de largura crescente sobre rows distintas para capturar
-        // a mesma grandeza ("pista está à esquerda/direita") em escalas de distância:
-        //   ch 90: W=8,  row 3 (~40m)  — antecipação de curva
-        //   ch 91: W=16, row 5 (~25m)  — horizonte médio, janela larga suaviza ruído
-        //   ch 92: sinal L-R puro (left_dark – right_dark), normalizado
-        //          — complementa centroide: funciona mesmo quando o centroide cai em parede
-        //   ch 93: W=8,  row 7 (~15m)  — reação iminente, curva já no campo imediato
+        // AFTER: 4 windows of increasing width over distinct rows to capture
+        // the same quantity ("track is to the left/right") at distance scales:
+        //   ch 90: W=8,  row 3 (~40m)  — curve anticipation
+        //   ch 91: W=16, row 5 (~25m)  — medium horizon, wide window smooths noise
+        //   ch 92: pure L-R signal (left_dark – right_dark), normalized
+        //          — complements the centroid: works even when the centroid lands on a wall
+        //   ch 93: W=8,  row 7 (~15m)  — imminent reaction, curve already in the immediate field
         //
-        // IMPACTO: invalida DNA treinado nos canais 91-93 (mudança de semântica).
-        // 2026-08-04: canais 91-93 eram constante (corr=1.0 com ch90) → variância perdida.
+        // IMPACT: invalidates DNA trained on channels 91-93 (semantics change).
+        // 2026-08-04: channels 91-93 were constant (corr=1.0 with ch90) → variance lost.
         let half_col = (RETINA_COLS / 2) as f32 - 0.5; // 31.5
 
-        // Helper: sliding-window blob finder para uma row específica.
-        // Retorna centroide angular normalizado em [-1,1].
+        // Helper: sliding-window blob finder for a specific row.
+        // Returns the angular centroid normalized in [-1,1].
         let dark_center_for_row = |row: usize, w_size: usize| -> f32 {
             let row_off = row * RETINA_COLS;
             let search_lo = RETINA_COLS / 4; // idx 16
@@ -1085,20 +1085,20 @@ pub(super) fn update_racers(
             }
         };
 
-        // ch 90: W=8, row 3 (~40m) — mesmo cálculo de antes, sinal de antecipação
+        // ch 90: W=8, row 3 (~40m) — same computation as before, anticipation signal
         let dc_40m = dark_center_for_row((RETINA_ROWS / 2).saturating_sub(1), 8);
         sensory_wave[90] = (dc_40m * 127.0).clamp(-127.0, 127.0) as i8;
 
-        // ch 91: W=16, row 5 (~25m) — janela mais larga, horizonte médio
+        // ch 91: W=16, row 5 (~25m) — wider window, medium horizon
         let dc_25m = dark_center_for_row(5.min(RETINA_ROWS - 1), 16);
         sensory_wave[91] = (dc_25m * 127.0).clamp(-127.0, 127.0) as i8;
 
-        // ch 92: diferença L-R de darkness em row 3 — informação que NÃO está no centroide:
-        // se há muito escuro dos dois lados (reta larga), centroide fica em 0 mas LR=0
-        // também, enquanto numa curva assimétrica LR diverge do centroide.
-        // (open_l_norm/open_r_norm calculados abaixo, mas usamos as somas brutas aqui)
-        // BUG FIX 2 (user report): "modelo escolhe menor lado". Canal EXPLÍCITO:
-        // Soma de "darkness" (road = i8 negativo) por metade.
+        // ch 92: L-R darkness difference at row 3 — information NOT in the centroid:
+        // if there is lots of dark on both sides (wide straight), the centroid sits at 0 but
+        // LR=0 too, while in an asymmetric curve LR diverges from the centroid.
+        // (open_l_norm/open_r_norm computed below, but we use the raw sums here)
+        // BUG FIX 2 (user report): "modelo escolhe menor lado" [model picks the smaller side].
+        // EXPLICIT channel: sum of "darkness" (road = negative i8) per half.
         let mut left_dark_sum: i32 = 0;
         let mut right_dark_sum: i32 = 0;
         let half = RETINA_COLS / 2;
@@ -1115,27 +1115,27 @@ pub(super) fn update_racers(
                 right_dark_sum += -v;
             }
         }
-        // Diferença normalizada: + = mais pista à esquerda, - = mais pista à direita
-        // Subtrai ao contrário do steer: pista à esq = virar esquerda = sinal negativo em steer.
+        // Normalized difference: + = more track on the left, - = more track on the right
+        // Subtracts opposite to steer: track on the left = turn left = negative steer signal.
         let lr_diff_norm = ((right_dark_sum - left_dark_sum) as f32 / 4096.0).clamp(-1.0, 1.0);
         sensory_wave[92] = (lr_diff_norm * 127.0).clamp(-127.0, 127.0) as i8;
 
-        // ch 93: W=8, row 7 (~15m) — reação iminente, mesma janela mas mais próxima
+        // ch 93: W=8, row 7 (~15m) — imminent reaction, same window but closer
         let dc_15m = dark_center_for_row(7.min(RETINA_ROWS - 1), 8);
         sensory_wave[93] = (dc_15m * 127.0).clamp(-127.0, 127.0) as i8;
 
-        // Max possível: 32 pixels × 128 = 4096. Normalize para open_l/r usados no trapped.
+        // Max possible: 32 pixels × 128 = 4096. Normalize for open_l/r used in trapped.
         let open_l_norm = (left_dark_sum as f32 / 4096.0).clamp(0.0, 1.0);
         let open_r_norm = (right_dark_sum as f32 / 4096.0).clamp(0.0, 1.0);
 
-        // --- ch 36-39: OPEN_L por row (abertura esquerda em 4 distâncias) ---
-        // ANTES: 4× open_l_i8 da row 3 — duplicata exata (corr=1.0).
-        // DEPOIS: row 3/5/7/9 para capturar o escuro à esquerda em distâncias distintas.
-        //   ch 36: row 3 (~40m)   — mesmo que antes, antecipação longa
-        //   ch 37: row 5 (~25m)   — horizonte médio
-        //   ch 38: row 7 (~15m)   — reação próxima
-        //   ch 39: row 9 (~8m)    — iminente (mais próxima disponível na retina)
-        // IMPACTO: invalida DNA em ch 37-39 (mudança de semântica).
+        // --- ch 36-39: OPEN_L per row (left opening at 4 distances) ---
+        // BEFORE: 4× row-3 open_l_i8 — exact duplicate (corr=1.0).
+        // AFTER: rows 3/5/7/9 to capture the dark on the left at distinct distances.
+        //   ch 36: row 3 (~40m)   — same as before, long anticipation
+        //   ch 37: row 5 (~25m)   — medium horizon
+        //   ch 38: row 7 (~15m)   — near reaction
+        //   ch 39: row 9 (~8m)    — imminent (closest available in the retina)
+        // IMPACT: invalidates DNA on ch 37-39 (semantics change).
         let dark_sum_left_at_row = |row: usize| -> f32 {
             let off = row.min(RETINA_ROWS - 1) * RETINA_COLS;
             let mut s: i32 = 0;
@@ -1152,10 +1152,10 @@ pub(super) fn update_racers(
         sensory_wave[38] = (dark_sum_left_at_row(7) * 127.0) as i8; // ~15m
         sensory_wave[39] = (dark_sum_left_at_row(9.min(RETINA_ROWS - 1)) * 127.0) as i8; // ~8m
 
-        // --- ch 40-43: OPEN_R por row (abertura direita em 4 distâncias) ---
-        // ANTES: 4× open_r_i8 da row 3 — duplicata exata (corr=1.0).
-        // DEPOIS: mesma ideia que ch 36-39, mas metade direita da retina.
-        // IMPACTO: invalida DNA em ch 41-43 (mudança de semântica).
+        // --- ch 40-43: OPEN_R per row (right opening at 4 distances) ---
+        // BEFORE: 4× row-3 open_r_i8 — exact duplicate (corr=1.0).
+        // AFTER: same idea as ch 36-39, but the right half of the retina.
+        // IMPACT: invalidates DNA on ch 41-43 (semantics change).
         let dark_sum_right_at_row = |row: usize| -> f32 {
             let off = row.min(RETINA_ROWS - 1) * RETINA_COLS;
             let mut s: i32 = 0;
@@ -1173,16 +1173,16 @@ pub(super) fn update_racers(
         sensory_wave[43] = (dark_sum_right_at_row(9.min(RETINA_ROWS - 1)) * 127.0) as i8; // ~8m
 
         // BEST ESCAPE direction — RESTRICT to FRONTAL field.
-        // Bug fix user: periph 180° pegava pista ATRÁS, modelo virava pra trás batendo.
-        // Frontal-only = car só considera "escape pra onde tô indo".
-        // --- ch 60-63: ESCAPE_DIR por row (direção de fuga em 4 distâncias) ---
-        // ANTES: 4× escape_i8 da row 3 — duplicata exata (corr=1.0).
-        // DEPOIS: escape calculado em rows 3/5/7/9 para profundidade de decisão:
-        //   ch 60: row 3 (~40m)  — antecipação de corredor longo
-        //   ch 61: row 5 (~25m)  — horizonte médio
-        //   ch 62: row 7 (~15m)  — decisão próxima
-        //   ch 63: row 9 (~8m)   — reflexo iminente
-        // IMPACTO: invalida DNA em ch 61-63 (mudança de semântica).
+        // User bug fix: 180° periphery caught track BEHIND, model turned backward crashing.
+        // Frontal-only = car only considers "escape toward where I'm going".
+        // --- ch 60-63: ESCAPE_DIR per row (escape direction at 4 distances) ---
+        // BEFORE: 4× row-3 escape_i8 — exact duplicate (corr=1.0).
+        // AFTER: escape computed at rows 3/5/7/9 for decision depth:
+        //   ch 60: row 3 (~40m)  — long-corridor anticipation
+        //   ch 61: row 5 (~25m)  — medium horizon
+        //   ch 62: row 7 (~15m)  — near decision
+        //   ch 63: row 9 (~8m)   — imminent reflex
+        // IMPACT: invalidates DNA on ch 61-63 (semantics change).
         let escape_at_row = |row: usize| -> i8 {
             let row_off = row.min(RETINA_ROWS - 1) * RETINA_COLS;
             let mut b_start = 0usize;
@@ -1217,19 +1217,19 @@ pub(super) fn update_racers(
         sensory_wave[62] = escape_at_row(7); // ~15m
         sensory_wave[63] = escape_at_row(9.min(RETINA_ROWS - 1)); // ~8m
 
-        // BUG FIX 3 (user report): "pista pequena bate direto". Wall imminent
-        // --- ch 44-47: WALL_IMMINENT decomposto em 4 regiões angulares ---
-        // ANTES: 4× o mesmo max-pixel na fóvea central — duplicata exata (corr=1.0).
-        // DEPOIS: 4 regiões da retina para detectar parede por ângulo de chegada:
-        //   ch 44: fóvea central (cols 5/16..11/16) — mesmo que antes
-        //   ch 45: fóvea estreita (cols 6/16..10/16, row mais próxima = row_near)
-        //   ch 46: lateral esquerda (cols 0..1/4) — parede que vem da esquerda
-        //   ch 47: lateral direita  (cols 3/4..COLS) — parede que vem da direita
-        // IMPACTO: invalida DNA em ch 45-47 (mudança de semântica).
+        // BUG FIX 3 (user report): "pista pequena bate direto" [small track crashes head-on].
+        // --- ch 44-47: WALL_IMMINENT decomposed into 4 angular regions ---
+        // BEFORE: 4× the same max-pixel in the central fovea — exact duplicate (corr=1.0).
+        // AFTER: 4 retina regions to detect a wall by angle of arrival:
+        //   ch 44: central fovea (cols 5/16..11/16) — same as before
+        //   ch 45: narrow fovea (cols 6/16..10/16, closest row = row_near)
+        //   ch 46: left side (cols 0..1/4) — wall coming from the left
+        //   ch 47: right side (cols 3/4..COLS) — wall coming from the right
+        // IMPACT: invalidates DNA on ch 45-47 (semantics change).
         let reflex_row = (RETINA_ROWS / 2).saturating_sub(1);
-        let near_row = RETINA_ROWS.saturating_sub(2); // row mais próxima disponível
+        let near_row = RETINA_ROWS.saturating_sub(2); // closest row available
 
-        // ch 44: fóvea central, row 3 (~30m) — mantém comportamento atual
+        // ch 44: central fovea, row 3 (~30m) — keeps current behavior
         let mut wall_central_max: i32 = -128;
         for i in (RETINA_COLS * 5 / 16)..(RETINA_COLS * 11 / 16) {
             let v = retina_binocular[reflex_row * RETINA_COLS + i] as i32;
@@ -1248,7 +1248,7 @@ pub(super) fn update_racers(
         };
         sensory_wave[44] = wall_imminent_i8;
 
-        // ch 45: fóvea estreita (cols 6/16..10/16), row mais próxima — colisão super-iminente
+        // ch 45: narrow fovea (cols 6/16..10/16), closest row — super-imminent collision
         let mut wall_near_max: i32 = -128;
         for i in (RETINA_COLS * 6 / 16)..(RETINA_COLS * 10 / 16) {
             let v = retina_binocular[near_row * RETINA_COLS + i] as i32;
@@ -1266,7 +1266,7 @@ pub(super) fn update_racers(
             0
         };
 
-        // ch 46: lateral esquerda (cols 0..COLS/4), row 3 — parede vindo da esquerda
+        // ch 46: left side (cols 0..COLS/4), row 3 — wall coming from the left
         let mut wall_left_max: i32 = -128;
         for i in 0..(RETINA_COLS / 4) {
             let v = retina_binocular[reflex_row * RETINA_COLS + i] as i32;
@@ -1282,7 +1282,7 @@ pub(super) fn update_racers(
             0
         };
 
-        // ch 47: lateral direita (cols 3COLS/4..COLS), row 3 — parede vindo da direita
+        // ch 47: right side (cols 3COLS/4..COLS), row 3 — wall coming from the right
         let mut wall_right_max: i32 = -128;
         for i in (RETINA_COLS * 3 / 4)..RETINA_COLS {
             let v = retina_binocular[reflex_row * RETINA_COLS + i] as i32;
@@ -1298,14 +1298,14 @@ pub(super) fn update_racers(
             0
         };
 
-        // ch 48..51 = TRAPPED_SCORE decomposto em 4 componentes.
-        // ANTES: 4× o mesmo valor composto — duplicata exata (corr=1.0).
-        // DEPOIS: expõe os 3 fatores individuais + resultado composto:
-        //   ch 48: wall_pressure normalizado [0..127] — pressão de parede frontal
-        //   ch 49: stuck_speed [0..127] — quanto o carro está parado (1 - v/25km/h)
-        //   ch 50: lr_blocked [0..127]  — falta de escuro lateral (sem saída L+R)
-        //   ch 51: composto final (resultado original) — heurística de emergência
-        // IMPACTO: invalida DNA em ch 49-51 (mudança de semântica).
+        // ch 48..51 = TRAPPED_SCORE decomposed into 4 components.
+        // BEFORE: 4× the same composite value — exact duplicate (corr=1.0).
+        // AFTER: exposes the 3 individual factors + composite result:
+        //   ch 48: normalized wall_pressure [0..127] — frontal wall pressure
+        //   ch 49: stuck_speed [0..127] — how stopped the car is (1 - v/25km/h)
+        //   ch 50: lr_blocked [0..127]  — lack of lateral dark (no L+R exit)
+        //   ch 51: final composite (original result) — emergency heuristic
+        // IMPACT: invalidates DNA on ch 49-51 (semantics change).
         let speed_kmh_now = ((sensory_wave[65] as f32 / 127.0) * 80.0 * 3.6).max(0.0);
         let wall_pressure = wall_imminent_i8 as f32;
         let stuck_speed = (1.0 - (speed_kmh_now / 25.0).clamp(0.0, 1.0)) * 127.0;
@@ -1320,17 +1320,17 @@ pub(super) fn update_racers(
         sensory_wave[50] = lr_blocked.clamp(0.0, 127.0) as i8;
         sensory_wave[51] = trapped_i8;
 
-        // --- FLUXO ÓPTICO + APPROACH DETECTION ---
-        // Motion sums (ch 83/84) — qualquer movimento.
-        // Approach signed (ch 114/115) — parede APROXIMANDO de fora pra centro.
-        // Pixel value SOBE = wall ficando mais próximo (perto = positivo retina).
-        // ΔV signed em hemisfério: + = aproximando, - = afastando.
+        // --- OPTICAL FLOW + APPROACH DETECTION ---
+        // Motion sums (ch 83/84) — any motion.
+        // Approach signed (ch 114/115) — wall APPROACHING from outside toward center.
+        // Pixel value RISES = wall getting closer (near = positive retina).
+        // Signed ΔV per hemisphere: + = approaching, - = receding.
         let mut motion_left: i32 = 0;
         let mut motion_right: i32 = 0;
-        let mut approach_left: i32 = 0; // delta signed sum (positivo = parede vindo)
+        let mut approach_left: i32 = 0; // signed delta sum (positive = wall coming)
         let mut approach_right: i32 = 0;
-        // Optical flow usa rows 3 e 4 (horizonte/céu) para detectar paredes se aproximando.
-        // O chão (rows 0, 1) é constante e não gera motion delta útil para paredes.
+        // Optical flow uses rows 3 and 4 (horizon/sky) to detect approaching walls.
+        // The ground (rows 0, 1) is constant and generates no useful motion delta for walls.
         for i in 0..half {
             let dr_f = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
                 as i32
@@ -1366,44 +1366,44 @@ pub(super) fn update_racers(
                 as i32
                 - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
                     as i32;
-            fovea_approach += dr; // + = wall vindo na frente
+            fovea_approach += dr; // + = wall coming in front
             fovea_motion_abs += dr.abs();
         }
         sensory_wave[116] = (fovea_approach / 32).clamp(-127, 127) as i8;
         sensory_wave[117] = (fovea_motion_abs / 32).min(127) as i8;
 
-        // --- DEPTH-PER-ROW (canais 52-59): profundidade explícita por linha da retina ---
-        // Cada linha da retina é pitched para detectar objetos em distância diferente.
-        // Row 0 (pitch=-0.10 rad) vê perto; Row 7 (pitch=+0.05 rad) vê longe.
-        // Canal = soma de todos os pixels de PAREDE (valores positivos altos) nessa linha,
-        // normalizado. Dá ao modelo sinal claro: "há parede perto" vs "há parede longe".
+        // --- DEPTH-PER-ROW (channels 52-59): explicit depth per retina row ---
+        // Each retina row is pitched to detect objects at a different distance.
+        // Row 0 (pitch=-0.10 rad) sees near; Row 7 (pitch=+0.05 rad) sees far.
+        // Channel = sum of all WALL pixels (high positive values) in that row,
+        // normalized. Gives the model a clear signal: "wall near" vs "wall far".
         // IMPORTANT: capped at 8 rows (ch 52-59) — NOT RETINA_ROWS (14).
         // Rows 8-13 would write to ch 60-65, overwriting escape_i8 in ch 60-63 (vital steering signal).
         for row in 0..8 {
             let wall_sum: i32 = (0..RETINA_COLS)
                 .map(|col| {
                     let v = retina_binocular[row * RETINA_COLS + col] as i32;
-                    v.max(0) // Só wall/hole (positivos), ignora road (negativo) e grass (~0-40)
+                    v.max(0) // Only wall/hole (positive), ignores road (negative) and grass (~0-40)
                 })
                 .sum();
-            // Normaliza: max teórico = 126 cols * 127 = 16002
+            // Normalize: theoretical max = 126 cols * 127 = 16002
             let depth_normalized = ((wall_sum as f32 / 4000.0) * 127.0).min(127.0) as i8;
             sensory_wave[52 + row] = depth_normalized;
         }
 
-        // --- WALL APPROACH RATE (canais 102-107): dD/dt em m/s ---
-        // Detecta se parede está se aproximando (positivo) ou afastando (negativo).
-        // Essencial para reflexos em alta velocidade — modelo precisa de taxa, não só distância.
+        // --- WALL APPROACH RATE (channels 102-107): dD/dt in m/s ---
+        // Detects whether the wall is approaching (positive) or receding (negative).
+        // Essential for high-speed reflexes — the model needs rate, not just distance.
         let DT = 1.0 / 64.0_f32;
-        // ch 76-77 normaliza por 40.0 (expandido de 15m→40m, BUG 1 fix 2026-08-04).
-        // Semântica: 0 = encostado, 127 = 40m livre. dist = (ch/127) * 40.
-        let dist_l = (sensory_wave[76] as f32 / 127.0) * 40.0; // distância lateral esq (m)
-        let dist_r = (sensory_wave[77] as f32 / 127.0) * 40.0; // distância lateral dir (m)
+        // ch 76-77 normalizes by 40.0 (expanded from 15m→40m, BUG 1 fix 2026-08-04).
+        // Semantics: 0 = touching, 127 = 40m free. dist = (ch/127) * 40.
+        let dist_l = (sensory_wave[76] as f32 / 127.0) * 40.0; // left lateral distance (m)
+        let dist_r = (sensory_wave[77] as f32 / 127.0) * 40.0; // right lateral distance (m)
 
         let approach_rate_l = (racer.wall_dist_prev_l - dist_l) / DT;
         let approach_rate_r = (racer.wall_dist_prev_r - dist_r) / DT;
 
-        // Frontal approach: usa row 3 (40m foresight) wall pixels centrais como proxy dist_front
+        // Frontal approach: uses row 3 (40m foresight) central wall pixels as dist_front proxy
         let reflex_row = (RETINA_ROWS / 2).saturating_sub(1);
         let front_wall_px: i32 = (RETINA_COLS / 3..(2 * RETINA_COLS / 3))
             .map(|col| retina_binocular[reflex_row * RETINA_COLS + col] as i32)
@@ -1420,7 +1420,7 @@ pub(super) fn update_racers(
         sensory_wave[103] = (approach_rate_r.clamp(-30.0, 30.0) / 30.0 * 127.0) as i8;
         sensory_wave[104] = (approach_rate_f.clamp(-30.0, 30.0) / 30.0 * 127.0) as i8;
 
-        // TTC mínimo (tempo para contato): D / v_approach (0..2s → 127=iminente, 0=seguro)
+        // Minimum TTC (time to contact): D / v_approach (0..2s → 127=imminent, 0=safe)
         let ttc_l = if approach_rate_l > 1.0 {
             (dist_l / approach_rate_l).min(2.0)
         } else {
@@ -1439,21 +1439,21 @@ pub(super) fn update_racers(
         let ttc_min = ttc_l.min(ttc_r).min(ttc_f).clamp(0.0, 2.0);
         sensory_wave[105] = (127.0 * (1.0 - ttc_min / 2.0)) as i8;
 
-        // Delta_dist (derivada simples, ±15m/s range)
+        // Delta_dist (simple derivative, ±15m/s range)
         sensory_wave[106] = (approach_rate_l.clamp(-15.0, 15.0) / 15.0 * 64.0) as i8;
         sensory_wave[107] = (approach_rate_r.clamp(-15.0, 15.0) / 15.0 * 64.0) as i8;
 
-        // Atualizar prev para próximo frame
+        // Update prev for the next frame
         racer.wall_dist_prev_l = dist_l;
         racer.wall_dist_prev_r = dist_r;
         racer.wall_dist_prev_f = dist_front_now;
 
         racer.visual_cortex = retina_binocular;
 
-        // --- CAOS VISUAL (Medo de Obstáculos) ---
-        // O modelo deve procurar o "Preto" (Pista). Ver muito "Branco" (Parede) causa Pânico.
-        // Pós pooled retina: itera 16 bins (8 fóvea + 8 periférica).
-        // --- AVALIAÇÃO VISUAL: MEDO VS HORIZONTE ---
+        // --- VISUAL CHAOS (Fear of Obstacles) ---
+        // The model should seek the "Black" (Track). Seeing lots of "White" (Wall) causes Panic.
+        // Post pooled retina: iterates 16 bins (8 fovea + 8 periphery).
+        // --- VISUAL ASSESSMENT: FEAR VS HORIZON ---
         let mut visual_stress = 0.0;
         let mut visual_freedom = 0.0;
         for i in 0..16 {
@@ -1461,22 +1461,22 @@ pub(super) fn update_racers(
             if v > 0.0 {
                 visual_stress += v / 127.0;
             } else if v < -50.0 {
-                // Pixel bem negativo = pista livre ou parede muito distante (Ciano)
+                // Very negative pixel = free track or very distant wall (Cyan)
                 visual_freedom += v.abs() / 128.0;
             }
         }
-        visual_stress /= 16.0; // Média de brancura (0.0 a 1.0)
-        visual_freedom /= 16.0; // Média de espaço livre (0.0 a 1.0)
+        visual_stress /= 16.0; // Average whiteness (0.0 to 1.0)
+        visual_freedom /= 16.0; // Average free space (0.0 to 1.0)
 
-        // Punição suave por encarar paredes, mas RECOMPENSA FORTE por olhar pro horizonte.
-        // Isso incentiva o modelo a virar o volante até encontrar o caminho longo.
+        // Soft punishment for staring at walls, but STRONG REWARD for looking at the horizon.
+        // This encourages the model to turn the wheel until it finds the long path.
         racer.joy_integral += (visual_freedom * 15.0 - visual_stress * 5.0) * dt;
 
-        // [PÂNICO DESATIVADO] - O modelo ficava cego com ruído quando se aproximava
-        // de paredes, o que causava o "congelamento" por falta de informação.
+        // [PANIC DISABLED] - The model went blind with noise when approaching
+        // walls, which caused the "freezing" from lack of information.
         let _panic_level = 0.0;
 
-        // --- RUÍDO NOTURNO: Apenas incerteza do ambiente ---
+        // --- NIGHT NOISE: Environment uncertainty only ---
         use rand::prelude::*;
         let mut rng =
             rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
@@ -1489,7 +1489,7 @@ pub(super) fn update_racers(
             }
         }
 
-        // --- 2. CANAIS DE INSTINTO E TELEMETRIA (Sensoriometria) ---
+        // --- 2. INSTINCT AND TELEMETRY CHANNELS (Sensoriometry) ---
         let alignment = (racer.phase - track_phase).cos();
         sensory_wave[64] = (alignment * 127.0) as i8;
 
@@ -1515,18 +1515,18 @@ pub(super) fn update_racers(
             }
         }
 
-        // Percepção de Dor Mecânica (HP), Tensão no Motor (RPM) e Marcha Atual
-        // CORRIGIDO: normaliza por HP_INICIAL em vez de 100.0 fixo. Com HP_INICIAL=1000
-        // e a base antiga de 100.0, o canal ficaria saturado em 127 para sempre (HP > 100
-        // → ratio > 1,0 → clamp → 127 = constante). O cérebro precisa sentir o HP real.
+        // Perception of Mechanical Pain (HP), Engine Strain (RPM) and Current Gear
+        // FIXED: normalizes by HP_INICIAL instead of fixed 100.0. With HP_INICIAL=1000
+        // and the old base of 100.0, the channel would stay saturated at 127 forever (HP > 100
+        // → ratio > 1.0 → clamp → 127 = constant). The brain needs to feel the real HP.
         sensory_wave[67] =
             ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(-128.0, 127.0) as i8;
-        // --- RANK + COMP_STRESS via precomputados ---
+        // --- RANK + COMP_STRESS via precomputed data ---
         let my_rank = rank_by_entity.get(&entity).copied().unwrap_or(0);
         let is_leader = my_rank == 0;
 
-        // Canal 125: Estresse Competitivo (0 líder, 127 atrás de alguém próximo, 64 meio pelotão)
-        // Spatial hash query: só 9 células ao redor (~8 carros cada) em vez de N inteiro.
+        // Channel 125: Competitive Stress (0 leader, 127 behind someone close, 64 mid-pack)
+        // Spatial hash query: only 9 surrounding cells (~8 cars each) instead of the whole N.
         let mut comp_stress = 0;
         if !is_leader {
             comp_stress = 64;
@@ -1553,8 +1553,8 @@ pub(super) fn update_racers(
         }
         sensory_wave[125] = comp_stress as i8;
 
-        // Canal 124: Dor de Centrífuga (Anti-Giro)
-        // Se estiver girando muito (>1.5 rad/s) e com pouca velocidade (<2.0 m/s), DOR MÁXIMA.
+        // Channel 124: Centrifugal Pain (Anti-Spin)
+        // If spinning a lot (>1.5 rad/s) with little speed (<2.0 m/s), MAXIMUM PAIN.
         let is_spinning = if let Some(body) = &opt_body {
             body.angular_velocity.y.abs() > 1.5 && speed < 2.0
         } else {
@@ -1562,8 +1562,8 @@ pub(super) fn update_racers(
         };
         sensory_wave[124] = if is_spinning { -128 } else { 0 };
 
-        // --- AGITAÇÃO SENSORIO-REFERENCIAL (RUÍDO DE ESTRESSE) ---
-        // Injeta ruído exploratório nos sensores quando está estressado para sair de estados presos
+        // --- SENSORY-REFERENTIAL AGITATION (STRESS NOISE) ---
+        // Injects exploratory noise into the sensors when stressed to escape stuck states
         if comp_stress > 0 {
             let noise_amplitude = (comp_stress as f32 / 127.0) * 5.0;
             for i in 0..16 {
@@ -1572,23 +1572,23 @@ pub(super) fn update_racers(
             }
         }
 
-        // --- CANAIS ORIGINAIS ---
+        // --- ORIGINAL CHANNELS ---
         if let Some(engine) = &opt_engine {
             let rpm_ratio = engine.current_rpm / engine.max_rpm;
             sensory_wave[68] = (rpm_ratio * 127.0).clamp(0.0, 127.0) as i8;
             sensory_wave[69] = (engine.current_gear as i8 * 20).clamp(0, 127);
         }
 
-        // --- NOVOS SENSORES DE TELEMETRIA (PROPRIOCEPÇÃO) ---
-        // Canal 70: Carga Térmica dos Pneus (0-127 = 0%-100%)
+        // --- NEW TELEMETRY SENSORS (PROPRIOCEPTION) ---
+        // Channel 70: Tire Thermal Load (0-127 = 0%-100%)
         sensory_wave[70] = (avg_tire_temp * 127.0).clamp(0.0, 127.0) as i8;
 
-        // Canal 71: Downforce Sensor (D = 0.5 * ρ * v² * Cl * A)
-        let downforce_normalized = (0.5 * 1.225 * speed * speed * 0.18 * 3.0 * 2.0) / 15000.0; // Normalizado ~15kN max
+        // Channel 71: Downforce Sensor (D = 0.5 * ρ * v² * Cl * A)
+        let downforce_normalized = (0.5 * 1.225 * speed * speed * 0.18 * 3.0 * 2.0) / 15000.0; // Normalized ~15kN max
         sensory_wave[71] = (downforce_normalized * 127.0).clamp(0.0, 127.0) as i8;
 
-        // Canal 72: Drafting/Slipstream (127 se piloto à frente dentro de 10m)
-        // Spatial hash: só 9 células em vez de N completo.
+        // Channel 72: Drafting/Slipstream (127 if a pilot ahead within 10m)
+        // Spatial hash: only 9 cells instead of the full N.
         let mut in_draft = false;
         let cx = (pos.x / SPATIAL_CELL).floor() as i32;
         let cz = (pos.z / SPATIAL_CELL).floor() as i32;
@@ -1612,21 +1612,21 @@ pub(super) fn update_racers(
         }
         sensory_wave[72] = if in_draft { 127 } else { 0 };
 
-        // voxel_current: material sob o carro — usado aqui (ch 73), no dopamina (1540),
-        // na penalidade de grama (2525), no buraco (2538) e na telemetria (2653).
+        // voxel_current: material under the car — used here (ch 73), in dopamine (1540),
+        // in the grass penalty (2525), in the hole (2538) and in telemetry (2653).
         let voxel_current = world.get_voxel_at(pos.x, pos.z);
 
-        // Canal 73: Corredor disponível (largura total de pista livre, sem depender de ch 76/77).
-        // Calcula diretamente aqui (ch 76/77 são escritos DEPOIS neste tick — não disponíveis).
-        // Normalizado: 0 = corredor 0m (cercado), 127 = corredor ≥30m (pista larga).
+        // Channel 73: Available corridor (total free track width, without depending on ch 76/77).
+        // Computed directly here (ch 76/77 are written LATER this tick — not available).
+        // Normalized: 0 = 0m corridor (boxed in), 127 = corridor ≥30m (wide track).
         //
-        // ANTES: "on_grass" (-128 na grama, 0 fora). Variância medida = 0.0 em 120
-        // amostras de pista (quase nunca na grama durante corridas), canal morto.
-        // A info "está na grama" já está em ch 56 (material_code = 64 na grama).
-        // DEPOIS: largura total do corredor — info que ch 76/77 têm SEPARADA (esq/dir)
-        // mas que o cérebro precisa como SOMA para "quanto espaço tenho ao todo".
-        // Exemplo: pista de 18m → corredor ≈ 18m → 18/30 × 127 ≈ 76.
-        // IMPACTO: invalida DNA treinado; ch 73 muda de semântica.
+        // BEFORE: "on_grass" (-128 on grass, 0 off). Measured variance = 0.0 in 120
+        // track samples (almost never on grass during races), dead channel.
+        // The "on grass" info is already in ch 56 (material_code = 64 on grass).
+        // AFTER: total corridor width — info that ch 76/77 hold SEPARATELY (left/right)
+        // but the brain needs as a SUM for "how much space do I have overall".
+        // Example: 18m track → corridor ≈ 18m → 18/30 × 127 ≈ 76.
+        // IMPACT: invalidates trained DNA; ch 73 changes semantics.
         {
             let left_perp_73 = Vec3::new(-forward.z, 0.0, forward.x).normalize_or_zero();
             let right_perp_73 = -left_perp_73;
@@ -1656,15 +1656,15 @@ pub(super) fn update_racers(
             sensory_wave[73] = ((corredor / 30.0) * 127.0).clamp(0.0, 127.0) as i8;
         }
 
-        // Canal 74: Peso do Volante (Steering Weight - Caster Dinâmico)
+        // Channel 74: Steering Weight (Dynamic Caster)
         let steer_limit = 1.0 / (1.0 + speed * 0.02);
         sensory_wave[74] = (steer_limit * 127.0).clamp(0.0, 127.0) as i8;
 
-        // Canal 75: Clima / Wetness
+        // Channel 75: Weather / Wetness
         sensory_wave[75] = (env.weather_wetness * 127.0).clamp(0.0, 127.0) as i8;
 
-        // --- SENSORES DE PROXIMIDADE LATERAL (sem raycasts) ---
-        // Sampled grid queries: procura paredes a 90° esquerda/direita
+        // --- LATERAL PROXIMITY SENSORS (no raycasts) ---
+        // Sampled grid queries: looks for walls at 90° left/right
         let mut dist_l = 15.0;
         let mut dist_r = 15.0;
         let left_perp = Vec3::new(-forward.z, 0.0, forward.x).normalize_or_zero();
@@ -1689,7 +1689,7 @@ pub(super) fn update_racers(
         sensory_wave[76] = ((dist_l / 15.0) * 127.0).clamp(0.0, 127.0) as i8;
         sensory_wave[77] = ((dist_r / 15.0) * 127.0).clamp(0.0, 127.0) as i8;
 
-        // --- WHISKERS DIAGONAIS (canais 94-97) — grid-based proximity ---
+        // --- DIAGONAL WHISKERS (channels 94-97) — grid-based proximity ---
         // Sample 4 diagonal directions (±30°, ±60°) with grid queries
         const WHISKER_RANGE: f32 = 10.0;
         let ang30 = std::f32::consts::FRAC_PI_6;
@@ -1714,10 +1714,10 @@ pub(super) fn update_racers(
         sensory_wave[96] = measure_whisker(ang60);
         sensory_wave[97] = measure_whisker(-ang60);
 
-        // --- CURVATURA ANTECIPADA (LOOKAHEAD DE PISTA) ---
-        // Amostra o flow field à frente a múltiplas distâncias e mede o desvio angular
-        // em relação ao heading atual. Positivo = pista curva à ESQUERDA;
-        // negativo = curva à DIREITA. É o "GPS interno" dos próximos ~5s.
+        // --- ANTICIPATED CURVATURE (TRACK LOOKAHEAD) ---
+        // Samples the flow field ahead at multiple distances and measures the angular
+        // deviation from the current heading. Positive = track curves LEFT;
+        // negative = curves RIGHT. It's the "internal GPS" of the next ~5s.
         for (slot, look_dist) in [
             (78usize, 10.0_f32),
             (79, 25.0),
@@ -1732,21 +1732,21 @@ pub(super) fn update_racers(
             sensory_wave[slot] = (cross * 127.0).clamp(-127.0, 127.0) as i8;
         }
 
-        // Canal 81: LANE OFFSET — assimetria lateral pra posição na pista [-1..+1].
-        // Positivo = mais espaço à direita → estou à ESQUERDA da pista.
-        // Negativo = mais espaço à esquerda → estou à DIREITA da pista.
+        // Channel 81: LANE OFFSET — lateral asymmetry for track position [-1..+1].
+        // Positive = more space on the right → I'm on the LEFT of the track.
+        // Negative = more space on the left → I'm on the RIGHT of the track.
         let lane_denom = (dist_l + dist_r).max(0.1);
         let lane_offset = (dist_r - dist_l) / lane_denom;
         sensory_wave[81] = (lane_offset * 127.0).clamp(-127.0, 127.0) as i8;
 
-        // --- RACING LINE SENSORS (canais 108/109/110) ---
-        // Teacher signal para a rede aprender a linha ideal (wide-apex-wide).
+        // --- RACING LINE SENSORS (channels 108/109/110) ---
+        // Teacher signal for the network to learn the ideal line (wide-apex-wide).
         // 108 = lateral offset (m, signed, clamped to ±half_width, then scaled).
-        //       Positivo = carro à ESQUERDA da linha → precisa virar pra DIREITA.
-        // 109 = derivada do offset (offset anterior - atual). Positivo = fechando
-        //       a distância pra linha (bom). Codifica "tô corrigindo na direção certa".
-        // 110 = lookahead offset ~5m à frente na linha ideal. Anticipa turn-in
-        //       quando o offset instantâneo é 0 mas a linha já começou a curvar.
+        //       Positive = car to the LEFT of the line → needs to turn RIGHT.
+        // 109 = offset derivative (previous offset - current). Positive = closing
+        //       the distance to the line (good). Encodes "I'm correcting in the right direction".
+        // 110 = lookahead offset ~5m ahead on the ideal line. Anticipates turn-in
+        //       when the instantaneous offset is 0 but the line has already started curving.
         let pos2d = Vec2::new(pos.x, pos.z);
         let fwd2d = Vec2::new(forward.x, forward.z);
         let line_offset_m = if !world.racing_line.is_empty() {
@@ -1762,9 +1762,9 @@ pub(super) fn update_racers(
             .get(&entity)
             .copied()
             .unwrap_or(line_offset_m);
-        // "offset anterior - atual": positivo quando o erro diminuiu neste tick.
+        // "previous offset - current": positive when the error shrank this tick.
         let d_off = (prev_off - line_offset_m) / hw;
-        sensory_wave[109] = (d_off * 127.0 * 8.0).clamp(-127.0, 127.0) as i8; // gain 8x pq delta por tick é pequeno
+        sensory_wave[109] = (d_off * 127.0 * 8.0).clamp(-127.0, 127.0) as i8; // gain 8x because per-tick delta is small
         prev_line_offset.insert(entity, line_offset_m);
 
         let lookahead_m = if !world.racing_line.is_empty() {
@@ -1774,8 +1774,8 @@ pub(super) fn update_racers(
         };
         sensory_wave[110] = ((lookahead_m / hw).clamp(-1.0, 1.0) * 127.0) as i8;
 
-        // Canal 82: URGÊNCIA DE COLISÃO FRONTAL — grid-based forward probe (no raycast).
-        // Sampled ahead to find closest wall, compute TTC inverso num único sinal [0..127].
+        // Channel 82: FRONTAL COLLISION URGENCY — grid-based forward probe (no raycast).
+        // Sampled ahead to find closest wall, compute inverse TTC in a single signal [0..127].
         let mut fwd_probe = 30.0f32;
         for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
             let probe = pos + forward * sample_dist;
@@ -1786,35 +1786,35 @@ pub(super) fn update_racers(
                 break;
             }
         }
-        let ttc_inv = (speed / fwd_probe.max(0.5)).clamp(0.0, 10.0); // 10 = ~0.1s de TTC
+        let ttc_inv = (speed / fwd_probe.max(0.5)).clamp(0.0, 10.0); // 10 = ~0.1s of TTC
         sensory_wave[82] = ((ttc_inv / 10.0) * 127.0) as i8;
 
         // ── WIDTH-INVARIANT CHANNELS (Tesla-like generalization) ──
-        // Sem isto, DNA over-fits absolute pixel intensity → 28m DNA não funciona em 16m.
-        // Normalize by half_width = mesma reação qualquer pista.
-        // ch 118: forward_wall_dist / hw — "X track-widths à frente" (clamp 0..3)
+        // Without this, DNA over-fits absolute pixel intensity → 28m DNA doesn't work at 16m.
+        // Normalize by half_width = same reaction on any track.
+        // ch 118: forward_wall_dist / hw — "X track-widths ahead" (clamp 0..3)
         let fwd_norm = (fwd_probe / hw).clamp(0.0, 3.0);
         sensory_wave[118] = ((fwd_norm / 3.0) * 127.0).clamp(0.0, 127.0) as i8;
-        // ch 119: lateral corridor / hw — "espaço livre lateral em track-widths"
+        // ch 119: lateral corridor / hw — "lateral free space in track-widths"
         let corridor = (dist_l + dist_r) / (2.0 * hw);
         sensory_wave[119] = (corridor.clamp(0.0, 2.0) * 63.5).clamp(0.0, 127.0) as i8;
-        // ch 123: whisker min dist / hw — parede mais próxima qualquer lado, normalizada
+        // ch 123: whisker min dist / hw — closest wall on either side, normalized
         let whisker_min = dist_l.min(dist_r).max(0.1);
         let whisker_norm = (whisker_min / hw).clamp(0.0, 1.5);
         sensory_wave[123] = ((whisker_norm / 1.5) * 127.0).clamp(0.0, 127.0) as i8;
 
-        // --- MEMÓRIA SENSORIAL PERSISTENTE ---
-        // EMA (alpha ~0.15/frame @ 60Hz ≈ ~0.5s de meia-vida) suaviza picos de ruído
-        // e mantém sensação de "tem parede perto" mesmo se o raycast momentâneo falhar.
+        // --- PERSISTENT SENSORY MEMORY ---
+        // EMA (alpha ~0.15/frame @ 60Hz ≈ ~0.5s half-life) smooths noise spikes
+        // and keeps the "wall nearby" sensation even if the momentary raycast fails.
         let ema_alpha = (dt * 3.0).clamp(0.0, 1.0);
         racer.wall_ema_l = racer.wall_ema_l * (1.0 - ema_alpha) + dist_l * ema_alpha;
         racer.wall_ema_r = racer.wall_ema_r * (1.0 - ema_alpha) + dist_r * ema_alpha;
-        // Invertido: 127 = encostado, 0 = 15m+ livre. Canal "alerta" persistente.
+        // Inverted: 127 = touching, 0 = 15m+ free. Persistent "alert" channel.
         sensory_wave[85] = ((1.0 - (racer.wall_ema_l / 15.0).clamp(0.0, 1.0)) * 127.0) as i8;
         sensory_wave[86] = ((1.0 - (racer.wall_ema_r / 15.0).clamp(0.0, 1.0)) * 127.0) as i8;
 
-        // Canal 87: SLIP ANGLE — ângulo entre velocity e forward (sinal de drift/aquaplanagem).
-        // Positivo = velocity aponta à direita do heading (drift pra direita).
+        // Channel 87: SLIP ANGLE — angle between velocity and forward (drift/aquaplaning signal).
+        // Positive = velocity points to the right of heading (drift to the right).
         let slip_signal = if let Some(ref body) = opt_body {
             if body.velocity.length_squared() > 1.0 {
                 let v2d = Vec2::new(body.velocity.x, body.velocity.z).normalize_or_zero();
@@ -1829,8 +1829,8 @@ pub(super) fn update_racers(
         };
         sensory_wave[87] = (slip_signal * 127.0).clamp(-127.0, 127.0) as i8;
 
-        // Canal 88: PROXIMIDADE SUSTENTADA — acumula tempo raspando qualquer lateral (<3m).
-        // Sinaliza "tô raspando há tempo demais, precisa afastar".
+        // Channel 88: SUSTAINED PROXIMITY — accumulates time scraping either side (<3m).
+        // Signals "I've been scraping too long, need to move away".
         let raspando = racer.wall_ema_l < 3.0 || racer.wall_ema_r < 3.0;
         if raspando {
             racer.proximity_sustain = (racer.proximity_sustain + dt).min(3.0);
@@ -1839,8 +1839,8 @@ pub(super) fn update_racers(
         }
         sensory_wave[88] = ((racer.proximity_sustain / 3.0) * 127.0) as i8;
 
-        // Canal 89: estado de ré/cooldown do frame ANTERIOR. 127 em ré, 64 em cooldown, 0 normal.
-        // (a atualização real do timer acontece mais abaixo, após a rede decidir)
+        // Channel 89: reverse/cooldown state from the PREVIOUS frame. 127 in reverse, 64 in cooldown, 0 normal.
+        // (the actual timer update happens further below, after the network decides)
         sensory_wave[89] = if racer.reverse_timer > 0.0 {
             127
         } else if racer.post_reverse_lockout > 0.0 {
@@ -1849,7 +1849,7 @@ pub(super) fn update_racers(
             0
         };
 
-        // --- SKIDMARKS DE DRIFT ---
+        // --- DRIFT SKIDMARKS ---
         if is_drifting && rng.random::<f32>() < 0.15 {
             // rate limit to ~10 FPS
             let (mark_mesh, mark_mat) = skidmark_cache.get_or_insert_with(|| {
@@ -1883,38 +1883,38 @@ pub(super) fn update_racers(
             // cleaning them up explicitly could block the CPU unnecessarily during reset.
         }
 
-        // Memória temporal
+        // Temporal memory
         sensory_wave[120] = (racer.memory[0] * 127.0) as i8;
         sensory_wave[121] = (racer.memory[1] * 127.0) as i8;
         sensory_wave[122] = (racer.memory[2] * 127.0) as i8;
 
-        // --- SISTEMA DOPAMINÉRGICO (Reward Shaping Contínuo) ---
-        // joy_tick = progresso_alinhado * superfície. Streak compõe flow state.
-        // Evolução seleciona quem MAXIMIZA a integral — grama/parede são PERMITIDAS, só rendem menos/custam.
-        let progress_speed = (speed * alignment.max(0.0) / 30.0).clamp(0.0, 1.0); // 30m/s ≈ 108km/h = pico
+        // --- DOPAMINERGIC SYSTEM (Continuous Reward Shaping) ---
+        // joy_tick = aligned_progress * surface. Streak compounds flow state.
+        // Evolution selects whoever MAXIMIZES the integral — grass/wall are ALLOWED, they just yield less/cost.
+        let progress_speed = (speed * alignment.max(0.0) / 30.0).clamp(0.0, 1.0); // 30m/s ≈ 108km/h = peak
         let surface_factor = match voxel_current {
             VoxelType::Road => 1.0,
             VoxelType::Grass => 0.2,
             VoxelType::Wall => -0.5,
-            VoxelType::Hole => -1.0, // Hole é pior que parede — reforça evitar.
+            VoxelType::Hole => -1.0, // Hole is worse than wall — reinforces avoidance.
         };
         let joy_tick = progress_speed * surface_factor;
         if joy_tick > 0.5 {
             racer.joy_streak = (racer.joy_streak + dt).min(5.0);
         } else {
-            racer.joy_streak = (racer.joy_streak - dt * 2.0).max(0.0); // decai 2x rápido
+            racer.joy_streak = (racer.joy_streak - dt * 2.0).max(0.0); // decays 2x faster
         }
-        let dopamine_mult = 1.0 + racer.joy_streak * 0.5; // até 3.5x em 5s de flow
+        let dopamine_mult = 1.0 + racer.joy_streak * 0.5; // up to 3.5x after 5s of flow
         racer.joy_integral += joy_tick * dopamine_mult * dt;
 
-        // Canais 126/127: expõe a dopamina como sinal sensorial (meta-cognição evoluível)
+        // Channels 126/127: exposes dopamine as a sensory signal (evolvable meta-cognition)
         sensory_wave[126] = (joy_tick * 127.0).clamp(-127.0, 127.0) as i8;
         sensory_wave[127] = ((racer.joy_streak / 5.0) * 127.0) as i8;
 
-        // --- TIER 3.1: DOPAMINA (Reward Prediction Error) ---
+        // --- TIER 3.1: DOPAMINE (Reward Prediction Error) ---
         // actual_reward ≈ delta_track_progress[m] * 10 - wall_contact_cost.
-        // Proxy para delta: speed * alignment * dt (componente forward de avanço).
-        // wall_contact_cost dispara com superfície de parede (voxel == Wall).
+        // Proxy for delta: speed * alignment * dt (forward component of advance).
+        // wall_contact_cost fires on wall surface (voxel == Wall).
         let delta_track_progress = (speed * alignment.max(0.0) * dt).max(0.0);
         let wall_contact_cost = if matches!(voxel_current, VoxelType::Wall) {
             5.0 * dt
@@ -1924,48 +1924,48 @@ pub(super) fn update_racers(
         let actual_reward = delta_track_progress * 10.0 - wall_contact_cost;
         racer.engine.metabolism.update_dopamine(actual_reward);
 
-        // --- TIER 3.2: CORTISOL (medo integral) ---
-        // Integra proximidade da parede mais próxima entre EMA esquerda/direita.
-        // wall_ema_l/r já são distâncias em metros (decay ~1s).
+        // --- TIER 3.2: CORTISOL (integral fear) ---
+        // Integrates proximity of the nearest wall between left/right EMA.
+        // wall_ema_l/r are already distances in meters (decay ~1s).
         let min_wall_distance = racer.wall_ema_l.min(racer.wall_ema_r);
         racer
             .engine
             .metabolism
             .update_cortisol(min_wall_distance, dt);
 
-        // --- TIER 3.3: CURIOSIDADE (novelty em retina) ---
-        // Mede variância do visual_cortex nos últimos 16 frames. Monotonia → sobe.
-        // visual_cortex já foi atualizado logo acima neste tick (recompute branch)
-        // ou preserva o valor do substep anterior (fallback). Ambos os casos servem
-        // como sinal retiniano válido pro histórico de curiosidade.
+        // --- TIER 3.3: CURIOSITY (retina novelty) ---
+        // Measures visual_cortex variance over the last 16 frames. Monotony → it rises.
+        // visual_cortex was updated just above in this tick (recompute branch)
+        // or preserves the previous substep's value (fallback). Both cases serve
+        // as a valid retinal signal for the curiosity history.
         let retina_snapshot = racer.visual_cortex;
         racer
             .engine
             .metabolism
             .update_curiosity(&retina_snapshot, dt);
 
-        // --- 3. EXECUÇÃO SOBERANA ---
-        // Tier 6.5 — Time Dilation sob stress:
-        //   cortisol baixo (<0.5)  → skip_n = 2 (brain fires 30Hz, economia de compute).
-        //   cortisol alto (≥0.5)   → skip_n = 1 (brain fires 60Hz, atenção máxima sob perigo).
-        // Racer preserva engine.final_intent entre ticks → skipped frames reusam última decisão.
-        // Gated atrás de gen ≥ 10 pra não desestabilizar bootstrap evolutivo.
+        // --- 3. SOVEREIGN EXECUTION ---
+        // Tier 6.5 — Time Dilation under stress:
+        //   low cortisol (<0.5)  → skip_n = 2 (brain fires 30Hz, compute savings).
+        //   high cortisol (≥0.5) → skip_n = 1 (brain fires 60Hz, maximum attention under danger).
+        // Racer preserves engine.final_intent between ticks → skipped frames reuse the last decision.
+        // Gated behind gen ≥ 10 so as not to destabilize the evolutionary bootstrap.
         racer.brain_tick_counter = racer.brain_tick_counter.wrapping_add(1);
         let cortisol = racer.engine.metabolism.cortisol;
-        // Time dilation desabilitada: skip_n=2 em gen>=10 reduzia brain freq pra
-        // 30Hz e degradava DNA reload (cars precisam reagir 60Hz pra cap).
+        // Time dilation disabled: skip_n=2 at gen>=10 reduced brain freq to
+        // 30Hz and degraded DNA reload (cars need to react at 60Hz to cap).
         let _ = cortisol;
         let skip_n: u8 = 1;
         let should_fire = (racer.brain_tick_counter % skip_n) == 0;
 
-        // --- ETAPA PERCEPTION v2: full upgrade (with retrain) ---
-        // Added channels (treinado do zero):
-        //   16..19 = yaw_rate × 4 (peso ternário)
+        // --- PERCEPTION STAGE v2: full upgrade (with retrain) ---
+        // Added channels (trained from scratch):
+        //   16..19 = yaw_rate × 4 (ternary weight)
         //   20..23 = pitch_rate × 4
         //   24..27 = roll_rate × 4
         //   28..31 = pre_brake_signal × 4 (speed × |curv|)
         //   78     = curv25_signed (cortex + axiom)
-        //   79     = curv25_signed (Sentinel + axiom — duplicado)
+        //   79     = curv25_signed (Sentinel + axiom — duplicated)
         //   80     = curv60_signed (lookahead)
         // Proprioception: yaw/pitch/roll into sensory wave
         {
@@ -2013,8 +2013,8 @@ pub(super) fn update_racers(
         let c120_signed = curv_at(120.0);
         let c180_signed = curv_at(180.0);
         let c260_signed = curv_at(260.0);
-        // c350_signed não é mais usado aqui: ch111 (350m) migrou para
-        // perception_temporal.wgsl (curv_at_d), eliminando conflito de escrita CPU/GPU.
+        // c350_signed is no longer used here: ch111 (350m) migrated to
+        // perception_temporal.wgsl (curv_at_d), eliminating the CPU/GPU write conflict.
 
         {
             let c20 = ((c20_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
@@ -2025,8 +2025,8 @@ pub(super) fn update_racers(
             let c260 = ((c260_signed / yn).clamp(-1.0, 1.0) * 127.0) as i8;
 
             // Ch 20, 78, 79, 80, 32, 101 (6 lookahead channels).
-            // ch111 (350m horizon) foi movido para perception_temporal.wgsl:curv_at_d(350)
-            // — conflito de escrita eliminado; agora só a GPU escreve ch111.
+            // ch111 (350m horizon) was moved to perception_temporal.wgsl:curv_at_d(350)
+            // — write conflict eliminated; now only the GPU writes ch111.
             sensory_wave[20] = c20; // 20m nearest
             sensory_wave[78] = c40; // 40m near
             sensory_wave[79] = c70; // 70m mid
@@ -2085,10 +2085,10 @@ pub(super) fn update_racers(
                 }));
             }
 
-            // Tier 1.3 — Axiom como prior externo (potential-based shaping).
-            // Injeta bias procedural no output do brain APÓS o forward. Escala decai
-            // com a geração (race.current_axiom_strength: 1.0 gen 0 → 0.0 gen 50+).
-            // Clamp em [-1, 1] preserva range do tanh já aplicado em final_intent.
+            // Tier 1.3 — Axiom as external prior (potential-based shaping).
+            // Injects procedural bias into the brain output AFTER the forward pass. Scale
+            // decays with the generation (race.current_axiom_strength: 1.0 gen 0 → 0.0 gen 50+).
+            // Clamp to [-1, 1] preserves the range of the tanh already applied to final_intent.
             let ax_strength = race.current_axiom_strength;
             if ax_strength > 1e-4 {
                 let bias = axiom_policy(&sensory_wave, &lab);
@@ -2203,42 +2203,42 @@ pub(super) fn update_racers(
                 *slot = trinity[2];
             }
             // ---- end Trinity ----
-            // Atualiza last_action com a saída fresca (throttle, steer).
+            // Updates last_action with the fresh output (throttle, steer).
             let ti = racer.engine.final_intent.get(0).copied().unwrap_or(0.0);
             let si = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
             racer.last_action = (ti, si);
             TIME_DILATION_FIRES.fetch_add(1, AtomicOrdering::Relaxed);
         } else {
-            // Skipped: engine.final_intent já contém última intent (persiste entre ticks).
-            // Nada a fazer — downstream vai ler os mesmos valores.
+            // Skipped: engine.final_intent already holds the last intent (persists between ticks).
+            // Nothing to do — downstream will read the same values.
             TIME_DILATION_SKIPS.fetch_add(1, AtomicOrdering::Relaxed);
         }
 
-        // --- CÓRTEX LENTO (System 2) — agrega contexto e emite bias modulador ---
-        // Input 32-dim: estado homeostático + pooled retina + saídas anteriores do fast.
-        // Roda subsampled (1× a cada 32 ticks). Output em `racer.engine.slow_brain.output`.
+        // --- SLOW CORTEX (System 2) — aggregates context and emits modulating bias ---
+        // 32-dim input: homeostatic state + pooled retina + previous fast outputs.
+        // Runs subsampled (1× every 32 ticks). Output in `racer.engine.slow_brain.output`.
         let _lap_progress = if world.lap_distance > 0.0 {
             (racer.distance / world.lap_distance).fract()
         } else {
             0.0
         };
         let mut slow_input = [0i8; 48];
-        // Canais 32..47: HD visual bins (do sensory_wave 128..143)
+        // Channels 32..47: HD visual bins (from sensory_wave 128..143)
         for i in 0..16 {
             slow_input[32 + i] = sensory_wave[128 + i];
         }
         slow_input[0] = sensory_wave[126]; // joy_tick
         slow_input[1] = sensory_wave[127]; // joy_streak
-        // CORRIGIDO: normaliza por HP_INICIAL em vez de 100.0 fixo.
-        // Com HP_INICIAL=1000 e divisor fixo 100.0, o canal ficaria em 127 para sempre.
+        // FIXED: normalizes by HP_INICIAL instead of a fixed 100.0.
+        // With HP_INICIAL=1000 and a fixed 100.0 divisor, the channel would sit at 127 forever.
         slow_input[2] =
             ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(0.0, 127.0) as i8; // hp
-        // MEDIDOR DE COMBUSTÍVEL = FRAÇÃO DO TANQUE, não unidades absolutas.
-        // Era `fuel * 127` com clamp: com o tanque de nascimento em 1000 o canal ficava
-        // travado em 127 para sempre — o cérebro tinha um sensor que era uma constante.
-        // Mesmo com o tanque em 3.0 ele só sairia da saturação depois de 2/3 gastos.
-        // Normalizado pelo tanque inicial, informa em toda a faixa, que é o que um
-        // ponteiro de combustível faz.
+        // FUEL GAUGE = FRACTION OF THE TANK, not absolute units.
+        // It used to be `fuel * 127` with a clamp: with the birth tank at 1000 the channel
+        // stayed pinned at 127 forever — the brain had a sensor that was a constant.
+        // Even with the tank at 3.0 it would only leave saturation after 2/3 was spent.
+        // Normalized by the initial tank, it informs across the whole range, which is what
+        // a fuel needle does.
         slow_input[3] =
             ((racer.fuel / crate::simulation::racer::FUEL_INICIAL) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[4] = ((speed / 80.0) * 127.0).clamp(0.0, 127.0) as i8; // speed / 80m/s
@@ -2246,17 +2246,17 @@ pub(super) fn update_racers(
         slow_input[6] = (racer.engine_power * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[7] = (alignment * 127.0) as i8;
         // BUG FIX: Second Lap Amnesia.
-        // Omitimos lap_progress e total_laps da entrada do modelo. Eles causavam descontinuidade
-        // no estado da rede quando a corrida completava uma volta, fazendo o carro "esquecer" como pilotar.
+        // We omit lap_progress and total_laps from the model input. They caused a discontinuity
+        // in the network state when the race completed a lap, making the car "forget" how to drive.
         slow_input[8] = 0;
         slow_input[9] = 0;
         slow_input[10] = ((racer.wall_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[11] = ((racer.grass_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[12] = (racer.stagnation * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[13] = if env.is_night() { 127 } else { 0 };
-        // 14..21: retina pooled — até 4 regiões, max-pool volumétrico across all rows.
-        // Adapta ao RETINA_COLS real: com 16 cols → 4 regiões de 4 bins.
-        // Com 8 cols → 4 regiões de 2 bins. Evita OOB quando RETINA_COLS < 32.
+        // 14..21: pooled retina — up to 4 regions, volumetric max-pool across all rows.
+        // Adapts to the real RETINA_COLS: with 16 cols → 4 regions of 4 bins.
+        // With 8 cols → 4 regions of 2 bins. Avoids OOB when RETINA_COLS < 32.
         let n_regions = 4usize.min(RETINA_COLS);
         let bins_per_region = RETINA_COLS / n_regions.max(1);
         for reg in 0..n_regions {
@@ -2283,17 +2283,17 @@ pub(super) fn update_racers(
             slow_input[14 + reg] = max_near;
             slow_input[18 + reg] = max_far;
         }
-        // 22..25: últimas intenções do fast (throttle, steer, brake, shift)
+        // 22..25: latest fast-brain intents (throttle, steer, brake, shift)
         slow_input[22] = (racer.memory[0] * 127.0) as i8;
         slow_input[23] = (racer.memory[1] * 127.0) as i8;
         slow_input[24] = (racer.memory[2] * 127.0) as i8;
         slow_input[25] = (racer.engine.final_intent[3] * 127.0) as i8;
-        // 26: memória auto-recorrente (slow[0] do tick anterior)
+        // 26: self-recurrent memory (slow[0] from the previous tick)
         slow_input[26] = (racer.engine.slow_brain.output[0] * 127.0) as i8;
-        // 27..28, 30: LOOKAHEAD DE CURVATURA — flow da pista a 30/60/90m à frente.
-        // Signed yaw [-π/2, +π/2] → normalizado pra [-127, +127]. Negativo = curva à esquerda,
-        // positivo = direita. System 2 agora SABE que a próxima curva vira e em qual direção,
-        // pode pré-frear e pré-girar volante antes do fast ver a parede.
+        // 27..28, 30: CURVATURE LOOKAHEAD — track flow 30/60/90m ahead.
+        // Signed yaw [-π/2, +π/2] → normalized to [-127, +127]. Negative = curve to the left,
+        // positive = right. System 2 now KNOWS the next curve turns and in which direction,
+        // and can pre-brake and pre-turn the wheel before the fast brain sees the wall.
         let forward_vec = forward; // alias already available
         let pos_fwd = Vec3::new(pos.x, 0.0, pos.z);
         let signed_yaw_to_flow = |ahead_m: f32| -> f32 {
@@ -2315,7 +2315,7 @@ pub(super) fn update_racers(
         slow_input[28] = ((curv_60 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
         slow_input[29] = if racer.grace_ticks < 2560 { 127 } else { 0 }; // in_grace (tick-based, sync with motor grace)
         slow_input[30] = ((curv_90 / yaw_norm).clamp(-1.0, 1.0) * 127.0) as i8;
-        // canal 31: distância à parede frontal normalizada (0 = encostado, 127 = livre >6m), via grid query
+        // channel 31: normalized frontal wall distance (0 = touching, 127 = free >6m), via grid query
         let mut forward_wall_dist_sensor = 30.0f32;
         for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
             let probe = pos + transform.right().as_vec3() * sample_dist;
@@ -2329,40 +2329,40 @@ pub(super) fn update_racers(
         slow_input[31] = ((forward_wall_dist_sensor / 6.0).clamp(0.0, 1.0) * 127.0) as i8;
         racer.engine.slow_brain.tick(&slow_input, dt);
 
-        // Usar final_intent estabilizado pelo CfC e KAN em vez de pesos crus (Evita ZigZag)
+        // Use the final_intent stabilized by the CfC and KAN instead of raw weights (avoids ZigZag)
         let intent = &racer.engine.final_intent;
 
         // ================================================================
-        // === CAMADA SIMBÓLICA: REFLEXOS DE SOBREVIVÊNCIA ================
+        // === SYMBOLIC LAYER: SURVIVAL REFLEXES ==========================
         // ================================================================
-        // A rede neural tem pesos aleatórios. Sem um "instinto base" de se
-        // mover, ela nunca bootstrapeia. O Reflexo Simbólico garante que:
-        //   1) O carro SEMPRE tenta andar para frente (throttle mínimo)
-        //   2) Freio só ativa com intenção EXPLÍCITA positiva (>0.5)
-        //   3) A IA modula INTENSIDADE e DIREÇÃO, não decide SE move
+        // The neural network has random weights. Without a base "instinct"
+        // to move, it never bootstraps. The Symbolic Reflex guarantees that:
+        //   1) The car ALWAYS tries to move forward (minimum throttle)
+        //   2) Brake only activates on EXPLICIT positive intent (>0.5)
+        //   3) The AI modulates INTENSITY and DIRECTION, it does not decide WHETHER to move
         //
-        // A evolução seleciona quem modula MELHOR, não quem descobre que
-        // precisa apertar o acelerador.
+        // Evolution selects whoever modulates BEST, not whoever discovers
+        // that the accelerator needs pressing.
         // ================================================================
 
-        // Throttle 100% neural — rede tem que APRENDER a acelerar via priming A3 (flow alignment).
-        // Removido survival_throttle 0.3 mínimo: tirava pressão seletiva sobre aprender throttle.
-        // KAN output head: spline suave por canal antes do clamp final — elimina saturação ±1
-        // hard do raw logit ([-2,2] esperado) e dá curva evoluível por carro.
+        // Throttle 100% neural — the network has to LEARN to accelerate via A3 priming (flow alignment).
+        // Removed the 0.3 minimum survival_throttle: it removed selective pressure on learning throttle.
+        // KAN output head: smooth per-channel spline before the final clamp — eliminates the hard ±1
+        // saturation of the raw logit ([-2,2] expected) and gives a per-car evolvable curve.
         let neural_throttle = racer.kan_out.eval(0, intent[0]);
-        // FIX simétrico throttle: ANTES era (n+1)/2 → 0-output virava 50% pedal default.
-        // Cars aceleravam mesmo quando cortex saía neutro/negativo. Agora:
-        //   neural < 0 → pedal 0 (não acelera)
-        //   neural > 0 → pedal proporcional (full at 1.0)
-        // Equilibra com brake (linha 1245: brake threshold 0.2).
+        // Symmetric throttle FIX: BEFORE it was (n+1)/2 → a 0-output became a 50% default pedal.
+        // Cars accelerated even when the cortex output was neutral/negative. Now:
+        //   neural < 0 → pedal 0 (does not accelerate)
+        //   neural > 0 → proportional pedal (full at 1.0)
+        // Balances with brake (line 1245: brake threshold 0.2).
         let base_pedal = neural_throttle.max(0.0).clamp(0.0, 1.0);
 
         // SLOW BRAIN MODULATION RE-ENABLED — System 2 active.
-        // ABLAÇÃO DA VIA LENTA (ver `neuro.rs`): zerar a saída devolve exatamente o neutro
-        // desta modulação — agressão 0, teto 1.0, viés 0 — ou seja, o carro rodando só com a
-        // via rápida. É a mesma ablação pareada da bancada Python, e aqui ela testa a
-        // predição de que MODULAR paga numa tarefa de INSTANTE (corrida), ao contrário da
-        // tarefa de TAXA (sobrevivência), onde o teto realizável mediu +0,11%.
+        // SLOW-PATHWAY ABLATION (see `neuro.rs`): zeroing the output returns exactly the
+        // neutral of this modulation — aggression 0, cap 1.0, bias 0 — i.e., the car running
+        // on the fast pathway alone. It is the same paired ablation as the Python bench, and
+        // here it tests the prediction that MODULATING pays off in an INSTANT task (racing),
+        // unlike the RATE task (survival), where the realizable ceiling measured +0.11%.
         let neutro = [0.0f32; 3];
         let slow: &[f32; 3] = if crate::neuro::ablada() == crate::neuro::Via::Lenta {
             &neutro
@@ -2379,24 +2379,24 @@ pub(super) fn update_racers(
         let risk_damp: f32 = 0.0; // Disabled: was weakening steer exactly when curves need it most
         let cortisol = racer.engine.metabolism.risk_aversion();
 
-        // Tier 3.2: medo freia (throttle -30% max) e suaviza volante (steer -20% max).
+        // Tier 3.2: fear brakes (throttle -30% max) and softens the wheel (steer -20% max).
         let cortisol_throttle_mult = 1.0 - cortisol * 0.3;
         let cortisol_steer_mult = 1.0 - cortisol * 0.2;
         let pedal_intent = (base_pedal * (1.0 + aggression * 0.5) * cortisol_throttle_mult)
             .clamp(0.0, throttle_cap);
-        // KAN spline no steer raw ANTES do smoothing (v8) — suaviza curva por carro evoluído.
+        // KAN spline on the raw steer BEFORE smoothing (v8) — smooths the curve per evolved car.
         let steer_spline = racer.kan_out.eval(1, intent[1]);
-        // Gain compensation: cérebro fala em "unidades físicas reais" — multiplicamos
-        // pelo inverso de dynamic_steer_limit (cap 2×) ANTES do clamp, p/ que saturação
-        // do neural ±1 corresponda a full-lock verdadeiro em qualquer velocidade.
-        // Ver melhorias/gain-asymmetry.md. OFF por default (invalida scales do champion legado).
+        // Gain compensation: the brain speaks in "real physical units" — we multiply
+        // by the inverse of dynamic_steer_limit (cap 2×) BEFORE the clamp, so that neural
+        // ±1 saturation corresponds to true full-lock at any speed.
+        // See melhorias/gain-asymmetry.md. OFF by default (invalidates legacy champion scales).
         #[cfg(feature = "gain_comp_steer")]
         let gain_comp = (1.0 + speed * 0.02).min(2.0);
         #[cfg(not(feature = "gain_comp_steer"))]
         let gain_comp = 1.0_f32;
         let steer_raw_unclamped = (steer_spline + steer_bias) * cortisol_steer_mult * gain_comp;
-        // v8: smoothing temporal via prev_steer_mem (memory[1] snapshot).
-        // Combate saturação ±1 winner-take-all alternada frame a frame.
+        // v8: temporal smoothing via prev_steer_mem (memory[1] snapshot).
+        // Fights winner-take-all ±1 saturation alternating frame by frame.
         let prev_steer_mem = racer.memory[1];
         let new_steer = steer_raw_unclamped.clamp(-1.0, 1.0);
         // v3: 0.65/0.35→0.50/0.50 — faster steer response for tight curves.
@@ -2404,12 +2404,12 @@ pub(super) fn update_racers(
         let steer_raw = prev_steer_mem * 0.50 + new_steer * 0.50;
         let steer_intent = steer_raw.clamp(-1.0, 1.0) * (1.0 - risk_damp);
 
-        // Sistema de Sobreposição: Freio tem prioridade se a intenção for clara (>0.2).
-        // KAN spline no brake raw antes do threshold — mesma razão do throttle/steer.
+        // Override system: brake has priority if the intent is clear (>0.2).
+        // KAN spline on the raw brake before the threshold — same reason as throttle/steer.
         let brake_spline = racer.kan_out.eval(2, intent[2]);
-        // Brake symmetric: dead-zone central ±0.05 em vez de threshold assimétrico 0.2.
-        // Permite modulação fina mas evita brake-constante de carros freshborn (spline≈0).
-        // Ver melhorias/gain-asymmetry.md §Assimetria de throttle → brake.
+        // Brake symmetric: central ±0.05 dead-zone instead of the asymmetric 0.2 threshold.
+        // Allows fine modulation but avoids the constant-brake of freshborn cars (spline≈0).
+        // See melhorias/gain-asymmetry.md §Throttle → brake asymmetry.
         #[cfg(feature = "brake_symmetric")]
         let raw_brake = {
             let dead = 0.05_f32;
@@ -2421,9 +2421,9 @@ pub(super) fn update_racers(
         };
         #[cfg(not(feature = "brake_symmetric"))]
         let raw_brake = {
-            // FIX: era threshold 0.2 — assimétrico vs throttle pedal sempre engajado.
-            // Cars não freavam mesmo com brake priming +14/+15 porque cortex output
-            // raramente excede 0.2. Dead-zone simétrica 0.05 (mesmo brake_symmetric).
+            // FIX: it was a 0.2 threshold — asymmetric vs the always-engaged throttle pedal.
+            // Cars did not brake even with brake priming +14/+15 because the cortex output
+            // rarely exceeds 0.2. Symmetric 0.05 dead-zone (same as brake_symmetric).
             let dead = 0.05_f32;
             if brake_spline > dead {
                 ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0)
@@ -2504,18 +2504,18 @@ pub(super) fn update_racers(
         }
 
         // SENTINEL ANTI-COLLISION (ALWAYS-ON) — Tesla AEB-like emergency brake.
-        // Regra física: carro NÃO PODE bater. Se TTC < threshold, force brake +
-        // throttle cut. Não depende de DNA, é pure geometric prediction.
+        // Physical rule: the car CANNOT crash. If TTC < threshold, force brake +
+        // throttle cut. Does not depend on DNA, it is pure geometric prediction.
         //
         // Multi-tier severity:
         //   TTC < 0.3s → brake 1.0 + throttle 0 (last resort)
         //   TTC < 0.6s → brake 0.8 (preemptive)
         //   TTC < 1.0s + closing → brake 0.5 (early warning)
         {
-            // [SENTINEL DESATIVADO POR SOLICITAÇÃO]
-            // O freio automático de emergência (AEB) estava fazendo o modelo "congelar"
-            // perto das paredes, impedindo-o de aprender a desviar por conta própria.
-            // O modelo agora tem liberdade total para bater ou desviar usando a rede neural.
+            // [SENTINEL DISABLED BY REQUEST]
+            // The automatic emergency brake (AEB) was making the model "freeze"
+            // near walls, preventing it from learning to dodge on its own.
+            // The model now has total freedom to crash or dodge using the neural network.
 
             /*
             const SENTINEL_TTC_HARD: f32 = 0.3;
@@ -2606,17 +2606,17 @@ pub(super) fn update_racers(
             */
         }
 
-        // Modula o acelerador: se estiver freando, reduz proporcionalmente o pedal.
-        // Sentinel hard override (TTC <0.3s) força pedal=0.
+        // Modulates the accelerator: if braking, reduces the pedal proportionally.
+        // Sentinel hard override (TTC <0.3s) forces pedal=0.
         let pedal_after_sentinel = pedal_intent_override.unwrap_or(pedal_intent);
         let final_pedal_intent = (pedal_after_sentinel - brake_intent).max(0.0);
 
-        // --- SISTEMA DE FUGA DE EMERGÊNCIA (ECAS) & STIGMERGY ---
-        // Se a parede está perto (< 4m) na lateral, o reflexo físico FORÇA a roda pro lado oposto
-        // Feedback visual: desenha setas vermelhas indicando a "repulsa" das paredes
+        // --- EMERGENCY ESCAPE SYSTEM (ECAS) & STIGMERGY ---
+        // If the wall is close (< 4m) on the side, the physical reflex FORCES the wheel to the opposite side
+        // Visual feedback: draws red arrows indicating the walls' "repulsion"
         let mut emerg_steer = 0.0;
-        // ECAS danger 4m→2.5m: em pista estreita, 4m tava disparando constante e brigava
-        // com steering aprendido. Agora só reflexo em emergência real (<2.5m lateral).
+        // ECAS danger 4m→2.5m: on a narrow track, 4m was firing constantly and fighting
+        // learned steering. Now only a reflex in real emergency (<2.5m lateral).
         let danger_dist = 2.5;
         // Grid-based proximity check (no raycasts)
         let left_perp = Vec3::new(
@@ -2645,8 +2645,8 @@ pub(super) fn update_racers(
             }
         }
 
-        // ECAS AGORA É DICA, NÃO OVERRIDE. Severity multiplier 2.0 → 0.5.
-        // A rede ainda precisa APRENDER a virar, ECAS só empurra o volante na hora do choque.
+        // ECAS IS NOW A HINT, NOT AN OVERRIDE. Severity multiplier 2.0 → 0.5.
+        // The network still has to LEARN to turn; ECAS only nudges the wheel at impact time.
         if p_dist_l < danger_dist {
             let severity = 1.0 - (p_dist_l / danger_dist);
             emerg_steer -= severity * 0.5;
@@ -2667,23 +2667,23 @@ pub(super) fn update_racers(
         }
 
         // ================================================================
-        // === SEGURANÇA FRONTAL & RÉ AUTOMÁTICA ==========================
+        // === FRONTAL SAFETY & AUTOMATIC REVERSE =========================
         // ================================================================
-        // Probe frontal: quão perto está a parede na direção do nariz do carro.
-        // Dois usos:
-        //   1) SAFETY CAP: throttle forward sobe linearmente com a folga à frente.
-        //      Encostado na parede => zero pedal; 6m+ de folga => pedal livre.
-        //      Evita que a IA se encrave acelerando contra concreto.
-        //   2) GATILHO DE RÉ: se muito perto (<2m) e praticamente parado,
-        //      dispara reverse_timer de 1.5s. Durante a ré, shift vai para
-        //      gear 0 e o pedal aplica torque de recuo. Visualmente: seta laranja.
-        const SAFE_DIST: f32 = 3.0; // folga mínima para throttle pleno (pista estreita friendly)
-        const REVERSE_TRIGGER_DIST: f32 = 3.0; // detecta antes (era 2.5)
-        const REVERSE_MIN_DURATION: f32 = 0.4; // toque curto (era 3.0)
-        const REVERSE_MAX_DURATION: f32 = 1.5; // cap duro (era 5.0)
-        const REVERSE_EXIT_CLEAR: f32 = 2.5; // só precisa afastar 2.5m (era 4.0)
-        const REVERSE_PEDAL: f32 = 0.75; // >0.5 garante stall recovery
-        const POST_REVERSE_LOCKOUT: f32 = 0.6; // cooldown curto (era 1.5)
+        // Frontal probe: how close the wall is in the direction of the car's nose.
+        // Two uses:
+        //   1) SAFETY CAP: forward throttle rises linearly with the clearance ahead.
+        //      Touching the wall => zero pedal; 6m+ of clearance => free pedal.
+        //      Prevents the AI from wedging itself accelerating into concrete.
+        //   2) REVERSE TRIGGER: if very close (<2m) and practically stopped,
+        //      fires a 1.5s reverse_timer. During reverse, shift goes to
+        //      gear 0 and the pedal applies recoil torque. Visually: orange arrow.
+        const SAFE_DIST: f32 = 3.0; // minimum clearance for full throttle (narrow-track friendly)
+        const REVERSE_TRIGGER_DIST: f32 = 3.0; // detects earlier (was 2.5)
+        const REVERSE_MIN_DURATION: f32 = 0.4; // short tap (was 3.0)
+        const REVERSE_MAX_DURATION: f32 = 1.5; // hard cap (was 5.0)
+        const REVERSE_EXIT_CLEAR: f32 = 2.5; // only needs to back off 2.5m (was 4.0)
+        const REVERSE_PEDAL: f32 = 0.75; // >0.5 guarantees stall recovery
+        const POST_REVERSE_LOCKOUT: f32 = 0.6; // short cooldown (was 1.5)
 
         // Grid-based forward wall distance (no raycast)
         let mut forward_wall_dist = 30.0f32;
@@ -2696,14 +2696,15 @@ pub(super) fn update_racers(
                 break;
             }
         }
-        // [SAFETY CAP DESATIVADO] - O acelerador não é mais cortado perto da parede.
-        // A rede neural decide se acelera ou não.
+        // [SAFETY CAP DISABLED] - The accelerator is no longer cut near the wall.
+        // The neural network decides whether to accelerate or not.
         let safety_cap: f32 = 1.0;
 
-        // --- RÉ CONTROLADA (3-point turn em pista narrow) ---
-        // User: "saber virar e dar ré pra ajustar ângulo se preciso".
-        // Trigger ESTRITO: parede frontal <2.5m + lateral L+R bloqueada (<3m
-        // ambos lados) + speed quase zero + 1s+ stuck. Evita loop frente/ré.
+        // --- CONTROLLED REVERSE (3-point turn on a narrow track) ---
+        // User: "saber virar e dar ré pra ajustar ângulo se preciso" [know how to turn and
+        // reverse to adjust the angle if needed].
+        // STRICT trigger: frontal wall <2.5m + L+R lateral blocked (<3m
+        // both sides) + speed near zero + 1s+ stuck. Avoids a forward/reverse loop.
         let mut lat_l_check = 10.0f32;
         let mut lat_r_check = 10.0f32;
         for sample_dist in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0].iter() {
@@ -2745,7 +2746,7 @@ pub(super) fn update_racers(
         }
         let is_reversing = racer.reverse_timer > 0.0;
 
-        // (canal 89 já foi setado antes do execute_cycle, usando o estado do frame anterior)
+        // (channel 89 was already set before execute_cycle, using the previous frame's state)
 
         if forward_wall_dist < SAFE_DIST {
             let severity = 1.0 - safety_cap;
@@ -2764,37 +2765,37 @@ pub(super) fn update_racers(
             );
         }
 
-        // Fuga Espectral (Stigmergia) Removida - Agora a IA aprende pela rede e seleção natural
+        // Spectral Escape (Stigmergy) Removed - The AI now learns via the network and natural selection
 
         // --- TIER 3.3: EXPLORATION NOISE (curiosity > 0.7 && stuck) ---
-        // Quando curiosidade alta E organismo estagnado (>60 frames sem max_progress),
-        // injeta ruído gaussiano no steering pra escapar de local optima.
-        // scale 0.1 * curiosity (cap 0.1). Usa rand::rng() (consistente com motor.rs).
+        // When curiosity is high AND the organism is stagnant (>60 frames without max_progress),
+        // injects gaussian noise into the steering to escape local optima.
+        // scale 0.1 * curiosity (cap 0.1). Uses rand::rng() (consistent with motor.rs).
         let curiosity = racer.engine.metabolism.exploration_drive();
         let exploration_steer = if curiosity > 0.7 && racer.stagnation > 60.0 && !is_reversing {
             use rand::prelude::*;
             let mut rng =
                 rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
-            // Box-Muller aproximado via soma de 4 uniformes (determinístico-friendly,
-            // evita dep em rand_distr). Média 0, std ≈ 0.58.
+            // Approximate Box-Muller via sum of 4 uniforms (determinism-friendly,
+            // avoids a rand_distr dep). Mean 0, std ≈ 0.58.
             let u: f32 = (0..4).map(|_| rng.random::<f32>() - 0.5).sum();
             u * 0.1 * curiosity
         } else {
             0.0
         };
 
-        // Durante ré, força steer = 0 (backup reto) pra evitar rotacionar pra outra parede.
-        // A rede retoma controle quando a ré termina.
+        // During reverse, forces steer = 0 (straight backup) to avoid rotating into another wall.
+        // The network regains control when reverse ends.
         let final_steer_intent = if is_reversing {
             0.0
         } else {
             (steer_intent + emerg_steer + exploration_steer).clamp(-1.0, 1.0)
         };
 
-        // Marchas: Auto-shift inteligente baseado em RPM e velocidade
-        // ABLAÇÃO DA AUTORIDADE SOBRE O CÂMBIO (ver `neuro.rs`): zera só a intenção NEURAL.
-        // A caixa continua inteira — auto-upshift, auto-downshift e anti-afogamento seguem
-        // funcionando. Mede exatamente o que o cérebro acrescenta à regra automática.
+        // Gears: smart auto-shift based on RPM and speed
+        // GEARBOX-AUTHORITY ABLATION (see `neuro.rs`): zeroes only the NEURAL intent.
+        // The gearbox stays whole — auto-upshift, auto-downshift and anti-stall keep
+        // working. Measures exactly what the brain adds to the automatic rule.
         let ablar_marcha = crate::neuro::ablada() == crate::neuro::Via::Marcha;
         let shift_up_intent = if ablar_marcha {
             0.0
@@ -2809,7 +2810,7 @@ pub(super) fn update_racers(
         let mut shift_req = 0;
 
         if let Some(ref eng) = opt_engine {
-            // A embreagem está patinando se velocidade da roda for baixa comparado ao giro
+            // The clutch is slipping if wheel speed is low compared to the revs
             let wheel_idx = eng.current_gear;
             let wheel_ratio = if wheel_idx <= 1 {
                 0.0
@@ -2819,29 +2820,29 @@ pub(super) fn update_racers(
             let wheel_rpm = speed * wheel_ratio.max(3.0) * 30.0;
             let is_clutch_engaged = wheel_rpm > 1200.0 && eng.current_gear >= 2;
 
-            // Manobra de ré ativa: empurra gear para 0 (Reverse) e segura lá.
+            // Active reverse maneuver: pushes gear to 0 (Reverse) and holds it there.
             if is_reversing {
                 if eng.current_gear > 0 {
                     shift_req = -1;
                 }
             }
-            // Auto-clutch: Sai de Neutro/Ré para 1ª SEMPRE quando parado (desativado na ré)
+            // Auto-clutch: leaves Neutral/Reverse into 1st ALWAYS when stopped (disabled in reverse)
             else if eng.current_gear <= 1 {
                 shift_req = 1;
             }
-            // Guardian Anti-Stall: Se parado mas numa marcha alta (2ª, 3ª), CAI DE MARCHA IMEDIATAMENTE!
-            // Impede a IA de matar o motor por ficar em marchas longas sem andar.
+            // Guardian Anti-Stall: if stopped but in a high gear (2nd, 3rd), DOWNSHIFT IMMEDIATELY!
+            // Prevents the AI from killing the engine by sitting in long gears without moving.
             else if eng.current_gear > 2 && speed < 3.0 {
                 shift_req = -1;
             }
-            // Auto-upshift: Sobe marcha ONLY se a embreagem estiver colada
+            // Auto-upshift: shifts up ONLY if the clutch is engaged
             else if is_clutch_engaged
                 && eng.current_rpm > eng.max_rpm * 0.85
                 && eng.current_gear < 6
             {
                 shift_req = 1;
             }
-            // Auto-downshift: Desce marcha em RPM crítico
+            // Auto-downshift: shifts down at critical RPM
             else if is_clutch_engaged
                 && eng.current_rpm < eng.max_rpm * 0.30
                 && eng.current_gear > 2
@@ -2849,7 +2850,7 @@ pub(super) fn update_racers(
             {
                 shift_req = -1;
             }
-            // IA pode sobrepor com shift manual APENAS em velocidade colada (is_clutch_engaged)
+            // AI may override with a manual shift ONLY at engaged speed (is_clutch_engaged)
             else if is_clutch_engaged {
                 if shift_up_intent > 0.5 && racer.memory[3] <= 0.5 && eng.current_gear < 6 {
                     shift_req = 1;
@@ -2861,16 +2862,16 @@ pub(super) fn update_racers(
         }
 
         racer.memory[0] = pedal_intent;
-        racer.memory[1] = steer_raw; // v8: RNN state; lido via ch121/slow23
+        racer.memory[1] = steer_raw; // v8: RNN state; read via ch121/slow23
         racer.memory[2] = brake_intent;
         racer.memory[3] = shift_up_intent;
         racer.memory[4] = shift_down_intent;
 
-        // --- INÉRCIA DE ATUADOR (Direção Hidráulica Rápida) ---
-        // Em ré: aplica pedal reverso fixo e solta o freio, sobrescrevendo o intent neural.
-        // Em modo normal: multiplica pelo safety_cap (zero se encostado na parede, 1 se >6m).
-        // Pedal: durante ré, aplica REVERSE_PEDAL fixo. Em lockout pós-ré, capa em 0.8 (era 0.3)
-        // v8b: aumentar de 0.3→0.8 pra não matar aceleração durante aprendizado inicial.
+        // --- ACTUATOR INERTIA (Fast Hydraulic Steering) ---
+        // In reverse: applies a fixed reverse pedal and releases the brake, overriding the neural intent.
+        // In normal mode: multiplies by safety_cap (zero if touching the wall, 1 if >6m).
+        // Pedal: during reverse, applies fixed REVERSE_PEDAL. In post-reverse lockout, caps at 0.8 (was 0.3)
+        // v8b: raised from 0.3→0.8 so as not to kill acceleration during early learning.
         let pedal_target = if is_reversing {
             REVERSE_PEDAL
         } else if racer.post_reverse_lockout > 0.0 {
@@ -2880,20 +2881,20 @@ pub(super) fn update_racers(
         };
         let brake_target = if is_reversing { 0.0 } else { brake_intent };
         racer.memory[0] += (pedal_target - racer.memory[0]) * (dt * 10.0).min(1.0);
-        racer.memory[1] += (final_steer_intent - racer.memory[1]) * (dt * 20.0).min(1.0); // De 8.0 para 20.0 (Quase instantâneo)
+        racer.memory[1] += (final_steer_intent - racer.memory[1]) * (dt * 20.0).min(1.0); // From 8.0 to 20.0 (Nearly instantaneous)
         racer.memory[2] += (brake_target - racer.memory[2]) * (dt * 15.0).min(1.0);
 
         let mut physical_throttle = racer.memory[0];
-        let physical_steer = racer.memory[1]; // Sem trava de volante! Foco total nas curvas
+        let physical_steer = racer.memory[1]; // No steering lock! Total focus on the curves
         let physical_brake = racer.memory[2];
 
-        // --- DIAGNÓSTICO: SNAPSHOT DO CÉREBRO (~2Hz) ---
-        // Captura entradas/saídas e atenuações para dump posterior nos reports.
+        // --- DIAGNOSTIC: BRAIN SNAPSHOT (~2Hz) ---
+        // Captures inputs/outputs and attenuations for later dump in the reports.
         racer.trace_timer -= dt;
         if racer.trace_timer <= 0.0 && racer.brain_trace.len() < 1800 {
             // ~30s @ 60Hz
             racer.trace_timer = 0.066; // 15Hz tracing for frame-by-frame vision debug
-            // Top-5 canais mais ativos (|valor|)
+            // Top-5 most active channels (|value|)
             let sw = &sensory_wave;
             let mut pairs: Vec<(u8, i8)> = (0..128u8).map(|i| (i, sw[i as usize])).collect();
             pairs.sort_by(|a, b| (b.1 as i16).abs().cmp(&(a.1 as i16).abs()));
@@ -2902,14 +2903,14 @@ pub(super) fn update_racers(
                 top5[k] = *p;
             }
 
-            // Pico dos canais centrais da retina (10..22) — parede bem em frente
+            // Peak of the retina's central channels (10..22) — wall straight ahead
             let _retina_center_max = (10..22usize)
                 .chain((32 + 10)..(32 + 22))
                 .map(|i| sw[i].unsigned_abs() as i8)
                 .max()
                 .unwrap_or(0);
 
-            // dynamic_steer_limit e risk_damp já calculados acima
+            // dynamic_steer_limit and risk_damp already computed above
             let slow = &racer.engine.slow_brain.output;
             let _snap_risk_damp = slow[2].max(0.0).min(0.3);
             let snap_steer_limit = 1.0 / (1.0 + speed * 0.02);
@@ -2932,9 +2933,9 @@ pub(super) fn update_racers(
             }
 
             // Compact sensory channels: speed, alignment, curvature, walls, etc
-            // `sensory_compact` foi removido: 10 canais eram preenchidos a cada tick e
-            // NENHUM era lido. O compilador avisava havia tempo, escondido entre 26 avisos.
-            // Os mesmos canais continuam disponíveis em `sensory_wave` para quem precisar.
+            // `sensory_compact` was removed: 10 channels were filled every tick and
+            // NONE was ever read. The compiler had been warning for a while, hidden among 26 warnings.
+            // The same channels remain available in `sensory_wave` for whoever needs them.
 
             // Capture sensory snapshot for visualization/diagnostics (UI panel access)
             for i in 0..64 {
@@ -2970,12 +2971,12 @@ pub(super) fn update_racers(
             */
         }
 
-        // BOS removido — o sistema de penalidades já pune sobreposição
-        // A camada simbólica garante que brake só ativa com intenção explícita
+        // BOS removed — the penalty system already punishes overlap
+        // The symbolic layer guarantees brake only activates on explicit intent
 
-        // --- DANO PROGRESSIVO MECÂNICO E TERMODINÂMICA DE ESTRESSE ---
-        // LIMP MODE na ré: não multiplica por engine_power, garantindo torque suficiente
-        // pra descolar da parede mesmo com HP baixo (mantém piso mínimo 0.6x do pedal).
+        // --- PROGRESSIVE MECHANICAL DAMAGE AND STRESS THERMODYNAMICS ---
+        // LIMP MODE in reverse: does not multiply by engine_power, guaranteeing enough torque
+        // to unstick from the wall even at low HP (keeps a minimum floor of 0.6x pedal).
         if !is_reversing {
             physical_throttle *= racer.engine_power;
         } else {
@@ -2983,7 +2984,7 @@ pub(super) fn update_racers(
         }
 
         // Overlap penalty — DISABLED v7
-        // Was killing post-grace when carros learned throttle+brake combo.
+        // Was killing post-grace when cars learned the throttle+brake combo.
         // let conflict = !is_reversing && final_pedal_intent > 0.4 && brake_intent > 0.4;
         // if conflict && racer.grace_ticks >= 2560 {
         //     racer.hp -= dt * 5.0;
@@ -2997,48 +2998,48 @@ pub(super) fn update_racers(
         //     if !in_grace && eng.current_rpm > eng.max_rpm * 0.95 {
         //         racer.hp -= dt * 5.0;
         //     }
-        //     // Burnout: reduzido e só fora do grace
+        //     // Burnout: reduced and only outside grace
         //     if !in_grace && speed < 1.0 && eng.current_rpm > eng.max_rpm * 0.7 {
-        //         racer.hp -= dt * 2.0; // era 5.0
+        //         racer.hp -= dt * 2.0; // was 5.0
         //     }
         // }
 
-        // --- PENALIDADE DE ESTAGNAÇÃO / ANDAR DEVAGAR — DISABLED v7
+        // --- STAGNATION / SLOW-DRIVING PENALTY — DISABLED v7
         // Was primary post-grace killer (5 HP/s when speed < 1 m/s)
         // if !in_grace && !is_reversing && speed < 1.0 {
         //     racer.hp -= dt * 5.0;
         // }
 
-        // --- MODELO TÉRMICO DOS PNEUS (agora per-wheel em physics.rs) ---
-        // Ler a média das rodas para a telemetria do Racer
+        // --- TIRE THERMAL MODEL (now per-wheel in physics.rs) ---
+        // Read the wheel average for the Racer's telemetry
         if let Some(ref body) = opt_body {
             racer.tire_temp = body.wheels.iter().map(|w| w.tire_temp).sum::<f32>() / 4.0;
         }
 
-        // --- GRAMA: Penalidade de Tempo ("DOR" Neural Constante) ---
+        // --- GRASS: Time Penalty (Constant Neural "PAIN") ---
         if voxel_current == VoxelType::Grass {
             racer.grass_time += dt;
         }
 
-        // --- HOLE: Dano severo (MODO VIDA) ou morte instantânea (padrão) ---
-        // VoxelType::Hole sob centro do carro → forte penalidade. Força a rede a desviar
-        // ativamente de buracos (pixel distinto na retina ~90, enquanto road ~-80 e wall ~127).
-        // Grace window v5: 180→640 frames (3s→10s). Gen 1 precisa mais tempo pra aprender.
+        // --- HOLE: severe damage (LIFE MODE) or instant death (default) ---
+        // VoxelType::Hole under the car's center → strong penalty. Forces the network to
+        // actively dodge holes (distinct retina pixel ~90, while road ~-80 and wall ~127).
+        // Grace window v5: 180→640 frames (3s→10s). Gen 1 needs more time to learn.
         //
-        // MODO VIDA: cair num buraco não mata instantaneamente — tira 100 HP (⅓ do tanque de
-        // 300). A 100 HP de dano por queda, 3 quedas matam. Isso ainda é uma punição severa
-        // mas recuperável: um ser que evita buracos depois de cair pode regenerar com progresso.
-        // Cooldown de 1s evita "100 HP/s de buraco" se o carro ficar preso dentro.
+        // LIFE MODE: falling into a hole does not kill instantly — it takes 100 HP (⅓ of the
+        // 300 tank). At 100 HP of damage per fall, 3 falls kill. That is still a severe
+        // punishment but recoverable: a being that avoids holes after falling can regenerate
+        // with progress. A 1s cooldown avoids "100 HP/s of hole" if the car gets stuck inside.
         if voxel_current == VoxelType::Hole && !racer.is_dead && racer.grace_ticks >= 2560 {
             if lab.modo_vida {
-                // Dano de buraco: 100 HP por evento (cooldown via wall_cooldown para não repetir).
-                // wall_cooldown serve aqui de cooldown genérico — o carro sai do buraco em <1s.
+                // Hole damage: 100 HP per event (cooldown via wall_cooldown so it does not repeat).
+                // wall_cooldown serves here as a generic cooldown — the car leaves the hole in <1s.
                 if racer.wall_cooldown == 0.0 {
                     racer.hp -= 100.0;
-                    racer.wall_cooldown = 1.0; // 1 segundo de cooldown entre danos de buraco
-                    // Pré-setar o rótulo de morte como Hole para que se o hp zerar aqui,
-                    // a lógica central (L~2373) encontre death_reason já preenchido e não
-                    // sobrescreva com HpZero — preservando a causa real na autópsia.
+                    racer.wall_cooldown = 1.0; // 1 second of cooldown between hole damage events
+                    // Pre-set the death label as Hole so that if hp hits zero here,
+                    // the central logic (L~2373) finds death_reason already filled and does
+                    // not overwrite it with HpZero — preserving the real cause in the autopsy.
                     if racer.hp <= 0.0 && racer.death_reason.is_none() {
                         racer.death_reason = Some(crate::simulation::racer::DeathReason::Hole);
                     }
@@ -3047,7 +3048,7 @@ pub(super) fn update_racers(
                         racer.name, racer.hp, racer.grace_ticks
                     );
                 }
-                // Se o HP chegou a zero por queda, morte normal pela lógica central (L~2373).
+                // If HP reached zero from the fall, normal death via the central logic (L~2373).
             } else {
                 racer.is_dead = true;
                 racer.hp = 0.0;
@@ -3084,18 +3085,18 @@ pub(super) fn update_racers(
         //     }
         // }
 
-        // --- DINÂMICA DE CASTER (STEERING WEIGHT DEPENDENTE DA VELOCIDADE) ---
+        // --- CASTER DYNAMICS (SPEED-DEPENDENT STEERING WEIGHT) ---
         // Steer_limit = MaxSteer / (1.0 + speed * 0.02)
-        // Impede virar 90° a 200km/h, forçando suavidade de F1
+        // Prevents turning 90° at 200km/h, forcing F1 smoothness
         let dynamic_steer_limit = 1.0 / (1.0 + speed * 0.02);
 
-        // engine_power degrada com HP (Dano Progressivo). Se zerar o HP, o motor morre (0.0 de power).
-        // CORRIGIDO: normaliza por HP_INICIAL em vez de 100.0. Com HP_INICIAL=1000 e divisor 100.0
-        // fixo, engine_power ficaria travado em 1.0 até HP cair abaixo de 100 — o ser não sentiria
-        // degradação alguma nos primeiros 900 HP de dano. Agora a degradação começa cedo e é proporcional.
+        // engine_power degrades with HP (Progressive Damage). If HP hits zero, the engine dies (0.0 power).
+        // FIXED: normalizes by HP_INICIAL instead of 100.0. With HP_INICIAL=1000 and a fixed 100.0
+        // divisor, engine_power would stay pinned at 1.0 until HP fell below 100 — the being would feel
+        // no degradation at all through the first 900 HP of damage. Now degradation starts early and is proportional.
         racer.engine_power = (racer.hp / crate::simulation::racer::HP_INICIAL).clamp(0.0, 1.0);
 
-        // Morte por falha mecânica CATASTRÓFICA (HP <= 0.0) ou tempo esgotado.
+        // Death by CATASTROPHIC mechanical failure (HP <= 0.0) or time running out.
         if racer.hp <= 0.0 && !racer.is_dead {
             racer.is_dead = true;
             if racer.death_reason.is_none() {
@@ -3103,19 +3104,19 @@ pub(super) fn update_racers(
                 racer.death_frame = racer.grace_ticks;
                 racer.death_pos = pos;
             }
-            // Cria MEMÓRIA DE DOR no mundo para as próximas gerações
+            // Creates a PAIN MEMORY in the world for the next generations
             race.death_markers.push(pos);
 
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
                 mat.base_color = Color::BLACK;
             }
-            // --- HIDE-ON-DEATH: libera a tela com 500 carros ---
-            // Mantemos a entidade (pipeline precisa ler Racer pro fitness/pool),
-            // mas esconde o mesh + filhos. InheritedVisibility propaga pro wing,
-            // cockpit e farol. Custo de render: zero.
+            // --- HIDE-ON-DEATH: frees the screen with 500 cars ---
+            // We keep the entity (the pipeline needs to read Racer for fitness/pool),
+            // but hide the mesh + children. InheritedVisibility propagates to the wing,
+            // cockpit and headlight. Render cost: zero.
             commands.entity(entity).insert(Visibility::Hidden);
         } else if !racer.is_dead {
-            // Cor reflete estado mecânico: vermelho = danificado, ciano normal
+            // Color reflects mechanical state: red = damaged, cyan normal
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
                 let health_ratio =
                     (racer.hp / crate::simulation::racer::HP_INICIAL).clamp(0.0, 1.0);
@@ -3123,31 +3124,31 @@ pub(super) fn update_racers(
             }
         }
 
-        // --- 4. ENGINE E FÍSICA ---
+        // --- 4. ENGINE AND PHYSICS ---
         let flow_pull = (track_phase - racer.phase).sin() * dev.flow_influence;
         let steering_speed = (physical_steer * dynamic_steer_limit) * 2.5 + flow_pull;
 
         if let (Some(engine_comp), Some(body)) = (&mut opt_engine, &mut opt_body) {
             engine_comp.throttle = physical_throttle;
             engine_comp.brake = physical_brake;
-            // Limita o ângulo real da roda traseira dependendo da velocidade
+            // Limits the actual rear-wheel angle depending on speed
             engine_comp.steer = physical_steer * dynamic_steer_limit;
             engine_comp.manual_shift_req = shift_req;
 
             // Physics system (physics.rs) handles: throttle→torque→forces→integration
             // Just set the control inputs; physics.rs will calculate realistic response
 
-            // Motor afogado: NÃO mata instantaneamente!
-            // A IA precisa aprender a sequência de partida (reduzir pra marcha 0/1 + segurar acelerador).
-            // Drena HP lentamente (bateria do starter) como pressão evolutiva para reiniciar rápido.
-            // Grace period: Gen 1 pode ter motor stalled durante bootstrap sem battery drain.
+            // Stalled engine: does NOT kill instantly!
+            // The AI needs to learn the start sequence (downshift to gear 0/1 + hold the accelerator).
+            // Drains HP slowly (starter battery) as evolutionary pressure to restart quickly.
+            // Grace period: Gen 1 may have a stalled engine during bootstrap without battery drain.
             if !in_grace && engine_comp.is_stalled {
-                racer.hp -= if lab.modo_vida { 0.1 } else { 1.0 } * dt; // modo vida: custo, não execução
+                racer.hp -= if lab.modo_vida { 0.1 } else { 1.0 } * dt; // life mode: cost, not execution
             }
 
-            // YAW FÍSICO ATIVADO!
-            // A rotação do carro agora é dominada inteiramente pelas forças dos pneus em physics.rs.
-            // A IA vira a roda da frente -> gera força lateral no pneu -> gera torque -> vira o chassi.
+            // PHYSICAL YAW ENABLED!
+            // The car's rotation is now dominated entirely by the tire forces in physics.rs.
+            // The AI turns the front wheel -> generates lateral tire force -> generates torque -> turns the chassis.
 
             racer.amplitude = body.velocity.length();
             if racer.amplitude > racer.peak_speed {
@@ -3155,8 +3156,8 @@ pub(super) fn update_racers(
             }
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0;
 
-            // --- TIER 1.1: TELEMETRIA DENSA (reward shaping) ---
-            // Amostra a cada fixed tick (64Hz). voxel==Road só premia exploração útil (anti-novelty-exploit).
+            // --- TIER 1.1: DENSE TELEMETRY (reward shaping) ---
+            // Samples every fixed tick (64Hz). voxel==Road only rewards useful exploration (anti-novelty-exploit).
             let tel_on_road = voxel_current == VoxelType::Road;
             racer.telemetry.record(
                 final_steer_intent,
@@ -3196,27 +3197,27 @@ pub(super) fn update_racers(
                     };
                     race.telemetry.write_frame(&frame);
 
-                    // --- NOVO REPLAY (128 bytes/frame, formato crate::replay) ---
-                    // Grava em paralelo com o replay legado para comparação motor vs cortex_evolve.
-                    // Lido por: `replay_analyze --replay telemetry/gen_N/motor.replay`
+                    // --- NEW REPLAY (128 bytes/frame, crate::replay format) ---
+                    // Records in parallel with the legacy replay for motor vs cortex_evolve comparison.
+                    // Read by: `replay_analyze --replay telemetry/gen_N/motor.replay`
                     let axiom_str_q = (race.current_axiom_strength * 127.0).clamp(0.0, 127.0) as u8;
                     if let Some(ref mut rw) = race.replay_writer {
-                        // Forward 2D normalizado para o player HTML (canvas 2D usa x/z = x/y)
+                        // Normalized 2D forward for the HTML player (2D canvas uses x/z = x/y)
                         let fwd_3 = transform.right().as_vec3();
                         let fwd_2 = [fwd_3.x, fwd_3.z];
 
-                        // Safety flags: bit0=governor (pedal_override presente), bit1=sentinel,
-                        // bit2=ecas (emerg_steer ativo), bit3=reversing
-                        // Sentinel está desativado neste caminho — bit1 sempre 0 aqui.
+                        // Safety flags: bit0=governor (pedal_override present), bit1=sentinel,
+                        // bit2=ecas (emerg_steer active), bit3=reversing
+                        // Sentinel is disabled on this path — bit1 always 0 here.
                         let sf: u8 = (pedal_intent_override.is_some() as u8)
-                            | 0u8 << 1  // sentinel desativado neste código
+                            | 0u8 << 1  // sentinel disabled in this code
                             | ((emerg_steer.abs() > 0.01) as u8) << 2
                             | (is_reversing as u8) << 3;
 
                         // flow_align: sensory_wave[64] = (alignment * 127) as i8
                         let flow_align = sensory_wave[64] as f32 / 127.0;
 
-                        // Retina compacta: amostra 8 canais igualmente espaçados no horizonte
+                        // Compact retina: samples 8 equally spaced channels along the horizon
                         let step_fov = (RETINA_COLS / 8).max(1);
                         let horizon = RETINA_ROWS / 2;
                         let mut retina_fov = [0i8; 8];
@@ -3228,7 +3229,7 @@ pub(super) fn update_racers(
                                 retina_binocular[peri_row * RETINA_COLS + k * step_fov];
                         }
 
-                        // Dimensões saturadas no final_intent (|x| > 0.95)
+                        // Saturated dimensions in final_intent (|x| > 0.95)
                         let dims_sat = racer
                             .engine
                             .final_intent
@@ -3289,22 +3290,22 @@ pub(super) fn update_racers(
                 }
             }
 
-            // Distância verdadeira: Projeção da velocidade na direção da pista (Flow)
+            // True distance: projection of velocity onto the track direction (Flow)
             let flow_3d = Vec3::new(flow.x, 0.0, flow.y).normalize_or_zero();
             let track_velocity = body.velocity.dot(flow_3d);
 
-            // Punição de Fitness por Zigzag + Penalidade de Grama
+            // Fitness punishment for Zigzag + Grass Penalty
             let lateral_velocity = body.velocity.cross(flow_3d).length();
 
-            // SÓ ACUMULA DISTÂNCIA SE NÃO ESTÁ NA PAREDE
-            // Isso elimina completamente a estratégia de "ricochete produtivo"
+            // ONLY ACCUMULATES DISTANCE IF NOT ON THE WALL
+            // This completely eliminates the "productive ricochet" strategy
             let on_wall = world.get_voxel_at(transform.translation.x, transform.translation.z)
                 == VoxelType::Wall;
             if !on_wall {
                 racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
             }
 
-            // --- AMOSTRAGEM DE PATH (~4Hz) para desenhar traçado do campeão ---
+            // --- PATH SAMPLING (~4Hz) to draw the champion's line ---
             racer.path_timer -= dt;
             if racer.path_timer <= 0.0 {
                 racer.path_timer = 0.25;
@@ -3314,9 +3315,9 @@ pub(super) fn update_racers(
             }
 
             // --- ANTI-PLATEAU / ANTI-DONUT ---
-            // Passar 10s sem ganhar 3m → drena 10HP/s (morte em ~10s de loop).
-            // Afrouxado pra pistas estreitas: carro precisa de tempo pra manobrar em curva fechada,
-            // e 5s/20HP/s antes matava qualquer um que parasse pra pensar numa L de 90°.
+            // Going 10s without gaining 3m → drains 10HP/s (death in ~10s of looping).
+            // Loosened for narrow tracks: the car needs time to maneuver in a tight curve,
+            // and 5s/20HP/s used to kill anyone who stopped to think in a 90° L.
             if racer.track_progress > racer.progress_checkpoint + 3.0 {
                 racer.progress_checkpoint = racer.track_progress;
                 racer.progress_stall = 0.0;
@@ -3324,31 +3325,31 @@ pub(super) fn update_racers(
                 racer.progress_stall += dt;
             }
             if !in_grace && !is_reversing && racer.progress_stall > 10.0 {
-                // MODO VIDA: 0,2 HP/s (era 1,0 HP/s).
-                // A HP_INICIAL=1000 e 0,2 HP/s levaria ~5000 s para matar — nunca mata sozinho.
-                // Era 1,0 HP/s → matava em ~300 s (com HP=300), continuava sendo executor escondido.
-                // A pressão real no modo_vida é a FOME (combustível), não o anti-donut.
+                // LIFE MODE: 0.2 HP/s (was 1.0 HP/s).
+                // At HP_INICIAL=1000 and 0.2 HP/s it would take ~5000 s to kill — never kills on its own.
+                // It was 1.0 HP/s → killed in ~300 s (with HP=300), still a hidden executioner.
+                // The real pressure in modo_vida is HUNGER (fuel), not the anti-donut.
                 racer.hp -= if lab.modo_vida { 0.2 } else { 10.0 } * dt;
             }
 
-            // Punição Severa por Andar na Contramão — DISABLED v7
-            // Era matando carros post-grace por backing up. Com base throttle bias deve ser natural forward.
+            // Severe Punishment for Driving the Wrong Way — DISABLED v7
+            // Was killing post-grace cars for backing up. With base throttle bias, forward should be natural.
             // if !in_grace && !is_reversing && racer.distance < -5.0 {
             //     racer.hp -= 100.0 * dt;
             // }
 
-            // Punição por fazer "zerinho" (Spinning in place donuts)
-            // Grace period: Gen 1 pode girar durante bootstrap sem morrer.
+            // Punishment for doing donuts (Spinning in place)
+            // Grace period: Gen 1 may spin during bootstrap without dying.
             if !in_grace && body.angular_velocity.y.abs() > 1.5 && track_velocity.abs() < 5.0 {
-                // MODO VIDA: 0,5 HP/s (era 3,0 HP/s → matava em ~100 s de donut contínuo com HP=300).
-                // A 0,5 HP/s e HP_INICIAL=1000 levaria ~2000 s de spinning ININTERRUPTO para matar.
-                // Na prática o combustível acaba antes: ~150 s sem volta = FUEL. Donut vira multa, não morte.
+                // LIFE MODE: 0.5 HP/s (was 3.0 HP/s → killed in ~100 s of continuous donut with HP=300).
+                // At 0.5 HP/s and HP_INICIAL=1000 it would take ~2000 s of UNINTERRUPTED spinning to kill.
+                // In practice the fuel runs out first: ~150 s without a lap = FUEL. Donut becomes a fine, not death.
                 racer.hp -= if lab.modo_vida { 0.5 } else { 30.0 } * dt;
             }
 
-            // Punição de Desgaste de Pneu (Destruição Térmica): Evitar Burnouts Livres
-            // Se as rodas estão escorregando loucamente (Slip Ratio enorme) e o carro não avança muito
-            // Grace period: Gen 1 pode derrapar durante spin-up initial sem penalidade.
+            // Tire Wear Punishment (Thermal Destruction): Avoid Free Burnouts
+            // If the wheels are slipping wildly (huge Slip Ratio) and the car barely advances
+            // Grace period: Gen 1 may skid during initial spin-up without penalty.
             let avg_slip = body
                 .wheels
                 .iter()
@@ -3356,34 +3357,34 @@ pub(super) fn update_racers(
                 .sum::<f32>()
                 / 4.0;
             if !in_grace && avg_slip > 0.5 && track_velocity.abs() < 15.0 {
-                // "Estourar os Pneus": drena vida se derrapar à toa acelerando parado.
-                // MODO VIDA: avg_slip × 0,2 HP/s (era avg_slip × 1,0 HP/s).
-                // Com avg_slip típico de ~1,0 e HP_INICIAL=1000: 0,2 HP/s → ~5000 s para matar.
-                // A 1,0 HP/s o mesmo slip matava em ~300 s (com HP=300) — outro executor escondido.
+                // "Blowing the Tires": drains life if skidding pointlessly while accelerating in place.
+                // LIFE MODE: avg_slip × 0.2 HP/s (was avg_slip × 1.0 HP/s).
+                // With typical avg_slip of ~1.0 and HP_INICIAL=1000: 0.2 HP/s → ~5000 s to kill.
+                // At 1.0 HP/s the same slip killed in ~300 s (with HP=300) — another hidden executioner.
                 racer.hp -= avg_slip * if lab.modo_vida { 0.2 } else { 10.0 } * dt;
             }
 
-            // === DRIFT REWARD (derrapagem limpa) ===
-            // Carro deslizando MAS mantendo velocidade na direção do track = dopamina bônus.
-            // Requer: slip_angle médio alto + forward speed real + throttle engajado + alinhamento ok.
-            // Burnout parado (acima) continua sendo punido — esses dois não se sobrepõem.
+            // === DRIFT REWARD (clean drifting) ===
+            // Car sliding BUT keeping speed in the track direction = bonus dopamine.
+            // Requires: high average slip_angle + real forward speed + engaged throttle + ok alignment.
+            // Stationary burnout (above) keeps being punished — the two do not overlap.
             let avg_slip_angle = body.wheels.iter().map(|w| w.slip_angle.abs()).sum::<f32>() / 4.0;
             if avg_slip_angle > 0.15
                 && track_velocity > 10.0
                 && pedal_intent > 0.3
                 && alignment > 0.3
             {
-                // Escala: drift magnitude × velocidade × alinhamento com pista.
-                // Cap em 0.6 rad (~34°) pra não premiar spins absurdos.
+                // Scale: drift magnitude × speed × alignment with the track.
+                // Cap at 0.6 rad (~34°) so as not to reward absurd spins.
                 let drift_bonus = avg_slip_angle.min(0.6) * track_velocity * alignment * 0.08;
                 racer.joy_integral += drift_bonus * dt;
-                // Fumaça visível: dobra chance de skidmark durante clean drift.
+                // Visible smoke: doubles skidmark chance during a clean drift.
                 if rng.random::<f32>() < 0.25 {
                     racer.tire_temp = (racer.tire_temp + 0.02 * dt).min(1.0);
                 }
             }
 
-            // === DRAFTING: Redução de arrasto 30% se atrás de outro carro ===
+            // === DRAFTING: 30% drag reduction if behind another car ===
             if in_draft {
                 let drag_reduction =
                     body.velocity.normalize_or_zero() * body.velocity.length_squared() * 0.18 * 0.3;
@@ -3404,12 +3405,12 @@ pub(super) fn update_racers(
         racer.wall_cooldown = (racer.wall_cooldown - dt).max(0.0);
         let mut hit_wall = false;
 
-        // Verifica colisões usando as mesmas probes físicas para não ser salvo pelo bounce
+        // Checks collisions using the same physical probes so the bounce cannot save it
         if world.get_voxel_at(transform.translation.x, transform.translation.z) == VoxelType::Wall {
             hit_wall = true;
         } else {
-            // Se o centro está livre, checa os 4 cantos (nariz, traseira, laterais)
-            // Constantes aproximadas do chassis (wheelbase, track_width) — ignora opt_body por ora.
+            // If the center is free, checks the 4 corners (nose, rear, sides)
+            // Approximate chassis constants (wheelbase, track_width) — ignores opt_body for now.
             let wb = 2.6_f32;
             let tw = 1.6_f32;
 
@@ -3418,10 +3419,10 @@ pub(super) fn update_racers(
             let right = -transform.back().as_vec3();
 
             let probe_points = [
-                pos + forward * (wb * 0.5), // Nariz
-                pos - forward * (wb * 0.5), // Traseira
-                pos + right * (tw * 0.5),   // Lateral direita
-                pos - right * (tw * 0.5),   // Lateral esquerda
+                pos + forward * (wb * 0.5), // Nose
+                pos - forward * (wb * 0.5), // Rear
+                pos + right * (tw * 0.5),   // Right side
+                pos - right * (tw * 0.5),   // Left side
             ];
 
             for p in &probe_points {
@@ -3432,14 +3433,14 @@ pub(super) fn update_racers(
             }
         }
 
-        // GRACE em frames REAIS — virtual time é caótico nos primeiros frames (FPS
-        // irregular em swarm grande, max_delta do Bevy, etc).
-        // v3: 3200 frames (50s). Era 7200 (112.5s) = 93.7% da geração protegida,
-        // criaturas crawling a 1-2 m/s ficavam imortais. Agora 50s de bootstrap +
-        // 70s de pressão seletiva real (speed bleed, wall damage, etc.).
+        // GRACE in REAL frames — virtual time is chaotic in the first frames (irregular
+        // FPS in a large swarm, Bevy's max_delta, etc).
+        // v3: 3200 frames (50s). It was 7200 (112.5s) = 93.7% of the generation protected,
+        // creatures crawling at 1-2 m/s became immortal. Now 50s of bootstrap +
+        // 70s of real selective pressure (speed bleed, wall damage, etc.).
         let out_of_grace = racer.grace_ticks >= 3200;
 
-        // === POST-LAP GRACE (calculado cedo — wall check abaixo precisa de HP grace) ===
+        // === POST-LAP GRACE (computed early — the wall check below needs HP grace) ===
         if racer.post_lap_grace > 0 {
             racer.post_lap_grace = racer.post_lap_grace.saturating_sub(1);
         }
@@ -3450,19 +3451,19 @@ pub(super) fn update_racers(
         let in_post_lap_hp_grace = racer.post_lap_grace > 480;
 
         if hit_wall && !racer.is_dead {
-            racer.wall_time += dt; // dt capado; wall_time em segundos REAIS (lento, estável).
-            // PINADO: 1.6s REAIS raspando parede = morte (era 0.8s). Mais tolerância.
-            // MODO VIDA: raspar parede não mata, machuca. Bater passa a ser custo, não fim.
+            racer.wall_time += dt; // capped dt; wall_time in REAL seconds (slow, stable).
+            // PINADO: 1.6s REAL scraping the wall = death (was 0.8s). More tolerance.
+            // LIFE MODE: scraping the wall does not kill, it hurts. Crashing becomes a cost, not the end.
             let pinned =
                 out_of_grace && !in_post_lap_hp_grace && racer.wall_time > 1.6 && !lab.modo_vida;
-            // MODO VIDA: raspar custa 0,3 HP/s (era 2,0 HP/s → matava em ~150 s contínuos com HP=300).
-            // A 0,3 HP/s e HP_INICIAL=1000 levaria ~3333 s de raspagem ININTERRUPTA para matar.
-            // Raspar a parede é custo real mas não é sentença — quem morre por parede agora
-            // é porque ficou encostado por vários minutos sem conseguir sair.
-            // Rótulo de morte: era possível que dano de parede zerasse o HP e a morte saísse
-            // como HpZero (detectado em L2373 antes de qualquer rótulo específico), pois o
-            // `is_dead = true` aqui só acontece se hp<=0.0 depois do `max(0.0)`. CORRIGIDO:
-            // setamos death_reason ANTES de verificar is_dead (rótulo Pinado garantido).
+            // LIFE MODE: scraping costs 0.3 HP/s (was 2.0 HP/s → killed in ~150 s continuous with HP=300).
+            // At 0.3 HP/s and HP_INICIAL=1000 it would take ~3333 s of UNINTERRUPTED scraping to kill.
+            // Scraping the wall is a real cost but not a sentence — whoever dies by wall now
+            // did so because they stayed pressed against it for several minutes without getting out.
+            // Death label: it was possible for wall damage to zero the HP and the death to come out
+            // as HpZero (detected at L2373 before any specific label), since the
+            // `is_dead = true` here only happens if hp<=0.0 after the `max(0.0)`. FIXED:
+            // we set death_reason BEFORE checking is_dead (Pinado label guaranteed).
             if lab.modo_vida && out_of_grace && racer.wall_time > 1.6 {
                 racer.hp = (racer.hp - 0.3 * dt).max(0.0);
                 if racer.hp <= 0.0 && !racer.is_dead {
@@ -3492,26 +3493,26 @@ pub(super) fn update_racers(
             } else if racer.wall_cooldown == 0.0 {
                 racer.wall_hits += 1;
                 racer.wall_cooldown = 0.6;
-                // Damage proporcional à componente NORMAL da velocidade na parede.
-                // Scrape paralelo (velocity dot wall_normal ≈ 0) = 8 dmg.
-                // Batida frontal 30m/s = 60 dmg (out_of_grace) ou 35 (grace).
-                // Aproximação: usa lateral_vel (normal à pista) como proxy da velocidade normal.
+                // Damage proportional to the NORMAL component of the velocity into the wall.
+                // Parallel scrape (velocity dot wall_normal ≈ 0) = 8 dmg.
+                // Head-on hit at 30m/s = 60 dmg (out_of_grace) or 35 (grace).
+                // Approximation: uses lateral_vel (normal to the track) as a proxy for the normal velocity.
                 let impact_speed = if let Some(ref body) = opt_body {
                     let lateral_dir = transform.back().as_vec3();
                     body.velocity.dot(lateral_dir).abs()
                 } else {
                     10.0
                 };
-                // DANO DE PAREDE DESLIGADO (decisão v7: era o principal matador pós-graça).
+                // WALL DAMAGE TURNED OFF (v7 decision: it was the main post-grace killer).
                 //
-                // O cálculo do dano ficava aqui inteiro — velocidade de impacto, teto por
-                // fase, atenuação pós-volta — e terminava numa linha comentada
-                // (`// racer.hp -= dmg;`). Dez linhas produzindo um número descartado.
+                // The full damage computation lived here — impact speed, per-phase
+                // ceiling, post-lap attenuation — and ended in a commented-out line
+                // (`// racer.hp -= dmg;`). Ten lines producing a discarded number.
                 //
-                // Consequência que o número esconde e vale registrar: sem este dano os
-                // seres praticamente não morrem batendo (3 batidas em 11.450 mortes
-                // medidas; 98,7% morrem por ficar lentos). Se um dia voltar, volta como
-                // parâmetro medido, não como linha comentada.
+                // Consequence the number hides and is worth recording: without this damage the
+                // beings practically never die from crashing (3 crashes in 11,450 measured
+                // deaths; 98.7% die from getting slow). If it ever comes back, it comes back as
+                // a measured parameter, not as a commented-out line.
                 let _ = (impact_speed, in_post_lap_hp_grace);
                 if racer.hp <= 0.0 {
                     racer.is_dead = true;
@@ -3535,29 +3536,29 @@ pub(super) fn update_racers(
                 }
             }
         } else {
-            // Decay lento: dt * 0.1 = precisa de ~10s reais contínuos sem hit pra zerar.
+            // Slow decay: dt * 0.1 = needs ~10 continuous real seconds without a hit to zero out.
             racer.wall_time = (racer.wall_time - dt * 0.1).max(0.0);
         }
 
         // --- CHECKPOINT RECOVERY (HEAL GATE) ---
-        // A cada 25m de pista (arc-length real), checkpoint alcançado.
-        // User feedback: carros morriam antes de chegar no próximo marco.
-        //  - Intervalo 50→25m: cura mais frequente, sobrevivem enquanto aprendem.
-        //  - HP boost 25→40: compensa wall hit (60 dmg) em 2 waypoints (antes: 3).
-        //  - Reset completo de estagnação: stagnation/progress_stall/progress_checkpoint.
-        //    Antes só zerava wall_hits — carro ainda morria por progress_stall antigo
-        //    mesmo cruzando waypoint.
+        // Every 25m of track (real arc-length), a checkpoint is reached.
+        // User feedback: cars were dying before reaching the next landmark.
+        //  - Interval 50→25m: more frequent healing, they survive while learning.
+        //  - HP boost 25→40: compensates a wall hit (60 dmg) in 2 waypoints (before: 3).
+        //  - Full stagnation reset: stagnation/progress_stall/progress_checkpoint.
+        //    Before, only wall_hits was zeroed — the car still died from old progress_stall
+        //    even when crossing a waypoint.
         let current_wp = (racer.track_progress / 25.0).floor().max(0.0) as usize;
 
         if current_wp > racer.last_waypoint {
             racer.last_waypoint = current_wp;
-            // TETO DA CURA = HP DE NASCIMENTO, não 100 fixo.
-            // Era `.min(100.0)`, e isso tornava `HP_INICIAL` quase INÓCUO: qualquer que
-            // fosse o valor de nascimento (100.000 ou 300), a primeira passagem por um
-            // checkpoint travava o HP em 100 e a escala real voltava a ser 100 para sempre.
-            // Medido: a distribuição de mortes é idêntica com HP=100.000 e com HP=300
-            // (HP ~59%, SpeedBleed ~40% nos dois), o que só é possível se o valor de
-            // nascimento não importar.
+            // HEALING CEILING = BIRTH HP, not a fixed 100.
+            // It was `.min(100.0)`, and that made `HP_INICIAL` nearly INERT: whatever
+            // the birth value (100,000 or 300), the first pass through a
+            // checkpoint pinned the HP at 100 and the real scale went back to 100 forever.
+            // Measured: the death distribution is identical with HP=100,000 and with HP=300
+            // (HP ~59%, SpeedBleed ~40% in both), which is only possible if the birth
+            // value does not matter.
             let teto = crate::simulation::racer::HP_INICIAL;
             racer.hp = (racer.hp + 0.4 * teto).min(teto);
             racer.wall_hits = 0;
@@ -3569,20 +3570,20 @@ pub(super) fn update_racers(
             }
         }
 
-        // === REGENERAÇÃO LENTA (MODO VIDA) ===
-        // Quando o ser está PROGREDINDO na pista (avançou >0,05 m desde o frame anterior),
-        // recupera HP lentamente. Isso torna o dano RECUPERÁVEL: um arranhão na parede não é
-        // um relógio de contagem regressiva — desde que o ser continue andando.
+        // === SLOW REGENERATION (LIFE MODE) ===
+        // When the being is PROGRESSING on the track (advanced >0.05 m since the previous frame),
+        // it recovers HP slowly. This makes damage RECOVERABLE: a scratch on the wall is not
+        // a countdown clock — as long as the being keeps moving.
         //
-        // Taxa: 1,0 HP/s enquanto avança. A HP_INICIAL=1000:
-        //   - um ser que anda SEMPRE regenera 1000 HP em 1000 s (≈14 voltas de ~70 s).
-        //   - para efeito prático: cada volta de ~70 s = +70 HP de regeneração.
-        // Como os drenos somados no pior caso (raspando parede 0,3 + donut 0,5 + stag 0,5)
-        // chegam a 1,3 HP/s, um ser que avança MESMO levando pancadas fica no equilíbrio
-        // quase perfeito (−0,3 HP/s líquido). Sem avançar, o FUEL acaba antes (~150 s de tanque).
+        // Rate: 1.0 HP/s while advancing. At HP_INICIAL=1000:
+        //   - a being that ALWAYS moves regenerates 1000 HP in 1000 s (≈14 laps of ~70 s).
+        //   - for practical purposes: each ~70 s lap = +70 HP of regeneration.
+        // Since the summed drains in the worst case (scraping wall 0.3 + donut 0.5 + stag 0.5)
+        // reach 1.3 HP/s, a being that advances EVEN while taking hits sits at a near-perfect
+        // equilibrium (−0.3 HP/s net). Without advancing, the FUEL runs out first (~150 s of tank).
         //
-        // Condição: requer modo_vida + out_of_grace + progresso real no frame.
-        // Não regenera em grace para não mascarar problemas de bootstrap.
+        // Condition: requires modo_vida + out_of_grace + real progress in the frame.
+        // Does not regenerate in grace so as not to mask bootstrap problems.
         if lab.modo_vida && out_of_grace && !racer.is_dead {
             let advancing = racer.track_progress > racer.progress_checkpoint;
             if advancing {
@@ -3591,15 +3592,15 @@ pub(super) fn update_racers(
             }
         }
 
-        // === STAGNATION MONOTÔNICA (em FRAMES reais) ===
-        // max_progress SÓ CRESCE. Sem avanço > 2m em 180 frames (≈3s reais), morte.
-        // Frame-based = estável independente de time_scale / FPS / max_delta do Bevy.
+        // === MONOTONIC STAGNATION (in real FRAMES) ===
+        // max_progress ONLY GROWS. No advance > 2m in 180 frames (≈3 real seconds) = death.
+        // Frame-based = stable regardless of time_scale / FPS / Bevy's max_delta.
         let prev_max = racer.max_progress;
         racer.max_progress = racer.max_progress.max(racer.track_progress);
         if out_of_grace && !in_post_lap_grace {
             if racer.max_progress > prev_max + 0.01 {
-                // v2: checkpoint 2m→0.5m (stagnation zera com progresso fino, não só chunks grandes).
-                // Carros que vão lentamente mas avançam não morrem por STAG.
+                // v2: checkpoint 2m→0.5m (stagnation resets on fine progress, not just big chunks).
+                // Cars that go slowly but advance do not die from STAG.
                 if racer.max_progress > racer.progress_checkpoint + 0.5 {
                     racer.progress_checkpoint = racer.max_progress;
                     racer.stagnation = 0.0;
@@ -3609,15 +3610,15 @@ pub(super) fn update_racers(
             } else {
                 racer.stagnation += 1.0;
             }
-            // v8: Stagnation kill RE-ENABLED. Carros que não avançam 0.5m em 480 frames
-            // (≈7.5s) morrem. Sem isto, carros ficam parados contra paredes até timeout
-            // de 120s, desperdiçando tempo de evolução.
-            // MODO VIDA: estagnar não mata IMEDIATAMENTE, drena 0,5 HP/s (era 3,0 HP/s).
-            // Era `.max(1.0)` — mantinha o HP em 1 para sempre, travando engine_power em
-            // 0,01: o ser ficava "vivo" mas sem motor, preso indefinidamente. CORRIGIDO: usa
-            // `.max(0.0)` e deixa o ser morrer pela lógica central de hp<=0 em L~2373.
-            // A 0,5 HP/s e HP_INICIAL=1000: ~2000 s de estagnação TOTAL para matar (FOME
-            // normalmente chega antes nos ~150 s do tanque, então stag nunca é o relógio real).
+            // v8: Stagnation kill RE-ENABLED. Cars that do not advance 0.5m in 480 frames
+            // (≈7.5s) die. Without this, cars sit against walls until the 120s
+            // timeout, wasting evolution time.
+            // LIFE MODE: stagnating does not kill IMMEDIATELY, it drains 0.5 HP/s (was 3.0 HP/s).
+            // It was `.max(1.0)` — it kept HP at 1 forever, pinning engine_power at
+            // 0.01: the being stayed "alive" but engineless, stuck indefinitely. FIXED: uses
+            // `.max(0.0)` and lets the being die via the central hp<=0 logic at L~2373.
+            // At 0.5 HP/s and HP_INICIAL=1000: ~2000 s of TOTAL stagnation to kill (HUNGER
+            // normally arrives first at the tank's ~150 s, so stag is never the real clock).
             if racer.stagnation > 480.0 && lab.modo_vida {
                 racer.hp = (racer.hp - 0.5 * dt).max(0.0);
             } else if racer.stagnation > 480.0 {
@@ -3638,7 +3639,7 @@ pub(super) fn update_racers(
         }
 
         // === SPEED BLEED (RE-ENABLED v8) ===
-        // Penaliza carros parados. Força evolução: aprende a mover ou morre.
+        // Penalizes stopped cars. Forces evolution: learn to move or die.
         let cur_speed = if let Some(ref body) = opt_body {
             body.velocity.length()
         } else {
@@ -3650,18 +3651,18 @@ pub(super) fn update_racers(
         if out_of_grace && !in_post_lap_grace && cur_speed < 4.0 && !making_progress {
             racer.slow_time += 1.0;
             if racer.slow_time > 180.0 {
-                // v8: 360→180 frames (~2.8s) antes de speed bleed
-                // MODO VIDA: lentidão NÃO tira vida. A 2 HP/s ainda matava 24-50 de 60,
-                // porque 300 HP acabam em 150 s e a geração tem 220 s — continuava sendo
-                // execução por lentidão, só mais devagar. Quem mata agora é a FOME.
+                // v8: 360→180 frames (~2.8s) before speed bleed
+                // LIFE MODE: slowness does NOT take life. At 2 HP/s it still killed 24-50 of 60,
+                // because 300 HP runs out in 150 s and the generation has 220 s — it was still
+                // execution by slowness, just slower. What kills now is HUNGER.
                 if !lab.modo_vida {
                     racer.hp -= 60.0 * dt;
                 }
-                // BUG CORRIGIDO: verificar `!racer.is_dead` antes de sobrescrever o rótulo.
-                // Antes, se a parede (modo_vida, L~2630) zerasse o HP e setasse is_dead=true
-                // com death_reason=Pinado no mesmo frame, este bloco entrava mesmo assim
-                // (hp<=0.0 é true) e SOBRESCREVIA o rótulo com SpeedBleed — autópsia errada.
-                // Agora só setar SpeedBleed se o carro ainda não foi marcado como morto.
+                // BUG FIXED: check `!racer.is_dead` before overwriting the label.
+                // Before, if the wall (modo_vida, L~2630) zeroed the HP and set is_dead=true
+                // with death_reason=Pinado in the same frame, this block still entered
+                // (hp<=0.0 is true) and OVERWROTE the label with SpeedBleed — wrong autopsy.
+                // Now only set SpeedBleed if the car has not yet been marked dead.
                 if racer.hp <= 0.0 && !racer.is_dead {
                     racer.is_dead = true;
                     racer.hp = 0.0;
@@ -3679,7 +3680,7 @@ pub(super) fn update_racers(
             racer.slow_time = (racer.slow_time - 2.0).max(0.0);
         }
 
-        // Fuel burn base + quadrático no pedal. Com survival_pressure: curva custa mais.
+        // Base fuel burn + quadratic in the pedal. With survival_pressure: cornering costs more.
         #[cfg(feature = "survival_pressure")]
         let corner_cost = {
             let steer_abs = physical_steer.abs();
@@ -3687,16 +3688,16 @@ pub(super) fn update_racers(
         };
         #[cfg(not(feature = "survival_pressure"))]
         let corner_cost = 0.0_f32;
-        // MODO VIDA: o combustível vira o relógio de verdade. No padrão, o consumo dá ~1500 s
-        // de tanque contra geração de 220 s — ou seja, ninguém jamais morria de fome
-        // (`FUEL: 0` em toda autópsia). Multiplicando por 10, o tanque cheio vale ~150 s,
-        // pouco mais que duas voltas de ~60 s: **é preciso completar volta para comer.**
+        // LIFE MODE: fuel becomes the true clock. In the default, consumption gives ~1500 s
+        // of tank against a 220 s generation — i.e., no one ever starved
+        // (`FUEL: 0` in every autopsy). Multiplying by 10, the full tank is worth ~150 s,
+        // little more than two ~60 s laps: **you must complete a lap to eat.**
         let mult_fome = if lab.modo_vida { 10.0 } else { 1.0 };
         racer.fuel -= (0.002 + pedal_intent.powi(2) * 0.004 + corner_cost) * mult_fome * dt;
 
-        // Idle brake penalty: brake forte + parado dreno HP pequeno.
-        // Caçador sem presa não pode hibernar freando.
-        // Grace period: Gen 1 pode usar brake durante bootstrap sem penalidade.
+        // Idle brake penalty: hard brake + stopped drains a small amount of HP.
+        // A hunter without prey cannot hibernate by braking.
+        // Grace period: Gen 1 may use the brake during bootstrap without penalty.
         #[cfg(feature = "survival_pressure")]
         if !in_grace && brake_intent > 0.5 && speed < 3.0 && !is_reversing {
             racer.hp -= 2.0 * dt;
@@ -3709,24 +3710,24 @@ pub(super) fn update_racers(
             commands.entity(entity).insert(Visibility::Hidden);
         }
 
-        // Contagem de Voltas — DIRECTION-AGNOSTIC via wrap detection + track_progress MONOTÔNICO.
+        // Lap Counting — DIRECTION-AGNOSTIC via wrap detection + MONOTONIC track_progress.
         //
-        // Bug fix crítico: antes, track_progress = lap_prog + total_laps*lap_dist. Quando carro
-        // cruzava a linha MAS lap não contava (check x-axis falhava OU required_progress bloqueava
-        // spawn distribuído), track_progress REGREDIA de ~450 pra ~0 → max_progress parava →
-        // stagnation matava. Carro sumia "na linha de chegada" sem completar a volta.
+        // Critical bug fix: before, track_progress = lap_prog + total_laps*lap_dist. When a car
+        // crossed the line BUT the lap did not count (the x-axis check failed OR required_progress
+        // blocked distributed spawn), track_progress REGRESSED from ~450 to ~0 → max_progress
+        // stopped → stagnation killed. The car vanished "at the finish line" without completing the lap.
         //
-        // Agora: track_progress acumula delta_arc SEMPRE (detecta wrap forward/backward no arc).
-        // Fitness usa (track_progress - spawn_progress), total_laps é DESACOPLADO e só incrementa
-        // quando NET travel >= (total_laps+1) * 0.85 * lap_dist — sem fraudar spawn distribuído.
+        // Now: track_progress accumulates delta_arc ALWAYS (detects forward/backward wrap in the arc).
+        // Fitness uses (track_progress - spawn_progress), total_laps is DECOUPLED and only increments
+        // when NET travel >= (total_laps+1) * 0.85 * lap_dist — without cheating distributed spawn.
         if !world.waypoints_world.is_empty() && world.lap_distance > 0.0 {
             let cur_lap_prog =
                 world.get_track_progress(transform.translation.x, transform.translation.z);
             let prev_lap_prog = racer.prev_lap_prog;
             let lap_dist = world.lap_distance;
-            racer.lap_dist_m = lap_dist; // p/ calc_fitness computar voltas fracionárias
+            racer.lap_dist_m = lap_dist; // for calc_fitness to compute fractional laps
 
-            // Delta assinado com wrap detection. Se arc "pulou" de >0.5*lap pra <0.5*lap: forward wrap.
+            // Signed delta with wrap detection. If the arc "jumped" from >0.5*lap to <0.5*lap: forward wrap.
             let mut delta = cur_lap_prog - prev_lap_prog;
             let wrapped_forward = delta < -lap_dist * 0.5;
             let wrapped_backward = delta > lap_dist * 0.5;
@@ -3736,7 +3737,7 @@ pub(super) fn update_racers(
                 delta -= lap_dist;
             }
 
-            // Cap delta pra evitar salto absurdo (glitch de get_track_progress ou teleporte).
+            // Cap delta to avoid an absurd jump (get_track_progress glitch or teleport).
             let delta_clamped = delta.clamp(-lap_dist * 0.1, lap_dist * 0.1);
             racer.track_progress += delta_clamped;
 
@@ -3746,31 +3747,31 @@ pub(super) fn update_racers(
                 if net >= required {
                     racer.total_laps += 1;
                     racer.distance = 0.0;
-                    // REABASTECIMENTO. Era `racer.fuel = 1.0`, e isso NÃO reabastecia: o
-                    // spawn dá `fuel: 1000.0` (spawn.rs:829), então atribuir 1.0 na 3ª volta
-                    // é um DESPEJO de 1000× disfarçado de tanque cheio. Com consumo de
-                    // ~0,006/s sobravam ~166 s de vida — ou seja, quem era bom o bastante
-                    // para chegar na 3ª volta era sentenciado por isso.
-                    // Medido: `3+v=0` em TODAS as gerações de todas as corridas.
-                    // Agora repõe ao nível de nascimento, seja ele qual for.
-                    // MODO VIDA: cada volta reabastece — a volta É a caça. Fora dele,
-                    // mantém o antigo (a cada 3 voltas) para não mudar experimento velho.
+                    // REFUELING. It was `racer.fuel = 1.0`, and that did NOT refuel: the
+                    // spawn gives `fuel: 1000.0` (spawn.rs:829), so assigning 1.0 on the 3rd lap
+                    // is a 1000× DUMP disguised as a full tank. With consumption of
+                    // ~0.006/s there were ~166 s of life left — i.e., whoever was good enough
+                    // to reach the 3rd lap was sentenced for it.
+                    // Measured: `3+v=0` in ALL generations of all races.
+                    // Now it restores to the birth level, whatever it is.
+                    // LIFE MODE: every lap refuels — the lap IS the hunt. Outside it,
+                    // keeps the old behavior (every 3 laps) so as not to change an old experiment.
                     if lab.modo_vida || racer.total_laps % 3 == 0 {
                         racer.fuel = crate::simulation::racer::FUEL_INICIAL;
                     }
-                    // Grace imediato pós-lap: carro passa pela linha parando, max_progress
-                    // congela em ~lap_dist, precisa de janela pra re-acelerar sem morrer.
-                    // 240f @ 60fps = 4s reais — suficiente pra sair do stall sem premiar preguiça.
+                    // Immediate post-lap grace: the car crosses the line while slowing, max_progress
+                    // freezes at ~lap_dist, it needs a window to re-accelerate without dying.
+                    // 240f @ 60fps = 4 real seconds — enough to leave the stall without rewarding laziness.
                     racer.post_lap_grace = 600;
                     racer.post_lap_checkpoint = racer.track_progress;
                     racer.stagnation = 0.0;
                     racer.slow_time = 0.0;
                     racer.progress_checkpoint = racer.max_progress;
-                    // CORRIGIDO: era `.min(100.0)` hardcoded — ignorava HP_INICIAL=300 e
-                    // colapsava o teto de volta ao mesmo bug do waypoint (ver racer.rs L36).
-                    // Agora usa HP_INICIAL como teto, igual ao checkpoint de 25m (L~2695).
-                    // Cura de volta = 50 HP absolutos (≈17% do tanque de 300). Moderada por
-                    // design: a vida saudável vem de VOLTAS FREQUENTES, não de um topo-up grande.
+                    // FIXED: it was a hardcoded `.min(100.0)` — it ignored HP_INICIAL=300 and
+                    // collapsed the ceiling back into the same waypoint bug (see racer.rs L36).
+                    // Now uses HP_INICIAL as the ceiling, same as the 25m checkpoint (L~2695).
+                    // Lap heal = 50 absolute HP (≈17% of the 300 tank). Moderate by
+                    // design: healthy life comes from FREQUENT LAPS, not one big top-up.
                     let teto_lap = crate::simulation::racer::HP_INICIAL;
                     racer.hp = (racer.hp + 50.0).min(teto_lap);
                     racer.wall_hits = 0;
@@ -3785,13 +3786,13 @@ pub(super) fn update_racers(
                         net
                     );
                 }
-                // WRAP sem LAP silenciado — spawn distribuído gera ruído; lap real já sinaliza progresso.
+                // WRAP without LAP silenced — distributed spawn generates noise; a real lap already signals progress.
             }
             racer.prev_lap_prog = cur_lap_prog;
         }
 
-        // --- 6. ESPIONAGEM NEURAL (GIZMOS DO CAMPO DE VISÃO) ---
-        // Toggle KeyH (dev.show_vision) — esconde cones verdes pra visual limpo.
+        // --- 6. NEURAL ESPIONAGE (FIELD-OF-VIEW GIZMOS) ---
+        // Toggle KeyH (dev.show_vision) — hides the green cones for a clean visual.
         if dev.show_vision
             && (race.selected_racer.is_some() && race.selected_racer.unwrap() == entity
                 || (race.selected_racer.is_none() && current_best == entity))
@@ -3800,8 +3801,8 @@ pub(super) fn update_racers(
             let up = *transform.up();
             let eye_pos = transform.translation + Vec3::Y * 0.4;
 
-            // Visualmente: SÓ fóvea verde 180° tan-warp. Periférica + whiskers continuam
-            // alimentando cérebro (canais 32-63 + 94-97) mas gizmo fica limpo.
+            // Visually: ONLY the green 180° tan-warp fovea. Peripheral + whiskers keep
+            // feeding the brain (channels 32-63 + 94-97) but the gizmo stays clean.
             let fov_half = 90.0_f32.to_radians();
             const TAN_K: f32 = 1.25_f32;
             let tan_k_val = TAN_K.tan();

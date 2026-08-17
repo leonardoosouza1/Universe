@@ -1,105 +1,105 @@
-// RETINA DIGEST — CfC de percepção + min_wall_ahead + edge_row6/7, tudo na GPU.
+// RETINA DIGEST — perception CfC + min_wall_ahead + edge_row6/7, all on the GPU.
 //
-// # Por que este kernel existe
+// # Why this kernel exists
 //
-// `context.rs::tick()` (gpu_evolve) fazia, TODO tick, um readback de 340 KB (48 seres ×
-// 1764 px × 4 B) da retina inteira e processava 84.672 pixels em laço Rust só para
-// produzir, por ser: 16 floats de estado CfC (ch192-207), `min_wall_ahead` (dreno de
-// vida por parede) e `edge_row6`/`edge_row7` (ch99/ch100). Esse readback+laço era o
-// gargalo medido do tick (2.30 ms contra 0.63 ms do tick GPU puro).
+// `context.rs::tick()` (gpu_evolve) used to do, EVERY tick, a 340 KB readback (48 beings ×
+// 1764 px × 4 B) of the entire retina and process 84,672 pixels in a Rust loop just to
+// produce, per being: 16 floats of CfC state (ch192-207), `min_wall_ahead` (life drain
+// from walls) and `edge_row6`/`edge_row7` (ch99/ch100). That readback+loop was the
+// measured bottleneck of the tick (2.30 ms versus 0.63 ms for the pure GPU tick).
 //
-// Este kernel roda DEPOIS de `retina.wgsl`, no MESMO `CommandEncoder`, consumindo o
-// buffer de retina física que já está em VRAM — sem NENHUM round-trip à CPU no laço
-// quente. Só desce à CPU o resultado pequeno: 3 floats por ser (`extra_out`).
+// This kernel runs AFTER `retina.wgsl`, in the SAME `CommandEncoder`, consuming the
+// physical retina buffer already in VRAM — with NO round-trip to the CPU in the hot
+// loop. Only the small result goes down to the CPU: 3 floats per being (`extra_out`).
 //
-// # O que este kernel NÃO faz
+// # What this kernel does NOT do
 //
-// O laço de vida (wall_ticks, dreno de vida, estagnação, combustível, -1 tick de
-// life_left) CONTINUA na CPU — ele só passa a consumir `min_wall_ahead` vindo daqui em
-// vez de recalculá-lo dos pixels. Ver `context.rs::tick()`, bloco "Atualiza CfC
-// percepção" (agora reduzido a: ler `extra_out`, aplicar os drenos).
+// The life loop (wall_ticks, life drain, stagnation, fuel, -1 tick of
+// life_left) STAYS on the CPU — it merely starts consuming `min_wall_ahead` from here
+// instead of recomputing it from the pixels. See `context.rs::tick()`, block "Atualiza CfC
+// percepção" (now reduced to: read `extra_out`, apply the drains).
 //
-// # A equação do CfC — UMA fonte, dois lugares que a espelham
+// # The CfC equation — ONE source, two places that mirror it
 //
-// A equação em si mora em `iara_cfc::CfcCell::step` (crate externa, compartilhada por
-// todo o ecossistema IARA) — ver `src/math/cfc_perception.rs`, que é o front door deste
-// crate para ela e documenta a fórmula por extenso. ESTE shader é o espelho GPU; se a
-// equação mudar, as DUAS cópias (lá e aqui) têm de mudar juntas — não existe uma
-// terceira cópia em lugar nenhum (Leonardo: "sem CfC espalhado").
+// The equation itself lives in `iara_cfc::CfcCell::step` (external crate, shared by the
+// whole IARA ecosystem) — see `src/math/cfc_perception.rs`, which is this crate's front
+// door to it and documents the formula in full. THIS shader is the GPU mirror; if the
+// equation changes, BOTH copies (there and here) must change together — there is no
+// third copy anywhere (Leonardo: "no scattered CfC").
 //
-// matvec aqui usa um `acc` sequencial (`for c { acc += w[r,c]*x[c] }`), replicando o
-// loop de `iara_cfc::matvec` — NÃO usar `dot()` do WGSL, que permite ao compilador
-// reassociar a soma e divergir em ULPs do resultado calculado na CPU.
+// matvec here uses a sequential `acc` (`for c { acc += w[r,c]*x[c] }`), replicating the
+// loop of `iara_cfc::matvec` — do NOT use WGSL's `dot()`, which allows the compiler to
+// reassociate the sum and diverge in ULPs from the result computed on the CPU.
 //
-// # Pipeline até virar x[48] (entrada do CfC) — espelha `perception/retina.rs`
+// # Pipeline until it becomes x[48] (CfC input) — mirrors `perception/retina.rs`
 //
-// 1. `legacy_encoding(dist_m, material)` por pixel — CÓPIA LITERAL de
-//    `perception.wgsl:251` (WGSL não importa função entre arquivos neste projeto;
-//    qualquer correção tem de tocar as duas cópias, mais `gpu::legacy_encoding` em
-//    Rust — é a mesma dívida documentada em `perception.wgsl` para uma 4ª cópia).
-// 2. Col max-pool: 126 colunas → 16 bins por linha (`cols_per_bin = 126/16 = 7`, o
-//    último bin absorve o resto até 126) — espelha `RetinaSensor::sense_retina`.
-//    O máximo é tirado sobre o valor ASSINADO (i32, mesma faixa de um i8), só DEPOIS
-//    deslocado para [0,255] via `+128` (equivalente a `(max_val as i16 + 128) as u8`).
-// 3. Zone-pool: far=linhas[0,5) MEAN, mid=linhas[5,10) MEAN, near=linhas[10,14) MAX —
-//    espelha `retina_zones()`. Cada valor pooled (0..255) vira f32 via `/127.5 - 1.0`
-//    DURANTE a agregação da zona (não antes) — espelha `ZoneConfig::pool`.
-// 4. x = [far(16) | mid(16) | near(16)] = 48 floats — mesma ordem de `pool_flat()`.
+// 1. `legacy_encoding(dist_m, material)` per pixel — LITERAL COPY of
+//    `perception.wgsl:251` (WGSL does not import functions across files in this project;
+//    any fix must touch both copies, plus `gpu::legacy_encoding` in
+//    Rust — the same debt documented in `perception.wgsl` for a 4th copy).
+// 2. Col max-pool: 126 columns → 16 bins per row (`cols_per_bin = 126/16 = 7`, the
+//    last bin absorbs the remainder up to 126) — mirrors `RetinaSensor::sense_retina`.
+//    The max is taken over the SIGNED value (i32, same range as an i8), and only AFTER
+//    shifted to [0,255] via `+128` (equivalent to `(max_val as i16 + 128) as u8`).
+// 3. Zone-pool: far=rows[0,5) MEAN, mid=rows[5,10) MEAN, near=rows[10,14) MAX —
+//    mirrors `retina_zones()`. Each pooled value (0..255) becomes f32 via `/127.5 - 1.0`
+//    DURING the zone aggregation (not before) — mirrors `ZoneConfig::pool`.
+// 4. x = [far(16) | mid(16) | near(16)] = 48 floats — same order as `pool_flat()`.
 //
-// # extra_out[3..19] ("ch192-207") — a MESMA defasagem de 1 tick que já existia
+// # extra_out[3..19] ("ch192-207") — the SAME 1-tick lag that already existed
 //
-// A CPU antiga injetava `hidden[]` em `buf_temporal[33-48]` ANTES do dispatch (estado
-// do CfC calculado no tick ANTERIOR, via readback pós-submit) e só `perception_temporal
-// .wgsl` convertia esse hidden em canal (escrevendo em `output`, ch192-207 — ver achado
-// P1.8 abaixo sobre por que isto NÃO é mais reproduzido aqui). Este kernel preserva só
-// a DEFASAGEM (não o destino do valor):
-//   1) calcula os 16 valores usando `cfc_state` COMO ESTAVA no início do tick (= h após
-//      o tick t-1), grava em `extra_out[3..19]`;
-//   2) só DEPOIS processa a retina deste tick e escreve o h NOVO de volta em
-//      `cfc_state`, para o PRÓXIMO tick ler.
-// A fórmula de conversão hidden→canal é a aproximação x/(1+|x|) que já estava em
-// `perception_temporal.wgsl` (NÃO o `tanh()` nativo do WGSL) — copiada literalmente
-// abaixo para não mudar o valor calculado, só o buffer de destino (ver achado P1.8).
+// The old CPU injected `hidden[]` into `buf_temporal[33-48]` BEFORE the dispatch (CfC
+// state computed in the PREVIOUS tick, via post-submit readback) and only `perception_temporal
+// .wgsl` converted that hidden into a channel (writing to `output`, ch192-207 — see finding
+// P1.8 below on why this is NO LONGER reproduced here). This kernel preserves only
+// the LAG (not the value's destination):
+//   1) computes the 16 values using `cfc_state` AS IT WAS at the start of the tick (= h after
+//      tick t-1), writes them to `extra_out[3..19]`;
+//   2) only AFTER THAT processes this tick's retina and writes the NEW h back to
+//      `cfc_state`, for the NEXT tick to read.
+// The hidden→channel conversion formula is the x/(1+|x|) approximation that was already in
+// `perception_temporal.wgsl` (NOT WGSL's native `tanh()`) — copied literally
+// below so as not to change the computed value, only the destination buffer (see finding P1.8).
 //
 // # Bindings
 //
 // binding 0 (uniform)          params: n_beings
 // binding 1 (storage, read)    retina: array<u32>       — N × 1764, packed (mm<<8|mat)
-// binding 2 (storage, read)    cfc_weights: array<f32>   — 1312 floats, buffer ÚNICO
-//   compartilhado por todos os seres (pesos fixos e idênticos — ver achado "pesos do
-//   CfC nunca carregados do genoma" em src/math/cfc_perception.rs). Layout:
+// binding 2 (storage, read)    cfc_weights: array<f32>   — 1312 floats, a SINGLE buffer
+//   shared by all beings (fixed, identical weights — see the finding "CfC weights
+//   never loaded from the genome" in src/math/cfc_perception.rs). Layout:
 //   [w_xi(768) | w_hi(256) | w_f(256) | b_i(16) | b_f(16)].
-// binding 3 (storage, read_write) cfc_state: array<f32>  — N × 16, RESIDENTE na VRAM
-//   entre ticks. Zerado por `reset()` (host) entre gerações.
-// binding 4 (storage, read_write) output: array<atomic<u32>> — MESMO `buf_output` da
-//   percepção (perception.rs). ESTE KERNEL NÃO ESCREVE MAIS AQUI (ver achado P1.8
-//   abaixo) — só lido implicitamente por outros kernels no mesmo pipeline; mantido
-//   no bind group porque o layout é compartilhado com `perception.rs`.
+// binding 3 (storage, read_write) cfc_state: array<f32>  — N × 16, RESIDENT in VRAM
+//   between ticks. Zeroed by `reset()` (host) between generations.
+// binding 4 (storage, read_write) output: array<atomic<u32>> — the SAME `buf_output` of
+//   perception (perception.rs). THIS KERNEL NO LONGER WRITES HERE (see finding P1.8
+//   below) — only read implicitly by other kernels in the same pipeline; kept
+//   in the bind group because the layout is shared with `perception.rs`.
 // binding 5 (storage, read_write) extra_out: array<f32>  — N × EXTRA_STRIDE(19):
-//   [0] min_wall_ahead (m, sentinela grande se não há parede à frente nas colunas
-//       centrais), [1] edge_row6 normalizado [0,1], [2] edge_row7 normalizado [0,1],
-//   [3..19] ch192-207 (estado CfC de percepção squashed, ver achado abaixo).
+//   [0] min_wall_ahead (m, large sentinel if there is no wall ahead in the central
+//       columns), [1] edge_row6 normalized [0,1], [2] edge_row7 normalized [0,1],
+//   [3..19] ch192-207 (squashed perception CfC state, see finding below).
 //
-// # P1.8 — achado crítico: ch192-207 aliasava para o PRÓXIMO ser (corrigido)
+// # P1.8 — critical finding: ch192-207 aliased into the NEXT being (fixed)
 //
-// `output` tem EXATAMENTE `WAVE_U32S=48` words (192 bytes) por ser — o mesmo
-// `SENSORY_WAVE_SIZE=192` que `brain.wgsl` lê (`const WAVE: u32 = 192u;`, sem
-// folga). Escrever em "ch192-207" via `write_channel` (que faz `ch/4` sem checar
-// limite) caía no índice `being*48 + 48..51` — o INÍCIO do bloco do PRÓXIMO ser,
-// corrompendo (via atomicOr) os canais 0-15 dele (FAR/NEAR pool, lidos de verdade
-// por L1). Como `brain.wgsl` nunca lê índice ≥ 192 (`WAVE=192u`, confirmado por
-// grep), os valores nem chegavam a influenciar a rede — o efeito observável era
-// SÓ a corrupção do ser vizinho. Fix: os 16 valores agora vão para `extra_out`
-// (espaço próprio por ser, sem colisão) em vez de `output`. O estado recorrente
-// de verdade (usado pela PRÓXIMA chamada deste kernel) continua correto e
-// intocado em `cfc_state` (binding 3) — isto só afeta o canal de EXPOSIÇÃO extra
-// que nunca foi lido por ninguém no pipeline de treino (gpu_evolve).
+// `output` has EXACTLY `WAVE_U32S=48` words (192 bytes) per being — the same
+// `SENSORY_WAVE_SIZE=192` that `brain.wgsl` reads (`const WAVE: u32 = 192u;`, with no
+// slack). Writing to "ch192-207" via `write_channel` (which does `ch/4` without a bounds
+// check) landed on index `being*48 + 48..51` — the START of the NEXT being's block,
+// corrupting (via atomicOr) its channels 0-15 (FAR/NEAR pool, actually read
+// by L1). Since `brain.wgsl` never reads an index ≥ 192 (`WAVE=192u`, confirmed by
+// grep), the values never even influenced the network — the observable effect was
+// ONLY the corruption of the neighboring being. Fix: the 16 values now go to `extra_out`
+// (each being's own space, no collision) instead of `output`. The true recurrent
+// state (used by the NEXT call of this kernel) remains correct and
+// untouched in `cfc_state` (binding 3) — this only affects the extra EXPOSURE channel
+// that was never read by anyone in the training pipeline (gpu_evolve).
 //
 // # Dispatch
 //
-// `@workgroup_size(1)`, `dispatch_workgroups(n_beings, 1, 1)` — 1 thread por ser,
-// espelhando `perception_temporal.wgsl` (padrão comprovado seguro contra o SIGSEGV do
-// compilador ACO/RADV que loops sobre storage buffers com workgroup_size>1 provocavam).
+// `@workgroup_size(1)`, `dispatch_workgroups(n_beings, 1, 1)` — 1 thread per being,
+// mirroring `perception_temporal.wgsl` (a pattern proven safe against the ACO/RADV
+// compiler SIGSEGV that loops over storage buffers with workgroup_size>1 used to trigger).
 
 struct Params {
     n_beings: u32,
@@ -119,16 +119,16 @@ const RETINA_ROWS:  u32 = 14u;
 const RETINA_COLS:  u32 = 126u;
 const RETINA_TOTAL: u32 = 1764u;
 const WAVE_U32S:    u32 = 48u;
-// P1.8: stride de `extra_out` por ser — 3 valores históricos (min_wall_ahead,
-// edge_row6, edge_row7) + 16 do estado CfC (ch192-207) que antes aliasava em
-// `output`. Ver achado no cabeçalho do arquivo (binding 5).
+// P1.8: `extra_out` stride per being — 3 historical values (min_wall_ahead,
+// edge_row6, edge_row7) + 16 of the CfC state (ch192-207) that previously aliased in
+// `output`. See the finding in the file header (binding 5).
 const EXTRA_STRIDE: u32 = 19u;
 
 const POOL_BINS:    u32 = 16u;   // PERCEPTION_BINS
 const CFC_HIDDEN:   u32 = 16u;   // CFC_HIDDEN (math/cfc_perception.rs)
-const CFC_INPUT:    u32 = 48u;   // CFC_INPUT  (3 zonas × 16 bins)
+const CFC_INPUT:    u32 = 48u;   // CFC_INPUT  (3 zones × 16 bins)
 
-// Offsets dentro de `cfc_weights` — espelha `math::cfc_perception::flat_weights()`.
+// Offsets inside `cfc_weights` — mirrors `math::cfc_perception::flat_weights()`.
 const OFF_W_XI: u32 = 0u;                                   // 16×48 = 768
 const OFF_W_HI: u32 = OFF_W_XI + CFC_HIDDEN * CFC_INPUT;     // 768
 const OFF_W_F:  u32 = OFF_W_HI + CFC_HIDDEN * CFC_HIDDEN;    // 1024
@@ -136,15 +136,15 @@ const OFF_B_I:  u32 = OFF_W_F  + CFC_HIDDEN * CFC_HIDDEN;    // 1280
 const OFF_B_F:  u32 = OFF_B_I  + CFC_HIDDEN;                 // 1296
 
 const VOXEL_WALL:    u32 = 2u;
-// Colunas centrais (terço do meio dos 126 pixels) — espelha context.rs:823-824.
+// Central columns (middle third of the 126 pixels) — mirrors context.rs:823-824.
 const WALL_COL_LO:   u32 = RETINA_COLS / 3u;       // 42
 const WALL_COL_HI:   u32 = 2u * RETINA_COLS / 3u;  // 84
-// Sentinela "sem parede à frente" — só precisa ser >= WALL_NEAR_M (3.0 m, em
-// statics.rs) para o consumidor da CPU (`if min_wall_ahead < WALL_NEAR_M`) se
-// comportar como o `f32::MAX` que o Rust usava. Não precisa ser o MAX exato.
+// "No wall ahead" sentinel — only needs to be >= WALL_NEAR_M (3.0 m, in
+// statics.rs) for the CPU consumer (`if min_wall_ahead < WALL_NEAR_M`) to
+// behave like the `f32::MAX` that Rust used. It does not need to be the exact MAX.
 const NO_WALL_SENTINEL: f32 = 1.0e9;
 
-// ─── legacy_encoding — CÓPIA LITERAL de perception.wgsl:251 ───────────────────────
+// ─── legacy_encoding — LITERAL COPY of perception.wgsl:251 ───────────────────────
 fn legacy_encoding(d: f32, mat: u32) -> i32 {
     let depth_fade = clamp(d / 1200.0, 0.0, 1.0);
     var v: f32;
@@ -168,11 +168,11 @@ fn legacy_encoding(d: f32, mat: u32) -> i32 {
     return i32(clamp(v, -128.0, 127.0));
 }
 
-// ─── write_channel — CÓPIA LITERAL de perception.wgsl:208 ─────────────────────────
-// P1.8: sem call sites neste arquivo desde o fix de "ch192-207 aliasa pro próximo
-// ser" (achado no cabeçalho) — `output`/binding 4 continua declarado só porque o
-// bind group layout é compartilhado com `perception.rs`. Mantida (não deletada)
-// caso um consumidor futuro de verdade precise escrever em `output` daqui.
+// ─── write_channel — LITERAL COPY of perception.wgsl:208 ─────────────────────────
+// P1.8: no call sites in this file since the fix for "ch192-207 aliases into the next
+// being" (finding in the header) — `output`/binding 4 stays declared only because the
+// bind group layout is shared with `perception.rs`. Kept (not deleted) in case a
+// future consumer genuinely needs to write to `output` from here.
 fn write_channel(being: u32, ch: u32, val: i32) {
     let clamped  = clamp(val, -128, 127);
     let byte_val = u32(clamped & 0xFF);
@@ -187,7 +187,7 @@ fn read_retina_pixel(being: u32, row: u32, col: u32) -> u32 {
 fn pixel_dist_m(packed: u32) -> f32 { return f32(packed >> 8u) / 1000.0; }
 fn pixel_mat(packed: u32)   -> u32 { return packed & 0xFFu; }
 
-// sigmoid — mesma ordem de operações de `iara_cfc::sigmoid`: `1.0/(1.0+(-x).exp())`.
+// sigmoid — same operation order as `iara_cfc::sigmoid`: `1.0/(1.0+(-x).exp())`.
 fn sigmoid_(x: f32) -> f32 {
     return 1.0 / (1.0 + exp(-x));
 }
@@ -197,28 +197,28 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     let being = wgid.x;
     if being >= params.n_beings { return; }
 
-    // ── 1) ch192-207 usa o ESTADO ANTIGO (h de antes deste tick) ─────────────────
-    // Preserva a defasagem de 1 tick que já existia (ver doc do arquivo). Lê ANTES
-    // de tocar a retina deste tick.
+    // ── 1) ch192-207 uses the OLD STATE (h from before this tick) ─────────────────
+    // Preserves the 1-tick lag that already existed (see the file doc). Reads BEFORE
+    // touching this tick's retina.
     let sb = being * CFC_HIDDEN;
     var h: array<f32, 16>;
     for (var i = 0u; i < CFC_HIDDEN; i++) {
         h[i] = cfc_state[sb + i];
     }
     for (var i = 0u; i < CFC_HIDDEN; i++) {
-        // Aproximação x/(1+|x|) — CÓPIA LITERAL de perception_temporal.wgsl (bloco
-        // "CfC de percepção"). NÃO trocar por tanh() nativo: mudaria o valor do canal.
+        // x/(1+|x|) approximation — LITERAL COPY of perception_temporal.wgsl (block
+        // "CfC de percepção"). Do NOT swap for native tanh(): it would change the channel value.
         let hi = h[i];
         let abs_h = abs(hi);
         let tanh_h = select(hi / (1.0 + abs_h), sign(hi) * 0.999, abs_h > 10.0);
         let val = i32(clamp(tanh_h * 127.0 * 0.3, -127.0, 127.0));
-        // P1.8: era `write_channel(being, 192u + i, val)` — aliasava pro ser
-        // seguinte (ver achado no cabeçalho). Vai para `extra_out`, espaço
-        // próprio deste ser, slots [3..19).
+        // P1.8: this was `write_channel(being, 192u + i, val)` — it aliased into the
+        // next being (see finding in the header). Goes to `extra_out`, this being's
+        // own space, slots [3..19).
         extra_out[being * EXTRA_STRIDE + 3u + i] = f32(val);
     }
 
-    // ── 2) Varre a retina física deste tick: col-pool, min_wall_ahead, edge_row6/7 ──
+    // ── 2) Sweeps this tick's physical retina: col-pool, min_wall_ahead, edge_row6/7 ──
     var pooled: array<f32, 224>; // 14 rows × 16 bins, row-major (row*16+bin)
     var min_wall_ahead: f32 = NO_WALL_SENTINEL;
     var edge_sum6: i32 = 0;
@@ -244,12 +244,12 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
                     min_wall_ahead = min(min_wall_ahead, dist_m);
                 }
 
-                // Densidade de borda: soma de |diferença| entre colunas CONSECUTIVAS
-                // (0..124 vs 1..125) — espelha context.rs:872-880. Os bins cobrem
-                // 0..126 em ordem crescente e sem sobreposição, então percorrer
-                // `col` dentro de `bin` crescente reconstrói a sequência 0..125
-                // completa; `edge_prev` carrega o valor do pixel anterior através
-                // da fronteira entre bins.
+                // Edge density: sum of |difference| between CONSECUTIVE columns
+                // (0..124 vs 1..125) — mirrors context.rs:872-880. The bins cover
+                // 0..126 in increasing order without overlap, so iterating
+                // `col` inside increasing `bin` reconstructs the full 0..125
+                // sequence; `edge_prev` carries the previous pixel's value across
+                // the boundary between bins.
                 if track_edge {
                     if row == 6u {
                         if col > 0u { edge_sum6 += abs(v - edge_prev6); }
@@ -269,10 +269,10 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     extra_out[being * EXTRA_STRIDE + 2u] = clamp(f32(edge_sum7) / 6000.0, 0.0, 1.0);
 
     // ── 3) Zone-pool: far=[0,5) mean, mid=[5,10) mean, near=[10,14) max ────────────
-    // Espelha `retina_zones()` + `ZoneConfig::pool` — ordem far,mid,near em x[48].
+    // Mirrors `retina_zones()` + `ZoneConfig::pool` — order far,mid,near in x[48].
     var x: array<f32, 48>;
 
-    // far: linhas [0,5), MEAN
+    // far: rows [0,5), MEAN
     for (var c = 0u; c < POOL_BINS; c++) {
         var acc: f32 = 0.0;
         for (var r = 0u; r < 5u; r++) {
@@ -280,7 +280,7 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
         }
         x[c] = acc * (1.0 / 5.0);
     }
-    // mid: linhas [5,10), MEAN
+    // mid: rows [5,10), MEAN
     for (var c = 0u; c < POOL_BINS; c++) {
         var acc: f32 = 0.0;
         for (var r = 5u; r < 10u; r++) {
@@ -288,7 +288,7 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
         }
         x[POOL_BINS + c] = acc * (1.0 / 5.0);
     }
-    // near: linhas [10,14), MAX
+    // near: rows [10,14), MAX
     for (var c = 0u; c < POOL_BINS; c++) {
         var mxv: f32 = -1.0e30;
         for (var r = 10u; r < 14u; r++) {
@@ -298,8 +298,8 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
         x[2u * POOL_BINS + c] = mxv;
     }
 
-    // ── 4) Passo do CfC — espelha `iara_cfc::CfcCell::step` (ver math/cfc_perception.rs) ──
-    // matvec com acumulador sequencial, MESMA ordem de `iara_cfc::matvec`.
+    // ── 4) CfC step — mirrors `iara_cfc::CfcCell::step` (see math/cfc_perception.rs) ──
+    // matvec with a sequential accumulator, SAME order as `iara_cfc::matvec`.
     var pre_xi: array<f32, 16>;
     for (var r = 0u; r < CFC_HIDDEN; r++) {
         var acc: f32 = 0.0;
@@ -335,7 +335,7 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
         h_new[i] = h[i] * decay + i_gate * (1.0 - decay);
     }
 
-    // ── 5) Persiste h_new para o PRÓXIMO tick ───────────────────────────────────
+    // ── 5) Persists h_new for the NEXT tick ───────────────────────────────────
     for (var i = 0u; i < CFC_HIDDEN; i++) {
         cfc_state[sb + i] = h_new[i];
     }

@@ -1,23 +1,24 @@
-//! Rotação determinística de pistas de treino (P1, docs/PLANO_EVOLUCAO.md §P1).
+//! Deterministic rotation of training tracks (P1, docs/PLANO_EVOLUCAO.md §P1).
 //!
-//! Puro e sem GPU de propósito — `pista_da_gen`/`parse_pistas` não tocam wgpu nem
-//! `VoxelWorld`, então são testáveis com `cargo test --bin gpu_evolve` sem hardware.
+//! Pure and GPU-free on purpose — `pista_da_gen`/`parse_pistas` touch neither wgpu nor
+//! `VoxelWorld`, so they are testable with `cargo test --bin gpu_evolve` without hardware.
 //!
-//! # Por que "conjunto vazio = pista 9001 fixa"
+//! # Why "empty set = fixed track 9001"
 //!
-//! O campeão atual (99,25% sorteio inicial, ver PLANO_EVOLUCAO.md) treina SEMPRE na
-//! mesma pista (seed 9001, `--same-start`) — é o A/B em andamento. `--pistas` tem que
-//! ser estritamente aditivo: sem a flag, `pistas` chega vazio em `pista_da_gen`, que
-//! devolve 9001 pra QUALQUER geração — bit-a-bit o mesmo hardcode que `main.rs` tinha
-//! antes desta mudança (`VoxelWorld::new(9001, track_width)`, fora do laço).
+//! The current champion (99.25% initial-draw, see PLANO_EVOLUCAO.md) trains ALWAYS on
+//! the same track (seed 9001, `--same-start`) — it is the A/B in progress. `--pistas`
+//! has to be strictly additive: without the flag, `pistas` arrives empty at
+//! `pista_da_gen`, which returns 9001 for ANY generation — bit-for-bit the same
+//! hardcode `main.rs` had before this change (`VoxelWorld::new(9001, track_width)`,
+//! outside the loop).
 
-/// Pista da geração `gen_abs`, por rotação determinística (`pistas[gen_abs % len]`).
+/// Track for generation `gen_abs`, by deterministic rotation (`pistas[gen_abs % len]`).
 ///
-/// Lista vazia devolve 9001 — a pista fixa que o binário sempre usou antes de
-/// `--pistas` existir. Determinístico por construção: mesma `gen_abs` + mesmo
-/// `pistas` sempre devolvem a mesma seed, o que é o que torna a bateria reproduzível
-/// (dois processos com o mesmo `--pistas` treinam exatamente na mesma sequência de
-/// pistas, gen a gen).
+/// An empty list returns 9001 — the fixed track the binary always used before
+/// `--pistas` existed. Deterministic by construction: the same `gen_abs` + the same
+/// `pistas` always return the same seed, which is what makes the battery reproducible
+/// (two processes with the same `--pistas` train on exactly the same sequence of
+/// tracks, generation by generation).
 pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
     if pistas.is_empty() {
         9001
@@ -26,13 +27,13 @@ pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
     }
 }
 
-/// Parseia `--pistas "9001,9002,9003"` em uma lista de seeds.
+/// Parses `--pistas "9001,9002,9003"` into a list of seeds.
 ///
-/// Vazio (flag ausente ou string vazia) devolve `Vec::new()` — é o valor que faz
-/// `pista_da_gen` cair no braço de controle (pista 9001 fixa). Tokens que não
-/// parseiam como `u64` são só ignorados (não abortam o parse inteiro): um `--pistas`
-/// digitado errado deve falhar visivelmente por ter MENOS pistas que o esperado no
-/// log de `[pista] gen ...`, não travar o binário inteiro por um dígito trocado.
+/// Empty (flag absent or empty string) returns `Vec::new()` — the value that makes
+/// `pista_da_gen` fall into the control arm (fixed track 9001). Tokens that do not
+/// parse as `u64` are simply ignored (they do not abort the whole parse): a mistyped
+/// `--pistas` should fail visibly by having FEWER tracks than expected in the
+/// `[pista] gen ...` log, not lock up the whole binary over one wrong digit.
 pub fn parse_pistas(s: &str) -> Vec<u64> {
     s.split(',')
         .map(|t| t.trim())
@@ -45,24 +46,24 @@ pub fn parse_pistas(s: &str) -> Vec<u64> {
 mod tests {
     use super::*;
 
-    /// Sem `--pistas` (lista vazia), toda geração usa 9001 — o A/B em andamento
-    /// (campeão treinado só na seed 9001, `--same-start`) não pode ser invalidado
-    /// por esta mudança.
+    /// Without `--pistas` (empty list), every generation uses 9001 — the A/B in
+    /// progress (champion trained only on seed 9001, `--same-start`) must not be
+    /// invalidated by this change.
     #[test]
     fn conjunto_vazio_e_pista_fixa_9001_comportamento_atual() {
-        // `gen` é palavra reservada nesta edição do Rust (sintaxe de geradores) —
-        // por isso `g` em vez de `gen` nestes testes.
+        // `gen` is a reserved word in this Rust edition (generator syntax) —
+        // hence `g` instead of `gen` in these tests.
         for g in [0usize, 1, 5, 100, 4000] {
             assert_eq!(
                 pista_da_gen(&[], g),
                 9001,
-                "sem --pistas, tem que reproduzir bit-a-bit o binário de antes desta mudança"
+                "without --pistas, it must reproduce bit-for-bit the binary from before this change"
             );
         }
     }
 
-    /// A mesma geração tem que sortear sempre a mesma pista — é o que torna a
-    /// bateria reproduzível entre processos/retomadas.
+    /// The same generation has to draw the same track every time — that is what makes
+    /// the battery reproducible across processes/resumes.
     #[test]
     fn rotacao_e_deterministica_mesma_gen_mesma_pista() {
         let pistas = vec![9001, 123, 64, 256, 512, 768, 1024, 31337];
@@ -71,12 +72,12 @@ mod tests {
             let b = pista_da_gen(&pistas, g);
             assert_eq!(
                 a, b,
-                "gen {g}: duas chamadas com o mesmo conjunto divergiram"
+                "gen {g}: two calls with the same set diverged"
             );
         }
     }
 
-    /// Percorre o conjunto em ordem e repete ao voltar ao começo — `gen % len`.
+    /// Walks the set in order and repeats when it wraps back to the start — `gen % len`.
     #[test]
     fn rotacao_percorre_o_conjunto_em_ordem_e_repete() {
         let pistas = vec![9001, 123, 64];
@@ -86,14 +87,14 @@ mod tests {
         assert_eq!(
             pista_da_gen(&pistas, 3),
             9001,
-            "gen 3 tem que voltar ao início do conjunto"
+            "gen 3 has to wrap back to the start of the set"
         );
         assert_eq!(pista_da_gen(&pistas, 4), 123);
         assert_eq!(pista_da_gen(&pistas, 8), pistas[8 % pistas.len()]);
     }
 
-    /// Lista de uma pista só se comporta como pista fixa (qualquer seed, não só
-    /// 9001) — cobre `--pistas 42` como equivalente de "fixa em 42".
+    /// A single-track list behaves as a fixed track (any seed, not just 9001) —
+    /// covers `--pistas 42` as the equivalent of "fixed at 42".
     #[test]
     fn lista_de_uma_pista_e_fixa_nessa_pista() {
         let pistas = vec![777u64];
@@ -119,7 +120,7 @@ mod tests {
 
     #[test]
     fn parse_pistas_token_invalido_e_ignorado_nao_aborta() {
-        // "abc" não parseia como u64 — é descartado, os outros dois sobrevivem.
+        // "abc" does not parse as u64 — it is discarded, the other two survive.
         assert_eq!(parse_pistas("9001,abc,123"), vec![9001, 123]);
     }
 

@@ -1,77 +1,81 @@
-//! PILOTO v2 — runtime da BASE FORJADA (não-linear), lendo `piloto_v2.json`.
+//! PILOT v2 — runtime of the FORGED BASE (non-linear), reading `piloto_v2.json`.
 //!
-//! O v1 (`piloto_linear.rs`) resolve um controlador LINEAR por ridge sobre os pares
-//! (sentiu→fez) do replay do campeão. O v2 troca a BASE: em vez de alimentar o ridge
-//! com `[x, EMA_a, EMA_b]` (576 features), alimenta com uma PIRÂMIDE DE GAUSSIANAS —
-//! 512 centros "grossos" (`Cg`) e 512 "finos" (`Cf`), cada conjunto lido por DUAS
-//! larguras, dando 2048 features. Erro no held-out temporal (ticks 17000..20000):
-//! **0,2620 → 0,1794 (−31,5%)**, por ação acel 0,109 · volante 0,137 · freio 0,292
-//! (`piloto_v2.json:err_holdout_temporal` e `err_holdout_por_acao`).
+//! v1 (`piloto_linear.rs`) solves a LINEAR controller by ridge over the (sensed→did)
+//! pairs from the champion's replay. v2 swaps the BASE: instead of feeding the ridge
+//! with `[x, EMA_a, EMA_b]` (576 features), it feeds a PYRAMID OF GAUSSIANS —
+//! 512 "coarse" centers (`Cg`) and 512 "fine" ones (`Cf`), each set read through TWO
+//! widths, giving 2048 features. Error on the temporal held-out (ticks 17000..20000):
+//! **0.2620 → 0.1794 (−31.5%)**, per action throttle 0.109 · steering 0.137 · brake 0.292
+//! (`piloto_v2.json:err_holdout_temporal` and `err_holdout_por_acao`).
 //!
-//! ## Matemática exata (FORMATO.md, `"formato": "piloto-v2/1"`)
-//! Com `x` = os MESMOS 192 canais que o L1 recebe (pós-KAN+CfC, idênticos ao v1):
+//! ## Exact math (FORMATO.md, `"formato": "piloto-v2/1"`)
+//! With `x` = the SAME 192 channels L1 receives (post-KAN+CfC, identical to v1):
 //! 1. `z[j] = (x[j] - mu[j]) / sd[j]`
 //! 2. `dg[a] = Σ_j (z[j] - Cg[a][j])²` · `df[b] = Σ_j (z[j] - Cf[b][j])²`
 //! 3. `phi = [ e^(-dg/2sg0²) ‖ e^(-dg/2sg1²) ‖ e^(-df/2sf0²) ‖ e^(-df/2sf1²) ]`
-//!    — 2048 valores NESTA ORDEM (é a ordem das linhas de `W`; trocar a ordem dos
-//!    quatro blocos é a armadilha da spec e o teste `ordem_dos_quatro_blocos_de_phi`
-//!    existe só para pegá-la)
+//!    — 2048 values IN THIS ORDER (it is the order of the rows of `W`; swapping the
+//!    order of the four blocks is the spec's trap and the test `ordem_dos_quatro_blocos_de_phi`
+//!    exists solely to catch it)
 //! 4. `pre[k] = (Σ_i phi[i]·W[i][k]) · y_sd[k] + y_mu[k]`
-//! 5. `intent[k] = tanh(pre[k])` → `[acelerador, volante, freio]`
+//! 5. `intent[k] = tanh(pre[k])` → `[throttle, steering, brake]`
 //!
-//! O `tanh` do passo 5 NÃO é enfeite: o ajuste foi feito em `arctanh(clip(y, ±0,999))`,
-//! logo `W` prevê a PRÉ-ativação. Sem ele o erro sobe de 0,1794 para 0,2306 (medido
-//! pela forja, FORMATO.md:16). `clip_arctanh` está no JSON como registro do ajuste;
-//! o runtime não usa clip nenhum. A saída é o intent CRU, o MESMO ponto de entrega do
-//! v1 (pré `kan_eval`/clamps) — quem chama segue com o pipeline normal.
+//! The `tanh` in step 5 is NOT decoration: the fit was done on `arctanh(clip(y, ±0.999))`,
+//! so `W` predicts the PRE-activation. Without it the error rises from 0.1794 to 0.2306
+//! (measured by the forge, FORMATO.md:16). `clip_arctanh` is in the JSON as a record of
+//! the fit; the runtime uses no clip at all. The output is the RAW intent, the SAME
+//! delivery point as v1 (pre `kan_eval`/clamps) — the caller continues with the normal
+//! pipeline.
 //!
-//! ## Custo por tick (pirâmide 2×512 centros sobre 192 canais)
-//! - distâncias: `(512+512) × 192 = 196 608` mult (mesmo número de sub e add)
-//! - `2048` exponenciais
-//! - leitura de W: `2048 × 3 = 6 144` MAC
-//! - **total ≈ 202 752 mult/tick** (`mult_por_tick()` devolve esse número, conferido
-//!   no teste). A 64 Hz = **12,98 M mult/s** (o v1 gastava 576×3 = 1 728 mult/tick,
-//!   117× menos, mas errava 46% mais).
-//! - MEDIDO, não estimado: **143,8 µs/tick** (5 000 ticks em 718,8 ms, 6 956 ticks/s,
-//!   `rustc -O` sem `target-cpu=native`, Ryzen 7 5800X3D, 1 thread). Isso é **0,92% do
-//!   orçamento de um tick a 64 Hz** (15 625 µs) para UM ser — é a conta que autoriza
-//!   chamar de desprezível, e vale para o uso do v1 (o piloto dirige o ser 0, o resto
-//!   segue o cérebro). Dirigir a POPULAÇÃO inteira NÃO é de graça: 200 seres × 143,8 µs
-//!   = 28,8 ms/tick, quase o dobro do orçamento. Para isso, a base tem de ir para a GPU.
-//! - `carregar` (parse do JSON de 4,1 MB): **14,1 ms**, uma vez.
-//! - memória residente: `(512+512)×192×4 B = 786 KB` de centros + 24 KB de W.
-//! - SEM ESTADO: `agir` é função pura de `x` (o v1 carregava 2 EMAs). Isso é o que
-//!   permite chamá-lo fora de ordem, repetir um tick, ou testá-lo linha a linha.
+//! ## Cost per tick (2×512-center pyramid over 192 channels)
+//! - distances: `(512+512) × 192 = 196 608` mult (same number of sub and add)
+//! - `2048` exponentials
+//! - reading W: `2048 × 3 = 6 144` MAC
+//! - **total ≈ 202 752 mult/tick** (`mult_por_tick()` returns that number, checked
+//!   in the test). At 64 Hz = **12.98 M mult/s** (v1 spent 576×3 = 1 728 mult/tick,
+//!   117× less, but erred 46% more).
+//! - MEASURED, not estimated: **143.8 µs/tick** (5 000 ticks in 718.8 ms, 6 956 ticks/s,
+//!   `rustc -O` without `target-cpu=native`, Ryzen 7 5800X3D, 1 thread). That is **0.92% of
+//!   the budget of one tick at 64 Hz** (15 625 µs) for ONE being — this is the arithmetic
+//!   that authorizes calling it negligible, and it holds for the v1 use case (the pilot
+//!   drives being 0, the rest follows the brain). Driving the whole POPULATION is NOT
+//!   free: 200 beings × 143.8 µs = 28.8 ms/tick, nearly double the budget. For that, the
+//!   base has to go to the GPU.
+//! - `carregar` (parsing the 4.1 MB JSON): **14.1 ms**, once.
+//! - resident memory: `(512+512)×192×4 B = 786 KB` of centers + 24 KB of W.
+//! - STATELESS: `agir` is a pure function of `x` (v1 carried 2 EMAs). This is what
+//!   allows calling it out of order, repeating a tick, or testing it line by line.
 //!
-//! ## Fragilidade medida, não suposta
-//! `sd` tem 6 canais degenerados (98, 114, 115, 116, 117, 124) com `sd = 1e-12`: são
-//! canais CONSTANTES em zero nos 20 001 ticks do dump (medido: `np.unique(X[:,j]) == [0]`).
-//! Dentro do dump `z = 0` neles e nada acontece. Numa pista NOVA, se um deles sair de
-//! zero, `z ≈ 5e11`, `dg` estoura e TODO o `phi` vai a zero — a saída congela em
-//! `tanh(y_mu)`, constante. Por isso:
-//! - `z` é saturado em ±`Z_MAX` (1e3) só para não gerar `inf`/`NaN` na física.
-//!   Não muda número nenhum em distribuição: o maior `|z|` do dump inteiro é **19,07**
-//!   e o maior `|centro|` é **17,63** — 1e3 é 50× acima de tudo que existe.
-//! - `soma_phi` é telemetria de "estou dentro do que vi": no dump inteiro ela vai de
-//!   **287,9 a 936,7** (p1 = 375,9; tick 17000 = 402,4). `agir_com_portao` abstém
-//!   quando ela cai abaixo de `thr_phi` — desligado por padrão (`thr_phi = 0`), porque
-//!   ligar sem medir mudaria o comportamento validado.
+//! ## Fragility measured, not assumed
+//! `sd` has 6 degenerate channels (98, 114, 115, 116, 117, 124) with `sd = 1e-12`: they
+//! are channels CONSTANT at zero across the 20 001 ticks of the dump (measured:
+//! `np.unique(X[:,j]) == [0]`). Inside the dump `z = 0` on them and nothing happens. On a
+//! NEW track, if one of them leaves zero, `z ≈ 5e11`, `dg` blows up and ALL of `phi` goes
+//! to zero — the output freezes at `tanh(y_mu)`, constant. Hence:
+//! - `z` is saturated at ±`Z_MAX` (1e3) only to avoid producing `inf`/`NaN` in the
+//!   physics. It changes no number in distribution: the largest `|z|` in the whole dump
+//!   is **19.07** and the largest `|center|` is **17.63** — 1e3 is 50× above everything
+//!   that exists.
+//! - `soma_phi` is "I am inside what I saw" telemetry: across the whole dump it ranges
+//!   from **287.9 to 936.7** (p1 = 375.9; tick 17000 = 402.4). `agir_com_portao` abstains
+//!   when it falls below `thr_phi` — off by default (`thr_phi = 0`), because turning it
+//!   on without measuring would change the validated behaviour.
 
 use std::io::Read;
 
-/// Saturação de `z`. Puramente anti-`NaN` — ver o bloco "Fragilidade medida" acima.
+/// Saturation of `z`. Purely anti-`NaN` — see the "Fragility measured" block above.
 const Z_MAX: f32 = 1.0e3;
 
-/// Um conjunto de centros compartilhando um banco de larguras (lentes).
-/// A pirâmide tem 2 grupos (`Cg` com `sg`, `Cf` com `sf`); o RBF tem 1.
+/// A set of centers sharing a bank of widths (lenses).
+/// The pyramid has 2 groups (`Cg` with `sg`, `Cf` with `sf`); the RBF has 1.
 struct Grupo {
-    /// `[n × c]` ACHATADO row-major: o centro `a`, canal `j`, é `centros[a * c + j]`.
-    /// O parser JSON daqui varre números e ignora os colchetes internos, então o
-    /// achatamento é assumido, não lido — por isso `carregar` CONFERE `len == n * c`
-    /// e recusa o arquivo se não bater (é a única defesa contra matriz transposta).
+    /// `[n × c]` FLATTENED row-major: center `a`, channel `j`, is `centros[a * c + j]`.
+    /// The JSON parser here scans numbers and ignores the inner brackets, so the
+    /// flattening is assumed, not read — which is why `carregar` CHECKS `len == n * c`
+    /// and rejects the file if it does not match (the only defence against a
+    /// transposed matrix).
     centros: Vec<f32>,
     n: usize,
-    /// `1/(2σ²)` por lente, na ordem em que as lentes aparecem em `phi`.
+    /// `1/(2σ²)` per lens, in the order the lenses appear in `phi`.
     inv2s2: Vec<f32>,
 }
 
@@ -81,40 +85,40 @@ pub struct PilotoForja {
     mu: Vec<f32>,
     sd: Vec<f32>,
     grupos: Vec<Grupo>,
-    /// `[n_feat × 3]` ACHATADO row-major: `w[i * 3 + k]` = peso da feature `i` na ação `k`.
+    /// `[n_feat × 3]` FLATTENED row-major: `w[i * 3 + k]` = weight of feature `i` on action `k`.
     w: Vec<f32>,
     y_mu: [f32; 3],
     y_sd: [f32; 3],
     n_feat: usize,
-    // buffers reusados entre ticks (zero alocação no laço quente)
+    // buffers reused between ticks (zero allocation in the hot loop)
     z: Vec<f32>,
     d2: Vec<f32>,
     phi: Vec<f32>,
-    // ── telemetria ──────────────────────────────────────────────────────────
-    /// Σφ do último tick. Faixa medida no dump: 287,9 … 936,7.
+    // ── telemetry ───────────────────────────────────────────────────────────
+    /// Σφ of the last tick. Range measured in the dump: 287.9 … 936.7.
     pub ultima_soma_phi: f32,
-    /// Quantas vezes `z` bateu em `Z_MAX` (≠0 = canal degenerado saiu de zero).
+    /// How many times `z` hit `Z_MAX` (≠0 = a degenerate channel left zero).
     pub saturacoes_z: u64,
     pub abstencoes: u64,
     pub decisoes: u64,
-    /// Limiar de Σφ abaixo do qual `agir_com_portao` abstém. 0 = portão desligado.
+    /// Σφ threshold below which `agir_com_portao` abstains. 0 = gate off.
     pub thr_phi: f32,
-    /// Índices com `sd` degenerado (< 1e-6): canais que o solve viu constantes.
+    /// Indices with degenerate `sd` (< 1e-6): channels the solve saw as constant.
     pub canais_degenerados: Vec<usize>,
 }
 
 impl PilotoForja {
-    /// Carrega `piloto_v2.json`. Parser dependência-zero, mesma estratégia do
-    /// `piloto_linear.rs`: acha `"chave"`, pega o `[` seguinte, casa colchetes e
-    /// varre TODOS os números do intervalo. Consequência: matriz `[[..],[..]]` sai
-    /// ACHATADA row-major (a varredura ignora os colchetes internos). As dimensões
-    /// vêm dos escalares `n_entrada`/`ng`/`nf`/`n_feat` do próprio JSON e são
-    /// conferidas contra o comprimento lido — arquivo que não bate é recusado.
+    /// Loads `piloto_v2.json`. Zero-dependency parser, same strategy as
+    /// `piloto_linear.rs`: find `"key"`, take the next `[`, match brackets and
+    /// scan ALL the numbers in the range. Consequence: a matrix `[[..],[..]]` comes out
+    /// FLATTENED row-major (the scan ignores the inner brackets). Dimensions come
+    /// from the scalars `n_entrada`/`ng`/`nf`/`n_feat` of the JSON itself and are
+    /// checked against the length read — a file that does not match is rejected.
     ///
-    /// Bases: `"piramide"` (a vencedora, obrigatória) e `"rbf"` atrás do mesmo match.
-    /// `"linear"` NÃO é aceita aqui de propósito: quem faz linear é `piloto_linear.rs`,
-    /// que aplica `clamp` em vez de `tanh` — aceitar aqui daria número silenciosamente
-    /// diferente do v1.
+    /// Bases: `"piramide"` (the winner, mandatory) and `"rbf"` behind the same match.
+    /// `"linear"` is NOT accepted here on purpose: linear is done by `piloto_linear.rs`,
+    /// which applies `clamp` instead of `tanh` — accepting it here would silently
+    /// produce numbers different from v1.
     pub fn carregar(path: &str) -> Option<PilotoForja> {
         let mut s = String::new();
         std::fs::File::open(path)
@@ -122,7 +126,7 @@ impl PilotoForja {
             .read_to_string(&mut s)
             .ok()?;
 
-        // ── extratores ──────────────────────────────────────────────────────
+        // ── extractors ──────────────────────────────────────────────────────
         let arr = |chave: &str| -> Option<Vec<f32>> {
             let i = s.find(&format!("\"{chave}\""))?;
             let a = s[i..].find('[')? + i;
@@ -155,9 +159,9 @@ impl PilotoForja {
                 .collect();
             Some(nums)
         };
-        // Escalar (não-array). NÃO reaproveitar `arr` aqui: `arr` procura o próximo
-        // '[', que num campo escalar pertence a OUTRA chave — foi assim que o limiar
-        // do portão do v1 virou INFINITO em silêncio (piloto_linear.rs:88-91).
+        // Scalar (non-array). Do NOT reuse `arr` here: `arr` looks for the next
+        // '[', which in a scalar field belongs to ANOTHER key — that is how the
+        // v1 gate threshold silently became INFINITY (piloto_linear.rs:88-91).
         let bruto = |chave: &str| -> Option<String> {
             let i = s.find(&format!("\"{chave}\""))?;
             let resto = &s[i + chave.len() + 2..];
@@ -175,7 +179,7 @@ impl PilotoForja {
         let base = bruto("base").unwrap_or_default();
         if !formato.starts_with("piloto-v2/") {
             eprintln!(
-                "[piloto-forja] formato desconhecido {formato:?} em {path} — esperava piloto-v2/*"
+                "[piloto-forja] unknown format {formato:?} in {path} — expected piloto-v2/*"
             );
             return None;
         }
@@ -188,7 +192,7 @@ impl PilotoForja {
         let y_sd_v = arr("y_sd")?;
         if mu.len() != c || sd.len() != c || y_mu_v.len() != 3 || y_sd_v.len() != 3 {
             eprintln!(
-                "[piloto-forja] dimensões inesperadas: n_entrada={c} mu={} sd={} y_mu={} y_sd={}",
+                "[piloto-forja] unexpected dimensions: n_entrada={c} mu={} sd={} y_mu={} y_sd={}",
                 mu.len(),
                 sd.len(),
                 y_mu_v.len(),
@@ -198,15 +202,16 @@ impl PilotoForja {
         }
 
         // ── bases ───────────────────────────────────────────────────────────
-        // A ORDEM desta lista é a ordem dos blocos de `phi`, e portanto a ordem das
-        // linhas de `W`. Mexer aqui sem mexer no solve troca as ações de lugar.
+        // The ORDER of this list is the order of the blocks of `phi`, and therefore the
+        // order of the rows of `W`. Touching this without touching the solve swaps the
+        // actions around.
         let mut grupos: Vec<Grupo> = Vec::new();
         let monta = |chave_c: &str, n: usize, sig: Vec<f32>| -> Option<Grupo> {
             let centros = arr(chave_c)?;
             if centros.len() != n * c {
                 eprintln!(
-                    "[piloto-forja] {chave_c} tem {} números, esperava {n}×{c}={} \
-                           (matriz transposta ou dimensão errada no JSON)",
+                    "[piloto-forja] {chave_c} has {} numbers, expected {n}×{c}={} \
+                           (transposed matrix or wrong dimension in the JSON)",
                     centros.len(),
                     n * c
                 );
@@ -226,17 +231,17 @@ impl PilotoForja {
                 grupos.push(monta("Cf", nf, arr("sf")?)?);
             }
             "rbf" => {
-                // Não há `piloto_v2.json` com base "rbf" nesta máquina, logo este
-                // ramo NÃO ESTÁ VALIDADO contra dado real — só contra os testes
-                // sintéticos daqui. Está aberto porque a matemática é a pirâmide
-                // com um grupo só.
+                // There is no `piloto_v2.json` with base "rbf" on this machine, so this
+                // branch is NOT VALIDATED against real data — only against the synthetic
+                // tests here. It is open because the math is the pyramid with a single
+                // group.
                 let ng = inteiro("ng")?;
                 grupos.push(monta("Cg", ng, arr("sg")?)?);
             }
             outra => {
                 eprintln!(
-                    "[piloto-forja] base {outra:?} não suportada por este runtime \
-                           (linear é do piloto_linear.rs, que usa clamp em vez de tanh)"
+                    "[piloto-forja] base {outra:?} not supported by this runtime \
+                           (linear belongs to piloto_linear.rs, which uses clamp instead of tanh)"
                 );
                 return None;
             }
@@ -245,13 +250,13 @@ impl PilotoForja {
         let n_feat: usize = grupos.iter().map(|g| g.n * g.inv2s2.len()).sum();
         if let Some(declarado) = inteiro("n_feat") {
             if declarado != n_feat {
-                eprintln!("[piloto-forja] n_feat declarado {declarado} ≠ montado {n_feat}");
+                eprintln!("[piloto-forja] declared n_feat {declarado} ≠ assembled {n_feat}");
                 return None;
             }
         }
         if w.len() != n_feat * 3 {
             eprintln!(
-                "[piloto-forja] W tem {} números, esperava {n_feat}×3={}",
+                "[piloto-forja] W has {} numbers, expected {n_feat}×3={}",
                 w.len(),
                 n_feat * 3
             );
@@ -262,8 +267,8 @@ impl PilotoForja {
         let maior_n = grupos.iter().map(|g| g.n).max().unwrap_or(0);
         let mult = grupos.iter().map(|g| g.n * c).sum::<usize>() + n_feat * 3;
         println!(
-            "  [piloto-forja] base={base} {c}→{n_feat}→3 · {} grupos · {mult} mult/tick \
-                  · err_holdout {} · degenerados {:?}",
+            "  [piloto-forja] base={base} {c}→{n_feat}→3 · {} groups · {mult} mult/tick \
+                  · err_holdout {} · degenerate {:?}",
             grupos.len(),
             escalar("err_holdout_temporal").unwrap_or(f32::NAN),
             canais_degenerados
@@ -301,28 +306,28 @@ impl PilotoForja {
         &self.base
     }
 
-    /// Multiplicações por tick desta configuração (distâncias + leitura de W).
-    /// Pirâmide 2×512 sobre 192 canais = 202 752; a 64 Hz, 12,98 M mult/s.
+    /// Multiplications per tick of this configuration (distances + reading W).
+    /// 2×512 pyramid over 192 channels = 202 752; at 64 Hz, 12.98 M mult/s.
     pub fn mult_por_tick(&self) -> usize {
         self.grupos.iter().map(|g| g.n * self.c).sum::<usize>() + self.n_feat * 3
     }
 
-    /// Um tick. `x` = os 192 canais COMO O L1 RECEBE (pós-KAN+CfC, o mesmo X do solve).
-    /// Devolve `[acelerador, volante, freio]` na MESMA convenção do intent do cérebro
-    /// (pós-`tanh`, pré `kan_eval`/clamps) — mesma assinatura e mesmo ponto de entrega
-    /// do `PilotoLinear::agir`.
+    /// One tick. `x` = the 192 channels AS L1 RECEIVES THEM (post-KAN+CfC, the same X of
+    /// the solve). Returns `[throttle, steering, brake]` in the SAME convention as the
+    /// brain's intent (post-`tanh`, pre `kan_eval`/clamps) — same signature and same
+    /// delivery point as `PilotoLinear::agir`.
     pub fn agir(&mut self, x: &[f32]) -> [f32; 3] {
         let c = self.c;
         let n_feat = self.n_feat;
         debug_assert_eq!(
             x.len(),
             c,
-            "piloto-forja: X com {} canais, esperava {c}",
+            "piloto-forja: X with {} channels, expected {c}",
             x.len()
         );
-        // Desestruturação para emprestar `grupos` (só leitura) e `z`/`d2`/`phi`
-        // (escrita) ao mesmo tempo — `for g in &self.grupos { self.d2[..] = .. }`
-        // não compila, os dois empréstimos seriam do mesmo `self`.
+        // Destructuring to borrow `grupos` (read-only) and `z`/`d2`/`phi`
+        // (write) at the same time — `for g in &self.grupos { self.d2[..] = .. }`
+        // does not compile, both borrows would come from the same `self`.
         let PilotoForja {
             mu,
             sd,
@@ -338,7 +343,7 @@ impl PilotoForja {
             ..
         } = self;
 
-        // 1. padroniza (com saturação anti-NaN — ver doc do módulo)
+        // 1. standardize (with anti-NaN saturation — see the module doc)
         let mut saturou = false;
         for j in 0..c {
             let v = (x[j] - mu[j]) / sd[j];
@@ -352,10 +357,11 @@ impl PilotoForja {
             *saturacoes_z += 1;
         }
 
-        // 2+3. distâncias e lentes. O laço externo é o GRUPO e o interno é a LENTE:
-        //      é isso que produz [dg/sg0 ‖ dg/sg1 ‖ df/sf0 ‖ df/sf1], a ordem das
-        //      linhas de W. Cada d² é calculado UMA vez e lido por todas as lentes
-        //      do grupo (é daí que a pirâmide sai barata: 1024 distâncias, 2048 features).
+        // 2+3. distances and lenses. The outer loop is the GROUP and the inner one the
+        //      LENS: that is what produces [dg/sg0 ‖ dg/sg1 ‖ df/sf0 ‖ df/sf1], the
+        //      order of the rows of W. Each d² is computed ONCE and read by every lens
+        //      of the group (which is where the pyramid gets cheap: 1024 distances,
+        //      2048 features).
         let mut p = 0usize;
         let mut soma = 0.0f32;
         for g in grupos.iter() {
@@ -389,7 +395,7 @@ impl PilotoForja {
             pre[2] += f * w[i * 3 + 2];
         }
 
-        // 5. desnormaliza e tanh (W prevê a PRÉ-ativação — ver doc do módulo)
+        // 5. denormalize and tanh (W predicts the PRE-activation — see the module doc)
         [
             (pre[0] * y_sd[0] + y_mu[0]).tanh(),
             (pre[1] * y_sd[1] + y_mu[1]).tanh(),
@@ -397,15 +403,16 @@ impl PilotoForja {
         ]
     }
 
-    /// Como `agir`, mas com PORTÃO por Σφ: devolve `None` quando o estado não acendeu
-    /// lente nenhuma (`Σφ < thr_phi`), e aí quem decide o tick é o cérebro — mesmo
-    /// contrato do `PilotoLinear::agir_com_portao`.
+    /// Like `agir`, but with a Σφ GATE: returns `None` when the state lit up no lens
+    /// (`Σφ < thr_phi`), and then the brain decides the tick — same contract as
+    /// `PilotoLinear::agir_com_portao`.
     ///
-    /// Σφ medido no dump inteiro (20 001 ticks): mín **287,9**, p1 **375,9**,
-    /// mediana 724,7, máx 936,7 (tick 17000 = 402,4). `thr_phi` vem do JSON se
-    /// existir, senão **0 = portão desligado**: ligar por conta própria mudaria o
-    /// comportamento que rendeu 0,1794, e isso é decisão de quem calibrar, não do
-    /// runtime. Um valor conservador seria ~150 (metade do mínimo observado).
+    /// Σφ measured across the whole dump (20 001 ticks): min **287.9**, p1 **375.9**,
+    /// median 724.7, max 936.7 (tick 17000 = 402.4). `thr_phi` comes from the JSON when
+    /// present, otherwise **0 = gate off**: turning it on unilaterally would change the
+    /// behaviour that yielded 0.1794, and that is a decision for whoever calibrates,
+    /// not the runtime. A conservative value would be ~150 (half of the observed
+    /// minimum).
     pub fn agir_com_portao(&mut self, x: &[f32]) -> Option<[f32; 3]> {
         let y = self.agir(x);
         if self.ultima_soma_phi >= self.thr_phi {
@@ -425,8 +432,8 @@ mod tests {
     const V2: &str = "/media/llm-data/universe-runs/piloto-formula/v2/piloto_v2.json";
     const SANIDADE: &str = "/media/llm-data/universe-runs/piloto-formula/v2/sanidade3.txt";
 
-    /// JSON sintético mínimo no formato piloto-v2/1.
-    /// `cg`/`cf`: linhas de centros já em ordem row-major.
+    /// Minimal synthetic JSON in the piloto-v2/1 format.
+    /// `cg`/`cf`: rows of centers already in row-major order.
     fn json_piramide(
         c: usize,
         cg: &[Vec<f32>],
@@ -496,8 +503,8 @@ mod tests {
         p.to_str().unwrap().to_string()
     }
 
-    /// Os 5 passos do FORMATO.md num caso que dá para conferir na mão.
-    /// 1 centro grosso em 0, 1 fino em 0, x = [1,0] → z = [1,0] → dg = df = 1.
+    /// The 5 steps of FORMATO.md in a case that can be checked by hand.
+    /// 1 coarse center at 0, 1 fine at 0, x = [1,0] → z = [1,0] → dg = df = 1.
     #[test]
     fn cinco_passos_conferidos_na_mao() {
         let c = 2;
@@ -507,7 +514,7 @@ mod tests {
             &[vec![0.0, 0.0]],
             [1.0, 2.0],
             [0.5, 4.0],
-            // W: só a feature 0 (dg com sg[0]) pesa, na ação 0.
+            // W: only feature 0 (dg with sg[0]) has weight, on action 0.
             &[
                 [1.0, 0.0, 0.0],
                 [0.0, 0.0, 0.0],
@@ -527,7 +534,7 @@ mod tests {
         let esperado = (-0.5f32).exp().tanh();
         assert!(
             (y[0] - esperado).abs() < 1e-6,
-            "y0={} esperado={esperado}",
+            "y0={} expected={esperado}",
             y[0]
         );
         assert_eq!((y[1], y[2]), (0.0, 0.0));
@@ -535,16 +542,16 @@ mod tests {
         let soma: f32 = (-0.5f32).exp() + (-0.125f32).exp() + (-2.0f32).exp() + (-0.03125f32).exp();
         assert!(
             (p.ultima_soma_phi - soma).abs() < 1e-6,
-            "Σφ={} esperado={soma}",
+            "Σφ={} expected={soma}",
             p.ultima_soma_phi
         );
-        // 1+1 centros × 2 canais + 4 features × 3 = 4 + 12 = 16 mult/tick
+        // 1+1 centers × 2 channels + 4 features × 3 = 4 + 12 = 16 mult/tick
         assert_eq!(p.mult_por_tick(), 16);
     }
 
-    /// A ARMADILHA DA SPEC: `phi` é `[dg/sg0 ‖ dg/sg1 ‖ df/sf0 ‖ df/sf1]`.
-    /// Aqui cada um dos 4 blocos tem um σ diferente e um centro diferente, e W liga
-    /// UM bloco por ação — se a ordem for trocada, dois valores caem no lugar errado.
+    /// THE SPEC'S TRAP: `phi` is `[dg/sg0 ‖ dg/sg1 ‖ df/sf0 ‖ df/sf1]`.
+    /// Here each of the 4 blocks has a different σ and a different center, and W wires
+    /// ONE block per action — if the order is swapped, two values land in the wrong place.
     #[test]
     fn ordem_dos_quatro_blocos_de_phi() {
         let c = 1;
@@ -555,7 +562,7 @@ mod tests {
             &[vec![3.0]],
             [1.0, 2.0],
             [4.0, 8.0],
-            // feature 0 → ação 0 · feature 1 → ação 1 · feature 2 → ação 2 · feature 3 → ação 2 (peso 10)
+            // feature 0 → action 0 · feature 1 → action 1 · feature 2 → action 2 · feature 3 → action 2 (weight 10)
             &[
                 [1.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0],
@@ -575,36 +582,37 @@ mod tests {
         let f3 = (-4.0f32 / 128.0).exp(); // df=4, sf1=8 → exp(-4/128)
         assert!(
             (y[0] - f0.tanh()).abs() < 1e-6,
-            "bloco 0 (Cg,sg0) fora de lugar: {}",
+            "block 0 (Cg,sg0) out of place: {}",
             y[0]
         );
         assert!(
             (y[1] - f1.tanh()).abs() < 1e-6,
-            "bloco 1 (Cg,sg1) fora de lugar: {}",
+            "block 1 (Cg,sg1) out of place: {}",
             y[1]
         );
         assert!(
             (y[2] - (f2 + 10.0 * f3).tanh()).abs() < 1e-6,
-            "blocos 2/3 (Cf) fora de lugar: {}",
+            "blocks 2/3 (Cf) out of place: {}",
             y[2]
         );
-        // f1 > f0 e f3 > f2: se os blocos trocassem, y[0] e y[1] trocariam de valor.
+        // f1 > f0 and f3 > f2: if the blocks swapped, y[0] and y[1] would swap values.
         assert!(f1 > f0 && f3 > f2);
     }
 
-    /// `W` e `Cg`/`Cf` chegam ACHATADOS do parser (ele varre números e ignora os
-    /// colchetes internos). Este teste crava o row-major: `w[i*3+k]` e `centros[a*c+j]`.
-    /// Com 2 centros de 3 canais, um centro casa exatamente com x e o outro não.
+    /// `W` and `Cg`/`Cf` arrive FLATTENED from the parser (it scans numbers and ignores
+    /// the inner brackets). This test nails the row-major layout: `w[i*3+k]` and
+    /// `centros[a*c+j]`. With 2 centers of 3 channels, one center matches x exactly and
+    /// the other does not.
     #[test]
     fn achatamento_row_major_de_matriz() {
         let c = 3;
         let j = json_piramide(
             c,
-            &[vec![1.0, 2.0, 3.0], vec![-9.0, -9.0, -9.0]], // Cg: centro 0 casa com x
+            &[vec![1.0, 2.0, 3.0], vec![-9.0, -9.0, -9.0]], // Cg: center 0 matches x
             &[vec![0.0, 0.0, 0.0]],
             [1.0, 1.0],
             [1.0, 1.0],
-            // n_feat = (2+1)*2 = 6. Ação 1 lê SÓ a feature 0 (centro 0, sg0).
+            // n_feat = (2+1)*2 = 6. Action 1 reads ONLY feature 0 (center 0, sg0).
             &[
                 [0.0, 5.0, 0.0],
                 [0.0, 0.0, 0.0],
@@ -621,22 +629,22 @@ mod tests {
         let mut p = PilotoForja::carregar(&escreve("pf_flat.json", &j)).unwrap();
         assert_eq!(p.n_features(), 6);
         let y = p.agir(&[1.0, 2.0, 3.0]);
-        // d² do centro 0 = 0 → phi[0] = 1 → pre[1] = 5 → y1 = tanh(5)
+        // d² of center 0 = 0 → phi[0] = 1 → pre[1] = 5 → y1 = tanh(5)
         assert!(
             (y[1] - 5.0f32.tanh()).abs() < 1e-6,
-            "y1={} (esperava tanh(5)); \
-                 se a matriz fosse lida transposta o centro 0 não casaria",
+            "y1={} (expected tanh(5)); \
+                 if the matrix were read transposed, center 0 would not match",
             y[1]
         );
-        // Matriz com dimensão errada tem de ser RECUSADA, não lida torto.
+        // A matrix with the wrong dimension must be REJECTED, not read crooked.
         let ruim = j.replace("\"ng\": 2", "\"ng\": 3");
         assert!(
             PilotoForja::carregar(&escreve("pf_flat_ruim.json", &ruim)).is_none(),
-            "aceitou Cg com número de linhas errado"
+            "accepted Cg with the wrong number of rows"
         );
     }
 
-    /// Portão por Σφ e saturação de z (canal degenerado saindo de zero).
+    /// Σφ gate and z saturation (degenerate channel leaving zero).
     #[test]
     fn portao_por_soma_phi_e_saturacao_de_z() {
         let c = 1;
@@ -657,41 +665,41 @@ mod tests {
         let mut p = PilotoForja::carregar(&escreve("pf_portao.json", &j)).unwrap();
         assert!(
             (p.thr_phi - 1.0).abs() < 1e-9,
-            "limiar lido = {}",
+            "threshold read = {}",
             p.thr_phi
         );
         assert_eq!(
             p.canais_degenerados,
             vec![0],
-            "sd=1e-12 tem de ser marcado degenerado"
+            "sd=1e-12 must be marked degenerate"
         );
-        // x = mu = 0 → z = 0 → phi todo 1 → Σφ = 4 ≥ 1 → decide
+        // x = mu = 0 → z = 0 → phi all 1 → Σφ = 4 ≥ 1 → decides
         assert!(p.agir_com_portao(&[0.0]).is_some());
         assert_eq!(p.saturacoes_z, 0);
-        // x = 1 com sd = 1e-12 → z = 1e12 → satura em Z_MAX, φ→0 → Σφ < 1 → abstém
+        // x = 1 with sd = 1e-12 → z = 1e12 → saturates at Z_MAX, φ→0 → Σφ < 1 → abstains
         assert!(p.agir_com_portao(&[1.0]).is_none());
-        assert_eq!(p.saturacoes_z, 1, "saturação de z não foi contada");
+        assert_eq!(p.saturacoes_z, 1, "z saturation was not counted");
         assert!(
             p.ultima_soma_phi.is_finite(),
-            "Σφ virou NaN/inf: {}",
+            "Σφ became NaN/inf: {}",
             p.ultima_soma_phi
         );
         assert_eq!((p.decisoes, p.abstencoes), (1, 1));
     }
 
-    /// SANIDADE CONTRA O ARQUIVO REAL. Carrega `piloto_v2.json` (o mesmo que a forja
-    /// gerou) e compara a saída com a referência gerada em Python a partir do MESMO
-    /// arquivo (`sanidade3.txt`, produzido por `gerar_sanidade3.py` executando os 5
-    /// passos do FORMATO.md em float64). Ticks 0, 1, 2 do `X.npy` + o tick 17000, que
-    /// é o valor publicado no FORMATO.md (`[0.91202, -0.99821, -0.99239]`).
-    /// Tolerância 1e-5: o runtime é f32, a referência é f64 (diferença medida ≤ 2,8e-6).
+    /// SANITY AGAINST THE REAL FILE. Loads `piloto_v2.json` (the same one the forge
+    /// generated) and compares the output against the reference generated in Python from
+    /// the SAME file (`sanidade3.txt`, produced by `gerar_sanidade3.py` executing the 5
+    /// steps of FORMATO.md in float64). Ticks 0, 1, 2 of `X.npy` + tick 17000, which
+    /// is the value published in FORMATO.md (`[0.91202, -0.99821, -0.99239]`).
+    /// Tolerance 1e-5: the runtime is f32, the reference is f64 (measured difference ≤ 2.8e-6).
     #[test]
     fn sanidade_contra_o_piloto_v2_real() {
         if !std::path::Path::new(V2).exists() || !std::path::Path::new(SANIDADE).exists() {
             eprintln!(
-                "\n[ATENÇÃO] TESTE NÃO EXECUTADO — falta {V2} ou {SANIDADE}.\n\
-                       Este é o único teste que prova o runtime contra o piloto real;\n\
-                       sem /media/llm-data montado ele não roda. NÃO é um PASS.\n"
+                "\n[WARNING] TEST NOT EXECUTED — missing {V2} or {SANIDADE}.\n\
+                       This is the only test that proves the runtime against the real pilot;\n\
+                       without /media/llm-data mounted it does not run. It is NOT a PASS.\n"
             );
             return;
         }
@@ -700,7 +708,7 @@ mod tests {
             .unwrap()
             .read_to_string(&mut ref_txt)
             .unwrap();
-        let mut p = PilotoForja::carregar(V2).expect("carregar piloto_v2.json real");
+        let mut p = PilotoForja::carregar(V2).expect("load the real piloto_v2.json");
         assert_eq!(p.base(), "piramide");
         assert_eq!((p.n_entradas(), p.n_features()), (192, 2048));
         assert_eq!(p.mult_por_tick(), 1024 * 192 + 2048 * 3);
@@ -720,7 +728,7 @@ mod tests {
                     assert_eq!(
                         x.len(),
                         p.n_entradas(),
-                        "tick {tick}: X com {} canais",
+                        "tick {tick}: X with {} channels",
                         x.len()
                     );
                     assert_eq!(esperado.len(), 3);
@@ -730,7 +738,7 @@ mod tests {
                         let dif = (y[k] - esperado[k]).abs();
                         assert!(
                             dif <= tol,
-                            "tick {tick} ação {k}: rust {} vs python {} (dif {dif:.3e} > tol {tol:.0e})",
+                            "tick {tick} action {k}: rust {} vs python {} (dif {dif:.3e} > tol {tol:.0e})",
                             y[k],
                             esperado[k]
                         );
@@ -738,20 +746,20 @@ mod tests {
                             pior = dif;
                         }
                     }
-                    // Σφ medida no dump: 287,9 … 936,7. Fora disso, algo mudou.
+                    // Σφ measured in the dump: 287.9 … 936.7. Outside that, something changed.
                     assert!(
                         p.ultima_soma_phi > 280.0 && p.ultima_soma_phi < 940.0,
-                        "tick {tick}: Σφ = {} fora da faixa medida [287,9 ; 936,7]",
+                        "tick {tick}: Σφ = {} outside the measured range [287.9 ; 936.7]",
                         p.ultima_soma_phi
                     );
                     assert_eq!(
                         p.saturacoes_z, 0,
-                        "tick {tick}: z saturou em dado do próprio dump"
+                        "tick {tick}: z saturated on data from the dump itself"
                     );
                     conferidos += 1;
                     println!(
                         "  tick {tick}: rust [{:.7}, {:.7}, {:.7}]  Σφ={:.2}  \
-                              maior dif vs python(f64) = {pior:.2e}  (tol {tol:.0e}) ✓",
+                              largest dif vs python(f64) = {pior:.2e}  (tol {tol:.0e}) ✓",
                         y[0], y[1], y[2], p.ultima_soma_phi
                     );
                 }
@@ -760,12 +768,12 @@ mod tests {
         }
         assert_eq!(
             conferidos, 4,
-            "esperava 4 ticks de referência, conferi {conferidos}"
+            "expected 4 reference ticks, checked {conferidos}"
         );
         assert_eq!(
             p.canais_degenerados,
             vec![98, 114, 115, 116, 117, 124],
-            "canais degenerados mudaram — o dump ou o solve não é o mesmo"
+            "degenerate channels changed — the dump or the solve is not the same"
         );
     }
 }

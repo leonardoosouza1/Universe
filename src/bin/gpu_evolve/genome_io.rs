@@ -1,4 +1,4 @@
-//! Shim: o conteúdo real mudou para `universe::gpu::genome_io` (lib) em 2026-08-14
-//! para o parser canônico poder ser usado por `genoma_view` e futuros leitores —
-//! ver o header lá pelo bug que motivou (parser duplicado lendo τ errado).
+//! Shim: the real content moved to `universe::gpu::genome_io` (lib) on 2026-08-14
+//! so the canonical parser could be used by `genoma_view` and future readers —
+//! see the header there for the bug that motivated it (duplicate parser reading τ wrong).
 pub use universe::gpu::genome_io::*;

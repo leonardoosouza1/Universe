@@ -1,7 +1,7 @@
-// Bissecção FASE_POWER parte C: adiciona APENAS o cálculo Pacejka ao shader B.
-// Testa: atan(b*sr), sin(c*atan(b*sr)), atan2, length(vec2), circle of Kamm.
-// Se crashar, o Pacejka é o culpado — provavelmente pressão de registradores aumentada
-// pelos floats adicionais (f_long, f_lat, sa, v_ref, sr, combined, scale...).
+// FASE_POWER bisection part C: adds ONLY the Pacejka computation to shader B.
+// Tests: atan(b*sr), sin(c*atan(b*sr)), atan2, length(vec2), circle of Kamm.
+// If it crashes, Pacejka is the culprit — probably register pressure increased
+// by the additional floats (f_long, f_lat, sa, v_ref, sr, combined, scale...).
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -80,9 +80,9 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
-    // D5 (ESCADA_DIFICULDADE.md — clima). Mirror consistente com physics_power_a/b.wgsl
-    // e com WorldParams em physics.rs. Este é o único kernel do trio POWER que computa
-    // força de pneu real (mu_base, abaixo) — é onde clima_mu/clima_freq têm efeito.
+    // D5 (ESCADA_DIFICULDADE.md — weather). Mirror consistent with physics_power_a/b.wgsl
+    // and with WorldParams in physics.rs. This is the only kernel of the POWER trio that
+    // computes real tire force (mu_base, below) — it is where clima_mu/clima_freq take effect.
     clima_mu:    f32,
     vento_x:     f32,
     vento_z:     f32,
@@ -122,11 +122,11 @@ fn gear_ratio(g: u32) -> f32 {
     }
 }
 
-// D5 — μ local por posição (idêntica em physics_power_a/b/c.wgsl, por consistência).
-// freq=0 (default) → sin(0)=0, termo posicional zera → mu_local = clima_mu*0.5+0.5,
-// CONSTANTE em toda a pista (sem variação espacial = "μ uniforme" do spec). E com
-// clima_mu=1.0 (seco, default) o fator (1-clima_mu) zera e mu_local=1.0 SEMPRE,
-// qualquer freq — é o que garante bit-idêntico com o comportamento pré-D5.
+// D5 — local μ by position (identical in physics_power_a/b/c.wgsl, for consistency).
+// freq=0 (default) → sin(0)=0, the positional term zeroes out → mu_local = clima_mu*0.5+0.5,
+// CONSTANT over the whole track (no spatial variation = the spec's "uniform μ"). And with
+// clima_mu=1.0 (dry, default) the (1-clima_mu) factor zeroes and mu_local=1.0 ALWAYS,
+// whatever freq — which is what guarantees bit-identical behavior with pre-D5.
 fn mu_local_at(pos: vec3<f32>) -> f32 {
     return params.clima_mu
         + (1.0 - params.clima_mu) * 0.5
@@ -237,14 +237,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let forward_vel=dot(c.vel,fwd); let lateral_vel=dot(c.vel,c.lat);
     let wheel_long_pos=array<f32,4>(hwb,hwb,-hwb,-hwb);
     let wheel_lat_pos=array<f32,4>(-htw,htw,-htw,htw);
-    // D5 — clima: mu_local_at(pos) = 1.0 sempre que clima_mu=1.0 (default), qualquer
-    // freq. Ponto único de contato (mu_base) — igual ao ponto único análogo em
-    // physics_b.wgsl:128 no pipeline vivo.
+    // D5 — weather: mu_local_at(pos) = 1.0 whenever clima_mu=1.0 (default), whatever
+    // freq. Single point of contact (mu_base) — same as the analogous single point in
+    // physics_b.wgsl:128 in the live pipeline.
     let mu_local=mu_local_at(c.pos);
     let mu_base=c.mu_peak*c.terrain_grip*c.env_grip*mu_local;
     let lsd_speed_gate=clamp(speed/5.0,0.0,1.0);
 
-    // Loop completo COM Pacejka (atan, atan2, sin, length(vec2))
+    // Full loop WITH Pacejka (atan, atan2, sin, length(vec2))
     for (var i:u32=0u;i<4u;i++){
         let load=max(nloads[i],10.0);
         var tf=1.0;
@@ -270,7 +270,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }else{
             f_lat=clamp(cl*load*mu*2.0,-load*mu,load*mu);
         }
-        // Círculo de Kamm
+        // Circle of Kamm
         let mf=mu*load; let comb=length(vec2<f32>(f_long,f_lat));
         var fl: f32; var fla: f32;
         if (comb>mf&&comb>0.001){let sc=mf/comb;fl=f_long*sc;fla=f_lat*sc;}

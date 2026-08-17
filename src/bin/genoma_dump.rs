@@ -1,12 +1,12 @@
-//! Dump de um genoma em texto, pelo parser CANÔNICO (`universe::gpu::genome_io`).
+//! Text dump of a genome, through the CANONICAL parser (`universe::gpu::genome_io`).
 //!
-//! Existe porque reimplementar o layout do arquivo já custou caro neste projeto:
-//! um segundo parser leu `neuron_activation` achando que era τ e produziu um
-//! "espalhamento 0,0×" que era mentira. Toda análise de genoma fora do Rust passa
-//! por aqui — o Python recebe texto, nunca decodifica o binário.
+//! Exists because reimplementing the file layout has already cost this project dearly:
+//! a second parser read `neuron_activation` believing it was τ and produced a
+//! "spread 0.0×" that was a lie. Every genome analysis outside Rust goes
+//! through here — Python receives text, never decodes the binary.
 //!
-//! Uso: genoma_dump --arquivo <genoma.bin> --saida <pasta>
-//! Gera na pasta: l2.txt (L2_OUT linhas × L1_OUT colunas), neuron_activation.txt,
+//! Usage: genoma_dump --arquivo <genoma.bin> --saida <folder>
+//! Writes into the folder: l2.txt (L2_OUT rows × L1_OUT columns), neuron_activation.txt,
 //! neuron_alpha.txt, neuron_threshold_l1.txt, tau.txt, meta.txt.
 
 use std::io::Write;
@@ -47,7 +47,7 @@ fn main() {
     let g = match universe::gpu::genome_io::load_genome(&arquivo) {
         Some(g) => g,
         None => {
-            eprintln!("não consegui carregar {arquivo}");
+            eprintln!("could not load {arquivo}");
             std::process::exit(1);
         }
     };
@@ -68,9 +68,9 @@ fn main() {
         }
     };
 
-    // Layout de `buf_l2w` no shader (brain.wgsl): j*L1_OUT + i — uma LINHA por
-    // saída de L2, 96 colunas de entrada. Escrevo na mesma ordem para o Python
-    // não precisar adivinhar.
+    // Layout of `buf_l2w` in the shader (brain.wgsl): j*L1_OUT + i — one ROW per
+    // L2 output, 96 input columns. Written in the same order so Python does
+    // not have to guess.
     let l1_out = 96usize;
     escreve("l2.txt", &g.l2, l1_out);
     escreve("neuron_activation.txt", &g.neuron_activation, 0);
@@ -102,28 +102,28 @@ fn main() {
     .unwrap();
     writeln!(m, "gates_w {}", g.gates_w.len()).unwrap();
     println!(
-        "dump em {saida} — l2 {} pesos, activation {} valores",
+        "dump at {saida} — l2 {} weights, activation {} values",
         g.l2.len(),
         g.neuron_activation.len()
     );
 }
 
-// ── CIRURGIA DE L2 ────────────────────────────────────────────────────────────
-// Segundo modo (`--patch-l2 <linhas.txt> --saida-genoma <novo.bin>`): substitui as
-// PRIMEIRAS linhas de L2 (as que produzem acelerador/volante/freio) por pesos
-// resolvidos fora, e regrava o genoma pelo serializador canônico.
+// ── L2 SURGERY ────────────────────────────────────────────────────────────────
+// Second mode (`--patch-l2 <linhas.txt> --saida-genoma <novo.bin>`): replaces the
+// FIRST L2 rows (the ones producing throttle/steer/brake) with weights
+// solved outside, and rewrites the genome through the canonical serializer.
 //
-// Por que existe: o piloto por fórmula dirige melhor que o campeão, mas não é um
-// genoma — não dá pra semear evolução com ele. Isto é a ponte: congela L1 e
-// recalcula só as linhas de L2 que viram ação, tendo o PILOTO como alvo. Se o
-// genoma remendado dirigir melhor que o original, a destilação volta pra dentro
-// do que a evolução consegue herdar.
+// Why it exists: the formula pilot drives better than the champion, but it is not a
+// genome — evolution cannot be seeded with it. This is the bridge: freeze L1 and
+// recompute only the L2 rows that become action, with the PILOT as the target. If the
+// patched genome drives better than the original, the distillation comes back inside
+// what evolution can inherit.
 //
-// O arquivo de entrada tem uma linha por saída (0=acelerador, 1=volante, 2=freio),
-// 96 pesos por linha, na MESMA ordem de `buf_l2w` (j*L1_OUT + i).
+// The input file has one line per output (0=throttle, 1=steer, 2=brake),
+// 96 weights per line, in the SAME order as `buf_l2w` (j*L1_OUT + i).
 fn patch_l2(genoma: &str, linhas_txt: &str, saida: &str) {
-    let mut g = universe::gpu::genome_io::load_genome(genoma).expect("genoma");
-    let txt = std::fs::read_to_string(linhas_txt).expect("linhas");
+    let mut g = universe::gpu::genome_io::load_genome(genoma).expect("genome");
+    let txt = std::fs::read_to_string(linhas_txt).expect("lines");
     let mut n_linhas = 0usize;
     for (j, linha) in txt.lines().filter(|l| !l.trim().is_empty()).enumerate() {
         let pesos: Vec<f32> = linha
@@ -133,12 +133,12 @@ fn patch_l2(genoma: &str, linhas_txt: &str, saida: &str) {
         assert_eq!(
             pesos.len(),
             96,
-            "linha {j} com {} pesos, esperava 96",
+            "row {j} has {} weights, expected 96",
             pesos.len()
         );
         g.l2[j * 96..(j + 1) * 96].copy_from_slice(&pesos);
         n_linhas += 1;
     }
-    universe::gpu::genome_io::save_genome(&g, saida).expect("gravar");
-    println!("cirurgia: {n_linhas} linha(s) de L2 substituídas → {saida}");
+    universe::gpu::genome_io::save_genome(&g, saida).expect("write");
+    println!("surgery: {n_linhas} L2 row(s) replaced → {saida}");
 }

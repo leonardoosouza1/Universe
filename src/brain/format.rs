@@ -1,81 +1,83 @@
-//! Formato `.brain` — o cérebro na palma da mão.
+//! `.brain` format — the brain in the palm of your hand.
 //!
-//! # Por que existe
+//! # Why it exists
 //!
-//! Leonardo: *"e se chamar de .brain? Porque a ideia é que seja o cérebro — a gente
-//! precisa ter ele na palma da mão."* E antes: *"além de eu ter só essas duas camadas,
-//! depois eu vou querer ter mais camadas, e aí vou querer ativar só uma, ativar outra."*
+//! Leonardo: *"what if we call it .brain? Because the idea is that it IS the brain — we
+//! need to have it in the palm of our hand."* And earlier: *"besides having just these
+//! two layers, later I'll want more layers, and then I'll want to activate just one,
+//! activate another."*
 //!
-//! O caminho de evolução na GPU salvava `UGEN v2`: quatro vetores de `f32` gravados em
-//! sequência, sem tabela de tamanhos. Três defeitos concretos, todos já sentidos:
+//! The GPU evolution path saved `UGEN v2`: four `f32` vectors written in sequence,
+//! with no size table. Three concrete defects, all already felt:
 //!
-//! · **reordenar um campo corrompe em silêncio** — o leitor confia na ordem, não há
-//!   verificação; um `.bin` antigo lido por um binário novo devolve pesos embaralhados
-//!   sem erro nenhum;
-//! · **o último bloco é adivinhado** — o loader deduz o tamanho de τ subtraindo o que
-//!   sobrou do arquivo;
-//! · **não há como desligar uma camada** nem acrescentar outra sem quebrar tudo.
+//! · **reordering a field corrupts silently** — the reader trusts the order, there is no
+//!   verification; an old `.bin` read by a new binary returns shuffled weights
+//!   with no error at all;
+//! · **the last block is guessed** — the loader deduces τ's size by subtracting what
+//!   is left of the file;
+//! · **there is no way to turn a layer off** nor add another without breaking everything.
 //!
-//! O `.dna` (TLV do caminho Bevy) já resolvia isso e foi abandonado sem decisão. Este
-//! formato retoma a tese com o vocabulário do projeto de hoje.
+//! The `.dna` (TLV of the Bevy path) already solved this and was abandoned without a
+//! decision. This format resumes the thesis with today's project vocabulary.
 //!
-//! # Anatomia
+//! # Anatomy
 //!
 //! ```text
-//! ┌─ CABEÇALHO (48 bytes) ────────────────────────────────────────────┐
-//! │ magic "BRAIN\0" (6) │ versão u16 │ geração u32 │ semente u64      │
-//! │ fitness f32 │ largura de pista f32 │ nº de blocos u16 │ reserva    │
-//! ├─ TABELA DE BLOCOS (24 bytes × n) ─────────────────────────────────┤
-//! │ tipo u8 │ codificação u8 │ sinalizadores u8 │ _ u8 │ nº itens u32 │
-//! │ deslocamento u64 │ bytes u64                                      │
-//! ├─ DADOS ───────────────────────────────────────────────────────────┤
+//! ┌─ HEADER (48 bytes) ───────────────────────────────────────────────┐
+//! │ magic "BRAIN\0" (6) │ version u16 │ generation u32 │ seed u64     │
+//! │ fitness f32 │ track width f32 │ block count u16 │ reserved        │
+//! ├─ BLOCK TABLE (24 bytes × n) ──────────────────────────────────────┤
+//! │ kind u8 │ encoding u8 │ flags u8 │ _ u8 │ item count u32          │
+//! │ offset u64 │ bytes u64                                            │
+//! ├─ DATA ────────────────────────────────────────────────────────────┤
 //! └───────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! A tabela é a diferença que importa: **cada bloco se descreve**. Um leitor antigo pula
-//! bloco de tipo desconhecido em vez de se perder; uma camada nova entra sem invalidar os
-//! arquivos existentes; e o bit `ATIVO` liga e desliga uma camada sem apagá-la do disco —
-//! que é o "ativar só uma, ativar outra" pedido.
+//! The table is the difference that matters: **each block describes itself**. An old
+//! reader skips a block of unknown kind instead of getting lost; a new layer comes in
+//! without invalidating existing files; and the `ACTIVE` bit turns a layer on and off
+//! without erasing it from disk — which is the requested "activate just one, activate
+//! another".
 //!
-//! # Tamanho
+//! # Size
 //!
-//! Cada bloco escolhe sua codificação. O cérebro de hoje em `f32` ocupa ~96 KB; os mesmos
-//! pesos em `i8` ocupam ~24 KB com erro de quantização medido em ~48 dB de SNR — sobra
-//! folga para quando o cérebro crescer. A codificação é por bloco justamente porque nem
-//! toda camada tolera a mesma perda: τ e os knots do KAN são poucos valores e sensíveis,
-//! então ficam em `f32`; L1 e L2 são dezenas de milhares e toleram `i8`.
+//! Each block picks its encoding. Today's brain in `f32` takes ~96 KB; the same
+//! weights in `i8` take ~24 KB with quantization error measured at ~48 dB of SNR —
+//! plenty of headroom for when the brain grows. Encoding is per block precisely because
+//! not every layer tolerates the same loss: τ and the KAN knots are few, sensitive
+//! values, so they stay in `f32`; L1 and L2 are tens of thousands and tolerate `i8`.
 
 use std::io::{self, Read, Write};
 
-/// Assinatura do arquivo. Seis bytes para o cabeçalho fechar alinhado em 8.
+/// File signature. Six bytes so the header closes aligned to 8.
 pub const MAGIC: &[u8; 6] = b"BRAIN\0";
 
-/// Versão do formato. Subir SÓ quando a mudança quebrar leitores antigos — acrescentar
-/// um tipo de bloco novo não quebra (o leitor pula o que não conhece), então não sobe.
+/// Format version. Bump ONLY when the change breaks old readers — adding a new
+/// block kind does not break (the reader skips what it does not know), so no bump.
 pub const VERSION: u16 = 1;
 
 const HEADER_BYTES: usize = 48;
 const ENTRY_BYTES: usize = 24;
 
-/// O que o bloco carrega. O valor numérico é gravado no disco: **nunca reaproveitar um
-/// número**, sempre acrescentar no fim, senão arquivos antigos passam a mentir.
+/// What the block carries. The numeric value is written to disk: **never reuse a
+/// number**, always append at the end, or old files start to lie.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum BlockKind {
-    /// Pesos sensoriais → camada rápida (`SENSORY_WAVE_SIZE × L1_NEURONS`).
+    /// Sensory weights → fast layer (`SENSORY_WAVE_SIZE × L1_NEURONS`).
     L1 = 1,
-    /// Camada rápida → motores (`L1_NEURONS × L2_NEURONS`).
+    /// Fast layer → motors (`L1_NEURONS × L2_NEURONS`).
     L2 = 2,
-    /// Knots do KAN de saída (3 × `KAN_OUT_KNOTS`).
+    /// Output KAN knots (3 × `KAN_OUT_KNOTS`).
     KanOut = 3,
-    /// Cérebro lento (modulação).
+    /// Slow brain (modulation).
     Slow = 4,
-    /// Banco de τ: taxa de decaimento por canal do CfC.
+    /// τ bank: decay rate per CfC channel.
     Tau = 5,
-    /// Reservado para a próxima camada — visão dedicada, córtex extra, o que vier.
+    /// Reserved for the next layer — dedicated vision, extra cortex, whatever comes.
     Extra = 6,
-    /// Bloco de tipo não reconhecido por este leitor: preservado byte a byte para não se
-    /// perder numa ida e volta pelo disco.
+    /// Block of a kind this reader does not recognize: preserved byte for byte so it is
+    /// not lost on a round trip through disk.
     Unknown = 255,
 }
 
@@ -93,37 +95,37 @@ impl BlockKind {
     }
 }
 
-/// Como os números do bloco estão gravados.
+/// How the block's numbers are written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Encoding {
-    /// Sem perda, 4 bytes por peso.
+    /// Lossless, 4 bytes per weight.
     F32 = 0,
-    /// 1 byte por peso, escala fixa de 127. Erro relativo ~0,4% para pesos em [-1, 1].
+    /// 1 byte per weight, fixed scale of 127. Relative error ~0.4% for weights in [-1, 1].
     I8 = 1,
 }
 
-/// Bit 0 dos sinalizadores: a camada participa do forward.
+/// Bit 0 of the flags: the layer takes part in the forward.
 ///
-/// Desligar NÃO apaga os pesos — eles continuam no arquivo, herdáveis e mutáveis. É a
-/// diferença entre amputar e sedar: uma camada sedada pode voltar numa geração futura se
-/// a seleção a favorecer.
+/// Turning it off does NOT erase the weights — they stay in the file, heritable and
+/// mutable. It is the difference between amputating and sedating: a sedated layer can
+/// come back in a future generation if selection favors it.
 pub const FLAG_ACTIVE: u8 = 1 << 0;
 
-/// Um bloco já decodificado em memória.
+/// A block already decoded in memory.
 #[derive(Clone, Debug)]
 pub struct Block {
     pub kind: BlockKind,
     pub encoding: Encoding,
     pub flags: u8,
-    /// Pesos em `f32`, já decodificados qualquer que seja a codificação em disco.
+    /// Weights in `f32`, already decoded whatever the on-disk encoding.
     pub data: Vec<f32>,
-    /// Bytes crus de um bloco de tipo desconhecido, preservados para a volta ao disco.
+    /// Raw bytes of an unknown-kind block, preserved for the trip back to disk.
     pub raw: Option<Vec<u8>>,
 }
 
 impl Block {
-    /// Bloco novo, ativo, em `f32`.
+    /// New block, active, in `f32`.
     pub fn new(kind: BlockKind, data: Vec<f32>) -> Self {
         Self {
             kind,
@@ -134,7 +136,7 @@ impl Block {
         }
     }
 
-    /// Mesmo bloco, gravado em `i8` — cabe em um quarto do espaço.
+    /// Same block, written in `i8` — fits in a quarter of the space.
     pub fn compact(mut self) -> Self {
         self.encoding = Encoding::I8;
         self
@@ -153,7 +155,7 @@ impl Block {
     }
 }
 
-/// Cérebro completo: quem ele é, e de que partes é feito.
+/// Complete brain: who it is, and what parts it is made of.
 #[derive(Clone, Debug, Default)]
 pub struct BrainFile {
     pub generation: u32,
@@ -164,7 +166,7 @@ pub struct BrainFile {
 }
 
 impl BrainFile {
-    /// Primeiro bloco daquele tipo, se existir e estiver ativo.
+    /// First block of that kind, if it exists and is active.
     pub fn active(&self, kind: BlockKind) -> Option<&[f32]> {
         self.blocks
             .iter()
@@ -172,12 +174,12 @@ impl BrainFile {
             .map(|b| b.data.as_slice())
     }
 
-    /// Primeiro bloco daquele tipo, ativo ou não.
+    /// First block of that kind, active or not.
     pub fn get(&self, kind: BlockKind) -> Option<&Block> {
         self.blocks.iter().find(|b| b.kind == kind)
     }
 
-    /// Tamanho que o arquivo terá em disco, sem gravá-lo.
+    /// Size the file will have on disk, without writing it.
     pub fn encoded_len(&self) -> usize {
         HEADER_BYTES
             + ENTRY_BYTES * self.blocks.len()
@@ -201,9 +203,9 @@ impl BrainFile {
         head.extend_from_slice(&self.fitness.to_le_bytes());
         head.extend_from_slice(&self.track_width.to_le_bytes());
         head.extend_from_slice(&(self.blocks.len() as u16).to_le_bytes());
-        head.resize(HEADER_BYTES, 0); // reserva zerada até 48 bytes
+        head.resize(HEADER_BYTES, 0); // zeroed reserve up to 48 bytes
 
-        // Os dados vão depois da tabela inteira, então os deslocamentos já são conhecidos.
+        // The data goes after the whole table, so the offsets are already known.
         let mut off = (HEADER_BYTES + ENTRY_BYTES * self.blocks.len()) as u64;
         let mut body = Vec::new();
         for b in &self.blocks {
@@ -239,12 +241,12 @@ impl BrainFile {
     pub fn from_bytes(b: &[u8]) -> io::Result<Self> {
         let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
         if b.len() < HEADER_BYTES || &b[0..6] != MAGIC {
-            return Err(bad("não é um arquivo .brain (assinatura ausente)"));
+            return Err(bad("not a .brain file (signature missing)"));
         }
         let version = u16::from_le_bytes([b[6], b[7]]);
         if version > VERSION {
             return Err(bad(&format!(
-                "versão {version} é mais nova que a suportada ({VERSION})"
+                "version {version} is newer than the supported one ({VERSION})"
             )));
         }
         let generation = u32::from_le_bytes(b[8..12].try_into().unwrap());
@@ -257,7 +259,7 @@ impl BrainFile {
         for i in 0..n {
             let e = HEADER_BYTES + i * ENTRY_BYTES;
             if e + ENTRY_BYTES > b.len() {
-                return Err(bad("tabela de blocos truncada"));
+                return Err(bad("block table truncated"));
             }
             let kind = BlockKind::from_u8(b[e]);
             let encoding = if b[e + 1] == 1 {
@@ -270,12 +272,12 @@ impl BrainFile {
             let off = u64::from_le_bytes(b[e + 8..e + 16].try_into().unwrap()) as usize;
             let len = u64::from_le_bytes(b[e + 16..e + 24].try_into().unwrap()) as usize;
             if off + len > b.len() {
-                return Err(bad("bloco aponta para fora do arquivo"));
+                return Err(bad("block points outside the file"));
             }
             let raw = &b[off..off + len];
 
-            // Tipo desconhecido: guarda os bytes e segue. É o que permite a um binário
-            // antigo abrir um cérebro com camadas que ele não conhece sem destruí-las.
+            // Unknown kind: keep the bytes and move on. This is what lets an old binary
+            // open a brain with layers it does not know without destroying them.
             if kind == BlockKind::Unknown {
                 blocks.push(Block {
                     kind,
@@ -295,7 +297,7 @@ impl BrainFile {
             };
             if data.len() != count {
                 return Err(bad(&format!(
-                    "bloco {kind:?}: esperava {count} valores, achei {}",
+                    "block {kind:?}: expected {count} values, found {}",
                     data.len()
                 )));
             }
@@ -354,7 +356,7 @@ mod tests {
         assert_eq!(b.track_width, 28.0);
         assert_eq!(b.blocks.len(), 2);
         assert_eq!(b.active(BlockKind::L1).unwrap(), &[0.5, -0.25, 0.125, 1.0]);
-        // τ guarda taxas fora de [-1,1]: por isso o padrão é f32, não i8.
+        // τ holds rates outside [-1,1]: that is why the default is f32, not i8.
         assert_eq!(b.active(BlockKind::Tau).unwrap(), &[2.0, 0.5]);
     }
 
@@ -365,9 +367,9 @@ mod tests {
         let mut v = Vec::new();
         a.write(&mut v).unwrap();
         let b = BrainFile::from_bytes(&v).unwrap();
-        // Some do forward…
+        // Disappears from the forward…
         assert!(b.active(BlockKind::L1).is_none());
-        // …mas os pesos continuam lá, herdáveis.
+        // …but the weights are still there, heritable.
         assert_eq!(b.get(BlockKind::L1).unwrap().data.len(), 4);
     }
 
@@ -383,7 +385,7 @@ mod tests {
             blocks: vec![Block::new(BlockKind::L1, pesos.clone()).compact()],
             ..Default::default()
         };
-        assert!(a.encoded_len() * 3 < f32_len, "i8 deveria encolher ~4x");
+        assert!(a.encoded_len() * 3 < f32_len, "i8 should shrink ~4x");
         let mut v = Vec::new();
         a.write(&mut v).unwrap();
         let b = BrainFile::from_bytes(&v).unwrap();
@@ -392,12 +394,12 @@ mod tests {
             .zip(b.active(BlockKind::L1).unwrap())
             .map(|(x, y)| (x - y).abs())
             .fold(0.0f32, f32::max);
-        assert!(erro < 0.005, "erro máximo de quantização foi {erro}");
+        assert!(erro < 0.005, "maximum quantization error was {erro}");
     }
 
     #[test]
     fn bloco_desconhecido_sobrevive_a_ida_e_volta() {
-        // Simula um arquivo gravado por uma versão futura, com um tipo que não existe aqui.
+        // Simulates a file written by a future version, with a kind that does not exist here.
         let mut a = exemplo();
         a.blocks.push(Block {
             kind: BlockKind::Unknown,

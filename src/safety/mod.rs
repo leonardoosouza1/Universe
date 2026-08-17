@@ -1,10 +1,10 @@
-//! Camada de segurança estilo Tesla — regras puras, sem rede neural (E6: doc adicionada
-//! na revisão de legibilidade final; módulo em si não foi tocado nesta rodada).
+//! Tesla-style safety layer — pure rules, no neural network (E6: doc added
+//! in the final readability review; the module itself was not touched in that round).
 //!
-//! `Sentinel` fica ENTRE a saída do cérebro (`IntentVec` proposto) e o atuador: Tier 0 é
-//! veto DURO (substitui a intenção inteira, ex. colisão iminente), Tier 1/2 são propostas
-//! SUAVES que o `gate` pondera. Consumido hoje só pelo caminho Bevy legado
-//! (`src/engine.rs`, `src/simulation/motor.rs`) — o caminho GPU (`gpu_evolve`) não passa
-//! por aqui ainda.
+//! `Sentinel` sits BETWEEN the brain's output (proposed `IntentVec`) and the actuator: Tier 0 is
+//! a HARD veto (replaces the whole intent, e.g. imminent collision), Tier 1/2 are SOFT
+//! proposals that the `gate` weighs. Consumed today only by the legacy Bevy path
+//! (`src/engine.rs`, `src/simulation/motor.rs`) — the GPU path (`gpu_evolve`) does not go
+//! through here yet.
 pub mod sentinel;
 pub use sentinel::{IntentVec, SafetyFlags, SafetyState, Sentinel, SentinelOutput};

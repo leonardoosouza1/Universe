@@ -109,7 +109,7 @@ pub fn spawn_scenery(
         .id();
     entities.push(sun_e);
 
-    // Sun halo (ghost sphere, larger + softer — bloom amplifica)
+    // Sun halo (ghost sphere, larger + softer — bloom amplifies)
     let halo_e = commands
         .spawn((
             Mesh3d(meshes.add(Sphere::new(280.0))),
@@ -126,7 +126,7 @@ pub fn spawn_scenery(
         .id();
     entities.push(halo_e);
 
-    // ---- 3b. Moon (oposto ao sol, prateado) ----
+    // ---- 3b. Moon (opposite the sun, silvery) ----
     let moon_dir = Vec3::new(0.0, 300.0, 200.0).normalize();
     let moon_pos = Vec3::new(cx, 0.0, cz) + moon_dir * 3500.0;
     let moon_e = commands
@@ -144,12 +144,12 @@ pub fn spawn_scenery(
         .id();
     entities.push(moon_e);
 
-    // ---- 4. URBAN CITY RING — buildings ao redor da pista (vibe street race) ----
-    // Anel de prédios entre o grid (720m) e as montanhas (1500m). Boxes de
-    // alturas variadas, cores de concreto/vidro, placement aleatório no anel.
+    // ---- 4. URBAN CITY RING — buildings around the track (street race vibe) ----
+    // Ring of buildings between the grid (720m) and the mountains (1500m). Boxes of
+    // varied heights, concrete/glass colors, random placement in the ring.
     let n_buildings = 80;
-    let inner_r = 380.0_f32; // logo fora do grid 720m
-    let outer_r = 900.0_f32; // antes das montanhas 1500m
+    let inner_r = 380.0_f32; // just outside the 720m grid
+    let outer_r = 900.0_f32; // before the 1500m mountains
     let mut bld_rng = make_rng(0xC1_D7_BE_EF_u64);
 
     for _ in 0..n_buildings {
@@ -160,12 +160,12 @@ pub fn spawn_scenery(
         let bw = 12.0 + bld_rng() * 18.0; // 12..30m wide
         let bd = 12.0 + bld_rng() * 18.0; // 12..30m deep
         let bh = 25.0 + bld_rng() * 110.0; // 25..135m tall (highrises mix)
-        // Cor: tons concreto cinza/bege/azulado pra variedade urbana.
+        // Color: gray/beige/bluish concrete tones for urban variety.
         let cv = bld_rng();
         let color = if cv < 0.33 {
-            Color::srgb(0.55, 0.55, 0.58) // concreto
+            Color::srgb(0.55, 0.55, 0.58) // concrete
         } else if cv < 0.66 {
-            Color::srgb(0.62, 0.58, 0.50) // bege
+            Color::srgb(0.62, 0.58, 0.50) // beige
         } else {
             Color::srgb(0.40, 0.46, 0.55) // glass blue
         };
@@ -186,7 +186,7 @@ pub fn spawn_scenery(
             .id();
         entities.push(e);
 
-        // Janelas iluminadas (emissive cube no topo) — só pros prédios mais altos.
+        // Lit windows (emissive cube on top) — only for the tallest buildings.
         if bh > 80.0 && bld_rng() < 0.4 {
             let win_mat = materials.add(StandardMaterial {
                 base_color: Color::srgb(1.0, 0.9, 0.6),
@@ -296,7 +296,7 @@ pub fn spawn_track_decorations(
         let d = world.min_dist_to_road[idx];
         if d < 25.0 {
             continue;
-        } // muito perto da pista — não bloqueia
+        } // too close to the track — does not block
         // Building dims
         let bw = 8.0 + bld_rng() * 12.0;
         let bd = 8.0 + bld_rng() * 12.0;
@@ -327,7 +327,7 @@ pub fn spawn_track_decorations(
             ))
             .id();
         entities.push(e);
-        // Janelas iluminadas em prédios altos
+        // Lit windows on tall buildings
         if bh > 50.0 && bld_rng() < 0.5 {
             let win_mat = materials.add(StandardMaterial {
                 base_color: Color::srgb(1.0, 0.92, 0.65),

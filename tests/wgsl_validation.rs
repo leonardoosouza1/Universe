@@ -1,31 +1,32 @@
-//! Validação estática de shaders WGSL modificados na FASE CANAIS (2026-08-14),
-//! SEM GPU — `naga::front::wgsl::parse_str` + `naga::valid::Validator` rodam
-//! inteiramente na CPU (parse + type-check), a mesma verificação que
-//! `wgpu::Device::create_shader_module` faria internamente, mas sem precisar de
-//! um device real.
+//! Static validation of the WGSL shaders modified in the CHANNELS PHASE
+//! (2026-08-14), WITHOUT a GPU — `naga::front::wgsl::parse_str` +
+//! `naga::valid::Validator` run entirely on the CPU (parse + type-check), the
+//! same verification `wgpu::Device::create_shader_module` would do internally,
+//! but without needing a real device.
 //!
-//! # Por que este teste existe
+//! # Why this test exists
 //!
-//! Os kernels `.wgsl` do projeto são embutidos via `include_str!` como texto puro
-//! — `cargo build`/`cargo test` NUNCA verificam a sintaxe ou os tipos do WGSL, só
-//! que a string compila como `&str` em Rust. Um erro de sintaxe WGSL (parêntese
-//! faltando, tipo errado, canal com nome duplicado) só apareceria em RUNTIME, na
-//! primeira vez que `device.create_shader_module()` rodasse — ou seja, só numa
-//! GPU real. A regra do projeto nesta sessão foi "não rode nada na GPU: há 2
-//! baterias de currículo ocupando-a", então este teste é o único jeito de saber,
-//! com `cargo test`, se os shaders editados (`perception_temporal.wgsl`,
-//! `perception_motion.wgsl` — ch101, 109, 114-117, FASE CANAIS) ao menos
-//! PARSEIAM e TYPE-CHECAM antes de alguém rodar `gpu_evolve` de verdade.
+//! The project's `.wgsl` kernels are embedded via `include_str!` as plain text
+//! — `cargo build`/`cargo test` NEVER check the WGSL syntax or types, only that
+//! the string compiles as a Rust `&str`. A WGSL syntax error (missing
+//! parenthesis, wrong type, duplicated channel name) would only show up at
+//! RUNTIME, the first time `device.create_shader_module()` ran — i.e. only on a
+//! real GPU. The project rule in that session was "run nothing on the GPU:
+//! 2 curriculum batteries are occupying it", so this test is the only way to
+//! know, with `cargo test`, whether the edited shaders
+//! (`perception_temporal.wgsl`, `perception_motion.wgsl` — ch101, 109, 114-117,
+//! CHANNELS PHASE) at least PARSE and TYPE-CHECK before anyone runs
+//! `gpu_evolve` for real.
 //!
-//! O que isto NÃO prova: que a LÓGICA está certa (semântica dos canais,
-//! normalizadores calibrados) — só que o shader é WGSL válido. Validação de
-//! comportamento (σ_temporal/σ_entre via `--auditar-visao`) continua pendente,
-//! documentada nos comentários dos próprios shaders.
+//! What this does NOT prove: that the LOGIC is right (channel semantics,
+//! calibrated normalizers) — only that the shader is valid WGSL. Behavior
+//! validation (σ_temporal/σ_entre via `--auditar-visao`) remains pending,
+//! documented in the shaders' own comments.
 
 fn validar_wgsl(nome: &str, fonte: &str) {
     let module = naga::front::wgsl::parse_str(fonte).unwrap_or_else(|e| {
         panic!(
-            "{nome}: falhou o PARSE de WGSL:\n{}",
+            "{nome}: WGSL PARSE failed:\n{}",
             e.emit_to_string(fonte)
         )
     });
@@ -36,69 +37,69 @@ fn validar_wgsl(nome: &str, fonte: &str) {
     );
     validator.validate(&module).unwrap_or_else(|e| {
         panic!(
-            "{nome}: falhou a VALIDAÇÃO (type-check) de WGSL:\n{}",
+            "{nome}: WGSL VALIDATION (type-check) failed:\n{}",
             e.emit_to_string(fonte)
         )
     });
 }
 
-/// Editado na FASE CANAIS: ch101 (curvatura 260m, reusa `curv_at_d`) e ch109
-/// (derivada real da racing line, antes hardcoded 0.0).
+/// Edited in the CHANNELS PHASE: ch101 (curvature 260m, reuses `curv_at_d`) and
+/// ch109 (real derivative of the racing line, previously hardcoded 0.0).
 #[test]
 fn perception_temporal_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/perception_temporal.wgsl");
     validar_wgsl("perception_temporal.wgsl", fonte);
 }
 
-/// Editado na FASE CANAIS: ch114-117 (approach hemisférico + fóvea), nova função
-/// `write_channel_signed`, `workgroup_size` de 10 para 11 threads.
+/// Edited in the CHANNELS PHASE: ch114-117 (hemispheric approach + fovea), new
+/// `write_channel_signed` function, `workgroup_size` from 10 to 11 threads.
 #[test]
 fn perception_motion_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/perception_motion.wgsl");
     validar_wgsl("perception_motion.wgsl", fonte);
 }
 
-/// FASE CANAIS (2026-08-14): inicialmente só comentários (header "NÃO portado"
-/// atualizado para refletir ch114-117 saindo da lista de "só motor.rs").
+/// CHANNELS PHASE (2026-08-14): initially comments only ("NOT ported" header
+/// updated to reflect ch114-117 leaving the "motor.rs only" list).
 ///
-/// FASE SENSORES, degrau 1 (2026-08-14, mudança substantiva): FOV do sweep de
-/// parede/curvatura (BLOCO C/D/E) e alcances/lookaheads (BLOCO J/K) deixaram de ser
-/// `const` de compilação e viraram genes herdáveis por ser, lidos de um buffer novo
-/// (`sensors`, binding 7 de `layout_spatial`) — ver `gpu::evolution::N_SENSOR_GENES`/
-/// `PerceptionGpu::upload_sensors`. Mudança estrutural (binding novo, bind group
-/// layout com 1 entrada a mais, leitura por-ser no início de `main()`) — exatamente o
-/// tipo de edição em que um erro de sintaxe/tipo só apareceria numa GPU real.
+/// SENSORS PHASE, step 1 (2026-08-14, substantive change): FOV of the
+/// wall/curvature sweep (BLOCK C/D/E) and ranges/lookaheads (BLOCK J/K) stopped
+/// being compile-time `const` and became heritable per-being genes, read from a new
+/// buffer (`sensors`, binding 7 of `layout_spatial`) — see `gpu::evolution::N_SENSOR_GENES`/
+/// `PerceptionGpu::upload_sensors`. Structural change (new binding, bind group
+/// layout with 1 more entry, per-being read at the start of `main()`) — exactly the
+/// kind of edit where a syntax/type error would only show up on a real GPU.
 #[test]
 fn perception_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/perception.wgsl");
     validar_wgsl("perception.wgsl", fonte);
 }
 
-/// Editado em P1.5 (`docs/PLANO_EVOLUCAO.md`): `Params` ganhou `out_gain` +
-/// `norm_l2_by_std` (+ padding pra manter o uniform em múltiplo de 16 bytes), a
-/// ETAPA 2 foi reestruturada para separar o matmul de L2 (guardado em LDS,
-/// `w_l2r[48]` novo) do ganho/fadiga/tanh — com um `workgroupBarrier()` novo em
-/// controle uniforme no meio — para permitir a normalização opcional por
-/// desvio-padrão. Mudança estrutural (barrier novo, array LDS novo, `if`
-/// aninhado calculando `l2_std`), não só troca de literal — é exatamente o tipo
-/// de edição em que um erro de sintaxe/tipo só apareceria numa GPU real; este
-/// teste pega isso sem precisar de uma.
+/// Edited in P1.5 (`docs/PLANO_EVOLUCAO.md`): `Params` gained `out_gain` +
+/// `norm_l2_by_std` (+ padding to keep the uniform a multiple of 16 bytes),
+/// STAGE 2 was restructured to separate the L2 matmul (kept in LDS, new
+/// `w_l2r[48]`) from the gain/fatigue/tanh — with a new `workgroupBarrier()` in
+/// uniform control flow in between — to allow the optional standard-deviation
+/// normalization. Structural change (new barrier, new LDS array, nested `if`
+/// computing `l2_std`), not just a literal swap — exactly the kind of edit where
+/// a syntax/type error would only show up on a real GPU; this test catches it
+/// without needing one.
 #[test]
 fn brain_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/brain.wgsl");
     validar_wgsl("brain.wgsl", fonte);
 }
 
-/// Editado em P1.8 (docs/PLANO_EVOLUCAO.md, achado crítico "ch192-207 aliasava
-/// pro PRÓXIMO ser"): o loop que escrevia `write_channel(being, 192u+i, val)` em
-/// `output` (buffer compartilhado, sem espaço pros 16 canais extra — corrompia
-/// os canais 0-15 do ser seguinte via atomicOr) passou a escrever em
-/// `extra_out[being*EXTRA_STRIDE + 3 + i]` (espaço próprio por ser). Mudança
-/// estrutural (nova const `EXTRA_STRIDE`, três escritas de `extra_out`
-/// re-indexadas), validada na GPU real por
+/// Edited in P1.8 (docs/PLANO_EVOLUCAO.md, critical finding "ch192-207 aliased
+/// into the NEXT being"): the loop that wrote `write_channel(being, 192u+i, val)`
+/// into `output` (shared buffer, no room for the 16 extra channels — corrupted
+/// channels 0-15 of the following being via atomicOr) now writes into
+/// `extra_out[being*EXTRA_STRIDE + 3 + i]` (its own per-being space). Structural
+/// change (new `EXTRA_STRIDE` const, three `extra_out` writes re-indexed),
+/// validated on the real GPU by
 /// `retina_digest_parity_test::retina_digest_bate_com_cpu_ao_longo_de_varios_ticks`
-/// (`--ignored`) — este teste aqui é a rede de segurança sem GPU, mesmo padrão
-/// dos demais nesta suíte.
+/// (`--ignored`) — this test here is the no-GPU safety net, same pattern as the
+/// others in this suite.
 #[test]
 fn retina_digest_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/retina_digest.wgsl");

@@ -64,27 +64,27 @@ impl MultiverseSpiral {
     }
 }
 
-/// Tier 2.3 — consolida traces episódicos no slow_brain via Hebbian ternário.
+/// Tier 2.3 — consolidates episodic traces into the slow_brain via ternary Hebbian.
 ///
-/// O slow_brain é um BitLinear 32→8 (input_dim × output_dim). Para cada
-/// episódio saliente:
-///   1) Reduz retina[64] → input[32] via fold de pares (média de i8 adjacentes).
-///   2) Expande action[2] → out_target[8] replicando action[0] nos primeiros 4
-///      e action[1] nos últimos 4.
-///   3) Para cada par (i,o), acumula delta = sign(reward) * sign(input[i]) *
-///      sign(out_target[o]) no peso correspondente, clampeado ao ternário
+/// The slow_brain is a BitLinear 32→8 (input_dim × output_dim). For each
+/// salient episode:
+///   1) Reduces retina[64] → input[32] via pair fold (mean of adjacent i8).
+///   2) Expands action[2] → out_target[8] replicating action[0] into the first 4
+///      and action[1] into the last 4.
+///   3) For each pair (i,o), accumulates delta = sign(reward) * sign(input[i]) *
+///      sign(out_target[o]) into the corresponding weight, clamped to the ternary
 ///      {-1, 0, +1}.
 ///
-/// Só processa episódios com |reward| > 0.1 (filtro saliência). Retorna o
-/// número de episódios realmente aplicados.
+/// Only processes episodes with |reward| > 0.1 (salience filter). Returns the
+/// number of episodes actually applied.
 pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTrace]) -> usize {
-    // SlowBrain::new() usa 32 inputs × 8 outputs. Sai silenciosamente se shape
-    // for outro (defensivo — nada corrompido).
+    // SlowBrain::new() uses 32 inputs × 8 outputs. Exits silently if the shape
+    // is different (defensive — nothing corrupted).
     if slow_brain.input_dim != 32 || slow_brain.output_dim != 8 {
         return 0;
     }
 
-    // Acumulador i32 p/ evitar overflow em múltiplos episódios antes de clamp.
+    // i32 accumulator to avoid overflow over multiple episodes before the clamp.
     let mut delta = [0i32; 32 * 8];
     let mut applied = 0usize;
 
@@ -94,7 +94,7 @@ pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTr
         }
         applied += 1;
 
-        // --- 1) Reduz retina[64] → input_sign[32] via fold média de pares.
+        // --- 1) Reduces retina[64] → input_sign[32] via pair-mean fold.
         let mut input_sign = [0i32; 32];
         for i in 0..32 {
             let a = ep.retina[2 * i] as i32;
@@ -103,7 +103,7 @@ pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTr
             input_sign[i] = avg.signum(); // {-1, 0, +1}
         }
 
-        // --- 2) Expande action[2] → out_sign[8]. Threshold ±0.1 = zona morta.
+        // --- 2) Expands action[2] → out_sign[8]. Threshold ±0.1 = dead zone.
         let a0 = if ep.action[0] > 0.1 {
             1
         } else if ep.action[0] < -0.1 {
@@ -128,7 +128,7 @@ pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTr
 
         let r_sign = if ep.reward > 0.0 { 1 } else { -1 };
 
-        // --- 3) Hebbian outer-product, modulado por sign(reward).
+        // --- 3) Hebbian outer-product, modulated by sign(reward).
         for o in 0..8 {
             let base = o * 32;
             let os = out_sign[o];
@@ -145,9 +145,9 @@ pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTr
         }
     }
 
-    // Aplica delta f32 aos pesos com clamp [-2, 2]. Scale baixo (0.01) para que
-    // múltiplos episódios não explodam magnitude; FloatLinear tolera valores
-    // contínuos (sem necessidade de saturação ternária).
+    // Applies the f32 delta to the weights with clamp [-2, 2]. Low scale (0.01) so that
+    // multiple episodes do not blow up the magnitude; FloatLinear tolerates continuous
+    // values (no need for ternary saturation).
     const HEBB_LR: f32 = 0.01;
     for (w, d) in slow_brain.weights.iter_mut().zip(delta.iter()) {
         *w = (*w + HEBB_LR * (*d as f32)).clamp(-2.0, 2.0);
@@ -158,14 +158,14 @@ pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTr
 
 /// Tier 6.2 LITE — Dream-based training (Dreamer-style).
 ///
-/// Durante o sono (adenosine ≥ 1.0), reprocessa os traces episódicos em
-/// múltiplas passadas ("rollouts oníricos"), embaralhando a ordem a cada
-/// iteração via LCG (determinístico, sem std::rand). Cada passada invoca
-/// `consolidate_episodic`, cujos clamps ternários {-1,0,+1} já garantem
-/// saturação estável — múltiplas passadas reforçam padrões salientes sem
-/// explodir pesos.
+/// During sleep (adenosine ≥ 1.0), reprocesses the episodic traces in
+/// multiple passes ("dream rollouts"), shuffling the order on each
+/// iteration via an LCG (deterministic, no std::rand). Each pass invokes
+/// `consolidate_episodic`, whose ternary clamps {-1,0,+1} already guarantee
+/// stable saturation — multiple passes reinforce salient patterns without
+/// blowing up weights.
 ///
-/// Retorna o total de aplicações acumuladas ao longo de todas as iterações.
+/// Returns the total of accumulated applications across all iterations.
 pub fn dream_rollout(
     slow_brain: &mut FloatLinear,
     episodes: &[EpisodicTrace],
@@ -176,10 +176,10 @@ pub fn dream_rollout(
     }
 
     let mut total_applied = 0usize;
-    // LCG seed derivado do nº de episódios + comprimento (determinístico).
+    // LCG seed derived from the episode count + length (deterministic).
     let mut seed: u64 = (episodes.len() as u64).wrapping_mul(0x9E3779B97F4A7C15);
 
-    // Buffer reutilizado entre iterações para evitar alocações.
+    // Buffer reused between iterations to avoid allocations.
     let mut shuffled: Vec<EpisodicTrace> = episodes.to_vec();
 
     for _ in 0..iterations {

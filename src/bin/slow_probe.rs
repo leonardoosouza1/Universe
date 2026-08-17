@@ -1,24 +1,24 @@
-//! Sonda do CÉREBRO LENTO — ele informa alguma coisa?
+//! SLOW BRAIN probe — does it inform anything?
 //!
-//! O lento é `input[48] → CfC(64) → Dense1(64→16) → ReLU → Dense2(16→3) → tanh`, e
-//! `motor.rs` consome as três saídas como grandezas DISTINTAS: agressão, teto de
-//! acelerador e viés de volante.
+//! The slow brain is `input[48] → CfC(64) → Dense1(64→16) → ReLU → Dense2(16→3) → tanh`, and
+//! `motor.rs` consumes the three outputs as DISTINCT quantities: aggression, throttle
+//! cap and steering bias.
 //!
-//! Medido na primeira passada: as três saídas têm correlação +0,9999 entre si e a
-//! primeira componente principal explica 100% da variância — é UM canal com três
-//! nomes. E `slow[1] > 0` em 0 de 2000 ticks, ou seja `throttle_cap` fica travado em
-//! 1,0 e aquele consumidor não existe na prática.
+//! Measured on the first pass: the three outputs have correlation +0.9999 with each other
+//! and the first principal component explains 100% of the variance — it is ONE channel with
+//! three names. And `slow[1] > 0` in 0 of 2000 ticks, i.e. `throttle_cap` stays locked at
+//! 1.0 and that consumer does not exist in practice.
 //!
-//! Esta sonda agora testa POR QUE, por ablação pareada: a hipótese é que a fadiga do
-//! CfC (`fatigue_beta`) injeta uma deriva monotônica igual em todos os 64 canais, e
-//! esse modo comum engole a informação por canal antes do Dense1. Controle = mesmo
-//! cérebro, mesma entrada, mesma semente, só com a fadiga desligada.
+//! This probe now tests WHY, by paired ablation: the hypothesis is that the CfC's
+//! fatigue (`fatigue_beta`) injects an identical monotonic drift into all 64 channels, and
+//! that common mode swallows the per-channel information before Dense1. Control = same
+//! brain, same input, same seed, only with fatigue turned off.
 //!
-//! Diagnóstico, não treino: CPU, sem GPU, menos de um segundo.
+//! Diagnosis, not training: CPU, no GPU, under a second.
 
 use universe::engine::SlowBrain;
 
-/// Resultado de uma condição: o que decide é INDEPENDÊNCIA, não amplitude.
+/// Result of one condition: what decides is INDEPENDENCE, not amplitude.
 struct Measurement {
     stddevs: [f32; 3],
     mean_corr: f32,
@@ -26,9 +26,9 @@ struct Measurement {
     frac_pos1: f32,
 }
 
-/// Entrada realista: cada canal oscila num período próprio, como sensores de um ser
-/// andando na pista. Períodos distintos por canal ⇒ entrada SEM modo comum; qualquer
-/// modo comum na saída foi criado pelo cérebro.
+/// Realistic input: each channel oscillates at its own period, like the sensors of a being
+/// driving on the track. Distinct periods per channel ⇒ input WITHOUT common mode; any
+/// common mode in the output was created by the brain.
 fn make_input(t: usize) -> [i8; 48] {
     let mut inp = [0i8; 48];
     for (i, slot) in inp.iter_mut().enumerate() {
@@ -87,7 +87,7 @@ fn run_condition(fatigue_beta: f32, ticks: usize, verbose: bool) -> Measurement 
     };
     let mean_corr = (corr(0, 1).abs() + corr(0, 2).abs() + corr(1, 2).abs()) / 3.0;
 
-    // Fração da variância na 1ª direção principal (iteração de potência, 3×3).
+    // Fraction of the variance along the 1st principal direction (power iteration, 3×3).
     let trace = cov[0][0] + cov[1][1] + cov[2][2];
     let mut v = [1.0f32, 0.3, -0.5];
     for _ in 0..300 {
@@ -119,9 +119,9 @@ fn run_condition(fatigue_beta: f32, ticks: usize, verbose: bool) -> Measurement 
 }
 
 fn main() {
-    // ---- Estatística dos pesos de nascimento ----
-    // Antes de qualquer dinâmica: o init é simétrico? Um init de sinal único transforma
-    // cada camada num somador com sinal fixo — todas as saídas viram a MESMA soma.
+    // ---- Statistics of the birth weights ----
+    // Before any dynamics: is the init symmetric? A single-sign init turns
+    // each layer into a fixed-sign adder — all outputs become the SAME sum.
     {
         let b = SlowBrain::new();
         for (nome, w) in [
@@ -133,7 +133,7 @@ fn main() {
             let mx = w.iter().cloned().fold(f32::MIN, f32::max);
             let media = w.iter().sum::<f32>() / w.len() as f32;
             println!(
-                "{:<16} n={:<5} negativos={:>5}/{:<5} ({:>5.1}%)  min={:+.4} max={:+.4} media={:+.4}",
+                "{:<16} n={:<5} negatives={:>5}/{:<5} ({:>5.1}%)  min={:+.4} max={:+.4} mean={:+.4}",
                 nome,
                 w.len(),
                 neg,
@@ -148,52 +148,52 @@ fn main() {
     }
 
     let ticks = 4000;
-    println!("=== COM fadiga (fatigue_beta = 0.8, como está no código) ===");
+    println!("=== WITH fatigue (fatigue_beta = 0.8, as it is in the code) ===");
     let with_fatigue = run_condition(0.8, ticks, true);
-    println!("\n=== SEM fadiga (fatigue_beta = 0.0) — controle pareado ===");
+    println!("\n=== WITHOUT fatigue (fatigue_beta = 0.0) — paired control ===");
     let without_fatigue = run_condition(0.0, ticks, true);
 
     println!("\n{:-<74}", "");
     println!(
         "{:<34} {:>18} {:>18}",
-        "métrica", "with_fatigue fadiga", "without_fatigue fadiga"
+        "metric", "with fatigue", "without fatigue"
     );
     println!("{:-<74}", "");
     for k in 0..3 {
         println!(
             "{:<34} {:>18.6} {:>18.6}",
-            format!("desvio out{}", k),
+            format!("stddev out{}", k),
             with_fatigue.stddevs[k],
             without_fatigue.stddevs[k]
         );
     }
     println!(
         "{:<34} {:>18.4} {:>18.4}",
-        "|correlação| média entre saídas", with_fatigue.mean_corr, without_fatigue.mean_corr
+        "mean |correlation| between outputs", with_fatigue.mean_corr, without_fatigue.mean_corr
     );
     println!(
         "{:<34} {:>17.1}% {:>17.1}%",
-        "variância na 1ª componente",
+        "variance in the 1st component",
         100.0 * with_fatigue.pc1_frac,
         100.0 * without_fatigue.pc1_frac
     );
     println!(
         "{:<34} {:>17.1}% {:>17.1}%",
-        "slow[1] > 0 (teto de acelerador)",
+        "slow[1] > 0 (throttle cap)",
         100.0 * with_fatigue.frac_pos1,
         100.0 * without_fatigue.frac_pos1
     );
     println!("{:-<74}", "");
 
-    println!("\nLeitura:");
+    println!("\nReading:");
     println!(
-        "  graus de liberdade efetivos — with_fatigue fadiga ≈ {:.2}, without_fatigue fadiga ≈ {:.2}  (de 3)",
+        "  effective degrees of freedom — with fatigue ≈ {:.2}, without fatigue ≈ {:.2}  (out of 3)",
         1.0 / with_fatigue.pc1_frac.max(1e-9),
         1.0 / without_fatigue.pc1_frac.max(1e-9)
     );
     if without_fatigue.mean_corr < with_fatigue.mean_corr - 0.05 {
-        println!("  ⇒ a FADIGA é a causa do modo comum: desligá-la separa as saídas.");
+        println!("  ⇒ FATIGUE is the cause of the common mode: turning it off separates the outputs.");
     } else {
-        println!("  ⇒ a fadiga NÃO explica o modo comum — a causa está antes dela.");
+        println!("  ⇒ fatigue does NOT explain the common mode — the cause lies before it.");
     }
 }

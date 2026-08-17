@@ -731,6 +731,114 @@ pub enum ChannelSource {
 /// zero_dead_inputs continua no lugar para o próximo canal genuinamente morto).
 pub const DEAD_L1_INPUTS: &[(usize, &str)] = &[];
 
+// ─── BODY BLOCK (BODY PHASE, 2026-08-17) — hostile-world + interoception ────────
+//
+// CONTRACT FOR THE INTEGRATOR (owner of context.rs/main.rs):
+//
+// A single mechanism carries every new CPU-born signal of the hostile world and of
+// the being's own body to the sensory wave: the CPU computes `BODY_K` f32 values
+// per being per tick and calls `PerceptionGpu::update_body_channels()`
+// (src/gpu/perception.rs), which writes them into `buf_temporal` slots
+// [BODY_SLOT_BASE .. BODY_SLOT_BASE+BODY_K). `perception_temporal.wgsl` converts
+// each slot to the i8 channel listed below ONLY when the flag
+// `gpu::perception::BODY_CHANNELS_ON` is set (same pattern as `PERIF_REAL`,
+// perception.rs — main.rs stores true, e.g. main.rs:990 for PERIF_REAL).
+//
+// OWNERSHIP HANDOFF, REGISTERED DECISION (mission rule 7): channels 98 and
+// 114-117 are written by `perception_motion.wgsl` when the flag is OFF (the
+// measured-constant approach/fovea family) and by `perception_temporal.wgsl`
+// (from this block) when the flag is ON. Both kernels read the SAME uniform
+// field `body_on`, built once per tick from the single static — two kernels can
+// never disagree, so no double-write (atomicOr corruption) and no mute channel.
+// Flag OFF is bit-for-bit the old behavior (project rule 3: new perception
+// enters behind a default-off flag).
+//
+// Why these channels: ch98, ch114-117 and ch124 are the six channels MEASURED
+// constant for a whole run (tools/destilabilidade.py degenerate list) — the
+// natural space for new signals. ch70/ch71 keep their meaning; the flag only
+// switches their SOURCE to the CPU-side real models (tire thermal / engine
+// temp) carried in this block.
+//
+// Declared out and why (do not silently drop sibling requirements):
+// - life_left interoception: ALREADY live as ch67 `VidaFrac` — context.rs:592-594
+//   feeds `vida_frac = life_left/life_cap` into prop[3] (`let vida_frac =
+//   (states[i].life_left as f32 / life_cap().max(1) as f32)`). Not duplicated.
+// - damage ("dano"): manifests as `life_left`, i.e. it is already sensed through
+//   ch67; no separate dead channel remains for a dedicated damage channel (all
+//   six measured-dead channels are allocated below). Next candidates would need
+//   ch144-159, which the D8 spec reserves as its pruning positive control.
+// - oil_temp: still orphan; same reason (no dead channel left).
+
+/// Number of f32 body values injected per being per tick. Fixed and part of the
+/// CPU↔GPU contract — must match `[f32; BODY_K]` in
+/// `PerceptionGpu::update_body_channels` and the slot reads in
+/// `perception_temporal.wgsl`.
+pub const BODY_K: usize = 8;
+
+/// Canonical map of the body block: `(slot, channel, name_when_on, doc)`.
+///
+/// `slot` is the index inside the `[f32; BODY_K]` array handed to
+/// `update_body_channels` (and the offset from `BODY_SLOT_BASE` in
+/// `buf_temporal`). `channel` is the sensory-wave index written when
+/// `BODY_CHANNELS_ON` is set. Every doc states the HOST range and the i8
+/// encoding, like the enum variants above do.
+///
+/// Bearings use the same signed encoding as the wall probes: host value in
+/// [-1, 1] (negative = target to the LEFT of `fwd`, positive = RIGHT,
+/// bearing/π), shader does `i32(clamp(v * 127.0, -127.0, 127.0))`.
+/// Proximities are `1 - min(d / 300m, 1)` in [0, 1] (1 = on top of it,
+/// 0 = ≥300 m away), shader `i32(clamp(v * 127.0, 0.0, 127.0))`.
+pub const BODY_SLOTS: &[(usize, usize, &str, &str)] = &[
+    (
+        0,
+        114,
+        "StationBearing",
+        "signed bearing to the nearest CHARGED energy station (D7), [-1,1] = [-pi,pi]/pi -> [-127,127]; 0 when no station qualifies",
+    ),
+    (
+        1,
+        115,
+        "StationProx",
+        "proximity to that station: 1 - min(d/300m, 1), [0,1] -> [0,127]; 0 when none",
+    ),
+    (
+        2,
+        116,
+        "StationCharge",
+        "charge fraction of that station, charge/C in [0,1] -> [0,127]",
+    ),
+    (
+        3,
+        117,
+        "OwnFuel",
+        "own fuel / tank capacity, [0,1] -> [0,127] — interoception, closes the orphan `fuel` state (physics computes it, brain never felt it)",
+    ),
+    (
+        4,
+        98,
+        "PredatorBearing",
+        "signed bearing to the nearest predator, [-1,1] -> [-127,127]; 0 when no predator active",
+    ),
+    (
+        5,
+        124,
+        "PredatorProx",
+        "proximity to that predator: 1 - min(d/300m, 1), [0,1] -> [0,127]; replaces the {0,-128} spinning flag while the flag is on",
+    ),
+    (
+        6,
+        70,
+        "TireTempReal",
+        "REAL tire temperature from the CPU-side thermal model, avg(temp)/120C in [0,1] -> [0,127]; overrides prop[6] (GPU passthrough temp) while on",
+    ),
+    (
+        7,
+        71,
+        "EngineTempReal",
+        "engine temperature (engine_temp - 20)/130 in [0,1] -> [0,127]; same encoding as prop[7], but sourced with the rest of the body block while on",
+    ),
+];
+
 /// Retorna o kernel/arquivo que escreve o canal `ch` na onda sensorial.
 ///
 /// Esta função substitui e formaliza a lógica de `canal_tem_fonte()` que

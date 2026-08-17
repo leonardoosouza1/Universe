@@ -5,35 +5,35 @@ use iara_genesis::model::tree::Sap;
 use iara_genesis::tlv::{Chunk, GenesisPayload, compress_organism, decompress_organism};
 
 // ============================================================================
-// TIER 6.6 — WEIGHT SCARS (trauma imutabilidade)
+// TIER 6.6 — WEIGHT SCARS (trauma immutability)
 // ----------------------------------------------------------------------------
-// Quando um organismo morre em CATÁSTROFE (Batida frontal com HP→0), uma fração
-// dos pesos NÃO-ZEROS (proxy de "pesos ativos naquele momento") é marcada como
-// "scar tissue" — bloqueada para mutação por N gerações.
+// When an organism dies in a CATASTROPHE (head-on crash with HP→0), a fraction
+// of the NON-ZERO weights (proxy for "weights active at that moment") is marked as
+// "scar tissue" — blocked from mutation for N generations.
 //
-// - `scar_mask[i]` = TTL u8: 0 = livre, >0 = travado (decrementa a cada gen).
-// - Scars sobrevivem transição de geração via EliteDna.
-// - Não entra no .dna v3 (runtime-only por enquanto). Documentado p/ v4.
+// - `scar_mask[i]` = TTL u8: 0 = free, >0 = locked (decrements every gen).
+// - Scars survive the generation transition via EliteDna.
+// - Not part of .dna v3 (runtime-only for now). Documented for v4.
 //
-// Versão simplificada (v1): snapshot proxy — ativos ≈ não-zeros. Versão completa
-// (v2, futura) usaria last_activation_mask do BitLinear após um forward real.
+// Simplified version (v1): snapshot proxy — active ≈ non-zeros. The complete version
+// (v2, future) would use BitLinear's last_activation_mask after a real forward.
 // ============================================================================
-pub const SCAR_TTL_INITIAL: u8 = 5; // trava por 5 gerações
-pub const SCAR_FRACTION: f32 = 0.10; // 10% dos pesos não-zero viram scar
+pub const SCAR_TTL_INITIAL: u8 = 5; // locks for 5 generations
+pub const SCAR_FRACTION: f32 = 0.10; // 10% of the non-zero weights become scar
 pub const SCAR_CATASTROPHE_LABEL: &str = "BATIDA";
 
 // ============================================================================
-// TIER 6.3 LITE — MORPHOLOGICAL CO-EVOLUTION (genes corporais)
+// TIER 6.3 LITE — MORPHOLOGICAL CO-EVOLUTION (body genes)
 // ----------------------------------------------------------------------------
-// 4 parâmetros de carroceria co-evoluem com o cérebro. Por ora só são
-// ARMAZENADOS (no DNA e no Racer) e mutacionam junto das elites; o wiring
-// físico fica pra follow-up.
+// 4 body parameters co-evolve with the brain. For now they are only
+// STORED (in the DNA and in the Racer) and mutate together with the elites; the
+// physical wiring is left for a follow-up.
 //   - mass      (kg)     [700, 1400]  default 1000
 //   - wheelbase (m)      [1.5, 3.0]   default 2.5
 //   - downforce (coef)   [0.5, 2.0]   default 1.0
 //   - grip_mult (coef)   [0.8, 1.2]   default 1.0
-// Mutação: 5% de chance por gen por gene, ruído gaussiano σ = 5% do range,
-// clamp nos limites.
+// Mutation: 5% chance per gen per gene, gaussian noise σ = 5% of the range,
+// clamp at the bounds.
 // ============================================================================
 pub const MORPHO_MASS_MIN: f32 = 700.0;
 pub const MORPHO_MASS_MAX: f32 = 1400.0;
@@ -43,8 +43,8 @@ pub const MORPHO_DOWNFORCE_MIN: f32 = 0.5;
 pub const MORPHO_DOWNFORCE_MAX: f32 = 2.0;
 pub const MORPHO_GRIP_MIN: f32 = 0.8;
 pub const MORPHO_GRIP_MAX: f32 = 1.2;
-pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% por gene por gen
-pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% do range
+pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% per gene per gen
+pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% of the range
 pub const MORPHO_BYTES: usize = 16; // 4 × f32 LE
 
 #[derive(Clone, Copy, Debug)]
@@ -93,7 +93,7 @@ impl MorphoGenes {
         Some(out.sanitized())
     }
 
-    /// Clamp nos ranges (+ proteção contra NaN/Inf vinda de arquivo corrompido).
+    /// Clamp to the ranges (+ protection against NaN/Inf coming from a corrupted file).
     pub fn sanitized(mut self) -> Self {
         let default = Self::default();
         if !self.mass.is_finite() {
@@ -119,13 +119,13 @@ impl MorphoGenes {
         self
     }
 
-    /// Muta cada gene independentemente com probabilidade MORPHO_MUTATION_RATE.
-    /// Ruído gaussiano (Box-Muller) com σ = MORPHO_SIGMA_FRAC × (max - min).
-    /// `rng01` deve retornar f32 uniforme em [0, 1).
+    /// Mutates each gene independently with probability MORPHO_MUTATION_RATE.
+    /// Gaussian noise (Box-Muller) with σ = MORPHO_SIGMA_FRAC × (max - min).
+    /// `rng01` must return a uniform f32 in [0, 1).
     pub fn mutate<R: FnMut() -> f32>(&mut self, mut rng01: R) {
         #[inline]
         fn gauss(rng01: &mut impl FnMut() -> f32) -> f32 {
-            // Box-Muller com clamp pra evitar ln(0).
+            // Box-Muller with clamp to avoid ln(0).
             let u1 = rng01().max(1e-7);
             let u2 = rng01();
             (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
@@ -154,33 +154,33 @@ impl MorphoGenes {
 
 #[derive(Clone)]
 pub struct EliteDna {
-    pub fast_weights: Vec<f32>, // f32 runtime; quantize só ao salvar DNA
+    pub fast_weights: Vec<f32>, // f32 runtime; quantize only when saving DNA
     pub fast_scale: f32,
     pub slow_weights: Vec<f32>,
     pub slow_scale: f32,
     pub cortex_l2: Vec<f32>,
     pub fitness: f32,
-    /// Runtime-only. Comprimento == fast_weights.len(). TTL por peso (0 = livre).
+    /// Runtime-only. Length == fast_weights.len(). TTL per weight (0 = free).
     pub scar_mask: Vec<u8>,
-    // --- Tier 4.2: Epigenética parcial (runtime-only, não serializa em .dna) ---
-    /// Média de cortisol do organismo ao longo da sua vida (trauma baseline).
+    // --- Tier 4.2: Partial epigenetics (runtime-only, not serialized into .dna) ---
+    /// The organism's mean cortisol over its lifetime (trauma baseline).
     pub cortisol_mean: f32,
-    /// Média de dopamina (RPE) do organismo (mood baseline).
+    /// The organism's mean dopamine (RPE) (mood baseline).
     pub dopamine_mean: f32,
-    /// Média de curiosidade do organismo (tendência exploratória).
+    /// The organism's mean curiosity (exploratory tendency).
     pub curiosity_mean: f32,
-    // --- Tier 6.3 LITE: morphological co-evolution (serializado em .dna v3.1) ---
+    // --- Tier 6.3 LITE: morphological co-evolution (serialized into .dna v3.1) ---
     pub morpho: MorphoGenes,
     pub car_model_idx: u8,
-    /// v11: KAN output head knots (runtime-only, não serializa em .dna).
-    /// 3 outputs × KAN_OUT_KNOTS cada. Preserva spline aprendido entre gens.
+    /// v11: KAN output head knots (runtime-only, not serialized into .dna).
+    /// 3 outputs × KAN_OUT_KNOTS each. Preserves the learned spline across gens.
     pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; 3],
     /// Perception CfC weights (f32 lossless). Evolvable via mutation/crossover.
     pub perception_weights: Vec<f32>,
 }
 
-/// Marca ~SCAR_FRACTION dos pesos NÃO-ZERO em `fast_weights` com scar TTL.
-/// Determinístico via seed (deriva de fast_weights.iter().sum); retorna nº de scars criados.
+/// Marks ~SCAR_FRACTION of the NON-ZERO weights in `fast_weights` with a scar TTL.
+/// Deterministic via seed (derived from fast_weights.iter().sum); returns the number of scars created.
 pub fn apply_catastrophic_scars(
     scar_mask: &mut Vec<u8>,
     fast_weights: &[i8],
@@ -189,7 +189,7 @@ pub fn apply_catastrophic_scars(
     if scar_mask.len() != fast_weights.len() {
         *scar_mask = vec![0u8; fast_weights.len()];
     }
-    // Lista de índices não-zero
+    // List of non-zero indices
     let nonzero_idx: Vec<usize> = fast_weights
         .iter()
         .enumerate()
@@ -199,7 +199,7 @@ pub fn apply_catastrophic_scars(
         return 0;
     }
     let target = ((nonzero_idx.len() as f32) * SCAR_FRACTION).ceil() as usize;
-    // Seleção pseudo-aleatória via LCG simples com seed_bias (determinismo por DNA).
+    // Pseudo-random selection via a simple LCG with seed_bias (determinism per DNA).
     let mut state: u64 = seed_bias
         .wrapping_mul(0x9E3779B97F4A7C15)
         .wrapping_add(0xDEADBEEF);
@@ -210,7 +210,7 @@ pub fn apply_catastrophic_scars(
             .wrapping_add(1442695040888963407);
         let pick = (state >> 32) as usize % nonzero_idx.len();
         let idx = nonzero_idx[pick];
-        // Só conta se o peso não estava já scarred (refresh também estende TTL).
+        // Only counts if the weight was not already scarred (a refresh also extends the TTL).
         if scar_mask[idx] == 0 {
             scars_created += 1;
         }
@@ -219,8 +219,8 @@ pub fn apply_catastrophic_scars(
     scars_created
 }
 
-/// Decrementa TTLs de todos os scars em 1 (chamado a cada gen boundary).
-/// Retorna nº de scars ainda ativos após decremento.
+/// Decrements the TTL of every scar by 1 (called at each gen boundary).
+/// Returns the number of scars still active after the decrement.
 pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
     let mut still_active = 0usize;
     for ttl in scar_mask.iter_mut() {
@@ -237,7 +237,7 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
 // ============================================================================
 // DNA FILE FORMAT v3 (+ v3.1 morpho tail)
 // ----------------------------------------------------------------------------
-// Layout core (little-endian, 8478 bytes) + opcional tail morpho (+16B = 8494):
+// Core layout (little-endian, 8478 bytes) + optional morpho tail (+16B = 8494):
 //   magic[4]     = b"IARA"
 //   version:u16  = 3
 //   generation:u32
@@ -251,9 +251,9 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
 //   [TIER 6.3 LITE tail, +16B] morpho: mass:f32 | wheelbase:f32 | downforce:f32 | grip_mult:f32
 //
 // Backward-compat:
-//   - legacy v1 (8196B) e v2 (8456B): sem magic, carregados com metadata zerada.
-//   - v3 antigo (8478B, sem tail morpho): MorphoGenes::default().
-//   - v3.1 (8494B): decodifica os 16 bytes finais.
+//   - legacy v1 (8196B) and v2 (8456B): no magic, loaded with zeroed metadata.
+//   - old v3 (8478B, no morpho tail): MorphoGenes::default().
+//   - v3.1 (8494B): decodes the final 16 bytes.
 // ============================================================================
 pub const DNA_MAGIC: &[u8; 4] = b"IARA";
 pub use crate::config::iara::genetics::*;
@@ -265,26 +265,26 @@ pub const DNA_V3_TOTAL: usize =
 pub const DNA_V31_TOTAL: usize = DNA_V3_TOTAL + MORPHO_BYTES; // 8494
 pub const DNA_V32_TOTAL: usize = DNA_V31_TOTAL + HYPERNET_BYTES; // 8755 (v3.2 with hypernet tail)
 
-// TLV TAG para metadados exclusivos do simulador (usado apenas na V4)
+// TLV TAG for simulator-exclusive metadata (used only in V4)
 pub const TAG_META_UNIVERSE: &[u8; 4] = b"META";
-// TLV TAG para Trinity weights (gate + reflex). Opcional — DNAs antigos não têm.
+// TLV TAG for Trinity weights (gate + reflex). Optional — old DNAs do not have it.
 pub const TAG_TRINITY: &[u8; 4] = b"TRIN";
-// TLV TAG para cortex equation (DCT compression). Opcional — substitui fast_weights raw.
+// TLV TAG for the cortex equation (DCT compression). Optional — replaces raw fast_weights.
 pub const TAG_CORTEX_EQ: &[u8; 4] = b"CEQU";
-// TLV TAG para slow_brain weights (V6 equation-only DNA — sem TREE/GENE).
+// TLV TAG for slow_brain weights (V6 equation-only DNA — no TREE/GENE).
 pub const TAG_SLOW_RAW: &[u8; 4] = b"SLOW";
-// TLV TAG para slow_brain weights f32 RAW (bypass Tree/sparse::compress que
-// clamp não-ternários a zero). 256 weights × 4 bytes = 1024 bytes. Lossless f32.
+// TLV TAG for slow_brain weights RAW f32 (bypasses Tree/sparse::compress, which
+// clamps non-ternaries to zero). 256 weights × 4 bytes = 1024 bytes. Lossless f32.
 pub const TAG_SLOW_F32: &[u8; 4] = b"SLWF";
-// TLV TAG para cortex weights raw i8 (bypass compress_organism que quantiza ternary).
-// Necessário pra preservar weights f32 trained com fidelidade plena (i8/63.5 round-trip).
+// TLV TAG for raw i8 cortex weights (bypasses compress_organism, which quantizes ternary).
+// Needed to preserve f32-trained weights with full fidelity (i8/63.5 round-trip).
 pub const TAG_CORTEX_RAW: &[u8; 4] = b"CRAW";
-// TLV TAG para cortex_l2 (Layer 2 deep composition, 64→32 = 2048 weights).
+// TLV TAG for cortex_l2 (Layer 2 deep composition, 64→32 = 2048 weights).
 pub const TAG_CORTEX_L2: &[u8; 4] = b"CL2W";
 
-/// Cortex DCT compression — 256 coeffs cobrem 8192 weights via inverse DCT-II.
-/// 32× compressão. Lossy mas smooth. Pra DNAs onde fidelidade absoluta não é
-/// crítica (cars treinados convergem mesmo com aproximação).
+/// Cortex DCT compression — 256 coeffs cover 8192 weights via inverse DCT-II.
+/// 32× compression. Lossy but smooth. For DNAs where absolute fidelity is not
+/// critical (trained cars converge even with the approximation).
 pub const CORTEX_DCT_COEFFS: usize = 256;
 pub const CORTEX_FULL_SIZE: usize = DNA_FAST_SIZE; // Retina HD v2
 pub const CORTEX_DCT_BYTES: usize = CORTEX_DCT_COEFFS * 4; // 1024 bytes
@@ -447,12 +447,12 @@ pub const HYPERNET_TERNARY_THRESH: f32 = 0.3;
 // ============================================================================
 // KAN OUTPUT-HEAD SPLINE KNOTS (v3.3 / V4 META tail)
 // ----------------------------------------------------------------------------
-// 3 outputs (throttle/steer/brake) × KAN_OUT_KNOTS f32 cada. Preserva spline
-// aprendido entre gens — antes era re-iniciado a cada load. Serializado como
-// tail do chunk META (V4) ou tail de arquivo (V3 legacy load).
+// 3 outputs (throttle/steer/brake) × KAN_OUT_KNOTS f32 each. Preserves the spline
+// learned across gens — it used to be re-initialized on every load. Serialized as the
+// tail of the META chunk (V4) or as a file tail (V3 legacy load).
 //
-// Layout: 144 bytes raw little-endian f32s na ordem [out0_k0..out0_kN, out1_..., out2_...].
-// Backward-compat: arquivos sem tail → KanOutputHead::new() default (tanh ramp).
+// Layout: 144 bytes raw little-endian f32s in the order [out0_k0..out0_kN, out1_..., out2_...].
+// Backward-compat: files without the tail → KanOutputHead::new() default (tanh ramp).
 // ============================================================================
 pub const KAN_KNOTS_OUTS: usize = 3;
 pub const KAN_KNOTS_PER_OUT: usize = crate::kan::KAN_OUT_KNOTS;
@@ -541,7 +541,7 @@ impl HypernetSeed {
         Some(Self { coeffs, active })
     }
 
-    /// Expande os 64 coeffs em 2048 pesos ternários via basis sin-product fixa.
+    /// Expands the 64 coeffs into 2048 ternary weights via a fixed sin-product basis.
     pub fn expand(&self) -> [i8; HYPERNET_EXPAND_SIZE] {
         let mut out = [0i8; HYPERNET_EXPAND_SIZE];
         for i in 0..HYPERNET_EXPAND_SIZE {
@@ -560,7 +560,7 @@ impl HypernetSeed {
         out
     }
 
-    /// 2% chance de flip do active por gen. Se ativo, ruído gaussiano σ=0.05 nos coeffs.
+    /// 2% chance of flipping active per gen. If active, gaussian noise σ=0.05 on the coeffs.
     pub fn mutate<R: FnMut() -> f32>(&mut self, mut rng01: R) {
         #[inline]
         fn gauss(rng01: &mut impl FnMut() -> f32) -> f32 {
@@ -593,24 +593,24 @@ pub struct DnaPayload {
     pub track_width: f32,
     pub fitness: f32,
     pub version: u16,
-    // --- Tier 6.3 LITE: defaults pra arquivos antigos sem tail morpho ---
+    // --- Tier 6.3 LITE: defaults for old files without the morpho tail ---
     pub morpho: MorphoGenes,
     pub car_model_idx: u8,
-    // --- Tier 6.4 LITE: hypernet seed (inactive default p/ backward-compat) ---
+    // --- Tier 6.4 LITE: hypernet seed (inactive default for backward-compat) ---
     pub hypernet: HypernetSeed,
-    // --- v3.3 / V4 META tail: KAN output-head knots (preserva spline aprendido) ---
+    // --- v3.3 / V4 META tail: KAN output-head knots (preserves the learned spline) ---
     pub kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
-    // --- v5 / TLV TRIN chunk: Trinity gate + reflex weights (None se DNA pré-v5) ---
+    // --- v5 / TLV TRIN chunk: Trinity gate + reflex weights (None if the DNA is pre-v5) ---
     pub trinity: Option<TrinityWeights>,
     // --- v6 / TLV CEQU chunk: cortex DCT compression (256 coeffs → 8192 weights).
-    // Experimental — ainda lossy demais pra ser source-of-truth.
+    // Experimental — still too lossy to be the source of truth.
     pub cortex_dct: Option<[f32; CORTEX_DCT_COEFFS]>,
-    // --- v6 / TLV CRAW chunk: cortex raw i8 weights (bypass compress_organism
-    // que quantizava ternary e destruía f32 trained). Source of truth pra cortex.
+    // --- v6 / TLV CRAW chunk: cortex raw i8 weights (bypasses compress_organism,
+    // which quantized ternary and destroyed f32-trained). Source of truth for the cortex.
     pub cortex_raw: Option<Vec<i8>>,
-    // --- v7 / TLV CL2W chunk: cortex layer 2 weights (64×32=2048 i8 quantizado 63.5).
+    // --- v7 / TLV CL2W chunk: cortex layer 2 weights (64×32=2048 i8 quantized at 63.5).
     pub cortex_l2_raw: Option<Vec<i8>>,
-    // SLWF chunk: slow_brain raw f32 (lossless). Bypassa Tree/sparse compressor ternary.
+    // SLWF chunk: slow_brain raw f32 (lossless). Bypasses the ternary Tree/sparse compressor.
     pub slow_f32: Option<Vec<f32>>,
 }
 
@@ -752,7 +752,7 @@ pub fn save_champion_dna_v7(
     cortex_l2: Option<&[i8]>,
     slow_f32: Option<&[f32]>,
 ) -> std::io::Result<()> {
-    // 1. Gera o payload compressando os genomas (V4)
+    // 1. Generates the payload by compressing the genomes (V4)
     let mut payload = compress_organism(
         fast_weights,
         slow_weights,
@@ -761,8 +761,8 @@ pub fn save_champion_dna_v7(
         Sap::default(),
     );
 
-    // 2. Cria o chunk META exclusivo do Universo para conter seed, scales, track e morpho
-    // Tamanho: seed(4) + t_width(4) + f_scale(4) + s_scale(4) + morpho(16) + hypernet(260) = 292
+    // 2. Creates the Universe-exclusive META chunk to hold seed, scales, track and morpho
+    // Size: seed(4) + t_width(4) + f_scale(4) + s_scale(4) + morpho(16) + hypernet(260) = 292
     let mut meta_data = Vec::with_capacity(300);
     meta_data.extend_from_slice(&seed.to_le_bytes());
     meta_data.extend_from_slice(&track_width.to_le_bytes());
@@ -774,19 +774,19 @@ pub fn save_champion_dna_v7(
 
     payload.add_chunk(Chunk::new(*TAG_META_UNIVERSE, meta_data));
 
-    // Trinity chunk (opcional) — gate + reflex weights pra restaurar swarm aprendido.
+    // Trinity chunk (optional) — gate + reflex weights to restore the learned swarm.
     if let Some(t) = trinity {
         payload.add_chunk(Chunk::new(*TAG_TRINITY, t.to_bytes().to_vec()));
     }
 
-    // CRAW chunk (cortex raw i8) — bypass compress_organism's ternary quantization
-    // que destruía f32 weights. Esta é a fonte de verdade do cortex L1.
+    // CRAW chunk (cortex raw i8) — bypasses compress_organism's ternary quantization,
+    // which destroyed f32 weights. This is the source of truth for cortex L1.
     payload.add_chunk(Chunk::new(
         *TAG_CORTEX_RAW,
         fast_weights.iter().map(|&b| b as u8).collect(),
     ));
 
-    // CL2W chunk (cortex layer 2, NOVO V7).
+    // CL2W chunk (cortex layer 2, NEW in V7).
     if let Some(l2) = cortex_l2 {
         payload.add_chunk(Chunk::new(
             *TAG_CORTEX_L2,
@@ -794,8 +794,8 @@ pub fn save_champion_dna_v7(
         ));
     }
 
-    // SLWF chunk (slow_brain raw f32) — bypass Tree/sparse::compress ternary clamp.
-    // Sem isso, slow weights = qualquer valor não {-1,0,+1} viravam zero no save.
+    // SLWF chunk (slow_brain raw f32) — bypasses the Tree/sparse::compress ternary clamp.
+    // Without it, slow weights = any value not in {-1,0,+1} became zero on save.
     if let Some(sw) = slow_f32 {
         let mut bytes = Vec::with_capacity(sw.len() * 4);
         for &w in sw {
@@ -805,8 +805,8 @@ pub fn save_champion_dna_v7(
     }
 
     // CEQU chunk (cortex equation): DCT compression for future equation-only DNA.
-    // Currently EXPERIMENTAL — not used on load (lossy 32× reconstruction não preserva
-    // trained net fidelity). Mantido pra iteração futura com basis menos perdida.
+    // Currently EXPERIMENTAL — not used on load (lossy 32× reconstruction does not preserve
+    // trained net fidelity). Kept for future iteration with a less lossy basis.
     {
         let cortex_f32: Vec<f32> = fast_weights.iter().map(|&w| w as f32 / 63.5).collect();
         let dct = cortex_to_dct(&cortex_f32);
@@ -816,12 +816,12 @@ pub fn save_champion_dna_v7(
         ));
     }
 
-    // 3. Escreve no disco (Header V4 minimalista)
+    // 3. Writes to disk (minimalist V4 header)
     let mut file = File::create(path)?;
     file.write_all(DNA_MAGIC)?; // "IARA"
     file.write_all(&DNA_VERSION.to_le_bytes())?; // 4
 
-    // Escreve todo o envelope generativo TLV
+    // Writes the whole generative TLV envelope
     file.write_all(&payload.to_bytes())?;
 
     Ok(())
@@ -836,15 +836,15 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
     if buf.len() > 6 && &buf[0..4] == DNA_MAGIC {
         let version = u16::from_le_bytes(buf[4..6].try_into().ok()?);
         if version == 8 {
-            // Desserializa o payload TLV a partir do byte 6
+            // Deserializes the TLV payload starting at byte 6
             if let Some(payload) = GenesisPayload::from_bytes(&buf[6..]) {
-                // Recupera os pesos biológicos
+                // Recovers the biological weights
                 if let Some((fast_weights, slow, generation, fitness)) =
                     decompress_organism(&payload)
                 {
                     let slow_weights = if slow.is_empty() { None } else { Some(slow) };
 
-                    // Recupera metadados do Universo
+                    // Recovers the Universe metadata
                     if let Some(meta_chunk) = payload.find_chunk(TAG_META_UNIVERSE) {
                         let meta_buf = &meta_chunk.data;
                         if meta_buf.len() >= 16 {
@@ -856,14 +856,14 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                             let slow_scale =
                                 f32::from_le_bytes(meta_buf[12..16].try_into().unwrap());
 
-                            // Morpho (offset 16..32 se existir, senao default)
+                            // Morpho (offset 16..32 if present, otherwise default)
                             let morpho = if meta_buf.len() >= 32 {
                                 MorphoGenes::from_le_bytes(&meta_buf[16..32]).unwrap_or_default()
                             } else {
                                 MorphoGenes::default()
                             };
 
-                            // Hypernet (offset 32..292 se existir, senao default)
+                            // Hypernet (offset 32..292 if present, otherwise default)
                             let hypernet = if meta_buf.len() >= 32 + HYPERNET_BYTES {
                                 HypernetSeed::from_le_bytes(&meta_buf[32..32 + HYPERNET_BYTES])
                                     .unwrap_or_default()
@@ -871,7 +871,7 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                                 HypernetSeed::default()
                             };
 
-                            // KAN knots (offset 292..436 se existir; default tanh ramp caso contrário)
+                            // KAN knots (offset 292..436 if present; default tanh ramp otherwise)
                             let knots_start = 32 + HYPERNET_BYTES;
                             let kan_knots = if meta_buf.len() >= knots_start + KAN_KNOTS_BYTES {
                                 kan_knots_from_bytes(
@@ -882,15 +882,15 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                                 default_kan_knots()
                             };
 
-                            // Trinity chunk (opcional, ausente em DNAs antigos).
+                            // Trinity chunk (optional, absent in old DNAs).
                             let trinity = payload
                                 .find_chunk(TAG_TRINITY)
                                 .and_then(|c| TrinityWeights::from_bytes(&c.data));
-                            // CEQU chunk (cortex equation, opcional).
+                            // CEQU chunk (cortex equation, optional).
                             let cortex_dct = payload
                                 .find_chunk(TAG_CORTEX_EQ)
                                 .and_then(|c| dct_coeffs_from_bytes(&c.data));
-                            // CRAW chunk (cortex raw i8) — bypass compress_organism ternary.
+                            // CRAW chunk (cortex raw i8) — bypasses compress_organism ternary.
                             let cortex_raw: Option<Vec<i8>> = payload
                                 .find_chunk(TAG_CORTEX_RAW)
                                 .map(|c| c.data.iter().map(|&b| b as i8).collect());
@@ -958,10 +958,10 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             }
             let slow_weights: Vec<i8> =
                 buf[slow_start..slow_end].iter().map(|&b| b as i8).collect();
-            // SANITIZAÇÃO: DNAs antigos podem ter scales astronômicos (bug myelinate
-            // sem cap pré-fix). Clamp em [1e-4, 10] — valores fora disso indicam
-            // corrupção runtime, não pesos válidos. Força recalibração na próxima
-            // quantize() via abs_mean dos pesos ternários.
+            // SANITIZATION: old DNAs can have astronomical scales (pre-fix myelinate
+            // bug with no cap). Clamp to [1e-4, 10] — values outside that indicate
+            // runtime corruption, not valid weights. Forces recalibration on the next
+            // quantize() via the abs_mean of the ternary weights.
             let fast_scale = if fast_scale_raw.is_finite() {
                 fast_scale_raw.clamp(1e-4, 10.0)
             } else {
@@ -972,14 +972,14 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             } else {
                 1.0
             };
-            // --- Tier 6.3 LITE: tail opcional de morpho (backward-compat c/ v3 antigo) ---
+            // --- Tier 6.3 LITE: optional morpho tail (backward-compat with old v3) ---
             let morpho = if buf.len() >= slow_end + MORPHO_BYTES {
                 MorphoGenes::from_le_bytes(&buf[slow_end..slow_end + MORPHO_BYTES])
                     .unwrap_or_default()
             } else {
                 MorphoGenes::default()
             };
-            // --- Tier 6.4 LITE: tail opcional de hypernet (backward-compat) ---
+            // --- Tier 6.4 LITE: optional hypernet tail (backward-compat) ---
             let hypernet_start = slow_end + MORPHO_BYTES;
             let hypernet = if buf.len() >= hypernet_start + HYPERNET_BYTES {
                 HypernetSeed::from_le_bytes(&buf[hypernet_start..hypernet_start + HYPERNET_BYTES])
@@ -1092,8 +1092,8 @@ mod tests {
     fn dct_roundtrip_random_signal_lossy_but_bounded() {
         // Random weights — 32× compression IS lossy, but RMS should stay reasonable.
         let n = CORTEX_FULL_SIZE;
-        // Var(U[-1,1]) = 1/3, que é o que o limiar de MSE abaixo assume. Com o LCG
-        // quebrado o sinal era U[-1,0), variância 1/12 — o teste passava por sorte.
+        // Var(U[-1,1]) = 1/3, which is what the MSE threshold below assumes. With the
+        // broken LCG the signal was U[-1,0), variance 1/12 — the test passed by luck.
         let mut r = crate::rng::Lcg::new(12345);
         let original: Vec<f32> = (0..n).map(|_| r.symmetric()).collect();
         let coeffs = cortex_to_dct(&original);
@@ -1118,13 +1118,13 @@ mod tests {
         (fast, slow)
     }
 
-    /// Pesos no tamanho dos formatos LEGADOS (v1/v2/v3).
+    /// Weights sized for the LEGACY formats (v1/v2/v3).
     ///
-    /// Os testes de compatibilidade usavam `DNA_FAST_SIZE`, que acompanhou o crescimento
-    /// da L1 (8192 → 21408 = 223×96). Só que os formatos legados são definidos com 8192
-    /// pesos: o teste escrevia um arquivo grande demais para o próprio formato que dizia
-    /// testar, e falhava por TAMANHO, não por conteúdo. O leitor sempre esteve certo —
-    /// já usa `DNA_FAST_SIZE_LEGACY`.
+    /// The compatibility tests used `DNA_FAST_SIZE`, which tracked the growth of
+    /// L1 (8192 → 21408 = 223×96). But the legacy formats are defined with 8192
+    /// weights: the test wrote a file too large for the very format it claimed to
+    /// test, and failed on SIZE, not content. The reader was always right —
+    /// it already uses `DNA_FAST_SIZE_LEGACY`.
     fn sample_weights_legacy(offset: i8) -> (Vec<i8>, Vec<i8>) {
         let fast: Vec<i8> = (0..DNA_FAST_SIZE_LEGACY)
             .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8)
@@ -1184,7 +1184,7 @@ mod tests {
 
     #[test]
     fn v3_total_size_matches_layout() {
-        // Verifica consistencia v3 legacy (usando os layouts legacy):
+        // Checks v3 legacy consistency (using the legacy layouts):
         assert_eq!(
             DNA_V3_TOTAL,
             4 + 2 + 4 + 4 + 4 + 4 + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY
@@ -1206,7 +1206,7 @@ mod tests {
         save_champion_dna_with_morpho(path_s, &fast, 0.1, &slow, 0.2, 1, 2, 10.0, 50.0, morpho)
             .unwrap();
         let meta = std::fs::metadata(&path).unwrap();
-        // Em V4 (Generative Compression) file size vai variar baseado na entropia da sequência.
+        // In V4 (Generative Compression) the file size varies based on the entropy of the sequence.
         assert!(meta.len() > 0);
         let loaded = load_champion_dna(path_s).expect("v4 must load");
         assert!((loaded.morpho.mass - 1234.5).abs() < 1e-1);
@@ -1233,12 +1233,12 @@ mod tests {
 
     #[test]
     fn legacy_v3_without_morpho_loads_with_default() {
-        // Simula um arquivo v3 salvo pre-tier-6.3 (8478 bytes, sem morpho tail).
+        // Simulates a v3 file saved pre-tier-6.3 (8478 bytes, no morpho tail).
         let (fast, slow) = sample_weights_legacy(3);
         let path = std::env::temp_dir().join("iara_test_v3_legacy_nomorpho.dna");
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(DNA_MAGIC).unwrap();
-        f.write_all(&3_u16.to_le_bytes()).unwrap(); // Legacy V3 tem version=3
+        f.write_all(&3_u16.to_le_bytes()).unwrap(); // Legacy V3 has version=3
         f.write_all(&7_u32.to_le_bytes()).unwrap();
         f.write_all(&123_u32.to_le_bytes()).unwrap();
         f.write_all(&12.0_f32.to_le_bytes()).unwrap();
@@ -1265,7 +1265,7 @@ mod tests {
         let path = std::env::temp_dir().join("iara_test_kan_knots.dna");
         let path_s = path.to_str().unwrap();
         let mut knots = default_kan_knots();
-        // Alvo distinguível do default pra confirmar que a escrita preserva valores.
+        // Target distinguishable from the default to confirm the write preserves values.
         for o in 0..3 {
             for k in 0..crate::kan::KAN_OUT_KNOTS {
                 knots[o][k] = ((o as f32) * 0.3) + ((k as f32) * 0.05) - 0.5;
@@ -1304,7 +1304,7 @@ mod tests {
 
     #[test]
     fn legacy_v4_without_knots_loads_with_default() {
-        // V4 salvo com assinatura antiga (sem knots tail) → default_kan_knots().
+        // V4 saved with the old signature (no knots tail) → default_kan_knots().
         let (fast, slow) = sample_weights(5);
         let path = std::env::temp_dir().join("iara_test_v4_no_knots.dna");
         let path_s = path.to_str().unwrap();

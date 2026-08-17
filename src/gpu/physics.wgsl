@@ -1,69 +1,69 @@
-// FÍSICA VEICULAR NA GPU — um thread por carro, kernel único por passo de simulação.
+// VEHICLE PHYSICS ON THE GPU — one thread per car, single kernel per simulation step.
 //
-// # Decisão de projeto: kernel único vs quatro kernels separados
+// # Design decision: single kernel vs four separate kernels
 //
-// A CPU roda suspensão → powertrain → colisão → integração em sequência, e CADA FASE lê
-// resultado da fase anterior DO MESMO CARRO. Isso descarta pipelines assíncronos porque a
-// dependência é local (carro i depende só de si mesmo). Com um único kernel:
+// The CPU runs suspension → powertrain → collision → integration in sequence, and EACH PHASE
+// reads the previous phase's result FOR THE SAME CAR. That rules out asynchronous pipelines
+// because the dependency is local (car i depends only on itself). With a single kernel:
 //
-//   1. Sem barreiras de memória global entre fases — cada thread carrega o estado do seu carro
-//      em registradores, executa as 4 fases em sequência e escreve de volta uma única vez.
-//   2. Sem overhead de 4 dispatches + 4 bind groups + 4 syncs.
-//   3. A GPU tem ~1800 registradores f32 por workgroup RDNA2; um carro usa ~150 floats.
-//      Não medido — estimativa conservadora. Pressão de registrador não deve ser gargalo.
+//   1. No global memory barriers between phases — each thread loads its car's state
+//      into registers, runs the 4 phases in sequence and writes back a single time.
+//   2. No overhead of 4 dispatches + 4 bind groups + 4 syncs.
+//   3. The GPU has ~1800 f32 registers per RDNA2 workgroup; one car uses ~150 floats.
+//      Not measured — conservative estimate. Register pressure should not be a bottleneck.
 //
-// Com 60 seres cabe em 1 workgroup de 64 threads (threads 60-63 saem no guard inicial).
-// O ponto de saturação de compute só aparece acima de ~512 threads; em 60 o gargalo é
-// latência de round-trip host↔GPU, não ALU. O ganho principal vem do estado residente.
+// With 60 beings it fits in 1 workgroup of 64 threads (threads 60-63 exit at the initial guard).
+// The compute saturation point only appears above ~512 threads; at 60 the bottleneck is
+// host↔GPU round-trip latency, not ALU. The main gain comes from resident state.
 //
-// # Riscos de divergência aritmética vs CPU
+// # Arithmetic divergence risks vs CPU
 //
-// 1. `atan` e `sin` WGSL: IEEE-754 single-precision, fiel a ±1 ULP na maioria das
-//    implementações Vulkan/GL. A GPU pode usar instrução nativa que difere da libm do x86.
-//    Ponto sensível: Pacejka (sin(c * atan(b * sr))) e slip_angle (atan2). Documentado
+// 1. WGSL `atan` and `sin`: IEEE-754 single-precision, faithful to ±1 ULP in most
+//    Vulkan/GL implementations. The GPU may use a native instruction that differs from x86 libm.
+//    Sensitive spot: Pacejka (sin(c * atan(b * sr))) and slip_angle (atan2). Documented
 //    in-situ.
 //
-// 2. `sqrt` / `length`: ±1 ULP vs sqrtf da CPU. Crítico no círculo de Kamm.
+// 2. `sqrt` / `length`: ±1 ULP vs the CPU's sqrtf. Critical in the Kamm circle.
 //
-// 3. Ordem de acumulação de forças: igual à CPU (acumula em variáveis locais, aplica ao final).
+// 3. Force accumulation order: same as CPU (accumulates in local variables, applies at the end).
 //
-// 4. Interpolação bilinear do heightmap: floor() GPU vs CPU — ambos seguem IEEE 60559. OK.
+// 4. Bilinear heightmap interpolation: floor() GPU vs CPU — both follow IEEE 60559. OK.
 //
-// 5. SUPOSIÇÃO MORTA em physics.rs linha 631:
+// 5. DEAD ASSUMPTION at physics.rs line 631:
 //    `yaw_inertia = mass * (wheel_base/2)^2`
-//    É o momento de inércia de um ponto de massa; ignora track_width e distribuição real.
-//    O comentário "momento de inércia correto" é otimista. Replicamos a mesma fórmula.
+//    It is the moment of inertia of a point mass; ignores track_width and the real distribution.
+//    The comment "correct moment of inertia" is optimistic. We replicate the same formula.
 //
-// 6. POSSÍVEL BUG na CPU physics.rs linha 467:
+// 6. POSSIBLE BUG in the CPU physics.rs line 467:
 //    `split_left = 0.5 + lock_factor * signum(omega_R - omega_L)`
-//    split_left não é clampeado a [0, 1] — pode ser >1.0 com lock_factor alto.
-//    split_right = 1.0 - split_left pode ser negativo. Replicamos fielmente.
+//    split_left is not clamped to [0, 1] — can be >1.0 with a high lock_factor.
+//    split_right = 1.0 - split_left can be negative. We replicate faithfully.
 //
-// 7. DUPLICAÇÃO DE AERO DRAG na CPU: powertrain_and_tire_system aplica drag (fase E) E
-//    integration_system reaplica (linha 717-721). Replicamos os dois.
+// 7. AERO DRAG DUPLICATION on the CPU: powertrain_and_tire_system applies drag (phase E) AND
+//    integration_system reapplies it (line 717-721). We replicate both.
 //
-// 8. YAW KICK DE COLISÃO: a CPU (linha 687) adiciona diretamente a body.angular_velocity.y
-//    — não via torque. Aqui usamos av_y_col acumulado, adicionado ANTES da integração.
+// 8. COLLISION YAW KICK: the CPU (line 687) adds directly to body.angular_velocity.y
+//    — not via torque. Here we use accumulated av_y_col, added BEFORE integration.
 
 // ============================================================
-// === STRUCTS DE ENTRADA/SAÍDA                             ===
+// === INPUT/OUTPUT STRUCTS                                 ===
 // ============================================================
 
-// Estado completo de um carro para leitura. Espelho de EstadoFisicoGpu em fisica.rs.
-// Todos os vec3 têm padding de f32 para alinhamento de 16 bytes exigido pelo WGSL.
+// Full state of one car for reading. Mirror of EstadoFisicoGpu in fisica.rs.
+// All vec3 carry f32 padding for the 16-byte alignment WGSL requires.
 struct CarInput {
     // --- PhysicsBody ---
     vel:        vec3<f32>,
     av_y:       f32,         // angular_velocity.y (rad/s)
-    // 4 rodas × 2 vec4 = 8 vec4. Roda i: wheels[i*2] = [omega, slip_r, slip_a, normal_load]
-    //                                    wheels[i*2+1] = [tire_temp, susp_comp, prev_comp, pad]
+    // 4 wheels × 2 vec4 = 8 vec4. Wheel i: wheels[i*2] = [omega, slip_r, slip_a, normal_load]
+    //                                      wheels[i*2+1] = [tire_temp, susp_comp, prev_comp, pad]
     wheels:     array<vec4<f32>, 8>,
     // --- Transform ---
     pos:        vec3<f32>,
     _pad_pos:   f32,
-    fwd:        vec3<f32>,   // transform.right() em Bevy = "frente" no physics.rs
+    fwd:        vec3<f32>,   // transform.right() in Bevy = "forward" in physics.rs
     _pad_fwd:   f32,
-    lat:        vec3<f32>,   // transform.back() em Bevy = "lateral" no physics.rs
+    lat:        vec3<f32>,   // transform.back() in Bevy = "lateral" in physics.rs
     _pad_lat:   f32,
     // --- EngineComponent ---
     max_torque:      f32,
@@ -73,7 +73,7 @@ struct CarInput {
     brake_cmd:       f32,
     steer:           f32,
     drive_torque_out:f32,
-    current_gear:    u32,   // 0=ré, 1=neutro, 2=1ª … 6=6ª
+    current_gear:    u32,   // 0=reverse, 1=neutral, 2=1st … 6=6th
     shift_timer:     f32,
     is_stalled:      u32,
     starter_timer:   f32,
@@ -100,10 +100,10 @@ struct CarInput {
     susp_damping:    f32,
     susp_rest:       f32,
     susp_max_travel: f32,
-    // PADDING: offset após susp_max_travel = 316 (não múltiplo de 16).
-    // wind: vec3<f32> exige alinhamento 16 → inserir 4 bytes aqui para levar ao offset 320.
+    // PADDING: offset after susp_max_travel = 316 (not a multiple of 16).
+    // wind: vec3<f32> requires alignment 16 → insert 4 bytes here to reach offset 320.
     _pad_before_wind: f32,
-    // --- Ambiente (snapshot do tick) ---
+    // --- Environment (tick snapshot) ---
     wind:            vec3<f32>,
     _pad_wind:       f32,
     terrain_grip:    f32,
@@ -149,20 +149,20 @@ struct WorldParams {
 @group(0) @binding(4) var<storage, read_write> output:   array<CarOutput>;
 
 // ============================================================
-// === CONSTANTES                                           ===
+// === CONSTANTS                                            ===
 // ============================================================
 
 const GRAVITY:      f32 = 9.81;
-const RHO_AR:       f32 = 1.225;   // kg/m³ densidade do ar ao nível do mar
-const FRONTAL_AREA: f32 = 2.2;     // m² area frontal GT3 (não medido, assumido no physics.rs)
+const RHO_AR:       f32 = 1.225;   // kg/m³ air density at sea level
+const FRONTAL_AREA: f32 = 2.2;     // m² GT3 frontal area (not measured, assumed in physics.rs)
 const PI2:          f32 = 6.283185307179586;
 
 // ============================================================
-// === AUXILIARES DE MUNDO                                  ===
+// === WORLD HELPERS                                        ===
 // ============================================================
 
-// Idêntico a get_voxel_at em world.rs: round() + índice [z*size+x].
-// Retorna Wall (2) fora dos limites — igual à CPU.
+// Identical to get_voxel_at in world.rs: round() + index [z*size+x].
+// Returns Wall (2) out of bounds — same as CPU.
 fn voxel_at(wx: f32, wz: f32) -> u32 {
     let x = i32(round(wx / params.cell_size));
     let z = i32(round(wz / params.cell_size));
@@ -173,8 +173,8 @@ fn voxel_at(wx: f32, wz: f32) -> u32 {
     return 2u; // Wall
 }
 
-// Idêntico a get_height_at em world.rs: interpolação bilinear.
-// DIVERGÊNCIA POSSÍVEL: floor() é especificado IEEE 60559 em ambos — OK para inputs normais.
+// Identical to get_height_at in world.rs: bilinear interpolation.
+// POSSIBLE DIVERGENCE: floor() is IEEE 60559 specified in both — OK for normal inputs.
 fn height_at(wx: f32, wz: f32) -> f32 {
     let fx = wx / params.cell_size;
     let fz = wz / params.cell_size;
@@ -195,22 +195,22 @@ fn height_at(wx: f32, wz: f32) -> f32 {
     return top * (1.0 - tz) + bot * tz;
 }
 
-// normalize_or_zero: igual a Bevy Vec3::normalize_or_zero.
-// Separado do builtin `normalize` para evitar NaN quando v = 0.
+// normalize_or_zero: same as Bevy Vec3::normalize_or_zero.
+// Separate from the builtin `normalize` to avoid NaN when v = 0.
 fn nor0(v: vec3<f32>) -> vec3<f32> {
     let l = length(v);
     if (l < 1e-9) { return vec3<f32>(0.0, 0.0, 0.0); }
     return v / l;
 }
 
-// Extrai bit `bit` de config_flags. Recebe o valor diretamente (não ponteiro para struct)
-// para evitar dependência do address space de EntradaCarro.
+// Extracts bit `bit` from config_flags. Takes the value directly (not a pointer to the struct)
+// to avoid depending on EntradaCarro's address space.
 fn flag(flags: u32, bit: u32) -> bool {
     return (flags >> bit & 1u) != 0u;
 }
 
-// Razão de transmissão por marcha. Índice: 0=ré, 1=neutro, 2=1ª..6=6ª.
-// Valores idênticos ao array `gears` da CPU (physics.rs linha 263).
+// Transmission ratio per gear. Index: 0=reverse, 1=neutral, 2=1st..6=6th.
+// Values identical to the CPU's `gears` array (physics.rs line 263).
 fn gear_ratio(g: u32) -> f32 {
     switch g {
         case 0u: { return -3.5; }
@@ -226,7 +226,7 @@ fn gear_ratio(g: u32) -> f32 {
 const FINAL_DRIVE: f32 = 3.7;
 
 // ============================================================
-// === KERNEL PRINCIPAL                                     ===
+// === MAIN KERNEL                                          ===
 // ============================================================
 
 @compute @workgroup_size(64)
@@ -234,19 +234,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let being = gid.x;
     if (being >= params.n_beings) { return; }
 
-    // Cópia local da entrada (leitura única do storage buffer — depois operam os registradores)
+    // Local copy of the input (single read of the storage buffer — registers operate afterwards)
     var c = input[being];
 
-    let dt_safe = max(c.dt, 0.001);  // mesmo guard da CPU: `time.delta_secs().max(0.001)`
+    let dt_safe = max(c.dt, 0.001);  // same guard as the CPU: `time.delta_secs().max(0.001)`
 
     // ============================================================
-    // === FASE 1: RESET FORCES                                 ===
+    // === PHASE 1: RESET FORCES                                ===
     // ============================================================
     var forces = vec3<f32>(0.0, -GRAVITY * c.mass, 0.0);
-    var torques_y = 0.0;  // só yaw importa no modelo 2.5D
+    var torques_y = 0.0;  // only yaw matters in the 2.5D model
 
     // ============================================================
-    // === FASE 2: SUSPENSÃO + CARGA NORMAL                    ===
+    // === PHASE 2: SUSPENSION + NORMAL LOAD                   ===
     // ============================================================
     let speed = length(c.vel);
     let aero_downforce = select(0.0, 3.0 * speed * speed, flag(c.config_flags,3u));
@@ -254,12 +254,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let static_load = c.mass * GRAVITY / 4.0;
 
     let fwd = c.fwd;
-    let rgt = -c.lat;   // right real = -back() do Bevy
+    let rgt = -c.lat;   // real right = -back() in Bevy
 
     let half_wb = c.wheel_base * 0.5;
     let half_tw = c.track_width * 0.5;
 
-    // Offsets de roda [FL, FR, RL, RR] — igual à CPU (suspension_and_load_system)
+    // Wheel offsets [FL, FR, RL, RR] — same as CPU (suspension_and_load_system)
     var wheel_offsets: array<vec3<f32>, 4>;
     wheel_offsets[0] = fwd * half_wb - rgt * half_tw;  // FL
     wheel_offsets[1] = fwd * half_wb + rgt * half_tw;  // FR
@@ -296,7 +296,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         total_susp_load    += normal_loads[i];
     }
 
-    // Fallback: sem carga em nenhuma roda → peso estático por roda
+    // Fallback: no load on any wheel → static weight per wheel
     let total_weight = c.mass * GRAVITY;
     if (total_susp_load < 100.0) {
         for (var i: u32 = 0u; i < 4u; i++) {
@@ -305,10 +305,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ============================================================
-    // === FASE 3: POWERTRAIN + PNEUS + AERO                   ===
+    // === PHASE 3: POWERTRAIN + TYRES + AERO                  ===
     // ============================================================
     let forward_dir = fwd;
-    let lateral_dir = c.lat;    // back() do Bevy — igual à CPU
+    let lateral_dir = c.lat;    // Bevy's back() — same as CPU
     let forward_vel = dot(c.vel, forward_dir);
     let lateral_vel = dot(c.vel, lateral_dir);
 
@@ -316,7 +316,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let total_ratio   = gratio * FINAL_DRIVE;
     let total_ratio_abs = abs(total_ratio);
 
-    // Estado mutável do motor (copiado para var locais)
+    // Mutable engine state (copied into local vars)
     var is_stalled      = c.is_stalled;
     var starter_timer   = c.starter_timer;
     var shift_timer     = c.shift_timer;
@@ -324,7 +324,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var engine_temp     = c.engine_temp;
     var oil_temp        = c.oil_temp;
 
-    // Estado mutável das rodas
+    // Mutable wheel state
     var omegas:      array<f32, 4>;
     var tire_temps:  array<f32, 4>;
     var slip_ratios: array<f32, 4>;
@@ -336,7 +336,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         slip_angles[i] = c.wheels[i * 2u].z;
     }
 
-    // --- A) Motor de arranque ---
+    // --- A) Starter motor ---
     if (is_stalled != 0u && flag(c.config_flags,0u)) {
         if (c.current_gear <= 2u && c.throttle > 0.5) {
             starter_timer += dt_safe;
@@ -351,9 +351,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // --- B) Transmissão ---
-    // Troca de marcha (manual_shift_req) gerenciada na CPU antes do dispatch — o host
-    // entrega current_gear já atualizado. Aqui só decaímos o shift_timer.
+    // --- B) Transmission ---
+    // Gear change (manual_shift_req) is managed on the CPU before the dispatch — the host
+    // delivers current_gear already updated. Here we only decay the shift_timer.
     if (shift_timer > 0.0) { shift_timer -= dt_safe; }
 
     // --- C) RPM + Clutch ---
@@ -388,7 +388,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         starter_timer = 0.0;
     }
 
-    // --- D) Térmica do motor ---
+    // --- D) Engine thermals ---
     if (is_stalled == 0u && flag(c.config_flags,1u)) {
         let rpm_ratio = current_rpm / c.max_rpm;
         let heat_gen  = rpm_ratio * c.throttle * 15.0 * dt_safe;
@@ -404,7 +404,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         thermal_power = clamp(1.0 - (engine_temp - 105.0) / 45.0, 0.1, 1.0);
     }
 
-    // --- Torque de acionamento ---
+    // --- Drive torque ---
     var drive_torque:     f32;
     var drive_torque_out: f32;
     if (is_stalled != 0u) {
@@ -415,7 +415,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         current_rpm = clamp(raw_rpm, 800.0, c.max_rpm + 250.0);
         let rpm_ratio = current_rpm / c.max_rpm;
 
-        // Curva de torque realística (pico em ~60% RPM) — physics.rs linha 382
+        // Realistic torque curve (peak at ~60% RPM) — physics.rs line 382
         var tm = 1.0 - (rpm_ratio - 0.6) * (rpm_ratio - 0.6) * 2.0;
         if (rpm_ratio > 1.0) {
             tm = 0.0;
@@ -424,7 +424,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         tm = clamp(tm, 0.0, 1.0);
 
-        // TCS — só RWD
+        // TCS — RWD only
         var tcs_cut = 1.0;
         if (flag(c.config_flags,4u) && c.drivetrain == 1u) {
             let slip_avg = (max(slip_ratios[2], 0.0) + max(slip_ratios[3], 0.0)) * 0.5;
@@ -438,7 +438,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         drive_torque_out = drive_torque;
     }
 
-    // --- E) Aerodinâmica ---
+    // --- E) Aerodynamics ---
     forces += c.wind * c.mass * 0.5;
 
     if (flag(c.config_flags,2u)) {  // enable_aero_drag
@@ -458,31 +458,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         forces += -nor0(c.vel) * (0.015 * total_load_rr);
     }
 
-    // Engine braking (igual CPU linha 432-438)
+    // Engine braking (same as CPU line 432-438)
     if (is_stalled == 0u && c.throttle < 0.05 && abs(forward_vel) > 1.0) {
         let eb = total_ratio_abs * 80.0;
         let max_eb = abs(forward_vel) * c.mass / dt_safe;
         forces += -forward_dir * sign(forward_vel) * min(eb, max_eb);
     }
 
-    // --- F) Grip de terreno e ambiente ---
+    // --- F) Terrain and environment grip ---
     let mu_base = c.mu_peak * c.terrain_grip * c.env_grip;
 
-    // --- G) Pneus por roda ---
+    // --- G) Tyres per wheel ---
     let wheel_long_pos = array<f32, 4>(half_wb, half_wb, -half_wb, -half_wb);
     let wheel_lat_pos  = array<f32, 4>(-half_tw, half_tw, -half_tw, half_tw);
 
-    // LSD / distribuição de torque
+    // LSD / torque distribution
     var wheel_torques = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
     switch c.drivetrain {
-        case 0u: {  // FWD — split uniforme
+        case 0u: {  // FWD — uniform split
             wheel_torques[0] = drive_torque * 0.5;
             wheel_torques[1] = drive_torque * 0.5;
         }
         case 1u: {  // RWD — LSD
             let delta_omega  = abs(omegas[3] - omegas[2]);
             let lock_factor  = clamp(c.lsd_lock_ratio * delta_omega * 0.5, 0.0, 0.4);
-            // POSSÍVEL BUG CPU replicado: split_left não clampeado a [0,1]
+            // POSSIBLE CPU BUG replicated: split_left not clamped to [0,1]
             let split_left   = 0.5 + lock_factor * sign(omegas[3] - omegas[2]);
             wheel_torques[2] = drive_torque * split_left;
             wheel_torques[3] = drive_torque * (1.0 - split_left);
@@ -495,7 +495,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Bias de freio: 30/30/20/20
+    // Brake bias: 30/30/20/20
     let brake_total = c.brake_cmd * c.brake_torque_max;
     let brake_pw = array<f32, 4>(
         brake_total * 0.30,
@@ -508,7 +508,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var total_lat_force  = 0.0;
     var total_yaw_torque = 0.0;
 
-    // Speed-sensitive steering (CPU linha 518-524)
+    // Speed-sensitive steering (CPU line 518-524)
     var max_steer_deg: f32;
     if (speed < 15.0) {
         max_steer_deg = 35.0;
@@ -522,7 +522,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var i: u32 = 0u; i < 4u; i++) {
         let load = max(normal_loads[i], 10.0);
 
-        // Temperatura do pneu
+        // Tyre temperature
         var temp_factor = 1.0;
         if (flag(c.config_flags,1u)) {
             temp_factor = clamp(1.0 - abs(tire_temps[i] - c.optimal_temp) * 0.5, 0.7, 1.0);
@@ -531,46 +531,46 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let wheel_linear_speed = omegas[i] * c.wheel_radius;
 
-        // Velocidade no ponto de contato (inclui yaw angular — physics.rs linhas 514-515)
+        // Velocity at the contact point (includes angular yaw — physics.rs lines 514-515)
         let raw_fwd = forward_vel + c.av_y * wheel_lat_pos[i];
         let raw_lat = lateral_vel - c.av_y * wheel_long_pos[i];
 
-        // Ângulo de esterçamento (só rodas dianteiras: i < 2)
+        // Steering angle (front wheels only: i < 2)
         let wheel_steer = select(0.0, c.steer * max_steer_rad, i < 2u);
         let cos_s = cos(wheel_steer);
         let sin_s = sin(wheel_steer);
 
-        // Velocidade no referencial da roda
+        // Velocity in the wheel's reference frame
         let contact_fwd = raw_fwd * cos_s + raw_lat * sin_s;
         let contact_lat = -raw_fwd * sin_s + raw_lat * cos_s;
 
-        // Slip ratio (Pacejka longitudinal)
-        // DIVERGÊNCIA POSSÍVEL: max() e clamp() são determinísticos; divisão IEEE-754. ±1 ULP.
+        // Slip ratio (longitudinal Pacejka)
+        // POSSIBLE DIVERGENCE: max() and clamp() are deterministic; IEEE-754 division. ±1 ULP.
         let v_ref = max(abs(wheel_linear_speed), max(abs(contact_fwd), 0.5));
         let sr    = clamp((wheel_linear_speed - contact_fwd) / v_ref, -1.0, 1.0);
 
-        // Pacejka longitudinal: F = load * mu * sin(c_long * atan(b_long * sr))
-        // DIVERGÊNCIA POSSÍVEL: atan GPU pode diferir de atanf CPU em ±1 ULP.
+        // Longitudinal Pacejka: F = load * mu * sin(c_long * atan(b_long * sr))
+        // POSSIBLE DIVERGENCE: GPU atan may differ from CPU atanf by ±1 ULP.
         let b_long: f32 = 10.0;
         let c_long: f32 = 1.5;
         let f_long = load * mu * sin(c_long * atan(b_long * sr));
 
-        // Pacejka lateral
+        // Lateral Pacejka
         var sa:    f32 = 0.0;
         var f_lat: f32;
         if (abs(contact_fwd) > 0.5) {
-            // DIVERGÊNCIA POSSÍVEL: atan2 GPU vs atan2f CPU ±1 ULP.
+            // POSSIBLE DIVERGENCE: GPU atan2 vs CPU atan2f ±1 ULP.
             sa    = atan2(contact_lat, abs(contact_fwd));
             let b_lat: f32 = 12.0;
             let c_lat: f32 = 1.35;
             f_lat = load * mu * sin(c_lat * atan(b_lat * sa));
         } else {
-            // Bug gelo fix: grip sintético viscoso (CPU linha 553)
+            // Ice-bug fix: viscous synthetic grip (CPU line 553)
             f_lat = clamp(contact_lat * load * mu * 2.0, -load * mu, load * mu);
         }
 
-        // Círculo de Kamm
-        // DIVERGÊNCIA POSSÍVEL: length() GPU vs hypotf CPU ±1 ULP.
+        // Kamm circle
+        // POSSIBLE DIVERGENCE: GPU length() vs CPU hypotf ±1 ULP.
         let max_force = mu * load;
         let combined  = length(vec2<f32>(f_long, f_lat));
         var f_long_f: f32;
@@ -584,7 +584,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             f_lat_f  = f_lat;
         }
 
-        // Integração da omega da roda
+        // Wheel omega integration
         let tire_react = f_long_f * c.wheel_radius;
         let base_t     = wheel_torques[i] - tire_react;
         var new_omega  = omegas[i] + (base_t / c.wheel_inertia) * dt_safe;
@@ -606,10 +606,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         omegas[i] = new_omega;
 
-        // Aquaplanagem (flag booleana passada como 0.1 ou 1.0 pelo host)
+        // Aquaplaning (boolean flag passed as 0.1 or 1.0 by the host)
         let aqua = c.aquaplaning;
 
-        // Rotação de volta para o referencial do chassi
+        // Rotation back to the chassis reference frame
         let ch_long = f_long_f * cos_s - f_lat_f * sin_s;
         let ch_lat  = f_long_f * sin_s + f_lat_f * cos_s;
 
@@ -618,11 +618,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         total_yaw_torque += ch_lat  * wheel_long_pos[i] * aqua;
         total_yaw_torque += ch_long * wheel_lat_pos[i]  * 0.005 * lsd_speed_gate;
 
-        // Térmica do pneu
+        // Tyre thermals
         if (flag(c.config_flags,1u)) {
             let slip_heat  = (abs(sr) + abs(sa)) * load * 0.000002 * dt_safe;
-            // NOTA: brake_heat usa new_omega (pós-frenagem), igual à CPU que usa o valor
-            // atualizado na mesma iteração (writeback ocorre no final do loop na CPU).
+            // NOTE: brake_heat uses new_omega (post-braking), same as the CPU which uses the
+            // value updated in the same iteration (writeback happens at the end of the CPU loop).
             let brake_heat = brake_pw[i] * abs(new_omega) * 0.000001 * dt_safe;
             let cooling    = 0.02 * (1.0 + speed * 0.01) * dt_safe;
             tire_temps[i]  = clamp(tire_temps[i] + slip_heat + brake_heat - cooling, 0.0, 1.0);
@@ -632,20 +632,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         slip_angles[i] = sa;
     }
 
-    // Aplicar forças de pneu ao chassi
+    // Apply tyre forces to the chassis
     forces  += forward_dir * total_long_force;
     forces  += -lateral_dir * total_lat_force;
     torques_y += total_yaw_torque;
 
-    // yaw_inertia: fórmula da CPU (suposição morta documentada no cabeçalho)
+    // yaw_inertia: the CPU's formula (dead assumption documented in the header)
     let yaw_inertia = c.mass * (half_wb * half_wb);
 
     // ============================================================
-    // === FASE 4: COLISÃO COM PAREDES                          ===
+    // === PHASE 4: WALL COLLISION                              ===
     // ============================================================
-    // A CPU (collision_system) modifica body.velocity e body.angular_velocity.y ANTES
-    // da integration_system. Para replicar: usamos vel_col (inicia em c.vel, pre-integração)
-    // e av_y_col (inicia em c.av_y). A integração na fase 5 parte dessas variáveis.
+    // The CPU (collision_system) modifies body.velocity and body.angular_velocity.y BEFORE
+    // integration_system. To replicate: we use vel_col (starts at c.vel, pre-integration)
+    // and av_y_col (starts at c.av_y). Phase 5 integration starts from these variables.
     var vel_col  = c.vel;
     var pos_col  = c.pos;
     var av_y_col = c.av_y;
@@ -662,23 +662,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let pen_dir  = nor0(probe - c.pos);
             let vel_into = dot(vel_col, pen_dir);
             if (vel_into > 0.0) {
-                // Impulso com restituição 0.05 (igual CPU linha 677)
+                // Impulse with restitution 0.05 (same as CPU line 677)
                 let impulse = -(1.0 + 0.05) * vel_into * c.mass;
                 vel_col += pen_dir * (impulse / c.mass);
-                // Atrito tangencial (CPU linha 682-683)
+                // Tangential friction (CPU line 682-683)
                 let tang = vel_col - pen_dir * dot(vel_col, pen_dir);
                 vel_col -= tang * 0.5;
-                // Yaw kick: ADICIONADO DIRETAMENTE a av_y — igual à CPU (linha 687)
-                // NÃO é torque; ignora yaw_inertia aqui (a CPU também não divide).
+                // Yaw kick: ADDED DIRECTLY to av_y — same as CPU (line 687)
+                // NOT a torque; ignores yaw_inertia here (the CPU does not divide either).
                 let yaw_kick = cross(fwd, pen_dir).y;
                 av_y_col += yaw_kick * vel_into * 0.05;
-                // Empurrar para fora da parede
+                // Push out of the wall
                 pos_col -= pen_dir * 0.5;
             }
         }
     }
 
-    // Ground clamp com heightmap (CPU linhas 696-700)
+    // Ground clamp with heightmap (CPU lines 696-700)
     let ground_y_c = height_at(c.pos.x, c.pos.z) + 0.5;
     if (pos_col.y < ground_y_c) {
         pos_col.y = ground_y_c;
@@ -686,9 +686,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ============================================================
-    // === FASE 5: INTEGRAÇÃO (Euler Semi-Implícito)            ===
+    // === PHASE 5: INTEGRATION (Semi-Implicit Euler)           ===
     // ============================================================
-    // A CPU começa do vel_col (pós-colisão). Reaplica aero drag (DUPLICAÇÃO — ver cabeçalho).
+    // The CPU starts from vel_col (post-collision). Reapplies aero drag (DUPLICATION — see header).
     let speed_int = length(vel_col);
     var drag_force_int = vec3<f32>(0.0, 0.0, 0.0);
     if (flag(c.config_flags,2u)) {
@@ -699,7 +699,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let accel    = (forces + drag_force_int) / c.mass;
     var final_vel = vel_col + accel * dt_safe;
 
-    // Lateral scrub friction (CPU linhas 727-735)
+    // Lateral scrub friction (CPU lines 727-735)
     let fwd_spd    = dot(final_vel, forward_dir);
     let lat_v      = final_vel - forward_dir * fwd_spd;
     if (length(lat_v) > 0.5) {
@@ -709,25 +709,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var final_pos = pos_col + final_vel * dt_safe;
 
-    // Ground constraint mínimo (CPU linha 754-756)
+    // Minimum ground constraint (CPU line 754-756)
     if (final_pos.y < 0.5) {
         final_pos.y = 0.5;
         final_vel.y = max(final_vel.y, 0.0);
     }
 
-    // Yaw: damping escala com velocidade (CPU v10 — 400 + speed * 60)
+    // Yaw: damping scales with speed (CPU v10 — 400 + speed * 60)
     let base_damp  = 400.0;
     let speed_damp = speed_int * 60.0;
-    // av_y_col inclui kicks diretos de colisão (já aplicados antes da integração, como na CPU)
+    // av_y_col includes direct collision kicks (already applied before integration, as on the CPU)
     let drag_y  = -av_y_col * (base_damp + speed_damp);
     let yi      = select(c.mass * 2.0, yaw_inertia, yaw_inertia > 0.0);
     let ang_a_y = (torques_y + drag_y) / yi;
     let final_av_y = av_y_col + ang_a_y * dt_safe;
 
-    // Rotação yaw: o host aplica transform.rotate_y(final_av_y * dt) depois de ler saida.
+    // Yaw rotation: the host applies transform.rotate_y(final_av_y * dt) after reading the output.
 
     // ============================================================
-    // === ESCRITA DA SAÍDA                                     ===
+    // === OUTPUT WRITE                                         ===
     // ============================================================
     var out: CarOutput;
     out.vel          = final_vel;

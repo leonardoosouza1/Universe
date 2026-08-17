@@ -1,42 +1,42 @@
 use std::fs::File;
-/// Sistema de replay quadro a quadro — formato único para motor.rs e cortex_evolve.
+/// Frame-by-frame replay system — single format for motor.rs and cortex_evolve.
 ///
-/// # Formato binário `.replay`
+/// # `.replay` binary format
 ///
-/// Cabeçalho fixo 64 bytes:
+/// Fixed 64-byte header:
 ///   magic: [u8; 8] = b"IARARPLY"
 ///   version: u16 = 1
-///   source: u8   = 0 (motor.rs) ou 1 (cortex_evolve)
+///   source: u8   = 0 (motor.rs) or 1 (cortex_evolve)
 ///   n_beings: u8
-///   tick_rate: f32  (Hz nominal, ex: 64.0)
+///   tick_rate: f32  (nominal Hz, e.g. 64.0)
 ///   world_seed: u64
 ///   _pad: [u8; 42]
 ///
-/// A seguir, frames intercalados:
-///   frame_tag: u8 = 0xFE  (início de frame)
+/// Then, interleaved frames:
+///   frame_tag: u8 = 0xFE  (start of frame)
 ///   being_idx: u8
-///   ReplayFrame serializado binário (bytemuck::Pod)
+///   ReplayFrame serialized binary (bytemuck::Pod)
 ///
-/// Escritor garante SENDO_IDX 0 = campeão.
+/// The writer guarantees BEING_IDX 0 = champion.
 ///
-/// # Leitura
+/// # Reading
 ///
-/// Carregar via `ReplayReader::open` → iterator de `(being_idx, ReplayFrame)`.
+/// Load via `ReplayReader::open` → iterator of `(being_idx, ReplayFrame)`.
 ///
-/// # Convenção de canais neural_summary
+/// # neural_summary channel convention
 ///
-/// [0] throttle_raw     — saída crua do cortex antes de axiom/governor
+/// [0] throttle_raw     — raw cortex output before axiom/governor
 /// [1] steer_raw        — idem
 /// [2] brake_raw        — idem
-/// [3] throttle_final   — comando aplicado na física
+/// [3] throttle_final   — command applied to the physics
 /// [4] steer_final      — idem
 /// [5] brake_final      — idem
-/// [6] governor_delta   — |throttle_raw - throttle_final| (quanto o governor mudou)
-/// [7] sentinel_active  — 0.0 ou 1.0 (se sentinel hard-vetou neste frame)
+/// [6] governor_delta   — |throttle_raw - throttle_final| (how much the governor changed)
+/// [7] sentinel_active  — 0.0 or 1.0 (whether the sentinel hard-vetoed this frame)
 use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 
-// ── Constantes do formato ────────────────────────────────────────────────────
+// ── Format constants ─────────────────────────────────────────────────────────
 
 pub const REPLAY_MAGIC: &[u8; 8] = b"IARARPLY";
 pub const REPLAY_VERSION: u16 = 1;
@@ -44,98 +44,98 @@ pub const SOURCE_MOTOR: u8 = 0;
 pub const SOURCE_CORTEX: u8 = 1;
 pub const FRAME_TAG: u8 = 0xFE;
 
-// ── Frame principal ──────────────────────────────────────────────────────────
+// ── Main frame ───────────────────────────────────────────────────────────────
 
-/// Um frame de replay — 128 bytes, alinhado e Pod.
+/// One replay frame — 128 bytes, aligned and Pod.
 ///
-/// Gravado por CADA ser em CADA tick onde a análise interessa.
-/// Para corridas longas (24000 ticks × 40 seres) = 960.000 frames ≈ 123 MB.
-/// Filtragem opcional: gravar só campeão (IDX=0) reduz para 3 MB.
+/// Recorded by EACH being at EACH tick the analysis cares about.
+/// For long races (24000 ticks × 40 beings) = 960.000 frames ≈ 123 MB.
+/// Optional filtering: recording only the champion (IDX=0) reduces it to 3 MB.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReplayFrame {
-    // --- Estado físico ---
-    /// Posição mundo (x, y, z) em metros
+    // --- Physical state ---
+    /// World position (x, y, z) in meters
     pub pos: [f32; 3],
-    /// Orientação (forward.x, forward.z) — 2D pois y sempre ~0
+    /// Orientation (forward.x, forward.z) — 2D since y is always ~0
     pub fwd: [f32; 2],
-    /// Velocidade escalar em m/s
+    /// Scalar speed in m/s
     pub speed: f32,
-    /// Taxa de rotação yaw em rad/s
+    /// Yaw rotation rate in rad/s
     pub yaw_rate: f32,
-    /// Progresso na pista em metros (arc-length)
+    /// Progress along the track in meters (arc-length)
     pub arc_prog: f32,
-    /// Número de voltas completas
+    /// Number of completed laps
     pub laps: u16,
-    /// Marcha atual (0=neutro/ré, 1-6=marchas)
+    /// Current gear (0=neutral/reverse, 1-6=gears)
     pub gear: u8,
-    /// HP normalizado [0..127] onde 127 = HP_INICIAL
+    /// Normalized HP [0..127] where 127 = HP_INICIAL
     pub hp_norm: u8,
-    /// Combustível normalizado [0..127]
+    /// Normalized fuel [0..127]
     pub fuel_norm: u8,
-    /// Tick absoluto desde início da geração
+    /// Absolute tick since the start of the generation
     pub tick: u32,
 
-    // --- Sensores de visão (distâncias em m, codificadas) ---
-    /// Distância à parede esquerda em metros (cap 15m)
+    // --- Vision sensors (distances in m, encoded) ---
+    /// Distance to the left wall in meters (cap 15m)
     pub dist_wall_l: f32,
-    /// Distância à parede direita em metros
+    /// Distance to the right wall in meters
     pub dist_wall_r: f32,
-    /// Distância à parede frontal em metros (cap 30m)
+    /// Distance to the frontal wall in meters (cap 30m)
     pub dist_wall_f: f32,
-    /// Curvatura 40m à frente — signed [-1..1] (positivo = curva direita)
+    /// Curvature 40m ahead — signed [-1..1] (positive = right turn)
     pub curv_40m: f32,
-    /// Curvatura 70m à frente
+    /// Curvature 70m ahead
     pub curv_70m: f32,
-    /// Curvatura 120m à frente
+    /// Curvature 120m ahead
     pub curv_120m: f32,
-    /// Alinhamento com o fluxo da pista [-1..1] (1 = perfeitamente alinhado)
+    /// Alignment with the track flow [-1..1] (1 = perfectly aligned)
     pub flow_align: f32,
-    /// Offset lateral da racing-line em metros (positivo = à esquerda da linha)
+    /// Lateral offset from the racing line in meters (positive = left of the line)
     pub line_offset: f32,
 
-    // --- Intent do cérebro (cru, antes de governor/sentinel) ---
-    /// Throttle bruto [-1..1]
+    // --- Brain intent (raw, before governor/sentinel) ---
+    /// Raw throttle [-1..1]
     pub intent_thr: f32,
-    /// Steer bruto [-1..1]
+    /// Raw steer [-1..1]
     pub intent_str: f32,
-    /// Brake bruto [0..1]
+    /// Raw brake [0..1]
     pub intent_brk: f32,
 
-    // --- Comando final aplicado na física ---
-    /// Throttle final (após KAN, governor, sentinel, ECAS)
+    // --- Final command applied to the physics ---
+    /// Final throttle (after KAN, governor, sentinel, ECAS)
     pub final_thr: f32,
-    /// Steer final
+    /// Final steer
     pub final_str: f32,
-    /// Brake final
+    /// Final brake
     pub final_brk: f32,
 
-    // --- Diagnóstico neural compacto ---
-    /// Número de dimensões saturadas (|x|>0.95) no final_intent (0..96)
+    // --- Compact neural diagnostics ---
+    /// Number of saturated dimensions (|x|>0.95) in final_intent (0..96)
     pub dims_saturated: u8,
-    /// Magnitude média do final_intent (quantizado 0..127)
+    /// Mean magnitude of final_intent (quantized 0..127)
     pub intent_mag_q: u8,
-    /// Axiom strength neste tick quantizada [0..127]
+    /// Axiom strength this tick, quantized [0..127]
     pub axiom_str_q: u8,
-    /// Flags de safety: bit0=governor_ativo, bit1=sentinel_hard, bit2=ecas, bit3=reversing
+    /// Safety flags: bit0=governor_active, bit1=sentinel_hard, bit2=ecas, bit3=reversing
     pub safety_flags: u8,
 
-    // --- Retina compacta (8 fóvea + 8 periférica, i8) ---
+    // --- Compact retina (8 fovea + 8 peripheral, i8) ---
     pub retina_fov: [i8; 8],
     pub retina_peri: [i8; 8],
 
-    // --- Padding para 128 bytes ---
+    // --- Padding to 128 bytes ---
     pub _pad: [u8; 8],
 }
 
-// Garante tamanho fixo — falha de compilação se mudar sem ajustar.
+// Guarantees a fixed size — compilation failure if it changes without adjustment.
 const _: () = assert!(std::mem::size_of::<ReplayFrame>() == 128);
 
-// SAFETY: ReplayFrame é #[repr(C)] com apenas tipos primitivos, sem padding implícito.
+// SAFETY: ReplayFrame is #[repr(C)] with only primitive types, no implicit padding.
 unsafe impl bytemuck::Pod for ReplayFrame {}
 unsafe impl bytemuck::Zeroable for ReplayFrame {}
 
-// ── Cabeçalho ────────────────────────────────────────────────────────────────
+// ── Header ───────────────────────────────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -154,7 +154,7 @@ const _: () = assert!(std::mem::size_of::<ReplayHeader>() == 64);
 unsafe impl bytemuck::Pod for ReplayHeader {}
 unsafe impl bytemuck::Zeroable for ReplayHeader {}
 
-// ── Escritor ─────────────────────────────────────────────────────────────────
+// ── Writer ───────────────────────────────────────────────────────────────────
 
 pub struct ReplayWriter {
     writer: BufWriter<File>,
@@ -162,7 +162,7 @@ pub struct ReplayWriter {
 }
 
 impl ReplayWriter {
-    /// Abre arquivo e escreve cabeçalho.
+    /// Opens the file and writes the header.
     pub fn create(
         path: &Path,
         source: u8,
@@ -190,7 +190,7 @@ impl ReplayWriter {
         })
     }
 
-    /// Escreve um frame de um ser específico.
+    /// Writes one frame of a specific being.
     pub fn write_frame(&mut self, being_idx: u8, frame: &ReplayFrame) -> io::Result<()> {
         self.writer.write_all(&[FRAME_TAG, being_idx])?;
         self.writer.write_all(bytemuck::bytes_of(frame))?;
@@ -203,7 +203,7 @@ impl ReplayWriter {
     }
 }
 
-// ── Leitor ───────────────────────────────────────────────────────────────────
+// ── Reader ───────────────────────────────────────────────────────────────────
 
 pub struct ReplayReader {
     data: Vec<u8>,
@@ -212,7 +212,7 @@ pub struct ReplayReader {
 }
 
 impl ReplayReader {
-    /// Carrega arquivo inteiro em memória (arquivos tipicamente < 200 MB).
+    /// Loads the whole file into memory (files typically < 200 MB).
     pub fn open(path: &Path) -> io::Result<Self> {
         let mut file = File::open(path)?;
         let mut data = Vec::new();
@@ -221,26 +221,26 @@ impl ReplayReader {
         if data.len() < 64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "arquivo muito curto",
+                "file too short",
             ));
         }
 
         let header_bytes: [u8; 64] = data[..64].try_into().unwrap();
-        // Desalinhado pelo mesmo motivo do quadro: o array local não tem garantia de
-        // alinhamento do tipo alvo, e depender disso é uma bomba-relógio de plataforma.
+        // Unaligned for the same reason as the frame: the local array has no alignment
+        // guarantee for the target type, and depending on it is a platform time bomb.
         let header: ReplayHeader = bytemuck::pod_read_unaligned(&header_bytes);
 
         if &header.magic != REPLAY_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "magic inválido — não é replay IARA",
+                "invalid magic — not an IARA replay",
             ));
         }
         if header.version != REPLAY_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "versão {} não suportada (esperado {})",
+                    "version {} not supported (expected {})",
                     header.version, REPLAY_VERSION
                 ),
             ));
@@ -253,7 +253,7 @@ impl ReplayReader {
         })
     }
 
-    /// Retorna próximo (being_idx, ReplayFrame) ou None se EOF.
+    /// Returns the next (being_idx, ReplayFrame) or None on EOF.
     pub fn next_frame(&mut self) -> Option<(u8, ReplayFrame)> {
         const FRAME_SIZE: usize = 128;
         const ENTRY_SIZE: usize = 2 + FRAME_SIZE; // tag + idx + frame
@@ -264,9 +264,9 @@ impl ReplayReader {
 
         let tag = self.data[self.cursor];
         if tag != FRAME_TAG {
-            // Corrupção: skip bytes até achar tag ou EOF
+            // Corruption: skip bytes until a tag or EOF is found
             eprintln!(
-                "REPLAY: tag inválida 0x{:02x} em offset {} — buscando próxima",
+                "REPLAY: invalid tag 0x{:02x} at offset {} — searching for the next",
                 tag, self.cursor
             );
             while self.cursor < self.data.len() && self.data[self.cursor] != FRAME_TAG {
@@ -280,20 +280,20 @@ impl ReplayReader {
             [self.cursor + 2..self.cursor + 2 + FRAME_SIZE]
             .try_into()
             .ok()?;
-        // Leitura DESALINHADA obrigatória: cada entrada ocupa 130 bytes (tag + índice +
-        // quadro de 128) e o quadro começa em `cursor + 2`, então seu deslocamento é
-        // 64 + k·130 + 2 — nunca múltiplo de 4. `bytemuck::from_bytes` exige alinhamento
-        // do tipo alvo e entra em pânico já no primeiro quadro; era isso que impedia
-        // qualquer replay de ser lido.
+        // MANDATORY UNALIGNED read: each entry occupies 130 bytes (tag + index +
+        // 128-byte frame) and the frame starts at `cursor + 2`, so its offset is
+        // 64 + k·130 + 2 — never a multiple of 4. `bytemuck::from_bytes` requires the
+        // target type's alignment and panics on the very first frame; this is what
+        // prevented any replay from being read.
         let frame: ReplayFrame = bytemuck::pod_read_unaligned(frame_bytes);
 
         self.cursor += ENTRY_SIZE;
         Some((being_idx, frame))
     }
 
-    /// Coleta todos os frames de um being específico em ordem.
+    /// Collects every frame of a specific being, in order.
     pub fn frames_of(&mut self, target_idx: u8) -> Vec<ReplayFrame> {
-        self.cursor = 64; // reset para início dos dados
+        self.cursor = 64; // reset to the start of the data
         let mut out = Vec::new();
         while let Some((idx, frame)) = self.next_frame() {
             if idx == target_idx {
@@ -303,7 +303,7 @@ impl ReplayReader {
         out
     }
 
-    /// Retorna todos os frames de todos os beings agrupados por idx.
+    /// Returns every frame of every being, grouped by idx.
     pub fn all_frames(&mut self) -> Vec<Vec<ReplayFrame>> {
         let n = self.header.n_beings as usize;
         let mut out: Vec<Vec<ReplayFrame>> = vec![Vec::new(); n.max(1)];
@@ -318,26 +318,26 @@ impl ReplayReader {
     }
 }
 
-// ── Análise quadro a quadro ──────────────────────────────────────────────────
+// ── Frame-by-frame analysis ──────────────────────────────────────────────────
 
-/// Perfil de uma seção da pista (dividida em N arcos iguais).
+/// Profile of one track section (divided into N equal arcs).
 pub struct SectionProfile {
     pub arc_start: f32,
     pub arc_end: f32,
     pub avg_speed: f32,
     pub max_speed: f32,
     pub min_speed: f32,
-    /// Tempo médio gasto nessa seção (estimado como arc_len / avg_speed)
+    /// Average time spent in this section (estimated as arc_len / avg_speed)
     pub time_est: f32,
-    /// Frames onde governor interveio (|thr_raw - thr_final| > 0.05)
+    /// Frames where the governor intervened (|thr_raw - thr_final| > 0.05)
     pub gov_count: u32,
     pub total_count: u32,
 }
 
-/// Analisa um conjunto de frames e produz perfil por seção.
+/// Analyzes a set of frames and produces a per-section profile.
 ///
-/// `n_sections`: quantas fatias iguais dividir o arco total.
-/// Retorna None se frames vazio.
+/// `n_sections`: how many equal slices to divide the total arc into.
+/// Returns None if frames is empty.
 pub fn section_profile(frames: &[ReplayFrame], n_sections: usize) -> Option<Vec<SectionProfile>> {
     if frames.is_empty() || n_sections == 0 {
         return None;
@@ -377,7 +377,7 @@ pub fn section_profile(frames: &[ReplayFrame], n_sections: usize) -> Option<Vec<
         p.min_speed = p.min_speed.min(f.speed);
         p.total_count += 1;
 
-        // Governor interveio se throttle final for significativamente menor que raw
+        // The governor intervened if the final throttle is significantly lower than raw
         if (f.intent_thr - f.final_thr).abs() > 0.05 {
             p.gov_count += 1;
         }
@@ -396,7 +396,7 @@ pub fn section_profile(frames: &[ReplayFrame], n_sections: usize) -> Option<Vec<
     Some(profiles)
 }
 
-/// Evento crítico detectado na análise.
+/// Critical event detected in the analysis.
 #[derive(Debug)]
 pub struct CriticalEvent {
     pub tick: u32,
@@ -409,21 +409,21 @@ pub struct CriticalEvent {
 
 #[derive(Debug)]
 pub enum EventKind {
-    /// Governor cortou throttle (delta > limiar)
+    /// The governor cut the throttle (delta > threshold)
     GovernorCut { thr_before: f32, thr_after: f32 },
-    /// Sentinel hard-veto ativo
+    /// Sentinel hard-veto active
     SentinelVeto,
-    /// ECAS interveio (safety_flags bit2)
+    /// ECAS intervened (safety_flags bit2)
     EcasActive,
-    /// Carro em ré (safety_flags bit3)
+    /// Car in reverse (safety_flags bit3)
     Reversing,
-    /// Velocidade caiu > 5 m/s em 10 frames (perda brusca)
+    /// Speed dropped > 5 m/s in 10 frames (abrupt loss)
     SpeedDrop { delta: f32 },
-    /// Saturação neural alta (>20 dims saturadas)
+    /// High neural saturation (>20 saturated dims)
     NeuralSaturation { dims: u8 },
 }
 
-/// Extrai todos os eventos críticos de uma sequência de frames.
+/// Extracts every critical event from a sequence of frames.
 pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
     let mut events = Vec::new();
 
@@ -480,7 +480,7 @@ pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
             });
         }
 
-        // Speed drop: compara com frame de 10 atrás
+        // Speed drop: compares with the frame 10 behind
         if i >= 10 {
             let prev = &frames[i - 10];
             let drop = prev.speed - f.speed;
@@ -496,7 +496,7 @@ pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
             }
         }
 
-        // Saturação neural
+        // Neural saturation
         if f.dims_saturated > 20 {
             events.push(CriticalEvent {
                 tick: f.tick,
@@ -514,23 +514,23 @@ pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
     events
 }
 
-/// Diff entre dois replays (caminho motor.rs vs caminho cortex_evolve).
+/// Diff between two replays (motor.rs path vs cortex_evolve path).
 pub struct ReplayDiff {
     pub arc: f32,
-    /// Velocidade no caminho A (motor.rs)
+    /// Speed on path A (motor.rs)
     pub speed_a: f32,
-    /// Velocidade no caminho B (cortex_evolve)
+    /// Speed on path B (cortex_evolve)
     pub speed_b: f32,
-    /// Diferença de steer final (A - B)
+    /// Final steer difference (A - B)
     pub steer_diff: f32,
-    /// Diferença de throttle final (A - B)
+    /// Final throttle difference (A - B)
     pub thr_diff: f32,
-    /// Posição A - posição B (distância entre trajetórias)
+    /// Position A - position B (distance between trajectories)
     pub pos_diverge: f32,
 }
 
-/// Compara dois conjuntos de frames (mesma pista, seres diferentes ou caminhos diferentes).
-/// Alinha por arc_prog — interpola frame B para mesmo arco que frame A.
+/// Compares two sets of frames (same track, different beings or different paths).
+/// Aligns by arc_prog — interpolates frame B to the same arc as frame A.
 pub fn diff_replays(frames_a: &[ReplayFrame], frames_b: &[ReplayFrame]) -> Vec<ReplayDiff> {
     if frames_a.is_empty() || frames_b.is_empty() {
         return Vec::new();
@@ -540,7 +540,7 @@ pub fn diff_replays(frames_a: &[ReplayFrame], frames_b: &[ReplayFrame]) -> Vec<R
     let mut bi = 0usize;
 
     for fa in frames_a {
-        // Avança bi até o frame de B mais próximo em arc_prog
+        // Advances bi to the frame of B closest in arc_prog
         while bi + 1 < frames_b.len()
             && (frames_b[bi + 1].arc_prog - fa.arc_prog).abs()
                 < (frames_b[bi].arc_prog - fa.arc_prog).abs()
@@ -571,19 +571,19 @@ fn glam_like_dist(a: [f32; 3], b: [f32; 3]) -> f32 {
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
-// ── Gerador de HTML player ───────────────────────────────────────────────────
+// ── HTML player generator ────────────────────────────────────────────────────
 
-/// Template HTML embutido em tempo de compilação (src/assets/replay_player.html).
-/// Contém toda a lógica de visualização; os dados são injetados como window.REPLAY_*.
+/// HTML template embedded at compile time (src/assets/replay_player.html).
+/// Contains all the visualization logic; the data is injected as window.REPLAY_*.
 static HTML_TEMPLATE: &str = include_str!("assets/replay_player.html");
 
-/// Constrói HTML autocontido com player frame-a-frame.
+/// Builds a self-contained HTML with a frame-by-frame player.
 ///
-/// `track_path`: polilinha da pista em coordenadas de mundo [(x, z)].
-/// `being_frames`: Vec de sequências de frames por ser (índice 0 = campeão).
-/// `labels`: nomes opcionais para cada ser.
+/// `track_path`: track polyline in world coordinates [(x, z)].
+/// `being_frames`: Vec of frame sequences per being (index 0 = champion).
+/// `labels`: optional names for each being.
 ///
-/// Injeta `window.REPLAY_TRACK` e `window.REPLAY_BEINGS` antes do `<script>` do template.
+/// Injects `window.REPLAY_TRACK` and `window.REPLAY_BEINGS` before the template's `<script>`.
 pub fn generate_html_player(
     track_path: &[[f32; 2]],
     being_frames: &[Vec<ReplayFrame>],
@@ -593,7 +593,7 @@ pub fn generate_html_player(
     let file = File::create(output_path)?;
     let mut w = BufWriter::new(file);
 
-    // --- Calcula bounds da pista para normalização ---
+    // --- Computes the track bounds for normalization ---
     let (mut min_x, mut max_x, mut min_z, mut max_z) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
     for &[x, z] in track_path {
         min_x = min_x.min(x);
@@ -601,7 +601,7 @@ pub fn generate_html_player(
         min_z = min_z.min(z);
         max_z = max_z.max(z);
     }
-    // Inclui posições de todos os seres nas bounds
+    // Includes every being's positions in the bounds
     for frames in being_frames {
         for f in frames {
             min_x = min_x.min(f.pos[0]);
@@ -614,8 +614,8 @@ pub fn generate_html_player(
     let range_x = (max_x - min_x).max(1.0);
     let range_z = (max_z - min_z).max(1.0);
 
-    // --- Serializa dados para JSON embutido no HTML ---
-    // track_points: array de [px, py] normalizados para [0..1000, 0..1000]
+    // --- Serializes data as JSON embedded in the HTML ---
+    // track_points: array of [px, py] normalized to [0..1000, 0..1000]
     let mut track_json = String::from("[");
     for (i, &[x, z]) in track_path.iter().enumerate() {
         let px = ((x - min_x) / range_x * 980.0 + 10.0) as i32;
@@ -627,7 +627,7 @@ pub fn generate_html_player(
     }
     track_json.push(']');
 
-    // beings_data: array de objetos, cada um com array de frames
+    // beings_data: array of objects, each with an array of frames
     let mut beings_json = String::from("[");
     for (bi, frames) in being_frames.iter().enumerate() {
         if bi > 0 {
@@ -682,16 +682,16 @@ pub fn generate_html_player(
     }
     beings_json.push(']');
 
-    // --- Injetar dados no template HTML ---
-    // O template espera window.REPLAY_TRACK e window.REPLAY_BEINGS
-    // definidos ANTES do seu <script>. Inserimos um bloco <script> com os
-    // dados logo antes do </head> do template.
+    // --- Inject the data into the HTML template ---
+    // The template expects window.REPLAY_TRACK and window.REPLAY_BEINGS
+    // defined BEFORE its <script>. We insert a <script> block with the
+    // data right before the template's </head>.
     let data_script = format!(
         "<script>\nwindow.REPLAY_TRACK = {};\nwindow.REPLAY_BEINGS = {};\n</script>\n",
         track_json, beings_json
     );
 
-    // Insere o bloco de dados antes de </head>
+    // Inserts the data block before </head>
     let output_html = HTML_TEMPLATE.replacen("</head>", &format!("{}</head>", data_script), 1);
 
     w.write_all(output_html.as_bytes())?;

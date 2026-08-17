@@ -1,19 +1,20 @@
-//! Structs `Pod` do uniform/params da retina — fonte canônica única.
+//! `Pod` structs for the retina uniform/params — single canonical source.
 //!
-//! # Por que este arquivo existe
+//! # Why this file exists
 //!
-//! `RetinaParamsGpu` (uniform da retina: grade, contagem de seres, pitches por linha) e
-//! `PoseRaw` (postura empacotada para o shader) existiam como structs **idênticas**,
-//! copiadas de arquivo em arquivo, em `src/gpu/mod.rs` (como `ParamsGpu`), `gpu_evolve.rs`,
-//! `gpu_loop.rs` e `cortex_evolve.rs`. Cada cópia é `#[repr(C)] + Pod` — o contrato real
-//! é o layout em bytes que o shader WGSL espera (ver `retina.wgsl`), não o nome do tipo.
-//! Ter quatro definições do mesmo layout é quatro chances de uma delas divergir sem que
-//! o compilador avise (structs `Pod` distintas não dão erro de tipo entre si).
+//! `RetinaParamsGpu` (retina uniform: grid, being count, per-row pitches) and
+//! `PoseRaw` (pose packed for the shader) existed as **identical** structs,
+//! copied file to file, in `src/gpu/mod.rs` (as `ParamsGpu`), `gpu_evolve.rs`,
+//! `gpu_loop.rs` and `cortex_evolve.rs`. Each copy is `#[repr(C)] + Pod` — the real
+//! contract is the byte layout the WGSL shader expects (see `retina.wgsl`), not the type
+//! name. Having four definitions of the same layout is four chances for one of them to
+//! diverge without the compiler warning (distinct `Pod` structs give no type error
+//! against each other).
 //!
-//! Movida para cá em E3 (REFACTOR_PLAN.md §2.3) sem alterar nenhum `.wgsl` — o layout em
-//! bytes é idêntico ao das cópias anteriores.
+//! Moved here in E3 (REFACTOR_PLAN.md §2.3) without changing any `.wgsl` — the byte
+//! layout is identical to the previous copies.
 
-/// Uniform da retina: parâmetros compartilhados por todos os seres do dispatch.
+/// Retina uniform: parameters shared by every being in the dispatch.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RetinaParamsGpu {
@@ -21,11 +22,11 @@ pub struct RetinaParamsGpu {
     pub n_beings: u32,
     pub cell_size: f32,
     pub fov_half: f32,
-    /// 4 × vec4 = 4 linhas × 4 pitches por linha (rows 0-15).
+    /// 4 × vec4 = 4 rows × 4 pitches per row (rows 0-15).
     pub pitches: [[f32; 4]; 4],
 }
 
-/// Postura de um ser, empacotada para o shader da retina.
+/// Pose of one being, packed for the retina shader.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PoseRaw {

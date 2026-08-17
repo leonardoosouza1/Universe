@@ -1,5 +1,5 @@
-// Bissecção FASE_POWER parte A: suspensão + motor (sem pneus, sem aero).
-// Testa: switch drivetrain, arrays omegas/tire_temps/slip_ratios/slip_angles, cálculo RPM.
+// Bisection FASE_POWER part A: suspension + engine (no tires, no aero).
+// Tests: drivetrain switch, omegas/tire_temps/slip_ratios/slip_angles arrays, RPM computation.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -78,10 +78,10 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
-    // D5 (ESCADA_DIFICULDADE.md — clima). Mirror consistente com physics_power_b/c.wgsl
-    // e com WorldParams em physics.rs. Este kernel (FASE_POWER_A) não calcula força de
-    // pneu nem integra velocidade — nada aqui CONSOME estes campos, só ficam disponíveis
-    // para o dia em que a fase A ganhar um cálculo de contato/vento real.
+    // D5 (ESCADA_DIFICULDADE.md — weather). Consistent mirror of physics_power_b/c.wgsl
+    // and of WorldParams in physics.rs. This kernel (FASE_POWER_A) computes no tire
+    // force and integrates no velocity — nothing here CONSUMES these fields, they are
+    // only available for the day phase A gains a real contact/wind computation.
     clima_mu:    f32,
     vento_x:     f32,
     vento_z:     f32,
@@ -124,11 +124,11 @@ fn gear_ratio(g: u32) -> f32 {
     }
 }
 
-// D5 — μ local por posição (idêntica em physics_power_a/b/c.wgsl, por consistência).
-// freq=0 (default) → sin(0)=0, termo posicional zera → mu_local = clima_mu*0.5+0.5,
-// CONSTANTE em toda a pista (sem variação espacial = "μ uniforme" do spec). E com
-// clima_mu=1.0 (seco, default) o fator (1-clima_mu) zera e mu_local=1.0 SEMPRE,
-// qualquer freq — é o que garante bit-idêntico com o comportamento pré-D5.
+// D5 — local μ by position (identical in physics_power_a/b/c.wgsl, for consistency).
+// freq=0 (default) → sin(0)=0, the positional term zeroes → mu_local = clima_mu*0.5+0.5,
+// CONSTANT across the whole track (no spatial variation = the spec's "uniform μ"). And
+// with clima_mu=1.0 (dry, default) the (1-clima_mu) factor zeroes and mu_local=1.0
+// ALWAYS, any freq — which is what guarantees bit-identity with the pre-D5 behaviour.
 fn mu_local_at(pos: vec3<f32>) -> f32 {
     return params.clima_mu
         + (1.0 - params.clima_mu) * 0.5
@@ -143,7 +143,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dt_safe = max(c.dt, 0.001);
     let speed = length(c.vel);
 
-    // Suspensão (igual FASE_SUSP — provado OK)
+    // Suspension (same as FASE_SUSP — proven OK)
     let dpw = select(0.0, 3.0*speed*speed, flag(c.config_flags,3u)) * 0.25;
     let sl0  = c.mass*GRAVITY/4.0;
     let fwd  = c.fwd; let rgt = -c.lat;
@@ -166,7 +166,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if (tsl<100.0){let pw=c.mass*GRAVITY*0.25;for (var i:u32=0u;i<4u;i++){nloads[i]=pw;}}
 
-    // Motor: RPM, clutch, switch, térmica, torque
+    // Engine: RPM, clutch, switch, thermals, torque
     let gratio = gear_ratio(c.current_gear);
     let total_ratio = gratio * FINAL_DRIVE;
     let tra = abs(total_ratio);
@@ -177,7 +177,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var engine_temp   = c.engine_temp;
     var oil_temp      = c.oil_temp;
 
-    // 4 arrays de roda — potencial suspeito de explosão de registradores
+    // 4 wheel arrays — potential suspect for register explosion
     var omegas:      array<f32,4>;
     var tire_temps:  array<f32,4>;
     var slip_ratios: array<f32,4>;

@@ -2,9 +2,9 @@ use crate::config::iara::vision::RETINA_TOTAL;
 /// IARA v2101 - Digital Metabolism & Homeostasis
 /// Based on Codex v2101 - Module I
 ///
-/// Tier 3.1+3.2: drives biológicos adicionados (dopamina = RPE, cortisol = medo integral).
-/// Todos novos campos são RUNTIME-ONLY — resetam em spawn (Default::default). NÃO persistem
-/// no .dna v3.
+/// Tier 3.1+3.2: biological drives added (dopamine = RPE, cortisol = integral fear).
+/// All new fields are RUNTIME-ONLY — reset on spawn (Default::default). They do NOT persist
+/// in .dna v3.
 use std::collections::VecDeque;
 
 /// Tier 2.3 — episodic memory trace used during sleep consolidation.
@@ -30,63 +30,63 @@ pub struct Metabolism {
     /// VRAM/Cache stress level
     pub cache_stress: f32,
 
-    // --- Tier 3.1: Dopamina = Reward Prediction Error ---
-    /// Dopamina momentânea [-1.0, 1.0] — sinal de RPE (actual - predicted reward).
-    /// Spike positivo em surpresa boa, dip em surpresa ruim, ~0 em reward esperado.
+    // --- Tier 3.1: Dopamine = Reward Prediction Error ---
+    /// Instantaneous dopamine [-1.0, 1.0] — RPE signal (actual - predicted reward).
+    /// Positive spike on good surprise, dip on bad surprise, ~0 on expected reward.
     pub dopamine: f32,
-    /// Reward previsto — running average (TD-learning α=0.1) do reward recebido.
+    /// Predicted reward — running average (TD-learning α=0.1) of the received reward.
     pub predicted_reward: f32,
 
-    // --- Tier 3.2: Cortisol = medo/stress integral ---
-    /// Cortisol [0.0, 1.0] — integra proximidade-de-parede no tempo.
-    /// Alto cortisol → comportamento defensivo (throttle ↓, steering ↓, risk_damp ↑).
+    // --- Tier 3.2: Cortisol = integral fear/stress ---
+    /// Cortisol [0.0, 1.0] — integrates wall proximity over time.
+    /// High cortisol → defensive behavior (throttle ↓, steering ↓, risk_damp ↑).
     pub cortisol: f32,
 
-    // --- Tier 3.3: Curiosidade = novelty em retina ---
-    /// Curiosidade [0.0, 1.0] — sobe quando retina está monótona (baixa variância
-    /// no histórico de 16 frames). Motor usa para injetar ruído de exploração
-    /// quando também está stuck (stagnation > 60 frames).
+    // --- Tier 3.3: Curiosity = novelty in the retina ---
+    /// Curiosity [0.0, 1.0] — rises when the retina is monotonous (low variance
+    /// over the 16-frame history). The motor uses it to inject exploration noise
+    /// when also stuck (stagnation > 60 frames).
     pub curiosity: f32,
-    /// Ring buffer dos últimos 16 frames da retina binocular (64 canais).
-    /// Rotate_right(1) + insert no índice 0. Compute variance across history.
+    /// Ring buffer of the last 16 frames of the binocular retina (64 channels).
+    /// Rotate_right(1) + insert at index 0. Compute variance across history.
     pub retina_history: [[i8; RETINA_TOTAL]; 16],
 
     // ------------------------------------------------------------------
-    // Tier 4.2 — Epigenética parcial (running means hormonais)
+    // Tier 4.2 — Partial epigenetics (hormonal running means)
     // ------------------------------------------------------------------
-    // Acumuladores RUNTIME-ONLY. Reseta em spawn (Default). NÃO persistem em .dna.
-    // Capturados por EliteDna ao final da gen e herdados 10% pelo filho no spawn.
+    // RUNTIME-ONLY accumulators. Reset on spawn (Default). Do NOT persist in .dna.
+    // Captured by EliteDna at the end of the gen and 10% inherited by the child on spawn.
     pub cortisol_sum: f64,
     pub dopamine_sum: f64,
     pub curiosity_sum: f64,
     pub tick_count: u64,
 
     // ------------------------------------------------------------------
-    // Tier 2.3 — Memória episódica (consolidada em sleep)
+    // Tier 2.3 — Episodic memory (consolidated during sleep)
     // ------------------------------------------------------------------
-    /// Ring buffer de traces salientes (cap 64). Push quando
-    /// |reward| > 0.1 OU wall_hit. Drenado em sleep por consolidate_episodic.
-    /// RUNTIME-only. Não persiste em .dna.
+    /// Ring buffer of salient traces (cap 64). Push when
+    /// |reward| > 0.1 OR wall_hit. Drained during sleep by consolidate_episodic.
+    /// RUNTIME-only. Does not persist in .dna.
     pub episodic_buffer: VecDeque<EpisodicTrace>,
-    /// Guard p/ evitar consolidar múltiplas vezes no mesmo ciclo de sono.
-    /// Reset quando adenosine < 0.5 (organismo acordou o suficiente).
+    /// Guard to avoid consolidating multiple times in the same sleep cycle.
+    /// Reset when adenosine < 0.5 (the organism has woken up enough).
     pub sleep_consolidated: bool,
 
     // ------------------------------------------------------------------
     // Tier 6.8 — Mirror neurons / observational learning
     // ------------------------------------------------------------------
-    /// Conta quantos ticks o mirror hook disparou (cosine(retina, champion_mean) > 0.8).
-    /// RUNTIME-only. Fitness hook pode ler pra bonificar aprendizado por imitação.
+    /// Counts how many ticks the mirror hook fired (cosine(retina, champion_mean) > 0.8).
+    /// RUNTIME-only. The fitness hook may read it to reward learning by imitation.
     pub mirror_activation_count: u32,
 
     // ------------------------------------------------------------------
-    // Tier 6.1 — Predictive coding como drive primário
+    // Tier 6.1 — Predictive coding as primary drive
     // ------------------------------------------------------------------
-    /// Erro de predição da retina no tick atual (L1 médio, ~[0, 2]).
-    /// Atualizado a cada tick pelo engine; feeds curiosity como drive intrínseco.
+    /// Retina prediction error at the current tick (mean L1, ~[0, 2]).
+    /// Updated every tick by the engine; feeds curiosity as an intrinsic drive.
     /// RUNTIME-only.
     pub prediction_error: f32,
-    /// Soma running do prediction_error p/ média lifetime (diagnóstico).
+    /// Running sum of prediction_error for the lifetime mean (diagnostics).
     pub prediction_error_sum: f64,
     pub prediction_error_samples: u64,
 }
@@ -141,55 +141,55 @@ impl Metabolism {
     }
 
     // ------------------------------------------------------------------
-    // Tier 3.1 — Dopamina (RPE)
+    // Tier 3.1 — Dopamine (RPE)
     // ------------------------------------------------------------------
 
-    /// Atualiza dopamina via TD-error: dopamine = actual - predicted (clamped).
-    /// predicted_reward é running average (α=0.1).
+    /// Updates dopamine via TD-error: dopamine = actual - predicted (clamped).
+    /// predicted_reward is a running average (α=0.1).
     pub fn update_dopamine(&mut self, actual_reward: f32) {
         let prediction_error = actual_reward - self.predicted_reward;
         self.dopamine = prediction_error.clamp(-1.0, 1.0);
         self.predicted_reward = 0.9 * self.predicted_reward + 0.1 * actual_reward;
-        // Tier 4.2: acumula soma hormonal (runtime-only, lido por EliteDna).
-        // tick_count é incrementado em update_cortisol (anchor por tick).
+        // Tier 4.2: accumulates the hormonal sum (runtime-only, read by EliteDna).
+        // tick_count is incremented in update_cortisol (per-tick anchor).
         self.dopamine_sum += self.dopamine as f64;
     }
 
-    /// Multiplicador de plasticidade pra myelination.
-    /// Clamp apertado [0.5, 1.5] pra evitar overflow em scale × 1.005^N acumulativo
-    /// (ver BitLinear::myelinate: já tem cap 10x mas dopamina não deve amplificar mais).
+    /// Plasticity multiplier for myelination.
+    /// Tight clamp [0.5, 1.5] to avoid overflow in the cumulative scale × 1.005^N
+    /// (see BitLinear::myelinate: it already has a 10x cap but dopamine must not amplify further).
     pub fn learning_modulation(&self) -> f32 {
         (1.0 + self.dopamine * 0.5).clamp(0.5, 1.5)
     }
 
     // ------------------------------------------------------------------
-    // Tier 3.2 — Cortisol (medo integral)
+    // Tier 3.2 — Cortisol (integral fear)
     // ------------------------------------------------------------------
 
-    /// Integra proximidade de parede no tempo com decay (~2s de memória).
-    /// min_wall_distance em metros (menor distância lateral).
+    /// Integrates wall proximity over time with decay (~2s of memory).
+    /// min_wall_distance in meters (smallest lateral distance).
     pub fn update_cortisol(&mut self, min_wall_distance: f32, dt: f32) {
         let threat = (1.0 / (min_wall_distance + 1.0)).min(1.0);
         self.cortisol = (self.cortisol * 0.95 + threat * dt * 2.0).clamp(0.0, 1.0);
-        // Tier 4.2: acumula soma + incrementa tick_count (anchor único por tick).
+        // Tier 4.2: accumulates the sum + increments tick_count (single per-tick anchor).
         self.cortisol_sum += self.cortisol as f64;
         self.tick_count = self.tick_count.saturating_add(1);
     }
 
-    /// Aversão a risco atual (0.0 = calmo, 1.0 = aterrorizado).
+    /// Current risk aversion (0.0 = calm, 1.0 = terrified).
     pub fn risk_aversion(&self) -> f32 {
         self.cortisol
     }
 
     // ------------------------------------------------------------------
-    // Tier 3.3 — Curiosidade (novelty em retina)
+    // Tier 3.3 — Curiosity (novelty in the retina)
     // ------------------------------------------------------------------
 
-    /// Atualiza curiosidade com base na variância da retina ao longo dos
-    /// últimos 16 frames. Baixa variância (monotonia) → curiosity sobe.
-    /// Alta variância (novidade sensorial) → curiosity relaxa lentamente.
+    /// Updates curiosity based on the retina variance over the last
+    /// 16 frames. Low variance (monotony) → curiosity rises.
+    /// High variance (sensory novelty) → curiosity relaxes slowly.
     ///
-    /// `current_retina` é o visual_cortex binocular pós-frame (64 canais i8).
+    /// `current_retina` is the post-frame binocular visual_cortex (64 i8 channels).
     pub fn update_curiosity(&mut self, current_retina: &[i8; RETINA_TOTAL], dt: f32) {
         let mut var_acc = 0.0f32;
         let n = self.retina_history.len() as f32;
@@ -206,36 +206,36 @@ impl Metabolism {
         }
         let novelty = (var_acc / (n * RETINA_TOTAL as f32)).sqrt().min(1.0);
 
-        // Monotonia (1 - novelty) alimenta curiosity com rate 0.5/s.
+        // Monotony (1 - novelty) feeds curiosity at a rate of 0.5/s.
         let delta = (1.0 - novelty) * dt * 0.5;
-        // Decay suave pra não travar em 1.0 quando retina muda pouco por sempre.
+        // Gentle decay so it does not lock at 1.0 when the retina barely ever changes.
         self.curiosity = (self.curiosity + delta - dt * 0.05).clamp(0.0, 1.0);
-        // Tier 4.2: acumula soma (tick_count já incrementado em update_cortisol).
+        // Tier 4.2: accumulates the sum (tick_count already incremented in update_cortisol).
         self.curiosity_sum += self.curiosity as f64;
 
-        // Ring buffer: rotate + inserir no slot 0.
+        // Ring buffer: rotate + insert at slot 0.
         self.retina_history.rotate_right(1);
         self.retina_history[0] = *current_retina;
     }
 
-    /// Drive de exploração (0..1). Usado pelo motor para injetar ruído.
+    /// Exploration drive (0..1). Used by the motor to inject noise.
     pub fn exploration_drive(&self) -> f32 {
         self.curiosity
     }
 
     // ------------------------------------------------------------------
-    // Tier 4.2 — Epigenética parcial (means + seeding de baselines)
+    // Tier 4.2 — Partial epigenetics (means + baseline seeding)
     // ------------------------------------------------------------------
 
-    /// Média running do cortisol ao longo da vida do organismo.
+    /// Running mean of cortisol over the organism's lifetime.
     pub fn mean_cortisol(&self) -> f32 {
         (self.cortisol_sum / self.tick_count.max(1) as f64) as f32
     }
-    /// Média running da dopamina (RPE) ao longo da vida.
+    /// Running mean of dopamine (RPE) over the lifetime.
     pub fn mean_dopamine(&self) -> f32 {
         (self.dopamine_sum / self.tick_count.max(1) as f64) as f32
     }
-    /// Média running da curiosidade ao longo da vida.
+    /// Running mean of curiosity over the lifetime.
     pub fn mean_curiosity(&self) -> f32 {
         (self.curiosity_sum / self.tick_count.max(1) as f64) as f32
     }
@@ -244,34 +244,34 @@ impl Metabolism {
     // Tier 6.1 — Predictive coding drive
     // ------------------------------------------------------------------
 
-    /// Hook chamado pelo engine após computar o prediction error L1 médio.
-    /// Feeds como drive intrínseco em curiosity (clamp [0,1]) e acumula soma
-    /// p/ média lifetime. Pequeno ganho (0.01) evita saturar curiosity num tick;
-    /// erros persistentes de predição reforçam exploração.
+    /// Hook called by the engine after computing the mean L1 prediction error.
+    /// Feeds curiosity as an intrinsic drive (clamp [0,1]) and accumulates the sum
+    /// for the lifetime mean. The small gain (0.01) avoids saturating curiosity in one tick;
+    /// persistent prediction errors reinforce exploration.
     pub fn apply_prediction_error(&mut self, prediction_error: f32) {
         self.curiosity = (self.curiosity + prediction_error * 0.01).clamp(0.0, 1.0);
         self.prediction_error_sum += prediction_error as f64;
         self.prediction_error_samples = self.prediction_error_samples.saturating_add(1);
     }
 
-    /// Média lifetime do prediction_error (diagnóstico / fitness hook).
+    /// Lifetime mean of prediction_error (diagnostics / fitness hook).
     pub fn prediction_error_mean(&self) -> f32 {
         (self.prediction_error_sum / self.prediction_error_samples.max(1) as f64) as f32
     }
 
-    /// Tier 4.2: inicializa baselines hormonais herdados do(s) parent(s).
-    /// 10% do estado metabólico médio passa pro filho ao nascer.
-    /// - cortisol inicial = parent_mean_cortisol * 0.1   (trauma baseline)
-    /// - predicted_reward = parent_mean_dopamine * 0.1   (mood baseline)
-    /// - dopamine atual   = 0.0                          (RPE fresco)
-    /// - curiosity inicial= parent_mean_curiosity * 0.1  (tendência exploratória)
+    /// Tier 4.2: initializes hormonal baselines inherited from the parent(s).
+    /// 10% of the mean metabolic state passes to the child at birth.
+    /// - initial cortisol  = parent_mean_cortisol * 0.1   (trauma baseline)
+    /// - predicted_reward  = parent_mean_dopamine * 0.1   (mood baseline)
+    /// - current dopamine  = 0.0                          (fresh RPE)
+    /// - initial curiosity = parent_mean_curiosity * 0.1  (exploratory tendency)
     // ------------------------------------------------------------------
-    // Tier 2.3 — Memória episódica API
+    // Tier 2.3 — Episodic memory API
     // ------------------------------------------------------------------
 
-    /// Captura um trace episódico se for saliente.
-    /// Condição: |reward| > 0.1 OU wall_hit. Ring buffer com cap EPISODIC_CAP:
-    /// empurra o mais antigo pra fora quando cheio.
+    /// Captures an episodic trace if it is salient.
+    /// Condition: |reward| > 0.1 OR wall_hit. Ring buffer with cap EPISODIC_CAP:
+    /// pushes the oldest one out when full.
     pub fn record_episode(
         &mut self,
         retina: &[i8; RETINA_TOTAL],

@@ -44,25 +44,25 @@ pub struct UniverseConfig {
     pub tracks: Vec<TrackProfile>,
     pub selected_track_index: usize,
     pub swarm_count: usize,
-    /// Multiplicador de velocidade de simulação (1.0 = tempo real, 10.0 = 10x mais rápido)
+    /// Simulation speed multiplier (1.0 = real time, 10.0 = 10x faster)
     pub time_scale: f32,
-    /// Duração máxima de cada geração em segundos de simulação.
-    /// A geração encerra quando: alguém completa 5 voltas, OU este timeout é atingido.
-    /// Carros mortos permanecem na cena (ocultos) mas não encerram a gen — os vivos
-    /// continuam acumulando distância até o tempo acabar.
+    /// Maximum duration of each generation in simulation seconds.
+    /// The generation ends when: someone completes 5 laps, OR this timeout is reached.
+    /// Dead cars stay in the scene (hidden) but do not end the gen — the living ones
+    /// keep accumulating distance until time runs out.
     #[serde(default = "default_generation_timeout_s")]
     pub generation_timeout_s: f32,
-    /// Tier 5.3: rotação de pistas por geração. Se false (default), usa sempre
-    /// `selected_track_index`. Se true, alterna entre `tracks` por bloco de
-    /// `gens_per_track` e fixa `tracks[0]` em gens de validação (env_level 0).
-    /// Pode ser ativado via CLI `--rotate` ou env `UNIVERSE_ROTATE=1`.
+    /// Tier 5.3: track rotation per generation. If false (default), always uses
+    /// `selected_track_index`. If true, alternates between `tracks` in blocks of
+    /// `gens_per_track` and pins `tracks[0]` on validation gens (env_level 0).
+    /// Can be enabled via CLI `--rotate` or env `UNIVERSE_ROTATE=1`.
     #[serde(default)]
     pub rotate_tracks: bool,
     #[serde(default = "default_gens_per_track")]
     pub gens_per_track: usize,
-    /// FIX UI vs headless mismatch: salvas flags do último treino pra UI
-    /// reproduzir mesma pista que DNA viu. Sem isso DNA treinado --easy
-    /// --no-holes rodava em pista hard com holes na UI → cars ruins.
+    /// FIX UI vs headless mismatch: saves the flags of the last training so the UI
+    /// reproduces the same track the DNA saw. Without this, DNA trained with --easy
+    /// --no-holes ran on a hard track with holes in the UI → bad cars.
     #[serde(default)]
     pub easy_track: bool,
     #[serde(default)]
@@ -80,8 +80,8 @@ impl Default for UniverseConfig {
     fn default() -> Self {
         Self {
             physics: PhysicsSettings::default(),
-            // Ordem = progressão curricular (easy → very hard).
-            // track_width: mais largo = mais perdão pra mutantes ruins.
+            // Order = curricular progression (easy → very hard).
+            // track_width: wider = more forgiveness for bad mutants.
             tracks: vec![
                 // Default = procedural seed 9001. Matches DNA training seeds — UI mode loads
                 // CHAMPION.dna trained on this layout instead of mismatching with hardcoded.
@@ -168,11 +168,11 @@ impl UniverseConfig {
             .min(self.tracks.len().saturating_sub(1))]
     }
 
-    /// Tier 5.3: retorna a pista para uma dada geração.
-    /// - `rotate_tracks == false`: sempre `current_track()` (back-compat).
-    /// - `is_validation_gen == true`: pinned em `tracks[0]` (env estável → comparação
-    ///   honesta de campeão entre gens).
-    /// - Caso contrário, rotação por bloco: idx = (gen / gens_per_track) % tracks.len().
+    /// Tier 5.3: returns the track for a given generation.
+    /// - `rotate_tracks == false`: always `current_track()` (back-compat).
+    /// - `is_validation_gen == true`: pinned to `tracks[0]` (stable env → honest
+    ///   champion comparison across gens).
+    /// - Otherwise, rotation by block: idx = (gen / gens_per_track) % tracks.len().
     pub fn track_for_gen(&self, gen_idx: usize, is_validation_gen: bool) -> &TrackProfile {
         if !self.rotate_tracks || self.tracks.is_empty() {
             return self.current_track();
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn validation_gen_pins_track_zero() {
         let c = cfg_with_rotate();
-        // Em qualquer gen, se é validation, track 0.
+        // In any gen, if it is a validation one, track 0.
         for g in [0usize, 7, 13, 42] {
             assert_eq!(c.track_for_gen(g, true).name, c.tracks[0].name);
         }
@@ -229,21 +229,21 @@ mod tests {
 }
 
 // ============================================================================
-// IARA — HUB DE CONSTANTES DE REFERÊNCIA
+// IARA — REFERENCE CONSTANTS HUB
 // ============================================================================
-// Documentação centralizada dos parâmetros do sistema.
-// Os valores abaixo ESPELHAM os que existem nos módulos originais.
+// Centralized documentation of the system's parameters.
+// The values below MIRROR the ones that exist in the original modules.
 //
-// Para alterar um parâmetro:
-//   1. Mude o valor AQUI
-//   2. Mude no arquivo original correspondente (indicado nos comentários)
+// To change a parameter:
+//   1. Change the value HERE
+//   2. Change it in the corresponding original file (indicated in the comments)
 //
-// Quando quiser que o sistema inteiro derive daqui automaticamente,
-// basta trocar o `use` no módulo original por `use crate::config::iara::*`.
+// When you want the whole system to derive from here automatically,
+// just swap the `use` in the original module for `use crate::config::iara::*`.
 // ============================================================================
 
 pub mod iara {
-    // ── VISÃO (fonte: src/world.rs:12-18) ──────────────────────────────
+    // ── VISION (source: src/world.rs:12-18) ────────────────────────────
     pub mod vision {
         // ORIGINAL
         // pub const RETINA_ROWS: usize = 14;
@@ -281,39 +281,39 @@ pub mod iara {
             pitches
         }
 
-        /// Ângulos de pitch por linha da retina (rad), auto-calculados.
-        /// Row 0 = horizonte alto (-0.10 rad), Row N-1 = chão (+0.05 rad).
+        /// Pitch angles per retina row (rad), auto-computed.
+        /// Row 0 = high horizon (-0.10 rad), Row N-1 = ground (+0.05 rad).
         pub const RETINA_PITCHES: [f32; RETINA_ROWS] = compute_pitches();
     }
 
-    // ── CÉREBRO (fonte: src/simulation/motor.rs, src/engine.rs) ────────
+    // ── BRAIN (source: src/simulation/motor.rs, src/engine.rs) ─────────
     pub mod brain {
 
-        /// Calcula tamanho da sensory wave automaticamente.
-        /// Estrutura: 0-127 (fóvea, periférica, telemetria, lookahead)
-        ///          + 160-191 (retina horizon scan: 32 amostras)
-        /// Total = 128 + 32 = 160, mas marginalia para segurança = 160 + RETINA_COLS
+        /// Computes the sensory wave size automatically.
+        /// Structure: 0-127 (fovea, peripheral, telemetry, lookahead)
+        ///          + 160-191 (retina horizon scan: 32 samples)
+        /// Total = 128 + 32 = 160, but margin for safety = 160 + RETINA_COLS
         const fn compute_sensory_size() -> usize {
-            // 160 base + 32 horizon = 192. É TUDO que a percepção escreve: o último bloco
-            // do `perception.wgsl` é o "BLOCO Q: ch 160-191".
+            // 160 base + 32 horizon = 192. This is EVERYTHING perception writes: the last
+            // block of `perception.wgsl` is "BLOCK Q: ch 160-191".
             //
-            // Havia mais 31 canais "spare (perception injection etc.)" que nunca foram
-            // preenchidos por bloco nenhum. Medido pela auditoria da visão: os canais
-            // 192..222 são ZERO em todos os seres, sempre. O efeito não é neutro — a
-            // primeira camada tinha 31 × 96 = 2.976 pesos ligados a zero constante, e a
-            // evolução mutava esses pesos toda geração, gastando busca em parâmetros que
-            // não podem influenciar nada.
+            // There were 31 more channels "spare (perception injection etc.)" that were never
+            // filled by any block. Measured by the vision audit: channels
+            // 192..222 are ZERO in every being, always. The effect is not neutral — the
+            // first layer had 31 × 96 = 2.976 weights wired to a constant zero, and
+            // evolution mutated those weights every generation, spending search on parameters
+            // that cannot influence anything.
             //
-            // Reservar espaço para o futuro custa caro quando o futuro não chega.
+            // Reserving space for the future costs dearly when the future never arrives.
             192
         }
 
-        /// Sensory wave = array de canais i8.
-        /// NÃO é retina direta — passa por pooling no motor.rs.
-        /// Tamanho calculado automaticamente baseado em RETINA_ROWS/COLS.
+        /// Sensory wave = array of i8 channels.
+        /// It is NOT the raw retina — it goes through pooling in motor.rs.
+        /// Size computed automatically based on RETINA_ROWS/COLS.
         pub const SENSORY_WAVE_SIZE: usize = compute_sensory_size();
 
-        /// Fast Brain: BitLinear 192→96 (instinct layer, pesos ternários no DNA).
+        /// Fast Brain: BitLinear 192→96 (instinct layer, ternary weights in the DNA).
         pub const L1_NEURONS: usize = 96;
 
         /// Cortex L2: 96→48 (deep composition).
@@ -322,27 +322,27 @@ pub mod iara {
         /// Cortex L3: 48→24 (pre-output).
         pub const L3_NEURONS: usize = 24;
 
-        /// Slow Brain: CfC(4) + Dense(64→16) + Dense(16→3) (córtex lento, roda a cada N ticks).
+        /// Slow Brain: CfC(4) + Dense(64→16) + Dense(16→3) (slow cortex, runs every N ticks).
         pub const SLOW_BRAIN_CFC_DIM: usize = 4;
         pub const SLOW_BRAIN_D1_IN: usize = 64;
         pub const SLOW_BRAIN_D1_OUT: usize = 16;
         pub const SLOW_BRAIN_D2_IN: usize = 16;
         pub const SLOW_BRAIN_D2_OUT: usize = 3; // throttle, steer, brake
-        pub const SLOW_BRAIN_TICK_INTERVAL: u32 = 8; // Roda 1x a cada 8 ticks (~8Hz @ 64Hz)
+        pub const SLOW_BRAIN_TICK_INTERVAL: u32 = 8; // Runs 1x every 8 ticks (~8Hz @ 64Hz)
 
         /// Legacy constants (for backward compatibility)
         pub const SLOW_BRAIN_INPUTS: usize = 48;
         pub const SLOW_BRAIN_OUTPUTS: usize = 8;
     }
 
-    // ── GENÉTICA / DNA (fonte: src/evolution/dna_genesis.rs) ───────────
+    // ── GENETICS / DNA (source: src/evolution/dna_genesis.rs) ──────────
     pub mod genetics {
         use super::brain::*;
 
-        // Versão atual do formato DNA
+        // Current version of the DNA format
         pub const DNA_VERSION: u16 = 8;
 
-        // Tamanho dos pesos (calculados a partir da arquitetura)
+        // Weight sizes (computed from the architecture)
         pub const DNA_FAST_SIZE: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
         // DNA v8: SlowBrain full (dense1 + dense2 + biases + scales)
         // dense1.weights(1024) + dense1.bias(16) + dense1.scale(4) + dense2.weights(48) + dense2.bias(3) + dense2.scale(4) = 1099
@@ -353,92 +353,92 @@ pub mod iara {
             + SLOW_BRAIN_D2_OUT
             + 4; // 1099
 
-        // Legacy (compatibilidade com DNAs antigos)
+        // Legacy (compatibility with old DNAs)
         pub const DNA_FAST_SIZE_LEGACY: usize = 128 * 64; // 8.192
         pub const DNA_SLOW_SIZE_LEGACY: usize = 32 * 8; // 256
 
-        // Scars (trauma imutabilidade — Tier 6.6)
-        pub const SCAR_TTL_INITIAL: u8 = 5; // trava por 5 gerações
-        pub const SCAR_FRACTION: f32 = 0.10; // 10% dos pesos não-zero viram scar
+        // Scars (trauma immutability — Tier 6.6)
+        pub const SCAR_TTL_INITIAL: u8 = 5; // locks for 5 generations
+        pub const SCAR_FRACTION: f32 = 0.10; // 10% of non-zero weights become scars
 
-        // Zona Protegida de axiomas (spawn.rs:17)
-        pub const PROTECTED_ZONE_SIZE: usize = 819; // ~4.4% do DNA_FAST_SIZE
+        // Protected axiom zone (spawn.rs:17)
+        pub const PROTECTED_ZONE_SIZE: usize = 819; // ~4.4% of DNA_FAST_SIZE
 
-        // Mutação de Pesos
-        pub const DEFAULT_MUTATION_RATE: f32 = 0.008; // 0.8% chance de flip por bit
+        // Weight Mutation
+        pub const DEFAULT_MUTATION_RATE: f32 = 0.008; // 0.8% flip chance per bit
 
-        // Mutação Morfológica (Corpo)
+        // Morphological Mutation (Body)
         pub const MORPHO_MASS_RANGE: (f32, f32) = (700.0, 1400.0);
         pub const MORPHO_WHEELBASE_RANGE: (f32, f32) = (1.5, 3.0);
         pub const MORPHO_DOWNFORCE_RANGE: (f32, f32) = (0.5, 2.0);
         pub const MORPHO_GRIP_RANGE: (f32, f32) = (0.8, 1.2);
-        pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% por gene por gen
-        pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% do range
+        pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% per gene per gen
+        pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% of the range
 
-        // Hiper-rede (Compressão de Pesos)
+        // Hyper-network (Weight Compression)
         pub const HYPERNET_COEFFS: usize = 64;
         pub const HYPERNET_EXPAND_SIZE: usize = 2048;
         pub const HYPERNET_MUTATION_FLIP_RATE: f32 = 0.02;
         pub const HYPERNET_SIGMA: f32 = 0.05;
         pub const HYPERNET_TERNARY_THRESH: f32 = 0.3;
 
-        // Métricas (settings.rs:5)
+        // Metrics (settings.rs:5)
         pub const FITNESS_HISTORY_CAP: usize = 100;
     }
 
-    // ── SIMULAÇÃO (fonte: src/simulation/motor.rs) ─────────────────────
+    // ── SIMULATION (source: src/simulation/motor.rs) ───────────────────
     pub mod simulation {
         // Timing
         pub const TICK_RATE: f32 = 64.0;
         pub const TIME_STEP: f32 = 1.0 / TICK_RATE;
 
-        // Thresholds de Punição (Survival Policy)
-        pub const STAGNATION_TIMEOUT_FRAMES: u32 = 960; // ~15s sem progresso = morte
+        // Punishment Thresholds (Survival Policy)
+        pub const STAGNATION_TIMEOUT_FRAMES: u32 = 960; // ~15s without progress = death
         pub const WALL_DAMAGE_BASE: f32 = 4.0;
         pub const WALL_DAMAGE_MAX: f32 = 40.0;
         pub const WALL_DAMAGE_GRACE: f32 = 20.0;
         // Reduced 30→15 for narrow tracks: models need time to navigate tight corners
         pub const SPEED_BLEED_DAMAGE: f32 = 15.0;
-        pub const WALL_PIN_TIME_S: f32 = 1.6; // Segundos preso na parede para morrer
-        pub const HP_GRACE_FRAMES: u32 = 480; // Frames de proteção pós-volta
+        pub const WALL_PIN_TIME_S: f32 = 1.6; // Seconds pinned to the wall before dying
+        pub const HP_GRACE_FRAMES: u32 = 480; // Post-lap protection frames
 
-        // Recuperação
-        pub const WAYPOINT_DIST_M: f32 = 25.0; // Distância entre checkpoints (metros)
-        pub const HEAL_AMOUNT: f32 = 40.0; // HP recuperado por checkpoint
+        // Recovery
+        pub const WAYPOINT_DIST_M: f32 = 25.0; // Distance between checkpoints (meters)
+        pub const HEAL_AMOUNT: f32 = 40.0; // HP recovered per checkpoint
 
-        // Axiomas (Injeção de Instinto)
-        pub const AXIOM_DECAY_GENS: f32 = 50.0; // Axiomas somem após N gerações
+        // Axioms (Instinct Injection)
+        pub const AXIOM_DECAY_GENS: f32 = 50.0; // Axioms fade after N generations
     }
 
-    /// Manobra de ré de emergência: parede frontal muito perto + parado + estagnado
-    /// dispara ré por tempo mínimo, com cooldown pós-ré. Réplica de `motor.rs`,
-    /// portada para os três laços GPU headless (`gpu_evolve`, `gpu_loop`, `cortex_evolve`).
+    /// Emergency reverse maneuver: front wall very close + stopped + stagnated
+    /// triggers reverse for a minimum time, with a post-reverse cooldown. Replica of `motor.rs`,
+    /// ported to the three headless GPU loops (`gpu_evolve`, `gpu_loop`, `cortex_evolve`).
     ///
-    /// Deduplicado (E3, REFACTOR_PLAN.md §2.3): existiam TRÊS cópias locais destas
-    /// constantes — e elas tinham DIVERGIDO: `gpu_evolve.rs` e `gpu_loop.rs` declaravam
-    /// `REVERSE_TRIGGER_DIST = 3.0` mas nunca a USAVAM (o `if` do gatilho tinha o
-    /// literal `4.0` hardcoded ao lado — a constante era morta, confirmado pelo warning
-    /// `constant REVERSE_TRIGGER_DIST is never used`). Só `cortex_evolve.rs` referenciava
-    /// a constante de fato, e a dele valia `4.0` — ou seja, o comportamento REAL dos três
-    /// binários sempre foi `4.0`; o `3.0` era um valor morto que mentia sobre o gatilho.
-    /// A constante única abaixo usa o valor efetivamente em vigor (`4.0`).
+    /// Deduplicated (E3, REFACTOR_PLAN.md §2.3): there were THREE local copies of these
+    /// constants — and they had DIVERGED: `gpu_evolve.rs` and `gpu_loop.rs` declared
+    /// `REVERSE_TRIGGER_DIST = 3.0` but never USED it (the trigger's `if` had the
+    /// literal `4.0` hardcoded next to it — the constant was dead, confirmed by the warning
+    /// `constant REVERSE_TRIGGER_DIST is never used`). Only `cortex_evolve.rs` actually
+    /// referenced the constant, and its value was `4.0` — that is, the REAL behaviour of the three
+    /// binaries was always `4.0`; the `3.0` was a dead value that lied about the trigger.
+    /// The single constant below uses the value effectively in force (`4.0`).
     pub mod reverse_maneuver {
-        /// Distância frontal (m) abaixo da qual a ré é disparada (com parado+estagnado).
+        /// Front distance (m) below which reverse is triggered (with stopped+stagnated).
         pub const TRIGGER_DIST_M: f32 = 4.0;
-        /// Duração mínima da manobra de ré, em segundos.
+        /// Minimum duration of the reverse maneuver, in seconds.
         pub const MIN_DURATION_S: f32 = 0.4;
-        /// Duração máxima da manobra de ré, em segundos (timeout de segurança).
+        /// Maximum duration of the reverse maneuver, in seconds (safety timeout).
         pub const MAX_DURATION_S: f32 = 1.5;
-        /// Distância frontal (m) a partir da qual a ré é considerada "livre" e encerra.
+        /// Front distance (m) from which the reverse is considered "clear" and ends.
         pub const EXIT_CLEAR_M: f32 = 2.5;
-        /// Cooldown pós-ré, em segundos: throttle capeado, nova ré bloqueada.
+        /// Post-reverse cooldown, in seconds: throttle capped, new reverse blocked.
         pub const POST_LOCKOUT_S: f32 = 0.6;
-        /// Ticks de estagnação (speed < 1.5 m/s) exigidos antes de habilitar o gatilho.
+        /// Stagnation ticks (speed < 1.5 m/s) required before enabling the trigger.
         /// 60 ticks ≈ 1 s @ 64 Hz.
         pub const STAGNATION_TICKS: u32 = 60;
-        /// Velocidade máxima (m/s) para o gatilho de ré considerar o ser "parado".
+        /// Maximum speed (m/s) for the reverse trigger to consider the being "stopped".
         pub const TRIGGER_SPEED_MAX_MS: f32 = 1.5;
-        /// Pedal fixo (acelerador) durante a ré ativa — mesmo valor de `motor.rs`.
+        /// Fixed pedal (throttle) during active reverse — same value as `motor.rs`.
         pub const PEDAL: f32 = 0.75;
     }
 }

@@ -1,44 +1,44 @@
-//! sensor_audit.rs — Auditoria estatística do vetor sensorial (223 canais).
+//! sensor_audit.rs — Statistical audit of the sensory vector (223 channels).
 //!
-//! Replica os canais de interesse sem Bevy: instancia VoxelWorld, gera N poses
-//! espalhadas pela pista, computa os canais manualmente e mede variância por canal
-//! e correlação entre pares suspeitos.
+//! Replicates the channels of interest without Bevy: instantiates VoxelWorld, generates
+//! N poses spread along the track, computes the channels by hand and measures per-channel
+//! variance and correlation between suspect pairs.
 //!
-//! Uso: env -u DISPLAY ./target/release/sensor_audit
+//! Usage: env -u DISPLAY ./target/release/sensor_audit
 //!
-//! Saída: tabela canal | variância | grupo de duplicatas.
+//! Output: table channel | variance | duplicate group.
 
 use bevy::math::{Vec2, Vec3};
 use universe::world::VoxelWorld;
 
 fn main() {
-    // Mundo determinístico para reproducibilidade.
+    // Deterministic world for reproducibility.
     let world = VoxelWorld::new(9001, 18.0);
     let n_wp = world.waypoints_world.len();
     println!(
-        "Mundo: {}x{} células · pista {} waypoints",
+        "World: {}x{} cells · track {} waypoints",
         world.size, world.size, n_wp
     );
 
-    // Gera N poses ao longo da pista com diferentes offsets laterais e headings.
-    // Para medir variância ENTRE SERES: seres em poses diferentes no mesmo tick.
-    // Para medir variância TEMPORAL: mesmo ser em ticks diferentes (mesmas poses com offset tick).
-    let n_poses = 120usize; // 2× o número de seres habitual (60)
+    // Generates N poses along the track with different lateral offsets and headings.
+    // To measure variance ACROSS BEINGS: beings at different poses in the same tick.
+    // To measure TEMPORAL variance: same being at different ticks (same poses with tick offset).
+    let n_poses = 120usize; // 2× the usual number of beings (60)
     let mut poses: Vec<(Vec3, Vec2, Vec2)> = Vec::new(); // (pos, forward, right)
 
     for k in 0..n_poses {
-        // Distribui uniformemente ao longo da pista
+        // Distributes uniformly along the track
         let wp_idx = (k * n_wp / n_poses).min(n_wp - 2);
         let wp = world.waypoints_world[wp_idx];
         let wp_next = world.waypoints_world[(wp_idx + 1).min(n_wp - 1)];
 
-        // Forward: direção do segmento da pista
+        // Forward: direction of the track segment
         let seg_dir = (wp_next - wp).normalize_or_zero();
         let fwd = Vec2::new(seg_dir.x, seg_dir.y);
         let rgt = Vec2::new(-fwd.y, fwd.x); // perpendicular
 
-        // Offset lateral: 0 (centro), ±4m (meio), ±8m (fora da pista, na grama).
-        // Com ±8m o ser está na grama — 3m/8m à frente pode cruzar a borda de volta.
+        // Lateral offset: 0 (center), ±4m (middle), ±8m (off the track, on the grass).
+        // At ±8m the being is on the grass — 3m/8m ahead may cross the edge back.
         let lat_offset = match k % 5 {
             0 => -8.0_f32,
             1 => -4.0,
@@ -52,27 +52,27 @@ fn main() {
         poses.push((pos, fwd, rgt));
     }
 
-    println!("Gerando {} amostras de sensory_wave...", n_poses);
+    println!("Generating {} sensory_wave samples...", n_poses);
 
-    // Computa os canais de interesse para cada pose.
-    // Canais suspeitos identificados no código:
-    //   ch 56-59: material_code (4× o mesmo voxel da posição atual)
-    //   ch 73:    prop_on_grass (0 se na pista, -128 se na grama — quase sempre 0)
+    // Computes the channels of interest for each pose.
+    // Suspect channels identified in the code:
+    //   ch 56-59: material_code (4× the same voxel of the current position)
+    //   ch 73:    prop_on_grass (0 if on track, -128 if on grass — almost always 0)
     //
-    // Outros grupos duplicados identificados NO motor.rs:
-    //   ch 36-39: open_l (abertura esquerda, 4×)
-    //   ch 40-43: open_r (abertura direita, 4× — SOBRESCREVE road_ahead NEAR depois)
+    // Other duplicated groups identified IN motor.rs:
+    //   ch 36-39: open_l (left opening, 4×)
+    //   ch 40-43: open_r (right opening, 4× — OVERWRITES road_ahead NEAR afterwards)
     //   ch 44-47: wall_imminent (4×)
     //   ch 48-51: trapped_score (4×)
     //   ch 60-63: escape_dir (4×)
-    //   ch 90-93: dark_center (3× + 1 depois)
+    //   ch 90-93: dark_center (3× + 1 afterwards)
     //
-    // Para canais que dependem da retina (open_l/r, wall_imminent, trapped, escape, dark_center),
-    // não temos acesso à retina sem Bevy. Medimos apenas os que dependem da grade:
-    //   ch 56-59: material (grade)
-    //   ch 73:    on_grass (grade)
-    //   ch 16-23: wall_distance_fov (grade — referência com variância real)
-    //   ch 76-77: lateral dist (grade — referência diferente entre lados)
+    // For channels that depend on the retina (open_l/r, wall_imminent, trapped, escape, dark_center),
+    // we have no retina access without Bevy. We measure only the grid-dependent ones:
+    //   ch 56-59: material (grid)
+    //   ch 73:    on_grass (grid)
+    //   ch 16-23: wall_distance_fov (grid — reference with real variance)
+    //   ch 76-77: lateral dist (grid — reference that differs between sides)
 
     const N_CH: usize = 223;
     let mut samples: Vec<[i8; N_CH]> = Vec::with_capacity(n_poses);
@@ -80,7 +80,7 @@ fn main() {
     for (pos, fwd, rgt) in &poses {
         let mut wave = [0i8; N_CH];
 
-        // ── ch 56-59: material atual + lookahead (após correção 2026-08-04) ──
+        // ── ch 56-59: current material + lookahead (after the 2026-08-04 fix) ──
         use universe::world::VoxelType;
         let enc_mat = |vox: VoxelType| -> i8 {
             match vox {
@@ -96,7 +96,7 @@ fn main() {
         wave[58] = enc_mat(world.get_voxel_at(pos.x + fwd3.x * 8.0, pos.z + fwd3.z * 8.0));
         wave[59] = enc_mat(world.get_voxel_at(pos.x + fwd3.x * 20.0, pos.z + fwd3.z * 20.0));
 
-        // ── ch 73: corredor disponível (após correção 2026-08-04) ────────────
+        // ── ch 73: available corridor (after the 2026-08-04 fix) ─────────────
         let lp_x_73 = -fwd.y;
         let lp_z_73 = fwd.x;
         let mut dist_l_73 = 30.0f32;
@@ -126,7 +126,7 @@ fn main() {
         let corredor = (dist_l_73 + dist_r_73).min(30.0);
         wave[73] = ((corredor / 30.0) * 127.0).clamp(0.0, 127.0) as i8;
 
-        // ── ch 16-23: wall_distance_fov (referência com variância real) ──────
+        // ── ch 16-23: wall_distance_fov (reference with real variance) ───────
         let fov_half_rad: f32 = 50.0_f32.to_radians();
         const WALL_SAMPLES: [f32; 8] = [3.0, 8.0, 15.0, 25.0, 35.0, 45.0, 52.0, 60.0];
         for ai in 0..8usize {
@@ -156,8 +156,8 @@ fn main() {
             };
         }
 
-        // ── ch 76-77: lateral esq/dir ─────────────────────────────────────────
-        // Versão CPU original (15m range, 6 amostras)
+        // ── ch 76-77: lateral left/right ─────────────────────────────────────
+        // Original CPU version (15m range, 6 samples)
         let lp_x = -fwd.y;
         let lp_z = fwd.x;
         let mut dist_l = 15.0f32;
@@ -182,19 +182,19 @@ fn main() {
         samples.push(wave);
     }
 
-    // ── Calcula variância por canal ───────────────────────────────────────────
+    // ── Computes per-channel variance ─────────────────────────────────────────
     println!("\n═══════════════════════════════════════════════════════════════════");
     println!(
-        "TABELA: variância por canal (medida em {} amostras)",
+        "TABLE: variance per channel (measured over {} samples)",
         n_poses
     );
-    println!("Canal | Var    | Min  | Max  | Nota");
+    println!("Chan  | Var    | Min  | Max  | Note");
     println!("------|--------|------|------|------------------------------------------");
 
     let canais_interesse = vec![
-        // Duplicatas materiais (ch 56-59)
-        56, 57, 58, 59, // on_grass (ch 73) — quase sempre 0
-        73, // Referência com variância real
+        // Material duplicates (ch 56-59)
+        56, 57, 58, 59, // on_grass (ch 73) — almost always 0
+        73, // Reference with real variance
         16, 17, 18, 19, 20, 21, 22, 23, // Lateral
         76, 77,
     ];
@@ -208,11 +208,11 @@ fn main() {
         let min_v = vals.iter().cloned().fold(f64::MAX, f64::min);
         let max_v = vals.iter().cloned().fold(f64::MIN, f64::max);
         let nota = if var < 1.0 {
-            "*** CONSTANTE — canal morto ***"
+            "*** CONSTANT — dead channel ***"
         } else if var < 50.0 {
-            "baixa variância"
+            "low variance"
         } else {
-            "variância normal"
+            "normal variance"
         };
         println!(
             "{:5} | {:6.1} | {:4.0} | {:4.0} | {}",
@@ -221,10 +221,10 @@ fn main() {
         variancas.push((ch, var));
     }
 
-    // ── Correlação entre ch 56 e ch 57, 58, 59 ───────────────────────────────
+    // ── Correlation between ch 56 and ch 57, 58, 59 ──────────────────────────
     println!("\n═══════════════════════════════════════════════════════════════════");
-    println!("CORRELAÇÃO entre pares suspeitos");
-    println!("Par          | Corr    | Interpretação");
+    println!("CORRELATION between suspect pairs");
+    println!("Pair         | Corr    | Interpretation");
     println!("-------------|---------|----------------------------------------");
 
     let pares = vec![
@@ -232,8 +232,8 @@ fn main() {
         (56, 58),
         (56, 59),
         (57, 58),
-        (76, 77), // deve ser distinto (lados opostos)
-        (16, 17), // deve ser distinto (ângulos diferentes)
+        (76, 77), // must be distinct (opposite sides)
+        (16, 17), // must be distinct (different angles)
     ];
 
     for (a, b) in &pares {
@@ -254,51 +254,51 @@ fn main() {
             1.0
         };
         let interp = if corr.abs() > 0.999 {
-            "DUPLICATA EXATA"
+            "EXACT DUPLICATE"
         } else if corr.abs() > 0.9 {
-            "quase duplicata"
+            "near duplicate"
         } else {
-            "independente (ok)"
+            "independent (ok)"
         };
         println!("ch{:3} vs ch{:3} | {:7.4} | {}", a, b, corr, interp);
     }
 
-    // ── PROVA DE DIVERGÊNCIA — grupos de retina com retina sintética ─────────
-    // Constrói retinas sintéticas com padrões distintos por row e verifica que
-    // os canais APÓS a correção (motor.rs 2026-08-04) têm valores DIFERENTES.
-    // Sem isso a correção pode compilar mas ainda produzir duplicatas.
+    // ── DIVERGENCE PROOF — retina groups with a synthetic retina ─────────────
+    // Builds synthetic retinas with distinct per-row patterns and verifies that
+    // the channels AFTER the fix (motor.rs 2026-08-04) have DIFFERENT values.
+    // Without this the fix may compile but still produce duplicates.
     //
-    // Retina sintética:
-    //   Row r: metade esquerda (cols 0..63) = -r*10 (escuro = pista),
-    //          metade direita (cols 63..126) = -(14-r)*8 (mais claro nas rows próximas)
-    //   Resultado: rows próximas têm mais "pista" à direita, rows longas à esquerda.
-    //   Wall_imminent: variamos pixel central por row (0, 50, 90, 127 em 4 rows).
+    // Synthetic retina:
+    //   Row r: left half (cols 0..63) = -r*10 (dark = track),
+    //          right half (cols 63..126) = -(14-r)*8 (lighter in the near rows)
+    //   Result: near rows have more "track" on the right, far rows on the left.
+    //   Wall_imminent: we vary the central pixel per row (0, 50, 90, 127 in 4 rows).
 
     use universe::config::iara::vision::{RETINA_COLS, RETINA_ROWS};
 
     println!("\n═══════════════════════════════════════════════════════════════════");
-    println!("PROVA DE DIVERGÊNCIA — retina sintética, após correção motor.rs 2026-08-04");
-    println!("Cada canal dos 6 grupos DEVE ter valor diferente dos outros 3 do mesmo grupo.");
-    println!("Canal | Val | Grupo | Observação");
+    println!("DIVERGENCE PROOF — synthetic retina, after the motor.rs 2026-08-04 fix");
+    println!("Each channel of the 6 groups MUST have a value different from the other 3 in its group.");
+    println!("Chan  | Val | Group | Observation");
     println!("------|-----|-------|------------------------------------------");
 
-    // Constrói retina sintética: 14 rows × 126 cols.
+    // Builds the synthetic retina: 14 rows × 126 cols.
     let mut retina_syn = [-128i8; RETINA_ROWS * RETINA_COLS];
     for row in 0..RETINA_ROWS {
         for col in 0..RETINA_COLS {
             let half = RETINA_COLS / 2;
             retina_syn[row * RETINA_COLS + col] = if col < half {
-                // Esquerda: escuridão cresce com a row (rows longas = mais pista à esq)
+                // Left: darkness grows with the row (far rows = more track on the left)
                 (-(row as i32 * 10 + 5)).clamp(-127, 0) as i8
             } else {
-                // Direita: escuridão maior nas rows próximas
+                // Right: greater darkness in the near rows
                 (-((RETINA_ROWS - 1 - row) as i32 * 8 + 4)).clamp(-127, 0) as i8
             };
         }
     }
-    // Injetar paredes para wall_imminent: deixar pixels altos em diferentes regiões
-    // Row 3 (reflex_row = ROWS/2-1 = 6): centro com max baixo
-    // Row near (ROWS-2 = 12): centro com max alto
+    // Inject walls for wall_imminent: leave high pixels in different regions
+    // Row 3 (reflex_row = ROWS/2-1 = 6): center with low max
+    // Row near (ROWS-2 = 12): center with high max
     let reflex_row = (RETINA_ROWS / 2).saturating_sub(1);
     let near_row = RETINA_ROWS.saturating_sub(2);
     for col in (RETINA_COLS * 5 / 16)..(RETINA_COLS * 11 / 16) {
@@ -307,38 +307,38 @@ fn main() {
     for col in (RETINA_COLS * 6 / 16)..(RETINA_COLS * 10 / 16) {
         retina_syn[near_row * RETINA_COLS + col] = 120; // near_max = 120 → val=127
     }
-    // Lateral esq (cols 0..31): baixo (sem parede)
+    // Left lateral (cols 0..31): low (no wall)
     for col in 0..(RETINA_COLS / 4) {
         retina_syn[reflex_row * RETINA_COLS + col] = 10; // wall_left_max = 10 → val=0
     }
-    // Lateral dir (cols 95..126): médio
+    // Right lateral (cols 95..126): medium
     for col in (RETINA_COLS * 3 / 4)..RETINA_COLS {
         retina_syn[reflex_row * RETINA_COLS + col] = 85; // wall_right_max = 85 → val=90
     }
-    // Escape: para provar divergência entre rows, precisamos que cada row tenha
-    // padrão de escape ÚNICO. Zeramos a metade frontal (cols 31..94) de cada row
-    // para parede (positivo = parede), então colocamos run de pista em posição diferente.
-    // Row 3: run em cols 32..39 (~esq, escape negativo)
-    // Row 5: run em cols 50..58 (~centro-dir, escape ligeiramente positivo)
-    // Row 7: run em cols 70..78 (~dir, escape positivo)
-    // Row 9: sem run (todos são parede → escape=0)
+    // Escape: to prove divergence between rows, each row needs a UNIQUE escape
+    // pattern. We zero the frontal half (cols 31..94) of each row to wall
+    // (positive = wall), then place a track run at a different position.
+    // Row 3: run at cols 32..39 (~left, negative escape)
+    // Row 5: run at cols 50..58 (~center-right, slightly positive escape)
+    // Row 7: run at cols 70..78 (~right, positive escape)
+    // Row 9: no run (all wall → escape=0)
     for row in [3usize, 5, 7, 9] {
         for col in (RETINA_COLS / 4)..(RETINA_COLS * 3 / 4) {
-            retina_syn[row * RETINA_COLS + col] = 30; // parede nessa faixa
+            retina_syn[row * RETINA_COLS + col] = 30; // wall in that band
         }
     }
     let escape_runs: [(usize, usize, usize); 3] = [(3, 32, 39), (5, 50, 58), (7, 70, 78)];
     for &(row, lo, hi) in &escape_runs {
         for col in lo..hi {
-            retina_syn[row * RETINA_COLS + col] = -80; // pista (escuro)
+            retina_syn[row * RETINA_COLS + col] = -80; // track (dark)
         }
     }
 
-    // Replica o cálculo do motor.rs com a retina sintética
+    // Replicates the motor.rs computation with the synthetic retina
     let half = RETINA_COLS / 2;
     let half_col = (RETINA_COLS / 2) as f32 - 0.5;
 
-    // --- Grupos ch 36-39 e ch 40-43: open_l/r por row ---
+    // --- Groups ch 36-39 and ch 40-43: open_l/r per row ---
     let dark_sum_left_at_row = |row: usize| -> f32 {
         let off = row.min(RETINA_ROWS - 1) * RETINA_COLS;
         let mut s: i32 = 0;
@@ -375,9 +375,9 @@ fn main() {
         "   36 | {:3} | open_l row3   | {}",
         ch36,
         if ol_distinct {
-            "OK — canais distintos"
+            "OK — distinct channels"
         } else {
-            "*** FALHA: ainda duplicata ***"
+            "*** FAIL: still a duplicate ***"
         }
     );
     println!("   37 | {:3} | open_l row5   |", ch37);
@@ -387,16 +387,16 @@ fn main() {
         "   40 | {:3} | open_r row3   | {}",
         ch40,
         if or_distinct {
-            "OK — canais distintos"
+            "OK — distinct channels"
         } else {
-            "*** FALHA: ainda duplicata ***"
+            "*** FAIL: still a duplicate ***"
         }
     );
     println!("   41 | {:3} | open_r row5   |", ch41);
     println!("   42 | {:3} | open_r row7   |", ch42);
     println!("   43 | {:3} | open_r row9   |", ch43);
 
-    // --- Grupo ch 44-47: wall_imminent por região angular ---
+    // --- Group ch 44-47: wall_imminent per angular region ---
     let mut wall_central_max: i32 = -128;
     for i in (RETINA_COLS * 5 / 16)..(RETINA_COLS * 11 / 16) {
         let v = retina_syn[reflex_row * RETINA_COLS + i] as i32;
@@ -459,21 +459,21 @@ fn main() {
     };
     let wi_distinct = !(ch44 == ch45 && ch45 == ch46 && ch46 == ch47);
     println!(
-        "   44 | {:3} | wall_imm fóv central | {}",
+        "   44 | {:3} | wall_imm central fov | {}",
         ch44,
         if wi_distinct {
-            "OK — canais distintos"
+            "OK — distinct channels"
         } else {
-            "*** FALHA ***"
+            "*** FAIL ***"
         }
     );
-    println!("   45 | {:3} | wall_imm fóv estreita|", ch45);
-    println!("   46 | {:3} | wall_imm lat esq     |", ch46);
-    println!("   47 | {:3} | wall_imm lat dir     |", ch47);
+    println!("   45 | {:3} | wall_imm narrow fov  |", ch45);
+    println!("   46 | {:3} | wall_imm left lat    |", ch46);
+    println!("   47 | {:3} | wall_imm right lat   |", ch47);
 
-    // --- Grupo ch 48-51: trapped decomposto ---
+    // --- Group ch 48-51: trapped decomposed ---
     let wall_pressure = ch44 as f32;
-    let speed_kmh_now = 0.0f32; // parado
+    let speed_kmh_now = 0.0f32; // stopped
     let open_l_norm = dark_sum_left_at_row(3);
     let open_r_norm = dark_sum_right_at_row(3);
     let stuck_speed = (1.0 - (speed_kmh_now / 25.0).clamp(0.0, 1.0)) * 127.0;
@@ -492,16 +492,16 @@ fn main() {
         "   48 | {:3} | trapped: wall_press | {}",
         ch48,
         if tr_distinct {
-            "OK — canais distintos"
+            "OK — distinct channels"
         } else {
-            "*** FALHA ***"
+            "*** FAIL ***"
         }
     );
     println!("   49 | {:3} | trapped: stuck_speed|", ch49);
     println!("   50 | {:3} | trapped: lr_blocked |", ch50);
-    println!("   51 | {:3} | trapped: composto   |", ch51);
+    println!("   51 | {:3} | trapped: composite  |", ch51);
 
-    // --- Grupo ch 60-63: escape_dir por row ---
+    // --- Group ch 60-63: escape_dir per row ---
     let escape_at_row = |row: usize| -> i8 {
         let row_off = row.min(RETINA_ROWS - 1) * RETINA_COLS;
         let mut b_start = 0usize;
@@ -540,16 +540,16 @@ fn main() {
         "   60 | {:3} | escape row3   | {}",
         ch60,
         if es_distinct {
-            "OK — canais distintos"
+            "OK — distinct channels"
         } else {
-            "*** FALHA ***"
+            "*** FAIL ***"
         }
     );
     println!("   61 | {:3} | escape row5   |", ch61);
     println!("   62 | {:3} | escape row7   |", ch62);
     println!("   63 | {:3} | escape row9   |", ch63);
 
-    // --- Grupo ch 90-93: dark_center variantes ---
+    // --- Group ch 90-93: dark_center variants ---
     let dark_center_for_row_inner = |row: usize, w_size: usize| -> f32 {
         let row_off = row * RETINA_COLS;
         let search_lo = RETINA_COLS / 4;
@@ -609,9 +609,9 @@ fn main() {
         "   90 | {:3} | dark_ctr W8 row3(40m) | {}",
         ch90,
         if dc_distinct {
-            "OK — canais distintos"
+            "OK — distinct channels"
         } else {
-            "*** FALHA ***"
+            "*** FAIL ***"
         }
     );
     println!("   91 | {:3} | dark_ctr W16 row5(25m)|", ch91);
@@ -622,11 +622,11 @@ fn main() {
         ol_distinct && or_distinct && wi_distinct && tr_distinct && es_distinct && dc_distinct;
     println!("\n═══════════════════════════════════════════════════════════════════");
     if all_ok {
-        println!("RESULTADO: PASS — todos os 6 grupos têm canais com valores distintos.");
-        println!("0 duplicatas confirmadas na retina sintética.");
+        println!("RESULT: PASS — all 6 groups have channels with distinct values.");
+        println!("0 duplicates confirmed on the synthetic retina.");
     } else {
-        println!("RESULTADO: FALHA — algum grupo ainda tem duplicata!");
+        println!("RESULT: FAIL — some group still has a duplicate!");
     }
-    println!("Canais libertos (antes duplicata, agora distintos): 18");
-    println!("(6 grupos × 3 canais extras = 18 canais que antes desperdiçavam informação)");
+    println!("Freed channels (formerly duplicates, now distinct): 18");
+    println!("(6 groups × 3 extra channels = 18 channels that used to waste information)");
 }

@@ -18,7 +18,7 @@ impl RealityEngine {
     }
 
     /// Materialization: Translate latent DNA (valid_intent) into visual draft.
-    /// Axiom: "Tradução direta de vetores latentes em pixels reais."
+    /// Axiom: "Direct translation of latent vectors into real pixels."
     pub fn materialize(&mut self, latent_dna: &[f32]) {
         for (i, &energy) in latent_dna.iter().enumerate() {
             if i >= self.width * self.height {

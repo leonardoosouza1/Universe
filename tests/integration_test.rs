@@ -50,17 +50,17 @@ fn test_bitlinear_inference() {
     // Calculation for out[0]: (10*1) + (20*-1) + (30*0) + (40*1) = 10 - 20 + 0 + 40 = 30
     // 30 / 127.0 (norm_factor) = 0.23622047
     //
-    // Achado (fora do escopo de P1.8, descoberto ao rodar `cargo test --workspace`
-    // como gate final do conserto): esta asserção assumia `output[0]` multiplicado
-    // por `weight_scale` (abs_mean dos pesos = 0.75) — mas `BitLinear::forward`
-    // (src/layers.rs:39-52) hoje NÃO multiplica `weight_scale` no forward (comentário
-    // do próprio campo, layers.rs:22: "Forward NÃO multiplica scale (peso já absorve
-    // magnitude)"). `weight_scale` só é lido/gravado no boundary do disco
-    // (`quantize_for_save`/`load_from_quantized`, ver layers.rs:83-98), não no forward
-    // em si. A asserção antiga (`22.5/127.0`) nunca foi atualizada quando esse
-    // comportamento mudou (git log mostra o último commit real em `layers.rs` como
+    // Finding (out of P1.8's scope, discovered while running `cargo test --workspace`
+    // as the final gate of the fix): this assertion assumed `output[0]` multiplied
+    // by `weight_scale` (abs_mean of the weights = 0.75) — but `BitLinear::forward`
+    // (src/layers.rs:39-52) today does NOT multiply `weight_scale` in the forward
+    // (the field's own comment, layers.rs:22: "Forward does NOT multiply scale
+    // (weight already absorbs magnitude)"). `weight_scale` is only read/written at the
+    // disk boundary (`quantize_for_save`/`load_from_quantized`, see layers.rs:83-98),
+    // not in the forward itself. The old assertion (`22.5/127.0`) was never updated
+    // when that behavior changed (git log shows the last real commit in `layers.rs` as
     // "fix(dna): cortex quantize scale 63.5 (was 127, saturated weights >1.0)",
-    // anterior a esta sessão) — corrigida aqui para refletir o forward atual.
+    // prior to this session) — fixed here to reflect the current forward.
     assert!((output[0] - (30.0 / 127.0)).abs() < 1e-5);
     println!("BitLinear Output: {:?}", output);
 }

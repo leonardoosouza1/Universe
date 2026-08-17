@@ -1,26 +1,27 @@
 [workspace]
-# `iara_genesis` foi movido para `docs/arquivo/dirs/iara_genesis` no commit "removing
-# trash" (2c71c69) sem atualizar este manifesto — a crate NÃO é lixo (é dependência real
-# de `src/evolution/dna_genesis.rs`, `dna_view`, `dna_compress`, `generic_dna`), só o
-# caminho ficou obsoleto e quebrava TODO `cargo build` do workspace. Repontuado para o
-# caminho novo; arquivos não foram movidos de volta (evita conflito com o cleanup feito).
+# `iara_genesis` was moved to `docs/arquivo/dirs/iara_genesis` in the "removing
+# trash" commit (2c71c69) without updating this manifest — the crate is NOT trash (it is a
+# real dependency of `src/evolution/dna_genesis.rs`, `dna_view`, `dna_compress`,
+# `generic_dna`), only the path became stale and broke EVERY `cargo build` of the
+# workspace. Repointed to the new path; files were not moved back (avoids conflicting with
+# the cleanup already done).
 members = [".", "docs/arquivo/dirs/iara_genesis"]
 
 [package]
 name = "universe"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85.0" # Versão estável em 2026
+rust-version = "1.85.0" # Stable version in 2026
 license = "MIT"
 default-run = "universe"
 
 [dependencies]
 iara_genesis = { path = "docs/arquivo/dirs/iara_genesis" }
 iara-perception = { path = "vendor/iara-perception" }
-# Já era dependência TRANSITIVA via iara-perception (RetinaPerception usa CfcCell
-# internamente). Tornada direta para que `src/math/cfc_perception.rs` possa referenciar
-# `iara_cfc::CfcCell` sem duplicar a equação — ver doc daquele módulo. Mesma crate,
-# mesma versão que iara-perception já resolve; não adiciona código novo ao grafo.
+# Was already a TRANSITIVE dependency via iara-perception (RetinaPerception uses CfcCell
+# internally). Made direct so that `src/math/cfc_perception.rs` can reference
+# `iara_cfc::CfcCell` without duplicating the equation — see that module's doc. Same crate,
+# same version iara-perception already resolves; adds no new code to the graph.
 iara-cfc = { path = "vendor/iara-cfc" }
 bevy = { version = "0.16.0", default-features = false, features = [
     "bevy_pbr",
@@ -30,7 +31,7 @@ bevy = { version = "0.16.0", default-features = false, features = [
     "bevy_winit",
     "bevy_text",
     "bevy_ui",
-    "bevy_gizmos", # Essencial para depuração metafísica
+    "bevy_gizmos", # Essential for metaphysical debugging
     "bevy_state",
     "x11",
     "tonemapping_luts",
@@ -38,13 +39,13 @@ bevy = { version = "0.16.0", default-features = false, features = [
     "multi_threaded"
 ] }
 bitflags = "2.6"
-# GPU compute sem parte gráfica (ver src/gpu/): wgpu já vem pela árvore do Bevy.
+# GPU compute without the graphics side (see src/gpu/): wgpu already comes via the Bevy tree.
 wgpu = "24.0"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
-rand = "0.9.0" # Versão ultra-rápida de 2026
-libc = "0.2"  # fork/waitpid para isolar crashes de driver em gpu_validate
-rayon = "1.10" # Paralelização CPU-bound (retina raycast pra 2000+ carros)
+rand = "0.9.0" # Ultra-fast 2026 version
+libc = "0.2"  # fork/waitpid to isolate driver crashes in gpu_validate
+rayon = "1.10" # CPU-bound parallelism (retina raycast for 2000+ cars)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bevy_atmosphere = "0.13.0"
@@ -53,40 +54,40 @@ bevy_hanabi = "0.16.0"
 [features]
 default = ["survival_pressure", "simple_elitism", "trinity_swarm"]
 # Trinity swarm + Tesla-style safety. Cortex+Reflex+Sentinel via MoE Gate.
-# Ver docs/superpowers/specs/2026-04-25-trinity-swarm-safety-design.md
+# See docs/superpowers/specs/2026-04-25-trinity-swarm-safety-design.md
 trinity_swarm = []
-# Elitismo simples: slot 0 = champion puro, resto = champion + mutação.
-# Coroação imediata se qualquer mutante bater champion (ignora validation-gate).
-# Ver melhorias/simple-elitism.md
+# Simple elitism: slot 0 = pure champion, rest = champion + mutation.
+# Immediate coronation if any mutant beats the champion (ignores the validation-gate).
+# See melhorias/simple-elitism.md
 simple_elitism = []
-# DEPRECATED: absorvido pelo Sentinel Tier 0 FCA. Habilitar só pra A/B regression.
+# DEPRECATED: absorbed by the Sentinel Tier 0 FCA. Enable only for A/B regression.
 sentinel_brake = []
-# Compensa dynamic_steer_limit no neural steer (x1/limit cap 2). Ver melhorias/gain-asymmetry.md
+# Compensates dynamic_steer_limit on the neural steer (x1/limit cap 2). See melhorias/gain-asymmetry.md
 gain_comp_steer = []
-# Remove threshold 0.2 do brake spline (simetria com throttle).
+# Removes the 0.2 threshold from the brake spline (symmetry with throttle).
 brake_symmetric = []
-# Pressão existencial extra: idle_brake_penalty + corner_fuel_burn + spin_hp_drain.
-# Ver melhorias/survival-pressure.md
+# Extra existential pressure: idle_brake_penalty + corner_fuel_burn + spin_hp_drain.
+# See melhorias/survival-pressure.md
 survival_pressure = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-# Validação estática de WGSL sem GPU (parse + type-check via naga) — ver
-# tests/wgsl_validation.rs. Mesma versão que wgpu 24.0 já traz transitivamente
-# (Cargo.lock), só tornada direta e com a feature "wgsl-in" explícita: sem ela,
-# `naga::front::wgsl` não compila (feature-gated) e a unificação de features do
-# workspace não é algo para depender silenciosamente.
+# Static WGSL validation without a GPU (parse + type-check via naga) — see
+# tests/wgsl_validation.rs. Same version wgpu 24.0 already brings transitively
+# (Cargo.lock), only made direct and with the "wgsl-in" feature explicit: without it,
+# `naga::front::wgsl` does not compile (feature-gated), and the workspace's feature
+# unification is not something to depend on silently.
 naga = { version = "24.0", features = ["wgsl-in"] }
 
 [[bench]]
 name = "bitlinear"
 harness = false
 
-# Binários: o Cargo descobre sozinho todo `src/bin/*.rs`, usando o nome do arquivo.
-# Só declaramos aqui o que NÃO segue essa regra. Havia 13 declarações redundantes e, ao
-# mesmo tempo, 8 binários sem declaração — inclusive o `gpu_evolve`, que é o caminho de
-# produção. A mistura fazia parecer que os não-declarados estavam desativados.
-# Adicionar uma ferramenta agora é só criar o arquivo.
+# Binaries: Cargo discovers every `src/bin/*.rs` on its own, using the file name.
+# We only declare here what does NOT follow that rule. There were 13 redundant
+# declarations and, at the same time, 8 binaries with no declaration — including
+# `gpu_evolve`, which is the production path. The mix made the undeclared ones look
+# disabled. Adding a tool now is just creating the file.
 [[bin]]
 name = "universe-lab"
 path = "src/bin/lab.rs"
