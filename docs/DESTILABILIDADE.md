@@ -338,3 +338,51 @@ tese de destilação ressuscita e eu estava errado sobre o mecanismo da fuga.
 
 Barra de sucesso real, a que importa: o híbrido tem de bater o CÉREBRO SOZINHO
 (6592 m em 9001, 5932 m em 9007) — não o clone v1.
+
+## VEREDITO FINAL: a destilação FUNCIONA — com a base certa e com caderno MISTO
+
+A predição registrada (v2 entre 20% e 60%) foi **refutada por cima**. Existe um limiar
+de erro por tick entre 0,26 e 0,18 onde o erro DEIXA de acumular em malha fechada:
+
+| piloto | erro held-out | 9001 (treino) | 9003 (treino) | 9007 (NUNCA VISTA) |
+|---|---|---|---|---|
+| cérebro campeão (referência) | — | 6592 m | 5242 m | 5932 m |
+| v1 linear | 0,2620 | 1027 m (15,6%) | — | 2559 m (43,1%) |
+| v2 pirâmide+arctanh, 1 pista | 0,1794 | **7485 m (113,5%)** | — | 4985 m (84,0%) |
+| **v2 CADERNO MISTO (9001+9003)** | **0,1388** | 7139 m (108,3%) | **5575 m (106,4%)** | **6072 m (102,4%)** |
+
+**O piloto misto bate o cérebro nas três pistas, inclusive numa que nunca viu.**
+
+Verificação de que o piloto REALMENTE dirige (o teste que faltou na primeira rodada e
+me fez publicar número falso): o comando APLICADO à física diverge do braço-cérebro no
+tick **0** (no bug era só no 576) e a correlação entre o comando aplicado e o intent
+pedido pelo piloto é 0,989 (acelerador) e 0,999 (freio) — a mesma do cérebro com o
+próprio intent (0,988).
+
+### Os dois ingredientes, em ordem de importância
+
+1. **`arctanh` na saída** — ajustar no espaço PRÉ-compressão do `tanh` e devolver com
+   `tanh`. Vale −23% de erro com ZERO parâmetro, mais que toda a não-linearidade da
+   entrada (−12%). Mecanismo: 61-74% dos alvos vivem no platô onde mover 1,0 na
+   pré-ativação move 0,004 na saída; o mínimo quadrado gastava capacidade raspando
+   platô em vez de decidir.
+2. **Caderno MISTO** (transferência da sessão-forja, lei "cobertura > aglomeração",
+   4ª aparição lá e 1ª aqui): ajustar com ticks de VÁRIAS pistas em vez de uma.
+   Fecha o buraco de generalização (84% → 102,4%) e custa 5 pontos na pista de casa
+   (113,5% → 108,3%) — o trade que a lei prevê.
+
+### O que isso destrava no projeto
+
+Um campeão que custou **80 gerações de GPU** vira, em **10 segundos de CPU**, um piloto
+que dirige melhor que ele — inclusive em pista nova. "Evolução vira refino" deixa de ser
+tese e passa a ter número. E a leitura dos pesos vem de graça junto.
+
+### O que ainda NÃO está resolvido
+
+- O piloto não é um GENOMA: não dá para semear a população com ele diretamente. Ligar
+  as duas coisas (destilar → devolver para dentro do cérebro evoluível) é a próxima
+  ponta solta, e não é óbvia — o L1 é ternário e o v2 é uma pirâmide de 202k features.
+- Custo por tick do v2: 202 752 multiplicações, mais caro que o próprio cérebro. Serve
+  como professor/baseline/instrumento, não como economia de computação.
+- Só duas pistas no caderno. A lei da cobertura prevê que mais pistas melhoram;
+  não medi.
