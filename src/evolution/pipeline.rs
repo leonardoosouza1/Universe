@@ -1040,7 +1040,7 @@ pub(super) fn evolution_pipeline(
                 );
             }
 
-            // --- ASCII MAP com death markers + finish positions ---
+            // --- ASCII MAP with death markers + finish positions ---
             let death_points: Vec<Vec3> = sorted
                 .iter()
                 .filter(|(_, r, _, _)| r.is_dead)
@@ -1073,7 +1073,7 @@ pub(super) fn evolution_pipeline(
                 let _ = writeln!(file, "\n### 🏆 RACERS WITH COMPLETED LAPS (all)");
                 let _ = writeln!(
                     file,
-                    "| Nome | Laps | NET(m) | Peak(km/h) | Walls | Death | Frame | Zone |"
+                    "| Name | Laps | NET(m) | Peak(km/h) | Walls | Death | Frame | Zone |"
                 );
                 let _ = writeln!(file, "|---|---|---|---|---|---|---|---|");
                 for (_, r, _, _) in with_lap.iter() {
@@ -1156,7 +1156,7 @@ pub(super) fn evolution_pipeline(
                 );
                 let _ = writeln!(
                     file,
-                    "| t(s) | V(km/h) | WL | WR | TTC | Curv25 | Retina_C | raw_thr | raw_steer | post_damp | phys_steer | steer_lim | risk_damp | TOP5 canais |"
+                    "| t(s) | V(km/h) | WL | WR | TTC | Curv25 | Retina_C | raw_thr | raw_steer | post_damp | phys_steer | steer_lim | risk_damp | TOP5 channels |"
                 );
                 let _ = writeln!(
                     file,

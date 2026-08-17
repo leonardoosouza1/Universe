@@ -1,9 +1,9 @@
-//! Cérebro — formato de arquivo e (futuramente) a topologia em si.
+//! Brain — file format and (in the future) the topology itself.
 //!
-//! Hoje abriga só o formato `.brain`. O módulo existe separado porque a intenção é que
-//! ele receba também a definição das camadas: quando o cérebro passar a ter regiões
-//! (visão, decisão, motor), a descrição de cada região mora aqui, ao lado do formato que
-//! a grava.
+//! Today it holds only the `.brain` format. The module exists on its own because the
+//! intent is for it to also receive the layer definitions: when the brain gains regions
+//! (vision, decision, motor), the description of each region lives here, next to the
+//! format that writes it.
 pub mod format;
 
 pub use format::{Block, BlockKind, BrainFile, Encoding, FLAG_ACTIVE};

@@ -4,13 +4,29 @@ Universe was written in Portuguese. On **2026-08-17** the project moved to
 English-only (`docs/STYLE.md`, `NAMING.md`). This file turns "translate 54,000 lines"
 into a queue of small, independent, reviewable pull requests.
 
-**Snapshot taken 2026-08-17** with `./scripts/check_language.sh --all`:
+**Snapshot refreshed 2026-08-17, after translation wave 2**, with
+`./scripts/check_language.sh --all`:
 
 | | files | offending lines |
 |---|---:|---:|
-| Live code (`src/`, `tests/`, root) | 140 | 11,819 |
+| Live code (`src/`, `tests/`, root) | 45 | 3,273 |
 | Archived crates under `docs/arquivo/` | 30 | 423 |
-| **Total** | **170** | **12,242** |
+| Vendored crates under `vendor/` (not a migration target) | 3 | 24 |
+| Product docs (defects, not debt — see below) | 2 | 5 |
+| **Total** | **80** | **3,725** |
+
+Trend so far, all four figures produced by `--all` on that commit:
+
+| Wave | Commit | files | offending lines |
+|---|---|---:|---:|
+| before wave 1 | `266b30a` | 168 | 11,261 |
+| after wave 1 | `3a69928` | 91 | 4,014 |
+| after wave 2 | this commit | 80 | 3,725 |
+
+Wave 1 never updated the table below, so this commit is where 95 rows flip to `done`
+at once: 84 were already at zero before wave 2 started, and 11 were cleared by wave 2
+itself. Wave 2 also cut partials — `src/bin/gpu_evolve/tests.rs` 85 → 3,
+`tests/ablacao_cortex.rs` 19 → 6, `tests/ablacao_controle.rs` 12 → 4.
 
 "Offending lines" counts lines containing Portuguese diacritics or one of the
 checker's unambiguous Portuguese function words. It is a workload proxy, not an exact
@@ -77,145 +93,145 @@ Sorted by offending lines, descending. Status is `pending` or `done`.
 
 | File | Occurrences | Status | Owner |
 |---|---:|---|---|
-| `src/bin/gpu_evolve/main.rs` | 850 | pending | — |
-| `src/gpu/evolution.rs` | 636 | pending | — |
-| `src/simulation/motor.rs` | 590 | pending | — |
-| `src/gpu/brain.wgsl` | 436 | pending | — |
+| `src/bin/gpu_evolve/main.rs` | 856 | pending | — |
+| `src/gpu/evolution.rs` | 31 | pending | — |
+| `src/simulation/motor.rs` | 2 | pending | — |
+| `src/gpu/brain.wgsl` | 0 | done | — |
 | `src/bin/gpu_evolve/context.rs` | 387 | pending | — |
-| `src/bin/gpu_loop.rs` | 385 | pending | — |
+| `src/bin/gpu_loop.rs` | 0 | done | — |
 | `src/gpu/perception.rs` | 358 | pending | — |
 | `src/perception/channels.rs` | 340 | pending | — |
-| `src/evolution/pipeline.rs` | 295 | pending | — |
-| `src/gpu/brain.rs` | 295 | pending | — |
-| `src/bin/cortex_evolve.rs` | 270 | pending | — |
+| `src/evolution/pipeline.rs` | 26 | pending | — |
+| `src/gpu/brain.rs` | 0 | done | — |
+| `src/bin/cortex_evolve.rs` | 0 | done | — |
 | `src/gpu/perception.wgsl` | 255 | pending | — |
 | `src/world.rs` | 228 | pending | — |
-| `src/neuro.rs` | 202 | pending | — |
-| `src/bin/gpu_report.rs` | 198 | pending | — |
+| `src/neuro.rs` | 8 | pending | — |
+| `src/bin/gpu_report.rs` | 15 | pending | — |
 | `src/bin/gpu_evolve/escada.rs` | 161 | pending | — |
-| `src/bin/gpu_validate.rs` | 152 | pending | — |
-| `src/bin/cortex_map.rs` | 149 | pending | — |
-| `src/gpu/cortex_sheet.rs` | 144 | pending | — |
-| `src/gpu/core.rs` | 143 | pending | — |
-| `src/evolution/spawn.rs` | 133 | pending | — |
-| `src/bin/gpu_evolve/piloto_forja.rs` | 131 | pending | — |
-| `src/gpu/physics.rs` | 130 | pending | — |
+| `src/bin/gpu_validate.rs` | 0 | done | — |
+| `src/bin/cortex_map.rs` | 0 | done | — |
+| `src/gpu/cortex_sheet.rs` | 0 | done | — |
+| `src/gpu/core.rs` | 0 | done | — |
+| `src/evolution/spawn.rs` | 0 | done | — |
+| `src/bin/gpu_evolve/piloto_forja.rs` | 6 | pending | — |
+| `src/gpu/physics.rs` | 0 | done | — |
 | `src/gpu/perception_temporal.wgsl` | 126 | pending | — |
 | `src/bin/gpu_evolve/statics.rs` | 125 | pending | — |
-| `src/engine.rs` | 119 | pending | — |
-| `src/simulation/racer.rs` | 117 | pending | — |
-| `src/bin/gpu_evolve/fantasma.rs` | 109 | pending | — |
-| `src/analysis/activation.rs` | 107 | pending | — |
+| `src/engine.rs` | 0 | done | — |
+| `src/simulation/racer.rs` | 0 | done | — |
+| `src/bin/gpu_evolve/fantasma.rs` | 12 | pending | — |
+| `src/analysis/activation.rs` | 5 | pending | — |
 | `src/pista_gen.rs` | 107 | pending | — |
-| `src/bin/replay_mapa.rs` | 106 | pending | — |
-| `src/bin/genoma_view.rs` | 93 | pending | — |
-| `src/gpu/cortex_sheet.wgsl` | 91 | pending | — |
-| `src/math/activations.rs` | 91 | pending | — |
-| `src/gpu/physics.wgsl` | 89 | pending | — |
-| `src/analysis/contextual.rs` | 88 | pending | — |
-| `src/gpu/retina_digest.wgsl` | 86 | pending | — |
-| `src/analysis/regioes.rs` | 85 | pending | — |
-| `src/bin/gpu_evolve/tests.rs` | 85 | pending | — |
-| `src/replay.rs` | 84 | pending | — |
-| `src/gpu/mod.rs` | 81 | pending | — |
-| `src/gpu/slow_brain.rs` | 79 | pending | — |
-| `src/config.rs` | 78 | pending | — |
-| `src/bin/replay_diag.rs` | 76 | pending | — |
-| `src/bin/gpu_evolve/piloto_linear.rs` | 75 | pending | — |
-| `src/evolution/dna_genesis.rs` | 74 | pending | — |
-| `src/environment.rs` | 73 | pending | — |
-| `src/gpu/retina_digest.rs` | 69 | pending | — |
-| `src/gpu/slow_brain.wgsl` | 69 | pending | — |
-| `src/math/linalg.rs` | 69 | pending | — |
-| `src/brain_capacity.rs` | 68 | pending | — |
+| `src/bin/replay_mapa.rs` | 0 | done | — |
+| `src/bin/genoma_view.rs` | 0 | done | — |
+| `src/gpu/cortex_sheet.wgsl` | 0 | done | — |
+| `src/math/activations.rs` | 14 | pending | — |
+| `src/gpu/physics.wgsl` | 0 | done | — |
+| `src/analysis/contextual.rs` | 6 | pending | — |
+| `src/gpu/retina_digest.wgsl` | 0 | done | — |
+| `src/analysis/regioes.rs` | 6 | pending | — |
+| `src/bin/gpu_evolve/tests.rs` | 3 | pending | — |
+| `src/replay.rs` | 0 | done | — |
+| `src/gpu/mod.rs` | 0 | done | — |
+| `src/gpu/slow_brain.rs` | 0 | done | — |
+| `src/config.rs` | 0 | done | — |
+| `src/bin/replay_diag.rs` | 0 | done | — |
+| `src/bin/gpu_evolve/piloto_linear.rs` | 4 | pending | — |
+| `src/evolution/dna_genesis.rs` | 0 | done | — |
+| `src/environment.rs` | 0 | done | — |
+| `src/gpu/retina_digest.rs` | 1 | pending | — |
+| `src/gpu/slow_brain.wgsl` | 0 | done | — |
+| `src/math/linalg.rs` | 1 | pending | — |
+| `src/brain_capacity.rs` | 0 | done | — |
 | `src/gpu/perception_motion.wgsl` | 67 | pending | — |
-| `src/bin/gpu_evolve/audit.rs` | 66 | pending | — |
-| `src/bin/gpu_evolve/painel.rs` | 66 | pending | — |
-| `src/bin/replay_obs.rs` | 66 | pending | — |
-| `src/cfc.rs` | 65 | pending | — |
-| `src/evolution/dna.rs` | 65 | pending | — |
-| `src/brain/format.rs` | 64 | pending | — |
-| `src/substrate.rs` | 63 | pending | — |
-| `src/bin/sensor_audit.rs` | 62 | pending | — |
-| `src/bin/sinapses.rs` | 62 | pending | — |
-| `src/gpu/genome_io.rs` | 59 | pending | — |
-| `src/math/quant.rs` | 56 | pending | — |
-| `src/math/thresholds.rs` | 55 | pending | — |
-| `src/bin/fisica_bisect.rs` | 54 | pending | — |
+| `src/bin/gpu_evolve/audit.rs` | 21 | pending | — |
+| `src/bin/gpu_evolve/painel.rs` | 0 | done | — |
+| `src/bin/replay_obs.rs` | 0 | done | — |
+| `src/cfc.rs` | 0 | done | — |
+| `src/evolution/dna.rs` | 0 | done | — |
+| `src/brain/format.rs` | 2 | pending | — |
+| `src/substrate.rs` | 0 | done | — |
+| `src/bin/sensor_audit.rs` | 0 | done | — |
+| `src/bin/sinapses.rs` | 0 | done | — |
+| `src/gpu/genome_io.rs` | 0 | done | — |
+| `src/math/quant.rs` | 1 | pending | — |
+| `src/math/thresholds.rs` | 3 | pending | — |
+| `src/bin/fisica_bisect.rs` | 0 | done | — |
 | `src/bin/gpu_evolve/types.rs` | 54 | pending | — |
-| `src/bin/visao_check.rs` | 54 | pending | — |
-| `src/bin/cortex_test.rs` | 53 | pending | — |
-| `src/physics.rs` | 52 | pending | — |
-| `src/metabolism.rs` | 51 | pending | — |
-| `src/bin/pistas.rs` | 48 | pending | — |
-| `src/gpu/retina_digest_parity_test.rs` | 47 | pending | — |
-| `src/main.rs` | 44 | pending | — |
-| `tests/wgsl_validation.rs` | 44 | pending | — |
-| `src/lab.rs` | 43 | pending | — |
-| `src/bin/replay_analyze.rs` | 42 | pending | — |
-| `src/bin/gpu_evolve/pilots.rs` | 40 | pending | — |
-| `src/evolution/settings.rs` | 36 | pending | — |
-| `src/bin/pista_check.rs` | 35 | pending | — |
-| `src/bin/gpu_evolve/pistas.rs` | 34 | pending | — |
-| `src/visao.rs` | 34 | pending | — |
-| `src/math/cfc_perception.rs` | 33 | pending | — |
-| `src/math/laws.rs` | 32 | pending | — |
-| `src/math/stats.rs` | 32 | pending | — |
-| `Cargo.toml` | 30 | pending | — |
-| `src/bin/dna_console.rs` | 30 | pending | — |
-| `src/gpu/slow_gather.wgsl` | 30 | pending | — |
-| `src/gpu/retina.wgsl` | 29 | pending | — |
-| `src/bin/replay_pop.rs` | 28 | pending | — |
-| `src/bin/slow_gpu_equiv.rs` | 28 | pending | — |
-| `src/gpu/physics_b.wgsl` | 28 | pending | — |
-| `src/kan.rs` | 28 | pending | — |
-| `src/specialist.rs` | 28 | pending | — |
-| `src/bin/slow_probe.rs` | 27 | pending | — |
-| `src/bin/impact.rs` | 26 | pending | — |
-| `src/rng.rs` | 24 | pending | — |
-| `src/gpu/physics_a.wgsl` | 23 | pending | — |
-| `src/layers.rs` | 22 | pending | — |
-| `src/memory.rs` | 22 | pending | — |
-| `src/simulation/mod.rs` | 22 | pending | — |
-| `tests/ablacao_cortex.rs` | 19 | pending | — |
-| `src/bin/dna_view.rs` | 18 | pending | — |
-| `src/bin/genoma_dump.rs` | 18 | pending | — |
-| `src/gpu/physics_c.wgsl` | 18 | pending | — |
-| `src/gpu/cortex_sheet_hebb.wgsl` | 17 | pending | — |
-| `src/bin/dump_dna.rs` | 16 | pending | — |
-| `src/gpu/cortex_sheet_motor.wgsl` | 16 | pending | — |
-| `src/gpu/physics_power_b.wgsl` | 16 | pending | — |
-| `src/bin/dna_compress.rs` | 15 | pending | — |
-| `src/gpu/physics_power_a.wgsl` | 12 | pending | — |
-| `src/gpu/physics_power_c.wgsl` | 12 | pending | — |
-| `tests/ablacao_controle.rs` | 12 | pending | — |
-| `src/gpu/retina_types.rs` | 11 | pending | — |
-| `src/math/mod.rs` | 11 | pending | — |
-| `src/ui.rs` | 11 | pending | — |
-| `src/gpu/physics_phase_integ.wgsl` | 9 | pending | — |
-| `src/safety/sentinel.rs` | 8 | pending | — |
-| `tests/integration_test.rs` | 8 | pending | — |
-| `src/analysis/mod.rs` | 7 | pending | — |
-| `src/dense_layer.rs` | 6 | pending | — |
-| `src/perception/mod.rs` | 6 | pending | — |
-| `src/safety/mod.rs` | 6 | pending | — |
-| `src/ui_menu.rs` | 6 | pending | — |
-| `src/gpu/physics_minimal.wgsl` | 5 | pending | — |
-| `src/gpu/physics_phase_susp.wgsl` | 5 | pending | — |
+| `src/bin/visao_check.rs` | 3 | pending | — |
+| `src/bin/cortex_test.rs` | 5 | pending | — |
+| `src/physics.rs` | 1 | pending | — |
+| `src/metabolism.rs` | 0 | done | — |
+| `src/bin/pistas.rs` | 0 | done | — |
+| `src/gpu/retina_digest_parity_test.rs` | 1 | pending | — |
+| `src/main.rs` | 0 | done | — |
+| `tests/wgsl_validation.rs` | 2 | pending | — |
+| `src/lab.rs` | 0 | done | — |
+| `src/bin/replay_analyze.rs` | 0 | done | — |
+| `src/bin/gpu_evolve/pilots.rs` | 0 | done | — |
+| `src/evolution/settings.rs` | 0 | done | — |
+| `src/bin/pista_check.rs` | 0 | done | — |
+| `src/bin/gpu_evolve/pistas.rs` | 2 | pending | — |
+| `src/visao.rs` | 1 | pending | — |
+| `src/math/cfc_perception.rs` | 2 | pending | — |
+| `src/math/laws.rs` | 7 | pending | — |
+| `src/math/stats.rs` | 2 | pending | — |
+| `Cargo.toml` | 0 | done | — |
+| `src/bin/dna_console.rs` | 0 | done | — |
+| `src/gpu/slow_gather.wgsl` | 0 | done | — |
+| `src/gpu/retina.wgsl` | 0 | done | — |
+| `src/bin/replay_pop.rs` | 0 | done | — |
+| `src/bin/slow_gpu_equiv.rs` | 0 | done | — |
+| `src/gpu/physics_b.wgsl` | 0 | done | — |
+| `src/kan.rs` | 0 | done | — |
+| `src/specialist.rs` | 0 | done | — |
+| `src/bin/slow_probe.rs` | 0 | done | — |
+| `src/bin/impact.rs` | 0 | done | — |
+| `src/rng.rs` | 0 | done | — |
+| `src/gpu/physics_a.wgsl` | 0 | done | — |
+| `src/layers.rs` | 0 | done | — |
+| `src/memory.rs` | 0 | done | — |
+| `src/simulation/mod.rs` | 0 | done | — |
+| `tests/ablacao_cortex.rs` | 6 | pending | — |
+| `src/bin/dna_view.rs` | 0 | done | — |
+| `src/bin/genoma_dump.rs` | 0 | done | — |
+| `src/gpu/physics_c.wgsl` | 0 | done | — |
+| `src/gpu/cortex_sheet_hebb.wgsl` | 0 | done | — |
+| `src/bin/dump_dna.rs` | 0 | done | — |
+| `src/gpu/cortex_sheet_motor.wgsl` | 0 | done | — |
+| `src/gpu/physics_power_b.wgsl` | 0 | done | — |
+| `src/bin/dna_compress.rs` | 0 | done | — |
+| `src/gpu/physics_power_a.wgsl` | 0 | done | — |
+| `src/gpu/physics_power_c.wgsl` | 0 | done | — |
+| `tests/ablacao_controle.rs` | 4 | pending | — |
+| `src/gpu/retina_types.rs` | 0 | done | — |
+| `src/math/mod.rs` | 0 | done | — |
+| `src/ui.rs` | 0 | done | — |
+| `src/gpu/physics_phase_integ.wgsl` | 0 | done | — |
+| `src/safety/sentinel.rs` | 0 | done | — |
+| `tests/integration_test.rs` | 0 | done | — |
+| `src/analysis/mod.rs` | 0 | done | — |
+| `src/dense_layer.rs` | 0 | done | — |
+| `src/perception/mod.rs` | 0 | done | — |
+| `src/safety/mod.rs` | 0 | done | — |
+| `src/ui_menu.rs` | 0 | done | — |
+| `src/gpu/physics_minimal.wgsl` | 0 | done | — |
+| `src/gpu/physics_phase_susp.wgsl` | 0 | done | — |
 | `src/prefabs.rs` | 5 | pending | — |
-| `src/scenery.rs` | 5 | pending | — |
-| `src/brain/mod.rs` | 4 | pending | — |
-| `src/evolution/logs.rs` | 4 | pending | — |
-| `src/gpu/physics_phase_power.wgsl` | 4 | pending | — |
-| `src/lib.rs` | 4 | pending | — |
-| `src/bin/gpu_evolve/genome_io.rs` | 3 | pending | — |
-| `src/bin/generic_dna.rs` | 2 | pending | — |
-| `src/evolution/mod.rs` | 2 | pending | — |
-| `src/perception_old_backup.rs` | 2 | pending | — |
-| `src/perception/retina.rs` | 2 | pending | — |
-| `src/mesh.rs` | 1 | pending | — |
-| `src/reality.rs` | 1 | pending | — |
-| `src/repominer.rs` | 1 | pending | — |
+| `src/scenery.rs` | 0 | done | — |
+| `src/brain/mod.rs` | 0 | done | — |
+| `src/evolution/logs.rs` | 0 | done | — |
+| `src/gpu/physics_phase_power.wgsl` | 0 | done | — |
+| `src/lib.rs` | 0 | done | — |
+| `src/bin/gpu_evolve/genome_io.rs` | 0 | done | — |
+| `src/bin/generic_dna.rs` | 0 | done | — |
+| `src/evolution/mod.rs` | 0 | done | — |
+| `src/perception_old_backup.rs` | 0 | done | — |
+| `src/perception/retina.rs` | 0 | done | — |
+| `src/mesh.rs` | 0 | done | — |
+| `src/reality.rs` | 0 | done | — |
+| `src/repominer.rs` | 0 | done | — |
 | `src/types.rs` | 1 | pending | — |
 
 ---
@@ -273,6 +289,13 @@ Not migration targets, and not scanned by `scripts/check_language.sh`:
 - **`CLAUDE.md`, `LEIA_PRIMEIRO.md`, `ARQUITETURA.md`** — the owner's operating
   notes. `ARQUITETURA.md` is a module map and a natural future translation, but it is
   the owner's call, not a contributor's. TODO: decide.
+- **`vendor/`** — vendored third-party crates, kept byte-identical to upstream.
+  `vendor/iara-byte`, `vendor/iara-gate` and `vendor/iara-perception` carry Portuguese
+  because their *test fixtures are Portuguese text* — that is the input the code exists
+  to process (`vendor/iara-gate/src/lib.rs:509` asserts on a sentence about Brasília), <!-- check-language: allow -->
+  so translating it would delete the test. Wave 2 added the three files to
+  `scripts/language_allowlist.txt`; they had been failing the gate before, unlisted.
+  They are not queued below and never will be.
 - **`scripts/*.sh` and `scripts/*.py`** — experiment drivers, named after the
   batteries they ran. Renaming them breaks the commands recorded in the docs above.
   TODO: decide whether new scripts must be English (recommended) while old ones stay.
@@ -282,6 +305,8 @@ Not migration targets, and not scanned by `scripts/check_language.sh`:
 | Date | Files pending | Lines pending |
 |---|---:|---:|
 | 2026-08-17 | 170 | 12,242 |
+| 2026-08-17 (wave 1, `3a69928`) | 91 | 4,014 |
+| 2026-08-17 (wave 2) | 80 | 3,725 |
 
 Add a row when you finish a batch, so the trend is visible without re-reading the git
 history.

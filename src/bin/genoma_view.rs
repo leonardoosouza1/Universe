@@ -321,8 +321,8 @@ fn main() {
         }
     }
 
-    // `--json`: dump completo pro LABORATÓRIO DE OBSERVAÇÃO (pesos + nomes de canal
-    // + P1.7 por neurônio), via parser canônico — nunca duplicar leitura de .bin.
+    // `--json`: full dump for the OBSERVATION LABORATORY (weights + channel names
+    // + P1.7 per neuron), through the canonical parser — never duplicate .bin reading.
     if let Some(dest) = &json_out {
         let gen_full =
             universe::gpu::genome_io::load_genome(std::env::args().nth(1).unwrap().as_str())
@@ -349,43 +349,43 @@ fn main() {
             nomes.join(","),
             docs.join(",")
         );
-        std::fs::write(dest, js).expect("gravar json");
-        println!("  → json do genoma em {dest}");
+        std::fs::write(dest, js).expect("write json");
+        println!("  → genome json at {dest}");
     }
     if let Some(dest) = &html_out {
         match escrever_html(&g, dest) {
-            Ok(_) => println!("\n  → mapa visual do cérebro em {dest}"),
-            Err(e) => eprintln!("\n  falha ao escrever {dest}: {e}"),
+            Ok(_) => println!("\n  → visual map of the brain at {dest}"),
+            Err(e) => eprintln!("\n  failed to write {dest}: {e}"),
         }
     }
 
     println!("\n═══════════════════════════════════════════════════════════════════");
-    println!("  pesos parados ≠ neurônio ativo. Cruze com [ativacao] do gpu_evolve:");
-    println!("  peso grande que nunca dispara é capacidade desperdiçada.");
+    println!("  weights at rest ≠ active neuron. Cross-check with gpu_evolve's [ativacao]:");
+    println!("  a large weight that never fires is wasted capacity.");
 }
 
-// ── MAPA VISUAL DO CÉREBRO ────────────────────────────────────────────────────
+// ── VISUAL MAP OF THE BRAIN ───────────────────────────────────────────────────
 //
-// Leonardo: *"eu não quero só que você me mande em texto — eu quero poder ver, tipo,
-// aqui tem neurônio x, neurônio y, eles fazem comunicação entre eles. Quem conversa com
-// quem, quem ativa, quais grupos são."*
+// Leonardo: *"I don't want you to just send it to me in text — I want to be able to see,
+// like, here is neuron x, neuron y, they communicate with each other. Who talks to
+// whom, who activates, what the groups are."*
 //
-// Escreve uma página HTML autocontida (nenhum recurso externo, abre com duplo clique) com
-// quatro leituras que o texto não dá:
+// Writes a self-contained HTML page (no external resources, opens on a double click) with
+// four readings that text does not give:
 //
-//   1. GRAFO  — 96 neurônios de L1 em anel, ligados aos 48 motores de L2. A espessura e a
-//      cor de cada aresta são o peso; só as ligações fortes são desenhadas, senão viram
-//      4.608 linhas de espaguete.
-//   2. GRUPOS — neurônios agrupados por SEMELHANÇA DE ENTRADA (correlação dos vetores de
-//      peso). Dois neurônios que escutam os mesmos canais fazem o mesmo trabalho: se a
-//      evolução tivesse especializado o cérebro, apareceriam blocos; se ainda é sorteio,
-//      aparece ruído uniforme. É o teste visual de "evoluiu ou teve sorte".
-//   3. MATRIZ — L2×L1 completa em cores, para achar motor que ignora o cérebro inteiro.
-//   4. ATENÇÃO — orçamento por canal sensorial, barras ordenadas.
+//   1. GRAPH — 96 L1 neurons in a ring, linked to the 48 L2 motors. The thickness and
+//      colour of each edge are the weight; only the strong links are drawn, otherwise they turn
+//      into 4,608 lines of spaghetti.
+//   2. GROUPS — neurons grouped by INPUT SIMILARITY (correlation of the weight
+//      vectors). Two neurons that listen to the same channels do the same job: if
+//      evolution had specialized the brain, blocks would appear; if it is still random draw,
+//      uniform noise appears. It is the visual test of "did it evolve or did it get lucky".
+//   3. MATRIX — full L2×L1 in colour, to find a motor that ignores the whole brain.
+//   4. ATTENTION — budget per sensory channel, sorted bars.
 fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
     use std::fmt::Write as _;
 
-    // Peso de saída de cada neurônio de L1 (o quanto L2 o escuta) — vira o raio do nó.
+    // Output weight of each L1 neuron (how much L2 listens to it) — becomes the node radius.
     let saida: Vec<f32> = (0..L1_NEURONS)
         .map(|n| {
             (0..L2_NEURONS)
@@ -395,7 +395,7 @@ fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
         .collect();
     let saida_max = saida.iter().cloned().fold(1e-6, f32::max);
 
-    // Correlação entre vetores de entrada de dois neurônios: mede se fazem o mesmo trabalho.
+    // Correlation between the input vectors of two neurons: measures whether they do the same job.
     let vetor = |n: usize| -> &[f32] {
         let a = (n * SENSORY_WAVE_SIZE).min(g.l1.len());
         let b = (a + SENSORY_WAVE_SIZE).min(g.l1.len());
@@ -412,7 +412,7 @@ fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
             sim[a * L1_NEURONS + b] = dot / (na * nb);
         }
     }
-    // Fora da diagonal: se a evolução agrupou funções, existe par com |cos| alto.
+    // Off the diagonal: if evolution grouped functions, there is a pair with high |cos|.
     let mut fora: Vec<f32> = Vec::new();
     for a in 0..L1_NEURONS {
         for b in 0..L1_NEURONS {
@@ -425,7 +425,7 @@ fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
     let sim_max = fora.first().copied().unwrap_or(0.0);
     let sim_med = fora.iter().sum::<f32>() / fora.len().max(1) as f32;
 
-    // Atenção por canal.
+    // Attention per channel.
     let mut aten: Vec<(usize, f32)> = (0..SENSORY_WAVE_SIZE)
         .map(|ch| {
             (
@@ -443,8 +443,8 @@ fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
     aten.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
     let mut h = String::new();
-    write!(h, r#"<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
-<title>Cérebro — mapa visual</title><style>
+    write!(h, r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Brain — visual map</title><style>
 :root{{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--pos:#3fb950;--neg:#f85149;--card:#161b22}}
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,sans-serif;padding:24px}}
@@ -459,19 +459,19 @@ canvas{{max-width:100%;height:auto;display:block}}
 table{{border-collapse:collapse;width:100%;font-size:12px}} td{{padding:2px 6px;border-bottom:1px solid #21262d}}
 td.n{{color:var(--dim);width:74px}} td.v{{width:56px;text-align:right;color:var(--dim)}}
 </style></head><body>
-<h1>Cérebro — mapa visual</h1>
-<div class="sub">L1 {L1_NEURONS} neurônios · L2 {L2_NEURONS} motores · {SENSORY_WAVE_SIZE} canais sensoriais · UGEN v{}</div>
+<h1>Brain — visual map</h1>
+<div class="sub">L1 {L1_NEURONS} neurons · L2 {L2_NEURONS} motors · {SENSORY_WAVE_SIZE} sensory channels · UGEN v{}</div>
 <div class="grid">
- <div class="card"><div class="kpi">{:.3}<small>maior semelhança entre dois neurônios (1,0 = clones)</small></div></div>
- <div class="card"><div class="kpi">{:.3}<small>semelhança média — perto de 0 significa que cada um faz coisa diferente por acaso, não por especialização</small></div></div>
- <div class="card"><div class="kpi">{:.2}%<small>atenção do canal mais atendido (uniforme seria {:.2}%)</small></div></div>
+ <div class="card"><div class="kpi">{:.3}<small>highest similarity between two neurons (1.0 = clones)</small></div></div>
+ <div class="card"><div class="kpi">{:.3}<small>mean similarity — close to 0 means each one does something different by chance, not by specialization</small></div></div>
+ <div class="card"><div class="kpi">{:.2}%<small>attention of the best-served channel (uniform would be {:.2}%)</small></div></div>
 </div>
 "#, g.versao, sim_max, sim_med, aten[0].1 * 100.0 / aten_tot, 100.0 / SENSORY_WAVE_SIZE as f32).ok();
 
-    // ── Grafo L1 → L2 ────────────────────────────────────────────────────────
-    write!(h, r#"<h2>Quem conversa com quem</h2><div class="card"><canvas id="g" width="1100" height="620"></canvas>
-<div class="leg">Anel externo: os {L1_NEURONS} neurônios de L1, raio proporcional a quanto L2 os escuta. Centro: os {L2_NEURONS} motores.
-Verde = ligação excitatória, vermelho = inibitória. Só ligações |w| &gt; 0,45 são desenhadas.</div></div>
+    // ── L1 → L2 graph ────────────────────────────────────────────────────────
+    write!(h, r#"<h2>Who talks to whom</h2><div class="card"><canvas id="g" width="1100" height="620"></canvas>
+<div class="leg">Outer ring: the {L1_NEURONS} L1 neurons, radius proportional to how much L2 listens to them. Centre: the {L2_NEURONS} motors.
+Green = excitatory link, red = inhibitory. Only links with |w| &gt; 0.45 are drawn.</div></div>
 <script>
 const L1={L1_NEURONS}, L2={L2_NEURONS};
 const saida={:?};
@@ -495,9 +495,9 @@ for(let n=0;n<L1;n++){{const [px,py]=posL1(n);const s=saida[n];
 </script>"#,
         saida.iter().map(|s| (s / saida_max * 100.0).round() / 100.0).collect::<Vec<f32>>(),
         {
-            // Serializa a mao como array de arrays. `{:?}` de tupla Rust produz
-            // "(0, 1, 0.5)", que em JS e o operador virgula — o array chegava como lixo e
-            // o grafo saia em branco.
+            // Serialized by hand as an array of arrays. `{:?}` of a Rust tuple produces
+            // "(0, 1, 0.5)", which in JS is the comma operator — the array arrived as garbage and
+            // the graph came out blank.
             let mut e = String::from("[");
             for j in 0..L2_NEURONS { for n in 0..L1_NEURONS {
                 let w = g.l2.get(j * L1_NEURONS + n).copied().unwrap_or(0.0);
@@ -510,11 +510,11 @@ for(let n=0;n<L1;n++){{const [px,py]=posL1(n);const s=saida[n];
             e
         }).ok();
 
-    // ── Mapa de semelhança ───────────────────────────────────────────────────
-    write!(h, r#"<h2>Grupos: quem faz o mesmo trabalho</h2><div class="card"><canvas id="s" width="580" height="580"></canvas>
-<div class="leg">Cada célula é a semelhança entre os vetores de entrada de dois neurônios. <b>Blocos</b> = a evolução formou
-grupos especializados. <b>Ruído uniforme</b> = cada neurônio ficou diferente por sorteio, não por função — o cérebro
-ainda não se organizou.</div></div>
+    // ── Similarity map ───────────────────────────────────────────────────────
+    write!(h, r#"<h2>Groups: who does the same job</h2><div class="card"><canvas id="s" width="580" height="580"></canvas>
+<div class="leg">Each cell is the similarity between the input vectors of two neurons. <b>Blocks</b> = evolution formed
+specialized groups. <b>Uniform noise</b> = each neuron ended up different by random draw, not by function — the brain
+has not organized itself yet.</div></div>
 <script>
 const S={:?};
 const cs=document.getElementById('s'), sx=cs.getContext('2d'), px=580/{L1_NEURONS};
@@ -525,10 +525,10 @@ for(let a=0;a<{L1_NEURONS};a++)for(let b=0;b<{L1_NEURONS};b++){{
 }}
 </script>"#, sim.iter().map(|v| (v * 1000.0).round() / 1000.0).collect::<Vec<f32>>()).ok();
 
-    // ── Atenção por canal ────────────────────────────────────────────────────
+    // ── Attention per channel ────────────────────────────────────────────────
     write!(
         h,
-        r#"<h2>Orçamento de atenção por sentido</h2><div class="card"><table>"#
+        r#"<h2>Attention budget per sense</h2><div class="card"><table>"#
     )
     .ok();
     for (ch, s) in aten.iter().take(28) {
@@ -536,7 +536,7 @@ for(let a=0;a<{L1_NEURONS};a++)for(let b=0;b<{L1_NEURONS};b++){{
         write!(h, r#"<tr><td class="n">ch{ch}</td><td>{}</td><td style="width:55%"><div class="bar" style="width:{:.1}%"></div></td><td class="v">{pct:.2}%</td></tr>"#,
                name_for(*ch), pct / aten[0].1 * aten_tot * 100.0).ok();
     }
-    write!(h, r#"</table><div class="leg">Uniforme seria {:.2}% por canal. Quanto mais plano, menos o cérebro escolheu no que prestar atenção.</div></div>
+    write!(h, r#"</table><div class="leg">Uniform would be {:.2}% per channel. The flatter it is, the less the brain chose what to pay attention to.</div></div>
 </body></html>"#, 100.0 / SENSORY_WAVE_SIZE as f32).ok();
 
     std::fs::write(dest, h)

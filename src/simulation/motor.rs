@@ -2924,8 +2924,8 @@ pub(super) fn update_racers(
             const FOV_BINS: usize = 8;
             const RETINA_ROWS_LOCAL: usize = 14;
             let mut retina_fov = vec![0i8; FOV_BINS * RETINA_ROWS_LOCAL];
-            // sw[0..FOV_BINS] are fóvea FOV bins. Distribute across rows for visualization.
-            // For now, repeat the fóvea bins (one per RETINA_ROW).
+            // sw[0..FOV_BINS] are fovea FOV bins. Distribute across rows for visualization.
+            // For now, repeat the fovea bins (one per RETINA_ROW).
             for row in 0..RETINA_ROWS_LOCAL {
                 for bin in 0..FOV_BINS {
                     retina_fov[row * FOV_BINS + bin] = sw[bin];

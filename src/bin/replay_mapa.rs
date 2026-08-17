@@ -518,7 +518,7 @@ fn gerar_html(
     )).collect::<Vec<_>>().join(",\n");
 
     format!(
-        r##"<!DOCTYPE html><meta charset="utf-8"><title>Mapa — todas as gerações</title>
+        r##"<!DOCTYPE html><meta charset="utf-8"><title>Map — every generation</title>
 <style>
 :root{{color-scheme:dark}}
 body{{margin:0;background:#0d1117;color:#c9d1d9;font:13px/1.5 ui-monospace,Menlo,monospace}}
@@ -539,10 +539,10 @@ input[type=range]{{width:100%}}
 small{{color:#8b949e}}
 </style>
 <header>
-  <h1>MAPA — TODAS AS GERAÇÕES</h1>
-  <span><small>volta</small> <b id="hlap">{lap:.0}</b> m · <small>pista</small> {width:.0} m ·
-        <small>raio mínimo</small> <b id="hraio">{raio_min:.0}</b> m <small>(setor <span id="hsetor">{setor_min}</span>)</small> ·
-        <small>1 quadro =</small> {passo} ticks · <small>semente</small> <b id="hseed">–</b></span>
+  <h1>MAP — EVERY GENERATION</h1>
+  <span><small>lap</small> <b id="hlap">{lap:.0}</b> m · <small>track</small> {width:.0} m ·
+        <small>minimum radius</small> <b id="hraio">{raio_min:.0}</b> m <small>(sector <span id="hsetor">{setor_min}</span>)</small> ·
+        <small>1 frame =</small> {passo} ticks · <small>seed</small> <b id="hseed">–</b></span>
 </header>
 <div class="wrap">
   <div>
@@ -550,54 +550,54 @@ small{{color:#8b949e}}
     <canvas id="cg" width="760" height="150" style="margin-top:10px"></canvas>
   </div>
   <div class="p">
-    <div class="b"><h2>Geração</h2>
+    <div class="b"><h2>Generation</h2>
       <div style="display:flex;gap:7px;align-items:center;margin-bottom:6px">
         <button id="gm">◀</button><span id="glab" class="g">0</span><button id="gp">▶</button>
-        <button id="gplay">▶ varrer gerações</button>
+        <button id="gplay">▶ sweep generations</button>
       </div>
       <input type="range" id="gs" min="0" max="{gmax}" value="0">
     </div>
-    <div class="b"><h2>Tempo dentro da geração</h2>
+    <div class="b"><h2>Time within the generation</h2>
       <div style="display:flex;gap:7px;align-items:center;margin-bottom:6px">
         <button id="play">▶</button><button id="vel">1×</button>
-        <button id="agonia">só antes da morte</button>
+        <button id="agonia">only before death</button>
       </div>
       <input type="range" id="s" min="0" max="0" value="0">
       <div id="t"><small>—</small></div>
     </div>
-    <div class="b"><h2>A pista exige · o carro faz</h2>
+    <div class="b"><h2>The track demands · the car does</h2>
       <table>
-        <tr><td>ω exigido (v·κ)</td><td id="we">–</td></tr>
+        <tr><td>ω demanded (v·κ)</td><td id="we">–</td></tr>
         <tr><td>ω real — magnitude</td><td id="wr">–</td></tr>
-        <tr><td>ω real — <b>no sentido da curva</b></td><td id="wp">–</td></tr>
-        <tr><td><b>obediência</b> (com sinal)</td><td id="ob" class="g">–</td></tr>
-        <tr><td>sentido certo <small>(0,50 = acaso)</small></td><td id="sc">–</td></tr>
-        <tr><td>volante médio |x|</td><td id="vo">–</td></tr>
+        <tr><td>ω real — <b>toward the corner</b></td><td id="wp">–</td></tr>
+        <tr><td><b>obedience</b> (signed)</td><td id="ob" class="g">–</td></tr>
+        <tr><td>correct direction <small>(0.50 = chance)</small></td><td id="sc">–</td></tr>
+        <tr><td>mean steering |x|</td><td id="vo">–</td></tr>
       </table>
       <div id="diag" style="margin-top:6px;font-size:11px"></div>
     </div>
-    <div class="b"><h2>Agora</h2>
+    <div class="b"><h2>Now</h2>
       <table>
-        <tr><td>vivos</td><td id="k-viv" class="g">–</td></tr>
-        <tr><td>mortos</td><td id="k-mor" class="g">–</td></tr>
-        <tr><td>fora da pista</td><td id="k-fora">–</td></tr>
-        <tr><td>acelerador · freio</td><td id="k-tb">–</td></tr>
-        <tr><td>velocidade</td><td id="k-vel">–</td></tr>
+        <tr><td>alive</td><td id="k-viv" class="g">–</td></tr>
+        <tr><td>dead</td><td id="k-mor" class="g">–</td></tr>
+        <tr><td>off track</td><td id="k-fora">–</td></tr>
+        <tr><td>throttle · brake</td><td id="k-tb">–</td></tr>
+        <tr><td>speed</td><td id="k-vel">–</td></tr>
       </table>
     </div>
-    <div class="b"><h2>Camadas</h2>
+    <div class="b"><h2>Layers</h2>
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px">
-        <button id="b-rastro" class="on">rastro</button>
-        <button id="b-curva" class="on">curvatura</button>
-        <button id="b-morte" class="on">mortes</button>
+        <button id="b-rastro" class="on">trail</button>
+        <button id="b-curva" class="on">curvature</button>
+        <button id="b-morte" class="on">deaths</button>
       </div>
       <div class="leg">
-        <span><i style="background:#3fb950"></i>acelera</span>
-        <span><i style="background:#f85149"></i>freia</span>
-        <span><i style="background:#d29922"></i>inércia</span>
-        <span><i style="background:#6e7681"></i>parado</span>
-        <span><i style="background:#30363d"></i>morto</span>
-        <span><i style="background:#a371f7"></i>agonia</span>
+        <span><i style="background:#3fb950"></i>accelerating</span>
+        <span><i style="background:#f85149"></i>braking</span>
+        <span><i style="background:#d29922"></i>coasting</span>
+        <span><i style="background:#6e7681"></i>stopped</span>
+        <span><i style="background:#30363d"></i>dead</span>
+        <span><i style="background:#a371f7"></i>agony</span>
       </div>
     </div>
   </div>
@@ -608,7 +608,7 @@ const NG=RES.length, PASSO={passo}, LARG={width}, C=12;
 const cv=document.getElementById('c'), cx=cv.getContext('2d');
 const cg=document.getElementById('cg'), gx=cg.getContext('2d');
 
-// Pista da GERAÇÃO em foco (o currículo troca 9001↔9003 no meio da bateria).
+// Track of the GENERATION in focus (the curriculum swaps 9001↔9003 mid-battery).
 let VIA=[], KAP=[], esc=1, ox=0, oz=0, KMAX=1;
 const M=26;
 const PX=x=>x*esc+ox, PZ=z=>z*esc+oz;
@@ -638,11 +638,11 @@ async function carrega(g){{
 
 function desenha(){{
   cx.fillStyle='#010409'; cx.fillRect(0,0,cv.width,cv.height);
-  // Asfalto.
+  // Asphalt.
   cx.strokeStyle='#161b22'; cx.lineWidth=LARG*esc; cx.lineJoin='round'; cx.lineCap='round';
   cx.beginPath(); VIA.forEach(([x,z],i)=>i?cx.lineTo(PX(x),PZ(z)):cx.moveTo(PX(x),PZ(z)));
   cx.closePath(); cx.stroke();
-  // Curvatura: quanto mais fechada a curva, mais quente o traço do eixo.
+  // Curvature: the tighter the corner, the hotter the stroke of the axis.
   if(verCurva){{
     for(let i=0;i<VIA.length-1;i++){{
       const a=Math.abs(KAP[i])/KMAX;
@@ -652,14 +652,14 @@ function desenha(){{
     }}
   }}
   if(!D) return;
-  // Rastro.
+  // Trail.
   if(verRastro){{
     cx.lineWidth=1; cx.strokeStyle='rgba(88,166,255,0.22)';
     for(const s of D){{ const n=Math.min(q,s.length/C-1); if(n<1)continue;
       cx.beginPath(); cx.moveTo(PX(s[0]),PZ(s[1]));
       for(let k=1;k<=n;k++)cx.lineTo(PX(s[k*C]),PZ(s[k*C+1])); cx.stroke(); }}
   }}
-  // Onde cada um morreu.
+  // Where each one died.
   if(verMorte){{
     for(const s of D){{ const n=s.length/C;
       let im=-1; for(let k=0;k<n;k++) if(s[k*C+7]===1){{im=k;break;}}
@@ -667,7 +667,7 @@ function desenha(){{
       cx.strokeStyle='#f85149'; cx.lineWidth=1.4;
       cx.beginPath(); cx.arc(PX(s[b]),PZ(s[b+1]),6,0,7); cx.stroke(); }}
   }}
-  // Seres.
+  // Beings.
   let viv=0,mor=0,fora=0,sthr=0,sbrk=0,svel=0,svol=0,swe=0,swr=0,swp=0,nsc=0,nc=0;
   for(const s of D){{ const n=s.length/C; if(!n)continue;
     const k=Math.min(q,n-1), b=k*C;
@@ -698,21 +698,21 @@ function desenha(){{
     d('wp',wp.toFixed(3)+' rad/s'); d('ob',ob.toFixed(2)); d('sc',sc.toFixed(2));
     const el=document.getElementById('ob'); el.className='g '+(ob<0.5?'al':'ok');
     document.getElementById('diag').innerHTML = ob<0.5
-      ? `<span class="al">Gira <b>${{wr.toFixed(3)}}</b> rad/s em módulo — mais que os
-         ${{we.toFixed(3)}} exigidos — mas só <b>${{wp.toFixed(3)}}</b> no sentido da curva,
-         e acerta o lado em ${{(100*sc).toFixed(0)}}% dos quadros. Isso é OSCILAÇÃO,
-         não direção.</span>`
-      : `<span class="ok">Acompanha a curva (${{(100*ob).toFixed(0)}}% do exigido, lado certo em
+      ? `<span class="al">Yaws <b>${{wr.toFixed(3)}}</b> rad/s in magnitude — more than the
+         ${{we.toFixed(3)}} demanded — but only <b>${{wp.toFixed(3)}}</b> toward the corner,
+         and gets the side right in ${{(100*sc).toFixed(0)}}% of the frames. That is OSCILLATION,
+         not steering.</span>`
+      : `<span class="ok">Follows the corner (${{(100*ob).toFixed(0)}}% of what is demanded, correct side in
          ${{(100*sc).toFixed(0)}}%).</span>`;
   }} else {{ d('we','–'); d('wr','–'); d('ob','–');
-    document.getElementById('diag').innerHTML='<small>nenhum ser em trecho de curva agora</small>'; }}
+    document.getElementById('diag').innerHTML='<small>no being in a corner stretch right now</small>'; }}
   let tk=0; for(const s of D){{const n=s.length/C; if(q<n){{tk=s[q*C+6];break;}}}}
   document.getElementById('t').innerHTML =
-    `<small>quadro ${{q}}/${{NQ-1}} · tick ${{tk}} (${{(tk/64).toFixed(1)}} s)</small>`;
+    `<small>frame ${{q}}/${{NQ-1}} · tick ${{tk}} (${{(tk/64).toFixed(1)}} s)</small>`;
   document.getElementById('s').value=q;
 }}
 
-// Gráfico por geração: avanço, mortos e obediência à curva ao longo da evolução.
+// Per-generation chart: progress, dead and corner obedience along the evolution.
 function grafico(){{
   gx.fillStyle='#010409'; gx.fillRect(0,0,cg.width,cg.height);
   const W=cg.width-46, H=cg.height-26, X0=38, Y0=cg.height-18;
@@ -723,19 +723,19 @@ function grafico(){{
   gx.fillText(mx.toFixed(0)+' m',2,14); gx.fillText('0',2,Y0);
   const linha=(f,cor)=>{{ gx.strokeStyle=cor; gx.lineWidth=1.5; gx.beginPath();
     RES.forEach((r,g)=>{{const y=Y0-f(r)*H; g?gx.lineTo(px(g),y):gx.moveTo(px(g),y);}}); gx.stroke(); }};
-  linha(r=>r.max/mx,'#58a6ff');            // avanço máximo
-  linha(r=>r.med/mx,'#3fb950');            // avanço mediano
-  linha(r=>Math.max(0,Math.min(r.obed,1)),'#f0883e');  // obediência COM SINAL (0..1)
-  linha(r=>r.sent,'#a371f7');                          // fração no sentido certo (0,5 = acaso)
+  linha(r=>r.max/mx,'#58a6ff');            // max progress
+  linha(r=>r.med/mx,'#3fb950');            // median progress
+  linha(r=>Math.max(0,Math.min(r.obed,1)),'#f0883e');  // SIGNED obedience (0..1)
+  linha(r=>r.sent,'#a371f7');                          // fraction in the correct direction (0.5 = chance)
   gx.strokeStyle='#484f58'; gx.setLineDash([3,4]); gx.lineWidth=1;
   gx.beginPath(); gx.moveTo(X0,Y0-0.5*H); gx.lineTo(X0+W,Y0-0.5*H); gx.stroke(); gx.setLineDash([]);
   gx.strokeStyle='#f85149'; gx.lineWidth=2;
   gx.beginPath(); gx.moveTo(px(gen),8); gx.lineTo(px(gen),Y0); gx.stroke();
-  gx.fillStyle='#58a6ff'; gx.fillText('avanço máx',X0+6,10);
-  gx.fillStyle='#3fb950'; gx.fillText('avanço mediano',X0+86,10);
-  gx.fillStyle='#f0883e'; gx.fillText('obediência (com sinal)',X0+200,10);
-  gx.fillStyle='#a371f7'; gx.fillText('sentido certo',X0+340,10);
-  gx.fillStyle='#484f58'; gx.fillText('acaso',X0+W-30,Y0-0.5*H-2);
+  gx.fillStyle='#58a6ff'; gx.fillText('max progress',X0+6,10);
+  gx.fillStyle='#3fb950'; gx.fillText('median progress',X0+86,10);
+  gx.fillStyle='#f0883e'; gx.fillText('obedience (signed)',X0+200,10);
+  gx.fillStyle='#a371f7'; gx.fillText('correct direction',X0+340,10);
+  gx.fillStyle='#484f58'; gx.fillText('chance',X0+W-30,Y0-0.5*H-2);
 }}
 
 const gs=document.getElementById('gs');
@@ -757,28 +757,29 @@ alt('b-rastro',()=>verRastro,v=>verRastro=v);
 alt('b-curva',()=>verCurva,v=>verCurva=v);
 alt('b-morte',()=>verMorte,v=>verMorte=v);
 alt('agonia',()=>soAgonia,v=>soAgonia=v);
-// Toca a geração até o fim e ENGATA a próxima sozinha, até acabarem todas.
-// Leonardo: "se morre todas troca para a próxima e toca ela, até acabar todas as gerações."
-// Isso transforma o viewer num filme da evolução em vez de 30 cliques.
+// Plays the generation to the end and ENGAGES the next one by itself, until all are over.
+// Leonardo (translated): "when they all die switch to the next one and play it, until all
+// the generations are over."
+// That turns the viewer into a film of the evolution instead of 30 clicks.
 async function laco(){{
   if(!tocando) return;
   q += veloc;
   const acabou = q >= NQ || vivosAgora() === 0;
   if(acabou){{
-    if(gen < NG-1){{                      // engata a próxima geração e continua tocando
+    if(gen < NG-1){{                      // engage the next generation and keep playing
       gen++; gs.value = gen; document.getElementById('glab').textContent = gen;
       q = 0; await carrega(gen);
       requestAnimationFrame(laco); return;
     }}
-    q = NQ-1; tocando = false;            // última geração: encerra
+    q = NQ-1; tocando = false;            // last generation: finish
     document.getElementById('play').textContent = '▶';
     document.getElementById('play').classList.remove('on');
   }}
   desenha();
   requestAnimationFrame(laco);
 }}
-// Zero vivos = a geração acabou de fato, mesmo que ainda restem quadros de cadáver
-// gravados. Sem isto o filme fica parado minutos olhando 48 corpos.
+// Zero alive = the generation is actually over, even if there are still recorded corpse
+// frames left. Without this the film sits still for minutes looking at 48 bodies.
 function vivosAgora(){{
   if(!D) return 1;
   let v=0;

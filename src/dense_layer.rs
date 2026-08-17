@@ -1,6 +1,6 @@
-/// Dense layer em f32 puro para aprendizado contínuo (sem ternário).
-/// Usada em SlowBrain (CfC → Dense → Dense → output).
-/// Weights são f32 (armazenados contiguamente), sem scale factors.
+/// Dense layer in pure f32 for continuous learning (no ternary).
+/// Used in SlowBrain (CfC → Dense → Dense → output).
+/// Weights are f32 (stored contiguously), no scale factors.
 
 pub struct DenseLayer {
     pub weights: Vec<f32>,
@@ -10,7 +10,7 @@ pub struct DenseLayer {
 }
 
 impl DenseLayer {
-    /// Cria nova camada com pesos zerados e bias zerado.
+    /// Creates a new layer with zeroed weights and zeroed bias.
     pub fn new(input_dim: usize, output_dim: usize) -> Self {
         Self {
             weights: vec![0.0; input_dim * output_dim],
@@ -21,7 +21,7 @@ impl DenseLayer {
     }
 
     /// Forward pass: output[j] = Σ_i weights[j*N+i] * input[i] + bias[j]
-    /// Input esperado em [-1, 1] (f32 normalizado).
+    /// Input expected in [-1, 1] (normalized f32).
     pub fn forward(&self, input: &[f32]) -> Vec<f32> {
         assert_eq!(input.len(), self.input_dim);
         let mut output = vec![0.0f32; self.output_dim];
@@ -36,20 +36,20 @@ impl DenseLayer {
         output
     }
 
-    /// Carrega pesos a partir de slice (copia até min(src.len(), weights.len())).
+    /// Loads weights from a slice (copies up to min(src.len(), weights.len())).
     pub fn set_weights(&mut self, src: &[f32]) {
         let n = src.len().min(self.weights.len());
         self.weights[..n].copy_from_slice(&src[..n]);
     }
 
-    /// Carrega bias a partir de slice.
+    /// Loads bias from a slice.
     pub fn set_bias(&mut self, src: &[f32]) {
         let n = src.len().min(self.bias.len());
         self.bias[..n].copy_from_slice(&src[..n]);
     }
 
-    /// Mutação gaussiana por peso: com probabilidade `rate`,
-    /// perturba por N(0, sigma) e clamp em [-clamp_val, clamp_val].
+    /// Gaussian mutation per weight: with probability `rate`,
+    /// perturbs by N(0, sigma) and clamps to [-clamp_val, clamp_val].
     pub fn mutate<R: FnMut() -> f32>(
         &mut self,
         mut rng01: R,
@@ -75,7 +75,7 @@ impl DenseLayer {
         }
     }
 
-    /// Retorna total de parâmetros (weights + bias).
+    /// Returns the total parameter count (weights + bias).
     pub fn param_count(&self) -> usize {
         self.weights.len() + self.bias.len()
     }

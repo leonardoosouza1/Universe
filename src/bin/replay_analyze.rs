@@ -298,7 +298,7 @@ fn run_single(
                     println!("SPEED_DROP -{:.1} m/s in 10 frames", delta)
                 }
                 universe::replay::EventKind::NeuralSaturation { dims } => {
-                    println!("NEURAL_SATURACAO {} dims", dims)
+                    println!("NEURAL_SATURATION {} dims", dims)
                 }
             }
         }

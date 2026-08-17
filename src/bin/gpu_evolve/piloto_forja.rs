@@ -526,7 +526,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             [1.0, 1.0, 1.0],
         );
-        let mut p = PilotoForja::carregar(&escreve("pf_5passos.json", &j)).expect("carregar");
+        let mut p = PilotoForja::carregar(&escreve("pf_5passos.json", &j)).expect("load");
         assert_eq!((p.n_entradas(), p.n_features()), (2, 4));
         assert_eq!(p.base(), "piramide");
         let y = p.agir(&[1.0, 0.0]);

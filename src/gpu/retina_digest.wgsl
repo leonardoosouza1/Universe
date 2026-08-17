@@ -16,8 +16,9 @@
 //
 // The life loop (wall_ticks, life drain, stagnation, fuel, -1 tick of
 // life_left) STAYS on the CPU — it merely starts consuming `min_wall_ahead` from here
-// instead of recomputing it from the pixels. See `context.rs::tick()`, block "Atualiza CfC
-// percepção" (now reduced to: read `extra_out`, apply the drains).
+// instead of recomputing it from the pixels. See `context.rs::tick()`, the block titled
+// "Atualiza CfC percepção" ("update perception CfC" — the block name is still in the // check-language: allow
+// original Portuguese there), now reduced to: read `extra_out`, apply the drains.
 //
 // # The CfC equation — ONE source, two places that mirror it
 //
@@ -206,8 +207,9 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
         h[i] = cfc_state[sb + i];
     }
     for (var i = 0u; i < CFC_HIDDEN; i++) {
-        // x/(1+|x|) approximation — LITERAL COPY of perception_temporal.wgsl (block
-        // "CfC de percepção"). Do NOT swap for native tanh(): it would change the channel value.
+        // x/(1+|x|) approximation — LITERAL COPY of perception_temporal.wgsl, block
+        // "CfC de percepção" (name still in Portuguese there). Do NOT swap for // check-language: allow
+        // native tanh(): it would change the channel value.
         let hi = h[i];
         let abs_h = abs(hi);
         let tanh_h = select(hi / (1.0 + abs_h), sign(hi) * 0.999, abs_h > 10.0);

@@ -1370,7 +1370,7 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
     lines.push("  === SENSORY CHANNELS AT STALL ===".to_string());
     lines.push(format!(
         "  {:>4}  {:>6}  {:>6}  {:>6}  {:>8}  {:>8}  {:>8}",
-        "ser", "dist_l", "dist_r", "dist_f", "int[0]", "int[1]", "int[2]"
+        "being", "dist_l", "dist_r", "dist_f", "int[0]", "int[1]", "int[2]"
     ));
 
     let mut n_ve_parede = 0usize;
@@ -2486,15 +2486,15 @@ fn main() {
     rln!("=== PER-BEING TABLE (sorted by distance) ===");
     rln!(
         "{:>4} {:>8} {:>6} {:>10} {:>10} {:>10} {:>10} {:>7} {:>7} {:>8} {:>8}",
-        "ser",
+        "being",
         "dist(m)",
-        "voltas",
-        "ini_x",
-        "ini_z",
-        "fin_x",
-        "fin_z",
+        "laps",
+        "start_x",
+        "start_z",
+        "end_x",
+        "end_z",
         "vmax",
-        "vmed",
+        "vavg",
         "arc(m)",
         "status"
     );
@@ -2546,7 +2546,7 @@ fn main() {
     rln!();
     for (idx, ser_idx) in (0..vel_series.len()).enumerate() {
         let titulo = format!(
-            "ser[{}]  dist={:.0}m  vmax={:.1}m/s",
+            "being[{}]  dist={:.0}m  vmax={:.1}m/s",
             ser_idx, dist_acum[ser_idx], speed_max[ser_idx]
         );
         let chart = ascii_velocity_chart(&vel_series[idx], PERFIL_ROWS, PERFIL_COLS, &titulo);

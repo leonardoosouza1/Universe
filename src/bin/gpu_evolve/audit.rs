@@ -94,7 +94,7 @@ pub fn auditoria_relatorio() {
     let g = AUDIT_ACUM.lock().unwrap();
     let n_ticks = g.n_ticks;
     if n_ticks == 0 {
-        println!("[auditoria] no tick accumulated — enable --auditar-visao");
+        println!("[audit] no tick accumulated — enable --auditar-visao");
         return;
     }
     let n_seres = g.ultimo_tick_4vivos.len();

@@ -1,8 +1,8 @@
-// Kernel C: colisão com paredes + integração Euler + escrita final.
-// Lê: input original + MidState (de A) + MidState2 (de B) → escreve CarOutput.
+// Kernel C: wall collision + Euler integration + final write.
+// Reads: original input + MidState (from A) + MidState2 (from B) → writes CarOutput.
 //
-// Este kernel é deliberadamente leve: sem loops de cálculo numérico intenso,
-// apenas álgebra linear simples + 4 lookups de voxel + 1 lookup de heightmap.
+// This kernel is deliberately light: no numerically intensive loops, only simple
+// linear algebra + 4 voxel lookups + 1 heightmap lookup.
 
 struct CarInput {
     vel:        vec3<f32>,
@@ -56,7 +56,7 @@ struct CarInput {
     _pad_dt:         f32,
 }
 
-// Buffer do Kernel A — precisamos de: susp_comps, prev_comps, yaw_inertia, engine state
+// Kernel A's buffer — we need: susp_comps, prev_comps, yaw_inertia, engine state
 struct MidState {
     normal_loads:    vec4<f32>,
     susp_comps:      vec4<f32>,
@@ -77,7 +77,7 @@ struct MidState {
     _pad2:           vec2<f32>,
 }
 
-// Buffer do Kernel B — forças de pneu + omegas + slip
+// Kernel B's buffer — tyre forces + omegas + slip
 struct MidState2 {
     forces:      vec3<f32>,
     torques_y:   f32,
@@ -111,7 +111,7 @@ struct WorldParams {
     n_beings:  u32,
     cell_size: f32,
     _pad:      f32,
-    // D5: espelho do clima (layout do uniform; c não consome).
+    // D5: climate mirror (uniform layout; c does not consume it).
     clima_mu:   f32,
     vento_x:    f32,
     vento_z:    f32,
@@ -171,19 +171,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let hwb = c.wheel_base * 0.5;
     let htw = c.track_width * 0.5;
 
-    // === FASE 4: colisão com paredes ===
-    // m2.forces já inclui as forças de pneu acumuladas pelo Kernel B
+    // === PHASE 4: wall collision ===
+    // m2.forces already includes the tyre forces accumulated by Kernel B
     var vel_col  = c.vel;
     var pos_col  = c.pos;
     var av_y_col = c.av_y;
 
-    // 4 pontos de sonda — idêntico ao physics.wgsl original (linhas 653-658)
+    // 4 probe points — identical to the original physics.wgsl (lines 653-658)
     let p0 = c.pos + fwd * hwb;
     let p1 = c.pos - fwd * hwb;
     let p2 = c.pos + rgt * htw;
     let p3 = c.pos - rgt * htw;
 
-    // Sonda 0
+    // Probe 0
     if (voxel_at(p0.x, p0.z) == 2u) {
         let pd = nor0(p0 - c.pos);
         let vi = dot(vel_col, pd);
@@ -195,7 +195,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pos_col  -= pd * 0.5;
         }
     }
-    // Sonda 1
+    // Probe 1
     if (voxel_at(p1.x, p1.z) == 2u) {
         let pd = nor0(p1 - c.pos);
         let vi = dot(vel_col, pd);
@@ -207,7 +207,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pos_col  -= pd * 0.5;
         }
     }
-    // Sonda 2
+    // Probe 2
     if (voxel_at(p2.x, p2.z) == 2u) {
         let pd = nor0(p2 - c.pos);
         let vi = dot(vel_col, pd);
@@ -219,7 +219,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pos_col  -= pd * 0.5;
         }
     }
-    // Sonda 3
+    // Probe 3
     if (voxel_at(p3.x, p3.z) == 2u) {
         let pd = nor0(p3 - c.pos);
         let vi = dot(vel_col, pd);
@@ -232,25 +232,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Ground clamp pré-integração
+    // Pre-integration ground clamp
     let gnd_c = height_at(c.pos.x, c.pos.z) + 0.5;
     if (pos_col.y < gnd_c) {
         pos_col.y = gnd_c;
         vel_col.y = max(vel_col.y, 0.0);
     }
 
-    // === FASE 5: integração Euler semi-implícito ===
-    // NOTA: drag aerodinâmico NÃO é reaplicado aqui.
-    // O Kernel A (physics_a.wgsl) já adicionou drag a m.forces, que chegou em m2.forces.
-    // Reaplicar causava drag 2× → teto de velocidade 12 km/h menor (medido 237 vs 248 km/h).
-    // A linha "drag_int" foi removida em 2026-08-03 após bissecção confirmada.
+    // === PHASE 5: semi-implicit Euler integration ===
+    // NOTE: aerodynamic drag is NOT reapplied here.
+    // Kernel A (physics_a.wgsl) already added drag to m.forces, which arrived in m2.forces.
+    // Reapplying it caused 2× drag → speed ceiling 12 km/h lower (measured 237 vs 248 km/h).
+    // The "drag_int" line was removed on 2026-08-03 after a confirmed bisection.
     let speed_int = length(vel_col);
-    // drag_int removido — drag já está em m2.forces (do Kernel A)
+    // drag_int removed — drag is already in m2.forces (from Kernel A)
 
     let accel     = m2.forces / c.mass;
     var final_vel = vel_col + accel * dt_safe;
 
-    // Lateral scrub friction (CPU linhas 727-735)
+    // Lateral scrub friction (CPU lines 727-735)
     let fwd_spd = dot(final_vel, fwd);
     let lat_v   = final_vel - fwd*fwd_spd;
     if (length(lat_v) > 0.5) {
@@ -261,12 +261,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var final_pos = pos_col + final_vel*dt_safe;
     if (final_pos.y < 0.5) { final_pos.y=0.5; final_vel.y=max(final_vel.y,0.0); }
 
-    // Yaw damping (velocidade escalável — CPU v10)
+    // Yaw damping (speed-scalable — CPU v10)
     let drag_y    = -av_y_col * (400.0 + speed_int*60.0);
     let yi        = select(c.mass*2.0, m.yaw_inertia, m.yaw_inertia>0.0);
     let final_av_y= av_y_col + (m2.torques_y + drag_y)/yi * dt_safe;
 
-    // === Escreve saída final ===
+    // === Writes the final output ===
     var out: CarOutput;
     out.vel          = final_vel;
     out.av_y         = final_av_y;
@@ -285,14 +285,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out.oil_temp     = m.oil_temp;
     out._pad_eng     = 0.0;
 
-    // Rodas: omegas e slip do Kernel B, susp_comps do Kernel A, tire_temps da entrada
+    // Wheels: omegas and slip from Kernel B, susp_comps from Kernel A, tire_temps from the input
     let sc = m.susp_comps;
     let pc = m.prev_comps;
     let nl = m.normal_loads;
 
     // FL (i=0)
     out.wheels[0] = vec4<f32>(m2.omegas.x, m2.slip_r.x, m2.slip_a.x, nl.x);
-    out.wheels[1] = vec4<f32>(c.wheels[1].x, sc.x, pc.x, 0.0);  // tire_temp da entrada (térmica no Kernel B não implementada para poupar reg)
+    out.wheels[1] = vec4<f32>(c.wheels[1].x, sc.x, pc.x, 0.0);  // tire_temp from the input (thermal model in Kernel B not implemented to save registers)
     // FR (i=1)
     out.wheels[2] = vec4<f32>(m2.omegas.y, m2.slip_r.y, m2.slip_a.y, nl.y);
     out.wheels[3] = vec4<f32>(c.wheels[3].x, sc.y, pc.y, 0.0);

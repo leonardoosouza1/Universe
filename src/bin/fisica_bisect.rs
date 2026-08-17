@@ -541,17 +541,17 @@ fn main() {
     println!("The dual-kernel solution works on this GPU/driver.");
 }
 
-/// Testa o Kernel A (physics_a.wgsl) que tem 5 bindings: params, grid, hmap, input, mid.
-/// O buffer 'mid' aqui tem layout de MidState (128 bytes).
+/// Tests Kernel A (physics_a.wgsl), which has 5 bindings: params, grid, hmap, input, mid.
+/// The 'mid' buffer here has the MidState layout (128 bytes).
 fn test_shader_a(name: &str) -> bool {
-    println!("  [BISECT] testando shader: {name}");
+    println!("  [BISECT] testing shader: {name}");
     let ok = unsafe {
         let pid = libc::fork();
         if pid == 0 {
             match run_shader_a() {
                 Ok(_) => libc::_exit(0),
                 Err(e) => {
-                    eprintln!("    erro: {e}");
+                    eprintln!("    error: {e}");
                     libc::_exit(1);
                 }
             }
@@ -563,21 +563,21 @@ fn test_shader_a(name: &str) -> bool {
     if ok {
         println!("  [BISECT] {name}: OK");
     } else {
-        println!("  [BISECT] {name}: CRASH (segfault ou erro)");
+        println!("  [BISECT] {name}: CRASH (segfault or error)");
     }
     ok
 }
 
-/// Testa o Kernel B (physics_b.wgsl) que tem 6 bindings: params, grid, hmap, input, mid, output.
+/// Tests Kernel B (physics_b.wgsl), which has 6 bindings: params, grid, hmap, input, mid, output.
 fn test_shader_b(name: &str) -> bool {
-    println!("  [BISECT] testando shader: {name}");
+    println!("  [BISECT] testing shader: {name}");
     let ok = unsafe {
         let pid = libc::fork();
         if pid == 0 {
             match run_shader_b() {
                 Ok(_) => libc::_exit(0),
                 Err(e) => {
-                    eprintln!("    erro: {e}");
+                    eprintln!("    error: {e}");
                     libc::_exit(1);
                 }
             }
@@ -589,7 +589,7 @@ fn test_shader_b(name: &str) -> bool {
     if ok {
         println!("  [BISECT] {name}: OK");
     } else {
-        println!("  [BISECT] {name}: CRASH (segfault ou erro)");
+        println!("  [BISECT] {name}: CRASH (segfault or error)");
     }
     ok
 }

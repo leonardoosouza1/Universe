@@ -600,7 +600,7 @@ fn powertrain_and_tire_system(
             let contact_lateral_vel = -raw_fwd_vel * sin_s + raw_lat_vel * cos_s;
 
             // ========================================================
-            // === SLIP RATIO REAL: SR = (ω·r - v) / max(|ω·r|, |v|) ===
+            // === REAL SLIP RATIO: SR = (ω·r - v) / max(|ω·r|, |v|) ===
             // ========================================================
             let v_ref = wheel_linear_speed
                 .abs()

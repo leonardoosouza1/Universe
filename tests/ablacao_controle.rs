@@ -1,11 +1,11 @@
-//! O controle do teste de ablação: SEM ablação, a intenção do córtex tem de importar.
+//! The control for the ablation test: WITHOUT ablation, the cortex intent has to matter.
 //!
-//! Par de `ablacao_cortex.rs`. Este arquivo nunca chama `definir_ablacao`, então
-//! `neuro::ablada()` devolve `Via::Nenhuma` e o comportamento é o normal do simulador.
+//! Pair of `ablacao_cortex.rs`. This file never calls `definir_ablacao`, so
+//! `neuro::ablada()` returns `Via::Nenhuma` and the behaviour is the simulator's normal one.
 //!
-//! É este teste que dá sentido ao outro. Sozinho, "a saída não muda quando o córtex muda"
-//! passaria igual se `decide()` ignorasse o córtex por um bug — aqui se verifica que, sem
-//! ablação, ela MUDA.
+//! It is this test that gives the other one meaning. On its own, "the output does not change
+//! when the cortex changes" would pass just the same if `decide()` ignored the cortex due to
+//! a bug — here we verify that, without ablation, it DOES change.
 
 use universe::{
     chaos::ChaosInput,
@@ -43,7 +43,7 @@ fn sem_ablacao_a_intencao_do_cortex_importa() {
     assert_eq!(
         ablada(),
         Via::Nenhuma,
-        "este binário não pode ter ablação definida"
+        "this binary must not have an ablation set"
     );
 
     let entrada = [0_i8; 32];
@@ -53,6 +53,6 @@ fn sem_ablacao_a_intencao_do_cortex_importa() {
     let dif: f32 = (0..3).map(|i| (a[i] - b[i]).abs()).sum();
     assert!(
         dif > 1e-3,
-        "sem ablação a saída TEM de responder à intenção do córtex; diferença total foi {dif}"
+        "without ablation the output MUST respond to the cortex intent; total difference was {dif}"
     );
 }
