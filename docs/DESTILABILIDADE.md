@@ -386,3 +386,29 @@ tese e passa a ter número. E a leitura dos pesos vem de graça junto.
   como professor/baseline/instrumento, não como economia de computação.
 - Só duas pistas no caderno. A lei da cobertura prevê que mais pistas melhoram;
   não medi.
+
+## Refinamento da lei do pré-squash (correção vinda da sessão-forja, verificada aqui)
+
+Eu tinha apostado que o `arctanh` consertaria também uma derrota deles em
+CLASSIFICAÇÃO. A forja mostrou a matemática contra: para alvo **dicotômico puro** o
+ridge é afim-invariante à codificação, então 0/1, ±1 e ±arctanh(0,999) dão as MESMAS
+predições ordenadas. Verifiquei nos nossos dados em vez de aceitar:
+
+```
+alvo dicotômico (frear ou não):  corr(pred 0/1, pred ±1)      = 1.0000000000
+                                 corr(pred 0/1, pred arctanh) = 1.0000000000
+alvo graduado (freio real):      identidade 0,2613 → arctanh 0,2071  (+20,7%)
+```
+
+(A correlação sai exatamente 1 porque Z é centrado no treino: `Zᵀ1 = 0`, então o termo
+constante da transformação afim resolve para peso ZERO e sobra só a escala.)
+
+**Enunciado corrigido: o pré-squash paga quando o alvo saturado tem MAGNITUDES VARIADAS
+comprimidas no platô — não quando é dicotomia.** No nosso caso 61,5% do freio vive em
+|y|>0,9 com valores distintos ali dentro: é essa variação esmagada que o `arctanh`
+devolve. Num alvo 0/1 não há variação a recuperar.
+
+Nota de método: minha primeira tentativa de verificar deu ganho NEGATIVO (−7%) porque eu
+tinha esquecido de padronizar o alvo — sem intercepto o modelo gasta pesos reproduzindo
+a média (o freio tem média −0,852). Refeito com o protocolo correto, reproduzi o número
+do agente de forma independente (+20,7% contra os +23% dele).
