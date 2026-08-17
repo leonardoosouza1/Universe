@@ -171,48 +171,31 @@ jobs:
             ${{ runner.os }}-cargo-
 
       # ── Formatting ────────────────────────────────────────────────────────────────
-      # NON-BLOCKING, TEMPORARILY. Measured 2026-08-17 on this tree:
+      # BLOCKING since 2026-08-17. The tree had never been formatted (2916 diffs across
+      # 121 of 127 files), so this landed as two formatting-only commits, recorded in
+      # .git-blame-ignore-revs so `git blame` still points at whoever wrote each line.
       #
-      #   $ cargo fmt -p universe --check | grep -oP '^Diff in \K[^ :]+' | sort -u | wc -l
-      #   121          (out of 127 .rs files)
-      #
-      # As a hard gate it would fail every pull request on day one, including the ones
-      # that fix it. Scoped with `-p universe` on purpose: plain `cargo fmt --all`
-      # reaches into ../iara-runtime and would report another project's formatting as
-      # this project's failure (measured 2026-08-17: 145 files, 8 of them outside this
-      # repository, in iara-runtime/iara-{byte,cfc,dna,gate,hdc,...}).
-      #
-      # TO FLIP THIS TO BLOCKING: land a formatting-only commit (`cargo fmt -p universe`,
-      # no behaviour change), confirm this step is green, then delete `continue-on-error`.
-      - name: cargo fmt --check (non-blocking — see comment)
-        continue-on-error: true
+      # Scoped with `-p universe` on purpose, and it is not cosmetic: `cargo fmt --all`
+      # also rewrites vendor/, and the vendored crates must stay byte-identical to their
+      # upstream or scripts/check_vendor.sh cannot tell a real divergence from a
+      # whitespace one.
+      - name: cargo fmt --check (blocking)
         working-directory: Universe
         run: cargo fmt -p universe --check
 
       # ── Clippy ────────────────────────────────────────────────────────────────────
-      # NON-BLOCKING, TEMPORARILY. `-D warnings` is not even the issue: clippy fails on
-      # this tree with its own deny-by-default correctness lints. Measured 2026-08-17
-      # with `cargo clippy --release --all-targets`:
+      # The deny-by-default errors are gone as of 2026-08-17 (`cargo clippy --release
+      # --all-targets` compiles clean), so this step gates on errors. It stays
+      # non-blocking for the ~185 style warnings, which are real debt: `-D warnings`
+      # would fail every pull request on day one, including the ones paying the debt
+      # down. Flip it by fixing the warnings, then adding `-- -D warnings`.
       #
-      #   warning: `universe` (lib) generated 186 warnings
-      #   error: could not compile `universe` (lib) due to 9 previous errors
-      #   warning: `universe` (lib test) generated 217 warnings (183 duplicates)
-      #   error: could not compile `universe` (lib test) due to 11 previous errors
-      #
-      # The 9 library errors are correctness lints, not style, and at least two look
-      # like real defects rather than noise:
-      #   * src/evolution/spawn.rs:325  absurd_extreme_comparisons —
-      #     `if idx < PROTECTED_ZONE_SIZE` is always false, so the guard never fires.
-      #   * src/evolution/spawn.rs:117  erasing_op — `weights[0 * SWS + 64]`.
-      #   * src/gpu/evolution.rs:783    never_loop — the Box-Muller `loop` always
-      #     returns on its first pass.
-      #   * src/gpu/evolution.rs:292    approx_constant — a literal FRAC_PI_6.
-      #
-      # --release so the artifacts are shared with the build and test steps below
-      # instead of paying for a second full compile in debug.
-      #
-      # TO FLIP THIS TO BLOCKING: clear the deny-by-default errors first (they are few
-      # and they are bugs), then the warnings, then delete `continue-on-error`.
+      # Investigating those errors was worth more than silencing them: all but two were
+      # deliberate code clippy cannot read (an index written `0 * SWS` to name the motor
+      # neuron; guards made constant by a zeroed size; 0.318 read as 1/pi when it is
+      # 318 ms). The two real ones were a vestigial `loop` and two rounded literals.
+      # `--all-targets` also caught benches/bitlinear.rs, broken for months because
+      # `cargo build` does not build benches.
       - name: cargo clippy -D warnings (non-blocking — see comment)
         continue-on-error: true
         working-directory: Universe
