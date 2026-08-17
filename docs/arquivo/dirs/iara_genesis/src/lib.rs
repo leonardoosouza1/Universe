@@ -42,9 +42,9 @@
 //!     weights.len() as f64 / compressed.data.len() as f64);
 //! ```
 
-pub mod math;
 pub mod codec;
-pub mod neural;
+pub mod math;
 pub mod model;
+pub mod neural;
 pub mod tlv;
 pub mod universal;

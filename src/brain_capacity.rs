@@ -289,7 +289,13 @@ mod tests {
         // Constrói ativações cujas colunas têm variâncias 1, 1/2, 1/3, 1/4, 1/5
         // e são ortogonais (frequências distintas).
         let freqs: [f32; 5] = [1.0, 2.0, 3.0, 5.0, 7.0];
-        let scales: [f32; 5] = [1.0, 0.5_f32.sqrt(), (1.0/3.0_f32).sqrt(), 0.5, (1.0/5.0_f32).sqrt()];
+        let scales: [f32; 5] = [
+            1.0,
+            0.5_f32.sqrt(),
+            (1.0 / 3.0_f32).sqrt(),
+            0.5,
+            (1.0 / 5.0_f32).sqrt(),
+        ];
         let activations: Vec<Vec<f32>> = (0..t)
             .map(|i| {
                 freqs

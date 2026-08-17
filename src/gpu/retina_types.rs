@@ -18,11 +18,11 @@
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RetinaParamsGpu {
     pub grid_size: u32,
-    pub n_beings:  u32,
+    pub n_beings: u32,
     pub cell_size: f32,
-    pub fov_half:  f32,
+    pub fov_half: f32,
     /// 4 × vec4 = 4 linhas × 4 pitches por linha (rows 0-15).
-    pub pitches:   [[f32; 4]; 4],
+    pub pitches: [[f32; 4]; 4],
 }
 
 /// Postura de um ser, empacotada para o shader da retina.
@@ -32,5 +32,5 @@ pub struct PoseRaw {
     /// [x, y, z, gaze_yaw]
     pub pos_gaze: [f32; 4],
     /// [fwd.x, fwd.z, right.x, right.z]
-    pub dirs:     [f32; 4],
+    pub dirs: [f32; 4],
 }

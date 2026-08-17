@@ -54,7 +54,8 @@ mod tests {
         // por isso `g` em vez de `gen` nestes testes.
         for g in [0usize, 1, 5, 100, 4000] {
             assert_eq!(
-                pista_da_gen(&[], g), 9001,
+                pista_da_gen(&[], g),
+                9001,
                 "sem --pistas, tem que reproduzir bit-a-bit o binário de antes desta mudança"
             );
         }
@@ -68,7 +69,10 @@ mod tests {
         for g in [0usize, 4, 7, 40, 4000] {
             let a = pista_da_gen(&pistas, g);
             let b = pista_da_gen(&pistas, g);
-            assert_eq!(a, b, "gen {g}: duas chamadas com o mesmo conjunto divergiram");
+            assert_eq!(
+                a, b,
+                "gen {g}: duas chamadas com o mesmo conjunto divergiram"
+            );
         }
     }
 
@@ -79,7 +83,11 @@ mod tests {
         assert_eq!(pista_da_gen(&pistas, 0), 9001);
         assert_eq!(pista_da_gen(&pistas, 1), 123);
         assert_eq!(pista_da_gen(&pistas, 2), 64);
-        assert_eq!(pista_da_gen(&pistas, 3), 9001, "gen 3 tem que voltar ao início do conjunto");
+        assert_eq!(
+            pista_da_gen(&pistas, 3),
+            9001,
+            "gen 3 tem que voltar ao início do conjunto"
+        );
         assert_eq!(pista_da_gen(&pistas, 4), 123);
         assert_eq!(pista_da_gen(&pistas, 8), pistas[8 % pistas.len()]);
     }

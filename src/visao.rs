@@ -57,7 +57,10 @@ pub struct Params {
 
 impl Default for Params {
     fn default() -> Self {
-        Self { alcance_m: ALCANCE_PADRAO, fov_deg: FOV_DEG }
+        Self {
+            alcance_m: ALCANCE_PADRAO,
+            fov_deg: FOV_DEG,
+        }
     }
 }
 
@@ -69,7 +72,10 @@ pub fn definir(p: Params) {
 
 #[inline]
 pub fn params() -> Params {
-    *PARAMS.get().unwrap_or(&Params { alcance_m: ALCANCE_PADRAO, fov_deg: FOV_DEG })
+    *PARAMS.get().unwrap_or(&Params {
+        alcance_m: ALCANCE_PADRAO,
+        fov_deg: FOV_DEG,
+    })
 }
 
 #[inline]
@@ -99,7 +105,11 @@ pub fn pitch(row: usize) -> f32 {
 /// A que distância no chão a linha `row` olha. Serve para relatório e para os testes.
 pub fn distancia_da_linha(row: usize) -> f32 {
     let p = pitch(row);
-    if p < -1e-6 { ALTURA_OLHO / -p } else { f32::INFINITY }
+    if p < -1e-6 {
+        ALTURA_OLHO / -p
+    } else {
+        f32::INFINITY
+    }
 }
 
 /// Velocidade acima da qual a frenagem exigida passa do alcance da visão.
@@ -119,11 +129,18 @@ mod testes {
         // senão a mudança altera o comportamento de todo experimento anterior
         for row in 0..RETINA_ROWS {
             let esperado = crate::config::iara::vision::RETINA_PITCHES[row];
-            assert!((pitch(row) - esperado).abs() < 1e-9,
-                    "linha {row}: {} vs {}", pitch(row), esperado);
+            assert!(
+                (pitch(row) - esperado).abs() < 1e-9,
+                "linha {row}: {} vs {}",
+                pitch(row),
+                esperado
+            );
         }
-        assert!((distancia_da_linha(0) - 33.33).abs() < 0.1,
-                "a linha 0 enxerga {:.1} m", distancia_da_linha(0));
+        assert!(
+            (distancia_da_linha(0) - 33.33).abs() < 0.1,
+            "a linha 0 enxerga {:.1} m",
+            distancia_da_linha(0)
+        );
     }
 
     #[test]
@@ -143,7 +160,11 @@ mod testes {
         assert!((v - 28.0).abs() < 0.5, "deu {v:.1} m/s, esperava ~28");
         // dobrar o alcance NÃO dobra a velocidade — a relação é de raiz
         let v2 = velocidade_cega(66.66, 11.4);
-        assert!(v2 < 2.0 * v, "a relação tem de ser sublinear: {v2:.1} vs {:.1}", 2.0 * v);
+        assert!(
+            v2 < 2.0 * v,
+            "a relação tem de ser sublinear: {v2:.1} vs {:.1}",
+            2.0 * v
+        );
         assert!(v2 > v, "mais alcance tem de permitir mais velocidade");
     }
 }

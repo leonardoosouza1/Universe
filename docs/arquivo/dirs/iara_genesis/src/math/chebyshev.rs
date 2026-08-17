@@ -135,23 +135,33 @@ pub fn serialize(cc: &ChebyshevCoeffs) -> Vec<u8> {
 
 /// Desserializa coeficientes de bytes.
 pub fn deserialize(buf: &[u8]) -> Option<ChebyshevCoeffs> {
-    if buf.len() < 12 { return None; }
+    if buf.len() < 12 {
+        return None;
+    }
 
     let original_len = u32::from_le_bytes(buf[0..4].try_into().ok()?) as usize;
     let ternary_threshold = f32::from_le_bytes(buf[4..8].try_into().ok()?);
     let num_terms = u32::from_le_bytes(buf[8..12].try_into().ok()?) as usize;
 
-    if buf.len() < 12 + num_terms * 4 { return None; }
+    if buf.len() < 12 + num_terms * 4 {
+        return None;
+    }
 
     let mut coeffs = Vec::with_capacity(num_terms);
     for k in 0..num_terms {
         let off = 12 + k * 4;
         let c = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
-        if !c.is_finite() { return None; }
+        if !c.is_finite() {
+            return None;
+        }
         coeffs.push(c);
     }
 
-    Some(ChebyshevCoeffs { coeffs, original_len, ternary_threshold })
+    Some(ChebyshevCoeffs {
+        coeffs,
+        original_len,
+        ternary_threshold,
+    })
 }
 
 /// Tamanho em bytes da serialização.
@@ -177,9 +187,17 @@ mod tests {
     fn fit_reconstruct_sparse_signal() {
         // Sinal esparso (muitos zeros) — Chebyshev deve pelo menos não explodir
         let n = 512;
-        let signal: Vec<i8> = (0..n).map(|i| {
-            if i % 20 == 0 { 1 } else if i % 30 == 0 { -1 } else { 0 }
-        }).collect();
+        let signal: Vec<i8> = (0..n)
+            .map(|i| {
+                if i % 20 == 0 {
+                    1
+                } else if i % 30 == 0 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect();
 
         let cc = fit(&signal, 32);
         let restored = reconstruct(&cc);
@@ -192,7 +210,8 @@ mod tests {
         assert!(
             zeros_restored > zeros_original / 2,
             "Too many false-positives: orig zeros={}, restored zeros={}",
-            zeros_original, zeros_restored
+            zeros_original,
+            zeros_restored
         );
     }
 
@@ -218,6 +237,10 @@ mod tests {
         let bytes = serialize(&cc);
         let ratio = n as f64 / bytes.len() as f64;
         // 16 termos → 12 + 64 = 76 bytes, ratio ~ 107:1
-        assert!(ratio > 80.0, "Ratio for zeros should be huge: {:.0}:1", ratio);
+        assert!(
+            ratio > 80.0,
+            "Ratio for zeros should be huge: {:.0}:1",
+            ratio
+        );
     }
 }

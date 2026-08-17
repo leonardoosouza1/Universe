@@ -32,15 +32,17 @@ impl TernaryMesh {
     pub fn bitwise_propagate(&mut self) {
         for i in 0..self.states.len() {
             let current = self.states[i];
-            if current == 0 { continue; } // Quiescent block
+            if current == 0 {
+                continue;
+            } // Quiescent block
 
             // Simulate wave propagation by shifting bits and applying logical gates
             // This spreads the '1's (energy) to adjacent bits in the u64
             let spread = current | (current << 2) | (current >> 2);
-            
+
             // Dissipate energy (Newtonian Cooling via bitwise mask)
             // Mask out some bits to simulate decay
-            self.states[i] = spread & 0xAAAA_AAAA_AAAA_AAAA; 
+            self.states[i] = spread & 0xAAAA_AAAA_AAAA_AAAA;
         }
     }
 }

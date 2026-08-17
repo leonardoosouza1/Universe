@@ -370,24 +370,54 @@ mod tests {
         // o fantasma fecha a escada.
         let e = Escada::padrao();
         assert_eq!(e.ativo, 0);
-        assert!(matches!(e.plano[0], Degrau::FuelK(_)), "escada começa pelo combustível");
+        assert!(
+            matches!(e.plano[0], Degrau::FuelK(_)),
+            "escada começa pelo combustível"
+        );
         assert_eq!(*e.plano.last().unwrap(), Degrau::Fantasma, "fantasma fecha");
         let (mut ult_fuel, mut ult_ruido) = (f32::INFINITY, 0.0f32);
         let (mut ult_dano, mut ult_clima) = (0.0f32, f32::INFINITY);
         let (mut n_fuel, mut n_ruido, mut n_dano, mut n_clima) = (0, 0, 0, 0);
         for d in &e.plano {
             match d {
-                Degrau::FuelK(k)  => { assert!(*k < ult_fuel,  "combustível tem de apertar: {k} não é < {ult_fuel}"); ult_fuel = *k; n_fuel += 1; }
-                Degrau::Ruido(x)  => { assert!(*x > ult_ruido, "ruído tem de subir");   ult_ruido = *x; n_ruido += 1; }
-                Degrau::Dano(x)   => { assert!(*x > ult_dano,  "dano tem de subir");    ult_dano = *x;  n_dano += 1; }
-                Degrau::Clima(mu) => { assert!(*mu < ult_clima,"aderência tem de cair");ult_clima = *mu; n_clima += 1; }
-                Degrau::Fantasma  => {}
+                Degrau::FuelK(k) => {
+                    assert!(
+                        *k < ult_fuel,
+                        "combustível tem de apertar: {k} não é < {ult_fuel}"
+                    );
+                    ult_fuel = *k;
+                    n_fuel += 1;
+                }
+                Degrau::Ruido(x) => {
+                    assert!(*x > ult_ruido, "ruído tem de subir");
+                    ult_ruido = *x;
+                    n_ruido += 1;
+                }
+                Degrau::Dano(x) => {
+                    assert!(*x > ult_dano, "dano tem de subir");
+                    ult_dano = *x;
+                    n_dano += 1;
+                }
+                Degrau::Clima(mu) => {
+                    assert!(*mu < ult_clima, "aderência tem de cair");
+                    ult_clima = *mu;
+                    n_clima += 1;
+                }
+                Degrau::Fantasma => {}
             }
         }
         // Cada mecanismo precisa de degraus suficientes para CHEGAR a morder antes
         // de ceder a vez — a lição das 34 gerações com mortalidade 0%.
-        for (nome, n) in [("fuel", n_fuel), ("ruído", n_ruido), ("dano", n_dano), ("clima", n_clima)] {
-            assert!(n >= 3, "mecanismo {nome} com só {n} degrau(s): aperta pouco antes de passar adiante");
+        for (nome, n) in [
+            ("fuel", n_fuel),
+            ("ruído", n_ruido),
+            ("dano", n_dano),
+            ("clima", n_clima),
+        ] {
+            assert!(
+                n >= 3,
+                "mecanismo {nome} com só {n} degrau(s): aperta pouco antes de passar adiante"
+            );
         }
     }
 
@@ -485,7 +515,11 @@ mod tests {
         assert_eq!(e.ativo, 0);
         for _ in 0..5 {
             let v = e.avaliar(RUIM_PROMO, RUIM_MORT, false);
-            assert_eq!(v, Veredito::Mantem, "já no primeiro degrau, não há pra onde recuar");
+            assert_eq!(
+                v,
+                Veredito::Mantem,
+                "já no primeiro degrau, não há pra onde recuar"
+            );
         }
         assert_eq!(e.ativo, 0);
     }
@@ -498,7 +532,10 @@ mod tests {
         assert_eq!(e.aprovacoes_seguidas, 2);
         let v = e.avaliar(CERTA_PROMO, CERTA_MORT, true);
         assert_eq!(v, Veredito::Mantem);
-        assert_eq!(e.aprovacoes_seguidas, 0, "dose certa quebra o streak de boas");
+        assert_eq!(
+            e.aprovacoes_seguidas, 0,
+            "dose certa quebra o streak de boas"
+        );
         assert_eq!(e.ativo, 0);
     }
 

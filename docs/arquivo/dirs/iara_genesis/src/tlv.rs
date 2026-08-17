@@ -13,10 +13,10 @@
 //! | `TREE` | Estrutura generativa completa | ~500B |
 //! | `BHVR` | Fingerprint comportamental | 12B |
 
-use crate::codec::{Compressed, HybridCodec, ternary_accuracy};
 use crate::codec::semantic::BehaviorFingerprint;
-use crate::model::tree::{Tree, Sap};
+use crate::codec::{Compressed, HybridCodec, ternary_accuracy};
 use crate::model::soil::Soil;
+use crate::model::tree::{Sap, Tree};
 use crate::neural::{autoencoder::TinyAutoencoder, codebook};
 
 /// Tags dos chunks iara_genesis no TLV V4.
@@ -49,13 +49,17 @@ impl Chunk {
 
     /// Desserializa um chunk de bytes (retorna chunk + bytes consumidos).
     pub fn from_bytes(buf: &[u8]) -> Option<(Self, usize)> {
-        if buf.len() < 8 { return None; }
+        if buf.len() < 8 {
+            return None;
+        }
 
         let mut tag = [0u8; 4];
         tag.copy_from_slice(&buf[0..4]);
         let length = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
 
-        if buf.len() < 8 + length { return None; }
+        if buf.len() < 8 + length {
+            return None;
+        }
         let data = buf[8..8 + length].to_vec();
 
         Some((Self { tag, data }, 8 + length))
@@ -100,8 +104,12 @@ impl GenesisPayload {
 
     /// Desserializa de bytes.
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 10 { return None; }
-        if &buf[0..4] != b"GNSS" { return None; }
+        if buf.len() < 10 {
+            return None;
+        }
+        if &buf[0..4] != b"GNSS" {
+            return None;
+        }
 
         let _version = u16::from_le_bytes(buf[4..6].try_into().ok()?);
         let num_chunks = u32::from_le_bytes(buf[6..10].try_into().ok()?) as usize;
@@ -232,23 +240,37 @@ pub fn compression_report(
 ) -> CompressionReport {
     let original_size = fast_weights.len() + slow_weights.len();
 
-    let payload = compress_organism(fast_weights, slow_weights, generation, fitness, Sap::default());
+    let payload = compress_organism(
+        fast_weights,
+        slow_weights,
+        generation,
+        fitness,
+        Sap::default(),
+    );
     let compressed_size = payload.total_size();
 
-    let (restored_fast, restored_slow, _, _) = decompress_organism(&payload)
-        .unwrap_or((vec![0; fast_weights.len()], vec![0; slow_weights.len()], 0, 0.0));
+    let (restored_fast, restored_slow, _, _) = decompress_organism(&payload).unwrap_or((
+        vec![0; fast_weights.len()],
+        vec![0; slow_weights.len()],
+        0,
+        0.0,
+    ));
 
     let fast_accuracy = ternary_accuracy(fast_weights, &restored_fast);
-    let slow_accuracy = if slow_weights.is_empty() { 1.0 } else {
+    let slow_accuracy = if slow_weights.is_empty() {
+        1.0
+    } else {
         ternary_accuracy(slow_weights, &restored_slow)
     };
 
-    let codec_used = payload.find_chunk(TAG_GENE)
+    let codec_used = payload
+        .find_chunk(TAG_GENE)
         .and_then(|c| Compressed::from_bytes(&c.data))
         .map(|c| String::from_utf8_lossy(&c.codec_tag).to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let tree_corrections = payload.find_chunk(TAG_TREE)
+    let tree_corrections = payload
+        .find_chunk(TAG_TREE)
         .and_then(|c| Tree::deserialize(&c.data))
         .map(|t| t.leaves.correction_count)
         .unwrap_or(0);
@@ -269,10 +291,18 @@ mod tests {
     use super::*;
 
     fn sample_fast() -> Vec<i8> {
-        (0..8192).map(|i| {
-            let v = (i as f64 * std::f64::consts::PI / 64.0).sin();
-            if v > 0.5 { 1 } else if v < -0.5 { -1 } else { 0 }
-        }).collect()
+        (0..8192)
+            .map(|i| {
+                let v = (i as f64 * std::f64::consts::PI / 64.0).sin();
+                if v > 0.5 {
+                    1
+                } else if v < -0.5 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect()
     }
 
     fn sample_slow() -> Vec<i8> {
@@ -341,8 +371,16 @@ mod tests {
         let report = compression_report(&fast, &slow, 10, 100.0);
 
         assert!(report.ratio > 0.5, "Ratio: {:.1}:1", report.ratio);
-        assert!(report.slow_accuracy > 0.99, "Slow acc: {:.1}%", report.slow_accuracy * 100.0);
-        assert!(report.fast_accuracy > 0.50, "Fast acc: {:.1}%", report.fast_accuracy * 100.0);
+        assert!(
+            report.slow_accuracy > 0.99,
+            "Slow acc: {:.1}%",
+            report.slow_accuracy * 100.0
+        );
+        assert!(
+            report.fast_accuracy > 0.50,
+            "Fast acc: {:.1}%",
+            report.fast_accuracy * 100.0
+        );
 
         println!("=== Compression Report ===");
         println!("  Original: {} bytes", report.original_size);

@@ -1,9 +1,8 @@
-use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
 use crate::config::iara::vision::*;
+use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::render_asset::RenderAssetUsages;
 use std::sync::atomic::{AtomicBool, Ordering};
-
 
 /// Difficulty flags — main.rs sets via CLI. Default OFF (full difficulty).
 pub static NO_HOLES: AtomicBool = AtomicBool::new(false);
@@ -19,14 +18,21 @@ pub static QUIET_MAP: AtomicBool = AtomicBool::new(false);
 pub fn silence_map_diag() -> impl Drop {
     struct Guard;
     impl Drop for Guard {
-        fn drop(&mut self) { QUIET_MAP.store(false, Ordering::Relaxed); }
+        fn drop(&mut self) {
+            QUIET_MAP.store(false, Ordering::Relaxed);
+        }
     }
     QUIET_MAP.store(true, Ordering::Relaxed);
     Guard
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum VoxelType { Grass = 0, Road = 1, Wall = 2, Hole = 3 }
+pub enum VoxelType {
+    Grass = 0,
+    Road = 1,
+    Wall = 2,
+    Hole = 3,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ObjectProposal {
@@ -59,17 +65,17 @@ pub struct VoxelWorld {
     pub size: usize,
     pub grid: Vec<VoxelType>,
     pub flow: Vec<Vec2>,
-    pub height_map: Vec<f32>,   // Elevação do terreno (metros)
-    pub banking: Vec<f32>,      // Inclinação lateral (radianos)
+    pub height_map: Vec<f32>, // Elevação do terreno (metros)
+    pub banking: Vec<f32>,    // Inclinação lateral (radianos)
     /// Min distance (cells) from each cell to nearest road waypoint segment.
     /// Used by generate_mesh to cull grass beyond extent threshold (sea visible).
     pub min_dist_to_road: Vec<f32>,
     pub cell_size: f32,
     pub start_pos: Vec3,
     pub lap_distance: f32,
-    pub waypoints_world: Vec<Vec2>,      // Waypoints já em coordenadas de mundo (x,z)
-    pub waypoint_arcs: Vec<f32>,         // Arco cumulativo por waypoint (arcs[i] = comprimento de wp[0] até wp[i])
-    pub start_progress: f32,             // Arc-length da start_pos projetada (cacheado em new() — constante)
+    pub waypoints_world: Vec<Vec2>, // Waypoints já em coordenadas de mundo (x,z)
+    pub waypoint_arcs: Vec<f32>, // Arco cumulativo por waypoint (arcs[i] = comprimento de wp[0] até wp[i])
+    pub start_progress: f32, // Arc-length da start_pos projetada (cacheado em new() — constante)
     /// Ideal racing line (outside-in-outside, precomputed once per track).
     /// Used to feed sensor channels 108/109/110 (lateral offset, derivative, lookahead).
     pub racing_line: crate::simulation::racing_line::RacingLine,
@@ -88,14 +94,14 @@ impl VoxelWorld {
         let mut height_map = vec![0.0f32; size * size];
         let mut banking = vec![0.0f32; size * size];
         let mut min_dist_to_road = vec![0.0f32; size * size];
-        
+
         // FIX: waypoints únicos por seed — cada pista é literalmente diferente,
         // progressão easy→very hard com rampas e desafios geométricos.
         // Seeds batem com TrackProfile em config.rs.
         let waypoints = track_waypoints_for_seed(_seed);
         let (height_amp, height_freq) = track_elevation_for_seed(_seed);
 
-        let track_width = track_width; 
+        let track_width = track_width;
         for y in 0..size {
             for x in 0..size {
                 let pos = Vec2::new(x as f32, y as f32);
@@ -104,10 +110,10 @@ impl VoxelWorld {
                 let mut best_seg_idx = 0usize;
 
                 for i in 0..waypoints.len() - 1 {
-                    let d = dist_to_segment(pos, waypoints[i], waypoints[i+1]);
-                    if d < min_dist { 
-                        min_dist = d; 
-                        best_dir = (waypoints[i+1] - waypoints[i]).normalize_or_zero();
+                    let d = dist_to_segment(pos, waypoints[i], waypoints[i + 1]);
+                    if d < min_dist {
+                        min_dist = d;
+                        best_dir = (waypoints[i + 1] - waypoints[i]).normalize_or_zero();
                         best_seg_idx = i;
                     }
                 }
@@ -128,21 +134,31 @@ impl VoxelWorld {
                 // O ser não tinha o que ver nem por que virar. Foi isso, e não o cérebro,
                 // que segurou a evolução em 3/24 setores por trinta gerações.
                 let dist_m = min_dist * cell_size;
-                grid[idx] = if dist_m < track_width / 2.0 { VoxelType::Road }
-                            else if dist_m < (track_width / 2.0) + 4.5 { VoxelType::Wall }
-                            else { VoxelType::Grass };
-                
+                grid[idx] = if dist_m < track_width / 2.0 {
+                    VoxelType::Road
+                } else if dist_m < (track_width / 2.0) + 4.5 {
+                    VoxelType::Wall
+                } else {
+                    VoxelType::Grass
+                };
+
                 // Elevação: amplitude/frequência por pista — Nürburgring Hills tem rampas sérias.
                 let elev_base = ((x as f32 * height_freq).sin() * height_amp
-                    + (y as f32 * height_freq * 0.67).cos() * height_amp * 1.3) * 0.5;
+                    + (y as f32 * height_freq * 0.67).cos() * height_amp * 1.3)
+                    * 0.5;
                 height_map[idx] = if grid[idx] == VoxelType::Road || grid[idx] == VoxelType::Wall {
                     elev_base
                 } else {
                     elev_base - 0.1 // Grama ligeiramente mais baixa
                 };
-                
+
                 // Banking: inclinação em curvas (segmentos 2,3,5,6 são curvas)
-                if grid[idx] == VoxelType::Road && (best_seg_idx == 2 || best_seg_idx == 3 || best_seg_idx == 5 || best_seg_idx == 6) {
+                if grid[idx] == VoxelType::Road
+                    && (best_seg_idx == 2
+                        || best_seg_idx == 3
+                        || best_seg_idx == 5
+                        || best_seg_idx == 6)
+                {
                     // Mesma correção de unidade: metros contra metros.
                     let norm_dist = (min_dist * cell_size) / (track_width / 2.0); // 0=centro, 1=borda
                     banking[idx] = 0.12 * (1.0 - norm_dist); // ~7° de banking no centro das curvas
@@ -173,7 +189,9 @@ impl VoxelWorld {
                 for dx in 0..2 {
                     let cx = hx + dx;
                     let cy = hy + dy;
-                    if cx < 0 || cx >= size as i32 || cy < 0 || cy >= size as i32 { continue; }
+                    if cx < 0 || cx >= size as i32 || cy < 0 || cy >= size as i32 {
+                        continue;
+                    }
                     let idx = cy as usize * size + cx as usize;
                     // Bloco tem ~6-8.5m de lado; só perfura pista larga o bastante pra
                     // sobrar corredor pro chassi (2m×2.6m) — achado "overlay incondicional
@@ -189,13 +207,17 @@ impl VoxelWorld {
         let mut waypoint_arcs = vec![0.0];
         let mut total_dist = 0.0;
         for i in 0..waypoints_world.len() - 1 {
-            total_dist += waypoints_world[i].distance(waypoints_world[i+1]);
+            total_dist += waypoints_world[i].distance(waypoints_world[i + 1]);
             waypoint_arcs.push(total_dist);
         }
 
         // Start pos por pista — runway suficiente pra ler primeira curva a ~40m/s.
         let start_pos_cells = track_start_for_seed(_seed);
-        let start_pos = Vec3::new(start_pos_cells.x * cell_size, 0.5, start_pos_cells.y * cell_size);
+        let start_pos = Vec3::new(
+            start_pos_cells.x * cell_size,
+            0.5,
+            start_pos_cells.y * cell_size,
+        );
 
         // Pré-calcula start_progress uma vez — antes era refeito a cada get_track_progress
         // (500 carros × 60 Hz × 10× time_scale = 300k recálculos/s de uma constante).
@@ -204,15 +226,20 @@ impl VoxelWorld {
         let mut min_start_dist = f32::MAX;
         for i in 0..waypoints_world.len() - 1 {
             let p1 = waypoints_world[i];
-            let p2 = waypoints_world[i+1];
+            let p2 = waypoints_world[i + 1];
             let seg_len = p1.distance(p2);
             let mut dir = p2 - p1;
-            if seg_len > 0.0 { dir /= seg_len; }
+            if seg_len > 0.0 {
+                dir /= seg_len;
+            }
             let v = start_pos_2d - p1;
             let t = v.dot(dir).clamp(0.0, seg_len);
             let proj = p1 + dir * t;
             let dist = start_pos_2d.distance(proj);
-            if dist < min_start_dist { min_start_dist = dist; start_progress = waypoint_arcs[i] + t; }
+            if dist < min_start_dist {
+                min_start_dist = dist;
+                start_progress = waypoint_arcs[i] + t;
+            }
         }
 
         // === DIAGNÓSTICO DE MAPA ===
@@ -223,30 +250,58 @@ impl VoxelWorld {
         let n_grass = grid.iter().filter(|v| **v == VoxelType::Grass).count();
         let n_hole = grid.iter().filter(|v| **v == VoxelType::Hole).count();
         if !QUIET_MAP.load(Ordering::Relaxed) {
-        println!("🗺  MAP DIAG track_width={:.1}m cell={:.1}m lap={:.1}m", track_width * cell_size * 0.0 + track_width, cell_size, total_dist);
-        println!("   voxels road={} wall={} grass={} hole={} road_ratio={:.1}%", n_road, n_wall, n_grass, n_hole, 100.0 * n_road as f32 / (n_road + n_wall + n_grass + n_hole) as f32);
-        println!("   start_pos=({:.1}, {:.1}) start_progress={:.1}m / lap {:.1}m ({:.1}%)",
-            start_pos.x, start_pos.z, start_progress, total_dist, 100.0 * start_progress / total_dist);
-        for i in 0..waypoints_world.len() {
-            let (seg_len, turn_deg) = if i == 0 {
-                (0.0, 0.0)
-            } else {
-                let prev = waypoints_world[i - 1];
-                let cur = waypoints_world[i];
-                let sl = prev.distance(cur);
-                let turn = if i + 1 < waypoints_world.len() {
-                    let next = waypoints_world[i + 1];
-                    let a = (cur - prev).normalize_or_zero();
-                    let b = (next - cur).normalize_or_zero();
-                    let cos_t = a.dot(b).clamp(-1.0, 1.0);
-                    cos_t.acos().to_degrees()
-                } else { 0.0 };
-                (sl, turn)
-            };
-            let tag = if turn_deg > 60.0 { "⚠ SHARP" } else if turn_deg > 30.0 { "CURVE" } else { "straight" };
-            println!("   WP[{}] ({:.0},{:.0}) seg_len={:.1}m turn={:.1}° {}",
-                i, waypoints_world[i].x, waypoints_world[i].y, seg_len, turn_deg, tag);
-        }
+            println!(
+                "🗺  MAP DIAG track_width={:.1}m cell={:.1}m lap={:.1}m",
+                track_width * cell_size * 0.0 + track_width,
+                cell_size,
+                total_dist
+            );
+            println!(
+                "   voxels road={} wall={} grass={} hole={} road_ratio={:.1}%",
+                n_road,
+                n_wall,
+                n_grass,
+                n_hole,
+                100.0 * n_road as f32 / (n_road + n_wall + n_grass + n_hole) as f32
+            );
+            println!(
+                "   start_pos=({:.1}, {:.1}) start_progress={:.1}m / lap {:.1}m ({:.1}%)",
+                start_pos.x,
+                start_pos.z,
+                start_progress,
+                total_dist,
+                100.0 * start_progress / total_dist
+            );
+            for i in 0..waypoints_world.len() {
+                let (seg_len, turn_deg) = if i == 0 {
+                    (0.0, 0.0)
+                } else {
+                    let prev = waypoints_world[i - 1];
+                    let cur = waypoints_world[i];
+                    let sl = prev.distance(cur);
+                    let turn = if i + 1 < waypoints_world.len() {
+                        let next = waypoints_world[i + 1];
+                        let a = (cur - prev).normalize_or_zero();
+                        let b = (next - cur).normalize_or_zero();
+                        let cos_t = a.dot(b).clamp(-1.0, 1.0);
+                        cos_t.acos().to_degrees()
+                    } else {
+                        0.0
+                    };
+                    (sl, turn)
+                };
+                let tag = if turn_deg > 60.0 {
+                    "⚠ SHARP"
+                } else if turn_deg > 30.0 {
+                    "CURVE"
+                } else {
+                    "straight"
+                };
+                println!(
+                    "   WP[{}] ({:.0},{:.0}) seg_len={:.1}m turn={:.1}° {}",
+                    i, waypoints_world[i].x, waypoints_world[i].y, seg_len, turn_deg, tag
+                );
+            }
         }
 
         // Precompute ideal racing line (outside-in-outside). Built once per
@@ -257,7 +312,13 @@ impl VoxelWorld {
         );
 
         let mut world = Self {
-            size, grid, flow, height_map, banking, min_dist_to_road, cell_size,
+            size,
+            grid,
+            flow,
+            height_map,
+            banking,
+            min_dist_to_road,
+            cell_size,
             start_pos,
             lap_distance: total_dist,
             waypoints_world,
@@ -325,7 +386,9 @@ impl VoxelWorld {
                     let mut d = 0.0f32;
                     while d < 300.0 {
                         let q = p + nrm * (d * sinal);
-                        if !matches!(self.material_at(q), VoxelType::Road) { return d; }
+                        if !matches!(self.material_at(q), VoxelType::Road) {
+                            return d;
+                        }
                         d += 0.5;
                     }
                     300.0
@@ -342,7 +405,10 @@ impl VoxelWorld {
 
             arco += 1.0;
             t += 1.0;
-            if t >= seg { t -= seg; wp += 1; }
+            if t >= seg {
+                t -= seg;
+                wp += 1;
+            }
         }
         defeitos
     }
@@ -429,10 +495,7 @@ impl VoxelWorld {
     }
 
     /// Computes ObjectProposal from cluster of Wall cells
-    fn compute_proposal_from_cluster(
-        &self,
-        cluster: &[(usize, usize)],
-    ) -> Option<ObjectProposal> {
+    fn compute_proposal_from_cluster(&self, cluster: &[(usize, usize)]) -> Option<ObjectProposal> {
         if cluster.is_empty() {
             return None;
         }
@@ -534,13 +597,16 @@ impl VoxelWorld {
         let mut best_seg = 0;
         for i in 0..self.waypoints_world.len().saturating_sub(1) {
             let p1 = self.waypoints_world[i];
-            let p2 = self.waypoints_world[i+1];
+            let p2 = self.waypoints_world[i + 1];
             let seg_len = p1.distance(p2).max(0.001);
             let dir = (p2 - p1) / seg_len;
             let t = (pos - p1).dot(dir).clamp(0.0, seg_len);
             let proj = p1 + dir * t;
             let d = pos.distance(proj);
-            if d < min_dist { min_dist = d; best_seg = i; }
+            if d < min_dist {
+                min_dist = d;
+                best_seg = i;
+            }
         }
         best_seg
     }
@@ -550,7 +616,9 @@ impl VoxelWorld {
         let y = (wz / self.cell_size).round() as i32;
         if x >= 0 && x < self.size as i32 && y >= 0 && y < self.size as i32 {
             self.grid[y as usize * self.size + x as usize]
-        } else { VoxelType::Wall }
+        } else {
+            VoxelType::Wall
+        }
     }
 
     pub fn get_flow_at(&self, wx: f32, wz: f32) -> Vec2 {
@@ -558,7 +626,9 @@ impl VoxelWorld {
         let y = (wz / self.cell_size).round() as i32;
         if x >= 0 && x < self.size as i32 && y >= 0 && y < self.size as i32 {
             self.flow[y as usize * self.size + x as usize]
-        } else { Vec2::ZERO }
+        } else {
+            Vec2::ZERO
+        }
     }
 
     /// Calcula a distância absoluta na pista a partir da linha de largada
@@ -566,27 +636,29 @@ impl VoxelWorld {
         let pos = Vec2::new(wx, wz);
         let mut min_dist = f32::MAX;
         let mut best_progress = 0.0;
-        
+
         for i in 0..self.waypoints_world.len() - 1 {
             let p1 = self.waypoints_world[i];
-            let p2 = self.waypoints_world[i+1];
+            let p2 = self.waypoints_world[i + 1];
             let seg_len = p1.distance(p2);
-            
+
             let mut dir = p2 - p1;
-            if seg_len > 0.0 { dir /= seg_len; }
-            
+            if seg_len > 0.0 {
+                dir /= seg_len;
+            }
+
             let v = pos - p1;
             let t = v.dot(dir).clamp(0.0, seg_len);
-            
+
             let proj = p1 + dir * t;
             let dist = pos.distance(proj);
-            
+
             if dist < min_dist {
                 min_dist = dist;
                 best_progress = self.waypoint_arcs[i] + t;
             }
         }
-        
+
         // Arc-length relativo à linha de largada. NÃO fazemos wrap aqui: contagem de voltas
         // é feita em simulation.rs (cruzamento de lap_line). Se o carro está atrás da largada
         // (spawn grid recuado, ou andou pra trás), retornamos 0 — jamais um valor enorme falso.
@@ -602,16 +674,20 @@ impl VoxelWorld {
         let z0 = fz.floor() as i32;
         let tx = fx - x0 as f32;
         let tz = fz - z0 as f32;
-        
+
         let h = |x: i32, z: i32| -> f32 {
             if x >= 0 && x < self.size as i32 && z >= 0 && z < self.size as i32 {
                 self.height_map[z as usize * self.size + x as usize]
-            } else { 0.0 }
+            } else {
+                0.0
+            }
         };
-        
-        let h00 = h(x0, z0); let h10 = h(x0 + 1, z0);
-        let h01 = h(x0, z0 + 1); let h11 = h(x0 + 1, z0 + 1);
-        
+
+        let h00 = h(x0, z0);
+        let h10 = h(x0 + 1, z0);
+        let h01 = h(x0, z0 + 1);
+        let h11 = h(x0 + 1, z0 + 1);
+
         let top = h00 * (1.0 - tx) + h10 * tx;
         let bot = h01 * (1.0 - tx) + h11 * tx;
         top * (1.0 - tz) + bot * tz
@@ -650,15 +726,18 @@ impl VoxelWorld {
                 let py = self.height_map[y * self.size + x];
 
                 if v == VoxelType::Road {
-                    let is_start_line = (px - self.start_pos.x).abs() < self.cell_size && (pz - self.start_pos.z).abs() < 25.0;
+                    let is_start_line = (px - self.start_pos.x).abs() < self.cell_size
+                        && (pz - self.start_pos.z).abs() < 25.0;
                     let b = road_pos.len() as u32;
                     let x0 = px - overlap;
                     let x1 = px + self.cell_size + overlap;
                     let z0 = pz - overlap;
                     let z1 = pz + self.cell_size + overlap;
                     road_pos.extend_from_slice(&[
-                        [x0, py + 0.02, z0], [x1, py + 0.02, z0],
-                        [x0, py + 0.02, z1], [x1, py + 0.02, z1]
+                        [x0, py + 0.02, z0],
+                        [x1, py + 0.02, z0],
+                        [x0, py + 0.02, z1],
+                        [x1, py + 0.02, z1],
                     ]);
 
                     // Asfalto coloring: faixa branca lateral + curb red/white na borda
@@ -666,14 +745,18 @@ impl VoxelWorld {
                     let dist_road = self.min_dist_to_road[y * self.size + x];
                     let banking_here = self.banking[y * self.size + x];
                     let is_lane_edge = dist_road > 5.5 && dist_road < 6.5; // ~6 cells = borda visual
-                    let is_curb = banking_here > 0.05 && dist_road > 6.5;  // só em curva
+                    let is_curb = banking_here > 0.05 && dist_road > 6.5; // só em curva
                     let dash_phase = ((x + y) / 4) % 2 == 0; // tracejado
                     let is_light = ((x / 2) + (y / 2)) % 2 == 0;
                     let color = if is_start_line {
                         [1.0, 1.0, 1.0, 1.0]
                     } else if is_curb {
                         // curb red/white alternado
-                        if (x / 2) % 2 == 0 { [0.85, 0.10, 0.10, 1.0] } else { [0.95, 0.95, 0.95, 1.0] }
+                        if (x / 2) % 2 == 0 {
+                            [0.85, 0.10, 0.10, 1.0]
+                        } else {
+                            [0.95, 0.95, 0.95, 1.0]
+                        }
                     } else if is_lane_edge {
                         [0.85, 0.85, 0.85, 1.0] // faixa branca contínua
                     } else if dist_road < 0.8 && dash_phase {
@@ -685,7 +768,7 @@ impl VoxelWorld {
                     };
 
                     road_colors.extend_from_slice(&[color; 4]);
-                    road_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
+                    road_indices.extend_from_slice(&[b, b + 2, b + 1, b + 1, b + 2, b + 3]);
                 } else if v == VoxelType::Grass {
                     // Grass cobre TODA grid (sem buracos no interior do circuito).
                     // Borda: cells nas extremidades do grid descem suavemente pra sea
@@ -704,12 +787,18 @@ impl VoxelWorld {
                     let z0 = pz - overlap;
                     let z1 = pz + self.cell_size + overlap;
                     grass_pos.extend_from_slice(&[
-                        [x0, py_eff, z0], [x1, py_eff, z0],
-                        [x0, py_eff, z1], [x1, py_eff, z1]
+                        [x0, py_eff, z0],
+                        [x1, py_eff, z0],
+                        [x0, py_eff, z1],
+                        [x1, py_eff, z1],
                     ]);
 
                     let is_light = ((x / 3) + (y / 3)) % 2 == 0;
-                    let base = if is_light { [0.18, 0.42, 0.18, 1.0] } else { [0.12, 0.32, 0.12, 1.0] };
+                    let base = if is_light {
+                        [0.18, 0.42, 0.18, 1.0]
+                    } else {
+                        [0.12, 0.32, 0.12, 1.0]
+                    };
                     // Edge color: escurece + leve azulado próximo à sea pra blend.
                     let darken = 1.0 - 0.5 * edge_t;
                     let color = [
@@ -719,7 +808,7 @@ impl VoxelWorld {
                         1.0,
                     ];
                     grass_colors.extend_from_slice(&[color; 4]);
-                    grass_indices.extend_from_slice(&[b, b+2, b+1, b+1, b+2, b+3]);
+                    grass_indices.extend_from_slice(&[b, b + 2, b + 1, b + 1, b + 2, b + 3]);
                 } else if v == VoxelType::Wall {
                     // Concrete barrier: 6 faces (caixa) ocupando cell quase inteira, altura 1.6m.
                     let b = wall_pos.len() as u32;
@@ -733,19 +822,36 @@ impl VoxelWorld {
                     let y1 = py + h;
                     // 8 vértices do cubo
                     wall_pos.extend_from_slice(&[
-                        [x0, y0, z0], [x1, y0, z0], [x0, y0, z1], [x1, y0, z1],
-                        [x0, y1, z0], [x1, y1, z0], [x0, y1, z1], [x1, y1, z1],
+                        [x0, y0, z0],
+                        [x1, y0, z0],
+                        [x0, y0, z1],
+                        [x1, y0, z1],
+                        [x0, y1, z0],
+                        [x1, y1, z0],
+                        [x0, y1, z1],
+                        [x1, y1, z1],
                     ]);
                     // 12 triangles (6 faces × 2 tris)
                     let f = |a, b, c| [a, b, c];
-                    wall_indices.extend_from_slice(&[
-                        f(b+0, b+2, b+1), f(b+1, b+2, b+3), // bottom
-                        f(b+4, b+5, b+6), f(b+5, b+7, b+6), // top
-                        f(b+0, b+1, b+4), f(b+1, b+5, b+4), // -z
-                        f(b+2, b+6, b+3), f(b+3, b+6, b+7), // +z
-                        f(b+0, b+4, b+2), f(b+2, b+4, b+6), // -x
-                        f(b+1, b+3, b+5), f(b+3, b+7, b+5), // +x
-                    ].iter().flat_map(|tri| tri.iter().copied()).collect::<Vec<u32>>());
+                    wall_indices.extend_from_slice(
+                        &[
+                            f(b + 0, b + 2, b + 1),
+                            f(b + 1, b + 2, b + 3), // bottom
+                            f(b + 4, b + 5, b + 6),
+                            f(b + 5, b + 7, b + 6), // top
+                            f(b + 0, b + 1, b + 4),
+                            f(b + 1, b + 5, b + 4), // -z
+                            f(b + 2, b + 6, b + 3),
+                            f(b + 3, b + 6, b + 7), // +z
+                            f(b + 0, b + 4, b + 2),
+                            f(b + 2, b + 4, b + 6), // -x
+                            f(b + 1, b + 3, b + 5),
+                            f(b + 3, b + 7, b + 5), // +x
+                        ]
+                        .iter()
+                        .flat_map(|tri| tri.iter().copied())
+                        .collect::<Vec<u32>>(),
+                    );
                 } else if v == VoxelType::Hole {
                     // Hole 3D: caixa funda 2.5m com 4 paredes laterais + bottom preto.
                     // Antes apenas quad raso 0.3m — invisível no chase cam.
@@ -756,41 +862,82 @@ impl VoxelWorld {
                     let x1 = px + self.cell_size - inset;
                     let z0 = pz + inset;
                     let z1 = pz + self.cell_size - inset;
-                    let y_top = py - 0.05;     // borda superior (afundamento visível)
+                    let y_top = py - 0.05; // borda superior (afundamento visível)
                     let y_bot = py - depth;
                     let b = road_pos.len() as u32;
                     // 8 vertices: 4 top + 4 bottom
                     road_pos.extend_from_slice(&[
-                        [x0, y_top, z0], [x1, y_top, z0], [x0, y_top, z1], [x1, y_top, z1],
-                        [x0, y_bot, z0], [x1, y_bot, z0], [x0, y_bot, z1], [x1, y_bot, z1],
+                        [x0, y_top, z0],
+                        [x1, y_top, z0],
+                        [x0, y_top, z1],
+                        [x1, y_top, z1],
+                        [x0, y_bot, z0],
+                        [x1, y_bot, z0],
+                        [x0, y_bot, z1],
+                        [x1, y_bot, z1],
                     ]);
                     // Top edges = cinza escuro (borda do buraco). Bottom = preto.
                     let edge = [0.10, 0.10, 0.12, 1.0];
                     let void = [0.0, 0.0, 0.0, 1.0];
-                    road_colors.extend_from_slice(&[edge, edge, edge, edge, void, void, void, void]);
+                    road_colors
+                        .extend_from_slice(&[edge, edge, edge, edge, void, void, void, void]);
                     // Bottom (visto de cima): triangles a partir dos bottom verts.
                     road_indices.extend_from_slice(&[
-                        b+4, b+5, b+6, b+5, b+7, b+6,        // bottom face
-                        b+0, b+4, b+1, b+1, b+4, b+5,        // -z wall
-                        b+2, b+3, b+6, b+3, b+7, b+6,        // +z wall
-                        b+0, b+2, b+4, b+2, b+6, b+4,        // -x wall
-                        b+1, b+5, b+3, b+3, b+5, b+7,        // +x wall
+                        b + 4,
+                        b + 5,
+                        b + 6,
+                        b + 5,
+                        b + 7,
+                        b + 6, // bottom face
+                        b + 0,
+                        b + 4,
+                        b + 1,
+                        b + 1,
+                        b + 4,
+                        b + 5, // -z wall
+                        b + 2,
+                        b + 3,
+                        b + 6,
+                        b + 3,
+                        b + 7,
+                        b + 6, // +z wall
+                        b + 0,
+                        b + 2,
+                        b + 4,
+                        b + 2,
+                        b + 6,
+                        b + 4, // -x wall
+                        b + 1,
+                        b + 5,
+                        b + 3,
+                        b + 3,
+                        b + 5,
+                        b + 7, // +x wall
                     ]);
                 }
             }
         }
 
-        let mut r_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        let mut r_mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
         r_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, road_pos);
         r_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, road_colors);
         r_mesh.insert_indices(Indices::U32(road_indices));
 
-        let mut g_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        let mut g_mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
         g_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, grass_pos);
         g_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, grass_colors);
         g_mesh.insert_indices(Indices::U32(grass_indices));
 
-        let mut w_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        let mut w_mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
         w_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, wall_pos);
         w_mesh.insert_indices(Indices::U32(wall_indices));
 
@@ -816,7 +963,13 @@ impl VoxelWorld {
     /// `gaze_yaw` (rad): offset angular da fóvea relativa ao forward. Simula saccade ocular —
     /// a fóvea vira pro setor mais escuro detectado pela periférica. Periférica ignora gaze
     /// (sempre centrada no forward — é o "campo panorâmico" fixo do motorista).
-    pub fn render_binocular_retina(&self, pos: Vec3, forward: Vec3, right: Vec3, gaze_yaw: f32) -> [i8; RETINA_TOTAL] {
+    pub fn render_binocular_retina(
+        &self,
+        pos: Vec3,
+        forward: Vec3,
+        right: Vec3,
+        gaze_yaw: f32,
+    ) -> [i8; RETINA_TOTAL] {
         let mut pixels = [-128i8; RETINA_TOTAL];
         let eye_pos = pos + Vec3::Y * 0.4;
         let cell = self.cell_size;
@@ -844,14 +997,18 @@ impl VoxelWorld {
                 } else {
                     normalized_i * fov_half
                 };
-                
+
                 let dir_x = (forward.x * yaw_angle.cos() + right.x * yaw_angle.sin()) * cos_pitch;
                 let dir_z = (forward.z * yaw_angle.cos() + right.z * yaw_angle.sin()) * cos_pitch;
-                
+
                 let mut hit_voxel = VoxelType::Road;
                 let mut hit_dist = 1200.0;
 
-                let dist_to_ground = if dir_y < -0.001 { -eye_pos.y / dir_y } else { 1000.0 };
+                let dist_to_ground = if dir_y < -0.001 {
+                    -eye_pos.y / dir_y
+                } else {
+                    1000.0
+                };
 
                 // Implementação do Algoritmo DDA (Digital Differential Analyzer) - Precisão Metafísica O(1)
                 let ray_start = Vec2::new(eye_pos.x / cell, eye_pos.z / cell);
@@ -860,22 +1017,36 @@ impl VoxelWorld {
                 let mut map_x = ray_start.x.floor() as i32;
                 let mut map_y = ray_start.y.floor() as i32;
 
-                let delta_dist_x = if ray_dir.x.abs() < 1e-5 { 1e30 } else { (1.0 / ray_dir.x).abs() };
-                let delta_dist_y = if ray_dir.y.abs() < 1e-5 { 1e30 } else { (1.0 / ray_dir.y).abs() };
+                let delta_dist_x = if ray_dir.x.abs() < 1e-5 {
+                    1e30
+                } else {
+                    (1.0 / ray_dir.x).abs()
+                };
+                let delta_dist_y = if ray_dir.y.abs() < 1e-5 {
+                    1e30
+                } else {
+                    (1.0 / ray_dir.y).abs()
+                };
 
-                let step_x: i32; let step_y: i32;
-                let mut side_dist_x: f32; let mut side_dist_y: f32;
+                let step_x: i32;
+                let step_y: i32;
+                let mut side_dist_x: f32;
+                let mut side_dist_y: f32;
 
                 if ray_dir.x < 0.0 {
-                    step_x = -1; side_dist_x = (ray_start.x - map_x as f32) * delta_dist_x;
+                    step_x = -1;
+                    side_dist_x = (ray_start.x - map_x as f32) * delta_dist_x;
                 } else {
-                    step_x = 1; side_dist_x = ((map_x as f32 + 1.0) - ray_start.x) * delta_dist_x;
+                    step_x = 1;
+                    side_dist_x = ((map_x as f32 + 1.0) - ray_start.x) * delta_dist_x;
                 }
 
                 if ray_dir.y < 0.0 {
-                    step_y = -1; side_dist_y = (ray_start.y - map_y as f32) * delta_dist_y;
+                    step_y = -1;
+                    side_dist_y = (ray_start.y - map_y as f32) * delta_dist_y;
                 } else {
-                    step_y = 1; side_dist_y = ((map_y as f32 + 1.0) - ray_start.y) * delta_dist_y;
+                    step_y = 1;
+                    side_dist_y = ((map_y as f32 + 1.0) - ray_start.y) * delta_dist_y;
                 }
 
                 let mut hit = false;
@@ -885,21 +1056,30 @@ impl VoxelWorld {
                 // antecipa curvas longas em retas largas a 80m/s antes (era 300m).
                 for _ in 0..400 {
                     if side_dist_x < side_dist_y {
-                        side_dist_x += delta_dist_x; map_x += step_x; side = 0;
+                        side_dist_x += delta_dist_x;
+                        map_x += step_x;
+                        side = 0;
                     } else {
-                        side_dist_y += delta_dist_y; map_y += step_y; side = 1;
+                        side_dist_y += delta_dist_y;
+                        map_y += step_y;
+                        side = 1;
                     }
 
                     let voxel = self.get_voxel_at((map_x as f32) * cell, (map_y as f32) * cell);
                     if voxel == VoxelType::Wall || voxel == VoxelType::Hole {
-                        hit_voxel = voxel; hit = true; break;
+                        hit_voxel = voxel;
+                        hit = true;
+                        break;
                     }
                 }
-                
+
                 if hit {
-                    let current_dist = (if side == 0 { (map_x as f32 - ray_start.x + (1 - step_x) as f32 / 2.0) / ray_dir.x } 
-                    else { (map_y as f32 - ray_start.y + (1 - step_y) as f32 / 2.0) / ray_dir.y }) * cell;
-                    
+                    let current_dist = (if side == 0 {
+                        (map_x as f32 - ray_start.x + (1 - step_x) as f32 / 2.0) / ray_dir.x
+                    } else {
+                        (map_y as f32 - ray_start.y + (1 - step_y) as f32 / 2.0) / ray_dir.y
+                    }) * cell;
+
                     if dir_y < -0.001 && current_dist > dist_to_ground {
                         // O raio bateu no chão ANTES de atingir a parede lateral DDA
                         hit_dist = dist_to_ground;
@@ -916,7 +1096,7 @@ impl VoxelWorld {
                     let hit_pz = eye_pos.z + dir_z * hit_dist;
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
                 }
-                
+
                 let depth_fade = (hit_dist / 1200.0).clamp(0.0, 1.0);
 
                 let pixel_val = match hit_voxel {
@@ -935,16 +1115,14 @@ impl VoxelWorld {
                             let xfar = ((hit_dist - 1200.0) / 1200.0).clamp(0.0, 1.0);
                             -25.0 - (xfar * 25.0)
                         }
-                    },
-                    VoxelType::Grass => {
-                        40.0 - (depth_fade * 40.0)
-                    },
+                    }
+                    VoxelType::Grass => 40.0 - (depth_fade * 40.0),
                     VoxelType::Road => {
                         // Expanded range: shows curves more clearly via finer gradation.
                         // Before: -128→-80 (range 48). Now: -128→-32 (range 96).
                         // Extra 48 values lets retina encode curve shape as smooth transitions.
                         -128.0 + (depth_fade * 96.0)
-                    },
+                    }
                     VoxelType::Hole => {
                         // Hole = buraco no asfalto. Mata no contato → canal precisa ser
                         // BEM distinguível de Road/Grass/Wall. Range 90→60 em 0..50m,
@@ -953,7 +1131,7 @@ impl VoxelWorld {
                         90.0 - (near * 30.0)
                     }
                 };
-                
+
                 pixels[index] = pixel_val.clamp(-128.0, 127.0) as i8;
             }
         }
@@ -995,7 +1173,10 @@ fn perfil_para_cells(wps_m: &[Vec2]) -> Vec<Vec2> {
     const CELL: f32 = 3.0;
     let mut wps: Vec<Vec2> = wps_m.iter().map(|p| *p / CELL).collect();
     let (mut min, mut max) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
-    for p in &wps { min = min.min(*p); max = max.max(*p); }
+    for p in &wps {
+        min = min.min(*p);
+        max = max.max(*p);
+    }
     let span = max - min;
     // Margem de 20 cells (60m) pra cada lado — sobra pro raio de detecção de
     // parede e pro deslocamento lateral do spawn. Antes: "cabe=130" e
@@ -1006,12 +1187,18 @@ fn perfil_para_cells(wps_m: &[Vec2]) -> Vec<Vec2> {
     let cabe = GRID_CELLS - 2.0 * margem;
     let escala = (cabe / span.x.max(span.y)).min(1.0);
     if escala < 1.0 {
-        eprintln!("[pista] perfil não coube no grid (span {:.0}x{:.0} cells, limite {cabe:.0}) — encolhido {:.0}%",
-                  span.x, span.y, escala * 100.0);
+        eprintln!(
+            "[pista] perfil não coube no grid (span {:.0}x{:.0} cells, limite {cabe:.0}) — encolhido {:.0}%",
+            span.x,
+            span.y,
+            escala * 100.0
+        );
     }
     let centro_atual = (min + max) * 0.5;
     let centro_grid = Vec2::splat(GRID_CELLS / 2.0);
-    for p in wps.iter_mut() { *p = centro_grid + (*p - centro_atual) * escala; }
+    for p in wps.iter_mut() {
+        *p = centro_grid + (*p - centro_atual) * escala;
+    }
     wps
 }
 
@@ -1020,56 +1207,82 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
         // Dubai Oval — EASY: oval largo, curvas suaves <45°, runway longo.
         // Coords shifted +40 cells (x,y) para centrar em grid 240×240.
         123 => vec![
-            Vec2::new(60.0, 60.0),  Vec2::new(160.0, 60.0),
-            Vec2::new(180.0, 80.0), Vec2::new(180.0, 140.0),
-            Vec2::new(160.0, 160.0), Vec2::new(80.0, 160.0),
-            Vec2::new(60.0, 140.0), Vec2::new(60.0, 60.0),
+            Vec2::new(60.0, 60.0),
+            Vec2::new(160.0, 60.0),
+            Vec2::new(180.0, 80.0),
+            Vec2::new(180.0, 140.0),
+            Vec2::new(160.0, 160.0),
+            Vec2::new(80.0, 160.0),
+            Vec2::new(60.0, 140.0),
+            Vec2::new(60.0, 60.0),
         ],
         // Interlagos Gateway — MEDIUM: current layout (90° + 2×45°).
         64 => vec![
-            Vec2::new(60.0, 60.0),  Vec2::new(180.0, 60.0),
-            Vec2::new(180.0, 100.0), Vec2::new(140.0, 140.0),
-            Vec2::new(140.0, 180.0), Vec2::new(100.0, 180.0),
-            Vec2::new(60.0, 140.0), Vec2::new(60.0, 60.0),
+            Vec2::new(60.0, 60.0),
+            Vec2::new(180.0, 60.0),
+            Vec2::new(180.0, 100.0),
+            Vec2::new(140.0, 140.0),
+            Vec2::new(140.0, 180.0),
+            Vec2::new(100.0, 180.0),
+            Vec2::new(60.0, 140.0),
+            Vec2::new(60.0, 60.0),
         ],
         // Monaco Tight — HARD: sequência de hairpins 90° sem reversos geométricos.
         // Antigo WP[3] fazia swing 135° (NW→E) — U-turn impossível pra rede shallow.
         // Agora monotonico em sentido horário: S→E→S→W→S→W→N→E.
         256 => vec![
-            Vec2::new(60.0, 60.0),  Vec2::new(150.0, 60.0),
-            Vec2::new(180.0, 90.0), Vec2::new(180.0, 130.0),
-            Vec2::new(140.0, 130.0), Vec2::new(140.0, 170.0),
-            Vec2::new(100.0, 170.0), Vec2::new(60.0, 130.0),
+            Vec2::new(60.0, 60.0),
+            Vec2::new(150.0, 60.0),
+            Vec2::new(180.0, 90.0),
+            Vec2::new(180.0, 130.0),
+            Vec2::new(140.0, 130.0),
+            Vec2::new(140.0, 170.0),
+            Vec2::new(100.0, 170.0),
+            Vec2::new(60.0, 130.0),
             Vec2::new(60.0, 60.0),
         ],
         // Silverstone Flow — VERY HARD: curvas rápidas sem zigzag reverso.
         // Antigo fazia (110,115)→(80,100)→(60,130) U-turn SW→NW→SW. Removido.
         512 => vec![
-            Vec2::new(60.0, 60.0),  Vec2::new(140.0, 65.0),
-            Vec2::new(180.0, 95.0), Vec2::new(180.0, 135.0),
-            Vec2::new(155.0, 160.0), Vec2::new(115.0, 170.0),
-            Vec2::new(75.0, 165.0), Vec2::new(55.0, 135.0),
-            Vec2::new(70.0, 105.0), Vec2::new(95.0, 85.0),
+            Vec2::new(60.0, 60.0),
+            Vec2::new(140.0, 65.0),
+            Vec2::new(180.0, 95.0),
+            Vec2::new(180.0, 135.0),
+            Vec2::new(155.0, 160.0),
+            Vec2::new(115.0, 170.0),
+            Vec2::new(75.0, 165.0),
+            Vec2::new(55.0, 135.0),
+            Vec2::new(70.0, 105.0),
+            Vec2::new(95.0, 85.0),
             Vec2::new(60.0, 60.0),
         ],
         // Nürburgring Hills — EXTREME: elevação forte, curvas longas, sem U-turns.
         // Antigo (95,110)→(130,140) fazia reverso SW→SE. Removido.
         768 => vec![
-            Vec2::new(60.0, 70.0),  Vec2::new(130.0, 60.0),
-            Vec2::new(180.0, 85.0), Vec2::new(180.0, 140.0),
-            Vec2::new(150.0, 170.0), Vec2::new(110.0, 180.0),
-            Vec2::new(70.0, 160.0), Vec2::new(60.0, 110.0),
+            Vec2::new(60.0, 70.0),
+            Vec2::new(130.0, 60.0),
+            Vec2::new(180.0, 85.0),
+            Vec2::new(180.0, 140.0),
+            Vec2::new(150.0, 170.0),
+            Vec2::new(110.0, 180.0),
+            Vec2::new(70.0, 160.0),
+            Vec2::new(60.0, 110.0),
             Vec2::new(60.0, 70.0),
         ],
         // Suzuka Crossing — INSANE: hairpins sucessivos SEM reversos. Antigo (90,50)→(70,70)
         // fazia SE→SW (U-turn) e (20,90)→(40,130) fazia SW→SE (outro U). Redesigned para
         // espiral horária com 90°s legítimos mas trajetória sempre forward.
         1024 => vec![
-            Vec2::new(60.0, 70.0),  Vec2::new(120.0, 70.0),
-            Vec2::new(155.0, 95.0), Vec2::new(180.0, 130.0),
-            Vec2::new(180.0, 170.0), Vec2::new(140.0, 185.0),
-            Vec2::new(95.0, 180.0), Vec2::new(60.0, 155.0),
-            Vec2::new(65.0, 115.0), Vec2::new(85.0, 95.0),
+            Vec2::new(60.0, 70.0),
+            Vec2::new(120.0, 70.0),
+            Vec2::new(155.0, 95.0),
+            Vec2::new(180.0, 130.0),
+            Vec2::new(180.0, 170.0),
+            Vec2::new(140.0, 185.0),
+            Vec2::new(95.0, 180.0),
+            Vec2::new(60.0, 155.0),
+            Vec2::new(65.0, 115.0),
+            Vec2::new(85.0, 95.0),
             Vec2::new(60.0, 70.0),
         ],
         // CURRÍCULO POR DIFICULDADE MEDIDA (ver `pista_gen.rs`).
@@ -1096,13 +1309,28 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
         // não conseguir geometria válida (informação no log, nunca silêncio).
         8000..=8099 => crate::pista_gen::gerar_perfil(seed, "curta", 28.0)
             .map(|wps| perfil_para_cells(&wps))
-            .unwrap_or_else(|| { eprintln!("[pista] perfil curta s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "[pista] perfil curta s={seed}: sem geometria válida, caindo no procedural"
+                );
+                procedural_waypoints(seed)
+            }),
         8100..=8199 => crate::pista_gen::gerar_perfil(seed, "curvas", 28.0)
             .map(|wps| perfil_para_cells(&wps))
-            .unwrap_or_else(|| { eprintln!("[pista] perfil curvas s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "[pista] perfil curvas s={seed}: sem geometria válida, caindo no procedural"
+                );
+                procedural_waypoints(seed)
+            }),
         8200..=8299 => crate::pista_gen::gerar_perfil(seed, "retao", 28.0)
             .map(|wps| perfil_para_cells(&wps))
-            .unwrap_or_else(|| { eprintln!("[pista] perfil retao s={seed}: sem geometria válida, caindo no procedural"); procedural_waypoints(seed) }),
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "[pista] perfil retao s={seed}: sem geometria válida, caindo no procedural"
+                );
+                procedural_waypoints(seed)
+            }),
         _ => procedural_waypoints(seed),
     }
 }
@@ -1118,8 +1346,9 @@ pub fn procedural_waypoints(seed: u64) -> Vec<Vec2> {
     // seguro se o gerador continuar achando candidato válido; mais tentativas
     // absorve a rejeição extra sem precisar pular a validação).
     for attempt in 0..96u64 {
-        let sub_seed = seed.wrapping_mul(0x9E3779B97F4A7C15)
-                           .wrapping_add(attempt.wrapping_mul(0xC1D7BEEF));
+        let sub_seed = seed
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(attempt.wrapping_mul(0xC1D7BEEF));
         let candidate = generate_track_candidate(sub_seed);
         if validate_track(&candidate) {
             return candidate;
@@ -1170,15 +1399,22 @@ fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
         let r = r_min + next() * (r_max - r_min);
         let theta = next() * std::f32::consts::TAU;
         let p = Vec2::new(cx + r * theta.cos(), cy + r * theta.sin());
-        if p.x < 35.0 || p.x > 285.0 || p.y < 35.0 || p.y > 285.0 { continue; }
-        if anchors.iter().any(|a| a.distance(p) < sp) { continue; }
+        if p.x < 35.0 || p.x > 285.0 || p.y < 35.0 || p.y > 285.0 {
+            continue;
+        }
+        if anchors.iter().any(|a| a.distance(p) < sp) {
+            continue;
+        }
         anchors.push(p);
     }
     if anchors.len() < 8 {
         anchors.clear();
         for i in 0..10 {
             let theta = i as f32 / 10.0 * std::f32::consts::TAU;
-            anchors.push(Vec2::new(cx + 110.0 * theta.cos(), cy + 110.0 * theta.sin()));
+            anchors.push(Vec2::new(
+                cx + 110.0 * theta.cos(),
+                cy + 110.0 * theta.sin(),
+            ));
         }
     }
 
@@ -1202,12 +1438,11 @@ fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
             let t = j as f32 / n_samples as f32;
             let t2 = t * t;
             let t3 = t2 * t;
-            let pt = 0.5 * (
-                (2.0 * p1)
-                + (-p0 + p2) * t
-                + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-                + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
-            );
+            let pt = 0.5
+                * ((2.0 * p1)
+                    + (-p0 + p2) * t
+                    + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+                    + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
             waypoints.push(Vec2::new(pt.x.clamp(30.0, 290.0), pt.y.clamp(30.0, 290.0)));
         }
     }
@@ -1221,7 +1456,9 @@ fn generate_track_candidate(seed: u64) -> Vec<Vec2> {
 /// - <= 1 sequência de 3+ curvas seguidas >50°
 /// - razão curva/reta razoável (varia entre seeds)
 fn validate_track(waypoints: &[Vec2]) -> bool {
-    if waypoints.len() < 8 { return false; }
+    if waypoints.len() < 8 {
+        return false;
+    }
     // Lap length em cells × 3m.
     let mut lap_len_cells = 0.0_f32;
     for w in waypoints.windows(2) {
@@ -1234,9 +1471,13 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         // que rejeitava TODAS pistas em --easy mode → procedural caía em fallback
         // simples. UI vs headless: DNA treinado em fallback, UI gera pista
         // real diferente → carros pareciam ruins.
-        if !(1200.0..=3500.0).contains(&lap_m) { return false; }
+        if !(1200.0..=3500.0).contains(&lap_m) {
+            return false;
+        }
     } else {
-        if !(2500.0..=7000.0).contains(&lap_m) { return false; }
+        if !(2500.0..=7000.0).contains(&lap_m) {
+            return false;
+        }
     }
 
     // Turn angles entre segmentos + turn-rate per meter (minecraft-style validation).
@@ -1261,7 +1502,9 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         let dot = v_in.dot(v_out).clamp(-1.0, 1.0);
         let turn_rad = dot.acos();
         let turn = turn_rad.to_degrees();
-        if turn > max_turn { max_turn = turn; }
+        if turn > max_turn {
+            max_turn = turn;
+        }
         total_curve_deg += turn;
 
         // Turn-rate-per-meter: curva apertada em segmento curto = perigo.
@@ -1271,57 +1514,93 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
         let avg_seg = (seg_in_m + seg_out_m) * 0.5;
         if avg_seg > 0.5 {
             let tpm = turn / avg_seg;
-            if tpm > max_turn_per_meter { max_turn_per_meter = tpm; }
+            if tpm > max_turn_per_meter {
+                max_turn_per_meter = tpm;
+            }
             // Raio local ≈ arco/ângulo (aproximação de círculo osculador — mesma
             // conta que `pista_check.rs` usa para reportar "raio" por waypoint).
             if turn_rad > 1e-4 {
                 let raio_m = avg_seg / turn_rad;
-                if raio_m < min_radius_m { min_radius_m = raio_m; }
+                if raio_m < min_radius_m {
+                    min_radius_m = raio_m;
+                }
             }
         }
         if turn > 50.0 {
             sharp_turns += 1;
             consecutive_sharp += 1;
-            if consecutive_sharp > max_consecutive { max_consecutive = consecutive_sharp; }
-            if avg_seg < min_seg_len_at_sharp { min_seg_len_at_sharp = avg_seg; }
+            if consecutive_sharp > max_consecutive {
+                max_consecutive = consecutive_sharp;
+            }
+            if avg_seg < min_seg_len_at_sharp {
+                min_seg_len_at_sharp = avg_seg;
+            }
         } else {
             consecutive_sharp = 0;
         }
     }
     // Curvas afiadas precisam segmento ≥ 12m (cars têm tempo de reagir).
     // Sem isso, layout = curva 60° em 5m = impossível.
-    if sharp_turns > 0 && min_seg_len_at_sharp < 12.0 { return false; }
+    if sharp_turns > 0 && min_seg_len_at_sharp < 12.0 {
+        return false;
+    }
     // Turn rate ≤ 8°/m (curva 60° precisa segmento ≥ 7.5m).
-    if max_turn_per_meter > 8.0 { return false; }
+    if max_turn_per_meter > 8.0 {
+        return false;
+    }
     // Piso de raio: mesmo piso que `pista_gen.rs::gerar` já usa (`d.r_min < 6.0`,
     // pista_gen.rs:220) — consistência entre os dois geradores em vez de um piso
     // arbitrário novo. Sementes procedurais fora da tabela nunca tinham essa
     // checagem; medido no build atual o raio mínimo típico fica em 7-10m, então
     // 6.0m é conservador (abaixo do observado) sem reabrir curvas hoje aceitas.
-    if min_radius_m.is_finite() && min_radius_m < 6.0 { return false; }
+    if min_radius_m.is_finite() && min_radius_m < 6.0 {
+        return false;
+    }
     // Permite hairpins até 90° + sequências de 4 curvas (chicanes desafiadoras OK).
     // EASY mode: pista REAL com curvas reais. Sem ser oval.
     // Mantém variedade (sharp turns, S-curves) mas sem extremos.
     if EASY_TRACK.load(Ordering::Relaxed) {
-        if max_turn > 85.0 { return false; }       // hairpins ok mas não impossíveis
-        if max_consecutive > 3 { return false; }   // até 3 chicanes seguidas
-        if sharp_turns < 3 || sharp_turns > 8 { return false; } // 3-8 curvas afiadas
-        if total_curve_deg < 360.0 { return false; }    // mínimo 1 volta integrada
+        if max_turn > 85.0 {
+            return false;
+        } // hairpins ok mas não impossíveis
+        if max_consecutive > 3 {
+            return false;
+        } // até 3 chicanes seguidas
+        if sharp_turns < 3 || sharp_turns > 8 {
+            return false;
+        } // 3-8 curvas afiadas
+        if total_curve_deg < 360.0 {
+            return false;
+        } // mínimo 1 volta integrada
         let avg_seg_m = (lap_len_cells * 3.0) / (n - 1) as f32;
-        if avg_seg_m > 60.0 { return false; }
+        if avg_seg_m > 60.0 {
+            return false;
+        }
         return true;
     }
 
     // CEILING (descarta layouts impossíveis):
-    if max_turn > 95.0 { return false; }
-    if max_consecutive > 5 { return false; }
+    if max_turn > 95.0 {
+        return false;
+    }
+    if max_consecutive > 5 {
+        return false;
+    }
 
     // FLOOR (descarta layouts FÁCEIS DEMAIS):
-    if total_curve_deg < 540.0 { return false; }
-    if sharp_turns < 4 { return false; }
-    if max_turn < 55.0 { return false; }
+    if total_curve_deg < 540.0 {
+        return false;
+    }
+    if sharp_turns < 4 {
+        return false;
+    }
+    if max_turn < 55.0 {
+        return false;
+    }
     let avg_seg_m = (lap_len_cells * 3.0) / (n - 1) as f32;
-    if avg_seg_m > 50.0 { return false; }
+    if avg_seg_m > 50.0 {
+        return false;
+    }
 
     true
 }
@@ -1329,13 +1608,13 @@ fn validate_track(waypoints: &[Vec2]) -> bool {
 /// (amp, freq) — amplitude em metros, frequência em radianos/cell.
 pub fn track_elevation_for_seed(seed: u64) -> (f32, f32) {
     match seed {
-        123  => (0.8, 0.02),   // Dubai: quase flat
-        64   => (1.5, 0.03),   // Interlagos: ondulação suave
-        256  => (2.0, 0.04),   // Monaco: street-level bumps
-        512  => (2.5, 0.035),  // Silverstone: ondulações
-        768  => (6.0, 0.025),  // Nürburgring Hills: RAMPAS de verdade
-        1024 => (3.5, 0.05),   // Suzuka: relevo moderado
-        _    => (1.5, 0.03),
+        123 => (0.8, 0.02),  // Dubai: quase flat
+        64 => (1.5, 0.03),   // Interlagos: ondulação suave
+        256 => (2.0, 0.04),  // Monaco: street-level bumps
+        512 => (2.5, 0.035), // Silverstone: ondulações
+        768 => (6.0, 0.025), // Nürburgring Hills: RAMPAS de verdade
+        1024 => (3.5, 0.05), // Suzuka: relevo moderado
+        _ => (1.5, 0.03),
     }
 }
 
@@ -1357,30 +1636,30 @@ pub fn track_holes_for_seed(seed: u64, waypoints: &[Vec2], largura_cells: f32) -
         // Monaco Tight — 2 buracos em apex de 90° interno.
         // Coords shifted +40 cells (x,y) para grid 240×240.
         256 => vec![
-            Vec2::new(170.0, 95.0),   // Apex curva 2 (E→S)
-            Vec2::new(138.0, 168.0),  // Apex curva 5 (S→W)
+            Vec2::new(170.0, 95.0),  // Apex curva 2 (E→S)
+            Vec2::new(138.0, 168.0), // Apex curva 5 (S→W)
         ],
 
         // Silverstone Flow — 3 buracos em trechos rápidos.
         512 => vec![
-            Vec2::new(150.0, 67.0),   // Reta 1
-            Vec2::new(178.0, 125.0),  // Curva longa
-            Vec2::new(72.0, 163.0),   // Saída W→N
+            Vec2::new(150.0, 67.0),  // Reta 1
+            Vec2::new(178.0, 125.0), // Curva longa
+            Vec2::new(72.0, 163.0),  // Saída W→N
         ],
 
         // Nürburgring Hills — 3 buracos em descidas (rampas amplificam).
         768 => vec![
-            Vec2::new(170.0, 80.0),   // Descida 1
-            Vec2::new(170.0, 155.0),  // Vale
-            Vec2::new(80.0, 165.0),   // Contra-subida
+            Vec2::new(170.0, 80.0),  // Descida 1
+            Vec2::new(170.0, 155.0), // Vale
+            Vec2::new(80.0, 165.0),  // Contra-subida
         ],
 
         // Suzuka Crossing — 4 buracos (insano: trajetória quase forçada).
         1024 => vec![
-            Vec2::new(115.0, 70.0),   // Reta inicial
-            Vec2::new(175.0, 120.0),  // Curva descendente
-            Vec2::new(155.0, 178.0),  // Hairpin S
-            Vec2::new(65.0, 135.0),   // Subida W
+            Vec2::new(115.0, 70.0),  // Reta inicial
+            Vec2::new(175.0, 120.0), // Curva descendente
+            Vec2::new(155.0, 178.0), // Hairpin S
+            Vec2::new(65.0, 135.0),  // Subida W
         ],
 
         _ => procedural_holes(seed, waypoints, largura_cells),
@@ -1400,12 +1679,14 @@ pub fn track_holes_for_seed(seed: u64, waypoints: &[Vec2], largura_cells: f32) -
 /// de fato percorre). `largura_cells`: usada para o offset lateral (achado "buracos
 /// nascem em cima do eixo, deslocamento lateral zero").
 pub fn procedural_holes(seed: u64, waypoints: &[Vec2], largura_cells: f32) -> Vec<Vec2> {
-    if waypoints.len() < 4 { return vec![]; }
+    if waypoints.len() < 4 {
+        return vec![];
+    }
     // Score each waypoint by turn angle; place hole near sharpest few apexes.
     let mut scored: Vec<(usize, f32)> = Vec::new();
     for i in 1..waypoints.len() - 1 {
-        let v_in = (waypoints[i] - waypoints[i-1]).normalize_or_zero();
-        let v_out = (waypoints[i+1] - waypoints[i]).normalize_or_zero();
+        let v_in = (waypoints[i] - waypoints[i - 1]).normalize_or_zero();
+        let v_out = (waypoints[i + 1] - waypoints[i]).normalize_or_zero();
         let dot = v_in.dot(v_out).clamp(-1.0, 1.0);
         let turn = dot.acos(); // 0=straight, π=u-turn
         scored.push((i, turn));
@@ -1414,31 +1695,39 @@ pub fn procedural_holes(seed: u64, waypoints: &[Vec2], largura_cells: f32) -> Ve
 
     // Seed-deterministic count: 1 or 2 holes (conservative — must not break learning curve).
     let n_holes = 1 + ((seed.wrapping_mul(0xA1B2C3D4) >> 32) as usize & 1);
-    scored.iter().take(n_holes).map(|(i, _)| {
-        // Position at 70% from prev → current (apex zone), deslocado lateralmente
-        // para o lado interno da curva por 30% da largura real — antes o buraco
-        // nascia exatamente EM CIMA do eixo (deslocamento lateral zero), podendo
-        // bloquear a pista inteira em curvas fechadas/estreitas.
-        let prev = waypoints[i.saturating_sub(1)];
-        let cur = waypoints[*i];
-        let next = waypoints[(*i + 1).min(waypoints.len() - 1)];
-        let dir_in = (cur - prev).normalize_or_zero();
-        let dir_out = (next - cur).normalize_or_zero();
-        let normal = Vec2::new(-dir_in.y, dir_in.x);
-        // Lado interno da curva: sinal do produto cruzado 2D entre entrada e saída.
-        let lado = if dir_in.perp_dot(dir_out) > 0.0 { 1.0 } else { -1.0 };
-        prev + (cur - prev) * 0.7 + normal * lado * (largura_cells * 0.3)
-    }).collect()
+    scored
+        .iter()
+        .take(n_holes)
+        .map(|(i, _)| {
+            // Position at 70% from prev → current (apex zone), deslocado lateralmente
+            // para o lado interno da curva por 30% da largura real — antes o buraco
+            // nascia exatamente EM CIMA do eixo (deslocamento lateral zero), podendo
+            // bloquear a pista inteira em curvas fechadas/estreitas.
+            let prev = waypoints[i.saturating_sub(1)];
+            let cur = waypoints[*i];
+            let next = waypoints[(*i + 1).min(waypoints.len() - 1)];
+            let dir_in = (cur - prev).normalize_or_zero();
+            let dir_out = (next - cur).normalize_or_zero();
+            let normal = Vec2::new(-dir_in.y, dir_in.x);
+            // Lado interno da curva: sinal do produto cruzado 2D entre entrada e saída.
+            let lado = if dir_in.perp_dot(dir_out) > 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
+            prev + (cur - prev) * 0.7 + normal * lado * (largura_cells * 0.3)
+        })
+        .collect()
 }
 
 pub fn track_start_for_seed(seed: u64) -> Vec2 {
     match seed {
-        123  => Vec2::new(95.0, 60.0),   // Dubai: runway largo
-        64   => Vec2::new(90.0, 60.0),   // Interlagos
-        256  => Vec2::new(80.0, 60.0),   // Monaco: start curto (pista técnica)
-        512  => Vec2::new(95.0, 62.0),   // Silverstone
-        768  => Vec2::new(95.0, 68.0),   // Nürburgring
-        1024 => Vec2::new(80.0, 70.0),   // Suzuka
+        123 => Vec2::new(95.0, 60.0),  // Dubai: runway largo
+        64 => Vec2::new(90.0, 60.0),   // Interlagos
+        256 => Vec2::new(80.0, 60.0),  // Monaco: start curto (pista técnica)
+        512 => Vec2::new(95.0, 62.0),  // Silverstone
+        768 => Vec2::new(95.0, 68.0),  // Nürburgring
+        1024 => Vec2::new(80.0, 70.0), // Suzuka
         // Achado 2026-08-15 (debug de unidades): currículo (≥1_000_000) e perfil
         // (8000-8299) caíam no braço `_` abaixo, que chama `procedural_waypoints(seed)`
         // — uma pista candidata TOTALMENTE diferente da que `track_waypoints_for_seed`
@@ -1451,12 +1740,20 @@ pub fn track_start_for_seed(seed: u64) -> Vec2 {
         // traçado que o mundo de fato usa.
         s if s >= 1_000_000 || (8000..=8299).contains(&s) => {
             let wp = track_waypoints_for_seed(seed);
-            if wp.len() >= 2 { (wp[0] + wp[1]) * 0.5 } else { Vec2::new(50.0, 20.0) }
+            if wp.len() >= 2 {
+                (wp[0] + wp[1]) * 0.5
+            } else {
+                Vec2::new(50.0, 20.0)
+            }
         }
         // Procedural: spawn at midpoint between waypoint[0] and waypoint[1] (forward into track).
-        _    => {
+        _ => {
             let wp = procedural_waypoints(seed);
-            if wp.len() >= 2 { (wp[0] + wp[1]) * 0.5 } else { Vec2::new(50.0, 20.0) }
+            if wp.len() >= 2 {
+                (wp[0] + wp[1]) * 0.5
+            } else {
+                Vec2::new(50.0, 20.0)
+            }
         }
     }
 }
@@ -1491,22 +1788,33 @@ mod tests {
         VoxelWorld::new(42, 10.0)
     }
 
-
-
     #[test]
     fn track_progress_never_negative() {
         let w = ref_world();
         // Progresso em coordenadas arbitrárias, incluindo pontos aleatórios, nunca deve ser < 0.
         // (Cláusula do bug de wrap: valores atrás da largada devem dar 0, não lap_distance).
-        for &(x, z) in &[(0.0, 0.0), (-500.0, -500.0), (1000.0, 1000.0), (50.0, -100.0)] {
-            assert!(w.get_track_progress(x, z) >= 0.0, "progress < 0 em ({}, {})", x, z);
+        for &(x, z) in &[
+            (0.0, 0.0),
+            (-500.0, -500.0),
+            (1000.0, 1000.0),
+            (50.0, -100.0),
+        ] {
+            assert!(
+                w.get_track_progress(x, z) >= 0.0,
+                "progress < 0 em ({}, {})",
+                x,
+                z
+            );
         }
     }
 
     #[test]
     fn lap_distance_is_positive() {
         let w = ref_world();
-        assert!(w.lap_distance > 0.0, "lap_distance deve ser positivo para pista real");
+        assert!(
+            w.lap_distance > 0.0,
+            "lap_distance deve ser positivo para pista real"
+        );
     }
 
     #[test]

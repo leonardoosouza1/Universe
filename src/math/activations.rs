@@ -102,7 +102,13 @@ pub const OUT_STAGE_NORM_EPS: f32 = 1e-3;
 /// fórmula que `brain.wgsl`/`engine.rs` tinham antes de `out_gain` virar
 /// parâmetro.
 #[inline]
-pub fn out_stage(raw_pregain: f32, l2_std: Option<f32>, out_gain: f32, out_beta: f32, out_fat: f32) -> f32 {
+pub fn out_stage(
+    raw_pregain: f32,
+    l2_std: Option<f32>,
+    out_gain: f32,
+    out_beta: f32,
+    out_fat: f32,
+) -> f32 {
     let scaled = match l2_std {
         Some(std) => raw_pregain / std.max(OUT_STAGE_NORM_EPS),
         None => raw_pregain,
@@ -123,7 +129,11 @@ mod tests {
     #[test]
     fn sigmoid_de_zero_e_meio() {
         let s = sigmoid(0.0);
-        assert!((s - 0.5).abs() < 1e-6, "sigmoid(0) deve ser 0.5, obteve {}", s);
+        assert!(
+            (s - 0.5).abs() < 1e-6,
+            "sigmoid(0) deve ser 0.5, obteve {}",
+            s
+        );
     }
 
     #[test]
@@ -154,7 +164,12 @@ mod tests {
             let approx = tanh_approx(xi);
             let exact = xi.tanh();
             let err = (approx - exact).abs();
-            assert!(err < 0.015, "tanh_approx({}) erro={} perto de zero", xi, err);
+            assert!(
+                err < 0.015,
+                "tanh_approx({}) erro={} perto de zero",
+                xi,
+                err
+            );
         }
     }
 
@@ -165,8 +180,14 @@ mod tests {
             let approx = tanh_approx(xi);
             let exact = xi.tanh();
             if exact.abs() > 1e-6 {
-                assert_eq!(approx.signum(), exact.signum(),
-                    "tanh_approx({}) trocou sinal: approx={} exact={}", xi, approx, exact);
+                assert_eq!(
+                    approx.signum(),
+                    exact.signum(),
+                    "tanh_approx({}) trocou sinal: approx={} exact={}",
+                    xi,
+                    approx,
+                    exact
+                );
             }
         }
     }
@@ -181,7 +202,11 @@ mod tests {
     fn leaky_relu_preserva_gradiente_negativo() {
         let alpha = 0.01_f32;
         let out = leaky_relu(-10.0, alpha);
-        assert!((out - (-0.1)).abs() < 1e-6, "leaky_relu(-10, 0.01) deve ser -0.1, obteve {}", out);
+        assert!(
+            (out - (-0.1)).abs() < 1e-6,
+            "leaky_relu(-10, 0.01) deve ser -0.1, obteve {}",
+            out
+        );
     }
 
     #[test]
@@ -207,7 +232,11 @@ mod tests {
     fn soft_threshold_atenua_sem_inverter() {
         // x=0.5, threshold=0.3 → sign(0.5)*max(0, 0.5-0.3) = 0.2
         let out = soft_threshold(0.5, 0.3);
-        assert!((out - 0.2).abs() < 1e-6, "soft_threshold(0.5, 0.3) = {}", out);
+        assert!(
+            (out - 0.2).abs() < 1e-6,
+            "soft_threshold(0.5, 0.3) = {}",
+            out
+        );
         // sinal não deve inverter
         assert!(out >= 0.0, "sinal negativo para entrada positiva!");
     }
@@ -215,7 +244,11 @@ mod tests {
     #[test]
     fn soft_threshold_negativo_atenua_sem_inverter() {
         let out = soft_threshold(-0.5, 0.3);
-        assert!((out - (-0.2)).abs() < 1e-6, "soft_threshold(-0.5, 0.3) = {}", out);
+        assert!(
+            (out - (-0.2)).abs() < 1e-6,
+            "soft_threshold(-0.5, 0.3) = {}",
+            out
+        );
         assert!(out <= 0.0, "sinal positivo para entrada negativa!");
     }
 
@@ -243,9 +276,11 @@ mod tests {
                         (raw.signum() * (raw.abs() - out_beta * out_fat).max(0.0)).tanh()
                     };
                     let novo = out_stage(raw_pregain, None, OUT_GAIN_PADRAO, out_beta, out_fat);
-                    assert_eq!(novo, historico,
+                    assert_eq!(
+                        novo, historico,
                         "raw_pregain={raw_pregain} out_beta={out_beta} out_fat={out_fat}: \
-                         novo={novo} histórico={historico}");
+                         novo={novo} histórico={historico}"
+                    );
                 }
             }
         }
@@ -274,7 +309,10 @@ mod tests {
         let com_norm = out_stage(4.0, Some(2.0), 1.0, 0.0, 0.0);
         assert_eq!(sem_norm, 4.0f32.tanh());
         assert_eq!(com_norm, 2.0f32.tanh()); // 4.0/2.0 = 2.0
-        assert!(com_norm.abs() < sem_norm.abs(), "normalização deveria atenuar, não amplificar aqui");
+        assert!(
+            com_norm.abs() < sem_norm.abs(),
+            "normalização deveria atenuar, não amplificar aqui"
+        );
     }
 
     /// O denominador nunca cai abaixo de `OUT_STAGE_NORM_EPS` — um desvio ~0
@@ -283,8 +321,14 @@ mod tests {
     #[test]
     fn out_stage_norm_com_desvio_quase_zero_nao_explode() {
         let out = out_stage(0.001, Some(0.0), 2.0, 0.0, 0.0);
-        assert!(out.is_finite(), "saída não-finita com desvio quase zero: {out}");
-        assert!(out.abs() <= 1.0, "tanh deve saturar em [-1,1], obteve {out}");
+        assert!(
+            out.is_finite(),
+            "saída não-finita com desvio quase zero: {out}"
+        );
+        assert!(
+            out.abs() <= 1.0,
+            "tanh deve saturar em [-1,1], obteve {out}"
+        );
     }
 
     /// `math::stats::population_std_dev` alimentando `out_stage` end-to-end:
@@ -301,13 +345,17 @@ mod tests {
         let std = population_std_dev(&l2_raw);
         assert!(std > 0.0, "desvio deveria ser > 0 para vetor não-constante");
 
-        let sat_sem_norm = l2_raw.iter()
+        let sat_sem_norm = l2_raw
+            .iter()
             .filter(|&&v| out_stage(v, None, 2.0, 0.0, 0.0).abs() > 0.9)
             .count();
-        let sat_com_norm = l2_raw.iter()
+        let sat_com_norm = l2_raw
+            .iter()
             .filter(|&&v| out_stage(v, Some(std), 2.0, 0.0, 0.0).abs() > 0.9)
             .count();
-        assert!(sat_com_norm <= sat_sem_norm,
-            "normalização deveria reduzir (ou manter) saturação: sem={sat_sem_norm} com={sat_com_norm}");
+        assert!(
+            sat_com_norm <= sat_sem_norm,
+            "normalização deveria reduzir (ou manter) saturação: sem={sat_sem_norm} com={sat_com_norm}"
+        );
     }
 }

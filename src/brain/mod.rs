@@ -6,4 +6,4 @@
 //! a grava.
 pub mod format;
 
-pub use format::{BrainFile, Block, BlockKind, Encoding, FLAG_ACTIVE};
+pub use format::{Block, BlockKind, BrainFile, Encoding, FLAG_ACTIVE};

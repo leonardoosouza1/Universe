@@ -20,10 +20,22 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--arquivo" => { i += 1; arquivo = args[i].clone(); }
-            "--saida" => { i += 1; saida = args[i].clone(); }
-            "--patch-l2" => { i += 1; patch = args[i].clone(); }
-            "--saida-genoma" => { i += 1; saida_genoma = args[i].clone(); }
+            "--arquivo" => {
+                i += 1;
+                arquivo = args[i].clone();
+            }
+            "--saida" => {
+                i += 1;
+                saida = args[i].clone();
+            }
+            "--patch-l2" => {
+                i += 1;
+                patch = args[i].clone();
+            }
+            "--saida-genoma" => {
+                i += 1;
+                saida_genoma = args[i].clone();
+            }
             _ => {}
         }
         i += 1;
@@ -34,7 +46,10 @@ fn main() {
     }
     let g = match universe::gpu::genome_io::load_genome(&arquivo) {
         Some(g) => g,
-        None => { eprintln!("não consegui carregar {arquivo}"); std::process::exit(1); }
+        None => {
+            eprintln!("não consegui carregar {arquivo}");
+            std::process::exit(1);
+        }
     };
     std::fs::create_dir_all(&saida).unwrap();
 
@@ -42,9 +57,15 @@ fn main() {
         let mut f = std::fs::File::create(format!("{saida}/{nome}")).unwrap();
         for (k, x) in v.iter().enumerate() {
             write!(f, "{x}").unwrap();
-            if cols > 0 && (k + 1) % cols == 0 { writeln!(f).unwrap(); } else { write!(f, " ").unwrap(); }
+            if cols > 0 && (k + 1) % cols == 0 {
+                writeln!(f).unwrap();
+            } else {
+                write!(f, " ").unwrap();
+            }
         }
-        if cols == 0 { writeln!(f).unwrap(); }
+        if cols == 0 {
+            writeln!(f).unwrap();
+        }
     };
 
     // Layout de `buf_l2w` no shader (brain.wgsl): j*L1_OUT + i — uma LINHA por
@@ -60,14 +81,31 @@ fn main() {
 
     let mut m = std::fs::File::create(format!("{saida}/meta.txt")).unwrap();
     writeln!(m, "arquivo {arquivo}").unwrap();
-    writeln!(m, "l1 {} l2 {} slow {} tau {} sensors {}",
-             g.l1.len(), g.l2.len(), g.slow.len(), g.tau.len(), g.sensors.len()).unwrap();
-    writeln!(m, "neuron_alpha {} neuron_period_l1 {} neuron_threshold_l1 {} neuron_activation {}",
-             g.neuron_alpha.len(), g.neuron_period_l1.len(),
-             g.neuron_threshold_l1.len(), g.neuron_activation.len()).unwrap();
+    writeln!(
+        m,
+        "l1 {} l2 {} slow {} tau {} sensors {}",
+        g.l1.len(),
+        g.l2.len(),
+        g.slow.len(),
+        g.tau.len(),
+        g.sensors.len()
+    )
+    .unwrap();
+    writeln!(
+        m,
+        "neuron_alpha {} neuron_period_l1 {} neuron_threshold_l1 {} neuron_activation {}",
+        g.neuron_alpha.len(),
+        g.neuron_period_l1.len(),
+        g.neuron_threshold_l1.len(),
+        g.neuron_activation.len()
+    )
+    .unwrap();
     writeln!(m, "gates_w {}", g.gates_w.len()).unwrap();
-    println!("dump em {saida} — l2 {} pesos, activation {} valores",
-             g.l2.len(), g.neuron_activation.len());
+    println!(
+        "dump em {saida} — l2 {} pesos, activation {} valores",
+        g.l2.len(),
+        g.neuron_activation.len()
+    );
 }
 
 // ── CIRURGIA DE L2 ────────────────────────────────────────────────────────────
@@ -88,8 +126,16 @@ fn patch_l2(genoma: &str, linhas_txt: &str, saida: &str) {
     let txt = std::fs::read_to_string(linhas_txt).expect("linhas");
     let mut n_linhas = 0usize;
     for (j, linha) in txt.lines().filter(|l| !l.trim().is_empty()).enumerate() {
-        let pesos: Vec<f32> = linha.split_whitespace().map(|t| t.parse().unwrap()).collect();
-        assert_eq!(pesos.len(), 96, "linha {j} com {} pesos, esperava 96", pesos.len());
+        let pesos: Vec<f32> = linha
+            .split_whitespace()
+            .map(|t| t.parse().unwrap())
+            .collect();
+        assert_eq!(
+            pesos.len(),
+            96,
+            "linha {j} com {} pesos, esperava 96",
+            pesos.len()
+        );
         g.l2[j * 96..(j + 1) * 96].copy_from_slice(&pesos);
         n_linhas += 1;
     }

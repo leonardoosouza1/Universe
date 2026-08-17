@@ -10,13 +10,11 @@
 ///
 /// Integration: motor.rs injects perception hidden state into sensory_wave
 /// before execute_cycle, so the existing brain layers see temporal visual features.
-
 use iara_perception::{
-    Rng,
-    PerceptionOutput, PerceptionPipeline, Sensor, SensoryField, Zone, ZoneConfig, PoolMethod,
+    PerceptionOutput, PerceptionPipeline, PoolMethod, Rng, Sensor, SensoryField, Zone, ZoneConfig,
 };
 
-use crate::config::iara::vision::{RETINA_ROWS, RETINA_COLS};
+use crate::config::iara::vision::{RETINA_COLS, RETINA_ROWS};
 
 pub const PERCEPTION_HIDDEN: usize = 16;
 pub const PERCEPTION_DECISIONS: usize = 4;
@@ -33,11 +31,17 @@ impl RetinaSensor {
         for row in 0..RETINA_ROWS {
             for bin in 0..PERCEPTION_BINS {
                 let start = bin * cols_per_bin;
-                let end = if bin == PERCEPTION_BINS - 1 { RETINA_COLS } else { (bin + 1) * cols_per_bin };
+                let end = if bin == PERCEPTION_BINS - 1 {
+                    RETINA_COLS
+                } else {
+                    (bin + 1) * cols_per_bin
+                };
                 let mut max_val = -128i8;
                 for col in start..end {
                     let v = input[row * RETINA_COLS + col];
-                    if v > max_val { max_val = v; }
+                    if v > max_val {
+                        max_val = v;
+                    }
                 }
                 data[row * PERCEPTION_BINS + bin] = (max_val as i16 + 128) as u8;
             }
@@ -61,9 +65,24 @@ impl Sensor for RetinaSensor {
 fn retina_zones() -> ZoneConfig {
     ZoneConfig {
         zones: vec![
-            Zone { name: "far",  row_start: 0,  row_end: 5,  pool_method: PoolMethod::Mean },
-            Zone { name: "mid",  row_start: 5,  row_end: 10, pool_method: PoolMethod::Mean },
-            Zone { name: "near", row_start: 10, row_end: 14, pool_method: PoolMethod::Max },
+            Zone {
+                name: "far",
+                row_start: 0,
+                row_end: 5,
+                pool_method: PoolMethod::Mean,
+            },
+            Zone {
+                name: "mid",
+                row_start: 5,
+                row_end: 10,
+                pool_method: PoolMethod::Mean,
+            },
+            Zone {
+                name: "near",
+                row_start: 10,
+                row_end: 14,
+                pool_method: PoolMethod::Max,
+            },
         ],
     }
 }
@@ -88,7 +107,10 @@ impl RetinaPerception {
             PERCEPTION_HIDDEN,
             &mut rng,
         );
-        Self { sensor: RetinaSensor, pipeline }
+        Self {
+            sensor: RetinaSensor,
+            pipeline,
+        }
     }
 
     pub fn perceive(&mut self, retina: &[i8]) -> PerceptionOutput {
@@ -96,11 +118,19 @@ impl RetinaPerception {
         self.pipeline.perceive(&field)
     }
 
-    pub fn inject_into_wave(&mut self, retina: &[i8], wave: &mut [i8], offset: usize, strength: f32) {
+    pub fn inject_into_wave(
+        &mut self,
+        retina: &[i8],
+        wave: &mut [i8],
+        offset: usize,
+        strength: f32,
+    ) {
         let output = self.perceive(retina);
         let end = (offset + output.hidden.len()).min(wave.len());
         for (i, &h) in output.hidden.iter().enumerate() {
-            if offset + i >= end { break; }
+            if offset + i >= end {
+                break;
+            }
             let existing = wave[offset + i] as f32;
             let injected = existing + h.tanh() * 127.0 * strength;
             wave[offset + i] = injected.clamp(-127.0, 127.0) as i8;
@@ -145,17 +175,23 @@ impl RetinaPerception {
 
         let mut off = 0;
         let n = cfc.w_xi.len();
-        cfc.w_xi.copy_from_slice(&w[off..off + n]); off += n;
+        cfc.w_xi.copy_from_slice(&w[off..off + n]);
+        off += n;
         let n = cfc.w_hi.len();
-        cfc.w_hi.copy_from_slice(&w[off..off + n]); off += n;
+        cfc.w_hi.copy_from_slice(&w[off..off + n]);
+        off += n;
         let n = cfc.w_f.len();
-        cfc.w_f.copy_from_slice(&w[off..off + n]); off += n;
+        cfc.w_f.copy_from_slice(&w[off..off + n]);
+        off += n;
         let n = cfc.b_i.len();
-        cfc.b_i.copy_from_slice(&w[off..off + n]); off += n;
+        cfc.b_i.copy_from_slice(&w[off..off + n]);
+        off += n;
         let n = cfc.b_f.len();
-        cfc.b_f.copy_from_slice(&w[off..off + n]); off += n;
+        cfc.b_f.copy_from_slice(&w[off..off + n]);
+        off += n;
         let n = head.w.len();
-        head.w.copy_from_slice(&w[off..off + n]); off += n;
+        head.w.copy_from_slice(&w[off..off + n]);
+        off += n;
         let n = head.b.len();
         head.b.copy_from_slice(&w[off..off + n]);
         let _ = off + n;
@@ -239,8 +275,12 @@ mod tests {
         let r2 = vec![-100i8; RETINA_TOTAL];
         let out1 = perc.perceive(&r1);
         let out2 = perc.perceive(&r2);
-        let diff: f32 = out1.hidden.iter().zip(out2.hidden.iter())
-            .map(|(a, b)| (a - b).abs()).sum();
+        let diff: f32 = out1
+            .hidden
+            .iter()
+            .zip(out2.hidden.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
         assert!(diff > 0.01);
     }
 
@@ -267,9 +307,16 @@ mod tests {
         child.load_weights(&child_weights);
         let child_out = child.perceive(&retina);
 
-        let diff: f32 = parent_out.hidden.iter().zip(child_out.hidden.iter())
-            .map(|(a, b)| (a - b).abs()).sum();
-        assert!(diff > 0.01, "mutated child should produce different output: diff={diff}");
+        let diff: f32 = parent_out
+            .hidden
+            .iter()
+            .zip(child_out.hidden.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            diff > 0.01,
+            "mutated child should produce different output: diff={diff}"
+        );
     }
 
     #[test]
@@ -279,9 +326,14 @@ mod tests {
         let wa = parent_a.weights_to_vec();
 
         let mut wb = wa.clone();
-        for w in wb.iter_mut() { *w += rng.signed() * 0.5; }
+        for w in wb.iter_mut() {
+            *w += rng.signed() * 0.5;
+        }
 
-        let crossed: Vec<f32> = wa.iter().zip(wb.iter()).enumerate()
+        let crossed: Vec<f32> = wa
+            .iter()
+            .zip(wb.iter())
+            .enumerate()
             .map(|(i, (&a, &b))| if i % 2 == 0 { a } else { b })
             .collect();
 
@@ -291,8 +343,19 @@ mod tests {
         let out = child.perceive(&retina);
         assert_eq!(out.hidden.len(), PERCEPTION_HIDDEN);
 
-        let diff_a: f32 = crossed.iter().zip(wa.iter()).map(|(c, a)| (c - a).abs()).sum();
-        let diff_b: f32 = crossed.iter().zip(wb.iter()).map(|(c, b)| (c - b).abs()).sum();
-        assert!(diff_a > 0.1 && diff_b > 0.1, "child should differ from both parents");
+        let diff_a: f32 = crossed
+            .iter()
+            .zip(wa.iter())
+            .map(|(c, a)| (c - a).abs())
+            .sum();
+        let diff_b: f32 = crossed
+            .iter()
+            .zip(wb.iter())
+            .map(|(c, b)| (c - b).abs())
+            .sum();
+        assert!(
+            diff_a > 0.1 && diff_b > 0.1,
+            "child should differ from both parents"
+        );
     }
 }

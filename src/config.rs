@@ -69,8 +69,12 @@ pub struct UniverseConfig {
     pub no_holes: bool,
 }
 
-fn default_generation_timeout_s() -> f32 { 120.0 }
-fn default_gens_per_track() -> usize { 3 }
+fn default_generation_timeout_s() -> f32 {
+    120.0
+}
+fn default_gens_per_track() -> usize {
+    3
+}
 
 impl Default for UniverseConfig {
     fn default() -> Self {
@@ -159,7 +163,9 @@ impl UniverseConfig {
     }
 
     pub fn current_track(&self) -> &TrackProfile {
-        &self.tracks[self.selected_track_index.min(self.tracks.len().saturating_sub(1))]
+        &self.tracks[self
+            .selected_track_index
+            .min(self.tracks.len().saturating_sub(1))]
     }
 
     /// Tier 5.3: retorna a pista para uma dada geração.
@@ -242,12 +248,12 @@ pub mod iara {
         // ORIGINAL
         // pub const RETINA_ROWS: usize = 14;
         // pub const RETINA_COLS: usize = 126;
-        // pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS; 
+        // pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS;
         // pub const FOV_DEG: f32 = 140.0;
         // pub const RETINA_SKIP: u32 = 2;
         // pub const RETINA_MIN_PITCH: f32 = -0.04;
         // pub const RETINA_MAX_PITCH: f32 = -0.005;
-        
+
         // POOLING FIX: max-pool ALL rows destroys curve shape. Use zone-based pooling instead.
         // 14 rows kept (no perf hit), but ch 0-15 now pool by zone (preserve depth + shape).
         // - ch 0-7: FAR rows (0-4, ~80m) = distant curves/crests (what's ahead?)
@@ -257,8 +263,8 @@ pub mod iara {
         pub const RETINA_TOTAL: usize = RETINA_ROWS * RETINA_COLS;
         pub const FOV_DEG: f32 = 120.0;
         pub const RETINA_SKIP: u32 = 1;
-        pub const RETINA_MIN_PITCH: f32 = -0.012;  // row 0: horizon/far (~33m ground @ 0.4m eye)
-        pub const RETINA_MAX_PITCH: f32 = -0.06;   // row 13: ground/near
+        pub const RETINA_MIN_PITCH: f32 = -0.012; // row 0: horizon/far (~33m ground @ 0.4m eye)
+        pub const RETINA_MAX_PITCH: f32 = -0.06; // row 13: ground/near
 
         const fn compute_pitches() -> [f32; RETINA_ROWS] {
             let mut pitches = [0.0_f32; RETINA_ROWS];
@@ -282,7 +288,6 @@ pub mod iara {
 
     // ── CÉREBRO (fonte: src/simulation/motor.rs, src/engine.rs) ────────
     pub mod brain {
-        
 
         /// Calcula tamanho da sensory wave automaticamente.
         /// Estrutura: 0-127 (fóvea, periférica, telemetria, lookahead)
@@ -341,15 +346,20 @@ pub mod iara {
         pub const DNA_FAST_SIZE: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
         // DNA v8: SlowBrain full (dense1 + dense2 + biases + scales)
         // dense1.weights(1024) + dense1.bias(16) + dense1.scale(4) + dense2.weights(48) + dense2.bias(3) + dense2.scale(4) = 1099
-        pub const DNA_SLOW_SIZE: usize = (SLOW_BRAIN_D1_IN * SLOW_BRAIN_D1_OUT) + SLOW_BRAIN_D1_OUT + 4 + (SLOW_BRAIN_D2_IN * SLOW_BRAIN_D2_OUT) + SLOW_BRAIN_D2_OUT + 4; // 1099
+        pub const DNA_SLOW_SIZE: usize = (SLOW_BRAIN_D1_IN * SLOW_BRAIN_D1_OUT)
+            + SLOW_BRAIN_D1_OUT
+            + 4
+            + (SLOW_BRAIN_D2_IN * SLOW_BRAIN_D2_OUT)
+            + SLOW_BRAIN_D2_OUT
+            + 4; // 1099
 
         // Legacy (compatibilidade com DNAs antigos)
         pub const DNA_FAST_SIZE_LEGACY: usize = 128 * 64; // 8.192
-        pub const DNA_SLOW_SIZE_LEGACY: usize = 32 * 8;   // 256
+        pub const DNA_SLOW_SIZE_LEGACY: usize = 32 * 8; // 256
 
         // Scars (trauma imutabilidade — Tier 6.6)
-        pub const SCAR_TTL_INITIAL: u8 = 5;       // trava por 5 gerações
-        pub const SCAR_FRACTION: f32 = 0.10;      // 10% dos pesos não-zero viram scar
+        pub const SCAR_TTL_INITIAL: u8 = 5; // trava por 5 gerações
+        pub const SCAR_FRACTION: f32 = 0.10; // 10% dos pesos não-zero viram scar
 
         // Zona Protegida de axiomas (spawn.rs:17)
         pub const PROTECTED_ZONE_SIZE: usize = 819; // ~4.4% do DNA_FAST_SIZE
@@ -363,7 +373,7 @@ pub mod iara {
         pub const MORPHO_DOWNFORCE_RANGE: (f32, f32) = (0.5, 2.0);
         pub const MORPHO_GRIP_RANGE: (f32, f32) = (0.8, 1.2);
         pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% por gene por gen
-        pub const MORPHO_SIGMA_FRAC: f32 = 0.05;    // σ = 5% do range
+        pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% do range
 
         // Hiper-rede (Compressão de Pesos)
         pub const HYPERNET_COEFFS: usize = 64;
@@ -389,15 +399,15 @@ pub mod iara {
         pub const WALL_DAMAGE_GRACE: f32 = 20.0;
         // Reduced 30→15 for narrow tracks: models need time to navigate tight corners
         pub const SPEED_BLEED_DAMAGE: f32 = 15.0;
-        pub const WALL_PIN_TIME_S: f32 = 1.6;    // Segundos preso na parede para morrer
-        pub const HP_GRACE_FRAMES: u32 = 480;     // Frames de proteção pós-volta
+        pub const WALL_PIN_TIME_S: f32 = 1.6; // Segundos preso na parede para morrer
+        pub const HP_GRACE_FRAMES: u32 = 480; // Frames de proteção pós-volta
 
         // Recuperação
-        pub const WAYPOINT_DIST_M: f32 = 25.0;   // Distância entre checkpoints (metros)
-        pub const HEAL_AMOUNT: f32 = 40.0;        // HP recuperado por checkpoint
+        pub const WAYPOINT_DIST_M: f32 = 25.0; // Distância entre checkpoints (metros)
+        pub const HEAL_AMOUNT: f32 = 40.0; // HP recuperado por checkpoint
 
         // Axiomas (Injeção de Instinto)
-        pub const AXIOM_DECAY_GENS: f32 = 50.0;  // Axiomas somem após N gerações
+        pub const AXIOM_DECAY_GENS: f32 = 50.0; // Axiomas somem após N gerações
     }
 
     /// Manobra de ré de emergência: parede frontal muito perto + parado + estagnado

@@ -1,19 +1,19 @@
+use crate::config::iara::brain::SENSORY_WAVE_SIZE;
+use serde_json::json;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use serde_json::json;
-use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 
 /// Fixed-size replay frame. #[repr(C)] for zero-copy binary write.
 /// Size: 272 bytes (fits in 256 + 16 padding, numpy will handle)
 #[repr(C)]
 pub struct ReplayFrame {
     pub frame_tick: u32,
-    pub generation: u16,    // renamed from 'gen' (reserved keyword)
+    pub generation: u16, // renamed from 'gen' (reserved keyword)
     pub rank: u8,
-    pub flags: u8,          // bit0=is_dead
+    pub flags: u8, // bit0=is_dead
     pub pos_x: f32,
     pub pos_z: f32,
-    pub heading: f32,       // yaw from quaternion
+    pub heading: f32, // yaw from quaternion
     pub speed_ms: f32,
     pub throttle: f32,
     pub steer: f32,
@@ -131,8 +131,14 @@ pub fn name_to_id(name: &str) -> u16 {
 }
 
 /// Save racer's brain trace to JSON for frame-by-frame vision debugging.
-pub fn save_brain_trace(run_id: &str, _racer_name: &str, trace: &[crate::simulation::racer::BrainSnapshot]) {
-    if trace.is_empty() { return; }
+pub fn save_brain_trace(
+    run_id: &str,
+    _racer_name: &str,
+    trace: &[crate::simulation::racer::BrainSnapshot],
+) {
+    if trace.is_empty() {
+        return;
+    }
     let mut frames = Vec::new();
     for (i, snap) in trace.iter().enumerate() {
         frames.push(json!({
@@ -157,5 +163,8 @@ pub fn save_brain_trace(run_id: &str, _racer_name: &str, trace: &[crate::simulat
     let output = serde_json::to_string_pretty(&frames).unwrap_or_default();
     // Save to debug/ subdir for easy access; telemetry uses timestamp, we use run_id (gen_N)
     let _ = std::fs::create_dir_all("debug");
-    let _ = std::fs::write(format!("debug/brain_trace_gen_{}.json", run_id.replace("gen_", "")), output);
+    let _ = std::fs::write(
+        format!("debug/brain_trace_gen_{}.json", run_id.replace("gen_", "")),
+        output,
+    );
 }

@@ -4,8 +4,8 @@
 //! 720m voxel grid; mountains sit ~1500m out). All entities are tagged with
 //! `SimulationEntity` so race reset cleans them up.
 
-use bevy::prelude::*;
 use crate::SimulationEntity;
+use bevy::prelude::*;
 
 /// Cheap deterministic PRNG — splitmix64. Same pattern as
 /// `world::procedural_waypoints`. Returns f32 in [0, 1).
@@ -37,17 +37,19 @@ pub fn spawn_scenery(
     let cz = 480.0_f32;
 
     // ---- 1. Sea plane (10000m × 10000m, just below grass) ----
-    let sea_e = commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(10000.0, 10000.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.10, 0.28, 0.45),
-            perceptual_roughness: 0.15,
-            metallic: 0.1,
-            ..default()
-        })),
-        Transform::from_xyz(cx, -2.0, cz),
-        SimulationEntity,
-    )).id();
+    let sea_e = commands
+        .spawn((
+            Mesh3d(meshes.add(Plane3d::default().mesh().size(10000.0, 10000.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.10, 0.28, 0.45),
+                perceptual_roughness: 0.15,
+                metallic: 0.1,
+                ..default()
+            })),
+            Transform::from_xyz(cx, -2.0, cz),
+            SimulationEntity,
+        ))
+        .id();
     entities.push(sea_e);
 
     // ---- 2. Mountain ring — 24 cones around the play area at radius ~1500m ----
@@ -65,8 +67,8 @@ pub fn spawn_scenery(
         let theta = (i as f32 / n_mountains as f32) * std::f32::consts::TAU;
         let radius_jitter = (rng() - 0.5) * 200.0; // ±100m
         let r = ring_radius + radius_jitter;
-        let base_radius = 80.0 + rng() * 70.0;   // 80..150
-        let height = 200.0 + rng() * 200.0;      // 200..400
+        let base_radius = 80.0 + rng() * 70.0; // 80..150
+        let height = 200.0 + rng() * 200.0; // 200..400
 
         let x = cx + r * theta.cos();
         let z = cz + r * theta.sin();
@@ -76,12 +78,14 @@ pub fn spawn_scenery(
         // sits ~at sea level).
         let y = height * 0.5 - 2.0;
 
-        let e = commands.spawn((
-            Mesh3d(meshes.add(Cone::new(base_radius, height))),
-            MeshMaterial3d(mountain_mat.clone()),
-            Transform::from_xyz(x, y, z),
-            SimulationEntity,
-        )).id();
+        let e = commands
+            .spawn((
+                Mesh3d(meshes.add(Cone::new(base_radius, height))),
+                MeshMaterial3d(mountain_mat.clone()),
+                Transform::from_xyz(x, y, z),
+                SimulationEntity,
+            ))
+            .id();
         entities.push(e);
     }
 
@@ -90,48 +94,54 @@ pub fn spawn_scenery(
     let sun_pos = Vec3::new(cx, 0.0, cz) + dir * 4000.0;
 
     // Sun core (bright disc)
-    let sun_e = commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(120.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.95, 0.7),
-            emissive: LinearRgba::new(15.0, 13.0, 8.0, 1.0).into(),
-            unlit: true,
-            ..default()
-        })),
-        Transform::from_translation(sun_pos),
-        SimulationEntity,
-    )).id();
+    let sun_e = commands
+        .spawn((
+            Mesh3d(meshes.add(Sphere::new(120.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.95, 0.7),
+                emissive: LinearRgba::new(15.0, 13.0, 8.0, 1.0).into(),
+                unlit: true,
+                ..default()
+            })),
+            Transform::from_translation(sun_pos),
+            SimulationEntity,
+        ))
+        .id();
     entities.push(sun_e);
 
     // Sun halo (ghost sphere, larger + softer — bloom amplifica)
-    let halo_e = commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(280.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.92, 0.65, 0.4),
-            emissive: LinearRgba::new(3.5, 2.8, 1.5, 1.0).into(),
-            unlit: true,
-            alpha_mode: AlphaMode::Add, // additive blending = glow
-            ..default()
-        })),
-        Transform::from_translation(sun_pos),
-        SimulationEntity,
-    )).id();
+    let halo_e = commands
+        .spawn((
+            Mesh3d(meshes.add(Sphere::new(280.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgba(1.0, 0.92, 0.65, 0.4),
+                emissive: LinearRgba::new(3.5, 2.8, 1.5, 1.0).into(),
+                unlit: true,
+                alpha_mode: AlphaMode::Add, // additive blending = glow
+                ..default()
+            })),
+            Transform::from_translation(sun_pos),
+            SimulationEntity,
+        ))
+        .id();
     entities.push(halo_e);
 
     // ---- 3b. Moon (oposto ao sol, prateado) ----
     let moon_dir = Vec3::new(0.0, 300.0, 200.0).normalize();
     let moon_pos = Vec3::new(cx, 0.0, cz) + moon_dir * 3500.0;
-    let moon_e = commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(70.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.92, 0.94, 0.98),
-            emissive: LinearRgba::new(2.8, 3.0, 3.5, 1.0).into(),
-            unlit: true,
-            ..default()
-        })),
-        Transform::from_translation(moon_pos),
-        SimulationEntity,
-    )).id();
+    let moon_e = commands
+        .spawn((
+            Mesh3d(meshes.add(Sphere::new(70.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.92, 0.94, 0.98),
+                emissive: LinearRgba::new(2.8, 3.0, 3.5, 1.0).into(),
+                unlit: true,
+                ..default()
+            })),
+            Transform::from_translation(moon_pos),
+            SimulationEntity,
+        ))
+        .id();
     entities.push(moon_e);
 
     // ---- 4. URBAN CITY RING — buildings ao redor da pista (vibe street race) ----
@@ -147,9 +157,9 @@ pub fn spawn_scenery(
         let r = inner_r + bld_rng() * (outer_r - inner_r);
         let bx = cx + r * theta.cos();
         let bz = cz + r * theta.sin();
-        let bw = 12.0 + bld_rng() * 18.0;   // 12..30m wide
-        let bd = 12.0 + bld_rng() * 18.0;   // 12..30m deep
-        let bh = 25.0 + bld_rng() * 110.0;  // 25..135m tall (highrises mix)
+        let bw = 12.0 + bld_rng() * 18.0; // 12..30m wide
+        let bd = 12.0 + bld_rng() * 18.0; // 12..30m deep
+        let bh = 25.0 + bld_rng() * 110.0; // 25..135m tall (highrises mix)
         // Cor: tons concreto cinza/bege/azulado pra variedade urbana.
         let cv = bld_rng();
         let color = if cv < 0.33 {
@@ -166,12 +176,14 @@ pub fn spawn_scenery(
             reflectance: 0.4,
             ..default()
         });
-        let e = commands.spawn((
-            Mesh3d(meshes.add(Cuboid::new(bw, bh, bd))),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(bx, bh * 0.5 - 2.0, bz),
-            SimulationEntity,
-        )).id();
+        let e = commands
+            .spawn((
+                Mesh3d(meshes.add(Cuboid::new(bw, bh, bd))),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(bx, bh * 0.5 - 2.0, bz),
+                SimulationEntity,
+            ))
+            .id();
         entities.push(e);
 
         // Janelas iluminadas (emissive cube no topo) — só pros prédios mais altos.
@@ -182,12 +194,14 @@ pub fn spawn_scenery(
                 unlit: true,
                 ..default()
             });
-            let we = commands.spawn((
-                Mesh3d(meshes.add(Cuboid::new(bw * 0.8, 4.0, bd * 0.8))),
-                MeshMaterial3d(win_mat),
-                Transform::from_xyz(bx, bh - 10.0, bz),
-                SimulationEntity,
-            )).id();
+            let we = commands
+                .spawn((
+                    Mesh3d(meshes.add(Cuboid::new(bw * 0.8, 4.0, bd * 0.8))),
+                    MeshMaterial3d(win_mat),
+                    Transform::from_xyz(bx, bh - 10.0, bz),
+                    SimulationEntity,
+                ))
+                .id();
             entities.push(we);
         }
     }
@@ -205,7 +219,9 @@ pub fn spawn_track_decorations(
     world: &crate::world::VoxelWorld,
 ) -> Vec<Entity> {
     let mut entities: Vec<Entity> = Vec::new();
-    if world.waypoints_world.is_empty() { return entities; }
+    if world.waypoints_world.is_empty() {
+        return entities;
+    }
 
     // ---- Streetlights along track (every 8th waypoint, alternating sides) ----
     let lamp_post_mat = materials.add(StandardMaterial {
@@ -224,7 +240,7 @@ pub fn spawn_track_decorations(
     let lamp_mesh = meshes.add(Sphere::new(0.6));
     let wps = &world.waypoints_world;
     let stride = 8usize;
-    for i in (0..wps.len()-1).step_by(stride) {
+    for i in (0..wps.len() - 1).step_by(stride) {
         let p = wps[i];
         let p_next = wps[(i + 1).min(wps.len() - 1)];
         let dir = (p_next - p).normalize_or_zero();
@@ -232,26 +248,30 @@ pub fn spawn_track_decorations(
         let side = if (i / stride) % 2 == 0 { 1.0 } else { -1.0 };
         let lamp_pos_2d = p + perp * (world.cell_size * 12.0) * side; // ~36m off-center
         let lamp_pos = Vec3::new(lamp_pos_2d.x, 4.0, lamp_pos_2d.y);
-        let post_e = commands.spawn((
-            Mesh3d(post_mesh.clone()),
-            MeshMaterial3d(lamp_post_mat.clone()),
-            Transform::from_translation(lamp_pos),
-            SimulationEntity,
-        )).id();
+        let post_e = commands
+            .spawn((
+                Mesh3d(post_mesh.clone()),
+                MeshMaterial3d(lamp_post_mat.clone()),
+                Transform::from_translation(lamp_pos),
+                SimulationEntity,
+            ))
+            .id();
         entities.push(post_e);
-        let lamp_e = commands.spawn((
-            Mesh3d(lamp_mesh.clone()),
-            MeshMaterial3d(lamp_glow_mat.clone()),
-            Transform::from_xyz(lamp_pos.x, 8.0, lamp_pos.z),
-            PointLight {
-                color: Color::srgb(1.0, 0.88, 0.6),
-                intensity: 80_000.0,
-                range: 25.0,
-                shadows_enabled: false,
-                ..default()
-            },
-            SimulationEntity,
-        )).id();
+        let lamp_e = commands
+            .spawn((
+                Mesh3d(lamp_mesh.clone()),
+                MeshMaterial3d(lamp_glow_mat.clone()),
+                Transform::from_xyz(lamp_pos.x, 8.0, lamp_pos.z),
+                PointLight {
+                    color: Color::srgb(1.0, 0.88, 0.6),
+                    intensity: 80_000.0,
+                    range: 25.0,
+                    shadows_enabled: false,
+                    ..default()
+                },
+                SimulationEntity,
+            ))
+            .id();
         entities.push(lamp_e);
     }
 
@@ -266,11 +286,17 @@ pub fn spawn_track_decorations(
         tries += 1;
         let cx_cell = (bld_rng() * world.size as f32) as usize;
         let cy_cell = (bld_rng() * world.size as f32) as usize;
-        if cx_cell >= world.size || cy_cell >= world.size { continue; }
+        if cx_cell >= world.size || cy_cell >= world.size {
+            continue;
+        }
         let idx = cy_cell * world.size + cx_cell;
-        if world.grid[idx] != crate::world::VoxelType::Grass { continue; }
+        if world.grid[idx] != crate::world::VoxelType::Grass {
+            continue;
+        }
         let d = world.min_dist_to_road[idx];
-        if d < 25.0 { continue; } // muito perto da pista — não bloqueia
+        if d < 25.0 {
+            continue;
+        } // muito perto da pista — não bloqueia
         // Building dims
         let bw = 8.0 + bld_rng() * 12.0;
         let bd = 8.0 + bld_rng() * 12.0;
@@ -292,12 +318,14 @@ pub fn spawn_track_decorations(
             reflectance: 0.45,
             ..default()
         });
-        let e = commands.spawn((
-            Mesh3d(meshes.add(Cuboid::new(bw, bh, bd))),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(bx, bh * 0.5, bz),
-            SimulationEntity,
-        )).id();
+        let e = commands
+            .spawn((
+                Mesh3d(meshes.add(Cuboid::new(bw, bh, bd))),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(bx, bh * 0.5, bz),
+                SimulationEntity,
+            ))
+            .id();
         entities.push(e);
         // Janelas iluminadas em prédios altos
         if bh > 50.0 && bld_rng() < 0.5 {
@@ -307,12 +335,14 @@ pub fn spawn_track_decorations(
                 unlit: true,
                 ..default()
             });
-            let we = commands.spawn((
-                Mesh3d(meshes.add(Cuboid::new(bw * 0.7, 3.0, bd * 0.7))),
-                MeshMaterial3d(win_mat),
-                Transform::from_xyz(bx, bh - 8.0, bz),
-                SimulationEntity,
-            )).id();
+            let we = commands
+                .spawn((
+                    Mesh3d(meshes.add(Cuboid::new(bw * 0.7, 3.0, bd * 0.7))),
+                    MeshMaterial3d(win_mat),
+                    Transform::from_xyz(bx, bh - 8.0, bz),
+                    SimulationEntity,
+                ))
+                .id();
             entities.push(we);
         }
         placed += 1;

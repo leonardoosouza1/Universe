@@ -1,6 +1,6 @@
+use super::dna_genesis::{EliteDna, HypernetSeed, MorphoGenes};
 use bevy::prelude::*;
 use std::collections::VecDeque;
-use super::dna_genesis::{EliteDna, MorphoGenes, HypernetSeed};
 
 pub const FITNESS_HISTORY_CAP: usize = 100;
 
@@ -27,16 +27,16 @@ pub struct RaceSettings {
     pub death_markers: Vec<Vec3>,
     pub global_best_distance: f32,
     pub global_best_position: Option<Vec3>,
-    pub champion_distance: f32,  // Distância do DNA salvo em CHAMPION.dna (só muda quando DNA é coroado)
-    pub best_ever_dist: f32,     // Protege contra regressão — só atualiza com 10% melhoria
-    pub elite_pool: Vec<EliteDna>,  // Top-5 DNAs da última geração (tournament pool)
+    pub champion_distance: f32, // Distância do DNA salvo em CHAMPION.dna (só muda quando DNA é coroado)
+    pub best_ever_dist: f32,    // Protege contra regressão — só atualiza com 10% melhoria
+    pub elite_pool: Vec<EliteDna>, // Top-5 DNAs da última geração (tournament pool)
     // Niching: cluster id paralelo a elite_pool (mesmo índice). Populado por
     // evolution_pipeline após clustering por BehaviorFingerprint (Hamming ≤ 8).
     // Usado por spawn.rs em tournament para rejeitar pares do mesmo cluster.
     pub elite_clusters: Vec<usize>,
-    pub champion_path: Vec<Vec3>,   // Traçado do último campeão (spawn → última posição)
-    pub champion_net_dist: f32,     // Distância NET do último campeão (para label do traçado)
-    pub gens_since_crown: u32,      // Gens consecutivas sem coroar — destrava threshold se > N
+    pub champion_path: Vec<Vec3>, // Traçado do último campeão (spawn → última posição)
+    pub champion_net_dist: f32,   // Distância NET do último campeão (para label do traçado)
+    pub gens_since_crown: u32,    // Gens consecutivas sem coroar — destrava threshold se > N
     /// Fração da POPULAÇÃO que fechou ≥1 volta na geração anterior.
     /// Rege o currículo de ambiente (ver `pipeline::decide_next_env_level_pop`). Antes ele
     /// era regido pela distância do CAMPEÃO, e um único carro de sorte levava os 60 para um
@@ -48,12 +48,12 @@ pub struct RaceSettings {
     /// ALARGAR de volta quando a população não sustenta. Ver o currículo de largura em
     /// `pipeline.rs`, que antes era dirigido pela distância do campeão.
     pub estreitamento: f32,
-    pub last_gen_path: Vec<Vec3>,   // Traçado do melhor da última gen (refresca sempre)
-    pub last_gen_net: f32,          // NET do melhor da última gen
-    pub last_gen_was_grid: bool,    // true se o melhor nasceu na largada (elegível pra coroar)
-    pub is_validation_gen: bool,    // próxima gen roda env fixo (level 0); só valida DNA sem ruído
+    pub last_gen_path: Vec<Vec3>, // Traçado do melhor da última gen (refresca sempre)
+    pub last_gen_net: f32,        // NET do melhor da última gen
+    pub last_gen_was_grid: bool,  // true se o melhor nasceu na largada (elegível pra coroar)
+    pub is_validation_gen: bool,  // próxima gen roda env fixo (level 0); só valida DNA sem ruído
     pub gens_until_validation: u32, // conta até próxima validation (default: cada 3 gens)
-    pub env_level: u8,              // nível curricular aplicado na gen atual (0..=3)
+    pub env_level: u8,            // nível curricular aplicado na gen atual (0..=3)
     // Batched spawn: evita freeze ao spawnar N carros de uma vez. Cada gen seta
     // Some((0, swarm_count)); drain_spawn_queue consome em blocos de SPAWN_BATCH_SIZE
     // por frame até virar None. Sim continua rodando entre batches — UI fica responsiva.

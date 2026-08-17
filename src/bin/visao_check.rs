@@ -34,9 +34,9 @@
 //!
 //!   visao_check [--seed 9001] [--width 28] [--alvo buraco|parede] [--de 120] [--ate 2]
 
-use universe::world::{VoxelWorld, VoxelType};
-use universe::config::iara::vision::{RETINA_COLS, RETINA_ROWS};
 use bevy::math::Vec2;
+use universe::config::iara::vision::{RETINA_COLS, RETINA_ROWS};
+use universe::world::{VoxelType, VoxelWorld};
 
 /// Codificação legada, réplica exata de `perception.wgsl:251`.
 ///
@@ -47,14 +47,19 @@ fn legacy_encoding(d: f32, mat: VoxelType) -> i32 {
     let depth_fade = (d / 1200.0).clamp(0.0, 1.0);
     let v = match mat {
         VoxelType::Wall => {
-            if d < 30.0 { 127.0 - ((d / 30.0).clamp(0.0, 1.0).sqrt() * 72.0) }
-            else if d < 120.0 { 55.0 - (((d - 30.0) / 90.0).clamp(0.0, 1.0) * 55.0) }
-            else if d < 1200.0 { -(((d - 120.0) / 480.0).clamp(0.0, 1.0) * 25.0) }
-            else { -25.0 - (((d - 1200.0) / 1200.0).clamp(0.0, 1.0) * 25.0) }
+            if d < 30.0 {
+                127.0 - ((d / 30.0).clamp(0.0, 1.0).sqrt() * 72.0)
+            } else if d < 120.0 {
+                55.0 - (((d - 30.0) / 90.0).clamp(0.0, 1.0) * 55.0)
+            } else if d < 1200.0 {
+                -(((d - 120.0) / 480.0).clamp(0.0, 1.0) * 25.0)
+            } else {
+                -25.0 - (((d - 1200.0) / 1200.0).clamp(0.0, 1.0) * 25.0)
+            }
         }
         VoxelType::Grass => 40.0 - (depth_fade * 40.0),
-        VoxelType::Road  => -128.0 + (depth_fade * 96.0),
-        VoxelType::Hole  => 90.0 - ((d / 50.0).clamp(0.0, 1.0) * 30.0),
+        VoxelType::Road => -128.0 + (depth_fade * 96.0),
+        VoxelType::Hole => 90.0 - ((d / 50.0).clamp(0.0, 1.0) * 30.0),
     };
     v.clamp(-128.0, 127.0) as i32
 }
@@ -88,18 +93,40 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--seed"  => { i += 1; seed  = args[i].parse().unwrap_or(9001); }
-            "--width" => { i += 1; width = args[i].parse().unwrap_or(28.0); }
-            "--alvo"  => { i += 1; alvo  = args[i].clone(); }
-            "--de"    => { i += 1; de    = args[i].parse().unwrap_or(120.0); }
-            "--ate"   => { i += 1; ate   = args[i].parse().unwrap_or(2.0); }
+            "--seed" => {
+                i += 1;
+                seed = args[i].parse().unwrap_or(9001);
+            }
+            "--width" => {
+                i += 1;
+                width = args[i].parse().unwrap_or(28.0);
+            }
+            "--alvo" => {
+                i += 1;
+                alvo = args[i].clone();
+            }
+            "--de" => {
+                i += 1;
+                de = args[i].parse().unwrap_or(120.0);
+            }
+            "--ate" => {
+                i += 1;
+                ate = args[i].parse().unwrap_or(2.0);
+            }
             _ => {}
         }
         i += 1;
     }
 
-    let world = { let _q = universe::world::silence_map_diag(); VoxelWorld::new(seed, width) };
-    let alvo_tipo = if alvo == "parede" { VoxelType::Wall } else { VoxelType::Hole };
+    let world = {
+        let _q = universe::world::silence_map_diag();
+        VoxelWorld::new(seed, width)
+    };
+    let alvo_tipo = if alvo == "parede" {
+        VoxelType::Wall
+    } else {
+        VoxelType::Hole
+    };
 
     // Acha o primeiro alvo do tipo pedido caminhando pelo eixo da pista, e guarda o ponto
     // do EIXO onde ele aparece — é de lá que o ser chega, então é de lá que a visão importa.
@@ -110,7 +137,8 @@ fn main() {
         let mut wp = 0usize;
         let mut t = 0.0f32;
         while wp < wps.len() - 1 && arco < 3000.0 {
-            let a = wps[wp]; let b = wps[wp + 1];
+            let a = wps[wp];
+            let b = wps[wp + 1];
             let seg = (b - a).length().max(0.001);
             let p = a + (b - a) * (t / seg);
             let dir = (b - a) / seg;
@@ -122,9 +150,15 @@ fn main() {
                     break;
                 }
             }
-            if alvo_pos.is_some() { break; }
-            arco += 1.0; t += 1.0;
-            if t >= seg { t -= seg; wp += 1; }
+            if alvo_pos.is_some() {
+                break;
+            }
+            arco += 1.0;
+            t += 1.0;
+            if t >= seg {
+                t -= seg;
+                wp += 1;
+            }
         }
     }
 
@@ -134,11 +168,18 @@ fn main() {
     };
 
     let fov = universe::visao::fov_deg().to_radians();
-    println!("VALIDAÇÃO DA VISÃO · semente {seed} · pista {width:.0} m · FOV {:.0}° · retina {RETINA_COLS}×{RETINA_ROWS}",
-             fov.to_degrees());
-    println!("Alvo: {alvo} em {arco_alvo:.0} m do início ({:.0}, {:.0})\n", alvo_ponto.x, alvo_ponto.y);
-    println!("{:>6} {:>8} {:>9} {:>9} {:>10}  {}",
-             "dist", "pixels", "valor i8", "fundo i8", "contraste", "veredito");
+    println!(
+        "VALIDAÇÃO DA VISÃO · semente {seed} · pista {width:.0} m · FOV {:.0}° · retina {RETINA_COLS}×{RETINA_ROWS}",
+        fov.to_degrees()
+    );
+    println!(
+        "Alvo: {alvo} em {arco_alvo:.0} m do início ({:.0}, {:.0})\n",
+        alvo_ponto.x, alvo_ponto.y
+    );
+    println!(
+        "{:>6} {:>8} {:>9} {:>9} {:>10}  {}",
+        "dist", "pixels", "valor i8", "fundo i8", "contraste", "veredito"
+    );
     println!("{}", "-".repeat(74));
 
     let mut primeira_deteccao: Option<f32> = None;
@@ -199,13 +240,17 @@ fn main() {
             // O que importa não é ver, é ver A TEMPO. A 6 m/s (velocidade medida na
             // bateria de 2026-08-13) cada metro de antecipação vale 1/6 s de reação.
             for v in [4.0f32, 6.0, 10.0] {
-                println!("  a {v:.0} m/s o ser tem {:.1} s desde a primeira detecção até o impacto",
-                         dist / v);
+                println!(
+                    "  a {v:.0} m/s o ser tem {:.1} s desde a primeira detecção até o impacto",
+                    dist / v
+                );
             }
             println!("\n  Primeira detecção a {dist:.0} m.");
         }
-        None => println!("  O alvo NUNCA foi detectado em nenhuma distância testada.\n\
-                          \x20 O ser é literalmente cego para este objeto — nenhum cérebro o evita."),
+        None => println!(
+            "  O alvo NUNCA foi detectado em nenhuma distância testada.\n\
+                          \x20 O ser é literalmente cego para este objeto — nenhum cérebro o evita."
+        ),
     }
 }
 
@@ -221,8 +266,10 @@ mod tests {
         assert_eq!(legacy_encoding(0.0, VoxelType::Hole), 90);
         assert_eq!(legacy_encoding(50.0, VoxelType::Hole), 60);
         // A saturação que motivou esta ferramenta: além de 50 m o buraco é uma constante.
-        assert_eq!(legacy_encoding(50.0, VoxelType::Hole),
-                   legacy_encoding(200.0, VoxelType::Hole));
+        assert_eq!(
+            legacy_encoding(50.0, VoxelType::Hole),
+            legacy_encoding(200.0, VoxelType::Hole)
+        );
     }
 
     /// A ambiguidade medida: buraco longe tem o mesmo valor que parede a meia distância.
@@ -230,7 +277,9 @@ mod tests {
     fn buraco_longe_colide_com_parede_media() {
         let buraco_60m = legacy_encoding(60.0, VoxelType::Hole);
         let parede_28m = legacy_encoding(28.0, VoxelType::Wall);
-        assert!((buraco_60m - parede_28m).abs() <= 3,
-                "buraco a 60 m = {buraco_60m}, parede a 28 m = {parede_28m}");
+        assert!(
+            (buraco_60m - parede_28m).abs() <= 3,
+            "buraco a 60 m = {buraco_60m}, parede a 28 m = {parede_28m}"
+        );
     }
 }

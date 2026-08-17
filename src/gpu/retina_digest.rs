@@ -38,7 +38,7 @@ use std::borrow::Cow;
 
 use wgpu::util::DeviceExt;
 
-use crate::math::cfc_perception::{flat_weights, CFC_HIDDEN, CFC_WEIGHTS_LEN};
+use crate::math::cfc_perception::{CFC_HIDDEN, CFC_WEIGHTS_LEN, flat_weights};
 use crate::perception::RetinaPerception;
 
 use super::core::{storage_entry, uniform_entry};
@@ -101,12 +101,12 @@ impl RetinaDigestGpu {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("retina-digest-layout"),
             entries: &[
-                uniform_entry(0),         // params
-                storage_entry(1, true),   // retina física (read)
-                storage_entry(2, true),   // cfc_weights (read)
-                storage_entry(3, false),  // cfc_state (read_write, persistente)
-                storage_entry(4, false),  // output — MESMO buf_output da percepção (atomicOr)
-                storage_entry(5, false),  // extra_out (read_write)
+                uniform_entry(0),        // params
+                storage_entry(1, true),  // retina física (read)
+                storage_entry(2, true),  // cfc_weights (read)
+                storage_entry(3, false), // cfc_state (read_write, persistente)
+                storage_entry(4, false), // output — MESMO buf_output da percepção (atomicOr)
+                storage_entry(5, false), // extra_out (read_write)
             ],
         });
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -200,7 +200,12 @@ impl RetinaDigestGpu {
             return 0;
         }
 
-        let params = ParamsGpu { n_beings: n as u32, _pad0: 0, _pad1: 0, _pad2: 0 };
+        let params = ParamsGpu {
+            n_beings: n as u32,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        };
         let buf_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("retina-digest-params"),
             contents: bytemuck::bytes_of(&params),
@@ -211,12 +216,30 @@ impl RetinaDigestGpu {
             label: Some("retina-digest-bg"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: buf_retina_fisica.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_cfc_weights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_cfc_state.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: buf_output_shared.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.buf_extra_out.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buf_retina_fisica.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_cfc_weights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_cfc_state.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: buf_output_shared.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buf_extra_out.as_entire_binding(),
+                },
             ],
         });
 
@@ -232,7 +255,13 @@ impl RetinaDigestGpu {
         }
 
         let bytes_extra = (n * EXTRA_OUT_STRIDE * std::mem::size_of::<f32>()) as u64;
-        enc.copy_buffer_to_buffer(&self.buf_extra_out, 0, &self.buf_extra_readback, 0, bytes_extra);
+        enc.copy_buffer_to_buffer(
+            &self.buf_extra_out,
+            0,
+            &self.buf_extra_readback,
+            0,
+            bytes_extra,
+        );
         let _ = queue; // reservado para simetria com PerceptionGpu::bind_and_dispatch (uniform via write_buffer futuro)
         bytes_extra
     }
@@ -256,7 +285,9 @@ impl RetinaDigestGpu {
 
         let slice = self.buf_extra_readback.slice(0..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 

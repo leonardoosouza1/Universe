@@ -27,10 +27,10 @@ pub struct SparseRle {
     pub original_len: usize,
 }
 
-const SYM_ZERO: u8 = 0b00;    // 0
-const SYM_POS: u8 = 0b01;     // +1
-const SYM_NEG: u8 = 0b10;     // -1
-const SYM_EXT: u8 = 0b11;     // extensão para runs > 64
+const SYM_ZERO: u8 = 0b00; // 0
+const SYM_POS: u8 = 0b01; // +1
+const SYM_NEG: u8 = 0b10; // -1
+const SYM_EXT: u8 = 0b11; // extensão para runs > 64
 
 /// Comprime um vetor de pesos ternários usando RLE.
 ///
@@ -40,7 +40,10 @@ pub fn compress(signal: &[i8]) -> SparseRle {
     let n = signal.len();
 
     if n == 0 {
-        return SparseRle { data, original_len: 0 };
+        return SparseRle {
+            data,
+            original_len: 0,
+        };
     }
 
     let mut i = 0;
@@ -81,7 +84,10 @@ pub fn compress(signal: &[i8]) -> SparseRle {
         i += run_len;
     }
 
-    SparseRle { data, original_len: n }
+    SparseRle {
+        data,
+        original_len: n,
+    }
 }
 
 /// Descomprime RLE de volta para vetor de pesos ternários.
@@ -97,7 +103,9 @@ pub fn decompress(rle: &SparseRle) -> Vec<i8> {
 
         if sym_code == SYM_EXT {
             // Extension: 14-bit length + symbol byte
-            if i + 2 >= data.len() { break; }
+            if i + 2 >= data.len() {
+                break;
+            }
             let high = len_part;
             let low = data[i + 1] as usize;
             let run_len = (high << 8 | low) + 1;
@@ -145,7 +153,9 @@ pub fn serialize(rle: &SparseRle) -> Vec<u8> {
 
 /// Desserializa SparseRle de bytes.
 pub fn deserialize(buf: &[u8]) -> Option<SparseRle> {
-    if buf.len() < 4 { return None; }
+    if buf.len() < 4 {
+        return None;
+    }
     let original_len = u32::from_le_bytes(buf[0..4].try_into().ok()?) as usize;
     let data = buf[4..].to_vec();
     Some(SparseRle { data, original_len })
@@ -153,7 +163,9 @@ pub fn deserialize(buf: &[u8]) -> Option<SparseRle> {
 
 /// Calcula a esparsidade (fração de zeros) de um vetor de pesos.
 pub fn sparsity(signal: &[i8]) -> f32 {
-    if signal.is_empty() { return 0.0; }
+    if signal.is_empty() {
+        return 0.0;
+    }
     signal.iter().filter(|&&s| s == 0).count() as f32 / signal.len() as f32
 }
 
@@ -174,8 +186,12 @@ mod tests {
         let n = 8192;
         let mut signal = vec![0i8; n];
         // Punturar com alguns não-zeros
-        for i in (0..n).step_by(50) { signal[i] = 1; }
-        for i in (25..n).step_by(50) { signal[i] = -1; }
+        for i in (0..n).step_by(50) {
+            signal[i] = 1;
+        }
+        for i in (25..n).step_by(50) {
+            signal[i] = -1;
+        }
 
         let rle = compress(&signal);
         let restored = decompress(&rle);
@@ -183,7 +199,11 @@ mod tests {
         assert_eq!(signal, restored, "RLE must be lossless");
 
         let ratio = n as f64 / (rle.data.len() + 4) as f64;
-        assert!(ratio > 3.0, "Sparse signal should compress well: {:.1}:1", ratio);
+        assert!(
+            ratio > 3.0,
+            "Sparse signal should compress well: {:.1}:1",
+            ratio
+        );
     }
 
     #[test]
@@ -195,7 +215,11 @@ mod tests {
 
         // All zeros should compress extremely well
         let ratio = 1024.0 / (rle.data.len() + 4) as f64;
-        assert!(ratio > 40.0, "All-zero should compress > 40:1, got {:.1}:1", ratio);
+        assert!(
+            ratio > 40.0,
+            "All-zero should compress > 40:1, got {:.1}:1",
+            ratio
+        );
     }
 
     #[test]

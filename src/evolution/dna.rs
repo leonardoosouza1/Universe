@@ -15,8 +15,8 @@ use std::io::{Read, Write};
 // Versão simplificada (v1): snapshot proxy — ativos ≈ não-zeros. Versão completa
 // (v2, futura) usaria last_activation_mask do BitLinear após um forward real.
 // ============================================================================
-pub const SCAR_TTL_INITIAL: u8 = 5;       // trava por 5 gerações
-pub const SCAR_FRACTION: f32 = 0.10;      // 10% dos pesos não-zero viram scar
+pub const SCAR_TTL_INITIAL: u8 = 5; // trava por 5 gerações
+pub const SCAR_FRACTION: f32 = 0.10; // 10% dos pesos não-zero viram scar
 pub const SCAR_CATASTROPHE_LABEL: &str = "BATIDA";
 
 // ============================================================================
@@ -41,8 +41,8 @@ pub const MORPHO_DOWNFORCE_MAX: f32 = 2.0;
 pub const MORPHO_GRIP_MIN: f32 = 0.8;
 pub const MORPHO_GRIP_MAX: f32 = 1.2;
 pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% por gene por gen
-pub const MORPHO_SIGMA_FRAC: f32 = 0.05;    // σ = 5% do range
-pub const MORPHO_BYTES: usize = 16;         // 4 × f32 LE
+pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% do range
+pub const MORPHO_BYTES: usize = 16; // 4 × f32 LE
 
 #[derive(Clone, Copy, Debug)]
 pub struct MorphoGenes {
@@ -54,7 +54,12 @@ pub struct MorphoGenes {
 
 impl Default for MorphoGenes {
     fn default() -> Self {
-        Self { mass: 1000.0, wheelbase: 2.5, downforce: 1.0, grip_mult: 1.0 }
+        Self {
+            mass: 1000.0,
+            wheelbase: 2.5,
+            downforce: 1.0,
+            grip_mult: 1.0,
+        }
     }
 }
 
@@ -69,25 +74,44 @@ impl MorphoGenes {
     }
 
     pub fn from_le_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < MORPHO_BYTES { return None; }
+        if buf.len() < MORPHO_BYTES {
+            return None;
+        }
         let mass = f32::from_le_bytes(buf[0..4].try_into().ok()?);
         let wheelbase = f32::from_le_bytes(buf[4..8].try_into().ok()?);
         let downforce = f32::from_le_bytes(buf[8..12].try_into().ok()?);
         let grip_mult = f32::from_le_bytes(buf[12..16].try_into().ok()?);
-        let out = Self { mass, wheelbase, downforce, grip_mult };
+        let out = Self {
+            mass,
+            wheelbase,
+            downforce,
+            grip_mult,
+        };
         Some(out.sanitized())
     }
 
     /// Clamp nos ranges (+ proteção contra NaN/Inf vinda de arquivo corrompido).
     pub fn sanitized(mut self) -> Self {
         let default = Self::default();
-        if !self.mass.is_finite()      { self.mass = default.mass; }
-        if !self.wheelbase.is_finite() { self.wheelbase = default.wheelbase; }
-        if !self.downforce.is_finite() { self.downforce = default.downforce; }
-        if !self.grip_mult.is_finite() { self.grip_mult = default.grip_mult; }
-        self.mass      = self.mass.clamp(MORPHO_MASS_MIN, MORPHO_MASS_MAX);
-        self.wheelbase = self.wheelbase.clamp(MORPHO_WHEELBASE_MIN, MORPHO_WHEELBASE_MAX);
-        self.downforce = self.downforce.clamp(MORPHO_DOWNFORCE_MIN, MORPHO_DOWNFORCE_MAX);
+        if !self.mass.is_finite() {
+            self.mass = default.mass;
+        }
+        if !self.wheelbase.is_finite() {
+            self.wheelbase = default.wheelbase;
+        }
+        if !self.downforce.is_finite() {
+            self.downforce = default.downforce;
+        }
+        if !self.grip_mult.is_finite() {
+            self.grip_mult = default.grip_mult;
+        }
+        self.mass = self.mass.clamp(MORPHO_MASS_MIN, MORPHO_MASS_MAX);
+        self.wheelbase = self
+            .wheelbase
+            .clamp(MORPHO_WHEELBASE_MIN, MORPHO_WHEELBASE_MAX);
+        self.downforce = self
+            .downforce
+            .clamp(MORPHO_DOWNFORCE_MIN, MORPHO_DOWNFORCE_MAX);
         self.grip_mult = self.grip_mult.clamp(MORPHO_GRIP_MIN, MORPHO_GRIP_MAX);
         self
     }
@@ -104,10 +128,10 @@ impl MorphoGenes {
             (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
         }
         let bounds = [
-            (MORPHO_MASS_MIN,      MORPHO_MASS_MAX),
+            (MORPHO_MASS_MIN, MORPHO_MASS_MAX),
             (MORPHO_WHEELBASE_MIN, MORPHO_WHEELBASE_MAX),
             (MORPHO_DOWNFORCE_MIN, MORPHO_DOWNFORCE_MAX),
-            (MORPHO_GRIP_MIN,      MORPHO_GRIP_MAX),
+            (MORPHO_GRIP_MIN, MORPHO_GRIP_MAX),
         ];
         for (i, (min, max)) in bounds.into_iter().enumerate() {
             if rng01() < MORPHO_MUTATION_RATE {
@@ -147,25 +171,39 @@ pub struct EliteDna {
 
 /// Marca ~SCAR_FRACTION dos pesos NÃO-ZERO em `fast_weights` com scar TTL.
 /// Determinístico via seed (deriva de fast_weights.iter().sum); retorna nº de scars criados.
-pub fn apply_catastrophic_scars(scar_mask: &mut Vec<u8>, fast_weights: &[i8], seed_bias: u64) -> usize {
+pub fn apply_catastrophic_scars(
+    scar_mask: &mut Vec<u8>,
+    fast_weights: &[i8],
+    seed_bias: u64,
+) -> usize {
     if scar_mask.len() != fast_weights.len() {
         *scar_mask = vec![0u8; fast_weights.len()];
     }
     // Lista de índices não-zero
-    let nonzero_idx: Vec<usize> = fast_weights.iter().enumerate()
+    let nonzero_idx: Vec<usize> = fast_weights
+        .iter()
+        .enumerate()
         .filter_map(|(i, &w)| if w != 0 { Some(i) } else { None })
         .collect();
-    if nonzero_idx.is_empty() { return 0; }
+    if nonzero_idx.is_empty() {
+        return 0;
+    }
     let target = ((nonzero_idx.len() as f32) * SCAR_FRACTION).ceil() as usize;
     // Seleção pseudo-aleatória via LCG simples com seed_bias (determinismo por DNA).
-    let mut state: u64 = seed_bias.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0xDEADBEEF);
+    let mut state: u64 = seed_bias
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add(0xDEADBEEF);
     let mut scars_created = 0usize;
     for _ in 0..target {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let pick = (state >> 32) as usize % nonzero_idx.len();
         let idx = nonzero_idx[pick];
         // Só conta se o peso não estava já scarred (refresh também estende TTL).
-        if scar_mask[idx] == 0 { scars_created += 1; }
+        if scar_mask[idx] == 0 {
+            scars_created += 1;
+        }
         scar_mask[idx] = SCAR_TTL_INITIAL;
     }
     scars_created
@@ -178,7 +216,9 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
     for ttl in scar_mask.iter_mut() {
         if *ttl > 0 {
             *ttl -= 1;
-            if *ttl > 0 { still_active += 1; }
+            if *ttl > 0 {
+                still_active += 1;
+            }
         }
     }
     still_active
@@ -209,9 +249,9 @@ pub const DNA_MAGIC: &[u8; 4] = b"IARA";
 pub const DNA_VERSION: u16 = 3;
 pub const DNA_FAST_SIZE: usize = 128 * 64;
 pub const DNA_SLOW_SIZE: usize = 32 * 8;
-pub const DNA_HEADER_SIZE: usize = 4 + 2 + 4 + 4 + 4 + 4;  // 22
-pub const DNA_V3_TOTAL: usize = DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE + 4 + DNA_SLOW_SIZE;  // 8478
-pub const DNA_V31_TOTAL: usize = DNA_V3_TOTAL + MORPHO_BYTES;  // 8494
+pub const DNA_HEADER_SIZE: usize = 4 + 2 + 4 + 4 + 4 + 4; // 22
+pub const DNA_V3_TOTAL: usize = DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE + 4 + DNA_SLOW_SIZE; // 8478
+pub const DNA_V31_TOTAL: usize = DNA_V3_TOTAL + MORPHO_BYTES; // 8494
 pub const DNA_V32_TOTAL: usize = DNA_V31_TOTAL + HYPERNET_BYTES; // 8755 (v3.2 with hypernet tail)
 
 // ============================================================================
@@ -244,7 +284,10 @@ pub struct HypernetSeed {
 
 impl Default for HypernetSeed {
     fn default() -> Self {
-        Self { coeffs: [0.0; HYPERNET_COEFFS], active: false }
+        Self {
+            coeffs: [0.0; HYPERNET_COEFFS],
+            active: false,
+        }
     }
 }
 
@@ -261,10 +304,14 @@ impl HypernetSeed {
     }
 
     pub fn from_le_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < HYPERNET_BYTES { return None; }
+        if buf.len() < HYPERNET_BYTES {
+            return None;
+        }
         let active = buf[0] != 0;
         let len = u32::from_le_bytes(buf[1..5].try_into().ok()?) as usize;
-        if len != HYPERNET_COEFFS { return None; }
+        if len != HYPERNET_COEFFS {
+            return None;
+        }
         let mut coeffs = [0.0f32; HYPERNET_COEFFS];
         for i in 0..HYPERNET_COEFFS {
             let off = 5 + i * 4;
@@ -282,9 +329,13 @@ impl HypernetSeed {
             let b = self.coeffs[(i.wrapping_mul(7)) % HYPERNET_COEFFS];
             let phase = a * (i as f32 / HYPERNET_EXPAND_SIZE as f32) * std::f32::consts::PI;
             let w = phase.sin() * b;
-            out[i] = if w > HYPERNET_TERNARY_THRESH { 1 }
-                     else if w < -HYPERNET_TERNARY_THRESH { -1 }
-                     else { 0 };
+            out[i] = if w > HYPERNET_TERNARY_THRESH {
+                1
+            } else if w < -HYPERNET_TERNARY_THRESH {
+                -1
+            } else {
+                0
+            };
         }
         out
     }
@@ -303,7 +354,9 @@ impl HypernetSeed {
         if self.active {
             for c in self.coeffs.iter_mut() {
                 *c += gauss(&mut rng01) * HYPERNET_SIGMA;
-                if !c.is_finite() { *c = 0.0; }
+                if !c.is_finite() {
+                    *c = 0.0;
+                }
             }
         }
     }
@@ -337,8 +390,16 @@ pub fn save_champion_dna(
     fitness: f32,
 ) -> std::io::Result<()> {
     save_champion_dna_with_morpho(
-        path, fast_weights, fast_scale, slow_weights, slow_scale,
-        generation, seed, track_width, fitness, MorphoGenes::default(),
+        path,
+        fast_weights,
+        fast_scale,
+        slow_weights,
+        slow_scale,
+        generation,
+        seed,
+        track_width,
+        fitness,
+        MorphoGenes::default(),
     )
 }
 
@@ -355,8 +416,17 @@ pub fn save_champion_dna_with_morpho(
     morpho: MorphoGenes,
 ) -> std::io::Result<()> {
     save_champion_dna_full(
-        path, fast_weights, fast_scale, slow_weights, slow_scale,
-        generation, seed, track_width, fitness, morpho, HypernetSeed::default(),
+        path,
+        fast_weights,
+        fast_scale,
+        slow_weights,
+        slow_scale,
+        generation,
+        seed,
+        track_width,
+        fitness,
+        morpho,
+        HypernetSeed::default(),
     )
 }
 
@@ -409,18 +479,27 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
         let slow_scale_raw = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
         let slow_start = fast_end + 4;
         let slow_end = slow_start + DNA_SLOW_SIZE;
-        if buf.len() < slow_end { return None; }
+        if buf.len() < slow_end {
+            return None;
+        }
         let slow_weights: Vec<i8> = buf[slow_start..slow_end].iter().map(|&b| b as i8).collect();
         // SANITIZAÇÃO: DNAs antigos podem ter scales astronômicos (bug myelinate
         // sem cap pré-fix). Clamp em [1e-4, 10] — valores fora disso indicam
         // corrupção runtime, não pesos válidos. Força recalibração na próxima
         // quantize() via abs_mean dos pesos ternários.
-        let fast_scale = if fast_scale_raw.is_finite() { fast_scale_raw.clamp(1e-4, 10.0) } else { 1.0 };
-        let slow_scale = if slow_scale_raw.is_finite() { slow_scale_raw.clamp(1e-4, 10.0) } else { 1.0 };
+        let fast_scale = if fast_scale_raw.is_finite() {
+            fast_scale_raw.clamp(1e-4, 10.0)
+        } else {
+            1.0
+        };
+        let slow_scale = if slow_scale_raw.is_finite() {
+            slow_scale_raw.clamp(1e-4, 10.0)
+        } else {
+            1.0
+        };
         // --- Tier 6.3 LITE: tail opcional de morpho (backward-compat c/ v3 antigo) ---
         let morpho = if buf.len() >= slow_end + MORPHO_BYTES {
-            MorphoGenes::from_le_bytes(&buf[slow_end..slow_end + MORPHO_BYTES])
-                .unwrap_or_default()
+            MorphoGenes::from_le_bytes(&buf[slow_end..slow_end + MORPHO_BYTES]).unwrap_or_default()
         } else {
             MorphoGenes::default()
         };
@@ -433,9 +512,17 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             HypernetSeed::default()
         };
         return Some(DnaPayload {
-            fast_weights, fast_scale,
-            slow_weights: Some(slow_weights), slow_scale,
-            generation, seed, track_width, fitness, version, morpho, hypernet,
+            fast_weights,
+            fast_scale,
+            slow_weights: Some(slow_weights),
+            slow_scale,
+            generation,
+            seed,
+            track_width,
+            fitness,
+            version,
+            morpho,
+            hypernet,
         });
     }
 
@@ -446,15 +533,24 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
         let fast_weights: Vec<i8> = buf[4..fast_end].iter().map(|&b| b as i8).collect();
         let (slow_weights, slow_scale, version) = if buf.len() >= fast_end + 4 + DNA_SLOW_SIZE {
             let ss = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
-            let sw: Vec<i8> = buf[fast_end + 4..fast_end + 4 + DNA_SLOW_SIZE].iter().map(|&b| b as i8).collect();
+            let sw: Vec<i8> = buf[fast_end + 4..fast_end + 4 + DNA_SLOW_SIZE]
+                .iter()
+                .map(|&b| b as i8)
+                .collect();
             (Some(sw), ss, 2u16)
         } else {
             (None, 1.0, 1u16)
         };
         return Some(DnaPayload {
-            fast_weights, fast_scale,
-            slow_weights, slow_scale,
-            generation: 0, seed: 0, track_width: 0.0, fitness: 0.0, version,
+            fast_weights,
+            fast_scale,
+            slow_weights,
+            slow_scale,
+            generation: 0,
+            seed: 0,
+            track_width: 0.0,
+            fitness: 0.0,
+            version,
             morpho: MorphoGenes::default(),
             hypernet: HypernetSeed::default(),
         });
@@ -469,8 +565,12 @@ mod tests {
     use std::io::Write;
 
     fn sample_weights(offset: i8) -> (Vec<i8>, Vec<i8>) {
-        let fast: Vec<i8> = (0..DNA_FAST_SIZE).map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
-        let slow: Vec<i8> = (0..DNA_SLOW_SIZE).map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
+        let fast: Vec<i8> = (0..DNA_FAST_SIZE)
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8)
+            .collect();
+        let slow: Vec<i8> = (0..DNA_SLOW_SIZE)
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8)
+            .collect();
         (fast, slow)
     }
 
@@ -499,9 +599,11 @@ mod tests {
         let path = std::env::temp_dir().join("iara_test_v2.dna");
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&0.5_f32.to_le_bytes()).unwrap();
-        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         f.write_all(&0.25_f32.to_le_bytes()).unwrap();
-        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         drop(f);
         let loaded = load_champion_dna(path.to_str().unwrap()).expect("v2 must load");
         assert_eq!(loaded.version, 2);
@@ -521,7 +623,10 @@ mod tests {
 
     #[test]
     fn v3_total_size_matches_layout() {
-        assert_eq!(DNA_V3_TOTAL, 4 + 2 + 4 + 4 + 4 + 4 + 4 + DNA_FAST_SIZE + 4 + DNA_SLOW_SIZE);
+        assert_eq!(
+            DNA_V3_TOTAL,
+            4 + 2 + 4 + 4 + 4 + 4 + 4 + DNA_FAST_SIZE + 4 + DNA_SLOW_SIZE
+        );
         assert_eq!(DNA_V31_TOTAL, DNA_V3_TOTAL + MORPHO_BYTES);
     }
 
@@ -530,8 +635,14 @@ mod tests {
         let (fast, slow) = sample_weights(2);
         let path = std::env::temp_dir().join("iara_test_v31.dna");
         let path_s = path.to_str().unwrap();
-        let morpho = MorphoGenes { mass: 1234.5, wheelbase: 2.1, downforce: 1.7, grip_mult: 0.9 };
-        save_champion_dna_with_morpho(path_s, &fast, 0.1, &slow, 0.2, 1, 2, 10.0, 50.0, morpho).unwrap();
+        let morpho = MorphoGenes {
+            mass: 1234.5,
+            wheelbase: 2.1,
+            downforce: 1.7,
+            grip_mult: 0.9,
+        };
+        save_champion_dna_with_morpho(path_s, &fast, 0.1, &slow, 0.2, 1, 2, 10.0, 50.0, morpho)
+            .unwrap();
         let meta = std::fs::metadata(&path).unwrap();
         assert_eq!(meta.len() as usize, DNA_V32_TOTAL);
         let loaded = load_champion_dna(path_s).expect("v3.1 must load");
@@ -544,7 +655,12 @@ mod tests {
 
     #[test]
     fn morpho_sanitize_clamps_out_of_range() {
-        let wild = MorphoGenes { mass: 9000.0, wheelbase: 0.1, downforce: -5.0, grip_mult: 99.0 };
+        let wild = MorphoGenes {
+            mass: 9000.0,
+            wheelbase: 0.1,
+            downforce: -5.0,
+            grip_mult: 99.0,
+        };
         let s = wild.sanitized();
         assert!(s.mass <= MORPHO_MASS_MAX && s.mass >= MORPHO_MASS_MIN);
         assert!(s.wheelbase <= MORPHO_WHEELBASE_MAX && s.wheelbase >= MORPHO_WHEELBASE_MIN);
@@ -565,9 +681,11 @@ mod tests {
         f.write_all(&12.0_f32.to_le_bytes()).unwrap();
         f.write_all(&42.0_f32.to_le_bytes()).unwrap();
         f.write_all(&0.3_f32.to_le_bytes()).unwrap();
-        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         f.write_all(&0.4_f32.to_le_bytes()).unwrap();
-        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         drop(f);
         let meta = std::fs::metadata(&path).unwrap();
         assert_eq!(meta.len() as usize, DNA_V3_TOTAL);
@@ -622,13 +740,28 @@ mod tests {
         // Metadados devem ser preservados.
         assert_eq!(loaded.generation, 10, "generation divergiu entre módulos");
         assert_eq!(loaded.seed, 42, "seed divergiu entre módulos");
-        assert!((loaded.track_width - 14.0).abs() < 1e-4, "track_width divergiu");
+        assert!(
+            (loaded.track_width - 14.0).abs() < 1e-4,
+            "track_width divergiu"
+        );
         assert!((loaded.fitness - 123.4).abs() < 1e-2, "fitness divergiu");
-        assert!((loaded.fast_scale - 0.25).abs() < 1e-4, "fast_scale divergiu");
-        assert!((loaded.slow_scale - 0.125).abs() < 1e-4, "slow_scale divergiu");
-        assert_eq!(loaded.fast_weights, fast, "fast_weights divergiram entre módulos");
-        assert_eq!(loaded.slow_weights.as_deref().unwrap(), slow.as_slice(),
-            "slow_weights divergiram entre módulos");
+        assert!(
+            (loaded.fast_scale - 0.25).abs() < 1e-4,
+            "fast_scale divergiu"
+        );
+        assert!(
+            (loaded.slow_scale - 0.125).abs() < 1e-4,
+            "slow_scale divergiu"
+        );
+        assert_eq!(
+            loaded.fast_weights, fast,
+            "fast_weights divergiram entre módulos"
+        );
+        assert_eq!(
+            loaded.slow_weights.as_deref().unwrap(),
+            slow.as_slice(),
+            "slow_weights divergiram entre módulos"
+        );
 
         let _ = std::fs::remove_file(path);
     }
@@ -658,7 +791,12 @@ mod tests {
     ///    bit-a-bit idênticos aos de dna_genesis.rs.
     #[test]
     fn morpho_bytes_identical_across_modules() {
-        let m_dna = MorphoGenes { mass: 1100.0, wheelbase: 2.3, downforce: 1.5, grip_mult: 1.0 };
+        let m_dna = MorphoGenes {
+            mass: 1100.0,
+            wheelbase: 2.3,
+            downforce: 1.5,
+            grip_mult: 1.0,
+        };
 
         // Serializa via dna.rs.
         let bytes_dna = m_dna.to_le_bytes();
@@ -667,23 +805,39 @@ mod tests {
         let m_genesis = crate::evolution::dna_genesis::MorphoGenes::from_le_bytes(&bytes_dna)
             .expect("dna_genesis deve desserializar bytes de dna.rs");
 
-        assert!((m_dna.mass - m_genesis.mass).abs() < 1e-4,
-            "MorphoGenes.mass diverge: {} vs {}", m_dna.mass, m_genesis.mass);
-        assert!((m_dna.wheelbase - m_genesis.wheelbase).abs() < 1e-5,
-            "MorphoGenes.wheelbase diverge");
-        assert!((m_dna.downforce - m_genesis.downforce).abs() < 1e-5,
-            "MorphoGenes.downforce diverge");
-        assert!((m_dna.grip_mult - m_genesis.grip_mult).abs() < 1e-5,
-            "MorphoGenes.grip_mult diverge");
+        assert!(
+            (m_dna.mass - m_genesis.mass).abs() < 1e-4,
+            "MorphoGenes.mass diverge: {} vs {}",
+            m_dna.mass,
+            m_genesis.mass
+        );
+        assert!(
+            (m_dna.wheelbase - m_genesis.wheelbase).abs() < 1e-5,
+            "MorphoGenes.wheelbase diverge"
+        );
+        assert!(
+            (m_dna.downforce - m_genesis.downforce).abs() < 1e-5,
+            "MorphoGenes.downforce diverge"
+        );
+        assert!(
+            (m_dna.grip_mult - m_genesis.grip_mult).abs() < 1e-5,
+            "MorphoGenes.grip_mult diverge"
+        );
 
         // E vice-versa: serializa via dna_genesis, desserializa via dna.
         let m_gen2 = crate::evolution::dna_genesis::MorphoGenes {
-            mass: 900.0, wheelbase: 2.8, downforce: 0.7, grip_mult: 1.1
+            mass: 900.0,
+            wheelbase: 2.8,
+            downforce: 0.7,
+            grip_mult: 1.1,
         };
         let bytes_gen2 = m_gen2.to_le_bytes();
         let m_back = MorphoGenes::from_le_bytes(&bytes_gen2)
             .expect("dna.rs deve desserializar bytes de dna_genesis");
-        assert!((m_gen2.mass - m_back.mass).abs() < 1e-4, "round-trip invertido falhou");
+        assert!(
+            (m_gen2.mass - m_back.mass).abs() < 1e-4,
+            "round-trip invertido falhou"
+        );
     }
 
     /// 4. HypernetSeed::to_le_bytes / from_le_bytes devem ser idênticos.

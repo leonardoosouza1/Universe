@@ -56,28 +56,26 @@ use std::time::Instant;
 use bytemuck::Pod;
 use wgpu::util::DeviceExt;
 
-use universe::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS};
+use universe::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
 use universe::config::iara::vision::{RETINA_ROWS, RETINA_TOTAL};
 use universe::engine::SovereignEngine;
 use universe::evolution::dna_genesis::load_champion_dna;
-use universe::gpu::{Pose, RetinaGpu};
 use universe::gpu::brain::{BrainGpu, BrainInput};
 use universe::gpu::perception::{PerceptionGpu, PosePerception, TEMPORAL_STRIDE};
-use universe::gpu::physics::{
-    PhysicsGpu, PhysicsStateGpu, pack_config_flags, WheelGpu,
-};
-use universe::world::VoxelWorld;
+use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu, WheelGpu, pack_config_flags};
+use universe::gpu::{Pose, RetinaGpu};
+use universe::perception::RetinaPerception;
 use universe::simulation::racing_line::RacingLine;
 use universe::visao::pitch;
-use universe::perception::RetinaPerception;
+use universe::world::VoxelWorld;
 
 // ─── Tipos/helpers deduplicados (E3, REFACTOR_PLAN §2.3) ─────────────────────
 // RetinaParamsGpu/PoseRaw/uniform_entry/storage_entry/pos_of/make_physics_state
 // eram cópias idênticas às de gpu_evolve.rs e cortex_evolve.rs — unificadas em
 // src/gpu/retina_types.rs, src/gpu/core.rs e src/gpu/physics.rs.
-use universe::gpu::retina_types::{RetinaParamsGpu, PoseRaw};
-use universe::gpu::core::{uniform_entry, storage_entry};
-use universe::gpu::physics::{pos_of, make_physics_state};
+use universe::gpu::core::{storage_entry, uniform_entry};
+use universe::gpu::physics::{make_physics_state, pos_of};
+use universe::gpu::retina_types::{PoseRaw, RetinaParamsGpu};
 
 // ─── Estado de um ser para o laço (CPU-side, posição física) ─────────────────
 
@@ -114,7 +112,7 @@ struct GpuLoop {
     // Device compartilhado por retina + percepção + cérebro.
     // Arc porque BrainGpu exige Arc<Device> na assinatura.
     device: Arc<wgpu::Device>,
-    queue:  Arc<wgpu::Queue>,
+    queue: Arc<wgpu::Queue>,
     adapter_name: String,
 
     // ── Retina ────────────────────────────────────────────────────────────────
@@ -123,10 +121,10 @@ struct GpuLoop {
     // PROBLEMA: RetinaGpu::new() abre device próprio. Para o laço encadeado,
     // replicamos o essencial da retina aqui usando o device compartilhado.
     pipeline_retina: wgpu::ComputePipeline,
-    layout_retina:   wgpu::BindGroupLayout,
-    buf_grid:        wgpu::Buffer,
+    layout_retina: wgpu::BindGroupLayout,
+    buf_grid: wgpu::Buffer,
     buf_poses_retina: wgpu::Buffer,
-    buf_retina_out:   wgpu::Buffer,  // VRAM, alimenta percepção direto
+    buf_retina_out: wgpu::Buffer, // VRAM, alimenta percepção direto
     // buf_retina_readback NÃO alocado — não fazemos readback da retina no laço
     grid_size: u32,
     cell_size: f32,
@@ -135,7 +133,7 @@ struct GpuLoop {
     percept: PerceptionGpu,
 
     // ── Cérebro ───────────────────────────────────────────────────────────────
-    brain:   BrainGpu,
+    brain: BrainGpu,
 
     // ── Racing line (cópia para cálculo CPU por tick) ─────────────────────────
     // A projeção na racing_line é calculada pela CPU antes de cada dispatch e
@@ -192,10 +190,10 @@ impl GpuLoop {
         // ── Garante que só um ICD Vulkan é carregado ──────────────────────────
         // Múltiplos ICDs (intel_hasvk, lvp, radeon...) causam SIGSEGV no loader.
         let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
-        if std::path::Path::new(icd_radeon).exists()
-            && std::env::var("VK_ICD_FILENAMES").is_err()
-        {
-            unsafe { std::env::set_var("VK_ICD_FILENAMES", icd_radeon); }
+        if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
+            unsafe {
+                std::env::set_var("VK_ICD_FILENAMES", icd_radeon);
+            }
         }
 
         // ── Abre device compartilhado ─────────────────────────────────────────
@@ -205,13 +203,11 @@ impl GpuLoop {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
         });
-        let adapter = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference:    wgpu::PowerPreference::HighPerformance,
-                compatible_surface:  None,
-                force_fallback_adapter: false,
-            },
-        ))?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))?;
         let name = adapter.get_info().name.clone();
         let mut limits = wgpu::Limits::downlevel_defaults();
         // Cérebro usa 10 storage buffers: bindings 1-9 mais o `buf_tau` (banco de τ) —
@@ -228,15 +224,16 @@ impl GpuLoop {
         limits.max_storage_buffers_per_shader_stage = 12;
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                label:             Some("iara-loop"),
+                label: Some("iara-loop"),
                 required_features: wgpu::Features::empty(),
-                required_limits:   limits,
-                memory_hints:      wgpu::MemoryHints::Performance,
+                required_limits: limits,
+                memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
-        )).ok()?;
+        ))
+        .ok()?;
         let device = Arc::new(raw_device);
-        let queue  = Arc::new(raw_queue);
+        let queue = Arc::new(raw_queue);
 
         let cap = capacity.max(1);
 
@@ -244,39 +241,37 @@ impl GpuLoop {
         // grade: 320×320 u32. Compartilhada por retina e percepção.
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("loop-grid"),
+            label: Some("loop-grid"),
             contents: bytemuck::cast_slice(&grid_u32),
             // COPY_SRC não necessário — só retina e percepção lêem.
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE,
         });
 
         // ── Buffers da retina ─────────────────────────────────────────────────
         // poses_retina: cap × PoseRaw (8 × f32 = 32 bytes).
         let buf_poses_retina = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("loop-poses-retina"),
-            size:                (cap * std::mem::size_of::<PoseRaw>()) as u64,
-            usage:               wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation:  false,
+            label: Some("loop-poses-retina"),
+            size: (cap * std::mem::size_of::<PoseRaw>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         // retina_out: cap × RETINA_TOTAL × 4 bytes. Alimenta percepção na VRAM.
         // COPY_SRC para inspecionar se necessário.
         let buf_retina_out = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("loop-retina-out"),
-            size:                (cap * RETINA_TOTAL * 4) as u64,
-            usage:               wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation:  false,
+            label: Some("loop-retina-out"),
+            size: (cap * RETINA_TOTAL * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
 
         // ── Pipeline da retina ─────────────────────────────────────────────────
         // retina.wgsl: binding 0=params(uniform), 1=grid(storage), 2=poses(storage), 3=saida(storage).
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("loop-retina"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
-                include_str!("../gpu/retina.wgsl"),
-            )),
+            label: Some("loop-retina"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../gpu/retina.wgsl"))),
         });
         let layout_retina = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("loop-retina-layout"),
+            label: Some("loop-retina-layout"),
             entries: &[
                 uniform_entry(0),
                 storage_entry(1, true),  // grid
@@ -285,17 +280,17 @@ impl GpuLoop {
             ],
         });
         let pl_retina = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                None,
-            bind_group_layouts:   &[&layout_retina],
+            label: None,
+            bind_group_layouts: &[&layout_retina],
             push_constant_ranges: &[],
         });
         let pipeline_retina = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("loop-retina-pipeline"),
-            layout:              Some(&pl_retina),
-            module:              &shader_retina,
-            entry_point:         Some("main"),
+            label: Some("loop-retina-pipeline"),
+            layout: Some(&pl_retina),
+            module: &shader_retina,
+            entry_point: Some("main"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache: None,
         });
 
         // ── Percepção ─────────────────────────────────────────────────────────
@@ -321,18 +316,25 @@ impl GpuLoop {
         // encadear os quatro dispatches num `CommandEncoder` único.
         let grid_u8: Vec<u8> = world.grid.iter().map(|v| *v as u8).collect();
         let phys_gpu = PhysicsGpu::new_shared(
-            Arc::clone(&device), Arc::clone(&queue), name.clone(),
-            &grid_u8, &world.height_map, world.size, world.cell_size, cap)?;
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            name.clone(),
+            &grid_u8,
+            &world.height_map,
+            world.size,
+            world.cell_size,
+            cap,
+        )?;
 
         // ── Buffer de readback da retina (para CfC de percepção na CPU) ────────
         // cap × RETINA_TOTAL × 4 bytes. Cópia de buf_retina_out após o dispatch.
         // Permite rodar RetinaPerception na CPU sem nenhuma alteração no shader.
         let retina_readback_bytes = (cap * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
         let buf_retina_readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("loop-retina-readback"),
-            size:                retina_readback_bytes,
-            usage:               wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation:  false,
+            label: Some("loop-retina-readback"),
+            size: retina_readback_bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         // ── CfC de percepção — um por ser, com estado recorrente na CPU ────────
@@ -340,14 +342,18 @@ impl GpuLoop {
         // Estado recorrente (hidden[16]) residirá aqui entre ticks.
         // Ao contrário do motor.rs que usa retina_binocular (u8 convertida de raw),
         // aqui usamos a retina GPU (u32 packed) convertida para i8 na leitura.
-        let percept_cfc: Vec<RetinaPerception> = (0..cap).map(|_| RetinaPerception::new()).collect();
+        let percept_cfc: Vec<RetinaPerception> =
+            (0..cap).map(|_| RetinaPerception::new()).collect();
 
         println!(
             "GpuLoop: adapter={} · cap={} seres · retina+percepção+cérebro+física NO MESMO device",
             name, cap
         );
-        println!("  CfC percepção (ch192-207): {} seres × 16 hidden = {} f32 na CPU",
-            cap, cap * 16);
+        println!(
+            "  CfC percepção (ch192-207): {} seres × 16 hidden = {} f32 na CPU",
+            cap,
+            cap * 16
+        );
         println!("  ch83-84 (fluxo hemisférico): ligado no kernel motion");
         println!("  ch89 (reverse_timer): ligado via temporal[32]");
 
@@ -399,40 +405,50 @@ impl GpuLoop {
     /// Retorna `true` se bem-sucedido.
     fn tick(
         &mut self,
-        states:    &mut Vec<BeingState>,
-        engines:   &[SovereignEngine],
-        n:         usize,
-        dt:        f32,
-        tick_idx:  usize,
+        states: &mut Vec<BeingState>,
+        engines: &[SovereignEngine],
+        n: usize,
+        dt: f32,
+        tick_idx: usize,
     ) -> bool {
-        if n == 0 || n > self.capacity { return false; }
+        if n == 0 || n > self.capacity {
+            return false;
+        }
 
         // ── 1. Converte estados físicos para poses da retina ──────────────────
         // PoseRaw: [pos.x, pos.y, pos.z, gaze_yaw] + [fwd.x, fwd.z, right.x, right.z]
         // A retina usa coordenadas do mundo; gaze_yaw = 0 (sem desvio lateral).
-        let pose_raw_data: Vec<PoseRaw> = (0..n).map(|i| {
-            let p = &states[i].phys;
-            PoseRaw {
-                pos_gaze: [p.pos[0], p.pos[1], p.pos[2], 0.0],
-                dirs:     [p.fwd[0], p.fwd[2], p.lat[0], p.lat[2]],
-            }
-        }).collect();
-        self.queue.write_buffer(&self.buf_poses_retina, 0, bytemuck::cast_slice(&pose_raw_data));
+        let pose_raw_data: Vec<PoseRaw> = (0..n)
+            .map(|i| {
+                let p = &states[i].phys;
+                PoseRaw {
+                    pos_gaze: [p.pos[0], p.pos[1], p.pos[2], 0.0],
+                    dirs: [p.fwd[0], p.fwd[2], p.lat[0], p.lat[2]],
+                }
+            })
+            .collect();
+        self.queue.write_buffer(
+            &self.buf_poses_retina,
+            0,
+            bytemuck::cast_slice(&pose_raw_data),
+        );
 
         // ── 2. Poses para percepção (formato diferente: PosePerception) ───────
-        let poses_percept: Vec<PosePerception> = (0..n).map(|i| {
-            let p = &states[i].phys;
-            PosePerception {
-                pos_x: p.pos[0],
-                pos_y: p.pos[1],
-                pos_z: p.pos[2],
-                phase: 0.0, // heading absoluto — zero pois não temos racer.phase aqui
-                fwd_x: p.fwd[0],
-                fwd_z: p.fwd[2],
-                rgt_x: p.lat[0],
-                rgt_z: p.lat[2],
-            }
-        }).collect();
+        let poses_percept: Vec<PosePerception> = (0..n)
+            .map(|i| {
+                let p = &states[i].phys;
+                PosePerception {
+                    pos_x: p.pos[0],
+                    pos_y: p.pos[1],
+                    pos_z: p.pos[2],
+                    phase: 0.0, // heading absoluto — zero pois não temos racer.phase aqui
+                    fwd_x: p.fwd[0],
+                    fwd_z: p.fwd[2],
+                    rgt_x: p.lat[0],
+                    rgt_z: p.lat[2],
+                }
+            })
+            .collect();
 
         // ── 3a. Pré-computa distâncias laterais/frontais na CPU → buf_temporal[16-18] ──
         // O compilador ACO do RADV travava ao compilar os loops LAT_SAMPLES e FWD_SAMPLES
@@ -468,7 +484,7 @@ impl GpuLoop {
                 // Perpendicular esquerda: (-fwd_z, fwd_x) no plano XZ.
                 // Replicamos exatamente o BLOCO T: perp_x = -fwd_z, perp_z = fwd_x.
                 let perp_x = -fz;
-                let perp_z =  fx;
+                let perp_z = fx;
 
                 // Distância lateral esquerda: pos - perp*sd (idem ao BLOCO T original)
                 // Default 40.0 = livre (sem parede no alcance de 40m).
@@ -491,12 +507,16 @@ impl GpuLoop {
                 let mut dist_f = 50.0_f32;
                 for &sd in &fwd_samp {
                     let v = voxel_at(px + fx * sd, pz + fz * sd);
-                    if v == 2u32 || v == 3u32 { dist_f = sd; break; }
+                    if v == 2u32 || v == 3u32 {
+                        dist_f = sd;
+                        break;
+                    }
                 }
                 dist_vals.push([dist_l, dist_r, dist_f]);
             }
             // Injeta em buf_temporal[16-18] ANTES do dispatch da percepção temporal.
-            self.percept.update_dist_temporal(&self.queue, &dist_vals[..n]);
+            self.percept
+                .update_dist_temporal(&self.queue, &dist_vals[..n]);
         }
 
         // ── 3b. Pré-computa racing_line na CPU e injeta em buf_temporal[10-15] ──
@@ -545,22 +565,29 @@ impl GpuLoop {
                 // TODO: para distâncias reais, fazer readback da grade ou passar world ref.
                 // Por agora: fwd_norm=0.5 (distância frontal desconhecida), corridor=0.8 (livre).
                 // O kernel WGSL calculou dist_l/r na grade — esses campos são complementares.
-                let cpu_fwd_norm     = 0.5_f32;   // desconhecido sem readback da grade
-                let cpu_corridor     = 0.8_f32;   // livre (conservador)
-                let cpu_whisker_norm = 0.7_f32;   // livre (conservador)
+                let cpu_fwd_norm = 0.5_f32; // desconhecido sem readback da grade
+                let cpu_corridor = 0.8_f32; // livre (conservador)
+                let cpu_whisker_norm = 0.7_f32; // livre (conservador)
 
                 // d_off: derivada do desvio. Precisamos do prev_off. Usamos off_norm
                 // atual como prev pra este tick; no próximo tick a diferença será real.
                 // (No GPU, o temporal[8] guarda prev_line_offset_n do tick anterior.)
                 // Aqui não temos o valor anterior sem readback. Passamos 0 para d_off,
                 // que dá sinal neutro. Motor.rs usa a versão completa com estado real.
-                let cpu_d_off = 0.0_f32;  // sem estado anterior disponível neste binário
+                let cpu_d_off = 0.0_f32; // sem estado anterior disponível neste binário
 
-                racing_vals.push([off_norm, cpu_d_off, la_norm,
-                                  cpu_fwd_norm, cpu_corridor, cpu_whisker_norm]);
+                racing_vals.push([
+                    off_norm,
+                    cpu_d_off,
+                    la_norm,
+                    cpu_fwd_norm,
+                    cpu_corridor,
+                    cpu_whisker_norm,
+                ]);
             }
             // Injeta em buf_temporal[10-15] ANTES do dispatch da percepção.
-            self.percept.update_racing_line_temporal(&self.queue, &racing_vals[..n]);
+            self.percept
+                .update_racing_line_temporal(&self.queue, &racing_vals[..n]);
         }
 
         // ── 3c. Telemetria proprioceptiva → buf_temporal[20-31] ───────────────
@@ -586,7 +613,9 @@ impl GpuLoop {
                 let ng = gs as i32;
                 if xi >= 0 && xi < ng && yi >= 0 && yi < ng {
                     self.grid_cpu[(yi as usize) * gs + (xi as usize)]
-                } else { 2u32 }
+                } else {
+                    2u32
+                }
             };
 
             let mut prop_vals: Vec<[f32; 12]> = Vec::with_capacity(n);
@@ -606,7 +635,7 @@ impl GpuLoop {
                 let alignment = if speed_m_s > 0.1 {
                     (vel_dot_fwd / speed_m_s).clamp(-1.0, 1.0)
                 } else {
-                    1.0  // parado = assume alinhado (sem ruído de direção)
+                    1.0 // parado = assume alinhado (sem ruído de direção)
                 };
 
                 // [2] lateral velocity: dot(vel, lat) — positivo = deriva para direita
@@ -618,7 +647,9 @@ impl GpuLoop {
                 // [4] RPM ratio
                 let rpm_ratio = if p.max_rpm > 0.0 {
                     (p.current_rpm / p.max_rpm).clamp(0.0, 1.0)
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
 
                 // [5] gear (f32 para o WGSL — multiplicado por 20 no shader)
                 let gear = p.current_gear as f32;
@@ -649,12 +680,22 @@ impl GpuLoop {
                 let wetness = 0.0_f32;
 
                 prop_vals.push([
-                    alignment, speed_m_s, lat_vel, hp_frac,
-                    rpm_ratio, gear, tire_temp_norm, downforce_norm,
-                    in_draft, on_grass, steer_abs, wetness,
+                    alignment,
+                    speed_m_s,
+                    lat_vel,
+                    hp_frac,
+                    rpm_ratio,
+                    gear,
+                    tire_temp_norm,
+                    downforce_norm,
+                    in_draft,
+                    on_grass,
+                    steer_abs,
+                    wetness,
                 ]);
             }
-            self.percept.update_proprioception_temporal(&self.queue, &prop_vals[..n]);
+            self.percept
+                .update_proprioception_temporal(&self.queue, &prop_vals[..n]);
         }
 
         // ── 3d. reverse_timer (ch 89) e CfC de percepção (ch 192-207) ──────────
@@ -686,7 +727,9 @@ impl GpuLoop {
                 let ng = gs as i32;
                 if xi >= 0 && xi < ng && yi >= 0 && yi < ng {
                     self.grid_cpu[(yi as usize) * gs + (xi as usize)]
-                } else { 2u32 }
+                } else {
+                    2u32
+                }
             };
 
             let mut extra_vals: Vec<[f32; 17]> = Vec::with_capacity(n);
@@ -699,14 +742,18 @@ impl GpuLoop {
                 //   lat_l_check = dist lat esq até Wall/Hole (<4m = bloqueado)
                 //   lat_r_check = idem direito
                 let (fx, fz) = (p.fwd[0], p.fwd[2]);
-                let perp_x = -fz; let perp_z = fx;  // left perpendicular
+                let perp_x = -fz;
+                let perp_z = fx; // left perpendicular
                 let (px, pz) = (p.pos[0], p.pos[2]);
 
                 // Distância frontal (amostras de 1m a 10m como no motor.rs)
                 let mut fwd_dist = 30.0_f32;
                 for sd in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
-                    let v = voxel_at(px + fx*sd, pz + fz*sd);
-                    if v == 2u32 || v == 3u32 { fwd_dist = sd; break; }
+                    let v = voxel_at(px + fx * sd, pz + fz * sd);
+                    if v == 2u32 || v == 3u32 {
+                        fwd_dist = sd;
+                        break;
+                    }
                 }
 
                 // Distâncias laterais (amostras 1m a 10m como no motor.rs)
@@ -714,12 +761,16 @@ impl GpuLoop {
                 let mut lat_r = 10.0_f32;
                 for sd in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
                     if lat_l == 10.0 {
-                        let v = voxel_at(px + perp_x*sd, pz + perp_z*sd);
-                        if v == 2u32 || v == 3u32 { lat_l = sd; }
+                        let v = voxel_at(px + perp_x * sd, pz + perp_z * sd);
+                        if v == 2u32 || v == 3u32 {
+                            lat_l = sd;
+                        }
                     }
                     if lat_r == 10.0 {
-                        let v = voxel_at(px - perp_x*sd, pz - perp_z*sd);
-                        if v == 2u32 || v == 3u32 { lat_r = sd; }
+                        let v = voxel_at(px - perp_x * sd, pz - perp_z * sd);
+                        if v == 2u32 || v == 3u32 {
+                            lat_r = sd;
+                        }
                     }
                 }
                 let both_blocked = lat_l < 4.0 && lat_r < 4.0;
@@ -743,7 +794,8 @@ impl GpuLoop {
                     let rev = states[i].reverse_timer;
                     let stag = states[i].stagnation_ticks;
                     let lockout = states[i].post_reverse_lockout;
-                    if rev <= 0.0 && lockout <= 0.0
+                    if rev <= 0.0
+                        && lockout <= 0.0
                         && fwd_dist < revcfg::TRIGGER_DIST_M
                         && speed < revcfg::TRIGGER_SPEED_MAX_MS
                         && stag > revcfg::STAGNATION_TICKS
@@ -770,7 +822,7 @@ impl GpuLoop {
 
                 // Lê hidden do CfC de percepção (estado do tick T-1, atualizado no readback).
                 let cfc_ref = &self.percept_cfc[i];
-                let hidden = &cfc_ref.pipeline.state.h;  // &Vec<f32>, len=16
+                let hidden = &cfc_ref.pipeline.state.h; // &Vec<f32>, len=16
 
                 // Monta [reverse_timer, cfc_hidden[0..15]] para injetar em temporal[32-48].
                 let mut val = [0.0f32; 17];
@@ -780,13 +832,16 @@ impl GpuLoop {
                 }
                 extra_vals.push(val);
             }
-            self.percept.update_extra_temporal(&self.queue, &extra_vals[..n]);
+            self.percept
+                .update_extra_temporal(&self.queue, &extra_vals[..n]);
         }
 
         // ── 4. Encoder único ──────────────────────────────────────────────────
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("loop-tick"),
-        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("loop-tick"),
+            });
 
         // ── 4a. Retina ────────────────────────────────────────────────────────
         // Params uniform para a retina (16 + 64 bytes = 80 bytes).
@@ -796,24 +851,38 @@ impl GpuLoop {
         }
         let retina_params = RetinaParamsGpu {
             grid_size: self.grid_size,
-            n_beings:  n as u32,
+            n_beings: n as u32,
             cell_size: self.cell_size,
-            fov_half:  (universe::visao::fov_deg() / 2.0).to_radians(),
-            pitches:   pitches_arr,
+            fov_half: (universe::visao::fov_deg() / 2.0).to_radians(),
+            pitches: pitches_arr,
         };
-        let buf_rp = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("loop-retina-params"),
-            contents: bytemuck::bytes_of(&retina_params),
-            usage:    wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_rp = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("loop-retina-params"),
+                contents: bytemuck::bytes_of(&retina_params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
         let bg_retina = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   None,
-            layout:  &self.layout_retina,
+            label: None,
+            layout: &self.layout_retina,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_rp.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_poses_retina.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_retina_out.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_rp.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_poses_retina.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_retina_out.as_entire_binding(),
+                },
             ],
         });
         // ── 4a-PRE: preserva retina do tick anterior ANTES da retina escrever ─────
@@ -821,10 +890,11 @@ impl GpuLoop {
         // Isso DEVE acontecer antes do dispatch da retina (que sobrescreve buf_retina_out).
         // No tick 0: buf_retina_prev = zeros → motion = |frame_real - 0| = frame_real (ok).
         // Nos ticks seguintes: buf_retina_prev = frame do tick t-1 → motion = delta real.
-        self.percept.copy_retina_prev(&mut enc, &self.buf_retina_out);
+        self.percept
+            .copy_retina_prev(&mut enc, &self.buf_retina_out);
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label:            Some("pass-retina"),
+                label: Some("pass-retina"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline_retina);
@@ -863,9 +933,9 @@ impl GpuLoop {
         let bytes_intent = self.brain.bind_and_dispatch(
             &mut enc,
             n,
-            &[],                                  // ignorado: use_percept_direct=1
+            &[], // ignorado: use_percept_direct=1
             dt,
-            Some(self.percept.buf_output()),       // elo percepção→cérebro via VRAM
+            Some(self.percept.buf_output()), // elo percepção→cérebro via VRAM
         );
 
         // ── 4d-extra. Cópia retina → buf_retina_readback (para CfC percepção) ──
@@ -875,7 +945,13 @@ impl GpuLoop {
         // (t+1), o estado atualizado do CfC será injetado em temporal[33-48].
         // Custo: ~423 KB de cópia intra-GPU (DMA, ~2 μs) + readback PCIe (~50 μs).
         let retina_copy_bytes = (n * RETINA_TOTAL * 4) as u64;
-        enc.copy_buffer_to_buffer(&self.buf_retina_out, 0, &self.buf_retina_readback, 0, retina_copy_bytes);
+        enc.copy_buffer_to_buffer(
+            &self.buf_retina_out,
+            0,
+            &self.buf_retina_readback,
+            0,
+            retina_copy_bytes,
+        );
 
         // ── 4e. Submit único ──────────────────────────────────────────────────
         // Todos os dispatches (retina, percepção, cérebro) + cópia retina readback
@@ -905,7 +981,9 @@ impl GpuLoop {
         {
             let slice = self.buf_retina_readback.slice(0..retina_copy_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            slice.map_async(wgpu::MapMode::Read, move |r| {
+                let _ = tx.send(r);
+            });
             // Poll pós-mapeamento: o submit já foi processado pelo poll acima,
             // mas o callback do map_async precisa de um poll para ser servido.
             self.device.poll(wgpu::Maintain::Wait);
@@ -922,26 +1000,28 @@ impl GpuLoop {
                 for j in 0..RETINA_TOTAL {
                     let packed = retina_u32[base + j];
                     let dist_mm = (packed >> 8) as f32;
-                    let dist_m  = dist_mm / 1000.0;
-                    let mat     = packed & 0xFF;
+                    let dist_m = dist_mm / 1000.0;
+                    let mat = packed & 0xFF;
                     // Replica codificacao_legada() do motor.rs:
                     //   wall (2): curva 127→55→0 (≤30m → 55, ≤120m → 0 linear)
                     //   road (1): -128..0 (mais perto = mais negativo)
                     //   grass(0): ~40 fixo
                     //   hole (3): 127 (perigo máximo)
                     let v: f32 = match mat {
-                        2 => {  // wall: positivo alto perto, decai à distância
+                        2 => {
+                            // wall: positivo alto perto, decai à distância
                             if dist_m <= 30.0 {
                                 127.0 - (127.0 - 55.0) * (dist_m / 30.0)
                             } else {
                                 55.0 * (1.0 - (dist_m - 30.0) / 90.0).max(0.0)
                             }
                         }
-                        1 => {  // road: negativo (mais perto = mais negativo)
+                        1 => {
+                            // road: negativo (mais perto = mais negativo)
                             -128.0 + (dist_m.min(80.0) / 80.0) * 128.0
                         }
-                        0 => 40.0,   // grass: valor moderado fixo
-                        _ => 127.0,  // hole (mat=3): perigo máximo
+                        0 => 40.0,  // grass: valor moderado fixo
+                        _ => 127.0, // hole (mat=3): perigo máximo
                     };
                     retina_i8[j] = v.clamp(-127.0, 127.0) as i8;
                 }
@@ -962,18 +1042,35 @@ impl GpuLoop {
         // chega na física. Só imprime no primeiro tick, para não poluir.
         if std::env::var("IARA_DIAG").is_ok() && (!self.diag_feito || tick_idx % 500 == 0) {
             self.diag_feito = true;
-            let int_nz = intents.iter().flat_map(|a| a.iter()).filter(|v| v.abs() > 1e-6).count();
-            let int_max = intents.iter().flat_map(|a| a.iter())
+            let int_nz = intents
+                .iter()
+                .flat_map(|a| a.iter())
+                .filter(|v| v.abs() > 1e-6)
+                .count();
+            let int_max = intents
+                .iter()
+                .flat_map(|a| a.iter())
                 .fold(0.0f32, |m, v| m.max(v.abs()));
-            eprintln!("[DIAG t={}] intent: {}/{} nao-zero, |max|={:.6}", tick_idx,
-                      int_nz, intents.len() * 96, int_max);
-            eprintln!("[DIAG t={}] intent[0][0..3] = {:?}", tick_idx,
-                      &intents[0][0..3.min(intents[0].len())]);
+            eprintln!(
+                "[DIAG t={}] intent: {}/{} nao-zero, |max|={:.6}",
+                tick_idx,
+                int_nz,
+                intents.len() * 96,
+                int_max
+            );
+            eprintln!(
+                "[DIAG t={}] intent[0][0..3] = {:?}",
+                tick_idx,
+                &intents[0][0..3.min(intents[0].len())]
+            );
             // ser 0 estado completo
             if !states.is_empty() {
                 let p = &states[0].phys;
                 let speed = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
-                eprintln!("[DIAG t={}] ser0 speed={:.2}m/s rpm={:.0} gear={}", tick_idx, speed, p.current_rpm, p.current_gear);
+                eprintln!(
+                    "[DIAG t={}] ser0 speed={:.2}m/s rpm={:.0} gear={}",
+                    tick_idx, speed, p.current_rpm, p.current_gear
+                );
             }
         }
         // ── DIAGNÓSTICO DE TRAVAMENTO: lê o sensory_wave quando ser0 está parado ──
@@ -987,24 +1084,35 @@ impl GpuLoop {
             // Só quando travado para não adicionar latência no laço quente.
             if speed0 < 0.5 && bytes_percept > 0 {
                 // Cria buffer temporário MAP_READ para 1 ser apenas (56 u32 = 224 bytes).
-                let diag_bytes = (1 * 56 * 4) as u64;  // 1 ser × 56 u32 × 4 bytes
+                let diag_bytes = (1 * 56 * 4) as u64; // 1 ser × 56 u32 × 4 bytes
                 let buf_wave_diag = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label:              Some("diag-wave"),
-                    size:               diag_bytes,
-                    usage:              wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    label: Some("diag-wave"),
+                    size: diag_bytes,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
                 // Copia buf_output[ser0] → buf_wave_diag via encoder separado.
-                let mut enc_diag = self.device.create_command_encoder(
-                    &wgpu::CommandEncoderDescriptor { label: Some("diag-enc") });
-                enc_diag.copy_buffer_to_buffer(self.percept.buf_output(), 0, &buf_wave_diag, 0, diag_bytes);
+                let mut enc_diag =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("diag-enc"),
+                        });
+                enc_diag.copy_buffer_to_buffer(
+                    self.percept.buf_output(),
+                    0,
+                    &buf_wave_diag,
+                    0,
+                    diag_bytes,
+                );
                 self.queue.submit(Some(enc_diag.finish()));
                 self.device.poll(wgpu::Maintain::Wait);
 
                 // Map e lê.
                 let slice_w = buf_wave_diag.slice(0..diag_bytes);
                 let (tx_w, rx_w) = std::sync::mpsc::channel();
-                slice_w.map_async(wgpu::MapMode::Read, move |r| { let _ = tx_w.send(r); });
+                slice_w.map_async(wgpu::MapMode::Read, move |r| {
+                    let _ = tx_w.send(r);
+                });
                 self.device.poll(wgpu::Maintain::Wait);
                 let _ = rx_w.recv();
 
@@ -1020,25 +1128,48 @@ impl GpuLoop {
                 buf_wave_diag.unmap();
 
                 // Imprime canais críticos do travamento.
-                eprintln!("[WAVE t={}] TRAVADO pos=({:.0},{:.0}) speed={:.2}m/s",
-                    tick_idx, p.pos[0], p.pos[2], speed0);
-                eprintln!("  ch64=align:{:4}  ch65=speed:{:4} (÷2={:.1}m/s)  ch66=lat:{:4}",
-                    w[64], w[65], w[65] as f32 / 2.0, w[66]);
-                eprintln!("  ch82=fwd_urg:{:4}  ch85=ema_l:{:4}  ch86=ema_r:{:4}  ch88=prox:{:4}",
-                    w[82], w[85], w[86], w[88]);
-                eprintln!("  ch89=reverse:{:4}  ch102=ar_l:{:4}  ch103=ar_r:{:4}  ch104=ar_f:{:4}",
-                    w[89], w[102], w[103], w[104]);
-                eprintln!("  ch108=rl_off:{:4}  ch109=doff:{:4}  ch110=la:{:4}  ch120=mem0:{:4}",
-                    w[108], w[109], w[110], w[120]);
-                eprintln!("  ch192-197 cfc=[{},{},{},{},{},{}]",
-                    w[192], w[193], w[194], w[195], w[196], w[197]);
-                let thr = intents[0][0]; let steer_raw = intents[0][1]; let brk = intents[0][2];
-                eprintln!("  INTENT raw: thr={:.3}  steer={:.3}  brake={:.3}",
-                    thr, steer_raw, brk);
+                eprintln!(
+                    "[WAVE t={}] TRAVADO pos=({:.0},{:.0}) speed={:.2}m/s",
+                    tick_idx, p.pos[0], p.pos[2], speed0
+                );
+                eprintln!(
+                    "  ch64=align:{:4}  ch65=speed:{:4} (÷2={:.1}m/s)  ch66=lat:{:4}",
+                    w[64],
+                    w[65],
+                    w[65] as f32 / 2.0,
+                    w[66]
+                );
+                eprintln!(
+                    "  ch82=fwd_urg:{:4}  ch85=ema_l:{:4}  ch86=ema_r:{:4}  ch88=prox:{:4}",
+                    w[82], w[85], w[86], w[88]
+                );
+                eprintln!(
+                    "  ch89=reverse:{:4}  ch102=ar_l:{:4}  ch103=ar_r:{:4}  ch104=ar_f:{:4}",
+                    w[89], w[102], w[103], w[104]
+                );
+                eprintln!(
+                    "  ch108=rl_off:{:4}  ch109=doff:{:4}  ch110=la:{:4}  ch120=mem0:{:4}",
+                    w[108], w[109], w[110], w[120]
+                );
+                eprintln!(
+                    "  ch192-197 cfc=[{},{},{},{},{},{}]",
+                    w[192], w[193], w[194], w[195], w[196], w[197]
+                );
+                let thr = intents[0][0];
+                let steer_raw = intents[0][1];
+                let brk = intents[0][2];
+                eprintln!(
+                    "  INTENT raw: thr={:.3}  steer={:.3}  brake={:.3}",
+                    thr, steer_raw, brk
+                );
             }
         }
         if intents.len() != n {
-            eprintln!("  ERRO: readback do intent retornou {} em vez de {}", intents.len(), n);
+            eprintln!(
+                "  ERRO: readback do intent retornou {} em vez de {}",
+                intents.len(),
+                n
+            );
             return false;
         }
 
@@ -1056,102 +1187,112 @@ impl GpuLoop {
         let kan_eval_fn = |out_idx: usize, x: f32| -> f32 {
             universe::kan::eval_knots(&self.kan_knots, out_idx, x)
         };
-        let mut phys_states: Vec<PhysicsStateGpu> = (0..n).map(|i| {
-            let mut s = states[i].phys;
-            let intent = &intents[i];
-            // Aplica KAN de saída (replica motor.rs L1873-L1926).
-            let thr_kan   = kan_eval_fn(0, intent[0]).max(0.0);   // throttle ≥ 0
-            let steer_kan = kan_eval_fn(1, intent[1]);
-            let brk_kan   = kan_eval_fn(2, intent[2]).max(0.0);   // brake ≥ 0
-            // Smoothing temporal do steer (50/50): amortece reversão abrupta.
-            let steer_smooth = (states[i].prev_steer * 0.50 + steer_kan * 0.50)
-                .clamp(-1.0, 1.0);
+        let mut phys_states: Vec<PhysicsStateGpu> = (0..n)
+            .map(|i| {
+                let mut s = states[i].phys;
+                let intent = &intents[i];
+                // Aplica KAN de saída (replica motor.rs L1873-L1926).
+                let thr_kan = kan_eval_fn(0, intent[0]).max(0.0); // throttle ≥ 0
+                let steer_kan = kan_eval_fn(1, intent[1]);
+                let brk_kan = kan_eval_fn(2, intent[2]).max(0.0); // brake ≥ 0
+                // Smoothing temporal do steer (50/50): amortece reversão abrupta.
+                let steer_smooth =
+                    (states[i].prev_steer * 0.50 + steer_kan * 0.50).clamp(-1.0, 1.0);
 
-            let is_reversing = states[i].reverse_timer > 0.0;
-            let in_lockout   = states[i].post_reverse_lockout > 0.0;
+                let is_reversing = states[i].reverse_timer > 0.0;
+                let in_lockout = states[i].post_reverse_lockout > 0.0;
 
-            // motor.rs L1950: anula brake quando speed < 2.0 m/s (evita travar carro parado).
-            // Sem isso: modelo emite brake=0.98 + throttle=0.90 → ambos se anulam → speed=0
-            // para sempre. O modelo aprendeu que "parado + parede" → brake alto, mas a física
-            // do motor.rs já anula o brake baixo speed para dar chance ao throttle.
-            let speed_now = (s.vel[0].powi(2) + s.vel[2].powi(2)).sqrt();
-            let brk_final = if speed_now < 2.0 { 0.0 } else { brk_kan };
+                // motor.rs L1950: anula brake quando speed < 2.0 m/s (evita travar carro parado).
+                // Sem isso: modelo emite brake=0.98 + throttle=0.90 → ambos se anulam → speed=0
+                // para sempre. O modelo aprendeu que "parado + parede" → brake alto, mas a física
+                // do motor.rs já anula o brake baixo speed para dar chance ao throttle.
+                let speed_now = (s.vel[0].powi(2) + s.vel[2].powi(2)).sqrt();
+                let brk_final = if speed_now < 2.0 { 0.0 } else { brk_kan };
 
-            if is_reversing {
-                // RÉ ATIVA: override COMPLETO do intent neural (motor.rs L2325-2339).
-                // Durante ré: pedal fixo de 0.75, steer=0 (backup reto), brake=0.
-                // O modelo NÃO controla o carro em ré — foi treinado com esse override.
-                // Force-shift para gear=0 (Reverse): shift_req = -1 repetido até gear=0.
-                // A física desce 1 marcha por tick quando throttle > 0 e gear > 0 na ré.
-                // Replicamos forçando current_gear = 0 diretamente (mesma semântica que shift_req).
-                s.throttle   = universe::config::iara::reverse_maneuver::PEDAL;  // pedal de recuo fixo
-                s.steer      = 0.0;             // backup reto (sem risco de girar para outra parede)
-                s.brake_cmd  = 0.0;             // sem freio (o pedal reverso acelera a ré)
-                s.current_gear = 0;             // gear 0 = Reverse (convenção do physics.wgsl)
-            } else if in_lockout {
-                // PÓS-RÉ LOCKOUT: throttle capeado em 0.8 para aceleração suave ao reiniciar.
-                // Replica motor.rs L2331-2332: pedal = (intent * safety_cap).min(0.8).
-                s.throttle   = thr_kan.min(0.8);
-                s.steer      = steer_smooth;
-                s.brake_cmd  = brk_final;
-                // Auto-clutch: se saiu da ré (gear=0) volta para 1ª marcha (gear=2 = 1ª).
-                // Motor.rs L2294-2296: se current_gear <= 1 e não em ré → shift_req = +1.
-                if s.current_gear <= 1 { s.current_gear = 2; }
-            } else if states[i].escape_ticks > 0 {
-                // ESCAPE DE ESTAGNAÇÃO: modelo está parado por 0.5s sem ré.
-                // Replica motor.rs stagnation escape: throttle=0.3 mínimo, brake=0.
-                // O steer continua sendo do modelo para manter a navegação.
-                // Sem isso: modelo emite throttle=0 em curvas apertadas e fica no idle
-                // do motor (0.07 m/s eterno). O CHAMPION foi treinado esperando essa âncora.
-                s.throttle  = 0.3f32.max(thr_kan);  // mínimo 0.3, respeita se modelo quer mais
-                s.steer     = steer_smooth;
-                s.brake_cmd = 0.0;  // zera freio para o throttle mínimo ter efeito
-                if s.current_gear <= 1 { s.current_gear = 2; }
-            } else {
-                // MODO NORMAL: intent neural completo.
-                s.throttle  = thr_kan;
-                s.steer     = steer_smooth;
-                s.brake_cmd = brk_final;
-                // Auto-clutch: sai de gear 0/1 para 2 (1ª marcha) quando não em ré.
-                if s.current_gear <= 1 { s.current_gear = 2; }
-                // Guardian Anti-Stall: se parado em marcha alta (>2), desce para 2.
-                if s.current_gear > 2 && speed_now < 3.0 { s.current_gear -= 1; }
-
-                // AUTO-SHIFT POR RPM — replica motor.rs L2303-2309 (linhas 2303, 2307).
-                // CAUSA RAIZ DO BUG: sem este bloco o carro fica preso em gear=3 (2ª marcha).
-                // Com gear=3 e max_rpm=8500, o limitador (`tm=0` quando `rr>1`) corta o torque
-                // assim que RPM > max_rpm — o carro satura em ~8 m/s e decai para 0.17 m/s.
-                // O modelo foi treinado no motor.rs que tem auto-shift → espera que as marchas
-                // troquem por RPM, não por decisão do cérebro.
-                //
-                // Embreagem colada (is_clutch_engaged no motor.rs):
-                //   wheel_ratio ≈ 12 - (gear-2)*2 → gear=3 → ratio=8
-                //   wheel_rpm = speed * ratio * 30 → a 8 m/s: 8 * 8 * 30 = 1920 > 1200 → colada
-                //   (conservador: usamos speed > 3 m/s E gear >= 2 como proxy)
-                // Upshift: rpm > 85% max_rpm E marcha < 6ª E shift_timer=0
-                // Downshift: rpm < 30% max_rpm E marcha > 2ª E speed > 3 m/s E shift_timer=0
-                if s.shift_timer <= 0.0 && s.current_gear >= 2 && speed_now > 3.0 {
-                    if s.current_rpm > s.max_rpm * 0.85 && s.current_gear < 6 {
-                        // Sobe marcha: timer de 150ms (motor.rs usa 150ms)
-                        s.current_gear += 1;
-                        s.shift_timer = 0.15;
-                    } else if s.current_rpm < s.max_rpm * 0.30 && s.current_gear > 2 {
-                        // Desce marcha: evita afogamento em marcha longa sem velocidade
+                if is_reversing {
+                    // RÉ ATIVA: override COMPLETO do intent neural (motor.rs L2325-2339).
+                    // Durante ré: pedal fixo de 0.75, steer=0 (backup reto), brake=0.
+                    // O modelo NÃO controla o carro em ré — foi treinado com esse override.
+                    // Force-shift para gear=0 (Reverse): shift_req = -1 repetido até gear=0.
+                    // A física desce 1 marcha por tick quando throttle > 0 e gear > 0 na ré.
+                    // Replicamos forçando current_gear = 0 diretamente (mesma semântica que shift_req).
+                    s.throttle = universe::config::iara::reverse_maneuver::PEDAL; // pedal de recuo fixo
+                    s.steer = 0.0; // backup reto (sem risco de girar para outra parede)
+                    s.brake_cmd = 0.0; // sem freio (o pedal reverso acelera a ré)
+                    s.current_gear = 0; // gear 0 = Reverse (convenção do physics.wgsl)
+                } else if in_lockout {
+                    // PÓS-RÉ LOCKOUT: throttle capeado em 0.8 para aceleração suave ao reiniciar.
+                    // Replica motor.rs L2331-2332: pedal = (intent * safety_cap).min(0.8).
+                    s.throttle = thr_kan.min(0.8);
+                    s.steer = steer_smooth;
+                    s.brake_cmd = brk_final;
+                    // Auto-clutch: se saiu da ré (gear=0) volta para 1ª marcha (gear=2 = 1ª).
+                    // Motor.rs L2294-2296: se current_gear <= 1 e não em ré → shift_req = +1.
+                    if s.current_gear <= 1 {
+                        s.current_gear = 2;
+                    }
+                } else if states[i].escape_ticks > 0 {
+                    // ESCAPE DE ESTAGNAÇÃO: modelo está parado por 0.5s sem ré.
+                    // Replica motor.rs stagnation escape: throttle=0.3 mínimo, brake=0.
+                    // O steer continua sendo do modelo para manter a navegação.
+                    // Sem isso: modelo emite throttle=0 em curvas apertadas e fica no idle
+                    // do motor (0.07 m/s eterno). O CHAMPION foi treinado esperando essa âncora.
+                    s.throttle = 0.3f32.max(thr_kan); // mínimo 0.3, respeita se modelo quer mais
+                    s.steer = steer_smooth;
+                    s.brake_cmd = 0.0; // zera freio para o throttle mínimo ter efeito
+                    if s.current_gear <= 1 {
+                        s.current_gear = 2;
+                    }
+                } else {
+                    // MODO NORMAL: intent neural completo.
+                    s.throttle = thr_kan;
+                    s.steer = steer_smooth;
+                    s.brake_cmd = brk_final;
+                    // Auto-clutch: sai de gear 0/1 para 2 (1ª marcha) quando não em ré.
+                    if s.current_gear <= 1 {
+                        s.current_gear = 2;
+                    }
+                    // Guardian Anti-Stall: se parado em marcha alta (>2), desce para 2.
+                    if s.current_gear > 2 && speed_now < 3.0 {
                         s.current_gear -= 1;
-                        s.shift_timer = 0.15;
+                    }
+
+                    // AUTO-SHIFT POR RPM — replica motor.rs L2303-2309 (linhas 2303, 2307).
+                    // CAUSA RAIZ DO BUG: sem este bloco o carro fica preso em gear=3 (2ª marcha).
+                    // Com gear=3 e max_rpm=8500, o limitador (`tm=0` quando `rr>1`) corta o torque
+                    // assim que RPM > max_rpm — o carro satura em ~8 m/s e decai para 0.17 m/s.
+                    // O modelo foi treinado no motor.rs que tem auto-shift → espera que as marchas
+                    // troquem por RPM, não por decisão do cérebro.
+                    //
+                    // Embreagem colada (is_clutch_engaged no motor.rs):
+                    //   wheel_ratio ≈ 12 - (gear-2)*2 → gear=3 → ratio=8
+                    //   wheel_rpm = speed * ratio * 30 → a 8 m/s: 8 * 8 * 30 = 1920 > 1200 → colada
+                    //   (conservador: usamos speed > 3 m/s E gear >= 2 como proxy)
+                    // Upshift: rpm > 85% max_rpm E marcha < 6ª E shift_timer=0
+                    // Downshift: rpm < 30% max_rpm E marcha > 2ª E speed > 3 m/s E shift_timer=0
+                    if s.shift_timer <= 0.0 && s.current_gear >= 2 && speed_now > 3.0 {
+                        if s.current_rpm > s.max_rpm * 0.85 && s.current_gear < 6 {
+                            // Sobe marcha: timer de 150ms (motor.rs usa 150ms)
+                            s.current_gear += 1;
+                            s.shift_timer = 0.15;
+                        } else if s.current_rpm < s.max_rpm * 0.30 && s.current_gear > 2 {
+                            // Desce marcha: evita afogamento em marcha longa sem velocidade
+                            s.current_gear -= 1;
+                            s.shift_timer = 0.15;
+                        }
                     }
                 }
-            }
-            s.dt = dt;
-            s
-        }).collect();
+                s.dt = dt;
+                s
+            })
+            .collect();
         // Salva steer suavizado e atualiza stagnation para o próximo tick.
         for i in 0..n {
             // Ao sair da ré, reseta prev_steer para 0 para evitar salto brusco no steer
             // na retomada: ao voltar ao modo normal, o smooth começa de 0 (reto), não de
             // qualquer valor que o modelo estava emitindo durante a ré.
             if states[i].reverse_timer > 0.0 {
-                states[i].prev_steer = 0.0;  // backup reto → suaviza a retomada
+                states[i].prev_steer = 0.0; // backup reto → suaviza a retomada
             } else {
                 states[i].prev_steer = phys_states[i].steer;
             }
@@ -1179,7 +1320,7 @@ impl GpuLoop {
                 // 128 ticks = 2s de throttle mínimo 0.3 — suficiente para contornar a maioria das
                 // curvas apertadas da pista seed=9001 onde o CHAMPION fica em idle sem slow brain.
                 if states[i].stagnation_ticks >= 32 && states[i].escape_ticks == 0 {
-                    states[i].escape_ticks = 64;  // 1s de throttle=0.3 mínimo
+                    states[i].escape_ticks = 64; // 1s de throttle=0.3 mínimo
                     states[i].stagnation_ticks = 0;
                 }
             }
@@ -1197,8 +1338,10 @@ impl GpuLoop {
         if diag {
             self.diag_fis = true;
             let a = &phys_states[0];
-            eprintln!("[FIS-ANTES] thr={:.3} brk={:.3} str={:.3} rpm={:.0} gear={} vel={:?} pos_y={:.3}",
-                a.throttle, a.brake_cmd, a.steer, a.current_rpm, a.current_gear, a.vel, a.pos[1]);
+            eprintln!(
+                "[FIS-ANTES] thr={:.3} brk={:.3} str={:.3} rpm={:.0} gear={} vel={:?} pos_y={:.3}",
+                a.throttle, a.brake_cmd, a.steer, a.current_rpm, a.current_gear, a.vel, a.pos[1]
+            );
             eprintln!("[FIS-ANTES] wheels={:?}", &a.wheels[..4]);
         }
 
@@ -1206,8 +1349,10 @@ impl GpuLoop {
         let ok_fis = self.phys_gpu.step(&mut phys_states);
         if diag {
             let a = &phys_states[0];
-            eprintln!("[FIS-DEPOIS] ok={} vel={:?} pos_y={:.3} rpm={:.0} torque={:.1}",
-                ok_fis, a.vel, a.pos[1], a.current_rpm, a.drive_torque_out);
+            eprintln!(
+                "[FIS-DEPOIS] ok={} vel={:?} pos_y={:.3} rpm={:.0} torque={:.1}",
+                ok_fis, a.vel, a.pos[1], a.current_rpm, a.drive_torque_out
+            );
             eprintln!("[FIS-DEPOIS] wheels={:?}", &a.wheels[..4]);
         }
         if !ok_fis {
@@ -1226,10 +1371,16 @@ impl GpuLoop {
             states[i].phys.fwd[2] = fwd[0] * sin_t + fwd[2] * cos_t;
             states[i].phys.lat[0] = lat[0] * cos_t - lat[2] * sin_t;
             states[i].phys.lat[2] = lat[0] * sin_t + lat[2] * cos_t;
-            let fn_ = (states[i].phys.fwd[0].powi(2) + states[i].phys.fwd[2].powi(2)).sqrt().max(1e-6);
-            let ln_ = (states[i].phys.lat[0].powi(2) + states[i].phys.lat[2].powi(2)).sqrt().max(1e-6);
-            states[i].phys.fwd[0] /= fn_; states[i].phys.fwd[2] /= fn_;
-            states[i].phys.lat[0] /= ln_; states[i].phys.lat[2] /= ln_;
+            let fn_ = (states[i].phys.fwd[0].powi(2) + states[i].phys.fwd[2].powi(2))
+                .sqrt()
+                .max(1e-6);
+            let ln_ = (states[i].phys.lat[0].powi(2) + states[i].phys.lat[2].powi(2))
+                .sqrt()
+                .max(1e-6);
+            states[i].phys.fwd[0] /= fn_;
+            states[i].phys.fwd[2] /= fn_;
+            states[i].phys.lat[0] /= ln_;
+            states[i].phys.lat[2] /= ln_;
         }
 
         // ── 8. Atualiza memory0 no estado temporal da GPU ─────────────────────
@@ -1238,9 +1389,11 @@ impl GpuLoop {
         // Chamada APÓS a física para garantir que o throttle final é o que chegou
         // nos pneus (não um valor pre-física).
         // Custo: N × 4 bytes de write_buffer = 240 bytes @ 60 seres — negligível.
-        let memory0_vals: Vec<f32> = (0..n).map(|i| {
-            intents[i][0].clamp(0.0, 1.0)  // mesmo clamp do throttle físico
-        }).collect();
+        let memory0_vals: Vec<f32> = (0..n)
+            .map(|i| {
+                intents[i][0].clamp(0.0, 1.0) // mesmo clamp do throttle físico
+            })
+            .collect();
         self.percept.update_memory0(&self.queue, &memory0_vals[..n]);
 
         true
@@ -1253,22 +1406,32 @@ fn main() {
     // Força ICD Vulkan da Radeon antes de qualquer wgpu::Instance::new.
     // Múltiplos ICDs causam SIGSEGV no loader (visto em gpu_validate.rs).
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
-    if std::path::Path::new(icd_radeon).exists()
-        && std::env::var("VK_ICD_FILENAMES").is_err()
-    {
-        unsafe { std::env::set_var("VK_ICD_FILENAMES", icd_radeon); }
+    if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
+        unsafe {
+            std::env::set_var("VK_ICD_FILENAMES", icd_radeon);
+        }
     }
 
     // ── Parsing de args ────────────────────────────────────────────────────────
     let args: Vec<String> = std::env::args().collect();
     let mut n_seres: usize = 60;
-    let mut n_ticks: usize = 20_000;  // 20.000 ticks = 312,5s @ 64Hz ≈ 5 min de simulação
+    let mut n_ticks: usize = 20_000; // 20.000 ticks = 312,5s @ 64Hz ≈ 5 min de simulação
     {
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
-                "--seres" => { i += 1; if i < args.len() { n_seres = args[i].parse().unwrap_or(60); } }
-                "--ticks" => { i += 1; if i < args.len() { n_ticks = args[i].parse().unwrap_or(20_000); } }
+                "--seres" => {
+                    i += 1;
+                    if i < args.len() {
+                        n_seres = args[i].parse().unwrap_or(60);
+                    }
+                }
+                "--ticks" => {
+                    i += 1;
+                    if i < args.len() {
+                        n_ticks = args[i].parse().unwrap_or(20_000);
+                    }
+                }
                 _ => {}
             }
             i += 1;
@@ -1285,8 +1448,10 @@ fn main() {
     // mas a validação canônica usa seed=9001, track_width=18m (gpu_validate.rs).
     // Com 14m o CHAMPION colidia com a parede após ~200 ticks (steer treinado para pista maior).
     let world = VoxelWorld::new(9001, 18.0);
-    println!("mundo: {}×{} · {} waypoints · volta {:.0} m  [{:.0} ms]",
-        world.size, world.size,
+    println!(
+        "mundo: {}×{} · {} waypoints · volta {:.0} m  [{:.0} ms]",
+        world.size,
+        world.size,
         world.waypoints_world.len(),
         world.lap_distance,
         t0.elapsed().as_secs_f64() * 1000.0,
@@ -1300,32 +1465,35 @@ fn main() {
     // (pesos nulos × qualquer wave = 0). O programa avisa e sai com erro.
     let t1 = Instant::now();
     let dna_opt = load_champion_dna("CHAMPION.dna");
-    let engines: Vec<SovereignEngine> = (0..n_seres).map(|_| {
-        let mut eng = SovereignEngine::new();
-        if let Some(ref dna) = dna_opt {
-            // Carrega pesos L1: cortex_raw (i8, 63.5-scaled) ou fast_weights (i8, 63.5-scaled).
-            let w: Vec<f32> = if let Some(ref cr) = dna.cortex_raw {
-                cr.iter().map(|&b| b as f32 / 63.5).collect()
-            } else {
-                dna.fast_weights.iter().map(|&b| b as f32 / 63.5).collect()
-            };
-            let n_l1 = eng.instinct_layer.weights.len().min(w.len());
-            eng.instinct_layer.weights[..n_l1].copy_from_slice(&w[..n_l1]);
-            // Carrega pesos L2 se presentes no DNA.
-            if let Some(ref l2) = dna.cortex_l2_raw {
-                let w2: Vec<f32> = l2.iter().map(|&b| b as f32 / 63.5).collect();
-                let n_l2 = eng.cortex_l2.weights.len().min(w2.len());
-                eng.cortex_l2.weights[..n_l2].copy_from_slice(&w2[..n_l2]);
+    let engines: Vec<SovereignEngine> = (0..n_seres)
+        .map(|_| {
+            let mut eng = SovereignEngine::new();
+            if let Some(ref dna) = dna_opt {
+                // Carrega pesos L1: cortex_raw (i8, 63.5-scaled) ou fast_weights (i8, 63.5-scaled).
+                let w: Vec<f32> = if let Some(ref cr) = dna.cortex_raw {
+                    cr.iter().map(|&b| b as f32 / 63.5).collect()
+                } else {
+                    dna.fast_weights.iter().map(|&b| b as f32 / 63.5).collect()
+                };
+                let n_l1 = eng.instinct_layer.weights.len().min(w.len());
+                eng.instinct_layer.weights[..n_l1].copy_from_slice(&w[..n_l1]);
+                // Carrega pesos L2 se presentes no DNA.
+                if let Some(ref l2) = dna.cortex_l2_raw {
+                    let w2: Vec<f32> = l2.iter().map(|&b| b as f32 / 63.5).collect();
+                    let n_l2 = eng.cortex_l2.weights.len().min(w2.len());
+                    eng.cortex_l2.weights[..n_l2].copy_from_slice(&w2[..n_l2]);
+                }
             }
-        }
-        eng
-    }).collect();
+            eng
+        })
+        .collect();
     // KAN output knots do CHAMPION — usado em GpuLoop::tick() via self.kan_knots.
     // Motor.rs aplica kan_out.eval(out_idx, raw) antes de usar throttle/steer/brake.
     // Sem o KAN: intent raw≈1 → steer físico=1 → slip_angle=90° → nenhuma tração.
     // KAN_OUT_KNOTS = 12 (kan.rs:85), KAN_OUT_DOMAIN = 2.0 (kan.rs:86).
     use universe::kan::KAN_OUT_KNOTS;
-    let kan_knots: [[f32; KAN_OUT_KNOTS]; 3] = dna_opt.as_ref()
+    let kan_knots: [[f32; KAN_OUT_KNOTS]; 3] = dna_opt
+        .as_ref()
         .map(|d| d.kan_knots)
         .unwrap_or_else(universe::evolution::dna_genesis::default_kan_knots);
 
@@ -1334,8 +1502,12 @@ fn main() {
     } else {
         "CHAMPION.dna nao encontrado — pesos ZEROS (seres nao se moverão por decisão própria)"
     };
-    println!("engines criados: {} seres · {}  [{:.0} ms]",
-        n_seres, dna_status, t1.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "engines criados: {} seres · {}  [{:.0} ms]",
+        n_seres,
+        dna_status,
+        t1.elapsed().as_secs_f64() * 1000.0
+    );
 
     // ── Contexto GPU ──────────────────────────────────────────────────────────
     let t2 = Instant::now();
@@ -1346,23 +1518,35 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("GpuLoop pronto  [{:.0} ms]", t2.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "GpuLoop pronto  [{:.0} ms]",
+        t2.elapsed().as_secs_f64() * 1000.0
+    );
     println!();
 
     // ── Estado inicial dos seres ───────────────────────────────────────────────
     // Distribui seres ao longo dos waypoints da pista.
     let n_wp = world.waypoints_world.len();
-    let mut states: Vec<BeingState> = (0..n_seres).map(|i| {
-        let wp = world.waypoints_world[(i * n_wp / n_seres).min(n_wp - 1)];
-        // Forward = direção para o próximo waypoint.
-        let wp_next = world.waypoints_world[((i * n_wp / n_seres) + 1).min(n_wp - 1)];
-        let dx = wp_next.x - wp.x;
-        let dz = wp_next.y - wp.y;
-        let len = (dx * dx + dz * dz).sqrt().max(1e-6);
-        let fwd = [dx / len, 0.0, dz / len];
-        let pos = [wp.x, 0.0, wp.y];
-        BeingState { phys: make_physics_state(pos, fwd), prev_steer: 0.0, stagnation_ticks: 0, escape_ticks: 0, reverse_timer: 0.0, post_reverse_lockout: 0.0 }
-    }).collect();
+    let mut states: Vec<BeingState> = (0..n_seres)
+        .map(|i| {
+            let wp = world.waypoints_world[(i * n_wp / n_seres).min(n_wp - 1)];
+            // Forward = direção para o próximo waypoint.
+            let wp_next = world.waypoints_world[((i * n_wp / n_seres) + 1).min(n_wp - 1)];
+            let dx = wp_next.x - wp.x;
+            let dz = wp_next.y - wp.y;
+            let len = (dx * dx + dz * dz).sqrt().max(1e-6);
+            let fwd = [dx / len, 0.0, dz / len];
+            let pos = [wp.x, 0.0, wp.y];
+            BeingState {
+                phys: make_physics_state(pos, fwd),
+                prev_steer: 0.0,
+                stagnation_ticks: 0,
+                escape_ticks: 0,
+                reverse_timer: 0.0,
+                post_reverse_lockout: 0.0,
+            }
+        })
+        .collect();
 
     // ── Odômetro acumulado por ser ─────────────────────────────────────────────
     // Usamos integração de velocidade * dt (mais preciso que euclidiana entre pontos
@@ -1399,7 +1583,7 @@ fn main() {
             let p1 = pos_of(&states[i].phys);
             let dx = (p1[0] - pos_prev[i][0]) as f64;
             let dz = (p1[2] - pos_prev[i][2]) as f64;
-            dist_acum[i] += (dx*dx + dz*dz).sqrt();
+            dist_acum[i] += (dx * dx + dz * dz).sqrt();
             pos_prev[i] = p1;
         }
         // Checkpoint de progresso a cada 1000 ticks (~15,6s de simulação)
@@ -1411,8 +1595,14 @@ fn main() {
                 v[v.len() / 2]
             };
             let max_voltas = max_d / lap_dist as f64;
-            println!("  tick {:5}: dist_max={:.0}m ({:.2}V)  dist_med={:.0}m ({:.2}V)",
-                tick_i + 1, max_d, max_voltas, med_d, med_d / lap_dist as f64);
+            println!(
+                "  tick {:5}: dist_max={:.0}m ({:.2}V)  dist_med={:.0}m ({:.2}V)",
+                tick_i + 1,
+                max_d,
+                max_voltas,
+                med_d,
+                med_d / lap_dist as f64
+            );
         }
     }
     let elapsed_loop = t_loop.elapsed().as_secs_f64();
@@ -1440,9 +1630,18 @@ fn main() {
 
     println!("=== DISTÂNCIAS E VOLTAS em {} ticks ===", n_ticks);
     println!("  lap_distance: {:.0} m", lap_dist);
-    println!("  dist_max:     {:.0} m  ({:.2} voltas)", dist_max, voltas_max);
-    println!("  dist_med:     {:.0} m  ({:.2} voltas)", dist_med, voltas_med);
-    println!("  seres com ≥1 volta completa: {}/{}", n_voltas_completas, n_seres);
+    println!(
+        "  dist_max:     {:.0} m  ({:.2} voltas)",
+        dist_max, voltas_max
+    );
+    println!(
+        "  dist_med:     {:.0} m  ({:.2} voltas)",
+        dist_med, voltas_med
+    );
+    println!(
+        "  seres com ≥1 volta completa: {}/{}",
+        n_voltas_completas, n_seres
+    );
     println!();
 
     // ── Top performers (prova de heterogeneidade) ─────────────────────────────
@@ -1456,12 +1655,20 @@ fn main() {
         let dist = dist_acum[i];
         let voltas = dist / lap_dist as f64;
         let vel = states[i].phys.vel;
-        let speed = (vel[0]*vel[0] + vel[1]*vel[1] + vel[2]*vel[2]).sqrt();
-        println!("  ser[{:2}]: dist={:.1}m ({:.2}V)  speed={:.2}m/s  pos=({:.0},{:.0})  {}",
-            i, dist, voltas, speed,
-            states[i].phys.pos[0], states[i].phys.pos[2],
-            if dist > 10.0 { "OK" } else { "PARADO!" });
-        if dist > 10.0 { algum_se_moveu = true; }
+        let speed = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
+        println!(
+            "  ser[{:2}]: dist={:.1}m ({:.2}V)  speed={:.2}m/s  pos=({:.0},{:.0})  {}",
+            i,
+            dist,
+            voltas,
+            speed,
+            states[i].phys.pos[0],
+            states[i].phys.pos[2],
+            if dist > 10.0 { "OK" } else { "PARADO!" }
+        );
+        if dist > 10.0 {
+            algum_se_moveu = true;
+        }
     }
     println!();
     if algum_se_moveu {

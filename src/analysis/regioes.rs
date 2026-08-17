@@ -49,7 +49,10 @@ impl CurvaturaPista {
     pub fn medir(waypoints_xz: &[(f32, f32)]) -> Self {
         let n = waypoints_xz.len();
         if n < 3 {
-            return Self { pts: waypoints_xz.to_vec(), kappa: vec![0.0; n] };
+            return Self {
+                pts: waypoints_xz.to_vec(),
+                kappa: vec![0.0; n],
+            };
         }
         let mut kappa = vec![0.0f32; n];
         for i in 0..n {
@@ -65,7 +68,10 @@ impl CurvaturaPista {
             let ang = cross.atan2(dot);
             kappa[i] = ang / (0.5 * (l1 + l2));
         }
-        Self { pts: waypoints_xz.to_vec(), kappa }
+        Self {
+            pts: waypoints_xz.to_vec(),
+            kappa,
+        }
     }
 
     /// |κ| (1/m) do waypoint mais próximo de `(x, z)`. Busca linear — só é chamada nos
@@ -216,7 +222,8 @@ pub fn analisar(
     for k in 0..n_neur {
         let media_reta = media_abs(&reta_idx, k);
         let media_curva = media_abs(&curva_idx, k);
-        let indice_especializacao = (media_curva - media_reta).abs() / (media_curva + media_reta + EPS);
+        let indice_especializacao =
+            (media_curva - media_reta).abs() / (media_curva + media_reta + EPS);
         let ativ_abs: Vec<f32> = amostras.iter().map(|a| a[k].abs()).collect();
         por_neuronio.push(EspecializacaoNeuronio {
             indice: k,
@@ -229,7 +236,8 @@ pub fn analisar(
         });
     }
 
-    let indices_especializados: Vec<usize> = por_neuronio.iter()
+    let indices_especializados: Vec<usize> = por_neuronio
+        .iter()
         .filter(|e| e.indice_especializacao >= limiar_especializacao)
         .map(|e| e.indice)
         .collect();
@@ -239,10 +247,21 @@ pub fn analisar(
     // especializadas, e reusa `contextual::coativacao` — mesma pergunta de E3,
     // domínio menor.
     let coesao = if indices_especializados.len() >= 2 && curva_idx.len() >= 2 {
-        let submatriz: Vec<Vec<f32>> = curva_idx.iter()
-            .map(|&t| indices_especializados.iter().map(|&k| amostras[t][k]).collect())
+        let submatriz: Vec<Vec<f32>> = curva_idx
+            .iter()
+            .map(|&t| {
+                indices_especializados
+                    .iter()
+                    .map(|&k| amostras[t][k])
+                    .collect()
+            })
             .collect();
-        Some(contextual::coativacao(camada, &submatriz, limiar_ativacao_coesao, 5))
+        Some(contextual::coativacao(
+            camada,
+            &submatriz,
+            limiar_ativacao_coesao,
+            5,
+        ))
     } else {
         None
     };
@@ -282,8 +301,10 @@ mod tests {
         let c = CurvaturaPista::medir(&pts);
         let k_reta = c.curvatura_em(5.0, 0.0);
         let k_curva = c.curvatura_em(10.0, 0.0); // a quina
-        assert!(k_curva > k_reta * 10.0,
-            "quina deveria ser bem mais curva que a reta: reta={k_reta} curva={k_curva}");
+        assert!(
+            k_curva > k_reta * 10.0,
+            "quina deveria ser bem mais curva que a reta: reta={k_reta} curva={k_curva}"
+        );
     }
 
     #[test]
@@ -298,11 +319,13 @@ mod tests {
     /// 0.0), ímpares = curva (curvatura 1.0). Mesma convenção nos dois testes centrais
     /// do protocolo (item 2 da tarefa).
     fn contexto_alternado(n: usize) -> Vec<ContextoAmostra> {
-        (0..n).map(|t| ContextoAmostra {
-            curvatura: if t % 2 == 0 { 0.0 } else { 1.0 },
-            velocidade: 10.0,
-            dist_parede: 5.0,
-        }).collect()
+        (0..n)
+            .map(|t| ContextoAmostra {
+                curvatura: if t % 2 == 0 { 0.0 } else { 1.0 },
+                velocidade: 10.0,
+                dist_parede: 5.0,
+            })
+            .collect()
     }
 
     #[test]
@@ -310,13 +333,18 @@ mod tests {
         let n = 20;
         let contexto = contexto_alternado(n);
         // Neurônio 0: 0.0 na reta, 1.0 na curva. Neurônio 1: constante 0.3 (controle).
-        let amostras: Vec<Vec<f32>> = (0..n).map(|t| {
-            let em_curva = t % 2 == 1;
-            vec![if em_curva { 1.0 } else { 0.0 }, 0.3]
-        }).collect();
+        let amostras: Vec<Vec<f32>> = (0..n)
+            .map(|t| {
+                let em_curva = t % 2 == 1;
+                vec![if em_curva { 1.0 } else { 0.0 }, 0.3]
+            })
+            .collect();
         let r = analisar("teste", &amostras, &contexto, 0.5, 0.5, 0.05).unwrap();
-        assert!(r.por_neuronio[0].indice_especializacao > 0.95,
-            "esperava ~1, veio {}", r.por_neuronio[0].indice_especializacao);
+        assert!(
+            r.por_neuronio[0].indice_especializacao > 0.95,
+            "esperava ~1, veio {}",
+            r.por_neuronio[0].indice_especializacao
+        );
     }
 
     #[test]
@@ -325,8 +353,11 @@ mod tests {
         let contexto = contexto_alternado(n);
         let amostras: Vec<Vec<f32>> = (0..n).map(|_| vec![0.7, 0.5]).collect();
         let r = analisar("teste", &amostras, &contexto, 0.5, 0.5, 0.05).unwrap();
-        assert!(r.por_neuronio[0].indice_especializacao < 0.05,
-            "esperava ~0, veio {}", r.por_neuronio[0].indice_especializacao);
+        assert!(
+            r.por_neuronio[0].indice_especializacao < 0.05,
+            "esperava ~0, veio {}",
+            r.por_neuronio[0].indice_especializacao
+        );
     }
 
     #[test]
@@ -334,14 +365,16 @@ mod tests {
         let n = 20;
         let contexto = contexto_alternado(n);
         // 3 neurônios: 0 especializado em curva, 1 especializado em reta, 2 neutro.
-        let amostras: Vec<Vec<f32>> = (0..n).map(|t| {
-            let em_curva = t % 2 == 1;
-            vec![
-                if em_curva { 1.0 } else { 0.0 },
-                if em_curva { 0.0 } else { 1.0 },
-                0.5,
-            ]
-        }).collect();
+        let amostras: Vec<Vec<f32>> = (0..n)
+            .map(|t| {
+                let em_curva = t % 2 == 1;
+                vec![
+                    if em_curva { 1.0 } else { 0.0 },
+                    if em_curva { 0.0 } else { 1.0 },
+                    0.5,
+                ]
+            })
+            .collect();
         let r = analisar("teste", &amostras, &contexto, 0.5, 0.8, 0.05).unwrap();
         assert_eq!(r.limiar_especializacao, 0.8);
         assert_eq!(r.indices_especializados.len(), 2);
@@ -354,12 +387,17 @@ mod tests {
     fn correlacao_curvatura_positiva_para_neuronio_alinhado_com_curva() {
         let n = 40;
         let contexto = contexto_alternado(n);
-        let amostras: Vec<Vec<f32>> = (0..n).map(|t| {
-            vec![contexto[t].curvatura] // ativação = a própria curvatura → corr = 1
-        }).collect();
+        let amostras: Vec<Vec<f32>> = (0..n)
+            .map(|t| {
+                vec![contexto[t].curvatura] // ativação = a própria curvatura → corr = 1
+            })
+            .collect();
         let r = analisar("teste", &amostras, &contexto, 0.5, 0.5, 0.05).unwrap();
-        assert!(r.por_neuronio[0].correlacao_curvatura > 0.99,
-            "correlacao deveria ser ~1, veio {}", r.por_neuronio[0].correlacao_curvatura);
+        assert!(
+            r.por_neuronio[0].correlacao_curvatura > 0.99,
+            "correlacao deveria ser ~1, veio {}",
+            r.por_neuronio[0].correlacao_curvatura
+        );
     }
 
     #[test]
@@ -385,21 +423,27 @@ mod tests {
         // da curva para a coesão ter algo a detectar, igual
         // `coativacao_detecta_par_acoplado`). A cada 4 ticks de curva, 1 fica "frio".
         let mut cnt_curva = 0usize;
-        let amostras: Vec<Vec<f32>> = (0..n).map(|t| {
-            let em_curva = t % 2 == 1;
-            if em_curva {
-                let ligado = cnt_curva % 4 != 0;
-                cnt_curva += 1;
-                let v = if ligado { 1.0 } else { 0.0 };
-                vec![v, v, 0.1]
-            } else {
-                vec![0.0, 0.0, 0.1]
-            }
-        }).collect();
+        let amostras: Vec<Vec<f32>> = (0..n)
+            .map(|t| {
+                let em_curva = t % 2 == 1;
+                if em_curva {
+                    let ligado = cnt_curva % 4 != 0;
+                    cnt_curva += 1;
+                    let v = if ligado { 1.0 } else { 0.0 };
+                    vec![v, v, 0.1]
+                } else {
+                    vec![0.0, 0.0, 0.1]
+                }
+            })
+            .collect();
         let r = analisar("teste", &amostras, &contexto, 0.5, 0.5, 0.5).unwrap();
         assert_eq!(r.indices_especializados.len(), 2);
         let co = r.coesao.expect("deveria ter coesao com 2 especializados");
-        assert!(co.excesso > 0.0, "excesso deveria ser positivo, veio {}", co.excesso);
+        assert!(
+            co.excesso > 0.0,
+            "excesso deveria ser positivo, veio {}",
+            co.excesso
+        );
     }
 
     #[test]

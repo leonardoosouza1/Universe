@@ -39,8 +39,8 @@ pub fn serialize(ae: &TinyAutoencoder) -> Vec<u8> {
 
     // Serializa todos os parâmetros em ordem
     for params in [
-        &ae.enc_w1, &ae.enc_b1, &ae.enc_w2, &ae.enc_b2,
-        &ae.dec_w1, &ae.dec_b1, &ae.dec_w2, &ae.dec_b2,
+        &ae.enc_w1, &ae.enc_b1, &ae.enc_w2, &ae.enc_b2, &ae.dec_w1, &ae.dec_b1, &ae.dec_w2,
+        &ae.dec_b2,
     ] {
         for &p in params.iter() {
             buf.extend_from_slice(&p.to_le_bytes());
@@ -52,9 +52,13 @@ pub fn serialize(ae: &TinyAutoencoder) -> Vec<u8> {
 
 /// Desserializa o codebook de bytes → TinyAutoencoder.
 pub fn deserialize(buf: &[u8]) -> Option<TinyAutoencoder> {
-    if buf.len() < 22 { return None; }
+    if buf.len() < 22 {
+        return None;
+    }
 
-    if &buf[0..4] != CODEBOOK_MAGIC { return None; }
+    if &buf[0..4] != CODEBOOK_MAGIC {
+        return None;
+    }
 
     let _version = u16::from_le_bytes(buf[4..6].try_into().ok()?);
     let input_dim = u32::from_le_bytes(buf[6..10].try_into().ok()?) as usize;
@@ -63,7 +67,9 @@ pub fn deserialize(buf: &[u8]) -> Option<TinyAutoencoder> {
     let epochs_trained = u32::from_le_bytes(buf[18..22].try_into().ok()?);
     let num_params = u32::from_le_bytes(buf[22..26].try_into().ok()?) as usize;
 
-    if buf.len() < 26 + num_params * 4 { return None; }
+    if buf.len() < 26 + num_params * 4 {
+        return None;
+    }
 
     // Ler todos os floats
     let mut all_params = Vec::with_capacity(num_params);
@@ -86,7 +92,9 @@ pub fn deserialize(buf: &[u8]) -> Option<TinyAutoencoder> {
     ];
 
     let expected_total: usize = sizes.iter().sum();
-    if num_params != expected_total { return None; }
+    if num_params != expected_total {
+        return None;
+    }
 
     let mut offset = 0;
     let mut take = |size: usize| -> Vec<f32> {
@@ -105,9 +113,17 @@ pub fn deserialize(buf: &[u8]) -> Option<TinyAutoencoder> {
     let dec_b2 = take(sizes[7]);
 
     Some(TinyAutoencoder {
-        enc_w1, enc_b1, enc_w2, enc_b2,
-        dec_w1, dec_b1, dec_w2, dec_b2,
-        input_dim, hidden_dim, latent_dim,
+        enc_w1,
+        enc_b1,
+        enc_w2,
+        enc_b2,
+        dec_w1,
+        dec_b1,
+        dec_w2,
+        dec_b2,
+        input_dim,
+        hidden_dim,
+        latent_dim,
         learning_rate: super::autoencoder::DEFAULT_LEARNING_RATE,
         l1_lambda: super::autoencoder::DEFAULT_L1_LAMBDA,
         epochs_trained,
@@ -116,10 +132,14 @@ pub fn deserialize(buf: &[u8]) -> Option<TinyAutoencoder> {
 
 /// Tamanho do codebook em bytes para dimensões dadas.
 pub fn codebook_size(input_dim: usize, hidden_dim: usize, latent_dim: usize) -> usize {
-    let num_params = input_dim * hidden_dim + hidden_dim
-        + hidden_dim * latent_dim + latent_dim
-        + latent_dim * hidden_dim + hidden_dim
-        + hidden_dim * input_dim + input_dim;
+    let num_params = input_dim * hidden_dim
+        + hidden_dim
+        + hidden_dim * latent_dim
+        + latent_dim
+        + latent_dim * hidden_dim
+        + hidden_dim
+        + hidden_dim * input_dim
+        + input_dim;
     26 + num_params * 4
 }
 

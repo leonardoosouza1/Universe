@@ -54,18 +54,24 @@ pub fn analyze_block(data: &[u8]) -> BlockProfile {
     let n = data.len();
     if n == 0 {
         return BlockProfile {
-            entropy: 0.0, zero_ratio: 1.0, roughness: 0.0,
-            periodicity: 0.0, best_motor: Motor::Zero,
+            entropy: 0.0,
+            zero_ratio: 1.0,
+            roughness: 0.0,
+            periodicity: 0.0,
+            best_motor: Motor::Zero,
         };
     }
 
     // 1. Contagem de frequência por byte
     let mut freq = [0u32; 256];
-    for &b in data { freq[b as usize] += 1; }
+    for &b in data {
+        freq[b as usize] += 1;
+    }
 
     // 2. Entropia de Shannon
     let nf = n as f64;
-    let entropy = freq.iter()
+    let entropy = freq
+        .iter()
         .filter(|&&c| c > 0)
         .map(|&c| {
             let p = c as f64 / nf;
@@ -78,11 +84,14 @@ pub fn analyze_block(data: &[u8]) -> BlockProfile {
 
     // 4. Roughness (suavidade)
     let roughness = if n > 1 {
-        let sum: f64 = data.windows(2)
+        let sum: f64 = data
+            .windows(2)
             .map(|w| (w[1] as f64 - w[0] as f64).abs())
             .sum();
         sum / (n - 1) as f64
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     // 5. Periodicidade (autocorrelação normalizada no lag dominante)
     let periodicity = estimate_periodicity(data);
@@ -90,23 +99,36 @@ pub fn analyze_block(data: &[u8]) -> BlockProfile {
     // 6. Seleção de motor
     let best_motor = select_motor(n, entropy, zero_ratio, roughness, periodicity);
 
-    BlockProfile { entropy, zero_ratio, roughness, periodicity, best_motor }
+    BlockProfile {
+        entropy,
+        zero_ratio,
+        roughness,
+        periodicity,
+        best_motor,
+    }
 }
 
 fn estimate_periodicity(data: &[u8]) -> f64 {
     let n = data.len();
-    if n < 8 { return 0.0; }
+    if n < 8 {
+        return 0.0;
+    }
 
     // Média
     let mean = data.iter().map(|&b| b as f64).sum::<f64>() / n as f64;
 
     // Autocorrelação para lags 1..N/2, normalizada
-    let variance: f64 = data.iter().map(|&b| {
-        let d = b as f64 - mean;
-        d * d
-    }).sum::<f64>();
+    let variance: f64 = data
+        .iter()
+        .map(|&b| {
+            let d = b as f64 - mean;
+            d * d
+        })
+        .sum::<f64>();
 
-    if variance < 1e-10 { return 0.0; }
+    if variance < 1e-10 {
+        return 0.0;
+    }
 
     let max_lag = (n / 2).min(256);
     let mut best_corr = 0.0f64;
@@ -117,37 +139,54 @@ fn estimate_periodicity(data: &[u8]) -> f64 {
             corr += (data[i] as f64 - mean) * (data[i + lag] as f64 - mean);
         }
         corr /= variance;
-        if corr > best_corr { best_corr = corr; }
+        if corr > best_corr {
+            best_corr = corr;
+        }
     }
 
     best_corr.clamp(0.0, 1.0)
 }
 
 fn select_motor(
-    block_len: usize, entropy: f64, zero_ratio: f64,
-    roughness: f64, periodicity: f64,
+    block_len: usize,
+    entropy: f64,
+    zero_ratio: f64,
+    roughness: f64,
+    periodicity: f64,
 ) -> Motor {
     // Tudo zero?
-    if zero_ratio > 0.9999 { return Motor::Zero; }
+    if zero_ratio > 0.9999 {
+        return Motor::Zero;
+    }
 
     // Muito repetitivo? (entropia < 1 bit/byte)
-    if entropy < 1.5 { return Motor::ByteRle; }
+    if entropy < 1.5 {
+        return Motor::ByteRle;
+    }
 
     // Suave? (gradientes, tabelas numéricas)
-    if roughness < 3.0 && entropy < 5.0 { return Motor::Delta; }
+    if roughness < 3.0 && entropy < 5.0 {
+        return Motor::Delta;
+    }
 
     // Periódico? (formas de onda, padrões cíclicos)
     if periodicity > 0.3 && entropy < 7.5 {
         // Número de harmônicos proporcional à complexidade
-        let k = if periodicity > 0.7 { 16 }
-                else if periodicity > 0.5 { 32 }
-                else { 64 };
+        let k = if periodicity > 0.7 {
+            16
+        } else if periodicity > 0.5 {
+            32
+        } else {
+            64
+        };
         let k = k.min(block_len / 4);
         return Motor::Fourier { num_harmonics: k };
     }
 
     // Entropia moderada? Tentar delta
-    if entropy < 6.5 { return Motor::Delta; }
+    if entropy < 6.5 {
+        return Motor::Delta;
+    }
 
     // Incompressível
     Motor::Literal
@@ -183,12 +222,20 @@ pub fn compress_block(raw: &[u8], profile: &BlockProfile) -> CompressedBlock {
 
 /// Motor ZERO: bloco inteiro é zero, custo = 0 bytes
 fn compress_zero(raw: &[u8]) -> CompressedBlock {
-    CompressedBlock { motor: Motor::Zero, data: vec![], original_len: raw.len() }
+    CompressedBlock {
+        motor: Motor::Zero,
+        data: vec![],
+        original_len: raw.len(),
+    }
 }
 
 /// Motor LITL: cópia bruta
 fn compress_literal(raw: &[u8]) -> CompressedBlock {
-    CompressedBlock { motor: Motor::Literal, data: raw.to_vec(), original_len: raw.len() }
+    CompressedBlock {
+        motor: Motor::Literal,
+        data: raw.to_vec(),
+        original_len: raw.len(),
+    }
 }
 
 /// Motor BRLE: Run-Length Encoding de bytes
@@ -213,13 +260,21 @@ fn compress_byte_rle(raw: &[u8]) -> CompressedBlock {
         return compress_literal(raw);
     }
 
-    CompressedBlock { motor: Motor::ByteRle, data: out, original_len: raw.len() }
+    CompressedBlock {
+        motor: Motor::ByteRle,
+        data: out,
+        original_len: raw.len(),
+    }
 }
 
 /// Motor DELT: Delta coding (diferenças entre bytes consecutivos)
 fn compress_delta(raw: &[u8]) -> CompressedBlock {
     if raw.is_empty() {
-        return CompressedBlock { motor: Motor::Delta, data: vec![], original_len: 0 };
+        return CompressedBlock {
+            motor: Motor::Delta,
+            data: vec![],
+            original_len: 0,
+        };
     }
 
     // Computar deltas
@@ -250,7 +305,11 @@ fn compress_delta(raw: &[u8]) -> CompressedBlock {
         return compress_literal(raw);
     }
 
-    CompressedBlock { motor: Motor::Delta, data: out, original_len: raw.len() }
+    CompressedBlock {
+        motor: Motor::Delta,
+        data: out,
+        original_len: raw.len(),
+    }
 }
 
 /// Motor DFTS: Fourier DFT — dados como soma de senóides
@@ -310,7 +369,11 @@ fn compress_fourier(raw: &[u8], num_harmonics: usize) -> CompressedBlock {
         return compress_literal(raw);
     }
 
-    CompressedBlock { motor: Motor::Fourier { num_harmonics: k }, data, original_len: n }
+    CompressedBlock {
+        motor: Motor::Fourier { num_harmonics: k },
+        data,
+        original_len: n,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -369,7 +432,9 @@ fn decompress_delta(data: &[u8], original_len: usize) -> Vec<u8> {
 }
 
 fn decompress_fourier(data: &[u8], original_len: usize) -> Vec<u8> {
-    if data.len() < 6 { return vec![128u8; original_len]; }
+    if data.len() < 6 {
+        return vec![128u8; original_len];
+    }
 
     let dc = f32::from_le_bytes(data[0..4].try_into().unwrap()) as f64;
     let k = u16::from_le_bytes(data[4..6].try_into().unwrap()) as usize;
@@ -377,10 +442,12 @@ fn decompress_fourier(data: &[u8], original_len: usize) -> Vec<u8> {
     let mut harmonics = Vec::with_capacity(k);
     for i in 0..k {
         let off = 6 + i * 10;
-        if off + 10 > data.len() { break; }
-        let freq = u16::from_le_bytes(data[off..off+2].try_into().unwrap()) as usize;
-        let amp = f32::from_le_bytes(data[off+2..off+6].try_into().unwrap()) as f64;
-        let phase = f32::from_le_bytes(data[off+6..off+10].try_into().unwrap()) as f64;
+        if off + 10 > data.len() {
+            break;
+        }
+        let freq = u16::from_le_bytes(data[off..off + 2].try_into().unwrap()) as usize;
+        let amp = f32::from_le_bytes(data[off + 2..off + 6].try_into().unwrap()) as f64;
+        let phase = f32::from_le_bytes(data[off + 6..off + 10].try_into().unwrap()) as f64;
         harmonics.push((freq, amp, phase));
     }
 
@@ -442,17 +509,28 @@ pub fn serialize_block(block: &CompressedBlock) -> Vec<u8> {
 /// Deserializa um CompressedBlock de bytes TLV.
 /// Retorna (block, bytes_consumed).
 pub fn deserialize_block(buf: &[u8]) -> Option<(CompressedBlock, usize)> {
-    if buf.len() < 12 { return None; }
+    if buf.len() < 12 {
+        return None;
+    }
     let mut tag = [0u8; 4];
     tag.copy_from_slice(&buf[0..4]);
     let original_len = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
     let data_len = u32::from_le_bytes(buf[8..12].try_into().ok()?) as usize;
 
-    if buf.len() < 12 + data_len { return None; }
+    if buf.len() < 12 + data_len {
+        return None;
+    }
     let data = buf[12..12 + data_len].to_vec();
     let motor = motor_from_tag(&tag);
 
-    Some((CompressedBlock { motor, data, original_len }, 12 + data_len))
+    Some((
+        CompressedBlock {
+            motor,
+            data,
+            original_len,
+        },
+        12 + data_len,
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -535,7 +613,9 @@ pub fn serialize_payload(result: &CompressionResult, block_size: u32) -> Vec<u8>
 
 /// Deserializa payload de volta para blocos.
 pub fn deserialize_payload(buf: &[u8]) -> Option<Vec<CompressedBlock>> {
-    if buf.len() < 16 { return None; }
+    if buf.len() < 16 {
+        return None;
+    }
 
     let num_blocks = u32::from_le_bytes(buf[0..4].try_into().ok()?) as usize;
     let _block_size = u32::from_le_bytes(buf[4..8].try_into().ok()?);

@@ -49,18 +49,18 @@ use wgpu::util::DeviceExt;
 
 // ── DIMENSÕES ────────────────────────────────────────────────────────────────
 
-const INPUT_SIZE:      usize = 48;
-const CFC_SIZE:        usize = 64;
-const D2_OUT:          usize = 3;
-const OUTPUT_DIM:      usize = D2_OUT;
+const INPUT_SIZE: usize = 48;
+const CFC_SIZE: usize = 64;
+const D2_OUT: usize = 3;
+const OUTPUT_DIM: usize = D2_OUT;
 
 /// Slots de estado por ser (f32):
 ///   cfc_state[64] + cfc_fatigue[64] + counter(1) + tick_counter(1) + output[3] = 133
-const STATE_PER_SER:   usize = CFC_SIZE + CFC_SIZE + 1 + 1 + D2_OUT;  // 133
+const STATE_PER_SER: usize = CFC_SIZE + CFC_SIZE + 1 + 1 + D2_OUT; // 133
 
 /// Pesos por ser (f32). Ordem espelha SlowBrain::all_weights():
 ///   dense1.weights(1024) + dense1.bias(16) + dense2.weights(48) + dense2.bias(3) = 1091
-const WEIGHTS_PER_SER: usize = 1024 + 16 + 48 + 3;  // 1091
+const WEIGHTS_PER_SER: usize = 1024 + 16 + 48 + 3; // 1091
 
 // ── UNIFORM ───────────────────────────────────────────────────────────────────
 
@@ -68,9 +68,9 @@ const WEIGHTS_PER_SER: usize = 1024 + 16 + 48 + 3;  // 1091
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SlowBrainParams {
     n_beings: u32,
-    dt:       f32,
-    _pad0:    u32,
-    _pad1:    u32,
+    dt: f32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 // ── CONTEXTO PERSISTENTE ──────────────────────────────────────────────────────
@@ -79,24 +79,24 @@ struct SlowBrainParams {
 ///
 /// Invariante: todos os buffers suportam até `capacity` seres.
 pub struct SlowBrainGpu {
-    device:       Arc<wgpu::Device>,
-    queue:        Arc<wgpu::Queue>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
 
     // Dois pipelines — dois kernels encadeados no mesmo CommandEncoder.
-    pipeline_cfc:   wgpu::ComputePipeline,
+    pipeline_cfc: wgpu::ComputePipeline,
     pipeline_dense: wgpu::ComputePipeline,
-    layout:         wgpu::BindGroupLayout,
+    layout: wgpu::BindGroupLayout,
 
     // Buffers residentes
-    buf_state:    wgpu::Buffer,   // f32 × (cap × STATE_PER_SER) — residente, zeros init
-    buf_weights:  wgpu::Buffer,   // f32 × (cap × WEIGHTS_PER_SER) — upload por spawn
-    buf_input:    wgpu::Buffer,   // i32 × (cap × INPUT_SIZE) — escrito por tick ou pela colheita
+    buf_state: wgpu::Buffer, // f32 × (cap × STATE_PER_SER) — residente, zeros init
+    buf_weights: wgpu::Buffer, // f32 × (cap × WEIGHTS_PER_SER) — upload por spawn
+    buf_input: wgpu::Buffer, // i32 × (cap × INPUT_SIZE) — escrito por tick ou pela colheita
     // Pipeline de COLHEITA: preenche buf_input a partir da onda sensorial que já
     // está na GPU, evitando um readback por tick só para escolher 48 de 223 canais.
     pipeline_gather: wgpu::ComputePipeline,
-    layout_gather:   wgpu::BindGroupLayout,
-    buf_output:   wgpu::Buffer,   // f32 × (cap × OUTPUT_DIM) — lido por tick (COPY_SRC)
-    buf_readback: wgpu::Buffer,   // f32 × (cap × OUTPUT_DIM) — MAP_READ
+    layout_gather: wgpu::BindGroupLayout,
+    buf_output: wgpu::Buffer, // f32 × (cap × OUTPUT_DIM) — lido por tick (COPY_SRC)
+    buf_readback: wgpu::Buffer, // f32 × (cap × OUTPUT_DIM) — MAP_READ
 
     /// Capacidade máxima (número de seres suportado com estes buffers).
     pub capacity: usize,
@@ -107,57 +107,51 @@ impl SlowBrainGpu {
     ///
     /// Receber Arc<Device/Queue> evita abrir um segundo dispositivo Vulkan para o
     /// mesmo hardware — o mesmo padrão de brain.rs:128.
-    pub fn new_shared(
-        device:   Arc<wgpu::Device>,
-        queue:    Arc<wgpu::Queue>,
-        capacity: usize,
-    ) -> Self {
+    pub fn new_shared(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, capacity: usize) -> Self {
         // ── Shader ─────────────────────────────────────────────────────────
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("slow-brain"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
-                include_str!("slow_brain.wgsl"),
-            )),
+            label: Some("slow-brain"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("slow_brain.wgsl"))),
         });
 
         // ── Bind group layout (um único layout para os dois kernels) ────────
         // Ambos os kernels usam o mesmo set de bindings — separar layouts seria
         // desnecessário e criaria dois bind groups por dispatch.
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("slow-brain-layout"),
+            label: Some("slow-brain-layout"),
             entries: &[
-                uniform_entry(0),       // params
-                storage_entry(1, true), // buf_input   (read)
-                storage_entry(2, true), // buf_weights (read)
-                storage_entry(3, false),// buf_state   (read_write, residente)
-                storage_entry(4, false),// buf_output  (read_write)
+                uniform_entry(0),        // params
+                storage_entry(1, true),  // buf_input   (read)
+                storage_entry(2, true),  // buf_weights (read)
+                storage_entry(3, false), // buf_state   (read_write, residente)
+                storage_entry(4, false), // buf_output  (read_write)
             ],
         });
 
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                None,
-            bind_group_layouts:   &[&layout],
+            label: None,
+            bind_group_layouts: &[&layout],
             push_constant_ranges: &[],
         });
 
         // Pipeline A: CfC
         let pipeline_cfc = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("slow-cfc-pipeline"),
-            layout:              Some(&pipe_layout),
-            module:              &module,
-            entry_point:         Some("run_cfc"),
+            label: Some("slow-cfc-pipeline"),
+            layout: Some(&pipe_layout),
+            module: &module,
+            entry_point: Some("run_cfc"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache: None,
         });
 
         // Pipeline B: Dense1 + Dense2
         let pipeline_dense = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("slow-dense-pipeline"),
-            layout:              Some(&pipe_layout),
-            module:              &module,
-            entry_point:         Some("run_dense"),
+            label: Some("slow-dense-pipeline"),
+            layout: Some(&pipe_layout),
+            module: &module,
+            entry_point: Some("run_dense"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache: None,
         });
 
         // ── Buffers ─────────────────────────────────────────────────────────
@@ -166,9 +160,9 @@ impl SlowBrainGpu {
         let bytes_state = (capacity * STATE_PER_SER * 4) as u64;
         let state_zeros: Vec<u8> = vec![0u8; bytes_state as usize];
         let buf_state = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("slow-state"),
+            label: Some("slow-state"),
             contents: &state_zeros,
-            usage:    wgpu::BufferUsages::STORAGE
+            usage: wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_DST  // para reset em reset_being()
                     | wgpu::BufferUsages::COPY_SRC, // para diagnóstico (se necessário)
         });
@@ -176,9 +170,9 @@ impl SlowBrainGpu {
         // Pesos: alocados mas não inicializados até upload_weights().
         let bytes_weights = (capacity * WEIGHTS_PER_SER * 4) as u64;
         let buf_weights = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("slow-weights"),
-            size:               bytes_weights,
-            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            label: Some("slow-weights"),
+            size: bytes_weights,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -187,25 +181,35 @@ impl SlowBrainGpu {
         // Módulo e pipeline da colheita — shader separado para manter cada kernel
         // pequeno (RADV/ACO trava em shaders grandes neste projeto).
         let module_gather = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("slow-gather"),
+            label: Some("slow-gather"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("slow_gather.wgsl"))),
         });
         let layout_gather = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("slow-gather-layout"),
-            entries: &[uniform_entry(0), storage_entry(1, true), storage_entry(2, false)],
+            label: Some("slow-gather-layout"),
+            entries: &[
+                uniform_entry(0),
+                storage_entry(1, true),
+                storage_entry(2, false),
+            ],
         });
         let pl_gather = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("slow-gather-pl"), bind_group_layouts: &[&layout_gather], push_constant_ranges: &[],
+            label: Some("slow-gather-pl"),
+            bind_group_layouts: &[&layout_gather],
+            push_constant_ranges: &[],
         });
         let pipeline_gather = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("slow-gather-pipe"), layout: Some(&pl_gather), module: &module_gather,
-            entry_point: Some("gather"), compilation_options: Default::default(), cache: None,
+            label: Some("slow-gather-pipe"),
+            layout: Some(&pl_gather),
+            module: &module_gather,
+            entry_point: Some("gather"),
+            compilation_options: Default::default(),
+            cache: None,
         });
 
         let buf_input = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("slow-input"),
-            size:               bytes_input,
-            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            label: Some("slow-input"),
+            size: bytes_input,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -213,17 +217,17 @@ impl SlowBrainGpu {
         // COPY_SRC para copiar para buf_readback no mesmo encoder.
         let bytes_output = (capacity * OUTPUT_DIM * 4) as u64;
         let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("slow-output"),
-            size:               bytes_output,
-            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            label: Some("slow-output"),
+            size: bytes_output,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         // Readback: MAP_READ não pode combinar com STORAGE em wgpu.
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("slow-readback"),
-            size:               bytes_output,
-            usage:              wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            label: Some("slow-readback"),
+            size: bytes_output,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -256,11 +260,14 @@ impl SlowBrainGpu {
     pub fn upload_weights(&self, weights: &[f32], n_beings: usize) {
         let n = n_beings.min(self.capacity);
         let expected = n * WEIGHTS_PER_SER;
-        let actual   = weights.len().min(expected);
+        let actual = weights.len().min(expected);
         // Escrita direta: SoA já está na ordem correta se o caller concatenou
         // all_weights() de cada ser na ordem certa.
-        self.queue.write_buffer(&self.buf_weights, 0,
-            bytemuck::cast_slice(&weights[..actual]));
+        self.queue.write_buffer(
+            &self.buf_weights,
+            0,
+            bytemuck::cast_slice(&weights[..actual]),
+        );
     }
 
     // ── DISPATCH (por tick) ────────────────────────────────────────────────────
@@ -284,67 +291,106 @@ impl SlowBrainGpu {
     /// desce para a CPU. Deve ser encadeado ANTES de `dispatch` no mesmo encoder.
     pub fn dispatch_gather(
         &self,
-        enc:      &mut wgpu::CommandEncoder,
+        enc: &mut wgpu::CommandEncoder,
         wave_buf: &wgpu::Buffer,
         n_beings: usize,
     ) {
         let n = n_beings.min(self.capacity);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
 
-        let params = SlowBrainParams { n_beings: n as u32, dt: 0.0, _pad0: 0, _pad1: 0 };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("slow-gather-params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let params = SlowBrainParams {
+            n_beings: n as u32,
+            dt: 0.0,
+            _pad0: 0,
+            _pad1: 0,
+        };
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("slow-gather-params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &self.layout_gather,
+            label: None,
+            layout: &self.layout_gather,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wave_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_input.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wave_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_input.as_entire_binding(),
+                },
             ],
         });
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("slow-gather-pass"), timestamp_writes: None,
+            label: Some("slow-gather-pass"),
+            timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline_gather);
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups(n as u32, 1, 1);
     }
 
-    pub fn dispatch(
-        &self,
-        enc:      &mut wgpu::CommandEncoder,
-        n_beings: usize,
-        dt:       f32,
-    ) -> u64 {
+    pub fn dispatch(&self, enc: &mut wgpu::CommandEncoder, n_beings: usize, dt: f32) -> u64 {
         let n = n_beings.min(self.capacity);
-        if n == 0 { return 0; }
+        if n == 0 {
+            return 0;
+        }
 
-        let params = SlowBrainParams { n_beings: n as u32, dt, _pad0: 0, _pad1: 0 };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("slow-params"),
-            contents: bytemuck::bytes_of(&params),
-            usage:    wgpu::BufferUsages::UNIFORM,
-        });
+        let params = SlowBrainParams {
+            n_beings: n as u32,
+            dt,
+            _pad0: 0,
+            _pad1: 0,
+        };
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("slow-params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   None,
-            layout:  &self.layout,
+            label: None,
+            layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_weights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_state.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_weights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_state.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_output.as_entire_binding(),
+                },
             ],
         });
 
         // Kernel A: CfC — 1 workgroup por ser, 64 threads por workgroup
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label:            Some("pass-slow-cfc"),
+                label: Some("pass-slow-cfc"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline_cfc);
@@ -357,7 +403,7 @@ impl SlowBrainGpu {
         // mesmo encoder já garantem a ordem de execução em wgpu/Vulkan.
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label:            Some("pass-slow-dense"),
+                label: Some("pass-slow-dense"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline_dense);
@@ -368,11 +414,7 @@ impl SlowBrainGpu {
         let bytes_output = (n * OUTPUT_DIM * 4) as u64;
 
         // Copia output para readback no mesmo encoder (DMA sem round-trip).
-        enc.copy_buffer_to_buffer(
-            &self.buf_output,   0,
-            &self.buf_readback, 0,
-            bytes_output,
-        );
+        enc.copy_buffer_to_buffer(&self.buf_output, 0, &self.buf_readback, 0, bytes_output);
 
         bytes_output
     }
@@ -391,7 +433,8 @@ impl SlowBrainGpu {
                 data.push(b as i32);
             }
         }
-        self.queue.write_buffer(&self.buf_input, 0, bytemuck::cast_slice(&data));
+        self.queue
+            .write_buffer(&self.buf_input, 0, bytemuck::cast_slice(&data));
     }
 
     // ── LEITURA DOS OUTPUTS ────────────────────────────────────────────────────
@@ -405,14 +448,18 @@ impl SlowBrainGpu {
     /// (poll ANTES de map_async é o deadlock silencioso documentado em brain.rs:710)
     pub fn read_outputs(&self, n_beings: usize) -> Vec<[f32; OUTPUT_DIM]> {
         let n = n_beings.min(self.capacity);
-        if n == 0 { return Vec::new(); }
+        if n == 0 {
+            return Vec::new();
+        }
 
         let bytes = (n * OUTPUT_DIM * 4) as u64;
         let slice = self.buf_readback.slice(0..bytes);
 
         let (tx, rx) = std::sync::mpsc::channel();
         // map_async registra o callback — poll(Wait) abaixo vai servi-lo.
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
 
         // poll DEPOIS do map_async: sem isso o callback nunca é servido.
         self.device.poll(wgpu::Maintain::Wait);
@@ -443,18 +490,22 @@ impl SlowBrainGpu {
     /// Para encadeamento com outros kernels, prefira `dispatch()` + submit externo.
     pub fn forward(
         &self,
-        inputs:   &[[i8; INPUT_SIZE]],
+        inputs: &[[i8; INPUT_SIZE]],
         n_beings: usize,
-        dt:       f32,
+        dt: f32,
     ) -> Vec<[f32; OUTPUT_DIM]> {
         let n = n_beings.min(self.capacity).min(inputs.len());
-        if n == 0 { return Vec::new(); }
+        if n == 0 {
+            return Vec::new();
+        }
 
         self.upload_input(inputs, n);
 
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("slow-brain-forward"),
-        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("slow-brain-forward"),
+            });
 
         let _bytes = self.dispatch(&mut enc, n, dt);
         self.queue.submit(Some(enc.finish()));
@@ -469,7 +520,9 @@ impl SlowBrainGpu {
     /// Equivale a `CfCCell::reset()` + reinício do tick_counter + limpeza do output.
     /// Chamado em spawn/death — ser recém-nascido começa sem estado acumulado.
     pub fn reset_being(&self, idx: usize) {
-        if idx >= self.capacity { return; }
+        if idx >= self.capacity {
+            return;
+        }
         let offset = (idx * STATE_PER_SER * 4) as u64;
         let zeros: Vec<u8> = vec![0u8; STATE_PER_SER * 4];
         self.queue.write_buffer(&self.buf_state, offset, &zeros);
@@ -491,12 +544,16 @@ impl SlowBrainGpuRes {
     /// Devolve contexto válido, criando se necessário. None = sem GPU utilizável.
     pub fn get_or_create(
         &mut self,
-        device:   Arc<wgpu::Device>,
-        queue:    Arc<wgpu::Queue>,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
         capacity: usize,
     ) -> Option<&SlowBrainGpu> {
         let needs = self.ctx.is_none()
-            || self.ctx.as_ref().map(|c| c.capacity < capacity).unwrap_or(true);
+            || self
+                .ctx
+                .as_ref()
+                .map(|c| c.capacity < capacity)
+                .unwrap_or(true);
         if needs {
             self.ctx = Some(SlowBrainGpu::new_shared(device, queue, capacity.max(64)));
         }
@@ -511,9 +568,9 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
-            ty:                 wgpu::BufferBindingType::Uniform,
+            ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
-            min_binding_size:   None,
+            min_binding_size: None,
         },
         count: None,
     }
@@ -526,7 +583,7 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only },
             has_dynamic_offset: false,
-            min_binding_size:   None,
+            min_binding_size: None,
         },
         count: None,
     }

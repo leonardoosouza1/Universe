@@ -1,12 +1,12 @@
-use bevy::prelude::*;
+use super::racer::{Racer, Skidmark};
+use crate::config::iara::vision::{RETINA_COLS, RETINA_ROWS, RETINA_TOTAL};
+use crate::environment::EnvironmentalState;
+use crate::world::{VoxelType, VoxelWorldResource};
 use bevy::ecs::system::SystemParam;
+use bevy::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use crate::world::{VoxelType, VoxelWorldResource};
-use crate::config::iara::vision::{RETINA_TOTAL, RETINA_COLS, RETINA_ROWS};
-use crate::environment::EnvironmentalState;
-use super::racer::{Racer, Skidmark};
 
 /// Agrupa os dois contextos de GPU (retina + percepção) num único SystemParam.
 ///
@@ -59,7 +59,9 @@ pub fn time_dilation_metrics() -> (u64, u64) {
 ///   98..101 = gaze tracker (A18)                  108 = racing-line offset (A21)
 /// Builds a 32-dim i8 input slice for the reflex SpecialistBrain by sampling key sensory channels.
 /// Conservative subset — enough for a simple safety-aware reflex.
-fn slow_input_for_reflex(sensory_wave: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]) -> [i8; 32] {
+fn slow_input_for_reflex(
+    sensory_wave: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE],
+) -> [i8; 32] {
     let mut out = [0_i8; 32];
     for (dst, &src) in out.iter_mut().zip(sensory_wave.iter().take(32)) {
         *dst = src;
@@ -67,9 +69,12 @@ fn slow_input_for_reflex(sensory_wave: &[i8; crate::config::iara::brain::SENSORY
     out
 }
 
-fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], lab: &crate::lab::LabParams) -> [f32; 96] {
+fn axiom_policy(
+    inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE],
+    lab: &crate::lab::LabParams,
+) -> [f32; 96] {
     let mut bias = [0.0f32; 96];
-    let WALL_T: i8 = lab.wall_t_threshold;  // ~0.31 normalizado — parede próxima mas não encostada
+    let WALL_T: i8 = lab.wall_t_threshold; // ~0.31 normalizado — parede próxima mas não encostada
 
     // A1: parede esquerda (perif bins 8..11) → steer direita (+)
     let wall_l: i32 = (8..12).map(|i| inputs[i] as i32).sum();
@@ -104,7 +109,7 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
     // v4: boost coeffs 0.08/0.18/0.06 → 0.20/0.40/0.25 pra romper plateau do 1º corner
     // (330m). Lookahead 10/25/50m cria steering preditivo em vez de reativo.
     bias[1] += (inputs[78] as f32 / 127.0) * 0.20;
-    bias[1] += (inputs[79] as f32 / 127.0) * 0.32;  // v5: 0.40→0.32 (menos overshoot)
+    bias[1] += (inputs[79] as f32 / 127.0) * 0.32; // v5: 0.40→0.32 (menos overshoot)
     bias[1] += (inputs[80] as f32 / 127.0) * 0.25;
     // v5: pre-brake só em curva SEVERA (threshold) em vez de proporcional sempre.
     // Tested 0.20 → regressed (305m swing, 15.4 bleeds). 0.10 is sweet spot.
@@ -136,7 +141,8 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
     //   94 = FL 30°, 95 = FR 30°, 96 = FL 60°, 97 = FR 60°
     if inputs[94] > WALL_T {
         bias[1] += lab.axiom_whisker;
-        bias[2] += lab.axiom_whisker * 0.67; bias[0] -= lab.axiom_whisker * 0.53;
+        bias[2] += lab.axiom_whisker * 0.67;
+        bias[0] -= lab.axiom_whisker * 0.53;
     }
     if inputs[96] > WALL_T {
         bias[1] += lab.axiom_whisker * 0.80;
@@ -144,7 +150,8 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
     }
     if inputs[95] > WALL_T {
         bias[1] -= lab.axiom_whisker;
-        bias[2] += lab.axiom_whisker * 0.67; bias[0] -= lab.axiom_whisker * 0.53;
+        bias[2] += lab.axiom_whisker * 0.67;
+        bias[0] -= lab.axiom_whisker * 0.53;
     }
     if inputs[97] > WALL_T {
         bias[1] -= lab.axiom_whisker * 0.80;
@@ -191,7 +198,8 @@ fn axiom_policy(inputs: &[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE], la
 
     // A-TTC: coefs reduzidos drasticamente pra debug
     let ttc_norm = inputs[105] as f32 / 127.0;
-    if ttc_norm > 0.85 { // threshold aumentado — só em perigo CRÍTICO
+    if ttc_norm > 0.85 {
+        // threshold aumentado — só em perigo CRÍTICO
         bias[2] += ttc_norm * 0.15; // brake muito fraco
         bias[0] -= ttc_norm * 0.05; // throttle cut muito fraco
     }
@@ -239,7 +247,7 @@ pub(super) fn update_racers(
         &mut Transform,
         &mut MeshMaterial3d<StandardMaterial>,
         Option<&mut crate::physics::EngineComponent>,
-        Option<&mut crate::physics::PhysicsBody>
+        Option<&mut crate::physics::PhysicsBody>,
     )>,
     world_res: Res<VoxelWorldResource>,
     env: Res<EnvironmentalState>,
@@ -287,77 +295,88 @@ pub(super) fn update_racers(
     // Wrap todo o bloco de gizmos visuais (flag, paths, pilares) em dev.show_gizmos.
     // Permite limpar UI pra "modo jogo" quando jogador quer só dirigir.
     if dev.show_gizmos {
-    // --- RENDERIZAR MARCO-ZERO (A BANDEIRA DO CAMPEÃO GLOBAL) ---
-    if let Some(flag_pos) = race.global_best_position {
-        // Haste de 15 metros cravada no chão
-        gizmos.line(flag_pos, flag_pos + Vec3::Y * 15.0, Color::srgb(1.0, 0.84, 0.0));
-        // Globo/Bandeira dourada no topo
-        gizmos.sphere(flag_pos + Vec3::Y * 15.0, 2.0, Color::srgb(1.0, 0.84, 0.0));
-        // Anel no chão para visibilidade de longe
-        gizmos.circle(
-            Isometry3d::new(flag_pos, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-            5.0, Color::srgba(1.0, 0.84, 0.0, 0.6),
-        );
-    }
+        // --- RENDERIZAR MARCO-ZERO (A BANDEIRA DO CAMPEÃO GLOBAL) ---
+        if let Some(flag_pos) = race.global_best_position {
+            // Haste de 15 metros cravada no chão
+            gizmos.line(
+                flag_pos,
+                flag_pos + Vec3::Y * 15.0,
+                Color::srgb(1.0, 0.84, 0.0),
+            );
+            // Globo/Bandeira dourada no topo
+            gizmos.sphere(flag_pos + Vec3::Y * 15.0, 2.0, Color::srgb(1.0, 0.84, 0.0));
+            // Anel no chão para visibilidade de longe
+            gizmos.circle(
+                Isometry3d::new(flag_pos, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                5.0,
+                Color::srgba(1.0, 0.84, 0.0, 0.6),
+            );
+        }
 
-    // --- TRAÇADO DO ÚLTIMO CAMPEÃO (magenta, persiste até ser superado) ---
-    if race.champion_path.len() >= 2 {
-        let path = &race.champion_path;
-        let y_off = Vec3::Y * 1.5;
-        for w in path.windows(2) {
-            gizmos.line(w[0] + y_off, w[1] + y_off, Color::srgba(1.0, 0.2, 0.9, 0.9));
+        // --- TRAÇADO DO ÚLTIMO CAMPEÃO (magenta, persiste até ser superado) ---
+        if race.champion_path.len() >= 2 {
+            let path = &race.champion_path;
+            let y_off = Vec3::Y * 1.5;
+            for w in path.windows(2) {
+                gizmos.line(w[0] + y_off, w[1] + y_off, Color::srgba(1.0, 0.2, 0.9, 0.9));
+            }
+            if let Some(&start) = path.first() {
+                gizmos.sphere(start + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.84, 0.0)); // 👑 dourado
+                gizmos.line(start, start + Vec3::Y * 12.0, Color::srgb(1.0, 0.84, 0.0));
+            }
+            if let Some(&end) = path.last() {
+                gizmos.sphere(end + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.1, 0.1)); // 🔴 fim
+                gizmos.line(end, end + Vec3::Y * 12.0, Color::srgb(1.0, 0.1, 0.1));
+            }
         }
-        if let Some(&start) = path.first() {
-            gizmos.sphere(start + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.84, 0.0)); // 👑 dourado
-            gizmos.line(start, start + Vec3::Y * 12.0, Color::srgb(1.0, 0.84, 0.0));
-        }
-        if let Some(&end) = path.last() {
-            gizmos.sphere(end + Vec3::Y * 2.0, 1.5, Color::srgb(1.0, 0.1, 0.1)); // 🔴 fim
-            gizmos.line(end, end + Vec3::Y * 12.0, Color::srgb(1.0, 0.1, 0.1));
-        }
-    }
 
-    // --- TRAÇADO DO MELHOR DA ÚLTIMA GERAÇÃO ---
-    // 🔵 CIANO = grid-spawn (elegível pra coroação — se for maior que magenta, vira campeão)
-    // 🟠 LARANJA = distributed spawn (NÃO coroa — é só especialista de um trecho)
-    // Assim se a laranja passa a magenta, você sabe que é fake progress.
-    if race.last_gen_path.len() >= 2 {
-        let path = &race.last_gen_path;
-        let y_off = Vec3::Y * 0.6;
-        let (line_col, sphere_col) = if race.last_gen_was_grid {
-            (Color::srgba(0.0, 0.9, 1.0, 0.75), Color::srgb(0.0, 0.9, 1.0))
-        } else {
-            (Color::srgba(1.0, 0.5, 0.0, 0.75), Color::srgb(1.0, 0.5, 0.0))
-        };
-        for w in path.windows(2) {
-            gizmos.line(w[0] + y_off, w[1] + y_off, line_col);
+        // --- TRAÇADO DO MELHOR DA ÚLTIMA GERAÇÃO ---
+        // 🔵 CIANO = grid-spawn (elegível pra coroação — se for maior que magenta, vira campeão)
+        // 🟠 LARANJA = distributed spawn (NÃO coroa — é só especialista de um trecho)
+        // Assim se a laranja passa a magenta, você sabe que é fake progress.
+        if race.last_gen_path.len() >= 2 {
+            let path = &race.last_gen_path;
+            let y_off = Vec3::Y * 0.6;
+            let (line_col, sphere_col) = if race.last_gen_was_grid {
+                (
+                    Color::srgba(0.0, 0.9, 1.0, 0.75),
+                    Color::srgb(0.0, 0.9, 1.0),
+                )
+            } else {
+                (
+                    Color::srgba(1.0, 0.5, 0.0, 0.75),
+                    Color::srgb(1.0, 0.5, 0.0),
+                )
+            };
+            for w in path.windows(2) {
+                gizmos.line(w[0] + y_off, w[1] + y_off, line_col);
+            }
+            if let Some(&start) = path.first() {
+                gizmos.sphere(start + Vec3::Y * 0.8, 1.0, sphere_col);
+            }
+            if let Some(&end) = path.last() {
+                gizmos.sphere(end + Vec3::Y * 0.8, 1.0, sphere_col);
+            }
         }
-        if let Some(&start) = path.first() {
-            gizmos.sphere(start + Vec3::Y * 0.8, 1.0, sphere_col);
-        }
-        if let Some(&end) = path.last() {
-            gizmos.sphere(end + Vec3::Y * 0.8, 1.0, sphere_col);
-        }
-    }
 
-    // --- RENDERIZAR WAYPOINTS/CHECKPOINTS DA PISTA ---
-    // Decima: pista procedural tem 100+ waypoints (Catmull-Rom). Mostrar todos
-    // = 100+ pilares atravessando paredes (gizmos drawn on top). Mostrar só 1 em
-    // cada 8 (densidade dos anchors originais) e altura reduzida pra 3m.
-    let wps = &world.waypoints_world;
-    let stride = (wps.len() / 18).max(1); // ~14-18 pilares
-    for i in (0..wps.len()).step_by(stride) {
-        let wp = Vec3::new(wps[i].x, 0.5, wps[i].y);
+        // --- RENDERIZAR WAYPOINTS/CHECKPOINTS DA PISTA ---
+        // Decima: pista procedural tem 100+ waypoints (Catmull-Rom). Mostrar todos
+        // = 100+ pilares atravessando paredes (gizmos drawn on top). Mostrar só 1 em
+        // cada 8 (densidade dos anchors originais) e altura reduzida pra 3m.
+        let wps = &world.waypoints_world;
+        let stride = (wps.len() / 18).max(1); // ~14-18 pilares
+        for i in (0..wps.len()).step_by(stride) {
+            let wp = Vec3::new(wps[i].x, 0.5, wps[i].y);
 
-        // Pilar de checkpoint (3m de altura, fino).
-        let pillar_color = if i == 0 {
-            Color::srgb(0.0, 1.0, 0.3) // Verde = Largada/Chegada
-        } else {
-            Color::srgba(0.0, 0.7, 1.0, 0.5) // Ciano sutil
-        };
-        gizmos.line(wp, wp + Vec3::Y * 3.0, pillar_color);
-        gizmos.sphere(wp + Vec3::Y * 3.5, 0.8, pillar_color);
-    }
+            // Pilar de checkpoint (3m de altura, fino).
+            let pillar_color = if i == 0 {
+                Color::srgb(0.0, 1.0, 0.3) // Verde = Largada/Chegada
+            } else {
+                Color::srgba(0.0, 0.7, 1.0, 0.5) // Ciano sutil
+            };
+            gizmos.line(wp, wp + Vec3::Y * 3.0, pillar_color);
+            gizmos.sphere(wp + Vec3::Y * 3.5, 0.8, pillar_color);
+        }
     } // end dev.show_gizmos
 
     // --- PRÉ-CÁLCULO (Primeiro passo read-only sobre a mesma query) ---
@@ -435,144 +454,170 @@ pub(super) fn update_racers(
     };
 
     // percept_waves: preenchido pelo caminho encadeado (gpu_core=true) ou fica None.
-    let mut percept_waves: Option<HashMap<Entity, [i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]>> = None;
+    let mut percept_waves: Option<
+        HashMap<Entity, [i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]>,
+    > = None;
 
     let retinas: HashMap<Entity, [i8; RETINA_TOTAL]> = if recompute_retinas {
         // ── Caminho GPU encadeado (retina → percepção, UM submit) ────────────────
-        let resultado_gpu: Option<(Vec<[i8; RETINA_TOTAL]>, Option<Vec<[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]>>)> =
-            if forcar_cpu { None }
-            else if let Some(retina_ctx) = gpu.retina.get_or_create(world, retina_inputs.len()) {
-                let poses: Vec<crate::gpu::Pose> = retina_inputs.iter()
-                    .map(|&(_, pos, fwd, right)| crate::gpu::Pose {
-                        // O `+0.4` do chamador é PRESERVADO de propósito: junto com o `+0.4` de
-                        // dentro do kernel dá o mesmo olho que a CPU sempre usou (1,3 m com o
-                        // carro em y=0,5). Documentado em visao.rs — conserto é experimento à parte.
-                        pos: pos + Vec3::Y * 0.4,
-                        forward: Vec2::new(fwd.x, fwd.z),
-                        right: Vec2::new(right.x, right.z),
-                        gaze_yaw: 0.0,
+        let resultado_gpu: Option<(
+            Vec<[i8; RETINA_TOTAL]>,
+            Option<Vec<[i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]>>,
+        )> = if forcar_cpu {
+            None
+        } else if let Some(retina_ctx) = gpu.retina.get_or_create(world, retina_inputs.len()) {
+            let poses: Vec<crate::gpu::Pose> = retina_inputs
+                .iter()
+                .map(|&(_, pos, fwd, right)| crate::gpu::Pose {
+                    // O `+0.4` do chamador é PRESERVADO de propósito: junto com o `+0.4` de
+                    // dentro do kernel dá o mesmo olho que a CPU sempre usou (1,3 m com o
+                    // carro em y=0,5). Documentado em visao.rs — conserto é experimento à parte.
+                    pos: pos + Vec3::Y * 0.4,
+                    forward: Vec2::new(fwd.x, fwd.z),
+                    right: Vec2::new(right.x, right.z),
+                    gaze_yaw: 0.0,
+                })
+                .collect();
+
+            if lab.gpu_core {
+                // ── Encadeamento: retina → percepção num único encoder ────────────
+                // Monta poses de percepção (phase + forward/right). Mesma ordem que
+                // retina_inputs, para que índice do ser bata com índice no buf_output.
+                let poses_percept: Vec<crate::gpu::perception::PosePerception> = query
+                    .iter()
+                    .filter(|(_, r, _, _, _, _)| !r.is_dead)
+                    .map(|(_, r, t, _, _, _)| {
+                        let fwd = t.right().as_vec3();
+                        let rgt = t.back().as_vec3();
+                        crate::gpu::perception::pose_from_transform(
+                            t.translation,
+                            Vec2::new(fwd.x, fwd.z),
+                            Vec2::new(rgt.x, rgt.z),
+                            r.phase,
+                        )
                     })
                     .collect();
 
-                if lab.gpu_core {
-                    // ── Encadeamento: retina → percepção num único encoder ────────────
-                    // Monta poses de percepção (phase + forward/right). Mesma ordem que
-                    // retina_inputs, para que índice do ser bata com índice no buf_output.
-                    let poses_percept: Vec<crate::gpu::perception::PosePerception> = query
-                        .iter()
-                        .filter(|(_, r, _, _, _, _)| !r.is_dead)
-                        .map(|(_, r, t, _, _, _)| {
-                            let fwd = t.right().as_vec3();
-                            let rgt = t.back().as_vec3();
-                            crate::gpu::perception::pose_from_transform(
-                                t.translation,
-                                Vec2::new(fwd.x, fwd.z),
-                                Vec2::new(rgt.x, rgt.z),
-                                r.phase,
-                            )
-                        })
-                        .collect();
+                let sig = crate::gpu::world_signature(world);
+                // get_or_create empresta device/queue da retina (sem segundo VkDevice).
+                // Percepção só está disponível se a retina GPU está presente.
+                let n_alive = retina_inputs.len();
+                let percept_ok = gpu
+                    .percept
+                    .get_or_create(retina_ctx.device(), retina_ctx.queue(), world, sig, n_alive)
+                    .is_some();
 
-                    let sig = crate::gpu::world_signature(world);
-                    // get_or_create empresta device/queue da retina (sem segundo VkDevice).
-                    // Percepção só está disponível se a retina GPU está presente.
-                    let n_alive = retina_inputs.len();
-                    let percept_ok = gpu.percept.get_or_create(
+                if percept_ok {
+                    // Cria o encoder com o device da retina (dispatch_into usa self.device/queue
+                    // internamente — sem parâmetros extras, sem conflito de borrow).
+                    let mut enc = retina_ctx
+                        .device()
+                        .create_command_encoder(&Default::default());
+
+                    // dispatch retina → enc (sem submit); usa self.device/queue internamente.
+                    let n_dispatched = retina_ctx.dispatch_into(&mut enc, &poses);
+
+                    // dispatch percepção → enc (sem submit); percepção usa buf_output da retina que
+                    // já está no encoder como fonte — a barreira implícita de pipeline do wgpu garante
+                    // que o compute pass anterior (retina) termine antes deste começar.
+                    let pctx = gpu.percept.ctx.as_ref().unwrap();
+                    let bytes_percept = pctx.bind_and_dispatch(
+                        &mut enc,
                         retina_ctx.device(),
                         retina_ctx.queue(),
-                        world,
-                        sig,
-                        n_alive,
-                    ).is_some();
+                        &poses_percept,
+                        retina_ctx.output_buffer(),
+                    );
 
-                    if percept_ok {
-                        // Cria o encoder com o device da retina (dispatch_into usa self.device/queue
-                        // internamente — sem parâmetros extras, sem conflito de borrow).
-                        let mut enc = retina_ctx.device().create_command_encoder(&Default::default());
+                    // UM submit para os dois dispatches. UM poll — elimina o
+                    // poll extra que custava ~0,76 ms/tick na percepção anterior.
+                    retina_ctx.queue().submit(Some(enc.finish()));
+                    retina_ctx.device().poll(wgpu::Maintain::Wait);
 
-                        // dispatch retina → enc (sem submit); usa self.device/queue internamente.
-                        let n_dispatched = retina_ctx.dispatch_into(&mut enc, &poses);
+                    // Lê retina (buf_readback já foi copiado no encoder pelo dispatch_into).
+                    let retina_legada = retina_ctx.read_legacy_after_submit(n_dispatched);
 
-                        // dispatch percepção → enc (sem submit); percepção usa buf_output da retina que
-                        // já está no encoder como fonte — a barreira implícita de pipeline do wgpu garante
-                        // que o compute pass anterior (retina) termine antes deste começar.
-                        let pctx = gpu.percept.ctx.as_ref().unwrap();
-                        let bytes_percept = pctx.bind_and_dispatch(
-                            &mut enc,
-                            retina_ctx.device(),
-                            retina_ctx.queue(),
-                            &poses_percept,
-                            retina_ctx.output_buffer(),
-                        );
+                    // Lê percepção (buf_readback já foi copiado no encoder pelo bind_and_dispatch).
+                    let waves = pctx.read_after_submit(retina_ctx.device(), n_alive, bytes_percept);
 
-                        // UM submit para os dois dispatches. UM poll — elimina o
-                        // poll extra que custava ~0,76 ms/tick na percepção anterior.
-                        retina_ctx.queue().submit(Some(enc.finish()));
-                        retina_ctx.device().poll(wgpu::Maintain::Wait);
-
-                        // Lê retina (buf_readback já foi copiado no encoder pelo dispatch_into).
-                        let retina_legada = retina_ctx.read_legacy_after_submit(n_dispatched);
-
-                        // Lê percepção (buf_readback já foi copiado no encoder pelo bind_and_dispatch).
-                        let waves = pctx.read_after_submit(retina_ctx.device(), n_alive, bytes_percept);
-
-                        if retina_legada.len() == n_alive && waves.len() == n_alive {
-                            Some((retina_legada, Some(waves)))
-                        } else {
-                            // Divergência de tamanho: mortes entre iters — fallback sem percepção.
-                            Some((retina_legada, None))
-                        }
+                    if retina_legada.len() == n_alive && waves.len() == n_alive {
+                        Some((retina_legada, Some(waves)))
                     } else {
-                        // Percepção GPU indisponível — retina sozinha com submit próprio.
-                        let saida = retina_ctx.render_legacy(&poses);
-                        if saida.len() == retina_inputs.len() {
-                            let conv: Vec<[i8; RETINA_TOTAL]> = saida.into_iter().map(|v| {
-                                let mut r = [-128i8; RETINA_TOTAL];
-                                r[..v.len().min(RETINA_TOTAL)].copy_from_slice(&v[..v.len().min(RETINA_TOTAL)]);
-                                r
-                            }).collect();
-                            Some((conv, None))
-                        } else { None }
+                        // Divergência de tamanho: mortes entre iters — fallback sem percepção.
+                        Some((retina_legada, None))
                     }
                 } else {
-                    // gpu_core=false — retina GPU normal (encoder próprio), sem percepção GPU.
-                    // RETINA NA GPU. Medido: 57% do tempo de simulação estava aqui. 31,7× vs CPU.
+                    // Percepção GPU indisponível — retina sozinha com submit próprio.
                     let saida = retina_ctx.render_legacy(&poses);
                     if saida.len() == retina_inputs.len() {
-                        let conv: Vec<[i8; RETINA_TOTAL]> = saida.into_iter().map(|v| {
-                            let mut r = [-128i8; RETINA_TOTAL];
-                            r[..v.len().min(RETINA_TOTAL)].copy_from_slice(&v[..v.len().min(RETINA_TOTAL)]);
-                            r
-                        }).collect();
+                        let conv: Vec<[i8; RETINA_TOTAL]> = saida
+                            .into_iter()
+                            .map(|v| {
+                                let mut r = [-128i8; RETINA_TOTAL];
+                                r[..v.len().min(RETINA_TOTAL)]
+                                    .copy_from_slice(&v[..v.len().min(RETINA_TOTAL)]);
+                                r
+                            })
+                            .collect();
                         Some((conv, None))
-                    } else { None }
+                    } else {
+                        None
+                    }
                 }
-            } else { None };
+            } else {
+                // gpu_core=false — retina GPU normal (encoder próprio), sem percepção GPU.
+                // RETINA NA GPU. Medido: 57% do tempo de simulação estava aqui. 31,7× vs CPU.
+                let saida = retina_ctx.render_legacy(&poses);
+                if saida.len() == retina_inputs.len() {
+                    let conv: Vec<[i8; RETINA_TOTAL]> = saida
+                        .into_iter()
+                        .map(|v| {
+                            let mut r = [-128i8; RETINA_TOTAL];
+                            r[..v.len().min(RETINA_TOTAL)]
+                                .copy_from_slice(&v[..v.len().min(RETINA_TOTAL)]);
+                            r
+                        })
+                        .collect();
+                    Some((conv, None))
+                } else {
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         match resultado_gpu {
             Some((retina_legada, waves)) => {
                 // Associa percept_waves às entidades (mesma ordem de retina_inputs).
                 if let Some(w) = waves {
-                    let entities_alive: Vec<Entity> = retina_inputs.iter().map(|&(e, _, _, _)| e).collect();
+                    let entities_alive: Vec<Entity> =
+                        retina_inputs.iter().map(|&(e, _, _, _)| e).collect();
                     if w.len() == entities_alive.len() {
-                        percept_waves = Some(entities_alive.iter().copied().zip(w.into_iter()).collect());
+                        percept_waves =
+                            Some(entities_alive.iter().copied().zip(w.into_iter()).collect());
                     }
                 }
                 // Retinas mapeadas por entity.
-                retina_inputs.iter().zip(retina_legada.into_iter())
+                retina_inputs
+                    .iter()
+                    .zip(retina_legada.into_iter())
                     .map(|(&(e, _, _, _), r)| (e, r))
                     .collect()
-            },
+            }
             None => {
                 // Fallback CPU — retina paralela via rayon.
                 // `IARA_RETINA_CPU=1` força este caminho para comparação A/B.
                 retina_inputs
                     .par_iter()
                     .map(|&(e, pos, fwd, right)| {
-                        (e, world.render_binocular_retina(pos + Vec3::Y * 0.4, fwd, right, 0.0))
+                        (
+                            e,
+                            world.render_binocular_retina(pos + Vec3::Y * 0.4, fwd, right, 0.0),
+                        )
                     })
                     .collect()
-            },
+            }
         }
     } else {
         // Reuso: pega visual_cortex (retina do último recompute) de cada carro.
@@ -592,9 +637,14 @@ pub(super) fn update_racers(
     // Antes: cada carro sortava todos (O(N log N) × N) + scan comp_stress/draft O(N) × N
     //      = ~4M ops/tick pra 2000 carros. Agora: 1 sort O(N log N) + lookup O(1).
     //   Spatial hash 20m cells: query vizinhos retorna só 9 células (média ~8 carros cada).
-    let mut rank_sorted: Vec<(Entity, f32)> = racer_positions.iter().map(|&(e, p, _)| (e, p.x)).collect();
+    let mut rank_sorted: Vec<(Entity, f32)> =
+        racer_positions.iter().map(|&(e, p, _)| (e, p.x)).collect();
     rank_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let rank_by_entity: HashMap<Entity, usize> = rank_sorted.iter().enumerate().map(|(i, &(e, _))| (e, i)).collect();
+    let rank_by_entity: HashMap<Entity, usize> = rank_sorted
+        .iter()
+        .enumerate()
+        .map(|(i, &(e, _))| (e, i))
+        .collect();
 
     const SPATIAL_CELL: f32 = 20.0;
     let mut spatial: HashMap<(i32, i32), Vec<(Entity, Vec3, Vec3)>> = HashMap::new();
@@ -604,13 +654,19 @@ pub(super) fn update_racers(
         spatial.entry((cx, cz)).or_default().push(entry);
     }
 
-    for (entity, mut racer, mut transform, mat_handle, mut opt_engine, mut opt_body) in query.iter_mut() {
+    for (entity, mut racer, mut transform, mat_handle, mut opt_engine, mut opt_body) in
+        query.iter_mut()
+    {
         if racer.is_dead {
-            if let Some(engine_comp) = opt_engine.as_mut() { engine_comp.throttle = 0.0; }
+            if let Some(engine_comp) = opt_engine.as_mut() {
+                engine_comp.throttle = 0.0;
+            }
             if let Some(body) = opt_body.as_mut() {
                 body.velocity *= 0.95_f32.powf(dt * 60.0); // Atrito forte: para em ~2s
                 body.angular_velocity *= 0.9_f32.powf(dt * 60.0);
-                if body.velocity.length() < 0.5 { body.velocity = Vec3::ZERO; }
+                if body.velocity.length() < 0.5 {
+                    body.velocity = Vec3::ZERO;
+                }
             }
             continue;
         }
@@ -632,7 +688,9 @@ pub(super) fn update_racers(
         // Quando gpu_core=false ou GPU indisponível, começa em zeros como antes.
         let mut sensory_wave: [i8; crate::config::iara::brain::SENSORY_WAVE_SIZE] =
             if let Some(ref pw) = percept_waves {
-                pw.get(&entity).copied().unwrap_or([0i8; crate::config::iara::brain::SENSORY_WAVE_SIZE])
+                pw.get(&entity)
+                    .copied()
+                    .unwrap_or([0i8; crate::config::iara::brain::SENSORY_WAVE_SIZE])
             } else {
                 [0i8; crate::config::iara::brain::SENSORY_WAVE_SIZE]
             };
@@ -652,22 +710,25 @@ pub(super) fn update_racers(
         let cols_per_fov_bin = c / 8;
         let fov_bins: [(usize, usize); 8] = [
             (0, cols_per_fov_bin),
-            (cols_per_fov_bin, 2*cols_per_fov_bin),
-            (2*cols_per_fov_bin, 3*cols_per_fov_bin),
-            (3*cols_per_fov_bin, 4*cols_per_fov_bin),
-            (4*cols_per_fov_bin, 5*cols_per_fov_bin),
-            (5*cols_per_fov_bin, 6*cols_per_fov_bin),
-            (6*cols_per_fov_bin, 7*cols_per_fov_bin),
-            (7*cols_per_fov_bin, c), // Última bin pega até o final pra cobrir resto
+            (cols_per_fov_bin, 2 * cols_per_fov_bin),
+            (2 * cols_per_fov_bin, 3 * cols_per_fov_bin),
+            (3 * cols_per_fov_bin, 4 * cols_per_fov_bin),
+            (4 * cols_per_fov_bin, 5 * cols_per_fov_bin),
+            (5 * cols_per_fov_bin, 6 * cols_per_fov_bin),
+            (6 * cols_per_fov_bin, 7 * cols_per_fov_bin),
+            (7 * cols_per_fov_bin, c), // Última bin pega até o final pra cobrir resto
         ];
         // === ZONE-BASED POOLING (ch 0-15): preserve depth + curve shape ===
         // FAR zone (ch 0-7): pool rows 0-4 (~80m ahead, distant curves)
         for (bin, &(lo, hi)) in fov_bins.iter().enumerate() {
             let mut fov_max: i8 = -128;
-            for row in 0..5 {  // FAR rows only (rows 0-4)
+            for row in 0..5 {
+                // FAR rows only (rows 0-4)
                 for p in lo..hi {
                     let f = retina_binocular[row * RETINA_COLS + p];
-                    if f > fov_max { fov_max = f; }
+                    if f > fov_max {
+                        fov_max = f;
+                    }
                 }
             }
             sensory_wave[bin] = fov_max;
@@ -677,10 +738,13 @@ pub(super) fn update_racers(
             let cols_per_bin = RETINA_COLS / 8;
             let start = bin * cols_per_bin;
             let mut per_max: i8 = -128;
-            for row in 10..RETINA_ROWS {  // NEAR rows only (rows 10-13)
+            for row in 10..RETINA_ROWS {
+                // NEAR rows only (rows 10-13)
                 for k in 0..cols_per_bin {
                     let p = retina_binocular[row * RETINA_COLS + start + k];
-                    if p > per_max { per_max = p; }
+                    if p > per_max {
+                        per_max = p;
+                    }
                 }
             }
             sensory_wave[8 + bin] = per_max;
@@ -695,7 +759,9 @@ pub(super) fn update_racers(
             for row in 0..RETINA_ROWS {
                 for p in lo..hi {
                     let f = retina_binocular[row * RETINA_COLS + p];
-                    if f > fov_max { fov_max = f; }
+                    if f > fov_max {
+                        fov_max = f;
+                    }
                 }
             }
             sensory_wave[128 + bin] = fov_max;
@@ -709,7 +775,9 @@ pub(super) fn update_racers(
             for row in 0..RETINA_ROWS {
                 for p in lo..hi {
                     let f = retina_binocular[row * RETINA_COLS + p];
-                    if f > per_max { per_max = f; }
+                    if f > per_max {
+                        per_max = f;
+                    }
                 }
             }
             sensory_wave[144 + bin] = per_max;
@@ -764,8 +832,11 @@ pub(super) fn update_racers(
                 }
             }
             // Encode: 0=no wall in 60m, 127=touching wall, 1-126=linear
-            let dist_encoded = if wall_dist_min >= WALL_MAX_DIST { 0i8 }
-                              else { ((127.0 * (WALL_MAX_DIST - wall_dist_min) / WALL_MAX_DIST).clamp(1.0, 127.0)) as i8 };
+            let dist_encoded = if wall_dist_min >= WALL_MAX_DIST {
+                0i8
+            } else {
+                ((127.0 * (WALL_MAX_DIST - wall_dist_min) / WALL_MAX_DIST).clamp(1.0, 127.0)) as i8
+            };
             sensory_wave[16 + angle_idx] = dist_encoded;
         }
 
@@ -819,7 +890,8 @@ pub(super) fn update_racers(
             };
 
             let flow_mag = flow.length();
-            sensory_wave[40 + dist_idx] = ((road_quality as f32 * (0.5 + flow_mag * 0.5)).clamp(-127.0, 127.0)) as i8;
+            sensory_wave[40 + dist_idx] =
+                ((road_quality as f32 * (0.5 + flow_mag * 0.5)).clamp(-127.0, 127.0)) as i8;
         }
 
         // --- ch 48-55: FAR ZONE (45-150m lookahead - strategic planning) ---
@@ -829,7 +901,8 @@ pub(super) fn update_racers(
             let apex_pos = pos + forward * horizon_dist;
 
             let height_now = world.get_height_at(apex_pos.x, apex_pos.z);
-            let height_ahead = world.get_height_at(apex_pos.x + forward.x * 10.0, apex_pos.z + forward.z * 10.0);
+            let height_ahead =
+                world.get_height_at(apex_pos.x + forward.x * 10.0, apex_pos.z + forward.z * 10.0);
             let height_delta = height_ahead - height_now;
 
             let normal = world.get_surface_normal(apex_pos.x, apex_pos.z);
@@ -863,20 +936,20 @@ pub(super) fn update_racers(
         // Atualizar oráculo CPU em gpu_validate --percepcao (ch 48-59 comparados).
         let material_encode = |vox: VoxelType| -> i8 {
             match vox {
-                VoxelType::Road  => 0,
+                VoxelType::Road => 0,
                 VoxelType::Grass => 64,
-                VoxelType::Wall  => 100,
-                VoxelType::Hole  => -127,
+                VoxelType::Wall => 100,
+                VoxelType::Hole => -127,
             }
         };
         let current_voxel = world.get_voxel_at(pos.x, pos.z);
-        sensory_wave[56] = material_encode(current_voxel);  // posição atual
+        sensory_wave[56] = material_encode(current_voxel); // posição atual
         // lookaheads: amostra a frente ao longo do vetor forward
-        let probe_3m  = pos + forward * 3.0;
-        let probe_8m  = pos + forward * 8.0;
+        let probe_3m = pos + forward * 3.0;
+        let probe_8m = pos + forward * 8.0;
         let probe_20m = pos + forward * 20.0;
-        sensory_wave[57] = material_encode(world.get_voxel_at(probe_3m.x,  probe_3m.z));
-        sensory_wave[58] = material_encode(world.get_voxel_at(probe_8m.x,  probe_8m.z));
+        sensory_wave[57] = material_encode(world.get_voxel_at(probe_3m.x, probe_3m.z));
+        sensory_wave[58] = material_encode(world.get_voxel_at(probe_8m.x, probe_8m.z));
         sensory_wave[59] = material_encode(world.get_voxel_at(probe_20m.x, probe_20m.z));
 
         // ch 60-63: agent state (speed, throttle, steer intent - will be filled below)
@@ -901,7 +974,7 @@ pub(super) fn update_racers(
             if row < 7 {
                 sensory_wave[21 + row] = motion_norm; // ch 21-27 = rows 0-6
             } else {
-                sensory_wave[98] = motion_norm;        // ch 98 = row 7
+                sensory_wave[98] = motion_norm; // ch 98 = row 7
             }
         }
 
@@ -918,9 +991,14 @@ pub(super) fn update_racers(
             // Max teórico: 255 * 125 = 31875
             let edge_norm = ((edge_sum as f32 / 6000.0) * 127.0).min(127.0) as i8;
             let slot: usize = match row {
-                0 => 29, 1 => 30, 2 => 31,
-                3 => 33, 4 => 34, 5 => 35,
-                6 => 99, 7 => 100,
+                0 => 29,
+                1 => 30,
+                2 => 31,
+                3 => 33,
+                4 => 34,
+                5 => 35,
+                6 => 99,
+                7 => 100,
                 _ => 0,
             };
             sensory_wave[slot] = edge_norm;
@@ -936,7 +1014,8 @@ pub(super) fn update_racers(
         let mut dark_angle_sum: f32 = 0.0;
         let mut dark_weight_sum: f32 = 0.0;
         for i in 12..52 {
-            let v = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32; // Row 3 (40m foresight)
+            let v =
+                retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32; // Row 3 (40m foresight)
             if v < 0 {
                 let strength = (-v) as f32;
                 let angle = ((i as f32 / (RETINA_COLS as f32 - 1.0)) * 2.0 - 1.0) * (per_fov / 2.0);
@@ -977,7 +1056,7 @@ pub(super) fn update_racers(
         // Retorna centroide angular normalizado em [-1,1].
         let dark_center_for_row = |row: usize, w_size: usize| -> f32 {
             let row_off = row * RETINA_COLS;
-            let search_lo = RETINA_COLS / 4;        // idx 16
+            let search_lo = RETINA_COLS / 4; // idx 16
             let search_hi = (RETINA_COLS * 3 / 4).saturating_sub(w_size); // idx 48-w
             let mut best_sum: f32 = -1.0;
             let mut best_centroid: f32 = 0.0;
@@ -992,10 +1071,18 @@ pub(super) fn update_racers(
                 }
                 if sum > best_sum {
                     best_sum = sum;
-                    best_centroid = if sum > 1.0 { weighted / sum } else { (start + w_size/2) as f32 };
+                    best_centroid = if sum > 1.0 {
+                        weighted / sum
+                    } else {
+                        (start + w_size / 2) as f32
+                    };
                 }
             }
-            if best_sum > 1.0 { ((best_centroid - half_col) / half_col).clamp(-1.0, 1.0) } else { 0.0 }
+            if best_sum > 1.0 {
+                ((best_centroid - half_col) / half_col).clamp(-1.0, 1.0)
+            } else {
+                0.0
+            }
         };
 
         // ch 90: W=8, row 3 (~40m) — mesmo cálculo de antes, sinal de antecipação
@@ -1018,11 +1105,15 @@ pub(super) fn update_racers(
         let row3_off = ((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS;
         for i in 0..half {
             let v = retina_binocular[row3_off + i] as i32;
-            if v < 0 { left_dark_sum += -v; }
+            if v < 0 {
+                left_dark_sum += -v;
+            }
         }
         for i in half..RETINA_COLS {
             let v = retina_binocular[row3_off + i] as i32;
-            if v < 0 { right_dark_sum += -v; }
+            if v < 0 {
+                right_dark_sum += -v;
+            }
         }
         // Diferença normalizada: + = mais pista à esquerda, - = mais pista à direita
         // Subtrai ao contrário do steer: pista à esq = virar esquerda = sinal negativo em steer.
@@ -1050,14 +1141,16 @@ pub(super) fn update_racers(
             let mut s: i32 = 0;
             for i in 0..half {
                 let v = retina_binocular[off + i] as i32;
-                if v < 0 { s += -v; }
+                if v < 0 {
+                    s += -v;
+                }
             }
             (s as f32 / 4096.0).clamp(0.0, 1.0)
         };
-        sensory_wave[36] = (dark_sum_left_at_row(3) * 127.0) as i8;  // ~40m
-        sensory_wave[37] = (dark_sum_left_at_row(5) * 127.0) as i8;  // ~25m
-        sensory_wave[38] = (dark_sum_left_at_row(7) * 127.0) as i8;  // ~15m
-        sensory_wave[39] = (dark_sum_left_at_row(9.min(RETINA_ROWS-1)) * 127.0) as i8; // ~8m
+        sensory_wave[36] = (dark_sum_left_at_row(3) * 127.0) as i8; // ~40m
+        sensory_wave[37] = (dark_sum_left_at_row(5) * 127.0) as i8; // ~25m
+        sensory_wave[38] = (dark_sum_left_at_row(7) * 127.0) as i8; // ~15m
+        sensory_wave[39] = (dark_sum_left_at_row(9.min(RETINA_ROWS - 1)) * 127.0) as i8; // ~8m
 
         // --- ch 40-43: OPEN_R por row (abertura direita em 4 distâncias) ---
         // ANTES: 4× open_r_i8 da row 3 — duplicata exata (corr=1.0).
@@ -1068,14 +1161,16 @@ pub(super) fn update_racers(
             let mut s: i32 = 0;
             for i in half..RETINA_COLS {
                 let v = retina_binocular[off + i] as i32;
-                if v < 0 { s += -v; }
+                if v < 0 {
+                    s += -v;
+                }
             }
             (s as f32 / 4096.0).clamp(0.0, 1.0)
         };
-        sensory_wave[40] = (dark_sum_right_at_row(3) * 127.0) as i8;  // ~40m
-        sensory_wave[41] = (dark_sum_right_at_row(5) * 127.0) as i8;  // ~25m
-        sensory_wave[42] = (dark_sum_right_at_row(7) * 127.0) as i8;  // ~15m
-        sensory_wave[43] = (dark_sum_right_at_row(9.min(RETINA_ROWS-1)) * 127.0) as i8; // ~8m
+        sensory_wave[40] = (dark_sum_right_at_row(3) * 127.0) as i8; // ~40m
+        sensory_wave[41] = (dark_sum_right_at_row(5) * 127.0) as i8; // ~25m
+        sensory_wave[42] = (dark_sum_right_at_row(7) * 127.0) as i8; // ~15m
+        sensory_wave[43] = (dark_sum_right_at_row(9.min(RETINA_ROWS - 1)) * 127.0) as i8; // ~8m
 
         // BEST ESCAPE direction — RESTRICT to FRONTAL field.
         // Bug fix user: periph 180° pegava pista ATRÁS, modelo virava pra trás batendo.
@@ -1094,23 +1189,32 @@ pub(super) fn update_racers(
             let mut b_len = 0usize;
             let mut c_start = 0usize;
             let mut c_len = 0usize;
-            for i in (RETINA_COLS/4)..(RETINA_COLS*3/4) {
+            for i in (RETINA_COLS / 4)..(RETINA_COLS * 3 / 4) {
                 let v = retina_binocular[row_off + i] as i32;
                 if v < -10 {
-                    if c_len == 0 { c_start = i; }
+                    if c_len == 0 {
+                        c_start = i;
+                    }
                     c_len += 1;
-                    if c_len > b_len { b_start = c_start; b_len = c_len; }
-                } else { c_len = 0; }
+                    if c_len > b_len {
+                        b_start = c_start;
+                        b_len = c_len;
+                    }
+                } else {
+                    c_len = 0;
+                }
             }
             let norm = if b_len >= 2 {
                 let center = b_start as f32 + (b_len as f32 - 1.0) * 0.5;
                 ((center - 31.5) / 31.5).clamp(-1.0, 1.0) * 127.0
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             norm as i8
         };
-        sensory_wave[60] = escape_at_row(3);  // ~40m
-        sensory_wave[61] = escape_at_row(5);  // ~25m
-        sensory_wave[62] = escape_at_row(7);  // ~15m
+        sensory_wave[60] = escape_at_row(3); // ~40m
+        sensory_wave[61] = escape_at_row(5); // ~25m
+        sensory_wave[62] = escape_at_row(7); // ~15m
         sensory_wave[63] = escape_at_row(9.min(RETINA_ROWS - 1)); // ~8m
 
         // BUG FIX 3 (user report): "pista pequena bate direto". Wall imminent
@@ -1123,46 +1227,76 @@ pub(super) fn update_racers(
         //   ch 47: lateral direita  (cols 3/4..COLS) — parede que vem da direita
         // IMPACTO: invalida DNA em ch 45-47 (mudança de semântica).
         let reflex_row = (RETINA_ROWS / 2).saturating_sub(1);
-        let near_row   = RETINA_ROWS.saturating_sub(2); // row mais próxima disponível
+        let near_row = RETINA_ROWS.saturating_sub(2); // row mais próxima disponível
 
         // ch 44: fóvea central, row 3 (~30m) — mantém comportamento atual
         let mut wall_central_max: i32 = -128;
-        for i in (RETINA_COLS*5/16)..(RETINA_COLS*11/16) {
+        for i in (RETINA_COLS * 5 / 16)..(RETINA_COLS * 11 / 16) {
             let v = retina_binocular[reflex_row * RETINA_COLS + i] as i32;
-            if v > wall_central_max { wall_central_max = v; }
+            if v > wall_central_max {
+                wall_central_max = v;
+            }
         }
-        let wall_imminent_i8: i8 = if wall_central_max > 110 { 127 }
-                                   else if wall_central_max > 80 { 90 }
-                                   else if wall_central_max > 40 { 50 }
-                                   else { 0 };
+        let wall_imminent_i8: i8 = if wall_central_max > 110 {
+            127
+        } else if wall_central_max > 80 {
+            90
+        } else if wall_central_max > 40 {
+            50
+        } else {
+            0
+        };
         sensory_wave[44] = wall_imminent_i8;
 
         // ch 45: fóvea estreita (cols 6/16..10/16), row mais próxima — colisão super-iminente
         let mut wall_near_max: i32 = -128;
-        for i in (RETINA_COLS*6/16)..(RETINA_COLS*10/16) {
+        for i in (RETINA_COLS * 6 / 16)..(RETINA_COLS * 10 / 16) {
             let v = retina_binocular[near_row * RETINA_COLS + i] as i32;
-            if v > wall_near_max { wall_near_max = v; }
+            if v > wall_near_max {
+                wall_near_max = v;
+            }
         }
-        sensory_wave[45] = if wall_near_max > 110 { 127 }
-                           else if wall_near_max > 80 { 90 }
-                           else if wall_near_max > 40 { 50 }
-                           else { 0 };
+        sensory_wave[45] = if wall_near_max > 110 {
+            127
+        } else if wall_near_max > 80 {
+            90
+        } else if wall_near_max > 40 {
+            50
+        } else {
+            0
+        };
 
         // ch 46: lateral esquerda (cols 0..COLS/4), row 3 — parede vindo da esquerda
         let mut wall_left_max: i32 = -128;
-        for i in 0..(RETINA_COLS/4) {
+        for i in 0..(RETINA_COLS / 4) {
             let v = retina_binocular[reflex_row * RETINA_COLS + i] as i32;
-            if v > wall_left_max { wall_left_max = v; }
+            if v > wall_left_max {
+                wall_left_max = v;
+            }
         }
-        sensory_wave[46] = if wall_left_max > 80 { 90 } else if wall_left_max > 40 { 50 } else { 0 };
+        sensory_wave[46] = if wall_left_max > 80 {
+            90
+        } else if wall_left_max > 40 {
+            50
+        } else {
+            0
+        };
 
         // ch 47: lateral direita (cols 3COLS/4..COLS), row 3 — parede vindo da direita
         let mut wall_right_max: i32 = -128;
-        for i in (RETINA_COLS*3/4)..RETINA_COLS {
+        for i in (RETINA_COLS * 3 / 4)..RETINA_COLS {
             let v = retina_binocular[reflex_row * RETINA_COLS + i] as i32;
-            if v > wall_right_max { wall_right_max = v; }
+            if v > wall_right_max {
+                wall_right_max = v;
+            }
         }
-        sensory_wave[47] = if wall_right_max > 80 { 90 } else if wall_right_max > 40 { 50 } else { 0 };
+        sensory_wave[47] = if wall_right_max > 80 {
+            90
+        } else if wall_right_max > 40 {
+            50
+        } else {
+            0
+        };
 
         // ch 48..51 = TRAPPED_SCORE decomposto em 4 componentes.
         // ANTES: 4× o mesmo valor composto — duplicata exata (corr=1.0).
@@ -1174,11 +1308,13 @@ pub(super) fn update_racers(
         // IMPACTO: invalida DNA em ch 49-51 (mudança de semântica).
         let speed_kmh_now = ((sensory_wave[65] as f32 / 127.0) * 80.0 * 3.6).max(0.0);
         let wall_pressure = wall_imminent_i8 as f32;
-        let stuck_speed   = (1.0 - (speed_kmh_now / 25.0).clamp(0.0, 1.0)) * 127.0;
-        let lr_blocked    = (1.0 - (open_l_norm + open_r_norm) * 0.5).clamp(0.0, 1.0) * 127.0;
+        let stuck_speed = (1.0 - (speed_kmh_now / 25.0).clamp(0.0, 1.0)) * 127.0;
+        let lr_blocked = (1.0 - (open_l_norm + open_r_norm) * 0.5).clamp(0.0, 1.0) * 127.0;
         let trapped_i8: i8 = if wall_pressure >= 80.0 {
             (stuck_speed * 0.3 + wall_pressure * 0.5 + lr_blocked * 0.2).clamp(0.0, 127.0) as i8
-        } else { 0 };
+        } else {
+            0
+        };
         sensory_wave[48] = wall_pressure.clamp(0.0, 127.0) as i8;
         sensory_wave[49] = stuck_speed.clamp(0.0, 127.0) as i8;
         sensory_wave[50] = lr_blocked.clamp(0.0, 127.0) as i8;
@@ -1191,19 +1327,27 @@ pub(super) fn update_racers(
         // ΔV signed em hemisfério: + = aproximando, - = afastando.
         let mut motion_left: i32 = 0;
         let mut motion_right: i32 = 0;
-        let mut approach_left: i32 = 0;   // delta signed sum (positivo = parede vindo)
+        let mut approach_left: i32 = 0; // delta signed sum (positivo = parede vindo)
         let mut approach_right: i32 = 0;
         // Optical flow usa rows 3 e 4 (horizonte/céu) para detectar paredes se aproximando.
         // O chão (rows 0, 1) é constante e não gera motion delta útil para paredes.
         for i in 0..half {
-            let dr_f = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
-            let dr_p = retina_binocular[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32;
+            let dr_f = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
+                as i32
+                - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
+                    as i32;
+            let dr_p = retina_binocular[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32
+                - racer.visual_cortex[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32;
             motion_left += dr_f.abs() + dr_p.abs();
             approach_left += dr_p;
         }
         for i in half..RETINA_COLS {
-            let dr_f = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
-            let dr_p = retina_binocular[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32;
+            let dr_f = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
+                as i32
+                - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
+                    as i32;
+            let dr_p = retina_binocular[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32
+                - racer.visual_cortex[((RETINA_ROWS / 2) + 1) * RETINA_COLS + i] as i32;
             motion_right += dr_f.abs() + dr_p.abs();
             approach_right += dr_p;
         }
@@ -1218,8 +1362,11 @@ pub(super) fn update_racers(
         let mut fovea_approach: i32 = 0;
         let mut fovea_motion_abs: i32 = 0;
         for i in 24..40 {
-            let dr = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32 - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i] as i32;
-            fovea_approach += dr;          // + = wall vindo na frente
+            let dr = retina_binocular[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
+                as i32
+                - racer.visual_cortex[((RETINA_ROWS / 2).saturating_sub(1)) * RETINA_COLS + i]
+                    as i32;
+            fovea_approach += dr; // + = wall vindo na frente
             fovea_motion_abs += dr.abs();
         }
         sensory_wave[116] = (fovea_approach / 32).clamp(-127, 127) as i8;
@@ -1258,13 +1405,15 @@ pub(super) fn update_racers(
 
         // Frontal approach: usa row 3 (40m foresight) wall pixels centrais como proxy dist_front
         let reflex_row = (RETINA_ROWS / 2).saturating_sub(1);
-        let front_wall_px: i32 = (RETINA_COLS/3..(2*RETINA_COLS/3))
+        let front_wall_px: i32 = (RETINA_COLS / 3..(2 * RETINA_COLS / 3))
             .map(|col| retina_binocular[reflex_row * RETINA_COLS + col] as i32)
             .filter(|&v| v > 0)
             .sum();
         let dist_front_now = if front_wall_px > 0 {
             (30.0 * (1.0 - (front_wall_px as f32 / 2000.0).min(1.0))).max(1.0)
-        } else { 50.0 };
+        } else {
+            50.0
+        };
         let approach_rate_f = (racer.wall_dist_prev_f - dist_front_now) / DT;
 
         sensory_wave[102] = (approach_rate_l.clamp(-30.0, 30.0) / 30.0 * 127.0) as i8;
@@ -1272,9 +1421,21 @@ pub(super) fn update_racers(
         sensory_wave[104] = (approach_rate_f.clamp(-30.0, 30.0) / 30.0 * 127.0) as i8;
 
         // TTC mínimo (tempo para contato): D / v_approach (0..2s → 127=iminente, 0=seguro)
-        let ttc_l = if approach_rate_l > 1.0 { (dist_l / approach_rate_l).min(2.0) } else { 2.0 };
-        let ttc_r = if approach_rate_r > 1.0 { (dist_r / approach_rate_r).min(2.0) } else { 2.0 };
-        let ttc_f = if approach_rate_f > 1.0 { (dist_front_now / approach_rate_f).min(2.0) } else { 2.0 };
+        let ttc_l = if approach_rate_l > 1.0 {
+            (dist_l / approach_rate_l).min(2.0)
+        } else {
+            2.0
+        };
+        let ttc_r = if approach_rate_r > 1.0 {
+            (dist_r / approach_rate_r).min(2.0)
+        } else {
+            2.0
+        };
+        let ttc_f = if approach_rate_f > 1.0 {
+            (dist_front_now / approach_rate_f).min(2.0)
+        } else {
+            2.0
+        };
         let ttc_min = ttc_l.min(ttc_r).min(ttc_f).clamp(0.0, 2.0);
         sensory_wave[105] = (127.0 * (1.0 - ttc_min / 2.0)) as i8;
 
@@ -1297,8 +1458,8 @@ pub(super) fn update_racers(
         let mut visual_freedom = 0.0;
         for i in 0..16 {
             let v = sensory_wave[i] as f32;
-            if v > 0.0 { 
-                visual_stress += v / 127.0; 
+            if v > 0.0 {
+                visual_stress += v / 127.0;
             } else if v < -50.0 {
                 // Pixel bem negativo = pista livre ou parede muito distante (Ciano)
                 visual_freedom += v.abs() / 128.0;
@@ -1311,13 +1472,14 @@ pub(super) fn update_racers(
         // Isso incentiva o modelo a virar o volante até encontrar o caminho longo.
         racer.joy_integral += (visual_freedom * 15.0 - visual_stress * 5.0) * dt;
 
-        // [PÂNICO DESATIVADO] - O modelo ficava cego com ruído quando se aproximava 
+        // [PÂNICO DESATIVADO] - O modelo ficava cego com ruído quando se aproximava
         // de paredes, o que causava o "congelamento" por falta de informação.
         let _panic_level = 0.0;
 
         // --- RUÍDO NOTURNO: Apenas incerteza do ambiente ---
         use rand::prelude::*;
-        let mut rng = rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
+        let mut rng =
+            rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
 
         if env.is_night() {
             let magnitude = 15;
@@ -1331,10 +1493,16 @@ pub(super) fn update_racers(
         let alignment = (racer.phase - track_phase).cos();
         sensory_wave[64] = (alignment * 127.0) as i8;
 
-        let speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
+        let speed = if let Some(ref body) = opt_body {
+            body.velocity.length()
+        } else {
+            0.0
+        };
         let avg_tire_temp = if let Some(ref body) = opt_body {
             body.wheels.iter().map(|w| w.tire_temp).sum::<f32>() / 4.0
-        } else { 0.3 };
+        } else {
+            0.3
+        };
         sensory_wave[65] = (speed * 2.0).clamp(0.0, 127.0) as i8;
 
         let mut is_drifting = false;
@@ -1342,14 +1510,17 @@ pub(super) fn update_racers(
             let lateral_dir = transform.back().as_vec3();
             let lateral_vel = body.velocity.dot(lateral_dir);
             sensory_wave[66] = (lateral_vel * 10.0).clamp(-127.0, 127.0) as i8;
-            if lateral_vel.abs() > 4.0 && speed > 5.0 && pos.y < 1.0 { is_drifting = true; }
+            if lateral_vel.abs() > 4.0 && speed > 5.0 && pos.y < 1.0 {
+                is_drifting = true;
+            }
         }
 
         // Percepção de Dor Mecânica (HP), Tensão no Motor (RPM) e Marcha Atual
         // CORRIGIDO: normaliza por HP_INICIAL em vez de 100.0 fixo. Com HP_INICIAL=1000
         // e a base antiga de 100.0, o canal ficaria saturado em 127 para sempre (HP > 100
         // → ratio > 1,0 → clamp → 127 = constante). O cérebro precisa sentir o HP real.
-        sensory_wave[67] = ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(-128.0, 127.0) as i8;
+        sensory_wave[67] =
+            ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(-128.0, 127.0) as i8;
         // --- RANK + COMP_STRESS via precomputados ---
         let my_rank = rank_by_entity.get(&entity).copied().unwrap_or(0);
         let is_leader = my_rank == 0;
@@ -1365,9 +1536,13 @@ pub(super) fn update_racers(
                 for dz in -1..=1 {
                     if let Some(cell) = spatial.get(&(cx + dx, cz + dz)) {
                         for &(other_e, other_pos, _) in cell {
-                            if other_e == entity { continue; }
+                            if other_e == entity {
+                                continue;
+                            }
                             let to_other = other_pos - pos;
-                            if to_other.length() < 20.0 && to_other.normalize_or_zero().dot(forward) > 0.3 {
+                            if to_other.length() < 20.0
+                                && to_other.normalize_or_zero().dot(forward) > 0.3
+                            {
                                 comp_stress = 127;
                                 break 'outer;
                             }
@@ -1380,7 +1555,11 @@ pub(super) fn update_racers(
 
         // Canal 124: Dor de Centrífuga (Anti-Giro)
         // Se estiver girando muito (>1.5 rad/s) e com pouca velocidade (<2.0 m/s), DOR MÁXIMA.
-        let is_spinning = if let Some(body) = &opt_body { body.angular_velocity.y.abs() > 1.5 && speed < 2.0 } else { false };
+        let is_spinning = if let Some(body) = &opt_body {
+            body.angular_velocity.y.abs() > 1.5 && speed < 2.0
+        } else {
+            false
+        };
         sensory_wave[124] = if is_spinning { -128 } else { 0 };
 
         // --- AGITAÇÃO SENSORIO-REFERENCIAL (RUÍDO DE ESTRESSE) ---
@@ -1417,7 +1596,9 @@ pub(super) fn update_racers(
             for dz in -1..=1 {
                 if let Some(cell) = spatial.get(&(cx + dx, cz + dz)) {
                     for &(other_e, other_pos, _) in cell {
-                        if other_e == entity { continue; }
+                        if other_e == entity {
+                            continue;
+                        }
                         let to_other = other_pos - pos;
                         let dist = to_other.length();
                         let dot_forward = to_other.normalize_or_zero().dot(forward);
@@ -1454,10 +1635,22 @@ pub(super) fn update_racers(
             for &sd in [1.0f32, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 30.0].iter() {
                 let lp = pos + left_perp_73 * sd;
                 let rp = pos + right_perp_73 * sd;
-                if dist_l_73 == 30.0 && matches!(world.get_voxel_at(lp.x, lp.z),
-                    VoxelType::Wall | VoxelType::Hole) { dist_l_73 = sd; }
-                if dist_r_73 == 30.0 && matches!(world.get_voxel_at(rp.x, rp.z),
-                    VoxelType::Wall | VoxelType::Hole) { dist_r_73 = sd; }
+                if dist_l_73 == 30.0
+                    && matches!(
+                        world.get_voxel_at(lp.x, lp.z),
+                        VoxelType::Wall | VoxelType::Hole
+                    )
+                {
+                    dist_l_73 = sd;
+                }
+                if dist_r_73 == 30.0
+                    && matches!(
+                        world.get_voxel_at(rp.x, rp.z),
+                        VoxelType::Wall | VoxelType::Hole
+                    )
+                {
+                    dist_r_73 = sd;
+                }
             }
             let corredor = (dist_l_73 + dist_r_73).min(30.0);
             sensory_wave[73] = ((corredor / 30.0) * 127.0).clamp(0.0, 127.0) as i8;
@@ -1480,12 +1673,16 @@ pub(super) fn update_racers(
         for sample_dist in [1.0, 3.0, 6.0, 9.0, 12.0, 15.0].iter() {
             let left_probe = pos + left_perp * sample_dist;
             let right_probe = pos + right_perp * sample_dist;
-            if dist_l == 15.0 && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
-                                 || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole) {
+            if dist_l == 15.0
+                && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
+                    || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole)
+            {
                 dist_l = *sample_dist;
             }
-            if dist_r == 15.0 && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
-                                 || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole) {
+            if dist_r == 15.0
+                && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
+                    || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole)
+            {
                 dist_r = *sample_dist;
             }
         }
@@ -1505,7 +1702,8 @@ pub(super) fn update_racers(
             for sample_dist in [1.0, 3.0, 5.0, 7.0, 10.0].iter() {
                 let probe = pos + dir * sample_dist;
                 if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
-                   || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                    || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole
+                {
                     min_dist = min_dist.min(*sample_dist);
                 }
             }
@@ -1520,7 +1718,13 @@ pub(super) fn update_racers(
         // Amostra o flow field à frente a múltiplas distâncias e mede o desvio angular
         // em relação ao heading atual. Positivo = pista curva à ESQUERDA;
         // negativo = curva à DIREITA. É o "GPS interno" dos próximos ~5s.
-        for (slot, look_dist) in [(78usize, 10.0_f32), (79, 25.0), (80, 100.0), (19, 75.0), (20, 150.0)] {
+        for (slot, look_dist) in [
+            (78usize, 10.0_f32),
+            (79, 25.0),
+            (80, 100.0),
+            (19, 75.0),
+            (20, 150.0),
+        ] {
             let sample = pos + forward * look_dist;
             let flow_ahead = world.get_flow_at(sample.x, sample.z);
             // cross-z (2D perp dot): forward × flow_ahead
@@ -1547,12 +1751,17 @@ pub(super) fn update_racers(
         let fwd2d = Vec2::new(forward.x, forward.z);
         let line_offset_m = if !world.racing_line.is_empty() {
             world.racing_line.lateral_offset_from_line(pos2d, fwd2d)
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let hw = world.racing_line.half_width.max(1.0);
         let line_off_norm = (line_offset_m / hw).clamp(-1.0, 1.0);
         sensory_wave[108] = (line_off_norm * 127.0).clamp(-127.0, 127.0) as i8;
 
-        let prev_off = prev_line_offset.get(&entity).copied().unwrap_or(line_offset_m);
+        let prev_off = prev_line_offset
+            .get(&entity)
+            .copied()
+            .unwrap_or(line_offset_m);
         // "offset anterior - atual": positivo quando o erro diminuiu neste tick.
         let d_off = (prev_off - line_offset_m) / hw;
         sensory_wave[109] = (d_off * 127.0 * 8.0).clamp(-127.0, 127.0) as i8; // gain 8x pq delta por tick é pequeno
@@ -1560,7 +1769,9 @@ pub(super) fn update_racers(
 
         let lookahead_m = if !world.racing_line.is_empty() {
             world.racing_line.lookahead_offset(pos2d, 5.0)
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         sensory_wave[110] = ((lookahead_m / hw).clamp(-1.0, 1.0) * 127.0) as i8;
 
         // Canal 82: URGÊNCIA DE COLISÃO FRONTAL — grid-based forward probe (no raycast).
@@ -1569,7 +1780,8 @@ pub(super) fn update_racers(
         for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
             let probe = pos + forward * sample_dist;
             if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
-               || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole
+            {
                 fwd_probe = *sample_dist;
                 break;
             }
@@ -1598,8 +1810,8 @@ pub(super) fn update_racers(
         racer.wall_ema_l = racer.wall_ema_l * (1.0 - ema_alpha) + dist_l * ema_alpha;
         racer.wall_ema_r = racer.wall_ema_r * (1.0 - ema_alpha) + dist_r * ema_alpha;
         // Invertido: 127 = encostado, 0 = 15m+ livre. Canal "alerta" persistente.
-        sensory_wave[85] = (((1.0 - (racer.wall_ema_l / 15.0).clamp(0.0, 1.0)) * 127.0)) as i8;
-        sensory_wave[86] = (((1.0 - (racer.wall_ema_r / 15.0).clamp(0.0, 1.0)) * 127.0)) as i8;
+        sensory_wave[85] = ((1.0 - (racer.wall_ema_l / 15.0).clamp(0.0, 1.0)) * 127.0) as i8;
+        sensory_wave[86] = ((1.0 - (racer.wall_ema_r / 15.0).clamp(0.0, 1.0)) * 127.0) as i8;
 
         // Canal 87: SLIP ANGLE — ângulo entre velocity e forward (sinal de drift/aquaplanagem).
         // Positivo = velocity aponta à direita do heading (drift pra direita).
@@ -1609,8 +1821,12 @@ pub(super) fn update_racers(
                 let f2d = forward_2d.normalize_or_zero();
                 // cross-z: f × v
                 f2d.x * v2d.y - f2d.y * v2d.x
-            } else { 0.0 }
-        } else { 0.0 };
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
         sensory_wave[87] = (slip_signal * 127.0).clamp(-127.0, 127.0) as i8;
 
         // Canal 88: PROXIMIDADE SUSTENTADA — acumula tempo raspando qualquer lateral (<3m).
@@ -1625,12 +1841,17 @@ pub(super) fn update_racers(
 
         // Canal 89: estado de ré/cooldown do frame ANTERIOR. 127 em ré, 64 em cooldown, 0 normal.
         // (a atualização real do timer acontece mais abaixo, após a rede decidir)
-        sensory_wave[89] = if racer.reverse_timer > 0.0 { 127 }
-                           else if racer.post_reverse_lockout > 0.0 { 64 }
-                           else { 0 };
+        sensory_wave[89] = if racer.reverse_timer > 0.0 {
+            127
+        } else if racer.post_reverse_lockout > 0.0 {
+            64
+        } else {
+            0
+        };
 
         // --- SKIDMARKS DE DRIFT ---
-        if is_drifting && rng.random::<f32>() < 0.15 { // rate limit to ~10 FPS
+        if is_drifting && rng.random::<f32>() < 0.15 {
+            // rate limit to ~10 FPS
             let (mark_mesh, mark_mat) = skidmark_cache.get_or_insert_with(|| {
                 (
                     meshes.add(Rectangle::new(1.0, 1.0)),
@@ -1639,7 +1860,7 @@ pub(super) fn update_racers(
                         alpha_mode: AlphaMode::Blend,
                         unlit: true,
                         ..default()
-                    })
+                    }),
                 )
             });
 
@@ -1650,7 +1871,14 @@ pub(super) fn update_racers(
             mark_t.rotation *= Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
             mark_t.scale = Vec3::new(mark_length, 0.4, 1.0);
 
-            let _e = commands.spawn((Mesh3d(mark_mesh.clone()), MeshMaterial3d(mark_mat.clone()), mark_t, Skidmark { timer: 5.0 })).id();
+            let _e = commands
+                .spawn((
+                    Mesh3d(mark_mesh.clone()),
+                    MeshMaterial3d(mark_mat.clone()),
+                    mark_t,
+                    Skidmark { timer: 5.0 },
+                ))
+                .id();
             // Not adding to world_entities because they decay on their own and
             // cleaning them up explicitly could block the CPU unnecessarily during reset.
         }
@@ -1688,7 +1916,11 @@ pub(super) fn update_racers(
         // Proxy para delta: speed * alignment * dt (componente forward de avanço).
         // wall_contact_cost dispara com superfície de parede (voxel == Wall).
         let delta_track_progress = (speed * alignment.max(0.0) * dt).max(0.0);
-        let wall_contact_cost = if matches!(voxel_current, VoxelType::Wall) { 5.0 * dt } else { 0.0 };
+        let wall_contact_cost = if matches!(voxel_current, VoxelType::Wall) {
+            5.0 * dt
+        } else {
+            0.0
+        };
         let actual_reward = delta_track_progress * 10.0 - wall_contact_cost;
         racer.engine.metabolism.update_dopamine(actual_reward);
 
@@ -1696,7 +1928,10 @@ pub(super) fn update_racers(
         // Integra proximidade da parede mais próxima entre EMA esquerda/direita.
         // wall_ema_l/r já são distâncias em metros (decay ~1s).
         let min_wall_distance = racer.wall_ema_l.min(racer.wall_ema_r);
-        racer.engine.metabolism.update_cortisol(min_wall_distance, dt);
+        racer
+            .engine
+            .metabolism
+            .update_cortisol(min_wall_distance, dt);
 
         // --- TIER 3.3: CURIOSIDADE (novelty em retina) ---
         // Mede variância do visual_cortex nos últimos 16 frames. Monotonia → sobe.
@@ -1704,7 +1939,10 @@ pub(super) fn update_racers(
         // ou preserva o valor do substep anterior (fallback). Ambos os casos servem
         // como sinal retiniano válido pro histórico de curiosidade.
         let retina_snapshot = racer.visual_cortex;
-        racer.engine.metabolism.update_curiosity(&retina_snapshot, dt);
+        racer
+            .engine
+            .metabolism
+            .update_curiosity(&retina_snapshot, dt);
 
         // --- 3. EXECUÇÃO SOBERANA ---
         // Tier 6.5 — Time Dilation sob stress:
@@ -1731,12 +1969,24 @@ pub(super) fn update_racers(
         //   80     = curv60_signed (lookahead)
         // Proprioception: yaw/pitch/roll into sensory wave
         {
-            let yaw = if let Some(ref body) = opt_body { body.angular_velocity.y } else { 0.0 };
-            let pitch_r = if let Some(ref body) = opt_body { body.angular_velocity.x } else { 0.0 };
-            let roll = if let Some(ref body) = opt_body { body.angular_velocity.z } else { 0.0 };
-            let yaw_i8   = ((yaw     / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
+            let yaw = if let Some(ref body) = opt_body {
+                body.angular_velocity.y
+            } else {
+                0.0
+            };
+            let pitch_r = if let Some(ref body) = opt_body {
+                body.angular_velocity.x
+            } else {
+                0.0
+            };
+            let roll = if let Some(ref body) = opt_body {
+                body.angular_velocity.z
+            } else {
+                0.0
+            };
+            let yaw_i8 = ((yaw / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
             let pitch_i8 = ((pitch_r / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
-            let roll_i8  = ((roll    / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
+            let roll_i8 = ((roll / 3.0).clamp(-1.0, 1.0) * 127.0) as i8;
             sensory_wave[16] = yaw_i8;
             sensory_wave[17] = pitch_i8;
             sensory_wave[18] = roll_i8;
@@ -1751,7 +2001,9 @@ pub(super) fn update_racers(
                 let cross_y = forward.x * f.y - forward.z * f.x;
                 let dot = (forward.x * f.x + forward.z * f.y).clamp(-1.0, 1.0);
                 cross_y.atan2(dot)
-            } else { 0.0 }
+            } else {
+                0.0
+            }
         };
         let yn = std::f32::consts::FRAC_PI_2;
         // 7 distances: near/mid/far progression for granular curve perception.
@@ -1775,9 +2027,9 @@ pub(super) fn update_racers(
             // Ch 20, 78, 79, 80, 32, 101 (6 lookahead channels).
             // ch111 (350m horizon) foi movido para perception_temporal.wgsl:curv_at_d(350)
             // — conflito de escrita eliminado; agora só a GPU escreve ch111.
-            sensory_wave[20] = c20;  // 20m nearest
-            sensory_wave[78] = c40;  // 40m near
-            sensory_wave[79] = c70;  // 70m mid
+            sensory_wave[20] = c20; // 20m nearest
+            sensory_wave[78] = c40; // 40m near
+            sensory_wave[79] = c70; // 70m mid
             sensory_wave[80] = c120; // 120m mid-far
             sensory_wave[32] = c180; // 180m far
             sensory_wave[101] = c260; // 260m very far
@@ -1796,7 +2048,10 @@ pub(super) fn update_racers(
         if should_fire {
             let t_percept = std::time::Instant::now();
             racer.engine.retina_perception.inject_into_wave(
-                &retina_binocular, &mut sensory_wave, 192, 0.3,
+                &retina_binocular,
+                &mut sensory_wave,
+                192,
+                0.3,
             );
             perf_accum.2 += t_percept.elapsed().as_secs_f64();
 
@@ -1810,7 +2065,14 @@ pub(super) fn update_racers(
             if racer.race_time < 1.0 {
                 let steer_pre_axiom = racer.engine.final_intent.get(1).copied().unwrap_or(0.0);
                 let throttle = racer.engine.final_intent.get(0).copied().unwrap_or(0.0);
-                let sensory_sample = format!("[{},{},{},{},{}]", sensory_wave[0], sensory_wave[1], sensory_wave[75], sensory_wave[82], sensory_wave[118]);
+                let sensory_sample = format!(
+                    "[{},{},{},{},{}]",
+                    sensory_wave[0],
+                    sensory_wave[1],
+                    sensory_wave[75],
+                    sensory_wave[82],
+                    sensory_wave[118]
+                );
                 race.telemetry.write_debug(serde_json::json!({
                     "gen": debug_gen,
                     "tick": debug_tick,
@@ -1860,12 +2122,16 @@ pub(super) fn update_racers(
             // Wall raycast proxies derived from retina samples (i8 0..127). Larger sum = closer.
             let horizon_row = RETINA_ROWS / 2;
             let wall_l_proxy = {
-                let s: i32 = ((RETINA_COLS/2)..(RETINA_COLS*38/64)).map(|i| retina_binocular[horizon_row * RETINA_COLS + i] as i32).sum();
+                let s: i32 = ((RETINA_COLS / 2)..(RETINA_COLS * 38 / 64))
+                    .map(|i| retina_binocular[horizon_row * RETINA_COLS + i] as i32)
+                    .sum();
                 let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
                 (1.0 - norm) * 5.0
             };
             let wall_r_proxy = {
-                let s: i32 = ((RETINA_COLS*58/64)..RETINA_COLS).map(|i| retina_binocular[horizon_row * RETINA_COLS + i] as i32).sum();
+                let s: i32 = ((RETINA_COLS * 58 / 64)..RETINA_COLS)
+                    .map(|i| retina_binocular[horizon_row * RETINA_COLS + i] as i32)
+                    .sum();
                 let norm = (s as f32 / (6.0 * 127.0)).clamp(0.0, 1.0);
                 (1.0 - norm) * 5.0
             };
@@ -1876,15 +2142,28 @@ pub(super) fn update_racers(
             let ttc_forward = if speed > 0.5 {
                 let clear_m = (1.0 - fwd_obstacle_norm) * 30.0;
                 (clear_m / speed).clamp(0.0, 99.0)
-            } else { 99.0 };
+            } else {
+                99.0
+            };
             // yaw_rate: pull from body angular velocity if available (cheap local).
-            let yaw_rate: f32 = if let Some(ref body) = opt_body { body.angular_velocity.y } else { 0.0 };
+            let yaw_rate: f32 = if let Some(ref body) = opt_body {
+                body.angular_velocity.y
+            } else {
+                0.0
+            };
             // slip_avg: read directly from wheel state (1-tick lag from physics, fine).
             let slip_avg: f32 = if let Some(ref body) = opt_body {
-                body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0
-            } else { 0.0 };
+                body.wheels
+                    .iter()
+                    .map(|w| w.slip_ratio.abs() + w.slip_angle.abs())
+                    .sum::<f32>()
+                    / 4.0
+            } else {
+                0.0
+            };
             // curv25 read from sensory_wave[79..80] (filled in proprio block above the brain fire).
-            let curv25: f32 = ((sensory_wave[79] as f32).abs() + (sensory_wave[80] as f32).abs()) / 254.0 * 60.0;
+            let curv25: f32 =
+                ((sensory_wave[79] as f32).abs() + (sensory_wave[80] as f32).abs()) / 254.0 * 60.0;
             let safety_state = crate::safety::SafetyState {
                 speed_kmh,
                 yaw_rate,
@@ -1895,7 +2174,11 @@ pub(super) fn update_racers(
                 // slow_time increments 1.0/tick @ ~64Hz when speed<2m/s; convert to real seconds.
                 stall_timer: racer.slow_time / 64.0,
                 // wall_time already in real seconds; gate on near-stop so it reads "pinned vs scraping".
-                pinado_timer: if speed_kmh < 8.0 { racer.wall_time } else { 0.0 },
+                pinado_timer: if speed_kmh < 8.0 {
+                    racer.wall_time
+                } else {
+                    0.0
+                },
                 rain: env.weather_wetness,
                 curv25,
                 current_thr: cortex_intent[0],
@@ -1906,11 +2189,19 @@ pub(super) fn update_racers(
                 retina_temporal_var: 0.0, // wired later from motion_left/motion_right
             };
             let reflex_in = slow_input_for_reflex(&sensory_wave);
-            let trinity = racer.engine.decide(cortex_intent, &reflex_in, &safety_state, &chaos_in);
+            let trinity = racer
+                .engine
+                .decide(cortex_intent, &reflex_in, &safety_state, &chaos_in);
             // Mutate final_intent so downstream readers see gate-blended values.
-            if let Some(slot) = racer.engine.final_intent.get_mut(0) { *slot = trinity[0]; }
-            if let Some(slot) = racer.engine.final_intent.get_mut(1) { *slot = trinity[1]; }
-            if let Some(slot) = racer.engine.final_intent.get_mut(2) { *slot = trinity[2]; }
+            if let Some(slot) = racer.engine.final_intent.get_mut(0) {
+                *slot = trinity[0];
+            }
+            if let Some(slot) = racer.engine.final_intent.get_mut(1) {
+                *slot = trinity[1];
+            }
+            if let Some(slot) = racer.engine.final_intent.get_mut(2) {
+                *slot = trinity[2];
+            }
             // ---- end Trinity ----
             // Atualiza last_action com a saída fresca (throttle, steer).
             let ti = racer.engine.final_intent.get(0).copied().unwrap_or(0.0);
@@ -1926,32 +2217,39 @@ pub(super) fn update_racers(
         // --- CÓRTEX LENTO (System 2) — agrega contexto e emite bias modulador ---
         // Input 32-dim: estado homeostático + pooled retina + saídas anteriores do fast.
         // Roda subsampled (1× a cada 32 ticks). Output em `racer.engine.slow_brain.output`.
-        let _lap_progress = if world.lap_distance > 0.0 { (racer.distance / world.lap_distance).fract() } else { 0.0 };
+        let _lap_progress = if world.lap_distance > 0.0 {
+            (racer.distance / world.lap_distance).fract()
+        } else {
+            0.0
+        };
         let mut slow_input = [0i8; 48];
         // Canais 32..47: HD visual bins (do sensory_wave 128..143)
-        for i in 0..16 { slow_input[32 + i] = sensory_wave[128 + i]; }
-        slow_input[0]  = sensory_wave[126];                                    // joy_tick
-        slow_input[1]  = sensory_wave[127];                                    // joy_streak
+        for i in 0..16 {
+            slow_input[32 + i] = sensory_wave[128 + i];
+        }
+        slow_input[0] = sensory_wave[126]; // joy_tick
+        slow_input[1] = sensory_wave[127]; // joy_streak
         // CORRIGIDO: normaliza por HP_INICIAL em vez de 100.0 fixo.
         // Com HP_INICIAL=1000 e divisor fixo 100.0, o canal ficaria em 127 para sempre.
-        slow_input[2]  = ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(0.0, 127.0) as i8; // hp
+        slow_input[2] =
+            ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(0.0, 127.0) as i8; // hp
         // MEDIDOR DE COMBUSTÍVEL = FRAÇÃO DO TANQUE, não unidades absolutas.
         // Era `fuel * 127` com clamp: com o tanque de nascimento em 1000 o canal ficava
         // travado em 127 para sempre — o cérebro tinha um sensor que era uma constante.
         // Mesmo com o tanque em 3.0 ele só sairia da saturação depois de 2/3 gastos.
         // Normalizado pelo tanque inicial, informa em toda a faixa, que é o que um
         // ponteiro de combustível faz.
-        slow_input[3]  = ((racer.fuel / crate::simulation::racer::FUEL_INICIAL) * 127.0)
-                            .clamp(0.0, 127.0) as i8;
-        slow_input[4]  = ((speed / 80.0) * 127.0).clamp(0.0, 127.0) as i8;      // speed / 80m/s
-        slow_input[5]  = (racer.tire_temp * 127.0).clamp(0.0, 127.0) as i8;
-        slow_input[6]  = (racer.engine_power * 127.0).clamp(0.0, 127.0) as i8;
-        slow_input[7]  = (alignment * 127.0) as i8;
-        // BUG FIX: Second Lap Amnesia. 
-        // Omitimos lap_progress e total_laps da entrada do modelo. Eles causavam descontinuidade 
+        slow_input[3] =
+            ((racer.fuel / crate::simulation::racer::FUEL_INICIAL) * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[4] = ((speed / 80.0) * 127.0).clamp(0.0, 127.0) as i8; // speed / 80m/s
+        slow_input[5] = (racer.tire_temp * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[6] = (racer.engine_power * 127.0).clamp(0.0, 127.0) as i8;
+        slow_input[7] = (alignment * 127.0) as i8;
+        // BUG FIX: Second Lap Amnesia.
+        // Omitimos lap_progress e total_laps da entrada do modelo. Eles causavam descontinuidade
         // no estado da rede quando a corrida completava uma volta, fazendo o carro "esquecer" como pilotar.
-        slow_input[8]  = 0;
-        slow_input[9]  = 0;
+        slow_input[8] = 0;
+        slow_input[9] = 0;
         slow_input[10] = ((racer.wall_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[11] = ((racer.grass_time / 5.0) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[12] = (racer.stagnation * 127.0).clamp(0.0, 127.0) as i8;
@@ -1967,12 +2265,18 @@ pub(super) fn update_racers(
             for row in 0..RETINA_ROWS {
                 for j in 0..bins_per_region {
                     let col = reg * bins_per_region + j;
-                    if col >= RETINA_COLS { break; }
+                    if col >= RETINA_COLS {
+                        break;
+                    }
                     let v = racer.visual_cortex[row * RETINA_COLS + col];
                     if row < RETINA_ROWS / 2 {
-                        if v > max_near { max_near = v; }
+                        if v > max_near {
+                            max_near = v;
+                        }
                     } else {
-                        if v > max_far { max_far = v; }
+                        if v > max_far {
+                            max_far = v;
+                        }
                     }
                 }
             }
@@ -1995,7 +2299,9 @@ pub(super) fn update_racers(
         let signed_yaw_to_flow = |ahead_m: f32| -> f32 {
             let probe = pos_fwd + forward_vec * ahead_m;
             let flow2 = world.get_flow_at(probe.x, probe.z);
-            if flow2.length_squared() < 1e-4 { return 0.0; }
+            if flow2.length_squared() < 1e-4 {
+                return 0.0;
+            }
             let flow3 = Vec3::new(flow2.x, 0.0, flow2.y).normalize_or_zero();
             let cross_y = forward_vec.x * flow3.z - forward_vec.z * flow3.x;
             let dot = forward_vec.dot(flow3);
@@ -2014,7 +2320,8 @@ pub(super) fn update_racers(
         for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
             let probe = pos + transform.right().as_vec3() * sample_dist;
             if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
-               || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole
+            {
                 forward_wall_dist_sensor = *sample_dist;
                 break;
             }
@@ -2062,7 +2369,7 @@ pub(super) fn update_racers(
         } else {
             &racer.engine.slow_brain.output
         };
-        let aggression: f32 = slow[0] * 0.5;                // Bias [-0.5, 0.5]
+        let aggression: f32 = slow[0] * 0.5; // Bias [-0.5, 0.5]
         let throttle_cap: f32 = 1.0 - slow[1].max(0.0) * 0.8; // Range [0.2, 1.0], Neutral at 0.0
         // v3: slow[2] repurposed: risk_damp→steer_bias.
         // OLD risk_damp was DAMPENING steer in curves (counterproductive for tight turns).
@@ -2106,8 +2413,11 @@ pub(super) fn update_racers(
         #[cfg(feature = "brake_symmetric")]
         let raw_brake = {
             let dead = 0.05_f32;
-            if brake_spline > dead { ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0) }
-            else { 0.0 }
+            if brake_spline > dead {
+                ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
         };
         #[cfg(not(feature = "brake_symmetric"))]
         let raw_brake = {
@@ -2115,8 +2425,11 @@ pub(super) fn update_racers(
             // Cars não freavam mesmo com brake priming +14/+15 porque cortex output
             // raramente excede 0.2. Dead-zone simétrica 0.05 (mesmo brake_symmetric).
             let dead = 0.05_f32;
-            if brake_spline > dead { ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0) }
-            else { 0.0 }
+            if brake_spline > dead {
+                ((brake_spline - dead) / (1.0 - dead)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
         };
         let combined_brake = raw_brake.clamp(0.0, 1.0);
         let mut brake_intent = if speed < 2.0 { 0.0 } else { combined_brake };
@@ -2142,23 +2455,25 @@ pub(super) fn update_racers(
         // 25→16 m/s over the approach. Neural net adds on top via gate.
         {
             const G: f32 = 9.81;
-            const MIN_ANGLE: f32 = 0.05;   // ~2.9° — below this, road is straight
+            const MIN_ANGLE: f32 = 0.05; // ~2.9° — below this, road is straight
             const GOV_MIN_SPEED: f32 = 5.0; // don't govern below 18 km/h
 
             // Per-probe: (distance, angle, concentration_factor)
             // Short probes: C closer to 1.0 (arc approx is more accurate)
             // Long probes: C lower (curve may be packed into fraction of d)
             let probes: [(f32, f32, f32); 3] = [
-                (40.0,  c40_signed.abs(),  0.5),  // primary braking zone
-                (70.0,  c70_signed.abs(),  0.45), // pre-decel zone
-                (120.0, c120_signed.abs(), 0.4),  // early warning
+                (40.0, c40_signed.abs(), 0.5),   // primary braking zone
+                (70.0, c70_signed.abs(), 0.45),  // pre-decel zone
+                (120.0, c120_signed.abs(), 0.4), // early warning
             ];
 
             if speed > GOV_MIN_SPEED {
                 let mut gov_brake = 0.0_f32;
 
                 for &(dist, angle, concentration) in &probes {
-                    if angle < MIN_ANGLE { continue; }
+                    if angle < MIN_ANGLE {
+                        continue;
+                    }
 
                     let r_eff = (dist / angle) * concentration;
                     let v_safe = (G * r_eff).sqrt(); // μ=1.0 implicit
@@ -2201,7 +2516,7 @@ pub(super) fn update_racers(
             // O freio automático de emergência (AEB) estava fazendo o modelo "congelar"
             // perto das paredes, impedindo-o de aprender a desviar por conta própria.
             // O modelo agora tem liberdade total para bater ou desviar usando a rede neural.
-            
+
             /*
             const SENTINEL_TTC_HARD: f32 = 0.3;
             const SENTINEL_TTC_BRAKE: f32 = 0.6;
@@ -2304,19 +2619,28 @@ pub(super) fn update_racers(
         // com steering aprendido. Agora só reflexo em emergência real (<2.5m lateral).
         let danger_dist = 2.5;
         // Grid-based proximity check (no raycasts)
-        let left_perp = Vec3::new(-transform.right().as_vec3().z, 0.0, transform.right().as_vec3().x).normalize_or_zero();
+        let left_perp = Vec3::new(
+            -transform.right().as_vec3().z,
+            0.0,
+            transform.right().as_vec3().x,
+        )
+        .normalize_or_zero();
         let right_perp = -left_perp;
         let mut p_dist_l = 10.0f32;
         let mut p_dist_r = 10.0f32;
         for sample_dist in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0].iter() {
             let left_probe = pos + left_perp * sample_dist;
             let right_probe = pos + right_perp * sample_dist;
-            if p_dist_l == 10.0f32 && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
-               || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole) {
+            if p_dist_l == 10.0f32
+                && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
+                    || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole)
+            {
                 p_dist_l = *sample_dist;
             }
-            if p_dist_r == 10.0f32 && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
-               || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole) {
+            if p_dist_r == 10.0f32
+                && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
+                    || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole)
+            {
                 p_dist_r = *sample_dist;
             }
         }
@@ -2326,12 +2650,20 @@ pub(super) fn update_racers(
         if p_dist_l < danger_dist {
             let severity = 1.0 - (p_dist_l / danger_dist);
             emerg_steer -= severity * 0.5;
-            gizmos.arrow(pos - transform.right().as_vec3() * p_dist_l, pos, Color::srgba(1.0, 0.0, 0.0, severity));
+            gizmos.arrow(
+                pos - transform.right().as_vec3() * p_dist_l,
+                pos,
+                Color::srgba(1.0, 0.0, 0.0, severity),
+            );
         }
         if p_dist_r < danger_dist {
             let severity = 1.0 - (p_dist_r / danger_dist);
             emerg_steer += severity * 0.5;
-            gizmos.arrow(pos + transform.right().as_vec3() * p_dist_r, pos, Color::srgba(1.0, 0.0, 0.0, severity));
+            gizmos.arrow(
+                pos + transform.right().as_vec3() * p_dist_r,
+                pos,
+                Color::srgba(1.0, 0.0, 0.0, severity),
+            );
         }
 
         // ================================================================
@@ -2345,20 +2677,21 @@ pub(super) fn update_racers(
         //   2) GATILHO DE RÉ: se muito perto (<2m) e praticamente parado,
         //      dispara reverse_timer de 1.5s. Durante a ré, shift vai para
         //      gear 0 e o pedal aplica torque de recuo. Visualmente: seta laranja.
-        const SAFE_DIST: f32 = 3.0;      // folga mínima para throttle pleno (pista estreita friendly)
-        const REVERSE_TRIGGER_DIST: f32 = 3.0;   // detecta antes (era 2.5)
-        const REVERSE_MIN_DURATION: f32 = 0.4;   // toque curto (era 3.0)
-        const REVERSE_MAX_DURATION: f32 = 1.5;   // cap duro (era 5.0)
-        const REVERSE_EXIT_CLEAR: f32 = 2.5;     // só precisa afastar 2.5m (era 4.0)
-        const REVERSE_PEDAL: f32 = 0.75;         // >0.5 garante stall recovery
-        const POST_REVERSE_LOCKOUT: f32 = 0.6;   // cooldown curto (era 1.5)
+        const SAFE_DIST: f32 = 3.0; // folga mínima para throttle pleno (pista estreita friendly)
+        const REVERSE_TRIGGER_DIST: f32 = 3.0; // detecta antes (era 2.5)
+        const REVERSE_MIN_DURATION: f32 = 0.4; // toque curto (era 3.0)
+        const REVERSE_MAX_DURATION: f32 = 1.5; // cap duro (era 5.0)
+        const REVERSE_EXIT_CLEAR: f32 = 2.5; // só precisa afastar 2.5m (era 4.0)
+        const REVERSE_PEDAL: f32 = 0.75; // >0.5 garante stall recovery
+        const POST_REVERSE_LOCKOUT: f32 = 0.6; // cooldown curto (era 1.5)
 
         // Grid-based forward wall distance (no raycast)
         let mut forward_wall_dist = 30.0f32;
         for sample_dist in [3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0].iter() {
             let probe = pos + transform.right().as_vec3() * sample_dist;
             if world.get_voxel_at(probe.x, probe.z) == VoxelType::Wall
-               || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole {
+                || world.get_voxel_at(probe.x, probe.z) == VoxelType::Hole
+            {
                 forward_wall_dist = *sample_dist;
                 break;
             }
@@ -2376,17 +2709,22 @@ pub(super) fn update_racers(
         for sample_dist in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0].iter() {
             let left_probe = pos + left_perp * sample_dist;
             let right_probe = pos + right_perp * sample_dist;
-            if lat_l_check == 10.0f32 && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
-               || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole) {
+            if lat_l_check == 10.0f32
+                && (world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Wall
+                    || world.get_voxel_at(left_probe.x, left_probe.z) == VoxelType::Hole)
+            {
                 lat_l_check = *sample_dist;
             }
-            if lat_r_check == 10.0f32 && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
-               || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole) {
+            if lat_r_check == 10.0f32
+                && (world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Wall
+                    || world.get_voxel_at(right_probe.x, right_probe.z) == VoxelType::Hole)
+            {
                 lat_r_check = *sample_dist;
             }
         }
         let both_lat_blocked = lat_l_check < 4.0 && lat_r_check < 4.0;
-        if racer.reverse_timer <= 0.0 && racer.post_reverse_lockout <= 0.0
+        if racer.reverse_timer <= 0.0
+            && racer.post_reverse_lockout <= 0.0
             && forward_wall_dist < REVERSE_TRIGGER_DIST
             && both_lat_blocked
             && speed < 1.5
@@ -2396,14 +2734,15 @@ pub(super) fn update_racers(
         }
         if racer.reverse_timer > 0.0 {
             racer.reverse_timer -= dt;
-            if forward_wall_dist > REVERSE_EXIT_CLEAR
-                || racer.reverse_timer > REVERSE_MAX_DURATION
+            if forward_wall_dist > REVERSE_EXIT_CLEAR || racer.reverse_timer > REVERSE_MAX_DURATION
             {
                 racer.reverse_timer = 0.0;
                 racer.post_reverse_lockout = POST_REVERSE_LOCKOUT;
             }
         }
-        if racer.post_reverse_lockout > 0.0 { racer.post_reverse_lockout -= dt; }
+        if racer.post_reverse_lockout > 0.0 {
+            racer.post_reverse_lockout -= dt;
+        }
         let is_reversing = racer.reverse_timer > 0.0;
 
         // (canal 89 já foi setado antes do execute_cycle, usando o estado do frame anterior)
@@ -2411,10 +2750,18 @@ pub(super) fn update_racers(
         if forward_wall_dist < SAFE_DIST {
             let severity = 1.0 - safety_cap;
             let front_point = pos + transform.right().as_vec3() * forward_wall_dist;
-            gizmos.arrow(front_point, pos, Color::srgba(1.0, 0.6, 0.0, severity.max(0.2)));
+            gizmos.arrow(
+                front_point,
+                pos,
+                Color::srgba(1.0, 0.6, 0.0, severity.max(0.2)),
+            );
         }
         if is_reversing {
-            gizmos.sphere(pos + Vec3::new(0.0, 2.0, 0.0), 0.5, Color::srgb(1.0, 0.4, 0.0));
+            gizmos.sphere(
+                pos + Vec3::new(0.0, 2.0, 0.0),
+                0.5,
+                Color::srgb(1.0, 0.4, 0.0),
+            );
         }
 
         // Fuga Espectral (Stigmergia) Removida - Agora a IA aprende pela rede e seleção natural
@@ -2426,7 +2773,8 @@ pub(super) fn update_racers(
         let curiosity = racer.engine.metabolism.exploration_drive();
         let exploration_steer = if curiosity > 0.7 && racer.stagnation > 60.0 && !is_reversing {
             use rand::prelude::*;
-            let mut rng = rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
+            let mut rng =
+                rand::rngs::StdRng::seed_from_u64(racer.stable_seed + racer.grace_ticks as u64);
             // Box-Muller aproximado via soma de 4 uniformes (determinístico-friendly,
             // evita dep em rand_distr). Média 0, std ≈ 0.58.
             let u: f32 = (0..4).map(|_| rng.random::<f32>() - 0.5).sum();
@@ -2448,20 +2796,34 @@ pub(super) fn update_racers(
         // A caixa continua inteira — auto-upshift, auto-downshift e anti-afogamento seguem
         // funcionando. Mede exatamente o que o cérebro acrescenta à regra automática.
         let ablar_marcha = crate::neuro::ablada() == crate::neuro::Via::Marcha;
-        let shift_up_intent = if ablar_marcha { 0.0 } else { racer.engine.final_intent[3] };
-        let shift_down_intent = if ablar_marcha { 0.0 } else { racer.engine.final_intent[4] };
+        let shift_up_intent = if ablar_marcha {
+            0.0
+        } else {
+            racer.engine.final_intent[3]
+        };
+        let shift_down_intent = if ablar_marcha {
+            0.0
+        } else {
+            racer.engine.final_intent[4]
+        };
         let mut shift_req = 0;
 
         if let Some(ref eng) = opt_engine {
             // A embreagem está patinando se velocidade da roda for baixa comparado ao giro
             let wheel_idx = eng.current_gear;
-            let wheel_ratio = if wheel_idx <= 1 { 0.0 } else { 12.0 - ((wheel_idx - 2) as f32 * 2.0) };
+            let wheel_ratio = if wheel_idx <= 1 {
+                0.0
+            } else {
+                12.0 - ((wheel_idx - 2) as f32 * 2.0)
+            };
             let wheel_rpm = speed * wheel_ratio.max(3.0) * 30.0;
             let is_clutch_engaged = wheel_rpm > 1200.0 && eng.current_gear >= 2;
 
             // Manobra de ré ativa: empurra gear para 0 (Reverse) e segura lá.
             if is_reversing {
-                if eng.current_gear > 0 { shift_req = -1; }
+                if eng.current_gear > 0 {
+                    shift_req = -1;
+                }
             }
             // Auto-clutch: Sai de Neutro/Ré para 1ª SEMPRE quando parado (desativado na ré)
             else if eng.current_gear <= 1 {
@@ -2473,17 +2835,28 @@ pub(super) fn update_racers(
                 shift_req = -1;
             }
             // Auto-upshift: Sobe marcha ONLY se a embreagem estiver colada
-            else if is_clutch_engaged && eng.current_rpm > eng.max_rpm * 0.85 && eng.current_gear < 6 {
+            else if is_clutch_engaged
+                && eng.current_rpm > eng.max_rpm * 0.85
+                && eng.current_gear < 6
+            {
                 shift_req = 1;
             }
             // Auto-downshift: Desce marcha em RPM crítico
-            else if is_clutch_engaged && eng.current_rpm < eng.max_rpm * 0.30 && eng.current_gear > 2 && speed > 3.0 {
+            else if is_clutch_engaged
+                && eng.current_rpm < eng.max_rpm * 0.30
+                && eng.current_gear > 2
+                && speed > 3.0
+            {
                 shift_req = -1;
             }
             // IA pode sobrepor com shift manual APENAS em velocidade colada (is_clutch_engaged)
             else if is_clutch_engaged {
-                if shift_up_intent > 0.5 && racer.memory[3] <= 0.5 && eng.current_gear < 6 { shift_req = 1; }
-                else if shift_down_intent > 0.5 && racer.memory[4] <= 0.5 && eng.current_gear > 2 { shift_req = -1; }
+                if shift_up_intent > 0.5 && racer.memory[3] <= 0.5 && eng.current_gear < 6 {
+                    shift_req = 1;
+                } else if shift_down_intent > 0.5 && racer.memory[4] <= 0.5 && eng.current_gear > 2
+                {
+                    shift_req = -1;
+                }
             }
         }
 
@@ -2517,22 +2890,24 @@ pub(super) fn update_racers(
         // --- DIAGNÓSTICO: SNAPSHOT DO CÉREBRO (~2Hz) ---
         // Captura entradas/saídas e atenuações para dump posterior nos reports.
         racer.trace_timer -= dt;
-        if racer.trace_timer <= 0.0 && racer.brain_trace.len() < 1800 {  // ~30s @ 60Hz
-            racer.trace_timer = 0.066;  // 15Hz tracing for frame-by-frame vision debug
+        if racer.trace_timer <= 0.0 && racer.brain_trace.len() < 1800 {
+            // ~30s @ 60Hz
+            racer.trace_timer = 0.066; // 15Hz tracing for frame-by-frame vision debug
             // Top-5 canais mais ativos (|valor|)
             let sw = &sensory_wave;
-            let mut pairs: Vec<(u8, i8)> = (0..128u8)
-                .map(|i| (i, sw[i as usize]))
-                .collect();
+            let mut pairs: Vec<(u8, i8)> = (0..128u8).map(|i| (i, sw[i as usize])).collect();
             pairs.sort_by(|a, b| (b.1 as i16).abs().cmp(&(a.1 as i16).abs()));
             let mut top5 = [(0u8, 0i8); 5];
-            for (k, p) in pairs.iter().take(5).enumerate() { top5[k] = *p; }
+            for (k, p) in pairs.iter().take(5).enumerate() {
+                top5[k] = *p;
+            }
 
             // Pico dos canais centrais da retina (10..22) — parede bem em frente
             let _retina_center_max = (10..22usize)
-                .chain((32+10)..(32+22))
+                .chain((32 + 10)..(32 + 22))
                 .map(|i| sw[i].unsigned_abs() as i8)
-                .max().unwrap_or(0);
+                .max()
+                .unwrap_or(0);
 
             // dynamic_steer_limit e risk_damp já calculados acima
             let slow = &racer.engine.slow_brain.output;
@@ -2667,7 +3042,10 @@ pub(super) fn update_racers(
                     if racer.hp <= 0.0 && racer.death_reason.is_none() {
                         racer.death_reason = Some(crate::simulation::racer::DeathReason::Hole);
                     }
-                    println!("⚠️ {} HOLE (modo_vida) hp={:.0} frame {}", racer.name, racer.hp, racer.grace_ticks);
+                    println!(
+                        "⚠️ {} HOLE (modo_vida) hp={:.0} frame {}",
+                        racer.name, racer.hp, racer.grace_ticks
+                    );
                 }
                 // Se o HP chegou a zero por queda, morte normal pela lógica central (L~2373).
             } else {
@@ -2677,9 +3055,14 @@ pub(super) fn update_racers(
                 racer.death_frame = racer.grace_ticks;
                 racer.death_pos = pos;
                 race.death_markers.push(pos);
-                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
+                    mat.base_color = Color::BLACK;
+                }
                 commands.entity(entity).insert(Visibility::Hidden);
-                println!("💀 {} HOLE frame {} pos=({:.1},{:.1})", racer.name, racer.grace_ticks, pos.x, pos.z);
+                println!(
+                    "💀 {} HOLE frame {} pos=({:.1},{:.1})",
+                    racer.name, racer.grace_ticks, pos.x, pos.z
+                );
             }
         }
 
@@ -2723,7 +3106,9 @@ pub(super) fn update_racers(
             // Cria MEMÓRIA DE DOR no mundo para as próximas gerações
             race.death_markers.push(pos);
 
-            if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+            if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
+                mat.base_color = Color::BLACK;
+            }
             // --- HIDE-ON-DEATH: libera a tela com 500 carros ---
             // Mantemos a entidade (pipeline precisa ler Racer pro fitness/pool),
             // mas esconde o mesh + filhos. InheritedVisibility propaga pro wing,
@@ -2732,7 +3117,8 @@ pub(super) fn update_racers(
         } else if !racer.is_dead {
             // Cor reflete estado mecânico: vermelho = danificado, ciano normal
             if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
-                let health_ratio = (racer.hp / crate::simulation::racer::HP_INICIAL).clamp(0.0, 1.0);
+                let health_ratio =
+                    (racer.hp / crate::simulation::racer::HP_INICIAL).clamp(0.0, 1.0);
                 mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
             }
         }
@@ -2764,7 +3150,9 @@ pub(super) fn update_racers(
             // A IA vira a roda da frente -> gera força lateral no pneu -> gera torque -> vira o chassi.
 
             racer.amplitude = body.velocity.length();
-            if racer.amplitude > racer.peak_speed { racer.peak_speed = racer.amplitude; }
+            if racer.amplitude > racer.peak_speed {
+                racer.peak_speed = racer.amplitude;
+            }
             racer.phase = transform.rotation.to_euler(EulerRot::YXZ).0 * -1.0;
 
             // --- TIER 1.1: TELEMETRIA DENSA (reward shaping) ---
@@ -2834,50 +3222,67 @@ pub(super) fn update_racers(
                         let mut retina_fov = [0i8; 8];
                         let mut retina_peri = [0i8; 8];
                         for k in 0..8 {
-                            retina_fov[k]  = retina_binocular[horizon * RETINA_COLS + k * step_fov];
+                            retina_fov[k] = retina_binocular[horizon * RETINA_COLS + k * step_fov];
                             let peri_row = (RETINA_ROWS * 3 / 4).min(RETINA_ROWS - 1);
-                            retina_peri[k] = retina_binocular[peri_row * RETINA_COLS + k * step_fov];
+                            retina_peri[k] =
+                                retina_binocular[peri_row * RETINA_COLS + k * step_fov];
                         }
 
                         // Dimensões saturadas no final_intent (|x| > 0.95)
-                        let dims_sat = racer.engine.final_intent.iter()
+                        let dims_sat = racer
+                            .engine
+                            .final_intent
+                            .iter()
                             .filter(|&&v| v.abs() > 0.95)
                             .count()
                             .min(255) as u8;
 
                         let replay_frame = crate::replay::ReplayFrame {
-                            pos:           [pos.x, pos.y, pos.z],
-                            fwd:           fwd_2,
+                            pos: [pos.x, pos.y, pos.z],
+                            fwd: fwd_2,
                             speed,
                             yaw_rate: body.angular_velocity.y,
-                            arc_prog:      racer.track_progress,
-                            laps:          racer.total_laps as u16,
-                            gear:          opt_engine.as_ref().map(|e| e.current_gear as u8).unwrap_or(0),
-                            hp_norm:       ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(0.0, 127.0) as u8,
-                            fuel_norm:     ((racer.fuel / crate::simulation::racer::FUEL_INICIAL) * 127.0).clamp(0.0, 127.0) as u8,
-                            tick:          racer.grace_ticks,
-                            dist_wall_l:   dist_l,
-                            dist_wall_r:   dist_r,
-                            dist_wall_f:   forward_wall_dist,
-                            curv_40m:      (c40_signed / std::f32::consts::PI).clamp(-1.0, 1.0),
-                            curv_70m:      (c70_signed / std::f32::consts::PI).clamp(-1.0, 1.0),
-                            curv_120m:     (c120_signed / std::f32::consts::PI).clamp(-1.0, 1.0),
+                            arc_prog: racer.track_progress,
+                            laps: racer.total_laps as u16,
+                            gear: opt_engine
+                                .as_ref()
+                                .map(|e| e.current_gear as u8)
+                                .unwrap_or(0),
+                            hp_norm: ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0)
+                                .clamp(0.0, 127.0) as u8,
+                            fuel_norm: ((racer.fuel / crate::simulation::racer::FUEL_INICIAL)
+                                * 127.0)
+                                .clamp(0.0, 127.0) as u8,
+                            tick: racer.grace_ticks,
+                            dist_wall_l: dist_l,
+                            dist_wall_r: dist_r,
+                            dist_wall_f: forward_wall_dist,
+                            curv_40m: (c40_signed / std::f32::consts::PI).clamp(-1.0, 1.0),
+                            curv_70m: (c70_signed / std::f32::consts::PI).clamp(-1.0, 1.0),
+                            curv_120m: (c120_signed / std::f32::consts::PI).clamp(-1.0, 1.0),
                             flow_align,
-                            line_offset:   line_offset_m,
-                            intent_thr:    pedal_intent,
-                            intent_str:    steer_intent,
-                            intent_brk:    combined_brake,
-                            final_thr:     physical_throttle,
-                            final_str:     physical_steer,
-                            final_brk:     physical_brake,
+                            line_offset: line_offset_m,
+                            intent_thr: pedal_intent,
+                            intent_str: steer_intent,
+                            intent_brk: combined_brake,
+                            final_thr: physical_throttle,
+                            final_str: physical_steer,
+                            final_brk: physical_brake,
                             dims_saturated: dims_sat,
-                            intent_mag_q:  ((racer.engine.final_intent.iter().map(|v| v.abs()).sum::<f32>()
-                                           / racer.engine.final_intent.len().max(1) as f32) * 127.0).clamp(0.0, 127.0) as u8,
+                            intent_mag_q: ((racer
+                                .engine
+                                .final_intent
+                                .iter()
+                                .map(|v| v.abs())
+                                .sum::<f32>()
+                                / racer.engine.final_intent.len().max(1) as f32)
+                                * 127.0)
+                                .clamp(0.0, 127.0) as u8,
                             axiom_str_q,
-                            safety_flags:  sf,
+                            safety_flags: sf,
                             retina_fov,
                             retina_peri,
-                            _pad:          [0u8; 8],
+                            _pad: [0u8; 8],
                         };
                         let _ = rw.write_frame(my_rank as u8, &replay_frame);
                     }
@@ -2893,7 +3298,8 @@ pub(super) fn update_racers(
 
             // SÓ ACUMULA DISTÂNCIA SE NÃO ESTÁ NA PAREDE
             // Isso elimina completamente a estratégia de "ricochete produtivo"
-            let on_wall = world.get_voxel_at(transform.translation.x, transform.translation.z) == VoxelType::Wall;
+            let on_wall = world.get_voxel_at(transform.translation.x, transform.translation.z)
+                == VoxelType::Wall;
             if !on_wall {
                 racer.distance += (track_velocity - lateral_velocity * 0.5) * dt;
             }
@@ -2943,7 +3349,12 @@ pub(super) fn update_racers(
             // Punição de Desgaste de Pneu (Destruição Térmica): Evitar Burnouts Livres
             // Se as rodas estão escorregando loucamente (Slip Ratio enorme) e o carro não avança muito
             // Grace period: Gen 1 pode derrapar durante spin-up initial sem penalidade.
-            let avg_slip = body.wheels.iter().map(|w| w.slip_ratio.abs() + w.slip_angle.abs()).sum::<f32>() / 4.0;
+            let avg_slip = body
+                .wheels
+                .iter()
+                .map(|w| w.slip_ratio.abs() + w.slip_angle.abs())
+                .sum::<f32>()
+                / 4.0;
             if !in_grace && avg_slip > 0.5 && track_velocity.abs() < 15.0 {
                 // "Estourar os Pneus": drena vida se derrapar à toa acelerando parado.
                 // MODO VIDA: avg_slip × 0,2 HP/s (era avg_slip × 1,0 HP/s).
@@ -2957,7 +3368,11 @@ pub(super) fn update_racers(
             // Requer: slip_angle médio alto + forward speed real + throttle engajado + alinhamento ok.
             // Burnout parado (acima) continua sendo punido — esses dois não se sobrepõem.
             let avg_slip_angle = body.wheels.iter().map(|w| w.slip_angle.abs()).sum::<f32>() / 4.0;
-            if avg_slip_angle > 0.15 && track_velocity > 10.0 && pedal_intent > 0.3 && alignment > 0.3 {
+            if avg_slip_angle > 0.15
+                && track_velocity > 10.0
+                && pedal_intent > 0.3
+                && alignment > 0.3
+            {
                 // Escala: drift magnitude × velocidade × alinhamento com pista.
                 // Cap em 0.6 rad (~34°) pra não premiar spins absurdos.
                 let drift_bonus = avg_slip_angle.min(0.6) * track_velocity * alignment * 0.08;
@@ -2970,7 +3385,8 @@ pub(super) fn update_racers(
 
             // === DRAFTING: Redução de arrasto 30% se atrás de outro carro ===
             if in_draft {
-                let drag_reduction = body.velocity.normalize_or_zero() * body.velocity.length_squared() * 0.18 * 0.3;
+                let drag_reduction =
+                    body.velocity.normalize_or_zero() * body.velocity.length_squared() * 0.18 * 0.3;
                 body.forces += drag_reduction;
             }
         } else {
@@ -2978,7 +3394,8 @@ pub(super) fn update_racers(
             let target_amp = pedal_intent * dev.wave_amplitude;
             racer.amplitude = racer.amplitude + (target_amp - racer.amplitude) * 2.0 * dt;
             racer.phase = racer.phase + steering_speed * dt;
-            let wave_vector = Vec3::new(racer.phase.cos(), 0.0, racer.phase.sin()) * racer.amplitude;
+            let wave_vector =
+                Vec3::new(racer.phase.cos(), 0.0, racer.phase.sin()) * racer.amplitude;
             transform.translation += wave_vector * dt;
             transform.rotation = Quat::from_rotation_y(-racer.phase);
             racer.distance += (wave_vector * dt).length();
@@ -3001,10 +3418,10 @@ pub(super) fn update_racers(
             let right = -transform.back().as_vec3();
 
             let probe_points = [
-                pos + forward * (wb * 0.5),   // Nariz
-                pos - forward * (wb * 0.5),   // Traseira
-                pos + right * (tw * 0.5),     // Lateral direita
-                pos - right * (tw * 0.5),     // Lateral esquerda
+                pos + forward * (wb * 0.5), // Nariz
+                pos - forward * (wb * 0.5), // Traseira
+                pos + right * (tw * 0.5),   // Lateral direita
+                pos - right * (tw * 0.5),   // Lateral esquerda
             ];
 
             for p in &probe_points {
@@ -3023,18 +3440,21 @@ pub(super) fn update_racers(
         let out_of_grace = racer.grace_ticks >= 3200;
 
         // === POST-LAP GRACE (calculado cedo — wall check abaixo precisa de HP grace) ===
-        if racer.post_lap_grace > 0 { racer.post_lap_grace = racer.post_lap_grace.saturating_sub(1); }
+        if racer.post_lap_grace > 0 {
+            racer.post_lap_grace = racer.post_lap_grace.saturating_sub(1);
+        }
         let advanced_past_line = racer.post_lap_checkpoint > 0.0
             && racer.track_progress >= racer.post_lap_checkpoint + 25.0;
-        let in_post_lap_grace = racer.post_lap_grace > 0 || (racer.post_lap_checkpoint > 0.0 && !advanced_past_line);
+        let in_post_lap_grace =
+            racer.post_lap_grace > 0 || (racer.post_lap_checkpoint > 0.0 && !advanced_past_line);
         let in_post_lap_hp_grace = racer.post_lap_grace > 480;
 
         if hit_wall && !racer.is_dead {
             racer.wall_time += dt; // dt capado; wall_time em segundos REAIS (lento, estável).
             // PINADO: 1.6s REAIS raspando parede = morte (era 0.8s). Mais tolerância.
             // MODO VIDA: raspar parede não mata, machuca. Bater passa a ser custo, não fim.
-            let pinned = out_of_grace && !in_post_lap_hp_grace && racer.wall_time > 1.6
-                         && !lab.modo_vida;
+            let pinned =
+                out_of_grace && !in_post_lap_hp_grace && racer.wall_time > 1.6 && !lab.modo_vida;
             // MODO VIDA: raspar custa 0,3 HP/s (era 2,0 HP/s → matava em ~150 s contínuos com HP=300).
             // A 0,3 HP/s e HP_INICIAL=1000 levaria ~3333 s de raspagem ININTERRUPTA para matar.
             // Raspar a parede é custo real mas não é sentença — quem morre por parede agora
@@ -3061,9 +3481,14 @@ pub(super) fn update_racers(
                 racer.death_frame = racer.grace_ticks;
                 racer.death_pos = pos;
                 race.death_markers.push(pos);
-                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
+                    mat.base_color = Color::BLACK;
+                }
                 commands.entity(entity).insert(Visibility::Hidden);
-                println!("💀 {} PINADO frame {} (wall_time={:.2}s)", racer.name, racer.grace_ticks, racer.wall_time);
+                println!(
+                    "💀 {} PINADO frame {} (wall_time={:.2}s)",
+                    racer.name, racer.grace_ticks, racer.wall_time
+                );
             } else if racer.wall_cooldown == 0.0 {
                 racer.wall_hits += 1;
                 racer.wall_cooldown = 0.6;
@@ -3074,7 +3499,9 @@ pub(super) fn update_racers(
                 let impact_speed = if let Some(ref body) = opt_body {
                     let lateral_dir = transform.back().as_vec3();
                     body.velocity.dot(lateral_dir).abs()
-                } else { 10.0 };
+                } else {
+                    10.0
+                };
                 // DANO DE PAREDE DESLIGADO (decisão v7: era o principal matador pós-graça).
                 //
                 // O cálculo do dano ficava aqui inteiro — velocidade de impacto, teto por
@@ -3093,11 +3520,17 @@ pub(super) fn update_racers(
                     racer.death_frame = racer.grace_ticks;
                     racer.death_pos = pos;
                     race.death_markers.push(pos);
-                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
+                        mat.base_color = Color::BLACK;
+                    }
                     commands.entity(entity).insert(Visibility::Hidden);
-                    println!("💀 {} BATIDA frame {} ({} hits)", racer.name, racer.grace_ticks, racer.wall_hits);
+                    println!(
+                        "💀 {} BATIDA frame {} ({} hits)",
+                        racer.name, racer.grace_ticks, racer.wall_hits
+                    );
                 } else if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
-                    let health_ratio = (racer.hp / crate::simulation::racer::HP_INICIAL).clamp(0.0, 1.0);
+                    let health_ratio =
+                        (racer.hp / crate::simulation::racer::HP_INICIAL).clamp(0.0, 1.0);
                     mat.base_color = Color::srgb(1.0, health_ratio, health_ratio);
                 }
             }
@@ -3194,7 +3627,9 @@ pub(super) fn update_racers(
                 racer.death_frame = racer.grace_ticks;
                 racer.death_pos = pos;
                 race.death_markers.push(pos);
-                if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
+                    mat.base_color = Color::BLACK;
+                }
                 commands.entity(entity).insert(Visibility::Hidden);
             }
         } else {
@@ -3204,17 +3639,24 @@ pub(super) fn update_racers(
 
         // === SPEED BLEED (RE-ENABLED v8) ===
         // Penaliza carros parados. Força evolução: aprende a mover ou morre.
-        let cur_speed = if let Some(ref body) = opt_body { body.velocity.length() } else { 0.0 };
+        let cur_speed = if let Some(ref body) = opt_body {
+            body.velocity.length()
+        } else {
+            0.0
+        };
         // v3: speed threshold 2.0→4.0 (crawlers at 1-2 m/s now count as stalled).
         // making_progress threshold 0.005→0.05 (require meaningful forward motion, not micro-creep).
         let making_progress = racer.max_progress > prev_max + 0.05;
         if out_of_grace && !in_post_lap_grace && cur_speed < 4.0 && !making_progress {
             racer.slow_time += 1.0;
-            if racer.slow_time > 180.0 {  // v8: 360→180 frames (~2.8s) antes de speed bleed
+            if racer.slow_time > 180.0 {
+                // v8: 360→180 frames (~2.8s) antes de speed bleed
                 // MODO VIDA: lentidão NÃO tira vida. A 2 HP/s ainda matava 24-50 de 60,
                 // porque 300 HP acabam em 150 s e a geração tem 220 s — continuava sendo
                 // execução por lentidão, só mais devagar. Quem mata agora é a FOME.
-                if !lab.modo_vida { racer.hp -= 60.0 * dt; }
+                if !lab.modo_vida {
+                    racer.hp -= 60.0 * dt;
+                }
                 // BUG CORRIGIDO: verificar `!racer.is_dead` antes de sobrescrever o rótulo.
                 // Antes, se a parede (modo_vida, L~2630) zerasse o HP e setasse is_dead=true
                 // com death_reason=Pinado no mesmo frame, este bloco entrava mesmo assim
@@ -3227,7 +3669,9 @@ pub(super) fn update_racers(
                     racer.death_frame = racer.grace_ticks;
                     racer.death_pos = pos;
                     race.death_markers.push(pos);
-                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) { mat.base_color = Color::BLACK; }
+                    if let Some(mat) = materials.get_mut(mat_handle.0.id()) {
+                        mat.base_color = Color::BLACK;
+                    }
                     commands.entity(entity).insert(Visibility::Hidden);
                 }
             }
@@ -3276,7 +3720,8 @@ pub(super) fn update_racers(
         // Fitness usa (track_progress - spawn_progress), total_laps é DESACOPLADO e só incrementa
         // quando NET travel >= (total_laps+1) * 0.85 * lap_dist — sem fraudar spawn distribuído.
         if !world.waypoints_world.is_empty() && world.lap_distance > 0.0 {
-            let cur_lap_prog = world.get_track_progress(transform.translation.x, transform.translation.z);
+            let cur_lap_prog =
+                world.get_track_progress(transform.translation.x, transform.translation.z);
             let prev_lap_prog = racer.prev_lap_prog;
             let lap_dist = world.lap_distance;
             racer.lap_dist_m = lap_dist; // p/ calc_fitness computar voltas fracionárias
@@ -3285,8 +3730,11 @@ pub(super) fn update_racers(
             let mut delta = cur_lap_prog - prev_lap_prog;
             let wrapped_forward = delta < -lap_dist * 0.5;
             let wrapped_backward = delta > lap_dist * 0.5;
-            if wrapped_forward { delta += lap_dist; }
-            else if wrapped_backward { delta -= lap_dist; }
+            if wrapped_forward {
+                delta += lap_dist;
+            } else if wrapped_backward {
+                delta -= lap_dist;
+            }
 
             // Cap delta pra evitar salto absurdo (glitch de get_track_progress ou teleporte).
             let delta_clamped = delta.clamp(-lap_dist * 0.1, lap_dist * 0.1);
@@ -3327,9 +3775,15 @@ pub(super) fn update_racers(
                     racer.hp = (racer.hp + 50.0).min(teto_lap);
                     racer.wall_hits = 0;
                     racer.wall_time = 0.0;
-                    println!("🏁 LAP {} | {} | gen_frame={} | pos=({:.1},{:.1}) | net_prog={:.0}m",
-                        racer.total_laps, racer.name, racer.grace_ticks,
-                        transform.translation.x, transform.translation.z, net);
+                    println!(
+                        "🏁 LAP {} | {} | gen_frame={} | pos=({:.1},{:.1}) | net_prog={:.0}m",
+                        racer.total_laps,
+                        racer.name,
+                        racer.grace_ticks,
+                        transform.translation.x,
+                        transform.translation.z,
+                        net
+                    );
                 }
                 // WRAP sem LAP silenciado — spawn distribuído gera ruído; lap real já sinaliza progresso.
             }
@@ -3338,9 +3792,10 @@ pub(super) fn update_racers(
 
         // --- 6. ESPIONAGEM NEURAL (GIZMOS DO CAMPO DE VISÃO) ---
         // Toggle KeyH (dev.show_vision) — esconde cones verdes pra visual limpo.
-        if dev.show_vision && (race.selected_racer.is_some() && race.selected_racer.unwrap() == entity ||
-           (race.selected_racer.is_none() && current_best == entity)) {
-
+        if dev.show_vision
+            && (race.selected_racer.is_some() && race.selected_racer.unwrap() == entity
+                || (race.selected_racer.is_none() && current_best == entity))
+        {
             let forward = *transform.right();
             let up = *transform.up();
             let eye_pos = transform.translation + Vec3::Y * 0.4;
@@ -3370,7 +3825,8 @@ pub(super) fn update_racers(
     perf_accum.0 += 1;
     if perf_accum.0 >= 640 {
         let n = perf_accum.0 as f64;
-        println!("⏱ PERF/640t | total={:.1}ms retina={:.1}ms percept={:.2}ms brain={:.1}ms | per_tick: {:.2}ms",
+        println!(
+            "⏱ PERF/640t | total={:.1}ms retina={:.1}ms percept={:.2}ms brain={:.1}ms | per_tick: {:.2}ms",
             perf_accum.4 * 1000.0,
             perf_accum.1 * 1000.0,
             perf_accum.2 * 1000.0,

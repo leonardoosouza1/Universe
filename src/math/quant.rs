@@ -112,7 +112,8 @@ pub fn snr_db(original: &[f32], quantized: &[i8]) -> f32 {
 /// da faixa representável (±[1,2]) nunca é usada por uma ativação já saturada em
 /// tanh (∈ [-1, 1]).
 pub fn snr_db_act(samples: &[f32]) -> f32 {
-    let reconstructed: Vec<f32> = samples.iter()
+    let reconstructed: Vec<f32> = samples
+        .iter()
         .map(|&v| decode_i8_act(encode_i8_act(v)))
         .collect();
     snr_db_core(samples, &reconstructed)
@@ -152,8 +153,12 @@ mod tests {
             let q = encode_i8_act(v);
             let back = decode_i8_act(q);
             let err = (back - v).abs();
-            assert!(err < 1.0 / I8_SCALE + 1e-6,
-                "round-trip erro {} para v={}", err, v);
+            assert!(
+                err < 1.0 / I8_SCALE + 1e-6,
+                "round-trip erro {} para v={}",
+                err,
+                v
+            );
         }
     }
 
@@ -165,8 +170,12 @@ mod tests {
             let q = encode_i8_disk(v);
             let back = decode_i8_disk(q);
             let err = (back - v).abs();
-            assert!(err <= 1.0 / I8_DISK_SCALE + 1e-6,
-                "round-trip disco erro {} para v={}", err, v);
+            assert!(
+                err <= 1.0 / I8_DISK_SCALE + 1e-6,
+                "round-trip disco erro {} para v={}",
+                err,
+                v
+            );
         }
     }
 
@@ -185,8 +194,12 @@ mod tests {
             let back = bf16_to_f32(bf);
             let err = (back - v).abs();
             // BF16 tem 7 bits de mantissa → erro relativo ≤ 2^-7 ≈ 0.0078
-            assert!(err <= v.abs() * 0.01 + 1e-7,
-                "BF16 round-trip erro {} para v={}", err, v);
+            assert!(
+                err <= v.abs() * 0.01 + 1e-7,
+                "BF16 round-trip erro {} para v={}",
+                err,
+                v
+            );
         }
     }
 
@@ -202,7 +215,11 @@ mod tests {
         let quantized: Vec<i8> = weights.iter().map(|&w| encode_i8_disk(w)).collect();
         let snr = snr_db(&weights, &quantized);
         // Para sinal uniforme [-2, 2] com 127 níveis o SNR esperado é ~42-48 dB
-        assert!(snr > 38.0, "SNR para sinal uniforme deve ser > 38 dB, obteve {} dB", snr);
+        assert!(
+            snr > 38.0,
+            "SNR para sinal uniforme deve ser > 38 dB, obteve {} dB",
+            snr
+        );
         assert!(snr < 60.0, "SNR suspeito alto: {} dB", snr);
     }
 
@@ -222,7 +239,11 @@ mod tests {
             .map(|i| (i as f32 / (n - 1) as f32) * 2.0 - 1.0)
             .collect();
         let snr = snr_db_act(&acts);
-        assert!(snr > 38.0, "SNR de ativação uniforme deve ser > 38 dB, obteve {} dB", snr);
+        assert!(
+            snr > 38.0,
+            "SNR de ativação uniforme deve ser > 38 dB, obteve {} dB",
+            snr
+        );
         assert!(snr < 60.0, "SNR suspeito alto: {} dB", snr);
     }
 
@@ -241,8 +262,10 @@ mod tests {
         let snr_act = snr_db_act(&v);
         let q_disk: Vec<i8> = v.iter().map(|&w| encode_i8_disk(w)).collect();
         let snr_disk = snr_db(&v, &q_disk);
-        assert!(snr_act < snr_disk,
-            "snr_act ({snr_act}) deveria ser pior que snr_disk ({snr_disk}) para v=1.5 (fora da faixa de ativação)");
+        assert!(
+            snr_act < snr_disk,
+            "snr_act ({snr_act}) deveria ser pior que snr_disk ({snr_disk}) para v=1.5 (fora da faixa de ativação)"
+        );
     }
 
     #[test]
@@ -252,7 +275,7 @@ mod tests {
         assert_eq!(to_ternary(-0.8, thr), -1);
         assert_eq!(to_ternary(0.3, thr), 0);
         assert_eq!(to_ternary(-0.3, thr), 0);
-        assert_eq!(to_ternary(0.5, thr), 1);   // borda positiva
+        assert_eq!(to_ternary(0.5, thr), 1); // borda positiva
         assert_eq!(to_ternary(-0.5, thr), -1); // borda negativa
     }
 }

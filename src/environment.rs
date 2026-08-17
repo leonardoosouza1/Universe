@@ -35,7 +35,11 @@ impl NpcObstacle {
         if dist < Self::ADVANCE_RADIUS {
             self.waypoint_idx = (self.waypoint_idx + 1) % waypoints.len();
         }
-        let dir = if dist > 1e-4 { delta / dist } else { Vec2::ZERO };
+        let dir = if dist > 1e-4 {
+            delta / dist
+        } else {
+            Vec2::ZERO
+        };
         self.velocity = dir * self.speed;
         self.pos += self.velocity * dt;
     }
@@ -96,10 +100,10 @@ pub struct EnvironmentalState {
 impl Default for EnvironmentalState {
     fn default() -> Self {
         Self {
-            asphalt_temp: 35.0,     // Temperatura ótima
-            weather_wetness: 0.0,   // Seco
+            asphalt_temp: 35.0,   // Temperatura ótima
+            weather_wetness: 0.0, // Seco
             wind: Vec3::ZERO,
-            time_of_day: 14.0,     // Meio da tarde
+            time_of_day: 14.0, // Meio da tarde
             tire_wear_global: 0.0,
             generation_time: 0.0,
             generation_index: 0,
@@ -304,9 +308,9 @@ impl EnvironmentalState {
     /// (distância < `NpcObstacle::HIT_RADIUS`). Consumidores (motor.rs) podem
     /// usar isso para incrementar `telemetry.hit_npc_count`.
     pub fn npc_hit(&self, racer_pos: Vec2) -> bool {
-        self.npcs
-            .iter()
-            .any(|n| n.pos.distance_squared(racer_pos) < NpcObstacle::HIT_RADIUS * NpcObstacle::HIT_RADIUS)
+        self.npcs.iter().any(|n| {
+            n.pos.distance_squared(racer_pos) < NpcObstacle::HIT_RADIUS * NpcObstacle::HIT_RADIUS
+        })
     }
 
     /// Tier 5.1 LITE — Percepção social: retorna os 3 rivais mais próximos como
@@ -328,7 +332,11 @@ impl EnvironmentalState {
             .filter_map(|&p| {
                 let delta = p - self_pos;
                 let d2 = delta.length_squared();
-                if d2 <= EPS_SQ { None } else { Some((d2, delta)) }
+                if d2 <= EPS_SQ {
+                    None
+                } else {
+                    Some((d2, delta))
+                }
             })
             .collect();
         candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -360,8 +368,8 @@ impl EnvironmentalState {
         }
 
         if self.rain_transition_started && self.weather_wetness < self.rain_target_wetness {
-            self.weather_wetness =
-                (self.weather_wetness + self.rain_transition_speed * dt).min(self.rain_target_wetness);
+            self.weather_wetness = (self.weather_wetness + self.rain_transition_speed * dt)
+                .min(self.rain_target_wetness);
         }
     }
 }
@@ -423,7 +431,11 @@ mod tests {
         let mut e = EnvironmentalState::default();
         e.generation_index = NPC_ACTIVATION_GEN - 1;
         e.spawn_npcs(&wps);
-        assert!(e.npcs.is_empty(), "NPCs não devem spawnar antes da gen {}", NPC_ACTIVATION_GEN);
+        assert!(
+            e.npcs.is_empty(),
+            "NPCs não devem spawnar antes da gen {}",
+            NPC_ACTIVATION_GEN
+        );
 
         e.generation_index = NPC_ACTIVATION_GEN;
         e.spawn_npcs(&wps);
@@ -464,11 +476,11 @@ mod tests {
         // self em (0,0); rivais a 10m, 30m, 5m, 80m (fora do clamp), e "eu mesmo" (0,0).
         let self_pos = Vec2::ZERO;
         let others = vec![
-            Vec2::new(10.0, 0.0),   // 10m leste
-            Vec2::new(0.0, 30.0),   // 30m norte
-            Vec2::new(-5.0, 0.0),   // 5m oeste  ← mais próximo
-            Vec2::new(80.0, 0.0),   // 80m — clamp em 1.0
-            Vec2::new(0.0, 0.0),    // "eu mesmo" — deve ser filtrado
+            Vec2::new(10.0, 0.0), // 10m leste
+            Vec2::new(0.0, 30.0), // 30m norte
+            Vec2::new(-5.0, 0.0), // 5m oeste  ← mais próximo
+            Vec2::new(80.0, 0.0), // 80m — clamp em 1.0
+            Vec2::new(0.0, 0.0),  // "eu mesmo" — deve ser filtrado
         ];
         let out = EnvironmentalState::closest_racers(self_pos, &others);
 
@@ -509,10 +521,7 @@ mod tests {
     #[test]
     fn closest_racers_clamps_far_rivals() {
         // Rival muito longe (>50m) deve saturar em ±1.0.
-        let out = EnvironmentalState::closest_racers(
-            Vec2::ZERO,
-            &[Vec2::new(500.0, -500.0)],
-        );
+        let out = EnvironmentalState::closest_racers(Vec2::ZERO, &[Vec2::new(500.0, -500.0)]);
         assert!((out[0].0 - 1.0).abs() < 1e-5);
         assert!((out[0].1 - (-1.0)).abs() < 1e-5);
     }
@@ -523,7 +532,12 @@ mod tests {
         for lvl in 0..=3 {
             e.randomize_level(lvl);
             let g = e.combined_grip_factor();
-            assert!((0.20..=1.01).contains(&g), "grip {} fora de bounds no level {}", g, lvl);
+            assert!(
+                (0.20..=1.01).contains(&g),
+                "grip {} fora de bounds no level {}",
+                g,
+                lvl
+            );
         }
     }
 }

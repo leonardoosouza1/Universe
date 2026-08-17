@@ -28,28 +28,36 @@ const DT: f32 = 1.0 / 64.0;
 
 fn main() {
     // ── Dispositivo compute-only, sem janela ────────────────────────────────
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { ..Default::default() });
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        ..Default::default()
+    });
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference:       wgpu::PowerPreference::HighPerformance,
-        compatible_surface:     None,
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
         force_fallback_adapter: false,
     })) {
         Some(a) => a,
-        None => { eprintln!("sem adaptador GPU"); std::process::exit(2); }
+        None => {
+            eprintln!("sem adaptador GPU");
+            std::process::exit(2);
+        }
     };
     println!("GPU: {}", adapter.get_info().name);
 
     let (device, queue) = match pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
-            label:             Some("slow-equiv"),
+            label: Some("slow-equiv"),
             required_features: wgpu::Features::empty(),
-            required_limits:   wgpu::Limits::downlevel_defaults(),
-            memory_hints:      wgpu::MemoryHints::Performance,
+            required_limits: wgpu::Limits::downlevel_defaults(),
+            memory_hints: wgpu::MemoryHints::Performance,
         },
         None,
     )) {
         Ok(t) => t,
-        Err(e) => { eprintln!("request_device falhou: {e:?}"); std::process::exit(2); }
+        Err(e) => {
+            eprintln!("request_device falhou: {e:?}");
+            std::process::exit(2);
+        }
     };
     let device: wgpu::Device = device;
     let queue: wgpu::Queue = queue;
@@ -106,7 +114,11 @@ fn main() {
         let gpu_out = gpu.forward(&inputs, N_BEINGS, DT);
 
         if gpu_out.len() != N_BEINGS {
-            eprintln!("GPU devolveu {} saídas, esperava {}", gpu_out.len(), N_BEINGS);
+            eprintln!(
+                "GPU devolveu {} saídas, esperava {}",
+                gpu_out.len(),
+                N_BEINGS
+            );
             std::process::exit(1);
         }
 
@@ -127,8 +139,12 @@ fn main() {
             println!(
                 "  t={:3}  cpu[0] = {:+.6} {:+.6} {:+.6}   gpu[0] = {:+.6} {:+.6} {:+.6}",
                 t,
-                cpus[0].output[0], cpus[0].output[1], cpus[0].output[2],
-                gpu_out[0][0], gpu_out[0][1], gpu_out[0][2],
+                cpus[0].output[0],
+                cpus[0].output[1],
+                cpus[0].output[2],
+                gpu_out[0][0],
+                gpu_out[0][1],
+                gpu_out[0][2],
             );
         }
     }

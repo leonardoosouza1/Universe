@@ -182,7 +182,13 @@ pub struct FourierField2D {
 
 impl FourierField2D {
     /// Cria campo 2D a partir de dados em grid.
-    pub fn from_grid(data: &[f32], width: usize, height: usize, kx_max: usize, ky_max: usize) -> Self {
+    pub fn from_grid(
+        data: &[f32],
+        width: usize,
+        height: usize,
+        kx_max: usize,
+        ky_max: usize,
+    ) -> Self {
         let mut modes = Vec::with_capacity(kx_max * ky_max);
         let wf = width as f64;
         let hf = height as f64;
@@ -195,8 +201,9 @@ impl FourierField2D {
                 for y in 0..height {
                     for x in 0..width {
                         let val = data[y * width + x] as f64;
-                        let angle = 2.0 * PI * ((kx as f64) * (x as f64) / wf
-                            + (ky as f64) * (y as f64) / hf);
+                        let angle = 2.0
+                            * PI
+                            * ((kx as f64) * (x as f64) / wf + (ky as f64) * (y as f64) / hf);
                         real += val * angle.cos();
                         imag += val * angle.sin();
                     }
@@ -212,7 +219,13 @@ impl FourierField2D {
             }
         }
 
-        Self { modes, width, height, kx_max, ky_max }
+        Self {
+            modes,
+            width,
+            height,
+            kx_max,
+            ky_max,
+        }
     }
 
     /// Reconstrói campo no ponto (x, y) normalizado [0, 1).
@@ -222,9 +235,7 @@ impl FourierField2D {
             for kx in 0..self.kx_max {
                 let idx = ky * self.kx_max + kx;
                 let (amp, phase) = self.modes[idx];
-                let angle = 2.0 * std::f32::consts::PI
-                    * (kx as f32 * x + ky as f32 * y)
-                    + phase;
+                let angle = 2.0 * std::f32::consts::PI * (kx as f32 * x + ky as f32 * y) + phase;
                 val += amp * angle.cos();
             }
         }
@@ -252,7 +263,9 @@ impl FourierField2D {
 
     /// Desserializa de bytes.
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 16 { return None; }
+        if buf.len() < 16 {
+            return None;
+        }
 
         let width = u32::from_le_bytes(buf[0..4].try_into().ok()?) as usize;
         let height = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
@@ -260,7 +273,9 @@ impl FourierField2D {
         let ky_max = u32::from_le_bytes(buf[12..16].try_into().ok()?) as usize;
 
         let expected = kx_max * ky_max;
-        if buf.len() < 16 + expected * 8 { return None; }
+        if buf.len() < 16 + expected * 8 {
+            return None;
+        }
 
         let mut modes = Vec::with_capacity(expected);
         for i in 0..expected {
@@ -270,7 +285,13 @@ impl FourierField2D {
             modes.push((amp, phase));
         }
 
-        Some(Self { modes, width, height, kx_max, ky_max })
+        Some(Self {
+            modes,
+            width,
+            height,
+            kx_max,
+            ky_max,
+        })
     }
 }
 
@@ -285,7 +306,13 @@ mod tests {
         let signal: Vec<i8> = (0..n)
             .map(|i| {
                 let v = (2.0 * PI * 3.0 * i as f64 / n as f64).sin();
-                if v > 0.3 { 1 } else if v < -0.3 { -1 } else { 0 }
+                if v > 0.3 {
+                    1
+                } else if v < -0.3 {
+                    -1
+                } else {
+                    0
+                }
             })
             .collect();
 
@@ -293,7 +320,9 @@ mod tests {
         let restored = synthesize(&fc);
 
         // Para um sinal com periodicidade limpa, Fourier deve capturar bem
-        let matches: usize = signal.iter().zip(restored.iter())
+        let matches: usize = signal
+            .iter()
+            .zip(restored.iter())
             .filter(|&(&a, &b)| a == b)
             .count();
         let accuracy = matches as f64 / n as f64;
@@ -351,6 +380,9 @@ mod tests {
         let signal = vec![0i8; 1024];
         let fc = analyze(&signal, 8);
         let restored = synthesize(&fc);
-        assert!(restored.iter().all(|&w| w == 0), "All-zero input should restore to all zeros");
+        assert!(
+            restored.iter().all(|&w| w == 0),
+            "All-zero input should restore to all zeros"
+        );
     }
 }

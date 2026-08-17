@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use rand::{Rng, SeedableRng};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use universe::layers::BitLinear;
 use universe::specialist::SpecialistBrain;
 
@@ -91,5 +91,11 @@ fn bench_specialist(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_forward_128x64, bench_forward_32x8, bench_swarm_tick, bench_specialist);
+criterion_group!(
+    benches,
+    bench_forward_128x64,
+    bench_forward_32x8,
+    bench_swarm_tick,
+    bench_specialist
+);
 criterion_main!(benches);

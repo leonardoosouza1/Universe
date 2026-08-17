@@ -2,7 +2,7 @@
 //! CLAUDE.md do projeto ("campo novo no genoma sem atualizar o disco"). NÃO remover
 //! (regra 9 do REFACTOR_PLAN.md §5).
 
-use crate::genome_io::{save_genome, load_genome};
+use crate::genome_io::{load_genome, save_genome};
 use universe::gpu::evolution::Genome;
 
 /// Ida-e-volta do genoma: o que sai do disco tem que ser o que entrou.
@@ -50,7 +50,7 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
     original.neuron_threshold_l1[0] = 0.321;
     let ultimo_limiar = original.neuron_threshold_l1.len() - 1;
     original.neuron_threshold_l1[ultimo_limiar] = 0.654;
-    original.gates_w[0] = 0.777;   // M4: marca fora do neutro (0.0)
+    original.gates_w[0] = 0.777; // M4: marca fora do neutro (0.0)
     original.gates_w[15] = -0.555;
     original.neuron_activation[0] = 2.0;
     let ultima_ativacao = original.neuron_activation.len() - 1;
@@ -65,22 +65,35 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
     assert_eq!(lido.l1, original.l1, "L1 mudou no disco");
     assert_eq!(lido.l2, original.l2, "L2 mudou no disco");
     assert_eq!(lido.kan_knots, original.kan_knots, "KAN mudou no disco");
-    assert_eq!(lido.slow, original.slow,
-        "cérebro LENTO não sobreviveu ao disco — era exatamente este o bug");
-    assert_eq!(lido.tau, original.tau,
-        "banco de τ não sobreviveu ao disco");
-    assert_eq!(lido.sensors, original.sensors,
-        "banco de sensores não sobreviveu ao disco");
-    assert_eq!(lido.neuron_alpha, original.neuron_alpha,
-        "memória por neurônio (P1.7, mecanismo 1) não sobreviveu ao disco");
-    assert_eq!(lido.neuron_period_l1, original.neuron_period_l1,
-        "período por neurônio (P1.7, mecanismo 2) não sobreviveu ao disco");
-    assert_eq!(lido.neuron_threshold_l1, original.neuron_threshold_l1,
-        "limiar por neurônio (P1.7, mecanismo 2) não sobreviveu ao disco");
-    assert_eq!(lido.neuron_activation, original.neuron_activation,
-        "ativação por neurônio (P1.7, mecanismo 3) não sobreviveu ao disco");
-    assert_eq!(lido.gates_w, original.gates_w,
-        "M4: gates do maestro não sobreviveram ao disco");
+    assert_eq!(
+        lido.slow, original.slow,
+        "cérebro LENTO não sobreviveu ao disco — era exatamente este o bug"
+    );
+    assert_eq!(lido.tau, original.tau, "banco de τ não sobreviveu ao disco");
+    assert_eq!(
+        lido.sensors, original.sensors,
+        "banco de sensores não sobreviveu ao disco"
+    );
+    assert_eq!(
+        lido.neuron_alpha, original.neuron_alpha,
+        "memória por neurônio (P1.7, mecanismo 1) não sobreviveu ao disco"
+    );
+    assert_eq!(
+        lido.neuron_period_l1, original.neuron_period_l1,
+        "período por neurônio (P1.7, mecanismo 2) não sobreviveu ao disco"
+    );
+    assert_eq!(
+        lido.neuron_threshold_l1, original.neuron_threshold_l1,
+        "limiar por neurônio (P1.7, mecanismo 2) não sobreviveu ao disco"
+    );
+    assert_eq!(
+        lido.neuron_activation, original.neuron_activation,
+        "ativação por neurônio (P1.7, mecanismo 3) não sobreviveu ao disco"
+    );
+    assert_eq!(
+        lido.gates_w, original.gates_w,
+        "M4: gates do maestro não sobreviveram ao disco"
+    );
 }
 
 /// Genoma gravado por uma versão antiga (sem lento nem τ) ainda carrega.
@@ -95,10 +108,16 @@ fn genoma_antigo_sem_lento_nem_tau_ainda_carrega() {
     let path = std::env::temp_dir().join("universe_genoma_antigo.bin");
     {
         let mut f = std::fs::File::create(&path).unwrap();
-        for w in &original.l1 { f.write_all(&w.to_le_bytes()).unwrap(); }
-        for w in &original.l2 { f.write_all(&w.to_le_bytes()).unwrap(); }
+        for w in &original.l1 {
+            f.write_all(&w.to_le_bytes()).unwrap();
+        }
+        for w in &original.l2 {
+            f.write_all(&w.to_le_bytes()).unwrap();
+        }
         for row in &original.kan_knots {
-            for k in row { f.write_all(&k.to_le_bytes()).unwrap(); }
+            for k in row {
+                f.write_all(&k.to_le_bytes()).unwrap();
+            }
         }
     }
     let lido = load_genome(path.to_str().unwrap()).expect("arquivo antigo deve carregar");
@@ -109,25 +128,43 @@ fn genoma_antigo_sem_lento_nem_tau_ainda_carrega() {
     // não carregava o dado. O que não pode é ler lixo ou devolver vetor vazio.
     assert_eq!(lido.tau.len(), universe::gpu::evolution::N_CFC_CHANNELS);
     assert!(lido.tau.iter().all(|&d| d == universe::cfc::DECAY_DEFAULT));
-    assert_eq!(lido.slow.len(), universe::engine::SlowBrain::new().all_weights().len());
+    assert_eq!(
+        lido.slow.len(),
+        universe::engine::SlowBrain::new().all_weights().len()
+    );
     // FASE SENSORES: genoma legado (gravado antes deste campo existir) tem que cair
     // exatamente em SENSOR_DEFAULTS — "os valores de hoje como padrão", requisito
     // explícito da tarefa (item 4).
-    assert_eq!(lido.sensors, universe::gpu::evolution::SENSOR_DEFAULTS.to_vec(),
-        "genoma legado sem sensores deveria carregar com SENSOR_DEFAULTS");
+    assert_eq!(
+        lido.sensors,
+        universe::gpu::evolution::SENSOR_DEFAULTS.to_vec(),
+        "genoma legado sem sensores deveria carregar com SENSOR_DEFAULTS"
+    );
     // P1.7: mesmo requisito — genoma gravado antes do cérebro assíncrono existir
     // carrega com os NEUTROS de `Genome::random` (0.0/1.0/0.0/0.0), reproduzindo
     // o comportamento real daquele genoma (rodava sem os três mecanismos).
     let n_l1 = universe::gpu::evolution::N_L1_NEURONS;
     let n_l2 = universe::gpu::evolution::N_L2_NEURONS;
-    assert_eq!(lido.neuron_alpha, vec![0.0; n_l1 + n_l2],
-        "genoma legado sem P1.7 deveria carregar alfa=0.0");
-    assert_eq!(lido.neuron_period_l1, vec![1.0; n_l1],
-        "genoma legado sem P1.7 deveria carregar período=1.0");
-    assert_eq!(lido.neuron_threshold_l1, vec![0.0; n_l1],
-        "genoma legado sem P1.7 deveria carregar limiar=0.0");
-    assert_eq!(lido.neuron_activation, vec![0.0; n_l1 + n_l2],
-        "genoma legado sem P1.7 deveria carregar ativação=0.0 (tanh)");
+    assert_eq!(
+        lido.neuron_alpha,
+        vec![0.0; n_l1 + n_l2],
+        "genoma legado sem P1.7 deveria carregar alfa=0.0"
+    );
+    assert_eq!(
+        lido.neuron_period_l1,
+        vec![1.0; n_l1],
+        "genoma legado sem P1.7 deveria carregar período=1.0"
+    );
+    assert_eq!(
+        lido.neuron_threshold_l1,
+        vec![0.0; n_l1],
+        "genoma legado sem P1.7 deveria carregar limiar=0.0"
+    );
+    assert_eq!(
+        lido.neuron_activation,
+        vec![0.0; n_l1 + n_l2],
+        "genoma legado sem P1.7 deveria carregar ativação=0.0 (tanh)"
+    );
 }
 
 /// Genoma v2 (com cabeçalho `UGEN`) sobrevive ida-e-volta no disco.
@@ -142,7 +179,7 @@ fn genoma_v2_com_cabecalho_sobrevive_ida_e_volta() {
     original.l1[0] = 0.123_4;
     original.slow[3] = -0.567_8;
     original.sensors[1] = 88.8; // FASE SENSORES: marca fora de SENSOR_DEFAULTS
-    original.neuron_alpha[2] = 0.444_4;      // P1.7: marca fora dos neutros
+    original.neuron_alpha[2] = 0.444_4; // P1.7: marca fora dos neutros
     original.neuron_period_l1[2] = 6.0;
     original.neuron_threshold_l1[2] = 0.222_2;
     original.neuron_activation[2] = 1.0;
@@ -155,7 +192,11 @@ fn genoma_v2_com_cabecalho_sobrevive_ida_e_volta() {
     // teste poderia passar mesmo se `save_genome` tivesse voltado a gravar sem
     // cabeçalho (load_genome tolera os dois formatos por sniff).
     let bytes = std::fs::read(path_str).expect("leu bytes crus");
-    assert_eq!(&bytes[0..4], b"UGEN", "cabeçalho magic ausente no arquivo salvo");
+    assert_eq!(
+        &bytes[0..4],
+        b"UGEN",
+        "cabeçalho magic ausente no arquivo salvo"
+    );
     let versao = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
     assert_eq!(versao, 2, "versão do cabeçalho não é 2");
 
@@ -164,14 +205,32 @@ fn genoma_v2_com_cabecalho_sobrevive_ida_e_volta() {
 
     assert_eq!(lido.l1, original.l1, "L1 mudou no disco (v2)");
     assert_eq!(lido.l2, original.l2, "L2 mudou no disco (v2)");
-    assert_eq!(lido.kan_knots, original.kan_knots, "KAN mudou no disco (v2)");
+    assert_eq!(
+        lido.kan_knots, original.kan_knots,
+        "KAN mudou no disco (v2)"
+    );
     assert_eq!(lido.slow, original.slow, "lento mudou no disco (v2)");
     assert_eq!(lido.tau, original.tau, "τ mudou no disco (v2)");
-    assert_eq!(lido.sensors, original.sensors, "sensores mudaram no disco (v2)");
-    assert_eq!(lido.neuron_alpha, original.neuron_alpha, "memória (P1.7) mudou no disco (v2)");
-    assert_eq!(lido.neuron_period_l1, original.neuron_period_l1, "período (P1.7) mudou no disco (v2)");
-    assert_eq!(lido.neuron_threshold_l1, original.neuron_threshold_l1, "limiar (P1.7) mudou no disco (v2)");
-    assert_eq!(lido.neuron_activation, original.neuron_activation, "ativação (P1.7) mudou no disco (v2)");
+    assert_eq!(
+        lido.sensors, original.sensors,
+        "sensores mudaram no disco (v2)"
+    );
+    assert_eq!(
+        lido.neuron_alpha, original.neuron_alpha,
+        "memória (P1.7) mudou no disco (v2)"
+    );
+    assert_eq!(
+        lido.neuron_period_l1, original.neuron_period_l1,
+        "período (P1.7) mudou no disco (v2)"
+    );
+    assert_eq!(
+        lido.neuron_threshold_l1, original.neuron_threshold_l1,
+        "limiar (P1.7) mudou no disco (v2)"
+    );
+    assert_eq!(
+        lido.neuron_activation, original.neuron_activation,
+        "ativação (P1.7) mudou no disco (v2)"
+    );
 }
 
 /// Blob legado SINTÉTICO (sem magic "UGEN", só os bytes crus de L1|L2|KAN) ainda
@@ -188,16 +247,26 @@ fn load_genome_detecta_legado_por_sniff_dos_primeiros_4_bytes() {
     {
         use std::io::Write;
         let mut f = std::fs::File::create(&path).unwrap();
-        for w in &original.l1 { f.write_all(&w.to_le_bytes()).unwrap(); }
-        for w in &original.l2 { f.write_all(&w.to_le_bytes()).unwrap(); }
+        for w in &original.l1 {
+            f.write_all(&w.to_le_bytes()).unwrap();
+        }
+        for w in &original.l2 {
+            f.write_all(&w.to_le_bytes()).unwrap();
+        }
         for row in &original.kan_knots {
-            for k in row { f.write_all(&k.to_le_bytes()).unwrap(); }
+            for k in row {
+                f.write_all(&k.to_le_bytes()).unwrap();
+            }
         }
     }
     // Confirma que os primeiros 4 bytes NÃO são o magic "UGEN" — o blob é
     // genuinamente legado, começando com bytes de peso f32 arbitrários.
     let bytes = std::fs::read(&path).unwrap();
-    assert_ne!(&bytes[0..4], b"UGEN", "blob de teste deveria ser legado (sem magic)");
+    assert_ne!(
+        &bytes[0..4],
+        b"UGEN",
+        "blob de teste deveria ser legado (sem magic)"
+    );
 
     let lido = load_genome(path.to_str().unwrap()).expect("blob legado sintético deve carregar");
     let _ = std::fs::remove_file(&path);
@@ -221,13 +290,15 @@ fn load_genome_detecta_legado_por_sniff_dos_primeiros_4_bytes() {
 /// aviso, ao ser retomado.
 #[test]
 fn genoma_legado_carregado_do_disco_nao_e_reescalado() {
-    use universe::math::linalg::largest_singular_value;
     use universe::config::iara::brain::{L1_NEURONS, SENSORY_WAVE_SIZE};
+    use universe::math::linalg::largest_singular_value;
 
     // Simula o L1 "legado": ganho espectral grande e conhecido, produzido sem
     // nenhuma normalização (era assim que TODO genoma nascia antes de P0.5).
     let mut legado = Genome::random(9999);
-    for w in legado.l1.iter_mut() { *w *= 6.0; }
+    for w in legado.l1.iter_mut() {
+        *w *= 6.0;
+    }
     let ganho_antes = largest_singular_value(&legado.l1, L1_NEURONS, SENSORY_WAVE_SIZE);
     assert!(
         ganho_antes > 2.0,
@@ -240,7 +311,10 @@ fn genoma_legado_carregado_do_disco_nao_e_reescalado() {
     let lido = load_genome(path_str).expect("leu");
     let _ = std::fs::remove_file(path_str);
 
-    assert_eq!(lido.l1, legado.l1, "L1 mudou ao ir e voltar do disco — deveria ser byte-idêntico");
+    assert_eq!(
+        lido.l1, legado.l1,
+        "L1 mudou ao ir e voltar do disco — deveria ser byte-idêntico"
+    );
     let ganho_depois = largest_singular_value(&lido.l1, L1_NEURONS, SENSORY_WAVE_SIZE);
     assert!(
         (ganho_depois - ganho_antes).abs() < 1e-3,

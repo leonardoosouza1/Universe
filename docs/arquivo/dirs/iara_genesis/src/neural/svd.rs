@@ -1,6 +1,6 @@
-use faer::{prelude::*, Mat};
-use half::bf16;
 use bytemuck;
+use faer::{Mat, prelude::*};
+use half::bf16;
 use std::time::Instant;
 
 /// Resultado da Fatoração SVD Low-Rank
@@ -21,7 +21,11 @@ impl LowRankTensors {
     /// Complexidade: Multiplicações caem de (8960 * 1536 = 13.7 milhões) para apenas ~600k ops,
     /// sem precisar de descompressão, mexendo diretamente nos bits minúsculos!
     pub fn forward_pass(&self, input_x: &[f32]) -> Vec<f32> {
-        assert_eq!(input_x.len(), self.cols, "Tensor de input deve bater com in_features");
+        assert_eq!(
+            input_x.len(),
+            self.cols,
+            "Tensor de input deve bater com in_features"
+        );
         let a_bf16: &[half::bf16] = bytemuck::cast_slice(&self.a_bytes);
         let b_bf16: &[half::bf16] = bytemuck::cast_slice(&self.b_bytes);
 
@@ -68,7 +72,7 @@ impl LowRankTensors {
                 out_bf16[r * self.cols + c] = half::bf16::from_f32(sum);
             }
         }
-        
+
         bytemuck::cast_slice(&out_bf16).to_vec()
     }
 }
@@ -82,10 +86,14 @@ pub fn factorize_bf16_tensor(
     rank: usize,
 ) -> LowRankTensors {
     let t0 = Instant::now();
-    
+
     // 1. Casting the bytes directly into BF16 slices
     let bf16_data: &[bf16] = bytemuck::cast_slice(tensor_bytes);
-    assert_eq!(bf16_data.len(), rows * cols, "Tamanho dos bytes não bate com a dimensão informada");
+    assert_eq!(
+        bf16_data.len(),
+        rows * cols,
+        "Tamanho dos bytes não bate com a dimensão informada"
+    );
 
     // 2. Preenchendo a matriz faer com f32 (pois a lib solver trabalha com normais fp32)
     // faer guarda matriz por colunas (Col-Major) por padrão se usarmos Mat::from_fn,
@@ -96,10 +104,15 @@ pub fn factorize_bf16_tensor(
             mat.write(i, j, bf16_data[i * cols + j].to_f32());
         }
     }
-    println!("Matriz {}x{} inflada na memória f32 em {:.2?}", rows, cols, t0.elapsed());
+    println!(
+        "Matriz {}x{} inflada na memória f32 em {:.2?}",
+        rows,
+        cols,
+        t0.elapsed()
+    );
 
     let t1 = Instant::now();
-    // 3. O compute real do Thin SVD 
+    // 3. O compute real do Thin SVD
     let svd = mat.thin_svd();
     println!("Thin SVD Concluído via faer em {:.2?}", t1.elapsed());
 
@@ -141,12 +154,9 @@ pub fn factorize_bf16_tensor(
 }
 
 /// Calcula o Root Mean Square Error (RMSE) da reconstrução com o tensor original.
-pub fn compute_rmse_bf16(
-    original_bytes: &[u8],
-    low_rank: &LowRankTensors,
-) -> f32 {
+pub fn compute_rmse_bf16(original_bytes: &[u8], low_rank: &LowRankTensors) -> f32 {
     let bf16_data: &[bf16] = bytemuck::cast_slice(original_bytes);
-    
+
     let a_bf16: &[bf16] = bytemuck::cast_slice(&low_rank.a_bytes);
     let b_bf16: &[bf16] = bytemuck::cast_slice(&low_rank.b_bytes);
     let rank = low_rank.rank;
@@ -158,7 +168,7 @@ pub fn compute_rmse_bf16(
     for i in 0..rows {
         for j in 0..cols {
             let orig = bf16_data[i * cols + j].to_f32() as f64;
-            
+
             // Reconstroi W[i, j] = inner_product(A[i, :], B[:, j])
             let mut synth = 0.0_f64;
             for r in 0..rank {
@@ -193,13 +203,13 @@ mod tests {
                 sim_bytes.extend_from_slice(bytes);
             }
         }
-        
+
         // Tensor de [128, 64] => rank normal = 64
         // Pede rank 8 => Compressao brutal
         let lora = factorize_bf16_tensor(&sim_bytes, rows, cols, 8);
-        
+
         let rmse = compute_rmse_bf16(&sim_bytes, &lora);
-        
+
         println!("RMSE de matriz Mockada: {}", rmse);
         assert!(rmse < 0.1, "RMSE deveria ser baixo por ter simulação suave");
     }

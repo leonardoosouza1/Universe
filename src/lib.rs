@@ -1,48 +1,48 @@
-pub mod brain;
-pub mod brain_capacity;
-/// Pure numeric core — functions with no GPU/Bevy dependency (E1).
-pub mod math;
 /// Activation metrics + runtime guards, built on top of `math::*` (E4).
 pub mod analysis;
-pub mod visao;
-pub mod pista_gen;
-pub mod neuro;
-pub mod lab;
-pub mod safety;
+pub mod brain;
+pub mod brain_capacity;
+pub mod cfc;
 pub mod chaos;
-pub mod gate;
+pub mod config;
+pub mod dense_layer;
 pub mod engine;
-pub mod world;
+pub mod environment;
+pub mod evolution;
+pub mod float_layers;
+pub mod gate;
 /// GPU simulation core, with no graphics (Bevy is only the visualizer on top).
 pub mod gpu;
-pub mod types;
-pub mod layers;
-pub mod specialist;
-pub mod float_layers;
-pub mod dense_layer;
 pub mod kan;
+pub mod lab;
+pub mod layers;
+/// Pure numeric core — functions with no GPU/Bevy dependency (E1).
+pub mod math;
+pub mod memory;
+pub mod mesh;
+pub mod metabolism;
+pub mod neuro;
+pub mod perception;
+pub mod physics;
+pub mod pista_gen;
+pub mod prefabs;
+pub mod reality;
+pub mod replay;
+pub mod repominer;
 pub mod resonance;
-pub mod cfc;
 /// The single deterministic generator — see `rng.rs` for the sign bug that motivated it.
 pub mod rng;
-pub mod perception;
-pub mod metabolism;
-pub mod memory;
-pub mod simulation;
-pub mod replay;
-pub mod ui;
-pub mod evolution;
-pub mod reality;
-pub mod repominer;
-pub mod mesh;
-pub mod physics;
-pub mod prefabs;
-pub mod environment;
-pub mod config;
-pub mod ui_menu;
-pub mod substrate;
+pub mod safety;
 pub mod scenery;
+pub mod simulation;
+pub mod specialist;
+pub mod substrate;
+pub mod types;
+pub mod ui;
+pub mod ui_menu;
+pub mod visao;
 pub mod visualization;
+pub mod world;
 
 use bevy::prelude::*;
 

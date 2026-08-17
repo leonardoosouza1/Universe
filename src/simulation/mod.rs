@@ -1,10 +1,10 @@
 use bevy::prelude::*;
 
-pub mod racer;
 pub mod motor;
+pub mod racer;
 pub mod racing_line;
 
-pub use racer::{Racer, PainSynapse, Skidmark};
+pub use racer::{PainSynapse, Racer, Skidmark};
 pub use racing_line::RacingLine;
 
 /// Label para ordering de sistemas — necessário porque update_racers tem muitos parâmetros
@@ -35,11 +35,17 @@ impl Plugin for RacerPlugin {
         // fn items além de certo limite. Solução: label em tick_npcs_system e ordering
         // sobre o set, garantindo NPC→racer sem tocar na assinatura da fn pesada.
         app.configure_sets(FixedUpdate, UpdateRacersSet);
-        app.add_systems(FixedUpdate, (
+        app.add_systems(
+            FixedUpdate,
+            (
                 tick_npcs_system.before(crate::physics::PhysicsSet),
                 motor::update_racers.before(crate::physics::PhysicsSet),
-            ))
-           .add_systems(Update, (camera_system, skidmark_cleanup_system, toggle_gizmos_system));
+            ),
+        )
+        .add_systems(
+            Update,
+            (camera_system, skidmark_cleanup_system, toggle_gizmos_system),
+        );
     }
 }
 
@@ -51,11 +57,21 @@ fn toggle_gizmos_system(
 ) {
     if keys.just_pressed(KeyCode::KeyG) {
         dev.show_gizmos = !dev.show_gizmos;
-        println!("🎮 Gizmos {}", if dev.show_gizmos { "ON" } else { "OFF (clean racing view)" });
+        println!(
+            "🎮 Gizmos {}",
+            if dev.show_gizmos {
+                "ON"
+            } else {
+                "OFF (clean racing view)"
+            }
+        );
     }
     if keys.just_pressed(KeyCode::KeyH) {
         dev.show_vision = !dev.show_vision;
-        println!("👁  Vision cones {}", if dev.show_vision { "ON" } else { "OFF" });
+        println!(
+            "👁  Vision cones {}",
+            if dev.show_vision { "ON" } else { "OFF" }
+        );
     }
 }
 
@@ -66,7 +82,9 @@ fn tick_npcs_system(
     world: Res<crate::world::VoxelWorldResource>,
     time: Res<Time>,
 ) {
-    if env.npcs.is_empty() || world.0.waypoints_world.is_empty() { return; }
+    if env.npcs.is_empty() || world.0.waypoints_world.is_empty() {
+        return;
+    }
     let dt = time.delta_secs();
     let wps = world.0.waypoints_world.clone();
     env.tick_npcs(&wps, dt);
@@ -80,7 +98,9 @@ fn skidmark_cleanup_system(
     let dt = time.delta_secs();
     for (e, mut skid) in query.iter_mut() {
         skid.timer -= dt;
-        if skid.timer <= 0.0 { commands.entity(e).despawn(); }
+        if skid.timer <= 0.0 {
+            commands.entity(e).despawn();
+        }
     }
 }
 
@@ -121,15 +141,31 @@ fn camera_system(
             let right = cam_t.right().as_vec3();
             let up = Vec3::Y;
 
-            if keys.pressed(KeyCode::KeyW) { move_dir += forward; }
-            if keys.pressed(KeyCode::KeyS) { move_dir -= forward; }
-            if keys.pressed(KeyCode::KeyA) { move_dir -= right; }
-            if keys.pressed(KeyCode::KeyD) { move_dir += right; }
-            if keys.pressed(KeyCode::KeyE) { move_dir += up; }
-            if keys.pressed(KeyCode::KeyQ) { move_dir -= up; }
+            if keys.pressed(KeyCode::KeyW) {
+                move_dir += forward;
+            }
+            if keys.pressed(KeyCode::KeyS) {
+                move_dir -= forward;
+            }
+            if keys.pressed(KeyCode::KeyA) {
+                move_dir -= right;
+            }
+            if keys.pressed(KeyCode::KeyD) {
+                move_dir += right;
+            }
+            if keys.pressed(KeyCode::KeyE) {
+                move_dir += up;
+            }
+            if keys.pressed(KeyCode::KeyQ) {
+                move_dir -= up;
+            }
 
             if move_dir.length_squared() > 0.0 {
-                let speed = if keys.pressed(KeyCode::ShiftLeft) { 300.0 } else { 100.0 };
+                let speed = if keys.pressed(KeyCode::ShiftLeft) {
+                    300.0
+                } else {
+                    100.0
+                };
                 cam_t.translation += move_dir.normalize() * speed * dt;
             }
 
@@ -145,14 +181,26 @@ fn camera_system(
             }
 
             // Mantendo fallback para as setas do teclado
-            if keys.pressed(KeyCode::ArrowLeft) { cam_t.rotate_axis(Dir3::Y, 2.0 * dt); }
-            if keys.pressed(KeyCode::ArrowRight) { cam_t.rotate_axis(Dir3::Y, -2.0 * dt); }
-            if keys.pressed(KeyCode::ArrowUp) { cam_t.rotate_local_x(2.0 * dt); }
-            if keys.pressed(KeyCode::ArrowDown) { cam_t.rotate_local_x(-2.0 * dt); }
+            if keys.pressed(KeyCode::ArrowLeft) {
+                cam_t.rotate_axis(Dir3::Y, 2.0 * dt);
+            }
+            if keys.pressed(KeyCode::ArrowRight) {
+                cam_t.rotate_axis(Dir3::Y, -2.0 * dt);
+            }
+            if keys.pressed(KeyCode::ArrowUp) {
+                cam_t.rotate_local_x(2.0 * dt);
+            }
+            if keys.pressed(KeyCode::ArrowDown) {
+                cam_t.rotate_local_x(-2.0 * dt);
+            }
         } else {
             let mut target = race.selected_racer;
             if target.is_none() {
-                if let Some((e, _, _)) = racer_query.iter().filter(|(_, r, _)| !r.is_dead).max_by(|a, b| a.1.distance.partial_cmp(&b.1.distance).unwrap()) {
+                if let Some((e, _, _)) = racer_query
+                    .iter()
+                    .filter(|(_, r, _)| !r.is_dead)
+                    .max_by(|a, b| a.1.distance.partial_cmp(&b.1.distance).unwrap())
+                {
                     target = Some(e);
                 }
             }
@@ -171,12 +219,16 @@ fn camera_system(
                         let offset = Vec3::new(-0.6, 0.8, -0.6).normalize() * race.camera_distance;
                         t.translation + offset
                     };
-                    cam_t.translation = cam_t.translation.lerp(goal, if chase { 0.10 } else { 0.05 });
+                    cam_t.translation = cam_t
+                        .translation
+                        .lerp(goal, if chase { 0.10 } else { 0.05 });
                     let look_target = if chase {
                         // Aponta 12m à frente do carro pra leve antecipação cinematográfica.
                         let fwd = t.right().as_vec3();
                         t.translation + fwd * 12.0 + Vec3::Y * 0.5
-                    } else { t.translation };
+                    } else {
+                        t.translation
+                    };
                     cam_t.look_at(look_target, Vec3::Y);
                 }
             }

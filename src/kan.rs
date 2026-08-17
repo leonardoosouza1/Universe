@@ -17,13 +17,15 @@ impl KanAxiomFilter {
     /// This filter uses splines to smooth the 1.58-bit ternary output.
     pub fn filter_pulse(&self, raw_signal: f32) -> f32 {
         // 1. Axiom 1: Velocity Persistence (Zero signals should be ignored)
-        if raw_signal.abs() < 0.001 { return 0.0; }
+        if raw_signal.abs() < 0.001 {
+            return 0.0;
+        }
 
         // 2. Spline Evaluation: Simplified 1D Spline Mapping
         // Map raw_signal [-1.0, 1.0] to spline index [0, 15]
         let idx = ((raw_signal + 1.0) * 7.5).clamp(0.0, 15.0) as usize;
         let c = self.spline_coeffs[idx];
-        
+
         // Final signal is the product of ternary intent and spline coefficient.
         // Result: A smooth, continuous action from a quantized source.
         raw_signal * c
@@ -158,7 +160,9 @@ impl KanOutputHead {
 }
 
 impl Default for KanOutputHead {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -178,7 +182,14 @@ mod tests {
             // coeffs = 1.0 → output ≈ input (±1 por quantização).
             // Zero-signal: |x/127| < 0.001 (i.e. input==0) → 0 (igual ao input==0 de qualquer jeito).
             let diff = (out[i] as i32 - input[i] as i32).abs();
-            assert!(diff <= 1, "channel {}: in={} out={} diff={}", i, input[i], out[i], diff);
+            assert!(
+                diff <= 1,
+                "channel {}: in={} out={} diff={}",
+                i,
+                input[i],
+                out[i],
+                diff
+            );
         }
     }
 

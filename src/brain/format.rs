@@ -82,8 +82,12 @@ pub enum BlockKind {
 impl BlockKind {
     fn from_u8(v: u8) -> Self {
         match v {
-            1 => Self::L1, 2 => Self::L2, 3 => Self::KanOut,
-            4 => Self::Slow, 5 => Self::Tau, 6 => Self::Extra,
+            1 => Self::L1,
+            2 => Self::L2,
+            3 => Self::KanOut,
+            4 => Self::Slow,
+            5 => Self::Tau,
+            6 => Self::Extra,
             _ => Self::Unknown,
         }
     }
@@ -121,7 +125,13 @@ pub struct Block {
 impl Block {
     /// Bloco novo, ativo, em `f32`.
     pub fn new(kind: BlockKind, data: Vec<f32>) -> Self {
-        Self { kind, encoding: Encoding::F32, flags: FLAG_ACTIVE, data, raw: None }
+        Self {
+            kind,
+            encoding: Encoding::F32,
+            flags: FLAG_ACTIVE,
+            data,
+            raw: None,
+        }
     }
 
     /// Mesmo bloco, gravado em `i8` — cabe em um quarto do espaço.
@@ -130,10 +140,16 @@ impl Block {
         self
     }
 
-    pub fn is_active(&self) -> bool { self.flags & FLAG_ACTIVE != 0 }
+    pub fn is_active(&self) -> bool {
+        self.flags & FLAG_ACTIVE != 0
+    }
 
     pub fn set_active(&mut self, on: bool) {
-        if on { self.flags |= FLAG_ACTIVE } else { self.flags &= !FLAG_ACTIVE }
+        if on {
+            self.flags |= FLAG_ACTIVE
+        } else {
+            self.flags &= !FLAG_ACTIVE
+        }
     }
 }
 
@@ -150,7 +166,8 @@ pub struct BrainFile {
 impl BrainFile {
     /// Primeiro bloco daquele tipo, se existir e estiver ativo.
     pub fn active(&self, kind: BlockKind) -> Option<&[f32]> {
-        self.blocks.iter()
+        self.blocks
+            .iter()
             .find(|b| b.kind == kind && b.is_active())
             .map(|b| b.data.as_slice())
     }
@@ -162,12 +179,17 @@ impl BrainFile {
 
     /// Tamanho que o arquivo terá em disco, sem gravá-lo.
     pub fn encoded_len(&self) -> usize {
-        HEADER_BYTES + ENTRY_BYTES * self.blocks.len()
-            + self.blocks.iter().map(|b| match (b.encoding, &b.raw) {
-                (_, Some(r)) => r.len(),
-                (Encoding::F32, _) => b.data.len() * 4,
-                (Encoding::I8,  _) => b.data.len(),
-            }).sum::<usize>()
+        HEADER_BYTES
+            + ENTRY_BYTES * self.blocks.len()
+            + self
+                .blocks
+                .iter()
+                .map(|b| match (b.encoding, &b.raw) {
+                    (_, Some(r)) => r.len(),
+                    (Encoding::F32, _) => b.data.len() * 4,
+                    (Encoding::I8, _) => b.data.len(),
+                })
+                .sum::<usize>()
     }
 
     pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -187,10 +209,12 @@ impl BrainFile {
         for b in &self.blocks {
             let bytes: Vec<u8> = match (&b.raw, b.encoding) {
                 (Some(r), _) => r.clone(),
-                (None, Encoding::F32) =>
-                    b.data.iter().flat_map(|v| v.to_le_bytes()).collect(),
-                (None, Encoding::I8) =>
-                    b.data.iter().map(|v| (v.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8).collect(),
+                (None, Encoding::F32) => b.data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                (None, Encoding::I8) => b
+                    .data
+                    .iter()
+                    .map(|v| (v.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8)
+                    .collect(),
             };
             head.push(b.kind as u8);
             head.push(b.encoding as u8);
@@ -219,46 +243,77 @@ impl BrainFile {
         }
         let version = u16::from_le_bytes([b[6], b[7]]);
         if version > VERSION {
-            return Err(bad(&format!("versão {version} é mais nova que a suportada ({VERSION})")));
+            return Err(bad(&format!(
+                "versão {version} é mais nova que a suportada ({VERSION})"
+            )));
         }
-        let generation  = u32::from_le_bytes(b[8..12].try_into().unwrap());
-        let seed        = u64::from_le_bytes(b[12..20].try_into().unwrap());
-        let fitness     = f32::from_le_bytes(b[20..24].try_into().unwrap());
+        let generation = u32::from_le_bytes(b[8..12].try_into().unwrap());
+        let seed = u64::from_le_bytes(b[12..20].try_into().unwrap());
+        let fitness = f32::from_le_bytes(b[20..24].try_into().unwrap());
         let track_width = f32::from_le_bytes(b[24..28].try_into().unwrap());
-        let n           = u16::from_le_bytes([b[28], b[29]]) as usize;
+        let n = u16::from_le_bytes([b[28], b[29]]) as usize;
 
         let mut blocks = Vec::with_capacity(n);
         for i in 0..n {
             let e = HEADER_BYTES + i * ENTRY_BYTES;
-            if e + ENTRY_BYTES > b.len() { return Err(bad("tabela de blocos truncada")); }
-            let kind     = BlockKind::from_u8(b[e]);
-            let encoding = if b[e + 1] == 1 { Encoding::I8 } else { Encoding::F32 };
-            let flags    = b[e + 2];
-            let count    = u32::from_le_bytes(b[e+4..e+8].try_into().unwrap()) as usize;
-            let off      = u64::from_le_bytes(b[e+8..e+16].try_into().unwrap()) as usize;
-            let len      = u64::from_le_bytes(b[e+16..e+24].try_into().unwrap()) as usize;
-            if off + len > b.len() { return Err(bad("bloco aponta para fora do arquivo")); }
+            if e + ENTRY_BYTES > b.len() {
+                return Err(bad("tabela de blocos truncada"));
+            }
+            let kind = BlockKind::from_u8(b[e]);
+            let encoding = if b[e + 1] == 1 {
+                Encoding::I8
+            } else {
+                Encoding::F32
+            };
+            let flags = b[e + 2];
+            let count = u32::from_le_bytes(b[e + 4..e + 8].try_into().unwrap()) as usize;
+            let off = u64::from_le_bytes(b[e + 8..e + 16].try_into().unwrap()) as usize;
+            let len = u64::from_le_bytes(b[e + 16..e + 24].try_into().unwrap()) as usize;
+            if off + len > b.len() {
+                return Err(bad("bloco aponta para fora do arquivo"));
+            }
             let raw = &b[off..off + len];
 
             // Tipo desconhecido: guarda os bytes e segue. É o que permite a um binário
             // antigo abrir um cérebro com camadas que ele não conhece sem destruí-las.
             if kind == BlockKind::Unknown {
                 blocks.push(Block {
-                    kind, encoding, flags, data: Vec::new(), raw: Some(raw.to_vec()),
+                    kind,
+                    encoding,
+                    flags,
+                    data: Vec::new(),
+                    raw: Some(raw.to_vec()),
                 });
                 continue;
             }
             let data: Vec<f32> = match encoding {
-                Encoding::F32 => raw.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
+                Encoding::F32 => raw
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
                 Encoding::I8 => raw.iter().map(|&v| v as i8 as f32 / 127.0).collect(),
             };
             if data.len() != count {
-                return Err(bad(&format!("bloco {kind:?}: esperava {count} valores, achei {}", data.len())));
+                return Err(bad(&format!(
+                    "bloco {kind:?}: esperava {count} valores, achei {}",
+                    data.len()
+                )));
             }
-            blocks.push(Block { kind, encoding, flags, data, raw: None });
+            blocks.push(Block {
+                kind,
+                encoding,
+                flags,
+                data,
+                raw: None,
+            });
         }
-        Ok(Self { generation, seed, fitness, track_width, blocks })
+        Ok(Self {
+            generation,
+            seed,
+            fitness,
+            track_width,
+            blocks,
+        })
     }
 
     pub fn save(&self, path: &str) -> io::Result<()> {
@@ -277,7 +332,10 @@ mod tests {
 
     fn exemplo() -> BrainFile {
         BrainFile {
-            generation: 29, seed: 77, fitness: 4223.5, track_width: 28.0,
+            generation: 29,
+            seed: 77,
+            fitness: 4223.5,
+            track_width: 28.0,
             blocks: vec![
                 Block::new(BlockKind::L1, vec![0.5, -0.25, 0.125, 1.0]),
                 Block::new(BlockKind::Tau, vec![2.0, 0.5]),
@@ -316,14 +374,24 @@ mod tests {
     #[test]
     fn i8_encolhe_quatro_vezes_com_erro_pequeno() {
         let pesos: Vec<f32> = (0..1000).map(|i| (i as f32 / 500.0 - 1.0) * 0.9).collect();
-        let f32_len = BrainFile { blocks: vec![Block::new(BlockKind::L1, pesos.clone())], ..Default::default() }.encoded_len();
-        let a = BrainFile { blocks: vec![Block::new(BlockKind::L1, pesos.clone()).compact()], ..Default::default() };
+        let f32_len = BrainFile {
+            blocks: vec![Block::new(BlockKind::L1, pesos.clone())],
+            ..Default::default()
+        }
+        .encoded_len();
+        let a = BrainFile {
+            blocks: vec![Block::new(BlockKind::L1, pesos.clone()).compact()],
+            ..Default::default()
+        };
         assert!(a.encoded_len() * 3 < f32_len, "i8 deveria encolher ~4x");
         let mut v = Vec::new();
         a.write(&mut v).unwrap();
         let b = BrainFile::from_bytes(&v).unwrap();
-        let erro = pesos.iter().zip(b.active(BlockKind::L1).unwrap())
-            .map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        let erro = pesos
+            .iter()
+            .zip(b.active(BlockKind::L1).unwrap())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
         assert!(erro < 0.005, "erro máximo de quantização foi {erro}");
     }
 
@@ -331,12 +399,21 @@ mod tests {
     fn bloco_desconhecido_sobrevive_a_ida_e_volta() {
         // Simula um arquivo gravado por uma versão futura, com um tipo que não existe aqui.
         let mut a = exemplo();
-        a.blocks.push(Block { kind: BlockKind::Unknown, encoding: Encoding::F32,
-                              flags: FLAG_ACTIVE, data: vec![], raw: Some(vec![1, 2, 3, 4]) });
+        a.blocks.push(Block {
+            kind: BlockKind::Unknown,
+            encoding: Encoding::F32,
+            flags: FLAG_ACTIVE,
+            data: vec![],
+            raw: Some(vec![1, 2, 3, 4]),
+        });
         let mut v = Vec::new();
         a.write(&mut v).unwrap();
         let b = BrainFile::from_bytes(&v).unwrap();
-        let desconhecido = b.blocks.iter().find(|x| x.kind == BlockKind::Unknown).unwrap();
+        let desconhecido = b
+            .blocks
+            .iter()
+            .find(|x| x.kind == BlockKind::Unknown)
+            .unwrap();
         assert_eq!(desconhecido.raw.as_deref(), Some(&[1u8, 2, 3, 4][..]));
     }
 

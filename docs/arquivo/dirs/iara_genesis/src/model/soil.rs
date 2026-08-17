@@ -66,15 +66,31 @@ impl Soil {
     ///
     /// `fitness_landscape[i]` = fitness do organismo i, organizado em grid.
     /// O Solo aprende quais regiões são "férteis" (alto fitness).
-    pub fn absorb(&mut self, fitness_landscape: &[f32], width: usize, height: usize, generation: u32) {
+    pub fn absorb(
+        &mut self,
+        fitness_landscape: &[f32],
+        width: usize,
+        height: usize,
+        generation: u32,
+    ) {
         // Média exponencial: blend entre campo antigo e novos dados
         let alpha = 0.3; // peso dos dados novos
 
-        let new_field = FourierField2D::from_grid(fitness_landscape, width, height,
-            self.energy_field.kx_max, self.energy_field.ky_max);
+        let new_field = FourierField2D::from_grid(
+            fitness_landscape,
+            width,
+            height,
+            self.energy_field.kx_max,
+            self.energy_field.ky_max,
+        );
 
         // Blend nos coeficientes de Fourier
-        for (old, new) in self.energy_field.modes.iter_mut().zip(new_field.modes.iter()) {
+        for (old, new) in self
+            .energy_field
+            .modes
+            .iter_mut()
+            .zip(new_field.modes.iter())
+        {
             old.0 = old.0 * (1.0 - alpha as f32) + new.0 * alpha as f32;
             old.1 = old.1 * (1.0 - alpha as f32) + new.1 * alpha as f32;
         }
@@ -85,10 +101,16 @@ impl Soil {
         // Ajuste automático de pH baseado na diversidade do fitness
         if fitness_landscape.len() > 1 {
             let mean: f32 = fitness_landscape.iter().sum::<f32>() / fitness_landscape.len() as f32;
-            let variance: f32 = fitness_landscape.iter()
+            let variance: f32 = fitness_landscape
+                .iter()
                 .map(|&f| (f - mean) * (f - mean))
-                .sum::<f32>() / fitness_landscape.len() as f32;
-            let cv = if mean.abs() > 1e-6 { variance.sqrt() / mean.abs() } else { 0.5 };
+                .sum::<f32>()
+                / fitness_landscape.len() as f32;
+            let cv = if mean.abs() > 1e-6 {
+                variance.sqrt() / mean.abs()
+            } else {
+                0.5
+            };
             // Alto CV (diversidade) → pH sobe (mais exploration)
             // Baixo CV (convergência) → pH desce (mais exploitation)
             self.ph = (self.ph * 0.9 + cv.clamp(0.0, 1.0) * 0.1).clamp(0.0, 1.0);
@@ -118,7 +140,9 @@ impl Soil {
 
     /// Desserializa de bytes.
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 24 { return None; }
+        if buf.len() < 24 {
+            return None;
+        }
 
         let selection_pressure = f32::from_le_bytes(buf[0..4].try_into().ok()?);
         let temperature = f32::from_le_bytes(buf[4..8].try_into().ok()?);
@@ -127,7 +151,9 @@ impl Soil {
         let sample_count = u32::from_le_bytes(buf[16..20].try_into().ok()?);
         let field_len = u32::from_le_bytes(buf[20..24].try_into().ok()?) as usize;
 
-        if buf.len() < 24 + field_len { return None; }
+        if buf.len() < 24 + field_len {
+            return None;
+        }
 
         let energy_field = FourierField2D::deserialize(&buf[24..24 + field_len])?;
 

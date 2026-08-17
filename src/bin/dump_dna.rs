@@ -32,8 +32,16 @@ fn perfil(rotulo: &str, w: &[i8]) {
     let ternario = mx <= 1 && mn >= -1;
     println!(
         "  {rotulo:<14} n={:<7} não-zero={:<6} ({:>5.1}%)  faixa=[{:>4},{:>4}]  {}",
-        w.len(), nz, nz as f32 / w.len() as f32 * 100.0, mn, mx,
-        if ternario { "TERNÁRIO ⚠️  /63.5 aqui dá ±0.016" } else { "i8 cheio" }
+        w.len(),
+        nz,
+        nz as f32 / w.len() as f32 * 100.0,
+        mn,
+        mx,
+        if ternario {
+            "TERNÁRIO ⚠️  /63.5 aqui dá ±0.016"
+        } else {
+            "i8 cheio"
+        }
     );
     println!("  {:<14} histograma |i8| em faixas de 16: {:?}", "", h);
 }
@@ -69,13 +77,24 @@ fn main() {
     }
 
     println!("\nOUTROS BLOCOS:");
-    let opt = |v: Option<&Vec<i8>>| v.map_or("ausente".to_string(), |x| format!("{} pesos", x.len()));
+    let opt =
+        |v: Option<&Vec<i8>>| v.map_or("ausente".to_string(), |x| format!("{} pesos", x.len()));
     println!("  cortex_l2_raw  {}", opt(d.cortex_l2_raw.as_ref()));
     println!("  slow_weights   {}", opt(d.slow_weights.as_ref()));
-    println!("  trinity        {}", if d.trinity.is_some() { "presente (portão + reflexo)" }
-                                    else { "ausente" });
+    println!(
+        "  trinity        {}",
+        if d.trinity.is_some() {
+            "presente (portão + reflexo)"
+        } else {
+            "ausente"
+        }
+    );
 
-    let fonte = if d.cortex_raw.is_some() { "CRAW" } else { "fast_weights" };
+    let fonte = if d.cortex_raw.is_some() {
+        "CRAW"
+    } else {
+        "fast_weights"
+    };
     println!("\n-> `sinapses` vai ler: {fonte}");
     if d.cortex_raw.is_none() {
         println!("   ⚠️  sem CRAW os pesos saem ~64× menores do que são.");

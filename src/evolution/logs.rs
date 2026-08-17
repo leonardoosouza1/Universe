@@ -14,5 +14,9 @@ pub fn open_report_log() -> Option<File> {
             let _ = std::fs::rename(LOG_PATH, LOG_BACKUP);
         }
     }
-    std::fs::OpenOptions::new().create(true).append(true).open(LOG_PATH).ok()
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(LOG_PATH)
+        .ok()
 }

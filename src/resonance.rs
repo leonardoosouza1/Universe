@@ -1,6 +1,5 @@
 /// IARA v2101 - Harmonic Resonance (Kuramoto Model)
 /// Based on Codex v2101 - Module V
-
 use std::f32::consts::PI;
 
 pub struct ResonantNode {
@@ -25,13 +24,17 @@ impl ResonantNode {
     /// Simplified for synchronization with an external signal (Acorde de Fase).
     pub fn synchronize(&mut self, external_phase: f32, delta_t: f32) {
         let phase_diff = external_phase - self.phase;
-        
+
         // Sincronia de Fase (Phase-Locked Loop)
         let d_theta = self.natural_freq + self.coupling * phase_diff.sin();
-        
+
         self.phase = (self.phase + d_theta * delta_t) % (2.0 * PI);
-        if self.phase > PI { self.phase -= 2.0 * PI; }
-        if self.phase < -PI { self.phase += 2.0 * PI; }
+        if self.phase > PI {
+            self.phase -= 2.0 * PI;
+        }
+        if self.phase < -PI {
+            self.phase += 2.0 * PI;
+        }
     }
 
     /// Coherence Check: Returns 1.0 if perfectly in sync with the phase
@@ -47,8 +50,13 @@ impl ResonantNode {
 /// ensuring oscillators are initialized — `debug_assert!` catches misuse in
 /// dev/test, release builds stay lenient.
 pub fn coherence(nodes: &[ResonantNode]) -> f32 {
-    debug_assert!(!nodes.is_empty(), "coherence called on empty oscillator set");
-    if nodes.is_empty() { return 1.0; }
+    debug_assert!(
+        !nodes.is_empty(),
+        "coherence called on empty oscillator set"
+    );
+    if nodes.is_empty() {
+        return 1.0;
+    }
     let n = nodes.len() as f32;
     let (sin_sum, cos_sum) = nodes.iter().fold((0.0_f32, 0.0_f32), |(s, c), node| {
         (s + node.phase.sin(), c + node.phase.cos())
@@ -64,7 +72,9 @@ mod coherence_tests {
     #[test]
     fn coherence_full_when_aligned() {
         let mut nodes: Vec<ResonantNode> = (0..4).map(|_| ResonantNode::new(1.0)).collect();
-        for n in &mut nodes { n.phase = 0.5; }
+        for n in &mut nodes {
+            n.phase = 0.5;
+        }
         assert!((coherence(&nodes) - 1.0).abs() < 1e-4);
     }
 

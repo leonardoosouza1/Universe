@@ -13,65 +13,44 @@
 //! Este módulo existe pra bloquear o API e permitir micro-benchmark comparativo
 //! com o monolítico 128→64 atual.
 
-use crate::layers::BrainForward;
 use crate::float_layers::FloatLinear;
+use crate::layers::BrainForward;
 
 /// Máscara de canais de input por especialista (32 ints, cada 0..127).
 /// Define QUAIS canais do sensory_wave[128] vão pra cada cérebro.
 /// Escolhidos a partir do mapa de canais em `motor.rs` e do priming em `spawn.rs`.
 pub const STEER_CHANNELS: [usize; 32] = [
     // fóvea center (3,4) — retina frontal
-    3, 4,
-    // periférica bins (8..16)
-    8, 9, 10, 11, 12, 13, 14, 15,
-    // deriva, curvatura, slip, whiskers
-    66, 78, 79, 80, 87,
-    94, 95, 96, 97,
-    // lane_offset, fluxo óptico, memória parede
-    81, 83, 84, 85, 86,
-    // gaze tracker + dark center (4 duplicatas cada)
+    3, 4, // periférica bins (8..16)
+    8, 9, 10, 11, 12, 13, 14, 15, // deriva, curvatura, slip, whiskers
+    66, 78, 79, 80, 87, 94, 95, 96, 97, // lane_offset, fluxo óptico, memória parede
+    81, 83, 84, 85, 86, // gaze tracker + dark center (4 duplicatas cada)
     90, 91, 92, 93, 98, 99, 100, 101,
 ];
 
 pub const THROTTLE_CHANNELS: [usize; 32] = [
     // fluxo (64), fóvea (3,4), road-hints (67, 76, 77)
-    64, 65, 3, 4, 67, 76, 77,
-    // grass, comp-stress, TTC, prox sustentada
-    73, 125, 82, 88,
-    // velocidade (65), speed_limit (74)
-    74,
-    // periférica para gatear em ambiente fechado
-    8, 11, 12, 15,
-    // memória, curvatura
-    85, 86, 78, 79, 80,
-    // whiskers próximos (corta throttle)
-    94, 95, 96, 97,
-    // retina fóvea bins 0..1 (extremos)
-    0, 1, 2, 5,
-    // padding canais de telemetria
+    64, 65, 3, 4, 67, 76, 77, // grass, comp-stress, TTC, prox sustentada
+    73, 125, 82, 88, // velocidade (65), speed_limit (74)
+    74, // periférica para gatear em ambiente fechado
+    8, 11, 12, 15, // memória, curvatura
+    85, 86, 78, 79, 80, // whiskers próximos (corta throttle)
+    94, 95, 96, 97, // retina fóvea bins 0..1 (extremos)
+    0, 1, 2, 5, // padding canais de telemetria
     68, 69, 70,
 ];
 
 pub const BRAKE_CHANNELS: [usize; 32] = [
     // TTC (82) — sinal primário
-    82,
-    // whiskers (94..97)
-    94, 95, 96, 97,
-    // prox sustentada, memória parede
-    88, 85, 86,
-    // fóvea centro (parede iminente)
-    3, 4,
-    // periférica center
-    11, 12,
-    // slip, curvatura (pre-brake em curva)
-    87, 78, 79, 80,
-    // velocidade
-    65,
-    // retina bins
-    0, 1, 2, 5, 6, 7,
-    // whiskers extras e mem
-    67, 73,
-    // padding
+    82, // whiskers (94..97)
+    94, 95, 96, 97, // prox sustentada, memória parede
+    88, 85, 86, // fóvea centro (parede iminente)
+    3, 4, // periférica center
+    11, 12, // slip, curvatura (pre-brake em curva)
+    87, 78, 79, 80, // velocidade
+    65, // retina bins
+    0, 1, 2, 5, 6, 7, // whiskers extras e mem
+    67, 73, // padding
     68, 69, 70, 71, 72, 83, 84,
 ];
 
@@ -129,9 +108,15 @@ impl BrainForward for SpecialistBrain {
     fn myelinate(&mut self, factor: f32) {
         // F32 runtime: scale weights uniformly (analog to BitLinear scale bump).
         let f = factor.clamp(0.5, 2.0);
-        for w in self.steer.weights.iter_mut() { *w *= f; }
-        for w in self.throttle.weights.iter_mut() { *w *= f; }
-        for w in self.brake.weights.iter_mut() { *w *= f; }
+        for w in self.steer.weights.iter_mut() {
+            *w *= f;
+        }
+        for w in self.throttle.weights.iter_mut() {
+            *w *= f;
+        }
+        for w in self.brake.weights.iter_mut() {
+            *w *= f;
+        }
     }
     fn quantize(&mut self, _latent: &[f32]) {
         // No-op: f32 runtime; quantize happens at DNA save boundary.

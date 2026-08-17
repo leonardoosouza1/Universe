@@ -34,9 +34,9 @@
 //! - Slip ratio / slip angle: ≤ 2 ULP (dominado por atan, idêntico IEEE-754)
 //! - Deriva acumulada por N ticks: medida e declarada em gpu_validate --fisica
 
+use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
-use bytemuck::{Pod, Zeroable};
 
 // ============================================================
 // === STRUCTS DE DADOS (mesmos que antes)                   ===
@@ -46,14 +46,19 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct WheelGpu {
-    pub part_a: [f32; 4],  // [omega, slip_ratio, slip_angle, normal_load]
-    pub part_b: [f32; 4],  // [tire_temp, susp_comp, prev_comp, padding]
+    pub part_a: [f32; 4], // [omega, slip_ratio, slip_angle, normal_load]
+    pub part_b: [f32; 4], // [tire_temp, susp_comp, prev_comp, padding]
 }
 
 impl WheelGpu {
     pub fn from_cpu(
-        omega: f32, slip_ratio: f32, slip_angle: f32, normal_load: f32,
-        tire_temp: f32, susp_comp: f32, prev_comp: f32,
+        omega: f32,
+        slip_ratio: f32,
+        slip_angle: f32,
+        normal_load: f32,
+        tire_temp: f32,
+        susp_comp: f32,
+        prev_comp: f32,
     ) -> Self {
         Self {
             part_a: [omega, slip_ratio, slip_angle, normal_load],
@@ -64,15 +69,19 @@ impl WheelGpu {
 
 /// Bitmask dos flags de configuração.
 pub fn pack_config_flags(
-    stall: bool, thermal: bool, aero_drag: bool,
-    downforce: bool, tcs: bool, abs: bool,
+    stall: bool,
+    thermal: bool,
+    aero_drag: bool,
+    downforce: bool,
+    tcs: bool,
+    abs: bool,
 ) -> u32 {
-    (stall    as u32)
-        | ((thermal   as u32) << 1)
+    (stall as u32)
+        | ((thermal as u32) << 1)
         | ((aero_drag as u32) << 2)
         | ((downforce as u32) << 3)
-        | ((tcs       as u32) << 4)
-        | ((abs       as u32) << 5)
+        | ((tcs as u32) << 4)
+        | ((abs as u32) << 5)
 }
 
 /// Posição extraída de `PhysicsStateGpu`, para comparação de distância.
@@ -80,7 +89,9 @@ pub fn pack_config_flags(
 /// Deduplicado (E3): existia idêntica em `gpu_evolve.rs`, `gpu_loop.rs` e
 /// `cortex_evolve.rs` — os três bins comparavam posição do mesmo jeito.
 #[inline]
-pub fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] { p.pos }
+pub fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] {
+    p.pos
+}
 
 /// Constrói o `PhysicsStateGpu` inicial para um ser na posição `start`, olhando `fwd`.
 ///
@@ -97,10 +108,16 @@ pub fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
     PhysicsStateGpu {
         vel: [fwd[0] * v0, 0.0, fwd[2] * v0],
         av_y: 0.0,
-        wheels: [wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b,
-                 wheel.part_a, wheel.part_b],
+        wheels: [
+            wheel.part_a,
+            wheel.part_b,
+            wheel.part_a,
+            wheel.part_b,
+            wheel.part_a,
+            wheel.part_b,
+            wheel.part_a,
+            wheel.part_b,
+        ],
         pos: [start[0], start[1].max(0.5), start[2]],
         _pad_pos: 0.0,
         fwd,
@@ -114,7 +131,7 @@ pub fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
         brake_cmd: 0.0,
         steer: 0.0,
         drive_torque_out: 0.0,
-        current_gear: 3,   // 2ª marcha (convenção: 0=ré, 1=neutro, 2=1ª ...)
+        current_gear: 3, // 2ª marcha (convenção: 0=ré, 1=neutro, 2=1ª ...)
         shift_timer: 0.0,
         is_stalled: 0,
         starter_timer: 0.0,
@@ -155,7 +172,7 @@ pub fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
 pub(crate) const INPUT_WGSL_STRIDE: usize = 368;
 
 fn serialize_input(state: &[PhysicsStateGpu]) -> Vec<u8> {
-    let n    = state.len();
+    let n = state.len();
     let size = std::mem::size_of::<PhysicsStateGpu>(); // 360
     let mut buf = vec![0u8; n * INPUT_WGSL_STRIDE];
     for (i, e) in state.iter().enumerate() {
@@ -248,24 +265,24 @@ pub struct PhysicsOutputGpu {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct MidState {
-    normal_loads:     [f32; 4],   // 16
-    susp_comps:       [f32; 4],   // 16
-    prev_comps:       [f32; 4],   // 16
-    current_rpm:      f32,         //  4
-    drive_torque:     f32,         //  4
-    drive_torque_out: f32,         //  4
-    shift_timer:      f32,         //  4
-    is_stalled:       u32,         //  4
-    starter_timer:    f32,         //  4
-    engine_temp:      f32,         //  4
-    oil_temp:         f32,         //  4
-    omegas:           [f32; 4],   // 16
-    forces:           [f32; 3],   // 12
-    _pad_f:           f32,         //  4
-    torques_y:        f32,         //  4
-    yaw_inertia:      f32,         //  4
-    _pad2:            [f32; 2],   //  8
-    // Total: 128 bytes — múltiplo de 16, stride = 128
+    normal_loads: [f32; 4], // 16
+    susp_comps: [f32; 4],   // 16
+    prev_comps: [f32; 4],   // 16
+    current_rpm: f32,       //  4
+    drive_torque: f32,      //  4
+    drive_torque_out: f32,  //  4
+    shift_timer: f32,       //  4
+    is_stalled: u32,        //  4
+    starter_timer: f32,     //  4
+    engine_temp: f32,       //  4
+    oil_temp: f32,          //  4
+    omegas: [f32; 4],       // 16
+    forces: [f32; 3],       // 12
+    _pad_f: f32,            //  4
+    torques_y: f32,         //  4
+    yaw_inertia: f32,       //  4
+    _pad2: [f32; 2],        //  8
+                            // Total: 128 bytes — múltiplo de 16, stride = 128
 }
 
 /// Buffer intermediário entre Kernel B e Kernel C. 64 bytes/carro, stride=64.
@@ -273,12 +290,12 @@ struct MidState {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct MidState2 {
-    forces:    [f32; 3],   // 12  — forças totais (gravidade + suspensão + aero + pneus)
-    torques_y: f32,         //  4  — torque yaw acumulado
-    omegas:    [f32; 4],   // 16  — omegas pós-frenagem
-    slip_r:    [f32; 4],   // 16  — slip ratios
-    slip_a:    [f32; 4],   // 16  — slip angles
-    // Total: 64 bytes — múltiplo de 16, stride = 64
+    forces: [f32; 3], // 12  — forças totais (gravidade + suspensão + aero + pneus)
+    torques_y: f32,   //  4  — torque yaw acumulado
+    omegas: [f32; 4], // 16  — omegas pós-frenagem
+    slip_r: [f32; 4], // 16  — slip ratios
+    slip_a: [f32; 4], // 16  — slip angles
+                      // Total: 64 bytes — múltiplo de 16, stride = 64
 }
 
 /// Parâmetros globais do mundo (uniform buffer).
@@ -293,20 +310,20 @@ struct MidState2 {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct WorldParams {
     grid_size: u32,
-    n_beings:  u32,
+    n_beings: u32,
     cell_size: f32,
-    _pad:      f32,
+    _pad: f32,
     /// D5 — multiplicador global de grip: 1.0 = seco (default, bit-idêntico ao
     /// comportamento pré-D5), 0.7 = chuva. Consumido em `physics_power_c.wgsl`
     /// (único kernel do trio POWER que computa força de pneu).
-    clima_mu:    f32,
+    clima_mu: f32,
     /// D5 — vento lateral constante (N) aplicado ao corpo, eixo mundo X. Default 0.
-    vento_x:     f32,
+    vento_x: f32,
     /// D5 — vento lateral constante (N) aplicado ao corpo, eixo mundo Z. Default 0.
-    vento_z:     f32,
+    vento_z: f32,
     /// D5 — frequência espacial da variação de μ. 0 = μ espacialmente uniforme
     /// (default). >0 = trechos escorregadios determinísticos por posição.
-    clima_freq:  f32,
+    clima_freq: f32,
 }
 
 // ============================================================
@@ -318,43 +335,43 @@ struct WorldParams {
 ///
 /// Três pipelines compilados uma vez; por tick apenas write_buffer + 3 dispatches + readback.
 pub struct PhysicsGpu {
-    device:      std::sync::Arc<wgpu::Device>,
-    queue:       std::sync::Arc<wgpu::Queue>,
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
     /// Pipeline do Kernel A (suspensão + motor + aero)
-    pipeline_a:  wgpu::ComputePipeline,
-    layout_a:    wgpu::BindGroupLayout,
+    pipeline_a: wgpu::ComputePipeline,
+    layout_a: wgpu::BindGroupLayout,
     /// Pipeline do Kernel B (pneus Pacejka — isolado para reduzir pressão de registradores)
-    pipeline_b:  wgpu::ComputePipeline,
-    layout_b:    wgpu::BindGroupLayout,
+    pipeline_b: wgpu::ComputePipeline,
+    layout_b: wgpu::BindGroupLayout,
     /// Pipeline do Kernel C (colisão + integração)
-    pipeline_c:  wgpu::ComputePipeline,
-    layout_c:    wgpu::BindGroupLayout,
+    pipeline_c: wgpu::ComputePipeline,
+    layout_c: wgpu::BindGroupLayout,
     /// Grade de voxels (estática por pista)
-    buf_grid:    wgpu::Buffer,
+    buf_grid: wgpu::Buffer,
     /// Heightmap bilinear (estático por pista)
-    buf_hmap:    wgpu::Buffer,
+    buf_hmap: wgpu::Buffer,
     /// Buffer de entrada (escrito pelo host a cada tick)
-    buf_input:   wgpu::Buffer,
+    buf_input: wgpu::Buffer,
     /// Buffer intermediário A→B: suspensão + motor + forças parciais (128B/carro)
-    buf_mid:     wgpu::Buffer,
+    buf_mid: wgpu::Buffer,
     /// Buffer intermediário B→C: forças de pneu + omegas + slip (64B/carro)
-    buf_mid2:    wgpu::Buffer,
+    buf_mid2: wgpu::Buffer,
     /// Buffer de saída do Kernel C
-    buf_output:  wgpu::Buffer,
+    buf_output: wgpu::Buffer,
     /// Buffer de readback (MAP_READ | COPY_DST)
-    buf_readback:wgpu::Buffer,
-    pub capacity:usize,
+    buf_readback: wgpu::Buffer,
+    pub capacity: usize,
     pub adapter: String,
-    grid_size:   u32,
-    cell_size:   f32,
+    grid_size: u32,
+    cell_size: f32,
     /// D5 — clima: ver `set_clima`. Default 1.0 = seco, sem efeito (bit-idêntico).
-    clima_mu:    f32,
+    clima_mu: f32,
     /// D5 — vento lateral constante (N), eixo mundo X. Default 0.0.
-    vento_x:     f32,
+    vento_x: f32,
     /// D5 — vento lateral constante (N), eixo mundo Z. Default 0.0.
-    vento_z:     f32,
+    vento_z: f32,
     /// D5 — frequência espacial de μ. Default 0.0 = uniforme.
-    clima_freq:  f32,
+    clima_freq: f32,
 }
 
 impl PhysicsGpu {
@@ -373,13 +390,11 @@ impl PhysicsGpu {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
         });
-        let adapter = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            },
-        ))?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))?;
         let name = adapter.get_info().name.clone();
 
         // Kernel B usa 6 bindings (params, grid, hmap, input, mid, output).
@@ -396,9 +411,18 @@ impl PhysicsGpu {
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
-        )).ok()?;
-        Self::build(std::sync::Arc::new(device), std::sync::Arc::new(queue), name,
-                    grid, hmap, grid_size, cell_size, capacity)
+        ))
+        .ok()?;
+        Self::build(
+            std::sync::Arc::new(device),
+            std::sync::Arc::new(queue),
+            name,
+            grid,
+            hmap,
+            grid_size,
+            cell_size,
+            capacity,
+        )
     }
 
     /// Constrói sobre um dispositivo JÁ ABERTO, compartilhado com retina/percepção/cérebro.
@@ -423,7 +447,16 @@ impl PhysicsGpu {
         cell_size: f32,
         capacity: usize,
     ) -> Option<Self> {
-        Self::build(device, queue, adapter_name, grid, hmap, grid_size, cell_size, capacity)
+        Self::build(
+            device,
+            queue,
+            adapter_name,
+            grid,
+            hmap,
+            grid_size,
+            cell_size,
+            capacity,
+        )
     }
 
     fn build(
@@ -436,7 +469,6 @@ impl PhysicsGpu {
         cell_size: f32,
         capacity: usize,
     ) -> Option<Self> {
-
         // Kernel A: 5 bindings (params, grid, hmap, input, mid)
         let mod_a = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("physics-a"),
@@ -446,14 +478,16 @@ impl PhysicsGpu {
             label: Some("physics-layout-a"),
             entries: &[
                 uniform_entry(0),
-                storage_entry(1, true),   // grid
-                storage_entry(2, true),   // hmap
-                storage_entry(3, true),   // input
-                storage_entry(4, false),  // mid (escrita)
+                storage_entry(1, true),  // grid
+                storage_entry(2, true),  // hmap
+                storage_entry(3, true),  // input
+                storage_entry(4, false), // mid (escrita)
             ],
         });
         let pipe_layout_a = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[&layout_a], push_constant_ranges: &[],
+            label: None,
+            bind_group_layouts: &[&layout_a],
+            push_constant_ranges: &[],
         });
         let pipeline_a = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("physics-pipeline-a"),
@@ -475,15 +509,17 @@ impl PhysicsGpu {
             label: Some("physics-layout-b"),
             entries: &[
                 uniform_entry(0),
-                storage_entry(1, true),   // grid  (declarado mas não usado em B — mantém layout uniforme)
-                storage_entry(2, true),   // hmap  (idem)
-                storage_entry(3, true),   // input
-                storage_entry(4, true),   // mid   (leitura — MidState de A)
-                storage_entry(5, false),  // mid2  (escrita — MidState2 para C)
+                storage_entry(1, true), // grid  (declarado mas não usado em B — mantém layout uniforme)
+                storage_entry(2, true), // hmap  (idem)
+                storage_entry(3, true), // input
+                storage_entry(4, true), // mid   (leitura — MidState de A)
+                storage_entry(5, false), // mid2  (escrita — MidState2 para C)
             ],
         });
         let pipe_layout_b = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[&layout_b], push_constant_ranges: &[],
+            label: None,
+            bind_group_layouts: &[&layout_b],
+            push_constant_ranges: &[],
         });
         let pipeline_b = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("physics-pipeline-b"),
@@ -503,16 +539,18 @@ impl PhysicsGpu {
             label: Some("physics-layout-c"),
             entries: &[
                 uniform_entry(0),
-                storage_entry(1, true),   // grid
-                storage_entry(2, true),   // hmap
-                storage_entry(3, true),   // input
-                storage_entry(4, true),   // mid  (leitura — MidState de A)
-                storage_entry(5, true),   // mid2 (leitura — MidState2 de B)
-                storage_entry(6, false),  // output (escrita)
+                storage_entry(1, true),  // grid
+                storage_entry(2, true),  // hmap
+                storage_entry(3, true),  // input
+                storage_entry(4, true),  // mid  (leitura — MidState de A)
+                storage_entry(5, true),  // mid2 (leitura — MidState2 de B)
+                storage_entry(6, false), // output (escrita)
             ],
         });
         let pipe_layout_c = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[&layout_c], push_constant_ranges: &[],
+            label: None,
+            bind_group_layouts: &[&layout_c],
+            push_constant_ranges: &[],
         });
         let pipeline_c = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("physics-pipeline-c"),
@@ -542,11 +580,11 @@ impl PhysicsGpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let cap           = capacity.max(64);
-        let bytes_input   = (cap * INPUT_WGSL_STRIDE) as u64;
-        let bytes_mid     = (cap * std::mem::size_of::<MidState>()) as u64;
-        let bytes_mid2    = (cap * std::mem::size_of::<MidState2>()) as u64;
-        let bytes_output  = (cap * std::mem::size_of::<PhysicsOutputGpu>()) as u64;
+        let cap = capacity.max(64);
+        let bytes_input = (cap * INPUT_WGSL_STRIDE) as u64;
+        let bytes_mid = (cap * std::mem::size_of::<MidState>()) as u64;
+        let bytes_mid2 = (cap * std::mem::size_of::<MidState2>()) as u64;
+        let bytes_output = (cap * std::mem::size_of::<PhysicsOutputGpu>()) as u64;
 
         let buf_input = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("physics-input"),
@@ -582,20 +620,29 @@ impl PhysicsGpu {
         });
 
         Some(Self {
-            device, queue,
-            pipeline_a, layout_a,
-            pipeline_b, layout_b,
-            pipeline_c, layout_c,
-            buf_grid, buf_hmap,
-            buf_input, buf_mid, buf_mid2, buf_output, buf_readback,
+            device,
+            queue,
+            pipeline_a,
+            layout_a,
+            pipeline_b,
+            layout_b,
+            pipeline_c,
+            layout_c,
+            buf_grid,
+            buf_hmap,
+            buf_input,
+            buf_mid,
+            buf_mid2,
+            buf_output,
+            buf_readback,
             capacity: cap,
             adapter: name,
             grid_size: grid_size as u32,
             cell_size,
             // D5 — defaults = comportamento pré-clima, bit-idêntico.
-            clima_mu:   1.0,
-            vento_x:    0.0,
-            vento_z:    0.0,
+            clima_mu: 1.0,
+            vento_x: 0.0,
+            vento_z: 0.0,
             clima_freq: 0.0,
         })
     }
@@ -630,13 +677,21 @@ impl PhysicsGpu {
     /// constante independente da seed (world.rs). O `debug_assert!` documenta essa
     /// invariante; em release o custo é zero.
     pub fn reload_world(&self, grid: &[u8], hmap: &[f32]) {
-        debug_assert_eq!(grid.len(), (self.grid_size * self.grid_size) as usize,
-            "reload_world: grade nova tem tamanho diferente do buffer alocado");
-        debug_assert_eq!(hmap.len(), (self.grid_size * self.grid_size) as usize,
-            "reload_world: heightmap novo tem tamanho diferente do buffer alocado");
+        debug_assert_eq!(
+            grid.len(),
+            (self.grid_size * self.grid_size) as usize,
+            "reload_world: grade nova tem tamanho diferente do buffer alocado"
+        );
+        debug_assert_eq!(
+            hmap.len(),
+            (self.grid_size * self.grid_size) as usize,
+            "reload_world: heightmap novo tem tamanho diferente do buffer alocado"
+        );
         let grid_u32: Vec<u32> = grid.iter().map(|v| *v as u32).collect();
-        self.queue.write_buffer(&self.buf_grid, 0, bytemuck::cast_slice(&grid_u32));
-        self.queue.write_buffer(&self.buf_hmap, 0, bytemuck::cast_slice(hmap));
+        self.queue
+            .write_buffer(&self.buf_grid, 0, bytemuck::cast_slice(&grid_u32));
+        self.queue
+            .write_buffer(&self.buf_hmap, 0, bytemuck::cast_slice(hmap));
     }
 
     /// Executa um passo de física para todos os carros em paralelo na GPU.
@@ -645,24 +700,30 @@ impl PhysicsGpu {
     /// Retorna `false` se o número de carros exceder a capacidade.
     pub fn step(&self, state: &mut [PhysicsStateGpu]) -> bool {
         let n = state.len();
-        if n == 0 { return true; }
-        if n > self.capacity { return false; }
+        if n == 0 {
+            return true;
+        }
+        if n > self.capacity {
+            return false;
+        }
 
         let params = WorldParams {
             grid_size: self.grid_size,
-            n_beings:  n as u32,
+            n_beings: n as u32,
             cell_size: self.cell_size,
-            _pad:      0.0,
-            clima_mu:    self.clima_mu,
-            vento_x:     self.vento_x,
-            vento_z:     self.vento_z,
-            clima_freq:  self.clima_freq,
+            _pad: 0.0,
+            clima_mu: self.clima_mu,
+            vento_x: self.vento_x,
+            vento_z: self.vento_z,
+            clima_freq: self.clima_freq,
         };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("physics-params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("physics-params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         // Sobe estado dos carros com stride WGSL correto (368 bytes/carro)
         let input_bytes = serialize_input(state);
@@ -670,40 +731,97 @@ impl PhysicsGpu {
 
         // Bind group do Kernel A: params, grid, hmap, input, mid
         let group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &self.layout_a,
+            label: None,
+            layout: &self.layout_a,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_hmap.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_mid.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_hmap.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_mid.as_entire_binding(),
+                },
             ],
         });
 
         // Bind group do Kernel B: params, grid, hmap, input, mid, mid2
         let group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &self.layout_b,
+            label: None,
+            layout: &self.layout_b,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_hmap.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_mid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.buf_mid2.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_hmap.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_mid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buf_mid2.as_entire_binding(),
+                },
             ],
         });
 
         // Bind group do Kernel C: params, grid, hmap, input, mid, mid2, output
         let group_c = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &self.layout_c,
+            label: None,
+            layout: &self.layout_c,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_hmap.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_mid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.buf_mid2.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_hmap.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_mid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buf_mid2.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_output.as_entire_binding(),
+                },
             ],
         });
 
@@ -740,7 +858,9 @@ impl PhysicsGpu {
         // Leitura síncrona — igual ao padrão do RetinaGpu
         let slice = self.buf_readback.slice(0..bytes_output);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
@@ -758,70 +878,146 @@ impl PhysicsGpu {
     /// Diagnóstico: executa um passo e devolve os structs de saída RAW.
     pub fn step_raw(&self, state: &[PhysicsStateGpu]) -> Vec<PhysicsOutputGpu> {
         let n = state.len();
-        if n == 0 || n > self.capacity { return vec![]; }
+        if n == 0 || n > self.capacity {
+            return vec![];
+        }
         let params = WorldParams {
-            grid_size: self.grid_size, n_beings: n as u32,
-            cell_size: self.cell_size, _pad: 0.0,
-            clima_mu: self.clima_mu, vento_x: self.vento_x,
-            vento_z: self.vento_z, clima_freq: self.clima_freq,
+            grid_size: self.grid_size,
+            n_beings: n as u32,
+            cell_size: self.cell_size,
+            _pad: 0.0,
+            clima_mu: self.clima_mu,
+            vento_x: self.vento_x,
+            vento_z: self.vento_z,
+            clima_freq: self.clima_freq,
         };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("physics-params-raw"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("physics-params-raw"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
         let input_bytes = serialize_input(state);
         self.queue.write_buffer(&self.buf_input, 0, &input_bytes);
         let group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &self.layout_a,
+            label: None,
+            layout: &self.layout_a,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_hmap.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_mid.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_hmap.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_mid.as_entire_binding(),
+                },
             ],
         });
         let group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &self.layout_b,
+            label: None,
+            layout: &self.layout_b,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_hmap.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_mid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.buf_mid2.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_hmap.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_mid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buf_mid2.as_entire_binding(),
+                },
             ],
         });
         let group_c = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &self.layout_c,
+            label: None,
+            layout: &self.layout_c,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_hmap.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_mid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.buf_mid2.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_hmap.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_mid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buf_mid2.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_output.as_entire_binding(),
+                },
             ],
         });
         let bytes_output = (n * std::mem::size_of::<PhysicsOutputGpu>()) as u64;
         let wg = (n as u32).div_ceil(64);
         let mut enc = self.device.create_command_encoder(&Default::default());
-        { let mut p = enc.begin_compute_pass(&Default::default());
-          p.set_pipeline(&self.pipeline_a); p.set_bind_group(0, &group_a, &[]);
-          p.dispatch_workgroups(wg, 1, 1); }
-        { let mut p = enc.begin_compute_pass(&Default::default());
-          p.set_pipeline(&self.pipeline_b); p.set_bind_group(0, &group_b, &[]);
-          p.dispatch_workgroups(wg, 1, 1); }
-        { let mut p = enc.begin_compute_pass(&Default::default());
-          p.set_pipeline(&self.pipeline_c); p.set_bind_group(0, &group_c, &[]);
-          p.dispatch_workgroups(wg, 1, 1); }
+        {
+            let mut p = enc.begin_compute_pass(&Default::default());
+            p.set_pipeline(&self.pipeline_a);
+            p.set_bind_group(0, &group_a, &[]);
+            p.dispatch_workgroups(wg, 1, 1);
+        }
+        {
+            let mut p = enc.begin_compute_pass(&Default::default());
+            p.set_pipeline(&self.pipeline_b);
+            p.set_bind_group(0, &group_b, &[]);
+            p.dispatch_workgroups(wg, 1, 1);
+        }
+        {
+            let mut p = enc.begin_compute_pass(&Default::default());
+            p.set_pipeline(&self.pipeline_c);
+            p.set_bind_group(0, &group_c, &[]);
+            p.dispatch_workgroups(wg, 1, 1);
+        }
         enc.copy_buffer_to_buffer(&self.buf_output, 0, &self.buf_readback, 0, bytes_output);
         self.queue.submit(Some(enc.finish()));
         let slice = self.buf_readback.slice(0..bytes_output);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
         let result = {
@@ -836,19 +1032,19 @@ impl PhysicsGpu {
 
 /// Aplica a saída do Kernel B de volta no PhysicsStateGpu.
 fn apply_output(e: &mut PhysicsStateGpu, s: &PhysicsOutputGpu) {
-    e.vel              = s.vel;
-    e.av_y             = s.av_y;
-    e.pos              = s.pos;
-    e.fwd              = s.fwd;
-    e.lat              = s.lat;
-    e.wheels           = s.wheels;
-    e.current_rpm      = s.current_rpm;
+    e.vel = s.vel;
+    e.av_y = s.av_y;
+    e.pos = s.pos;
+    e.fwd = s.fwd;
+    e.lat = s.lat;
+    e.wheels = s.wheels;
+    e.current_rpm = s.current_rpm;
     e.drive_torque_out = s.drive_torque_out;
-    e.shift_timer      = s.shift_timer;
-    e.is_stalled       = s.is_stalled;
-    e.starter_timer    = s.starter_timer;
-    e.engine_temp      = s.engine_temp;
-    e.oil_temp         = s.oil_temp;
+    e.shift_timer = s.shift_timer;
+    e.is_stalled = s.is_stalled;
+    e.starter_timer = s.starter_timer;
+    e.engine_temp = s.engine_temp;
+    e.oil_temp = s.oil_temp;
 }
 
 // ============================================================
@@ -856,7 +1052,7 @@ fn apply_output(e: &mut PhysicsStateGpu, s: &PhysicsOutputGpu) {
 // ============================================================
 // Deduplicado para src/gpu/core.rs (E3) — fonte canônica única. Havia 14 cópias
 // idênticas destas duas funções espalhadas por src/gpu/*.rs e src/bin/*.rs.
-use crate::gpu::core::{uniform_entry, storage_entry};
+use crate::gpu::core::{storage_entry, uniform_entry};
 
 // ============================================================
 // === RECURSO BEVY                                         ===
@@ -882,23 +1078,36 @@ impl PhysicsGpuRes {
     /// Recebe dados de mundo para criar os buffers estáticos. Recria se a pista mudar.
     pub fn get_or_create(
         &mut self,
-        world:     &crate::world::VoxelWorld,
+        world: &crate::world::VoxelWorld,
         signature: u64,
-        capacity:  usize,
+        capacity: usize,
     ) -> Option<&PhysicsGpu> {
         // Fisica GPU tem device próprio — não compartilha com retina (devices são incompatíveis).
         // Isso é um custo de design aceito: o overhead de dois devices é pequeno comparado ao
         // ganho de paralelismo (física GPU roda enquanto motor.rs calcula canais na CPU).
         let needs_update = self.ctx.is_none()
             || self.signature != signature
-            || self.ctx.as_ref().map(|c| c.capacity < capacity).unwrap_or(true);
+            || self
+                .ctx
+                .as_ref()
+                .map(|c| c.capacity < capacity)
+                .unwrap_or(true);
         if needs_update {
             // Converte VoxelType → u8 para o buffer de grade da GPU.
             let grid_u8: Vec<u8> = world.grid.iter().map(|v| *v as u8).collect();
-            self.ctx = PhysicsGpu::new(&grid_u8, &world.height_map, world.size, world.cell_size, capacity.max(64));
+            self.ctx = PhysicsGpu::new(
+                &grid_u8,
+                &world.height_map,
+                world.size,
+                world.cell_size,
+                capacity.max(64),
+            );
             self.signature = signature;
             if self.ctx.is_some() {
-                println!("🏎 física na GPU: {} seres (3 kernels physics_a/b/c.wgsl)", capacity);
+                println!(
+                    "🏎 física na GPU: {} seres (3 kernels physics_a/b/c.wgsl)",
+                    capacity
+                );
             } else {
                 println!("⚠️  física GPU falhou — física continua na CPU");
             }

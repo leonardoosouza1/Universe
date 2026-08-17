@@ -117,7 +117,10 @@ impl PilotoForja {
     /// diferente do v1.
     pub fn carregar(path: &str) -> Option<PilotoForja> {
         let mut s = String::new();
-        std::fs::File::open(path).ok()?.read_to_string(&mut s).ok()?;
+        std::fs::File::open(path)
+            .ok()?
+            .read_to_string(&mut s)
+            .ok()?;
 
         // ── extratores ──────────────────────────────────────────────────────
         let arr = |chave: &str| -> Option<Vec<f32>> {
@@ -140,7 +143,12 @@ impl PilotoForja {
             }
             let nums: Vec<f32> = s[a..=fim]
                 .split(|c: char| {
-                    !(c.is_ascii_digit() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+')
+                    !(c.is_ascii_digit()
+                        || c == '.'
+                        || c == '-'
+                        || c == 'e'
+                        || c == 'E'
+                        || c == '+')
                 })
                 .filter(|t| !t.is_empty() && t.chars().any(|c| c.is_ascii_digit()))
                 .filter_map(|t| t.parse().ok())
@@ -154,7 +162,10 @@ impl PilotoForja {
             let i = s.find(&format!("\"{chave}\""))?;
             let resto = &s[i + chave.len() + 2..];
             let j = resto.find(':')? + 1;
-            let fim = resto[j..].find(|c: char| c == ',' || c == '}').unwrap_or(resto.len() - j) + j;
+            let fim = resto[j..]
+                .find(|c: char| c == ',' || c == '}')
+                .unwrap_or(resto.len() - j)
+                + j;
             Some(resto[j..fim].trim().trim_matches('"').to_string())
         };
         let escalar = |chave: &str| -> Option<f32> { bruto(chave)?.parse().ok() };
@@ -163,7 +174,9 @@ impl PilotoForja {
         let formato = bruto("formato").unwrap_or_default();
         let base = bruto("base").unwrap_or_default();
         if !formato.starts_with("piloto-v2/") {
-            eprintln!("[piloto-forja] formato desconhecido {formato:?} em {path} — esperava piloto-v2/*");
+            eprintln!(
+                "[piloto-forja] formato desconhecido {formato:?} em {path} — esperava piloto-v2/*"
+            );
             return None;
         }
 
@@ -174,8 +187,13 @@ impl PilotoForja {
         let y_mu_v = arr("y_mu")?;
         let y_sd_v = arr("y_sd")?;
         if mu.len() != c || sd.len() != c || y_mu_v.len() != 3 || y_sd_v.len() != 3 {
-            eprintln!("[piloto-forja] dimensões inesperadas: n_entrada={c} mu={} sd={} y_mu={} y_sd={}",
-                      mu.len(), sd.len(), y_mu_v.len(), y_sd_v.len());
+            eprintln!(
+                "[piloto-forja] dimensões inesperadas: n_entrada={c} mu={} sd={} y_mu={} y_sd={}",
+                mu.len(),
+                sd.len(),
+                y_mu_v.len(),
+                y_sd_v.len()
+            );
             return None;
         }
 
@@ -186,12 +204,19 @@ impl PilotoForja {
         let monta = |chave_c: &str, n: usize, sig: Vec<f32>| -> Option<Grupo> {
             let centros = arr(chave_c)?;
             if centros.len() != n * c {
-                eprintln!("[piloto-forja] {chave_c} tem {} números, esperava {n}×{c}={} \
+                eprintln!(
+                    "[piloto-forja] {chave_c} tem {} números, esperava {n}×{c}={} \
                            (matriz transposta ou dimensão errada no JSON)",
-                          centros.len(), n * c);
+                    centros.len(),
+                    n * c
+                );
                 return None;
             }
-            Some(Grupo { centros, n, inv2s2: sig.iter().map(|s| 1.0 / (2.0 * s * s)).collect() })
+            Some(Grupo {
+                centros,
+                n,
+                inv2s2: sig.iter().map(|s| 1.0 / (2.0 * s * s)).collect(),
+            })
         };
         match base.as_str() {
             "piramide" => {
@@ -209,8 +234,10 @@ impl PilotoForja {
                 grupos.push(monta("Cg", ng, arr("sg")?)?);
             }
             outra => {
-                eprintln!("[piloto-forja] base {outra:?} não suportada por este runtime \
-                           (linear é do piloto_linear.rs, que usa clamp em vez de tanh)");
+                eprintln!(
+                    "[piloto-forja] base {outra:?} não suportada por este runtime \
+                           (linear é do piloto_linear.rs, que usa clamp em vez de tanh)"
+                );
                 return None;
             }
         }
@@ -223,19 +250,24 @@ impl PilotoForja {
             }
         }
         if w.len() != n_feat * 3 {
-            eprintln!("[piloto-forja] W tem {} números, esperava {n_feat}×3={}",
-                      w.len(), n_feat * 3);
+            eprintln!(
+                "[piloto-forja] W tem {} números, esperava {n_feat}×3={}",
+                w.len(),
+                n_feat * 3
+            );
             return None;
         }
 
-        let canais_degenerados: Vec<usize> =
-            (0..c).filter(|&j| sd[j].abs() < 1e-6).collect();
+        let canais_degenerados: Vec<usize> = (0..c).filter(|&j| sd[j].abs() < 1e-6).collect();
         let maior_n = grupos.iter().map(|g| g.n).max().unwrap_or(0);
         let mult = grupos.iter().map(|g| g.n * c).sum::<usize>() + n_feat * 3;
-        println!("  [piloto-forja] base={base} {c}→{n_feat}→3 · {} grupos · {mult} mult/tick \
+        println!(
+            "  [piloto-forja] base={base} {c}→{n_feat}→3 · {} grupos · {mult} mult/tick \
                   · err_holdout {} · degenerados {:?}",
-                 grupos.len(), escalar("err_holdout_temporal").unwrap_or(f32::NAN),
-                 canais_degenerados);
+            grupos.len(),
+            escalar("err_holdout_temporal").unwrap_or(f32::NAN),
+            canais_degenerados
+        );
 
         Some(PilotoForja {
             base,
@@ -259,9 +291,15 @@ impl PilotoForja {
         })
     }
 
-    pub fn n_entradas(&self) -> usize { self.c }
-    pub fn n_features(&self) -> usize { self.n_feat }
-    pub fn base(&self) -> &str { &self.base }
+    pub fn n_entradas(&self) -> usize {
+        self.c
+    }
+    pub fn n_features(&self) -> usize {
+        self.n_feat
+    }
+    pub fn base(&self) -> &str {
+        &self.base
+    }
 
     /// Multiplicações por tick desta configuração (distâncias + leitura de W).
     /// Pirâmide 2×512 sobre 192 canais = 202 752; a 64 Hz, 12,98 M mult/s.
@@ -276,22 +314,43 @@ impl PilotoForja {
     pub fn agir(&mut self, x: &[f32]) -> [f32; 3] {
         let c = self.c;
         let n_feat = self.n_feat;
-        debug_assert_eq!(x.len(), c, "piloto-forja: X com {} canais, esperava {c}", x.len());
+        debug_assert_eq!(
+            x.len(),
+            c,
+            "piloto-forja: X com {} canais, esperava {c}",
+            x.len()
+        );
         // Desestruturação para emprestar `grupos` (só leitura) e `z`/`d2`/`phi`
         // (escrita) ao mesmo tempo — `for g in &self.grupos { self.d2[..] = .. }`
         // não compila, os dois empréstimos seriam do mesmo `self`.
-        let PilotoForja { mu, sd, grupos, w, z, d2, phi, y_mu, y_sd,
-                          ultima_soma_phi, saturacoes_z, .. } = self;
+        let PilotoForja {
+            mu,
+            sd,
+            grupos,
+            w,
+            z,
+            d2,
+            phi,
+            y_mu,
+            y_sd,
+            ultima_soma_phi,
+            saturacoes_z,
+            ..
+        } = self;
 
         // 1. padroniza (com saturação anti-NaN — ver doc do módulo)
         let mut saturou = false;
         for j in 0..c {
             let v = (x[j] - mu[j]) / sd[j];
             let v = if v.is_finite() { v } else { 0.0 };
-            if v > Z_MAX || v < -Z_MAX { saturou = true; }
+            if v > Z_MAX || v < -Z_MAX {
+                saturou = true;
+            }
             z[j] = v.clamp(-Z_MAX, Z_MAX);
         }
-        if saturou { *saturacoes_z += 1; }
+        if saturou {
+            *saturacoes_z += 1;
+        }
 
         // 2+3. distâncias e lentes. O laço externo é o GRUPO e o interno é a LENTE:
         //      é isso que produz [dg/sg0 ‖ dg/sg1 ‖ df/sf0 ‖ df/sf1], a ordem das
@@ -368,26 +427,66 @@ mod tests {
 
     /// JSON sintético mínimo no formato piloto-v2/1.
     /// `cg`/`cf`: linhas de centros já em ordem row-major.
-    fn json_piramide(c: usize, cg: &[Vec<f32>], cf: &[Vec<f32>], sg: [f32; 2], sf: [f32; 2],
-                     w: &[[f32; 3]], mu: &[f32], sd: &[f32], y_mu: [f32; 3], y_sd: [f32; 3]) -> String {
+    fn json_piramide(
+        c: usize,
+        cg: &[Vec<f32>],
+        cf: &[Vec<f32>],
+        sg: [f32; 2],
+        sf: [f32; 2],
+        w: &[[f32; 3]],
+        mu: &[f32],
+        sd: &[f32],
+        y_mu: [f32; 3],
+        y_sd: [f32; 3],
+    ) -> String {
         let mat = |m: &[Vec<f32>]| -> String {
-            m.iter().map(|r| format!("[{}]", r.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(",")))
-                .collect::<Vec<_>>().join(",")
+            m.iter()
+                .map(|r| {
+                    format!(
+                        "[{}]",
+                        r.iter()
+                            .map(|v| format!("{v:?}"))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
         };
-        let wm: String = w.iter()
+        let wm: String = w
+            .iter()
             .map(|r| format!("[{:?},{:?},{:?}]", r[0], r[1], r[2]))
-            .collect::<Vec<_>>().join(",");
-        let v = |x: &[f32]| x.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(",");
+            .collect::<Vec<_>>()
+            .join(",");
+        let v = |x: &[f32]| {
+            x.iter()
+                .map(|v| format!("{v:?}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         format!(
             "{{\"formato\": \"piloto-v2/1\", \"base\": \"piramide\", \"n_entrada\": {c}, \"n_saida\": 3, \
              \"ng\": {}, \"nf\": {}, \"n_feat\": {}, \"sg\": [{:?},{:?}], \"sf\": [{:?},{:?}], \
              \"mu\": [{}], \"sd\": [{}], \"y_mu\": [{:?},{:?},{:?}], \"y_sd\": [{:?},{:?},{:?}], \
              \"Cg\": [{}], \"Cf\": [{}], \"W\": [{}]}}",
-            cg.len(), cf.len(), (cg.len() + cf.len()) * 2,
-            sg[0], sg[1], sf[0], sf[1],
-            v(mu), v(sd),
-            y_mu[0], y_mu[1], y_mu[2], y_sd[0], y_sd[1], y_sd[2],
-            mat(cg), mat(cf), wm
+            cg.len(),
+            cf.len(),
+            (cg.len() + cf.len()) * 2,
+            sg[0],
+            sg[1],
+            sf[0],
+            sf[1],
+            v(mu),
+            v(sd),
+            y_mu[0],
+            y_mu[1],
+            y_mu[2],
+            y_sd[0],
+            y_sd[1],
+            y_sd[2],
+            mat(cg),
+            mat(cf),
+            wm
         )
     }
 
@@ -404,11 +503,21 @@ mod tests {
         let c = 2;
         let j = json_piramide(
             c,
-            &[vec![0.0, 0.0]], &[vec![0.0, 0.0]],
-            [1.0, 2.0], [0.5, 4.0],
+            &[vec![0.0, 0.0]],
+            &[vec![0.0, 0.0]],
+            [1.0, 2.0],
+            [0.5, 4.0],
             // W: só a feature 0 (dg com sg[0]) pesa, na ação 0.
-            &[[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            &[0.0, 0.0], &[1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
+            &[
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            &[0.0, 0.0],
+            &[1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
         );
         let mut p = PilotoForja::carregar(&escreve("pf_5passos.json", &j)).expect("carregar");
         assert_eq!((p.n_entradas(), p.n_features()), (2, 4));
@@ -416,11 +525,19 @@ mod tests {
         let y = p.agir(&[1.0, 0.0]);
         // phi[0] = exp(-1/(2·1²)) = 0.60653066 ; pre[0] = 0.60653066 ; y0 = tanh(pre)
         let esperado = (-0.5f32).exp().tanh();
-        assert!((y[0] - esperado).abs() < 1e-6, "y0={} esperado={esperado}", y[0]);
+        assert!(
+            (y[0] - esperado).abs() < 1e-6,
+            "y0={} esperado={esperado}",
+            y[0]
+        );
         assert_eq!((y[1], y[2]), (0.0, 0.0));
         // Σφ = e^-0.5 + e^-0.125 + e^-2 + e^-0.03125
         let soma: f32 = (-0.5f32).exp() + (-0.125f32).exp() + (-2.0f32).exp() + (-0.03125f32).exp();
-        assert!((p.ultima_soma_phi - soma).abs() < 1e-6, "Σφ={} esperado={soma}", p.ultima_soma_phi);
+        assert!(
+            (p.ultima_soma_phi - soma).abs() < 1e-6,
+            "Σφ={} esperado={soma}",
+            p.ultima_soma_phi
+        );
         // 1+1 centros × 2 canais + 4 features × 3 = 4 + 12 = 16 mult/tick
         assert_eq!(p.mult_por_tick(), 16);
     }
@@ -433,21 +550,44 @@ mod tests {
         let c = 1;
         // Cg = [[0]], Cf = [[3]]; x = 1 → dg = 1, df = 4.
         let j = json_piramide(
-            c, &[vec![0.0]], &[vec![3.0]],
-            [1.0, 2.0], [4.0, 8.0],
+            c,
+            &[vec![0.0]],
+            &[vec![3.0]],
+            [1.0, 2.0],
+            [4.0, 8.0],
             // feature 0 → ação 0 · feature 1 → ação 1 · feature 2 → ação 2 · feature 3 → ação 2 (peso 10)
-            &[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 10.0]],
-            &[0.0], &[1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
+            &[
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 10.0],
+            ],
+            &[0.0],
+            &[1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
         );
         let mut p = PilotoForja::carregar(&escreve("pf_ordem.json", &j)).unwrap();
         let y = p.agir(&[1.0]);
-        let f0 = (-1.0f32 / 2.0).exp();          // dg=1, sg0=1 → exp(-1/2)
-        let f1 = (-1.0f32 / 8.0).exp();          // dg=1, sg1=2 → exp(-1/8)
-        let f2 = (-4.0f32 / 32.0).exp();         // df=4, sf0=4 → exp(-4/32)
-        let f3 = (-4.0f32 / 128.0).exp();        // df=4, sf1=8 → exp(-4/128)
-        assert!((y[0] - f0.tanh()).abs() < 1e-6, "bloco 0 (Cg,sg0) fora de lugar: {}", y[0]);
-        assert!((y[1] - f1.tanh()).abs() < 1e-6, "bloco 1 (Cg,sg1) fora de lugar: {}", y[1]);
-        assert!((y[2] - (f2 + 10.0 * f3).tanh()).abs() < 1e-6, "blocos 2/3 (Cf) fora de lugar: {}", y[2]);
+        let f0 = (-1.0f32 / 2.0).exp(); // dg=1, sg0=1 → exp(-1/2)
+        let f1 = (-1.0f32 / 8.0).exp(); // dg=1, sg1=2 → exp(-1/8)
+        let f2 = (-4.0f32 / 32.0).exp(); // df=4, sf0=4 → exp(-4/32)
+        let f3 = (-4.0f32 / 128.0).exp(); // df=4, sf1=8 → exp(-4/128)
+        assert!(
+            (y[0] - f0.tanh()).abs() < 1e-6,
+            "bloco 0 (Cg,sg0) fora de lugar: {}",
+            y[0]
+        );
+        assert!(
+            (y[1] - f1.tanh()).abs() < 1e-6,
+            "bloco 1 (Cg,sg1) fora de lugar: {}",
+            y[1]
+        );
+        assert!(
+            (y[2] - (f2 + 10.0 * f3).tanh()).abs() < 1e-6,
+            "blocos 2/3 (Cf) fora de lugar: {}",
+            y[2]
+        );
         // f1 > f0 e f3 > f2: se os blocos trocassem, y[0] e y[1] trocariam de valor.
         assert!(f1 > f0 && f3 > f2);
     }
@@ -460,24 +600,40 @@ mod tests {
         let c = 3;
         let j = json_piramide(
             c,
-            &[vec![1.0, 2.0, 3.0], vec![-9.0, -9.0, -9.0]],   // Cg: centro 0 casa com x
+            &[vec![1.0, 2.0, 3.0], vec![-9.0, -9.0, -9.0]], // Cg: centro 0 casa com x
             &[vec![0.0, 0.0, 0.0]],
-            [1.0, 1.0], [1.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 1.0],
             // n_feat = (2+1)*2 = 6. Ação 1 lê SÓ a feature 0 (centro 0, sg0).
-            &[[0.0, 5.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
-              [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            &[0.0, 0.0, 0.0], &[1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
+            &[
+                [0.0, 5.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            &[0.0, 0.0, 0.0],
+            &[1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
         );
         let mut p = PilotoForja::carregar(&escreve("pf_flat.json", &j)).unwrap();
         assert_eq!(p.n_features(), 6);
         let y = p.agir(&[1.0, 2.0, 3.0]);
         // d² do centro 0 = 0 → phi[0] = 1 → pre[1] = 5 → y1 = tanh(5)
-        assert!((y[1] - 5.0f32.tanh()).abs() < 1e-6, "y1={} (esperava tanh(5)); \
-                 se a matriz fosse lida transposta o centro 0 não casaria", y[1]);
+        assert!(
+            (y[1] - 5.0f32.tanh()).abs() < 1e-6,
+            "y1={} (esperava tanh(5)); \
+                 se a matriz fosse lida transposta o centro 0 não casaria",
+            y[1]
+        );
         // Matriz com dimensão errada tem de ser RECUSADA, não lida torto.
         let ruim = j.replace("\"ng\": 2", "\"ng\": 3");
-        assert!(PilotoForja::carregar(&escreve("pf_flat_ruim.json", &ruim)).is_none(),
-                "aceitou Cg com número de linhas errado");
+        assert!(
+            PilotoForja::carregar(&escreve("pf_flat_ruim.json", &ruim)).is_none(),
+            "aceitou Cg com número de linhas errado"
+        );
     }
 
     /// Portão por Σφ e saturação de z (canal degenerado saindo de zero).
@@ -485,22 +641,41 @@ mod tests {
     fn portao_por_soma_phi_e_saturacao_de_z() {
         let c = 1;
         let mut j = json_piramide(
-            c, &[vec![0.0]], &[vec![0.0]], [1.0, 1.0], [1.0, 1.0],
+            c,
+            &[vec![0.0]],
+            &[vec![0.0]],
+            [1.0, 1.0],
+            [1.0, 1.0],
             &[[0.0, 0.0, 0.0]; 4],
-            &[0.0], &[1.0e-12], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
+            &[0.0],
+            &[1.0e-12],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
         );
         j = j.replace("\"n_saida\": 3", "\"n_saida\": 3, \"thr_phi\": 1.0");
         assert_eq!(j.matches("thr_phi").count(), 1);
         let mut p = PilotoForja::carregar(&escreve("pf_portao.json", &j)).unwrap();
-        assert!((p.thr_phi - 1.0).abs() < 1e-9, "limiar lido = {}", p.thr_phi);
-        assert_eq!(p.canais_degenerados, vec![0], "sd=1e-12 tem de ser marcado degenerado");
+        assert!(
+            (p.thr_phi - 1.0).abs() < 1e-9,
+            "limiar lido = {}",
+            p.thr_phi
+        );
+        assert_eq!(
+            p.canais_degenerados,
+            vec![0],
+            "sd=1e-12 tem de ser marcado degenerado"
+        );
         // x = mu = 0 → z = 0 → phi todo 1 → Σφ = 4 ≥ 1 → decide
         assert!(p.agir_com_portao(&[0.0]).is_some());
         assert_eq!(p.saturacoes_z, 0);
         // x = 1 com sd = 1e-12 → z = 1e12 → satura em Z_MAX, φ→0 → Σφ < 1 → abstém
         assert!(p.agir_com_portao(&[1.0]).is_none());
         assert_eq!(p.saturacoes_z, 1, "saturação de z não foi contada");
-        assert!(p.ultima_soma_phi.is_finite(), "Σφ virou NaN/inf: {}", p.ultima_soma_phi);
+        assert!(
+            p.ultima_soma_phi.is_finite(),
+            "Σφ virou NaN/inf: {}",
+            p.ultima_soma_phi
+        );
         assert_eq!((p.decisoes, p.abstencoes), (1, 1));
     }
 
@@ -513,13 +688,18 @@ mod tests {
     #[test]
     fn sanidade_contra_o_piloto_v2_real() {
         if !std::path::Path::new(V2).exists() || !std::path::Path::new(SANIDADE).exists() {
-            eprintln!("\n[ATENÇÃO] TESTE NÃO EXECUTADO — falta {V2} ou {SANIDADE}.\n\
+            eprintln!(
+                "\n[ATENÇÃO] TESTE NÃO EXECUTADO — falta {V2} ou {SANIDADE}.\n\
                        Este é o único teste que prova o runtime contra o piloto real;\n\
-                       sem /media/llm-data montado ele não roda. NÃO é um PASS.\n");
+                       sem /media/llm-data montado ele não roda. NÃO é um PASS.\n"
+            );
             return;
         }
         let mut ref_txt = String::new();
-        std::fs::File::open(SANIDADE).unwrap().read_to_string(&mut ref_txt).unwrap();
+        std::fs::File::open(SANIDADE)
+            .unwrap()
+            .read_to_string(&mut ref_txt)
+            .unwrap();
         let mut p = PilotoForja::carregar(V2).expect("carregar piloto_v2.json real");
         assert_eq!(p.base(), "piramide");
         assert_eq!((p.n_entradas(), p.n_features()), (192, 2048));
@@ -537,31 +717,55 @@ mod tests {
                 Some("X") => x = it.map(|t| t.parse().unwrap()).collect(),
                 Some("Y") => {
                     let esperado: Vec<f32> = it.map(|t| t.parse().unwrap()).collect();
-                    assert_eq!(x.len(), p.n_entradas(), "tick {tick}: X com {} canais", x.len());
+                    assert_eq!(
+                        x.len(),
+                        p.n_entradas(),
+                        "tick {tick}: X com {} canais",
+                        x.len()
+                    );
                     assert_eq!(esperado.len(), 3);
                     let y = p.agir(&x);
                     let mut pior = 0.0f32;
                     for k in 0..3 {
                         let dif = (y[k] - esperado[k]).abs();
-                        assert!(dif <= tol,
-                                "tick {tick} ação {k}: rust {} vs python {} (dif {dif:.3e} > tol {tol:.0e})",
-                                y[k], esperado[k]);
-                        if dif > pior { pior = dif; }
+                        assert!(
+                            dif <= tol,
+                            "tick {tick} ação {k}: rust {} vs python {} (dif {dif:.3e} > tol {tol:.0e})",
+                            y[k],
+                            esperado[k]
+                        );
+                        if dif > pior {
+                            pior = dif;
+                        }
                     }
                     // Σφ medida no dump: 287,9 … 936,7. Fora disso, algo mudou.
-                    assert!(p.ultima_soma_phi > 280.0 && p.ultima_soma_phi < 940.0,
-                            "tick {tick}: Σφ = {} fora da faixa medida [287,9 ; 936,7]", p.ultima_soma_phi);
-                    assert_eq!(p.saturacoes_z, 0, "tick {tick}: z saturou em dado do próprio dump");
+                    assert!(
+                        p.ultima_soma_phi > 280.0 && p.ultima_soma_phi < 940.0,
+                        "tick {tick}: Σφ = {} fora da faixa medida [287,9 ; 936,7]",
+                        p.ultima_soma_phi
+                    );
+                    assert_eq!(
+                        p.saturacoes_z, 0,
+                        "tick {tick}: z saturou em dado do próprio dump"
+                    );
                     conferidos += 1;
-                    println!("  tick {tick}: rust [{:.7}, {:.7}, {:.7}]  Σφ={:.2}  \
+                    println!(
+                        "  tick {tick}: rust [{:.7}, {:.7}, {:.7}]  Σφ={:.2}  \
                               maior dif vs python(f64) = {pior:.2e}  (tol {tol:.0e}) ✓",
-                             y[0], y[1], y[2], p.ultima_soma_phi);
+                        y[0], y[1], y[2], p.ultima_soma_phi
+                    );
                 }
                 _ => {}
             }
         }
-        assert_eq!(conferidos, 4, "esperava 4 ticks de referência, conferi {conferidos}");
-        assert_eq!(p.canais_degenerados, vec![98, 114, 115, 116, 117, 124],
-                   "canais degenerados mudaram — o dump ou o solve não é o mesmo");
+        assert_eq!(
+            conferidos, 4,
+            "esperava 4 ticks de referência, conferi {conferidos}"
+        );
+        assert_eq!(
+            p.canais_degenerados,
+            vec![98, 114, 115, 116, 117, 124],
+            "canais degenerados mudaram — o dump ou o solve não é o mesmo"
+        );
     }
 }

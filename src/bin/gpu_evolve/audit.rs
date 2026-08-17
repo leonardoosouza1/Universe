@@ -40,7 +40,11 @@ struct AuditAcum {
 
 impl AuditAcum {
     fn new() -> Self {
-        Self { hist_ser0: Vec::new(), ultimo_tick_4vivos: Vec::new(), n_ticks: 0 }
+        Self {
+            hist_ser0: Vec::new(),
+            ultimo_tick_4vivos: Vec::new(),
+            n_ticks: 0,
+        }
     }
 }
 
@@ -65,14 +69,11 @@ pub fn nova_geracao() {
 /// Chamado a cada tick quando `--auditar-visao` está ativo.
 /// Grava onda do ser 0 (variância temporal) e snapshot de todos (variância entre seres).
 /// `n_vivos` = quantos seres têm life_left > 0 neste tick.
-pub fn auditoria_acumular(
-    ondas: &[[i8; N_CH]],
-    n: usize,
-    ser_vivo: usize,
-    n_vivos: usize,
-) {
+pub fn auditoria_acumular(ondas: &[[i8; N_CH]], n: usize, ser_vivo: usize, n_vivos: usize) {
     let mut g = AUDIT_ACUM.lock().unwrap();
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
     // Onda do primeiro ser VIVO — trajetória temporal estável (ser morto fica constante).
     g.hist_ser0.push(ondas[ser_vivo.min(n - 1)]);
     // Snapshot do tick atual apenas se ≥4 seres estão vivos.
@@ -95,12 +96,16 @@ pub fn auditoria_relatorio() {
     }
     let n_seres = g.ultimo_tick_4vivos.len();
     println!();
-    println!("╔══ AUDITORIA DA VISÃO — RELATÓRIO FINAL ({n_ticks} ticks, {n_seres} seres, {N_CH} canais) ══");
+    println!(
+        "╔══ AUDITORIA DA VISÃO — RELATÓRIO FINAL ({n_ticks} ticks, {n_seres} seres, {N_CH} canais) ══"
+    );
 
     // ── (a) Variância temporal: desvio-padrão ao longo dos ticks, ser 0 ──────
     let mut sigma_temporal = [0.0f32; N_CH];
     for ch in 0..N_CH {
-        if g.hist_ser0.is_empty() { break; }
+        if g.hist_ser0.is_empty() {
+            break;
+        }
         let vals: Vec<f32> = g.hist_ser0.iter().map(|f| f[ch] as f32).collect();
         let m = vals.iter().sum::<f32>() / vals.len() as f32;
         let var = vals.iter().map(|v| (v - m).powi(2)).sum::<f32>() / vals.len() as f32;
@@ -158,9 +163,16 @@ pub fn auditoria_relatorio() {
     // Imprime faixas contíguas de aprovados
     if !aprovados.is_empty() {
         let faixas = faixas_contiguas(&aprovados);
-        let faixas_str: Vec<String> = faixas.iter().map(|(a, b)|
-            if a == b { format!("{a}") } else { format!("{a}-{b}") }
-        ).collect();
+        let faixas_str: Vec<String> = faixas
+            .iter()
+            .map(|(a, b)| {
+                if a == b {
+                    format!("{a}")
+                } else {
+                    format!("{a}-{b}")
+                }
+            })
+            .collect();
         println!("║   {}", faixas_str.join(" "));
     }
 
@@ -168,29 +180,47 @@ pub fn auditoria_relatorio() {
     println!("║ REPROVADOS por tipo de falha:");
 
     if !falha_temporal.is_empty() {
-        println!("║   [sem variância temporal — constante no tempo] {} canais:", falha_temporal.len());
+        println!(
+            "║   [sem variância temporal — constante no tempo] {} canais:",
+            falha_temporal.len()
+        );
         let faixas = faixas_contiguas(&falha_temporal);
         for (a, b) in &faixas {
             if a == b {
-                println!("║     ch{a:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
-                    sigma_temporal[*a], sigma_entre[*a], canal_tem_fonte(*a));
+                println!(
+                    "║     ch{a:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
+                    sigma_temporal[*a],
+                    sigma_entre[*a],
+                    canal_tem_fonte(*a)
+                );
             } else {
-                println!("║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1})",
-                    sigma_temporal[*a], sigma_entre[*a]);
+                println!(
+                    "║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1})",
+                    sigma_temporal[*a], sigma_entre[*a]
+                );
             }
         }
     }
 
     if !falha_entre.is_empty() {
-        println!("║   [sem variância entre seres no último tick] {} canais:", falha_entre.len());
+        println!(
+            "║   [sem variância entre seres no último tick] {} canais:",
+            falha_entre.len()
+        );
         let faixas = faixas_contiguas(&falha_entre);
         for (a, b) in &faixas {
             if a == b {
-                println!("║     ch{a:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
-                    sigma_temporal[*a], sigma_entre[*a], canal_tem_fonte(*a));
+                println!(
+                    "║     ch{a:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
+                    sigma_temporal[*a],
+                    sigma_entre[*a],
+                    canal_tem_fonte(*a)
+                );
             } else {
-                println!("║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1})",
-                    sigma_temporal[*a], sigma_entre[*a]);
+                println!(
+                    "║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1})",
+                    sigma_temporal[*a], sigma_entre[*a]
+                );
             }
         }
     }
@@ -198,8 +228,12 @@ pub fn auditoria_relatorio() {
     if !falha_fonte.is_empty() {
         println!("║   [sem fonte documentada] {} canais:", falha_fonte.len());
         for &ch in &falha_fonte {
-            println!("║     ch{ch:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
-                sigma_temporal[ch], sigma_entre[ch], canal_tem_fonte(ch));
+            println!(
+                "║     ch{ch:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
+                sigma_temporal[ch],
+                sigma_entre[ch],
+                canal_tem_fonte(ch)
+            );
         }
     }
 
@@ -208,11 +242,19 @@ pub fn auditoria_relatorio() {
         let faixas = faixas_contiguas(&falha_multi);
         for (a, b) in &faixas {
             if a == b {
-                println!("║     ch{a:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
-                    sigma_temporal[*a], sigma_entre[*a], canal_tem_fonte(*a));
+                println!(
+                    "║     ch{a:3}  σ_t={:.1} σ_e={:.1}  fonte={}",
+                    sigma_temporal[*a],
+                    sigma_entre[*a],
+                    canal_tem_fonte(*a)
+                );
             } else {
-                println!("║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1}  fonte={})",
-                    sigma_temporal[*a], sigma_entre[*a], canal_tem_fonte(*a));
+                println!(
+                    "║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1}  fonte={})",
+                    sigma_temporal[*a],
+                    sigma_entre[*a],
+                    canal_tem_fonte(*a)
+                );
             }
         }
     }
@@ -220,8 +262,11 @@ pub fn auditoria_relatorio() {
     // Canais mais informativos (maior σ_temporal)
     let mut ranking_t: Vec<(usize, f32)> = (0..N_CH).map(|ch| (ch, sigma_temporal[ch])).collect();
     ranking_t.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    let topo: Vec<String> = ranking_t.iter().take(10)
-        .map(|(ch, s)| format!("ch{ch}(σ_t{s:.0})")).collect();
+    let topo: Vec<String> = ranking_t
+        .iter()
+        .take(10)
+        .map(|(ch, s)| format!("ch{ch}(σ_t{s:.0})"))
+        .collect();
     println!("║");
     println!("║ Top-10 σ_temporal: {}", topo.join(" "));
 
@@ -235,7 +280,9 @@ pub fn n_ticks_acumulados() -> usize {
 }
 
 fn faixas_contiguas(idxs: &[usize]) -> Vec<(usize, usize)> {
-    if idxs.is_empty() { return Vec::new(); }
+    if idxs.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let mut ini = idxs[0];
     let mut ant = idxs[0];

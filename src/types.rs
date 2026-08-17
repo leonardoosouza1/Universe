@@ -21,24 +21,24 @@ pub struct WaveformTensor {
 
 #[derive(Debug, Clone)]
 pub struct SplineNode {
-    pub position: [f32; 3],       // (x, y, z) spatial coordinates
-    pub momentum: [f32; 3],       // p (vector) for kinetic calculations
-    pub torque: [f32; 3],         // tau (vector) for error redirection (Hapkido)
+    pub position: [f32; 3],            // (x, y, z) spatial coordinates
+    pub momentum: [f32; 3],            // p (vector) for kinetic calculations
+    pub torque: [f32; 3],              // tau (vector) for error redirection (Hapkido)
     pub next: Option<Box<SplineNode>>, // Recursive pointer to next node
-    pub mass: f32,                // Semantic mass
+    pub mass: f32,                     // Semantic mass
 }
 
 #[derive(Debug, Clone)]
 pub struct PotentialWell {
-    pub semantic_mass: f32,       // M (mass) - depth of gravitational well
-    pub theta: f32,               // Angular coordinate (theta)
-    pub radius: f32,               // Complexity level (R)
-    pub concept_id: String,       // Unique concept identifier
+    pub semantic_mass: f32, // M (mass) - depth of gravitational well
+    pub theta: f32,         // Angular coordinate (theta)
+    pub radius: f32,        // Complexity level (R)
+    pub concept_id: String, // Unique concept identifier
 }
 
 #[derive(Debug, Clone)]
 pub struct QuantumPill {
-    pub harmonics: Vec<i8>,       // Quantized frequencies
+    pub harmonics: Vec<i8>, // Quantized frequencies
     pub amplitude: f32,
     pub phase: f32,
 }

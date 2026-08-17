@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::{Read, Write};
 
-use iara_genesis::tlv::{compress_organism, decompress_organism, Chunk, GenesisPayload};
 use iara_genesis::model::tree::Sap;
+use iara_genesis::tlv::{Chunk, GenesisPayload, compress_organism, decompress_organism};
 
 // ============================================================================
 // TIER 6.6 — WEIGHT SCARS (trauma imutabilidade)
@@ -18,8 +18,8 @@ use iara_genesis::model::tree::Sap;
 // Versão simplificada (v1): snapshot proxy — ativos ≈ não-zeros. Versão completa
 // (v2, futura) usaria last_activation_mask do BitLinear após um forward real.
 // ============================================================================
-pub const SCAR_TTL_INITIAL: u8 = 5;       // trava por 5 gerações
-pub const SCAR_FRACTION: f32 = 0.10;      // 10% dos pesos não-zero viram scar
+pub const SCAR_TTL_INITIAL: u8 = 5; // trava por 5 gerações
+pub const SCAR_FRACTION: f32 = 0.10; // 10% dos pesos não-zero viram scar
 pub const SCAR_CATASTROPHE_LABEL: &str = "BATIDA";
 
 // ============================================================================
@@ -44,8 +44,8 @@ pub const MORPHO_DOWNFORCE_MAX: f32 = 2.0;
 pub const MORPHO_GRIP_MIN: f32 = 0.8;
 pub const MORPHO_GRIP_MAX: f32 = 1.2;
 pub const MORPHO_MUTATION_RATE: f32 = 0.05; // 5% por gene por gen
-pub const MORPHO_SIGMA_FRAC: f32 = 0.05;    // σ = 5% do range
-pub const MORPHO_BYTES: usize = 16;         // 4 × f32 LE
+pub const MORPHO_SIGMA_FRAC: f32 = 0.05; // σ = 5% do range
+pub const MORPHO_BYTES: usize = 16; // 4 × f32 LE
 
 #[derive(Clone, Copy, Debug)]
 pub struct MorphoGenes {
@@ -57,7 +57,12 @@ pub struct MorphoGenes {
 
 impl Default for MorphoGenes {
     fn default() -> Self {
-        Self { mass: 1000.0, wheelbase: 2.5, downforce: 1.0, grip_mult: 1.0 }
+        Self {
+            mass: 1000.0,
+            wheelbase: 2.5,
+            downforce: 1.0,
+            grip_mult: 1.0,
+        }
     }
 }
 
@@ -72,25 +77,44 @@ impl MorphoGenes {
     }
 
     pub fn from_le_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < MORPHO_BYTES { return None; }
+        if buf.len() < MORPHO_BYTES {
+            return None;
+        }
         let mass = f32::from_le_bytes(buf[0..4].try_into().ok()?);
         let wheelbase = f32::from_le_bytes(buf[4..8].try_into().ok()?);
         let downforce = f32::from_le_bytes(buf[8..12].try_into().ok()?);
         let grip_mult = f32::from_le_bytes(buf[12..16].try_into().ok()?);
-        let out = Self { mass, wheelbase, downforce, grip_mult };
+        let out = Self {
+            mass,
+            wheelbase,
+            downforce,
+            grip_mult,
+        };
         Some(out.sanitized())
     }
 
     /// Clamp nos ranges (+ proteção contra NaN/Inf vinda de arquivo corrompido).
     pub fn sanitized(mut self) -> Self {
         let default = Self::default();
-        if !self.mass.is_finite()      { self.mass = default.mass; }
-        if !self.wheelbase.is_finite() { self.wheelbase = default.wheelbase; }
-        if !self.downforce.is_finite() { self.downforce = default.downforce; }
-        if !self.grip_mult.is_finite() { self.grip_mult = default.grip_mult; }
-        self.mass      = self.mass.clamp(MORPHO_MASS_MIN, MORPHO_MASS_MAX);
-        self.wheelbase = self.wheelbase.clamp(MORPHO_WHEELBASE_MIN, MORPHO_WHEELBASE_MAX);
-        self.downforce = self.downforce.clamp(MORPHO_DOWNFORCE_MIN, MORPHO_DOWNFORCE_MAX);
+        if !self.mass.is_finite() {
+            self.mass = default.mass;
+        }
+        if !self.wheelbase.is_finite() {
+            self.wheelbase = default.wheelbase;
+        }
+        if !self.downforce.is_finite() {
+            self.downforce = default.downforce;
+        }
+        if !self.grip_mult.is_finite() {
+            self.grip_mult = default.grip_mult;
+        }
+        self.mass = self.mass.clamp(MORPHO_MASS_MIN, MORPHO_MASS_MAX);
+        self.wheelbase = self
+            .wheelbase
+            .clamp(MORPHO_WHEELBASE_MIN, MORPHO_WHEELBASE_MAX);
+        self.downforce = self
+            .downforce
+            .clamp(MORPHO_DOWNFORCE_MIN, MORPHO_DOWNFORCE_MAX);
         self.grip_mult = self.grip_mult.clamp(MORPHO_GRIP_MIN, MORPHO_GRIP_MAX);
         self
     }
@@ -107,10 +131,10 @@ impl MorphoGenes {
             (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
         }
         let bounds = [
-            (MORPHO_MASS_MIN,      MORPHO_MASS_MAX),
+            (MORPHO_MASS_MIN, MORPHO_MASS_MAX),
             (MORPHO_WHEELBASE_MIN, MORPHO_WHEELBASE_MAX),
             (MORPHO_DOWNFORCE_MIN, MORPHO_DOWNFORCE_MAX),
-            (MORPHO_GRIP_MIN,      MORPHO_GRIP_MAX),
+            (MORPHO_GRIP_MIN, MORPHO_GRIP_MAX),
         ];
         for (i, (min, max)) in bounds.into_iter().enumerate() {
             if rng01() < MORPHO_MUTATION_RATE {
@@ -157,25 +181,39 @@ pub struct EliteDna {
 
 /// Marca ~SCAR_FRACTION dos pesos NÃO-ZERO em `fast_weights` com scar TTL.
 /// Determinístico via seed (deriva de fast_weights.iter().sum); retorna nº de scars criados.
-pub fn apply_catastrophic_scars(scar_mask: &mut Vec<u8>, fast_weights: &[i8], seed_bias: u64) -> usize {
+pub fn apply_catastrophic_scars(
+    scar_mask: &mut Vec<u8>,
+    fast_weights: &[i8],
+    seed_bias: u64,
+) -> usize {
     if scar_mask.len() != fast_weights.len() {
         *scar_mask = vec![0u8; fast_weights.len()];
     }
     // Lista de índices não-zero
-    let nonzero_idx: Vec<usize> = fast_weights.iter().enumerate()
+    let nonzero_idx: Vec<usize> = fast_weights
+        .iter()
+        .enumerate()
         .filter_map(|(i, &w)| if w != 0 { Some(i) } else { None })
         .collect();
-    if nonzero_idx.is_empty() { return 0; }
+    if nonzero_idx.is_empty() {
+        return 0;
+    }
     let target = ((nonzero_idx.len() as f32) * SCAR_FRACTION).ceil() as usize;
     // Seleção pseudo-aleatória via LCG simples com seed_bias (determinismo por DNA).
-    let mut state: u64 = seed_bias.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0xDEADBEEF);
+    let mut state: u64 = seed_bias
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add(0xDEADBEEF);
     let mut scars_created = 0usize;
     for _ in 0..target {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let pick = (state >> 32) as usize % nonzero_idx.len();
         let idx = nonzero_idx[pick];
         // Só conta se o peso não estava já scarred (refresh também estende TTL).
-        if scar_mask[idx] == 0 { scars_created += 1; }
+        if scar_mask[idx] == 0 {
+            scars_created += 1;
+        }
         scar_mask[idx] = SCAR_TTL_INITIAL;
     }
     scars_created
@@ -188,7 +226,9 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
     for ttl in scar_mask.iter_mut() {
         if *ttl > 0 {
             *ttl -= 1;
-            if *ttl > 0 { still_active += 1; }
+            if *ttl > 0 {
+                still_active += 1;
+            }
         }
     }
     still_active
@@ -218,14 +258,11 @@ pub fn decay_scars(scar_mask: &mut [u8]) -> usize {
 pub const DNA_MAGIC: &[u8; 4] = b"IARA";
 pub use crate::config::iara::genetics::*;
 
+pub const DNA_HEADER_SIZE: usize = 4 + 2 + 4 + 4 + 4 + 4; // 22
 
-
-pub const DNA_HEADER_SIZE: usize = 4 + 2 + 4 + 4 + 4 + 4;  // 22
-
-
-
-pub const DNA_V3_TOTAL: usize = DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY;  // 8478
-pub const DNA_V31_TOTAL: usize = DNA_V3_TOTAL + MORPHO_BYTES;  // 8494
+pub const DNA_V3_TOTAL: usize =
+    DNA_HEADER_SIZE + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY; // 8478
+pub const DNA_V31_TOTAL: usize = DNA_V3_TOTAL + MORPHO_BYTES; // 8494
 pub const DNA_V32_TOTAL: usize = DNA_V31_TOTAL + HYPERNET_BYTES; // 8755 (v3.2 with hypernet tail)
 
 // TLV TAG para metadados exclusivos do simulador (usado apenas na V4)
@@ -288,16 +325,18 @@ pub fn cortex_from_dct(coeffs: &[f32; CORTEX_DCT_COEFFS]) -> Vec<f32> {
 pub fn dct_coeffs_to_bytes(coeffs: &[f32; CORTEX_DCT_COEFFS]) -> [u8; CORTEX_DCT_BYTES] {
     let mut out = [0u8; CORTEX_DCT_BYTES];
     for (i, c) in coeffs.iter().enumerate() {
-        out[i*4..i*4+4].copy_from_slice(&c.to_le_bytes());
+        out[i * 4..i * 4 + 4].copy_from_slice(&c.to_le_bytes());
     }
     out
 }
 
 pub fn dct_coeffs_from_bytes(buf: &[u8]) -> Option<[f32; CORTEX_DCT_COEFFS]> {
-    if buf.len() < CORTEX_DCT_BYTES { return None; }
+    if buf.len() < CORTEX_DCT_BYTES {
+        return None;
+    }
     let mut out = [0.0_f32; CORTEX_DCT_COEFFS];
     for i in 0..CORTEX_DCT_COEFFS {
-        let v = f32::from_le_bytes(buf[i*4..i*4+4].try_into().ok()?);
+        let v = f32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().ok()?);
         out[i] = if v.is_finite() { v } else { 0.0 };
     }
     Some(out)
@@ -305,7 +344,7 @@ pub fn dct_coeffs_from_bytes(buf: &[u8]) -> Option<[f32; CORTEX_DCT_COEFFS]> {
 
 // Trinity payload: gate weights (16*3=48 f32) + gate bias (3 f32) + reflex i8 (32*3=96)
 pub const TRINITY_GATE_FLOATS: usize = 16 * 3 + 3; // 51
-pub const TRINITY_REFLEX_BYTES: usize = 32 * 3;    // 96
+pub const TRINITY_REFLEX_BYTES: usize = 32 * 3; // 96
 pub const TRINITY_BYTES: usize = TRINITY_GATE_FLOATS * 4 + TRINITY_REFLEX_BYTES; // 300
 
 #[derive(Clone, Debug)]
@@ -321,30 +360,67 @@ impl TrinityWeights {
     pub fn to_bytes(&self) -> [u8; TRINITY_BYTES] {
         let mut out = [0u8; TRINITY_BYTES];
         let mut o = 0;
-        for &w in &self.gate_weights { out[o..o+4].copy_from_slice(&w.to_le_bytes()); o += 4; }
-        for &b in &self.gate_bias    { out[o..o+4].copy_from_slice(&b.to_le_bytes()); o += 4; }
-        for &w in &self.reflex_steer    { out[o] = w as u8; o += 1; }
-        for &w in &self.reflex_throttle { out[o] = w as u8; o += 1; }
-        for &w in &self.reflex_brake    { out[o] = w as u8; o += 1; }
+        for &w in &self.gate_weights {
+            out[o..o + 4].copy_from_slice(&w.to_le_bytes());
+            o += 4;
+        }
+        for &b in &self.gate_bias {
+            out[o..o + 4].copy_from_slice(&b.to_le_bytes());
+            o += 4;
+        }
+        for &w in &self.reflex_steer {
+            out[o] = w as u8;
+            o += 1;
+        }
+        for &w in &self.reflex_throttle {
+            out[o] = w as u8;
+            o += 1;
+        }
+        for &w in &self.reflex_brake {
+            out[o] = w as u8;
+            o += 1;
+        }
         out
     }
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < TRINITY_BYTES { return None; }
+        if buf.len() < TRINITY_BYTES {
+            return None;
+        }
         let mut gate_weights = [0.0f32; 48];
         let mut gate_bias = [0.0f32; 3];
         let mut reflex_steer = [0i8; 32];
         let mut reflex_throttle = [0i8; 32];
         let mut reflex_brake = [0i8; 32];
         let mut o = 0;
-        for w in gate_weights.iter_mut() { *w = f32::from_le_bytes(buf[o..o+4].try_into().ok()?); o += 4; }
-        for b in gate_bias.iter_mut()    { *b = f32::from_le_bytes(buf[o..o+4].try_into().ok()?); o += 4; }
-        for w in reflex_steer.iter_mut()    { *w = buf[o] as i8; o += 1; }
-        for w in reflex_throttle.iter_mut() { *w = buf[o] as i8; o += 1; }
-        for w in reflex_brake.iter_mut()    { *w = buf[o] as i8; o += 1; }
-        Some(Self { gate_weights, gate_bias, reflex_steer, reflex_throttle, reflex_brake })
+        for w in gate_weights.iter_mut() {
+            *w = f32::from_le_bytes(buf[o..o + 4].try_into().ok()?);
+            o += 4;
+        }
+        for b in gate_bias.iter_mut() {
+            *b = f32::from_le_bytes(buf[o..o + 4].try_into().ok()?);
+            o += 4;
+        }
+        for w in reflex_steer.iter_mut() {
+            *w = buf[o] as i8;
+            o += 1;
+        }
+        for w in reflex_throttle.iter_mut() {
+            *w = buf[o] as i8;
+            o += 1;
+        }
+        for w in reflex_brake.iter_mut() {
+            *w = buf[o] as i8;
+            o += 1;
+        }
+        Some(Self {
+            gate_weights,
+            gate_bias,
+            reflex_steer,
+            reflex_throttle,
+            reflex_brake,
+        })
     }
 }
-
 
 // ============================================================================
 // TIER 6.4 LITE — HYPERNETWORK GENOME (smallest viable slice)
@@ -386,7 +462,9 @@ pub fn default_kan_knots() -> [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS]
     crate::kan::KanOutputHead::new().knots
 }
 
-pub fn kan_knots_to_bytes(knots: &[[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS]) -> [u8; KAN_KNOTS_BYTES] {
+pub fn kan_knots_to_bytes(
+    knots: &[[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
+) -> [u8; KAN_KNOTS_BYTES] {
     let mut out = [0u8; KAN_KNOTS_BYTES];
     for o in 0..KAN_KNOTS_OUTS {
         for k in 0..KAN_KNOTS_PER_OUT {
@@ -397,14 +475,22 @@ pub fn kan_knots_to_bytes(knots: &[[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_O
     out
 }
 
-pub fn kan_knots_from_bytes(buf: &[u8]) -> Option<[[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS]> {
-    if buf.len() < KAN_KNOTS_BYTES { return None; }
+pub fn kan_knots_from_bytes(
+    buf: &[u8],
+) -> Option<[[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS]> {
+    if buf.len() < KAN_KNOTS_BYTES {
+        return None;
+    }
     let mut knots = [[0.0f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS];
     for o in 0..KAN_KNOTS_OUTS {
         for k in 0..KAN_KNOTS_PER_OUT {
             let off = (o * KAN_KNOTS_PER_OUT + k) * 4;
             let v = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
-            knots[o][k] = if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 };
+            knots[o][k] = if v.is_finite() {
+                v.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
         }
     }
     Some(knots)
@@ -418,7 +504,10 @@ pub struct HypernetSeed {
 
 impl Default for HypernetSeed {
     fn default() -> Self {
-        Self { coeffs: [0.0; HYPERNET_COEFFS], active: false }
+        Self {
+            coeffs: [0.0; HYPERNET_COEFFS],
+            active: false,
+        }
     }
 }
 
@@ -435,10 +524,14 @@ impl HypernetSeed {
     }
 
     pub fn from_le_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < HYPERNET_BYTES { return None; }
+        if buf.len() < HYPERNET_BYTES {
+            return None;
+        }
         let active = buf[0] != 0;
         let len = u32::from_le_bytes(buf[1..5].try_into().ok()?) as usize;
-        if len != HYPERNET_COEFFS { return None; }
+        if len != HYPERNET_COEFFS {
+            return None;
+        }
         let mut coeffs = [0.0f32; HYPERNET_COEFFS];
         for i in 0..HYPERNET_COEFFS {
             let off = 5 + i * 4;
@@ -456,9 +549,13 @@ impl HypernetSeed {
             let b = self.coeffs[(i.wrapping_mul(7)) % HYPERNET_COEFFS];
             let phase = a * (i as f32 / HYPERNET_EXPAND_SIZE as f32) * std::f32::consts::PI;
             let w = phase.sin() * b;
-            out[i] = if w > HYPERNET_TERNARY_THRESH { 1 }
-                     else if w < -HYPERNET_TERNARY_THRESH { -1 }
-                     else { 0 };
+            out[i] = if w > HYPERNET_TERNARY_THRESH {
+                1
+            } else if w < -HYPERNET_TERNARY_THRESH {
+                -1
+            } else {
+                0
+            };
         }
         out
     }
@@ -477,7 +574,9 @@ impl HypernetSeed {
         if self.active {
             for c in self.coeffs.iter_mut() {
                 *c += gauss(&mut rng01) * HYPERNET_SIGMA;
-                if !c.is_finite() { *c = 0.0; }
+                if !c.is_finite() {
+                    *c = 0.0;
+                }
             }
         }
     }
@@ -488,7 +587,7 @@ pub struct DnaPayload {
     pub fast_scale: f32,
     pub slow_weights: Option<Vec<i8>>,
     pub slow_scale: f32,
-    
+
     pub generation: u32,
     pub seed: u32,
     pub track_width: f32,
@@ -527,8 +626,16 @@ pub fn save_champion_dna(
     fitness: f32,
 ) -> std::io::Result<()> {
     save_champion_dna_with_morpho(
-        path, fast_weights, fast_scale, slow_weights, slow_scale,
-        generation, seed, track_width, fitness, MorphoGenes::default(),
+        path,
+        fast_weights,
+        fast_scale,
+        slow_weights,
+        slow_scale,
+        generation,
+        seed,
+        track_width,
+        fitness,
+        MorphoGenes::default(),
     )
 }
 
@@ -545,8 +652,17 @@ pub fn save_champion_dna_with_morpho(
     morpho: MorphoGenes,
 ) -> std::io::Result<()> {
     save_champion_dna_full(
-        path, fast_weights, fast_scale, slow_weights, slow_scale,
-        generation, seed, track_width, fitness, morpho, HypernetSeed::default(),
+        path,
+        fast_weights,
+        fast_scale,
+        slow_weights,
+        slow_scale,
+        generation,
+        seed,
+        track_width,
+        fitness,
+        morpho,
+        HypernetSeed::default(),
         default_kan_knots(),
     )
 }
@@ -566,8 +682,19 @@ pub fn save_champion_dna_full(
     kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
 ) -> std::io::Result<()> {
     save_champion_dna_v5(
-        path, fast_weights, fast_scale, slow_weights, slow_scale,
-        generation, seed, track_width, fitness, morpho, hypernet, kan_knots, None,
+        path,
+        fast_weights,
+        fast_scale,
+        slow_weights,
+        slow_scale,
+        generation,
+        seed,
+        track_width,
+        fitness,
+        morpho,
+        hypernet,
+        kan_knots,
+        None,
     )
 }
 
@@ -588,8 +715,23 @@ pub fn save_champion_dna_v5(
     kan_knots: [[f32; crate::kan::KAN_OUT_KNOTS]; KAN_KNOTS_OUTS],
     trinity: Option<&TrinityWeights>,
 ) -> std::io::Result<()> {
-    save_champion_dna_v7(path, fast_weights, fast_scale, slow_weights, slow_scale,
-        generation, seed, track_width, fitness, morpho, hypernet, kan_knots, trinity, None, None)
+    save_champion_dna_v7(
+        path,
+        fast_weights,
+        fast_scale,
+        slow_weights,
+        slow_scale,
+        generation,
+        seed,
+        track_width,
+        fitness,
+        morpho,
+        hypernet,
+        kan_knots,
+        trinity,
+        None,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -616,7 +758,7 @@ pub fn save_champion_dna_v7(
         slow_weights,
         generation,
         fitness,
-        Sap::default()
+        Sap::default(),
     );
 
     // 2. Cria o chunk META exclusivo do Universo para conter seed, scales, track e morpho
@@ -639,11 +781,17 @@ pub fn save_champion_dna_v7(
 
     // CRAW chunk (cortex raw i8) — bypass compress_organism's ternary quantization
     // que destruía f32 weights. Esta é a fonte de verdade do cortex L1.
-    payload.add_chunk(Chunk::new(*TAG_CORTEX_RAW, fast_weights.iter().map(|&b| b as u8).collect()));
+    payload.add_chunk(Chunk::new(
+        *TAG_CORTEX_RAW,
+        fast_weights.iter().map(|&b| b as u8).collect(),
+    ));
 
     // CL2W chunk (cortex layer 2, NOVO V7).
     if let Some(l2) = cortex_l2 {
-        payload.add_chunk(Chunk::new(*TAG_CORTEX_L2, l2.iter().map(|&b| b as u8).collect()));
+        payload.add_chunk(Chunk::new(
+            *TAG_CORTEX_L2,
+            l2.iter().map(|&b| b as u8).collect(),
+        ));
     }
 
     // SLWF chunk (slow_brain raw f32) — bypass Tree/sparse::compress ternary clamp.
@@ -662,14 +810,17 @@ pub fn save_champion_dna_v7(
     {
         let cortex_f32: Vec<f32> = fast_weights.iter().map(|&w| w as f32 / 63.5).collect();
         let dct = cortex_to_dct(&cortex_f32);
-        payload.add_chunk(Chunk::new(*TAG_CORTEX_EQ, dct_coeffs_to_bytes(&dct).to_vec()));
+        payload.add_chunk(Chunk::new(
+            *TAG_CORTEX_EQ,
+            dct_coeffs_to_bytes(&dct).to_vec(),
+        ));
     }
 
     // 3. Escreve no disco (Header V4 minimalista)
     let mut file = File::create(path)?;
     file.write_all(DNA_MAGIC)?; // "IARA"
     file.write_all(&DNA_VERSION.to_le_bytes())?; // 4
-    
+
     // Escreve todo o envelope generativo TLV
     file.write_all(&payload.to_bytes())?;
 
@@ -688,18 +839,23 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             // Desserializa o payload TLV a partir do byte 6
             if let Some(payload) = GenesisPayload::from_bytes(&buf[6..]) {
                 // Recupera os pesos biológicos
-                if let Some((fast_weights, slow, generation, fitness)) = decompress_organism(&payload) {
+                if let Some((fast_weights, slow, generation, fitness)) =
+                    decompress_organism(&payload)
+                {
                     let slow_weights = if slow.is_empty() { None } else { Some(slow) };
-                    
+
                     // Recupera metadados do Universo
                     if let Some(meta_chunk) = payload.find_chunk(TAG_META_UNIVERSE) {
                         let meta_buf = &meta_chunk.data;
                         if meta_buf.len() >= 16 {
                             let seed = u32::from_le_bytes(meta_buf[0..4].try_into().unwrap());
-                            let track_width = f32::from_le_bytes(meta_buf[4..8].try_into().unwrap());
-                            let fast_scale = f32::from_le_bytes(meta_buf[8..12].try_into().unwrap());
-                            let slow_scale = f32::from_le_bytes(meta_buf[12..16].try_into().unwrap());
-                            
+                            let track_width =
+                                f32::from_le_bytes(meta_buf[4..8].try_into().unwrap());
+                            let fast_scale =
+                                f32::from_le_bytes(meta_buf[8..12].try_into().unwrap());
+                            let slow_scale =
+                                f32::from_le_bytes(meta_buf[12..16].try_into().unwrap());
+
                             // Morpho (offset 16..32 se existir, senao default)
                             let morpho = if meta_buf.len() >= 32 {
                                 MorphoGenes::from_le_bytes(&meta_buf[16..32]).unwrap_or_default()
@@ -709,7 +865,8 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
 
                             // Hypernet (offset 32..292 se existir, senao default)
                             let hypernet = if meta_buf.len() >= 32 + HYPERNET_BYTES {
-                                HypernetSeed::from_le_bytes(&meta_buf[32..32 + HYPERNET_BYTES]).unwrap_or_default()
+                                HypernetSeed::from_le_bytes(&meta_buf[32..32 + HYPERNET_BYTES])
+                                    .unwrap_or_default()
                             } else {
                                 HypernetSeed::default()
                             };
@@ -717,37 +874,57 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
                             // KAN knots (offset 292..436 se existir; default tanh ramp caso contrário)
                             let knots_start = 32 + HYPERNET_BYTES;
                             let kan_knots = if meta_buf.len() >= knots_start + KAN_KNOTS_BYTES {
-                                kan_knots_from_bytes(&meta_buf[knots_start..knots_start + KAN_KNOTS_BYTES])
-                                    .unwrap_or_else(default_kan_knots)
+                                kan_knots_from_bytes(
+                                    &meta_buf[knots_start..knots_start + KAN_KNOTS_BYTES],
+                                )
+                                .unwrap_or_else(default_kan_knots)
                             } else {
                                 default_kan_knots()
                             };
 
                             // Trinity chunk (opcional, ausente em DNAs antigos).
-                            let trinity = payload.find_chunk(TAG_TRINITY)
+                            let trinity = payload
+                                .find_chunk(TAG_TRINITY)
                                 .and_then(|c| TrinityWeights::from_bytes(&c.data));
                             // CEQU chunk (cortex equation, opcional).
-                            let cortex_dct = payload.find_chunk(TAG_CORTEX_EQ)
+                            let cortex_dct = payload
+                                .find_chunk(TAG_CORTEX_EQ)
                                 .and_then(|c| dct_coeffs_from_bytes(&c.data));
                             // CRAW chunk (cortex raw i8) — bypass compress_organism ternary.
-                            let cortex_raw: Option<Vec<i8>> = payload.find_chunk(TAG_CORTEX_RAW)
+                            let cortex_raw: Option<Vec<i8>> = payload
+                                .find_chunk(TAG_CORTEX_RAW)
                                 .map(|c| c.data.iter().map(|&b| b as i8).collect());
                             // CL2W chunk (V7): cortex layer 2 weights raw i8 (64×32=2048).
-                            let cortex_l2_raw: Option<Vec<i8>> = payload.find_chunk(TAG_CORTEX_L2)
+                            let cortex_l2_raw: Option<Vec<i8>> = payload
+                                .find_chunk(TAG_CORTEX_L2)
                                 .map(|c| c.data.iter().map(|&b| b as i8).collect());
                             // SLWF chunk: slow_brain raw f32 (lossless, bypass ternary).
-                            let slow_f32: Option<Vec<f32>> = payload.find_chunk(TAG_SLOW_F32)
-                                .and_then(|c| {
-                                    if c.data.len() % 4 != 0 { return None; }
-                                    Some(c.data.chunks_exact(4)
-                                        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-                                        .collect())
+                            let slow_f32: Option<Vec<f32>> =
+                                payload.find_chunk(TAG_SLOW_F32).and_then(|c| {
+                                    if c.data.len() % 4 != 0 {
+                                        return None;
+                                    }
+                                    Some(
+                                        c.data
+                                            .chunks_exact(4)
+                                            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                                            .collect(),
+                                    )
                                 });
                             return Some(DnaPayload {
-                car_model_idx: 0,
-                                fast_weights, fast_scale,
-                                slow_weights, slow_scale,
-                                generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
+                                car_model_idx: 0,
+                                fast_weights,
+                                fast_scale,
+                                slow_weights,
+                                slow_scale,
+                                generation,
+                                seed,
+                                track_width,
+                                fitness,
+                                version,
+                                morpho,
+                                hypernet,
+                                kan_knots,
                                 trinity,
                                 cortex_dct,
                                 cortex_raw,
@@ -775,48 +952,68 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
             let slow_scale_raw = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
             let slow_start = fast_end + 4;
 
-        let slow_end = slow_start + DNA_SLOW_SIZE_LEGACY;
-        if buf.len() < slow_end { return None; }
-        let slow_weights: Vec<i8> = buf[slow_start..slow_end].iter().map(|&b| b as i8).collect();
-        // SANITIZAÇÃO: DNAs antigos podem ter scales astronômicos (bug myelinate
-        // sem cap pré-fix). Clamp em [1e-4, 10] — valores fora disso indicam
-        // corrupção runtime, não pesos válidos. Força recalibração na próxima
-        // quantize() via abs_mean dos pesos ternários.
-        let fast_scale = if fast_scale_raw.is_finite() { fast_scale_raw.clamp(1e-4, 10.0) } else { 1.0 };
-        let slow_scale = if slow_scale_raw.is_finite() { slow_scale_raw.clamp(1e-4, 10.0) } else { 1.0 };
-        // --- Tier 6.3 LITE: tail opcional de morpho (backward-compat c/ v3 antigo) ---
-        let morpho = if buf.len() >= slow_end + MORPHO_BYTES {
-            MorphoGenes::from_le_bytes(&buf[slow_end..slow_end + MORPHO_BYTES])
-                .unwrap_or_default()
-        } else {
-            MorphoGenes::default()
-        };
-        // --- Tier 6.4 LITE: tail opcional de hypernet (backward-compat) ---
-        let hypernet_start = slow_end + MORPHO_BYTES;
-        let hypernet = if buf.len() >= hypernet_start + HYPERNET_BYTES {
-            HypernetSeed::from_le_bytes(&buf[hypernet_start..hypernet_start + HYPERNET_BYTES])
-                .unwrap_or_default()
-        } else {
-            HypernetSeed::default()
-        };
-        let knots_start = hypernet_start + HYPERNET_BYTES;
-        let kan_knots = if buf.len() >= knots_start + KAN_KNOTS_BYTES {
-            kan_knots_from_bytes(&buf[knots_start..knots_start + KAN_KNOTS_BYTES])
-                .unwrap_or_else(default_kan_knots)
-        } else {
-            default_kan_knots()
-        };
-        return Some(DnaPayload {
+            let slow_end = slow_start + DNA_SLOW_SIZE_LEGACY;
+            if buf.len() < slow_end {
+                return None;
+            }
+            let slow_weights: Vec<i8> =
+                buf[slow_start..slow_end].iter().map(|&b| b as i8).collect();
+            // SANITIZAÇÃO: DNAs antigos podem ter scales astronômicos (bug myelinate
+            // sem cap pré-fix). Clamp em [1e-4, 10] — valores fora disso indicam
+            // corrupção runtime, não pesos válidos. Força recalibração na próxima
+            // quantize() via abs_mean dos pesos ternários.
+            let fast_scale = if fast_scale_raw.is_finite() {
+                fast_scale_raw.clamp(1e-4, 10.0)
+            } else {
+                1.0
+            };
+            let slow_scale = if slow_scale_raw.is_finite() {
+                slow_scale_raw.clamp(1e-4, 10.0)
+            } else {
+                1.0
+            };
+            // --- Tier 6.3 LITE: tail opcional de morpho (backward-compat c/ v3 antigo) ---
+            let morpho = if buf.len() >= slow_end + MORPHO_BYTES {
+                MorphoGenes::from_le_bytes(&buf[slow_end..slow_end + MORPHO_BYTES])
+                    .unwrap_or_default()
+            } else {
+                MorphoGenes::default()
+            };
+            // --- Tier 6.4 LITE: tail opcional de hypernet (backward-compat) ---
+            let hypernet_start = slow_end + MORPHO_BYTES;
+            let hypernet = if buf.len() >= hypernet_start + HYPERNET_BYTES {
+                HypernetSeed::from_le_bytes(&buf[hypernet_start..hypernet_start + HYPERNET_BYTES])
+                    .unwrap_or_default()
+            } else {
+                HypernetSeed::default()
+            };
+            let knots_start = hypernet_start + HYPERNET_BYTES;
+            let kan_knots = if buf.len() >= knots_start + KAN_KNOTS_BYTES {
+                kan_knots_from_bytes(&buf[knots_start..knots_start + KAN_KNOTS_BYTES])
+                    .unwrap_or_else(default_kan_knots)
+            } else {
+                default_kan_knots()
+            };
+            return Some(DnaPayload {
                 car_model_idx: 0,
-            fast_weights, fast_scale,
-            slow_weights: Some(slow_weights), slow_scale,
-            generation, seed, track_width, fitness, version, morpho, hypernet, kan_knots,
-            trinity: None,
-            cortex_dct: None,
-            cortex_raw: None,
-            cortex_l2_raw: None,
-            slow_f32: None,
-        });
+                fast_weights,
+                fast_scale,
+                slow_weights: Some(slow_weights),
+                slow_scale,
+                generation,
+                seed,
+                track_width,
+                fitness,
+                version,
+                morpho,
+                hypernet,
+                kan_knots,
+                trinity: None,
+                cortex_dct: None,
+                cortex_raw: None,
+                cortex_l2_raw: None,
+                slow_f32: None,
+            });
         }
     }
 
@@ -825,18 +1022,28 @@ pub fn load_champion_dna(path: &str) -> Option<DnaPayload> {
         let fast_scale = f32::from_le_bytes(buf[0..4].try_into().ok()?);
         let fast_end = 4 + DNA_FAST_SIZE_LEGACY;
         let fast_weights: Vec<i8> = buf[4..fast_end].iter().map(|&b| b as i8).collect();
-        let (slow_weights, slow_scale, version) = if buf.len() >= fast_end + 4 + DNA_SLOW_SIZE_LEGACY {
-            let ss = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
-            let sw: Vec<i8> = buf[fast_end + 4..fast_end + 4 + DNA_SLOW_SIZE_LEGACY].iter().map(|&b| b as i8).collect();
-            (Some(sw), ss, 2u16)
-        } else {
-            (None, 1.0, 1u16)
-        };
+        let (slow_weights, slow_scale, version) =
+            if buf.len() >= fast_end + 4 + DNA_SLOW_SIZE_LEGACY {
+                let ss = f32::from_le_bytes(buf[fast_end..fast_end + 4].try_into().ok()?);
+                let sw: Vec<i8> = buf[fast_end + 4..fast_end + 4 + DNA_SLOW_SIZE_LEGACY]
+                    .iter()
+                    .map(|&b| b as i8)
+                    .collect();
+                (Some(sw), ss, 2u16)
+            } else {
+                (None, 1.0, 1u16)
+            };
         return Some(DnaPayload {
-                car_model_idx: 0,
-            fast_weights, fast_scale,
-            slow_weights, slow_scale,
-            generation: 0, seed: 0, track_width: 0.0, fitness: 0.0, version,
+            car_model_idx: 0,
+            fast_weights,
+            fast_scale,
+            slow_weights,
+            slow_scale,
+            generation: 0,
+            seed: 0,
+            track_width: 0.0,
+            fitness: 0.0,
+            version,
             morpho: MorphoGenes::default(),
             hypernet: HypernetSeed::default(),
             kan_knots: default_kan_knots(),
@@ -860,16 +1067,25 @@ mod tests {
     fn dct_roundtrip_smooth_signal() {
         // Smooth f(i) = sin(2πi/N) + 0.5*cos(4πi/N) — should reconstruct accurately.
         let n = CORTEX_FULL_SIZE;
-        let original: Vec<f32> = (0..n).map(|i| {
-            let t = i as f32 / n as f32;
-            (2.0 * std::f32::consts::PI * t).sin() + 0.5 * (4.0 * std::f32::consts::PI * t).cos()
-        }).collect();
+        let original: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / n as f32;
+                (2.0 * std::f32::consts::PI * t).sin()
+                    + 0.5 * (4.0 * std::f32::consts::PI * t).cos()
+            })
+            .collect();
         let coeffs = cortex_to_dct(&original);
         let recovered = cortex_from_dct(&coeffs);
-        let max_err = original.iter().zip(recovered.iter())
+        let max_err = original
+            .iter()
+            .zip(recovered.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
-        assert!(max_err < 0.01, "smooth round-trip max err {} too high", max_err);
+        assert!(
+            max_err < 0.01,
+            "smooth round-trip max err {} too high",
+            max_err
+        );
     }
 
     #[test]
@@ -882,16 +1098,23 @@ mod tests {
         let original: Vec<f32> = (0..n).map(|_| r.symmetric()).collect();
         let coeffs = cortex_to_dct(&original);
         let recovered = cortex_from_dct(&coeffs);
-        let mse = original.iter().zip(recovered.iter())
+        let mse = original
+            .iter()
+            .zip(recovered.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / n as f32;
+            .sum::<f32>()
+            / n as f32;
         // Random signal lossy 32× → MSE ~ var × (1 - K/N) = 0.33 × 0.97 ≈ 0.32
         assert!(mse < 0.4, "random-signal MSE {} unreasonable", mse);
     }
 
     fn sample_weights(offset: i8) -> (Vec<i8>, Vec<i8>) {
-        let fast: Vec<i8> = (0..DNA_FAST_SIZE).map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
-        let slow: Vec<i8> = (0..DNA_SLOW_SIZE).map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
+        let fast: Vec<i8> = (0..DNA_FAST_SIZE)
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8)
+            .collect();
+        let slow: Vec<i8> = (0..DNA_SLOW_SIZE)
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8)
+            .collect();
         (fast, slow)
     }
 
@@ -904,9 +1127,11 @@ mod tests {
     /// já usa `DNA_FAST_SIZE_LEGACY`.
     fn sample_weights_legacy(offset: i8) -> (Vec<i8>, Vec<i8>) {
         let fast: Vec<i8> = (0..DNA_FAST_SIZE_LEGACY)
-            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8)
+            .collect();
         let slow: Vec<i8> = (0..DNA_SLOW_SIZE_LEGACY)
-            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8).collect();
+            .map(|i| (((i as i32 + offset as i32) % 3) - 1) as i8)
+            .collect();
         (fast, slow)
     }
 
@@ -935,9 +1160,11 @@ mod tests {
         let path = std::env::temp_dir().join("iara_test_v2_genesis.dna");
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(&0.5_f32.to_le_bytes()).unwrap();
-        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         f.write_all(&0.25_f32.to_le_bytes()).unwrap();
-        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         drop(f);
         let loaded = load_champion_dna(path.to_str().unwrap()).expect("v2 must load");
         assert_eq!(loaded.version, 2);
@@ -958,7 +1185,10 @@ mod tests {
     #[test]
     fn v3_total_size_matches_layout() {
         // Verifica consistencia v3 legacy (usando os layouts legacy):
-        assert_eq!(DNA_V3_TOTAL, 4 + 2 + 4 + 4 + 4 + 4 + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY);
+        assert_eq!(
+            DNA_V3_TOTAL,
+            4 + 2 + 4 + 4 + 4 + 4 + 4 + DNA_FAST_SIZE_LEGACY + 4 + DNA_SLOW_SIZE_LEGACY
+        );
         assert_eq!(DNA_V31_TOTAL, DNA_V3_TOTAL + MORPHO_BYTES);
     }
 
@@ -967,8 +1197,14 @@ mod tests {
         let (fast, slow) = sample_weights(2);
         let path = std::env::temp_dir().join("iara_test_v31_v4_morpho.dna");
         let path_s = path.to_str().unwrap();
-        let morpho = MorphoGenes { mass: 1234.5, wheelbase: 2.1, downforce: 1.7, grip_mult: 0.9 };
-        save_champion_dna_with_morpho(path_s, &fast, 0.1, &slow, 0.2, 1, 2, 10.0, 50.0, morpho).unwrap();
+        let morpho = MorphoGenes {
+            mass: 1234.5,
+            wheelbase: 2.1,
+            downforce: 1.7,
+            grip_mult: 0.9,
+        };
+        save_champion_dna_with_morpho(path_s, &fast, 0.1, &slow, 0.2, 1, 2, 10.0, 50.0, morpho)
+            .unwrap();
         let meta = std::fs::metadata(&path).unwrap();
         // Em V4 (Generative Compression) file size vai variar baseado na entropia da sequência.
         assert!(meta.len() > 0);
@@ -982,7 +1218,12 @@ mod tests {
 
     #[test]
     fn morpho_sanitize_clamps_out_of_range() {
-        let wild = MorphoGenes { mass: 9000.0, wheelbase: 0.1, downforce: -5.0, grip_mult: 99.0 };
+        let wild = MorphoGenes {
+            mass: 9000.0,
+            wheelbase: 0.1,
+            downforce: -5.0,
+            grip_mult: 99.0,
+        };
         let s = wild.sanitized();
         assert!(s.mass <= MORPHO_MASS_MAX && s.mass >= MORPHO_MASS_MIN);
         assert!(s.wheelbase <= MORPHO_WHEELBASE_MAX && s.wheelbase >= MORPHO_WHEELBASE_MIN);
@@ -1003,9 +1244,11 @@ mod tests {
         f.write_all(&12.0_f32.to_le_bytes()).unwrap();
         f.write_all(&42.0_f32.to_le_bytes()).unwrap();
         f.write_all(&0.3_f32.to_le_bytes()).unwrap();
-        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&fast.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         f.write_all(&0.4_f32.to_le_bytes()).unwrap();
-        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>()).unwrap();
+        f.write_all(&slow.iter().map(|&w| w as u8).collect::<Vec<u8>>())
+            .unwrap();
         drop(f);
         let meta = std::fs::metadata(&path).unwrap();
         assert_eq!(meta.len() as usize, DNA_V3_TOTAL);
@@ -1029,14 +1272,31 @@ mod tests {
             }
         }
         save_champion_dna_full(
-            path_s, &fast, 0.5, &slow, 0.25, 10, 20, 14.0, 777.0,
-            MorphoGenes::default(), HypernetSeed::default(), knots,
-        ).unwrap();
+            path_s,
+            &fast,
+            0.5,
+            &slow,
+            0.25,
+            10,
+            20,
+            14.0,
+            777.0,
+            MorphoGenes::default(),
+            HypernetSeed::default(),
+            knots,
+        )
+        .unwrap();
         let loaded = load_champion_dna(path_s).expect("v4 kan round trip");
         for o in 0..3 {
             for k in 0..crate::kan::KAN_OUT_KNOTS {
-                assert!((loaded.kan_knots[o][k] - knots[o][k]).abs() < 1e-5,
-                    "knot mismatch at [{}][{}]: {} vs {}", o, k, loaded.kan_knots[o][k], knots[o][k]);
+                assert!(
+                    (loaded.kan_knots[o][k] - knots[o][k]).abs() < 1e-5,
+                    "knot mismatch at [{}][{}]: {} vs {}",
+                    o,
+                    k,
+                    loaded.kan_knots[o][k],
+                    knots[o][k]
+                );
             }
         }
         let _ = std::fs::remove_file(path);
@@ -1049,8 +1309,18 @@ mod tests {
         let path = std::env::temp_dir().join("iara_test_v4_no_knots.dna");
         let path_s = path.to_str().unwrap();
         save_champion_dna_with_morpho(
-            path_s, &fast, 0.1, &slow, 0.2, 1, 2, 10.0, 50.0, MorphoGenes::default(),
-        ).unwrap();
+            path_s,
+            &fast,
+            0.1,
+            &slow,
+            0.2,
+            1,
+            2,
+            10.0,
+            50.0,
+            MorphoGenes::default(),
+        )
+        .unwrap();
         let loaded = load_champion_dna(path_s).expect("must load");
         let def = default_kan_knots();
         for o in 0..3 {

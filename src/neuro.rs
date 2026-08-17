@@ -61,8 +61,8 @@
 //! ./target/release/universe-lab --spec lab_specs/alocacao.json --gens 30
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// As vias do cérebro que podem ser desligadas independentemente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,10 +123,21 @@ pub enum Via {
 
 /// As 15 sinapses do priming esparso (`spawn.rs:64-90`), como (neurônio, canal).
 pub const PRIMING: [(usize, usize); 15] = [
-    (0, 64), (0, 79), (0, 78),                                   // acelerador
-    (1, 80), (1, 32), (1, 79), (1, 78), (1, 20), (1, 81),        // esterço
-    (1, 90), (1, 91), (1, 92), (1, 93),                          // rastreador de asfalto
-    (2, 79), (2, 78),                                            // freio
+    (0, 64),
+    (0, 79),
+    (0, 78), // acelerador
+    (1, 80),
+    (1, 32),
+    (1, 79),
+    (1, 78),
+    (1, 20),
+    (1, 81), // esterço
+    (1, 90),
+    (1, 91),
+    (1, 92),
+    (1, 93), // rastreador de asfalto
+    (2, 79),
+    (2, 78), // freio
 ];
 
 /// Zera as sinapses do priming, se a ablação pedir. Chamado uma vez, quando o cérebro é
@@ -331,7 +342,9 @@ pub const FRACAO_EXPLORADORA_PADRAO: f32 = 0.50;
 
 #[inline]
 pub fn fracao_exploradora() -> f32 {
-    *FRACAO_EXPLORADORA.get().unwrap_or(&FRACAO_EXPLORADORA_PADRAO)
+    *FRACAO_EXPLORADORA
+        .get()
+        .unwrap_or(&FRACAO_EXPLORADORA_PADRAO)
 }
 
 static ABLADA: OnceLock<Via> = OnceLock::new();
@@ -384,7 +397,11 @@ pub fn uso_medio() -> ([f32; 3], u64, u64) {
         (USO[1].load(Ordering::Relaxed) as f64 / ESCALA / n as f64) as f32,
         (USO[2].load(Ordering::Relaxed) as f64 / ESCALA / n as f64) as f32,
     ];
-    (m, USO_N.load(Ordering::Relaxed), VETOS.load(Ordering::Relaxed))
+    (
+        m,
+        USO_N.load(Ordering::Relaxed),
+        VETOS.load(Ordering::Relaxed),
+    )
 }
 
 pub fn zerar_uso() {
@@ -476,7 +493,6 @@ pub fn canal_nome(ch: usize) -> Option<&'static str> {
     })
 }
 
-
 /// Papel do neurônio de saída da camada 1. Os três primeiros são motores por construção
 /// (`spawn.rs`: recebem só o priming esparso); do 3 em diante são de característica.
 pub fn neuronio_papel(n: usize) -> &'static str {
@@ -526,8 +542,14 @@ mod testes_sentido {
     #[test]
     fn os_grupos_nao_se_sobrepoem_e_cobrem_o_que_dizem() {
         // sobreposição faria a soma dos custos de ablação contar canal duas vezes
-        let todos = [Sentido::Visao, Sentido::Curvatura, Sentido::Paredes,
-                     Sentido::PistaAFrente, Sentido::Corpo, Sentido::Movimento];
+        let todos = [
+            Sentido::Visao,
+            Sentido::Curvatura,
+            Sentido::Paredes,
+            Sentido::PistaAFrente,
+            Sentido::Corpo,
+            Sentido::Movimento,
+        ];
         let mut visto = std::collections::HashMap::new();
         for s in todos {
             for &(a, b) in s.faixas() {
@@ -558,7 +580,9 @@ mod testes_sentido {
         // exercita a função de faixas diretamente, que é o que decide o que some
         let mut onda = [42i8; 223];
         for &(a, b) in Sentido::Curvatura.faixas() {
-            for ch in a..=b { onda[ch] = 0; }
+            for ch in a..=b {
+                onda[ch] = 0;
+            }
         }
         assert_eq!(onda[79], 0, "curvatura a 70 m tinha de sumir");
         assert_eq!(onda[0], 42, "a retina não podia ser tocada");
@@ -596,10 +620,26 @@ mod testes_priming {
         for &(neu, ch) in PRIMING.iter() {
             pesos[neu * stride + ch] = 0.0;
         }
-        assert_eq!(pesos[2 * stride + 79], 0.0, "freio/curvatura 70 m tinha de sumir");
-        assert_eq!(pesos[0 * stride + 64], 0.0, "acelerador/fluxo tinha de sumir");
-        assert_eq!(pesos[1 * stride + 100], 1.0, "canal não primado não podia ser tocado");
-        assert_eq!(pesos[2 * stride + 64], 1.0, "canal 64 só é primado no neurônio 0");
+        assert_eq!(
+            pesos[2 * stride + 79],
+            0.0,
+            "freio/curvatura 70 m tinha de sumir"
+        );
+        assert_eq!(
+            pesos[0 * stride + 64],
+            0.0,
+            "acelerador/fluxo tinha de sumir"
+        );
+        assert_eq!(
+            pesos[1 * stride + 100],
+            1.0,
+            "canal não primado não podia ser tocado"
+        );
+        assert_eq!(
+            pesos[2 * stride + 64],
+            1.0,
+            "canal 64 só é primado no neurônio 0"
+        );
         assert_eq!(pesos.iter().filter(|&&w| w == 0.0).count(), 15);
     }
 }
@@ -612,8 +652,16 @@ mod testes_nascimento {
     fn a_quantidade_de_conexoes_bate_com_o_priming() {
         // o modo "esparso aleatório" tem de dar aos motores a MESMA quantidade de conexões
         // do priming à mão — senão a comparação mede quantidade, não escolha de canal
-        assert_eq!(n_conexoes_motor(0), 3, "acelerador: fluxo + curvatura 70 + curvatura 40");
-        assert_eq!(n_conexoes_motor(1), 10, "esterço: 6 curvaturas/offset + 4 do asfalto");
+        assert_eq!(
+            n_conexoes_motor(0),
+            3,
+            "acelerador: fluxo + curvatura 70 + curvatura 40"
+        );
+        assert_eq!(
+            n_conexoes_motor(1),
+            10,
+            "esterço: 6 curvaturas/offset + 4 do asfalto"
+        );
         assert_eq!(n_conexoes_motor(2), 2, "freio: curvatura 70 e 40");
         assert_eq!(
             n_conexoes_motor(0) + n_conexoes_motor(1) + n_conexoes_motor(2),
@@ -624,7 +672,10 @@ mod testes_nascimento {
     #[test]
     fn de_str_reconhece_os_modos_e_cai_no_primado() {
         assert_eq!(Nascimento::de_str("esparso"), Nascimento::EsparsoAleatorio);
-        assert_eq!(Nascimento::de_str("independente"), Nascimento::EsparsoAleatorio);
+        assert_eq!(
+            Nascimento::de_str("independente"),
+            Nascimento::EsparsoAleatorio
+        );
         assert_eq!(Nascimento::de_str("denso"), Nascimento::Denso);
         assert_eq!(Nascimento::de_str(""), Nascimento::Primado);
         // grafia errada cai no comportamento ATUAL, não num modo experimental silencioso
@@ -639,10 +690,15 @@ mod testes_fracao {
     /// Réplica da aritmética de `spawn.rs`, para poder testá-la sem montar o mundo.
     fn faixa(i: usize, n_pop: usize, frac: f32) -> &'static str {
         let ini = ((1.0 - frac) * n_pop as f32) as usize;
-        if i >= ini { "explora" }
-        else if i * 2 >= ini { "medio" }
-        else if i * 6 >= ini { "pequeno" }
-        else { "clone" }
+        if i >= ini {
+            "explora"
+        } else if i * 2 >= ini {
+            "medio"
+        } else if i * 6 >= ini {
+            "pequeno"
+        } else {
+            "clone"
+        }
     }
 
     #[test]
@@ -664,7 +720,11 @@ mod testes_fracao {
     fn fracao_menor_encolhe_a_faixa_destrutiva() {
         let n = 60;
         let n_explora = |f: f32| (0..n).filter(|&i| faixa(i, n, f) == "explora").count();
-        assert_eq!(n_explora(0.50), 30, "o padrão sacrifica metade da população");
+        assert_eq!(
+            n_explora(0.50),
+            30,
+            "o padrão sacrifica metade da população"
+        );
         assert_eq!(n_explora(0.25), 15);
         assert_eq!(n_explora(0.10), 6);
         // e a ordem tem de ser monotônica — menos fração, menos exploradores
@@ -677,7 +737,11 @@ mod testes_fracao {
         // o slot 0 é o campeão puro (simple_elitism); ele NUNCA pode cair na faixa
         // destrutiva, senão a linhagem se perde a cada geração
         for f in [0.10f32, 0.25, 0.50, 0.75] {
-            assert_eq!(faixa(0, 60, f), "clone", "fração {f} pôs o slot 0 fora dos clones");
+            assert_eq!(
+                faixa(0, 60, f),
+                "clone",
+                "fração {f} pôs o slot 0 fora dos clones"
+            );
         }
     }
 }

@@ -1,3 +1,4 @@
+use std::fs::File;
 /// Sistema de replay quadro a quadro — formato único para motor.rs e cortex_evolve.
 ///
 /// # Formato binário `.replay`
@@ -32,10 +33,8 @@
 /// [5] brake_final      — idem
 /// [6] governor_delta   — |throttle_raw - throttle_final| (quanto o governor mudou)
 /// [7] sentinel_active  — 0.0 ou 1.0 (se sentinel hard-vetou neste frame)
-
-use std::io::{self, Read, Write, BufWriter};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
-use std::fs::File;
 
 // ── Constantes do formato ────────────────────────────────────────────────────
 
@@ -57,72 +56,72 @@ pub const FRAME_TAG: u8 = 0xFE;
 pub struct ReplayFrame {
     // --- Estado físico ---
     /// Posição mundo (x, y, z) em metros
-    pub pos:        [f32; 3],
+    pub pos: [f32; 3],
     /// Orientação (forward.x, forward.z) — 2D pois y sempre ~0
-    pub fwd:        [f32; 2],
+    pub fwd: [f32; 2],
     /// Velocidade escalar em m/s
-    pub speed:      f32,
+    pub speed: f32,
     /// Taxa de rotação yaw em rad/s
-    pub yaw_rate:   f32,
+    pub yaw_rate: f32,
     /// Progresso na pista em metros (arc-length)
-    pub arc_prog:   f32,
+    pub arc_prog: f32,
     /// Número de voltas completas
-    pub laps:       u16,
+    pub laps: u16,
     /// Marcha atual (0=neutro/ré, 1-6=marchas)
-    pub gear:       u8,
+    pub gear: u8,
     /// HP normalizado [0..127] onde 127 = HP_INICIAL
-    pub hp_norm:    u8,
+    pub hp_norm: u8,
     /// Combustível normalizado [0..127]
-    pub fuel_norm:  u8,
+    pub fuel_norm: u8,
     /// Tick absoluto desde início da geração
-    pub tick:       u32,
+    pub tick: u32,
 
     // --- Sensores de visão (distâncias em m, codificadas) ---
     /// Distância à parede esquerda em metros (cap 15m)
-    pub dist_wall_l:  f32,
+    pub dist_wall_l: f32,
     /// Distância à parede direita em metros
-    pub dist_wall_r:  f32,
+    pub dist_wall_r: f32,
     /// Distância à parede frontal em metros (cap 30m)
-    pub dist_wall_f:  f32,
+    pub dist_wall_f: f32,
     /// Curvatura 40m à frente — signed [-1..1] (positivo = curva direita)
-    pub curv_40m:     f32,
+    pub curv_40m: f32,
     /// Curvatura 70m à frente
-    pub curv_70m:     f32,
+    pub curv_70m: f32,
     /// Curvatura 120m à frente
-    pub curv_120m:    f32,
+    pub curv_120m: f32,
     /// Alinhamento com o fluxo da pista [-1..1] (1 = perfeitamente alinhado)
-    pub flow_align:   f32,
+    pub flow_align: f32,
     /// Offset lateral da racing-line em metros (positivo = à esquerda da linha)
-    pub line_offset:  f32,
+    pub line_offset: f32,
 
     // --- Intent do cérebro (cru, antes de governor/sentinel) ---
     /// Throttle bruto [-1..1]
-    pub intent_thr:   f32,
+    pub intent_thr: f32,
     /// Steer bruto [-1..1]
-    pub intent_str:   f32,
+    pub intent_str: f32,
     /// Brake bruto [0..1]
-    pub intent_brk:   f32,
+    pub intent_brk: f32,
 
     // --- Comando final aplicado na física ---
     /// Throttle final (após KAN, governor, sentinel, ECAS)
-    pub final_thr:    f32,
+    pub final_thr: f32,
     /// Steer final
-    pub final_str:    f32,
+    pub final_str: f32,
     /// Brake final
-    pub final_brk:    f32,
+    pub final_brk: f32,
 
     // --- Diagnóstico neural compacto ---
     /// Número de dimensões saturadas (|x|>0.95) no final_intent (0..96)
     pub dims_saturated: u8,
     /// Magnitude média do final_intent (quantizado 0..127)
-    pub intent_mag_q:   u8,
+    pub intent_mag_q: u8,
     /// Axiom strength neste tick quantizada [0..127]
-    pub axiom_str_q:    u8,
+    pub axiom_str_q: u8,
     /// Flags de safety: bit0=governor_ativo, bit1=sentinel_hard, bit2=ecas, bit3=reversing
-    pub safety_flags:   u8,
+    pub safety_flags: u8,
 
     // --- Retina compacta (8 fóvea + 8 periférica, i8) ---
-    pub retina_fov:  [i8; 8],
+    pub retina_fov: [i8; 8],
     pub retina_peri: [i8; 8],
 
     // --- Padding para 128 bytes ---
@@ -141,13 +140,13 @@ unsafe impl bytemuck::Zeroable for ReplayFrame {}
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReplayHeader {
-    pub magic:      [u8; 8],
-    pub version:    u16,
-    pub source:     u8,
-    pub n_beings:   u8,
-    pub tick_rate:  f32,
+    pub magic: [u8; 8],
+    pub version: u16,
+    pub source: u8,
+    pub n_beings: u8,
+    pub tick_rate: f32,
     pub world_seed: u64,
-    pub _pad:       [u8; 40],
+    pub _pad: [u8; 40],
 }
 
 const _: () = assert!(std::mem::size_of::<ReplayHeader>() == 64);
@@ -164,7 +163,13 @@ pub struct ReplayWriter {
 
 impl ReplayWriter {
     /// Abre arquivo e escreve cabeçalho.
-    pub fn create(path: &Path, source: u8, n_beings: u8, tick_rate: f32, world_seed: u64) -> io::Result<Self> {
+    pub fn create(
+        path: &Path,
+        source: u8,
+        n_beings: u8,
+        tick_rate: f32,
+        world_seed: u64,
+    ) -> io::Result<Self> {
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
 
@@ -179,7 +184,10 @@ impl ReplayWriter {
         };
         writer.write_all(bytemuck::bytes_of(&hdr))?;
 
-        Ok(Self { writer, frames_written: 0 })
+        Ok(Self {
+            writer,
+            frames_written: 0,
+        })
     }
 
     /// Escreve um frame de um ser específico.
@@ -198,7 +206,7 @@ impl ReplayWriter {
 // ── Leitor ───────────────────────────────────────────────────────────────────
 
 pub struct ReplayReader {
-    data:   Vec<u8>,
+    data: Vec<u8>,
     cursor: usize,
     pub header: ReplayHeader,
 }
@@ -211,7 +219,10 @@ impl ReplayReader {
         file.read_to_end(&mut data)?;
 
         if data.len() < 64 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "arquivo muito curto"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "arquivo muito curto",
+            ));
         }
 
         let header_bytes: [u8; 64] = data[..64].try_into().unwrap();
@@ -220,14 +231,26 @@ impl ReplayReader {
         let header: ReplayHeader = bytemuck::pod_read_unaligned(&header_bytes);
 
         if &header.magic != REPLAY_MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "magic inválido — não é replay IARA"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "magic inválido — não é replay IARA",
+            ));
         }
         if header.version != REPLAY_VERSION {
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                format!("versão {} não suportada (esperado {})", header.version, REPLAY_VERSION)));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "versão {} não suportada (esperado {})",
+                    header.version, REPLAY_VERSION
+                ),
+            ));
         }
 
-        Ok(Self { data, cursor: 64, header })
+        Ok(Self {
+            data,
+            cursor: 64,
+            header,
+        })
     }
 
     /// Retorna próximo (being_idx, ReplayFrame) ou None se EOF.
@@ -242,7 +265,10 @@ impl ReplayReader {
         let tag = self.data[self.cursor];
         if tag != FRAME_TAG {
             // Corrupção: skip bytes até achar tag ou EOF
-            eprintln!("REPLAY: tag inválida 0x{:02x} em offset {} — buscando próxima", tag, self.cursor);
+            eprintln!(
+                "REPLAY: tag inválida 0x{:02x} em offset {} — buscando próxima",
+                tag, self.cursor
+            );
             while self.cursor < self.data.len() && self.data[self.cursor] != FRAME_TAG {
                 self.cursor += 1;
             }
@@ -250,8 +276,10 @@ impl ReplayReader {
         }
 
         let being_idx = self.data[self.cursor + 1];
-        let frame_bytes: &[u8; FRAME_SIZE] = self.data[self.cursor + 2..self.cursor + 2 + FRAME_SIZE]
-            .try_into().ok()?;
+        let frame_bytes: &[u8; FRAME_SIZE] = self.data
+            [self.cursor + 2..self.cursor + 2 + FRAME_SIZE]
+            .try_into()
+            .ok()?;
         // Leitura DESALINHADA obrigatória: cada entrada ocupa 130 bytes (tag + índice +
         // quadro de 128) e o quadro começa em `cursor + 2`, então seu deslocamento é
         // 64 + k·130 + 2 — nunca múltiplo de 4. `bytemuck::from_bytes` exige alinhamento
@@ -294,15 +322,15 @@ impl ReplayReader {
 
 /// Perfil de uma seção da pista (dividida em N arcos iguais).
 pub struct SectionProfile {
-    pub arc_start:   f32,
-    pub arc_end:     f32,
-    pub avg_speed:   f32,
-    pub max_speed:   f32,
-    pub min_speed:   f32,
+    pub arc_start: f32,
+    pub arc_end: f32,
+    pub avg_speed: f32,
+    pub max_speed: f32,
+    pub min_speed: f32,
     /// Tempo médio gasto nessa seção (estimado como arc_len / avg_speed)
-    pub time_est:    f32,
+    pub time_est: f32,
     /// Frames onde governor interveio (|thr_raw - thr_final| > 0.05)
-    pub gov_count:   u32,
+    pub gov_count: u32,
     pub total_count: u32,
 }
 
@@ -315,24 +343,38 @@ pub fn section_profile(frames: &[ReplayFrame], n_sections: usize) -> Option<Vec<
         return None;
     }
 
-    let arc_max = frames.iter().map(|f| f.arc_prog).fold(f32::NEG_INFINITY, f32::max);
-    let arc_min = frames.iter().map(|f| f.arc_prog).fold(f32::INFINITY, f32::min);
-    if arc_max <= arc_min { return None; }
+    let arc_max = frames
+        .iter()
+        .map(|f| f.arc_prog)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let arc_min = frames
+        .iter()
+        .map(|f| f.arc_prog)
+        .fold(f32::INFINITY, f32::min);
+    if arc_max <= arc_min {
+        return None;
+    }
 
     let section_len = (arc_max - arc_min) / n_sections as f32;
-    let mut profiles: Vec<SectionProfile> = (0..n_sections).map(|i| SectionProfile {
-        arc_start: arc_min + i as f32 * section_len,
-        arc_end:   arc_min + (i + 1) as f32 * section_len,
-        avg_speed: 0.0, max_speed: 0.0, min_speed: f32::MAX,
-        time_est: 0.0, gov_count: 0, total_count: 0,
-    }).collect();
+    let mut profiles: Vec<SectionProfile> = (0..n_sections)
+        .map(|i| SectionProfile {
+            arc_start: arc_min + i as f32 * section_len,
+            arc_end: arc_min + (i + 1) as f32 * section_len,
+            avg_speed: 0.0,
+            max_speed: 0.0,
+            min_speed: f32::MAX,
+            time_est: 0.0,
+            gov_count: 0,
+            total_count: 0,
+        })
+        .collect();
 
     for f in frames {
         let idx = (((f.arc_prog - arc_min) / section_len) as usize).min(n_sections - 1);
         let p = &mut profiles[idx];
-        p.avg_speed  += f.speed;
-        p.max_speed   = p.max_speed.max(f.speed);
-        p.min_speed   = p.min_speed.min(f.speed);
+        p.avg_speed += f.speed;
+        p.max_speed = p.max_speed.max(f.speed);
+        p.min_speed = p.min_speed.min(f.speed);
         p.total_count += 1;
 
         // Governor interveio se throttle final for significativamente menor que raw
@@ -346,7 +388,9 @@ pub fn section_profile(frames: &[ReplayFrame], n_sections: usize) -> Option<Vec<
             p.avg_speed /= p.total_count as f32;
             p.time_est = section_len / p.avg_speed.max(0.5);
         }
-        if p.min_speed == f32::MAX { p.min_speed = 0.0; }
+        if p.min_speed == f32::MAX {
+            p.min_speed = 0.0;
+        }
     }
 
     Some(profiles)
@@ -355,12 +399,12 @@ pub fn section_profile(frames: &[ReplayFrame], n_sections: usize) -> Option<Vec<
 /// Evento crítico detectado na análise.
 #[derive(Debug)]
 pub struct CriticalEvent {
-    pub tick:        u32,
-    pub arc:         f32,
-    pub kind:        EventKind,
-    pub speed:       f32,
-    pub intent_str:  f32,
-    pub final_str:   f32,
+    pub tick: u32,
+    pub arc: f32,
+    pub kind: EventKind,
+    pub speed: f32,
+    pub intent_str: f32,
+    pub final_str: f32,
 }
 
 #[derive(Debug)]
@@ -388,34 +432,51 @@ pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
         let gov_delta = f.intent_thr - f.final_thr;
         if gov_delta > 0.10 {
             events.push(CriticalEvent {
-                tick: f.tick, arc: f.arc_prog, kind: EventKind::GovernorCut {
-                    thr_before: f.intent_thr, thr_after: f.final_thr,
+                tick: f.tick,
+                arc: f.arc_prog,
+                kind: EventKind::GovernorCut {
+                    thr_before: f.intent_thr,
+                    thr_after: f.final_thr,
                 },
-                speed: f.speed, intent_str: f.intent_str, final_str: f.final_str,
+                speed: f.speed,
+                intent_str: f.intent_str,
+                final_str: f.final_str,
             });
         }
 
         // Sentinel hard veto (bit1)
         if f.safety_flags & 0x02 != 0 {
             events.push(CriticalEvent {
-                tick: f.tick, arc: f.arc_prog, kind: EventKind::SentinelVeto,
-                speed: f.speed, intent_str: f.intent_str, final_str: f.final_str,
+                tick: f.tick,
+                arc: f.arc_prog,
+                kind: EventKind::SentinelVeto,
+                speed: f.speed,
+                intent_str: f.intent_str,
+                final_str: f.final_str,
             });
         }
 
         // ECAS (bit2)
         if f.safety_flags & 0x04 != 0 {
             events.push(CriticalEvent {
-                tick: f.tick, arc: f.arc_prog, kind: EventKind::EcasActive,
-                speed: f.speed, intent_str: f.intent_str, final_str: f.final_str,
+                tick: f.tick,
+                arc: f.arc_prog,
+                kind: EventKind::EcasActive,
+                speed: f.speed,
+                intent_str: f.intent_str,
+                final_str: f.final_str,
             });
         }
 
         // Reversing (bit3)
         if f.safety_flags & 0x08 != 0 {
             events.push(CriticalEvent {
-                tick: f.tick, arc: f.arc_prog, kind: EventKind::Reversing,
-                speed: f.speed, intent_str: f.intent_str, final_str: f.final_str,
+                tick: f.tick,
+                arc: f.arc_prog,
+                kind: EventKind::Reversing,
+                speed: f.speed,
+                intent_str: f.intent_str,
+                final_str: f.final_str,
             });
         }
 
@@ -425,8 +486,12 @@ pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
             let drop = prev.speed - f.speed;
             if drop > 5.0 {
                 events.push(CriticalEvent {
-                    tick: f.tick, arc: f.arc_prog, kind: EventKind::SpeedDrop { delta: drop },
-                    speed: f.speed, intent_str: f.intent_str, final_str: f.final_str,
+                    tick: f.tick,
+                    arc: f.arc_prog,
+                    kind: EventKind::SpeedDrop { delta: drop },
+                    speed: f.speed,
+                    intent_str: f.intent_str,
+                    final_str: f.final_str,
                 });
             }
         }
@@ -434,8 +499,14 @@ pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
         // Saturação neural
         if f.dims_saturated > 20 {
             events.push(CriticalEvent {
-                tick: f.tick, arc: f.arc_prog, kind: EventKind::NeuralSaturation { dims: f.dims_saturated },
-                speed: f.speed, intent_str: f.intent_str, final_str: f.final_str,
+                tick: f.tick,
+                arc: f.arc_prog,
+                kind: EventKind::NeuralSaturation {
+                    dims: f.dims_saturated,
+                },
+                speed: f.speed,
+                intent_str: f.intent_str,
+                final_str: f.final_str,
             });
         }
     }
@@ -445,17 +516,17 @@ pub fn detect_events(frames: &[ReplayFrame]) -> Vec<CriticalEvent> {
 
 /// Diff entre dois replays (caminho motor.rs vs caminho cortex_evolve).
 pub struct ReplayDiff {
-    pub arc:           f32,
+    pub arc: f32,
     /// Velocidade no caminho A (motor.rs)
-    pub speed_a:       f32,
+    pub speed_a: f32,
     /// Velocidade no caminho B (cortex_evolve)
-    pub speed_b:       f32,
+    pub speed_b: f32,
     /// Diferença de steer final (A - B)
-    pub steer_diff:    f32,
+    pub steer_diff: f32,
     /// Diferença de throttle final (A - B)
-    pub thr_diff:      f32,
+    pub thr_diff: f32,
     /// Posição A - posição B (distância entre trajetórias)
-    pub pos_diverge:   f32,
+    pub pos_diverge: f32,
 }
 
 /// Compara dois conjuntos de frames (mesma pista, seres diferentes ou caminhos diferentes).
@@ -481,11 +552,11 @@ pub fn diff_replays(frames_a: &[ReplayFrame], frames_b: &[ReplayFrame]) -> Vec<R
         let pos_a = glam_like_dist(fa.pos, fb.pos);
 
         out.push(ReplayDiff {
-            arc:         fa.arc_prog,
-            speed_a:     fa.speed,
-            speed_b:     fb.speed,
-            steer_diff:  fa.final_str - fb.final_str,
-            thr_diff:    fa.final_thr - fb.final_thr,
+            arc: fa.arc_prog,
+            speed_a: fa.speed,
+            speed_b: fb.speed,
+            steer_diff: fa.final_str - fb.final_str,
+            thr_diff: fa.final_thr - fb.final_thr,
             pos_diverge: pos_a,
         });
     }
@@ -497,7 +568,7 @@ fn glam_like_dist(a: [f32; 3], b: [f32; 3]) -> f32 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
     let dz = a[2] - b[2];
-    (dx*dx + dy*dy + dz*dz).sqrt()
+    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 // ── Gerador de HTML player ───────────────────────────────────────────────────
@@ -525,14 +596,18 @@ pub fn generate_html_player(
     // --- Calcula bounds da pista para normalização ---
     let (mut min_x, mut max_x, mut min_z, mut max_z) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
     for &[x, z] in track_path {
-        min_x = min_x.min(x); max_x = max_x.max(x);
-        min_z = min_z.min(z); max_z = max_z.max(z);
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_z = min_z.min(z);
+        max_z = max_z.max(z);
     }
     // Inclui posições de todos os seres nas bounds
     for frames in being_frames {
         for f in frames {
-            min_x = min_x.min(f.pos[0]); max_x = max_x.max(f.pos[0]);
-            min_z = min_z.min(f.pos[2]); max_z = max_z.max(f.pos[2]);
+            min_x = min_x.min(f.pos[0]);
+            max_x = max_x.max(f.pos[0]);
+            min_z = min_z.min(f.pos[2]);
+            max_z = max_z.max(f.pos[2]);
         }
     }
 
@@ -545,7 +620,9 @@ pub fn generate_html_player(
     for (i, &[x, z]) in track_path.iter().enumerate() {
         let px = ((x - min_x) / range_x * 980.0 + 10.0) as i32;
         let py = ((z - min_z) / range_z * 980.0 + 10.0) as i32;
-        if i > 0 { track_json.push(','); }
+        if i > 0 {
+            track_json.push(',');
+        }
         track_json.push_str(&format!("[{},{}]", px, py));
     }
     track_json.push(']');
@@ -553,12 +630,16 @@ pub fn generate_html_player(
     // beings_data: array de objetos, cada um com array de frames
     let mut beings_json = String::from("[");
     for (bi, frames) in being_frames.iter().enumerate() {
-        if bi > 0 { beings_json.push(','); }
+        if bi > 0 {
+            beings_json.push(',');
+        }
         let label = labels.get(bi).copied().unwrap_or("?");
         beings_json.push_str(&format!("{{\"label\":\"{}\",\"frames\":[", label));
 
         for (fi, f) in frames.iter().enumerate() {
-            if fi > 0 { beings_json.push(','); }
+            if fi > 0 {
+                beings_json.push(',');
+            }
             let px = ((f.pos[0] - min_x) / range_x * 980.0 + 10.0) as i32;
             let py = ((f.pos[2] - min_z) / range_z * 980.0 + 10.0) as i32;
             let fwd_px = (f.fwd[0] * 15.0) as i32;
@@ -571,15 +652,30 @@ pub fn generate_html_player(
                  \"c40\":{:.2},\"c70\":{:.2},\"c120\":{:.2},\
                  \"fl\":{:.2},\"lo\":{:.2},\
                  \"ds\":{},\"sf\":{},\"laps\":{},\"arc\":{:.1}}}",
-                f.tick, px, py, fwd_px, fwd_py,
+                f.tick,
+                px,
+                py,
+                fwd_px,
+                fwd_py,
                 f.speed,
-                f.final_thr, f.final_str, f.final_brk,
-                f.intent_thr, f.intent_str, f.intent_brk,
-                f.dist_wall_l, f.dist_wall_r, f.dist_wall_f,
-                f.curv_40m, f.curv_70m, f.curv_120m,
-                f.flow_align, f.line_offset,
-                f.dims_saturated, f.safety_flags,
-                f.laps, f.arc_prog,
+                f.final_thr,
+                f.final_str,
+                f.final_brk,
+                f.intent_thr,
+                f.intent_str,
+                f.intent_brk,
+                f.dist_wall_l,
+                f.dist_wall_r,
+                f.dist_wall_f,
+                f.curv_40m,
+                f.curv_70m,
+                f.curv_120m,
+                f.flow_align,
+                f.line_offset,
+                f.dims_saturated,
+                f.safety_flags,
+                f.laps,
+                f.arc_prog,
             ));
         }
         beings_json.push_str("]}");

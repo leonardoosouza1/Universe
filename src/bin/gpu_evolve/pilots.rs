@@ -24,7 +24,10 @@ fn raio(px: f32, pz: f32, dx: f32, dz: f32, cap: f32, voxel_at: &impl Fn(f32, f3
     let mut t = 1.0_f32;
     while t <= cap {
         let v = voxel_at(px + dx * t, pz + dz * t);
-        if v == 2 || v == 3 { d = t; break; }
+        if v == 2 || v == 3 {
+            d = t;
+            break;
+        }
         t += 1.0;
     }
     d
@@ -43,9 +46,12 @@ fn raio(px: f32, pz: f32, dx: f32, dz: f32, cap: f32, voxel_at: &impl Fn(f32, f3
 /// informação. Este usa só raios de parede, exatamente o que a retina do ser enxerga.
 pub fn piloto_sensorial(
     ganho: f32,
-    px: f32, pz: f32,
-    fx: f32, fz: f32,
-    perp_x: f32, perp_z: f32,
+    px: f32,
+    pz: f32,
+    fx: f32,
+    fz: f32,
+    perp_x: f32,
+    perp_z: f32,
     speed: f32,
     fwd_dist: f32,
     voxel_at: &impl Fn(f32, f32) -> u32,
@@ -56,8 +62,22 @@ pub fn piloto_sensorial(
     // Diagonais a ±45°: antecipação. A curva aparece nelas ANTES de aparecer
     // nas laterais — é o que permite virar antes de raspar a parede.
     let k = std::f32::consts::FRAC_1_SQRT_2;
-    let diag_e = raio(px, pz, fx * k + perp_x * k, fz * k + perp_z * k, 25.0, voxel_at);
-    let diag_d = raio(px, pz, fx * k - perp_x * k, fz * k - perp_z * k, 25.0, voxel_at);
+    let diag_e = raio(
+        px,
+        pz,
+        fx * k + perp_x * k,
+        fz * k + perp_z * k,
+        25.0,
+        voxel_at,
+    );
+    let diag_d = raio(
+        px,
+        pz,
+        fx * k - perp_x * k,
+        fz * k - perp_z * k,
+        25.0,
+        voxel_at,
+    );
 
     // Erro de centralização, normalizado: +1 = colado num lado.
     let centro = (dir - esq) / (dir + esq).max(1.0);
@@ -87,24 +107,75 @@ pub fn piloto_sensorial(
 /// Alimenta o freio antecipado do piloto fantasma. A curva aparece como parede
 /// diagonal ANTES de aparecer frontalmente — o fan detecta a curva antes do raio puro.
 pub fn fan_ray_d_min(
-    px: f32, pz: f32,
-    fx: f32, fz: f32,
+    px: f32,
+    pz: f32,
+    fx: f32,
+    fz: f32,
     voxel_at: &impl Fn(f32, f32) -> u32,
 ) -> f32 {
     let (pxp, pzp) = (-fz, fx); // perpendicular esquerda
-    let k15 = 0.9659_f32; let s15 = 0.2588_f32;
-    let k30 = 0.8660_f32; let s30 = 0.5000_f32;
+    let k15 = 0.9659_f32;
+    let s15 = 0.2588_f32;
+    let k30 = 0.8660_f32;
+    let s30 = 0.5000_f32;
     // cos(45°) = sin(45°) = 1/sqrt(2); use the constant instead of a 4-digit literal.
     let k45 = std::f32::consts::FRAC_1_SQRT_2;
     let s45 = std::f32::consts::FRAC_1_SQRT_2;
-    let d0   = raio(px, pz, fx, fz, 30.0, voxel_at);
-    let dl15 = raio(px, pz, fx*k15 + pxp*s15, fz*k15 + pzp*s15, 30.0, voxel_at);
-    let dr15 = raio(px, pz, fx*k15 - pxp*s15, fz*k15 - pzp*s15, 30.0, voxel_at);
-    let dl30 = raio(px, pz, fx*k30 + pxp*s30, fz*k30 + pzp*s30, 30.0, voxel_at);
-    let dr30 = raio(px, pz, fx*k30 - pxp*s30, fz*k30 - pzp*s30, 30.0, voxel_at);
-    let dl45 = raio(px, pz, fx*k45 + pxp*s45, fz*k45 + pzp*s45, 25.0, voxel_at);
-    let dr45 = raio(px, pz, fx*k45 - pxp*s45, fz*k45 - pzp*s45, 25.0, voxel_at);
-    d0.min(dl15).min(dr15).min(dl30).min(dr30).min(dl45).min(dr45)
+    let d0 = raio(px, pz, fx, fz, 30.0, voxel_at);
+    let dl15 = raio(
+        px,
+        pz,
+        fx * k15 + pxp * s15,
+        fz * k15 + pzp * s15,
+        30.0,
+        voxel_at,
+    );
+    let dr15 = raio(
+        px,
+        pz,
+        fx * k15 - pxp * s15,
+        fz * k15 - pzp * s15,
+        30.0,
+        voxel_at,
+    );
+    let dl30 = raio(
+        px,
+        pz,
+        fx * k30 + pxp * s30,
+        fz * k30 + pzp * s30,
+        30.0,
+        voxel_at,
+    );
+    let dr30 = raio(
+        px,
+        pz,
+        fx * k30 - pxp * s30,
+        fz * k30 - pzp * s30,
+        30.0,
+        voxel_at,
+    );
+    let dl45 = raio(
+        px,
+        pz,
+        fx * k45 + pxp * s45,
+        fz * k45 + pzp * s45,
+        25.0,
+        voxel_at,
+    );
+    let dr45 = raio(
+        px,
+        pz,
+        fx * k45 - pxp * s45,
+        fz * k45 - pzp * s45,
+        25.0,
+        voxel_at,
+    );
+    d0.min(dl15)
+        .min(dr15)
+        .min(dl30)
+        .min(dr30)
+        .min(dl45)
+        .min(dr45)
 }
 
 /// Comando pure-pursuit do piloto fantasma: aponta para um ponto `L` metros à
@@ -119,9 +190,12 @@ pub fn fan_ray_d_min(
 pub fn piloto_fantasma_comando(
     ganho: f32,
     thr_base: f32,
-    pos_x: f32, pos_z: f32,
-    fwd_x: f32, fwd_z: f32,
-    tgt_x: f32, tgt_z: f32,
+    pos_x: f32,
+    pos_z: f32,
+    fwd_x: f32,
+    fwd_z: f32,
+    tgt_x: f32,
+    tgt_z: f32,
     speed_now: f32,
     d_min: f32,
 ) -> (f32, f32, f32) {

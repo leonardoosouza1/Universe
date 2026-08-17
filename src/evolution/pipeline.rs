@@ -1,9 +1,9 @@
-use bevy::prelude::*;
+use crate::SimulationEntity;
+use crate::config::UniverseConfig;
+use crate::environment::EnvironmentalState;
 use crate::simulation::Racer;
 use crate::world::{VoxelWorld, VoxelWorldResource};
-use crate::environment::EnvironmentalState;
-use crate::config::UniverseConfig;
-use crate::SimulationEntity;
+use bevy::prelude::*;
 use iara_genesis::codec::semantic::BehaviorFingerprint;
 
 use super::dna_genesis::{EliteDna, apply_catastrophic_scars, decay_scars};
@@ -52,10 +52,14 @@ pub(super) fn limiar_de_nicho(dists: &[u32]) -> u32 {
 /// Serve para saber se `clusters=1` é monocultura de verdade ou limiar frouxo: a contagem de
 /// clusters sozinha não distingue os dois casos.
 pub(super) fn distancias_entre_elites(elites: &[EliteDna]) -> Vec<u32> {
-    let fps: Vec<BehaviorFingerprint> = elites.iter()
+    let fps: Vec<BehaviorFingerprint> = elites
+        .iter()
         .map(|e| {
-            let q: Vec<i8> = e.fast_weights.iter()
-                .map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
+            let q: Vec<i8> = e
+                .fast_weights
+                .iter()
+                .map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8)
+                .collect();
             BehaviorFingerprint::from_weights(&q)
         })
         .collect();
@@ -77,36 +81,55 @@ pub(super) fn distancias_entre_elites(elites: &[EliteDna]) -> Vec<u32> {
 /// limitada por `NICHE_DISTANCE`. Limiar fixo não funciona porque a escala das distâncias
 /// muda ao longo da evolução — medido 5,3 nas primeiras gerações e 2,4 depois de convergir.
 pub(super) fn cluster_elites(elites: &[EliteDna], adaptativo: bool) -> (Vec<usize>, Vec<usize>) {
-    let fps: Vec<BehaviorFingerprint> = elites.iter()
+    let fps: Vec<BehaviorFingerprint> = elites
+        .iter()
         .map(|e| {
-            let q: Vec<i8> = e.fast_weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
+            let q: Vec<i8> = e
+                .fast_weights
+                .iter()
+                .map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8)
+                .collect();
             BehaviorFingerprint::from_weights(&q)
         })
         .collect();
     let mut pares = Vec::new();
     for i in 0..fps.len() {
-        for j in (i + 1)..fps.len() { pares.push(fps[i].distance(&fps[j])); }
+        for j in (i + 1)..fps.len() {
+            pares.push(fps[i].distance(&fps[j]));
+        }
     }
-    let limiar = if adaptativo { limiar_de_nicho(&pares) } else { NICHE_DISTANCE };
+    let limiar = if adaptativo {
+        limiar_de_nicho(&pares)
+    } else {
+        NICHE_DISTANCE
+    };
     let mut reps: Vec<BehaviorFingerprint> = Vec::new();
     let mut ids: Vec<usize> = Vec::with_capacity(elites.len());
     for fp in fps.iter() {
         let mut found: Option<usize> = None;
         for (i, r) in reps.iter().enumerate() {
-            if fp.distance(r) <= limiar { found = Some(i); break; }
+            if fp.distance(r) <= limiar {
+                found = Some(i);
+                break;
+            }
         }
         match found {
             Some(i) => ids.push(i),
-            None => { reps.push(*fp); ids.push(reps.len() - 1); }
+            None => {
+                reps.push(*fp);
+                ids.push(reps.len() - 1);
+            }
         }
     }
     let mut sizes = vec![0usize; reps.len()];
-    for &id in ids.iter() { sizes[id] += 1; }
+    for &id in ids.iter() {
+        sizes[id] += 1;
+    }
     let per_elite: Vec<usize> = ids.iter().map(|&id| sizes[id]).collect();
     (ids, per_elite)
 }
 use super::logs::open_report_log;
-use super::settings::{RaceSettings, DevSettings};
+use super::settings::{DevSettings, RaceSettings};
 
 /// Decide nível ambiental da próxima geração.
 /// Muta `gens_until_validation` e `is_validation_gen` de forma pura/testável.
@@ -123,8 +146,13 @@ pub fn decide_next_env_level(
     current_level: u8,
 ) -> (u8, bool) {
     // compatibilidade: sem dado de população, comporta-se como antes
-    decide_next_env_level_pop(gens_until_validation, champion_distance, lap_distance,
-                              current_level, None)
+    decide_next_env_level_pop(
+        gens_until_validation,
+        champion_distance,
+        lap_distance,
+        current_level,
+        None,
+    )
 }
 
 /// Decide o próximo nível de ambiente pela POPULAÇÃO, não pelo campeão.
@@ -197,7 +225,9 @@ pub fn decide_next_env_level_pop(
 
 fn aesthetic_score(telem: &crate::simulation::racer::RacerTelemetry) -> f32 {
     let steer: Vec<f32> = telem.steering_history.iter().copied().collect();
-    if steer.len() < 3 { return 0.0; }
+    if steer.len() < 3 {
+        return 0.0;
+    }
     let mut jerk_sum = 0.0f32;
     let mut jerk_n = 0usize;
     for i in 2..steer.len() {
@@ -206,15 +236,23 @@ fn aesthetic_score(telem: &crate::simulation::racer::RacerTelemetry) -> f32 {
         jerk_sum += (d1 - d0).abs();
         jerk_n += 1;
     }
-    let jerk = if jerk_n > 0 { jerk_sum / jerk_n as f32 } else { 0.0 };
-    let speeds: Vec<f32> = telem.speed_history.iter()
+    let jerk = if jerk_n > 0 {
+        jerk_sum / jerk_n as f32
+    } else {
+        0.0
+    };
+    let speeds: Vec<f32> = telem
+        .speed_history
+        .iter()
         .zip(telem.on_road_mask.iter())
         .filter_map(|(&s, &on)| if on { Some(s) } else { None })
         .collect();
     let speed_var = if speeds.len() >= 2 {
         let mean = speeds.iter().sum::<f32>() / speeds.len() as f32;
         speeds.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / speeds.len() as f32
-    } else { 0.0 };
+    } else {
+        0.0
+    };
     let line_consistency = 1.0 / (1.0 + speed_var);
     let score = (1.0 / (1.0 + jerk * 10.0)) * 0.5 + line_consistency * 0.5;
     score.clamp(0.0, 1.0)
@@ -233,7 +271,9 @@ fn aesthetic_score(telem: &crate::simulation::racer::RacerTelemetry) -> f32 {
 fn compute_phi_proxy(r: &Racer) -> f32 {
     let trace = &r.brain_trace;
     let n = trace.len();
-    if n < 4 { return 0.0; }
+    if n < 4 {
+        return 0.0;
+    }
 
     // Sensor matrix (5 channels), action matrix (3 channels).
     let mut sensors: [Vec<f32>; 5] = Default::default();
@@ -259,11 +299,21 @@ fn compute_phi_proxy(r: &Racer) -> f32 {
         let n = xs.len() as f32;
         let (mx, vx) = mean_var(xs);
         let (my, vy) = mean_var(ys);
-        if vx <= 1e-6 || vy <= 1e-6 { return 0.0; }
-        let cov: f32 = xs.iter().zip(ys.iter())
-            .map(|(x, y)| (x - mx) * (y - my)).sum::<f32>() / n;
+        if vx <= 1e-6 || vy <= 1e-6 {
+            return 0.0;
+        }
+        let cov: f32 = xs
+            .iter()
+            .zip(ys.iter())
+            .map(|(x, y)| (x - mx) * (y - my))
+            .sum::<f32>()
+            / n;
         let c = cov / (vx.sqrt() * vy.sqrt());
-        if c.is_nan() || c.is_infinite() { 0.0 } else { c }
+        if c.is_nan() || c.is_infinite() {
+            0.0
+        } else {
+            c
+        }
     }
 
     let mut sum_abs = 0.0f32;
@@ -274,9 +324,15 @@ fn compute_phi_proxy(r: &Racer) -> f32 {
             pairs += 1;
         }
     }
-    if pairs == 0 { return 0.0; }
+    if pairs == 0 {
+        return 0.0;
+    }
     let phi = sum_abs / pairs as f32;
-    if phi.is_nan() || phi.is_infinite() { 0.0 } else { phi.clamp(0.0, 1.0) }
+    if phi.is_nan() || phi.is_infinite() {
+        0.0
+    } else {
+        phi.clamp(0.0, 1.0)
+    }
 }
 
 /// Bônus de volta — inteiro (antigo) ou contínuo em voltas fracionárias.
@@ -286,8 +342,13 @@ fn compute_phi_proxy(r: &Racer) -> f32 {
 ///
 /// `continuo == false` ou `lap_dist <= 0` (mundo ainda não escreveu o comprimento) devolvem
 /// o comportamento antigo, que é o que mantém a comparação A/B honesta.
-pub(super) fn bonus_de_volta(prog: f32, lap_dist: f32, total_laps: usize, bonus: f32,
-                             continuo: bool) -> f32 {
+pub(super) fn bonus_de_volta(
+    prog: f32,
+    lap_dist: f32,
+    total_laps: usize,
+    bonus: f32,
+    continuo: bool,
+) -> f32 {
     if continuo && lap_dist > 0.0 {
         (prog / lap_dist) * bonus
     } else {
@@ -327,9 +388,14 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabPar
     // Contínuo mantém escala e incentivo a fechar voltas, sem o degrau. Fica atrás de flag
     // para a comparação A/B ser possível; `lap_dist_m == 0` (mundo ainda não escreveu o
     // comprimento) também cai no comportamento antigo.
-    let lap_bonus = bonus_de_volta(prog, r.lap_dist_m, r.total_laps, lab.lap_bonus,
-                                   lab.lap_bonus_continuo);
-    let joy = r.joy_integral * 1.0;  // Desempate fino
+    let lap_bonus = bonus_de_volta(
+        prog,
+        r.lap_dist_m,
+        r.total_laps,
+        lab.lap_bonus,
+        lab.lap_bonus_continuo,
+    );
+    let joy = r.joy_integral * 1.0; // Desempate fino
 
     // Proximity bonus: incentiva FECHAR a volta. Quadrático em NET até saturar em 500m.
     // Carro com 480m (quase 1 volta) ganha 9200 pts extras = gap claro vs 400m (6400) ou
@@ -354,7 +420,11 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabPar
     // Death penalty REWORKED: antes `(100-prog)*10` capava em 1000pts e zerava após 100m
     // — dying ficava de graça depois. Agora: 2000 flat + 5% do prog (perdeu potencial).
     // 800m prog + death = 2000 + 400 = 2400pts. 800m prog survived = 0 penalty + SURVIVAL_BONUS.
-    let death_penalty = if r.is_dead { lab.death_penalty + prog * 0.05 } else { 0.0 };
+    let death_penalty = if r.is_dead {
+        lab.death_penalty + prog * 0.05
+    } else {
+        0.0
+    };
     // Survival bonus: sobreviver até final da geração tem valor flat. Quebra incentivo de
     // "acelera geral + morre" quando progresso é equivalente a quem vai devagar e chega.
     let survival_bonus = if r.is_dead { 0.0 } else { lab.survival_bonus };
@@ -392,7 +462,8 @@ pub(super) fn calc_fitness(r: &Racer, track_width: f32, lab: &crate::lab::LabPar
         (1000.0, 8000.0),  // mid-lap curves
         (1300.0, 10000.0), // far curves
     ];
-    let curve_bonus: f32 = curve_thresholds.iter()
+    let curve_bonus: f32 = curve_thresholds
+        .iter()
         .filter(|(threshold, _)| prog >= *threshold)
         .map(|(_, bonus)| bonus)
         .sum();
@@ -420,7 +491,12 @@ pub(super) fn evolution_pipeline(
     _dev: Res<DevSettings>,
     mut world_res: ResMut<VoxelWorldResource>,
     mut env: ResMut<EnvironmentalState>,
-    query: Query<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody)>,
+    query: Query<(
+        Entity,
+        &Racer,
+        &crate::physics::EngineComponent,
+        &crate::physics::PhysicsBody,
+    )>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     config: Res<UniverseConfig>,
@@ -433,7 +509,9 @@ pub(super) fn evolution_pipeline(
     // virtual total — generation_timeout em virtual-seconds escala certinho.
     let dt = time.delta_secs();
     env.tick(dt);
-    if query.is_empty() { return; }
+    if query.is_empty() {
+        return;
+    }
     // MODO VIDA: limite elevado de 10 para 200 voltas.
     // Com vida longa (HP_INICIAL=300, regeneração 1 HP/s enquanto avança, FUEL=relógio real),
     // o primeiro ser a completar 10 voltas dispara a geração antes do timeout — e isso cortava
@@ -454,7 +532,9 @@ pub(super) fn evolution_pipeline(
     let track_w = config.current_track().track_width;
     let timeout_reached = if hl.enabled || track_w > 30.0 {
         env.generation_time >= config.generation_timeout_s
-    } else { false };
+    } else {
+        false
+    };
 
     if winner.is_some() || all_dead || timeout_reached || race.should_reset {
         // Rank global por fitness — reutilizado pelo pool elite + relatório.
@@ -462,7 +542,9 @@ pub(super) fn evolution_pipeline(
         sorted.sort_by(|a, b| {
             let score_a = calc_fitness(a.1, track_w, &lab);
             let score_b = calc_fitness(b.1, track_w, &lab);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // --- POOL ELITE PERSISTENTE (Hall of Fame) ---
@@ -484,9 +566,15 @@ pub(super) fn evolution_pipeline(
         // Scars propagam pros elites top-K (proxy de "paciência evolutiva" — se
         // o top-N tem parentesco com quem bateu, marcar pesos ativos).
         // Simples: conta BATIDAs em toda a população.
-        let gen_batidas = sorted.iter().filter(|(_, r, _, _)|
-            matches!(r.death_reason, Some(crate::simulation::racer::DeathReason::Batida))
-        ).count();
+        let gen_batidas = sorted
+            .iter()
+            .filter(|(_, r, _, _)| {
+                matches!(
+                    r.death_reason,
+                    Some(crate::simulation::racer::DeathReason::Batida)
+                )
+            })
+            .count();
 
         let mut scars_created_this_gen = 0usize;
         for (rank, (_, r, _, _)) in sorted.iter().take(10).enumerate() {
@@ -497,14 +585,16 @@ pub(super) fn evolution_pipeline(
             let so = r.engine.soft_override_count as f32;
             let avg_entropy = if r.engine.gate_entropy_n > 0 {
                 r.engine.gate_entropy_acc / (r.engine.gate_entropy_n as f32)
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             let entropy_norm = (avg_entropy / LN3).clamp(0.0, 1.0);
-            let chaos_alive_bonus = if r.engine.last_chaos > 0.5 && !r.is_dead { 10.0 } else { 0.0 };
-            let new_fit = new_fit
-                - hv * 5.0
-                - so * 0.3
-                + entropy_norm * 20.0
-                + chaos_alive_bonus;
+            let chaos_alive_bonus = if r.engine.last_chaos > 0.5 && !r.is_dead {
+                10.0
+            } else {
+                0.0
+            };
+            let new_fit = new_fit - hv * 5.0 - so * 0.3 + entropy_norm * 20.0 + chaos_alive_bonus;
             // ---- end Trinity fitness ----
             let fast_weights: Vec<f32> = r.engine.instinct_layer.weights.clone();
             let mut scar_mask = vec![0u8; fast_weights.len()];
@@ -517,7 +607,10 @@ pub(super) fn evolution_pipeline(
             //    Proxy: população afeta pool inteiro via reprodução compartilhada.
             let lineage_batida = gen_batidas > 0 && rank < 3;
             if own_batida || lineage_batida {
-                let q: Vec<i8> = fast_weights.iter().map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8).collect();
+                let q: Vec<i8> = fast_weights
+                    .iter()
+                    .map(|&w| (w * 127.0).clamp(-127.0, 127.0) as i8)
+                    .collect();
                 let seed_bias = q.iter().map(|&w| w as i64).sum::<i64>() as u64
                     ^ (race.generation as u64).wrapping_mul(0xA5A5_A5A5)
                     ^ (rank as u64).wrapping_mul(0x1234_5678);
@@ -557,8 +650,15 @@ pub(super) fn evolution_pipeline(
                 race.elite_pool.push(candidate);
             } else {
                 // Acha pior do pool. Se novo é melhor, substitui.
-                let (worst_idx, worst_fit) = race.elite_pool.iter().enumerate()
-                    .min_by(|a, b| a.1.fitness.partial_cmp(&b.1.fitness).unwrap_or(std::cmp::Ordering::Equal))
+                let (worst_idx, worst_fit) = race
+                    .elite_pool
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| {
+                        a.1.fitness
+                            .partial_cmp(&b.1.fitness)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
                     .map(|(i, e)| (i, e.fitness))
                     .unwrap_or((0, f32::NEG_INFINITY));
                 if new_fit > worst_fit {
@@ -585,11 +685,18 @@ pub(super) fn evolution_pipeline(
         // (spawn.rs reads race.elite_clusters in tournament rejection sampling).
         let (ids_post, sizes_post) = cluster_elites(&race.elite_pool, lab.nicho_adaptativo);
         race.elite_clusters = ids_post;
-        let cluster_count = sizes_post.iter().copied().max().map(|_| {
-            let mut seen = std::collections::BTreeSet::new();
-            for &c in race.elite_clusters.iter() { seen.insert(c); }
-            seen.len()
-        }).unwrap_or(0);
+        let cluster_count = sizes_post
+            .iter()
+            .copied()
+            .max()
+            .map(|_| {
+                let mut seen = std::collections::BTreeSet::new();
+                for &c in race.elite_clusters.iter() {
+                    seen.insert(c);
+                }
+                seen.len()
+            })
+            .unwrap_or(0);
         let largest_cluster_size = sizes_post.iter().copied().max().unwrap_or(0);
         // Telemetry — small one-line stderr log per generation (parallel to the
         // existing println! GEN summary). Concise so it can be grepped easily.
@@ -603,25 +710,57 @@ pub(super) fn evolution_pipeline(
         // cluster") foi feita quando o fingerprint SATURAVA e toda distância era 0. Aquela
         // conclusão é nula, e esta linha é o que permite refazê-la com dado de verdade.
         let dists = distancias_entre_elites(&race.elite_pool);
-        let (d_med, d_max) = if dists.is_empty() { (0.0, 0) } else {
-            (dists.iter().sum::<u32>() as f32 / dists.len() as f32,
-             dists.iter().copied().max().unwrap_or(0))
+        let (d_med, d_max) = if dists.is_empty() {
+            (0.0, 0)
+        } else {
+            (
+                dists.iter().sum::<u32>() as f32 / dists.len() as f32,
+                dists.iter().copied().max().unwrap_or(0),
+            )
         };
-        let thr_usado = if lab.nicho_adaptativo { limiar_de_nicho(&dists) } else { NICHE_DISTANCE };
-        eprintln!("[NICHE] gen={} pool={} clusters={} largest={} thr={} dist_med={:.1} dist_max={}",
-            race.generation, race.elite_pool.len(), cluster_count, largest_cluster_size,
-            thr_usado, d_med, d_max);
+        let thr_usado = if lab.nicho_adaptativo {
+            limiar_de_nicho(&dists)
+        } else {
+            NICHE_DISTANCE
+        };
+        eprintln!(
+            "[NICHE] gen={} pool={} clusters={} largest={} thr={} dist_med={:.1} dist_max={}",
+            race.generation,
+            race.elite_pool.len(),
+            cluster_count,
+            largest_cluster_size,
+            thr_usado,
+            d_med,
+            d_max
+        );
 
         // --- RELATÓRIO DO GÊNESIS (TELEMETRIA COMPLETA) ---
         if let Some(mut file) = open_report_log() {
             use std::io::Write;
-            let reason = if winner.is_some() { "Vencedor Encontrado" }
-                else if all_dead { "Extinção (Colisão)" }
-                else if timeout_reached { "Timeout Atingido" }
-                else { "Reset Manual" };
-            let _ = writeln!(file, "\n## GERAÇÃO {} | Motivo do Fim: {} | Duração: {:.1}s", race.generation, reason, env.generation_time);
-            let _ = writeln!(file, "**Ambiente:** Asfalto {:.0}°C | Chuva: {:.0}% | Vento: ({:.1}, {:.1}) m/s | Hora: {:.1}h | μ_base: 1.3 × grip_env: {:.2}",
-                env.asphalt_temp, env.weather_wetness * 100.0, env.wind.x, env.wind.z, env.time_of_day, env.combined_grip_factor());
+            let reason = if winner.is_some() {
+                "Vencedor Encontrado"
+            } else if all_dead {
+                "Extinção (Colisão)"
+            } else if timeout_reached {
+                "Timeout Atingido"
+            } else {
+                "Reset Manual"
+            };
+            let _ = writeln!(
+                file,
+                "\n## GERAÇÃO {} | Motivo do Fim: {} | Duração: {:.1}s",
+                race.generation, reason, env.generation_time
+            );
+            let _ = writeln!(
+                file,
+                "**Ambiente:** Asfalto {:.0}°C | Chuva: {:.0}% | Vento: ({:.1}, {:.1}) m/s | Hora: {:.1}h | μ_base: 1.3 × grip_env: {:.2}",
+                env.asphalt_temp,
+                env.weather_wetness * 100.0,
+                env.wind.x,
+                env.wind.z,
+                env.time_of_day,
+                env.combined_grip_factor()
+            );
 
             // --- REPORT OTIMIZADO PARA 500+ CARROS ---
             // Antes: 500 linhas por gen × ~200 gens = 100k linhas em race_reports.md (~2MB/ciclo).
@@ -631,7 +770,11 @@ pub(super) fn evolution_pipeline(
             let total = sorted.len();
             let top_n = 15.min(total);
             let bot_n = if total > top_n + 3 { 3 } else { 0 };
-            let dump_row = |file: &mut std::fs::File, rank: usize, r: &Racer, engine_comp: &crate::physics::EngineComponent, phys_body: &crate::physics::PhysicsBody| {
+            let dump_row = |file: &mut std::fs::File,
+                            rank: usize,
+                            r: &Racer,
+                            engine_comp: &crate::physics::EngineComponent,
+                            phys_body: &crate::physics::PhysicsBody| {
                 let status = if r.is_dead { "M" } else { "V" };
                 let speed_kmh = r.amplitude * 3.6;
                 let gear_label = match engine_comp.current_gear {
@@ -644,10 +787,23 @@ pub(super) fn evolution_pipeline(
                 let rr_slip = phys_body.wheels[3].slip_ratio;
                 let net = (r.track_progress - r.spawn_progress).max(0.0);
                 let grid_tag = if r.spawn_progress < 1.0 { "G" } else { "D" };
-                let _ = writeln!(file, "{:03}. [{}{}] **{}** | NET:{:.1}m | V:{:.0}km/h | G:{} | RPM:{:.0} | YAW:{:.2}r/s | SR:{:.2}/{:.2} | Thr:{:.0}% Brk:{:.0}%",
-                    rank, grid_tag, status, r.name, net, speed_kmh, gear_label, engine_comp.current_rpm, yaw_rate,
-                    rl_slip, rr_slip,
-                    engine_comp.throttle * 100.0, engine_comp.brake * 100.0);
+                let _ = writeln!(
+                    file,
+                    "{:03}. [{}{}] **{}** | NET:{:.1}m | V:{:.0}km/h | G:{} | RPM:{:.0} | YAW:{:.2}r/s | SR:{:.2}/{:.2} | Thr:{:.0}% Brk:{:.0}%",
+                    rank,
+                    grid_tag,
+                    status,
+                    r.name,
+                    net,
+                    speed_kmh,
+                    gear_label,
+                    engine_comp.current_rpm,
+                    yaw_rate,
+                    rl_slip,
+                    rr_slip,
+                    engine_comp.throttle * 100.0,
+                    engine_comp.brake * 100.0
+                );
             };
 
             let _ = writeln!(file, "\n### 🏁 TOP {}", top_n);
@@ -656,44 +812,116 @@ pub(super) fn evolution_pipeline(
             }
             if bot_n > 0 {
                 let _ = writeln!(file, "\n### 🪦 BOTTOM {}", bot_n);
-                for (idx, (_, r, engine_comp, phys_body)) in sorted.iter().rev().take(bot_n).enumerate() {
+                for (idx, (_, r, engine_comp, phys_body)) in
+                    sorted.iter().rev().take(bot_n).enumerate()
+                {
                     dump_row(&mut file, total - idx, r, engine_comp, phys_body);
                 }
             }
 
             // Summary agregado: distribuição de NET/fitness/survival.
-            let nets: Vec<f32> = sorted.iter().map(|(_, r, _, _)| (r.track_progress - r.spawn_progress).max(0.0)).collect();
+            let nets: Vec<f32> = sorted
+                .iter()
+                .map(|(_, r, _, _)| (r.track_progress - r.spawn_progress).max(0.0))
+                .collect();
             let deaths = sorted.iter().filter(|(_, r, _, _)| r.is_dead).count();
-            let fits: Vec<f32> = sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).collect();
-            let median = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[v.len()/2] } };
-            let p90 = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[(v.len()*1/10).min(v.len()-1)] } }; // v já ordenado desc
-            let mean = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 } };
-            let grid_count = sorted.iter().filter(|(_, r, _, _)| r.spawn_progress < 1.0).count();
-            let _ = writeln!(file, "\n### 📊 SUMMARY | N={} | Deaths: {}/{} ({:.0}%) | Grid: {} | Distrib: {}",
-                total, deaths, total, (deaths as f32 / total as f32) * 100.0, grid_count, total - grid_count);
-            let _ = writeln!(file, "NET — max: {:.1}m | p90: {:.1}m | median: {:.1}m | mean: {:.1}m",
-                nets.first().copied().unwrap_or(0.0), p90(&nets), median(&nets), mean(&nets));
-            let _ = writeln!(file, "Fitness — max: {:.0} | p90: {:.0} | median: {:.0} | mean: {:.0}",
-                fits.first().copied().unwrap_or(0.0), p90(&fits), median(&fits), mean(&fits));
+            let fits: Vec<f32> = sorted
+                .iter()
+                .map(|(_, r, _, _)| calc_fitness(r, track_w, &lab))
+                .collect();
+            let median = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[v.len() / 2] } };
+            let p90 = |v: &[f32]| -> f32 {
+                if v.is_empty() {
+                    0.0
+                } else {
+                    v[(v.len() * 1 / 10).min(v.len() - 1)]
+                }
+            }; // v já ordenado desc
+            let mean = |v: &[f32]| -> f32 {
+                if v.is_empty() {
+                    0.0
+                } else {
+                    v.iter().sum::<f32>() / v.len() as f32
+                }
+            };
+            let grid_count = sorted
+                .iter()
+                .filter(|(_, r, _, _)| r.spawn_progress < 1.0)
+                .count();
+            let _ = writeln!(
+                file,
+                "\n### 📊 SUMMARY | N={} | Deaths: {}/{} ({:.0}%) | Grid: {} | Distrib: {}",
+                total,
+                deaths,
+                total,
+                (deaths as f32 / total as f32) * 100.0,
+                grid_count,
+                total - grid_count
+            );
+            let _ = writeln!(
+                file,
+                "NET — max: {:.1}m | p90: {:.1}m | median: {:.1}m | mean: {:.1}m",
+                nets.first().copied().unwrap_or(0.0),
+                p90(&nets),
+                median(&nets),
+                mean(&nets)
+            );
+            let _ = writeln!(
+                file,
+                "Fitness — max: {:.0} | p90: {:.0} | median: {:.0} | mean: {:.0}",
+                fits.first().copied().unwrap_or(0.0),
+                p90(&fits),
+                median(&fits),
+                mean(&fits)
+            );
 
             // Lap completion distribution — quantos completaram 1, 2, 3+ voltas
             // guardado no RaceSettings porque o currículo é decidido lá fora, noutro escopo
             race.frac_completou_volta = if total > 0 {
-                sorted.iter().filter(|(_, r, _, _)| r.total_laps >= 1).count() as f32
+                sorted
+                    .iter()
+                    .filter(|(_, r, _, _)| r.total_laps >= 1)
+                    .count() as f32
                     / total as f32
-            } else { 0.0 };
-            let laps_0 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 0).count();
-            let laps_1 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 1).count();
-            let laps_2 = sorted.iter().filter(|(_, r, _, _)| r.total_laps == 2).count();
-            let laps_3p = sorted.iter().filter(|(_, r, _, _)| r.total_laps >= 3).count();
-            let _ = writeln!(file, "Laps — 0v: {} | 1v: {} | 2v: {} | 3+v: {}", laps_0, laps_1, laps_2, laps_3p);
+            } else {
+                0.0
+            };
+            let laps_0 = sorted
+                .iter()
+                .filter(|(_, r, _, _)| r.total_laps == 0)
+                .count();
+            let laps_1 = sorted
+                .iter()
+                .filter(|(_, r, _, _)| r.total_laps == 1)
+                .count();
+            let laps_2 = sorted
+                .iter()
+                .filter(|(_, r, _, _)| r.total_laps == 2)
+                .count();
+            let laps_3p = sorted
+                .iter()
+                .filter(|(_, r, _, _)| r.total_laps >= 3)
+                .count();
+            let _ = writeln!(
+                file,
+                "Laps — 0v: {} | 1v: {} | 2v: {} | 3+v: {}",
+                laps_0, laps_1, laps_2, laps_3p
+            );
 
             // Death reason breakdown — categórico via DeathReason enum.
-            let mut d_hp = 0; let mut d_pin = 0; let mut d_bat = 0;
-            let mut d_stag = 0; let mut d_sbld = 0; let mut d_fuel = 0;
-            let mut d_hole = 0; let mut d_npc = 0; let mut d_unk = 0;
+            let mut d_hp = 0;
+            let mut d_pin = 0;
+            let mut d_bat = 0;
+            let mut d_stag = 0;
+            let mut d_sbld = 0;
+            let mut d_fuel = 0;
+            let mut d_hole = 0;
+            let mut d_npc = 0;
+            let mut d_unk = 0;
             for (_, r, _, _) in sorted.iter() {
-                if !r.is_dead { continue; }
+                if !r.is_dead {
+                    continue;
+                }
                 match r.death_reason {
                     Some(crate::simulation::racer::DeathReason::HpZero) => d_hp += 1,
                     Some(crate::simulation::racer::DeathReason::Pinado) => d_pin += 1,
@@ -706,30 +934,52 @@ pub(super) fn evolution_pipeline(
                     None => d_unk += 1,
                 }
             }
-            let _ = writeln!(file, "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} HOLE:{} NPC:{} ?:{}",
-                d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_hole, d_npc, d_unk);
+            let _ = writeln!(
+                file,
+                "Death reasons — HP:{} PINADO:{} BATIDA:{} STAG:{} SBLD:{} FUEL:{} HOLE:{} NPC:{} ?:{}",
+                d_hp, d_pin, d_bat, d_stag, d_sbld, d_fuel, d_hole, d_npc, d_unk
+            );
 
             // Tier 4.3 — NICHO-SPLITTING METRICS.
             // Diferencial de pressão: defensive pune wall_time 2×, aggressive premia
             // speed_on_track 1.5×. Esperamos divergência estatística: defensive com
             // wall_time MENOR, aggressive com speed_on_track MAIOR.
-            let mut def_n = 0usize; let mut agg_n = 0usize;
-            let mut def_wall_sum = 0.0f32; let mut agg_wall_sum = 0.0f32;
-            let mut def_speed_sum = 0.0f32; let mut agg_speed_sum = 0.0f32;
-            let mut def_fit_sum = 0.0f32; let mut agg_fit_sum = 0.0f32;
+            let mut def_n = 0usize;
+            let mut agg_n = 0usize;
+            let mut def_wall_sum = 0.0f32;
+            let mut agg_wall_sum = 0.0f32;
+            let mut def_speed_sum = 0.0f32;
+            let mut agg_speed_sum = 0.0f32;
+            let mut def_fit_sum = 0.0f32;
+            let mut agg_fit_sum = 0.0f32;
             for (_, r, _, _) in sorted.iter() {
                 let f = calc_fitness(r, track_w, &lab);
                 let sp = r.telemetry.speed_on_track();
                 if r.niche == 0 {
-                    def_n += 1; def_wall_sum += r.wall_time; def_speed_sum += sp; def_fit_sum += f;
+                    def_n += 1;
+                    def_wall_sum += r.wall_time;
+                    def_speed_sum += sp;
+                    def_fit_sum += f;
                 } else {
-                    agg_n += 1; agg_wall_sum += r.wall_time; agg_speed_sum += sp; agg_fit_sum += f;
+                    agg_n += 1;
+                    agg_wall_sum += r.wall_time;
+                    agg_speed_sum += sp;
+                    agg_fit_sum += f;
                 }
             }
             let safe = |s: f32, n: usize| -> f32 { if n == 0 { 0.0 } else { s / n as f32 } };
-            let _ = writeln!(file, "Niche — DEF n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0} | AGG n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0}",
-                def_n, safe(def_wall_sum, def_n), safe(def_speed_sum, def_n), safe(def_fit_sum, def_n),
-                agg_n, safe(agg_wall_sum, agg_n), safe(agg_speed_sum, agg_n), safe(agg_fit_sum, agg_n));
+            let _ = writeln!(
+                file,
+                "Niche — DEF n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0} | AGG n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0}",
+                def_n,
+                safe(def_wall_sum, def_n),
+                safe(def_speed_sum, def_n),
+                safe(def_fit_sum, def_n),
+                agg_n,
+                safe(agg_wall_sum, agg_n),
+                safe(agg_speed_sum, agg_n),
+                safe(agg_fit_sum, agg_n)
+            );
 
             // Tier 6.6 — Weight Scars telemetry.
             // pool_active_scars é o estado FINAL do pool (pós-decay + pós-inserção).
@@ -737,14 +987,26 @@ pub(super) fn evolution_pipeline(
             // - total_active_scars_after: sobreviveram ao decay (TTL>0 após -1).
             // - new_this_gen: scars recém-criados por BATIDA (antes de push no pool).
             // - pool_active: soma final (após merge top-10 e sort).
-            let pool_active_scars: usize = race.elite_pool.iter()
+            let pool_active_scars: usize = race
+                .elite_pool
+                .iter()
                 .map(|e| e.scar_mask.iter().filter(|&&t| t > 0).count())
                 .sum();
-            let pool_max_ttl: u8 = race.elite_pool.iter()
+            let pool_max_ttl: u8 = race
+                .elite_pool
+                .iter()
                 .flat_map(|e| e.scar_mask.iter().copied())
-                .max().unwrap_or(0);
-            let _ = writeln!(file, "Scars — new_this_gen: {} | pool_active: {} | max_ttl: {} (pre_decay: {}, post_decay: {})",
-                scars_created_this_gen, pool_active_scars, pool_max_ttl, total_active_scars_before, total_active_scars_after);
+                .max()
+                .unwrap_or(0);
+            let _ = writeln!(
+                file,
+                "Scars — new_this_gen: {} | pool_active: {} | max_ttl: {} (pre_decay: {}, post_decay: {})",
+                scars_created_this_gen,
+                pool_active_scars,
+                pool_max_ttl,
+                total_active_scars_before,
+                total_active_scars_after
+            );
 
             // --- DEATH BY ZONE (waypoint segment) ---
             // Agrupa mortes por segmento da pista. Identifica "curva que mata".
@@ -753,68 +1015,121 @@ pub(super) fn evolution_pipeline(
             let mut deaths_per_seg = vec![0u32; n_segs];
             for (_, r, _, _) in sorted.iter() {
                 if r.is_dead {
-                    let seg = world.waypoint_zone(r.death_pos.x, r.death_pos.z).min(n_segs - 1);
+                    let seg = world
+                        .waypoint_zone(r.death_pos.x, r.death_pos.z)
+                        .min(n_segs - 1);
                     deaths_per_seg[seg] += 1;
                 }
             }
             let _ = writeln!(file, "\n### 💀 DEATHS POR SEGMENTO (waypoint i → i+1)");
             for (i, count) in deaths_per_seg.iter().enumerate() {
                 let p1 = world.waypoints_world[i];
-                let p2 = world.waypoints_world[i+1];
+                let p2 = world.waypoints_world[i + 1];
                 let bar = "█".repeat((((*count as f32) / (total as f32).max(1.0)) * 30.0) as usize);
-                let _ = writeln!(file, "seg[{}] ({:.0},{:.0})→({:.0},{:.0}): {:3}  {}",
-                    i, p1.x, p1.y, p2.x, p2.y, count, bar);
+                let _ = writeln!(
+                    file,
+                    "seg[{}] ({:.0},{:.0})→({:.0},{:.0}): {:3}  {}",
+                    i, p1.x, p1.y, p2.x, p2.y, count, bar
+                );
             }
 
             // --- ASCII MAP com death markers + finish positions ---
-            let death_points: Vec<Vec3> = sorted.iter()
+            let death_points: Vec<Vec3> = sorted
+                .iter()
                 .filter(|(_, r, _, _)| r.is_dead)
-                .map(|(_, r, _, _)| r.death_pos).collect();
-            let alive_positions: Vec<Vec3> = sorted.iter()
+                .map(|(_, r, _, _)| r.death_pos)
+                .collect();
+            let alive_positions: Vec<Vec3> = sorted
+                .iter()
                 .filter(|(_, r, _, _)| !r.is_dead)
                 .take(30)
                 .map(|(_, _, _, body)| {
                     let _ = body;
                     Vec3::ZERO
-                }).collect();
+                })
+                .collect();
             let map = world.render_ascii_map(100, 40, &death_points, &alive_positions);
-            let _ = writeln!(file, "\n### 🗺️  MAPA (100×40) | `.`=grass `=`=road `#`=wall `0-7`=waypoints `X`=morte");
+            let _ = writeln!(
+                file,
+                "\n### 🗺️  MAPA (100×40) | `.`=grass `=`=road `#`=wall `0-7`=waypoints `X`=morte"
+            );
             let _ = writeln!(file, "```");
             let _ = write!(file, "{}", map);
             let _ = writeln!(file, "```");
 
             // --- PER-RACER ENHANCED (top + qualquer com lap) ---
-            let with_lap: Vec<_> = sorted.iter().filter(|(_, r, _, _)| r.total_laps > 0).collect();
+            let with_lap: Vec<_> = sorted
+                .iter()
+                .filter(|(_, r, _, _)| r.total_laps > 0)
+                .collect();
             if !with_lap.is_empty() {
                 let _ = writeln!(file, "\n### 🏆 RACERS COM VOLTAS COMPLETADAS (todos)");
-                let _ = writeln!(file, "| Nome | Laps | NET(m) | Peak(km/h) | Walls | Death | Frame | Zone |");
+                let _ = writeln!(
+                    file,
+                    "| Nome | Laps | NET(m) | Peak(km/h) | Walls | Death | Frame | Zone |"
+                );
                 let _ = writeln!(file, "|---|---|---|---|---|---|---|---|");
                 for (_, r, _, _) in with_lap.iter() {
                     let net = (r.track_progress - r.spawn_progress).max(0.0);
                     let death = r.death_reason.map(|d| d.label()).unwrap_or("VIVO");
-                    let zone = if r.is_dead { world.waypoint_zone(r.death_pos.x, r.death_pos.z) as i32 } else { -1 };
-                    let _ = writeln!(file, "| {} | {} | {:.0} | {:.0} | {} | {} | {} | {} |",
-                        r.name, r.total_laps, net, r.peak_speed * 3.6, r.wall_hits, death, r.death_frame,
-                        if zone < 0 { "-".to_string() } else { zone.to_string() });
+                    let zone = if r.is_dead {
+                        world.waypoint_zone(r.death_pos.x, r.death_pos.z) as i32
+                    } else {
+                        -1
+                    };
+                    let _ = writeln!(
+                        file,
+                        "| {} | {} | {:.0} | {:.0} | {} | {} | {} | {} |",
+                        r.name,
+                        r.total_laps,
+                        net,
+                        r.peak_speed * 3.6,
+                        r.wall_hits,
+                        death,
+                        r.death_frame,
+                        if zone < 0 {
+                            "-".to_string()
+                        } else {
+                            zone.to_string()
+                        }
+                    );
                 }
             }
 
             // Console summary compacto pra feedback ao vivo.
             // FIX Bug 2: NET max real (não do top-fitness; rewards múltiplos desacoplam fitness e NET).
             let net_max_real: f32 = nets.iter().cloned().fold(0.0_f32, f32::max);
-            println!("📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
-                race.generation, laps_0, laps_1, laps_2, laps_3p,
-                net_max_real, median(&nets), deaths, total);
+            println!(
+                "📊 GEN {} | Laps: 0v={} 1v={} 2v={} 3+v={} | NET max={:.0}m median={:.0}m | Deaths {}/{}",
+                race.generation,
+                laps_0,
+                laps_1,
+                laps_2,
+                laps_3p,
+                net_max_real,
+                median(&nets),
+                deaths,
+                total
+            );
 
             // USO das vias (peso médio do portão) ao lado da via ablada. Linha grepável.
             // Uso NÃO é contribuição: o par (uso aqui, custo da ablação entre variantes) é o
             // resultado do experimento de alocação — ver `neuro.rs` e `lab_specs/alocacao.json`.
             {
                 let (uso, n, vetos) = crate::neuro::uso_medio();
-                println!("🧠 ALOC gen={} ablada={} uso_cortex={:.3} uso_reflexo={:.3} \
+                println!(
+                    "🧠 ALOC gen={} ablada={} uso_cortex={:.3} uso_reflexo={:.3} \
                           uso_sentinela={:.3} vetos={} n={} net_max={:.0} net_med={:.0}",
-                    race.generation, crate::neuro::ablada().nome(),
-                    uso[0], uso[1], uso[2], vetos, n, net_max_real, median(&nets));
+                    race.generation,
+                    crate::neuro::ablada().nome(),
+                    uso[0],
+                    uso[1],
+                    uso[2],
+                    vetos,
+                    n,
+                    net_max_real,
+                    median(&nets)
+                );
                 crate::neuro::zerar_uso();
             }
 
@@ -824,19 +1139,48 @@ pub(super) fn evolution_pipeline(
             let _ = writeln!(file, "\n### 🧠 BRAIN TRACE — Top 3 (NET)");
             for (i, (_, r, _, _)) in sorted.iter().take(3).enumerate() {
                 let net = (r.track_progress - r.spawn_progress).max(0.0);
-                let _ = writeln!(file, "\n#### {}. {} — NET {:.1}m | {} snapshots", i+1, r.name, net, r.brain_trace.len());
-                let _ = writeln!(file, "| t(s) | V(km/h) | WL | WR | TTC | Curv25 | Retina_C | raw_thr | raw_steer | post_damp | phys_steer | steer_lim | risk_damp | TOP5 canais |");
-                let _ = writeln!(file, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+                let _ = writeln!(
+                    file,
+                    "\n#### {}. {} — NET {:.1}m | {} snapshots",
+                    i + 1,
+                    r.name,
+                    net,
+                    r.brain_trace.len()
+                );
+                let _ = writeln!(
+                    file,
+                    "| t(s) | V(km/h) | WL | WR | TTC | Curv25 | Retina_C | raw_thr | raw_steer | post_damp | phys_steer | steer_lim | risk_damp | TOP5 canais |"
+                );
+                let _ = writeln!(
+                    file,
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+                );
                 for s in r.brain_trace.iter() {
-                    let top5s = s.top_channels.iter()
-                        .filter(|(_,v)| *v != 0)
-                        .map(|(i,v)| format!("c{}={}", i, v))
-                        .collect::<Vec<_>>().join(" ");
-                    let _ = writeln!(file, "| {:.1} | {:.0} | {} | {} | {} | {} | {} | {:+.2} | {:+.2} | {:+.2} | {:+.2} | {:.2} | {:.2} | {} |",
-                        s.t, s.speed_kmh, s.wall_prox_l, s.wall_prox_r, s.ttc_inv,
-                        s.curv_25, s.retina_center_max,
-                        s.raw_throttle, s.raw_steer, s.post_damp_steer,
-                        s.physical_steer, s.steer_limit, s.risk_damp, top5s);
+                    let top5s = s
+                        .top_channels
+                        .iter()
+                        .filter(|(_, v)| *v != 0)
+                        .map(|(i, v)| format!("c{}={}", i, v))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let _ = writeln!(
+                        file,
+                        "| {:.1} | {:.0} | {} | {} | {} | {} | {} | {:+.2} | {:+.2} | {:+.2} | {:+.2} | {:.2} | {:.2} | {} |",
+                        s.t,
+                        s.speed_kmh,
+                        s.wall_prox_l,
+                        s.wall_prox_r,
+                        s.ttc_inv,
+                        s.curv_25,
+                        s.retina_center_max,
+                        s.raw_throttle,
+                        s.raw_steer,
+                        s.post_damp_steer,
+                        s.physical_steer,
+                        s.steer_limit,
+                        s.risk_damp,
+                        top5s
+                    );
                 }
             }
             let _ = writeln!(file, "");
@@ -855,7 +1199,11 @@ pub(super) fn evolution_pipeline(
             race.last_gen_was_grid = gen_best.spawn_progress < 1.0;
             // Debug: dump best racer's brain trace for vision analysis (15Hz sampling)
             let run_id = format!("gen_{}", race.generation);
-            crate::evolution::telemetry::save_brain_trace(&run_id, &gen_best.name, &gen_best.brain_trace);
+            crate::evolution::telemetry::save_brain_trace(
+                &run_id,
+                &gen_best.name,
+                &gen_best.brain_trace,
+            );
         }
 
         // SELEÇÃO POR NET PROGRESS, RESTRITA A GRID-SPAWNS.
@@ -868,10 +1216,13 @@ pub(super) fn evolution_pipeline(
         let best_racer = if let Some((_, w, _, _)) = winner {
             Some(w)
         } else {
-            query.iter()
+            query
+                .iter()
                 .filter(|(_, r, _, _)| is_grid_spawn(r))
                 .max_by(|a, b| {
-                    net_prog(a.1).partial_cmp(&net_prog(b.1)).unwrap_or(std::cmp::Ordering::Equal)
+                    net_prog(a.1)
+                        .partial_cmp(&net_prog(b.1))
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(_, r, _, _)| r)
         };
@@ -900,18 +1251,15 @@ pub(super) fn evolution_pipeline(
             // chegam a 1139m NET (87% volta) mas nunca fecham. Threshold trava em
             // bootstrap 280m apesar de evolução 4x. NET puro > champion_distance
             // basta — elitism rígido (linha acima) evita regressão.
-            let val_ok = is_validation
-                && this_gen_best_dist > race.champion_distance;
+            let val_ok = is_validation && this_gen_best_dist > race.champion_distance;
             // SIMPLE ELITISM: ignora validation-gate. Qualquer gen em que best-racer
             // bater champion_distance → coroa. Ver melhorias/simple-elitism.md.
             #[cfg(feature = "simple_elitism")]
             let simple_ok = this_gen_best_dist > race.champion_distance;
             #[cfg(not(feature = "simple_elitism"))]
             let simple_ok = false;
-            let should_crown = winner.is_some()
-                || race.best_weights.is_none()
-                || val_ok
-                || simple_ok;
+            let should_crown =
+                winner.is_some() || race.best_weights.is_none() || val_ok || simple_ok;
 
             // Guard removido: o requisito de melhoria ≥10% sobre best_ever_dist (que
             // nunca decai) bloqueava ganhos incrementais após 664m — o campeão precisava
@@ -954,24 +1302,58 @@ pub(super) fn evolution_pipeline(
                     let mut steer_arr = [0i8; 32];
                     let mut thr_arr = [0i8; 32];
                     let mut brake_arr = [0i8; 32];
-                    for (i, &w) in best.engine.reflex.steer.weights.iter().enumerate().take(32)    { steer_arr[i] = q(w); }
-                    for (i, &w) in best.engine.reflex.throttle.weights.iter().enumerate().take(32) { thr_arr[i]   = q(w); }
-                    for (i, &w) in best.engine.reflex.brake.weights.iter().enumerate().take(32)    { brake_arr[i] = q(w); }
+                    for (i, &w) in best.engine.reflex.steer.weights.iter().enumerate().take(32) {
+                        steer_arr[i] = q(w);
+                    }
+                    for (i, &w) in best
+                        .engine
+                        .reflex
+                        .throttle
+                        .weights
+                        .iter()
+                        .enumerate()
+                        .take(32)
+                    {
+                        thr_arr[i] = q(w);
+                    }
+                    for (i, &w) in best.engine.reflex.brake.weights.iter().enumerate().take(32) {
+                        brake_arr[i] = q(w);
+                    }
                     crate::evolution::dna_genesis::TrinityWeights {
-                        gate_weights: gate_w_arr, gate_bias: gate_b_arr,
-                        reflex_steer: steer_arr, reflex_throttle: thr_arr, reflex_brake: brake_arr,
+                        gate_weights: gate_w_arr,
+                        gate_bias: gate_b_arr,
+                        reflex_steer: steer_arr,
+                        reflex_throttle: thr_arr,
+                        reflex_brake: brake_arr,
                     }
                 };
                 // FIX Bug 1: persistir morpho + hypernet + trinity do champion.
                 // Cortex f32 runtime — quantize pra i8 no save com scale 63.5
                 // (cobre range ±2.0 do mutation clamp sem saturar).
-                let weights_q: Vec<i8> = weights.iter().map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
+                let weights_q: Vec<i8> = weights
+                    .iter()
+                    .map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8)
+                    .collect();
                 // V7: cortex_l2 também quantizado pra disk.
-                let l2_q: Vec<i8> = best.engine.cortex_l2.weights.iter()
-                    .map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8).collect();
+                let l2_q: Vec<i8> = best
+                    .engine
+                    .cortex_l2
+                    .weights
+                    .iter()
+                    .map(|&w| (w * 63.5).clamp(-127.0, 127.0) as i8)
+                    .collect();
                 // Keep ternary for now. i8 quantization caused regression.
-                let slow_weights_q: Vec<i8> = slow_weights.iter()
-                    .map(|&w| if w > 0.15 { 1i8 } else if w < -0.15 { -1i8 } else { 0i8 })
+                let slow_weights_q: Vec<i8> = slow_weights
+                    .iter()
+                    .map(|&w| {
+                        if w > 0.15 {
+                            1i8
+                        } else if w < -0.15 {
+                            -1i8
+                        } else {
+                            0i8
+                        }
+                    })
                     .collect();
                 // Save TWICE: generic CHAMPION.dna (latest run) + per-width
                 // CHAMPION_W{width}m.dna (memória persistente por pista, não desaprende).
@@ -989,8 +1371,10 @@ pub(super) fn evolution_pipeline(
                 for path in &["CHAMPION.dna", per_width.as_str(), snapshot.as_str()] {
                     let _ = crate::evolution::dna_genesis::save_champion_dna_v7(
                         path,
-                        &weights_q, scale,
-                        &slow_weights_q, slow_scale,
+                        &weights_q,
+                        scale,
+                        &slow_weights_q,
+                        slow_scale,
                         race.generation as u32,
                         race.seed as u32,
                         track_w,
@@ -1007,14 +1391,29 @@ pub(super) fn evolution_pipeline(
                 race.best_ever_dist = this_gen_best_dist.max(race.best_ever_dist);
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
-                    let _ = writeln!(file, "👑 **NOVO CAMPEÃO COROADO!** Distância: {:.1}m (Gen {}) — Superou {:.1}m anterior", this_gen_best_dist, race.generation, race.champion_distance);
+                    let _ = writeln!(
+                        file,
+                        "👑 **NOVO CAMPEÃO COROADO!** Distância: {:.1}m (Gen {}) — Superou {:.1}m anterior",
+                        this_gen_best_dist, race.generation, race.champion_distance
+                    );
                 }
             } else {
                 race.gens_since_crown += 1;
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
-                    let decay_note = if race.gens_since_crown >= 20 { " [THRESHOLD EM DECAY -5%/gen]" } else { "" };
-                    let _ = writeln!(file, "📉 Geração fraca ({:.1}m vs campeão {:.1}m) — DNA PRESERVADO (gens sem coroar: {}){}", this_gen_best_dist, race.champion_distance, race.gens_since_crown, decay_note);
+                    let decay_note = if race.gens_since_crown >= 20 {
+                        " [THRESHOLD EM DECAY -5%/gen]"
+                    } else {
+                        ""
+                    };
+                    let _ = writeln!(
+                        file,
+                        "📉 Geração fraca ({:.1}m vs campeão {:.1}m) — DNA PRESERVADO (gens sem coroar: {}){}",
+                        this_gen_best_dist,
+                        race.champion_distance,
+                        race.gens_since_crown,
+                        decay_note
+                    );
                 }
             }
         } else {
@@ -1043,8 +1442,15 @@ pub(super) fn evolution_pipeline(
         // ativa boost counter de 10 gens (axiom_strength piso 0.5 pra forçar recuperação).
         let gen_fitness: f32 = {
             let n = sorted.len();
-            if n == 0 { 0.0 }
-            else { sorted.iter().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).sum::<f32>() / n as f32 }
+            if n == 0 {
+                0.0
+            } else {
+                sorted
+                    .iter()
+                    .map(|(_, r, _, _)| calc_fitness(r, track_w, &lab))
+                    .sum::<f32>()
+                    / n as f32
+            }
         };
         if race.fitness_history.len() == super::settings::FITNESS_HISTORY_CAP {
             race.fitness_history.pop_front();
@@ -1055,7 +1461,8 @@ pub(super) fn evolution_pipeline(
         }
         if race.generation > 30 && race.fitness_history.len() >= 30 {
             let hist_len = race.fitness_history.len();
-            let recent_slice: Vec<f32> = race.fitness_history.iter().rev().take(5).copied().collect();
+            let recent_slice: Vec<f32> =
+                race.fitness_history.iter().rev().take(5).copied().collect();
             let recent_mean = recent_slice.iter().sum::<f32>() / recent_slice.len() as f32;
             // "around 30" = janela de 5 gens centrada no offset 30 a partir do fim.
             let start = hist_len.saturating_sub(32);
@@ -1066,14 +1473,23 @@ pub(super) fn evolution_pipeline(
                 race.axiom_boost_counter = 10;
                 if let Some(mut file) = open_report_log() {
                     use std::io::Write;
-                    let _ = writeln!(file, "🚨 EMERGENCY BRAKE: mean_fit recente {:.0} < {:.0} × 0.5 — axiom_strength floor 0.5 por 10 gens",
-                        recent_mean, ref_mean);
+                    let _ = writeln!(
+                        file,
+                        "🚨 EMERGENCY BRAKE: mean_fit recente {:.0} < {:.0} × 0.5 — axiom_strength floor 0.5 por 10 gens",
+                        recent_mean, ref_mean
+                    );
                 }
             }
         }
 
-        for e in &race.world_entities { if let Ok(mut e_cmd) = commands.get_entity(*e) { e_cmd.despawn(); } }
-        for (e, _, _, _) in query.iter() { commands.entity(e).despawn(); }
+        for e in &race.world_entities {
+            if let Ok(mut e_cmd) = commands.get_entity(*e) {
+                e_cmd.despawn();
+            }
+        }
+        for (e, _, _, _) in query.iter() {
+            commands.entity(e).despawn();
+        }
 
         // Fecha o escritor de replay desta geração antes de incrementar o contador.
         // O próximo update_racers abrirá um novo arquivo para gen N+1.
@@ -1082,7 +1498,10 @@ pub(super) fn evolution_pipeline(
         }
         race.replay_writer = None;
 
-        race.generation += 1; race.should_reset = false; race.hard_reset = false; race.selected_racer = None;
+        race.generation += 1;
+        race.should_reset = false;
+        race.hard_reset = false;
+        race.selected_racer = None;
 
         // CURRICULUM LEVEL + VALIDATION GEN (ver decide_next_env_level)
         // Calculado ANTES do world rebuild pra Tier 5.3 pinar validation no track 0.
@@ -1136,24 +1555,29 @@ pub(super) fn evolution_pipeline(
         // currículo de ambiente (nada abaixo de FRACAO_PARA_SUBIR), e o estreitamento anda no
         // máximo 0,25 m por geração — nos DOIS sentidos, para poder alargar de volta quando a
         // população não sustenta.
-        let alvo = 4.0
-            * ((race.frac_completou_volta - FRACAO_PARA_SUBIR) / 0.50).clamp(0.0, 1.0);
+        let alvo = 4.0 * ((race.frac_completou_volta - FRACAO_PARA_SUBIR) / 0.50).clamp(0.0, 1.0);
         let passo = 0.25;
         race.estreitamento += (alvo - race.estreitamento).clamp(-passo, passo);
         let narrowing = race.estreitamento.clamp(0.0, 4.0);
         let effective_width = (full_width - narrowing).max(base_width);
         if config.rotate_tracks {
-            println!("🔀 TRACK ROTATION gen={} → \"{}\" (seed={}, width={:.1}m, val={})",
-                next_gen_idx, next_track.name, next_track.seed, effective_width, is_val);
+            println!(
+                "🔀 TRACK ROTATION gen={} → \"{}\" (seed={}, width={:.1}m, val={})",
+                next_gen_idx, next_track.name, next_track.seed, effective_width, is_val
+            );
             if let Some(mut file) = open_report_log() {
                 use std::io::Write;
-                let _ = writeln!(file, "🔀 **TRACK**: {} (seed={}, base_width={:.1}m, validation={})",
-                    next_track.name, next_track.seed, base_width, is_val);
+                let _ = writeln!(
+                    file,
+                    "🔀 **TRACK**: {} (seed={}, base_width={:.1}m, validation={})",
+                    next_track.name, next_track.seed, base_width, is_val
+                );
             }
         }
 
         // Telemetria — sempre executar, não só em rotate_tracks
-        let nets: Vec<f32> = sorted.iter()
+        let nets: Vec<f32> = sorted
+            .iter()
             .map(|(_, r, _, _)| r.track_progress.max(0.0))
             .collect();
         let n = nets.len().max(1);
@@ -1163,12 +1587,19 @@ pub(super) fn evolution_pipeline(
         let p50_dist = nets_sorted[n / 2];
         let p90_dist = nets_sorted[(n * 9 / 10).min(n - 1)];
         let crashes = sorted.iter().filter(|(_, r, _, _)| r.is_dead).count();
-        let speed_bleeds = sorted.iter()
-            .filter(|(_, r, _, _)| matches!(r.death_reason, Some(crate::simulation::racer::DeathReason::SpeedBleed)))
+        let speed_bleeds = sorted
+            .iter()
+            .filter(|(_, r, _, _)| {
+                matches!(
+                    r.death_reason,
+                    Some(crate::simulation::racer::DeathReason::SpeedBleed)
+                )
+            })
             .count();
 
         // Count death reasons
-        let mut death_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut death_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for (_, r, _, _) in &sorted {
             if let Some(ref reason) = r.death_reason {
                 *death_counts.entry(format!("{:?}", reason)).or_insert(0) += 1;
@@ -1176,10 +1607,18 @@ pub(super) fn evolution_pipeline(
         }
 
         let laps: usize = sorted.first().map(|(_, r, _, _)| r.total_laps).unwrap_or(0);
-        let champ_dist = sorted.first().map(|(_, r, _, _)| r.track_progress).unwrap_or(0.0);
-        let best_fitness = sorted.first().map(|(_, r, _, _)| calc_fitness(r, track_w, &lab)).unwrap_or(0.0);
+        let champ_dist = sorted
+            .first()
+            .map(|(_, r, _, _)| r.track_progress)
+            .unwrap_or(0.0);
+        let best_fitness = sorted
+            .first()
+            .map(|(_, r, _, _)| calc_fitness(r, track_w, &lab))
+            .unwrap_or(0.0);
         let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         // Extrai valores de race ANTES de usar race.telemetry
         let run_id_copy = race.telemetry.run_id.clone();
         let gen_num = race.generation;
@@ -1246,9 +1685,40 @@ pub(super) fn evolution_pipeline(
             race.world_entities = Vec::new();
         } else {
             let (r_mesh, g_mesh, w_mesh) = world.generate_mesh();
-            let road_e = commands.spawn((Mesh3d(meshes.add(r_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.15, 0.15, 0.18), perceptual_roughness: 0.85, ..default() })), SimulationEntity)).id();
-            let grass_e = commands.spawn((Mesh3d(meshes.add(g_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.1, 0.3, 0.1), perceptual_roughness: 0.9, ..default() })), SimulationEntity)).id();
-            let wall_e = commands.spawn((Mesh3d(meshes.add(w_mesh)), MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.7, 0.7, 0.7), metallic: 1.0, perceptual_roughness: 0.1, ..default() })), SimulationEntity)).id();
+            let road_e = commands
+                .spawn((
+                    Mesh3d(meshes.add(r_mesh)),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.15, 0.15, 0.18),
+                        perceptual_roughness: 0.85,
+                        ..default()
+                    })),
+                    SimulationEntity,
+                ))
+                .id();
+            let grass_e = commands
+                .spawn((
+                    Mesh3d(meshes.add(g_mesh)),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.1, 0.3, 0.1),
+                        perceptual_roughness: 0.9,
+                        ..default()
+                    })),
+                    SimulationEntity,
+                ))
+                .id();
+            let wall_e = commands
+                .spawn((
+                    Mesh3d(meshes.add(w_mesh)),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.7, 0.7, 0.7),
+                        metallic: 1.0,
+                        perceptual_roughness: 0.1,
+                        ..default()
+                    })),
+                    SimulationEntity,
+                ))
+                .id();
             race.world_entities = vec![road_e, grass_e, wall_e];
         }
         // Spawn batched: agenda jobs, drain_spawn_queue processa em blocos por frame.
@@ -1260,15 +1730,19 @@ pub(super) fn evolution_pipeline(
         // está dentro de spawn_npcs. Validation gens limparam npcs via reset_fixed.
         env.spawn_npcs(&world_res.0.waypoints_world);
         if !env.npcs.is_empty() {
-            println!("🚧 NPCS gen={} count={} waypoints={}",
-                race.generation, env.npcs.len(), world_res.0.waypoints_world.len());
+            println!(
+                "🚧 NPCS gen={} count={} waypoints={}",
+                race.generation,
+                env.npcs.len(),
+                world_res.0.waypoints_world.len()
+            );
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bonus_de_volta, decide_next_env_level, limiar_de_nicho, NICHE_DISTANCE};
+    use super::{NICHE_DISTANCE, bonus_de_volta, decide_next_env_level, limiar_de_nicho};
 
     /// O limiar fixo de 8 apaga a diversidade que MEDIMOS existir.
     ///
@@ -1279,17 +1753,22 @@ mod tests {
     fn limiar_fixo_e_grande_demais_para_a_distancia_medida() {
         // amostra com a forma do medido na geração 4-7: mediana 2,4, máximo 8
         let medido = [1, 2, 2, 2, 3, 3, 4, 8];
-        assert!(NICHE_DISTANCE > 2 * 2, "8 é mais que o dobro da mediana medida");
-        assert!(limiar_de_nicho(&medido) < NICHE_DISTANCE,
-                "o adaptativo tem de apertar quando a população converge");
+        assert!(
+            NICHE_DISTANCE > 2 * 2,
+            "8 é mais que o dobro da mediana medida"
+        );
+        assert!(
+            limiar_de_nicho(&medido) < NICHE_DISTANCE,
+            "o adaptativo tem de apertar quando a população converge"
+        );
     }
 
     /// O adaptativo ACOMPANHA a escala: aperta quando a população converge e afrouxa quando
     /// ela é diversa. É o que um limiar absoluto não consegue fazer.
     #[test]
     fn limiar_adaptativo_acompanha_a_escala() {
-        let cedo = [4, 5, 5, 5, 6, 6, 7, 10];      // gen 1-3: mediana ~5
-        let tarde = [1, 2, 2, 2, 3, 3, 4, 8];      // gen 4-7: mediana ~2,4
+        let cedo = [4, 5, 5, 5, 6, 6, 7, 10]; // gen 1-3: mediana ~5
+        let tarde = [1, 2, 2, 2, 3, 3, 4, 8]; // gen 4-7: mediana ~2,4
         assert!(limiar_de_nicho(&cedo) > limiar_de_nicho(&tarde));
     }
 
@@ -1328,8 +1807,11 @@ mod tests {
 
         // Só o progresso bruto separa os dois, e ele é ~9× menor que o bônus.
         let dif_prog = (3.99 - 3.01) * PISTA;
-        assert!(dif_prog / a < 0.02,
-                "o sinal que sobra é {:.1}% — praticamente ruído", dif_prog / a * 100.0);
+        assert!(
+            dif_prog / a < 0.02,
+            "o sinal que sobra é {:.1}% — praticamente ruído",
+            dif_prog / a * 100.0
+        );
     }
 
     /// O contínuo enxerga a mesma melhoria com sinal proporcional ao ganho real.
@@ -1357,12 +1839,17 @@ mod tests {
     /// A contagem inteira tem patamares — a prova direta do que o contínuo conserta.
     #[test]
     fn contagem_inteira_tem_patamares() {
-        let patamares = (0..400).filter(|i| {
-            let (p1, p2) = (*i as f32 * 15.0, (*i + 1) as f32 * 15.0);
-            bonus_de_volta(p1, PISTA, (p1 / PISTA) as usize, BONUS, false)
-                == bonus_de_volta(p2, PISTA, (p2 / PISTA) as usize, BONUS, false)
-        }).count();
-        assert!(patamares > 350, "esperava quase tudo em patamar, deu {patamares}");
+        let patamares = (0..400)
+            .filter(|i| {
+                let (p1, p2) = (*i as f32 * 15.0, (*i + 1) as f32 * 15.0);
+                bonus_de_volta(p1, PISTA, (p1 / PISTA) as usize, BONUS, false)
+                    == bonus_de_volta(p2, PISTA, (p2 / PISTA) as usize, BONUS, false)
+            })
+            .count();
+        assert!(
+            patamares > 350,
+            "esperava quase tudo em patamar, deu {patamares}"
+        );
     }
 
     /// Compatibilidade: sem a flag, ou antes de o mundo escrever o comprimento, nada muda.
@@ -1423,7 +1910,7 @@ mod tests {
 
 #[cfg(test)]
 mod testes_curriculo_populacao {
-    use super::{decide_next_env_level_pop, FRACAO_PARA_DESCER, FRACAO_PARA_SUBIR};
+    use super::{FRACAO_PARA_DESCER, FRACAO_PARA_SUBIR, decide_next_env_level_pop};
 
     /// O caso real que quebrou o treino: um carro de sorte fez 1,93 voltas e levou os 60
     /// para o nível 3, onde a aderência cai a 0,33 e a frenagem exigida (130 m) passa do
@@ -1439,8 +1926,8 @@ mod testes_curriculo_populacao {
     #[test]
     fn sobe_so_quando_a_populacao_consolida() {
         let mut val = 5;
-        let (n, _) = decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1,
-                                               Some(FRACAO_PARA_SUBIR + 0.05));
+        let (n, _) =
+            decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1, Some(FRACAO_PARA_SUBIR + 0.05));
         assert_eq!(n, 2, "com a fração acima do limiar, sobe um degrau");
     }
 
@@ -1448,14 +1935,17 @@ mod testes_curriculo_populacao {
     fn sobe_no_maximo_um_degrau_por_geracao() {
         let mut val = 5;
         let (n, _) = decide_next_env_level_pop(&mut val, 99999.0, 1658.0, 1, Some(0.95));
-        assert_eq!(n, 2, "nunca dois degraus de uma vez, por melhor que tenha sido");
+        assert_eq!(
+            n, 2,
+            "nunca dois degraus de uma vez, por melhor que tenha sido"
+        );
     }
 
     #[test]
     fn recua_quando_ninguem_sustenta() {
         let mut val = 5;
-        let (n, _) = decide_next_env_level_pop(&mut val, 3198.0, 1658.0, 3,
-                                               Some(FRACAO_PARA_DESCER / 2.0));
+        let (n, _) =
+            decide_next_env_level_pop(&mut val, 3198.0, 1658.0, 3, Some(FRACAO_PARA_DESCER / 2.0));
         assert_eq!(n, 2, "sem ninguém completando volta, o nível tem de recuar");
     }
 
@@ -1504,7 +1994,9 @@ mod testes_largura_populacao {
         // o caso real: 8% da população fechava volta e a pista estreitava mesmo assim,
         // porque UM carro tinha feito 1,93 voltas
         let mut e = 0.0;
-        for _ in 0..10 { passo_largura(&mut e, 0.08); }
+        for _ in 0..10 {
+            passo_largura(&mut e, 0.08);
+        }
         assert_eq!(e, 0.0, "com 8% da população, a pista não pode estreitar");
     }
 
@@ -1512,24 +2004,41 @@ mod testes_largura_populacao {
     fn estreita_devagar_quando_a_populacao_sustenta() {
         let mut e = 0.0;
         let d1 = passo_largura(&mut e, 0.80);
-        assert!((d1 - 0.25).abs() < 1e-6, "no máximo 0,25 m por geração, deu {d1}");
-        for _ in 0..40 { passo_largura(&mut e, 0.80); }
-        assert!((e - 4.0).abs() < 1e-3, "com 80% consolidado chega ao teto de 4 m, deu {e}");
+        assert!(
+            (d1 - 0.25).abs() < 1e-6,
+            "no máximo 0,25 m por geração, deu {d1}"
+        );
+        for _ in 0..40 {
+            passo_largura(&mut e, 0.80);
+        }
+        assert!(
+            (e - 4.0).abs() < 1e-3,
+            "com 80% consolidado chega ao teto de 4 m, deu {e}"
+        );
     }
 
     #[test]
     fn alarga_de_volta_quando_a_populacao_desaba() {
         let mut e = 0.0;
-        for _ in 0..40 { passo_largura(&mut e, 0.80); }   // estreitou até 4 m
+        for _ in 0..40 {
+            passo_largura(&mut e, 0.80);
+        } // estreitou até 4 m
         assert!(e > 3.9);
-        for _ in 0..40 { passo_largura(&mut e, 0.02); }   // população desabou
-        assert_eq!(e, 0.0, "a pista tem de alargar de volta — antes isso era impossível");
+        for _ in 0..40 {
+            passo_largura(&mut e, 0.02);
+        } // população desabou
+        assert_eq!(
+            e, 0.0,
+            "a pista tem de alargar de volta — antes isso era impossível"
+        );
     }
 
     #[test]
     fn nunca_passa_do_teto_de_quatro_metros() {
         let mut e = 0.0;
-        for _ in 0..100 { passo_largura(&mut e, 1.0); }
+        for _ in 0..100 {
+            passo_largura(&mut e, 1.0);
+        }
         assert!(e <= 4.0 + 1e-6);
     }
 }

@@ -141,7 +141,9 @@ impl RacingLine {
 
     /// Project `pos` onto the ideal line, return (segment_index, t_in_seg[0..1], projected_point, segment_tangent).
     fn project(&self, pos: Vec2) -> Option<(usize, f32, Vec2, Vec2)> {
-        if self.points.len() < 2 { return None; }
+        if self.points.len() < 2 {
+            return None;
+        }
         let mut best = (0usize, 0.0f32, self.points[0], self.tangents[0]);
         let mut best_d = f32::INFINITY;
         for i in 0..self.points.len() - 1 {
@@ -172,7 +174,9 @@ impl RacingLine {
     /// kept in the signature per API contract — could be used to disambiguate
     /// projections on self-intersecting lines in future work.
     pub fn lateral_offset_from_line(&self, pos: Vec2, _tangent: Vec2) -> f32 {
-        let Some((_, _, proj, tan)) = self.project(pos) else { return 0.0; };
+        let Some((_, _, proj, tan)) = self.project(pos) else {
+            return 0.0;
+        };
         let delta = pos - proj;
         // Left-hand normal of the line tangent.
         let normal_left = Vec2::new(-tan.y, tan.x);
@@ -188,8 +192,12 @@ impl RacingLine {
     /// Practical use: anticipates corner turn-in while the car is still on
     /// straight, when instantaneous offset is zero.
     pub fn lookahead_offset(&self, pos: Vec2, s: f32) -> f32 {
-        let Some((i, t, _proj, _tan)) = self.project(pos) else { return 0.0; };
-        if self.arc.is_empty() { return 0.0; }
+        let Some((i, t, _proj, _tan)) = self.project(pos) else {
+            return 0.0;
+        };
+        if self.arc.is_empty() {
+            return 0.0;
+        }
         // Current arc s0 = arc[i] + t * (arc[i+1]-arc[i]).
         let seg_len = (self.arc[i + 1] - self.arc[i]).max(1e-4);
         let s0 = self.arc[i] + t * seg_len;
@@ -207,14 +215,20 @@ impl RacingLine {
         let look_p = self.points[j] + (self.points[j + 1] - self.points[j]) * u;
         let tan = self.tangents[j];
         let normal_left = Vec2::new(-tan.y, tan.x);
-        (pos - look_p).dot(normal_left).clamp(-self.half_width, self.half_width)
+        (pos - look_p)
+            .dot(normal_left)
+            .clamp(-self.half_width, self.half_width)
     }
 
     /// Return the world-space position on the racing line `s` meters ahead of `pos`.
     /// Returns `pos` if the projection fails or the line is empty.
     pub fn lookahead_point(&self, pos: Vec2, s: f32) -> Vec2 {
-        let Some((i, t, _proj, _tan)) = self.project(pos) else { return pos; };
-        if self.arc.is_empty() { return pos; }
+        let Some((i, t, _proj, _tan)) = self.project(pos) else {
+            return pos;
+        };
+        if self.arc.is_empty() {
+            return pos;
+        }
         let seg_len = (self.arc[i + 1] - self.arc[i]).max(1e-4);
         let s0 = self.arc[i] + t * seg_len;
         let target = (s0 + s).rem_euclid(self.total_len.max(1e-4));
@@ -245,7 +259,9 @@ fn resample_polyline(points: &[Vec2], step: f32) -> Vec<Vec2> {
         let b = points[i + 1];
         let seg = b - a;
         let seg_len = seg.length();
-        if seg_len < 1e-4 { continue; }
+        if seg_len < 1e-4 {
+            continue;
+        }
         let dir = seg / seg_len;
         let mut d = step - acc;
         while d < seg_len {
@@ -263,8 +279,10 @@ mod tests {
 
     fn square_track() -> Vec<Vec2> {
         vec![
-            Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0),
-            Vec2::new(100.0, 100.0), Vec2::new(0.0, 100.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(0.0, 100.0),
             Vec2::new(0.0, 0.0),
         ]
     }
@@ -279,22 +297,34 @@ mod tests {
     #[test]
     fn offset_is_zero_at_ideal_point() {
         let line = RacingLine::from_centerline(&square_track(), 18.0);
-        if line.points.is_empty() { return; }
+        if line.points.is_empty() {
+            return;
+        }
         let p = line.points[line.points.len() / 2];
         let off = line.lateral_offset_from_line(p, Vec2::X);
-        assert!(off.abs() < 0.01, "point ON line should have ~0 offset, got {}", off);
+        assert!(
+            off.abs() < 0.01,
+            "point ON line should have ~0 offset, got {}",
+            off
+        );
     }
 
     #[test]
     fn offset_sign_is_consistent() {
         let line = RacingLine::from_centerline(&square_track(), 18.0);
-        if line.points.len() < 3 { return; }
+        if line.points.len() < 3 {
+            return;
+        }
         // Pick a point, move it along the LEFT normal of the tangent → expect positive offset.
         let i = line.points.len() / 4;
         let tan = line.tangents[i];
         let normal_left = Vec2::new(-tan.y, tan.x);
         let probe = line.points[i] + normal_left * 2.0;
         let off = line.lateral_offset_from_line(probe, tan);
-        assert!(off > 0.0, "probe to the LEFT should be positive, got {}", off);
+        assert!(
+            off > 0.0,
+            "probe to the LEFT should be positive, got {}",
+            off
+        );
     }
 }

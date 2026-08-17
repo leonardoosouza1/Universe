@@ -56,7 +56,7 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
 use crate::config::iara::{
-    brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS, L3_NEURONS},
+    brain::{L1_NEURONS, L2_NEURONS, L3_NEURONS, SENSORY_WAVE_SIZE},
     vision::RETINA_TOTAL,
 };
 use crate::world::VoxelWorld;
@@ -78,8 +78,8 @@ pub const GRID_SIZE: usize = 320;
 // FloatLinear 96→48: input L1_NEURONS, output L2_NEURONS.
 // FloatLinear 48→24: input L2_NEURONS, output L3_NEURONS.
 const W1_TOTAL: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 223×96 = 21,408 f32 (see note)
-const W2_TOTAL: usize = L1_NEURONS * L2_NEURONS;         // 96×48  =  4,608 f32
-const W3_TOTAL: usize = L2_NEURONS * L3_NEURONS;         // 48×24  =  1,152 f32
+const W2_TOTAL: usize = L1_NEURONS * L2_NEURONS; // 96×48  =  4,608 f32
+const W3_TOTAL: usize = L2_NEURONS * L3_NEURONS; // 48×24  =  1,152 f32
 
 // CfC state (96 dimensions, one slice per being, f32).
 const CFC_DIM: usize = L1_NEURONS; // 96
@@ -90,8 +90,8 @@ const CFC_DIM: usize = L1_NEURONS; // 96
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PosGpu {
     /// [pos.x, pos.y, pos.z, padding] + [fwd.x, fwd.z, right.x, right.z]
-    pub pos_pad:  [f32; 4],
-    pub dirs:     [f32; 4],
+    pub pos_pad: [f32; 4],
+    pub dirs: [f32; 4],
 }
 
 // ─── Motor intent returned by the GPU each tick. ───────────────────────────
@@ -100,9 +100,9 @@ pub struct PosGpu {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
 pub struct IntentGpu {
     pub throttle: f32,
-    pub steer:    f32,
-    pub brake:    f32,
-    pub _pad:     f32,
+    pub steer: f32,
+    pub brake: f32,
+    pub _pad: f32,
 }
 
 /// GPU context shared by every kernel.
@@ -130,19 +130,19 @@ pub struct IntentGpu {
 /// download_cfc_state()                 ← once per generation, before evolution
 /// ```
 pub struct CoreGpu {
-    pub device:  wgpu::Device,
-    pub queue:   wgpu::Queue,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
     pub adapter: String,
 
     // ── World buffers (static per track, uploaded in `new`) ────────────────
     /// grid[320×320] → u32 (VoxelType cast).
-    pub buf_grid:      wgpu::Buffer,
+    pub buf_grid: wgpu::Buffer,
     /// height_map[320×320] → f32 (metres).
-    pub buf_height:     wgpu::Buffer,
+    pub buf_height: wgpu::Buffer,
     /// banking[320×320] → f32 (radians).
-    pub buf_banking:    wgpu::Buffer,
+    pub buf_banking: wgpu::Buffer,
     /// flow[320×320] → [f32;2] (normalised direction along the track).
-    pub buf_flow:       wgpu::Buffer,
+    pub buf_flow: wgpu::Buffer,
 
     // ── Weight buffers (once per generation) ──────────────────────────────
     /// Concatenated weights: being0:[W1|W2|W3|CfC_state], being1:..., ...
@@ -152,23 +152,23 @@ pub struct CoreGpu {
     /// CfC_state = CFC_DIM f32 (temporal state — updated in place by the brain).
     ///
     /// Stride per being = (W1_TOTAL + W2_TOTAL + W3_TOTAL + CFC_DIM) × sizeof(f32).
-    pub buf_weights:      wgpu::Buffer,
+    pub buf_weights: wgpu::Buffer,
 
     // ── Per-tick state buffers ────────────────────────────────────────────
     /// poses[capacity] → PosGpu (written by the CPU each tick, 2 kB for 60 beings).
-    pub buf_poses:      wgpu::Buffer,
+    pub buf_poses: wgpu::Buffer,
     /// retina_output[capacity × RETINA_TOTAL] → u32 (dist_mm<<8 | material).
     /// NEVER comes down to the CPU on the hot path. The brain kernel reads it from here.
     pub buf_retina_output: wgpu::Buffer,
     /// intent[capacity] → IntentGpu (comes down to the CPU each tick, 720 bytes).
-    pub buf_intent:   wgpu::Buffer,
+    pub buf_intent: wgpu::Buffer,
     /// Read staging for intent (MAP_READ).
     pub buf_intent_readback: wgpu::Buffer,
 
     // ── Metadata ──────────────────────────────────────────────────────────
-    pub capacity:    usize,
-    pub grid_size:     u32,
-    pub cell_size:     f32,
+    pub capacity: usize,
+    pub grid_size: u32,
+    pub cell_size: f32,
 
     // ── Compiled pipelines ────────────────────────────────────────────────
     // ASSUMED: the perception, brain and physics kernels get compiled here once their
@@ -179,7 +179,7 @@ pub struct CoreGpu {
     // ASSUMED: the brain pipeline will come from src/gpu/brain.wgsl (agent B).
     // ASSUMED: the physics pipeline will come from src/gpu/physics.wgsl (agent A).
     pub pipeline_retina: wgpu::ComputePipeline,
-    pub layout_retina:   wgpu::BindGroupLayout,
+    pub layout_retina: wgpu::BindGroupLayout,
 }
 
 // Weight stride per being, in f32 (not in bytes).
@@ -205,23 +205,23 @@ impl CoreGpu {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
         });
-        let adapter_obj = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference:    wgpu::PowerPreference::HighPerformance,
-                compatible_surface:  None,
+        let adapter_obj =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
                 force_fallback_adapter: false,
-            },
-        ))?;
+            }))?;
         let name = adapter_obj.get_info().name.clone();
         let (device, queue) = pollster::block_on(adapter_obj.request_device(
             &wgpu::DeviceDescriptor {
-                label:             Some("iara-core"),
+                label: Some("iara-core"),
                 required_features: wgpu::Features::empty(),
-                required_limits:   wgpu::Limits::downlevel_defaults(),
-                memory_hints:      wgpu::MemoryHints::Performance,
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
-        )).ok()?;
+        ))
+        .ok()?;
 
         let cap = capacity.min(MAX_CAPACITY).max(1);
 
@@ -230,32 +230,32 @@ impl CoreGpu {
         // 320×320 × 4 = 409,600 bytes.
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("core-grid"),
+            label: Some("core-grid"),
             contents: bytemuck::cast_slice(&grid_u32),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE,
         });
 
         // height_map: 320×320 × 4 = 409,600 bytes.
         let buf_height = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("core-height"),
+            label: Some("core-height"),
             contents: bytemuck::cast_slice(&world.height_map),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE,
         });
 
         // banking: 320×320 × 4 = 409,600 bytes.
         let buf_banking = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("core-banking"),
+            label: Some("core-banking"),
             contents: bytemuck::cast_slice(&world.banking),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE,
         });
 
         // flow: Vec<Vec2> → [f32;2] per cell → 320×320×8 = 819,200 bytes.
         // `Vec2` is bytemuck::Pod in bevy 0.16 (layout [f32; 2]).
         let flow_raw: Vec<[f32; 2]> = world.flow.iter().map(|v| [v.x, v.y]).collect();
         let buf_flow = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("core-flow"),
+            label: Some("core-flow"),
             contents: bytemuck::cast_slice(&flow_raw),
-            usage:    wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE,
         });
 
         // ── Weight buffer (per being) ───────────────────────────────────────
@@ -267,51 +267,51 @@ impl CoreGpu {
         // it is 24288 × 4 × 60 = 5,829,120 bytes ≈ 5.6 MB.
         let bytes_weights = (weights_stride_f32() * cap * std::mem::size_of::<f32>()) as u64;
         let buf_weights = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("core-weights"),
-            size:                bytes_weights,
+            label: Some("core-weights"),
+            size: bytes_weights,
             // COPY_SRC is required because the recurrent state (CfC) lives INSIDE this
             // buffer and has to be read back at the end of the generation. Without the
             // flag, wgpu rejects the copy_buffer_to_buffer with a validation error — which
             // is exactly what happened.
-            usage:               wgpu::BufferUsages::STORAGE
-                                 | wgpu::BufferUsages::COPY_DST
-                                 | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation:  false,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
 
         // ── Per-tick buffers ───────────────────────────────────────────────
         // poses: 60 × 32 bytes = 1,920 bytes.
         let bytes_poses = (cap * std::mem::size_of::<PosGpu>()) as u64;
         let buf_poses = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("core-poses"),
-            size:                bytes_poses,
-            usage:               wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation:  false,
+            label: Some("core-poses"),
+            size: bytes_poses,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         // retina_output: 60 × 1764 × 4 = 423,360 bytes.
         // COPY_SRC so it can be copied into a readback buffer when inspection is needed.
         let bytes_retina = (cap * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
         let buf_retina_output = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("core-retina-output"),
-            size:                bytes_retina,
-            usage:               wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation:  false,
+            label: Some("core-retina-output"),
+            size: bytes_retina,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
 
         // intent: 60 × 16 bytes = 960 bytes (IntentGpu carries padding).
         let bytes_intent = (cap * std::mem::size_of::<IntentGpu>()) as u64;
         let buf_intent = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("core-intent"),
-            size:                bytes_intent,
-            usage:               wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation:  false,
+            label: Some("core-intent"),
+            size: bytes_intent,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
         let buf_intent_readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("core-intent-readback"),
-            size:                bytes_intent,
-            usage:               wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation:  false,
+            label: Some("core-intent-readback"),
+            size: bytes_intent,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         // ── Retina pipeline (reuses retina.wgsl) ───────────────────────────
@@ -319,13 +319,11 @@ impl CoreGpu {
         // (uniform params, read-only storage grid, read-only storage poses,
         // write-only storage output). This is the layout already in mod.rs.
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("retina"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
-                include_str!("retina.wgsl"),
-            )),
+            label: Some("retina"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("retina.wgsl"))),
         });
         let layout_retina = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("retina-layout"),
+            label: Some("retina-layout"),
             entries: &[
                 uniform_entry(0),
                 storage_entry(1, true),  // grid
@@ -334,17 +332,17 @@ impl CoreGpu {
             ],
         });
         let pipe_layout_retina = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                None,
-            bind_group_layouts:   &[&layout_retina],
+            label: None,
+            bind_group_layouts: &[&layout_retina],
             push_constant_ranges: &[],
         });
         let pipeline_retina = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("retina-pipeline"),
-            layout:              Some(&pipe_layout_retina),
-            module:              &shader_retina,
-            entry_point:         Some("main"),
+            label: Some("retina-pipeline"),
+            layout: Some(&pipe_layout_retina),
+            module: &shader_retina,
+            entry_point: Some("main"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache: None,
         });
 
         Some(Self {
@@ -361,8 +359,8 @@ impl CoreGpu {
             buf_intent,
             buf_intent_readback,
             capacity: cap,
-            grid_size:  world.size as u32,
-            cell_size:  world.cell_size,
+            grid_size: world.size as u32,
+            cell_size: world.cell_size,
             pipeline_retina,
             layout_retina,
         })
@@ -394,22 +392,20 @@ impl CoreGpu {
             let base = s * stride;
             // W1
             let w1s = s * W1_TOTAL;
-            interleaved[base..base + W1_TOTAL]
-                .copy_from_slice(&weights_w1[w1s..w1s + W1_TOTAL]);
+            interleaved[base..base + W1_TOTAL].copy_from_slice(&weights_w1[w1s..w1s + W1_TOTAL]);
             // W2
             let w2s = s * W2_TOTAL;
             let o2 = base + W1_TOTAL;
-            interleaved[o2..o2 + W2_TOTAL]
-                .copy_from_slice(&weights_w2[w2s..w2s + W2_TOTAL]);
+            interleaved[o2..o2 + W2_TOTAL].copy_from_slice(&weights_w2[w2s..w2s + W2_TOTAL]);
             // W3
             let w3s = s * W3_TOTAL;
             let o3 = o2 + W2_TOTAL;
-            interleaved[o3..o3 + W3_TOTAL]
-                .copy_from_slice(&weights_w3[w3s..w3s + W3_TOTAL]);
+            interleaved[o3..o3 + W3_TOTAL].copy_from_slice(&weights_w3[w3s..w3s + W3_TOTAL]);
             // CfC state: zeros (reset every generation, like CfCCell::reset()).
             // bytes [o3+W3_TOTAL .. o3+W3_TOTAL+CFC_DIM] are already 0 from `vec![0.0]`.
         }
-        self.queue.write_buffer(&self.buf_weights, 0, bytemuck::cast_slice(&interleaved));
+        self.queue
+            .write_buffer(&self.buf_weights, 0, bytemuck::cast_slice(&interleaved));
     }
 
     /// Writes the living beings' poses and fires the kernels in sequence.
@@ -443,9 +439,9 @@ impl CoreGpu {
     /// Returns the motor intents read back from the GPU: a `Vec` of length `n_alive`.
     pub fn tick(
         &self,
-        poses:         &[PosGpu],
-        params_retina: &[u8],  // bytemuck::bytes_of(&ParamsGpu{...})
-        n_alive:       usize,
+        poses: &[PosGpu],
+        params_retina: &[u8], // bytemuck::bytes_of(&ParamsGpu{...})
+        n_alive: usize,
     ) -> Vec<IntentGpu> {
         let n = n_alive.min(self.capacity);
         if n == 0 {
@@ -453,36 +449,49 @@ impl CoreGpu {
         }
 
         // 1. Upload poses (1,920 bytes for 60 beings — the only CPU→GPU traffic per tick).
-        self.queue.write_buffer(
-            &self.buf_poses,
-            0,
-            bytemuck::cast_slice(&poses[..n]),
-        );
+        self.queue
+            .write_buffer(&self.buf_poses, 0, bytemuck::cast_slice(&poses[..n]));
 
         // 2. Build the retina params uniform as a temporary buffer.
         //    We create it per tick because `n_beings` can vary (deaths during a generation).
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("core-params-retina"),
-            contents: params_retina,
-            usage:    wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("core-params-retina"),
+                contents: params_retina,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         // 3. Retina bind group (same layout as mod.rs::RetinaGpu).
         let bg_retina = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   None,
-            layout:  &self.layout_retina,
+            label: None,
+            layout: &self.layout_retina,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_poses.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_retina_output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_poses.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_retina_output.as_entire_binding(),
+                },
             ],
         });
 
         // 4. A single CommandEncoder — every dispatch with no intermediate readback.
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("core-tick"),
-        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("core-tick"),
+            });
 
         // ── Retina dispatch ──────────────────────────────────────────────────
         // 64 threads/workgroup: 2 waves of 32 on RDNA2 (wave32 is the correct size).
@@ -490,8 +499,8 @@ impl CoreGpu {
         // Workgroups = ceil(105840 / 64) = 1,654.
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label:                    Some("pass-retina"),
-                timestamp_writes:         None,
+                label: Some("pass-retina"),
+                timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline_retina);
             pass.set_bind_group(0, &bg_retina, &[]);
@@ -528,11 +537,7 @@ impl CoreGpu {
 
         // ── Intent readback (the only readback per tick, 720 bytes) ───────────
         let bytes_int = (n * std::mem::size_of::<IntentGpu>()) as u64;
-        enc.copy_buffer_to_buffer(
-            &self.buf_intent, 0,
-            &self.buf_intent_readback, 0,
-            bytes_int,
-        );
+        enc.copy_buffer_to_buffer(&self.buf_intent, 0, &self.buf_intent_readback, 0, bytes_int);
 
         self.queue.submit(Some(enc.finish()));
 
@@ -578,18 +583,14 @@ impl CoreGpu {
         // requires copying aligned blocks; we copy the entire stride and extract).
         let bytes_total_weights = (stride * n * std::mem::size_of::<f32>()) as u64;
         let buf_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label:               Some("core-cfc-staging"),
-            size:                bytes_total_weights,
-            usage:               wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation:  false,
+            label: Some("core-cfc-staging"),
+            size: bytes_total_weights,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let mut enc = self.device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(
-            &self.buf_weights, 0,
-            &buf_staging,    0,
-            bytes_total_weights,
-        );
+        enc.copy_buffer_to_buffer(&self.buf_weights, 0, &buf_staging, 0, bytes_total_weights);
         self.queue.submit(Some(enc.finish()));
 
         let slice = buf_staging.slice(..);
@@ -618,18 +619,36 @@ impl CoreGpu {
     /// ASSUMED: PhysicsGpu, BrainGpu and PerceptionGpu receive `&CoreGpu` and use
     /// `core.device` and `core.queue` directly — they never create their own
     /// `wgpu::Instance`.
-    pub fn device(&self) -> &wgpu::Device { &self.device }
-    pub fn queue(&self) -> &wgpu::Queue   { &self.queue }
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
 
     /// Dimension constants exposed so external kernels do not have to import the config
     /// constants directly (avoids crate coupling).
-    pub const fn retina_total()       -> usize { RETINA_TOTAL }
-    pub const fn sensory_wave_size()  -> usize { SENSORY_WAVE_SIZE }
-    pub const fn cfc_dim()            -> usize { CFC_DIM }
-    pub const fn weights_stride()       -> usize { W1_TOTAL + W2_TOTAL + W3_TOTAL + CFC_DIM }
-    pub const fn w1_total()           -> usize { W1_TOTAL }
-    pub const fn w2_total()           -> usize { W2_TOTAL }
-    pub const fn w3_total()           -> usize { W3_TOTAL }
+    pub const fn retina_total() -> usize {
+        RETINA_TOTAL
+    }
+    pub const fn sensory_wave_size() -> usize {
+        SENSORY_WAVE_SIZE
+    }
+    pub const fn cfc_dim() -> usize {
+        CFC_DIM
+    }
+    pub const fn weights_stride() -> usize {
+        W1_TOTAL + W2_TOTAL + W3_TOTAL + CFC_DIM
+    }
+    pub const fn w1_total() -> usize {
+        W1_TOTAL
+    }
+    pub const fn w2_total() -> usize {
+        W2_TOTAL
+    }
+    pub const fn w3_total() -> usize {
+        W3_TOTAL
+    }
 }
 
 // ── Bind group layout helpers ───────────────────────────────────────────────
@@ -644,9 +663,9 @@ pub fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
-            ty:                wgpu::BufferBindingType::Uniform,
+            ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
-            min_binding_size:   None,
+            min_binding_size: None,
         },
         count: None,
     }
@@ -659,7 +678,7 @@ pub fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntr
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only },
             has_dynamic_offset: false,
-            min_binding_size:   None,
+            min_binding_size: None,
         },
         count: None,
     }

@@ -301,14 +301,19 @@ mod tests {
         // Sinais ortogonais de amplitude igual → autovalores iguais → PR = N
         let freqs = [1.0_f32, 2.0, 3.0, 5.0];
         let acts: Vec<Vec<f32>> = (0..t)
-            .map(|i| freqs.iter()
-                .map(|&f| (2.0 * std::f32::consts::PI * f * i as f32 / t as f32).sin())
-                .collect())
+            .map(|i| {
+                freqs
+                    .iter()
+                    .map(|&f| (2.0 * std::f32::consts::PI * f * i as f32 / t as f32).sin())
+                    .collect()
+            })
             .collect();
         let pr = participation_ratio(&acts).expect("PR deve existir");
         assert!(
             (pr - n as f32).abs() < 0.5,
-            "PR de sinais ortogonais deve ser ≈ {}, obteve {}", n, pr
+            "PR de sinais ortogonais deve ser ≈ {}, obteve {}",
+            n,
+            pr
         );
     }
 
@@ -324,7 +329,11 @@ mod tests {
             })
             .collect();
         let pr = participation_ratio(&acts).expect("PR deve existir");
-        assert!((pr - 1.0).abs() < 0.05, "PR posto-1 deve ser ≈ 1, obteve {}", pr);
+        assert!(
+            (pr - 1.0).abs() < 0.05,
+            "PR posto-1 deve ser ≈ 1, obteve {}",
+            pr
+        );
     }
 
     /// Amostras insuficientes → None.
@@ -343,7 +352,11 @@ mod tests {
             m[i * n + i] = 1.0;
         }
         let r = spectral_radius(&m, n, 100);
-        assert!((r - 1.0).abs() < 0.01, "raio espectral de I deve ser 1, obteve {}", r);
+        assert!(
+            (r - 1.0).abs() < 0.01,
+            "raio espectral de I deve ser 1, obteve {}",
+            r
+        );
     }
 
     /// Raio espectral de matriz zero = 0.0.
@@ -352,7 +365,11 @@ mod tests {
         let n = 3usize;
         let m = vec![0.0_f32; n * n];
         let r = spectral_radius(&m, n, 50);
-        assert!(r < 1e-10, "raio espectral de zeros deve ser 0, obteve {}", r);
+        assert!(
+            r < 1e-10,
+            "raio espectral de zeros deve ser 0, obteve {}",
+            r
+        );
     }
 
     /// Raio espectral de escalar 2 = 2.0.
@@ -360,7 +377,11 @@ mod tests {
     fn raio_espectral_escalar_2() {
         // Matriz [[2.0]]: autovalor = 2.0
         let r = spectral_radius(&[2.0], 1, 10);
-        assert!((r - 2.0).abs() < 0.01, "raio espectral de [[2]] deve ser 2, obteve {}", r);
+        assert!(
+            (r - 2.0).abs() < 0.01,
+            "raio espectral de [[2]] deve ser 2, obteve {}",
+            r
+        );
     }
 
     /// Rank efetivo de vetor [1,0,0,...]: apenas 1 singular value → rank = 1.
@@ -393,7 +414,9 @@ mod tests {
         let n = 3usize;
         let mut m = vec![0.0f32; n * n];
         let diag = [4.0f32, 1.0, 9.0];
-        for i in 0..n { m[i * n + i] = diag[i]; }
+        for i in 0..n {
+            m[i * n + i] = diag[i];
+        }
         let mut eig = eigenvalues_symmetric(&m, n);
         eig.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mut esperado = diag.to_vec();
@@ -408,7 +431,9 @@ mod tests {
     fn largest_singular_value_identidade_e_1() {
         let n = 4usize;
         let mut w = vec![0.0f32; n * n];
-        for i in 0..n { w[i * n + i] = 1.0; }
+        for i in 0..n {
+            w[i * n + i] = 1.0;
+        }
         let sv = largest_singular_value(&w, n, n);
         assert!((sv - 1.0).abs() < 0.05, "esperado ~1.0, obteve {sv}");
     }
@@ -417,10 +442,7 @@ mod tests {
     /// duas linhas ortogonais com normas diferentes → maior valor singular = maior norma.
     #[test]
     fn largest_singular_value_retangular() {
-        let w = vec![
-            2.0, 0.0, 0.0, 0.0,
-            0.0, 3.0, 0.0, 0.0,
-        ];
+        let w = vec![2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0];
         let sv = largest_singular_value(&w, 2, 4);
         assert!((sv - 3.0).abs() < 0.05, "esperado ~3.0, obteve {sv}");
     }
@@ -436,7 +458,10 @@ mod tests {
         let sv_escalado = largest_singular_value(&escalado, 2, 4);
         assert!(
             (sv_escalado - sv_base * 2.5).abs() < 1e-3,
-            "esperado {} (= {} × 2.5), obteve {}", sv_base * 2.5, sv_base, sv_escalado
+            "esperado {} (= {} × 2.5), obteve {}",
+            sv_base * 2.5,
+            sv_base,
+            sv_escalado
         );
     }
 
@@ -453,14 +478,15 @@ mod tests {
     fn eigenvalues_symmetric_soma_e_traco() {
         let n = 3usize;
         // Matriz simétrica arbitrária.
-        let m = vec![
-            2.0, 1.0, 0.0,
-            1.0, 3.0, 1.0,
-            0.0, 1.0, 4.0,
-        ];
+        let m = vec![2.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 4.0];
         let traco: f32 = (0..n).map(|i| m[i * n + i]).sum();
         let eig = eigenvalues_symmetric(&m, n);
         let soma: f32 = eig.iter().sum();
-        assert!((soma - traco).abs() < 1e-2, "soma autovalores {} != traço {}", soma, traco);
+        assert!(
+            (soma - traco).abs() < 1e-2,
+            "soma autovalores {} != traço {}",
+            soma,
+            traco
+        );
     }
 }

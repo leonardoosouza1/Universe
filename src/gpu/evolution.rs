@@ -47,9 +47,9 @@
 //! literal — então um campeão salvo antes desta mudança carrega com o ganho espectral
 //! que ele sempre teve, intocado.
 
-use crate::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS};
-use crate::kan::KAN_OUT_KNOTS;
+use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
 use crate::engine::SovereignEngine;
+use crate::kan::KAN_OUT_KNOTS;
 use crate::math::{linalg, thresholds};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -85,8 +85,8 @@ fn spectral_rescale_factor(medido: f32, alvo: f32) -> f32 {
 
 // ── Dimensões derivadas ────────────────────────────────────────────────────────
 pub const N_L1_WEIGHTS: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
-pub const N_L2_WEIGHTS: usize = L1_NEURONS * L2_NEURONS;         // 96  × 48 =  4.608
-pub const N_KAN_KNOTS:  usize = 3 * KAN_OUT_KNOTS;               // 3   × 12 =     36
+pub const N_L2_WEIGHTS: usize = L1_NEURONS * L2_NEURONS; // 96  × 48 =  4.608
+pub const N_KAN_KNOTS: usize = 3 * KAN_OUT_KNOTS; // 3   × 12 =     36
 
 /// Genoma completo de um ser: L1 + L2 + KAN de saída.
 #[derive(Clone)]
@@ -233,10 +233,10 @@ pub const N_SENSOR_GENES: usize = 6;
 pub mod sensor_idx {
     pub const FOV_HALF_RAD: usize = 0;
     pub const WALL_RANGE_M: usize = 1;
-    pub const LAT_RANGE_M:  usize = 2;
-    pub const CURV_NEAR_M:  usize = 3;
-    pub const CURV_MID_M:   usize = 4;
-    pub const CURV_FAR_M:   usize = 5;
+    pub const LAT_RANGE_M: usize = 2;
+    pub const CURV_NEAR_M: usize = 3;
+    pub const CURV_MID_M: usize = 4;
+    pub const CURV_FAR_M: usize = 5;
 }
 
 /// Valor de nascença de cada gene sensorial — os hardcodes de HOJE, byte-idênticos aos
@@ -292,11 +292,11 @@ pub const SENSOR_RANGES: [(f32, f32); N_SENSOR_GENES] = [
     // 30°..85° in radians. The lower bound is exactly FRAC_PI_6, so use the constant
     // rather than a rounded literal; the upper bound has no named constant.
     (std::f32::consts::FRAC_PI_6, 1.483529864), // fov_half_rad
-    (20.0, 120.0),               // wall_range_m
-    (15.0, 100.0),                // lat_range_m
-    (15.0, 80.0),                 // curv_near_m
-    (40.0, 150.0),                // curv_mid_m
-    (80.0, 250.0),                // curv_far_m
+    (20.0, 120.0),                              // wall_range_m
+    (15.0, 100.0),                              // lat_range_m
+    (15.0, 80.0),                               // curv_near_m
+    (40.0, 150.0),                              // curv_mid_m
+    (80.0, 250.0),                              // curv_far_m
 ];
 
 /// Fração da FAIXA de cada gene usada como σ da mutação gaussiana (ver `mutate_sensors`).
@@ -354,8 +354,12 @@ pub trait GenoRng {
 }
 
 impl GenoRng for crate::rng::Lcg {
-    fn chance(&mut self) -> f32 { self.uniform() }
-    fn gauss(&mut self) -> f32 { self.gaussian() }
+    fn chance(&mut self) -> f32 {
+        self.uniform()
+    }
+    fn gauss(&mut self) -> f32 {
+        self.gaussian()
+    }
 }
 
 /// Sorteia os `N_SENSOR_GENES` genes uniformemente dentro de `SENSOR_RANGES` — a
@@ -368,7 +372,10 @@ impl GenoRng for crate::rng::Lcg {
 /// função pura em vez de testada via `SPECTRAL_INIT_ON`).
 pub fn random_sensors_within_ranges(seed: u64) -> Vec<f32> {
     let mut rng = crate::rng::Lcg::new(seed);
-    SENSOR_RANGES.iter().map(|&(lo, hi)| lo + rng.uniform() * (hi - lo)).collect()
+    SENSOR_RANGES
+        .iter()
+        .map(|&(lo, hi)| lo + rng.uniform() * (hi - lo))
+        .collect()
 }
 
 /// Muta o banco de sensores IN-PLACE — ruído gaussiano PROPORCIONAL À FAIXA de cada
@@ -389,7 +396,11 @@ pub fn random_sensors_within_ranges(seed: u64) -> Vec<f32> {
 /// Função PURA (recebe os geradores de fora, não lê `SENSORS_EVOLVE_ON`) pelo mesmo
 /// motivo de `random_sensors_within_ranges` — ver o comentário lá.
 pub fn mutate_sensors(sensors: &mut [f32], p_mutate: f32, rng: &mut impl GenoRng) {
-    debug_assert_eq!(sensors.len(), N_SENSOR_GENES, "banco de sensores tem que ter N_SENSOR_GENES genes");
+    debug_assert_eq!(
+        sensors.len(),
+        N_SENSOR_GENES,
+        "banco de sensores tem que ter N_SENSOR_GENES genes"
+    );
     for i in 0..N_SENSOR_GENES {
         if rng.chance() < p_mutate {
             let (lo, hi) = SENSOR_RANGES[i];
@@ -438,11 +449,15 @@ impl Genome {
     /// precisa ser evoluído nos primeiros estágios.
     pub fn random(seed: u64) -> Self {
         // LCG de 64 bits (Knuth MMIX) — determinístico por seed.
-        let mut state = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0x6C62272E07BB0142);
+        let mut state = seed
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(0x6C62272E07BB0142);
         let mut rng_f32 = move || -> f32 {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let u = ((state >> 11) as f32) / (1u64 << 53) as f32;
-            u * 2.0 - 1.0  // uniforme [-1, 1]
+            u * 2.0 - 1.0 // uniforme [-1, 1]
         };
 
         // Box-Muller para N(0, σ).
@@ -451,7 +466,7 @@ impl Genome {
             let u1 = (rng() * 0.5 + 0.5).max(1e-7_f32);
             let u2 = rng() * 0.5 + 0.5;
             let g = (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos();
-            (g * sigma_l1).clamp(-3.0 * sigma_l1, 3.0 * sigma_l1)  // clamp em 3σ
+            (g * sigma_l1).clamp(-3.0 * sigma_l1, 3.0 * sigma_l1) // clamp em 3σ
         };
 
         let mut l1: Vec<f32> = (0..N_L1_WEIGHTS).map(|_| gauss(&mut rng_f32)).collect();
@@ -471,7 +486,9 @@ impl Genome {
         if SPECTRAL_INIT_ON.load(Ordering::Relaxed) {
             let medido = linalg::largest_singular_value(&l1, L1_NEURONS, SENSORY_WAVE_SIZE);
             let fator = spectral_rescale_factor(medido, thresholds::SPECTRAL_INIT_TARGET);
-            for w in l1.iter_mut() { *w *= fator; }
+            for w in l1.iter_mut() {
+                *w *= fator;
+            }
         }
 
         // FASE CANAIS (2026-08-14) — zera a coluna de L1 dos canais em
@@ -526,8 +543,16 @@ impl Genome {
         let neuron_threshold_l1 = vec![0.0; N_L1_NEURONS];
         let neuron_activation = vec![0.0; N_L1_NEURONS + N_L2_NEURONS];
         Self {
-            l1, l2, kan_knots, slow, tau, sensors,
-            neuron_alpha, neuron_period_l1, neuron_threshold_l1, neuron_activation,
+            l1,
+            l2,
+            kan_knots,
+            slow,
+            tau,
+            sensors,
+            neuron_alpha,
+            neuron_period_l1,
+            neuron_threshold_l1,
+            neuron_activation,
             gates_w: vec![0.0; 16],
         }
     }
@@ -540,7 +565,9 @@ impl Genome {
     /// Achata o banco de τ de vários genomas no layout que `BrainGpu::upload_tau` espera.
     pub fn pack_taus(genomes: &[Genome]) -> Vec<f32> {
         let mut out = Vec::with_capacity(genomes.len() * N_CFC_CHANNELS);
-        for g in genomes { out.extend_from_slice(&g.tau); }
+        for g in genomes {
+            out.extend_from_slice(&g.tau);
+        }
         out
     }
 
@@ -548,7 +575,9 @@ impl Genome {
     /// `PerceptionGpu::upload_sensors` espera — mesmo padrão de `pack_taus`.
     pub fn pack_sensors(genomes: &[Genome]) -> Vec<f32> {
         let mut out = Vec::with_capacity(genomes.len() * N_SENSOR_GENES);
-        for g in genomes { out.extend_from_slice(&g.sensors); }
+        for g in genomes {
+            out.extend_from_slice(&g.sensors);
+        }
         out
     }
 
@@ -571,12 +600,12 @@ impl Genome {
             debug_assert_eq!(g.neuron_period_l1.len(), N_L1_NEURONS);
             debug_assert_eq!(g.neuron_threshold_l1.len(), N_L1_NEURONS);
             debug_assert_eq!(g.neuron_activation.len(), N_L1_NEURONS + N_L2_NEURONS);
-            out.extend_from_slice(&g.neuron_alpha[..N_L1_NEURONS]);       // l1_alpha
-            out.extend_from_slice(&g.neuron_period_l1);                   // l1_period
-            out.extend_from_slice(&g.neuron_threshold_l1);                // l1_threshold
-            out.extend_from_slice(&g.neuron_activation[..N_L1_NEURONS]);  // l1_activation
-            out.extend_from_slice(&g.neuron_alpha[N_L1_NEURONS..]);       // l2_alpha
-            out.extend_from_slice(&g.neuron_activation[N_L1_NEURONS..]);  // l2_activation
+            out.extend_from_slice(&g.neuron_alpha[..N_L1_NEURONS]); // l1_alpha
+            out.extend_from_slice(&g.neuron_period_l1); // l1_period
+            out.extend_from_slice(&g.neuron_threshold_l1); // l1_threshold
+            out.extend_from_slice(&g.neuron_activation[..N_L1_NEURONS]); // l1_activation
+            out.extend_from_slice(&g.neuron_alpha[N_L1_NEURONS..]); // l2_alpha
+            out.extend_from_slice(&g.neuron_activation[N_L1_NEURONS..]); // l2_activation
         }
         out
     }
@@ -601,8 +630,16 @@ impl Genome {
         let neuron_threshold_l1 = vec![0.0; N_L1_NEURONS];
         let neuron_activation = vec![0.0; N_L1_NEURONS + N_L2_NEURONS];
         Self {
-            l1, l2, kan_knots, slow, tau, sensors,
-            neuron_alpha, neuron_period_l1, neuron_threshold_l1, neuron_activation,
+            l1,
+            l2,
+            kan_knots,
+            slow,
+            tau,
+            sensors,
+            neuron_alpha,
+            neuron_period_l1,
+            neuron_threshold_l1,
+            neuron_activation,
             gates_w: vec![0.0; 16],
         }
     }
@@ -627,29 +664,39 @@ impl Genome {
     /// o neurônio emitindo o seu viés.
     pub fn ablar_l1_acima_de(&mut self, vivos: usize) {
         use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS};
-        if vivos == 0 || vivos >= L1_NEURONS { return; }
+        if vivos == 0 || vivos >= L1_NEURONS {
+            return;
+        }
         for j in 0..L2_NEURONS {
             for n in vivos..L1_NEURONS {
                 let idx = j * L1_NEURONS + n;
-                if idx < self.l2.len() { self.l2[idx] = 0.0; }
+                if idx < self.l2.len() {
+                    self.l2[idx] = 0.0;
+                }
             }
         }
     }
 
     pub fn apply_to_engine(&self, eng: &mut SovereignEngine) {
         assert_eq!(
-            self.l1.len(), eng.instinct_layer.weights.len(),
+            self.l1.len(),
+            eng.instinct_layer.weights.len(),
             "L1 tem {} pesos, engine espera {} — divergência de SENSORY_WAVE_SIZE ou L1_NEURONS",
-            self.l1.len(), eng.instinct_layer.weights.len()
+            self.l1.len(),
+            eng.instinct_layer.weights.len()
         );
         eng.instinct_layer.weights.copy_from_slice(&self.l1);
         assert_eq!(
-            self.l2.len(), eng.cortex_l2.weights.len(),
+            self.l2.len(),
+            eng.cortex_l2.weights.len(),
             "L2 tem {} pesos, engine espera {} — divergência de L1_NEURONS ou L2_NEURONS",
-            self.l2.len(), eng.cortex_l2.weights.len()
+            self.l2.len(),
+            eng.cortex_l2.weights.len()
         );
         eng.cortex_l2.weights.copy_from_slice(&self.l2);
-        if !self.slow.is_empty() { eng.slow_brain.set_all_weights(&self.slow); }
+        if !self.slow.is_empty() {
+            eng.slow_brain.set_all_weights(&self.slow);
+        }
         // KAN knots são usados pelo ciclo de evolução diretamente (não no engine).
     }
 }
@@ -714,10 +761,10 @@ pub fn aplicar_mascara_regioes(g: &mut Genome) {
 impl Default for EvoParams {
     fn default() -> Self {
         Self {
-            p_mutate: 0.02,    // 2% dos pesos por geração
-            sigma: 0.05,       // perturbação gaussiana σ=0.05
-            n_elite: 3,        // top 3 passam sem mutação
-            tournament_k: 3,   // torneio de 3
+            p_mutate: 0.02,  // 2% dos pesos por geração
+            sigma: 0.05,     // perturbação gaussiana σ=0.05
+            n_elite: 3,      // top 3 passam sem mutação
+            tournament_k: 3, // torneio de 3
             congela_l2_cegas: false,
             l2_linhas_lidas: L2_LINHAS_LIDAS,
             mascara_regioes: false,
@@ -728,11 +775,11 @@ impl Default for EvoParams {
 /// Resultado de uma geração.
 pub struct GenResult {
     pub generation: usize,
-    pub dist_max:  f64,  // metros, melhor indivíduo
-    pub dist_med:  f64,  // metros, mediana
-    pub n_ge1v:    usize, // seres com ≥1 volta completa
-    pub n_ge2v:    usize, // seres com ≥2 voltas completas
-    pub mortality: f32,  // fração de seres que não andaram (dist < 10m)
+    pub dist_max: f64,  // metros, melhor indivíduo
+    pub dist_med: f64,  // metros, mediana
+    pub n_ge1v: usize,  // seres com ≥1 volta completa
+    pub n_ge2v: usize,  // seres com ≥2 voltas completas
+    pub mortality: f32, // fração de seres que não andaram (dist < 10m)
 }
 
 /// Executa um ciclo evolutivo: seleciona + muta.
@@ -748,18 +795,26 @@ pub struct GenResult {
 /// reproduz o stream antigo exatamente (o termo se anula) — baterias antigas
 /// continuam reproduzíveis.
 pub fn evolve(
-    genomes:    &[Genome],
-    fitnesses:  &[f64],
-    params:     &EvoParams,
-    generation: usize,   // índice da geração (para seed determinística)
-    pop_seed:   u64,     // `--seed` da CLI; 0 = stream histórico
+    genomes: &[Genome],
+    fitnesses: &[f64],
+    params: &EvoParams,
+    generation: usize, // índice da geração (para seed determinística)
+    pop_seed: u64,     // `--seed` da CLI; 0 = stream histórico
 ) -> Vec<Genome> {
     let n = genomes.len();
-    assert_eq!(fitnesses.len(), n, "fitnesses e genomes devem ter mesmo tamanho");
+    assert_eq!(
+        fitnesses.len(),
+        n,
+        "fitnesses e genomes devem ter mesmo tamanho"
+    );
 
     // ── Ordena por fitness decrescente ─────────────────────────────────────────
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| fitnesses[b].partial_cmp(&fitnesses[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        fitnesses[b]
+            .partial_cmp(&fitnesses[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut nova: Vec<Genome> = Vec::with_capacity(n);
 
@@ -770,18 +825,32 @@ pub fn evolve(
 
     // ── Seleção por torneio + mutação ───────────────────────────────────────────
     // Struct local para encapsular o RNG sem aliasing de closures.
-    struct Rng { state: u64, spare: Option<f32> }
+    struct Rng {
+        state: u64,
+        spare: Option<f32>,
+    }
     impl Rng {
-        fn new(seed: u64) -> Self { Self { state: seed, spare: None } }
+        fn new(seed: u64) -> Self {
+            Self {
+                state: seed,
+                spare: None,
+            }
+        }
         fn u64(&mut self) -> u64 {
-            self.state = self.state.wrapping_mul(6364136223846793005)
+            self.state = self
+                .state
+                .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             self.state
         }
-        fn f32(&mut self) -> f32 { ((self.u64() >> 11) as f32) / (1u64 << 53) as f32 }
+        fn f32(&mut self) -> f32 {
+            ((self.u64() >> 11) as f32) / (1u64 << 53) as f32
+        }
         // Box-Muller N(0,1).
         fn gauss(&mut self) -> f32 {
-            if let Some(v) = self.spare.take() { return v; }
+            if let Some(v) = self.spare.take() {
+                return v;
+            }
             // No rejection loop here: `u1` is clamped away from zero, so the first
             // draw is always valid. The `loop` this used to sit in never iterated
             // twice and clippy reported it as dead structure.
@@ -796,8 +865,12 @@ pub fn evolve(
     // `Rng` implementa `GenoRng` para `mutate_sensors` poder receber UMA referência
     // (`&mut rng`) em vez de dois closures — ver a doc de `GenoRng` no topo do arquivo.
     impl GenoRng for Rng {
-        fn chance(&mut self) -> f32 { self.f32() }
-        fn gauss(&mut self) -> f32 { Rng::gauss(self) }
+        fn chance(&mut self) -> f32 {
+            self.f32()
+        }
+        fn gauss(&mut self) -> f32 {
+            Rng::gauss(self)
+        }
     }
 
     let seed = (generation as u64)
@@ -812,7 +885,9 @@ pub fn evolve(
             let mut best = rng.u64() as usize % n;
             for _ in 1..params.tournament_k {
                 let cand = rng.u64() as usize % n;
-                if fitnesses[cand] > fitnesses[best] { best = cand; }
+                if fitnesses[cand] > fitnesses[best] {
+                    best = cand;
+                }
             }
             best
         };
@@ -835,7 +910,9 @@ pub fn evolve(
         // filhos — nenhum teste assume que `evolve()` preserva o valor cru da
         // mutação nesses canais.
         filho.zero_dead_inputs();
-        if params.mascara_regioes { aplicar_mascara_regioes(&mut filho); }
+        if params.mascara_regioes {
+            aplicar_mascara_regioes(&mut filho);
+        }
         // Mutação gaussiana em L2. Com `congela_l2_cegas`, só as linhas com
         // consumidor real (0..L2_LINHAS_LIDAS) mutam — as cegas ficam como estão
         // (nem random walk: o que o campeão tinha, fica congelado nele).
@@ -997,15 +1074,22 @@ pub fn evolve(
 /// Retorna `(media, desvio_padrao)` da contagem de neurônios disparando por
 /// tick, somada sobre TODOS os seres (não por ser).
 pub fn simulate_l1_fire_counts(periods_all: &[f32], n_beings: usize, n_ticks: usize) -> (f64, f64) {
-    if n_beings == 0 || n_ticks == 0 { return (0.0, 0.0); }
-    debug_assert_eq!(periods_all.len(), n_beings * N_L1_NEURONS,
-        "periods_all deveria ter n_beings*N_L1_NEURONS valores");
+    if n_beings == 0 || n_ticks == 0 {
+        return (0.0, 0.0);
+    }
+    debug_assert_eq!(
+        periods_all.len(),
+        n_beings * N_L1_NEURONS,
+        "periods_all deveria ter n_beings*N_L1_NEURONS valores"
+    );
     let mut contagens: Vec<f64> = Vec::with_capacity(n_ticks);
     for tick in 1..=n_ticks {
         let mut count: u64 = 0;
         for &p_raw in periods_all.iter() {
             let period = (p_raw.round() as i64).max(1) as usize;
-            if period <= 1 || tick % period == 0 { count += 1; }
+            if period <= 1 || tick % period == 0 {
+                count += 1;
+            }
         }
         contagens.push(count as f64);
     }
@@ -1023,11 +1107,18 @@ pub fn gen_stats(generation: usize, dist_acum: &[f64], lap_dist: f64) -> GenResu
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         v[v.len() / 2]
     };
-    let n_ge1v  = dist_acum.iter().filter(|&&d| d >= lap_dist).count();
-    let n_ge2v  = dist_acum.iter().filter(|&&d| d >= lap_dist * 2.0).count();
+    let n_ge1v = dist_acum.iter().filter(|&&d| d >= lap_dist).count();
+    let n_ge2v = dist_acum.iter().filter(|&&d| d >= lap_dist * 2.0).count();
     let n_morto = dist_acum.iter().filter(|&&d| d < 10.0).count();
     let mortality = n_morto as f32 / n as f32;
-    GenResult { generation, dist_max, dist_med, n_ge1v, n_ge2v, mortality }
+    GenResult {
+        generation,
+        dist_max,
+        dist_med,
+        n_ge1v,
+        n_ge2v,
+        mortality,
+    }
 }
 
 /// Calcula inclinação linear (OLS) e seu desvio-padrão (erro do estimador).
@@ -1036,16 +1127,26 @@ pub fn gen_stats(generation: usize, dist_acum: &[f64], lap_dist: f64) -> GenResu
 /// Retorna `(slope, slope_stderr)`. Se n < 2 retorna (0.0, 0.0).
 pub fn linear_slope(ys: &[f64]) -> (f64, f64) {
     let n = ys.len();
-    if n < 2 { return (0.0, 0.0); }
+    if n < 2 {
+        return (0.0, 0.0);
+    }
     let xs: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let mean_x = xs.iter().sum::<f64>() / n as f64;
     let mean_y = ys.iter().sum::<f64>() / n as f64;
     let sxx: f64 = xs.iter().map(|&x| (x - mean_x).powi(2)).sum();
-    let sxy: f64 = xs.iter().zip(ys.iter()).map(|(&x, &y)| (x - mean_x) * (y - mean_y)).sum();
-    if sxx < 1e-10 { return (0.0, 0.0); }
+    let sxy: f64 = xs
+        .iter()
+        .zip(ys.iter())
+        .map(|(&x, &y)| (x - mean_x) * (y - mean_y))
+        .sum();
+    if sxx < 1e-10 {
+        return (0.0, 0.0);
+    }
     let slope = sxy / sxx;
     // SSR = variância residual
-    let ssr: f64 = xs.iter().zip(ys.iter())
+    let ssr: f64 = xs
+        .iter()
+        .zip(ys.iter())
         .map(|(&x, &y)| (y - (mean_y + slope * (x - mean_x))).powi(2))
         .sum();
     let var_resid = ssr / (n as f64 - 2.0).max(1.0);
@@ -1068,8 +1169,14 @@ mod tests {
     #[test]
     fn spectral_rescale_factor_atinge_alvo_exatamente() {
         let fator = spectral_rescale_factor(7.0, 1.0);
-        assert!((fator - 1.0 / 7.0).abs() < 1e-6, "fator = {fator}, esperado 1/7");
-        assert!((7.0 * fator - 1.0).abs() < 1e-6, "aplicar o fator deveria levar a 1.0");
+        assert!(
+            (fator - 1.0 / 7.0).abs() < 1e-6,
+            "fator = {fator}, esperado 1/7"
+        );
+        assert!(
+            (7.0 * fator - 1.0).abs() < 1e-6,
+            "aplicar o fator deveria levar a 1.0"
+        );
     }
 
     /// Ganho ~0 (L1 nulo, nunca observado na prática) não deve gerar divisão explosiva
@@ -1115,13 +1222,18 @@ mod tests {
         // Lista vazia desde 2026-08-15 (ch70 refutado por medição — canal estava
         // VIVO; térmica implementada em physics_power_c.wgsl). Teste vira no-op
         // até existir canal genuinamente morto; a máquina segue no forward.
-        if DEAD_L1_INPUTS.is_empty() { return; }
+        if DEAD_L1_INPUTS.is_empty() {
+            return;
+        }
         for seed in [1u64, 7, 999] {
             let g = Genome::random(seed);
             for &(ch, _motivo) in DEAD_L1_INPUTS {
                 for neuron in 0..L1_NEURONS {
                     let w = g.l1[neuron * SENSORY_WAVE_SIZE + ch];
-                    assert_eq!(w, 0.0, "seed {seed}: l1[neuron={neuron}, ch={ch}] = {w}, esperado 0.0");
+                    assert_eq!(
+                        w, 0.0,
+                        "seed {seed}: l1[neuron={neuron}, ch={ch}] = {w}, esperado 0.0"
+                    );
                 }
             }
         }
@@ -1149,7 +1261,12 @@ mod tests {
                     // which neuron this is.
                     #[allow(clippy::erasing_op)]
                     let vizinho = g.l1[0 * SENSORY_WAVE_SIZE + (ch + 1)];
-                    assert_ne!(vizinho, 0.0, "seed {seed}: canal vizinho ch{} não deveria ter sido zerado", ch + 1);
+                    assert_ne!(
+                        vizinho,
+                        0.0,
+                        "seed {seed}: canal vizinho ch{} não deveria ter sido zerado",
+                        ch + 1
+                    );
                 }
             }
         }
@@ -1169,17 +1286,31 @@ mod tests {
     fn evolve_pop_seeds_diferentes_divergem_e_zero_reproduz() {
         let n = 10;
         let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
+        let params = EvoParams {
+            p_mutate: 1.0,
+            sigma: 0.05,
+            n_elite: 1,
+            tournament_k: 3,
+            congela_l2_cegas: false,
+            l2_linhas_lidas: L2_LINHAS_LIDAS,
+            mascara_regioes: false,
+        };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
-        let a  = evolve(&genomes, &fitnesses, &params, 1, 77);
-        let b  = evolve(&genomes, &fitnesses, &params, 1, 31);
+        let a = evolve(&genomes, &fitnesses, &params, 1, 77);
+        let b = evolve(&genomes, &fitnesses, &params, 1, 31);
         let a2 = evolve(&genomes, &fitnesses, &params, 1, 77);
 
         // Elite (índice 0) passa clonada nos dois — compara um filho MUTADO.
-        assert_ne!(a[1].l1, b[1].l1, "seeds 77 e 31 produziram o mesmo filho: pop_seed não entrou na mutação");
+        assert_ne!(
+            a[1].l1, b[1].l1,
+            "seeds 77 e 31 produziram o mesmo filho: pop_seed não entrou na mutação"
+        );
         assert_eq!(a[1].l1, a2[1].l1, "mesma seed deixou de ser determinística");
-        assert_eq!(a[0].l1, b[0].l1, "elite não pode depender de seed (passa sem mutação)");
+        assert_eq!(
+            a[0].l1, b[0].l1,
+            "elite não pode depender de seed (passa sem mutação)"
+        );
     }
 
     /// `--l2-congelar-cegas`: linhas 5..48 de L2 não mutam; 0..5 mutam normal.
@@ -1187,7 +1318,15 @@ mod tests {
     fn evolve_congela_linhas_cegas_de_l2() {
         let n = 10;
         let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: true, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
+        let params = EvoParams {
+            p_mutate: 1.0,
+            sigma: 0.05,
+            n_elite: 1,
+            tournament_k: 3,
+            congela_l2_cegas: true,
+            l2_linhas_lidas: L2_LINHAS_LIDAS,
+            mascara_regioes: false,
+        };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         let nova = evolve(&genomes, &fitnesses, &params, 1, 0);
@@ -1195,11 +1334,18 @@ mod tests {
         // de ser idênticas às de ALGUM genoma original (nunca mutaram).
         let corte = L2_LINHAS_LIDAS * L1_NEURONS;
         let filho = &nova[1];
-        let pai = genomes.iter().find(|g| g.l2[corte..] == filho.l2[corte..])
-            .expect("linhas cegas do filho não batem com nenhum pai: mutaram apesar do congelamento");
+        let pai = genomes
+            .iter()
+            .find(|g| g.l2[corte..] == filho.l2[corte..])
+            .expect(
+                "linhas cegas do filho não batem com nenhum pai: mutaram apesar do congelamento",
+            );
         // E as linhas lidas TÊM de ter mutado (p_mutate=1.0 → 480 pesos, todos perturbados).
-        assert_ne!(pai.l2[..corte], filho.l2[..corte],
-            "linhas lidas não mutaram — congelamento vazou pro range errado");
+        assert_ne!(
+            pai.l2[..corte],
+            filho.l2[..corte],
+            "linhas lidas não mutaram — congelamento vazou pro range errado"
+        );
     }
 
     #[test]
@@ -1208,13 +1354,23 @@ mod tests {
         // Lista vazia desde 2026-08-15 (ch70 refutado por medição — canal estava
         // VIVO; térmica implementada em physics_power_c.wgsl). Teste vira no-op
         // até existir canal genuinamente morto; a máquina segue no forward.
-        if DEAD_L1_INPUTS.is_empty() { return; }
+        if DEAD_L1_INPUTS.is_empty() {
+            return;
+        }
 
         let n = 10;
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
         // p_mutate=1.0: garante que TODO peso de L1 (inclusive os dos canais mortos,
         // se a máscara não fosse reaplicada) sofre tentativa de mutação toda geração.
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
+        let params = EvoParams {
+            p_mutate: 1.0,
+            sigma: 0.05,
+            n_elite: 1,
+            tournament_k: 3,
+            congela_l2_cegas: false,
+            l2_linhas_lidas: L2_LINHAS_LIDAS,
+            mascara_regioes: false,
+        };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..10 {
@@ -1255,7 +1411,10 @@ mod tests {
         for i in 0..N_SENSOR_GENES {
             let (lo, hi) = SENSOR_RANGES[i];
             let v = SENSOR_DEFAULTS[i];
-            assert!(v >= lo && v <= hi, "gene {i}: default {v} fora da faixa [{lo}, {hi}]");
+            assert!(
+                v >= lo && v <= hi,
+                "gene {i}: default {v} fora da faixa [{lo}, {hi}]"
+            );
         }
     }
 
@@ -1272,7 +1431,11 @@ mod tests {
         );
         for seed in [1u64, 2, 3, 42, 999_999] {
             let g = Genome::random(seed);
-            assert_eq!(g.sensors, SENSOR_DEFAULTS.to_vec(), "seed {seed}: sensores deveriam ser SENSOR_DEFAULTS");
+            assert_eq!(
+                g.sensors,
+                SENSOR_DEFAULTS.to_vec(),
+                "seed {seed}: sensores deveriam ser SENSOR_DEFAULTS"
+            );
         }
     }
 
@@ -1286,7 +1449,10 @@ mod tests {
             for i in 0..N_SENSOR_GENES {
                 let (lo, hi) = SENSOR_RANGES[i];
                 let v = sensores[i];
-                assert!(v >= lo && v <= hi, "seed {seed}, gene {i}: sorteado {v} fora da faixa [{lo}, {hi}]");
+                assert!(
+                    v >= lo && v <= hi,
+                    "seed {seed}, gene {i}: sorteado {v} fora da faixa [{lo}, {hi}]"
+                );
             }
         }
     }
@@ -1307,7 +1473,10 @@ mod tests {
             for i in 0..N_SENSOR_GENES {
                 let (lo, hi) = SENSOR_RANGES[i];
                 let v = sensores[i];
-                assert!(v >= lo && v <= hi, "seed {seed}, gene {i}: {v} fora da faixa [{lo}, {hi}] após 500 mutações");
+                assert!(
+                    v >= lo && v <= hi,
+                    "seed {seed}, gene {i}: {v} fora da faixa [{lo}, {hi}] após 500 mutações"
+                );
             }
         }
     }
@@ -1341,14 +1510,34 @@ mod tests {
     fn genoma_novo_tem_mecanismos_p17_neutros() {
         for seed in [1u64, 2, 3, 42, 999_999] {
             let g = Genome::random(seed);
-            assert_eq!(g.neuron_alpha.len(), N_L1_NEURONS + N_L2_NEURONS, "seed {seed}");
-            assert!(g.neuron_alpha.iter().all(|&a| a == 0.0), "seed {seed}: alfa deveria nascer 0.0");
+            assert_eq!(
+                g.neuron_alpha.len(),
+                N_L1_NEURONS + N_L2_NEURONS,
+                "seed {seed}"
+            );
+            assert!(
+                g.neuron_alpha.iter().all(|&a| a == 0.0),
+                "seed {seed}: alfa deveria nascer 0.0"
+            );
             assert_eq!(g.neuron_period_l1.len(), N_L1_NEURONS, "seed {seed}");
-            assert!(g.neuron_period_l1.iter().all(|&p| p == 1.0), "seed {seed}: período deveria nascer 1.0");
+            assert!(
+                g.neuron_period_l1.iter().all(|&p| p == 1.0),
+                "seed {seed}: período deveria nascer 1.0"
+            );
             assert_eq!(g.neuron_threshold_l1.len(), N_L1_NEURONS, "seed {seed}");
-            assert!(g.neuron_threshold_l1.iter().all(|&t| t == 0.0), "seed {seed}: limiar deveria nascer 0.0");
-            assert_eq!(g.neuron_activation.len(), N_L1_NEURONS + N_L2_NEURONS, "seed {seed}");
-            assert!(g.neuron_activation.iter().all(|&a| a == 0.0), "seed {seed}: ativação deveria nascer 0.0 (tanh)");
+            assert!(
+                g.neuron_threshold_l1.iter().all(|&t| t == 0.0),
+                "seed {seed}: limiar deveria nascer 0.0"
+            );
+            assert_eq!(
+                g.neuron_activation.len(),
+                N_L1_NEURONS + N_L2_NEURONS,
+                "seed {seed}"
+            );
+            assert!(
+                g.neuron_activation.iter().all(|&a| a == 0.0),
+                "seed {seed}: ativação deveria nascer 0.0 (tanh)"
+            );
         }
     }
 
@@ -1370,11 +1559,20 @@ mod tests {
     #[test]
     fn neuron_mem_gain_cresce_e_fica_finito_no_teto_do_clamp() {
         let g_baixo = neuron_mem_gain(0.2);
-        let g_alto  = neuron_mem_gain(0.95);
-        assert!(g_alto > g_baixo, "ganho deveria crescer com alfa: {g_baixo} vs {g_alto}");
-        assert!(g_alto.is_finite(), "ganho no teto do clamp (0.95) deveria ser finito, obteve {g_alto}");
+        let g_alto = neuron_mem_gain(0.95);
+        assert!(
+            g_alto > g_baixo,
+            "ganho deveria crescer com alfa: {g_baixo} vs {g_alto}"
+        );
+        assert!(
+            g_alto.is_finite(),
+            "ganho no teto do clamp (0.95) deveria ser finito, obteve {g_alto}"
+        );
         // sqrt((1+0.95)/(1-0.95)) = sqrt(1.95/0.05) = sqrt(39) ≈ 6.245
-        assert!((g_alto - 39.0f32.sqrt()).abs() < 1e-4, "ganho em alfa=0.95: {g_alto}, esperado ≈6.245");
+        assert!(
+            (g_alto - 39.0f32.sqrt()).abs() < 1e-4,
+            "ganho em alfa=0.95: {g_alto}, esperado ≈6.245"
+        );
     }
 
     /// `evolve()`, com os quatro atomics de P1.7 no padrão (`true` — mutação
@@ -1397,33 +1595,68 @@ mod tests {
     /// intermediário destes atomics.
     #[test]
     fn evolve_muta_mecanismos_p17_e_flags_sem_x_congelam_no_neutro() {
-        assert!(NEURON_MEM_MUTATE_ON.load(Ordering::Relaxed), "pré-condição: padrão deveria ser true");
-        assert!(NEURON_PERIOD_MUTATE_ON.load(Ordering::Relaxed), "pré-condição: padrão deveria ser true");
-        assert!(NEURON_THRESHOLD_MUTATE_ON.load(Ordering::Relaxed), "pré-condição: padrão deveria ser true");
-        assert!(NEURON_ACTIVATION_MUTATE_ON.load(Ordering::Relaxed), "pré-condição: padrão deveria ser true");
+        assert!(
+            NEURON_MEM_MUTATE_ON.load(Ordering::Relaxed),
+            "pré-condição: padrão deveria ser true"
+        );
+        assert!(
+            NEURON_PERIOD_MUTATE_ON.load(Ordering::Relaxed),
+            "pré-condição: padrão deveria ser true"
+        );
+        assert!(
+            NEURON_THRESHOLD_MUTATE_ON.load(Ordering::Relaxed),
+            "pré-condição: padrão deveria ser true"
+        );
+        assert!(
+            NEURON_ACTIVATION_MUTATE_ON.load(Ordering::Relaxed),
+            "pré-condição: padrão deveria ser true"
+        );
 
         // ── Parte 1: padrão (mutação LIGADA) — faixas respeitadas + algo mudou ──
         let n = 12;
         let mut genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
-        let params = EvoParams { p_mutate: 1.0, sigma: 0.05, n_elite: 1, tournament_k: 3, congela_l2_cegas: false, l2_linhas_lidas: L2_LINHAS_LIDAS, mascara_regioes: false };
+        let params = EvoParams {
+            p_mutate: 1.0,
+            sigma: 0.05,
+            n_elite: 1,
+            tournament_k: 3,
+            congela_l2_cegas: false,
+            l2_linhas_lidas: L2_LINHAS_LIDAS,
+            mascara_regioes: false,
+        };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
         for geracao in 0..40 {
             genomes = evolve(&genomes, &fitnesses, &params, geracao, 0);
             for g in &genomes {
                 for &a in &g.neuron_alpha {
-                    assert!((0.0..=0.95).contains(&a), "geração {geracao}: alfa {a} fora de [0, 0.95]");
+                    assert!(
+                        (0.0..=0.95).contains(&a),
+                        "geração {geracao}: alfa {a} fora de [0, 0.95]"
+                    );
                 }
                 for &p in &g.neuron_period_l1 {
-                    assert!((1.0..=8.0).contains(&p), "geração {geracao}: período {p} fora de [1, 8]");
-                    assert_eq!(p, p.round(), "geração {geracao}: período {p} deveria ser inteiro");
+                    assert!(
+                        (1.0..=8.0).contains(&p),
+                        "geração {geracao}: período {p} fora de [1, 8]"
+                    );
+                    assert_eq!(
+                        p,
+                        p.round(),
+                        "geração {geracao}: período {p} deveria ser inteiro"
+                    );
                 }
                 for &t in &g.neuron_threshold_l1 {
-                    assert!((0.0..=0.9).contains(&t), "geração {geracao}: limiar {t} fora de [0, 0.9]");
+                    assert!(
+                        (0.0..=0.9).contains(&t),
+                        "geração {geracao}: limiar {t} fora de [0, 0.9]"
+                    );
                 }
                 for &act in &g.neuron_activation {
-                    assert!((0.0..=3.0).contains(&act) && act == act.floor(),
-                        "geração {geracao}: id de ativação {act} deveria ser inteiro em [0,3]");
+                    assert!(
+                        (0.0..=3.0).contains(&act) && act == act.floor(),
+                        "geração {geracao}: id de ativação {act} deveria ser inteiro em [0,3]"
+                    );
                 }
             }
         }
@@ -1432,14 +1665,34 @@ mod tests {
         // menos ALGUM valor deveria ter saído do neutro — senão o teste acima
         // estaria vacuamente verdadeiro (tudo continua 0.0/1.0/0.0/0.0 e "nunca sai
         // da faixa" seria trivial, não uma prova de que a mutação funciona).
-        let algum_alfa_mudou = genomes.iter().any(|g| g.neuron_alpha.iter().any(|&a| a != 0.0));
-        let algum_periodo_mudou = genomes.iter().any(|g| g.neuron_period_l1.iter().any(|&p| p != 1.0));
-        let algum_limiar_mudou = genomes.iter().any(|g| g.neuron_threshold_l1.iter().any(|&t| t != 0.0));
-        let alguma_ativacao_mudou = genomes.iter().any(|g| g.neuron_activation.iter().any(|&a| a != 0.0));
-        assert!(algum_alfa_mudou, "40 gerações com p_mutate=1.0 e nenhum alfa mudou — mutação não está rodando");
-        assert!(algum_periodo_mudou, "40 gerações com p_mutate=1.0 e nenhum período mudou — mutação não está rodando");
-        assert!(algum_limiar_mudou, "40 gerações com p_mutate=1.0 e nenhum limiar mudou — mutação não está rodando");
-        assert!(alguma_ativacao_mudou, "40 gerações e nenhuma ativação mudou — mutação discreta não está rodando");
+        let algum_alfa_mudou = genomes
+            .iter()
+            .any(|g| g.neuron_alpha.iter().any(|&a| a != 0.0));
+        let algum_periodo_mudou = genomes
+            .iter()
+            .any(|g| g.neuron_period_l1.iter().any(|&p| p != 1.0));
+        let algum_limiar_mudou = genomes
+            .iter()
+            .any(|g| g.neuron_threshold_l1.iter().any(|&t| t != 0.0));
+        let alguma_ativacao_mudou = genomes
+            .iter()
+            .any(|g| g.neuron_activation.iter().any(|&a| a != 0.0));
+        assert!(
+            algum_alfa_mudou,
+            "40 gerações com p_mutate=1.0 e nenhum alfa mudou — mutação não está rodando"
+        );
+        assert!(
+            algum_periodo_mudou,
+            "40 gerações com p_mutate=1.0 e nenhum período mudou — mutação não está rodando"
+        );
+        assert!(
+            algum_limiar_mudou,
+            "40 gerações com p_mutate=1.0 e nenhum limiar mudou — mutação não está rodando"
+        );
+        assert!(
+            alguma_ativacao_mudou,
+            "40 gerações e nenhuma ativação mudou — mutação discreta não está rodando"
+        );
 
         // ── Parte 2: braço de controle (`--sem-*`) — congela no neutro ──────────
         // `let _guard` devolve os atomics ao padrão mesmo se o resto do teste
@@ -1470,10 +1723,22 @@ mod tests {
         }
 
         for g in &genomes2 {
-            assert!(g.neuron_alpha.iter().all(|&a| a == 0.0), "--sem-memoria-neuronal deveria congelar alfa em 0.0");
-            assert!(g.neuron_period_l1.iter().all(|&p| p == 1.0), "--sem-periodo-neuronal deveria congelar período em 1.0");
-            assert!(g.neuron_threshold_l1.iter().all(|&t| t == 0.0), "--sem-limiar-neuronal deveria congelar limiar em 0.0");
-            assert!(g.neuron_activation.iter().all(|&a| a == 0.0), "--sem-ativacao-heterogenea deveria congelar ativação em 0.0");
+            assert!(
+                g.neuron_alpha.iter().all(|&a| a == 0.0),
+                "--sem-memoria-neuronal deveria congelar alfa em 0.0"
+            );
+            assert!(
+                g.neuron_period_l1.iter().all(|&p| p == 1.0),
+                "--sem-periodo-neuronal deveria congelar período em 1.0"
+            );
+            assert!(
+                g.neuron_threshold_l1.iter().all(|&t| t == 0.0),
+                "--sem-limiar-neuronal deveria congelar limiar em 0.0"
+            );
+            assert!(
+                g.neuron_activation.iter().all(|&a| a == 0.0),
+                "--sem-ativacao-heterogenea deveria congelar ativação em 0.0"
+            );
         }
     }
 
@@ -1486,7 +1751,11 @@ mod tests {
         let n_beings = 5;
         let periods = vec![1.0f32; n_beings * N_L1_NEURONS];
         let (media, desvio) = simulate_l1_fire_counts(&periods, n_beings, 100);
-        assert_eq!(media, (n_beings * N_L1_NEURONS) as f64, "período=1 deveria disparar 100% sempre");
+        assert_eq!(
+            media,
+            (n_beings * N_L1_NEURONS) as f64,
+            "período=1 deveria disparar 100% sempre"
+        );
         assert_eq!(desvio, 0.0, "sem variação possível com período uniforme=1");
     }
 
@@ -1503,9 +1772,17 @@ mod tests {
         let total = (n_beings * N_L1_NEURONS) as f64; // 384
         let periods = vec![2.0f32; n_beings * N_L1_NEURONS];
         let (media, desvio) = simulate_l1_fire_counts(&periods, n_beings, 200);
-        assert_eq!(media, total / 2.0, "período=2 deveria disparar 50% em média");
+        assert_eq!(
+            media,
+            total / 2.0,
+            "período=2 deveria disparar 50% em média"
+        );
         // Distribuição de dois pontos (0 ou total, 50/50): desvio = total/2 exatamente.
-        assert_eq!(desvio, total / 2.0, "degrau 0/total deveria ter desvio = total/2");
+        assert_eq!(
+            desvio,
+            total / 2.0,
+            "degrau 0/total deveria ter desvio = total/2"
+        );
     }
 
     /// População MISTA (metade período=1, metade período=4): a média fica entre
@@ -1516,12 +1793,18 @@ mod tests {
     fn simulate_l1_fire_counts_populacao_mista_tem_desvio_no_zero() {
         let n_beings = 2;
         let mut periods = vec![1.0f32; N_L1_NEURONS]; // ser 0: todos período 1
-        periods.extend(vec![4.0f32; N_L1_NEURONS]);   // ser 1: todos período 4
+        periods.extend(vec![4.0f32; N_L1_NEURONS]); // ser 1: todos período 4
         let (media, desvio) = simulate_l1_fire_counts(&periods, n_beings, 400);
         // Ser 0 contribui 96 sempre; ser 1 contribui 96 a cada 4 ticks, 0 nos outros —
         // média esperada = 96 + 96*0.25 = 120.
-        assert!((media - 120.0).abs() < 1.0, "média esperada ≈120, obteve {media}");
-        assert!(desvio > 0.0, "população mista deveria ter desvio > 0, obteve {desvio}");
+        assert!(
+            (media - 120.0).abs() < 1.0,
+            "média esperada ≈120, obteve {media}"
+        );
+        assert!(
+            desvio > 0.0,
+            "população mista deveria ter desvio > 0, obteve {desvio}"
+        );
     }
 
     /// `pack_neuron_meta` produz o layout EXATO que `brain.wgsl` espera: por
@@ -1533,10 +1816,18 @@ mod tests {
     fn pack_neuron_meta_produz_layout_esperado_pelo_shader() {
         let mut g = Genome::random(7);
         // Marca cada bloco com um valor único e identificável, fora do neutro.
-        for (i, a) in g.neuron_alpha.iter_mut().enumerate() { *a = 1000.0 + i as f32; }
-        for (i, p) in g.neuron_period_l1.iter_mut().enumerate() { *p = 2000.0 + i as f32; }
-        for (i, t) in g.neuron_threshold_l1.iter_mut().enumerate() { *t = 3000.0 + i as f32; }
-        for (i, act) in g.neuron_activation.iter_mut().enumerate() { *act = 4000.0 + i as f32; }
+        for (i, a) in g.neuron_alpha.iter_mut().enumerate() {
+            *a = 1000.0 + i as f32;
+        }
+        for (i, p) in g.neuron_period_l1.iter_mut().enumerate() {
+            *p = 2000.0 + i as f32;
+        }
+        for (i, t) in g.neuron_threshold_l1.iter_mut().enumerate() {
+            *t = 3000.0 + i as f32;
+        }
+        for (i, act) in g.neuron_activation.iter_mut().enumerate() {
+            *act = 4000.0 + i as f32;
+        }
 
         let packed = Genome::pack_neuron_meta(&[g.clone()]);
         assert_eq!(packed.len(), N_L1_NEURONS * 4 + N_L2_NEURONS * 2);
@@ -1559,11 +1850,19 @@ mod tests {
         }
         // l2_alpha = neuron_alpha[96..144] = 1096..1144
         for i in 0..N_L2_NEURONS {
-            assert_eq!(packed[384 + i], 1000.0 + (N_L1_NEURONS + i) as f32, "l2_alpha[{i}]");
+            assert_eq!(
+                packed[384 + i],
+                1000.0 + (N_L1_NEURONS + i) as f32,
+                "l2_alpha[{i}]"
+            );
         }
         // l2_activation = neuron_activation[96..144] = 4096..4144
         for i in 0..N_L2_NEURONS {
-            assert_eq!(packed[432 + i], 4000.0 + (N_L1_NEURONS + i) as f32, "l2_activation[{i}]");
+            assert_eq!(
+                packed[432 + i],
+                4000.0 + (N_L1_NEURONS + i) as f32,
+                "l2_activation[{i}]"
+            );
         }
     }
 }

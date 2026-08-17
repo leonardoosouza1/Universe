@@ -43,7 +43,9 @@ pub fn log_uniform_decays(seed: u64, n: usize) -> Vec<f32> {
     let mut rng = crate::rng::Lcg::new(seed);
     let lo = (1.0 / TAU_MAX_S).ln();
     let hi = (1.0 / TAU_MIN_S).ln();
-    (0..n).map(|_| (lo + rng.uniform() * (hi - lo)).exp()).collect()
+    (0..n)
+        .map(|_| (lo + rng.uniform() * (hi - lo)).exp())
+        .collect()
 }
 
 #[derive(Clone)]
@@ -99,13 +101,13 @@ impl CfCCell {
         Self {
             hidden_size,
             state: vec![0.0; hidden_size],
-            decay_rates: vec![DECAY_DEFAULT; hidden_size],  // τ = 2,0 s, o valor herdado
+            decay_rates: vec![DECAY_DEFAULT; hidden_size], // τ = 2,0 s, o valor herdado
             dc_gain: DC_GAIN_DEFAULT,
             clamp_range: 2.0,
-            denoise_mag: 0.10,   // byte-lab validated: 15% noise fixes exposure bias
+            denoise_mag: 0.10, // byte-lab validated: 15% noise fixes exposure bias
             denoise_counter: 0,
             fatigue: vec![0.0; hidden_size],
-            fatigue_alpha: 1.0,  // τ ≈ 1s @ 64Hz — sobe em ~64 ticks para 63% do alvo
+            fatigue_alpha: 1.0, // τ ≈ 1s @ 64Hz — sobe em ~64 ticks para 63% do alvo
             // β=0.4: com o encolhimento suave o ponto fixo de entrada máxima sustentada
             // é s = 2(1 - β·s) ⇒ s = 2/(1+2β). Com β=0.4 dá s=1.111 (saída 102/127, o
             // canal continua informando); com β=0.8 dá s=0.769 (saída 82) e o CfC deixa
@@ -113,7 +115,7 @@ impl CfCCell {
             // 0.4 é o valor que a documentação deste arquivo sempre declarou — o código
             // tinha ido para 0.8 sem atualizar nem o comentário nem o teste. Segue como
             // parâmetro de varredura, não como constante sagrada.
-            fatigue_beta:  0.4,
+            fatigue_beta: 0.4,
         }
     }
 
@@ -135,7 +137,11 @@ impl CfCCell {
     /// assert: um vetor curto deixaria metade dos canais no τ antigo e a condição
     /// "heterogênea" seria meia-heterogênea sem ninguém notar.
     pub fn set_decay_rates(&mut self, d: &[f32]) {
-        assert_eq!(d.len(), self.hidden_size, "decay_rates tem que cobrir todos os canais");
+        assert_eq!(
+            d.len(),
+            self.hidden_size,
+            "decay_rates tem que cobrir todos os canais"
+        );
         self.decay_rates.copy_from_slice(d);
     }
 
@@ -163,7 +169,7 @@ impl CfCCell {
         self.denoise_counter = self.denoise_counter.wrapping_add(1);
         let noise_mag = self.denoise_mag;
         let alpha = self.fatigue_alpha;
-        let beta  = self.fatigue_beta;
+        let beta = self.fatigue_beta;
         for i in 0..self.hidden_size {
             let x_raw = (input[i] as f32) / 127.0;
             // Fadiga adaptativa por LIMIAR SUAVE — atenua, nunca inverte.
@@ -191,14 +197,22 @@ impl CfCCell {
             let mut s = self.state[i] * decay + x * gain_dt;
             // Inject deterministic noise (~15% of channels per tick, cheap hash).
             if noise_mag > 0.0 {
-                let h = self.denoise_counter.wrapping_mul(2654435761).wrapping_add(i as u32);
-                if h % 7 == 0 { // ~14% of channels hit per tick
+                let h = self
+                    .denoise_counter
+                    .wrapping_mul(2654435761)
+                    .wrapping_add(i as u32);
+                if h % 7 == 0 {
+                    // ~14% of channels hit per tick
                     // Pseudo-uniform noise in [-noise_mag, +noise_mag] from hash bits.
                     let noise = ((h >> 8) as f32 / 16777216.0 - 0.5) * 2.0 * noise_mag;
                     s += noise;
                 }
             }
-            if s > clamp { s = clamp; } else if s < -clamp { s = -clamp; }
+            if s > clamp {
+                s = clamp;
+            } else if s < -clamp {
+                s = -clamp;
+            }
             // Atualiza fadiga: filtro passa-baixa sobre |state| (spike-frequency adaptation).
             // fat += alpha * (|s| - fat) * dt
             self.fatigue[i] += alpha * (s.abs() - self.fatigue[i]) * dt;
@@ -241,9 +255,21 @@ mod tests {
         }
         // Steady state: s = x * gain / decay_rate = x * 1.0 / 0.5 = 2x, clamped em ±2.
         // tanh(2) ≈ 0.964 → ≈122 para +127, -122 para -127.
-        assert!(out[0] > 100, "sustained +127 input should drive filtered high ({})", out[0]);
-        assert!(out[2] < -100, "sustained -127 input should drive filtered low ({})", out[2]);
-        assert!(out[1].abs() < 5, "zero input should stay near zero ({})", out[1]);
+        assert!(
+            out[0] > 100,
+            "sustained +127 input should drive filtered high ({})",
+            out[0]
+        );
+        assert!(
+            out[2] < -100,
+            "sustained -127 input should drive filtered low ({})",
+            out[2]
+        );
+        assert!(
+            out[1].abs() < 5,
+            "zero input should stay near zero ({})",
+            out[1]
+        );
     }
 
     #[test]
@@ -257,14 +283,24 @@ mod tests {
         for _ in 0..1200 {
             cfc.update(&input, &mut out, 1.0 / 60.0);
         }
-        assert!(cfc.state[0].abs() < 0.05, "state should decay near zero ({})", cfc.state[0]);
-        assert!(cfc.state[1].abs() < 0.05, "state should decay near zero ({})", cfc.state[1]);
+        assert!(
+            cfc.state[0].abs() < 0.05,
+            "state should decay near zero ({})",
+            cfc.state[0]
+        );
+        assert!(
+            cfc.state[1].abs() < 0.05,
+            "state should decay near zero ({})",
+            cfc.state[1]
+        );
     }
 
     #[test]
     fn reset_zeros_state() {
         let mut cfc = CfCCell::new(8);
-        for s in cfc.state.iter_mut() { *s = 1.23; }
+        for s in cfc.state.iter_mut() {
+            *s = 1.23;
+        }
         cfc.reset();
         assert!(cfc.state.iter().all(|&s| s == 0.0));
     }

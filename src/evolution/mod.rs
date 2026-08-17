@@ -9,22 +9,22 @@ pub mod spawn;
 pub mod telemetry;
 
 pub use dna_genesis::{
-    EliteDna, DnaPayload,
-    DNA_MAGIC, DNA_VERSION, DNA_FAST_SIZE, DNA_SLOW_SIZE, DNA_HEADER_SIZE, DNA_V3_TOTAL,
-    save_champion_dna, load_champion_dna,
+    DNA_FAST_SIZE, DNA_HEADER_SIZE, DNA_MAGIC, DNA_SLOW_SIZE, DNA_V3_TOTAL, DNA_VERSION,
+    DnaPayload, EliteDna, load_champion_dna, save_champion_dna,
 };
 pub use logs::open_report_log;
-pub use settings::{RaceSettings, DevSettings};
+pub use settings::{DevSettings, RaceSettings};
 pub use spawn::spawn_swarm;
 
 pub struct EvolutionPlugin;
 
 impl Plugin for EvolutionPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (
-            pipeline::evolution_pipeline,
-            drain_spawn_queue,
-        ).run_if(in_state(crate::AppState::Simulation)));
+        app.add_systems(
+            Update,
+            (pipeline::evolution_pipeline, drain_spawn_queue)
+                .run_if(in_state(crate::AppState::Simulation)),
+        );
     }
 }
 
@@ -43,13 +43,26 @@ fn drain_spawn_queue(
     config: Res<crate::config::UniverseConfig>,
     lab: Res<crate::lab::LabParams>,
 ) {
-    let Some((next_i, total)) = race.pending_spawn else { return; };
+    let Some((next_i, total)) = race.pending_spawn else {
+        return;
+    };
     let batch_end = (next_i + SPAWN_BATCH_SIZE).min(total);
     let world = &world_res.0;
     spawn_swarm(
-        &mut commands, &mut meshes, &mut materials, &mut race,
-        world, &dev, &config, &lab,
-        next_i, batch_end,
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &mut race,
+        world,
+        &dev,
+        &config,
+        &lab,
+        next_i,
+        batch_end,
     );
-    race.pending_spawn = if batch_end >= total { None } else { Some((batch_end, total)) };
+    race.pending_spawn = if batch_end >= total {
+        None
+    } else {
+        Some((batch_end, total))
+    };
 }

@@ -144,12 +144,16 @@ impl PainelHandle {
             let listener = match TcpListener::bind(("0.0.0.0", port)) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("[painel] ERRO ao abrir a porta {port}: {e} — painel DESLIGADO, \
-                               a corrida continua sem ele.");
+                    eprintln!(
+                        "[painel] ERRO ao abrir a porta {port}: {e} — painel DESLIGADO, \
+                               a corrida continua sem ele."
+                    );
                     return;
                 }
             };
-            println!("[painel] servindo em http://localhost:{port}  (Ctrl+C não derruba só o painel — mata o processo inteiro)");
+            println!(
+                "[painel] servindo em http://localhost:{port}  (Ctrl+C não derruba só o painel — mata o processo inteiro)"
+            );
             for conn in listener.incoming() {
                 match conn {
                     Ok(stream) => serve_one(stream, &state_l, &beings_l, &activation_l),
@@ -158,7 +162,11 @@ impl PainelHandle {
             }
         });
 
-        Self { state, beings, activation }
+        Self {
+            state,
+            beings,
+            activation,
+        }
     }
 
     /// Traçado da pista — chamar UMA vez, logo depois de `VoxelWorld::new()`, antes do
@@ -228,7 +236,9 @@ impl PainelHandle {
 /// pânico no `unwrap()` do `sort_by`.
 fn mediana(xs: impl Iterator<Item = f32>) -> f32 {
     let mut v: Vec<f32> = xs.collect();
-    if v.is_empty() { return 0.0; }
+    if v.is_empty() {
+        return 0.0;
+    }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v[v.len() / 2]
 }
@@ -236,7 +246,8 @@ fn mediana(xs: impl Iterator<Item = f32>) -> f32 {
 /// Extrai o path da primeira linha da requisição HTTP (`GET /api/status HTTP/1.1`).
 /// Parse mínimo de propósito — este servidor só precisa distinguir 4 rotas fixas.
 fn extract_path(req: &str) -> &str {
-    req.lines().next()
+    req.lines()
+        .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/")
 }
@@ -262,15 +273,27 @@ fn serve_one(
         "/" => ("200 OK", "text/html; charset=utf-8", HTML.to_string()),
         "/api/status" => {
             let st = state.lock().unwrap().clone();
-            ("200 OK", "application/json", serde_json::to_string(&st).unwrap_or_else(|_| "{}".into()))
+            (
+                "200 OK",
+                "application/json",
+                serde_json::to_string(&st).unwrap_or_else(|_| "{}".into()),
+            )
         }
         "/api/activation" => {
             let act = activation.lock().unwrap().clone();
-            ("200 OK", "application/json", serde_json::to_string(&act).unwrap_or_else(|_| "{}".into()))
+            (
+                "200 OK",
+                "application/json",
+                serde_json::to_string(&act).unwrap_or_else(|_| "{}".into()),
+            )
         }
         "/api/beings" => {
             let b = beings.lock().unwrap().clone();
-            ("200 OK", "application/json", serde_json::to_string(&b).unwrap_or_else(|_| "[]".into()))
+            (
+                "200 OK",
+                "application/json",
+                serde_json::to_string(&b).unwrap_or_else(|_| "[]".into()),
+            )
         }
         _ => ("404 Not Found", "text/plain", "not found".to_string()),
     };

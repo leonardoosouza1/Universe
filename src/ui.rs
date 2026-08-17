@@ -1,15 +1,19 @@
-use bevy::prelude::*;
+use crate::evolution::{DevSettings, RaceSettings};
 use crate::simulation::Racer;
-use crate::evolution::{RaceSettings, DevSettings};
+use bevy::prelude::*;
 
 #[derive(Component)]
 pub struct LeaderboardUI;
 
 #[derive(Component)]
-pub struct RacerButton { pub racer_entity: Entity }
+pub struct RacerButton {
+    pub racer_entity: Entity,
+}
 
 #[derive(Component)]
-pub struct DevButton { pub action: DevAction }
+pub struct DevButton {
+    pub action: DevAction,
+}
 
 #[derive(Clone, Copy)]
 pub enum DevAction {
@@ -17,9 +21,12 @@ pub enum DevAction {
     HardResetPrompt,
     HardResetConfirm,
     HardResetCancel,
-    MutUp, MutDown,
-    AmpUp, AmpDown,
-    FlowUp, FlowDown,
+    MutUp,
+    MutDown,
+    AmpUp,
+    AmpDown,
+    FlowUp,
+    FlowDown,
     ReturnToMenu,
 }
 
@@ -27,8 +34,11 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (update_hud, handle_ui_interactions).run_if(in_state(crate::AppState::Simulation)))
-           .add_systems(OnExit(crate::AppState::Simulation), cleanup_physics_ui);
+        app.add_systems(
+            Update,
+            (update_hud, handle_ui_interactions).run_if(in_state(crate::AppState::Simulation)),
+        )
+        .add_systems(OnExit(crate::AppState::Simulation), cleanup_physics_ui);
     }
 }
 
@@ -41,11 +51,19 @@ fn cleanup_physics_ui(mut commands: Commands, query: Query<Entity, With<Leaderbo
 fn update_hud(
     mut commands: Commands,
     query: Query<(Entity, Option<&Children>), With<LeaderboardUI>>,
-    racer_query: Query<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody, &Transform)>,
+    racer_query: Query<(
+        Entity,
+        &Racer,
+        &crate::physics::EngineComponent,
+        &crate::physics::PhysicsBody,
+        &Transform,
+    )>,
     race: Res<RaceSettings>,
     dev: Res<DevSettings>,
 ) {
-    let Ok((ui_entity, children)) = query.single() else { return; };
+    let Ok((ui_entity, children)) = query.single() else {
+        return;
+    };
     if let Some(children) = children {
         for child in children.iter() {
             if let Ok(mut e) = commands.get_entity(child) {
@@ -54,15 +72,27 @@ fn update_hud(
         }
     }
 
-    let mut sorted: Vec<(Entity, &Racer, &crate::physics::EngineComponent, &crate::physics::PhysicsBody, &Transform)> = racer_query.iter().collect();
+    let mut sorted: Vec<(
+        Entity,
+        &Racer,
+        &crate::physics::EngineComponent,
+        &crate::physics::PhysicsBody,
+        &Transform,
+    )> = racer_query.iter().collect();
     sorted.sort_by(|a, b| {
         if a.1.is_dead != b.1.is_dead {
-            return if a.1.is_dead { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less };
+            return if a.1.is_dead {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Less
+            };
         }
         if a.1.total_laps != b.1.total_laps {
             return b.1.total_laps.cmp(&a.1.total_laps);
         }
-        b.1.distance.partial_cmp(&a.1.distance).unwrap_or(std::cmp::Ordering::Equal)
+        b.1.distance
+            .partial_cmp(&a.1.distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     commands.entity(ui_entity).with_children(|p| {
@@ -363,19 +393,26 @@ fn handle_ui_interactions(
     mut race: ResMut<RaceSettings>,
     mut dev: ResMut<DevSettings>,
     mut next_state: ResMut<NextState<crate::AppState>>,
-    query: Query<(&Interaction, Option<&RacerButton>, Option<&DevButton>), (Changed<Interaction>, With<Button>)>,
+    query: Query<
+        (&Interaction, Option<&RacerButton>, Option<&DevButton>),
+        (Changed<Interaction>, With<Button>),
+    >,
 ) {
     for (interaction, racer_btn, dev_btn) in &query {
         if *interaction == Interaction::Pressed {
-            if let Some(r_btn) = racer_btn { 
-                race.selected_racer = Some(r_btn.racer_entity); 
+            if let Some(r_btn) = racer_btn {
+                race.selected_racer = Some(r_btn.racer_entity);
                 race.is_free_cam = false;
             }
             if let Some(d_btn) = dev_btn {
                 match d_btn.action {
                     DevAction::ResetKeepBest => race.should_reset = true,
                     DevAction::HardResetPrompt => race.show_confirm_modal = true,
-                    DevAction::HardResetConfirm => { race.hard_reset = true; race.should_reset = true; race.show_confirm_modal = false; },
+                    DevAction::HardResetConfirm => {
+                        race.hard_reset = true;
+                        race.should_reset = true;
+                        race.show_confirm_modal = false;
+                    }
                     DevAction::HardResetCancel => race.show_confirm_modal = false,
                     DevAction::ReturnToMenu => next_state.set(crate::AppState::MainMenu),
                     DevAction::MutUp => dev.mutation_rate = (dev.mutation_rate + 0.05).min(1.0),

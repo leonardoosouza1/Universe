@@ -221,9 +221,7 @@ pub fn collect_activation_stats(
     let mut all_vals: Vec<f32> = Vec::with_capacity(n_samples * n_neurons.max(1));
 
     for j in 0..n_neurons {
-        let col: Vec<f32> = clean.iter()
-            .filter_map(|row| row.get(j).copied())
-            .collect();
+        let col: Vec<f32> = clean.iter().filter_map(|row| row.get(j).copied()).collect();
         all_vals.extend_from_slice(&col);
 
         let mean = stats::mean(&col);
@@ -232,18 +230,34 @@ pub fn collect_activation_stats(
         let p5 = stats::percentile(&mut for_percentile, 5.0);
         let p50 = stats::percentile(&mut for_percentile, 50.0);
         let p95 = stats::percentile(&mut for_percentile, 95.0);
-        let dead_pct = if col.is_empty() { 0.0 } else {
-            100.0 * col.iter().filter(|&&v| v.abs() < thresholds::DEAD_EPS).count() as f32
+        let dead_pct = if col.is_empty() {
+            0.0
+        } else {
+            100.0
+                * col
+                    .iter()
+                    .filter(|&&v| v.abs() < thresholds::DEAD_EPS)
+                    .count() as f32
                 / col.len() as f32
         };
-        let saturated_pct = if col.is_empty() { 0.0 } else {
+        let saturated_pct = if col.is_empty() {
+            0.0
+        } else {
             100.0 * col.iter().filter(|&&v| v.abs() > SATURATION_CUTOFF).count() as f32
                 / col.len() as f32
         };
         let snr_i8 = quant::snr_db_act(&col);
 
         neurons.push(NeuronStats {
-            neuron_id: j, mean, sigma, p5, p50, p95, dead_pct, saturated_pct, snr_i8,
+            neuron_id: j,
+            mean,
+            sigma,
+            p5,
+            p50,
+            p95,
+            dead_pct,
+            saturated_pct,
+            snr_i8,
         });
     }
 
@@ -255,32 +269,49 @@ pub fn collect_activation_stats(
     // Custou uma conclusao invertida em 2026-08-13 (L2 parecia morta e estava apenas nao
     // medida). Ausencia de medida agora viaja como Option ate o relatorio, que imprime n/a.
     let (spectral_radius, effective_rank) = match w_rec {
-        Some(w) => { let (r, k) = spectral_summary(w, n_neurons); (Some(r), Some(k)) }
+        Some(w) => {
+            let (r, k) = spectral_summary(w, n_neurons);
+            (Some(r), Some(k))
+        }
         None => (None, None),
     };
 
     let policy_entropy = policy_actions.and_then(|a| {
-        if a.is_empty() { None } else { Some(policy_entropy_nats(a)) }
+        if a.is_empty() {
+            None
+        } else {
+            Some(policy_entropy_nats(a))
+        }
     });
 
     // ── Alarmes de camada (fração de NEURÔNIOS, não de amostras — ver doc do módulo) ──
     if n_neurons > 0 {
-        let dead_frac_layer = 100.0 * neurons.iter()
-            .filter(|s| s.dead_pct >= NEURON_DEAD_CLASSIFY_PCT).count() as f32
+        let dead_frac_layer = 100.0
+            * neurons
+                .iter()
+                .filter(|s| s.dead_pct >= NEURON_DEAD_CLASSIFY_PCT)
+                .count() as f32
             / n_neurons as f32;
         if dead_frac_layer > thresholds::DEAD_NEURONS_WARN_PCT {
             alarms.push(ActivationAlarm {
-                layer: layer_name.to_string(), kind: AlarmKind::DeadNeurons,
-                value: dead_frac_layer, threshold: thresholds::DEAD_NEURONS_WARN_PCT,
+                layer: layer_name.to_string(),
+                kind: AlarmKind::DeadNeurons,
+                value: dead_frac_layer,
+                threshold: thresholds::DEAD_NEURONS_WARN_PCT,
             });
         }
-        let sat_frac_layer = 100.0 * neurons.iter()
-            .filter(|s| s.saturated_pct >= NEURON_SATURATED_CLASSIFY_PCT).count() as f32
+        let sat_frac_layer = 100.0
+            * neurons
+                .iter()
+                .filter(|s| s.saturated_pct >= NEURON_SATURATED_CLASSIFY_PCT)
+                .count() as f32
             / n_neurons as f32;
         if sat_frac_layer > thresholds::SATURATED_NEURONS_WARN_PCT {
             alarms.push(ActivationAlarm {
-                layer: layer_name.to_string(), kind: AlarmKind::Saturated,
-                value: sat_frac_layer, threshold: thresholds::SATURATED_NEURONS_WARN_PCT,
+                layer: layer_name.to_string(),
+                kind: AlarmKind::Saturated,
+                value: sat_frac_layer,
+                threshold: thresholds::SATURATED_NEURONS_WARN_PCT,
             });
         }
     }
@@ -290,20 +321,28 @@ pub fn collect_activation_stats(
     if let Some(sr) = spectral_radius {
         if sr > thresholds::SPECTRAL_MAX {
             alarms.push(ActivationAlarm {
-                layer: layer_name.to_string(), kind: AlarmKind::SpectralRadiusHigh,
-                value: sr, threshold: thresholds::SPECTRAL_MAX,
+                layer: layer_name.to_string(),
+                kind: AlarmKind::SpectralRadiusHigh,
+                value: sr,
+                threshold: thresholds::SPECTRAL_MAX,
             });
         }
     }
 
-    if let Some(min_snr) = neurons.iter().map(|s| s.snr_i8)
+    if let Some(min_snr) = neurons
+        .iter()
+        .map(|s| s.snr_i8)
         .filter(|v| v.is_finite())
-        .fold(None, |acc: Option<f32>, v| Some(acc.map_or(v, |a| a.min(v))))
+        .fold(None, |acc: Option<f32>, v| {
+            Some(acc.map_or(v, |a| a.min(v)))
+        })
     {
         if min_snr < thresholds::SNR_I8_MIN {
             alarms.push(ActivationAlarm {
-                layer: layer_name.to_string(), kind: AlarmKind::SnrLow,
-                value: min_snr, threshold: thresholds::SNR_I8_MIN,
+                layer: layer_name.to_string(),
+                kind: AlarmKind::SnrLow,
+                value: min_snr,
+                threshold: thresholds::SNR_I8_MIN,
             });
         }
     }
@@ -311,21 +350,26 @@ pub fn collect_activation_stats(
     if let Some(pe) = policy_entropy {
         if pe < thresholds::POLICY_ENTROPY_MIN {
             alarms.push(ActivationAlarm {
-                layer: layer_name.to_string(), kind: AlarmKind::PolicyEntropyLow,
-                value: pe, threshold: thresholds::POLICY_ENTROPY_MIN,
+                layer: layer_name.to_string(),
+                kind: AlarmKind::PolicyEntropyLow,
+                value: pe,
+                threshold: thresholds::POLICY_ENTROPY_MIN,
             });
         }
     }
 
-    (LayerStats {
-        layer_name: layer_name.to_string(),
-        n_samples,
-        neurons,
-        spectral_radius,
-        effective_rank,
-        policy_entropy,
-        histogram,
-    }, alarms)
+    (
+        LayerStats {
+            layer_name: layer_name.to_string(),
+            n_samples,
+            neurons,
+            spectral_radius,
+            effective_rank,
+            policy_entropy,
+            histogram,
+        },
+        alarms,
+    )
 }
 
 /// Imprime relatório de stats para stderr (não bloqueia, não tranca Mutex — cada
@@ -333,11 +377,21 @@ pub fn collect_activation_stats(
 pub fn print_stats_report(stats: &LayerStats, alarms: &[ActivationAlarm]) {
     eprintln!(
         "[ativacao:{}] amostras={} neuronios={} raio_espectral={} rank_efetivo={} entropia_politica={}",
-        stats.layer_name, stats.n_samples, stats.neurons.len(),
-        stats.spectral_radius.map(|v| format!("{v:.3}")).unwrap_or_else(|| "n/a".to_string()),
-        stats.effective_rank.map(|k| format!("{k}/{}", stats.neurons.len()))
-             .unwrap_or_else(|| "n/a (pesos nao entregues)".to_string()),
-        stats.policy_entropy.map(|v| format!("{v:.3}")).unwrap_or_else(|| "n/a".to_string()),
+        stats.layer_name,
+        stats.n_samples,
+        stats.neurons.len(),
+        stats
+            .spectral_radius
+            .map(|v| format!("{v:.3}"))
+            .unwrap_or_else(|| "n/a".to_string()),
+        stats
+            .effective_rank
+            .map(|k| format!("{k}/{}", stats.neurons.len()))
+            .unwrap_or_else(|| "n/a (pesos nao entregues)".to_string()),
+        stats
+            .policy_entropy
+            .map(|v| format!("{v:.3}"))
+            .unwrap_or_else(|| "n/a".to_string()),
     );
     for a in alarms {
         eprintln!(
@@ -355,7 +409,9 @@ pub fn print_stats_report(stats: &LayerStats, alarms: &[ActivationAlarm]) {
 mod tests {
     use super::*;
 
-    fn linha(vs: &[f32]) -> Vec<f32> { vs.to_vec() }
+    fn linha(vs: &[f32]) -> Vec<f32> {
+        vs.to_vec()
+    }
 
     #[test]
     fn neuronio_morto_detectado() {
@@ -366,7 +422,11 @@ mod tests {
             samples.push(linha(&[1e-6, t, -t]));
         }
         let (stats, _alarms) = collect_activation_stats("teste", &samples, None, 3, None);
-        assert!(stats.neurons[0].dead_pct > 99.0, "neurônio 0 devia estar ~100% morto, {}", stats.neurons[0].dead_pct);
+        assert!(
+            stats.neurons[0].dead_pct > 99.0,
+            "neurônio 0 devia estar ~100% morto, {}",
+            stats.neurons[0].dead_pct
+        );
         assert!(stats.neurons[1].dead_pct < 50.0);
     }
 
@@ -378,8 +438,11 @@ mod tests {
         }
         let (stats, alarms) = collect_activation_stats("teste", &samples, None, 2, None);
         assert!(stats.neurons[0].saturated_pct > 99.0);
-        assert!(alarms.iter().any(|a| a.kind == AlarmKind::Saturated),
-            "camada com 1/2 neurônios saturados (50% > 30% warn) devia alarmar: {:?}", alarms);
+        assert!(
+            alarms.iter().any(|a| a.kind == AlarmKind::Saturated),
+            "camada com 1/2 neurônios saturados (50% > 30% warn) devia alarmar: {:?}",
+            alarms
+        );
     }
 
     #[test]
@@ -390,7 +453,10 @@ mod tests {
             linha(&[0.3, 0.4]),
         ];
         let (stats, alarms) = collect_activation_stats("teste", &samples, None, 2, None);
-        assert_eq!(stats.n_samples, 2, "a linha com NaN deve ser excluída da contagem");
+        assert_eq!(
+            stats.n_samples, 2,
+            "a linha com NaN deve ser excluída da contagem"
+        );
         assert!(alarms.iter().any(|a| a.kind == AlarmKind::NanDetected));
     }
 
@@ -408,9 +474,14 @@ mod tests {
         // rank efetivo = 4 (energia espalhada igualmente).
         let n = 4usize;
         let mut w = vec![0.0f32; n * n];
-        for i in 0..n { w[i * n + i] = 1.0; }
+        for i in 0..n {
+            w[i * n + i] = 1.0;
+        }
         let (sr, er) = spectral_summary(&w, n);
-        assert!((sr - 1.0).abs() < 0.05, "raio espectral esperado ~1.0, obteve {sr}");
+        assert!(
+            (sr - 1.0).abs() < 0.05,
+            "raio espectral esperado ~1.0, obteve {sr}"
+        );
         assert_eq!(er, n);
     }
 
@@ -418,12 +489,12 @@ mod tests {
     fn spectral_summary_matriz_retangular_nao_quadrada() {
         // W (2×4): duas linhas idênticas ortogonais a duas colunas de zero.
         // rows=2 < cols=4 — testa o caminho "L1 não é quadrada" (192→96 na prática).
-        let w = vec![
-            2.0, 0.0, 0.0, 0.0,
-            0.0, 3.0, 0.0, 0.0,
-        ];
+        let w = vec![2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0];
         let (sr, er) = spectral_summary(&w, 2);
-        assert!((sr - 3.0).abs() < 0.05, "maior valor singular esperado 3.0, obteve {sr}");
+        assert!(
+            (sr - 3.0).abs() < 0.05,
+            "maior valor singular esperado 3.0, obteve {sr}"
+        );
         assert_eq!(er, 2);
     }
 
@@ -435,17 +506,28 @@ mod tests {
         let samples = vec![linha(&[0.0, 0.0, 0.0])];
         let (stats, alarms) = collect_activation_stats("teste", &samples, Some(&w), 3, None);
         assert!(stats.spectral_radius.unwrap() > thresholds::SPECTRAL_MAX);
-        assert!(alarms.iter().any(|a| a.kind == AlarmKind::SpectralRadiusHigh));
+        assert!(
+            alarms
+                .iter()
+                .any(|a| a.kind == AlarmKind::SpectralRadiusHigh)
+        );
     }
 
     #[test]
     fn entropia_politica_baixa_com_acao_constante() {
         let acoes: Vec<[f32; 3]> = (0..50).map(|_| [0.8_f32, 0.63, 0.0]).collect();
         let mut samples = Vec::new();
-        for _ in 0..50 { samples.push(linha(&[0.0])); }
+        for _ in 0..50 {
+            samples.push(linha(&[0.0]));
+        }
         let (stats, alarms) = collect_activation_stats("L2", &samples, None, 1, Some(&acoes));
-        let pe = stats.policy_entropy.expect("deve calcular entropia quando policy_actions é Some");
-        assert!(pe < 0.05, "ação constante deve ter entropia ~0, obteve {pe}");
+        let pe = stats
+            .policy_entropy
+            .expect("deve calcular entropia quando policy_actions é Some");
+        assert!(
+            pe < 0.05,
+            "ação constante deve ter entropia ~0, obteve {pe}"
+        );
         assert!(alarms.iter().any(|a| a.kind == AlarmKind::PolicyEntropyLow));
     }
 
@@ -467,13 +549,19 @@ mod tests {
         let samples: Vec<Vec<f32>> = (0..acoes.len()).map(|_| linha(&[0.0])).collect();
         let (stats, _alarms) = collect_activation_stats("L2", &samples, None, 1, Some(&acoes));
         let pe = stats.policy_entropy.unwrap();
-        assert!(pe > thresholds::POLICY_ENTROPY_MIN,
-            "125 ações distintas uniformes devem ter entropia > {}, obteve {}", thresholds::POLICY_ENTROPY_MIN, pe);
+        assert!(
+            pe > thresholds::POLICY_ENTROPY_MIN,
+            "125 ações distintas uniformes devem ter entropia > {}, obteve {}",
+            thresholds::POLICY_ENTROPY_MIN,
+            pe
+        );
     }
 
     #[test]
     fn histograma_tem_32_bins_e_soma_total() {
-        let samples: Vec<Vec<f32>> = (0..20).map(|i| linha(&[(i as f32 / 19.0) * 2.0 - 1.0])).collect();
+        let samples: Vec<Vec<f32>> = (0..20)
+            .map(|i| linha(&[(i as f32 / 19.0) * 2.0 - 1.0]))
+            .collect();
         let (stats, _) = collect_activation_stats("teste", &samples, None, 1, None);
         assert_eq!(stats.histogram.len(), HISTOGRAM_BINS);
         assert_eq!(stats.histogram.iter().sum::<u32>(), 20);
@@ -486,6 +574,10 @@ mod tests {
         // Sem matriz entregue: ausencia de medida, nao zero (ver doc do campo).
         assert_eq!(stats.spectral_radius, None);
         assert_eq!(stats.effective_rank, None);
-        assert!(!alarms.iter().any(|a| a.kind == AlarmKind::SpectralRadiusHigh));
+        assert!(
+            !alarms
+                .iter()
+                .any(|a| a.kind == AlarmKind::SpectralRadiusHigh)
+        );
     }
 }

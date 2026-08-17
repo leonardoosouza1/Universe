@@ -6,24 +6,24 @@ use bitflags::bitflags;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct IntentVec {
-    pub throttle: f32,  // [-1, 1] (negative = reverse)
-    pub steer: f32,     // [-1, 1]
-    pub brake: f32,     // [0, 1]
+    pub throttle: f32, // [-1, 1] (negative = reverse)
+    pub steer: f32,    // [-1, 1]
+    pub brake: f32,    // [0, 1]
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct SafetyState {
     pub speed_kmh: f32,
-    pub yaw_rate: f32,         // rad/s
-    pub slip_avg: f32,         // [0, 1]
-    pub ttc_forward: f32,      // s, INF if clear
-    pub wall_left: f32,        // raycast distance m
+    pub yaw_rate: f32,    // rad/s
+    pub slip_avg: f32,    // [0, 1]
+    pub ttc_forward: f32, // s, INF if clear
+    pub wall_left: f32,   // raycast distance m
     pub wall_right: f32,
-    pub stall_timer: f32,      // s spent below 2 km/h with obstacle ahead
-    pub pinado_timer: f32,     // s pinned (V<2 + obstacle)
-    pub rain: f32,             // [0, 1]
-    pub curv25: f32,           // upcoming curvature
-    pub current_thr: f32,      // brain proposed thr (for tier2 TCS check)
+    pub stall_timer: f32,  // s spent below 2 km/h with obstacle ahead
+    pub pinado_timer: f32, // s pinned (V<2 + obstacle)
+    pub rain: f32,         // [0, 1]
+    pub curv25: f32,       // upcoming curvature
+    pub current_thr: f32,  // brain proposed thr (for tier2 TCS check)
 }
 
 bitflags! {
@@ -83,13 +83,24 @@ impl Sentinel {
         // FCA mais sensível pra pistas estreitas: 0.6s + 25kmh (era 0.3s + 15kmh).
         if s.ttc_forward < 0.6 && s.speed_kmh > 25.0 {
             out.flags |= SafetyFlags::FCA;
-            out.hard_veto = Some(IntentVec { throttle: 0.0, brake: 1.0, steer: 0.0 });
+            out.hard_veto = Some(IntentVec {
+                throttle: 0.0,
+                brake: 1.0,
+                steer: 0.0,
+            });
             return out;
         }
-        if s.stall_timer > 0.3 && s.speed_kmh < 2.0 && (s.wall_left < 1.0 || s.wall_right < 1.0 || s.ttc_forward < 2.0) {
+        if s.stall_timer > 0.3
+            && s.speed_kmh < 2.0
+            && (s.wall_left < 1.0 || s.wall_right < 1.0 || s.ttc_forward < 2.0)
+        {
             out.flags |= SafetyFlags::ANTI_STALL;
             // sign chosen by which wall is closer (escape away from it)
-            let escape_steer = if s.wall_left < s.wall_right { 0.5 } else { -0.5 };
+            let escape_steer = if s.wall_left < s.wall_right {
+                0.5
+            } else {
+                -0.5
+            };
             out.hard_veto = Some(IntentVec {
                 throttle: -0.5,
                 brake: 0.0,
@@ -149,16 +160,26 @@ mod tests {
 
     fn base_state() -> SafetyState {
         SafetyState {
-            speed_kmh: 30.0, yaw_rate: 0.0, slip_avg: 0.0, ttc_forward: 10.0,
-            wall_left: 5.0, wall_right: 5.0, stall_timer: 0.0, pinado_timer: 0.0,
-            rain: 0.0, curv25: 0.0, current_thr: 0.5,
+            speed_kmh: 30.0,
+            yaw_rate: 0.0,
+            slip_avg: 0.0,
+            ttc_forward: 10.0,
+            wall_left: 5.0,
+            wall_right: 5.0,
+            stall_timer: 0.0,
+            pinado_timer: 0.0,
+            rain: 0.0,
+            curv25: 0.0,
+            current_thr: 0.5,
         }
     }
 
     #[test]
     fn anti_stall_triggers_after_300ms() {
         let mut s = base_state();
-        s.speed_kmh = 1.0; s.stall_timer = 0.4; s.wall_left = 0.5;
+        s.speed_kmh = 1.0;
+        s.stall_timer = 0.4;
+        s.wall_left = 0.5;
         let out = Sentinel::evaluate(&s);
         assert!(out.flags.contains(SafetyFlags::ANTI_STALL));
         let v = out.hard_veto.expect("hard veto required");
@@ -168,7 +189,8 @@ mod tests {
     #[test]
     fn fca_critical_overrides_throttle() {
         let mut s = base_state();
-        s.ttc_forward = 0.2; s.speed_kmh = 50.0;
+        s.ttc_forward = 0.2;
+        s.speed_kmh = 50.0;
         let out = Sentinel::evaluate(&s);
         assert!(out.flags.contains(SafetyFlags::FCA));
         assert_eq!(out.hard_veto.unwrap().brake, 1.0);
@@ -203,7 +225,8 @@ mod tests {
     fn tcs_cuts_throttle_on_slip() {
         // Acima do limiar de derrapagem: o TCS tem de agir.
         let mut s = base_state();
-        s.slip_avg = 0.7; s.current_thr = 0.8;
+        s.slip_avg = 0.7;
+        s.current_thr = 0.8;
         let out = Sentinel::evaluate(&s);
         assert!(out.flags.contains(SafetyFlags::TCS));
         assert!(out.soft_proposal.throttle < 0.0);
@@ -216,7 +239,8 @@ mod tests {
     #[test]
     fn tcs_allows_drift_below_threshold() {
         let mut s = base_state();
-        s.slip_avg = 0.5; s.current_thr = 0.8;   // derrapagem moderada, acelerador alto
+        s.slip_avg = 0.5;
+        s.current_thr = 0.8; // derrapagem moderada, acelerador alto
         let out = Sentinel::evaluate(&s);
         assert!(
             !out.flags.contains(SafetyFlags::TCS),
@@ -227,7 +251,9 @@ mod tests {
     #[test]
     fn priority_spin_over_fca() {
         let mut s = base_state();
-        s.yaw_rate = 3.5; s.ttc_forward = 0.1; s.speed_kmh = 40.0;
+        s.yaw_rate = 3.5;
+        s.ttc_forward = 0.1;
+        s.speed_kmh = 40.0;
         let out = Sentinel::evaluate(&s);
         assert!(out.flags.contains(SafetyFlags::SPIN));
         assert!(!out.flags.contains(SafetyFlags::FCA));
@@ -248,7 +274,7 @@ mod tests {
         // Combined throttle delta would be -0.7 + -0.4 + -0.3 = -1.4, must clamp to -1.0.
         let mut s = base_state();
         s.yaw_rate = 2.0;
-        s.slip_avg = 0.7;   // acima do limiar de derrapagem (0,65)
+        s.slip_avg = 0.7; // acima do limiar de derrapagem (0,65)
         s.current_thr = 0.8;
         s.rain = 0.8;
         s.speed_kmh = 50.0;

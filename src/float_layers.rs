@@ -46,7 +46,9 @@ impl FloatLinear {
             if rng01() < rate {
                 // Box-Muller from two uniforms in (0, 1].
                 let mut u1 = rng01();
-                if u1 <= 0.0 { u1 = 1e-7; }
+                if u1 <= 0.0 {
+                    u1 = 1e-7;
+                }
                 let u2 = rng01();
                 let mag = (-2.0 * u1.ln()).sqrt();
                 let z = mag * (2.0 * std::f32::consts::PI * u2).cos();

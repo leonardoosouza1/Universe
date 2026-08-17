@@ -28,16 +28,16 @@ pub const DEFAULT_L1_LAMBDA: f32 = 0.0001;
 #[derive(Clone)]
 pub struct TinyAutoencoder {
     // Encoder: input → hidden → latent
-    pub enc_w1: Vec<f32>,  // input_dim × hidden_dim
-    pub enc_b1: Vec<f32>,  // hidden_dim
-    pub enc_w2: Vec<f32>,  // hidden_dim × latent_dim
-    pub enc_b2: Vec<f32>,  // latent_dim
+    pub enc_w1: Vec<f32>, // input_dim × hidden_dim
+    pub enc_b1: Vec<f32>, // hidden_dim
+    pub enc_w2: Vec<f32>, // hidden_dim × latent_dim
+    pub enc_b2: Vec<f32>, // latent_dim
 
     // Decoder: latent → hidden → output
-    pub dec_w1: Vec<f32>,  // latent_dim × hidden_dim
-    pub dec_b1: Vec<f32>,  // hidden_dim
-    pub dec_w2: Vec<f32>,  // hidden_dim × input_dim
-    pub dec_b2: Vec<f32>,  // input_dim
+    pub dec_w1: Vec<f32>, // latent_dim × hidden_dim
+    pub dec_b1: Vec<f32>, // hidden_dim
+    pub dec_w2: Vec<f32>, // hidden_dim × input_dim
+    pub dec_b2: Vec<f32>, // input_dim
 
     pub input_dim: usize,
     pub hidden_dim: usize,
@@ -66,9 +66,17 @@ impl TinyAutoencoder {
         let dec_b2 = vec![0.0; input_dim];
 
         Self {
-            enc_w1, enc_b1, enc_w2, enc_b2,
-            dec_w1, dec_b1, dec_w2, dec_b2,
-            input_dim, hidden_dim, latent_dim,
+            enc_w1,
+            enc_b1,
+            enc_w2,
+            enc_b2,
+            dec_w1,
+            dec_b1,
+            dec_w2,
+            dec_b2,
+            input_dim,
+            hidden_dim,
+            latent_dim,
             learning_rate: DEFAULT_LEARNING_RATE,
             l1_lambda: DEFAULT_L1_LAMBDA,
             epochs_trained: 0,
@@ -88,10 +96,22 @@ impl TinyAutoencoder {
         let input_f: Vec<f32> = input.iter().map(|&w| w as f32).collect();
 
         // Layer 1: z1 = ReLU(W1 · input + b1)
-        let hidden = linear_relu(&input_f, &self.enc_w1, &self.enc_b1, self.input_dim, self.hidden_dim);
+        let hidden = linear_relu(
+            &input_f,
+            &self.enc_w1,
+            &self.enc_b1,
+            self.input_dim,
+            self.hidden_dim,
+        );
 
         // Layer 2: latent = W2 · z1 + b2 (sem ativação — espaço contínuo)
-        let latent = linear_forward(&hidden, &self.enc_w2, &self.enc_b2, self.hidden_dim, self.latent_dim);
+        let latent = linear_forward(
+            &hidden,
+            &self.enc_w2,
+            &self.enc_b2,
+            self.hidden_dim,
+            self.latent_dim,
+        );
 
         latent
     }
@@ -101,23 +121,54 @@ impl TinyAutoencoder {
         assert_eq!(latent.len(), self.latent_dim);
 
         // Layer 1: z1 = ReLU(W1 · latent + b1)
-        let hidden = linear_relu(latent, &self.dec_w1, &self.dec_b1, self.latent_dim, self.hidden_dim);
+        let hidden = linear_relu(
+            latent,
+            &self.dec_w1,
+            &self.dec_b1,
+            self.latent_dim,
+            self.hidden_dim,
+        );
 
         // Layer 2: output = W2 · z1 + b2
-        let output = linear_forward(&hidden, &self.dec_w2, &self.dec_b2, self.hidden_dim, self.input_dim);
+        let output = linear_forward(
+            &hidden,
+            &self.dec_w2,
+            &self.dec_b2,
+            self.hidden_dim,
+            self.input_dim,
+        );
 
         // Quantizar para ternário
-        output.iter().map(|&v| {
-            if v > 0.5 { 1i8 }
-            else if v < -0.5 { -1i8 }
-            else { 0i8 }
-        }).collect()
+        output
+            .iter()
+            .map(|&v| {
+                if v > 0.5 {
+                    1i8
+                } else if v < -0.5 {
+                    -1i8
+                } else {
+                    0i8
+                }
+            })
+            .collect()
     }
 
     /// Decode para f32 (sem quantização — útil para treino).
     fn decode_f32(&self, latent: &[f32]) -> Vec<f32> {
-        let hidden = linear_relu(latent, &self.dec_w1, &self.dec_b1, self.latent_dim, self.hidden_dim);
-        linear_forward(&hidden, &self.dec_w2, &self.dec_b2, self.hidden_dim, self.input_dim)
+        let hidden = linear_relu(
+            latent,
+            &self.dec_w1,
+            &self.dec_b1,
+            self.latent_dim,
+            self.hidden_dim,
+        );
+        linear_forward(
+            &hidden,
+            &self.dec_w2,
+            &self.dec_b2,
+            self.hidden_dim,
+            self.input_dim,
+        )
     }
 
     /// Round-trip: encode → decode.
@@ -130,7 +181,9 @@ impl TinyAutoencoder {
     ///
     /// Retorna (loss_média, accuracy_média) do batch.
     pub fn train_batch(&mut self, batch: &[Vec<i8>]) -> (f32, f32) {
-        if batch.is_empty() { return (0.0, 0.0); }
+        if batch.is_empty() {
+            return (0.0, 0.0);
+        }
 
         let mut total_loss = 0.0_f32;
         let mut total_acc = 0.0_f32;
@@ -151,26 +204,53 @@ impl TinyAutoencoder {
 
             // === FORWARD ===
             // Encoder layer 1
-            let enc_h1_pre = linear_forward(&input_f, &self.enc_w1, &self.enc_b1, self.input_dim, self.hidden_dim);
+            let enc_h1_pre = linear_forward(
+                &input_f,
+                &self.enc_w1,
+                &self.enc_b1,
+                self.input_dim,
+                self.hidden_dim,
+            );
             let enc_h1: Vec<f32> = enc_h1_pre.iter().map(|&v| v.max(0.0)).collect(); // ReLU
             let relu_mask_enc: Vec<bool> = enc_h1_pre.iter().map(|&v| v > 0.0).collect();
 
             // Encoder layer 2 (latent)
-            let latent = linear_forward(&enc_h1, &self.enc_w2, &self.enc_b2, self.hidden_dim, self.latent_dim);
+            let latent = linear_forward(
+                &enc_h1,
+                &self.enc_w2,
+                &self.enc_b2,
+                self.hidden_dim,
+                self.latent_dim,
+            );
 
             // Decoder layer 1
-            let dec_h1_pre = linear_forward(&latent, &self.dec_w1, &self.dec_b1, self.latent_dim, self.hidden_dim);
+            let dec_h1_pre = linear_forward(
+                &latent,
+                &self.dec_w1,
+                &self.dec_b1,
+                self.latent_dim,
+                self.hidden_dim,
+            );
             let dec_h1: Vec<f32> = dec_h1_pre.iter().map(|&v| v.max(0.0)).collect();
             let relu_mask_dec: Vec<bool> = dec_h1_pre.iter().map(|&v| v > 0.0).collect();
 
             // Decoder layer 2 (output)
-            let output = linear_forward(&dec_h1, &self.dec_w2, &self.dec_b2, self.hidden_dim, self.input_dim);
+            let output = linear_forward(
+                &dec_h1,
+                &self.dec_w2,
+                &self.dec_b2,
+                self.hidden_dim,
+                self.input_dim,
+            );
 
             // === LOSS ===
             // MSE reconstruction loss
-            let mse: f32 = input_f.iter().zip(output.iter())
+            let mse: f32 = input_f
+                .iter()
+                .zip(output.iter())
                 .map(|(a, b)| (a - b) * (a - b))
-                .sum::<f32>() / self.input_dim as f32;
+                .sum::<f32>()
+                / self.input_dim as f32;
 
             // L1 sparsity on latent
             let l1: f32 = latent.iter().map(|&v| v.abs()).sum::<f32>() / self.latent_dim as f32;
@@ -179,65 +259,105 @@ impl TinyAutoencoder {
             total_loss += loss;
 
             // Accuracy (quantized)
-            let quantized: Vec<i8> = output.iter().map(|&v| {
-                if v > 0.5 { 1 } else if v < -0.5 { -1 } else { 0 }
-            }).collect();
-            let correct = sample.iter().zip(quantized.iter())
-                .filter(|&(&a, &b)| a == b).count();
+            let quantized: Vec<i8> = output
+                .iter()
+                .map(|&v| {
+                    if v > 0.5 {
+                        1
+                    } else if v < -0.5 {
+                        -1
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            let correct = sample
+                .iter()
+                .zip(quantized.iter())
+                .filter(|&(&a, &b)| a == b)
+                .count();
             total_acc += correct as f32 / self.input_dim as f32;
 
             // === BACKWARD ===
             // d_loss/d_output = 2(output - input) / N
-            let d_output: Vec<f32> = output.iter().zip(input_f.iter())
+            let d_output: Vec<f32> = output
+                .iter()
+                .zip(input_f.iter())
                 .map(|(&o, &i)| 2.0 * (o - i) / self.input_dim as f32)
                 .collect();
 
             // Backprop through dec_w2, dec_b2
             let d_dec_h1 = backprop_linear(
-                &d_output, &dec_h1, &self.dec_w2,
-                self.hidden_dim, self.input_dim,
-                &mut grad_dec_w2, &mut grad_dec_b2,
+                &d_output,
+                &dec_h1,
+                &self.dec_w2,
+                self.hidden_dim,
+                self.input_dim,
+                &mut grad_dec_w2,
+                &mut grad_dec_b2,
             );
 
             // Backprop through ReLU decoder
-            let d_dec_h1_pre: Vec<f32> = d_dec_h1.iter().zip(relu_mask_dec.iter())
+            let d_dec_h1_pre: Vec<f32> = d_dec_h1
+                .iter()
+                .zip(relu_mask_dec.iter())
                 .map(|(&d, &active)| if active { d } else { 0.0 })
                 .collect();
 
             // Backprop through dec_w1, dec_b1
             let d_latent_recon = backprop_linear(
-                &d_dec_h1_pre, &latent, &self.dec_w1,
-                self.latent_dim, self.hidden_dim,
-                &mut grad_dec_w1, &mut grad_dec_b1,
+                &d_dec_h1_pre,
+                &latent,
+                &self.dec_w1,
+                self.latent_dim,
+                self.hidden_dim,
+                &mut grad_dec_w1,
+                &mut grad_dec_b1,
             );
 
             // L1 gradient on latent
-            let d_latent: Vec<f32> = d_latent_recon.iter().zip(latent.iter())
+            let d_latent: Vec<f32> = d_latent_recon
+                .iter()
+                .zip(latent.iter())
                 .map(|(&dr, &l)| {
-                    let l1_grad = if l > 0.0 { self.l1_lambda / self.latent_dim as f32 }
-                                  else if l < 0.0 { -self.l1_lambda / self.latent_dim as f32 }
-                                  else { 0.0 };
+                    let l1_grad = if l > 0.0 {
+                        self.l1_lambda / self.latent_dim as f32
+                    } else if l < 0.0 {
+                        -self.l1_lambda / self.latent_dim as f32
+                    } else {
+                        0.0
+                    };
                     dr + l1_grad
                 })
                 .collect();
 
             // Backprop through enc_w2, enc_b2
             let d_enc_h1 = backprop_linear(
-                &d_latent, &enc_h1, &self.enc_w2,
-                self.hidden_dim, self.latent_dim,
-                &mut grad_enc_w2, &mut grad_enc_b2,
+                &d_latent,
+                &enc_h1,
+                &self.enc_w2,
+                self.hidden_dim,
+                self.latent_dim,
+                &mut grad_enc_w2,
+                &mut grad_enc_b2,
             );
 
             // Backprop through ReLU encoder
-            let d_enc_h1_pre: Vec<f32> = d_enc_h1.iter().zip(relu_mask_enc.iter())
+            let d_enc_h1_pre: Vec<f32> = d_enc_h1
+                .iter()
+                .zip(relu_mask_enc.iter())
                 .map(|(&d, &active)| if active { d } else { 0.0 })
                 .collect();
 
             // Backprop through enc_w1, enc_b1
             let _d_input = backprop_linear(
-                &d_enc_h1_pre, &input_f, &self.enc_w1,
-                self.input_dim, self.hidden_dim,
-                &mut grad_enc_w1, &mut grad_enc_b1,
+                &d_enc_h1_pre,
+                &input_f,
+                &self.enc_w1,
+                self.input_dim,
+                self.hidden_dim,
+                &mut grad_enc_w1,
+                &mut grad_enc_b1,
             );
         }
 
@@ -279,10 +399,14 @@ impl TinyAutoencoder {
 
     /// Número total de parâmetros (pesos + biases do autoencoder).
     pub fn num_params(&self) -> usize {
-        self.enc_w1.len() + self.enc_b1.len()
-            + self.enc_w2.len() + self.enc_b2.len()
-            + self.dec_w1.len() + self.dec_b1.len()
-            + self.dec_w2.len() + self.dec_b2.len()
+        self.enc_w1.len()
+            + self.enc_b1.len()
+            + self.enc_w2.len()
+            + self.enc_b2.len()
+            + self.dec_w1.len()
+            + self.dec_b1.len()
+            + self.dec_w2.len()
+            + self.dec_b2.len()
     }
 
     /// Tamanho do codebook em bytes.
@@ -296,7 +420,13 @@ impl TinyAutoencoder {
 // ============================================================================
 
 /// Forward linear: output[j] = Σ_i input[i] × W[j * input_dim + i] + bias[j]
-fn linear_forward(input: &[f32], weights: &[f32], bias: &[f32], in_dim: usize, out_dim: usize) -> Vec<f32> {
+fn linear_forward(
+    input: &[f32],
+    weights: &[f32],
+    bias: &[f32],
+    in_dim: usize,
+    out_dim: usize,
+) -> Vec<f32> {
     let mut output = Vec::with_capacity(out_dim);
     for j in 0..out_dim {
         let mut sum = bias[j];
@@ -310,7 +440,13 @@ fn linear_forward(input: &[f32], weights: &[f32], bias: &[f32], in_dim: usize, o
 }
 
 /// Forward linear + ReLU.
-fn linear_relu(input: &[f32], weights: &[f32], bias: &[f32], in_dim: usize, out_dim: usize) -> Vec<f32> {
+fn linear_relu(
+    input: &[f32],
+    weights: &[f32],
+    bias: &[f32],
+    in_dim: usize,
+    out_dim: usize,
+) -> Vec<f32> {
     let mut output = linear_forward(input, weights, bias, in_dim, out_dim);
     for v in output.iter_mut() {
         *v = v.max(0.0);
@@ -361,7 +497,9 @@ fn sgd_update(params: &mut [f32], grads: &[f32], lr: f32) {
     for (p, g) in params.iter_mut().zip(grads.iter()) {
         *p -= lr * g;
         // Clamp to prevent exploding weights
-        if !p.is_finite() { *p = 0.0; }
+        if !p.is_finite() {
+            *p = 0.0;
+        }
     }
 }
 
@@ -379,7 +517,9 @@ fn xavier_init(fan_in: usize, fan_out: usize, rng: &mut u64) -> Vec<f32> {
 
 /// LCG pseudo-random para inicialização (determinístico, sem dep externa).
 fn lcg_uniform(state: &mut u64) -> f32 {
-    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     ((*state >> 33) as f32) / (u32::MAX as f32)
 }
 
@@ -472,9 +612,13 @@ mod tests {
         ae.learning_rate = 0.01;
 
         // Batch de 5 amostras simples (muitos zeros — fácil de aprender)
-        let batch: Vec<Vec<i8>> = (0..5).map(|k| {
-            (0..64).map(|i| if (i + k) % 10 == 0 { 1 } else { 0 }).collect()
-        }).collect();
+        let batch: Vec<Vec<i8>> = (0..5)
+            .map(|k| {
+                (0..64)
+                    .map(|i| if (i + k) % 10 == 0 { 1 } else { 0 })
+                    .collect()
+            })
+            .collect();
 
         let (loss0, _) = ae.train_batch(&batch);
         // Treinar mais epochs
@@ -487,7 +631,8 @@ mod tests {
         assert!(
             last_loss < loss0,
             "Loss should decrease: {:.4} → {:.4}",
-            loss0, last_loss
+            loss0,
+            last_loss
         );
     }
 
@@ -500,7 +645,13 @@ mod tests {
             let err = (v - back).abs();
             // f16 has ~3 decimal digits of precision
             let tolerance = v.abs() * 0.01 + 0.001;
-            assert!(err < tolerance, "f16 round-trip failed: {} → {} (err={})", v, back, err);
+            assert!(
+                err < tolerance,
+                "f16 round-trip failed: {} → {} (err={})",
+                v,
+                back,
+                err
+            );
         }
     }
 

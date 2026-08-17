@@ -1,7 +1,7 @@
+use crate::config::iara::vision::RETINA_TOTAL;
+use crate::engine::SovereignEngine;
 use bevy::prelude::*;
 use std::collections::{HashSet, VecDeque};
-use crate::engine::SovereignEngine;
-use crate::config::iara::vision::RETINA_TOTAL;
 
 /// Tier 1.1 — Reward shaping denso.
 /// Ring buffers (128 amostras ≈ 2s @ 64Hz FixedUpdate) + voxel grid de exploração.
@@ -84,12 +84,12 @@ pub const HP_INICIAL: f32 = 1000.0;
 
 #[derive(Clone)]
 pub struct RacerTelemetry {
-    pub steering_history: VecDeque<f32>,  // steer_intent [-1, 1]
-    pub speed_history: VecDeque<f32>,     // m/s
-    pub on_road_mask: VecDeque<bool>,     // true quando voxel == Road
-    pub yaw_rate_history: VecDeque<f32>,  // rad/s
+    pub steering_history: VecDeque<f32>,     // steer_intent [-1, 1]
+    pub speed_history: VecDeque<f32>,        // m/s
+    pub on_road_mask: VecDeque<bool>,        // true quando voxel == Road
+    pub yaw_rate_history: VecDeque<f32>,     // rad/s
     pub visited_voxels: HashSet<(i32, i32)>, // células (cx, cz) visitadas ON-ROAD
-    pub hit_npc_count: u32, // Tier 5.4 — colisões com NPCs obstáculos móveis
+    pub hit_npc_count: u32,                  // Tier 5.4 — colisões com NPCs obstáculos móveis
 }
 
 impl RacerTelemetry {
@@ -105,11 +105,21 @@ impl RacerTelemetry {
     }
 
     fn push_capped<T>(buf: &mut VecDeque<T>, val: T) {
-        if buf.len() == TELEMETRY_CAP { buf.pop_front(); }
+        if buf.len() == TELEMETRY_CAP {
+            buf.pop_front();
+        }
         buf.push_back(val);
     }
 
-    pub fn record(&mut self, steer: f32, speed: f32, yaw_rate: f32, on_road: bool, pos_x: f32, pos_z: f32) {
+    pub fn record(
+        &mut self,
+        steer: f32,
+        speed: f32,
+        yaw_rate: f32,
+        on_road: bool,
+        pos_x: f32,
+        pos_z: f32,
+    ) {
         Self::push_capped(&mut self.steering_history, steer);
         Self::push_capped(&mut self.speed_history, speed);
         Self::push_capped(&mut self.yaw_rate_history, yaw_rate);
@@ -124,17 +134,26 @@ impl RacerTelemetry {
     /// Variância populacional do histórico de steering (jitter).
     pub fn steering_variance(&self) -> f32 {
         let n = self.steering_history.len();
-        if n < 2 { return 0.0; }
+        if n < 2 {
+            return 0.0;
+        }
         let mean: f32 = self.steering_history.iter().sum::<f32>() / n as f32;
-        let var: f32 = self.steering_history.iter()
-            .map(|v| { let d = v - mean; d * d })
-            .sum::<f32>() / n as f32;
+        let var: f32 = self
+            .steering_history
+            .iter()
+            .map(|v| {
+                let d = v - mean;
+                d * d
+            })
+            .sum::<f32>()
+            / n as f32;
         var
     }
 
     /// Σ speed * on_road * DT — distância "útil" percorrida na pista (≈metros on-road).
     pub fn speed_on_track(&self) -> f32 {
-        self.speed_history.iter()
+        self.speed_history
+            .iter()
             .zip(self.on_road_mask.iter())
             .map(|(&s, &on)| if on { s * TELEMETRY_DT } else { 0.0 })
             .sum()
@@ -142,27 +161,36 @@ impl RacerTelemetry {
 
     /// Σ (1 - |yaw_rate|.min(1)) * DT on-road — premia controle de yaw.
     pub fn stability_integral(&self) -> f32 {
-        self.yaw_rate_history.iter()
+        self.yaw_rate_history
+            .iter()
             .zip(self.on_road_mask.iter())
-            .map(|(rate, on)| if *on { (1.0 - rate.abs().min(1.0)) * TELEMETRY_DT } else { 0.0 })
+            .map(|(rate, on)| {
+                if *on {
+                    (1.0 - rate.abs().min(1.0)) * TELEMETRY_DT
+                } else {
+                    0.0
+                }
+            })
             .sum()
     }
 }
 
 impl Default for RacerTelemetry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeathReason {
-    HpZero,       // HP drained outside wall event
-    Pinado,       // Wall-time > 0.8s
-    Batida,       // Wall hit chain → HP 0
-    Stagnation,   // max_progress não cresceu
-    SpeedBleed,   // < 2 m/s + sem progresso → HP drain
-    Fuel,         // fuel <= 0
-    Hole,         // Caiu em buraco (VoxelType::Hole) → morte instantânea
-    NpcHit,       // Colisão violenta com NPC obstáculo → HP 0
+    HpZero,     // HP drained outside wall event
+    Pinado,     // Wall-time > 0.8s
+    Batida,     // Wall hit chain → HP 0
+    Stagnation, // max_progress não cresceu
+    SpeedBleed, // < 2 m/s + sem progresso → HP drain
+    Fuel,       // fuel <= 0
+    Hole,       // Caiu em buraco (VoxelType::Hole) → morte instantânea
+    NpcHit,     // Colisão violenta com NPC obstáculo → HP 0
 }
 
 impl DeathReason {
@@ -199,53 +227,53 @@ pub struct Racer {
     pub memory: [f32; 5], // [throttle, steer, brake, prev_shift_up, prev_shift_down]
     pub visual_cortex: [i8; RETINA_TOTAL],
     // --- NOVOS CAMPOS (Sovereign Drive Evolution) ---
-    pub tire_temp: f32,       // Carga térmica dos pneus 0.0-1.0
-    pub engine_power: f32,    // Degradação mecânica 0.1-1.0 (1.0 = full)
-    pub grass_time: f32,      // Tempo acumulado na grama (penalidade fitness)
-    pub wall_time: f32,        // Tempo acumulado raspando parede (penalidade fitness)
-    pub aquaplaning_timer: f32, // Timer de aquaplanagem (0.5s de perda de controle)
-    pub joy_integral: f32,    // Dopamina acumulada: Σ(joy_tick * streak_mult * dt) — driver de fitness
-    pub joy_streak: f32,      // Tempo contínuo em flow state (cap 5s); zera em "dor"
-    pub wall_hits: u32,       // Contador de impactos na parede (3 strikes = dead)
-    pub wall_cooldown: f32,   // Tempo até registrar novo hit na parede
+    pub tire_temp: f32,                  // Carga térmica dos pneus 0.0-1.0
+    pub engine_power: f32,               // Degradação mecânica 0.1-1.0 (1.0 = full)
+    pub grass_time: f32,                 // Tempo acumulado na grama (penalidade fitness)
+    pub wall_time: f32,                  // Tempo acumulado raspando parede (penalidade fitness)
+    pub aquaplaning_timer: f32,          // Timer de aquaplanagem (0.5s de perda de controle)
+    pub joy_integral: f32, // Dopamina acumulada: Σ(joy_tick * streak_mult * dt) — driver de fitness
+    pub joy_streak: f32,   // Tempo contínuo em flow state (cap 5s); zera em "dor"
+    pub wall_hits: u32,    // Contador de impactos na parede (3 strikes = dead)
+    pub wall_cooldown: f32, // Tempo até registrar novo hit na parede
     pub last_waypoint: usize, // Último waypoint alcançado para cura
-    pub track_progress: f32,  // Progresso real ao longo da polilinha da pista (arc-length)
-    pub grace_ticks: u32,     // Contador de frames desde spawn; imune a time_scale (grace real de ~10s)
-    pub reverse_timer: f32,   // >0 enquanto em manobra de ré de emergência; decrementa com dt
+    pub track_progress: f32, // Progresso real ao longo da polilinha da pista (arc-length)
+    pub grace_ticks: u32, // Contador de frames desde spawn; imune a time_scale (grace real de ~10s)
+    pub reverse_timer: f32, // >0 enquanto em manobra de ré de emergência; decrementa com dt
     pub progress_checkpoint: f32, // Último track_progress que marcou avanço real (+3m)
-    pub progress_stall: f32,      // Segundos acumulados SEM ganhar 3m de pista (anti-donut)
-    pub wall_ema_l: f32,          // EMA da distância à parede esquerda (decay ~1s) — sensação persistente
-    pub wall_ema_r: f32,          // EMA da distância à parede direita
-    pub wall_dist_prev_l: f32,    // Distância à parede esquerda frame anterior (m) — para cálculo approach rate
-    pub wall_dist_prev_r: f32,    // Distância à parede direita frame anterior (m)
-    pub wall_dist_prev_f: f32,    // Distância à parede frontal frame anterior (m)
-    pub proximity_sustain: f32,   // Segundos contínuos raspando alguma lateral (alerta sustentado)
+    pub progress_stall: f32, // Segundos acumulados SEM ganhar 3m de pista (anti-donut)
+    pub wall_ema_l: f32,  // EMA da distância à parede esquerda (decay ~1s) — sensação persistente
+    pub wall_ema_r: f32,  // EMA da distância à parede direita
+    pub wall_dist_prev_l: f32, // Distância à parede esquerda frame anterior (m) — para cálculo approach rate
+    pub wall_dist_prev_r: f32, // Distância à parede direita frame anterior (m)
+    pub wall_dist_prev_f: f32, // Distância à parede frontal frame anterior (m)
+    pub proximity_sustain: f32, // Segundos contínuos raspando alguma lateral (alerta sustentado)
     pub post_reverse_lockout: f32, // Cooldown pós-ré com throttle capado (evita "ré-acelera-bate")
-    pub spawn_progress: f32,       // track_progress da posição de spawn — fitness usa (track_progress - spawn_progress)
-    pub path: Vec<Vec3>,           // Histórico de posições (amostrado ~4Hz) — usado para desenhar traçado do campeão
-    pub path_timer: f32,           // Cooldown entre amostras de path
+    pub spawn_progress: f32, // track_progress da posição de spawn — fitness usa (track_progress - spawn_progress)
+    pub path: Vec<Vec3>, // Histórico de posições (amostrado ~4Hz) — usado para desenhar traçado do campeão
+    pub path_timer: f32, // Cooldown entre amostras de path
     pub brain_trace: Vec<BrainSnapshot>, // Snapshots periódicos do cérebro (diagnóstico)
-    pub trace_timer: f32,          // Cooldown entre snapshots
-    pub gaze_yaw: f32,             // Ângulo da fóvea relativo ao forward (rad). Atualizado por saccade
-                                   // reativo — aponta pro caminho mais aberto detectado pela periférica.
-                                   // Clamp ±π/3. Canal 98 expõe pra rede.
+    pub trace_timer: f32, // Cooldown entre snapshots
+    pub gaze_yaw: f32,   // Ângulo da fóvea relativo ao forward (rad). Atualizado por saccade
+    // reativo — aponta pro caminho mais aberto detectado pela periférica.
+    // Clamp ±π/3. Canal 98 expõe pra rede.
     /// Comprimento da volta em metros, copiado de `world.lap_distance` junto com a
     /// atualização de progresso. Existe para `calc_fitness` computar VOLTAS FRACIONÁRIAS sem
     /// precisar enxergar o mundo. Zero = ainda não escrito, e aí a fitness cai no
     /// comportamento antigo (contagem inteira) — o que mantém a comparação A/B honesta.
     pub lap_dist_m: f32,
-    pub max_progress: f32,         // track_progress máximo já alcançado — MONOTÔNICO. Imune a oscilação.
-                                   // Base do stagnation check: sem crescimento > 2m em 1.5s virtuais, morte.
-    pub slow_time: f32,            // SEGUNDOS VIRTUAIS com velocidade < 3 m/s após grace. > 0.5s → sangria pesada.
-    pub race_time: f32,            // SEGUNDOS VIRTUAIS vivos — imune a time_scale. Usado pra grace real
-                                   // (grace_ticks conta frames reais, inadequado quando sim roda a 8x).
-    pub prev_lap_prog: f32,        // In-lap arc position do frame anterior — usado pra detectar wrap
-                                   // direction-agnostic (prev > 0.85*lap_dist && cur < 0.15*lap_dist).
-    pub post_lap_grace: u32,       // Frames restantes de imunidade a STAGNATION/SPEED_BLEED após lap.
-                                   // Carro que completa volta para no waypoint[0] → max_progress congela →
-                                   // morria por stagnation antes de re-acelerar. Grace dá tempo pra sair.
-    pub post_lap_checkpoint: f32,  // track_progress no instante do último lap. Grace só acaba quando
-                                   // carro avança 25m ALÉM desse checkpoint — garante saída da start line.
+    pub max_progress: f32, // track_progress máximo já alcançado — MONOTÔNICO. Imune a oscilação.
+    // Base do stagnation check: sem crescimento > 2m em 1.5s virtuais, morte.
+    pub slow_time: f32, // SEGUNDOS VIRTUAIS com velocidade < 3 m/s após grace. > 0.5s → sangria pesada.
+    pub race_time: f32, // SEGUNDOS VIRTUAIS vivos — imune a time_scale. Usado pra grace real
+    // (grace_ticks conta frames reais, inadequado quando sim roda a 8x).
+    pub prev_lap_prog: f32, // In-lap arc position do frame anterior — usado pra detectar wrap
+    // direction-agnostic (prev > 0.85*lap_dist && cur < 0.15*lap_dist).
+    pub post_lap_grace: u32, // Frames restantes de imunidade a STAGNATION/SPEED_BLEED após lap.
+    // Carro que completa volta para no waypoint[0] → max_progress congela →
+    // morria por stagnation antes de re-acelerar. Grace dá tempo pra sair.
+    pub post_lap_checkpoint: f32, // track_progress no instante do último lap. Grace só acaba quando
+    // carro avança 25m ALÉM desse checkpoint — garante saída da start line.
     pub death_reason: Option<DeathReason>, // Motivo causal de morte (autopsia).
     pub death_frame: u32,                  // grace_ticks no instante da morte (≈ frame real).
     pub death_pos: Vec3,                   // Posição mundo da morte (zona na pista).
@@ -292,24 +320,24 @@ pub struct Racer {
 /// quanto foi atenuado entre o neurônio e a física.
 #[derive(Clone)]
 pub struct BrainSnapshot {
-    pub t: f32,                    // Tempo de vida do carro
-    pub speed_kmh: f32,            // Velocidade
-    pub wall_prox_l: i8,           // Canal 85: proximidade parede esquerda (0=longe, 127=colada)
-    pub wall_prox_r: i8,           // Canal 86: proximidade parede direita
-    pub ttc_inv: i8,               // Canal 82: urgência de colisão frontal
-    pub curv_25: i8,               // Canal 79: curvatura antecipada 25m
-    pub retina_center_max: i8,     // Pico dos canais centrais da retina (10..22) — parede no centro
-    pub raw_throttle: f32,         // final_intent[0] do cérebro
-    pub raw_steer: f32,            // final_intent[1] (pré-atenuação)
-    pub raw_brake: f32,            // final_intent[2]
-    pub post_damp_steer: f32,      // steer_intent depois do risk_damp do slow brain
-    pub physical_steer: f32,       // O que REALMENTE chegou no volante (com dynamic_steer_limit)
-    pub steer_limit: f32,          // Fator dinâmico 1/(1+v*0.02)
-    pub risk_damp: f32,            // Atenuação do slow brain (0..0.3)
+    pub t: f32,                      // Tempo de vida do carro
+    pub speed_kmh: f32,              // Velocidade
+    pub wall_prox_l: i8,             // Canal 85: proximidade parede esquerda (0=longe, 127=colada)
+    pub wall_prox_r: i8,             // Canal 86: proximidade parede direita
+    pub ttc_inv: i8,                 // Canal 82: urgência de colisão frontal
+    pub curv_25: i8,                 // Canal 79: curvatura antecipada 25m
+    pub retina_center_max: i8, // Pico dos canais centrais da retina (10..22) — parede no centro
+    pub raw_throttle: f32,     // final_intent[0] do cérebro
+    pub raw_steer: f32,        // final_intent[1] (pré-atenuação)
+    pub raw_brake: f32,        // final_intent[2]
+    pub post_damp_steer: f32,  // steer_intent depois do risk_damp do slow brain
+    pub physical_steer: f32,   // O que REALMENTE chegou no volante (com dynamic_steer_limit)
+    pub steer_limit: f32,      // Fator dinâmico 1/(1+v*0.02)
+    pub risk_damp: f32,        // Atenuação do slow brain (0..0.3)
     pub top_channels: [(u8, i8); 5], // Top-5 canais mais ativados (|valor|), com índice+valor
 
     // --- Vision replay data (compressed retina + sensory channels) ---
-    pub retina_fov: Vec<i8>,       // FOV_BINS × RETINA_ROWS (dynamic size, supports variable retina dimensions)
+    pub retina_fov: Vec<i8>, // FOV_BINS × RETINA_ROWS (dynamic size, supports variable retina dimensions)
     pub sensory_compact: [i8; 32], // Top-32 telemetry channels: speed, alignment, curvature, walls, etc
 }
 

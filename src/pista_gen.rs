@@ -104,8 +104,12 @@ pub fn medir(wps_celulas: &[Vec2], largura: f32, v_teto: f32) -> Dificuldade {
     let p: Vec<Vec2> = wps_celulas.iter().map(|w| *w * CELULA).collect();
     let n = p.len();
     let mut d = Dificuldade {
-        comprimento: 0.0, r_min: f32::INFINITY, n_curvas: 0,
-        d_freio: 0.0, r_pior: 0.0, v_pior: 0.0,
+        comprimento: 0.0,
+        r_min: f32::INFINITY,
+        n_curvas: 0,
+        d_freio: 0.0,
+        r_pior: 0.0,
+        v_pior: 0.0,
     };
     if n < 3 {
         return d;
@@ -155,7 +159,10 @@ struct Rng(u64);
 
 impl Rng {
     fn novo(s: u64) -> Self {
-        Rng(s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) | 1)
+        Rng(s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407)
+            | 1)
     }
     fn proximo(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
@@ -232,7 +239,7 @@ pub fn gerar(
         }
     }
     let _ = melhor; // a mais próxima NÃO é devolvida: entregar quase-difícil como difícil
-                    // é exatamente o tipo de mentira silenciosa que este projeto evita
+    // é exatamente o tipo de mentira silenciosa que este projeto evita
     None
 }
 
@@ -302,19 +309,36 @@ pub fn gerar_perfil(semente: u64, perfil: &str, largura: f32) -> Option<Vec<Vec2
         let s = semente.wrapping_mul(2654435761).wrapping_add(t);
         let mut r = Rng::novo(s);
         let (n_vert, n_retas, raio) = match perfil {
-            "curta"  => (6 + (r.proximo() * 4.0) as usize, 1, r.faixa(60.0, 110.0)),
-            "curvas" => (12 + (r.proximo() * 5.0) as usize, (r.proximo() * 2.0) as usize, r.faixa(95.0, 150.0)),
-            "retao"  => (5 + (r.proximo() * 3.0) as usize, 3 + (r.proximo() * 2.0) as usize, r.faixa(170.0, 260.0)),
+            "curta" => (6 + (r.proximo() * 4.0) as usize, 1, r.faixa(60.0, 110.0)),
+            "curvas" => (
+                12 + (r.proximo() * 5.0) as usize,
+                (r.proximo() * 2.0) as usize,
+                r.faixa(95.0, 150.0),
+            ),
+            "retao" => (
+                5 + (r.proximo() * 3.0) as usize,
+                3 + (r.proximo() * 2.0) as usize,
+                r.faixa(170.0, 260.0),
+            ),
             _ => return None,
         };
         let wps = tracado(s, n_vert, n_retas, raio);
         let d = medir(&wps, largura, 40.0);
-        if d.r_min < 6.0 { continue; }
-        if d.comprimento < *faixa_lo || d.comprimento > *faixa_hi { continue; }
+        if d.r_min < 6.0 {
+            continue;
+        }
+        if d.comprimento < *faixa_lo || d.comprimento > *faixa_hi {
+            continue;
+        }
         let (mut mn, mut mx) = (Vec2::new(f32::MAX, f32::MAX), Vec2::new(f32::MIN, f32::MIN));
-        for p in &wps { mn = mn.min(*p); mx = mx.max(*p); }
+        for p in &wps {
+            mn = mn.min(*p);
+            mx = mx.max(*p);
+        }
         let span = mx - mn;
-        if span.x.max(span.y) > SPAN_MAX_CELLS { continue; }
+        if span.x.max(span.y) > SPAN_MAX_CELLS {
+            continue;
+        }
         // tracado() é CELLS (mesma convenção de do_curriculo); converte pra METROS
         // AQUI, antes de densificar com passo real de 23 m — ver doc da função.
         let wps_m: Vec<Vec2> = wps.iter().map(|p| *p * CELULA).collect();
@@ -357,8 +381,10 @@ mod testes {
     fn medir_reconhece_pista_facil_e_dificil() {
         // quadrado grande: curvas abertas, o carro nem precisa frear
         let facil = vec![
-            Vec2::new(40.0, 40.0), Vec2::new(200.0, 40.0),
-            Vec2::new(200.0, 200.0), Vec2::new(40.0, 200.0),
+            Vec2::new(40.0, 40.0),
+            Vec2::new(200.0, 40.0),
+            Vec2::new(200.0, 200.0),
+            Vec2::new(40.0, 200.0),
             Vec2::new(40.0, 40.0),
         ];
         let df = medir(&facil, 14.0, 30.0);
@@ -369,37 +395,56 @@ mod testes {
             .map(|i| Vec2::new(40.0 + i as f32 * 8.0, if i % 2 == 0 { 60.0 } else { 90.0 }))
             .collect();
         let dd = medir(&dificil, 14.0, 30.0);
-        assert!(dd.r_min < df.r_min,
-                "o zigue-zague tem de ter raio menor: {} vs {}", dd.r_min, df.r_min);
-        assert!(dd.d_freio > df.d_freio,
-                "e exigir mais frenagem: {} vs {}", dd.d_freio, df.d_freio);
+        assert!(
+            dd.r_min < df.r_min,
+            "o zigue-zague tem de ter raio menor: {} vs {}",
+            dd.r_min,
+            df.r_min
+        );
+        assert!(
+            dd.d_freio > df.d_freio,
+            "e exigir mais frenagem: {} vs {}",
+            dd.d_freio,
+            df.d_freio
+        );
     }
 
     #[test]
     fn reta_longa_exige_mais_que_curva_fechada_sozinha() {
         // a mesma curva de 90°, uma logo depois de outra curva, outra no fim de uma reta
         let sem_reta = vec![
-            Vec2::new(100.0, 100.0), Vec2::new(115.0, 100.0),
-            Vec2::new(115.0, 115.0), Vec2::new(100.0, 115.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(115.0, 100.0),
+            Vec2::new(115.0, 115.0),
+            Vec2::new(100.0, 115.0),
             Vec2::new(100.0, 100.0),
         ];
         let com_reta = vec![
-            Vec2::new(20.0, 100.0), Vec2::new(200.0, 100.0),
-            Vec2::new(200.0, 115.0), Vec2::new(20.0, 115.0),
+            Vec2::new(20.0, 100.0),
+            Vec2::new(200.0, 100.0),
+            Vec2::new(200.0, 115.0),
+            Vec2::new(20.0, 115.0),
             Vec2::new(20.0, 100.0),
         ];
         let a = medir(&sem_reta, 14.0, 40.0);
         let b = medir(&com_reta, 14.0, 40.0);
-        assert!(b.d_freio > a.d_freio,
-                "reta longa tem de exigir mais frenagem: {} vs {}", b.d_freio, a.d_freio);
+        assert!(
+            b.d_freio > a.d_freio,
+            "reta longa tem de exigir mais frenagem: {} vs {}",
+            b.d_freio,
+            a.d_freio
+        );
     }
 
     #[test]
     fn gerar_devolve_so_o_que_esta_na_faixa_pedida() {
         // se achar, a dificuldade MEDIDA tem de estar dentro do pedido — nunca "quase"
         if let Some((_, d)) = gerar(7, 10.0, 30.0, 14.0, 35.0, 400) {
-            assert!(d.d_freio >= 10.0 && d.d_freio <= 30.0,
-                    "devolveu fora da faixa: {}", d.d_freio);
+            assert!(
+                d.d_freio >= 10.0 && d.d_freio <= 30.0,
+                "devolveu fora da faixa: {}",
+                d.d_freio
+            );
         }
     }
 }
@@ -445,7 +490,9 @@ mod testes_curriculo {
     fn variantes_do_mesmo_degrau_sao_pistas_diferentes() {
         if let (Some(a), Some(b)) = (do_curriculo(2, 0), do_curriculo(2, 1)) {
             let iguais = a.len() == b.len()
-                && a.iter().zip(b.iter()).all(|(p, q)| (p.x - q.x).abs() < 1e-6);
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(p, q)| (p.x - q.x).abs() < 1e-6);
             assert!(!iguais, "variantes 0 e 1 do degrau 2 deram a mesma pista");
         }
     }

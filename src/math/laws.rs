@@ -95,7 +95,9 @@ mod tests {
         let got = search_noise_threshold(1.0, 2);
         assert!(
             (got - expected).abs() < 1e-5,
-            "σ=1 M=2: esperado {}, obteve {}", expected, got
+            "σ=1 M=2: esperado {}, obteve {}",
+            expected,
+            got
         );
     }
 
@@ -104,7 +106,10 @@ mod tests {
         // Limiar deve ser proporcional a σ
         let t1 = search_noise_threshold(1.0, 100);
         let t2 = search_noise_threshold(2.0, 100);
-        assert!((t2 / t1 - 2.0).abs() < 1e-5, "limiar deve escalar 2× com 2σ");
+        assert!(
+            (t2 / t1 - 2.0).abs() < 1e-5,
+            "limiar deve escalar 2× com 2σ"
+        );
     }
 
     #[test]
@@ -112,8 +117,10 @@ mod tests {
         // Mesma variância residual, mais parâmetros → AIC maior
         let aic_simples = aic_cost(0.1, 5, 100);
         let aic_complexo = aic_cost(0.1, 50, 100);
-        assert!(aic_complexo > aic_simples,
-            "AIC deve crescer com mais parâmetros");
+        assert!(
+            aic_complexo > aic_simples,
+            "AIC deve crescer com mais parâmetros"
+        );
     }
 
     #[test]

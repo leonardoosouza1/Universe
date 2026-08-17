@@ -21,8 +21,10 @@ impl RealityEngine {
     /// Axiom: "Tradução direta de vetores latentes em pixels reais."
     pub fn materialize(&mut self, latent_dna: &[f32]) {
         for (i, &energy) in latent_dna.iter().enumerate() {
-            if i >= self.width * self.height { break; }
-            
+            if i >= self.width * self.height {
+                break;
+            }
+
             let pixel_val = if energy > 5.0 {
                 0b11 // High Energy (White/Bright)
             } else if energy > 2.0 {
@@ -53,7 +55,7 @@ impl RealityEngine {
                 let byte_idx = idx / 4;
                 let bit_shift = (idx % 4) * 2;
                 let val = (self.draft_buffer[byte_idx] >> bit_shift) & 0b11;
-                
+
                 let char = match val {
                     0b11 => '█',
                     0b10 => '▓',

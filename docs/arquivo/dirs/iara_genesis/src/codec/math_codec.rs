@@ -3,7 +3,7 @@
 //! Wrappers que implementam o trait `Codec` para Fourier, Chebyshev e Sparse RLE.
 
 use super::{Codec, Compressed};
-use crate::math::{fourier, chebyshev, sparse};
+use crate::math::{chebyshev, fourier, sparse};
 
 // ============================================================================
 // Sparse RLE Codec — LOSSLESS
@@ -13,7 +13,9 @@ use crate::math::{fourier, chebyshev, sparse};
 pub struct SparseRleCodec;
 
 impl Codec for SparseRleCodec {
-    fn tag(&self) -> [u8; 4] { *b"SRLE" }
+    fn tag(&self) -> [u8; 4] {
+        *b"SRLE"
+    }
 
     fn encode(&self, weights: &[i8]) -> Compressed {
         let rle = sparse::compress(weights);
@@ -48,12 +50,20 @@ impl FourierCodec {
 
 impl Codec for FourierCodec {
     fn tag(&self) -> [u8; 4] {
-        if self.num_harmonics <= 32 { *b"FFT1" } else { *b"FFT2" }
+        if self.num_harmonics <= 32 {
+            *b"FFT1"
+        } else {
+            *b"FFT2"
+        }
     }
 
     fn encode(&self, weights: &[i8]) -> Compressed {
         if weights.is_empty() {
-            return Compressed { codec_tag: self.tag(), data: vec![], original_len: 0 };
+            return Compressed {
+                codec_tag: self.tag(),
+                data: vec![],
+                original_len: 0,
+            };
         }
         let fc = fourier::analyze(weights, self.num_harmonics);
         let data = fourier::serialize(&fc);
@@ -65,7 +75,9 @@ impl Codec for FourierCodec {
     }
 
     fn decode(&self, compressed: &Compressed) -> Option<Vec<i8>> {
-        if compressed.original_len == 0 { return Some(vec![]); }
+        if compressed.original_len == 0 {
+            return Some(vec![]);
+        }
         let fc = fourier::deserialize(&compressed.data)?;
         Some(fourier::synthesize(&fc))
     }
@@ -88,12 +100,20 @@ impl ChebyshevCodec {
 
 impl Codec for ChebyshevCodec {
     fn tag(&self) -> [u8; 4] {
-        if self.num_terms <= 16 { *b"CHB1" } else { *b"CHB2" }
+        if self.num_terms <= 16 {
+            *b"CHB1"
+        } else {
+            *b"CHB2"
+        }
     }
 
     fn encode(&self, weights: &[i8]) -> Compressed {
         if weights.is_empty() {
-            return Compressed { codec_tag: self.tag(), data: vec![], original_len: 0 };
+            return Compressed {
+                codec_tag: self.tag(),
+                data: vec![],
+                original_len: 0,
+            };
         }
         let cc = chebyshev::fit(weights, self.num_terms);
         let data = chebyshev::serialize(&cc);
@@ -105,7 +125,9 @@ impl Codec for ChebyshevCodec {
     }
 
     fn decode(&self, compressed: &Compressed) -> Option<Vec<i8>> {
-        if compressed.original_len == 0 { return Some(vec![]); }
+        if compressed.original_len == 0 {
+            return Some(vec![]);
+        }
         let cc = chebyshev::deserialize(&compressed.data)?;
         Some(chebyshev::reconstruct(&cc))
     }
@@ -118,9 +140,7 @@ mod tests {
 
     #[test]
     fn sparse_rle_always_lossless() {
-        let weights: Vec<i8> = (0..8192)
-            .map(|i| [0, 1, -1, 0, 0][i % 5])
-            .collect();
+        let weights: Vec<i8> = (0..8192).map(|i| [0, 1, -1, 0, 0][i % 5]).collect();
         let codec = SparseRleCodec;
         let compressed = codec.encode(&weights);
         let restored = codec.decode(&compressed).unwrap();
@@ -133,14 +153,24 @@ mod tests {
         let weights: Vec<i8> = (0..2048)
             .map(|i| {
                 let v = (2.0 * std::f64::consts::PI * 5.0 * i as f64 / 2048.0).sin();
-                if v > 0.3 { 1 } else if v < -0.3 { -1 } else { 0 }
+                if v > 0.3 {
+                    1
+                } else if v < -0.3 {
+                    -1
+                } else {
+                    0
+                }
             })
             .collect();
         let codec = FourierCodec::new(32);
         let compressed = codec.encode(&weights);
         let restored = codec.decode(&compressed).unwrap();
         let acc = ternary_accuracy(&weights, &restored);
-        assert!(acc > 0.70, "Fourier accuracy on sinusoidal: {:.1}%", acc * 100.0);
+        assert!(
+            acc > 0.70,
+            "Fourier accuracy on sinusoidal: {:.1}%",
+            acc * 100.0
+        );
     }
 
     #[test]
@@ -149,7 +179,11 @@ mod tests {
         let codec = ChebyshevCodec::new(16);
         let compressed = codec.encode(&weights);
         let ratio = compressed.ratio();
-        assert!(ratio > 50.0, "Chebyshev 16 terms should compress > 50:1, got {:.0}:1", ratio);
+        assert!(
+            ratio > 50.0,
+            "Chebyshev 16 terms should compress > 50:1, got {:.0}:1",
+            ratio
+        );
     }
 
     #[test]

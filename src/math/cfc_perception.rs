@@ -56,12 +56,11 @@ pub const CFC_INPUT: usize = 3 * PERCEPTION_BINS; // 48
 /// roda o passo recorrente que alimenta ch192-207, não a cabeça de 4 classes (que hoje
 /// nenhum caminho do `gpu_evolve` consome — ver achado "pesos do CfC nunca carregados
 /// do genoma").
-pub const CFC_WEIGHTS_LEN: usize =
-    CFC_HIDDEN * CFC_INPUT   // w_xi
+pub const CFC_WEIGHTS_LEN: usize = CFC_HIDDEN * CFC_INPUT   // w_xi
     + CFC_HIDDEN * CFC_HIDDEN // w_hi
     + CFC_HIDDEN * CFC_HIDDEN // w_f
     + CFC_HIDDEN              // b_i
-    + CFC_HIDDEN;             // b_f
+    + CFC_HIDDEN; // b_f
 
 /// Achata os pesos de um `CfcCell` no layout que `retina_digest.wgsl` espera.
 ///
@@ -71,7 +70,10 @@ pub const CFC_WEIGHTS_LEN: usize =
 /// `RetinaPerception::new()`, `Genome` do `gpu_evolve` não carrega `perception_weights`)
 /// — por isso um único upload, uma vez por processo, basta.
 pub fn flat_weights(cell: &CfcCell) -> Vec<f32> {
-    debug_assert_eq!(cell.hidden_dim, CFC_HIDDEN, "CfcCell hidden_dim != CFC_HIDDEN");
+    debug_assert_eq!(
+        cell.hidden_dim, CFC_HIDDEN,
+        "CfcCell hidden_dim != CFC_HIDDEN"
+    );
     debug_assert_eq!(cell.input_dim, CFC_INPUT, "CfcCell input_dim != CFC_INPUT");
     let mut w = Vec::with_capacity(CFC_WEIGHTS_LEN);
     w.extend_from_slice(&cell.w_xi);
@@ -126,6 +128,9 @@ mod tests {
         // quebrar e avisar quem estiver mexendo em retina_digest.rs.
         let a = flat_weights(&RetinaPerception::new().pipeline.cfc);
         let b = flat_weights(&RetinaPerception::new().pipeline.cfc);
-        assert_eq!(a, b, "seed seria fixa — pesos deveriam ser idênticos entre instâncias");
+        assert_eq!(
+            a, b,
+            "seed seria fixa — pesos deveriam ser idênticos entre instâncias"
+        );
     }
 }

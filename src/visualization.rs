@@ -51,7 +51,13 @@ fn decode_sensory_vision(racer: &crate::simulation::racer::Racer) -> String {
     output.push_str("NEAR WALLS [16-23]: ");
     for i in 16..24 {
         let val = racer.sensory_snapshot[i] as f32 / 127.0;
-        let c = if val > 0.5 { '⚠' } else if val > 0.2 { '.' } else { ' ' };
+        let c = if val > 0.5 {
+            '⚠'
+        } else if val > 0.2 {
+            '.'
+        } else {
+            ' '
+        };
         output.push(c);
     }
     output.push_str(" (L←→R)\n");
@@ -61,9 +67,9 @@ fn decode_sensory_vision(racer: &crate::simulation::racer::Racer) -> String {
     for i in 40..48 {
         let val = racer.sensory_snapshot[i] as i8;
         let c = match val {
-            v if v > 50 => '🟢',   // Road detected
-            v if v > 0 => '🟡',    // Uncertain
-            v if v < -50 => '🔴',  // Wall/obstacle
+            v if v > 50 => '🟢',  // Road detected
+            v if v > 0 => '🟡',   // Uncertain
+            v if v < -50 => '🔴', // Wall/obstacle
             _ => '⚫',
         };
         output.push(c);
@@ -76,9 +82,9 @@ fn decode_sensory_vision(racer: &crate::simulation::racer::Racer) -> String {
     for i in 48..56 {
         let val = racer.sensory_snapshot[i] as i8;
         let c = match val {
-            v if v > 60 => '▲',    // Crest/apex detected
-            v if v > 20 => '∧',    // Gentle slope
-            v if v < -60 => '▼',   // Drop/hole
+            v if v > 60 => '▲',  // Crest/apex detected
+            v if v > 20 => '∧',  // Gentle slope
+            v if v < -60 => '▼', // Drop/hole
             _ => '—',
         };
         output.push(c);
@@ -100,11 +106,13 @@ fn decode_sensory_vision(racer: &crate::simulation::racer::Racer) -> String {
     // Summary: what vision mode is active?
     let near_threat = (16..24)
         .map(|i| racer.sensory_snapshot[i].abs() as i32)
-        .sum::<i32>() as f32 / 8.0;
+        .sum::<i32>() as f32
+        / 8.0;
 
     let far_signal = (48..56)
         .map(|i| racer.sensory_snapshot[i].abs() as i32)
-        .sum::<i32>() as f32 / 8.0;
+        .sum::<i32>() as f32
+        / 8.0;
 
     let vision_mode = if far_signal > near_threat * 0.5 {
         "STRATEGIC (lookahead active)"
@@ -112,8 +120,10 @@ fn decode_sensory_vision(racer: &crate::simulation::racer::Racer) -> String {
         "REACTIVE (immediate obstacle)"
     };
 
-    output.push_str(&format!("\nVISION MODE: {} | NEAR_THREAT={:.1} FAR_SIGNAL={:.1}\n",
-        vision_mode, near_threat, far_signal));
+    output.push_str(&format!(
+        "\nVISION MODE: {} | NEAR_THREAT={:.1} FAR_SIGNAL={:.1}\n",
+        vision_mode, near_threat, far_signal
+    ));
 
     output
 }

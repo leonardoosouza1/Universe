@@ -20,9 +20,9 @@
 //! O banco pode estar desatualizado (nomes antigos como `cerebro.rs` → `brain.rs`).
 //! Use como ponto de partida; confirme no código com grep.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::process::{self, Command};
-use std::collections::{HashMap, HashSet, VecDeque};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -38,9 +38,7 @@ fn main() {
 
     let symbol_needle = &args[1];
     let mut max_depth: usize = 3;
-    let mut db_path = String::from(
-        "/home/leonardo/projects/LLM/.code-review-graph/graph.db"
-    );
+    let mut db_path = String::from("/home/leonardo/projects/LLM/.code-review-graph/graph.db");
 
     let mut i = 2;
     while i < args.len() {
@@ -94,13 +92,19 @@ fn main() {
     for row in &seed_nodes {
         let parts: Vec<&str> = row.splitn(3, '\t').collect();
         if parts.len() == 3 {
-            println!("  [{}] {} ({})", parts[2].trim(), parts[0], abbrev_path(parts[1]));
+            println!(
+                "  [{}] {} ({})",
+                parts[2].trim(),
+                parts[0],
+                abbrev_path(parts[1])
+            );
         }
     }
     println!();
 
     // 2. BFS nos dependentes transitivos.
-    let seed_qnames: Vec<String> = seed_nodes.iter()
+    let seed_qnames: Vec<String> = seed_nodes
+        .iter()
         .filter_map(|r| r.split('\t').next().map(|s| s.to_string()))
         .collect();
 
@@ -118,19 +122,29 @@ fn main() {
 
     let mut by_kind: HashMap<String, Vec<(String, String, usize)>> = HashMap::new();
     for (qname, file, kind, depth) in &dependents {
-        by_kind.entry(kind.clone()).or_default()
-               .push((qname.clone(), file.clone(), *depth));
+        by_kind
+            .entry(kind.clone())
+            .or_default()
+            .push((qname.clone(), file.clone(), *depth));
     }
 
     let kind_order = [
-        "CALLS", "REFERENCES", "TESTED_BY", "CONTAINS", "IMPORTS_FROM", "INHERITS",
+        "CALLS",
+        "REFERENCES",
+        "TESTED_BY",
+        "CONTAINS",
+        "IMPORTS_FROM",
+        "INHERITS",
     ];
-    let mut shown: Vec<String> = kind_order.iter()
+    let mut shown: Vec<String> = kind_order
+        .iter()
         .map(|s| s.to_string())
         .filter(|k| by_kind.contains_key(k))
         .collect();
     for k in by_kind.keys() {
-        if !shown.contains(k) { shown.push(k.clone()); }
+        if !shown.contains(k) {
+            shown.push(k.clone());
+        }
     }
 
     for kind in &shown {
@@ -139,7 +153,12 @@ fn main() {
         let mut sorted = items.clone();
         sorted.sort_by_key(|(_, _, d)| *d);
         for (qname, file, depth) in &sorted {
-            println!("    [d{}] {} ({})", depth, short_qname(qname), abbrev_path(file));
+            println!(
+                "    [d{}] {} ({})",
+                depth,
+                short_qname(qname),
+                abbrev_path(file)
+            );
         }
     }
 
@@ -163,12 +182,13 @@ fn bfs_dependents(
     max_depth: usize,
 ) -> Vec<(String, String, String, usize)> {
     let mut visited: HashSet<String> = seeds.iter().cloned().collect();
-    let mut queue: VecDeque<(String, usize)> =
-        seeds.iter().map(|q| (q.clone(), 0usize)).collect();
+    let mut queue: VecDeque<(String, usize)> = seeds.iter().map(|q| (q.clone(), 0usize)).collect();
     let mut result: Vec<(String, String, String, usize)> = Vec::new();
 
     while let Some((target, depth)) = queue.pop_front() {
-        if depth >= max_depth { continue; }
+        if depth >= max_depth {
+            continue;
+        }
 
         // Quem aponta para `target`?
         let sql = format!(
@@ -183,7 +203,9 @@ fn bfs_dependents(
 
         for row in rows {
             let parts: Vec<&str> = row.splitn(3, '\t').collect();
-            if parts.len() < 3 { continue; }
+            if parts.len() < 3 {
+                continue;
+            }
             let src = parts[0].to_string();
             let file = parts[1].to_string();
             let kind = parts[2].trim().to_string();
@@ -219,10 +241,7 @@ except Exception as e:
         python_str_literal(sql),
     );
 
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(&script)
-        .output();
+    let out = Command::new("python3").arg("-c").arg(&script).output();
 
     match out {
         Ok(o) => {

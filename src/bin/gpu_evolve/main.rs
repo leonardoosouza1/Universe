@@ -41,34 +41,34 @@
 //!   env -u DISPLAY nice -n 19 ./target/release/gpu_evolve \
 //!       --seres 60 --ticks 8000 --gens 100 --retomar
 
-use std::time::Instant;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
-mod statics;
-mod types;
-mod genome_io;
 mod audit;
-mod pilots;
 mod context;
+mod escada;
+mod fantasma;
+mod genome_io;
 mod painel;
+mod piloto_forja;
+mod piloto_linear;
+mod pilots;
 mod pistas;
+mod statics;
 #[cfg(test)]
 mod tests;
-mod fantasma;
-mod escada;
-mod piloto_linear;
-mod piloto_forja;
+mod types;
 
-use statics::*;
 use context::GpuCtx;
-use types::BeingState;
-use genome_io::{save_genome, load_genome, population_seed_for};
+use genome_io::{load_genome, population_seed_for, save_genome};
 use pistas::{parse_pistas, pista_da_gen};
+use statics::*;
+use types::BeingState;
 
-use universe::gpu::evolution::{Genome, EvoParams, GenResult, evolve, gen_stats, linear_slope};
-use universe::world::VoxelWorld;
-use universe::evolution::dna_genesis::default_kan_knots;
 use universe::engine::SovereignEngine;
+use universe::evolution::dna_genesis::default_kan_knots;
+use universe::gpu::evolution::{EvoParams, GenResult, Genome, evolve, gen_stats, linear_slope};
+use universe::world::VoxelWorld;
 
 // ── Tipos locais (espelhando gpu_loop.rs) ────────────────────────────────────
 //
@@ -81,8 +81,7 @@ use universe::engine::SovereignEngine;
 // SlowBrainGpu, PerceptionGpu, PhysicsGpu/PhysicsStateGpu/WheelGpu, RacingLine, pitch,
 // RetinaPerception, Channel/channel_source_for/channel_name_for, KAN_OUT_KNOTS) só
 // eram usados dentro de `GpuCtx` — ficaram em context.rs/audit.rs, não aqui.
-use universe::gpu::physics::{pos_of, make_physics_state};
-
+use universe::gpu::physics::{make_physics_state, pos_of};
 
 // ── Persistência de genomas ───────────────────────────────────────────────────
 //
@@ -202,48 +201,56 @@ fn avaliar_held_out(
     // laço principal (main(), bloco "Reseta CfC entre gerações").
     ctx.reload_world(&world_ho);
     ctx.reset_cfc(n_seres);
-    for i in 0..n_seres { ctx.brain.reset_cfc(i); }
+    for i in 0..n_seres {
+        ctx.brain.reset_cfc(i);
+    }
 
     let lap_dist = world_ho.lap_distance as f64;
     let n_wp = world_ho.waypoints_world.len();
-    let mut states: Vec<BeingState> = (0..n_seres).map(|i| {
-        let wi = if same_start { 0 } else { (i * n_wp / n_seres).min(n_wp - 1) };
-        let wp = world_ho.waypoints_world[wi];
-        let fwd = frente_do_waypoint(&world_ho.waypoints_world, wi);
-        let pos = [wp.x, 0.0, wp.y];
-        BeingState {
-            phys: make_physics_state(pos, fwd),
-            prev_steer: 0.0,
-            stagnation_ticks: 0,
-            wall_ticks: 0,
-            center_prog: 0.0,
-            sensor_steer: 0.0,
-            sensor_thr: 0.0,
-            sensor_brk: 0.0,
-            wp_near: 0,
-            fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
-            ticks_alive: 0,
-            // Vida CHEIA (ver doc da função: held-out mede rota, não orçamento de fôlego).
-            life_left: n_ticks as f64,
-            reverse_timer: 0.0,
-            post_reverse_lockout: 0.0,
-            shift_cooldown: 0.0,
-            shift_up_prev: 0.0,
-            shift_down_prev: 0.0,
-            nm_reserva: [1.0; 4],
-            re_falhas: 0,
-            re_desde_saida: 999.0,
-            dano: 0.0,
-            joy_tick: 0.0,
-            joy_streak: 0.0,
-            edge_row6: 0.0,
-            edge_row7: 0.0,
-            phantom_d_min: 30.0,
-            dist_wall_l: 40.0,
-            dist_wall_r: 40.0,
-            dist_wall_f: 50.0,
-        }
-    }).collect();
+    let mut states: Vec<BeingState> = (0..n_seres)
+        .map(|i| {
+            let wi = if same_start {
+                0
+            } else {
+                (i * n_wp / n_seres).min(n_wp - 1)
+            };
+            let wp = world_ho.waypoints_world[wi];
+            let fwd = frente_do_waypoint(&world_ho.waypoints_world, wi);
+            let pos = [wp.x, 0.0, wp.y];
+            BeingState {
+                phys: make_physics_state(pos, fwd),
+                prev_steer: 0.0,
+                stagnation_ticks: 0,
+                wall_ticks: 0,
+                center_prog: 0.0,
+                sensor_steer: 0.0,
+                sensor_thr: 0.0,
+                sensor_brk: 0.0,
+                wp_near: 0,
+                fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
+                ticks_alive: 0,
+                // Vida CHEIA (ver doc da função: held-out mede rota, não orçamento de fôlego).
+                life_left: n_ticks as f64,
+                reverse_timer: 0.0,
+                post_reverse_lockout: 0.0,
+                shift_cooldown: 0.0,
+                shift_up_prev: 0.0,
+                shift_down_prev: 0.0,
+                nm_reserva: [1.0; 4],
+                re_falhas: 0,
+                re_desde_saida: 999.0,
+                dano: 0.0,
+                joy_tick: 0.0,
+                joy_streak: 0.0,
+                edge_row6: 0.0,
+                edge_row7: 0.0,
+                phantom_d_min: 30.0,
+                dist_wall_l: 40.0,
+                dist_wall_r: 40.0,
+                dist_wall_f: 50.0,
+            }
+        })
+        .collect();
 
     let mut dist_acum: Vec<f64> = vec![0.0; n_seres];
     let mut prog_acum: Vec<f64> = vec![0.0; n_seres];
@@ -260,7 +267,9 @@ fn avaliar_held_out(
     let dt = 1.0_f32 / 64.0;
     for tick_i in 0..n_ticks {
         if !ctx.tick(&mut states, n_seres, dt, tick_i + 1, kan_knots) {
-            eprintln!("[held-out] ERRO no tick {tick_i} — avaliação abortada, usando dados parciais.");
+            eprintln!(
+                "[held-out] ERRO no tick {tick_i} — avaliação abortada, usando dados parciais."
+            );
             break;
         }
         // `ctx.tick()` já decrementa `life_left`/incrementa `ticks_alive` por conta
@@ -276,7 +285,11 @@ fn avaliar_held_out(
                 let cur = world_ho.get_track_progress(p1[0], p1[2]);
                 let ld = lap_dist as f32;
                 let mut d = cur - prog_prev[i];
-                if d < -ld * 0.5 { d += ld; } else if d > ld * 0.5 { d -= ld; }
+                if d < -ld * 0.5 {
+                    d += ld;
+                } else if d > ld * 0.5 {
+                    d -= ld;
+                }
                 let avanco = d.clamp(-ld * 0.1, ld * 0.1) as f64;
                 prog_acum[i] += avanco;
                 prog_prev[i] = cur;
@@ -292,20 +305,27 @@ fn avaliar_held_out(
                     let dxx = wps[idx].x - p1[0];
                     let dzz = wps[idx].y - p1[2];
                     let dd = dxx * dxx + dzz * dzz;
-                    if dd < best_d { best_d = dd; melhor = idx; }
+                    if dd < best_d {
+                        best_d = dd;
+                        melhor = idx;
+                    }
                 }
                 states[i].wp_near = melhor;
                 let dist_eixo = best_d.sqrt();
                 let half = (track_width * 0.5).max(1.0);
                 let prox = (1.0 - dist_eixo / half).clamp(0.0, 1.0) as f64;
-                if avanco > 0.0 { states[i].center_prog += avanco * prox; }
+                if avanco > 0.0 {
+                    states[i].center_prog += avanco * prox;
+                }
 
                 // Setor SEMPRE uniforme (ver doc da função — held-out ignora
                 // `--portal-curva` de propósito, pra manter a contagem de setores
                 // comparável entre treino e held-out).
                 let setor = ((cur / ld) * N_CHECKPOINTS as f32) as u32;
                 let esperado = checkpoint[i] % N_CHECKPOINTS.max(1);
-                if setor == esperado { checkpoint[i] += 1; }
+                if setor == esperado {
+                    checkpoint[i] += 1;
+                }
             }
             pos_prev[i] = p1;
         }
@@ -314,12 +334,12 @@ fn avaliar_held_out(
     let fitness_ho: Vec<f64> = match modo_fitness {
         "dist" => dist_acum,
         "prog" => prog_acum.iter().map(|p| p.max(0.0)).collect(),
-        "centro" => (0..n_seres).map(|i| {
-            checkpoint[i] as f64 * lap_dist + states[i].center_prog.max(0.0)
-        }).collect(),
-        _ => (0..n_seres).map(|i| {
-            checkpoint[i] as f64 * lap_dist + prog_acum[i].max(0.0)
-        }).collect(),
+        "centro" => (0..n_seres)
+            .map(|i| checkpoint[i] as f64 * lap_dist + states[i].center_prog.max(0.0))
+            .collect(),
+        _ => (0..n_seres)
+            .map(|i| checkpoint[i] as f64 * lap_dist + prog_acum[i].max(0.0))
+            .collect(),
     };
 
     // Não deixa nenhuma amostra desta corrida vazar pro relatório de ativação da
@@ -347,8 +367,10 @@ fn avaliar_held_out(
         .map(|i| fitness_ho[i])
         .collect();
     if vivos.is_empty() {
-        eprintln!("[held-out] ninguém sobreviveu na pista reservada — mediana calculada \
-                    sobre TODOS os seres (não só vivos), número menos confiável.");
+        eprintln!(
+            "[held-out] ninguém sobreviveu na pista reservada — mediana calculada \
+                    sobre TODOS os seres (não só vivos), número menos confiável."
+        );
         mediana(fitness_ho)
     } else {
         mediana(vivos)
@@ -360,25 +382,25 @@ fn avaliar_held_out(
 fn main() {
     // Força ICD Vulkan da Radeon (evita SIGSEGV com múltiplos ICDs).
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
-    if std::path::Path::new(icd_radeon).exists()
-        && std::env::var("VK_ICD_FILENAMES").is_err()
-    {
-        unsafe { std::env::set_var("VK_ICD_FILENAMES", icd_radeon); }
+    if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
+        unsafe {
+            std::env::set_var("VK_ICD_FILENAMES", icd_radeon);
+        }
     }
 
     // ── Parsing de args ────────────────────────────────────────────────────────
     let args: Vec<String> = std::env::args().collect();
-    let mut n_seres:  usize = 60;
-    let mut n_ticks:  usize = 8_000;   // 8.000 ticks = 125s @ 64Hz por geração
-    let mut n_gens:   usize = 100;
-    let mut retomar:  bool  = false;
-    let mut l1_vivos: usize = 0;   // 0 = todos os 96 (sem ablacao)
-    let mut retomar_mix: f32 = 0.85;   // fracao do campeao preservada nos filhos
+    let mut n_seres: usize = 60;
+    let mut n_ticks: usize = 8_000; // 8.000 ticks = 125s @ 64Hz por geração
+    let mut n_gens: usize = 100;
+    let mut retomar: bool = false;
+    let mut l1_vivos: usize = 0; // 0 = todos os 96 (sem ablacao)
+    let mut retomar_mix: f32 = 0.85; // fracao do campeao preservada nos filhos
     let mut congela_l2_cegas: bool = false;
     let mut mascara_regioes: bool = false;
     let mut tau_semeado: bool = false;
     let mut observar_path: Option<String> = None;
-    let mut trocar_ao_completar: usize = 0;  // 0 = rotacao por geracao (comportamento atual)
+    let mut trocar_ao_completar: usize = 0; // 0 = rotacao por geracao (comportamento atual)
     /// P1.8, achado "currículo avança com UM ser rastejando promove a turma"
     /// (`--trocar-ao-completar 1` deixava um único ser lento fechar a lição pra
     /// população inteira). Piso: promoção exige `v1` (voltas REAIS, não hodômetro)
@@ -392,11 +414,11 @@ fn main() {
     /// bem abaixo do ritmo de corrida medido (79 km/h ≈ 22 m/s), então não deveria
     /// travar progresso real de currículo — é ponto de partida, não medição final.
     let mut curriculo_veloc_min: f64 = 5.0;
-    let mut out_dir   = ".".to_string();
+    let mut out_dir = ".".to_string();
     // Parâmetros evolutivos ajustáveis via CLI (padrão conservador para fine-tuning).
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
-    let mut evo_sigma:    f32  = 0.05;
-    let mut evo_p_mutate: f32  = 0.02;
+    let mut evo_sigma: f32 = 0.05;
+    let mut evo_p_mutate: f32 = 0.02;
     // Semente da população inicial. Sem isto, repetições da mesma condição são
     // idênticas e não distinguem efeito de sorte — que é o ponto de repetir.
     let mut pop_seed: u64 = 0;
@@ -421,13 +443,13 @@ fn main() {
     let mut same_start = false;
     let mut largada_aleatoria = false;
     let mut ruido_sigma: f32 = 0.0;
-    let mut ruido_drop:  f32 = 0.0;
-    let mut clima_mu:    f32 = 1.0;
-    let mut clima_freq:  f32 = 0.0;
-    let mut vento_x:     f32 = 0.0;
-    let mut vento_z:     f32 = 0.0;
+    let mut ruido_drop: f32 = 0.0;
+    let mut clima_mu: f32 = 1.0;
+    let mut clima_freq: f32 = 0.0;
+    let mut vento_x: f32 = 0.0;
+    let mut vento_z: f32 = 0.0;
     let mut fantasma_on = false;
-    let mut escada_on   = false;
+    let mut escada_on = false;
     let mut piloto_formula_path: Option<String> = None;
     let mut piloto_forja_path: Option<String> = None;
     let mut portao_aleatorio: f32 = 0.0;
@@ -461,10 +483,10 @@ fn main() {
     let mut slow_steer_auth: f32 = 0.20;
     /// Teto de vida acumulável em ticks (0 = usar o padrão de 1920).
     let mut life_cap_arg: i64 = 0;
-    let mut evo_n_elite:  usize = 3;
-    let mut evo_tourney:  usize = 3;
+    let mut evo_n_elite: usize = 3;
+    let mut evo_tourney: usize = 3;
     // gen_offset: número de geração inicial para relatório (útil ao retomar).
-    let mut gen_offset:   usize = 0;
+    let mut gen_offset: usize = 0;
     /// `--tau-hetero`: banco de τ log-uniforme em [25 ms, 4 s], um por canal do CfC.
     ///
     /// Sem a flag todos os 96 canais ficam em τ = 2,0 s — o valor único que o cérebro
@@ -508,7 +530,7 @@ fn main() {
     let mut steer_fixo: f32 = 0.0;
     let mut steer_escala: f32 = 0.0;
     let mut piloto_sensor: f32 = 0.0;
-    let mut thr_fixo:   f32 = 0.0;
+    let mut thr_fixo: f32 = 0.0;
     // `--ativacao`: liga métricas de ativação L1/L2 + guardas de runtime (E4).
     let mut ativacao_on = false;
     // `--ativacao-n <N>`: amostra a cada N ticks (padrão 64).
@@ -539,24 +561,73 @@ fn main() {
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
-                "--seres"     => { i += 1; if i < args.len() { n_seres       = args[i].parse().unwrap_or(60); } }
-                "--ticks"     => { i += 1; if i < args.len() { n_ticks       = args[i].parse().unwrap_or(8_000); } }
-                "--gens"      => { i += 1; if i < args.len() { n_gens        = args[i].parse().unwrap_or(100); } }
-                "--sigma"     => { i += 1; if i < args.len() { evo_sigma     = args[i].parse().unwrap_or(0.05); } }
-                "--p-mutate"  => { i += 1; if i < args.len() { evo_p_mutate  = args[i].parse().unwrap_or(0.02); } }
-                "--sem-lento" => { SLOW_ABLATED.store(true, std::sync::atomic::Ordering::Relaxed); }
+                "--seres" => {
+                    i += 1;
+                    if i < args.len() {
+                        n_seres = args[i].parse().unwrap_or(60);
+                    }
+                }
+                "--ticks" => {
+                    i += 1;
+                    if i < args.len() {
+                        n_ticks = args[i].parse().unwrap_or(8_000);
+                    }
+                }
+                "--gens" => {
+                    i += 1;
+                    if i < args.len() {
+                        n_gens = args[i].parse().unwrap_or(100);
+                    }
+                }
+                "--sigma" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_sigma = args[i].parse().unwrap_or(0.05);
+                    }
+                }
+                "--p-mutate" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_p_mutate = args[i].parse().unwrap_or(0.02);
+                    }
+                }
+                "--sem-lento" => {
+                    SLOW_ABLATED.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 // Curva de capacidade: quantos dos 96 neuronios de L1 ficam vivos.
                 // O PR mede 6,7 dimensoes em uso; esta flag testa se isso se traduz em
                 // metros — cortar ate onde o desempenho aguentar.
-                "--l1-vivos" => { i += 1; if i < args.len() { l1_vivos = args[i].parse().unwrap_or(0); } }
-                "--retomar-mix" => { i += 1; if i < args.len() { retomar_mix = args[i].parse().unwrap_or(0.85); } }
-                "--trocar-ao-completar" => { i += 1; if i < args.len() { trocar_ao_completar = args[i].parse().unwrap_or(1); } }
+                "--l1-vivos" => {
+                    i += 1;
+                    if i < args.len() {
+                        l1_vivos = args[i].parse().unwrap_or(0);
+                    }
+                }
+                "--retomar-mix" => {
+                    i += 1;
+                    if i < args.len() {
+                        retomar_mix = args[i].parse().unwrap_or(0.85);
+                    }
+                }
+                "--trocar-ao-completar" => {
+                    i += 1;
+                    if i < args.len() {
+                        trocar_ao_completar = args[i].parse().unwrap_or(1);
+                    }
+                }
                 // P1.8: piso de velocidade mediana para a rota alternativa de promoção
                 // do currículo (ver doc de `curriculo_veloc_min` acima).
-                "--curriculo-veloc-min" => { i += 1; if i < args.len() { curriculo_veloc_min = args[i].parse().unwrap_or(curriculo_veloc_min); } }
+                "--curriculo-veloc-min" => {
+                    i += 1;
+                    if i < args.len() {
+                        curriculo_veloc_min = args[i].parse().unwrap_or(curriculo_veloc_min);
+                    }
+                }
                 // Banco de τ log-uniforme em [25 ms, 4 s] em vez do τ = 2,0 s uniforme.
                 // Sem a flag o comportamento é o histórico — é o braço de controle.
-                "--tau-hetero" => { tau_hetero = true; }
+                "--tau-hetero" => {
+                    tau_hetero = true;
+                }
                 // P0.5: inicialização espectral de L1 vem LIGADA por padrão (genoma
                 // nasce com ganho espectral ≈ 1.0 em vez do ~7.0 cru medido com
                 // σ=0.30 i.i.d. — ver `gpu::evolution::Genome::random`). Esta flag
@@ -589,128 +660,328 @@ fn main() {
                 }
                 "--sem-periodo-neuronal" => {
                     sem_periodo_neuronal = true;
-                    universe::gpu::evolution::NEURON_PERIOD_MUTATE_ON.store(false, Ordering::Relaxed);
+                    universe::gpu::evolution::NEURON_PERIOD_MUTATE_ON
+                        .store(false, Ordering::Relaxed);
                 }
                 "--sem-limiar-neuronal" => {
                     sem_limiar_neuronal = true;
-                    universe::gpu::evolution::NEURON_THRESHOLD_MUTATE_ON.store(false, Ordering::Relaxed);
+                    universe::gpu::evolution::NEURON_THRESHOLD_MUTATE_ON
+                        .store(false, Ordering::Relaxed);
                 }
                 "--sem-ativacao-heterogenea" => {
                     sem_ativacao_heterogenea = true;
-                    universe::gpu::evolution::NEURON_ACTIVATION_MUTATE_ON.store(false, Ordering::Relaxed);
+                    universe::gpu::evolution::NEURON_ACTIVATION_MUTATE_ON
+                        .store(false, Ordering::Relaxed);
                 }
                 // Cobra o recuo na fitness `centro` (ver a acumulação de `center_prog`).
-                "--centro-simetrico" => { centro_simetrico = true; }
+                "--centro-simetrico" => {
+                    centro_simetrico = true;
+                }
                 // Força da fadiga de SAÍDA. 0,85 (padrão) faz comando sustentado sair a
                 // 15% da intenção em ~1 s; 0,0 desliga. Ver `BrainParams::out_beta`.
-                "--out-beta"  => { i += 1; if i < args.len() { out_beta = args[i].parse().unwrap_or(out_beta); } }
+                "--out-beta" => {
+                    i += 1;
+                    if i < args.len() {
+                        out_beta = args[i].parse().unwrap_or(out_beta);
+                    }
+                }
                 // P1.5: ganho de saída (era a constante 2.0 hardcoded na ETAPA 2).
                 // Ver `BrainParams::out_gain` e o comentário de `ganho_saida` acima.
-                "--ganho-saida" => { i += 1; if i < args.len() { ganho_saida = args[i].parse().unwrap_or(ganho_saida); } }
+                "--ganho-saida" => {
+                    i += 1;
+                    if i < args.len() {
+                        ganho_saida = args[i].parse().unwrap_or(ganho_saida);
+                    }
+                }
                 // P1.5/P1.8: normaliza l2_raw pelo desvio-padrão dos 48 valores do ser
                 // antes do ganho/tanh. LIGADA por padrão desde P1.8 — esta flag vira
                 // no-op explícito (mantida para não quebrar scripts existentes).
-                "--norm-l2-por-desvio" => { norm_l2_por_desvio = true; }
+                "--norm-l2-por-desvio" => {
+                    norm_l2_por_desvio = true;
+                }
                 // Braço de controle: desliga a normalização e volta ao comportamento
                 // histórico pré-P1.8 (l2_std fixo em 1.0, divisão é no-op no shader).
-                "--sem-norm-l2-por-desvio" => { norm_l2_por_desvio = false; }
+                "--sem-norm-l2-por-desvio" => {
+                    norm_l2_por_desvio = false;
+                }
                 // Piloto fantasma: ganho do controlador geométrico. 0 = cérebro no comando.
-                "--piloto"    => { i += 1; if i < args.len() { piloto = args[i].parse().unwrap_or(0.0); } }
-                "--piloto-thr" => { i += 1; if i < args.len() { piloto_thr = args[i].parse().unwrap_or(0.45); } }
-                "--steer-fixo" => { i += 1; if i < args.len() { steer_fixo = args[i].parse().unwrap_or(0.0); } }
-                "--steer-escala" => { i += 1; if i < args.len() { steer_escala = args[i].parse().unwrap_or(0.0); } }
-                "--piloto-sensor" => { i += 1; if i < args.len() { piloto_sensor = args[i].parse().unwrap_or(0.0); } }
-                "--thr-fixo"   => { i += 1; if i < args.len() { thr_fixo   = args[i].parse().unwrap_or(0.0); } }
-                "--seed"      => { i += 1; if i < args.len() { pop_seed      = args[i].parse().unwrap_or(0); } }
-                "--wall-cost" => { i += 1; if i < args.len() { wall_cost     = args[i].parse().unwrap_or(0.0); } }
-                "--brain-skip"=> { i += 1; if i < args.len() { brain_skip    = args[i].parse().unwrap_or(1).max(1); } }
-                "--wall-life" => { i += 1; if i < args.len() { wall_life     = args[i].parse().unwrap_or(0); } }
+                "--piloto" => {
+                    i += 1;
+                    if i < args.len() {
+                        piloto = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--piloto-thr" => {
+                    i += 1;
+                    if i < args.len() {
+                        piloto_thr = args[i].parse().unwrap_or(0.45);
+                    }
+                }
+                "--steer-fixo" => {
+                    i += 1;
+                    if i < args.len() {
+                        steer_fixo = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--steer-escala" => {
+                    i += 1;
+                    if i < args.len() {
+                        steer_escala = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--piloto-sensor" => {
+                    i += 1;
+                    if i < args.len() {
+                        piloto_sensor = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--thr-fixo" => {
+                    i += 1;
+                    if i < args.len() {
+                        thr_fixo = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--seed" => {
+                    i += 1;
+                    if i < args.len() {
+                        pop_seed = args[i].parse().unwrap_or(0);
+                    }
+                }
+                "--wall-cost" => {
+                    i += 1;
+                    if i < args.len() {
+                        wall_cost = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--brain-skip" => {
+                    i += 1;
+                    if i < args.len() {
+                        brain_skip = args[i].parse().unwrap_or(1).max(1);
+                    }
+                }
+                "--wall-life" => {
+                    i += 1;
+                    if i < args.len() {
+                        wall_life = args[i].parse().unwrap_or(0);
+                    }
+                }
                 // FÍSICA 1: vida/tick queimada por girar acima de 90% do RPM (0=off).
                 // E-REG1: λ do custo de fiação por distância (0=off). Ver statics.rs.
-                "--fiacao-cauda" => { i += 1; if i < args.len() {
-                    FIACAO_CAUDA.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
-                } }
-                "--custo-fiacao" => { i += 1; if i < args.len() {
-                    CUSTO_FIACAO.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
-                } }
-                "--custo-rpm" => { i += 1; if i < args.len() {
-                    CUSTO_RPM.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
-                } }
-                "--stag-life-drain" => { i += 1; if i < args.len() { stag_life = args[i].parse().unwrap_or(0); } }
-                "--same-start"=> { same_start = true; }
+                "--fiacao-cauda" => {
+                    i += 1;
+                    if i < args.len() {
+                        FIACAO_CAUDA.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
+                    }
+                }
+                "--custo-fiacao" => {
+                    i += 1;
+                    if i < args.len() {
+                        CUSTO_FIACAO.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--custo-rpm" => {
+                    i += 1;
+                    if i < args.len() {
+                        CUSTO_RPM.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--stag-life-drain" => {
+                    i += 1;
+                    if i < args.len() {
+                        stag_life = args[i].parse().unwrap_or(0);
+                    }
+                }
+                "--same-start" => {
+                    same_start = true;
+                }
                 // D2 (ESCADA_DIFICULDADE.md): largada num waypoint ALEATÓRIO por geração
                 // (o MESMO para todos os seres da gen — comparável; derivado da seed da
                 // gen). Mata a decoração de traçado sem reintroduzir o ruído de largada.
-                "--largada-aleatoria" => { largada_aleatoria = true; same_start = true; }
+                "--largada-aleatoria" => {
+                    largada_aleatoria = true;
+                    same_start = true;
+                }
                 // D4: dano oculto (0=off; 1=escala padrão). Ver ESCADA_DIFICULDADE.md.
-                "--dano" => { i += 1; if i < args.len() {
-                    DANO_ESCALA.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
-                } }
+                "--dano" => {
+                    i += 1;
+                    if i < args.len() {
+                        DANO_ESCALA.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
                 // D3: ruído sensorial (σ em unidades i8; 6 ≈ 5% da faixa) + prob de falha.
-                "--ruido-sensorial" => { i += 1; if i < args.len() { ruido_sigma = args[i].parse().unwrap_or(0.0); } }
-                "--ruido-dropout"   => { i += 1; if i < args.len() { ruido_drop  = args[i].parse().unwrap_or(0.0); } }
+                "--ruido-sensorial" => {
+                    i += 1;
+                    if i < args.len() {
+                        ruido_sigma = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--ruido-dropout" => {
+                    i += 1;
+                    if i < args.len() {
+                        ruido_drop = args[i].parse().unwrap_or(0.0);
+                    }
+                }
                 // D5: clima — μ base (<1 = escorregadio), freq espacial, vento N.
-                "--clima"      => { i += 1; if i < args.len() { clima_mu = args[i].parse().unwrap_or(1.0); } }
-                "--clima-freq" => { i += 1; if i < args.len() { clima_freq = args[i].parse().unwrap_or(0.0); } }
-                "--vento"      => { i += 1; if i + 1 < args.len() {
-                    vento_x = args[i].parse().unwrap_or(0.0); i += 1; vento_z = args[i].parse().unwrap_or(0.0); } }
+                "--clima" => {
+                    i += 1;
+                    if i < args.len() {
+                        clima_mu = args[i].parse().unwrap_or(1.0);
+                    }
+                }
+                "--clima-freq" => {
+                    i += 1;
+                    if i < args.len() {
+                        clima_freq = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--vento" => {
+                    i += 1;
+                    if i + 1 < args.len() {
+                        vento_x = args[i].parse().unwrap_or(0.0);
+                        i += 1;
+                        vento_z = args[i].parse().unwrap_or(0.0);
+                    }
+                }
                 // D6: fantasma do campeão anterior (bônus de vida por estar à frente).
-                "--fantasma" => { fantasma_on = true; }
+                "--fantasma" => {
+                    fantasma_on = true;
+                }
                 // ESCADA completa (controlador automático de dificuldade; ver escada.rs).
-                "--escada" => { escada_on = true; }
+                "--escada" => {
+                    escada_on = true;
+                }
                 // PILOTO POR FÓRMULA (PILOTO_POR_FORMULA.md): ser 0 dirigido pelo
                 // controlador ridge destilado do replay do campeão.
-                "--piloto-formula" => { i += 1; if i < args.len() { piloto_formula_path = Some(args[i].clone()); } }
+                "--piloto-formula" => {
+                    i += 1;
+                    if i < args.len() {
+                        piloto_formula_path = Some(args[i].clone());
+                    }
+                }
                 // PILOTO v2 (não-linear, base pirâmide + arctanh na saída). Erra 31%
                 // menos no held-out temporal que o linear (0,179 vs 0,261) — a pergunta
                 // que este flag responde é se isso passa do limiar em que o erro deixa
                 // de acumular em malha fechada.
-                "--piloto-forja" => { i += 1; if i < args.len() { piloto_forja_path = Some(args[i].clone()); } }
+                "--piloto-forja" => {
+                    i += 1;
+                    if i < args.len() {
+                        piloto_forja_path = Some(args[i].clone());
+                    }
+                }
                 // Controle do portão: abstenção ALEATÓRIA na mesma dose (ver
                 // piloto_linear.rs). Responde "o portão escolhe bem ou qualquer
                 // intervenção do cérebro na mesma taxa já bastaria?".
-                "--portao-aleatorio" => { i += 1; if i < args.len() { portao_aleatorio = args[i].parse().unwrap_or(0.0); } }
-                "--portao-semente" => { i += 1; if i < args.len() { portao_semente = args[i].parse().unwrap_or(0); } }
-                "--life-earn" => { i += 1; if i < args.len() { life_earn     = args[i].parse().unwrap_or(0.0); } }
-                "--width"     => { i += 1; if i < args.len() { track_width   = args[i].parse().unwrap_or(18.0); } }
-                "--fitness"   => { i += 1; if i < args.len() { modo_fitness = args[i].clone(); } }
-                "--steer-alpha"=>{ i += 1; if i < args.len() { steer_alpha = args[i].parse().unwrap_or(0.5); } }
+                "--portao-aleatorio" => {
+                    i += 1;
+                    if i < args.len() {
+                        portao_aleatorio = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--portao-semente" => {
+                    i += 1;
+                    if i < args.len() {
+                        portao_semente = args[i].parse().unwrap_or(0);
+                    }
+                }
+                "--life-earn" => {
+                    i += 1;
+                    if i < args.len() {
+                        life_earn = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--width" => {
+                    i += 1;
+                    if i < args.len() {
+                        track_width = args[i].parse().unwrap_or(18.0);
+                    }
+                }
+                "--fitness" => {
+                    i += 1;
+                    if i < args.len() {
+                        modo_fitness = args[i].clone();
+                    }
+                }
+                "--steer-alpha" => {
+                    i += 1;
+                    if i < args.len() {
+                        steer_alpha = args[i].parse().unwrap_or(0.5);
+                    }
+                }
                 // Regra de três do combustível: tanque = f(volta da pista) × k. Ver statics.rs.
-                "--fuel-auto" => { i += 1; if i < args.len() {
-                    FUEL_AUTO_K.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                "--fuel-auto" => {
+                    i += 1;
+                    if i < args.len() {
+                        FUEL_AUTO_K.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                        fuel_on = true;
+                    }
+                }
+                "--fuel" => {
                     fuel_on = true;
-                } }
-                "--fuel"      => { fuel_on = true; }
-                "--fuel-tank" => { i += 1; if i < args.len() { fuel_tank = args[i].parse().unwrap_or(1.0); fuel_on = true; } }
-                "--refuel-lap-only" => { setor_paga = false; }
-                "--auditar-visao" => { auditar_visao = true; }
+                }
+                "--fuel-tank" => {
+                    i += 1;
+                    if i < args.len() {
+                        fuel_tank = args[i].parse().unwrap_or(1.0);
+                        fuel_on = true;
+                    }
+                }
+                "--refuel-lap-only" => {
+                    setor_paga = false;
+                }
+                "--auditar-visao" => {
+                    auditar_visao = true;
+                }
                 // Remove os buracos intencionais da pista (world.rs:141). Existia so no
                 // caminho Bevy (main.rs:50); exposto aqui porque a bateria pos-refatoracao
                 // mostrou a POPULACAO estacionada em 1.076 m por 20 geracoes — 11 m antes
                 // do campo de buracos (1.087-1.092 m). Este A/B e o que separa "nao
                 // aprendem a desviar" de "os buracos sao a segunda parede".
-                "--sem-buracos" => { universe::world::NO_HOLES.store(true, Ordering::Relaxed); }
+                "--sem-buracos" => {
+                    universe::world::NO_HOLES.store(true, Ordering::Relaxed);
+                }
                 // Câmbio: travado (histórico, teto 21,5 m/s), auto (RPM, paridade Bevy)
                 // ou neural (auto + intent[3]/[4]). Ver CAMBIO_MODO em statics.rs.
-                "--cambio-curriculo" => { CAMBIO_CURRICULO.store(true, Ordering::Relaxed); }
-                "--cambio-teto" => { i += 1; if i < args.len() {
-                    CAMBIO_TETO.store(args[i].parse().unwrap_or(6).clamp(2, 6), Ordering::Relaxed);
-                } }
-                "--cambio"    => { i += 1; if i < args.len() {
-                    let m = match args[i].as_str() {
-                        "travado" => 0u32, "auto" => 1, "neural" => 2,
-                        outro => { eprintln!("--cambio '{outro}' inválido (travado|auto|neural); usando travado"); 0 }
-                    };
-                    CAMBIO_MODO.store(m, Ordering::Relaxed);
-                } }
+                "--cambio-curriculo" => {
+                    CAMBIO_CURRICULO.store(true, Ordering::Relaxed);
+                }
+                "--cambio-teto" => {
+                    i += 1;
+                    if i < args.len() {
+                        CAMBIO_TETO
+                            .store(args[i].parse().unwrap_or(6).clamp(2, 6), Ordering::Relaxed);
+                    }
+                }
+                "--cambio" => {
+                    i += 1;
+                    if i < args.len() {
+                        let m = match args[i].as_str() {
+                            "travado" => 0u32,
+                            "auto" => 1,
+                            "neural" => 2,
+                            outro => {
+                                eprintln!(
+                                    "--cambio '{outro}' inválido (travado|auto|neural); usando travado"
+                                );
+                                0
+                            }
+                        };
+                        CAMBIO_MODO.store(m, Ordering::Relaxed);
+                    }
+                }
                 // Congela a mutação das linhas 5..48 de L2 (saídas que nenhum pipeline
                 // lê — "feature neurons" sem consumidor; 4.128 pesos de busca inerte).
-                "--l2-congelar-cegas" => { congela_l2_cegas = true; }
+                "--l2-congelar-cegas" => {
+                    congela_l2_cegas = true;
+                }
                 // M3: regiões DIRIGIDAS (teto de referência) — ver evolution.rs::mascara_permite.
-                "--mascara-regioes" => { mascara_regioes = true; }
+                "--mascara-regioes" => {
+                    mascara_regioes = true;
+                }
                 // E-REG2 (M2): semeia τ por BLOCO (mesmos 4 blocos do M3) — reflexo
                 // curto na parede/estrada, longo no associativo. Função segue tempo?
-                "--tau-semeado" => { tau_semeado = true; }
+                "--tau-semeado" => {
+                    tau_semeado = true;
+                }
                 // Visão periférica REAL: ch144-159 deixam de ser cópia bit-a-bit da
                 // fóvea e passam a olhar as bordas da retina (ver perception.wgsl).
                 // Off por padrão — muda a DISTRIBUIÇÃO de entrada, então campeão
@@ -719,65 +990,177 @@ fn main() {
                     universe::gpu::perception::PERIF_REAL.store(true, Ordering::Relaxed);
                 }
                 // M4: maestro de regiões (lento→gates com reserva). Ver statics.rs.
-                "--neuromod-regioes" => { NEUROMOD_REGIOES.store(true, Ordering::Relaxed); }
+                "--neuromod-regioes" => {
+                    NEUROMOD_REGIOES.store(true, Ordering::Relaxed);
+                }
                 // Laboratório de observação: grava a cadeia neural do ser 0 por tick
                 // (394 f32/linha, ver context.rs). Usar com --retomar --gens 1.
-                "--observar"  => { i += 1; if i < args.len() { observar_path = Some(args[i].clone()); } }
-                "--portal-curva" => { portal_curva = true; }
-                "--slow-steer" => { i += 1; if i < args.len() { slow_steer_auth = args[i].parse().unwrap_or(0.20); } }
-                "--refuel-laps"=>{ i += 1; if i < args.len() { refuel_laps = args[i].parse().unwrap_or(1).max(1); } }
-                "--life-cap"  => { i += 1; if i < args.len() { life_cap_arg  = args[i].parse().unwrap_or(0); } }
-                "--n-elite"   => { i += 1; if i < args.len() { evo_n_elite   = args[i].parse().unwrap_or(3); } }
-                "--tourney"   => { i += 1; if i < args.len() { evo_tourney   = args[i].parse().unwrap_or(3); } }
-                "--gen-offset"=> { i += 1; if i < args.len() { gen_offset    = args[i].parse().unwrap_or(0); } }
-                "--ativacao"   => { ativacao_on = true; }
-                "--ativacao-n" => { i += 1; if i < args.len() { ativacao_n = args[i].parse().unwrap_or(64).max(1); } }
-                "--regioes"    => { regioes_on = true; }
-                "--painel"       => { painel_on = true; }
-                "--painel-porta" => { i += 1; if i < args.len() { painel_porta = args[i].parse().unwrap_or(3200); painel_on = true; } }
-                "--pistas"        => { i += 1; if i < args.len() { pistas = parse_pistas(&args[i]); } }
-                "--pista-held-out" => { i += 1; if i < args.len() { pista_held_out = args[i].parse().ok(); } }
-                "--held-out-cada" => { i += 1; if i < args.len() { held_out_cada = args[i].parse().unwrap_or(5).max(1); } }
-                "--retomar"   => { retomar = true; }
-                "--out"       => { i += 1; if i < args.len() { out_dir       = args[i].clone(); } }
+                "--observar" => {
+                    i += 1;
+                    if i < args.len() {
+                        observar_path = Some(args[i].clone());
+                    }
+                }
+                "--portal-curva" => {
+                    portal_curva = true;
+                }
+                "--slow-steer" => {
+                    i += 1;
+                    if i < args.len() {
+                        slow_steer_auth = args[i].parse().unwrap_or(0.20);
+                    }
+                }
+                "--refuel-laps" => {
+                    i += 1;
+                    if i < args.len() {
+                        refuel_laps = args[i].parse().unwrap_or(1).max(1);
+                    }
+                }
+                "--life-cap" => {
+                    i += 1;
+                    if i < args.len() {
+                        life_cap_arg = args[i].parse().unwrap_or(0);
+                    }
+                }
+                "--n-elite" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_n_elite = args[i].parse().unwrap_or(3);
+                    }
+                }
+                "--tourney" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_tourney = args[i].parse().unwrap_or(3);
+                    }
+                }
+                "--gen-offset" => {
+                    i += 1;
+                    if i < args.len() {
+                        gen_offset = args[i].parse().unwrap_or(0);
+                    }
+                }
+                "--ativacao" => {
+                    ativacao_on = true;
+                }
+                "--ativacao-n" => {
+                    i += 1;
+                    if i < args.len() {
+                        ativacao_n = args[i].parse().unwrap_or(64).max(1);
+                    }
+                }
+                "--regioes" => {
+                    regioes_on = true;
+                }
+                "--painel" => {
+                    painel_on = true;
+                }
+                "--painel-porta" => {
+                    i += 1;
+                    if i < args.len() {
+                        painel_porta = args[i].parse().unwrap_or(3200);
+                        painel_on = true;
+                    }
+                }
+                "--pistas" => {
+                    i += 1;
+                    if i < args.len() {
+                        pistas = parse_pistas(&args[i]);
+                    }
+                }
+                "--pista-held-out" => {
+                    i += 1;
+                    if i < args.len() {
+                        pista_held_out = args[i].parse().ok();
+                    }
+                }
+                "--held-out-cada" => {
+                    i += 1;
+                    if i < args.len() {
+                        held_out_cada = args[i].parse().unwrap_or(5).max(1);
+                    }
+                }
+                "--retomar" => {
+                    retomar = true;
+                }
+                "--out" => {
+                    i += 1;
+                    if i < args.len() {
+                        out_dir = args[i].clone();
+                    }
+                }
                 _ => {}
             }
             i += 1;
         }
     }
 
-    let inicio = if retomar { "retomando de checkpoint" } else { "pesos ALEATÓRIOS (σ=0.30, N(0,σ))" };
+    let inicio = if retomar {
+        "retomando de checkpoint"
+    } else {
+        "pesos ALEATÓRIOS (σ=0.30, N(0,σ))"
+    };
     let spectral_init_on = universe::gpu::evolution::SPECTRAL_INIT_ON.load(Ordering::Relaxed);
-    println!("=== gpu_evolve: {} seres · {} ticks/gen · {} gens ===", n_seres, n_ticks, n_gens);
+    println!(
+        "=== gpu_evolve: {} seres · {} ticks/gen · {} gens ===",
+        n_seres, n_ticks, n_gens
+    );
     println!("  Inicio: {}", inicio);
-    println!("  Init espectral L1 (P0.5): {}", if spectral_init_on {
-        "LIGADA — L1 nasce com ganho espectral ≈ 1.0 (alvo em thresholds::SPECTRAL_INIT_TARGET)"
-    } else {
-        "DESLIGADA (--sem-init-espectral) — L1 nasce cru, σ=0.30 i.i.d. sem correção (braço de controle)"
-    });
+    println!(
+        "  Init espectral L1 (P0.5): {}",
+        if spectral_init_on {
+            "LIGADA — L1 nasce com ganho espectral ≈ 1.0 (alvo em thresholds::SPECTRAL_INIT_TARGET)"
+        } else {
+            "DESLIGADA (--sem-init-espectral) — L1 nasce cru, σ=0.30 i.i.d. sem correção (braço de controle)"
+        }
+    );
     let sensors_evolve_on = universe::gpu::evolution::SENSORS_EVOLVE_ON.load(Ordering::Relaxed);
-    println!("  Sensores (FASE SENSORES, degrau 1): {}", if sensors_evolve_on {
-        "EVOLUINDO (--sensores-evolutivos) — FOV/alcance-parede/alcance-lateral/curvatura heterogêneos e mutáveis"
-    } else {
-        "FIXOS (padrão / --sensores-fixos) — todo genoma em SENSOR_DEFAULTS, os hardcodes de hoje"
-    });
+    println!(
+        "  Sensores (FASE SENSORES, degrau 1): {}",
+        if sensors_evolve_on {
+            "EVOLUINDO (--sensores-evolutivos) — FOV/alcance-parede/alcance-lateral/curvatura heterogêneos e mutáveis"
+        } else {
+            "FIXOS (padrão / --sensores-fixos) — todo genoma em SENSOR_DEFAULTS, os hardcodes de hoje"
+        }
+    );
     // P1.7 — cérebro assíncrono: relatório de quais dos três mecanismos estão
     // mutando nesta corrida. Genoma sempre nasce neutro (gen 0 idêntica ao
     // cérebro de hoje); o que muda entre "ligado"/"--sem-*" é se a mutação afasta
     // o campo do neutro ao longo das gerações.
     println!("  Cérebro assíncrono (P1.7):");
-    println!("    memória por neurônio:  {}", if sem_memoria_neuronal {
-        "CONGELADA (--sem-memoria-neuronal) — alfa preso em 0.0, braço de controle"
-    } else { "mutando (padrão) — h[n]=h[n-1]·α+x[n]·(1-α), α∈[0,0.95] a partir de 0.0" });
-    println!("    período/limiar (L1):   {}{}", if sem_periodo_neuronal {
-        "período CONGELADO (--sem-periodo-neuronal) "
-    } else { "período mutando (padrão) " }, if sem_limiar_neuronal {
-        "· limiar CONGELADO (--sem-limiar-neuronal)"
-    } else { "· limiar mutando (padrão)" });
-    println!("    ativação heterogênea:  {}", if sem_ativacao_heterogenea {
-        "CONGELADA (--sem-ativacao-heterogenea) — todos em tanh, braço de controle"
-    } else { "mutando (padrão) — tanh/ReLU/linear/leaky-ReLU, taxa 0,2%/neurônio/geração" });
-    println!("  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}", evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney);
+    println!(
+        "    memória por neurônio:  {}",
+        if sem_memoria_neuronal {
+            "CONGELADA (--sem-memoria-neuronal) — alfa preso em 0.0, braço de controle"
+        } else {
+            "mutando (padrão) — h[n]=h[n-1]·α+x[n]·(1-α), α∈[0,0.95] a partir de 0.0"
+        }
+    );
+    println!(
+        "    período/limiar (L1):   {}{}",
+        if sem_periodo_neuronal {
+            "período CONGELADO (--sem-periodo-neuronal) "
+        } else {
+            "período mutando (padrão) "
+        },
+        if sem_limiar_neuronal {
+            "· limiar CONGELADO (--sem-limiar-neuronal)"
+        } else {
+            "· limiar mutando (padrão)"
+        }
+    );
+    println!(
+        "    ativação heterogênea:  {}",
+        if sem_ativacao_heterogenea {
+            "CONGELADA (--sem-ativacao-heterogenea) — todos em tanh, braço de controle"
+        } else {
+            "mutando (padrão) — tanh/ReLU/linear/leaky-ReLU, taxa 0,2%/neurônio/geração"
+        }
+    );
+    println!(
+        "  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}",
+        evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney
+    );
     println!("  SEM muletas motoras (escape_ticks, curvature_governor)");
     println!("  Fitness: distância contínua em metros (sem degrau de volta inteira)");
     println!();
@@ -790,7 +1173,8 @@ fn main() {
         if pistas.contains(&ho) {
             eprintln!(
                 "[AVISO] --pista-held-out {} também está em --pistas — ela não é mais \
-                 reservada, a medição de generalização fica inválida.", ho
+                 reservada, a medição de generalização fica inválida.",
+                ho
             );
         }
     }
@@ -806,11 +1190,16 @@ fn main() {
     if !pistas.is_empty() || pista_held_out.is_some() {
         let mut seeds_a_checar: Vec<u64> = pistas.clone();
         if let Some(ho) = pista_held_out {
-            if !seeds_a_checar.contains(&ho) { seeds_a_checar.push(ho); }
+            if !seeds_a_checar.contains(&ho) {
+                seeds_a_checar.push(ho);
+            }
         }
         let mut alguma_falhou = false;
         for &s in &seeds_a_checar {
-            let w = { let _q = universe::world::silence_map_diag(); VoxelWorld::new(s, track_width) };
+            let w = {
+                let _q = universe::world::silence_map_diag();
+                VoxelWorld::new(s, track_width)
+            };
             let ate = w.lap_distance.max(1.0);
             let defeitos = w.validar_pista(track_width, ate);
             if !defeitos.is_empty() {
@@ -818,7 +1207,12 @@ fn main() {
                 eprintln!(
                     "[pista_check] seed {s}: {} defeito(s) em {ate:.0}m de eixo — {}{}",
                     defeitos.len(),
-                    defeitos.iter().take(3).cloned().collect::<Vec<_>>().join(" | "),
+                    defeitos
+                        .iter()
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | "),
                     if defeitos.len() > 3 { " | ..." } else { "" }
                 );
             } else {
@@ -847,15 +1241,27 @@ fn main() {
     let mut idx_curriculo: usize = gen_offset;
     let mut world = VoxelWorld::new(world_seed_atual, track_width);
     let mut lap_dist = world.lap_distance as f64;
-    println!("mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
-        world.size, world.size, world.waypoints_world.len(), lap_dist,
-        t0.elapsed().as_secs_f64() * 1000.0, world_seed_atual);
+    println!(
+        "mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
+        world.size,
+        world.size,
+        world.waypoints_world.len(),
+        lap_dist,
+        t0.elapsed().as_secs_f64() * 1000.0,
+        world_seed_atual
+    );
     if !pistas.is_empty() {
-        println!("  [pistas] rotação LIGADA: {:?} (gen % {})", pistas, pistas.len());
+        println!(
+            "  [pistas] rotação LIGADA: {:?} (gen % {})",
+            pistas,
+            pistas.len()
+        );
     }
     if let Some(ho) = pista_held_out {
-        println!("  [pistas] held-out seed={} a cada {} gerações (medição pura, NUNCA entra na seleção)",
-                 ho, held_out_cada);
+        println!(
+            "  [pistas] held-out seed={} a cada {} gerações (medição pura, NUNCA entra na seleção)",
+            ho, held_out_cada
+        );
     }
     println!();
 
@@ -883,8 +1289,12 @@ fn main() {
     if let Some(ref p) = piloto_forja_path {
         match piloto_forja::PilotoForja::carregar(p) {
             Some(pf) => {
-                println!("  [piloto-forja] ser 0 dirigido pela base {} ({} features, {} mult/tick)",
-                         pf.base(), pf.n_features(), pf.mult_por_tick());
+                println!(
+                    "  [piloto-forja] ser 0 dirigido pela base {} ({} features, {} mult/tick)",
+                    pf.base(),
+                    pf.n_features(),
+                    pf.mult_por_tick()
+                );
                 ctx.piloto_forja = Some(pf);
             }
             None => eprintln!("[ERRO] não consegui carregar o piloto v2 de {p}"),
@@ -893,16 +1303,24 @@ fn main() {
     if let Some(ref p) = piloto_formula_path {
         match piloto_linear::PilotoLinear::carregar(p) {
             Some(pl) => {
-                println!("  [piloto-formula] ser 0 dirigido pela fórmula ({} entradas)", pl.n_entradas());
+                println!(
+                    "  [piloto-formula] ser 0 dirigido pela fórmula ({} entradas)",
+                    pl.n_entradas()
+                );
                 let mut pl = pl;
                 pl.prob_aleatoria = portao_aleatorio;
                 pl.semente = portao_semente;
                 if portao_aleatorio > 0.0 {
-                    println!("  [piloto] CONTROLE: portão ALEATÓRIO com p={portao_aleatorio:.3} (ignora o estado)");
+                    println!(
+                        "  [piloto] CONTROLE: portão ALEATÓRIO com p={portao_aleatorio:.3} (ignora o estado)"
+                    );
                 }
                 ctx.piloto_formula = Some(pl);
             }
-            None => { eprintln!("ERRO: --piloto-formula não carregou {p}"); std::process::exit(1); }
+            None => {
+                eprintln!("ERRO: --piloto-formula não carregou {p}");
+                std::process::exit(1);
+            }
         }
     }
     if ruido_sigma > 0.0 || ruido_drop > 0.0 {
@@ -910,19 +1328,26 @@ fn main() {
         println!("  [ruido] D3: sigma={ruido_sigma} dropout={ruido_drop}");
     }
     if clima_mu < 1.0 || vento_x != 0.0 || vento_z != 0.0 {
-        ctx.phys_gpu.set_clima(clima_mu, vento_x, vento_z, clima_freq);
+        ctx.phys_gpu
+            .set_clima(clima_mu, vento_x, vento_z, clima_freq);
         println!("  [clima] D5: mu={clima_mu} freq={clima_freq} vento=({vento_x},{vento_z}) N");
     }
     // Estado da escada/fantasma (vivem no laço de gerações).
-    let mut escada_ctl = if escada_on { Some(escada::Escada::padrao()) } else { None };
+    let mut escada_ctl = if escada_on {
+        Some(escada::Escada::padrao())
+    } else {
+        None
+    };
     let mut fantasma_atual: fantasma::Fantasma = fantasma::Fantasma::default();
     let mut hist_med_escada: Vec<f64> = Vec::new();
     if CAMBIO_CURRICULO.load(Ordering::Relaxed) {
         // O valor de --cambio-teto vira o MÁXIMO; o teto vivo começa em 2 (≡ travado).
         CAMBIO_TETO_MAX.store(CAMBIO_TETO.load(Ordering::Relaxed), Ordering::Relaxed);
         CAMBIO_TETO.store(2, Ordering::Relaxed);
-        println!("  [cambio] currículo de teto LIGADO: começa na marcha 2, sobe por mérito até {}",
-                 CAMBIO_TETO_MAX.load(Ordering::Relaxed));
+        println!(
+            "  [cambio] currículo de teto LIGADO: começa na marcha 2, sobe por mérito até {}",
+            CAMBIO_TETO_MAX.load(Ordering::Relaxed)
+        );
     }
     if let Some(ref path) = observar_path {
         match std::fs::File::create(path) {
@@ -930,7 +1355,10 @@ fn main() {
                 ctx.obs_writer = Some(std::io::BufWriter::new(f));
                 println!("  [observar] gravando cadeia neural do ser 0 em {path} (394 f32/tick)");
             }
-            Err(e) => { eprintln!("ERRO --observar {path}: {e}"); std::process::exit(1); }
+            Err(e) => {
+                eprintln!("ERRO --observar {path}: {e}");
+                std::process::exit(1);
+            }
         }
     }
     // Fitness do melhor da geração anterior — o mesmo genoma reaparece sem mutação no
@@ -956,15 +1384,19 @@ fn main() {
         if k > 0.0 {
             let x = tanque_por_setor(world.lap_distance as f64, k);
             FUEL_TANK.store(x, Ordering::Relaxed);
-            println!("  [fuel-auto] pista inicial (volta {:.0} m) → tanque {x:.4} (k={k})",
-                     world.lap_distance);
+            println!(
+                "  [fuel-auto] pista inicial (volta {:.0} m) → tanque {x:.4} (k={k})",
+                world.lap_distance
+            );
         }
     }
     SETOR_PAGA.store(setor_paga, Ordering::Relaxed);
     AUDITAR.store(auditar_visao, Ordering::Relaxed);
     PORTAL_CURVA.store(portal_curva, Ordering::Relaxed);
     SLOW_STEER_AUTH.store(slow_steer_auth, Ordering::Relaxed);
-    if life_cap_arg > 0 { LIFE_CAP_TICKS.store(life_cap_arg, Ordering::Relaxed); }
+    if life_cap_arg > 0 {
+        LIFE_CAP_TICKS.store(life_cap_arg, Ordering::Relaxed);
+    }
     ctx.brain.out_beta = out_beta;
     ctx.brain.out_gain = ganho_saida;
     ctx.brain.norm_l2_by_std = norm_l2_por_desvio;
@@ -979,47 +1411,70 @@ fn main() {
     ctx.brain.threshold_off = sem_limiar_neuronal;
     ctx.brain.activation_off = sem_ativacao_heterogenea;
     PILOTO_GANHO.store(piloto, Ordering::Relaxed);
-    PILOTO_THR.store(if piloto_thr > 0.0 { piloto_thr } else { 0.45 }, Ordering::Relaxed);
+    PILOTO_THR.store(
+        if piloto_thr > 0.0 { piloto_thr } else { 0.45 },
+        Ordering::Relaxed,
+    );
     STEER_FIXO.store(steer_fixo, Ordering::Relaxed);
     STEER_ESCALA.store(steer_escala, Ordering::Relaxed);
     PILOTO_SENSOR.store(piloto_sensor, Ordering::Relaxed);
     ATIVACAO_ON.store(ativacao_on, Ordering::Relaxed);
     ATIVACAO_N.store(ativacao_n, Ordering::Relaxed);
     if ativacao_on {
-        println!("[ativacao] métricas de ativação L1/L2 LIGADAS — amostra a cada {ativacao_n} ticks");
+        println!(
+            "[ativacao] métricas de ativação L1/L2 LIGADAS — amostra a cada {ativacao_n} ticks"
+        );
     }
     if piloto_sensor != 0.0 {
-        println!("PILOTO SENSORIAL (ganho {piloto_sensor:+.2}) — sem cérebro, só raios de \
-                  parede. Mede o TETO DA INFORMAÇÃO, não o modelo.");
+        println!(
+            "PILOTO SENSORIAL (ganho {piloto_sensor:+.2}) — sem cérebro, só raios de \
+                  parede. Mede o TETO DA INFORMAÇÃO, não o modelo."
+        );
     }
     THR_FIXO.store(thr_fixo, Ordering::Relaxed);
     if steer_fixo != 0.0 || thr_fixo != 0.0 {
-        println!("OVERRIDE BRUTO: volante={steer_fixo:+.2} acelerador={thr_fixo:.2} \
-                  — o cérebro NÃO comanda nada. Isto mede o CORPO.");
+        println!(
+            "OVERRIDE BRUTO: volante={steer_fixo:+.2} acelerador={thr_fixo:.2} \
+                  — o cérebro NÃO comanda nada. Isto mede o CORPO."
+        );
     }
     if piloto != 0.0 {
-        println!("PILOTO FANTASMA ligado (ganho {piloto:+.1}) — o cérebro NÃO comanda o volante. \
-                  Isto mede o CORPO, não o modelo.");
+        println!(
+            "PILOTO FANTASMA ligado (ganho {piloto:+.1}) — o cérebro NÃO comanda o volante. \
+                  Isto mede o CORPO, não o modelo."
+        );
     }
     if (out_beta - universe::gpu::brain::OUT_BETA_DEFAULT).abs() > 1e-6 {
-        println!("fadiga de saída: out_beta={out_beta:.2} (padrão {:.2}) — comando sustentado \
+        println!(
+            "fadiga de saída: out_beta={out_beta:.2} (padrão {:.2}) — comando sustentado \
                   sai a {:.0}% da intenção",
-                 universe::gpu::brain::OUT_BETA_DEFAULT, 100.0 * (1.0 - out_beta).max(0.0));
+            universe::gpu::brain::OUT_BETA_DEFAULT,
+            100.0 * (1.0 - out_beta).max(0.0)
+        );
     }
     if (ganho_saida - universe::gpu::brain::OUT_GAIN_DEFAULT).abs() > 1e-6 {
-        println!("[P1.5] ganho de saída: out_gain={ganho_saida:.2} (padrão {:.2}) — ETAPA 2 \
+        println!(
+            "[P1.5] ganho de saída: out_gain={ganho_saida:.2} (padrão {:.2}) — ETAPA 2 \
                   (l2_raw e bypass) escalada antes da fadiga/tanh",
-                 universe::gpu::brain::OUT_GAIN_DEFAULT);
+            universe::gpu::brain::OUT_GAIN_DEFAULT
+        );
     }
     if norm_l2_por_desvio {
-        println!("[P1.5/P1.8] normalização de L2 por desvio-padrão LIGADA (padrão desde P1.8) \
-                  — l2_raw dividido pelo desvio dos 48 valores do ser antes do ganho/tanh");
+        println!(
+            "[P1.5/P1.8] normalização de L2 por desvio-padrão LIGADA (padrão desde P1.8) \
+                  — l2_raw dividido pelo desvio dos 48 valores do ser antes do ganho/tanh"
+        );
     } else {
-        println!("[P1.5/P1.8] normalização de L2 por desvio-padrão DESLIGADA (--sem-norm-l2-por-desvio) \
+        println!(
+            "[P1.5/P1.8] normalização de L2 por desvio-padrão DESLIGADA (--sem-norm-l2-por-desvio) \
                   — braço de controle, comportamento histórico pré-P1.8 (l2_std=1.0, saturação de L2 \
-                  não corrigida)");
+                  não corrigida)"
+        );
     }
-    println!("GpuCtx pronto  [{:.0}ms]", t1.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "GpuCtx pronto  [{:.0}ms]",
+        t1.elapsed().as_secs_f64() * 1000.0
+    );
 
     // ── Genomas iniciais ───────────────────────────────────────────────────────
     // P1.8, achado "--retomar + --tau-hetero descarta o τ evoluído do campeão":
@@ -1046,7 +1501,7 @@ fn main() {
                 elite_carregado_do_checkpoint = true;
                 // Semente a população a partir do melhor genoma + variações.
                 let mut pop = Vec::with_capacity(n_seres);
-                pop.push(best.clone());  // elite exato
+                pop.push(best.clone()); // elite exato
                 // ── COMO OS FILHOS DO CAMPEÃO NASCEM ────────────────────────────
                 //
                 // Leonardo: *"faça uma mutação superleve nos outros carros, nada de 70/30,
@@ -1073,26 +1528,38 @@ fn main() {
                 let mix = retomar_mix.clamp(0.0, 1.0);
                 println!(
                     "  filhos do campeão: {:.0}% do pai + {:.0}% zero (atenuação, sem ruído)",
-                    mix * 100.0, (1.0 - mix) * 100.0);
+                    mix * 100.0,
+                    (1.0 - mix) * 100.0
+                );
                 while pop.len() < n_seres {
                     let mut filho = best.clone();
-                    for w in filho.l1.iter_mut() { *w *= mix; }
-                    for w in filho.l2.iter_mut() { *w *= mix; }
+                    for w in filho.l1.iter_mut() {
+                        *w *= mix;
+                    }
+                    for w in filho.l2.iter_mut() {
+                        *w *= mix;
+                    }
                     pop.push(filho);
                 }
                 pop
             } else {
                 eprintln!("Falha ao carregar arquivo — usando população aleatória.");
-                (0..n_seres).map(|i| Genome::random(population_seed_for(pop_seed, i))).collect()
+                (0..n_seres)
+                    .map(|i| Genome::random(population_seed_for(pop_seed, i)))
+                    .collect()
             }
         } else {
             println!("Nenhum arquivo de checkpoint encontrado — população aleatória.");
-            (0..n_seres).map(|i| Genome::random(population_seed_for(pop_seed, i))).collect()
+            (0..n_seres)
+                .map(|i| Genome::random(population_seed_for(pop_seed, i)))
+                .collect()
         }
     } else {
         // População aleatória do zero.
         // Seed = índice do ser (determinístico e diverso).
-        (0..n_seres).map(|i| Genome::random(population_seed_for(pop_seed, i))).collect()
+        (0..n_seres)
+            .map(|i| Genome::random(population_seed_for(pop_seed, i)))
+            .collect()
     };
 
     // Banco de τ heterogêneo: aplicado DEPOIS de montar a população, em qualquer um dos
@@ -1108,8 +1575,11 @@ fn main() {
         // `elite_carregado_do_checkpoint` acima).
         let start = if elite_carregado_do_checkpoint { 1 } else { 0 };
         if elite_carregado_do_checkpoint {
-            println!("  [tau-hetero] preservando τ evoluído do elite exato (slot 0) — \
-                      banco novo só nos demais {} slots", n_seres.saturating_sub(1));
+            println!(
+                "  [tau-hetero] preservando τ evoluído do elite exato (slot 0) — \
+                      banco novo só nos demais {} slots",
+                n_seres.saturating_sub(1)
+            );
         }
         for (i, g) in genomes.iter_mut().enumerate().skip(start) {
             g.randomize_tau(population_seed_for(pop_seed, i).wrapping_add(0x7A11_0000));
@@ -1132,39 +1602,53 @@ fn main() {
                     _ => (4.0, 15.0),
                 };
                 let u = {
-                    let mut x = (gi as u64 * 96 + j as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(pop_seed);
-                    x ^= x >> 33; x = x.wrapping_mul(0xFF51AFD7ED558CCD); x ^= x >> 33;
+                    let mut x = (gi as u64 * 96 + j as u64)
+                        .wrapping_mul(0x9E3779B97F4A7C15)
+                        .wrapping_add(pop_seed);
+                    x ^= x >> 33;
+                    x = x.wrapping_mul(0xFF51AFD7ED558CCD);
+                    x ^= x >> 33;
                     (x % 10_000) as f64 / 10_000.0
                 };
                 let tau = lo * (hi / lo).powf(u);
                 g.tau[j] = (1.0 / tau) as f32;
             }
         }
-        println!("  [tau-semeado] E-REG2: τ por bloco (visão 0,5-4s · reflexo 0,3-0,8s · corpo 1-4s · associativo 4-15s)");
+        println!(
+            "  [tau-semeado] E-REG2: τ por bloco (visão 0,5-4s · reflexo 0,3-0,8s · corpo 1-4s · associativo 4-15s)"
+        );
     }
     if mascara_regioes {
-        for g in genomes.iter_mut() { universe::gpu::evolution::aplicar_mascara_regioes(g); }
-        println!("  [mascara] regiões DIRIGIDAS ativas (4 blocos de 24: visão/parede/corpo/associativo)");
+        for g in genomes.iter_mut() {
+            universe::gpu::evolution::aplicar_mascara_regioes(g);
+        }
+        println!(
+            "  [mascara] regiões DIRIGIDAS ativas (4 blocos de 24: visão/parede/corpo/associativo)"
+        );
     }
     let evo_params = EvoParams {
-        p_mutate:    evo_p_mutate,
-        sigma:       evo_sigma,
-        n_elite:     evo_n_elite,
+        p_mutate: evo_p_mutate,
+        sigma: evo_sigma,
+        n_elite: evo_n_elite,
         tournament_k: evo_tourney,
         congela_l2_cegas,
         mascara_regioes,
         // 5 linhas lidas só quando o câmbio neural dá leitor ao intent[3]/[4];
         // travado/auto: 3 (throttle/steer/brake).
-        l2_linhas_lidas: if CAMBIO_MODO.load(Ordering::Relaxed) == 2 { 5 } else { 3 },
+        l2_linhas_lidas: if CAMBIO_MODO.load(Ordering::Relaxed) == 2 {
+            5
+        } else {
+            3
+        },
     };
 
     // ── Histórico de medianas (para inclinação ao final) ──────────────────────
-    let mut hist_med:  Vec<f64> = Vec::with_capacity(n_gens);
+    let mut hist_med: Vec<f64> = Vec::with_capacity(n_gens);
     // Volta da pista em que CADA geração rodou — a tabela final normalizava tudo pela
     // última pista carregada e imprimia V errada em bateria com rotação de currículo
     // (medido: gen28 rodou 9001/2928m, tabela dividiu por 3691m e mostrou 1.256V).
-    let mut hist_lap:  Vec<f64> = Vec::with_capacity(n_gens);
-    let mut hist_max:  Vec<f64> = Vec::with_capacity(n_gens);
+    let mut hist_lap: Vec<f64> = Vec::with_capacity(n_gens);
+    let mut hist_max: Vec<f64> = Vec::with_capacity(n_gens);
     let mut hist_results: Vec<GenResult> = Vec::with_capacity(n_gens);
 
     // ── KAN knots iniciais: default de saída ──────────────────────────────────
@@ -1201,7 +1685,14 @@ fn main() {
         //
         // O índice é separado de `gen_abs` justamente porque um deles anda sozinho e o
         // outro só anda por mérito.
-        let seed_gen = pista_da_gen(&pistas, if trocar_ao_completar > 0 { idx_curriculo } else { gen_abs });
+        let seed_gen = pista_da_gen(
+            &pistas,
+            if trocar_ao_completar > 0 {
+                idx_curriculo
+            } else {
+                gen_abs
+            },
+        );
         if seed_gen != world_seed_atual {
             world = VoxelWorld::new(seed_gen, track_width);
             ctx.reload_world(&world);
@@ -1229,12 +1720,19 @@ fn main() {
                 // fica sem combustível: é essa a pressão que faltava.
                 let x = tanque_por_setor(lap_dist, k);
                 FUEL_TANK.store(x, Ordering::Relaxed);
-                println!("  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.4} \
-                          (k={k}; 1,0 = alcança o próximo setor a 18,75 m/s)");
+                println!(
+                    "  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.4} \
+                          (k={k}; 1,0 = alcança o próximo setor a 18,75 m/s)"
+                );
             }
         }
-        println!("  [pista] gen {:4} usa seed={} ({} wp, volta={:.0}m)",
-                 gen_abs, seed_gen, world.waypoints_world.len(), lap_dist);
+        println!(
+            "  [pista] gen {:4} usa seed={} ({} wp, volta={:.0}m)",
+            gen_abs,
+            seed_gen,
+            world.waypoints_world.len(),
+            lap_dist
+        );
 
         // Limita a memória de AUDIT_ACUM (risco R6 do REFACTOR_PLAN.md): sem isto,
         // uma bateria de 100 gerações × 8.000 ticks acumula ~166 MB sem nunca liberar.
@@ -1246,8 +1744,8 @@ fn main() {
         // O `gpu_evolve` não gravava replay nenhum: `grep ReplayWriter` devolvia zero.
         // Sem isso não há como o Leonardo VER o que os seres fazem — só médias. Grava a
         // 16 Hz (1 quadro a cada 4 ticks) o ser que está na frente.
-        let replay_path = std::path::PathBuf::from(&out_dir).join(format!("gen{gen_num:04}.replay",
-            gen_num = gen_abs));
+        let replay_path = std::path::PathBuf::from(&out_dir)
+            .join(format!("gen{gen_num:04}.replay", gen_num = gen_abs));
         let _ = std::fs::create_dir_all(&out_dir);
         // TODOS os seres, não só o líder.
         //
@@ -1261,12 +1759,18 @@ fn main() {
         // risco item do mapa P1. Sem `--pistas`, `seed_gen == 9001` sempre, e este
         // campo do arquivo fica idêntico ao que já era.
         let mut replay_writer = universe::replay::ReplayWriter::create(
-            &replay_path, universe::replay::SOURCE_CORTEX, n_grav as u8, 64.0, seed_gen,
-        ).ok();
+            &replay_path,
+            universe::replay::SOURCE_CORTEX,
+            n_grav as u8,
+            64.0,
+            seed_gen,
+        )
+        .ok();
         let t_gen = Instant::now();
 
         // ── Aplica genomas nos engines ─────────────────────────────────────────
-        let mut engines: Vec<SovereignEngine> = (0..n_seres).map(|_| SovereignEngine::new()).collect();
+        let mut engines: Vec<SovereignEngine> =
+            (0..n_seres).map(|_| SovereignEngine::new()).collect();
         for (i, (eng, genome)) in engines.iter_mut().zip(genomes.iter()).enumerate() {
             if l1_vivos > 0 {
                 // Ablacao aplicada numa COPIA: o genoma herdado fica intacto, so o corpo
@@ -1286,33 +1790,49 @@ fn main() {
             let lam = CUSTO_FIACAO.load(Ordering::Relaxed);
             if lam > 0.0 {
                 let cauda = FIACAO_CAUDA.load(Ordering::Relaxed) as usize;
-                ctx.fiacao_custo = genomes.iter().map(|g| {
-                    let (mut num, mut den) = (0.0f64, 0.0f64);
-                    for j in 0..universe::config::iara::brain::L1_NEURONS {
-                        let pj = j as f64 / 96.0;
-                        let linha: Vec<(f64, f64)> = (0..universe::config::iara::brain::SENSORY_WAVE_SIZE).map(|c| {
-                            let w = g.l1[j * universe::config::iara::brain::SENSORY_WAVE_SIZE + c].abs() as f64;
-                            let pc = c as f64 / 192.0;
-                            let d = (pj - pc).abs();
-                            (w, d.min(1.0 - d))
-                        }).collect();
-                        // E-REG1b: com --fiacao-cauda N, só as N conexões mais FORTES do
-                        // neurônio pagam fio — é onde os genomas diferem (ver statics.rs).
-                        let mut itens = linha;
-                        if cauda > 0 {
-                            itens.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                            itens.truncate(cauda);
+                ctx.fiacao_custo = genomes
+                    .iter()
+                    .map(|g| {
+                        let (mut num, mut den) = (0.0f64, 0.0f64);
+                        for j in 0..universe::config::iara::brain::L1_NEURONS {
+                            let pj = j as f64 / 96.0;
+                            let linha: Vec<(f64, f64)> = (0
+                                ..universe::config::iara::brain::SENSORY_WAVE_SIZE)
+                                .map(|c| {
+                                    let w = g.l1
+                                        [j * universe::config::iara::brain::SENSORY_WAVE_SIZE + c]
+                                        .abs() as f64;
+                                    let pc = c as f64 / 192.0;
+                                    let d = (pj - pc).abs();
+                                    (w, d.min(1.0 - d))
+                                })
+                                .collect();
+                            // E-REG1b: com --fiacao-cauda N, só as N conexões mais FORTES do
+                            // neurônio pagam fio — é onde os genomas diferem (ver statics.rs).
+                            let mut itens = linha;
+                            if cauda > 0 {
+                                itens.sort_by(|a, b| {
+                                    b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                                itens.truncate(cauda);
+                            }
+                            for (w, d) in itens {
+                                num += w * d;
+                                den += w;
+                            }
                         }
-                        for (w, d) in itens { num += w * d; den += w; }
-                    }
-                    (lam as f64 * (num / den.max(1e-9)) * 2.0) as f32
-                }).collect();
+                        (lam as f64 * (num / den.max(1e-9)) * 2.0) as f32
+                    })
+                    .collect();
             } else {
                 ctx.fiacao_custo.clear();
             }
         }
         if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
-            ctx.gates_w = genomes.iter().flat_map(|g| g.gates_w.iter().copied()).collect();
+            ctx.gates_w = genomes
+                .iter()
+                .flat_map(|g| g.gates_w.iter().copied())
+                .collect();
         }
         ctx.upload_engines(&engines);
         // Banco de τ: vai separado porque τ vive no genoma, não no `SovereignEngine`.
@@ -1323,10 +1843,12 @@ fn main() {
         // Com `SENSORS_EVOLVE_ON` no padrão (desligado), todo genoma tem
         // `SENSOR_DEFAULTS` e este upload sobe os hardcodes de hoje — equivalente a
         // nunca chamar o upload, só documenta a fonte única.
-        ctx.percept.upload_sensors(&ctx.queue, &Genome::pack_sensors(&genomes), n_seres);
+        ctx.percept
+            .upload_sensors(&ctx.queue, &Genome::pack_sensors(&genomes), n_seres);
         // P1.7 (cérebro assíncrono) — metadados por neurônio (alfa/período/limiar/
         // ativação): mesmo motivo do τ/sensores, uma vez por geração.
-        ctx.brain.upload_neuron_meta(&Genome::pack_neuron_meta(&genomes), n_seres);
+        ctx.brain
+            .upload_neuron_meta(&Genome::pack_neuron_meta(&genomes), n_seres);
 
         // ── P1.7, mecanismo 2 — quantos neurônios de L1 disparam por tick ──────
         //
@@ -1338,18 +1860,23 @@ fn main() {
         // períodos possíveis (1..8, clamp de `evolve()`) independente de onde a
         // amostragem começaria dentro da corrida de verdade.
         if !sem_periodo_neuronal {
-            let periods_flat: Vec<f32> = genomes.iter()
+            let periods_flat: Vec<f32> = genomes
+                .iter()
                 .flat_map(|g| g.neuron_period_l1.iter().copied())
                 .collect();
             let janela = n_ticks.min(840).max(1);
-            let (media_disp, desvio_disp) = universe::gpu::evolution::simulate_l1_fire_counts(
-                &periods_flat, n_seres, janela);
+            let (media_disp, desvio_disp) =
+                universe::gpu::evolution::simulate_l1_fire_counts(&periods_flat, n_seres, janela);
             let total_neuronios = (n_seres * universe::gpu::evolution::N_L1_NEURONS) as f64;
             println!(
                 "  [periodo] neurônios de L1 disparando/tick: {:.1} ± {:.1} de {:.0} ({:.1}%) \
                  · janela simulada {} ticks (REPRESENTAÇÃO, não velocidade — GPU roda todas as threads de qualquer forma)",
-                media_disp, desvio_disp, total_neuronios,
-                100.0 * media_disp / total_neuronios.max(1.0), janela);
+                media_disp,
+                desvio_disp,
+                total_neuronios,
+                100.0 * media_disp / total_neuronios.max(1.0),
+                janela
+            );
         }
 
         // ── Reseta CfC entre gerações ──────────────────────────────────────────
@@ -1378,76 +1905,92 @@ fn main() {
         // 2026-08-16 exigiu uma sonda dedicada para descobrir que a largada era o
         // waypoint duplicado do fechamento (ver `frente_do_waypoint`).
         let wi_gen = {
-            let h = (gen_abs as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(pop_seed)
+            let h = (gen_abs as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_add(pop_seed)
                 .wrapping_mul(0xFF51AFD7ED558CCD);
             ((h >> 17) as usize) % n_wp
         };
         if largada_aleatoria {
             let wp = world.waypoints_world[wi_gen];
-            println!("  [largada] gen {gen_abs:4} nasce no wp {wi_gen}/{n_wp} \
+            println!(
+                "  [largada] gen {gen_abs:4} nasce no wp {wi_gen}/{n_wp} \
                       (arco ≈ {:.0} m) em ({:.0},{:.0})",
-                     wi_gen as f64 * lap_dist / n_wp as f64, wp.x, wp.y);
+                wi_gen as f64 * lap_dist / n_wp as f64,
+                wp.x,
+                wp.y
+            );
         }
-        let mut states: Vec<BeingState> = (0..n_seres).map(|i| {
-            // Onde cada ser nasce.
-            //
-            // Espalhar a população pelos waypoints parecia razoável — mais trechos vistos,
-            // menos colisão na largada. Só que a fitness é distância percorrida, e trechos
-            // de pista NÃO são igualmente difíceis: quem nasce numa reta longa acumula
-            // muito, quem nasce antes de uma curva fechada trava.
-            //
-            // Consequência medida: o MESMO genoma, reavaliado na geração seguinte (o elite
-            // passa sem mutação), rendia em média 72% do anterior — e quanto MAIOR o feito,
-            // mais perdia (536 m → 287 m, 54%). Isso é regressão à média, a assinatura de
-            // seleção sobre RUÍDO: o campeão não sabia dar volta, tinha nascido no lugar
-            // certo. Como na geração seguinte ele nasce noutro ponto, não há nada a herdar,
-            // e por isso o número de completadores nunca cresce.
-            // D2: com --largada-aleatoria, o waypoint da GERAÇÃO vem de hash(gen,seed)
-            // — todos os seres da gen largam do mesmo lugar (comparável), mas o lugar
-            // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
-            let wi = if largada_aleatoria { wi_gen } else if same_start { 0 }
-                     else { (i * n_wp / n_seres).min(n_wp - 1) };
-            let wp = world.waypoints_world[wi];
-            // Ver `frente_do_waypoint`: o último waypoint REPETE o primeiro, e o
-            // versor ingênuo saía nulo ali — geração inteira imóvel e seleção cega.
-            let fwd = frente_do_waypoint(&world.waypoints_world, wi);
-            let pos = [wp.x, 0.0, wp.y];
-            BeingState {
-                phys: make_physics_state(pos, fwd),
-                prev_steer: 0.0,
-                stagnation_ticks: 0,
-                wall_ticks: 0,
-                center_prog: 0.0,
-                sensor_steer: 0.0,
-                sensor_thr: 0.0,
-                sensor_brk: 0.0,
-                wp_near: 0,
-                fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
-                ticks_alive: 0,
-                // Com vida ganha, o ser nasce com pouco fôlego (10 s) e precisa
-                // conquistar o resto. Sem isso, ele teria a geração inteira garantida e o
-                // mecanismo não teria efeito nenhum nos primeiros minutos.
-                life_left: if LIFE_EARN.load(Ordering::Relaxed) > 0.0 { LIFE_START as f64 }
-                           else { n_ticks as f64 },
-                reverse_timer: 0.0,
-                post_reverse_lockout: 0.0,
-                shift_cooldown: 0.0,
-                shift_up_prev: 0.0,
-                shift_down_prev: 0.0,
-            nm_reserva: [1.0; 4],
-            re_falhas: 0,
-            re_desde_saida: 999.0,
-            dano: 0.0,
-                joy_tick: 0.0,
-                joy_streak: 0.0,
-                edge_row6: 0.0,
-                edge_row7: 0.0,
-                phantom_d_min: 30.0,
-                dist_wall_l:  40.0,
-                dist_wall_r:  40.0,
-                dist_wall_f:  50.0,
-            }
-        }).collect();
+        let mut states: Vec<BeingState> = (0..n_seres)
+            .map(|i| {
+                // Onde cada ser nasce.
+                //
+                // Espalhar a população pelos waypoints parecia razoável — mais trechos vistos,
+                // menos colisão na largada. Só que a fitness é distância percorrida, e trechos
+                // de pista NÃO são igualmente difíceis: quem nasce numa reta longa acumula
+                // muito, quem nasce antes de uma curva fechada trava.
+                //
+                // Consequência medida: o MESMO genoma, reavaliado na geração seguinte (o elite
+                // passa sem mutação), rendia em média 72% do anterior — e quanto MAIOR o feito,
+                // mais perdia (536 m → 287 m, 54%). Isso é regressão à média, a assinatura de
+                // seleção sobre RUÍDO: o campeão não sabia dar volta, tinha nascido no lugar
+                // certo. Como na geração seguinte ele nasce noutro ponto, não há nada a herdar,
+                // e por isso o número de completadores nunca cresce.
+                // D2: com --largada-aleatoria, o waypoint da GERAÇÃO vem de hash(gen,seed)
+                // — todos os seres da gen largam do mesmo lugar (comparável), mas o lugar
+                // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
+                let wi = if largada_aleatoria {
+                    wi_gen
+                } else if same_start {
+                    0
+                } else {
+                    (i * n_wp / n_seres).min(n_wp - 1)
+                };
+                let wp = world.waypoints_world[wi];
+                // Ver `frente_do_waypoint`: o último waypoint REPETE o primeiro, e o
+                // versor ingênuo saía nulo ali — geração inteira imóvel e seleção cega.
+                let fwd = frente_do_waypoint(&world.waypoints_world, wi);
+                let pos = [wp.x, 0.0, wp.y];
+                BeingState {
+                    phys: make_physics_state(pos, fwd),
+                    prev_steer: 0.0,
+                    stagnation_ticks: 0,
+                    wall_ticks: 0,
+                    center_prog: 0.0,
+                    sensor_steer: 0.0,
+                    sensor_thr: 0.0,
+                    sensor_brk: 0.0,
+                    wp_near: 0,
+                    fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
+                    ticks_alive: 0,
+                    // Com vida ganha, o ser nasce com pouco fôlego (10 s) e precisa
+                    // conquistar o resto. Sem isso, ele teria a geração inteira garantida e o
+                    // mecanismo não teria efeito nenhum nos primeiros minutos.
+                    life_left: if LIFE_EARN.load(Ordering::Relaxed) > 0.0 {
+                        LIFE_START as f64
+                    } else {
+                        n_ticks as f64
+                    },
+                    reverse_timer: 0.0,
+                    post_reverse_lockout: 0.0,
+                    shift_cooldown: 0.0,
+                    shift_up_prev: 0.0,
+                    shift_down_prev: 0.0,
+                    nm_reserva: [1.0; 4],
+                    re_falhas: 0,
+                    re_desde_saida: 999.0,
+                    dano: 0.0,
+                    joy_tick: 0.0,
+                    joy_streak: 0.0,
+                    edge_row6: 0.0,
+                    edge_row7: 0.0,
+                    phantom_d_min: 30.0,
+                    dist_wall_l: 40.0,
+                    dist_wall_r: 40.0,
+                    dist_wall_f: 50.0,
+                }
+            })
+            .collect();
 
         // ── Odômetro ───────────────────────────────────────────────────────────
         let mut dist_acum: Vec<f64> = vec![0.0; n_seres];
@@ -1490,13 +2033,18 @@ fn main() {
                 let a = (wps[i] - wps[i - 1]).normalize_or_zero();
                 let b = (wps[i + 1] - wps[i]).normalize_or_zero();
                 let ang = a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
-                if ang > 8.0 { v.push(acc); }
+                if ang > 8.0 {
+                    v.push(acc);
+                }
             }
             v
         };
         if generation_idx == 0 {
-            println!("  [portais] {} portais em curvas > 8° (uniforme seriam {})",
-                     portais.len(), N_CHECKPOINTS);
+            println!(
+                "  [portais] {} portais em curvas > 8° (uniforme seriam {})",
+                portais.len(),
+                N_CHECKPOINTS
+            );
         }
         let mut voltas_reais: Vec<u32> = vec![0; n_seres];
         let mut prog_prev: Vec<f32> = (0..n_seres)
@@ -1505,7 +2053,7 @@ fn main() {
         let mut pos_prev: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
 
         // Tick de aquecimento (compilação JIT — descartado).
-        let _ = ctx.tick(&mut states, n_seres, 1.0/64.0, 0, &kan_knots_global);
+        let _ = ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, &kan_knots_global);
 
         // ── N ticks de simulação ───────────────────────────────────────────────
         let dt = 1.0_f32 / 64.0;
@@ -1513,7 +2061,10 @@ fn main() {
         for tick_i in 0..n_ticks {
             let ok = ctx.tick(&mut states, n_seres, dt, tick_i + 1, &kan_knots_global);
             if !ok {
-                eprintln!("[gen {:4}] ERRO no tick {} — abortando geração.", gen_abs, tick_i);
+                eprintln!(
+                    "[gen {:4}] ERRO no tick {} — abortando geração.",
+                    gen_abs, tick_i
+                );
                 abortado = true;
                 break;
             }
@@ -1522,44 +2073,45 @@ fn main() {
             // Quadro de replay do líder, a 16 Hz.
             if tick_i % 4 == 0 {
                 if let Some(ref mut rw) = replay_writer {
-                  for lider in 0..n_grav {
-                    let ph = &states[lider].phys;
-                    let vel = (ph.vel[0].powi(2) + ph.vel[2].powi(2)).sqrt();
-                    let rf = universe::replay::ReplayFrame {
-                        pos: ph.pos,
-                        fwd: [ph.fwd[0], ph.fwd[2]],
-                        speed: vel,
-                        yaw_rate: ph.av_y,
-                        arc_prog: dist_acum[lider] as f32,
-                        laps: 0,
-                        gear: ph.current_gear as u8,
-                        // Vida restante no lugar do HP: é o recurso que este caminho
-                        // realmente consome, e é o que explica o ser parar.
-                        hp_norm: ((states[lider].life_left.max(0.0) as f32
-                                   / life_cap() as f32).min(1.0) * 127.0) as u8,
-                        fuel_norm: 127,
-                        tick: tick_i as u32,
-                        // COMANDOS: sem eles não dá para separar "o cérebro não manda
-                        // virar" de "o carro não consegue virar" — e é exatamente essa a
-                        // pergunta agora que sabemos que todos param na primeira curva.
-                        // `intent_*` é a decisão neural crua; `final_*` é o que a física
-                        // recebeu depois do KAN, da modulação lenta e do trecho de ré.
-                        final_thr: ph.throttle,
-                        final_str: ph.steer,
-                        final_brk: ph.brake_cmd,
-                        // Distâncias às paredes: agora gravadas de verdade (Conserto 4, 2026-08-12).
-                        // Antes chegavam zeradas via ..Default::default(). Com estes valores é
-                        // possível saber exatamente o que o cérebro via ao parar na curva.
-                        dist_wall_l: states[lider].dist_wall_l,
-                        dist_wall_r: states[lider].dist_wall_r,
-                        dist_wall_f: states[lider].dist_wall_f,
-                        // `intent_*` fica zerado aqui de propósito: a intenção neural
-                        // crua vive dentro de `tick()` e não chega a este laço. O que a
-                        // física RECEBEU já responde a pergunta atual.
-                        ..Default::default()
-                    };
-                    let _ = rw.write_frame(lider as u8, &rf);
-                  }
+                    for lider in 0..n_grav {
+                        let ph = &states[lider].phys;
+                        let vel = (ph.vel[0].powi(2) + ph.vel[2].powi(2)).sqrt();
+                        let rf = universe::replay::ReplayFrame {
+                            pos: ph.pos,
+                            fwd: [ph.fwd[0], ph.fwd[2]],
+                            speed: vel,
+                            yaw_rate: ph.av_y,
+                            arc_prog: dist_acum[lider] as f32,
+                            laps: 0,
+                            gear: ph.current_gear as u8,
+                            // Vida restante no lugar do HP: é o recurso que este caminho
+                            // realmente consome, e é o que explica o ser parar.
+                            hp_norm: ((states[lider].life_left.max(0.0) as f32 / life_cap() as f32)
+                                .min(1.0)
+                                * 127.0) as u8,
+                            fuel_norm: 127,
+                            tick: tick_i as u32,
+                            // COMANDOS: sem eles não dá para separar "o cérebro não manda
+                            // virar" de "o carro não consegue virar" — e é exatamente essa a
+                            // pergunta agora que sabemos que todos param na primeira curva.
+                            // `intent_*` é a decisão neural crua; `final_*` é o que a física
+                            // recebeu depois do KAN, da modulação lenta e do trecho de ré.
+                            final_thr: ph.throttle,
+                            final_str: ph.steer,
+                            final_brk: ph.brake_cmd,
+                            // Distâncias às paredes: agora gravadas de verdade (Conserto 4, 2026-08-12).
+                            // Antes chegavam zeradas via ..Default::default(). Com estes valores é
+                            // possível saber exatamente o que o cérebro via ao parar na curva.
+                            dist_wall_l: states[lider].dist_wall_l,
+                            dist_wall_r: states[lider].dist_wall_r,
+                            dist_wall_f: states[lider].dist_wall_f,
+                            // `intent_*` fica zerado aqui de propósito: a intenção neural
+                            // crua vive dentro de `tick()` e não chega a este laço. O que a
+                            // física RECEBEU já responde a pergunta atual.
+                            ..Default::default()
+                        };
+                        let _ = rw.write_frame(lider as u8, &rf);
+                    }
                 }
             }
 
@@ -1568,7 +2120,7 @@ fn main() {
                 let dx = (p1[0] - pos_prev[i][0]) as f64;
                 let dz = (p1[2] - pos_prev[i][2]) as f64;
                 if states[i].life_left > 0.0 {
-                    let passo = (dx*dx + dz*dz).sqrt();
+                    let passo = (dx * dx + dz * dz).sqrt();
                     dist_acum[i] += passo;
 
                     // Avanço na pista desde o tick anterior, com o salto da linha de
@@ -1577,7 +2129,11 @@ fn main() {
                     let cur = world.get_track_progress(p1[0], p1[2]);
                     let ld = lap_dist as f32;
                     let mut d = cur - prog_prev[i];
-                    if d < -ld * 0.5 { d += ld; } else if d > ld * 0.5 { d -= ld; }
+                    if d < -ld * 0.5 {
+                        d += ld;
+                    } else if d > ld * 0.5 {
+                        d -= ld;
+                    }
                     let avanco = d.clamp(-ld * 0.1, ld * 0.1) as f64;
                     prog_acum[i] += avanco;
                     prog_prev[i] = cur;
@@ -1590,26 +2146,32 @@ fn main() {
                     // voxel (estrada=1, grama=0.2, parede=-0.5). O ser deve SENTIR quando
                     // está indo bem para que o cérebro lento (System 2) possa modular.
                     {
-                        let p   = &states[i].phys;
+                        let p = &states[i].phys;
                         let spd = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
-                        let vel_dot = p.vel[0]*p.fwd[0] + p.vel[2]*p.fwd[2];
-                        let align = if spd > 0.1 { (vel_dot / spd).clamp(-1.0, 1.0) } else { 1.0 };
+                        let vel_dot = p.vel[0] * p.fwd[0] + p.vel[2] * p.fwd[2];
+                        let align = if spd > 0.1 {
+                            (vel_dot / spd).clamp(-1.0, 1.0)
+                        } else {
+                            1.0
+                        };
                         let progress_speed = (spd * align.max(0.0) / 30.0).clamp(0.0, 1.0);
                         // Voxel sob o ser usando a grade CPU (mesma grade usada para
                         // propriocepção acima — não há custo adicional).
-                        let gs  = ctx.grid_size_cpu as usize;
-                        let cs  = ctx.cell_size_cpu;
-                        let xi  = (p.pos[0] / cs).round() as i32;
-                        let zi  = (p.pos[2] / cs).round() as i32;
+                        let gs = ctx.grid_size_cpu as usize;
+                        let cs = ctx.cell_size_cpu;
+                        let xi = (p.pos[0] / cs).round() as i32;
+                        let zi = (p.pos[2] / cs).round() as i32;
                         let vox = if xi >= 0 && xi < gs as i32 && zi >= 0 && zi < gs as i32 {
                             ctx.grid_cpu[(zi as usize) * gs + xi as usize]
-                        } else { 2u32 };
+                        } else {
+                            2u32
+                        };
                         // 0=grama, 1=estrada, 2=parede, 3=buraco (VoxelType ordem em world.rs)
                         let surface_factor: f32 = match vox {
-                            1 => 1.0,   // Road
-                            0 => 0.2,   // Grass
-                            2 => -0.5,  // Wall
-                            _ => -1.0,  // Hole (3) e demais
+                            1 => 1.0,  // Road
+                            0 => 0.2,  // Grass
+                            2 => -0.5, // Wall
+                            _ => -1.0, // Hole (3) e demais
                         };
                         let joy_tick = progress_speed * surface_factor;
                         // Acumula streak: sobe quando fluindo, decai 2× mais rápido quando não.
@@ -1633,8 +2195,11 @@ fn main() {
                         let idx = (states[i].wp_near + nwp + off - 4) % nwp;
                         let dxx = wps[idx].x - p1[0];
                         let dzz = wps[idx].y - p1[2];
-                        let dd = dxx*dxx + dzz*dzz;
-                        if dd < best_d { best_d = dd; melhor = idx; }
+                        let dd = dxx * dxx + dzz * dzz;
+                        if dd < best_d {
+                            best_d = dd;
+                            melhor = idx;
+                        }
                     }
                     states[i].wp_near = melhor;
                     let dist_eixo = best_d.sqrt();
@@ -1663,11 +2228,19 @@ fn main() {
                     // Índice do portal atual: quantos portais já ficaram para trás.
                     let n_port = portais.len() as u32;
                     let setor = if PORTAL_CURVA.load(Ordering::Relaxed) {
-                        portais.iter().filter(|&&p| cur >= p).count().saturating_sub(1) as u32
+                        portais
+                            .iter()
+                            .filter(|&&p| cur >= p)
+                            .count()
+                            .saturating_sub(1) as u32
                     } else {
                         ((cur / ld) * N_CHECKPOINTS as f32) as u32
                     };
-                    let total = if PORTAL_CURVA.load(Ordering::Relaxed) { n_port } else { N_CHECKPOINTS };
+                    let total = if PORTAL_CURVA.load(Ordering::Relaxed) {
+                        n_port
+                    } else {
+                        N_CHECKPOINTS
+                    };
                     let esperado = checkpoint[i] % total.max(1);
                     if setor == esperado {
                         checkpoint[i] += 1;
@@ -1676,9 +2249,11 @@ fn main() {
                         // cruzada: VIDA; assimétrico — atrás não perde, ver fantasma.rs).
                         cruzamentos[i].push((checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32));
                         if fantasma_on {
-                            let v = fantasma_atual.vantagem(checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32);
+                            let v = fantasma_atual
+                                .vantagem(checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32);
                             states[i].life_left = (states[i].life_left
-                                + fantasma_atual.bonus_vida(v) as f64).min(life_cap() as f64);
+                                + fantasma_atual.bonus_vida(v) as f64)
+                                .min(life_cap() as f64);
                         }
                         // REABASTECE A CADA SETOR, não só ao fechar volta.
                         //
@@ -1714,8 +2289,8 @@ fn main() {
                         // Teto: ninguém acumula fôlego infinito numa reta. Sem o teto, um
                         // trecho rápido compraria vida para atravessar a pista inteira
                         // parado depois — o oposto da pressão que se quer criar.
-                        states[i].life_left = (states[i].life_left
-                            + passo * ganho as f64).min(life_cap() as f64);
+                        states[i].life_left =
+                            (states[i].life_left + passo * ganho as f64).min(life_cap() as f64);
                     }
                 }
                 pos_prev[i] = p1;
@@ -1726,20 +2301,27 @@ fn main() {
             // já refletem este tick (vida ganha, combustível reabastecido no setor, etc.).
             if let Some(p) = &painel {
                 if tick_i % 64 == 0 {
-                    let snaps: Vec<painel::BeingSnapshot> = (0..n_seres).map(|i| {
-                        let ph = &states[i].phys;
-                        let vel = (ph.vel[0].powi(2) + ph.vel[2].powi(2)).sqrt();
-                        painel::BeingSnapshot {
-                            id: i,
-                            x: ph.pos[0],
-                            z: ph.pos[2],
-                            vel,
-                            life: (states[i].life_left.max(0.0) as f32 / life_cap() as f32).min(1.0),
-                            vivo: states[i].life_left > 0.0,
-                        }
-                    }).collect();
+                    let snaps: Vec<painel::BeingSnapshot> = (0..n_seres)
+                        .map(|i| {
+                            let ph = &states[i].phys;
+                            let vel = (ph.vel[0].powi(2) + ph.vel[2].powi(2)).sqrt();
+                            painel::BeingSnapshot {
+                                id: i,
+                                x: ph.pos[0],
+                                z: ph.pos[2],
+                                vel,
+                                life: (states[i].life_left.max(0.0) as f32 / life_cap() as f32)
+                                    .min(1.0),
+                                vivo: states[i].life_left > 0.0,
+                            }
+                        })
+                        .collect();
                     let fuel_mediana = {
-                        let mut fv: Vec<f64> = states.iter().take(n_seres).map(|s| s.fuel.max(0.0)).collect();
+                        let mut fv: Vec<f64> = states
+                            .iter()
+                            .take(n_seres)
+                            .map(|s| s.fuel.max(0.0))
+                            .collect();
                         fv.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                         fv[fv.len() / 2] as f32
                     };
@@ -1753,7 +2335,11 @@ fn main() {
         // `--wall-cost 0` nada muda e a linha vira só telemetria: é a condição de controle
         // do experimento pareado, no MESMO binário, sem recompilar entre condições.
         let wall_frac: f64 = {
-            let total: u64 = states.iter().take(n_seres).map(|s| s.wall_ticks as u64).sum();
+            let total: u64 = states
+                .iter()
+                .take(n_seres)
+                .map(|s| s.wall_ticks as u64)
+                .sum();
             total as f64 / (n_seres as f64 * n_ticks as f64)
         };
         if wall_cost > 0.0 {
@@ -1789,14 +2375,18 @@ fn main() {
             // avanço PONDERADO por proximidade do eixo. Cravar deriva → centro baixo →
             // perde para quem modula e segue o traçado. Não recompensa parar
             // (avanço zero → center_prog zero).
-            "centro" => (0..n_seres).map(|i| {
-                let setor = checkpoint[i] as f64 * lap_dist;
-                setor + states[i].center_prog.max(0.0)
-            }).collect(),
-            _ => (0..n_seres).map(|i| {
-                let setor = checkpoint[i] as f64 * lap_dist;
-                setor + prog_acum[i].max(0.0)
-            }).collect(),
+            "centro" => (0..n_seres)
+                .map(|i| {
+                    let setor = checkpoint[i] as f64 * lap_dist;
+                    setor + states[i].center_prog.max(0.0)
+                })
+                .collect(),
+            _ => (0..n_seres)
+                .map(|i| {
+                    let setor = checkpoint[i] as f64 * lap_dist;
+                    setor + prog_acum[i].max(0.0)
+                })
+                .collect(),
         };
 
         // ── O campeão se REPRODUZ? ─────────────────────────────────────────────
@@ -1814,17 +2404,25 @@ fn main() {
         if let Some(anterior) = elite_fitness_anterior {
             if elite_fitness_anterior_pista == Some(seed_gen) {
                 let agora = fitness[0];
-                let razao = if anterior > 1.0 { agora / anterior } else { f64::NAN };
+                let razao = if anterior > 1.0 {
+                    agora / anterior
+                } else {
+                    f64::NAN
+                };
                 println!(
                     "  [elite] mesmo genoma: {:.0} → {:.0} (fitness, {:.0}% do anterior) · hodômetro={:.0}m",
-                    anterior, agora, 100.0 * razao, dist_acum[0]
+                    anterior,
+                    agora,
+                    100.0 * razao,
+                    dist_acum[0]
                 );
                 elite_reprod.push(razao);
             } else {
                 println!(
                     "  [elite] pista mudou desde a última reavaliação (seed {} → {}) — razão \
                      não comparável, pulando",
-                    elite_fitness_anterior_pista.unwrap_or(0), seed_gen
+                    elite_fitness_anterior_pista.unwrap_or(0),
+                    seed_gen
                 );
             }
         }
@@ -1838,13 +2436,22 @@ fn main() {
         {
             let mut f = fitness.clone();
             f.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let (lo, hi) = (f[0], f[f.len()-1]);
+            let (lo, hi) = (f[0], f[f.len() - 1]);
             let m = f.iter().sum::<f64>() / f.len() as f64;
-            let sd = (f.iter().map(|v| (v-m).powi(2)).sum::<f64>() / f.len() as f64).sqrt();
-            let distintos = { let mut u = f.clone();
-                u.dedup_by(|a, b| (*a - *b).abs() < 0.5); u.len() };
-            println!("  [seleção] fitness {:.0}..{:.0} · desvio {:.2} · valores distintos {}/{}",
-                     lo, hi, sd, distintos, f.len());
+            let sd = (f.iter().map(|v| (v - m).powi(2)).sum::<f64>() / f.len() as f64).sqrt();
+            let distintos = {
+                let mut u = f.clone();
+                u.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+                u.len()
+            };
+            println!(
+                "  [seleção] fitness {:.0}..{:.0} · desvio {:.2} · valores distintos {}/{}",
+                lo,
+                hi,
+                sd,
+                distintos,
+                f.len()
+            );
             if distintos <= 2 {
                 println!("            ⇒ SELEÇÃO CEGA: quase todos com a mesma nota.");
             }
@@ -1853,15 +2460,22 @@ fn main() {
         // gen_stats conta "voltas" como fitness/lap_dist. Com a fitness de checkpoint
         // valendo lap_dist por setor, isso vira número inflado (3 setores = "3 voltas").
         // As VOLTAS mostradas têm de vir do progresso real na pista, não da fitness.
-        let mut r = gen_stats(gen_abs, &prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>(), lap_dist);
+        let mut r = gen_stats(
+            gen_abs,
+            &prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>(),
+            lap_dist,
+        );
         let t_gen_s = t_gen.elapsed().as_secs_f64();
 
         hist_med.push(r.dist_med);
         // D6: o melhor da geração vira o fantasma da próxima.
         if fantasma_on || escada_ctl.is_some() {
-            let best_i = fitness.iter().enumerate()
+            let best_i = fitness
+                .iter()
+                .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i).unwrap_or(0);
+                .map(|(i, _)| i)
+                .unwrap_or(0);
             fantasma_atual = fantasma::Fantasma::gravar(&cruzamentos[best_i]);
         }
         // ESCADA: avalia a dose do mundo e sobe/segura/recua degraus (escada.rs).
@@ -1872,15 +2486,23 @@ fn main() {
                 && r.dist_med >= hist_med_escada[hist_med_escada.len() - 15] * 0.8;
             let veredito = ctl.avaliar(promo_pct, r.mortality, recuperou);
             match &veredito {
-                escada::Veredito::Sobe(d) | escada::Veredito::Rece(d) => {
-                    match d {
-                        escada::Degrau::FuelK(k) => { FUEL_AUTO_K.store(*k, Ordering::Relaxed); }
-                        escada::Degrau::Ruido(sig) => { ctx.brain.set_noise(*sig, 0.02); }
-                        escada::Degrau::Dano(e) => { DANO_ESCALA.store(*e, Ordering::Relaxed); }
-                        escada::Degrau::Clima(mu) => { ctx.phys_gpu.set_clima(*mu, 0.0, 0.0, 0.03); }
-                        escada::Degrau::Fantasma => { fantasma_on = true; }
+                escada::Veredito::Sobe(d) | escada::Veredito::Rece(d) => match d {
+                    escada::Degrau::FuelK(k) => {
+                        FUEL_AUTO_K.store(*k, Ordering::Relaxed);
                     }
-                }
+                    escada::Degrau::Ruido(sig) => {
+                        ctx.brain.set_noise(*sig, 0.02);
+                    }
+                    escada::Degrau::Dano(e) => {
+                        DANO_ESCALA.store(*e, Ordering::Relaxed);
+                    }
+                    escada::Degrau::Clima(mu) => {
+                        ctx.phys_gpu.set_clima(*mu, 0.0, 0.0, 0.03);
+                    }
+                    escada::Degrau::Fantasma => {
+                        fantasma_on = true;
+                    }
+                },
                 escada::Veredito::Mantem => {}
             }
             println!("{}", ctl.descrever());
@@ -1892,9 +2514,12 @@ fn main() {
         // Usa gen_abs no nome do arquivo — continua sequência do checkpoint.
         // Melhor pela MESMA grandeza que a seleção usa — senão o genoma salvo e o
         // relatório de reprodutibilidade falam de um campeão que a evolução não escolheu.
-        let best_idx = fitness.iter().enumerate()
+        let best_idx = fitness
+            .iter()
+            .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i).unwrap_or(0);
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         let save_path = format!("{}/evolve_best_gen{:04}.bin", out_dir, gen_abs);
         if let Err(e) = save_genome(&genomes[best_idx], &save_path) {
             eprintln!("[gen {:4}] AVISO: falha ao salvar genoma: {}", gen_abs, e);
@@ -1925,21 +2550,38 @@ fn main() {
         // que "3/24" quando na verdade são 4/43 (9,3% da volta) contra 3/24 (12,5%) — a
         // condição pior aparecendo como melhor. Por isso a FRAÇÃO vai junto: ela é a única
         // grandeza comparável entre os dois modos.
-        let n_portais = if PORTAL_CURVA.load(Ordering::Relaxed) { portais.len() as u32 }
-                        else { N_CHECKPOINTS };
-        println!("  [setores] mediana {}/{} ({:.1}% da volta) · melhor {}/{} ({:.1}%) · voltas reais: {} seres ≥1, {} ≥2",
-                 cp_med, n_portais, 100.0 * cp_med as f32 / n_portais.max(1) as f32,
-                 cp_max, n_portais, 100.0 * cp_max as f32 / n_portais.max(1) as f32, v1, v2);
+        let n_portais = if PORTAL_CURVA.load(Ordering::Relaxed) {
+            portais.len() as u32
+        } else {
+            N_CHECKPOINTS
+        };
+        println!(
+            "  [setores] mediana {}/{} ({:.1}% da volta) · melhor {}/{} ({:.1}%) · voltas reais: {} seres ≥1, {} ≥2",
+            cp_med,
+            n_portais,
+            100.0 * cp_med as f32 / n_portais.max(1) as f32,
+            cp_max,
+            n_portais,
+            100.0 * cp_max as f32 / n_portais.max(1) as f32,
+            v1,
+            v2
+        );
 
         // ── Painel: fim de geração (E5) ─────────────────────────────────────────
         // Fica AQUI (não logo após `hist_med.push`, mais acima) porque é onde `checkpoint`
         // e `n_portais` (para `setores`) já estão prontos — e `hist_med` já recebeu o push
         // desta geração, então `linear_slope` já enxerga o ponto atual.
         if let Some(p) = &painel {
-            let setores_frac: Vec<f32> = (0..n_portais).map(|s| {
-                checkpoint.iter().filter(|&&c| c > s).count() as f32 / n_seres.max(1) as f32
-            }).collect();
-            let slope = if hist_med.len() >= 2 { linear_slope(&hist_med).0 } else { 0.0 };
+            let setores_frac: Vec<f32> = (0..n_portais)
+                .map(|s| {
+                    checkpoint.iter().filter(|&&c| c > s).count() as f32 / n_seres.max(1) as f32
+                })
+                .collect();
+            let slope = if hist_med.len() >= 2 {
+                linear_slope(&hist_med).0
+            } else {
+                0.0
+            };
             p.update_gen(
                 gen_abs as u32,
                 r.dist_med,
@@ -1955,10 +2597,12 @@ fn main() {
         // de baixo (que a usa de novo) porque o gate do currículo (abaixo) também precisa
         // dela ANTES daquele bloco rodar. Mesma fórmula: distância acumulada / tempo vivo.
         let vmed: f64 = {
-            let mut v: Vec<f64> = (0..n_seres).map(|i| {
-                let seg = (states[i].ticks_alive.max(1) as f64) / 64.0;
-                dist_acum[i] / seg
-            }).collect();
+            let mut v: Vec<f64> = (0..n_seres)
+                .map(|i| {
+                    let seg = (states[i].ticks_alive.max(1) as f64) / 64.0;
+                    dist_acum[i] / seg
+                })
+                .collect();
             v.sort_by(|a, b| a.partial_cmp(b).unwrap());
             v[v.len() / 2]
         };
@@ -1989,27 +2633,36 @@ fn main() {
             // pista — um degrau por vez. Só quando o teto está no máximo a promoção
             // volta a rodar a pista.
             let teto_atual = CAMBIO_TETO.load(Ordering::Relaxed);
-            let teto_max   = CAMBIO_TETO_MAX.load(Ordering::Relaxed);
+            let teto_max = CAMBIO_TETO_MAX.load(Ordering::Relaxed);
             if CAMBIO_CURRICULO.load(Ordering::Relaxed)
                 && CAMBIO_MODO.load(Ordering::Relaxed) > 0
                 && teto_atual < teto_max
             {
                 CAMBIO_TETO.store(teto_atual + 1, Ordering::Relaxed);
-                println!("  [cambio] população completou a volta ({v1} seres) — teto de marcha {} → {} (pista continua {})",
-                         teto_atual, teto_atual + 1, world_seed_atual);
+                println!(
+                    "  [cambio] população completou a volta ({v1} seres) — teto de marcha {} → {} (pista continua {})",
+                    teto_atual,
+                    teto_atual + 1,
+                    world_seed_atual
+                );
             } else {
-            idx_curriculo += 1;
-            let proxima = pista_da_gen(&pistas, idx_curriculo);
-            let via = if cond_populacao {
-                format!("população (v1={} ≥ {} = max(N={}, 25%={}))",
-                        v1, limiar_efetivo, trocar_ao_completar, piso_populacional)
-            } else {
-                format!("velocidade (v1={} ≥ N={} · mediana {:.2}m/s ≥ piso {:.2}m/s)",
-                        v1, trocar_ao_completar, vmed, curriculo_veloc_min)
-            };
-            println!(
-                "  [curriculo] {} seres completaram a volta via {} — pista {} → {}",
-                v1, via, world_seed_atual, proxima);
+                idx_curriculo += 1;
+                let proxima = pista_da_gen(&pistas, idx_curriculo);
+                let via = if cond_populacao {
+                    format!(
+                        "população (v1={} ≥ {} = max(N={}, 25%={}))",
+                        v1, limiar_efetivo, trocar_ao_completar, piso_populacional
+                    )
+                } else {
+                    format!(
+                        "velocidade (v1={} ≥ N={} · mediana {:.2}m/s ≥ piso {:.2}m/s)",
+                        v1, trocar_ao_completar, vmed, curriculo_veloc_min
+                    )
+                };
+                println!(
+                    "  [curriculo] {} seres completaram a volta via {} — pista {} → {}",
+                    v1, via, world_seed_atual, proxima
+                );
             }
         } else if trocar_ao_completar > 0 && v1 > 0 {
             // Visível mesmo quando NÃO promove: sem isto, "por que não trocou" exige
@@ -2018,70 +2671,129 @@ fn main() {
                 "  [curriculo] {} seres completaram a volta, mas nem população (precisa {}) \
                  nem velocidade (mediana {:.2}m/s, precisa {:.2}m/s com N={}) bateram o piso \
                  — pista continua {}",
-                v1, limiar_efetivo, vmed, curriculo_veloc_min, trocar_ao_completar, world_seed_atual);
+                v1,
+                limiar_efetivo,
+                vmed,
+                curriculo_veloc_min,
+                trocar_ao_completar,
+                world_seed_atual
+            );
         }
 
         println!(
             "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} morto={:.0}% | {:.1}s",
             gen_abs,
-            r.dist_med,  r.dist_med  / lap_dist,
-            r.dist_max,  r.dist_max  / lap_dist,
-            r.n_ge1v, r.n_ge2v,
+            r.dist_med,
+            r.dist_med / lap_dist,
+            r.dist_max,
+            r.dist_max / lap_dist,
+            r.n_ge1v,
+            r.n_ge2v,
             r.mortality * 100.0,
             t_gen_s,
         );
 
-        let sem_vida = states.iter().take(n_seres).filter(|s| s.life_left <= 0.0).count();
+        let sem_vida = states
+            .iter()
+            .take(n_seres)
+            .filter(|s| s.life_left <= 0.0)
+            .count();
         if FUEL_ON.load(Ordering::Relaxed) {
-            let secos = states.iter().take(n_seres).filter(|s| s.fuel <= 0.0).count();
-            let mut f: Vec<f64> = states.iter().take(n_seres).map(|s| s.fuel.max(0.0)).collect();
+            let secos = states
+                .iter()
+                .take(n_seres)
+                .filter(|s| s.fuel <= 0.0)
+                .count();
+            let mut f: Vec<f64> = states
+                .iter()
+                .take(n_seres)
+                .map(|s| s.fuel.max(0.0))
+                .collect();
             f.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            println!("  [combustível] secos {}/{} · tanque restante mediano {:.2} · tanque inicial {:.2}",
-                     secos, n_seres, f[f.len()/2], FUEL_TANK.load(Ordering::Relaxed));
+            println!(
+                "  [combustível] secos {}/{} · tanque restante mediano {:.2} · tanque inicial {:.2}",
+                secos,
+                n_seres,
+                f[f.len() / 2],
+                FUEL_TANK.load(Ordering::Relaxed)
+            );
         }
         // Velocidade média da população. É a grandeza que a vida-ganha ataca: a distância
         // pode subir só por ter mais tempo, mas a velocidade não mente.
         // (`vmed` já foi calculada acima, antes do gate do currículo — reusa aqui.)
         {
-            let vida_med = states.iter().take(n_seres)
-                .map(|s| s.ticks_alive as f64).sum::<f64>() / n_seres as f64;
+            let vida_med = states
+                .iter()
+                .take(n_seres)
+                .map(|s| s.ticks_alive as f64)
+                .sum::<f64>()
+                / n_seres as f64;
             {
-            // Hodômetro contra progresso: a lacuna entre os dois É o quanto o ser anda sem
-            // avançar na pista. Com fitness de hodômetro essa lacuna era invisível e ele
-            // podia ir reto para fora do circuito sem perder nada.
-            let mut od: Vec<f64> = dist_acum.clone(); od.sort_by(|a,b| a.partial_cmp(b).unwrap());
-            let mut pr: Vec<f64> = prog_acum.clone(); pr.sort_by(|a,b| a.partial_cmp(b).unwrap());
-            let (odm, prm) = (od[od.len()/2], pr[pr.len()/2]);
-            println!("  [pista] hodômetro {:.0} m · progresso {:.0} m · aproveitamento {:.0}%",
-                     odm, prm, if odm > 1.0 { 100.0 * prm / odm } else { 0.0 });
-        }
-        // Telemetria do portão do piloto: quanto da corrida o CÉREBRO reassumiu.
-        // É a medida direta de "onde a fórmula não sabe" — e o número que diz se o
-        // domínio destilado cobre a pista nova (ver E-PIL1 em docs/DESTILABILIDADE.md).
-        if let Some(pl) = ctx.piloto_formula.as_ref() {
-            let tot = pl.decisoes + pl.abstencoes;
-            if tot > 0 {
-                println!("  [piloto] fórmula decidiu {} ticks · cérebro reassumiu {} ({:.1}%)",
-                         pl.decisoes, pl.abstencoes, 100.0 * pl.abstencoes as f64 / tot as f64);
-                let (med, mx, q) = pl.estat_seqs();
-                println!("  [piloto] sequências de abstenção: {q} blocos · mediana {med:.0} ticks · maior {mx}");
+                // Hodômetro contra progresso: a lacuna entre os dois É o quanto o ser anda sem
+                // avançar na pista. Com fitness de hodômetro essa lacuna era invisível e ele
+                // podia ir reto para fora do circuito sem perder nada.
+                let mut od: Vec<f64> = dist_acum.clone();
+                od.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let mut pr: Vec<f64> = prog_acum.clone();
+                pr.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let (odm, prm) = (od[od.len() / 2], pr[pr.len() / 2]);
+                println!(
+                    "  [pista] hodômetro {:.0} m · progresso {:.0} m · aproveitamento {:.0}%",
+                    odm,
+                    prm,
+                    if odm > 1.0 { 100.0 * prm / odm } else { 0.0 }
+                );
             }
+            // Telemetria do portão do piloto: quanto da corrida o CÉREBRO reassumiu.
+            // É a medida direta de "onde a fórmula não sabe" — e o número que diz se o
+            // domínio destilado cobre a pista nova (ver E-PIL1 em docs/DESTILABILIDADE.md).
+            if let Some(pl) = ctx.piloto_formula.as_ref() {
+                let tot = pl.decisoes + pl.abstencoes;
+                if tot > 0 {
+                    println!(
+                        "  [piloto] fórmula decidiu {} ticks · cérebro reassumiu {} ({:.1}%)",
+                        pl.decisoes,
+                        pl.abstencoes,
+                        100.0 * pl.abstencoes as f64 / tot as f64
+                    );
+                    let (med, mx, q) = pl.estat_seqs();
+                    println!(
+                        "  [piloto] sequências de abstenção: {q} blocos · mediana {med:.0} ticks · maior {mx}"
+                    );
+                }
+            }
+            if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
+                println!(
+                    "  [neuromod] gates ser0 [visão,parede,corpo,assoc] = [{:.2},{:.2},{:.2},{:.2}] · reserva [{:.2},{:.2},{:.2},{:.2}]",
+                    ctx.ultimo_gate[0],
+                    ctx.ultimo_gate[1],
+                    ctx.ultimo_gate[2],
+                    ctx.ultimo_gate[3],
+                    states[0].nm_reserva[0],
+                    states[0].nm_reserva[1],
+                    states[0].nm_reserva[2],
+                    states[0].nm_reserva[3]
+                );
+            }
+            println!(
+                "  [veloc] mediana {:.2} m/s ({:.1} km/h) | pico {:.1} m/s | marcha máx {} | vida média {:.0}% da geração",
+                vmed,
+                vmed * 3.6,
+                VEL_PICO.load(Ordering::Relaxed),
+                MARCHA_PICO.load(Ordering::Relaxed),
+                100.0 * vida_med / n_ticks as f64
+            );
+            VEL_PICO.store(0.0, Ordering::Relaxed);
+            MARCHA_PICO.store(0, Ordering::Relaxed);
         }
-        if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
-            println!("  [neuromod] gates ser0 [visão,parede,corpo,assoc] = [{:.2},{:.2},{:.2},{:.2}] · reserva [{:.2},{:.2},{:.2},{:.2}]",
-                ctx.ultimo_gate[0], ctx.ultimo_gate[1], ctx.ultimo_gate[2], ctx.ultimo_gate[3],
-                states[0].nm_reserva[0], states[0].nm_reserva[1], states[0].nm_reserva[2], states[0].nm_reserva[3]);
-        }
-        println!("  [veloc] mediana {:.2} m/s ({:.1} km/h) | pico {:.1} m/s | marcha máx {} | vida média {:.0}% da geração",
-                     vmed, vmed * 3.6,
-                     VEL_PICO.load(Ordering::Relaxed), MARCHA_PICO.load(Ordering::Relaxed),
-                     100.0 * vida_med / n_ticks as f64);
-        VEL_PICO.store(0.0, Ordering::Relaxed);
-        MARCHA_PICO.store(0, Ordering::Relaxed);
-        }
-        println!("  [parede] {:.1}% dos ticks colado (<{:.0} m) | sem vida: {}/{} | custo={:.0} m/s",
-                 100.0 * wall_frac, WALL_NEAR_M, sem_vida, n_seres, wall_cost);
-
+        println!(
+            "  [parede] {:.1}% dos ticks colado (<{:.0} m) | sem vida: {}/{} | custo={:.0} m/s",
+            100.0 * wall_frac,
+            WALL_NEAR_M,
+            sem_vida,
+            n_seres,
+            wall_cost
+        );
 
         // ── O lento merece existir? ────────────────────────────────────────────
         // Razão de participação das três saídas: perto de 3 = três decisões distintas;
@@ -2089,15 +2801,23 @@ fn main() {
         if !ctx.slow_samples.is_empty() {
             let samples = std::mem::take(&mut ctx.slow_samples);
             let pr = universe::math::linalg::participation_ratio(&samples);
-            let amp: Vec<f32> = (0..3).map(|k| {
-                let mx = samples.iter().map(|r| r[k]).fold(f32::MIN, f32::max);
-                let mn = samples.iter().map(|r| r[k]).fold(f32::MAX, f32::min);
-                mx - mn
-            }).collect();
+            let amp: Vec<f32> = (0..3)
+                .map(|k| {
+                    let mx = samples.iter().map(|r| r[k]).fold(f32::MIN, f32::max);
+                    let mn = samples.iter().map(|r| r[k]).fold(f32::MAX, f32::min);
+                    mx - mn
+                })
+                .collect();
             match pr {
                 Some(v) => println!(
                     "  [lento] PR={:.2}/3 ({:.0}% da capacidade) | amplitude {:.3} {:.3} {:.3} | n={}",
-                    v, 100.0 * v / 3.0, amp[0], amp[1], amp[2], samples.len()),
+                    v,
+                    100.0 * v / 3.0,
+                    amp[0],
+                    amp[1],
+                    amp[2],
+                    samples.len()
+                ),
                 None => println!("  [lento] samples insuficientes (n={})", samples.len()),
             }
         }
@@ -2130,10 +2850,10 @@ fn main() {
             use universe::analysis::activation::collect_activation_stats;
             use universe::config::iara::brain::{L1_NEURONS, L2_NEURONS};
 
-            let (l1_stats, l1_alarms) = collect_activation_stats(
-                "L1", &l1, Some(l1_w), L1_NEURONS, None);
-            let (l2_stats, l2_alarms) = collect_activation_stats(
-                "L2", &l2, None, L2_NEURONS, Some(&policy));
+            let (l1_stats, l1_alarms) =
+                collect_activation_stats("L1", &l1, Some(l1_w), L1_NEURONS, None);
+            let (l2_stats, l2_alarms) =
+                collect_activation_stats("L2", &l2, None, L2_NEURONS, Some(&policy));
 
             // ── ESPARSIDADE CONTEXTUAL (E1-E4 do protocolo) ────────────────────
             //
@@ -2152,34 +2872,51 @@ fn main() {
                 // Entradas da Lei do Garimpo. `ganho` = quanto o melhor da geracao
                 // superou o melhor da anterior; `disp` = desvio da fitness na populacao,
                 // que e a escala do ruido contra a qual o ganho e comparado.
-                let ganho_fitness_geracao: Option<f32> = elite_fitness_anterior
-                    .map(|ant| (fitness[0] - ant).max(0.0) as f32);
+                let ganho_fitness_geracao: Option<f32> =
+                    elite_fitness_anterior.map(|ant| (fitness[0] - ant).max(0.0) as f32);
                 let disp_fitness: f32 = {
                     let vals: Vec<f32> = fitness.iter().map(|f| *f as f32).collect();
                     universe::math::stats::std_dev(&vals)
                 };
                 for (nome, amostras) in [("L1", &l1), ("L2", &l2)] {
-                    if amostras.len() < 2 { continue; }
+                    if amostras.len() < 2 {
+                        continue;
+                    }
                     let e = ctx::esparsidade(nome, amostras, LIMIAR);
                     let p = ctx::persistencia(nome, amostras, LIMIAR, 37);
                     let q = ctx::quente_frio(nome, amostras, LIMIAR);
                     println!(
                         "  [contextual:{}] limiar={:.2} · ativos {:.1}%±{:.1} · saturado {:.1}%",
-                        nome, LIMIAR, e.fracao_ativa_media * 100.0,
-                        e.fracao_ativa_sigma * 100.0, e.saturacao_media * 100.0);
+                        nome,
+                        LIMIAR,
+                        e.fracao_ativa_media * 100.0,
+                        e.fracao_ativa_sigma * 100.0,
+                        e.saturacao_media * 100.0
+                    );
                     println!(
                         "  [contextual:{}] persistencia {:.1}% · baseline {:.1}% · ganho {:+.1} pts · churn {:.1}%",
-                        nome, p.persistencia * 100.0, p.baseline_aleatorio * 100.0,
-                        p.ganho_temporal * 100.0, p.churn * 100.0);
+                        nome,
+                        p.persistencia * 100.0,
+                        p.baseline_aleatorio * 100.0,
+                        p.ganho_temporal * 100.0,
+                        p.churn * 100.0
+                    );
                     println!(
                         "  [contextual:{}] {} neuronios cobrem 80% das ativacoes · {} nunca · {} sempre",
-                        nome, q.neuronios_para_80pct, q.nunca_ativos, q.sempre_ativos);
+                        nome, q.neuronios_para_80pct, q.nunca_ativos, q.sempre_ativos
+                    );
                     // Armadilha nº 1 do protocolo: `tanh` nao zera, entao "ativo" e uma
                     // escolha de limiar. A curva mostra se a conclusao sobrevive a ela.
                     let sens = ctx::sensibilidade_ao_limiar(amostras, &[0.01, 0.05, 0.2, 0.5, 0.9]);
-                    let curva: Vec<String> = sens.iter()
-                        .map(|(l, f)| format!("{l:.2}→{:.0}%", f * 100.0)).collect();
-                    println!("  [contextual:{}] sensibilidade ao limiar: {}", nome, curva.join(" · "));
+                    let curva: Vec<String> = sens
+                        .iter()
+                        .map(|(l, f)| format!("{l:.2}→{:.0}%", f * 100.0))
+                        .collect();
+                    println!(
+                        "  [contextual:{}] sensibilidade ao limiar: {}",
+                        nome,
+                        curva.join(" · ")
+                    );
 
                     // E3 — co-ativacao. E a base EMPIRICA para dividir o cerebro em
                     // regioes: os grupos tem de sair de neuronios que disparam juntos,
@@ -2189,11 +2926,19 @@ fn main() {
                     let co = ctx::coativacao(nome, amostras, LIMIAR, 5);
                     println!(
                         "  [contextual:{}] co-ativacao {:.3} vs independente {:.3} · excesso {:+.3}",
-                        nome, co.coativacao_media, co.esperado_independente, co.excesso);
+                        nome, co.coativacao_media, co.esperado_independente, co.excesso
+                    );
                     if !co.pares_fortes.is_empty() {
-                        let ps: Vec<String> = co.pares_fortes.iter()
-                            .map(|(i, j, e)| format!("({i},{j}){e:+.2}")).collect();
-                        println!("  [contextual:{}] pares mais acoplados: {}", nome, ps.join(" "));
+                        let ps: Vec<String> = co
+                            .pares_fortes
+                            .iter()
+                            .map(|(i, j, e)| format!("({i},{j}){e:+.2}"))
+                            .collect();
+                        println!(
+                            "  [contextual:{}] pares mais acoplados: {}",
+                            nome,
+                            ps.join(" ")
+                        );
                     }
 
                     // CAPACIDADE — quanto espaco este cerebro realmente USA.
@@ -2208,7 +2953,11 @@ fn main() {
                     if let Some(pr) = universe::math::linalg::participation_ratio(amostras) {
                         println!(
                             "  [contextual:{}] capacidade: PR {:.1}/{} ({:.0}% das dimensoes em uso)",
-                            nome, pr, n_neur, 100.0 * pr / n_neur as f32);
+                            nome,
+                            pr,
+                            n_neur,
+                            100.0 * pr / n_neur as f32
+                        );
 
                         // LEI DO GARIMPO — crescer o cerebro se justifica AGORA?
                         //
@@ -2227,16 +2976,30 @@ fn main() {
                         // Um veredito por camada, porque cada uma satura no seu tempo.
                         let ganho = ganho_fitness_geracao.unwrap_or(0.0);
                         let v = universe::brain_capacity::growth_verdict(
-                            amostras, n_neur, 0.80, ganho, disp_fitness, n_seres);
+                            amostras,
+                            n_neur,
+                            0.80,
+                            ganho,
+                            disp_fitness,
+                            n_seres,
+                        );
                         let (rotulo, acao) = match v {
-                            universe::brain_capacity::Verdict::Grow =>
-                                ("CRESCER", "capacidade saturada e ganho acima do ruido de busca"),
-                            universe::brain_capacity::Verdict::WastedSpace =>
-                                ("nao crescer", "ha dimensoes ociosas — crescer desperdicaria"),
-                            universe::brain_capacity::Verdict::GainNotReal =>
-                                ("nao crescer", "saturada, mas o ganho nao passa do limiar do Garimpo"),
-                            universe::brain_capacity::Verdict::InsufficientData =>
-                                ("indefinido", "amostras insuficientes para estimar a covariancia"),
+                            universe::brain_capacity::Verdict::Grow => (
+                                "CRESCER",
+                                "capacidade saturada e ganho acima do ruido de busca",
+                            ),
+                            universe::brain_capacity::Verdict::WastedSpace => (
+                                "nao crescer",
+                                "ha dimensoes ociosas — crescer desperdicaria",
+                            ),
+                            universe::brain_capacity::Verdict::GainNotReal => (
+                                "nao crescer",
+                                "saturada, mas o ganho nao passa do limiar do Garimpo",
+                            ),
+                            universe::brain_capacity::Verdict::InsufficientData => (
+                                "indefinido",
+                                "amostras insuficientes para estimar a covariancia",
+                            ),
                         };
                         println!("  [garimpo:{}] {} — {}", nome, rotulo, acao);
                     }
@@ -2261,24 +3024,35 @@ fn main() {
                 const LIMIAR_ESPECIALIZACAO: f32 = 0.30;
                 const LIMIAR_ATIVACAO_COESAO: f32 = 0.05;
 
-                for (nome, amostras, contexto) in [
-                    ("L1", &l1, &regiao_l1),
-                    ("L2", &l2, &regiao_l2),
-                ] {
-                    match regioes::analisar(nome, amostras, contexto,
-                        LIMIAR_CURVA, LIMIAR_ESPECIALIZACAO, LIMIAR_ATIVACAO_COESAO)
-                    {
+                for (nome, amostras, contexto) in [("L1", &l1, &regiao_l1), ("L2", &l2, &regiao_l2)]
+                {
+                    match regioes::analisar(
+                        nome,
+                        amostras,
+                        contexto,
+                        LIMIAR_CURVA,
+                        LIMIAR_ESPECIALIZACAO,
+                        LIMIAR_ATIVACAO_COESAO,
+                    ) {
                         Some(r) => {
                             println!(
                                 "  [regioes:{}] limiar_curva={:.3} 1/m · amostras reta={} curva={}",
-                                nome, r.limiar_curva, r.n_reta, r.n_curva);
+                                nome, r.limiar_curva, r.n_reta, r.n_curva
+                            );
                             println!(
                                 "  [regioes:{}] especializacao >= {:.2}: {}/{} neuronios · idx {:?}",
-                                nome, r.limiar_especializacao, r.indices_especializados.len(),
-                                r.por_neuronio.len(), r.indices_especializados);
+                                nome,
+                                r.limiar_especializacao,
+                                r.indices_especializados.len(),
+                                r.por_neuronio.len(),
+                                r.indices_especializados
+                            );
                             let mut ord = r.por_neuronio.clone();
-                            ord.sort_by(|a, b| b.indice_especializacao
-                                .partial_cmp(&a.indice_especializacao).unwrap());
+                            ord.sort_by(|a, b| {
+                                b.indice_especializacao
+                                    .partial_cmp(&a.indice_especializacao)
+                                    .unwrap()
+                            });
                             let top: Vec<String> = ord.iter().take(5).map(|e| format!(
                                 "#{}(idx={:.2} corr_curva={:+.2} corr_vel={:+.2} corr_parede={:+.2})",
                                 e.indice, e.indice_especializacao, e.correlacao_curvatura,
@@ -2287,15 +3061,20 @@ fn main() {
                             match &r.coesao {
                                 Some(co) => println!(
                                     "  [regioes:{}] coesao dos especializados: co-ativacao {:.3} vs independente {:.3} · excesso {:+.3}",
-                                    nome, co.coativacao_media, co.esperado_independente, co.excesso),
+                                    nome, co.coativacao_media, co.esperado_independente, co.excesso
+                                ),
                                 None => println!(
                                     "  [regioes:{}] coesao: N/A (menos de 2 especializados ou menos de 2 amostras de curva)",
-                                    nome),
+                                    nome
+                                ),
                             }
                         }
                         None => println!(
                             "  [regioes:{}] sem dados (amostras={} contexto={} — desalinhado ou vazio)",
-                            nome, amostras.len(), contexto.len()),
+                            nome,
+                            amostras.len(),
+                            contexto.len()
+                        ),
                     }
                 }
             }
@@ -2321,19 +3100,27 @@ fn main() {
             for (stats, alarms) in [(&l1_stats, &l1_alarms), (&l2_stats, &l2_alarms)] {
                 universe::analysis::activation::print_stats_report(stats, alarms);
                 let n_neurons = stats.neurons.len().max(1);
-                let dead_pct: f32 = stats.neurons.iter().map(|s| s.dead_pct).sum::<f32>()
-                    / n_neurons as f32;
-                let saturad_pct: f32 = stats.neurons.iter().map(|s| s.saturated_pct).sum::<f32>()
-                    / n_neurons as f32;
-                let snr_pct: f32 = stats.neurons.iter().map(|s| s.snr_i8).sum::<f32>()
-                    / n_neurons as f32;
+                let dead_pct: f32 =
+                    stats.neurons.iter().map(|s| s.dead_pct).sum::<f32>() / n_neurons as f32;
+                let saturad_pct: f32 =
+                    stats.neurons.iter().map(|s| s.saturated_pct).sum::<f32>() / n_neurons as f32;
+                let snr_pct: f32 =
+                    stats.neurons.iter().map(|s| s.snr_i8).sum::<f32>() / n_neurons as f32;
                 println!(
                     "  [ativacao:{}] amostras={} dead_pct={:.1}% saturad_pct={:.1}% \
                      raio_espectral={} rank_efetivo={} alarmes={}",
-                    stats.layer_name, stats.n_samples, dead_pct, saturad_pct,
-                    stats.spectral_radius.map(|v| format!("{v:.3}")).unwrap_or_else(|| "n/a".into()),
-                    stats.effective_rank.map(|k| format!("{k}/{n_neurons}"))
-                         .unwrap_or_else(|| "n/a (pesos nao entregues)".into()),
+                    stats.layer_name,
+                    stats.n_samples,
+                    dead_pct,
+                    saturad_pct,
+                    stats
+                        .spectral_radius
+                        .map(|v| format!("{v:.3}"))
+                        .unwrap_or_else(|| "n/a".into()),
+                    stats
+                        .effective_rank
+                        .map(|k| format!("{k}/{n_neurons}"))
+                        .unwrap_or_else(|| "n/a (pesos nao entregues)".into()),
                     alarms.len(),
                 );
                 if painel.is_some() {
@@ -2351,13 +3138,16 @@ fn main() {
                         // neuronio (o "agora" da camada); `mean_per_neuron` e a media da
                         // geracao (o "sempre"). Ver os dois lado a lado distingue neuronio
                         // que RESPONDE a pista de neuronio que so tem vies alto.
-                        live: ultima_amostra_camada.get(&stats.layer_name)
-                                 .cloned().unwrap_or_default(),
+                        live: ultima_amostra_camada
+                            .get(&stats.layer_name)
+                            .cloned()
+                            .unwrap_or_default(),
                         mean_per_neuron: stats.neurons.iter().map(|n| n.mean).collect(),
                     });
                     for a in alarms {
                         painel_alarms.push(format!(
-                            "{}: {:?} valor={:.2} limiar={:.2}", a.layer, a.kind, a.value, a.threshold
+                            "{}: {:?} valor={:.2} limiar={:.2}",
+                            a.layer, a.kind, a.value, a.threshold
                         ));
                     }
                 }
@@ -2365,7 +3155,8 @@ fn main() {
             if let Some(pe) = l2_stats.policy_entropy {
                 println!(
                     "  [ativacao:L2] entropia_politica={:.3} nats (limiar {:.2}) · ser 0 = campeão herdado",
-                    pe, universe::math::thresholds::POLICY_ENTROPY_MIN,
+                    pe,
+                    universe::math::thresholds::POLICY_ENTROPY_MIN,
                 );
             }
             if !nan_seres.is_empty() {
@@ -2375,7 +3166,8 @@ fn main() {
                 );
                 if painel.is_some() {
                     painel_alarms.push(format!(
-                        "NaN/Inf detectado no estado L1 de {} ser(es) nesta geração", nan_seres.len()
+                        "NaN/Inf detectado no estado L1 de {} ser(es) nesta geração",
+                        nan_seres.len()
                     ));
                 }
             }
@@ -2402,14 +3194,23 @@ fn main() {
             let p90 = taus[taus.len() * 9 / 10];
             // Dispersão da população inteira, não só do campeão: um elite com τ espalhado
             // dentro de uma população uniforme seria sorte, não seleção.
-            let disp_pop: f32 = genomes.iter().map(|g| {
-                let mut t: Vec<f32> = g.tau.iter().map(|&d| 1.0 / d).collect();
-                t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                t[t.len() * 9 / 10] / t[t.len() / 10].max(1e-6)
-            }).sum::<f32>() / genomes.len() as f32;
+            let disp_pop: f32 = genomes
+                .iter()
+                .map(|g| {
+                    let mut t: Vec<f32> = g.tau.iter().map(|&d| 1.0 / d).collect();
+                    t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    t[t.len() * 9 / 10] / t[t.len() / 10].max(1e-6)
+                })
+                .sum::<f32>()
+                / genomes.len() as f32;
             println!(
                 "  [tau] campeão τ p10 {:.3}s · mediana {:.3}s · p90 {:.3}s (espalha {:.1}×) | população {:.1}×",
-                p10, p50, p90, p90 / p10.max(1e-6), disp_pop);
+                p10,
+                p50,
+                p90,
+                p90 / p10.max(1e-6),
+                disp_pop
+            );
         }
 
         // ── Held-out (P1) ───────────────────────────────────────────────────────
@@ -2434,8 +3235,14 @@ fn main() {
                 // Bônus: held-out para de pagar o readback de visão que nunca usa.
                 AUDITAR.store(false, Ordering::Relaxed);
                 let held_med = avaliar_held_out(
-                    &mut ctx, n_seres, n_ticks, track_width, same_start,
-                    &modo_fitness, ho_seed, &kan_knots_global,
+                    &mut ctx,
+                    n_seres,
+                    n_ticks,
+                    track_width,
+                    same_start,
+                    &modo_fitness,
+                    ho_seed,
+                    &kan_knots_global,
                 );
                 AUDITAR.store(auditar_visao, Ordering::Relaxed);
                 // Mesma classe do toggle AUDITAR acima: o held-out roda ctx.tick()
@@ -2468,7 +3275,11 @@ fn main() {
                     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
                     v[v.len() / 2]
                 };
-                let razao = if treino_med > 1.0 { held_med / treino_med } else { f64::NAN };
+                let razao = if treino_med > 1.0 {
+                    held_med / treino_med
+                } else {
+                    f64::NAN
+                };
                 println!(
                     "  [generalizacao] gen={:4} treino={:.0}m held={:.0}m razao={:.3}  \
                      (pista treino=seed {} · held-out=seed {})",
@@ -2478,9 +3289,7 @@ fn main() {
         }
 
         // O genoma que vai para o slot 0 da próxima geração é o melhor DESTA.
-        elite_fitness_anterior = Some(
-            fitness.iter().cloned().fold(f64::MIN, f64::max)
-        );
+        elite_fitness_anterior = Some(fitness.iter().cloned().fold(f64::MIN, f64::max));
         elite_fitness_anterior_pista = Some(seed_gen);
 
         hist_results.push(r);
@@ -2500,7 +3309,11 @@ fn main() {
     let total_s = t_total.elapsed().as_secs_f64();
     println!();
     if !elite_reprod.is_empty() {
-        let validos: Vec<f64> = elite_reprod.iter().cloned().filter(|v| v.is_finite()).collect();
+        let validos: Vec<f64> = elite_reprod
+            .iter()
+            .cloned()
+            .filter(|v| v.is_finite())
+            .collect();
         if !validos.is_empty() {
             let media = validos.iter().sum::<f64>() / validos.len() as f64;
             let mut ord = validos.clone();
@@ -2510,23 +3323,45 @@ fn main() {
             println!();
             println!("=== REPRODUTIBILIDADE DO CAMPEÃO ===");
             println!("  o MESMO genoma, reavaliado na geração seguinte:");
-            println!("  média {:.0}% · mediana {:.0}% do resultado anterior · n={}",
-                     100.0 * media, 100.0 * mediana, validos.len());
-            println!("  perdeu mais da METADE em {}/{} gerações", piores, validos.len());
+            println!(
+                "  média {:.0}% · mediana {:.0}% do resultado anterior · n={}",
+                100.0 * media,
+                100.0 * mediana,
+                validos.len()
+            );
+            println!(
+                "  perdeu mais da METADE em {}/{} gerações",
+                piores,
+                validos.len()
+            );
             println!("  (100% = fitness é do genoma; muito abaixo = seleção premiou sorte)");
         }
     }
 
     println!("=== RESULTADO FINAL ({:.1}s total) ===", total_s);
-    println!("  gerações: {} · seres: {} · ticks/gen: {}", n_gens, n_seres, n_ticks);
+    println!(
+        "  gerações: {} · seres: {} · ticks/gen: {}",
+        n_gens, n_seres, n_ticks
+    );
     println!();
 
     // ── Última geração ─────────────────────────────────────────────────────────
     if let Some(last) = hist_results.last() {
         println!("Última geração (gen {:4}):", last.generation);
-        println!("  mediana: {:.0}m ({:.3} voltas)", last.dist_med, last.dist_med / lap_dist);
-        println!("  máximo:  {:.0}m ({:.3} voltas)", last.dist_max, last.dist_max / lap_dist);
-        println!("  ≥1 volta: {}/{}  ≥2 voltas: {}/{}", last.n_ge1v, n_seres, last.n_ge2v, n_seres);
+        println!(
+            "  mediana: {:.0}m ({:.3} voltas)",
+            last.dist_med,
+            last.dist_med / lap_dist
+        );
+        println!(
+            "  máximo:  {:.0}m ({:.3} voltas)",
+            last.dist_max,
+            last.dist_max / lap_dist
+        );
+        println!(
+            "  ≥1 volta: {}/{}  ≥2 voltas: {}/{}",
+            last.n_ge1v, n_seres, last.n_ge2v, n_seres
+        );
         println!("  mortalidade: {:.1}%", last.mortality * 100.0);
         println!();
     }
@@ -2536,8 +3371,13 @@ fn main() {
     if hist_med.len() >= 2 {
         let (slope, stderr) = linear_slope(&hist_med);
         let sigma_ratio = if stderr > 1e-10 { slope / stderr } else { 0.0 };
-        println!("  Todas {} gens: slope={:+.2}m/gen  σ={:.2}  razão={:.2}σ",
-            hist_med.len(), slope, stderr, sigma_ratio);
+        println!(
+            "  Todas {} gens: slope={:+.2}m/gen  σ={:.2}  razão={:.2}σ",
+            hist_med.len(),
+            slope,
+            stderr,
+            sigma_ratio
+        );
 
         // Teste de janela encolhida: remove as últimas 1, 2, 3 gens e recalcula.
         // Se a inclinação some ao remover poucos pontos, era artefato de janela.
@@ -2545,8 +3385,10 @@ fn main() {
             let n_restante = hist_med.len() - remover;
             let (s2, e2) = linear_slope(&hist_med[..n_restante]);
             let sr2 = if e2 > 1e-10 { s2 / e2 } else { 0.0 };
-            println!("  -{}gen ({} gens): slope={:+.2}m/gen  σ={:.2}  razão={:.2}σ",
-                remover, n_restante, s2, e2, sr2);
+            println!(
+                "  -{}gen ({} gens): slope={:+.2}m/gen  σ={:.2}  razão={:.2}σ",
+                remover, n_restante, s2, e2, sr2
+            );
         }
     } else {
         println!("  Dados insuficientes (< 2 gerações).");
@@ -2557,8 +3399,13 @@ fn main() {
     if hist_max.len() >= 2 {
         let (slope, stderr) = linear_slope(&hist_max);
         let sigma_ratio = if stderr > 1e-10 { slope / stderr } else { 0.0 };
-        println!("  Todas {} gens: slope={:+.2}m/gen  σ={:.2}  razão={:.2}σ",
-            hist_max.len(), slope, stderr, sigma_ratio);
+        println!(
+            "  Todas {} gens: slope={:+.2}m/gen  σ={:.2}  razão={:.2}σ",
+            hist_max.len(),
+            slope,
+            stderr,
+            sigma_ratio
+        );
     }
 
     // ── Tabela completa das medianas ───────────────────────────────────────────
@@ -2566,8 +3413,14 @@ fn main() {
     println!("=== TABELA COMPLETA (gen | mediana metros | voltas) ===");
     for (i, (&med, &max)) in hist_med.iter().zip(hist_max.iter()).enumerate() {
         let ld = hist_lap.get(i).copied().unwrap_or(lap_dist);
-        println!("  gen {:4}: med={:7.0}m ({:.3}V) max={:7.0}m ({:.3}V)",
-            gen_offset + i, med, med / ld, max, max / ld);
+        println!(
+            "  gen {:4}: med={:7.0}m ({:.3}V) max={:7.0}m ({:.3}V)",
+            gen_offset + i,
+            med,
+            med / ld,
+            max,
+            max / ld
+        );
     }
 
     println!();
@@ -2579,4 +3432,3 @@ fn main() {
 
     println!("=== FIM gpu_evolve ===");
 }
-

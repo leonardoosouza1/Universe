@@ -7,4 +7,4 @@
 //! (`src/engine.rs`, `src/simulation/motor.rs`) — o caminho GPU (`gpu_evolve`) não passa
 //! por aqui ainda.
 pub mod sentinel;
-pub use sentinel::{Sentinel, SafetyState, IntentVec, SentinelOutput, SafetyFlags};
+pub use sentinel::{IntentVec, SafetyFlags, SafetyState, Sentinel, SentinelOutput};

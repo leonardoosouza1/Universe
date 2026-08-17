@@ -170,9 +170,15 @@ mod tests {
         // Fantasma alcançou o setor 5 em tick 500 (5*100); ser chega em tick 436,
         // 64 ticks (1 s) mais cedo.
         let vant = f.vantagem(5, 436);
-        assert!((vant - 1.0).abs() < 1e-4, "vantagem esperada ~1.0s, veio {vant}");
+        assert!(
+            (vant - 1.0).abs() < 1e-4,
+            "vantagem esperada ~1.0s, veio {vant}"
+        );
         let bonus = f.bonus_vida(vant);
-        assert!((bonus - 1.0).abs() < 1e-4, "bonus esperado ~1.0, veio {bonus}");
+        assert!(
+            (bonus - 1.0).abs() < 1e-4,
+            "bonus esperado ~1.0, veio {bonus}"
+        );
     }
 
     #[test]
@@ -180,8 +186,15 @@ mod tests {
         let f = fantasma_constante();
         // Fantasma alcançou o setor 10 em tick 1000; ser chega em 1128 (2s atrasado).
         let vant = f.vantagem(10, 1128);
-        assert!((vant + 2.0).abs() < 1e-4, "vantagem esperada ~-2.0s, veio {vant}");
-        assert_eq!(f.bonus_vida(vant), 0.0, "atrás não perde nada, mas também não ganha");
+        assert!(
+            (vant + 2.0).abs() < 1e-4,
+            "vantagem esperada ~-2.0s, veio {vant}"
+        );
+        assert_eq!(
+            f.bonus_vida(vant),
+            0.0,
+            "atrás não perde nada, mas também não ganha"
+        );
     }
 
     #[test]

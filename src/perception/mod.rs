@@ -1,3 +1,4 @@
+pub mod channels;
 /// Módulo de percepção sensorial — retina e canais (E2).
 ///
 /// # Estrutura
@@ -8,7 +9,6 @@
 /// Os callers que usavam `use crate::perception::RetinaPerception;` continuam
 /// funcionando via reexport abaixo.
 pub mod retina;
-pub mod channels;
 
 // Reexporta tudo que os callers externos esperam do módulo original.
 // Callers: src/engine.rs, src/bin/cortex_evolve.rs, src/bin/gpu_loop.rs,
@@ -16,4 +16,4 @@ pub mod channels;
 pub use retina::*;
 
 // Reexporta os símbolos principais de channels para conveniência.
-pub use channels::{Channel, ChannelSource, N_CHANNELS, source_for, name_for};
+pub use channels::{Channel, ChannelSource, N_CHANNELS, name_for, source_for};

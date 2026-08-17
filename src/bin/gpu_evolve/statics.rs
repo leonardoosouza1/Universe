@@ -34,9 +34,15 @@ use std::sync::atomic::Ordering;
 /// f32 atômico simples sobre AtomicU32 — só precisa de store/load, sem aritmética.
 pub struct AtomicF32(std::sync::atomic::AtomicU32);
 impl AtomicF32 {
-    pub const fn new() -> Self { Self(std::sync::atomic::AtomicU32::new(0)) }
-    pub fn store(&self, v: f32, o: Ordering) { self.0.store(v.to_bits(), o) }
-    pub fn load(&self, o: Ordering) -> f32 { f32::from_bits(self.0.load(o)) }
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU32::new(0))
+    }
+    pub fn store(&self, v: f32, o: Ordering) {
+        self.0.store(v.to_bits(), o)
+    }
+    pub fn load(&self, o: Ordering) -> f32 {
+        f32::from_bits(self.0.load(o))
+    }
 }
 
 /// Ablação da metade lenta: quando ligada, as três saídas do lento são zeradas antes
@@ -45,7 +51,9 @@ impl AtomicF32 {
 /// o efeito de existir. Comparar contra um binário sem o órgão mudaria duas coisas.
 pub static SLOW_ABLATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[inline]
-pub fn slow_ablated() -> bool { SLOW_ABLATED.load(Ordering::Relaxed) }
+pub fn slow_ablated() -> bool {
+    SLOW_ABLATED.load(Ordering::Relaxed)
+}
 
 // VOXEL_WALL (material de parede = 2, mesma ordem de `VoxelType`) foi removido daqui —
 // o único consumidor era o laço de `min_wall_ahead` em `context.rs::tick()`, migrado
@@ -88,7 +96,8 @@ pub static CAMBIO_TETO: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 /// de `--cambio-teto`). A promoção que sobe o teto NÃO roda a pista — um degrau
 /// de cada vez, corpo primeiro, pista depois (teto3 fixo: readaptação incompleta
 /// em 30 gens, Σ≥1V/gen 6-22 vs 24-36 do travado; teto6 direto: colapso 30-100×).
-pub static CAMBIO_CURRICULO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static CAMBIO_CURRICULO: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 pub static CAMBIO_TETO_MAX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6);
 pub static VEL_PICO: AtomicF32 = AtomicF32::new();
 pub static MARCHA_PICO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -123,7 +132,8 @@ pub static CUSTO_FIACAO: AtomicF32 = AtomicF32::new();
 /// M4: liga o maestro — cérebro lento → 4 gates de região com RESERVA finita
 /// (doc-09 §6.2). gate_b = 1 + 0,5·tanh(Σ w·slow_out + b) atenuado pela reserva;
 /// usar o gate longe de 1,0 GASTA reserva (repõe devagar) → burnout mensurável.
-pub static NEUROMOD_REGIOES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static NEUROMOD_REGIOES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// `--fuel-auto k`: o 4º VALOR da regra de três do Leonardo (2026-08-16).
 /// MEDIDO na rodada 2 da energia: tanque 0,30 durou ~100 s → consumo 0,003/s;
 /// 1875 m em 100 s → v típica 18,75 m/s. Logo o tanque VIÁVEL para uma volta L:
@@ -165,7 +175,9 @@ pub const LIFE_START: i64 = 640;
 /// contra a tarefa vira o resultado.
 pub static LIFE_CAP_TICKS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1920);
 #[inline]
-pub fn life_cap() -> i64 { LIFE_CAP_TICKS.load(Ordering::Relaxed) }
+pub fn life_cap() -> i64 {
+    LIFE_CAP_TICKS.load(Ordering::Relaxed)
+}
 /// Ticks de vida por metro avançado (lido dentro do laço, longe do parsing).
 pub static LIFE_EARN: AtomicF32 = AtomicF32::new();
 

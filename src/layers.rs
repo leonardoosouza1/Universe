@@ -72,7 +72,8 @@ impl BitLinear {
         // Zerar noutro lugar deixaria algum desses caminhos passar com o priming intacto.
         crate::neuro::ablar_priming(&mut self.weights, self.input_dim);
         // Update legacy scale field as abs_mean (still used by some DNA paths).
-        let abs_mean: f32 = full_precision.iter().map(|w| w.abs()).sum::<f32>() / full_precision.len().max(1) as f32;
+        let abs_mean: f32 = full_precision.iter().map(|w| w.abs()).sum::<f32>()
+            / full_precision.len().max(1) as f32;
         self.weight_scale = abs_mean.max(1e-4);
     }
 
@@ -88,13 +89,18 @@ impl BitLinear {
         // que salva e recarrega o campeão a cada geração, isso é decaimento acumulado
         // dos pesos, não ruído simétrico. Arredondar deixa o erro em ±0,5/63,5 ≈ 1/127,
         // que é a precisão que o teste deste arquivo sempre declarou esperar.
-        self.weights.iter().map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8).collect()
+        self.weights
+            .iter()
+            .map(|&w| (w * 63.5).round().clamp(-127.0, 127.0) as i8)
+            .collect()
     }
 
     /// Dequantize i8 disk weights → f32 runtime. i8/63.5 covers [-2.0, 2.0].
     pub fn load_from_quantized(&mut self, q: &[i8]) {
         let n = q.len().min(self.weights.len());
-        for i in 0..n { self.weights[i] = q[i] as f32 / 63.5; }
+        for i in 0..n {
+            self.weights[i] = q[i] as f32 / 63.5;
+        }
     }
 }
 
@@ -117,7 +123,7 @@ mod tests {
     #[test]
     fn quantize_copies_to_weights() {
         let mut layer = BitLinear::new(4, 2);
-        let full = vec![0.5_f32, -0.5, 0.1, -1.0,    0.01, 1.5, -1.2, 0.0];
+        let full = vec![0.5_f32, -0.5, 0.1, -1.0, 0.01, 1.5, -1.2, 0.0];
         layer.quantize(&full);
         for (i, &w) in full.iter().enumerate() {
             assert!((layer.weights[i] - w).abs() < 1e-6);

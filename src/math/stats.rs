@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn percentile_50_de_impar() {
-        let mut xs = [3.0_f32, 1.0, 2.0];  // ordenado: [1, 2, 3], median = 2.0
+        let mut xs = [3.0_f32, 1.0, 2.0]; // ordenado: [1, 2, 3], median = 2.0
         let med = percentile(&mut xs, 50.0);
         assert!((med - 2.0).abs() < 1e-5, "mediana = {}", med);
     }
@@ -179,8 +179,12 @@ mod tests {
         assert_eq!(h.iter().sum::<u32>(), 100);
         // Cada bin deve ter aproximadamente 10 ±3 (tolerante a bordas)
         for (i, &count) in h.iter().enumerate() {
-            assert!(count >= 7 && count <= 13,
-                "bin {} tem {} (esperado ~10)", i, count);
+            assert!(
+                count >= 7 && count <= 13,
+                "bin {} tem {} (esperado ~10)",
+                i,
+                count
+            );
         }
     }
 
@@ -223,7 +227,11 @@ mod tests {
         // {0,1,2,3} → média 1.5, variância POPULACIONAL (÷N) = 1.25, desvio ≈ 1.1180
         let xs = [0.0_f32, 1.0, 2.0, 3.0];
         let d = population_std_dev(&xs);
-        assert!((d - 1.25f32.sqrt()).abs() < 1e-5, "desvio populacional = {}", d);
+        assert!(
+            (d - 1.25f32.sqrt()).abs() < 1e-5,
+            "desvio populacional = {}",
+            d
+        );
     }
 
     #[test]

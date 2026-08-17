@@ -96,35 +96,52 @@ mod tests {
 
     #[test]
     fn saturation_warn_entre_zero_e_um() {
-        assert!(SATURATION_WARN > 0.0 && SATURATION_WARN < 1.0,
-            "SATURATION_WARN deve estar em (0, 1), valor = {}", SATURATION_WARN);
+        assert!(
+            SATURATION_WARN > 0.0 && SATURATION_WARN < 1.0,
+            "SATURATION_WARN deve estar em (0, 1), valor = {}",
+            SATURATION_WARN
+        );
     }
 
     #[test]
     fn dead_eps_positivo_e_pequeno() {
-        assert!(DEAD_EPS > 0.0 && DEAD_EPS < 0.01,
-            "DEAD_EPS deve ser pequeno e positivo, valor = {}", DEAD_EPS);
+        assert!(
+            DEAD_EPS > 0.0 && DEAD_EPS < 0.01,
+            "DEAD_EPS deve ser pequeno e positivo, valor = {}",
+            DEAD_EPS
+        );
     }
 
     #[test]
     fn spectral_max_positivo() {
-        assert!(SPECTRAL_MAX > 0.0,
-            "SPECTRAL_MAX deve ser positivo, valor = {}", SPECTRAL_MAX);
+        assert!(
+            SPECTRAL_MAX > 0.0,
+            "SPECTRAL_MAX deve ser positivo, valor = {}",
+            SPECTRAL_MAX
+        );
     }
 
     #[test]
     fn spectral_init_target_positivo_e_igual_ao_alarme() {
-        assert!(SPECTRAL_INIT_TARGET > 0.0,
-            "SPECTRAL_INIT_TARGET deve ser positivo, valor = {}", SPECTRAL_INIT_TARGET);
+        assert!(
+            SPECTRAL_INIT_TARGET > 0.0,
+            "SPECTRAL_INIT_TARGET deve ser positivo, valor = {}",
+            SPECTRAL_INIT_TARGET
+        );
         // Por definição documentada: o alarme dispara acima do que a init mira.
-        assert_eq!(SPECTRAL_INIT_TARGET, SPECTRAL_MAX,
-            "alvo de init e limiar de alarme deveriam coincidir numericamente por definição");
+        assert_eq!(
+            SPECTRAL_INIT_TARGET, SPECTRAL_MAX,
+            "alvo de init e limiar de alarme deveriam coincidir numericamente por definição"
+        );
     }
 
     #[test]
     fn snr_min_positivo() {
-        assert!(SNR_I8_MIN > 0.0,
-            "SNR_I8_MIN deve ser positivo, valor = {}", SNR_I8_MIN);
+        assert!(
+            SNR_I8_MIN > 0.0,
+            "SNR_I8_MIN deve ser positivo, valor = {}",
+            SNR_I8_MIN
+        );
     }
 
     #[test]

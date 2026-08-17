@@ -40,16 +40,16 @@
 // ── GPU simulation core, written in parallel by agents ────────────────────────
 // Each module brings a WGSL kernel + its wgpu host. The rule is the same in all of them:
 // equivalence with the CPU demonstrated before any claim of speed-up.
-pub mod physics;
 pub mod brain;
-pub mod perception;
 pub mod core;
-pub mod evolution;
 pub mod cortex_sheet;
-pub mod slow_brain;
-pub mod retina_types;
-pub mod retina_digest;
+pub mod evolution;
 pub mod genome_io;
+pub mod perception;
+pub mod physics;
+pub mod retina_digest;
+pub mod retina_types;
+pub mod slow_brain;
 
 use std::borrow::Cow;
 
@@ -78,7 +78,11 @@ impl RetinaGpuRes {
         let sig = world_signature(world);
         let needs_rebuild = self.ctx.is_none()
             || self.signature != sig
-            || self.ctx.as_ref().map(|c| c.capacity < capacity).unwrap_or(true);
+            || self
+                .ctx
+                .as_ref()
+                .map(|c| c.capacity < capacity)
+                .unwrap_or(true);
         if needs_rebuild {
             self.ctx = RetinaGpu::new(world, capacity.max(64));
             self.signature = sig;
@@ -99,7 +103,9 @@ pub fn world_signature(world: &VoxelWorld) -> u64 {
     let mut h = world.size as u64 ^ ((world.lap_distance as u64) << 20);
     let step = (world.grid.len() / 512).max(1);
     for (i, v) in world.grid.iter().step_by(step).enumerate() {
-        h = h.wrapping_mul(1099511628211).wrapping_add((*v as u64) ^ i as u64);
+        h = h
+            .wrapping_mul(1099511628211)
+            .wrapping_add((*v as u64) ^ i as u64);
     }
     h
 }
@@ -130,10 +136,15 @@ pub fn legacy_encoding(px: Pixel) -> i8 {
     let depth_fade = (d / 1200.0).clamp(0.0, 1.0);
     let v = match px.material {
         2 => {
-            if d < 30.0 { 127.0 - ((d / 30.0).clamp(0.0, 1.0).sqrt() * 72.0) }
-            else if d < 120.0 { 55.0 - (((d - 30.0) / 90.0).clamp(0.0, 1.0) * 55.0) }
-            else if d < 1200.0 { 0.0 - (((d - 120.0) / 480.0).clamp(0.0, 1.0) * 25.0) }
-            else { -25.0 - (((d - 1200.0) / 1200.0).clamp(0.0, 1.0) * 25.0) }
+            if d < 30.0 {
+                127.0 - ((d / 30.0).clamp(0.0, 1.0).sqrt() * 72.0)
+            } else if d < 120.0 {
+                55.0 - (((d - 30.0) / 90.0).clamp(0.0, 1.0) * 55.0)
+            } else if d < 1200.0 {
+                0.0 - (((d - 120.0) / 480.0).clamp(0.0, 1.0) * 25.0)
+            } else {
+                -25.0 - (((d - 1200.0) / 1200.0).clamp(0.0, 1.0) * 25.0)
+            }
         }
         0 => 40.0 - (depth_fade * 40.0),
         1 => -128.0 + (depth_fade * 96.0),
@@ -155,7 +166,7 @@ pub struct Pose {
 // (the other four were in gpu_evolve.rs, gpu_loop.rs, cortex_evolve.rs and — earlier
 // still — inside this very file under different names). Local alias so that every
 // `ParamsGpu { .. }` literal below did not have to be rewritten.
-use crate::gpu::retina_types::{RetinaParamsGpu as ParamsGpu, PoseRaw};
+use crate::gpu::retina_types::{PoseRaw, RetinaParamsGpu as ParamsGpu};
 
 /// Persistent compute context. Building this costs (opens a device, compiles a shader), so
 /// it lives for the whole race — recreating it per tick would cancel out the gain.
@@ -185,21 +196,25 @@ impl RetinaGpu {
             ..Default::default()
         });
         // `compatible_surface: None` is the point: we ask for a COMPUTE adapter, no window.
-        let adapter_obj = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))?;
+        let adapter_obj =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            }))?;
         let name = adapter_obj.get_info().name.clone();
         // perception.wgsl uses 6 storage buffers — above the downlevel default limit (4).
         let mut limits = wgpu::Limits::downlevel_defaults();
         limits.max_storage_buffers_per_shader_stage = 8;
-        let (device, queue) = pollster::block_on(adapter_obj.request_device(&wgpu::DeviceDescriptor {
-            label: Some("iara-compute"),
-            required_features: wgpu::Features::empty(),
-            required_limits: limits,
-            memory_hints: wgpu::MemoryHints::Performance,
-        }, None))
+        let (device, queue) = pollster::block_on(adapter_obj.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("iara-compute"),
+                required_features: wgpu::Features::empty(),
+                required_limits: limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
         .ok()?;
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -292,11 +307,13 @@ impl RetinaGpu {
             fov_half: (crate::visao::fov_deg() / 2.0).to_radians(),
             pitches,
         };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let pose_data: Vec<PoseRaw> = poses_in[..n]
             .iter()
@@ -305,16 +322,29 @@ impl RetinaGpu {
                 dirs: [p.forward.x, p.forward.y, p.right.x, p.right.y],
             })
             .collect();
-        self.queue.write_buffer(&self.buf_poses, 0, bytemuck::cast_slice(&pose_data));
+        self.queue
+            .write_buffer(&self.buf_poses, 0, bytemuck::cast_slice(&pose_data));
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_poses.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_poses.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_output.as_entire_binding(),
+                },
             ],
         });
 
@@ -364,17 +394,24 @@ impl RetinaGpu {
     /// would travel back to the CPU only to be reduced to 223 channels and uploaded again.
     /// (223 was the channel count when this was written; `SENSORY_WAVE_SIZE` is computed in
     /// `config.rs:309` and is 192 today — read the constant, not this number.)
-    pub fn output_buffer(&self) -> &wgpu::Buffer { &self.buf_output }
+    pub fn output_buffer(&self) -> &wgpu::Buffer {
+        &self.buf_output
+    }
 
     /// The device and the queue, for the other kernels to SHARE instead of opening another.
     /// Opening a second VkDevice on the same GPU wastes memory and some drivers refuse it.
-    pub fn device(&self) -> &wgpu::Device { &self.device }
-    pub fn queue(&self) -> &wgpu::Queue { &self.queue }
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
 
     /// The retina translated into the old encoding — only for the equivalence proof and for
     /// the A/B against the physical encoding. Do not use it on a new code path.
     pub fn render_legacy(&self, poses_in: &[Pose]) -> Vec<Vec<i8>> {
-        self.render(poses_in).into_iter()
+        self.render(poses_in)
+            .into_iter()
             .map(|r| r.into_iter().map(legacy_encoding).collect())
             .collect()
     }
@@ -405,13 +442,11 @@ impl RetinaGpu {
     ///
     /// Returns the N beings dispatched (so the caller can call
     /// `read_legacy_after_submit(N)`).
-    pub fn dispatch_into(
-        &self,
-        enc:      &mut wgpu::CommandEncoder,
-        poses_in: &[Pose],
-    ) -> usize {
+    pub fn dispatch_into(&self, enc: &mut wgpu::CommandEncoder, poses_in: &[Pose]) -> usize {
         let n = poses_in.len().min(self.capacity);
-        if n == 0 { return 0; }
+        if n == 0 {
+            return 0;
+        }
 
         // Prepare uniform + poses (write_buffer does not block — the data sits in the queue
         // until submit).
@@ -426,11 +461,13 @@ impl RetinaGpu {
             fov_half: (crate::visao::fov_deg() / 2.0).to_radians(),
             pitches,
         };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("retina-params-chain"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("retina-params-chain"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let pose_data: Vec<PoseRaw> = poses_in[..n]
             .iter()
@@ -440,16 +477,29 @@ impl RetinaGpu {
             })
             .collect();
         // write_buffer: CPU→GPU staging, no blocking until submit.
-        self.queue.write_buffer(&self.buf_poses, 0, bytemuck::cast_slice(&pose_data));
+        self.queue
+            .write_buffer(&self.buf_poses, 0, bytemuck::cast_slice(&pose_data));
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_poses.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_poses.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_output.as_entire_binding(),
+                },
             ],
         });
 
@@ -473,11 +523,15 @@ impl RetinaGpu {
     /// MUST be called after the `device.poll(Wait)` of the encoder that held `dispatch_into`.
     /// Without that poll the buffer is not available for mapping and this method will panic.
     pub fn read_legacy_after_submit(&self, n: usize) -> Vec<[i8; RETINA_TOTAL]> {
-        if n == 0 { return Vec::new(); }
+        if n == 0 {
+            return Vec::new();
+        }
         let bytes = (n * RETINA_TOTAL * 4) as u64;
         let slice = self.buf_readback.slice(0..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         // The caller already polled with Wait — the recv() should complete immediately.
         let _ = rx.recv();
 

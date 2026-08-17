@@ -133,7 +133,9 @@ pub fn esparsidade(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> Esparsid
     let mut fracoes: Vec<f32> = Vec::with_capacity(amostras.len());
     let mut saturacoes: Vec<f32> = Vec::with_capacity(amostras.len());
     for a in amostras {
-        if a.is_empty() { continue; }
+        if a.is_empty() {
+            continue;
+        }
         let ativos = a.iter().filter(|v| v.abs() > limiar).count();
         let sat = a.iter().filter(|v| v.abs() > 0.99).count();
         fracoes.push(ativos as f32 / a.len() as f32);
@@ -156,16 +158,29 @@ pub fn esparsidade(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> Esparsid
 /// `passo_aleatorio` define o deslocamento usado como baseline: comparar A[t] com
 /// A[t + passo] em vez de A[t-1]. Um passo grande o bastante para não haver correlação
 /// temporal, mas dentro da mesma corrida (mesma distribuição).
-pub fn persistencia(camada: &str, amostras: &[Vec<f32>], limiar: f32, passo_aleatorio: usize) -> Persistencia {
+pub fn persistencia(
+    camada: &str,
+    amostras: &[Vec<f32>],
+    limiar: f32,
+    passo_aleatorio: usize,
+) -> Persistencia {
     if amostras.len() < 2 {
-        return Persistencia { camada: camada.to_string(), limiar,
-            persistencia: 0.0, baseline_aleatorio: 0.0, ganho_temporal: 0.0, churn: 0.0 };
+        return Persistencia {
+            camada: camada.to_string(),
+            limiar,
+            persistencia: 0.0,
+            baseline_aleatorio: 0.0,
+            ganho_temporal: 0.0,
+            churn: 0.0,
+        };
     }
     let mascaras: Vec<Vec<bool>> = amostras.iter().map(|a| mascara(a, limiar)).collect();
 
     let sobreposicao = |a: &[bool], b: &[bool]| -> Option<f32> {
         let n_a = a.iter().filter(|x| **x).count();
-        if n_a == 0 { return None; }   // sem conjunto ativo, a razão é indefinida
+        if n_a == 0 {
+            return None;
+        } // sem conjunto ativo, a razão é indefinida
         let inter = a.iter().zip(b).filter(|(x, y)| **x && **y).count();
         Some(inter as f32 / n_a as f32)
     };
@@ -174,16 +189,21 @@ pub fn persistencia(camada: &str, amostras: &[Vec<f32>], limiar: f32, passo_alea
     let mut ale: Vec<f32> = Vec::new();
     let passo = passo_aleatorio.max(2);
     for t in 1..mascaras.len() {
-        if let Some(v) = sobreposicao(&mascaras[t], &mascaras[t - 1]) { adj.push(v); }
+        if let Some(v) = sobreposicao(&mascaras[t], &mascaras[t - 1]) {
+            adj.push(v);
+        }
         let outro = (t + passo) % mascaras.len();
         if outro != t && outro != t - 1 {
-            if let Some(v) = sobreposicao(&mascaras[t], &mascaras[outro]) { ale.push(v); }
+            if let Some(v) = sobreposicao(&mascaras[t], &mascaras[outro]) {
+                ale.push(v);
+            }
         }
     }
     let p = stats::mean(&adj);
     let b = stats::mean(&ale);
     Persistencia {
-        camada: camada.to_string(), limiar,
+        camada: camada.to_string(),
+        limiar,
         persistencia: p,
         baseline_aleatorio: b,
         ganho_temporal: p - b,
@@ -195,18 +215,35 @@ pub fn persistencia(camada: &str, amostras: &[Vec<f32>], limiar: f32, passo_alea
 ///
 /// Custo O(n² · amostras); com n=96 e milhares de amostras é barato o bastante para rodar
 /// offline. `max_pares` limita só o relatório dos pares fortes.
-pub fn coativacao(camada: &str, amostras: &[Vec<f32>], limiar: f32, max_pares: usize) -> CoAtivacao {
+pub fn coativacao(
+    camada: &str,
+    amostras: &[Vec<f32>],
+    limiar: f32,
+    max_pares: usize,
+) -> CoAtivacao {
     let n = amostras.first().map_or(0, |a| a.len());
     if n == 0 || amostras.is_empty() {
-        return CoAtivacao { camada: camada.to_string(), limiar, coativacao_media: 0.0,
-            esperado_independente: 0.0, excesso: 0.0, pares_fortes: Vec::new() };
+        return CoAtivacao {
+            camada: camada.to_string(),
+            limiar,
+            coativacao_media: 0.0,
+            esperado_independente: 0.0,
+            excesso: 0.0,
+            pares_fortes: Vec::new(),
+        };
     }
     let mascaras: Vec<Vec<bool>> = amostras.iter().map(|a| mascara(a, limiar)).collect();
     let total = mascaras.len() as f32;
 
     // Marginais: P(i ativo).
     let marginal: Vec<f32> = (0..n)
-        .map(|i| mascaras.iter().filter(|m| m.get(i).copied().unwrap_or(false)).count() as f32 / total)
+        .map(|i| {
+            mascaras
+                .iter()
+                .filter(|m| m.get(i).copied().unwrap_or(false))
+                .count() as f32
+                / total
+        })
         .collect();
 
     let mut soma_conj = 0.0f64;
@@ -215,15 +252,21 @@ pub fn coativacao(camada: &str, amostras: &[Vec<f32>], limiar: f32, max_pares: u
     let mut n_pares = 0usize;
     for i in 0..n {
         for j in (i + 1)..n {
-            let conj = mascaras.iter()
-                .filter(|m| m.get(i).copied().unwrap_or(false) && m.get(j).copied().unwrap_or(false))
-                .count() as f32 / total;
+            let conj = mascaras
+                .iter()
+                .filter(|m| {
+                    m.get(i).copied().unwrap_or(false) && m.get(j).copied().unwrap_or(false)
+                })
+                .count() as f32
+                / total;
             let indep = marginal[i] * marginal[j];
             soma_conj += conj as f64;
             soma_indep += indep as f64;
             n_pares += 1;
             let exc = conj - indep;
-            if exc.abs() > 0.05 { pares.push((i, j, exc)); }
+            if exc.abs() > 0.05 {
+                pares.push((i, j, exc));
+            }
         }
     }
     pares.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
@@ -233,8 +276,11 @@ pub fn coativacao(camada: &str, amostras: &[Vec<f32>], limiar: f32, max_pares: u
     let cm = (soma_conj / d) as f32;
     let ei = (soma_indep / d) as f32;
     CoAtivacao {
-        camada: camada.to_string(), limiar,
-        coativacao_media: cm, esperado_independente: ei, excesso: cm - ei,
+        camada: camada.to_string(),
+        limiar,
+        coativacao_media: cm,
+        esperado_independente: ei,
+        excesso: cm - ei,
         pares_fortes: pares,
     }
 }
@@ -244,7 +290,13 @@ pub fn quente_frio(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> QuenteFr
     let n = amostras.first().map_or(0, |a| a.len());
     let total = amostras.len().max(1) as f32;
     let frequencia: Vec<f32> = (0..n)
-        .map(|i| amostras.iter().filter(|a| a.get(i).map_or(false, |v| v.abs() > limiar)).count() as f32 / total)
+        .map(|i| {
+            amostras
+                .iter()
+                .filter(|a| a.get(i).map_or(false, |v| v.abs() > limiar))
+                .count() as f32
+                / total
+        })
         .collect();
 
     // Quantos neurônios cobrem 80% de TODAS as ativações (não 80% dos neurônios).
@@ -255,12 +307,16 @@ pub fn quente_frio(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> QuenteFr
     let mut acc = 0.0f32;
     let mut k = 0usize;
     for f in &ord {
-        acc += f; k += 1;
-        if acc >= alvo { break; }
+        acc += f;
+        k += 1;
+        if acc >= alvo {
+            break;
+        }
     }
 
     QuenteFrio {
-        camada: camada.to_string(), limiar,
+        camada: camada.to_string(),
+        limiar,
         nunca_ativos: frequencia.iter().filter(|f| **f == 0.0).count(),
         sempre_ativos: frequencia.iter().filter(|f| **f > 0.95).count(),
         neuronios_para_80pct: k,
@@ -274,7 +330,8 @@ pub fn quente_frio(camada: &str, amostras: &[Vec<f32>], limiar: f32) -> QuenteFr
 /// escolha, e escolha que muda o resultado precisa ser exposta. Devolve a fração ativa
 /// para cada limiar testado.
 pub fn sensibilidade_ao_limiar(amostras: &[Vec<f32>], limiares: &[f32]) -> Vec<(f32, f32)> {
-    limiares.iter()
+    limiares
+        .iter()
         .map(|&l| (l, esparsidade("_", amostras, l).fracao_ativa_media))
         .collect()
 }
@@ -318,13 +375,22 @@ mod tests {
         let a = amostras_fixas(&[&[1.0, 1.0], &[1.0, 1.0], &[1.0, 1.0], &[1.0, 1.0]]);
         let p = persistencia("t", &a, 0.5, 2);
         assert!((p.persistencia - 1.0).abs() < 1e-5);
-        assert!(p.ganho_temporal.abs() < 1e-5, "ganho foi {}", p.ganho_temporal);
+        assert!(
+            p.ganho_temporal.abs() < 1e-5,
+            "ganho foi {}",
+            p.ganho_temporal
+        );
     }
 
     #[test]
     fn coativacao_detecta_par_acoplado() {
         // 0 e 1 sempre juntos; 2 independente.
-        let a = amostras_fixas(&[&[1.0, 1.0, 0.0], &[0.0, 0.0, 1.0], &[1.0, 1.0, 1.0], &[0.0, 0.0, 0.0]]);
+        let a = amostras_fixas(&[
+            &[1.0, 1.0, 0.0],
+            &[0.0, 0.0, 1.0],
+            &[1.0, 1.0, 1.0],
+            &[0.0, 0.0, 0.0],
+        ]);
         let c = coativacao("t", &a, 0.5, 5);
         assert!(c.excesso > 0.0, "excesso foi {}", c.excesso);
         assert!(c.pares_fortes.iter().any(|(i, j, _)| *i == 0 && *j == 1));
@@ -334,14 +400,17 @@ mod tests {
     fn quente_frio_separa_sempre_de_nunca() {
         let a = amostras_fixas(&[&[1.0, 0.0, 0.5], &[1.0, 0.0, 0.0], &[1.0, 0.0, 0.9]]);
         let q = quente_frio("t", &a, 0.4);
-        assert_eq!(q.sempre_ativos, 1);   // neurônio 0
-        assert_eq!(q.nunca_ativos, 1);    // neurônio 1
+        assert_eq!(q.sempre_ativos, 1); // neurônio 0
+        assert_eq!(q.nunca_ativos, 1); // neurônio 1
     }
 
     #[test]
     fn sensibilidade_cai_com_limiar_maior() {
         let a = amostras_fixas(&[&[0.9, 0.5, 0.1], &[0.8, 0.4, 0.05]]);
         let s = sensibilidade_ao_limiar(&a, &[0.01, 0.45, 0.95]);
-        assert!(s[0].1 >= s[1].1 && s[1].1 >= s[2].1, "fração deveria cair: {s:?}");
+        assert!(
+            s[0].1 >= s[1].1 && s[1].1 >= s[2].1,
+            "fração deveria cair: {s:?}"
+        );
     }
 }

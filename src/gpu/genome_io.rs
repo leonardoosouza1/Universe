@@ -39,9 +39,9 @@
 //! REFACTOR_PLAN.md). Every new field in `Genome` requires updating `save_genome` AND
 //! `load_genome` together — the tests in `tests.rs` catch the omission.
 
+use crate::evolution::dna_genesis::default_kan_knots;
 use crate::gpu::evolution::Genome;
 use crate::kan::KAN_OUT_KNOTS;
-use crate::evolution::dna_genesis::default_kan_knots;
 
 /// Magic of the v2 header — 4 ASCII bytes, "Universe GENome".
 const MAGIC: &[u8; 4] = b"UGEN";
@@ -62,24 +62,46 @@ pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     f.write_all(MAGIC)?;
     f.write_all(&FORMAT_VERSION.to_le_bytes())?;
-    for w in &genome.l1 { f.write_all(&w.to_le_bytes())?; }
-    for w in &genome.l2 { f.write_all(&w.to_le_bytes())?; }
-    for row in &genome.kan_knots {
-        for k in row { f.write_all(&k.to_le_bytes())?; }
+    for w in &genome.l1 {
+        f.write_all(&w.to_le_bytes())?;
     }
-    for w in &genome.slow { f.write_all(&w.to_le_bytes())?; }
-    for d in &genome.tau  { f.write_all(&d.to_le_bytes())?; }
-    for s in &genome.sensors { f.write_all(&s.to_le_bytes())?; }
+    for w in &genome.l2 {
+        f.write_all(&w.to_le_bytes())?;
+    }
+    for row in &genome.kan_knots {
+        for k in row {
+            f.write_all(&k.to_le_bytes())?;
+        }
+    }
+    for w in &genome.slow {
+        f.write_all(&w.to_le_bytes())?;
+    }
+    for d in &genome.tau {
+        f.write_all(&d.to_le_bytes())?;
+    }
+    for s in &genome.sensors {
+        f.write_all(&s.to_le_bytes())?;
+    }
     // P1.7 (docs/PLANO_EVOLUCAO.md) — asynchronous brain: memory, period/threshold,
     // heterogeneous activation. Same rule as the blocks above: a new field here WITHOUT
     // updating `load_genome` alongside it is gap 7 of the project's CLAUDE.md (we lost
     // 1091 weights in silence once by forgetting exactly this) — `tests.rs` covers it.
-    for a in &genome.neuron_alpha { f.write_all(&a.to_le_bytes())?; }
-    for p in &genome.neuron_period_l1 { f.write_all(&p.to_le_bytes())?; }
-    for t in &genome.neuron_threshold_l1 { f.write_all(&t.to_le_bytes())?; }
-    for a in &genome.neuron_activation { f.write_all(&a.to_le_bytes())?; }
+    for a in &genome.neuron_alpha {
+        f.write_all(&a.to_le_bytes())?;
+    }
+    for p in &genome.neuron_period_l1 {
+        f.write_all(&p.to_le_bytes())?;
+    }
+    for t in &genome.neuron_threshold_l1 {
+        f.write_all(&t.to_le_bytes())?;
+    }
+    for a in &genome.neuron_activation {
+        f.write_all(&a.to_le_bytes())?;
+    }
     // M4: the maestro's gates (16 f32) — optional block, always last.
-    for a in &genome.gates_w { f.write_all(&a.to_le_bytes())?; }
+    for a in &genome.gates_w {
+        f.write_all(&a.to_le_bytes())?;
+    }
     Ok(())
 }
 
@@ -93,7 +115,10 @@ pub fn load_genome(path: &str) -> Option<Genome> {
         let version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
         // Only v2 exists so far; an unknown (higher) version still attempts to read with
         // the current layout — a file of a LOWER version should not carry the magic.
-        debug_assert!(version <= FORMAT_VERSION, "genome saved by a future version ({version})");
+        debug_assert!(
+            version <= FORMAT_VERSION,
+            "genome saved by a future version ({version})"
+        );
         8usize
     } else {
         0usize
@@ -103,22 +128,28 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     let n_l2 = crate::gpu::evolution::N_L2_WEIGHTS;
     let n_kan = 3 * KAN_OUT_KNOTS;
     let expected = base_off + (n_l1 + n_l2 + n_kan) * 4;
-    if bytes.len() < expected { return None; }
+    if bytes.len() < expected {
+        return None;
+    }
 
     // Reading by explicit offset. The version with a closure mutating `off` does not pass
     // the borrow checker as soon as someone needs to read `off` from outside it — and
     // needing to is unavoidable here, because the final blocks are optional and the
     // decision to read them depends on comparing `off` against the file size.
     fn read_at(bytes: &[u8], off: usize, n: usize) -> Vec<f32> {
-        bytes[off..off + n * 4].chunks_exact(4)
+        bytes[off..off + n * 4]
+            .chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
             .collect()
     }
 
     let mut off = base_off;
-    let l1 = read_at(&bytes, off, n_l1);   off += n_l1 * 4;
-    let l2 = read_at(&bytes, off, n_l2);   off += n_l2 * 4;
-    let kan_flat = read_at(&bytes, off, n_kan); off += n_kan * 4;
+    let l1 = read_at(&bytes, off, n_l1);
+    off += n_l1 * 4;
+    let l2 = read_at(&bytes, off, n_l2);
+    off += n_l2 * 4;
+    let kan_flat = read_at(&bytes, off, n_kan);
+    off += n_kan * 4;
     let mut kan_knots = default_kan_knots();
     for o in 0..3 {
         for k in 0..KAN_OUT_KNOTS {
@@ -129,15 +160,19 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     // fields existed falls back to the default — which is the truth, not an invention:
     // that genome really did not carry the data.
     let n_slow = crate::engine::SlowBrain::new().all_weights().len();
-    let n_tau  = crate::gpu::evolution::N_CFC_CHANNELS;
+    let n_tau = crate::gpu::evolution::N_CFC_CHANNELS;
 
     let slow = if bytes.len() >= off + n_slow * 4 {
-        let v = read_at(&bytes, off, n_slow); off += n_slow * 4; v
+        let v = read_at(&bytes, off, n_slow);
+        off += n_slow * 4;
+        v
     } else {
         crate::engine::SlowBrain::new().all_weights()
     };
     let tau = if bytes.len() >= off + n_tau * 4 {
-        let v = read_at(&bytes, off, n_tau); off += n_tau * 4; v
+        let v = read_at(&bytes, off, n_tau);
+        off += n_tau * 4;
+        v
     } else {
         vec![crate::cfc::DECAY_DEFAULT; n_tau]
     };
@@ -146,7 +181,9 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     // did run with today's hardcoded values, not with an invented one).
     let n_sensors = crate::gpu::evolution::N_SENSOR_GENES;
     let sensors = if bytes.len() >= off + n_sensors * 4 {
-        let v = read_at(&bytes, off, n_sensors); off += n_sensors * 4; v
+        let v = read_at(&bytes, off, n_sensors);
+        off += n_sensors * 4;
+        v
     } else {
         crate::gpu::evolution::SENSOR_DEFAULTS.to_vec()
     };
@@ -158,22 +195,30 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     let n_l1 = crate::gpu::evolution::N_L1_NEURONS;
     let n_l2 = crate::gpu::evolution::N_L2_NEURONS;
     let neuron_alpha = if bytes.len() >= off + (n_l1 + n_l2) * 4 {
-        let v = read_at(&bytes, off, n_l1 + n_l2); off += (n_l1 + n_l2) * 4; v
+        let v = read_at(&bytes, off, n_l1 + n_l2);
+        off += (n_l1 + n_l2) * 4;
+        v
     } else {
         vec![0.0; n_l1 + n_l2]
     };
     let neuron_period_l1 = if bytes.len() >= off + n_l1 * 4 {
-        let v = read_at(&bytes, off, n_l1); off += n_l1 * 4; v
+        let v = read_at(&bytes, off, n_l1);
+        off += n_l1 * 4;
+        v
     } else {
         vec![1.0; n_l1]
     };
     let neuron_threshold_l1 = if bytes.len() >= off + n_l1 * 4 {
-        let v = read_at(&bytes, off, n_l1); off += n_l1 * 4; v
+        let v = read_at(&bytes, off, n_l1);
+        off += n_l1 * 4;
+        v
     } else {
         vec![0.0; n_l1]
     };
     let neuron_activation = if bytes.len() >= off + (n_l1 + n_l2) * 4 {
-        let v = read_at(&bytes, off, n_l1 + n_l2); off += (n_l1 + n_l2) * 4; v
+        let v = read_at(&bytes, off, n_l1 + n_l2);
+        off += (n_l1 + n_l2) * 4;
+        v
     } else {
         vec![0.0; n_l1 + n_l2]
     };
@@ -185,8 +230,16 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     };
 
     Some(Genome {
-        l1, l2, kan_knots, slow, tau, sensors,
-        neuron_alpha, neuron_period_l1, neuron_threshold_l1, neuron_activation,
+        l1,
+        l2,
+        kan_knots,
+        slow,
+        tau,
+        sensors,
+        neuron_alpha,
+        neuron_period_l1,
+        neuron_threshold_l1,
+        neuron_activation,
         gates_w,
     })
 }

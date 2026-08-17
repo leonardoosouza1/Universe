@@ -42,8 +42,10 @@ fn ler(caminho: &str) -> Result<(Vec<f32>, u32, f32), String> {
         return Err(format!("{caminho} não tem pesos da camada 1"));
     }
     if dna.cortex_raw.is_none() {
-        eprintln!("⚠️  {caminho} não tem chunk CRAW — lendo `fast_weights`, que no v8 é \
-                   TERNÁRIO. Os pesos vão parecer ~64× menores do que são.");
+        eprintln!(
+            "⚠️  {caminho} não tem chunk CRAW — lendo `fast_weights`, que no v8 é \
+                   TERNÁRIO. Os pesos vão parecer ~64× menores do que são."
+        );
     }
     let w = crus.iter().map(|w| *w as f32 / 63.5).collect();
     Ok((w, dna.generation, dna.fitness))
@@ -63,7 +65,11 @@ fn fortes(pesos: &[f32], filtro_neuronio: Option<usize>) -> Vec<Sinapse> {
                     return None;
                 }
             }
-            Some(Sinapse { neuronio, canal, peso: p })
+            Some(Sinapse {
+                neuronio,
+                canal,
+                peso: p,
+            })
         })
         .collect();
     v.sort_by(|a, b| b.peso.abs().partial_cmp(&a.peso.abs()).unwrap());
@@ -103,12 +109,18 @@ fn main() {
     let arquivo = match args.get(1) {
         Some(a) if !a.starts_with("--") => a.clone(),
         _ => {
-            eprintln!("uso: sinapses <arquivo.dna> [--contra outro.dna] \
-                       [--neuronio N] [--top K]");
+            eprintln!(
+                "uso: sinapses <arquivo.dna> [--contra outro.dna] \
+                       [--neuronio N] [--top K]"
+            );
             std::process::exit(2);
         }
     };
-    let contra = args.iter().position(|a| a == "--contra").and_then(|i| args.get(i + 1)).cloned();
+    let contra = args
+        .iter()
+        .position(|a| a == "--contra")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
     let filtro = args
         .iter()
         .position(|a| a == "--neuronio")
@@ -168,15 +180,23 @@ fn main() {
             }
         };
         if p2.len() != pesos.len() {
-            eprintln!("\n⚠️  os dois DNAs têm tamanhos diferentes ({} vs {}) — não dá para \
-                       parear sinapse a sinapse", pesos.len(), p2.len());
+            eprintln!(
+                "\n⚠️  os dois DNAs têm tamanhos diferentes ({} vs {}) — não dá para \
+                       parear sinapse a sinapse",
+                pesos.len(),
+                p2.len()
+            );
             std::process::exit(1);
         }
         println!("\n=== O QUE MUDOU DE {outro} (gen {ger2}) PARA {arquivo} (gen {geracao}) ===\n");
         let (mut nasceram, mut morreram, mut mudaram) = (vec![], vec![], vec![]);
         for i in 0..pesos.len() {
             let (a, b) = (p2[i], pesos[i]);
-            let s = Sinapse { neuronio: i / SWS, canal: i % SWS, peso: b };
+            let s = Sinapse {
+                neuronio: i / SWS,
+                canal: i % SWS,
+                peso: b,
+            };
             match (a.abs() >= LIMIAR, b.abs() >= LIMIAR) {
                 (false, true) => nasceram.push(s),
                 (true, false) => morreram.push(Sinapse { peso: a, ..s }),
@@ -212,12 +232,18 @@ fn main() {
 /// Grupos sensoriais, para saber quanto de cada sentido o cérebro consome.
 /// As faixas vêm de onde os canais são ESCRITOS (`motor.rs:455-524, 480-513`).
 const GRUPOS: [(&str, &[(usize, usize)]); 6] = [
-    ("VISÃO (retina)",     &[(0, 15), (128, 191)]),
+    ("VISÃO (retina)", &[(0, 15), (128, 191)]),
     ("curvatura à frente", &[(20, 20), (32, 39), (78, 80)]),
-    ("paredes e bigodes",  &[(16, 31), (76, 77), (94, 97), (114, 115)]),
-    ("pista à frente",     &[(40, 55), (90, 93), (108, 110), (118, 119)]),
-    ("telemetria do corpo",&[(56, 75), (124, 125)]),
-    ("movimento e TTC",    &[(82, 84), (98, 107), (116, 117)]),
+    (
+        "paredes e bigodes",
+        &[(16, 31), (76, 77), (94, 97), (114, 115)],
+    ),
+    (
+        "pista à frente",
+        &[(40, 55), (90, 93), (108, 110), (118, 119)],
+    ),
+    ("telemetria do corpo", &[(56, 75), (124, 125)]),
+    ("movimento e TTC", &[(82, 84), (98, 107), (116, 117)]),
 ];
 
 fn grupo_de(canal: usize) -> &'static str {
@@ -249,10 +275,17 @@ fn mapa(pesos: &[f32]) {
                 }
             }
             // por canal, senão um grupo grande parece importante só por ser grande
-            (soma / n_canais.max(1) as f32,
-             format!("{:<22} {:>7} canais {:>9.1} total {:>9.2} por canal {:>7.1}%",
-                     nome, n_canais, soma, soma / n_canais.max(1) as f32,
-                     soma / total.max(1e-9) * 100.0))
+            (
+                soma / n_canais.max(1) as f32,
+                format!(
+                    "{:<22} {:>7} canais {:>9.1} total {:>9.2} por canal {:>7.1}%",
+                    nome,
+                    n_canais,
+                    soma,
+                    soma / n_canais.max(1) as f32,
+                    soma / total.max(1e-9) * 100.0
+                ),
+            )
         })
         .collect();
     linhas.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
@@ -271,17 +304,27 @@ fn mapa(pesos: &[f32]) {
         for (ch, w) in fatia.iter().enumerate() {
             *soma_grupo.entry(grupo_de(ch)).or_insert(0.0) += w.abs();
         }
-        let dono = soma_grupo.iter()
+        let dono = soma_grupo
+            .iter()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(k, _)| *k).unwrap_or("—");
+            .map(|(k, _)| *k)
+            .unwrap_or("—");
         *por_grupo.entry(dono).or_insert(0) += 1;
         if neu < 3 {
-            let (melhor_ch, melhor_w) = fatia.iter().enumerate()
+            let (melhor_ch, melhor_w) = fatia
+                .iter()
+                .enumerate()
                 .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
-                .map(|(i, w)| (i, *w)).unwrap_or((0, 0.0));
-            println!("  n{:<3} {:<14} domina: {:<22} mais forte: {:>+6.2} {}",
-                     neu, neuronio_papel(neu), dono, melhor_w,
-                     canal_nome(melhor_ch).unwrap_or("(sem nome)"));
+                .map(|(i, w)| (i, *w))
+                .unwrap_or((0, 0.0));
+            println!(
+                "  n{:<3} {:<14} domina: {:<22} mais forte: {:>+6.2} {}",
+                neu,
+                neuronio_papel(neu),
+                dono,
+                melhor_w,
+                canal_nome(melhor_ch).unwrap_or("(sem nome)")
+            );
         }
     }
     println!("\n  DISTRIBUIÇÃO das {n_neuronios} unidades por sentido dominante:");
@@ -306,20 +349,37 @@ fn mapa(pesos: &[f32]) {
 fn compara_priming(pesos: &[f32]) {
     use universe::neuro::PRIMING;
     println!("\n=== O QUE O HUMANO ESCREVEU vs O QUE ESTE CÉREBRO TEM ===\n");
-    println!("{:>4} {:>7} {:>9}  {:<44} {}", "n", "canal", "peso aqui", "canal", "veredito");
+    println!(
+        "{:>4} {:>7} {:>9}  {:<44} {}",
+        "n", "canal", "peso aqui", "canal", "veredito"
+    );
     println!("{}", "-".repeat(92));
     let mut presentes = 0;
     for &(neu, ch) in PRIMING.iter() {
         let w = pesos.get(neu * SWS + ch).copied().unwrap_or(0.0);
-        let veredito = if w.abs() >= 1.0 { presentes += 1; "PRESENTE e forte" }
-                       else if w.abs() >= LIMIAR { presentes += 1; "presente, fraca" }
-                       else { "ausente" };
-        println!("{:>4} {:>7} {:>+9.2}  {:<44} {}", neu, ch, w,
-                 canal_nome(ch).unwrap_or("(sem nome)"), veredito);
+        let veredito = if w.abs() >= 1.0 {
+            presentes += 1;
+            "PRESENTE e forte"
+        } else if w.abs() >= LIMIAR {
+            presentes += 1;
+            "presente, fraca"
+        } else {
+            "ausente"
+        };
+        println!(
+            "{:>4} {:>7} {:>+9.2}  {:<44} {}",
+            neu,
+            ch,
+            w,
+            canal_nome(ch).unwrap_or("(sem nome)"),
+            veredito
+        );
     }
     println!("{}", "-".repeat(92));
-    println!("  {presentes}/{} das sinapses escritas à mão estão neste cérebro",
-             PRIMING.len());
+    println!(
+        "  {presentes}/{} das sinapses escritas à mão estão neste cérebro",
+        PRIMING.len()
+    );
 
     // e o que ele tem NOS MOTORES que o humano NÃO escreveu
     let mut proprias: Vec<(usize, usize, f32)> = Vec::new();
@@ -332,10 +392,18 @@ fn compara_priming(pesos: &[f32]) {
         }
     }
     proprias.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
-    println!("\n  CONEXÕES MOTORAS QUE O HUMANO NÃO ESCREVEU: {}", proprias.len());
+    println!(
+        "\n  CONEXÕES MOTORAS QUE O HUMANO NÃO ESCREVEU: {}",
+        proprias.len()
+    );
     for (neu, ch, w) in proprias.iter().take(10) {
-        println!("    {:>+7.2}  n{} {:<16} ← {}", w, neu, neuronio_papel(*neu),
-                 canal_nome(*ch).unwrap_or("(sem nome)"));
+        println!(
+            "    {:>+7.2}  n{} {:<16} ← {}",
+            w,
+            neu,
+            neuronio_papel(*neu),
+            canal_nome(*ch).unwrap_or("(sem nome)")
+        );
     }
     if proprias.is_empty() {
         println!("    (nenhuma — os motores só têm o que veio de fábrica)");

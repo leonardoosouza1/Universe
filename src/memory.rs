@@ -1,19 +1,18 @@
+use crate::float_layers::FloatLinear;
+use crate::metabolism::EpisodicTrace;
+use crate::types::PotentialWell;
 /// IARA v2100 - Multiverse Spiral & Semantic Gravity
 /// Based on Codex Part 2 & 5
 ///
 /// Tier 2.3 extension — `consolidate_episodic` replays sleep-time episodic
 /// traces into the slow_brain BitLinear via a ternary Hebbian update.
-
 use std::collections::HashMap;
-use crate::types::PotentialWell;
-use crate::float_layers::FloatLinear;
-use crate::metabolism::EpisodicTrace;
 
 pub struct MultiverseSpiral {
     /// The "1D Spiral Tape" stored as nodes on a cylindrical coordinate system.
     /// Memory grows along the Z-axis (time).
     pub cylinders: HashMap<String, Vec<PotentialWell>>,
-    
+
     /// The "Einstein-Rosen Bridge" (Z-Axis absolute bus).
     /// Provides O(1) direct access from Core to Present.
     pub z_bus: Vec<f32>,
@@ -29,27 +28,32 @@ impl MultiverseSpiral {
 
     /// Store a concept in the spiral at a specific coordinate.
     pub fn store_concept(&mut self, domain: &str, theta: f32, radius: f32, mass: f32, id: &str) {
-        let entry = self.cylinders.entry(domain.to_string()).or_insert(Vec::new());
+        let entry = self
+            .cylinders
+            .entry(domain.to_string())
+            .or_insert(Vec::new());
         entry.push(PotentialWell {
             semantic_mass: mass,
             theta,
             radius,
             concept_id: id.to_string(),
         });
-        
+
         // Update the Z-Bus for O(1) tracking of this domain's growth
         self.z_bus.push(radius);
     }
 
     /// Semantic Gravity (Tier 2.3 helper unused here, but exposed for consistency).
     #[allow(dead_code)]
-    pub fn len(&self) -> usize { self.z_bus.len() }
+    pub fn len(&self) -> usize {
+        self.z_bus.len()
+    }
 
     /// Semantic Gravity: Find the closest Potential Well for a given coordinate.
     /// This is the "Gravitational Pull" that routes incoming data (Splines).
     pub fn resolve_gravity(&self, domain: &str, query_theta: f32) -> Option<&PotentialWell> {
         let wells = self.cylinders.get(domain)?;
-        
+
         // In a real implementation, we use spatial hashes or Morton Curves
         // to find the minimum energy state in O(1).
         wells.iter().min_by(|a, b| {
@@ -100,11 +104,27 @@ pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTr
         }
 
         // --- 2) Expande action[2] → out_sign[8]. Threshold ±0.1 = zona morta.
-        let a0 = if ep.action[0] > 0.1 { 1 } else if ep.action[0] < -0.1 { -1 } else { 0 };
-        let a1 = if ep.action[1] > 0.1 { 1 } else if ep.action[1] < -0.1 { -1 } else { 0 };
+        let a0 = if ep.action[0] > 0.1 {
+            1
+        } else if ep.action[0] < -0.1 {
+            -1
+        } else {
+            0
+        };
+        let a1 = if ep.action[1] > 0.1 {
+            1
+        } else if ep.action[1] < -0.1 {
+            -1
+        } else {
+            0
+        };
         let mut out_sign = [0i32; 8];
-        for k in 0..4 { out_sign[k] = a0; }
-        for k in 4..8 { out_sign[k] = a1; }
+        for k in 0..4 {
+            out_sign[k] = a0;
+        }
+        for k in 4..8 {
+            out_sign[k] = a1;
+        }
 
         let r_sign = if ep.reward > 0.0 { 1 } else { -1 };
 
@@ -112,10 +132,14 @@ pub fn consolidate_episodic(slow_brain: &mut FloatLinear, episodes: &[EpisodicTr
         for o in 0..8 {
             let base = o * 32;
             let os = out_sign[o];
-            if os == 0 { continue; }
+            if os == 0 {
+                continue;
+            }
             for i in 0..32 {
                 let is = input_sign[i];
-                if is == 0 { continue; }
+                if is == 0 {
+                    continue;
+                }
                 delta[base + i] += r_sign * is * os;
             }
         }
@@ -161,7 +185,9 @@ pub fn dream_rollout(
     for _ in 0..iterations {
         // Fisher–Yates shuffle via LCG (Numerical Recipes constants).
         for i in (1..shuffled.len()).rev() {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let j = ((seed >> 33) as usize) % (i + 1);
             shuffled.swap(i, j);
         }

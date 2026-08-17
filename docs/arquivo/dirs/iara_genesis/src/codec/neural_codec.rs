@@ -31,7 +31,9 @@ impl NeuralCodec {
 }
 
 impl Codec for NeuralCodec {
-    fn tag(&self) -> [u8; 4] { *b"NEUR" }
+    fn tag(&self) -> [u8; 4] {
+        *b"NEUR"
+    }
 
     fn encode(&self, weights: &[i8]) -> Compressed {
         let latent = self.autoencoder.encode(weights);
@@ -80,7 +82,11 @@ mod tests {
         let compressed = codec.encode(&input);
         let ratio = compressed.ratio();
         // 8192 / 256 = 32:1
-        assert!(ratio > 25.0, "Neural ratio should be ~32:1, got {:.1}:1", ratio);
+        assert!(
+            ratio > 25.0,
+            "Neural ratio should be ~32:1, got {:.1}:1",
+            ratio
+        );
     }
 
     #[test]
@@ -88,16 +94,22 @@ mod tests {
         let mut codec = NeuralCodec::with_dims(64, 16, 4);
 
         // Batch de amostras simples
-        let batch: Vec<Vec<i8>> = (0..10).map(|_| {
-            vec![0i8; 64] // all-zeros — easiest pattern
-        }).collect();
+        let batch: Vec<Vec<i8>> = (0..10)
+            .map(|_| {
+                vec![0i8; 64] // all-zeros — easiest pattern
+            })
+            .collect();
 
         // Accuracy antes do treino
         let input = &batch[0];
         let before = codec.encode(input);
         let before_restored = codec.decode(&before).unwrap();
-        let acc_before = input.iter().zip(before_restored.iter())
-            .filter(|&(&a, &b)| a == b).count() as f32 / 64.0;
+        let acc_before = input
+            .iter()
+            .zip(before_restored.iter())
+            .filter(|&(&a, &b)| a == b)
+            .count() as f32
+            / 64.0;
 
         // Treinar
         for _ in 0..50 {
@@ -107,13 +119,18 @@ mod tests {
         // Accuracy depois do treino
         let after = codec.encode(input);
         let after_restored = codec.decode(&after).unwrap();
-        let acc_after = input.iter().zip(after_restored.iter())
-            .filter(|&(&a, &b)| a == b).count() as f32 / 64.0;
+        let acc_after = input
+            .iter()
+            .zip(after_restored.iter())
+            .filter(|&(&a, &b)| a == b)
+            .count() as f32
+            / 64.0;
 
         assert!(
             acc_after >= acc_before,
             "Training should improve accuracy: {:.1}% → {:.1}%",
-            acc_before * 100.0, acc_after * 100.0
+            acc_before * 100.0,
+            acc_after * 100.0
         );
     }
 }

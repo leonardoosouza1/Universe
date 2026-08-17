@@ -15,8 +15,8 @@
 //!   Semente (64B) + Tronco (256B) + Galhos (128B) + Folhas (variável)
 //!   ≈ 400-800 bytes típico vs 8192 bytes cru
 
-use crate::math::{fourier, chebyshev, sparse};
 use crate::codec::semantic::BehaviorFingerprint;
+use crate::math::{chebyshev, fourier, sparse};
 
 /// Semente: o código genético minimal do organismo.
 ///
@@ -171,10 +171,10 @@ impl Tree {
 
         // 3. Folhas: deltas entre Fourier e realidade
         let trunk_reconstructed = fourier::synthesize(&trunk.fourier);
-        let deltas: Vec<i8> = fast_weights.iter().zip(trunk_reconstructed.iter())
-            .map(|(&orig, &recon)| {
-                (orig as i16 - recon as i16).clamp(-1, 1) as i8
-            })
+        let deltas: Vec<i8> = fast_weights
+            .iter()
+            .zip(trunk_reconstructed.iter())
+            .map(|(&orig, &recon)| (orig as i16 - recon as i16).clamp(-1, 1) as i8)
             .collect();
         let correction_count = deltas.iter().filter(|&&d| d != 0).count();
         let leaves = Leaves {
@@ -226,14 +226,16 @@ impl Tree {
         let trunk_weights = fourier::synthesize(&self.trunk.fourier);
         let deltas = sparse::decompress(&self.leaves.sparse_deltas);
 
-        let fast_weights: Vec<i8> = trunk_weights.iter().zip(deltas.iter())
-            .map(|(&t, &d)| {
-                (t as i16 + d as i16).clamp(-1, 1) as i8
-            })
+        let fast_weights: Vec<i8> = trunk_weights
+            .iter()
+            .zip(deltas.iter())
+            .map(|(&t, &d)| (t as i16 + d as i16).clamp(-1, 1) as i8)
             .collect();
 
         // Slow weights: encontrar galho SlowWeights
-        let slow_weights = self.branches.iter()
+        let slow_weights = self
+            .branches
+            .iter()
             .find(|b| b.kind == BranchKind::SlowWeights)
             .and_then(|b| sparse::deserialize(&b.data))
             .map(|rle| sparse::decompress(&rle))
@@ -250,7 +252,9 @@ impl Tree {
 
     /// Ratio de compressão vs pesos crus.
     pub fn compression_ratio(&self, original_size: usize) -> f64 {
-        if self.compressed_size() == 0 { return 0.0; }
+        if self.compressed_size() == 0 {
+            return 0.0;
+        }
         original_size as f64 / self.compressed_size() as f64
     }
 
@@ -297,8 +301,12 @@ impl Tree {
 
         // Sap
         for val in [
-            self.sap.dopamine, self.sap.serotonin, self.sap.cortisol,
-            self.sap.oxytocin, self.sap.adrenaline, self.sap.melatonin,
+            self.sap.dopamine,
+            self.sap.serotonin,
+            self.sap.cortisol,
+            self.sap.oxytocin,
+            self.sap.adrenaline,
+            self.sap.melatonin,
             self.sap.curiosity,
         ] {
             buf.extend_from_slice(&val.to_le_bytes());
@@ -315,48 +323,74 @@ impl Tree {
 
     /// Desserializa uma árvore de bytes.
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 12 { return None; }
-        if &buf[0..4] != b"TREE" { return None; }
+        if buf.len() < 12 {
+            return None;
+        }
+        if &buf[0..4] != b"TREE" {
+            return None;
+        }
 
         let mut off = 4;
 
-        let generation = u32::from_le_bytes(buf[off..off+4].try_into().ok()?); off += 4;
-        let fitness = f32::from_le_bytes(buf[off..off+4].try_into().ok()?); off += 4;
+        let generation = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
+        off += 4;
+        let fitness = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
+        off += 4;
 
         // Seed
-        let seed_len = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
-        let seed_coeffs = chebyshev::deserialize(&buf[off..off+seed_len])?; off += seed_len;
+        let seed_len = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+        off += 4;
+        let seed_coeffs = chebyshev::deserialize(&buf[off..off + seed_len])?;
+        off += seed_len;
 
         // Trunk
-        let trunk_len = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
-        let trunk_fourier = fourier::deserialize(&buf[off..off+trunk_len])?; off += trunk_len;
+        let trunk_len = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+        off += 4;
+        let trunk_fourier = fourier::deserialize(&buf[off..off + trunk_len])?;
+        off += trunk_len;
 
         // Leaves
-        let leaves_len = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
-        let sparse_deltas = sparse::deserialize(&buf[off..off+leaves_len])?; off += leaves_len;
-        let correction_count = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
+        let leaves_len = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+        off += 4;
+        let sparse_deltas = sparse::deserialize(&buf[off..off + leaves_len])?;
+        off += leaves_len;
+        let correction_count = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+        off += 4;
 
         // Branches
-        let num_branches = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
+        let num_branches = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+        off += 4;
         let mut branches = Vec::with_capacity(num_branches);
         for _ in 0..num_branches {
-            let kind = BranchKind::from_tag(buf[off]); off += 1;
-            let original_len = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
-            let data_len = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
-            let data = buf[off..off+data_len].to_vec(); off += data_len;
-            branches.push(Branch { kind, original_len, data });
+            let kind = BranchKind::from_tag(buf[off]);
+            off += 1;
+            let original_len = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+            off += 4;
+            let data_len = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+            off += 4;
+            let data = buf[off..off + data_len].to_vec();
+            off += data_len;
+            branches.push(Branch {
+                kind,
+                original_len,
+                data,
+            });
         }
 
         // Roots
-        let pos_x = f32::from_le_bytes(buf[off..off+4].try_into().ok()?); off += 4;
-        let pos_y = f32::from_le_bytes(buf[off..off+4].try_into().ok()?); off += 4;
-        let depth = f32::from_le_bytes(buf[off..off+4].try_into().ok()?); off += 4;
-        let fp_bytes: [u8; 8] = buf[off..off+8].try_into().ok()?; off += 8;
+        let pos_x = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
+        off += 4;
+        let pos_y = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
+        off += 4;
+        let depth = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
+        off += 4;
+        let fp_bytes: [u8; 8] = buf[off..off + 8].try_into().ok()?;
+        off += 8;
         let fingerprint = BehaviorFingerprint::from_bytes(&fp_bytes);
 
         // Sap
         let mut read_f32 = || -> Option<f32> {
-            let v = f32::from_le_bytes(buf[off..off+4].try_into().ok()?);
+            let v = f32::from_le_bytes(buf[off..off + 4].try_into().ok()?);
             off += 4;
             Some(v)
         };
@@ -371,19 +405,32 @@ impl Tree {
         };
 
         // Rings
-        let num_rings = u32::from_le_bytes(buf[off..off+4].try_into().ok()?) as usize; off += 4;
+        let num_rings = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
+        off += 4;
         let mut rings = Vec::with_capacity(num_rings);
         for _ in 0..num_rings {
-            let ring = u64::from_le_bytes(buf[off..off+8].try_into().ok()?); off += 8;
+            let ring = u64::from_le_bytes(buf[off..off + 8].try_into().ok()?);
+            off += 8;
             rings.push(ring);
         }
 
         Some(Tree {
-            seed: Seed { coeffs: seed_coeffs },
-            trunk: Trunk { fourier: trunk_fourier },
+            seed: Seed {
+                coeffs: seed_coeffs,
+            },
+            trunk: Trunk {
+                fourier: trunk_fourier,
+            },
             branches,
-            leaves: Leaves { sparse_deltas, correction_count },
-            roots: RootSystem { position: (pos_x, pos_y), depth, fingerprint },
+            leaves: Leaves {
+                sparse_deltas,
+                correction_count,
+            },
+            roots: RootSystem {
+                position: (pos_x, pos_y),
+                depth,
+                fingerprint,
+            },
             sap,
             rings,
             generation,
@@ -408,11 +455,19 @@ mod tests {
     use super::*;
 
     fn sample_fast() -> Vec<i8> {
-        (0..8192).map(|i| {
-            // Low-frequency sine wave + some zeros
-            let v = (i as f64 * std::f64::consts::PI / 64.0).sin();
-            if v > 0.5 { 1 } else if v < -0.5 { -1 } else { 0 }
-        }).collect()
+        (0..8192)
+            .map(|i| {
+                // Low-frequency sine wave + some zeros
+                let v = (i as f64 * std::f64::consts::PI / 64.0).sin();
+                if v > 0.5 {
+                    1
+                } else if v < -0.5 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect()
     }
 
     fn sample_slow() -> Vec<i8> {
@@ -436,11 +491,17 @@ mod tests {
 
         // Fast weights: Fourier + deltas devem ser lossless
         // (tronco + folhas = reconstrução perfeita)
-        let matches = fast.iter().zip(restored_fast.iter())
-            .filter(|&(&a, &b)| a == b).count();
+        let matches = fast
+            .iter()
+            .zip(restored_fast.iter())
+            .filter(|&(&a, &b)| a == b)
+            .count();
         let accuracy = matches as f64 / fast.len() as f64;
-        assert!(accuracy > 0.95,
-            "Fast weights accuracy with trunk+leaves: {:.1}%", accuracy * 100.0);
+        assert!(
+            accuracy > 0.95,
+            "Fast weights accuracy with trunk+leaves: {:.1}%",
+            accuracy * 100.0
+        );
     }
 
     #[test]
@@ -452,7 +513,11 @@ mod tests {
         let original_size = fast.len() + slow.len(); // 8448 bytes
         let ratio = tree.compression_ratio(original_size);
 
-        assert!(ratio > 1.5, "Should compress at least 1.5:1, got {:.1}:1", ratio);
+        assert!(
+            ratio > 1.5,
+            "Should compress at least 1.5:1, got {:.1}:1",
+            ratio
+        );
         println!(
             "Compression: {} bytes → {} bytes ({:.1}:1)",
             original_size,
@@ -466,11 +531,17 @@ mod tests {
         let fast = sample_fast();
         let slow = sample_slow();
 
-        let tree = Tree::plant(&fast, &slow, 42, 999.0, Sap {
-            dopamine: 0.5,
-            cortisol: 0.3,
-            ..Default::default()
-        });
+        let tree = Tree::plant(
+            &fast,
+            &slow,
+            42,
+            999.0,
+            Sap {
+                dopamine: 0.5,
+                cortisol: 0.3,
+                ..Default::default()
+            },
+        );
 
         let bytes = tree.serialize();
         let restored = Tree::deserialize(&bytes).expect("tree deser must work");

@@ -79,11 +79,17 @@ impl BehaviorFingerprint {
             return Self { hash };
         }
 
-        let energias: Vec<i64> = (0..64).map(|bit| {
-            let start = bit * region_size;
-            let end = if bit == 63 { n } else { (bit + 1) * region_size };
-            weights[start..end].iter().map(|&w| (w as i64).abs()).sum()
-        }).collect();
+        let energias: Vec<i64> = (0..64)
+            .map(|bit| {
+                let start = bit * region_size;
+                let end = if bit == 63 {
+                    n
+                } else {
+                    (bit + 1) * region_size
+                };
+                weights[start..end].iter().map(|&w| (w as i64).abs()).sum()
+            })
+            .collect();
 
         // Cérebro sem nenhum peso não é "metade aceso", é ausência — mantém hash 0.
         if energias.iter().all(|&e| e == 0) {
@@ -117,7 +123,9 @@ impl BehaviorFingerprint {
 
     /// Desserializa de 8 bytes.
     pub fn from_bytes(buf: &[u8; 8]) -> Self {
-        Self { hash: u64::from_le_bytes(*buf) }
+        Self {
+            hash: u64::from_le_bytes(*buf),
+        }
     }
 }
 
@@ -153,7 +161,9 @@ impl SemanticField {
     /// Encontra o centroid mais próximo para um fingerprint.
     /// Retorna (índice, distância).
     pub fn find_nearest(&self, fp: &BehaviorFingerprint) -> Option<(usize, u32)> {
-        if self.centroids.is_empty() { return None; }
+        if self.centroids.is_empty() {
+            return None;
+        }
 
         let mut best_idx = 0;
         let mut best_dist = u32::MAX;
@@ -198,7 +208,9 @@ impl SemanticField {
             self.centroids.push(new_centroid);
         } else {
             // Substituir o menos popular
-            if let Some(min_idx) = self.centroids.iter()
+            if let Some(min_idx) = self
+                .centroids
+                .iter()
                 .enumerate()
                 .min_by_key(|(_, c)| c.population_count)
                 .map(|(i, _)| i)
@@ -212,7 +224,11 @@ impl SemanticField {
     ///
     /// Retorna (centroid_index, delta_compressed).
     /// Se nenhum centroid está perto o suficiente, retorna None.
-    pub fn compress_with_template(&self, weights: &[i8], max_distance: u32) -> Option<(usize, Vec<u8>)> {
+    pub fn compress_with_template(
+        &self,
+        weights: &[i8],
+        max_distance: u32,
+    ) -> Option<(usize, Vec<u8>)> {
         let fp = BehaviorFingerprint::from_weights(weights);
         let (idx, dist) = self.find_nearest(&fp)?;
 
@@ -225,7 +241,9 @@ impl SemanticField {
         let template = sparse::decompress(&template_rle);
 
         // Calcular delta: weights - template
-        let delta: Vec<i8> = weights.iter().zip(template.iter())
+        let delta: Vec<i8> = weights
+            .iter()
+            .zip(template.iter())
             .map(|(&w, &t)| (w as i16 - t as i16).clamp(-1, 1) as i8)
             .collect();
 
@@ -237,8 +255,14 @@ impl SemanticField {
     }
 
     /// Descomprime usando centroid + delta.
-    pub fn decompress_with_template(&self, centroid_idx: usize, delta_bytes: &[u8]) -> Option<Vec<i8>> {
-        if centroid_idx >= self.centroids.len() { return None; }
+    pub fn decompress_with_template(
+        &self,
+        centroid_idx: usize,
+        delta_bytes: &[u8],
+    ) -> Option<Vec<i8>> {
+        if centroid_idx >= self.centroids.len() {
+            return None;
+        }
 
         let template_rle = sparse::deserialize(&self.centroids[centroid_idx].template_compressed)?;
         let template = sparse::decompress(&template_rle);
@@ -247,7 +271,9 @@ impl SemanticField {
         let delta = sparse::decompress(&delta_rle);
 
         // Somar template + delta e re-quantizar
-        let weights: Vec<i8> = template.iter().zip(delta.iter())
+        let weights: Vec<i8> = template
+            .iter()
+            .zip(delta.iter())
             .map(|(&t, &d)| (t as i16 + d as i16).clamp(-1, 1) as i8)
             .collect();
 
@@ -274,7 +300,9 @@ impl SemanticField {
 
     /// Desserializa o campo semântico.
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 8 { return None; }
+        if buf.len() < 8 {
+            return None;
+        }
 
         let num_centroids = u32::from_le_bytes(buf[0..4].try_into().ok()?) as usize;
         let max_centroids = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
@@ -283,7 +311,9 @@ impl SemanticField {
         let mut off = 8;
 
         for _ in 0..num_centroids {
-            if off + 20 > buf.len() { return None; }
+            if off + 20 > buf.len() {
+                return None;
+            }
 
             let fp_bytes: [u8; 8] = buf[off..off + 8].try_into().ok()?;
             let fingerprint = BehaviorFingerprint::from_bytes(&fp_bytes);
@@ -298,7 +328,9 @@ impl SemanticField {
             let data_len = u32::from_le_bytes(buf[off..off + 4].try_into().ok()?) as usize;
             off += 4;
 
-            if off + data_len > buf.len() { return None; }
+            if off + data_len > buf.len() {
+                return None;
+            }
             let template_compressed = buf[off..off + data_len].to_vec();
             off += data_len;
 
@@ -310,7 +342,10 @@ impl SemanticField {
             });
         }
 
-        Some(Self { centroids, max_centroids })
+        Some(Self {
+            centroids,
+            max_centroids,
+        })
     }
 }
 
@@ -322,7 +357,10 @@ mod tests {
     fn fingerprint_from_all_zeros() {
         let weights = vec![0i8; 256];
         let fp = BehaviorFingerprint::from_weights(&weights);
-        assert_eq!(fp.hash, 0, "All-zero weights should produce zero fingerprint");
+        assert_eq!(
+            fp.hash, 0,
+            "All-zero weights should produce zero fingerprint"
+        );
     }
 
     /// Pesos UNIFORMES não carregam informação de região: toda região tem a mesma energia.
@@ -335,7 +373,12 @@ mod tests {
     fn fingerprint_from_dense_signal() {
         let weights: Vec<i8> = (0..256).map(|_| 1i8).collect();
         let fp = BehaviorFingerprint::from_weights(&weights);
-        assert_eq!(fp.hash.count_ones(), 32, "sinal uniforme: {:#018x}", fp.hash);
+        assert_eq!(
+            fp.hash.count_ones(),
+            32,
+            "sinal uniforme: {:#018x}",
+            fp.hash
+        );
     }
 
     /// O que o fingerprint existe para fazer: separar cérebros diferentes.
@@ -345,9 +388,11 @@ mod tests {
         let fb = BehaviorFingerprint::from_weights(&cerebro_realista(999));
         let fc = BehaviorFingerprint::from_weights(&cerebro_realista(4242));
         for (x, y, n) in [(fa, fb, "1x999"), (fa, fc, "1x4242"), (fb, fc, "999x4242")] {
-            assert!(x.distance(&y) > NICHE_DISTANCE_ESPERADA,
-                    "{n}: distância {} não separa (limiar de nicho {NICHE_DISTANCE_ESPERADA})",
-                    x.distance(&y));
+            assert!(
+                x.distance(&y) > NICHE_DISTANCE_ESPERADA,
+                "{n}: distância {} não separa (limiar de nicho {NICHE_DISTANCE_ESPERADA})",
+                x.distance(&y)
+            );
         }
     }
 
@@ -356,8 +401,10 @@ mod tests {
     #[test]
     fn fingerprint_e_deterministico() {
         let c = cerebro_realista(31337);
-        assert_eq!(BehaviorFingerprint::from_weights(&c).hash,
-                   BehaviorFingerprint::from_weights(&c).hash);
+        assert_eq!(
+            BehaviorFingerprint::from_weights(&c).hash,
+            BehaviorFingerprint::from_weights(&c).hash
+        );
     }
 
     /// Sensibilidade: mexer numa região tem de mover o fingerprint. Zerar um quarto dos
@@ -366,7 +413,9 @@ mod tests {
     fn fingerprint_reage_a_mudanca_de_regiao() {
         let base = cerebro_realista(5);
         let mut mexido = base.clone();
-        for w in mexido.iter_mut().take(base.len() / 4) { *w = 0; }
+        for w in mexido.iter_mut().take(base.len() / 4) {
+            *w = 0;
+        }
         let d = BehaviorFingerprint::from_weights(&base)
             .distance(&BehaviorFingerprint::from_weights(&mexido));
         assert!(d > 0, "zerar 25% dos pesos não mudou o fingerprint");
@@ -381,14 +430,18 @@ mod tests {
     /// `CHAMPION.dna`. `semente` muda o padrão sem mudar a densidade.
     fn cerebro_realista(semente: u64) -> Vec<i8> {
         let mut s = semente.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (0..21408).map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            match (s >> 33) % 1000 {
-                0..=262 => -127,
-                263..=525 => 127,
-                _ => 0,
-            }
-        }).collect()
+        (0..21408)
+            .map(|_| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                match (s >> 33) % 1000 {
+                    0..=262 => -127,
+                    263..=525 => 127,
+                    _ => 0,
+                }
+            })
+            .collect()
     }
 
     /// REGRESSÃO do bug que desligou a diversidade da evolução inteira.
@@ -411,25 +464,43 @@ mod tests {
         let a = cerebro_realista(1);
         let b = cerebro_realista(999);
         let nz = a.iter().filter(|&&w| w != 0).count();
-        assert!((0.45..0.60).contains(&(nz as f32 / a.len() as f32)),
-                "densidade fora do medido em CHAMPION.dna: {nz}");
+        assert!(
+            (0.45..0.60).contains(&(nz as f32 / a.len() as f32)),
+            "densidade fora do medido em CHAMPION.dna: {nz}"
+        );
 
         // O critério ANTIGO, reproduzido aqui: acendia todos os 64 bits.
         let regiao = a.len() / 64;
-        let acesos_criterio_antigo = (0..64).filter(|bit| {
-            let (i, f) = (bit * regiao, if *bit == 63 { a.len() } else { (bit + 1) * regiao });
-            let energia: i64 = a[i..f].iter().map(|&w| (w as i64).abs()).sum();
-            energia > ((f - i) as i64 / 10).max(1)
-        }).count();
-        assert_eq!(acesos_criterio_antigo, 64, "o critério antigo saturava — este é o bug");
+        let acesos_criterio_antigo = (0..64)
+            .filter(|bit| {
+                let (i, f) = (
+                    bit * regiao,
+                    if *bit == 63 {
+                        a.len()
+                    } else {
+                        (bit + 1) * regiao
+                    },
+                );
+                let energia: i64 = a[i..f].iter().map(|&w| (w as i64).abs()).sum();
+                energia > ((f - i) as i64 / 10).max(1)
+            })
+            .count();
+        assert_eq!(
+            acesos_criterio_antigo, 64,
+            "o critério antigo saturava — este é o bug"
+        );
 
         // O critério ATUAL tem de separar os dois cérebros.
-        let (fa, fb) = (BehaviorFingerprint::from_weights(&a),
-                        BehaviorFingerprint::from_weights(&b));
+        let (fa, fb) = (
+            BehaviorFingerprint::from_weights(&a),
+            BehaviorFingerprint::from_weights(&b),
+        );
         assert_ne!(fa.hash, u64::MAX, "voltou a saturar");
-        assert!(fa.distance(&fb) > NICHE_DISTANCE_ESPERADA,
-                "cérebros diferentes voltaram a cair no mesmo nicho: distância {}",
-                fa.distance(&fb));
+        assert!(
+            fa.distance(&fb) > NICHE_DISTANCE_ESPERADA,
+            "cérebros diferentes voltaram a cair no mesmo nicho: distância {}",
+            fa.distance(&fb)
+        );
     }
 
     /// O critério corrigido (contagem de não-zeros, como a documentação sempre disse)
@@ -441,12 +512,23 @@ mod tests {
     fn consertar_so_a_unidade_nao_resolve() {
         let a = cerebro_realista(7);
         let regiao = a.len() / 64;
-        let regioes_acima: usize = (0..64).filter(|bit| {
-            let (i, f) = (bit * regiao, if *bit == 63 { a.len() } else { (bit + 1) * regiao });
-            a[i..f].iter().filter(|&&w| w != 0).count() > (f - i) / 10
-        }).count();
-        assert_eq!(regioes_acima, 64,
-                   "com 52,6% de densidade, contagem>10% também dá todos os bits");
+        let regioes_acima: usize = (0..64)
+            .filter(|bit| {
+                let (i, f) = (
+                    bit * regiao,
+                    if *bit == 63 {
+                        a.len()
+                    } else {
+                        (bit + 1) * regiao
+                    },
+                );
+                a[i..f].iter().filter(|&&w| w != 0).count() > (f - i) / 10
+            })
+            .count();
+        assert_eq!(
+            regioes_acima, 64,
+            "com 52,6% de densidade, contagem>10% também dá todos os bits"
+        );
     }
 
     #[test]
@@ -456,12 +538,14 @@ mod tests {
         let dist = fp1.distance(&fp2);
         assert_eq!(dist, 4); // 4 bits differ (0x0F)
         let sim = fp1.similarity(&fp2);
-        assert!((sim - (1.0 - 4.0/64.0)).abs() < 1e-6);
+        assert!((sim - (1.0 - 4.0 / 64.0)).abs() < 1e-6);
     }
 
     #[test]
     fn fingerprint_serialization() {
-        let fp = BehaviorFingerprint { hash: 0xDEAD_BEEF_CAFE_BABE };
+        let fp = BehaviorFingerprint {
+            hash: 0xDEAD_BEEF_CAFE_BABE,
+        };
         let bytes = fp.to_bytes();
         let restored = BehaviorFingerprint::from_bytes(&bytes);
         assert_eq!(fp, restored);

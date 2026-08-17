@@ -34,7 +34,7 @@
 use super::RetinaDigestGpu;
 use crate::config::iara::vision::{RETINA_COLS, RETINA_TOTAL};
 use crate::gpu::perception::WAVE_U32S;
-use crate::gpu::{legacy_encoding, Pixel};
+use crate::gpu::{Pixel, legacy_encoding};
 use crate::perception::RetinaPerception;
 
 const N_BEINGS: usize = 2;
@@ -47,10 +47,15 @@ const N_TICKS: usize = 4;
 /// exercer o caminho de `min_wall_ahead`.
 fn synthetic_retina(being: usize, tick: usize) -> Vec<u32> {
     let mut out = Vec::with_capacity(RETINA_TOTAL);
-    let seed = (being as u32).wrapping_mul(97).wrapping_add((tick as u32).wrapping_mul(131));
+    let seed = (being as u32)
+        .wrapping_mul(97)
+        .wrapping_add((tick as u32).wrapping_mul(131));
     for j in 0..RETINA_TOTAL {
         let jx = j as u32;
-        let h = jx.wrapping_mul(2654435761).wrapping_add(seed).wrapping_mul(0x9E3779B1);
+        let h = jx
+            .wrapping_mul(2654435761)
+            .wrapping_add(seed)
+            .wrapping_mul(0x9E3779B1);
         let dist_mm = (h % 60_000) as u32; // 0..60 m
         let col = j % RETINA_COLS;
         // Força parede nas colunas centrais em ~1/4 dos pixels dessa faixa, perto
@@ -60,7 +65,11 @@ fn synthetic_retina(being: usize, tick: usize) -> Vec<u32> {
         } else {
             h % 4
         };
-        let dist_mm = if material == 2 { dist_mm % 20_000 } else { dist_mm };
+        let dist_mm = if material == 2 {
+            dist_mm % 20_000
+        } else {
+            dist_mm
+        };
         out.push((dist_mm << 8) | material);
     }
     out
@@ -104,7 +113,11 @@ fn channel_from_hidden(h: &[f32]) -> [i8; 16] {
     let mut out = [0i8; 16];
     for (i, &hi) in h.iter().enumerate() {
         let abs_h = hi.abs();
-        let tanh_h = if abs_h > 10.0 { hi.signum() * 0.999 } else { hi / (1.0 + abs_h) };
+        let tanh_h = if abs_h > 10.0 {
+            hi.signum() * 0.999
+        } else {
+            hi / (1.0 + abs_h)
+        };
         let val = (tanh_h * 127.0 * 0.3).clamp(-127.0, 127.0);
         out[i] = val as i8;
     }
@@ -167,13 +180,16 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
     let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("test-output"),
         size: bytes_output,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
     // Oráculo CPU: mesma seed fixa que RetinaDigestGpu::new() usa internamente para
     // subir os pesos — os dois lados partem dos MESMOS pesos de CfC.
-    let mut cpu_percept: Vec<RetinaPerception> = (0..N_BEINGS).map(|_| RetinaPerception::new()).collect();
+    let mut cpu_percept: Vec<RetinaPerception> =
+        (0..N_BEINGS).map(|_| RetinaPerception::new()).collect();
 
     for tick in 0..N_TICKS {
         let mut retina_data = Vec::with_capacity(N_BEINGS * RETINA_TOTAL);
@@ -193,8 +209,14 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
 
         let mut enc = device.create_command_encoder(&Default::default());
         enc.clear_buffer(&buf_output, 0, Some(bytes_output));
-        let bytes_extra =
-            digest.bind_and_dispatch(&mut enc, &device, &queue, N_BEINGS, &buf_retina, &buf_output);
+        let bytes_extra = digest.bind_and_dispatch(
+            &mut enc,
+            &device,
+            &queue,
+            N_BEINGS,
+            &buf_retina,
+            &buf_output,
+        );
         queue.submit(Some(enc.finish()));
         device.poll(wgpu::Maintain::Wait);
 
@@ -215,7 +237,10 @@ fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
                     "tick={tick} being={being} min_wall_ahead: GPU={got_wall} CPU={want_wall}"
                 );
             } else {
-                assert!(got_wall > 1.0e8, "tick={tick} being={being} esperava sentinela, GPU={got_wall}");
+                assert!(
+                    got_wall > 1.0e8,
+                    "tick={tick} being={being} esperava sentinela, GPU={got_wall}"
+                );
             }
             assert!(
                 (got_e6 - want_e6).abs() < 0.01,

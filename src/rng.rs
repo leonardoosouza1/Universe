@@ -110,7 +110,10 @@ mod tests {
         let a: Vec<f32> = (0..50_000).map(|_| r.symmetric()).collect();
         let m = a.iter().sum::<f32>() / a.len() as f32;
         let var = a.iter().map(|v| (v - m).powi(2)).sum::<f32>() / a.len() as f32;
-        assert!((var - 1.0 / 3.0).abs() < 0.02, "variância {var}, esperado 1/3");
+        assert!(
+            (var - 1.0 / 3.0).abs() < 0.02,
+            "variância {var}, esperado 1/3"
+        );
     }
 
     #[test]
@@ -125,8 +128,14 @@ mod tests {
 
     #[test]
     fn is_deterministic_for_same_seed() {
-        let a: Vec<f32> = { let mut r = Lcg::new(42); (0..100).map(|_| r.symmetric()).collect() };
-        let b: Vec<f32> = { let mut r = Lcg::new(42); (0..100).map(|_| r.symmetric()).collect() };
+        let a: Vec<f32> = {
+            let mut r = Lcg::new(42);
+            (0..100).map(|_| r.symmetric()).collect()
+        };
+        let b: Vec<f32> = {
+            let mut r = Lcg::new(42);
+            (0..100).map(|_| r.symmetric()).collect()
+        };
         assert_eq!(a, b);
     }
 }

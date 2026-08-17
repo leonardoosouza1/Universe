@@ -32,8 +32,8 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
 use crate::engine::SovereignEngine;
-use crate::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS};
 
 // ── CONSTANTS DERIVED FROM THE BRAIN DIMENSIONS ──────────────────────────────
 
@@ -69,27 +69,27 @@ pub const OUT_BETA_DEFAULT: f32 = 0.85;
 pub const OUT_GAIN_DEFAULT: f32 = 2.0;
 
 /// CfC state per being: 96 floats (state) + 1 u32 (counter, bitcast as f32) = 97 f32.
-const CFC_SLOTS_PER_BEING: usize = L1_NEURONS + 1;  // 97
+const CFC_SLOTS_PER_BEING: usize = L1_NEURONS + 1; // 97
 
 /// P1.7 (`docs/PLANO_EVOLUCAO.md`) — asynchronous brain. Per-neuron metadata, SoA
 /// layout per being, mirroring `buf_neuron_meta` in `brain.wgsl` byte for byte:
 /// `[l1_alpha(96), l1_period(96), l1_threshold(96), l1_activation(96), l2_alpha(48),
 /// l2_activation(48)]` = 480 f32 per being. See `NEURON_META_PER_BEING` in the shader.
-pub const NEURON_META_PER_BEING: usize = L1_NEURONS * 4 + L2_NEURONS * 2;  // 480
+pub const NEURON_META_PER_BEING: usize = L1_NEURONS * 4 + L2_NEURONS * 2; // 480
 
 /// P1.7 — persistent state of the EMA memory (mechanism 1), one slot per L1+L2 neuron.
 /// `[l1_mem(96), l2_mem(48)]` = 144 f32 per being. Mirrors `NEURON_MEM_PER_BEING` in
 /// the shader.
-pub const NEURON_MEM_PER_BEING: usize = L1_NEURONS + L2_NEURONS;  // 144
+pub const NEURON_MEM_PER_BEING: usize = L1_NEURONS + L2_NEURONS; // 144
 
 /// Adaptive fatigue per being: 192 floats.
 /// Slots `[0..96]`   = CfC input fatigue (recurrent state, present from the start).
 /// Slots `[96..192]` = output fatigue, which breaks the `final_intent` fixed point.
 /// Grown from 96 → 192 to support `OUT_ALPHA`/`OUT_BETA` in `brain.wgsl`.
-const FATIGUE_PER_BEING: usize = L1_NEURONS * 2;  // 192
+const FATIGUE_PER_BEING: usize = L1_NEURONS * 2; // 192
 
 /// Width of `final_intent` (96 slots, `engine.rs:472`).
-const INTENT_DIM: usize = L1_NEURONS;  // 96
+const INTENT_DIM: usize = L1_NEURONS; // 96
 
 // ── #[repr(C)] STRUCT FOR THE UNIFORM ────────────────────────────────────────
 
@@ -180,23 +180,23 @@ pub struct BrainInput<'a> {
 /// Invariant: every buffer has capacity >= `capacity` beings. If the capacity has to
 /// change (more beings spawn than were budgeted for), rebuild it with `BrainGpu::new`.
 pub struct BrainGpu {
-    device:   Arc<wgpu::Device>,
-    queue:     Arc<wgpu::Queue>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     pipeline: wgpu::ComputePipeline,
-    layout:   wgpu::BindGroupLayout,
+    layout: wgpu::BindGroupLayout,
 
     // Persistent buffers (fixed size for the whole generation)
-    buf_wave:   wgpu::Buffer,  // i32 × (cap × WAVE) — rewritten every tick
-    buf_kan:    wgpu::Buffer,  // f32 × (cap × KAN_WEIGHTS_PER_BEING) — per generation
-    buf_l1w:    wgpu::Buffer,  // f32 × (cap × L1_WEIGHTS_PER_BEING)  — per generation
-    buf_l2w:    wgpu::Buffer,  // f32 × (cap × L2_WEIGHTS_PER_BEING)  — per generation
-    buf_intent: wgpu::Buffer,  // f32 × (cap × INTENT_DIM)            — read every tick
-    buf_cfc:     wgpu::Buffer,  // f32 × (cap × CFC_SLOTS_PER_BEING)  — resident
+    buf_wave: wgpu::Buffer,   // i32 × (cap × WAVE) — rewritten every tick
+    buf_kan: wgpu::Buffer,    // f32 × (cap × KAN_WEIGHTS_PER_BEING) — per generation
+    buf_l1w: wgpu::Buffer,    // f32 × (cap × L1_WEIGHTS_PER_BEING)  — per generation
+    buf_l2w: wgpu::Buffer,    // f32 × (cap × L2_WEIGHTS_PER_BEING)  — per generation
+    buf_intent: wgpu::Buffer, // f32 × (cap × INTENT_DIM)            — read every tick
+    buf_cfc: wgpu::Buffer,    // f32 × (cap × CFC_SLOTS_PER_BEING)  — resident
 
     /// Adaptive fatigue (spike-frequency adaptation): slow per-neuron state.
     /// It grows while `|state[i]|` is high and saturates when a neuron fires hard for a
     /// long time. Initialised to zeros; updated every tick by the `brain.wgsl` kernel.
-    buf_fatigue: wgpu::Buffer,  // f32 × (cap × FATIGUE_PER_BEING)    — resident
+    buf_fatigue: wgpu::Buffer, // f32 × (cap × FATIGUE_PER_BEING)    — resident
 
     /// The τ bank: the CfC decay rate per channel per being, in s⁻¹ (d = 1/τ).
     ///
@@ -204,19 +204,19 @@ pub struct BrainGpu {
     /// genome and does not change during a being's life. Uploaded by `upload_tau`. It
     /// is born at `DECAY_DEFAULT` (τ = 2.0 s on every channel) so that a caller who
     /// never calls `upload_tau` gets the old behaviour.
-    buf_tau:    wgpu::Buffer,   // f32 × (cap × L1_NEURONS)           — per generation
+    buf_tau: wgpu::Buffer, // f32 × (cap × L1_NEURONS)           — per generation
 
     /// P1.7 — per-neuron metadata (alpha / period / threshold / activation), read-only,
     /// uploaded once per generation. See `NEURON_META_PER_BEING`.
-    buf_neuron_meta: wgpu::Buffer,  // f32 × (cap × NEURON_META_PER_BEING) — per generation
+    buf_neuron_meta: wgpu::Buffer, // f32 × (cap × NEURON_META_PER_BEING) — per generation
 
     /// P1.7 — persistent state of the per-neuron EMA memory (mechanism 1).
     /// FOLLOWS THE PATTERN of `buf_cfc`: read_write, resident, cleared on spawn and
     /// between generations through `reset_cfc` (the same method, extended).
-    buf_neuron_mem: wgpu::Buffer,   // f32 × (cap × NEURON_MEM_PER_BEING)  — resident
+    buf_neuron_mem: wgpu::Buffer, // f32 × (cap × NEURON_MEM_PER_BEING)  — resident
 
     /// M4: per-region gate, 4 f32 per being; 1.0 is neutral.
-    buf_gates: wgpu::Buffer,        // f32 × (cap × 4)
+    buf_gates: wgpu::Buffer, // f32 × (cap × 4)
 
     /// Temporary debug buffer: exports `l1_raw` plus the CfC/KAN inputs of being 0.
     /// Layout: `[l1_raw[0..96], cfc_in[0..96], kan_in[96..223]]` = 319 f32. The last
@@ -224,7 +224,7 @@ pub struct BrainGpu {
     /// the shader only fills its first 96 entries (the guard `j < 127u` never binds,
     /// because only 96 threads reach it), so slots 288..319 hold whatever was there
     /// before. Harmless, but do not read past `192 + 96`.
-    buf_debug:  wgpu::Buffer,
+    buf_debug: wgpu::Buffer,
 
     /// CPU readback buffer (`MAP_READ`, same size as `buf_intent`).
     buf_readback: wgpu::Buffer,
@@ -294,7 +294,7 @@ impl BrainGpu {
     /// If the number of living beings ever exceeds it, the caller must rebuild.
     pub fn new(
         device: Arc<wgpu::Device>,
-        queue:   Arc<wgpu::Queue>,
+        queue: Arc<wgpu::Queue>,
         adapter_name: String,
         capacity: usize,
     ) -> Self {
@@ -306,20 +306,20 @@ impl BrainGpu {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("brain-layout"),
             entries: &[
-                uniform_entry(0),              // params (includes use_percept_direct)
-                storage_entry(1, true),         // buf_wave: i32 sign-extended (CPU path)
-                storage_entry(2, true),         // buf_kan  (read)
-                storage_entry(3, true),         // buf_l1w  (read)
-                storage_entry(4, true),         // buf_l2w  (read)
-                storage_entry(5, false),        // buf_intent (read_write)
-                storage_entry(6, false),        // buf_cfc    (read_write, recurrent state)
-                storage_entry(7, false),        // buf_debug  (temporary diagnostics)
-                storage_entry(8, true),         // buf_percept: u32 from perception.wgsl (GPU path)
-                storage_entry(9, false),        // buf_fatigue (read_write, adaptive fatigue)
-                storage_entry(10, true),        // buf_tau     (read, per-channel τ bank)
-                storage_entry(11, true),        // buf_neuron_meta (read, P1.7 — alpha/period/threshold/activation)
-                storage_entry(12, false),       // buf_neuron_mem  (read_write, P1.7 — resident EMA memory)
-                storage_entry(13, true),        // buf_gates (read, M4 — per-region gate, 4 f32/being)
+                uniform_entry(0),         // params (includes use_percept_direct)
+                storage_entry(1, true),   // buf_wave: i32 sign-extended (CPU path)
+                storage_entry(2, true),   // buf_kan  (read)
+                storage_entry(3, true),   // buf_l1w  (read)
+                storage_entry(4, true),   // buf_l2w  (read)
+                storage_entry(5, false),  // buf_intent (read_write)
+                storage_entry(6, false),  // buf_cfc    (read_write, recurrent state)
+                storage_entry(7, false),  // buf_debug  (temporary diagnostics)
+                storage_entry(8, true),   // buf_percept: u32 from perception.wgsl (GPU path)
+                storage_entry(9, false),  // buf_fatigue (read_write, adaptive fatigue)
+                storage_entry(10, true),  // buf_tau     (read, per-channel τ bank)
+                storage_entry(11, true), // buf_neuron_meta (read, P1.7 — alpha/period/threshold/activation)
+                storage_entry(12, false), // buf_neuron_mem  (read_write, P1.7 — resident EMA memory)
+                storage_entry(13, true),  // buf_gates (read, M4 — per-region gate, 4 f32/being)
             ],
         });
 
@@ -441,8 +441,8 @@ impl BrainGpu {
             label: Some("brain-neuron-mem"),
             contents: &neuron_mem_zeros,
             usage: wgpu::BufferUsages::STORAGE
-                 | wgpu::BufferUsages::COPY_DST
-                 | wgpu::BufferUsages::COPY_SRC, // per-being reset via write_buffer + future diagnostics
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC, // per-being reset via write_buffer + future diagnostics
         });
 
         // M4: the gates start NEUTRAL (1.0) — with the flag off they are never rewritten.
@@ -464,7 +464,7 @@ impl BrainGpu {
         // Fixed size (it does not scale with cap): being 0 only.
         let buf_debug = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-debug"),
-            size: (319 * 4) as u64,  // 96 + 96 + 127 = 319 f32
+            size: (319 * 4) as u64, // 96 + 96 + 127 = 319 f32
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -534,7 +534,10 @@ impl BrainGpu {
         // it). Re-uploading the same 3072×n floats each generation is pure bandwidth, so
         // upload once (on the first `upload_weights` call) and skip afterwards. See the
         // doc on `kan_uploaded`.
-        if !self.kan_uploaded.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if !self
+            .kan_uploaded
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             let mut kan_data: Vec<f32> = Vec::with_capacity(n * KAN_WEIGHTS_PER_BEING);
             for eng in engines[..n].iter() {
                 for filter in eng.kan_filters.filters.iter().take(SENSORY_WAVE_SIZE) {
@@ -550,7 +553,8 @@ impl BrainGpu {
                     }
                 }
             }
-            self.queue.write_buffer(&self.buf_kan, 0, bytemuck::cast_slice(&kan_data));
+            self.queue
+                .write_buffer(&self.buf_kan, 0, bytemuck::cast_slice(&kan_data));
         }
 
         // ── L1 (instinct_layer: BitLinear WAVE→96) ───────────────────────
@@ -560,22 +564,34 @@ impl BrainGpu {
         for eng in engines[..n].iter() {
             // The weights live in a Vec<f32> of len = WAVE * L1_OUT (layers.rs:40).
             let w = &eng.instinct_layer.weights;
-            debug_assert_eq!(w.len(), L1_WEIGHTS_PER_BEING,
-                "L1 weights size mismatch: {} vs {}", w.len(), L1_WEIGHTS_PER_BEING);
+            debug_assert_eq!(
+                w.len(),
+                L1_WEIGHTS_PER_BEING,
+                "L1 weights size mismatch: {} vs {}",
+                w.len(),
+                L1_WEIGHTS_PER_BEING
+            );
             l1_data.extend_from_slice(w);
         }
-        self.queue.write_buffer(&self.buf_l1w, 0, bytemuck::cast_slice(&l1_data));
+        self.queue
+            .write_buffer(&self.buf_l1w, 0, bytemuck::cast_slice(&l1_data));
 
         // ── L2 (cortex_l2: FloatLinear 96→48) ────────────────────────────
         // weights: Vec<f32>, row-major — weights[j * L1_OUT + i].
         let mut l2_data: Vec<f32> = Vec::with_capacity(n * L2_WEIGHTS_PER_BEING);
         for eng in engines[..n].iter() {
             let w = &eng.cortex_l2.weights;
-            debug_assert_eq!(w.len(), L2_WEIGHTS_PER_BEING,
-                "L2 weights size mismatch: {} vs {}", w.len(), L2_WEIGHTS_PER_BEING);
+            debug_assert_eq!(
+                w.len(),
+                L2_WEIGHTS_PER_BEING,
+                "L2 weights size mismatch: {} vs {}",
+                w.len(),
+                L2_WEIGHTS_PER_BEING
+            );
             l2_data.extend_from_slice(w);
         }
-        self.queue.write_buffer(&self.buf_l2w, 0, bytemuck::cast_slice(&l2_data));
+        self.queue
+            .write_buffer(&self.buf_l2w, 0, bytemuck::cast_slice(&l2_data));
     }
 
     /// Uploads the τ bank: `n × L1_NEURONS` decay rates in s⁻¹, in being order.
@@ -585,27 +601,45 @@ impl BrainGpu {
     /// initialisation, which is the old uniform τ = 2.0 s; that way the experiment's
     /// control arm *is* the historical behaviour.
     pub fn upload_tau(&self, taus: &[f32], n: usize) {
-        assert!(n <= self.capacity, "n={n} exceeds capacity {}", self.capacity);
+        assert!(
+            n <= self.capacity,
+            "n={n} exceeds capacity {}",
+            self.capacity
+        );
         // A wrong length here would be a SILENT bug: the kernel would read the next
         // being's τ (or garbage past the end of the buffer) and the "heterogeneous"
         // condition would turn into shuffled noise with no visible symptom. That exact
         // class of error — a wrong stride on the sensory wave — has already scrambled
         // the slow brain's input in this project.
-        assert_eq!(taus.len(), n * L1_NEURONS,
+        assert_eq!(
+            taus.len(),
+            n * L1_NEURONS,
             "tau bank has {} values, expected {} ({n} beings × {L1_NEURONS} channels)",
-            taus.len(), n * L1_NEURONS);
-        self.queue.write_buffer(&self.buf_tau, 0, bytemuck::cast_slice(taus));
+            taus.len(),
+            n * L1_NEURONS
+        );
+        self.queue
+            .write_buffer(&self.buf_tau, 0, bytemuck::cast_slice(taus));
     }
 
     /// P1.7 — uploads the per-neuron metadata (alpha/period/threshold/activation) of
     /// `n` beings. Same contract as `upload_tau`: once per generation, SoA layout
     /// (`NEURON_META_PER_BEING` floats per being, see the field's comment).
     pub fn upload_neuron_meta(&self, meta: &[f32], n: usize) {
-        assert!(n <= self.capacity, "n={n} exceeds capacity {}", self.capacity);
-        assert_eq!(meta.len(), n * NEURON_META_PER_BEING,
+        assert!(
+            n <= self.capacity,
+            "n={n} exceeds capacity {}",
+            self.capacity
+        );
+        assert_eq!(
+            meta.len(),
+            n * NEURON_META_PER_BEING,
             "neuron metadata (P1.7) has {} values, expected {} ({n} beings × {NEURON_META_PER_BEING})",
-            meta.len(), n * NEURON_META_PER_BEING);
-        self.queue.write_buffer(&self.buf_neuron_meta, 0, bytemuck::cast_slice(meta));
+            meta.len(),
+            n * NEURON_META_PER_BEING
+        );
+        self.queue
+            .write_buffer(&self.buf_neuron_meta, 0, bytemuck::cast_slice(meta));
     }
 
     /// P1.7 — folds the four control flags into a single bitmask for the uniform.
@@ -659,7 +693,9 @@ impl BrainGpu {
 
         let slice = staging.slice(0..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
@@ -667,10 +703,12 @@ impl BrainGpu {
         let vals: &[f32] = bytemuck::cast_slice(&data);
 
         // Each being holds CFC_SLOTS_PER_BEING=97 f32: state[0..96] + counter (bitcast).
-        (0..n).map(|s| {
-            let base = s * CFC_SLOTS_PER_BEING;
-            vals[base..base + 96].to_vec()  // the state only, without the counter
-        }).collect()
+        (0..n)
+            .map(|s| {
+                let base = s * CFC_SLOTS_PER_BEING;
+                vals[base..base + 96].to_vec() // the state only, without the counter
+            })
+            .collect()
     }
 
     /// M4: uploads the per-region gates (4 f32 per being). Called once every 8 ticks by
@@ -678,7 +716,8 @@ impl BrainGpu {
     /// at 1.0.
     pub fn upload_gates(&self, gates: &[f32], n: usize) {
         debug_assert_eq!(gates.len(), n * 4);
-        self.queue.write_buffer(&self.buf_gates, 0, bytemuck::cast_slice(gates));
+        self.queue
+            .write_buffer(&self.buf_gates, 0, bytemuck::cast_slice(gates));
     }
 
     // ── DEBUG BUFFER DOWNLOAD (diagnostics) ────────────────────────────────
@@ -705,16 +744,18 @@ impl BrainGpu {
 
         let slice = staging.slice(0..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
         let data = slice.get_mapped_range();
         let vals: &[f32] = bytemuck::cast_slice(&data);
 
-        let l1_raw   = vals[0..96].to_vec();
-        let cfc_in   = vals[96..192].to_vec();
-        let kan_in   = vals[192..319].to_vec();
+        let l1_raw = vals[0..96].to_vec();
+        let cfc_in = vals[96..192].to_vec();
+        let kan_in = vals[192..319].to_vec();
         (l1_raw, cfc_in, kan_in)
     }
 
@@ -741,7 +782,9 @@ impl BrainGpu {
 
         let slice = staging.slice(0..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
@@ -763,20 +806,25 @@ impl BrainGpu {
     /// state-leaking-across-generations bug that motivated resetting `buf_cfc` and
     /// `buf_fatigue` here.
     pub fn reset_cfc(&self, being_idx: usize) {
-        if being_idx >= self.capacity { return; }
+        if being_idx >= self.capacity {
+            return;
+        }
         // Reset the CfC state + counter (97 f32).
         let cfc_offset = (being_idx * CFC_SLOTS_PER_BEING * 4) as u64;
         let cfc_zeros: Vec<u8> = vec![0u8; CFC_SLOTS_PER_BEING * 4];
-        self.queue.write_buffer(&self.buf_cfc, cfc_offset, &cfc_zeros);
+        self.queue
+            .write_buffer(&self.buf_cfc, cfc_offset, &cfc_zeros);
         // Reset the adaptive fatigue: 192 f32 per being (slots [0..96] input,
         // [96..192] output).
         let fat_offset = (being_idx * FATIGUE_PER_BEING * 4) as u64;
         let fat_zeros: Vec<u8> = vec![0u8; FATIGUE_PER_BEING * 4];
-        self.queue.write_buffer(&self.buf_fatigue, fat_offset, &fat_zeros);
+        self.queue
+            .write_buffer(&self.buf_fatigue, fat_offset, &fat_zeros);
         // P1.7 — reset the per-neuron EMA memory: 144 f32 per being (96 L1 + 48 L2).
         let mem_offset = (being_idx * NEURON_MEM_PER_BEING * 4) as u64;
         let mem_zeros: Vec<u8> = vec![0u8; NEURON_MEM_PER_BEING * 4];
-        self.queue.write_buffer(&self.buf_neuron_mem, mem_offset, &mem_zeros);
+        self.queue
+            .write_buffer(&self.buf_neuron_mem, mem_offset, &mem_zeros);
     }
 
     // ── FORWARD PASS (per tick) ────────────────────────────────────────────
@@ -800,13 +848,11 @@ impl BrainGpu {
     ///    as before — those paths did not change.
     /// 3. NOT call `engine.execute_cycle` for the beings that went to the GPU, or the
     ///    CfC state would be updated twice.
-    pub fn forward(
-        &self,
-        inputs: &[BrainInput<'_>],
-        dt: f32,
-    ) -> Vec<[f32; INTENT_DIM]> {
+    pub fn forward(&self, inputs: &[BrainInput<'_>], dt: f32) -> Vec<[f32; INTENT_DIM]> {
         let n = inputs.len().min(self.capacity);
-        if n == 0 { return Vec::new(); }
+        if n == 0 {
+            return Vec::new();
+        }
 
         // ── Sensory-wave upload (changes every tick) ─────────────────────
         // Converts i8 → i32 (sign-extend) so the shader reads it without bit tricks.
@@ -816,7 +862,8 @@ impl BrainGpu {
                 wave_data.push(b as i32);
             }
         }
-        self.queue.write_buffer(&self.buf_wave, 0, bytemuck::cast_slice(&wave_data));
+        self.queue
+            .write_buffer(&self.buf_wave, 0, bytemuck::cast_slice(&wave_data));
 
         // ── Uniform params ───────────────────────────────────────────────
         // use_percept_direct = 0: read from buf_wave (binding 1), the CPU path.
@@ -842,11 +889,13 @@ impl BrainGpu {
             _pad2: 0,
             _pad3: 0,
         };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("brain-params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("brain-params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         // ── Bind group ───────────────────────────────────────────────────
         // Binding 8 = buf_percept_dummy (placeholder, unread with use_percept_direct=0).
@@ -855,20 +904,62 @@ impl BrainGpu {
             label: None,
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_wave.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_kan.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_l1w.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_l2w.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.buf_intent.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_cfc.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.buf_debug.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: self.buf_percept_dummy.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: self.buf_fatigue.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 11, resource: self.buf_neuron_meta.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 12, resource: self.buf_neuron_mem.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 13, resource: self.buf_gates.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_wave.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_kan.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_l1w.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_l2w.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buf_intent.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_cfc.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.buf_debug.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: self.buf_percept_dummy.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: self.buf_fatigue.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: self.buf_tau.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: self.buf_neuron_meta.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: self.buf_neuron_mem.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: self.buf_gates.as_entire_binding(),
+                },
             ],
         });
 
@@ -889,7 +980,9 @@ impl BrainGpu {
         // ── Readback ─────────────────────────────────────────────────────
         let slice = self.buf_readback.slice(0..bytes_intent);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         // poll(Wait) blocks until the GPU finishes. Inside a Bevy system that is
         // acceptable, because the system already blocks the scheduler thread anyway. An
         // async alternative (which would not block the thread) would mean restructuring
@@ -946,14 +1039,16 @@ impl BrainGpu {
     ///   intermediate readback at all.
     pub fn bind_and_dispatch(
         &self,
-        enc:          &mut wgpu::CommandEncoder,
-        n:            usize,
-        wave_data_i32: &[i32],               // used ONLY when buf_percept = None
-        dt:           f32,
-        buf_percept:  Option<&wgpu::Buffer>, // Some = GPU path (use_percept_direct=1)
+        enc: &mut wgpu::CommandEncoder,
+        n: usize,
+        wave_data_i32: &[i32], // used ONLY when buf_percept = None
+        dt: f32,
+        buf_percept: Option<&wgpu::Buffer>, // Some = GPU path (use_percept_direct=1)
     ) -> u64 {
         let n = n.min(self.capacity);
-        if n == 0 { return 0; }
+        if n == 0 {
+            return 0;
+        }
 
         // Decide how the wave is read.
         let use_percept_direct: u32;
@@ -967,7 +1062,8 @@ impl BrainGpu {
         } else {
             // CPU path: upload wave_data_i32 via write_buffer (non-blocking until
             // submit). wave_data_i32 must have len = n × SENSORY_WAVE_SIZE.
-            self.queue.write_buffer(&self.buf_wave, 0, bytemuck::cast_slice(wave_data_i32));
+            self.queue
+                .write_buffer(&self.buf_wave, 0, bytemuck::cast_slice(wave_data_i32));
             use_percept_direct = 0;
             percept_binding = &self.buf_percept_dummy;
         };
@@ -990,37 +1086,81 @@ impl BrainGpu {
             _pad2: 0,
             _pad3: 0,
         };
-        let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("brain-params-chain"),
-            contents: bytemuck::bytes_of(&params),
-            usage:    wgpu::BufferUsages::UNIFORM,
-        });
+        let buf_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("brain-params-chain"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_wave.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_kan.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_l1w.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_l2w.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.buf_intent.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_cfc.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.buf_debug.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: percept_binding.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: self.buf_fatigue.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 10, resource: self.buf_tau.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 11, resource: self.buf_neuron_meta.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 12, resource: self.buf_neuron_mem.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 13, resource: self.buf_gates.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_wave.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_kan.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_l1w.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_l2w.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buf_intent.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_cfc.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.buf_debug.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: percept_binding.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: self.buf_fatigue.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: self.buf_tau.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: self.buf_neuron_meta.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: self.buf_neuron_mem.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: self.buf_gates.as_entire_binding(),
+                },
             ],
         });
 
         // One workgroup per being — no rounding.
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label:            Some("pass-brain"),
+                label: Some("pass-brain"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline);
@@ -1043,12 +1183,16 @@ impl BrainGpu {
     /// mapped.
     pub fn read_intent_after_submit(&self, n: usize) -> Vec<[f32; INTENT_DIM]> {
         let n = n.min(self.capacity);
-        if n == 0 { return Vec::new(); }
+        if n == 0 {
+            return Vec::new();
+        }
 
         let bytes_intent = (n * INTENT_DIM * 4) as u64;
         let slice = self.buf_readback.slice(0..bytes_intent);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         // FIXED HANG: `map_async` registers a callback that is only SERVED by a LATER
         // `poll`. The previous comment claimed "the caller already polled, so recv()
         // returns immediately" — and it was wrong: the caller's poll happens BEFORE the
@@ -1074,7 +1218,9 @@ impl BrainGpu {
 
     /// Reference to `buf_intent` (in VRAM), so other kernels can consume the output
     /// directly.
-    pub fn buf_intent(&self) -> &wgpu::Buffer { &self.buf_intent }
+    pub fn buf_intent(&self) -> &wgpu::Buffer {
+        &self.buf_intent
+    }
 }
 
 // ── BEVY RESOURCE ────────────────────────────────────────────────────────────
@@ -1108,7 +1254,11 @@ impl BrainGpuRes {
         capacity: usize,
     ) -> Option<&BrainGpu> {
         let needs_alloc = self.ctx.is_none()
-            || self.ctx.as_ref().map(|c| c.capacity < capacity).unwrap_or(true);
+            || self
+                .ctx
+                .as_ref()
+                .map(|c| c.capacity < capacity)
+                .unwrap_or(true);
         if needs_alloc {
             self.ctx = Some(BrainGpu::new(device, queue, name, capacity.max(64)));
             if let Some(c) = &self.ctx {

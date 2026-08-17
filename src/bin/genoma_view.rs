@@ -28,11 +28,11 @@
 //!
 //!   genoma_view <caminho.bin> [--top 20] [--heatmap]
 
-use universe::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS};
+use universe::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
 // `name_for` e fn livre do modulo: cobre os 192 indices, enquanto o enum `Channel` so
 // tem variante para os canais nomeados individualmente.
-use universe::perception::channels::name_for;
 use universe::math::stats;
+use universe::perception::channels::name_for;
 
 const MAGIC: &[u8; 4] = b"UGEN";
 
@@ -53,19 +53,36 @@ struct Genoma {
 
 fn carregar(path: &str) -> Option<Genoma> {
     // Sniff só para EXIBIR a versão; a leitura em si é do parser canônico.
-    let versao = std::fs::read(path).ok()
-        .map(|b| if b.len() > 8 && &b[0..4] == MAGIC { u32::from_le_bytes([b[4],b[5],b[6],b[7]]) } else { 1 })
+    let versao = std::fs::read(path)
+        .ok()
+        .map(|b| {
+            if b.len() > 8 && &b[0..4] == MAGIC {
+                u32::from_le_bytes([b[4], b[5], b[6], b[7]])
+            } else {
+                1
+            }
+        })
         .unwrap_or(0);
     let g = universe::gpu::genome_io::load_genome(path)?;
     // `Genome.tau` guarda a taxa d (s⁻¹); exibição converte para τ = 1/d adiante,
     // idêntico ao que era antes (o campo já vinha como d no formato).
     let kan: Vec<f32> = g.kan_knots.iter().flat_map(|r| r.iter().copied()).collect();
-    Some(Genoma { versao, l1: g.l1, l2: g.l2, kan, slow: g.slow, tau: g.tau })
+    Some(Genoma {
+        versao,
+        l1: g.l1,
+        l2: g.l2,
+        kan,
+        slow: g.slow,
+        tau: g.tau,
+    })
 }
 
 /// Histograma ASCII — a "forma" da distribuição, que média e desvio escondem.
 fn histograma(vals: &[f32], bins: usize, largura: usize) {
-    if vals.is_empty() { println!("    (vazio)"); return; }
+    if vals.is_empty() {
+        println!("    (vazio)");
+        return;
+    }
     let h = stats::histogram(vals, bins);
     let lo = vals.iter().cloned().fold(f32::MAX, f32::min);
     let hi = vals.iter().cloned().fold(f32::MIN, f32::max);
@@ -73,24 +90,41 @@ fn histograma(vals: &[f32], bins: usize, largura: usize) {
     for (i, &c) in h.iter().enumerate() {
         let a = lo + (hi - lo) * i as f32 / bins as f32;
         let n = ((c as f32 / pico) * largura as f32).round() as usize;
-        println!("    {a:+7.3} │{}{} {c}", "█".repeat(n), " ".repeat(largura - n));
+        println!(
+            "    {a:+7.3} │{}{} {c}",
+            "█".repeat(n),
+            " ".repeat(largura - n)
+        );
     }
 }
 
 fn resumo(nome: &str, w: &[f32]) {
-    if w.is_empty() { println!("  {nome}: ausente"); return; }
+    if w.is_empty() {
+        println!("  {nome}: ausente");
+        return;
+    }
     // `percentile` ordena no lugar, entao trabalha sobre copia mutavel.
     let mut abs: Vec<f32> = w.iter().map(|x| x.abs()).collect();
     let media = stats::mean(w);
     let sigma = stats::std_dev(w);
     let mortos = abs.iter().filter(|&&x| x < 0.01).count();
     let fortes = abs.iter().filter(|&&x| x > 1.0).count();
-    println!("  {nome}: {} pesos · média {media:+.4} · σ {sigma:.4} · |w|max {:.3}",
-             w.len(), abs.iter().cloned().fold(0.0, f32::max));
-    println!("    quase-zero (|w|<0.01): {mortos} ({:.1}%) · fortes (|w|>1.0): {fortes} ({:.1}%)",
-             mortos as f32 * 100.0 / w.len() as f32, fortes as f32 * 100.0 / w.len() as f32);
-    println!("    percentis |w|: p50 {:.3} · p90 {:.3} · p99 {:.3}",
-             stats::percentile(&mut abs, 50.0), stats::percentile(&mut abs, 90.0), stats::percentile(&mut abs, 99.0));
+    println!(
+        "  {nome}: {} pesos · média {media:+.4} · σ {sigma:.4} · |w|max {:.3}",
+        w.len(),
+        abs.iter().cloned().fold(0.0, f32::max)
+    );
+    println!(
+        "    quase-zero (|w|<0.01): {mortos} ({:.1}%) · fortes (|w|>1.0): {fortes} ({:.1}%)",
+        mortos as f32 * 100.0 / w.len() as f32,
+        fortes as f32 * 100.0 / w.len() as f32
+    );
+    println!(
+        "    percentis |w|: p50 {:.3} · p90 {:.3} · p99 {:.3}",
+        stats::percentile(&mut abs, 50.0),
+        stats::percentile(&mut abs, 90.0),
+        stats::percentile(&mut abs, 99.0)
+    );
 }
 
 fn main() {
@@ -106,13 +140,22 @@ fn main() {
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
-            "--top" => { i += 1; top = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(20); }
+            "--top" => {
+                i += 1;
+                top = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(20);
+            }
             "--heatmap" => heatmap = true,
             // Leonardo: "eu quero realmente poder ver, tipo, quem conversa com quem, quais
             // grupos são" — texto nao mostra topologia. `--html` escreve uma pagina
             // autocontida com o grafo do cerebro.
-            "--html" => { i += 1; html_out = args.get(i).cloned(); }
-            "--json" => { i += 1; json_out = args.get(i).cloned(); }
+            "--html" => {
+                i += 1;
+                html_out = args.get(i).cloned();
+            }
+            "--json" => {
+                i += 1;
+                json_out = args.get(i).cloned();
+            }
             _ => {}
         }
         i += 1;
@@ -126,9 +169,17 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════════");
     println!("🧬 GENOMA — {path}");
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("  formato UGEN v{} · L1 {}×{} · L2 {}×{} · KAN {} · lento {} · τ {}",
-             g.versao, SENSORY_WAVE_SIZE, L1_NEURONS, L1_NEURONS, L2_NEURONS,
-             g.kan.len(), g.slow.len(), g.tau.len());
+    println!(
+        "  formato UGEN v{} · L1 {}×{} · L2 {}×{} · KAN {} · lento {} · τ {}",
+        g.versao,
+        SENSORY_WAVE_SIZE,
+        L1_NEURONS,
+        L1_NEURONS,
+        L2_NEURONS,
+        g.kan.len(),
+        g.slow.len(),
+        g.tau.len()
+    );
     println!();
 
     println!("─── DISTRIBUIÇÃO DOS PESOS ────────────────────────────────────────");
@@ -149,7 +200,10 @@ fn main() {
     let mut por_canal: Vec<(usize, f32)> = (0..SENSORY_WAVE_SIZE)
         .map(|ch| {
             let soma: f32 = (0..L1_NEURONS)
-                .map(|n| g.l1.get(n * SENSORY_WAVE_SIZE + ch).map_or(0.0, |w| w.abs()))
+                .map(|n| {
+                    g.l1.get(n * SENSORY_WAVE_SIZE + ch)
+                        .map_or(0.0, |w| w.abs())
+                })
                 .sum();
             (ch, soma)
         })
@@ -160,13 +214,21 @@ fn main() {
     println!("  os {top} canais mais atendidos:");
     for (ch, soma) in por_canal.iter().take(top) {
         let pct = soma * 100.0 / total;
-        let barra = "▁▂▃▄▅▆▇█".chars().nth(((pct / 2.0).min(7.0)) as usize).unwrap_or('▁');
+        let barra = "▁▂▃▄▅▆▇█"
+            .chars()
+            .nth(((pct / 2.0).min(7.0)) as usize)
+            .unwrap_or('▁');
         println!("    ch{ch:3} {barra} {pct:5.2}%  {}", name_for(*ch));
     }
-    let ignorados: Vec<usize> = por_canal.iter()
+    let ignorados: Vec<usize> = por_canal
+        .iter()
         .filter(|(_, s)| *s * 100.0 / total < 0.05)
-        .map(|(c, _)| *c).collect();
-    println!("\n  canais praticamente ignorados (<0,05% da atenção): {}", ignorados.len());
+        .map(|(c, _)| *c)
+        .collect();
+    println!(
+        "\n  canais praticamente ignorados (<0,05% da atenção): {}",
+        ignorados.len()
+    );
     if !ignorados.is_empty() {
         let amostra: Vec<String> = ignorados.iter().take(24).map(|c| format!("{c}")).collect();
         println!("    {}", amostra.join(" "));
@@ -188,8 +250,14 @@ fn main() {
         })
         .collect();
     let entrada_media = perfil.iter().map(|(_, e, _)| e).sum::<f32>() / L1_NEURONS as f32;
-    let mudos = perfil.iter().filter(|(_, _, s)| *s < 0.05 * entrada_media).count();
-    let surdos = perfil.iter().filter(|(_, e, _)| *e < 0.05 * entrada_media).count();
+    let mudos = perfil
+        .iter()
+        .filter(|(_, _, s)| *s < 0.05 * entrada_media)
+        .count();
+    let surdos = perfil
+        .iter()
+        .filter(|(_, e, _)| *e < 0.05 * entrada_media)
+        .count();
     println!("  entrada média por neurônio: {entrada_media:.2}");
     println!("  SURDOS (quase não recebem entrada): {surdos}");
     println!("  MUDOS (L2 quase não os escuta):     {mudos}");
@@ -204,8 +272,10 @@ fn main() {
                 wa.partial_cmp(&wb).unwrap()
             })
             .unwrap_or(0);
-        println!("    N{n:02}  entrada {ent:6.2}  saída {sai:6.2}  ← escuta sobretudo ch{dom} ({})",
-                 name_for(dom));
+        println!(
+            "    N{n:02}  entrada {ent:6.2}  saída {sai:6.2}  ← escuta sobretudo ch{dom} ({})",
+            name_for(dom)
+        );
     }
 
     // ── BANCO DE τ ─────────────────────────────────────────────────────────
@@ -213,12 +283,20 @@ fn main() {
         println!("\n─── BANCO DE τ (escalas de tempo do CfC) ──────────────────────────");
         let mut t = g.tau.clone();
         t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!("  {} canais · taxa d [{:.3}, {:.3}] s⁻¹ · τ = 1/d [{:.3}, {:.3}] s",
-                 t.len(), t[0], t[t.len()-1],
-                 1.0 / t[t.len()-1].max(1e-6), 1.0 / t[0].max(1e-6));
-        let mut t90 = t.clone(); let mut t10 = t.clone();
-        println!("  espalhamento p90/p10: {:.1}× (1,0 = população monotemporal)",
-                 stats::percentile(&mut t90, 90.0) / stats::percentile(&mut t10, 10.0).max(1e-6));
+        println!(
+            "  {} canais · taxa d [{:.3}, {:.3}] s⁻¹ · τ = 1/d [{:.3}, {:.3}] s",
+            t.len(),
+            t[0],
+            t[t.len() - 1],
+            1.0 / t[t.len() - 1].max(1e-6),
+            1.0 / t[0].max(1e-6)
+        );
+        let mut t90 = t.clone();
+        let mut t10 = t.clone();
+        println!(
+            "  espalhamento p90/p10: {:.1}× (1,0 = população monotemporal)",
+            stats::percentile(&mut t90, 90.0) / stats::percentile(&mut t10, 10.0).max(1e-6)
+        );
         println!("\n  forma:");
         histograma(&t, 12, 34);
     }
@@ -227,14 +305,16 @@ fn main() {
         println!("\n─── HEATMAP L2 (48 motores × 96 neurônios) ────────────────────────");
         println!("  + forte positivo · - forte negativo · · fraco · . nulo");
         for j in 0..L2_NEURONS.min(48) {
-            let linha: String = (0..L1_NEURONS).map(|n| {
-                match g.l2.get(j * L1_NEURONS + n).copied().unwrap_or(0.0) {
-                    w if w >  0.3 => '+',
-                    w if w < -0.3 => '-',
-                    w if w.abs() > 0.05 => '·',
-                    _ => '.',
-                }
-            }).collect();
+            let linha: String = (0..L1_NEURONS)
+                .map(
+                    |n| match g.l2.get(j * L1_NEURONS + n).copied().unwrap_or(0.0) {
+                        w if w > 0.3 => '+',
+                        w if w < -0.3 => '-',
+                        w if w.abs() > 0.05 => '·',
+                        _ => '.',
+                    },
+                )
+                .collect();
             println!("  M{j:02} │{linha}");
         }
     }
@@ -242,22 +322,37 @@ fn main() {
     // `--json`: dump completo pro LABORATÓRIO DE OBSERVAÇÃO (pesos + nomes de canal
     // + P1.7 por neurônio), via parser canônico — nunca duplicar leitura de .bin.
     if let Some(dest) = &json_out {
-        let gen_full = universe::gpu::genome_io::load_genome(std::env::args().nth(1).unwrap().as_str()).unwrap();
-        let nomes: Vec<String> = (0..SENSORY_WAVE_SIZE).map(|c| format!("\"{}\"", name_for(c))).collect();
+        let gen_full =
+            universe::gpu::genome_io::load_genome(std::env::args().nth(1).unwrap().as_str())
+                .unwrap();
+        let nomes: Vec<String> = (0..SENSORY_WAVE_SIZE)
+            .map(|c| format!("\"{}\"", name_for(c)))
+            .collect();
         let docs: Vec<String> = (0..SENSORY_WAVE_SIZE)
-            .map(|c| format!("{:?}", universe::perception::channels::doc_for(c))).collect();
-        let arr = |v: &[f32]| v.iter().map(|x| format!("{x:.4}")).collect::<Vec<_>>().join(",");
+            .map(|c| format!("{:?}", universe::perception::channels::doc_for(c)))
+            .collect();
+        let arr = |v: &[f32]| {
+            v.iter()
+                .map(|x| format!("{x:.4}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         let js = format!(
             "{{\"l1\":[{}],\"l2\":[{}],\"tau\":[{}],\"act\":[{}],\"alpha\":[{}],\"nomes\":[{}],\"docs\":[{}]}}",
-            arr(&gen_full.l1), arr(&gen_full.l2), arr(&gen_full.tau),
-            arr(&gen_full.neuron_activation), arr(&gen_full.neuron_alpha),
-            nomes.join(","), docs.join(","));
+            arr(&gen_full.l1),
+            arr(&gen_full.l2),
+            arr(&gen_full.tau),
+            arr(&gen_full.neuron_activation),
+            arr(&gen_full.neuron_alpha),
+            nomes.join(","),
+            docs.join(",")
+        );
         std::fs::write(dest, js).expect("gravar json");
         println!("  → json do genoma em {dest}");
     }
     if let Some(dest) = &html_out {
         match escrever_html(&g, dest) {
-            Ok(_)  => println!("\n  → mapa visual do cérebro em {dest}"),
+            Ok(_) => println!("\n  → mapa visual do cérebro em {dest}"),
             Err(e) => eprintln!("\n  falha ao escrever {dest}: {e}"),
         }
     }
@@ -289,9 +384,13 @@ fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
     use std::fmt::Write as _;
 
     // Peso de saída de cada neurônio de L1 (o quanto L2 o escuta) — vira o raio do nó.
-    let saida: Vec<f32> = (0..L1_NEURONS).map(|n| {
-        (0..L2_NEURONS).map(|j| g.l2.get(j * L1_NEURONS + n).map_or(0.0, |w| w.abs())).sum()
-    }).collect();
+    let saida: Vec<f32> = (0..L1_NEURONS)
+        .map(|n| {
+            (0..L2_NEURONS)
+                .map(|j| g.l2.get(j * L1_NEURONS + n).map_or(0.0, |w| w.abs()))
+                .sum()
+        })
+        .collect();
     let saida_max = saida.iter().cloned().fold(1e-6, f32::max);
 
     // Correlação entre vetores de entrada de dois neurônios: mede se fazem o mesmo trabalho.
@@ -313,15 +412,31 @@ fn escrever_html(g: &Genoma, dest: &str) -> std::io::Result<()> {
     }
     // Fora da diagonal: se a evolução agrupou funções, existe par com |cos| alto.
     let mut fora: Vec<f32> = Vec::new();
-    for a in 0..L1_NEURONS { for b in 0..L1_NEURONS { if a != b { fora.push(sim[a*L1_NEURONS+b].abs()); } } }
+    for a in 0..L1_NEURONS {
+        for b in 0..L1_NEURONS {
+            if a != b {
+                fora.push(sim[a * L1_NEURONS + b].abs());
+            }
+        }
+    }
     fora.sort_by(|x, y| y.partial_cmp(x).unwrap());
     let sim_max = fora.first().copied().unwrap_or(0.0);
     let sim_med = fora.iter().sum::<f32>() / fora.len().max(1) as f32;
 
     // Atenção por canal.
-    let mut aten: Vec<(usize, f32)> = (0..SENSORY_WAVE_SIZE).map(|ch| {
-        (ch, (0..L1_NEURONS).map(|n| g.l1.get(n * SENSORY_WAVE_SIZE + ch).map_or(0.0, |w| w.abs())).sum())
-    }).collect();
+    let mut aten: Vec<(usize, f32)> = (0..SENSORY_WAVE_SIZE)
+        .map(|ch| {
+            (
+                ch,
+                (0..L1_NEURONS)
+                    .map(|n| {
+                        g.l1.get(n * SENSORY_WAVE_SIZE + ch)
+                            .map_or(0.0, |w| w.abs())
+                    })
+                    .sum(),
+            )
+        })
+        .collect();
     let aten_tot: f32 = aten.iter().map(|(_, s)| s).sum::<f32>().max(1e-6);
     aten.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
@@ -409,7 +524,11 @@ for(let a=0;a<{L1_NEURONS};a++)for(let b=0;b<{L1_NEURONS};b++){{
 </script>"#, sim.iter().map(|v| (v * 1000.0).round() / 1000.0).collect::<Vec<f32>>()).ok();
 
     // ── Atenção por canal ────────────────────────────────────────────────────
-    write!(h, r#"<h2>Orçamento de atenção por sentido</h2><div class="card"><table>"#).ok();
+    write!(
+        h,
+        r#"<h2>Orçamento de atenção por sentido</h2><div class="card"><table>"#
+    )
+    .ok();
     for (ch, s) in aten.iter().take(28) {
         let pct = s * 100.0 / aten_tot;
         write!(h, r#"<tr><td class="n">ch{ch}</td><td>{}</td><td style="width:55%"><div class="bar" style="width:{:.1}%"></div></td><td class="v">{pct:.2}%</td></tr>"#,

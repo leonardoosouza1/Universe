@@ -65,7 +65,10 @@ fn run_condition(fatigue_beta: f32, ticks: usize, verbose: bool) -> Measurement 
     };
     let mut stddevs = [0.0f32; 3];
     for (k, d) in stddevs.iter_mut().enumerate() {
-        let var = history.iter().map(|o| (o[k] - means[k]).powi(2)).sum::<f32>()
+        let var = history
+            .iter()
+            .map(|o| (o[k] - means[k]).powi(2))
+            .sum::<f32>()
             / history.len() as f32;
         *d = var.sqrt();
     }
@@ -94,7 +97,9 @@ fn run_condition(fatigue_beta: f32, ticks: usize, verbose: bool) -> Measurement 
                 nv[i] += cov[i][j] * v[j];
             }
         }
-        let n = (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt().max(1e-20);
+        let n = (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2])
+            .sqrt()
+            .max(1e-20);
         v = [nv[0] / n, nv[1] / n, nv[2] / n];
     }
     let mut av = [0.0f32; 3];
@@ -129,7 +134,14 @@ fn main() {
             let media = w.iter().sum::<f32>() / w.len() as f32;
             println!(
                 "{:<16} n={:<5} negativos={:>5}/{:<5} ({:>5.1}%)  min={:+.4} max={:+.4} media={:+.4}",
-                nome, w.len(), neg, w.len(), 100.0 * neg as f32 / w.len() as f32, mn, mx, media
+                nome,
+                w.len(),
+                neg,
+                w.len(),
+                100.0 * neg as f32 / w.len() as f32,
+                mn,
+                mx,
+                media
             );
         }
         println!();
@@ -161,11 +173,15 @@ fn main() {
     );
     println!(
         "{:<34} {:>17.1}% {:>17.1}%",
-        "variância na 1ª componente", 100.0 * with_fatigue.pc1_frac, 100.0 * without_fatigue.pc1_frac
+        "variância na 1ª componente",
+        100.0 * with_fatigue.pc1_frac,
+        100.0 * without_fatigue.pc1_frac
     );
     println!(
         "{:<34} {:>17.1}% {:>17.1}%",
-        "slow[1] > 0 (teto de acelerador)", 100.0 * with_fatigue.frac_pos1, 100.0 * without_fatigue.frac_pos1
+        "slow[1] > 0 (teto de acelerador)",
+        100.0 * with_fatigue.frac_pos1,
+        100.0 * without_fatigue.frac_pos1
     );
     println!("{:-<74}", "");
 

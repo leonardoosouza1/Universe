@@ -1,13 +1,13 @@
-use crate::metabolism::Metabolism;
-use crate::layers::BitLinear;
+use crate::cfc::CfCCell;
+use crate::config::iara::brain::SENSORY_WAVE_SIZE;
+use crate::config::iara::vision::RETINA_TOTAL;
 use crate::dense_layer::DenseLayer;
+use crate::kan::SensoryPreFilter;
+use crate::layers::BitLinear;
+use crate::metabolism::Metabolism;
+use crate::perception::RetinaPerception;
 use crate::resonance::ResonantNode;
 use crate::types::SplineNode;
-use crate::cfc::CfCCell;
-use crate::kan::SensoryPreFilter;
-use crate::perception::RetinaPerception;
-use crate::config::iara::vision::RETINA_TOTAL;
-use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 use std::sync::RwLock;
 
 /// Tier 6.8 — Mirror neurons / observational learning.
@@ -21,8 +21,12 @@ static CHAMPION_ACTION: RwLock<Option<[f32; 2]>> = RwLock::new(None);
 
 /// Atualiza o snapshot global do campeão (chamado pelo pipeline no fim da gen).
 pub fn set_global_champion_snapshot(retina_mean: [f32; RETINA_TOTAL], action: [f32; 2]) {
-    if let Ok(mut g) = CHAMPION_RETINA_MEAN.write() { *g = Some(retina_mean); }
-    if let Ok(mut g) = CHAMPION_ACTION.write() { *g = Some(action); }
+    if let Ok(mut g) = CHAMPION_RETINA_MEAN.write() {
+        *g = Some(retina_mean);
+    }
+    if let Ok(mut g) = CHAMPION_ACTION.write() {
+        *g = Some(action);
+    }
 }
 
 /// Córtex estratégico — cérebro LENTO com arquitetura CfC + Dense f32.
@@ -37,12 +41,12 @@ pub fn set_global_champion_snapshot(retina_mean: [f32; RETINA_TOTAL], action: [f
 ///
 /// Output de 3 dims: [throttle, steer, brake] em [-1,1] (brake em [0,1]).
 pub struct SlowBrain {
-    pub cfc: CfCCell,                  // 64 canais com memória temporal
-    pub dense1: DenseLayer,            // 64 → 16
-    pub dense2: DenseLayer,            // 16 → 3 (throttle, steer, brake)
-    pub output: [f32; 3],              // [throttle, steer, brake] held entre ticks
+    pub cfc: CfCCell,       // 64 canais com memória temporal
+    pub dense1: DenseLayer, // 64 → 16
+    pub dense2: DenseLayer, // 16 → 3 (throttle, steer, brake)
+    pub output: [f32; 3],   // [throttle, steer, brake] held entre ticks
     pub tick_counter: u32,
-    pub tick_interval: u32,            // roda 1× a cada N ticks
+    pub tick_interval: u32, // roda 1× a cada N ticks
 }
 
 impl SlowBrain {
@@ -77,7 +81,7 @@ impl SlowBrain {
             dense2,
             output: [0.0; 3],
             tick_counter: 0,
-            tick_interval: 8,  // roda 1× a cada 8 ticks (~8Hz @ 64Hz)
+            tick_interval: 8, // roda 1× a cada 8 ticks (~8Hz @ 64Hz)
         }
     }
 
@@ -90,7 +94,9 @@ impl SlowBrain {
     /// Salva resultado em output[3].
     pub fn tick(&mut self, input: &[i8; 48], dt: f32) {
         self.tick_counter = self.tick_counter.wrapping_add(1);
-        if self.tick_counter % self.tick_interval != 0 { return; }
+        if self.tick_counter % self.tick_interval != 0 {
+            return;
+        }
 
         // Expande input[48] → cfc_input[64] com padding zeros
         let mut cfc_input = [0i8; 64];
@@ -143,18 +149,32 @@ impl SlowBrain {
         let d2_b_size = self.dense2.bias.len();
         let expected = d1_w_size + d1_b_size + d2_w_size + d2_b_size;
         assert_eq!(
-            weights.len(), expected,
+            weights.len(),
+            expected,
             "slow_brain espera {} valores ({}w+{}b+{}w+{}b), recebeu {}",
-            expected, d1_w_size, d1_b_size, d2_w_size, d2_b_size, weights.len()
+            expected,
+            d1_w_size,
+            d1_b_size,
+            d2_w_size,
+            d2_b_size,
+            weights.len()
         );
         let mut offset = 0;
-        self.dense1.weights.copy_from_slice(&weights[offset..offset + d1_w_size]);
+        self.dense1
+            .weights
+            .copy_from_slice(&weights[offset..offset + d1_w_size]);
         offset += d1_w_size;
-        self.dense1.bias.copy_from_slice(&weights[offset..offset + d1_b_size]);
+        self.dense1
+            .bias
+            .copy_from_slice(&weights[offset..offset + d1_b_size]);
         offset += d1_b_size;
-        self.dense2.weights.copy_from_slice(&weights[offset..offset + d2_w_size]);
+        self.dense2
+            .weights
+            .copy_from_slice(&weights[offset..offset + d2_w_size]);
         offset += d2_w_size;
-        self.dense2.bias.copy_from_slice(&weights[offset..offset + d2_b_size]);
+        self.dense2
+            .bias
+            .copy_from_slice(&weights[offset..offset + d2_b_size]);
     }
 }
 
@@ -174,8 +194,8 @@ impl SlowBrain {
 /// `cfc_state` é RUNTIME-ONLY — não persiste em .dna v3 (reset a cada spawn).
 pub struct SovereignEngine {
     pub metabolism: Metabolism,
-    pub instinct_layer: BitLinear,         // 192 → 96 (Layer 1, sensory mixing)
-    pub cortex_l2: crate::float_layers::FloatLinear,  // 96 → 48 (Layer 2, composição AND/OR)
+    pub instinct_layer: BitLinear, // 192 → 96 (Layer 1, sensory mixing)
+    pub cortex_l2: crate::float_layers::FloatLinear, // 96 → 48 (Layer 2, composição AND/OR)
     pub slow_brain: SlowBrain,
     pub heart_resonance: ResonantNode,
     pub cfc_state: CfCCell,
@@ -250,8 +270,12 @@ impl SovereignEngine {
             cortex_l2: {
                 let mut l = crate::float_layers::FloatLinear::new(96, 48);
                 let mut r = crate::rng::Lcg::new(0xC0DE_CAFE);
-                for i in 0..4608 { l.weights[i] = r.symmetric() * 0.05; }
-                for i in 0..48 { l.weights[i * 96 + i] += 1.0; }
+                for i in 0..4608 {
+                    l.weights[i] = r.symmetric() * 0.05;
+                }
+                for i in 0..48 {
+                    l.weights[i * 96 + i] += 1.0;
+                }
                 l
             },
             slow_brain: SlowBrain::new(),
@@ -273,10 +297,12 @@ impl SovereignEngine {
             soft_override_count: 0,
             gate_entropy_acc: 0.0,
             gate_entropy_n: 0,
-            oscillators: (0..8).map(|i| {
-                let freq = 0.5 + (i as f32) * (4.0 - 0.5) / 7.0;
-                crate::resonance::ResonantNode::new(freq)
-            }).collect(),
+            oscillators: (0..8)
+                .map(|i| {
+                    let freq = 0.5 + (i as f32) * (4.0 - 0.5) / 7.0;
+                    crate::resonance::ResonantNode::new(freq)
+                })
+                .collect(),
             retina_perception: RetinaPerception::new(),
             out_fatigue: [0.0f32; 96],
         }
@@ -292,7 +318,7 @@ impl SovereignEngine {
         safety_state: &crate::safety::SafetyState,
         chaos_input: &crate::chaos::ChaosInput,
     ) -> [f32; 3] {
-        use crate::safety::{Sentinel, IntentVec, SafetyFlags};
+        use crate::safety::{IntentVec, SafetyFlags, Sentinel};
 
         let chaos = crate::chaos::score(chaos_input, &self.oscillators);
         self.last_chaos = chaos.combined;
@@ -310,28 +336,53 @@ impl SovereignEngine {
             chaos.coherence,
             (1.0 / (1.0 + safety_state.wall_left.max(0.0))).clamp(0.0, 1.0),
             (1.0 / (1.0 + safety_state.wall_right.max(0.0))).clamp(0.0, 1.0),
-            if sentinel_out.flags.intersects(
-                SafetyFlags::ESP | SafetyFlags::LANE_KEEP | SafetyFlags::REVERSE_OUT
-            ) { 1.0 } else { 0.0 },
-            if sentinel_out.flags.intersects(
-                SafetyFlags::TCS | SafetyFlags::AQUA | SafetyFlags::CORNER_LIM
-            ) { 1.0 } else { 0.0 },
+            if sentinel_out
+                .flags
+                .intersects(SafetyFlags::ESP | SafetyFlags::LANE_KEEP | SafetyFlags::REVERSE_OUT)
+            {
+                1.0
+            } else {
+                0.0
+            },
+            if sentinel_out
+                .flags
+                .intersects(SafetyFlags::TCS | SafetyFlags::AQUA | SafetyFlags::CORNER_LIM)
+            {
+                1.0
+            } else {
+                0.0
+            },
             if self.hard_veto_count > 0 { 1.0 } else { 0.0 },
-            0.0, 0.0, 0.0, 0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         ];
         let w = self.gate.forward(&gi);
         self.gate_entropy_acc += crate::gate::GateBrain::entropy(&w);
         self.gate_entropy_n = self.gate_entropy_n.saturating_add(1);
         crate::neuro::registrar_uso(&w);
 
-        let mut cortex_iv = IntentVec { throttle: cortex_intent[0], steer: cortex_intent[1], brake: cortex_intent[2] };
-        let mut reflex_iv = IntentVec { throttle: reflex_raw[0], steer: reflex_raw[1], brake: reflex_raw[2] };
+        let mut cortex_iv = IntentVec {
+            throttle: cortex_intent[0],
+            steer: cortex_intent[1],
+            brake: cortex_intent[2],
+        };
+        let mut reflex_iv = IntentVec {
+            throttle: reflex_raw[0],
+            steer: reflex_raw[1],
+            brake: reflex_raw[2],
+        };
         let mut sentinel_iv = sentinel_out.soft_proposal;
 
         // ABLAÇÃO DE VIA (ver `neuro.rs`): zera a intenção DEPOIS do portão, não os pesos.
         // Assim o portão continua vendo o mesmo mundo e distribuindo os mesmos pesos — o que
         // se mede é a falta da via, não uma mudança de comportamento do misturador.
-        let zero = IntentVec { throttle: 0.0, steer: 0.0, brake: 0.0 };
+        let zero = IntentVec {
+            throttle: 0.0,
+            steer: 0.0,
+            brake: 0.0,
+        };
         match crate::neuro::ablada() {
             crate::neuro::Via::Cortex => cortex_iv = zero,
             crate::neuro::Via::Reflexo => reflex_iv = zero,
@@ -342,9 +393,11 @@ impl SovereignEngine {
         }
 
         let mixed = IntentVec {
-            throttle: w[0]*cortex_iv.throttle + w[1]*reflex_iv.throttle + w[2]*sentinel_iv.throttle,
-            steer:    w[0]*cortex_iv.steer    + w[1]*reflex_iv.steer    + w[2]*sentinel_iv.steer,
-            brake:    w[0]*cortex_iv.brake    + w[1]*reflex_iv.brake    + w[2]*sentinel_iv.brake,
+            throttle: w[0] * cortex_iv.throttle
+                + w[1] * reflex_iv.throttle
+                + w[2] * sentinel_iv.throttle,
+            steer: w[0] * cortex_iv.steer + w[1] * reflex_iv.steer + w[2] * sentinel_iv.steer,
+            brake: w[0] * cortex_iv.brake + w[1] * reflex_iv.brake + w[2] * sentinel_iv.brake,
         };
 
         // O veto DURO só cai na ablação total. Na suave ele fica: sem veto o carro bate nos
@@ -374,12 +427,13 @@ impl SovereignEngine {
     /// Tier 6.8 — consulta o snapshot do campeão: prefere override local,
     /// senão lê do global process-wide. Retorna None se nada foi setado.
     pub fn champion_snapshot(&self) -> Option<([f32; RETINA_TOTAL], [f32; 2])> {
-        let retina = self.champion_retina_snapshot.or_else(|| {
-            CHAMPION_RETINA_MEAN.read().ok().and_then(|g| *g)
-        })?;
-        let action = self.champion_action.or_else(|| {
-            CHAMPION_ACTION.read().ok().and_then(|g| *g)
-        }).unwrap_or([0.0, 0.0]);
+        let retina = self
+            .champion_retina_snapshot
+            .or_else(|| CHAMPION_RETINA_MEAN.read().ok().and_then(|g| *g))?;
+        let action = self
+            .champion_action
+            .or_else(|| CHAMPION_ACTION.read().ok().and_then(|g| *g))
+            .unwrap_or([0.0, 0.0]);
         Some((retina, action))
     }
 
@@ -415,7 +469,8 @@ impl SovereignEngine {
         // sentido chega distorcido" — se fosse depois do filtro, o KAN já teria misturado o
         // canal ablado com os outros e o número mediria outra coisa.
         let mut onda_ablada = [0i8; SENSORY_WAVE_SIZE];
-        let sensory_wave: &[i8] = if matches!(crate::neuro::ablada(), crate::neuro::Via::Sentido(_)) {
+        let sensory_wave: &[i8] = if matches!(crate::neuro::ablada(), crate::neuro::Via::Sentido(_))
+        {
             let n = sensory_wave.len().min(SENSORY_WAVE_SIZE);
             onda_ablada[..n].copy_from_slice(&sensory_wave[..n]);
             crate::neuro::ablar_sentido(&mut onda_ablada[..n]);
@@ -431,7 +486,8 @@ impl SovereignEngine {
         let mut filtered_wave = [0i8; SENSORY_WAVE_SIZE];
         filtered_wave.copy_from_slice(&kan_wave);
         let mut filtered_retina = [0i8; 96];
-        self.cfc_state.update(&kan_wave[0..96], &mut filtered_retina, delta_t);
+        self.cfc_state
+            .update(&kan_wave[0..96], &mut filtered_retina, delta_t);
         filtered_wave[0..96].copy_from_slice(&filtered_retina);
 
         // Tier 6.1 — Predictive coding como drive primário (brain-free baseline).
@@ -441,7 +497,11 @@ impl SovereignEngine {
         // sem cérebro; substituível por rede preditiva no futuro (Dreamer-like).
         let mut current_retina_f = [0.0f32; RETINA_TOTAL];
         for j in 0..RETINA_TOTAL {
-            current_retina_f[j] = if j < filtered_retina.len() { filtered_retina[j] as f32 / 127.0 } else { 0.0 };
+            current_retina_f[j] = if j < filtered_retina.len() {
+                filtered_retina[j] as f32 / 127.0
+            } else {
+                0.0
+            };
         }
         let mut err_acc = 0.0f32;
         for j in 0..RETINA_TOTAL {
@@ -484,7 +544,7 @@ impl SovereignEngine {
         // OUT_BETA = 0.85: em regime permanente (out_fat → |raw|), intent →
         //   tanh(|raw| × 0.15). Com |raw| = 3.8: tanh(0.57) ≈ 0.54 < 0.90 ✓.
         const OUT_ALPHA: f32 = 4.0;
-        const OUT_BETA:  f32 = 0.85;
+        const OUT_BETA: f32 = 0.85;
 
         let mut final_intent = [0.0f32; 96];
         // Canais 0..48: via L2 (val * 2.0 como no shader: acc * 2/127 * 127 = acc * 2)
@@ -499,7 +559,7 @@ impl SovereignEngine {
         // Itera l1_raw[48..96] com índice k de 0..48; j = 48+k.
         // NOTA: não usar enumerate().skip(48) pois k começaria em 48 e j=96 estouraria.
         for (k, &val) in l1_raw[48..96].iter().enumerate() {
-            let j = 48 + k;  // k ∈ [0,48), j ∈ [48,96)
+            let j = 48 + k; // k ∈ [0,48), j ∈ [48,96)
             let raw = val * 2.0;
             self.out_fatigue[j] += OUT_ALPHA * (raw.abs() - self.out_fatigue[j]) * delta_t;
             let adapted = raw.signum() * (raw.abs() - OUT_BETA * self.out_fatigue[j]).max(0.0);
@@ -532,8 +592,10 @@ impl SovereignEngine {
             if cosine > 0.8 {
                 const MIRROR_W: f32 = 0.05;
                 if self.final_intent.len() >= 2 {
-                    self.final_intent[0] = (self.final_intent[0] + MIRROR_W * champ_action[0]).clamp(-1.0, 1.0);
-                    self.final_intent[1] = (self.final_intent[1] + MIRROR_W * champ_action[1]).clamp(-1.0, 1.0);
+                    self.final_intent[0] =
+                        (self.final_intent[0] + MIRROR_W * champ_action[0]).clamp(-1.0, 1.0);
+                    self.final_intent[1] =
+                        (self.final_intent[1] + MIRROR_W * champ_action[1]).clamp(-1.0, 1.0);
                 }
                 self.metabolism.mirror_activation_count =
                     self.metabolism.mirror_activation_count.saturating_add(1);

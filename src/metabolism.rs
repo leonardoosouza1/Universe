@@ -1,12 +1,11 @@
+use crate::config::iara::vision::RETINA_TOTAL;
 /// IARA v2101 - Digital Metabolism & Homeostasis
 /// Based on Codex v2101 - Module I
 ///
 /// Tier 3.1+3.2: drives biológicos adicionados (dopamina = RPE, cortisol = medo integral).
 /// Todos novos campos são RUNTIME-ONLY — resetam em spawn (Default::default). NÃO persistem
 /// no .dna v3.
-
 use std::collections::VecDeque;
-use crate::config::iara::vision::RETINA_TOTAL;
 
 /// Tier 2.3 — episodic memory trace used during sleep consolidation.
 /// Captured during wake only when something salient happens (big reward swing
@@ -124,8 +123,7 @@ impl Metabolism {
             if self.adenosine <= 0.1 {
                 self.is_sleeping = false;
             }
-        }
- else {
+        } else {
             // Natural slow recovery if not fully stressed
             if self.adenosine > 0.0 {
                 self.adenosine -= 0.001 * delta_t;
@@ -274,7 +272,13 @@ impl Metabolism {
     /// Captura um trace episódico se for saliente.
     /// Condição: |reward| > 0.1 OU wall_hit. Ring buffer com cap EPISODIC_CAP:
     /// empurra o mais antigo pra fora quando cheio.
-    pub fn record_episode(&mut self, retina: &[i8; RETINA_TOTAL], action: [f32; 2], reward: f32, wall_hit: bool) {
+    pub fn record_episode(
+        &mut self,
+        retina: &[i8; RETINA_TOTAL],
+        action: [f32; 2],
+        reward: f32,
+        wall_hit: bool,
+    ) {
         if reward.abs() <= 0.1 && !wall_hit {
             return;
         }
@@ -288,7 +292,12 @@ impl Metabolism {
         });
     }
 
-    pub fn seed_epigenetic(&mut self, parent_cortisol: f32, parent_dopamine: f32, parent_curiosity: f32) {
+    pub fn seed_epigenetic(
+        &mut self,
+        parent_cortisol: f32,
+        parent_dopamine: f32,
+        parent_curiosity: f32,
+    ) {
         const INHERITANCE: f32 = 0.1;
         self.cortisol = (parent_cortisol * INHERITANCE).clamp(0.0, 1.0);
         self.dopamine = 0.0;

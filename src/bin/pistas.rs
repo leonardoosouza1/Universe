@@ -63,7 +63,12 @@ fn medir(wps: &[Vec2]) -> Medida {
         let r = seg_menor / ang;
         r_min = r_min.min(r);
     }
-    Medida { comprimento, r_min, n_curvas, angulo_max: ang_max }
+    Medida {
+        comprimento,
+        r_min,
+        n_curvas,
+        angulo_max: ang_max,
+    }
 }
 
 /// Qual sonda ainda chega a tempo para frear de `v_reta` até a curva de raio `r`.
@@ -153,10 +158,17 @@ fn main() {
         let m = medir(&wps);
         let p: Vec<Vec2> = wps.iter().map(|w| *w * CELULA).collect();
         let (i_pior, r_pior, v_ent, d_real) = demanda_maxima(&p, largura, v_reta);
-        let sonda = SONDAS.iter().find(|&&x| x >= d_real)
+        let sonda = SONDAS
+            .iter()
+            .find(|&&x| x >= d_real)
             .map(|x| format!("{x:.0} m"))
-            .unwrap_or_else(|| if d_real > 0.0 { "NENHUMA — cega".into() }
-                            else { "nenhuma — não precisa frear".into() });
+            .unwrap_or_else(|| {
+                if d_real > 0.0 {
+                    "NENHUMA — cega".into()
+                } else {
+                    "nenhuma — não precisa frear".into()
+                }
+            });
         linhas.push((
             d_real,
             format!(
@@ -170,10 +182,18 @@ fn main() {
         println!("{l}");
     }
     println!("{}", "-".repeat(104));
-    println!("\nOrdenado pela DEMANDA DE ANTECIPAÇÃO (distância de frenagem exigida na pior curva),");
-    println!("não pelo raio mínimo: a mesma curva é fácil depois de outra curva e dura no fim de uma reta.");
+    println!(
+        "\nOrdenado pela DEMANDA DE ANTECIPAÇÃO (distância de frenagem exigida na pior curva),"
+    );
+    println!(
+        "não pelo raio mínimo: a mesma curva é fácil depois de outra curva e dura no fim de uma reta."
+    );
     if std::env::args().any(|a| a == "--curriculo") {
-        let v = std::env::args().position(|a| a == "--vteto").and_then(|i| std::env::args().nth(i+1)).and_then(|s| s.parse().ok()).unwrap_or(40.0);
+        let v = std::env::args()
+            .position(|a| a == "--vteto")
+            .and_then(|i| std::env::args().nth(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(40.0);
         curriculo(largura, v);
         return;
     }
@@ -189,11 +209,15 @@ fn main() {
 /// as quatro sondas do carro. É o que falta hoje: as pistas à mão vivem todas na faixa da
 /// sonda de 20 m, e as procedurais pulam direto para 40 m — platô e abismo, sem rampa.
 fn curriculo(largura: f32, v_teto: f32) {
-    use universe::pista_gen::{gerar, SONDAS};
-    println!("\n\n=== CURRÍCULO GERADO (largura {largura:.0} m · teto do carro {v_teto:.0} m/s) ===");
+    use universe::pista_gen::{SONDAS, gerar};
+    println!(
+        "\n\n=== CURRÍCULO GERADO (largura {largura:.0} m · teto do carro {v_teto:.0} m/s) ==="
+    );
     println!("cada degrau exige uma sonda mais longa que o anterior\n");
-    println!("{:>7} {:>9} {:>8} {:>8} {:>9} {:>9}  {}",
-             "degrau", "semente", "compr.", "curvas", "r_min", "d_freio", "exige");
+    println!(
+        "{:>7} {:>9} {:>8} {:>8} {:>9} {:>9}  {}",
+        "degrau", "semente", "compr.", "curvas", "r_min", "d_freio", "exige"
+    );
     println!("{}", "-".repeat(84));
 
     let faixas: [(f32, f32); 4] = [(2.0, 18.0), (22.0, 38.0), (45.0, 68.0), (75.0, 115.0)];
@@ -203,17 +227,29 @@ fn curriculo(largura: f32, v_teto: f32) {
         for s in 1u64..=60 {
             if let Some((_, d)) = gerar(s * 7919, *lo, *hi, largura, v_teto, 300) {
                 let sonda = d.sonda().map(|x| format!("{x:.0} m")).unwrap_or("—".into());
-                println!("{:>7} {:>9} {:>7.0}m {:>8} {:>8.1}m {:>8.1}m  {} ({})",
-                         degrau + 1, s * 7919, d.comprimento, d.n_curvas, d.r_min,
-                         d.d_freio, sonda, d.rotulo());
-                ok = true; achados += 1;
+                println!(
+                    "{:>7} {:>9} {:>7.0}m {:>8} {:>8.1}m {:>8.1}m  {} ({})",
+                    degrau + 1,
+                    s * 7919,
+                    d.comprimento,
+                    d.n_curvas,
+                    d.r_min,
+                    d.d_freio,
+                    sonda,
+                    d.rotulo()
+                );
+                ok = true;
+                achados += 1;
                 break;
             }
         }
         if !ok {
-            println!("{:>7} {:>9} {:>50}",
-                     degrau + 1, "—",
-                     format!("NÃO ACHEI pista com d_freio em [{lo:.0}, {hi:.0}] m"));
+            println!(
+                "{:>7} {:>9} {:>50}",
+                degrau + 1,
+                "—",
+                format!("NÃO ACHEI pista com d_freio em [{lo:.0}, {hi:.0}] m")
+            );
         }
     }
     println!("{}", "-".repeat(84));

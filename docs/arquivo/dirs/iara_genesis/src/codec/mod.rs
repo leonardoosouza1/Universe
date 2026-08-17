@@ -30,19 +30,29 @@ impl Compressed {
 
     /// Desserializa de bytes.
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 12 { return None; }
+        if buf.len() < 12 {
+            return None;
+        }
         let mut codec_tag = [0u8; 4];
         codec_tag.copy_from_slice(&buf[0..4]);
         let original_len = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
         let data_len = u32::from_le_bytes(buf[8..12].try_into().ok()?) as usize;
-        if buf.len() < 12 + data_len { return None; }
+        if buf.len() < 12 + data_len {
+            return None;
+        }
         let data = buf[12..12 + data_len].to_vec();
-        Some(Self { codec_tag, original_len, data })
+        Some(Self {
+            codec_tag,
+            original_len,
+            data,
+        })
     }
 
     /// Ratio de compressão.
     pub fn ratio(&self) -> f64 {
-        if self.data.is_empty() { return 0.0; }
+        if self.data.is_empty() {
+            return 0.0;
+        }
         self.original_len as f64 / self.data.len() as f64
     }
 }
@@ -64,7 +74,9 @@ pub fn ternary_accuracy(original: &[i8], restored: &[i8]) -> f64 {
     if original.len() != restored.len() || original.is_empty() {
         return 0.0;
     }
-    let matches = original.iter().zip(restored.iter())
+    let matches = original
+        .iter()
+        .zip(restored.iter())
         .filter(|&(&a, &b)| a == b)
         .count();
     matches as f64 / original.len() as f64
@@ -76,7 +88,9 @@ pub fn functional_error(original: &[i8], restored: &[i8]) -> f64 {
     if original.len() != restored.len() || original.is_empty() {
         return f64::MAX;
     }
-    let sum_sq: f64 = original.iter().zip(restored.iter())
+    let sum_sq: f64 = original
+        .iter()
+        .zip(restored.iter())
         .map(|(a, b)| {
             let diff = (*a as f64) - (*b as f64);
             diff * diff
@@ -120,7 +134,11 @@ impl HybridCodec {
                 if accuracy >= self.min_accuracy {
                     // Valorizamos compressão lossless imensamente (SparseRLE em sinais esparsos)
                     // Se for 100% perfeito, damos peso 10x à compressão para garantir que vença opções lossy
-                    let bonus = if (accuracy - 1.0).abs() < f64::EPSILON { 10.0 } else { 1.0 };
+                    let bonus = if (accuracy - 1.0).abs() < f64::EPSILON {
+                        10.0
+                    } else {
+                        1.0
+                    };
                     let score = accuracy * compressed.ratio() * bonus;
                     if score > best_score {
                         best_score = score;
@@ -141,10 +159,8 @@ impl HybridCodec {
             b"FFT1" | b"FFT2" => {
                 // Fourier — o número de harmônicos é inferido dos dados
                 math_codec::FourierCodec::new(32).decode(compressed)
-            },
-            b"CHB1" | b"CHB2" => {
-                math_codec::ChebyshevCodec::new(16).decode(compressed)
-            },
+            }
+            b"CHB1" | b"CHB2" => math_codec::ChebyshevCodec::new(16).decode(compressed),
             b"NEUR" => neural_codec::NeuralCodec::default_codec().decode(compressed),
             _ => None,
         }
@@ -195,7 +211,9 @@ mod tests {
         // Sparse signal: should prefer SRLE
         let sparse: Vec<i8> = {
             let mut v = vec![0i8; 4096];
-            for i in (0..4096).step_by(100) { v[i] = 1; }
+            for i in (0..4096).step_by(100) {
+                v[i] = 1;
+            }
             v
         };
         let compressed = codec.encode(&sparse);
@@ -210,6 +228,11 @@ mod tests {
         // Check ratio is good. Sparse RLE ratio on 4096 bytes with 40 non-zeros is very high.
         // Data length might be ~50-100 bytes.
         let ratio = sparse.len() as f64 / compressed.data.len() as f64;
-        assert!(ratio > 5.0, "Sparse ratio: {:.1}:1 codec: {}", ratio, codec_used);
+        assert!(
+            ratio > 5.0,
+            "Sparse ratio: {:.1}:1 codec: {}",
+            ratio,
+            codec_used
+        );
     }
 }

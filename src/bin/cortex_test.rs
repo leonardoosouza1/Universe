@@ -44,10 +44,10 @@ use universe::gpu::cortex_sheet::{CortexSheet, SHEET_N};
 fn main() {
     // ── Garante ICD Vulkan único (previne SIGSEGV do loader com múltiplos ICDs) ──
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
-    if std::path::Path::new(icd_radeon).exists()
-        && std::env::var("VK_ICD_FILENAMES").is_err()
-    {
-        unsafe { std::env::set_var("VK_ICD_FILENAMES", icd_radeon); }
+    if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
+        unsafe {
+            std::env::set_var("VK_ICD_FILENAMES", icd_radeon);
+        }
     }
 
     // ── Abre device wgpu ─────────────────────────────────────────────────────
@@ -55,13 +55,12 @@ fn main() {
         backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
         ..Default::default()
     });
-    let adapter = pollster::block_on(instance.request_adapter(
-        &wgpu::RequestAdapterOptions {
-            power_preference:    wgpu::PowerPreference::HighPerformance,
-            compatible_surface:  None,
-            force_fallback_adapter: false,
-        },
-    )).expect("Nenhum adapter encontrado");
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .expect("Nenhum adapter encontrado");
 
     let name = adapter.get_info().name.clone();
     eprintln!("[cortex_test] Adapter: {}", name);
@@ -77,10 +76,11 @@ fn main() {
             memory_hints: wgpu::MemoryHints::Performance,
         },
         None,
-    )).expect("Falha ao criar device");
+    ))
+    .expect("Falha ao criar device");
 
     let device = Arc::new(raw_device);
-    let queue  = Arc::new(raw_queue);
+    let queue = Arc::new(raw_queue);
 
     // ── Cria folha cortical com 4 seres ─────────────────────────────────────
     let n_seres = 4usize;
@@ -88,15 +88,20 @@ fn main() {
 
     // Inspeciona o banco de τ (sem GPU — calculado na CPU)
     let taus = cortex.tau_bank();
-    println!("[τ] banco de {} valores: min={:.4}ms  max={:.1}ms  spread={:.0}×",
+    println!(
+        "[τ] banco de {} valores: min={:.4}ms  max={:.1}ms  spread={:.0}×",
         taus.len(),
         taus[0] * 1000.0,
         taus[taus.len() - 1] * 1000.0,
-        taus[taus.len() - 1] / taus[0]);
+        taus[taus.len() - 1] / taus[0]
+    );
     // Verifica log-espaçamento: τ[512] deve ser ≈ √(τ_min × τ_max)
-    let tau_mid_expected = (taus[0] * taus[taus.len()-1]).sqrt();
-    println!("[τ] τ[512] = {:.4}ms  esperado(geomédio)={:.4}ms",
-        taus[512] * 1000.0, tau_mid_expected * 1000.0);
+    let tau_mid_expected = (taus[0] * taus[taus.len() - 1]).sqrt();
+    println!(
+        "[τ] τ[512] = {:.4}ms  esperado(geomédio)={:.4}ms",
+        taus[512] * 1000.0,
+        tau_mid_expected * 1000.0
+    );
 
     // ── Executa 20 ticks com sensory_wave distinto por ser ────────────────────
     // Waves artificiais: ser i tem canal k = sin(k + i*π/4) × 64 como i8.
@@ -112,8 +117,8 @@ fn main() {
             for k in 0..223usize {
                 // Onda senoidal distinta por ser e por tick: sin(k/10 + ser + tick/5)
                 let phase = (k as f32 / 10.0)
-                          + (ser as f32 * std::f32::consts::PI / 4.0)
-                          + (tick as f32 / 5.0);
+                    + (ser as f32 * std::f32::consts::PI / 4.0)
+                    + (tick as f32 / 5.0);
                 w[k] = (phase.sin() * 64.0) as i8;
             }
             waves.push(w);
@@ -156,10 +161,18 @@ fn main() {
                 let heterogeneo = std > &0.01 && (mx - mn) > 0.05;
                 let nao_zero = mean.abs() > 1e-6;
                 let ok = heterogeneo && nao_zero;
-                if !ok { all_pass = false; }
-                println!("  ser {}: min={:+.4}  max={:+.4}  mean={:+.4}  std={:.4}  {}",
-                    ser, mn, mx, mean, std,
-                    if ok { "PASS" } else { "FAIL" });
+                if !ok {
+                    all_pass = false;
+                }
+                println!(
+                    "  ser {}: min={:+.4}  max={:+.4}  mean={:+.4}  std={:.4}  {}",
+                    ser,
+                    mn,
+                    mx,
+                    mean,
+                    std,
+                    if ok { "PASS" } else { "FAIL" }
+                );
             }
 
             // Lê saída motora
@@ -167,33 +180,54 @@ fn main() {
             println!("\n── Saída motora (tick {}) ──", tick);
             for (ser, m) in motors.iter().enumerate() {
                 let nao_zero = m[0].abs() + m[1].abs() + m[2].abs() > 1e-6;
-                if !nao_zero { all_pass = false; }
-                println!("  ser {}: throttle={:+.4}  steer={:+.4}  brake={:+.4}  {}",
-                    ser, m[0], m[1], m[2],
-                    if nao_zero { "PASS" } else { "FAIL (zero)" });
+                if !nao_zero {
+                    all_pass = false;
+                }
+                println!(
+                    "  ser {}: throttle={:+.4}  steer={:+.4}  brake={:+.4}  {}",
+                    ser,
+                    m[0],
+                    m[1],
+                    m[2],
+                    if nao_zero { "PASS" } else { "FAIL (zero)" }
+                );
             }
 
             // Verifica que seres DIFEREM entre si (individualidade)
             let mut divergencia_ok = false;
             for i in 0..n_seres {
-                for j in (i+1)..n_seres {
+                for j in (i + 1)..n_seres {
                     let diff = (stats[i].2 - stats[j].2).abs();
-                    if diff > 1e-6 { divergencia_ok = true; }
+                    if diff > 1e-6 {
+                        divergencia_ok = true;
+                    }
                 }
             }
-            if !divergencia_ok { all_pass = false; }
+            if !divergencia_ok {
+                all_pass = false;
+            }
             println!("\n── Divergência entre seres ──");
             for i in 0..n_seres {
-                for j in (i+1)..n_seres {
+                for j in (i + 1)..n_seres {
                     let diff = (stats[i].2 - stats[j].2).abs();
-                    println!("  |mean[{}] − mean[{}]| = {:.6}  {}",
-                        i, j, diff,
-                        if diff > 1e-6 { "divergente (OK)" } else { "idêntico (PROBLEMA)" });
+                    println!(
+                        "  |mean[{}] − mean[{}]| = {:.6}  {}",
+                        i,
+                        j,
+                        diff,
+                        if diff > 1e-6 {
+                            "divergente (OK)"
+                        } else {
+                            "idêntico (PROBLEMA)"
+                        }
+                    );
                 }
             }
 
-            println!("\n══ RESULTADO FINAL: {} ══",
-                if all_pass { "PASS" } else { "FAIL" });
+            println!(
+                "\n══ RESULTADO FINAL: {} ══",
+                if all_pass { "PASS" } else { "FAIL" }
+            );
             if !all_pass {
                 eprintln!("FAIL: Verificar stderr para detalhes do driver");
                 std::process::exit(1);
@@ -203,19 +237,45 @@ fn main() {
 
     // ── Sumário do banco de τ ────────────────────────────────────────────────
     // Conta quantas unidades estão em cada banda (por ser 0, τ são os mesmos).
-    let (mut n_gamma, mut n_beta, mut n_alpha, mut n_theta, mut n_delta) = (0,0,0,0,0);
+    let (mut n_gamma, mut n_beta, mut n_alpha, mut n_theta, mut n_delta) = (0, 0, 0, 0, 0);
     for &t in &taus {
         let f_hz = 1.0 / (2.0 * std::f32::consts::PI * t);
-        if f_hz >= 30.0 { n_gamma += 1; }
-        else if f_hz >= 13.0 { n_beta += 1; }
-        else if f_hz >= 8.0  { n_alpha += 1; }
-        else if f_hz >= 4.0  { n_theta += 1; }
-        else { n_delta += 1; }
+        if f_hz >= 30.0 {
+            n_gamma += 1;
+        } else if f_hz >= 13.0 {
+            n_beta += 1;
+        } else if f_hz >= 8.0 {
+            n_alpha += 1;
+        } else if f_hz >= 4.0 {
+            n_theta += 1;
+        } else {
+            n_delta += 1;
+        }
     }
     println!("\n── Distribuição de bandas (doc §5.3) ──");
-    println!("  gamma (>30Hz):   {:4} unidades ({:.1}%)", n_gamma, n_gamma as f32 / SHEET_N as f32 * 100.0);
-    println!("  beta  (13-30Hz): {:4} unidades ({:.1}%)", n_beta,  n_beta  as f32 / SHEET_N as f32 * 100.0);
-    println!("  alpha (8-13Hz):  {:4} unidades ({:.1}%)", n_alpha, n_alpha as f32 / SHEET_N as f32 * 100.0);
-    println!("  theta (4-8Hz):   {:4} unidades ({:.1}%)", n_theta, n_theta as f32 / SHEET_N as f32 * 100.0);
-    println!("  delta (<4Hz):    {:4} unidades ({:.1}%)", n_delta, n_delta as f32 / SHEET_N as f32 * 100.0);
+    println!(
+        "  gamma (>30Hz):   {:4} unidades ({:.1}%)",
+        n_gamma,
+        n_gamma as f32 / SHEET_N as f32 * 100.0
+    );
+    println!(
+        "  beta  (13-30Hz): {:4} unidades ({:.1}%)",
+        n_beta,
+        n_beta as f32 / SHEET_N as f32 * 100.0
+    );
+    println!(
+        "  alpha (8-13Hz):  {:4} unidades ({:.1}%)",
+        n_alpha,
+        n_alpha as f32 / SHEET_N as f32 * 100.0
+    );
+    println!(
+        "  theta (4-8Hz):   {:4} unidades ({:.1}%)",
+        n_theta,
+        n_theta as f32 / SHEET_N as f32 * 100.0
+    );
+    println!(
+        "  delta (<4Hz):    {:4} unidades ({:.1}%)",
+        n_delta,
+        n_delta as f32 / SHEET_N as f32 * 100.0
+    );
 }

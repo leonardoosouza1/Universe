@@ -111,7 +111,7 @@ pub static PERIF_REAL: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParamsGpu {
     grid_size: u32,
-    n_beings:  u32,
+    n_beings: u32,
     cell_size: f32,
     /// 1.0 = visão periférica REAL (ver perception.wgsl). 0.0 = legado (a periférica
     /// era cópia bit-a-bit da fóvea — 16 canais redundantes de 192).
@@ -217,24 +217,24 @@ pub const TEMPORAL_STRIDE: usize = 58;
 pub struct PerceptionGpu {
     // ── Pipeline espacial (perception.wgsl) — 8 bindings (binding 7 = buf_sensors,
     // FASE SENSORES degrau 1; era 7 bindings antes deste campo existir) ────────────
-    pipeline_spatial:  wgpu::ComputePipeline,
-    layout_spatial:    wgpu::BindGroupLayout,
+    pipeline_spatial: wgpu::ComputePipeline,
+    layout_spatial: wgpu::BindGroupLayout,
     // ── Pipeline temporal (perception_temporal.wgsl) — 8 bindings ───────────────
     pipeline_temporal: wgpu::ComputePipeline,
-    layout_temporal:   wgpu::BindGroupLayout,
+    layout_temporal: wgpu::BindGroupLayout,
     // ── Pipeline motion (perception_motion.wgsl) — 4 bindings ───────────────────
     // Calcula ch 21-27 (motion_per_row) comparando retina atual vs anterior.
     // Weight L1 total dos canais 21-27 no CHAMPION.dna = 91.1 (alta importância).
-    pipeline_motion:   wgpu::ComputePipeline,
-    layout_motion:     wgpu::BindGroupLayout,
+    pipeline_motion: wgpu::ComputePipeline,
+    layout_motion: wgpu::BindGroupLayout,
     /// Grade de voxels (estática por pista, subida uma vez). Mesmos dados de `RetinaGpu`.
-    buf_grid:     wgpu::Buffer,
+    buf_grid: wgpu::Buffer,
     /// Campo de fluxo (estático por pista). Dois f32 por célula (x, z).
-    buf_flow:     wgpu::Buffer,
+    buf_flow: wgpu::Buffer,
     /// Mapa de altura (estático por pista). Um f32 por célula.
-    buf_heights:  wgpu::Buffer,
+    buf_heights: wgpu::Buffer,
     /// Poses dos seres (atualizado por tick via write_buffer). Tamanho: capacidade × PosePercep.
-    buf_poses:    wgpu::Buffer,
+    buf_poses: wgpu::Buffer,
     /// Banco de sensores herdáveis por ser (FASE SENSORES, degrau 1: FOV do sweep de
     /// parede/curvatura, alcance de parede, alcance lateral, 3 lookaheads de curvatura —
     /// ver `gpu::evolution::N_SENSOR_GENES`/`sensor_idx`). Constante durante a geração,
@@ -245,9 +245,9 @@ pub struct PerceptionGpu {
     /// `brain.rs`. Binding 7 de `layout_spatial` (só o pipeline ESPACIAL lê; os lookaheads
     /// de curvatura de `perception_temporal.wgsl` ficam fora de escopo nesta fase, ver
     /// doc de `N_SENSOR_GENES`).
-    buf_sensors:  wgpu::Buffer,
+    buf_sensors: wgpu::Buffer,
     /// Saída: WAVE_U32S u32 por ser. Copiado para buf_readback antes de mapear.
-    buf_output:   wgpu::Buffer,
+    buf_output: wgpu::Buffer,
     /// Buffer MAP_READ, tamanho = buf_output. Separado porque STORAGE | MAP_READ é inválido.
     buf_readback: wgpu::Buffer,
     /// Estado temporal por ser — residente na VRAM entre ticks.
@@ -277,9 +277,9 @@ impl PerceptionGpu {
     /// `retina_fisica_buf` é o `buf_output` da retina que ficará em VRAM; passamos o
     /// handle para o bind group (binding 5), eliminando qualquer cópia.
     pub fn new(
-        device:    &wgpu::Device,
-        _queue:     &wgpu::Queue,
-        world:     &crate::world::VoxelWorld,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        world: &crate::world::VoxelWorld,
         capacity: usize,
     ) -> Option<Self> {
         // ── Pipeline espacial: perception.wgsl (7 bindings, sem temporal) ─────
@@ -287,7 +287,7 @@ impl PerceptionGpu {
         // Mesma solução usada em physics.wgsl (dividido em 3 kernels).
         eprintln!("[perception] create_shader_module (spatial)...");
         let shader_spatial = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("perception-spatial"),
+            label: Some("perception-spatial"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("perception.wgsl"))),
         });
         eprintln!("[perception] shader_module (spatial) OK");
@@ -296,36 +296,36 @@ impl PerceptionGpu {
         // O compilador ACO do RADV crashava com o shader combinado de ~1050 linhas;
         // ao dividir em dois shaders menores, cada um compila sem travar.
         let layout_spatial = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("perception-spatial-layout"),
+            label: Some("perception-spatial-layout"),
             entries: &[
                 uniform_entry(0),
-                storage_entry(1, true),   // grade
-                storage_entry(2, true),   // fluxo
-                storage_entry(3, true),   // alturas
-                storage_entry(4, true),   // poses
-                storage_entry(5, true),   // retina física
-                storage_entry(6, false),  // buf_output (read_write, atomic)
+                storage_entry(1, true),  // grade
+                storage_entry(2, true),  // fluxo
+                storage_entry(3, true),  // alturas
+                storage_entry(4, true),  // poses
+                storage_entry(5, true),  // retina física
+                storage_entry(6, false), // buf_output (read_write, atomic)
                 // binding 7 aqui = buf_sensors (FASE SENSORES, degrau 1). Namespace de
                 // binding é POR LAYOUT — não colide com o binding 7 de `layout_temporal`
                 // (que é o estado temporal, um buffer inteiramente diferente num pipeline
                 // separado). Ver doc de `buf_sensors` no struct.
-                storage_entry(7, true),   // sensores herdáveis (read-only)
+                storage_entry(7, true), // sensores herdáveis (read-only)
             ],
         });
         eprintln!("[perception] create_pipeline_layout (spatial)...");
         let pipe_layout_spatial = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:               None,
-            bind_group_layouts:  &[&layout_spatial],
+            label: None,
+            bind_group_layouts: &[&layout_spatial],
             push_constant_ranges: &[],
         });
         eprintln!("[perception] create_compute_pipeline (spatial)...");
         let pipeline_spatial = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("perception-spatial-pipeline"),
-            layout:              Some(&pipe_layout_spatial),
-            module:              &shader_spatial,
-            entry_point:         Some("main"),
+            label: Some("perception-spatial-pipeline"),
+            layout: Some(&pipe_layout_spatial),
+            module: &shader_spatial,
+            entry_point: Some("main"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache: None,
         });
         eprintln!("[perception] pipeline (spatial) OK");
 
@@ -334,40 +334,42 @@ impl PerceptionGpu {
         // no mesmo buf_output (binding 6). Encadeado no mesmo CommandEncoder.
         eprintln!("[perception] create_shader_module (temporal)...");
         let shader_temporal = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("perception-temporal"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("perception_temporal.wgsl"))),
+            label: Some("perception-temporal"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
+                "perception_temporal.wgsl"
+            ))),
         });
         eprintln!("[perception] shader_module (temporal) OK");
 
         // Layout temporal: 8 bindings (0-7), idêntico ao layout original.
         // Os bindings 0-6 são os mesmos; binding 7 é o estado temporal (read_write).
         let layout_temporal = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("perception-temporal-layout"),
+            label: Some("perception-temporal-layout"),
             entries: &[
                 uniform_entry(0),
-                storage_entry(1, true),   // grade (mesmo buffer)
-                storage_entry(2, true),   // fluxo (mesmo buffer)
-                storage_entry(3, true),   // alturas (mesmo buffer)
-                storage_entry(4, true),   // poses (mesmo buffer)
-                storage_entry(5, true),   // retina física (mesmo buffer)
-                storage_entry(6, false),  // buf_output (mesmo buffer, escrita nos canais temporais)
-                storage_entry(7, false),  // estado temporal — lê prev_dist/EMA, escreve atualizado
+                storage_entry(1, true),  // grade (mesmo buffer)
+                storage_entry(2, true),  // fluxo (mesmo buffer)
+                storage_entry(3, true),  // alturas (mesmo buffer)
+                storage_entry(4, true),  // poses (mesmo buffer)
+                storage_entry(5, true),  // retina física (mesmo buffer)
+                storage_entry(6, false), // buf_output (mesmo buffer, escrita nos canais temporais)
+                storage_entry(7, false), // estado temporal — lê prev_dist/EMA, escreve atualizado
             ],
         });
         eprintln!("[perception] create_pipeline_layout (temporal)...");
         let pipe_layout_temporal = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:               None,
-            bind_group_layouts:  &[&layout_temporal],
+            label: None,
+            bind_group_layouts: &[&layout_temporal],
             push_constant_ranges: &[],
         });
         eprintln!("[perception] create_compute_pipeline (temporal)...");
         let pipeline_temporal = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("perception-temporal-pipeline"),
-            layout:              Some(&pipe_layout_temporal),
-            module:              &shader_temporal,
-            entry_point:         Some("main"),
+            label: Some("perception-temporal-pipeline"),
+            layout: Some(&pipe_layout_temporal),
+            module: &shader_temporal,
+            entry_point: Some("main"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache: None,
         });
         eprintln!("[perception] pipeline (temporal) OK");
 
@@ -377,7 +379,7 @@ impl PerceptionGpu {
         // Dividido em kernel separado para evitar o crash ACO do RADV (shader grande → SIGSEGV).
         eprintln!("[perception] create_shader_module (motion)...");
         let shader_motion = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("perception-motion"),
+            label: Some("perception-motion"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("perception_motion.wgsl"))),
         });
         eprintln!("[perception] shader_module (motion) OK");
@@ -385,27 +387,27 @@ impl PerceptionGpu {
         // Layout motion: 4 bindings (params, retina_cur, retina_prev, output).
         // Não precisa de grade/fluxo/alturas/poses/temporal — só retina delta.
         let layout_motion = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("perception-motion-layout"),
+            label: Some("perception-motion-layout"),
             entries: &[
-                uniform_entry(0),           // params (n_beings)
-                storage_entry(1, true),     // retina_cur (tick atual)
-                storage_entry(2, true),     // retina_prev (tick anterior)
-                storage_entry(3, false),    // buf_output (read_write, atomicOr)
+                uniform_entry(0),        // params (n_beings)
+                storage_entry(1, true),  // retina_cur (tick atual)
+                storage_entry(2, true),  // retina_prev (tick anterior)
+                storage_entry(3, false), // buf_output (read_write, atomicOr)
             ],
         });
         let pipe_layout_motion = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:               None,
-            bind_group_layouts:  &[&layout_motion],
+            label: None,
+            bind_group_layouts: &[&layout_motion],
             push_constant_ranges: &[],
         });
         eprintln!("[perception] create_compute_pipeline (motion)...");
         let pipeline_motion = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               Some("perception-motion-pipeline"),
-            layout:              Some(&pipe_layout_motion),
-            module:              &shader_motion,
-            entry_point:         Some("main"),
+            label: Some("perception-motion-pipeline"),
+            layout: Some(&pipe_layout_motion),
+            module: &shader_motion,
+            entry_point: Some("main"),
             compilation_options: Default::default(),
-            cache:               None,
+            cache: None,
         });
         eprintln!("[perception] pipeline (motion) OK");
 
@@ -419,54 +421,54 @@ impl PerceptionGpu {
         // pistas — docs/PLANO_EVOLUCAO.md).
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("percep-grid"),
+            label: Some("percep-grid"),
             contents: bytemuck::cast_slice(&grid_u32),
-            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // fluxo: vec2<f32> por célula → [f32, f32] empacotado.
         // VoxelWorld::flow é Vec<Vec2>; Vec2 = [f32; 2] no layout de memória do Bevy
         // (bevy::math::Vec2 = glam::Vec2 = repr(C) { x: f32, y: f32 }).
         // bytemuck::cast_slice funciona diretamente porque Vec2 é Pod.
-        let flow_flat: Vec<f32> = world.flow.iter()
-            .flat_map(|v| [v.x, v.y])
-            .collect();
+        let flow_flat: Vec<f32> = world.flow.iter().flat_map(|v| [v.x, v.y]).collect();
         let buf_flow = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("percep-flow"),
+            label: Some("percep-flow"),
             contents: bytemuck::cast_slice(&flow_flat),
-            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // alturas: f32 por célula.
         let buf_heights = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("percep-heights"),
+            label: Some("percep-heights"),
             contents: bytemuck::cast_slice(&world.height_map),
-            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // ── Buffers dinâmicos: poses, saida, leitura ─────────────────────────
         let cap = capacity.max(64);
-        let bytes_poses  = (cap * std::mem::size_of::<PosePerception>()) as u64;
+        let bytes_poses = (cap * std::mem::size_of::<PosePerception>()) as u64;
         let bytes_output = (cap * WAVE_U32S * std::mem::size_of::<u32>()) as u64;
 
         let buf_poses = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("percep-poses"),
-            size:               bytes_poses,
-            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            label: Some("percep-poses"),
+            size: bytes_poses,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("percep-output"),
-            size:               bytes_output,
+            label: Some("percep-output"),
+            size: bytes_output,
             // COPY_DST necessário para enc.clear_buffer() que zera antes do dispatch atomicOr.
             // COPY_SRC necessário para enc.copy_buffer_to_buffer() pós-dispatch.
-            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("percep-readback"),
-            size:               bytes_output,
-            usage:              wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            label: Some("percep-readback"),
+            size: bytes_output,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -477,11 +479,15 @@ impl PerceptionGpu {
         // reproduza o comportamento antigo, exatamente como `buf_tau` nasce em
         // DECAY_DEFAULT em `brain.rs`.
         let sensors_init: Vec<f32> = crate::gpu::evolution::SENSOR_DEFAULTS
-            .iter().cycle().take(cap * crate::gpu::evolution::N_SENSOR_GENES).copied().collect();
+            .iter()
+            .cycle()
+            .take(cap * crate::gpu::evolution::N_SENSOR_GENES)
+            .copied()
+            .collect();
         let buf_sensors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("percep-sensors"),
+            label: Some("percep-sensors"),
             contents: bytemuck::cast_slice(&sensors_init),
-            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         // ── Buffer de estado temporal por ser ─────────────────────────────────
@@ -503,28 +509,28 @@ impl PerceptionGpu {
             // serão sobrescritos pela CPU antes do primeiro dispatch via update_dist_temporal().
             for i in 0..cap {
                 let b = i * TEMPORAL_STRIDE;
-                v[b]      = 40.0;  // wall_dist_prev_l (expandido de 27→40m, BUG 1 fix)
-                v[b + 1]  = 40.0;  // wall_dist_prev_r
-                v[b + 2]  = 50.0;  // wall_dist_prev_f
-                v[b + 3]  = 40.0;  // wall_ema_l (começa longe = sem alerta)
-                v[b + 4]  = 40.0;  // wall_ema_r
-                v[b + 16] = 40.0;  // cpu_dist_l atual (será sobrescrito pela CPU)
-                v[b + 17] = 40.0;  // cpu_dist_r atual
-                v[b + 18] = 50.0;  // cpu_dist_f atual
+                v[b] = 40.0; // wall_dist_prev_l (expandido de 27→40m, BUG 1 fix)
+                v[b + 1] = 40.0; // wall_dist_prev_r
+                v[b + 2] = 50.0; // wall_dist_prev_f
+                v[b + 3] = 40.0; // wall_ema_l (começa longe = sem alerta)
+                v[b + 4] = 40.0; // wall_ema_r
+                v[b + 16] = 40.0; // cpu_dist_l atual (será sobrescrito pela CPU)
+                v[b + 17] = 40.0; // cpu_dist_r atual
+                v[b + 18] = 50.0; // cpu_dist_f atual
                 // Telemetria proprioceptiva [20-31] — valores neutros no tick 0.
                 // Serão sobrescritos pela CPU via update_proprioception_temporal() antes do dispatch.
-                v[b + 20] = 1.0;   // prop_alignment: alinhado na pista (ótimo)
-                v[b + 21] = 0.0;   // prop_speed_m_s: parado
-                v[b + 22] = 0.0;   // prop_lat_vel: sem deriva
-                v[b + 23] = 1.0;   // prop_hp_frac: HP cheio
-                v[b + 24] = 0.0;   // prop_rpm_ratio: motor frio
-                v[b + 25] = 1.0;   // prop_gear: 1ª marcha
-                v[b + 26] = 0.5;   // prop_tire_temp_norm: temp moderada (60/120)
-                v[b + 27] = 0.0;   // prop_downforce_norm: reservado
-                v[b + 28] = 0.0;   // prop_in_draft: reservado
-                v[b + 29] = 0.0;   // prop_on_grass: na pista
-                v[b + 30] = 0.0;   // prop_steer_abs: sem esterçamento
-                v[b + 31] = 0.0;   // prop_wetness: reservado
+                v[b + 20] = 1.0; // prop_alignment: alinhado na pista (ótimo)
+                v[b + 21] = 0.0; // prop_speed_m_s: parado
+                v[b + 22] = 0.0; // prop_lat_vel: sem deriva
+                v[b + 23] = 1.0; // prop_hp_frac: HP cheio
+                v[b + 24] = 0.0; // prop_rpm_ratio: motor frio
+                v[b + 25] = 1.0; // prop_gear: 1ª marcha
+                v[b + 26] = 0.5; // prop_tire_temp_norm: temp moderada (60/120)
+                v[b + 27] = 0.0; // prop_downforce_norm: reservado
+                v[b + 28] = 0.0; // prop_in_draft: reservado
+                v[b + 29] = 0.0; // prop_on_grass: na pista
+                v[b + 30] = 0.0; // prop_steer_abs: sem esterçamento
+                v[b + 31] = 0.0; // prop_wetness: reservado
                 // Slots v2 [32-48] — zeros já corretos (sem ré no tick 0, cfc_hidden=0).
                 // [32] reverse_timer = 0.0 (não em ré)
                 // [33-48] cfc_hidden = 0.0 (CfC sem histórico → primeira percepção zerada)
@@ -534,10 +540,12 @@ impl PerceptionGpu {
             v
         };
         let buf_temporal = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("percep-temporal"),
+            label: Some("percep-temporal"),
             contents: bytemuck::cast_slice(&temporal_init),
             // read_write: o kernel lê e escreve; COPY_SRC/DST para diagnóstico/readback futuro.
-            usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
         });
 
         // A racing_line é pré-computada pela CPU e injetada em buf_temporal[10-15]
@@ -551,9 +559,9 @@ impl PerceptionGpu {
         // mas aceitável (modelo não treinou com tick 0 zerado, mas converge em 1 tick).
         let retina_bytes = (cap * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
         let buf_retina_prev = device.create_buffer(&wgpu::BufferDescriptor {
-            label:              Some("percep-retina-prev"),
-            size:               retina_bytes,
-            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            label: Some("percep-retina-prev"),
+            size: retina_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -591,15 +599,23 @@ impl PerceptionGpu {
     /// documenta essa invariante e pega em teste/debug qualquer violação futura
     /// (ex.: alguém tornar `size` dependente da seed); em release o custo é zero.
     pub fn reload_world(&self, queue: &wgpu::Queue, world: &crate::world::VoxelWorld) {
-        debug_assert_eq!(world.size as u32, self.grid_size,
-            "reload_world: pista nova tem grade de tamanho diferente — buffer não realoca");
-        debug_assert!((world.cell_size - self.cell_size).abs() < 1e-6,
-            "reload_world: pista nova tem cell_size diferente — buffer não realoca");
+        debug_assert_eq!(
+            world.size as u32, self.grid_size,
+            "reload_world: pista nova tem grade de tamanho diferente — buffer não realoca"
+        );
+        debug_assert!(
+            (world.cell_size - self.cell_size).abs() < 1e-6,
+            "reload_world: pista nova tem cell_size diferente — buffer não realoca"
+        );
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         queue.write_buffer(&self.buf_grid, 0, bytemuck::cast_slice(&grid_u32));
         let flow_flat: Vec<f32> = world.flow.iter().flat_map(|v| [v.x, v.y]).collect();
         queue.write_buffer(&self.buf_flow, 0, bytemuck::cast_slice(&flow_flat));
-        queue.write_buffer(&self.buf_heights, 0, bytemuck::cast_slice(&world.height_map));
+        queue.write_buffer(
+            &self.buf_heights,
+            0,
+            bytemuck::cast_slice(&world.height_map),
+        );
     }
 
     /// Roda o kernel de percepção para N seres, consumindo o buffer de retina física já em VRAM.
@@ -615,9 +631,9 @@ impl PerceptionGpu {
     /// Se `poses.len() > capacidade`, trunca. Igual ao comportamento de `RetinaGpu::render()`.
     pub fn reduce(
         &self,
-        device:            &wgpu::Device,
-        queue:             &wgpu::Queue,
-        poses:             &[PosePerception],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        poses: &[PosePerception],
         buf_retina_fisica: &wgpu::Buffer,
     ) -> Vec<[i8; SENSORY_WAVE_SIZE]> {
         let n = poses.len().min(self.capacity);
@@ -631,45 +647,97 @@ impl PerceptionGpu {
         // ── Uniforme (criado por tick; barato — é só 16 bytes) ───────────────
         let params = ParamsGpu {
             grid_size: self.grid_size,
-            n_beings:  n as u32,
+            n_beings: n as u32,
             cell_size: self.cell_size,
-            perif_real: if PERIF_REAL.load(std::sync::atomic::Ordering::Relaxed) { 1.0 } else { 0.0 },
+            perif_real: if PERIF_REAL.load(std::sync::atomic::Ordering::Relaxed) {
+                1.0
+            } else {
+                0.0
+            },
         };
         let buf_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("percep-params"),
+            label: Some("percep-params"),
             contents: bytemuck::bytes_of(&params),
-            usage:    wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM,
         });
 
         // ── Bind group espacial (8 bindings: 0-6 + 7=buf_sensors, FASE SENSORES) ──
         let bg_spatial = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("percep-bg-spatial"),
-            layout:  &self.layout_spatial,
+            label: Some("percep-bg-spatial"),
+            layout: &self.layout_spatial,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_flow.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_heights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_poses.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: buf_retina_fisica.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.buf_sensors.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_flow.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_heights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_poses.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: buf_retina_fisica.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.buf_sensors.as_entire_binding(),
+                },
             ],
         });
 
         // ── Bind group temporal (8 bindings, inclui temporal) ────────────────
         let bg_temporal = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("percep-bg-temporal"),
-            layout:  &self.layout_temporal,
+            label: Some("percep-bg-temporal"),
+            layout: &self.layout_temporal,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_flow.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_heights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_poses.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: buf_retina_fisica.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.buf_temporal.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_flow.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_heights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_poses.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: buf_retina_fisica.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.buf_temporal.as_entire_binding(),
+                },
             ],
         });
 
@@ -684,7 +752,8 @@ impl PerceptionGpu {
         enc.clear_buffer(&self.buf_output, 0, Some(bytes_out));
         {
             let mut passe = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pass-percep-spatial"), timestamp_writes: None,
+                label: Some("pass-percep-spatial"),
+                timestamp_writes: None,
             });
             passe.set_pipeline(&self.pipeline_spatial);
             passe.set_bind_group(0, &bg_spatial, &[]);
@@ -693,7 +762,8 @@ impl PerceptionGpu {
         // Fim do pass espacial → barreira implícita: buf_output visível para o próximo pass.
         {
             let mut passe = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pass-percep-temporal"), timestamp_writes: None,
+                label: Some("pass-percep-temporal"),
+                timestamp_writes: None,
             });
             passe.set_pipeline(&self.pipeline_temporal);
             passe.set_bind_group(0, &bg_temporal, &[]);
@@ -709,7 +779,9 @@ impl PerceptionGpu {
         // CPU trabalha tick N-1 enquanto GPU está ocupada com tick N.
         let slice = self.buf_readback.slice(0..bytes_out);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
@@ -758,14 +830,22 @@ impl PerceptionGpu {
     /// histórico — mesmo padrão de `BrainGpu::upload_tau`.
     pub fn upload_sensors(&self, queue: &wgpu::Queue, sensors: &[f32], n: usize) {
         use crate::gpu::evolution::N_SENSOR_GENES;
-        assert!(n <= self.capacity, "n={n} excede capacidade {}", self.capacity);
+        assert!(
+            n <= self.capacity,
+            "n={n} excede capacidade {}",
+            self.capacity
+        );
         // Comprimento errado seria um bug MUDO: o kernel leria sensores do ser seguinte
         // (ou lixo do fim do buffer) e a "evolução dos sensores" viraria ruído embaralhado
         // sem sintoma visível — mesma classe de erro já vista neste projeto no stride da
         // onda sensorial (ver CLAUDE.md, gap 1).
-        assert_eq!(sensors.len(), n * N_SENSOR_GENES,
+        assert_eq!(
+            sensors.len(),
+            n * N_SENSOR_GENES,
             "banco de sensores tem {} valores, esperava {} ({n} seres × {N_SENSOR_GENES} genes)",
-            sensors.len(), n * N_SENSOR_GENES);
+            sensors.len(),
+            n * N_SENSOR_GENES
+        );
         queue.write_buffer(&self.buf_sensors, 0, bytemuck::cast_slice(sensors));
     }
 
@@ -783,7 +863,9 @@ impl PerceptionGpu {
     /// `memory0_vals`: fatia com N valores em [-1, 1] (o throttle intencional).
     pub fn update_memory0(&self, queue: &wgpu::Queue, memory0_vals: &[f32]) {
         let n = memory0_vals.len().min(self.capacity);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         // Cada ser ocupa TEMPORAL_STRIDE f32; memory0 está no índice 7.
         // Para atualizar apenas memory0 sem sobreescrever os outros campos, precisamos
         // de writes pontuais. Usamos write_buffer para cada ser — custo: N × 4 bytes de overhead.
@@ -791,7 +873,11 @@ impl PerceptionGpu {
         // ALTERNATIVA: um buffer auxiliar e kernel de cópia — desnecessário a este nível.
         for i in 0..n {
             let byte_offset = (i * TEMPORAL_STRIDE + 7) as u64 * 4;
-            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::bytes_of(&memory0_vals[i]));
+            queue.write_buffer(
+                &self.buf_temporal,
+                byte_offset,
+                bytemuck::bytes_of(&memory0_vals[i]),
+            );
         }
     }
 
@@ -816,13 +902,19 @@ impl PerceptionGpu {
     /// ```
     pub fn update_racing_line_temporal(&self, queue: &wgpu::Queue, racing_vals: &[[f32; 6]]) {
         let n = racing_vals.len().min(self.capacity);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         // Campos [10-15] = índices 10 a 15 em buf_temporal para cada ser.
         // Escrevemos 6 f32 contíguos de uma vez (24 bytes) por ser — mais eficiente
         // do que 6 write_buffer separados.
         for i in 0..n {
             let byte_offset = (i * TEMPORAL_STRIDE + 10) as u64 * 4;
-            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::cast_slice(&racing_vals[i]));
+            queue.write_buffer(
+                &self.buf_temporal,
+                byte_offset,
+                bytemuck::cast_slice(&racing_vals[i]),
+            );
         }
     }
 
@@ -846,12 +938,18 @@ impl PerceptionGpu {
     /// ```
     pub fn update_dist_temporal(&self, queue: &wgpu::Queue, dist_vals: &[[f32; 3]]) {
         let n = dist_vals.len().min(self.capacity);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         // Campos [16-18] = índices 16 a 18 em buf_temporal.
         // 3 f32 contíguos (12 bytes) por ser em um único write_buffer.
         for i in 0..n {
             let byte_offset = (i * TEMPORAL_STRIDE + 16) as u64 * 4;
-            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::cast_slice(&dist_vals[i]));
+            queue.write_buffer(
+                &self.buf_temporal,
+                byte_offset,
+                bytemuck::cast_slice(&dist_vals[i]),
+            );
         }
     }
 
@@ -883,13 +981,19 @@ impl PerceptionGpu {
     /// ```
     pub fn update_proprioception_temporal(&self, queue: &wgpu::Queue, vals: &[[f32; 12]]) {
         let n = vals.len().min(self.capacity);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         // Campos [20-31] = 12 f32 contíguos (48 bytes) por ser.
         // Um write_buffer por ser para gravar os 48 bytes no offset correto.
         // Custo total: N × 48 bytes ≈ 2880 bytes @ 60 seres — negligível.
         for i in 0..n {
             let byte_offset = (i * TEMPORAL_STRIDE + 20) as u64 * 4;
-            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::cast_slice(&vals[i]));
+            queue.write_buffer(
+                &self.buf_temporal,
+                byte_offset,
+                bytemuck::cast_slice(&vals[i]),
+            );
         }
     }
 
@@ -915,13 +1019,19 @@ impl PerceptionGpu {
     /// ```
     pub fn update_extra_temporal(&self, queue: &wgpu::Queue, extra_vals: &[[f32; 17]]) {
         let n = extra_vals.len().min(self.capacity);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         // Slot 32 (reverse_timer) + slots 33-48 (cfc_hidden[0..15]) = 17 f32 contíguos.
         // Um write_buffer por ser grava os 68 bytes no offset correto.
         // Custo total: N × 68 bytes ≈ 4080 bytes @ 60 seres — negligível.
         for i in 0..n {
             let byte_offset = (i * TEMPORAL_STRIDE + 32) as u64 * 4;
-            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::cast_slice(&extra_vals[i]));
+            queue.write_buffer(
+                &self.buf_temporal,
+                byte_offset,
+                bytemuck::cast_slice(&extra_vals[i]),
+            );
         }
     }
 
@@ -945,11 +1055,17 @@ impl PerceptionGpu {
     /// ```
     pub fn update_extra2_temporal(&self, queue: &wgpu::Queue, extra2_vals: &[[f32; 9]]) {
         let n = extra2_vals.len().min(self.capacity);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         // Slots 49-57 (9 f32 contíguos). Um write_buffer por ser = 36 bytes.
         for i in 0..n {
             let byte_offset = (i * TEMPORAL_STRIDE + 49) as u64 * 4;
-            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::cast_slice(&extra2_vals[i]));
+            queue.write_buffer(
+                &self.buf_temporal,
+                byte_offset,
+                bytemuck::cast_slice(&extra2_vals[i]),
+            );
         }
     }
 
@@ -986,10 +1102,10 @@ impl PerceptionGpu {
     /// Retorna o número de bytes do buf_output preenchidos (para o copy posterior).
     pub fn bind_and_dispatch(
         &self,
-        enc:               &mut wgpu::CommandEncoder,
-        device:            &wgpu::Device,
-        queue:             &wgpu::Queue,
-        poses:             &[PosePerception],
+        enc: &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        poses: &[PosePerception],
         buf_retina_fisica: &wgpu::Buffer,
     ) -> u64 {
         let n = poses.len().min(self.capacity);
@@ -1003,45 +1119,97 @@ impl PerceptionGpu {
         // Uniform criado por tick — 16 bytes, custo negligível.
         let params = ParamsGpu {
             grid_size: self.grid_size,
-            n_beings:  n as u32,
+            n_beings: n as u32,
             cell_size: self.cell_size,
-            perif_real: if PERIF_REAL.load(std::sync::atomic::Ordering::Relaxed) { 1.0 } else { 0.0 },
+            perif_real: if PERIF_REAL.load(std::sync::atomic::Ordering::Relaxed) {
+                1.0
+            } else {
+                0.0
+            },
         };
         let buf_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("percep-params-chain"),
+            label: Some("percep-params-chain"),
             contents: bytemuck::bytes_of(&params),
-            usage:    wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM,
         });
 
         // ── Bind group espacial (8 bindings: 0-6 + 7=buf_sensors, FASE SENSORES) ──
         let bg_spatial = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("percep-chain-bg-spatial"),
-            layout:  &self.layout_spatial,
+            label: Some("percep-chain-bg-spatial"),
+            layout: &self.layout_spatial,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_flow.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_heights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_poses.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: buf_retina_fisica.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.buf_sensors.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_flow.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_heights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_poses.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: buf_retina_fisica.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.buf_sensors.as_entire_binding(),
+                },
             ],
         });
 
         // ── Bind group temporal (8 bindings, inclui estado temporal) ─────────
         let bg_temporal = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("percep-chain-bg-temporal"),
-            layout:  &self.layout_temporal,
+            label: Some("percep-chain-bg-temporal"),
+            layout: &self.layout_temporal,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.buf_grid.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_flow.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_heights.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_poses.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: buf_retina_fisica.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.buf_temporal.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buf_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_flow.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_heights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_poses.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: buf_retina_fisica.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.buf_temporal.as_entire_binding(),
+                },
             ],
         });
 
@@ -1053,7 +1221,8 @@ impl PerceptionGpu {
         // Dispatch espacial: canais 0-97, 128-191
         {
             let mut passe = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pass-percep-spatial-chain"), timestamp_writes: None,
+                label: Some("pass-percep-spatial-chain"),
+                timestamp_writes: None,
             });
             passe.set_pipeline(&self.pipeline_spatial);
             passe.set_bind_group(0, &bg_spatial, &[]);
@@ -1064,7 +1233,8 @@ impl PerceptionGpu {
         // Dispatch temporal: canais 85, 86, 88, 102-110, 118-120, 123
         {
             let mut passe = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pass-percep-temporal-chain"), timestamp_writes: None,
+                label: Some("pass-percep-temporal-chain"),
+                timestamp_writes: None,
             });
             passe.set_pipeline(&self.pipeline_temporal);
             passe.set_bind_group(0, &bg_temporal, &[]);
@@ -1077,18 +1247,31 @@ impl PerceptionGpu {
         // ANTES do dispatch da retina neste encoder.
         // Weight L1 total ch21-27 = 91.1 no CHAMPION.dna — crítico para curvas.
         let bg_motion = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("percep-chain-bg-motion"),
-            layout:  &self.layout_motion,
+            label: Some("percep-chain-bg-motion"),
+            layout: &self.layout_motion,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf_params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: buf_retina_fisica.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.buf_retina_prev.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.buf_output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buf_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buf_retina_fisica.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_retina_prev.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.buf_output.as_entire_binding(),
+                },
             ],
         });
         {
             let mut passe = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("pass-percep-motion-chain"), timestamp_writes: None,
+                label: Some("pass-percep-motion-chain"),
+                timestamp_writes: None,
             });
             passe.set_pipeline(&self.pipeline_motion);
             passe.set_bind_group(0, &bg_motion, &[]);
@@ -1118,7 +1301,7 @@ impl PerceptionGpu {
     /// mas convergirá no tick 1.
     pub fn copy_retina_prev(
         &self,
-        enc:               &mut wgpu::CommandEncoder,
+        enc: &mut wgpu::CommandEncoder,
         buf_retina_fisica: &wgpu::Buffer,
     ) {
         // Cópia GPU→GPU dentro do encoder: zero overhead de CPU, latência ≈ PCIe write latency.
@@ -1129,13 +1312,7 @@ impl PerceptionGpu {
         // buf_retina_prev: alocado para capacity.max(64) seres (ex: 64×1764×4 = 451.584 B).
         // Copiamos apenas o que a fonte tem — excedente em dst fica como zero.
         let copy_bytes = buf_retina_fisica.size().min(self.retina_bytes);
-        enc.copy_buffer_to_buffer(
-            buf_retina_fisica,
-            0,
-            &self.buf_retina_prev,
-            0,
-            copy_bytes,
-        );
+        enc.copy_buffer_to_buffer(buf_retina_fisica, 0, &self.buf_retina_prev, 0, copy_bytes);
     }
 
     /// Lê o buf_readback após um poll(Wait) do encoder que continha bind_and_dispatch.
@@ -1156,8 +1333,8 @@ impl PerceptionGpu {
     /// map_async, nunca antes**.
     pub fn read_after_submit(
         &self,
-        device:   &wgpu::Device,
-        n:        usize,
+        device: &wgpu::Device,
+        n: usize,
         bytes_out: u64,
     ) -> Vec<[i8; SENSORY_WAVE_SIZE]> {
         let n = n.min(self.capacity);
@@ -1167,7 +1344,9 @@ impl PerceptionGpu {
 
         let slice = self.buf_readback.slice(0..bytes_out);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         // O poll QUE FALTAVA: sem ele o callback nunca é servido e o recv trava.
         device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
@@ -1198,9 +1377,9 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
-            ty:                  wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset:  false,
-            min_binding_size:    None,
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
         },
         count: None,
     }
@@ -1211,9 +1390,9 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
-            ty:                  wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset:  false,
-            min_binding_size:    None,
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
         },
         count: None,
     }
@@ -1304,20 +1483,27 @@ impl PerceptionGpuRes {
     /// Não deve criar um segundo dispositivo — wgpu só suporta 1 por processo em muitos drivers.
     pub fn get_or_create(
         &mut self,
-        device:     &wgpu::Device,
-        queue:      &wgpu::Queue,
-        world:      &crate::world::VoxelWorld,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        world: &crate::world::VoxelWorld,
         signature: u64,
         capacity: usize,
     ) -> Option<&PerceptionGpu> {
         let needs_update = self.ctx.is_none()
             || self.signature != signature
-            || self.ctx.as_ref().map(|c| c.capacity < capacity).unwrap_or(true);
+            || self
+                .ctx
+                .as_ref()
+                .map(|c| c.capacity < capacity)
+                .unwrap_or(true);
         if needs_update {
             self.ctx = PerceptionGpu::new(device, queue, world, capacity.max(64));
             self.signature = signature;
             if self.ctx.is_some() {
-                println!("🔭 percepção na GPU: {} seres (kernel percepcao.wgsl)", capacity);
+                println!(
+                    "🔭 percepção na GPU: {} seres (kernel percepcao.wgsl)",
+                    capacity
+                );
             } else {
                 println!("⚠️  percepção GPU falhou — canais ficam na CPU");
             }
@@ -1332,10 +1518,10 @@ impl PerceptionGpuRes {
 /// `forward_2d` = Vec2 { x: transform.right().x, y: transform.right().z } (motor.rs usa .right() como forward).
 /// `right_2d`   = Vec2 { x: transform.back().x,  y: transform.back().z }.
 pub fn pose_from_transform(
-    pos:        bevy::math::Vec3,
+    pos: bevy::math::Vec3,
     forward_2d: Vec2,
-    right_2d:   Vec2,
-    phase:      f32,
+    right_2d: Vec2,
+    phase: f32,
 ) -> PosePerception {
     PosePerception {
         pos_x: pos.x,
@@ -1385,19 +1571,34 @@ mod tests {
     fn legacy_encoding_edge_values() {
         use crate::gpu::Pixel;
         // Wall a 0m → 127
-        let v = crate::gpu::legacy_encoding(Pixel { dist_m: 0.0, material: 2 });
+        let v = crate::gpu::legacy_encoding(Pixel {
+            dist_m: 0.0,
+            material: 2,
+        });
         assert_eq!(v, 127i8);
         // Road a 0m → -128
-        let v = crate::gpu::legacy_encoding(Pixel { dist_m: 0.0, material: 1 });
+        let v = crate::gpu::legacy_encoding(Pixel {
+            dist_m: 0.0,
+            material: 1,
+        });
         assert_eq!(v, -128i8);
         // Grass a 0m → 40
-        let v = crate::gpu::legacy_encoding(Pixel { dist_m: 0.0, material: 0 });
+        let v = crate::gpu::legacy_encoding(Pixel {
+            dist_m: 0.0,
+            material: 0,
+        });
         assert_eq!(v, 40i8);
         // Wall a 30m → 55 (limit point entre as duas curvas de Wall)
-        let v = crate::gpu::legacy_encoding(Pixel { dist_m: 30.0, material: 2 });
+        let v = crate::gpu::legacy_encoding(Pixel {
+            dist_m: 30.0,
+            material: 2,
+        });
         assert_eq!(v, 55i8, "Wall a 30m deveria ser 55 (limite das curvas)");
         // Wall a 120m → 0
-        let v = crate::gpu::legacy_encoding(Pixel { dist_m: 120.0, material: 2 });
+        let v = crate::gpu::legacy_encoding(Pixel {
+            dist_m: 120.0,
+            material: 2,
+        });
         assert_eq!(v, 0i8, "Wall a 120m deveria ser 0");
     }
 
@@ -1414,8 +1615,11 @@ mod tests {
     /// Verifica que PosePercep tem o tamanho e alinhamento esperados.
     #[test]
     fn pose_perception_layout() {
-        assert_eq!(std::mem::size_of::<PosePerception>(), 32,
-            "8 campos f32 = 32 bytes, bytemuck exige alinhamento correto");
+        assert_eq!(
+            std::mem::size_of::<PosePerception>(),
+            32,
+            "8 campos f32 = 32 bytes, bytemuck exige alinhamento correto"
+        );
         assert_eq!(std::mem::align_of::<PosePerception>(), 4);
     }
 }

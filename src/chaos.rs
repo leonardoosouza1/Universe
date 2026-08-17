@@ -29,13 +29,18 @@ pub struct ChaosScore {
 
 pub fn score(input: &ChaosInput, oscillators: &[ResonantNode]) -> ChaosScore {
     let phys = W_YAW * (input.yaw_rate.abs() / YAW_RATE_KNEE).tanh()
-             + W_SLIP * (input.slip_avg / SLIP_KNEE).tanh()
-             + W_RETINA * input.retina_temporal_var.clamp(0.0, 1.0);
+        + W_SLIP * (input.slip_avg / SLIP_KNEE).tanh()
+        + W_RETINA * input.retina_temporal_var.clamp(0.0, 1.0);
     let phys = phys.clamp(0.0, 1.0);
     let coh = coherence(oscillators);
     let neural = 1.0 - coh;
     let combined = phys.max(neural);
-    ChaosScore { physical: phys, neural, coherence: coh, combined }
+    ChaosScore {
+        physical: phys,
+        neural,
+        coherence: coh,
+        combined,
+    }
 }
 
 #[cfg(test)]
@@ -44,7 +49,11 @@ mod tests {
     use std::f32::consts::PI;
 
     fn calm_input() -> ChaosInput {
-        ChaosInput { yaw_rate: 0.0, slip_avg: 0.0, retina_temporal_var: 0.0 }
+        ChaosInput {
+            yaw_rate: 0.0,
+            slip_avg: 0.0,
+            retina_temporal_var: 0.0,
+        }
     }
 
     #[test]
@@ -56,7 +65,8 @@ mod tests {
 
     #[test]
     fn high_yaw_high_physical_chaos() {
-        let mut i = calm_input(); i.yaw_rate = 5.0;
+        let mut i = calm_input();
+        i.yaw_rate = 5.0;
         let nodes: Vec<ResonantNode> = (0..4).map(|_| ResonantNode::new(1.0)).collect();
         let s = score(&i, &nodes);
         assert!(s.physical > 0.3);
@@ -75,7 +85,8 @@ mod tests {
 
     #[test]
     fn combined_takes_max() {
-        let mut i = calm_input(); i.yaw_rate = 5.0;
+        let mut i = calm_input();
+        i.yaw_rate = 5.0;
         let nodes: Vec<ResonantNode> = (0..4).map(|_| ResonantNode::new(1.0)).collect();
         let s = score(&i, &nodes);
         assert_eq!(s.combined, s.physical);

@@ -23,7 +23,7 @@ impl RepoMiner {
     /// Axiom: "Sinal de Fome (Hunger Trigger): Mestre LNN detecta alta incerteza."
     pub fn monitor_uncertainty(&mut self, uncertainty: f32) {
         self.hunger_level += uncertainty * 0.1;
-        
+
         if self.hunger_level >= self.trigger_threshold {
             self.trigger_hunt();
         }

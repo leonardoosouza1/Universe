@@ -29,10 +29,10 @@
 //!   replay_mapa --dir <pasta com gen*.replay> [--width 28] [--saida /tmp/replay_srv]
 //!   replay_mapa --replay <um.replay>          # ainda funciona, gera uma geração só
 
+use bevy::math::Vec2;
 use std::path::{Path, PathBuf};
 use universe::replay::ReplayReader;
-use universe::world::{VoxelWorld, VoxelType};
-use bevy::math::Vec2;
+use universe::world::{VoxelType, VoxelWorld};
 
 /// Quantos quadros antes da morte marcar como "agonia" — o trecho que interessa olhar.
 const QUADROS_DE_AGONIA: usize = 24;
@@ -47,11 +47,36 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--dir"    => { i += 1; if i < args.len() { dir = Some(PathBuf::from(&args[i])); } }
-            "--replay" => { i += 1; if i < args.len() { um = Some(PathBuf::from(&args[i])); } }
-            "--saida"  => { i += 1; if i < args.len() { saida = PathBuf::from(&args[i]); } }
-            "--width"  => { i += 1; if i < args.len() { width = args[i].parse().unwrap_or(28.0); } }
-            "--passo"  => { i += 1; if i < args.len() { passo = args[i].parse().unwrap_or(4).max(1); } }
+            "--dir" => {
+                i += 1;
+                if i < args.len() {
+                    dir = Some(PathBuf::from(&args[i]));
+                }
+            }
+            "--replay" => {
+                i += 1;
+                if i < args.len() {
+                    um = Some(PathBuf::from(&args[i]));
+                }
+            }
+            "--saida" => {
+                i += 1;
+                if i < args.len() {
+                    saida = PathBuf::from(&args[i]);
+                }
+            }
+            "--width" => {
+                i += 1;
+                if i < args.len() {
+                    width = args[i].parse().unwrap_or(28.0);
+                }
+            }
+            "--passo" => {
+                i += 1;
+                if i < args.len() {
+                    passo = args[i].parse().unwrap_or(4).max(1);
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -59,10 +84,13 @@ fn main() {
 
     let mut arquivos: Vec<PathBuf> = Vec::new();
     if let Some(d) = &dir {
-        let mut v: Vec<PathBuf> = std::fs::read_dir(d).ok()
-            .map(|it| it.filter_map(|e| e.ok().map(|e| e.path()))
-                 .filter(|p| p.extension().map(|e| e == "replay").unwrap_or(false))
-                 .collect())
+        let mut v: Vec<PathBuf> = std::fs::read_dir(d)
+            .ok()
+            .map(|it| {
+                it.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().map(|e| e == "replay").unwrap_or(false))
+                    .collect()
+            })
             .unwrap_or_default();
         v.sort();
         arquivos = v;
@@ -70,23 +98,33 @@ fn main() {
         arquivos.push(u);
     }
     if arquivos.is_empty() {
-        eprintln!("uso: replay_mapa --dir <pasta com gen*.replay> [--width 28] [--saida /tmp/replay_srv]");
+        eprintln!(
+            "uso: replay_mapa --dir <pasta com gen*.replay> [--width 28] [--saida /tmp/replay_srv]"
+        );
         std::process::exit(2);
     }
 
     if let Err(e) = std::fs::create_dir_all(&saida) {
-        eprintln!("não criou {}: {e}", saida.display()); std::process::exit(1);
+        eprintln!("não criou {}: {e}", saida.display());
+        std::process::exit(1);
     }
 
     // Geometria: reconstruída UMA vez da semente do primeiro replay. Todas as gerações da
     // mesma corrida rodam o mesmo mundo, então recalcular por geração seria desperdício —
     // mas se a semente divergir entre arquivos isso é um erro grave e precisa gritar.
-    let semente0 = ReplayReader::open(&arquivos[0]).map(|r| r.header.world_seed).unwrap_or(0);
-    let world = { let _q = universe::world::silence_map_diag(); VoxelWorld::new(semente0, width) };
+    let semente0 = ReplayReader::open(&arquivos[0])
+        .map(|r| r.header.world_seed)
+        .unwrap_or(0);
+    let world = {
+        let _q = universe::world::silence_map_diag();
+        VoxelWorld::new(semente0, width)
+    };
     let pista = Pista::medir(&world, width);
 
-    println!("pista: volta {:.0} m · {} waypoints · raio mínimo {:.1} m (setor {})",
-             pista.lap, pista.n, pista.raio_min, pista.setor_do_raio_min);
+    println!(
+        "pista: volta {:.0} m · {} waypoints · raio mínimo {:.1} m (setor {})",
+        pista.lap, pista.n, pista.raio_min, pista.setor_do_raio_min
+    );
 
     // ── UM MUNDO POR GERAÇÃO ──────────────────────────────────────────────────
     //
@@ -109,13 +147,20 @@ fn main() {
     // trocado 9001→9003 e o desenho ficou na 9001). Agora o JS troca o traçado por gen.
     let mut gen_seeds: Vec<u64> = Vec::new();
     for (g, arq) in arquivos.iter().enumerate() {
-        let semente_gen = ReplayReader::open(arq).map(|r| r.header.world_seed).unwrap_or(semente0);
+        let semente_gen = ReplayReader::open(arq)
+            .map(|r| r.header.world_seed)
+            .unwrap_or(semente0);
         gen_seeds.push(semente_gen);
         let (world, pista) = mundos.entry(semente_gen).or_insert_with(|| {
-            let w = { let _q = universe::world::silence_map_diag(); VoxelWorld::new(semente_gen, width) };
+            let w = {
+                let _q = universe::world::silence_map_diag();
+                VoxelWorld::new(semente_gen, width)
+            };
             let p = Pista::medir(&w, width);
-            println!("  (pista nova: semente {semente_gen} · volta {:.0} m · raio mínimo {:.1} m)",
-                     p.lap, p.raio_min);
+            println!(
+                "  (pista nova: semente {semente_gen} · volta {:.0} m · raio mínimo {:.1} m)",
+                p.lap, p.raio_min
+            );
             (w, p)
         });
         match processar(arq, world, pista, passo) {
@@ -130,13 +175,19 @@ fn main() {
             None => eprintln!("  g{g:04} ilegível: {}", arq.display()),
         }
     }
-    if resumo.is_empty() { eprintln!("nenhuma geração legível"); std::process::exit(1); }
+    if resumo.is_empty() {
+        eprintln!("nenhuma geração legível");
+        std::process::exit(1);
+    }
 
     let html = gerar_html(&pista, &mundos, &gen_seeds, &resumo, passo, width);
     let alvo = saida.join("mapa.html");
     std::fs::write(&alvo, html).ok();
-    std::fs::write(saida.join("index.html"),
-                   std::fs::read(&alvo).unwrap_or_default()).ok();
+    std::fs::write(
+        saida.join("index.html"),
+        std::fs::read(&alvo).unwrap_or_default(),
+    )
+    .ok();
     println!("\n→ {} ({} gerações)", alvo.display(), resumo.len());
 }
 
@@ -165,8 +216,8 @@ impl Pista {
 
         let mut arco = vec![0.0f32; n];
         for i in 1..n {
-            let d = ((pts[i].0 - pts[i-1].0).powi(2) + (pts[i].1 - pts[i-1].1).powi(2)).sqrt();
-            arco[i] = arco[i-1] + d;
+            let d = ((pts[i].0 - pts[i - 1].0).powi(2) + (pts[i].1 - pts[i - 1].1).powi(2)).sqrt();
+            arco[i] = arco[i - 1] + d;
         }
 
         // κ pelo ângulo entre segmentos consecutivos, dividido pelo comprimento médio.
@@ -182,7 +233,7 @@ impl Pista {
             let l2 = (v2.0 * v2.0 + v2.1 * v2.1).sqrt().max(1e-3);
             // Ângulo COM SINAL (produto vetorial 2D): positivo = curva para um lado.
             let cross = v1.0 * v2.1 - v1.1 * v2.0;
-            let dot   = v1.0 * v2.0 + v1.1 * v2.1;
+            let dot = v1.0 * v2.0 + v1.1 * v2.1;
             let ang = cross.atan2(dot);
             kappa[i] = ang / (0.5 * (l1 + l2));
         }
@@ -191,10 +242,21 @@ impl Pista {
         let mut setor_min = 0usize;
         for i in 0..n {
             let r = 1.0 / kappa[i].abs().max(1e-6);
-            if r < raio_min { raio_min = r; setor_min = i * 24 / n; }
+            if r < raio_min {
+                raio_min = r;
+                setor_min = i * 24 / n;
+            }
         }
 
-        Self { lap: world.lap_distance, n, pts, kappa, arco, raio_min, setor_do_raio_min: setor_min }
+        Self {
+            lap: world.lap_distance,
+            n,
+            pts,
+            kappa,
+            arco,
+            raio_min,
+            setor_do_raio_min: setor_min,
+        }
     }
 
     /// Waypoint mais próximo de um ponto — busca completa, chamada fora do laço quente.
@@ -203,7 +265,10 @@ impl Pista {
         let mut best = f32::MAX;
         for (i, p) in self.pts.iter().enumerate() {
             let d = (p.0 - x).powi(2) + (p.1 - z).powi(2);
-            if d < best { best = d; melhor = i; }
+            if d < best {
+                best = d;
+                melhor = i;
+            }
         }
         melhor
     }
@@ -224,17 +289,22 @@ struct LinhaResumo {
     n_mortos: usize,
 }
 
-fn processar(arq: &Path, world: &VoxelWorld, pista: &Pista, passo: usize)
-    -> Option<(String, LinhaResumo)>
-{
+fn processar(
+    arq: &Path,
+    world: &VoxelWorld,
+    pista: &Pista,
+    passo: usize,
+) -> Option<(String, LinhaResumo)> {
     let mut reader = ReplayReader::open(arq).ok()?;
     // O chamador agora entrega o mundo da semente CERTA para cada geração. Se ainda assim
     // divergir, é bug de quem chamou — desenhar trajetória sobre a geometria errada produz
     // exatamente o falso "o ser saiu da pista" que este `assert` existe para impedir.
     debug_assert_eq!(
-        reader.header.world_seed, pista_semente(world),
+        reader.header.world_seed,
+        pista_semente(world),
         "replay da semente {} sendo desenhado sobre a pista da semente {}",
-        reader.header.world_seed, pista_semente(world)
+        reader.header.world_seed,
+        pista_semente(world)
     );
     let todos = reader.all_frames();
 
@@ -250,13 +320,18 @@ fn processar(arq: &Path, world: &VoxelWorld, pista: &Pista, passo: usize)
     let mut n_mortos = 0usize;
 
     for fr in todos.iter() {
-        if fr.is_empty() { continue; }
+        if fr.is_empty() {
+            continue;
+        }
 
         // Índice de morte: assinatura que o simulador escreve em quem perdeu a vida
         // (gpu_evolve.rs:843 — throttle=0, freio=1, volante=0).
-        let i_morte = fr.iter().position(|f|
-            f.final_thr == 0.0 && f.final_brk == 1.0 && f.final_str == 0.0);
-        if i_morte.is_some() { n_mortos += 1; }
+        let i_morte = fr
+            .iter()
+            .position(|f| f.final_thr == 0.0 && f.final_brk == 1.0 && f.final_str == 0.0);
+        if i_morte.is_some() {
+            n_mortos += 1;
+        }
         let fim = i_morte.unwrap_or(fr.len());
 
         // Avanço LÍQUIDO monotônico (mesma conta do replay_obs, não amplitude).
@@ -266,7 +341,11 @@ fn processar(arq: &Path, world: &VoxelWorld, pista: &Pista, passo: usize)
         for f in fr[..fim].iter() {
             let p = world.get_track_progress(f.pos[0], f.pos[2]);
             let mut d = p - prog_ant;
-            if d < -pista.lap * 0.5 { d += pista.lap; } else if d > pista.lap * 0.5 { d -= pista.lap; }
+            if d < -pista.lap * 0.5 {
+                d += pista.lap;
+            } else if d > pista.lap * 0.5 {
+                d -= pista.lap;
+            }
             prog += d.clamp(-pista.lap * 0.1, pista.lap * 0.1);
             pico = pico.max(prog);
             prog_ant = p;
@@ -305,29 +384,61 @@ fn processar(arq: &Path, world: &VoxelWorld, pista: &Pista, passo: usize)
                 // exigência dele, que é o que a pergunta quer.
                 soma_proj += (w_real * w_exig.signum()) as f64;
                 soma_exig += w_exig.abs() as f64;
-                if w_real.signum() == w_exig.signum() { n_sentido += 1; }
+                if w_real.signum() == w_exig.signum() {
+                    n_sentido += 1;
+                }
                 n_obed += 1;
             }
-            if !morto { soma_vel += f.speed as f64; n_vel += 1; }
+            if !morto {
+                soma_vel += f.speed as f64;
+                n_vel += 1;
+            }
 
-            let agonia = i_morte.map(|im| k < im && im - k <= QUADROS_DE_AGONIA * passo).unwrap_or(false);
+            let agonia = i_morte
+                .map(|im| k < im && im - k <= QUADROS_DE_AGONIA * passo)
+                .unwrap_or(false);
             plano.push(format!(
                 "{:.1},{:.1},{:.2},{:.2},{:.2},{:.2},{},{},{:.3},{:.3},{},{}",
-                f.pos[0], f.pos[2], f.speed, f.final_thr, f.final_brk, f.final_str,
-                f.tick, morto as u8, w_real, w_exig, fora as u8, agonia as u8));
+                f.pos[0],
+                f.pos[2],
+                f.speed,
+                f.final_thr,
+                f.final_brk,
+                f.final_str,
+                f.tick,
+                morto as u8,
+                w_real,
+                w_exig,
+                fora as u8,
+                agonia as u8
+            ));
         }
         seres_json.push(format!("[{}]", plano.join(",")));
     }
 
-    if avancos.is_empty() { return None; }
+    if avancos.is_empty() {
+        return None;
+    }
     let mut ord = avancos.clone();
     ord.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let avanco_max = *ord.last().unwrap();
     let avanco_med = ord[ord.len() / 2];
-    let obediencia = if soma_exig > 0.0 { (soma_proj / soma_exig) as f32 } else { 0.0 };
+    let obediencia = if soma_exig > 0.0 {
+        (soma_proj / soma_exig) as f32
+    } else {
+        0.0
+    };
     // 0,50 = acaso. Acima disso o giro segue a curva mais do que não segue.
-    let sentido = if n_obed > 0 { n_sentido as f32 / n_obed as f32 } else { 0.0 };
-    let vel_media = if n_vel > 0 { (soma_vel / n_vel as f64) as f32 } else { 0.0 };
+    let sentido = if n_obed > 0 {
+        n_sentido as f32 / n_obed as f32
+    } else {
+        0.0
+    };
+    let vel_media = if n_vel > 0 {
+        (soma_vel / n_vel as f64) as f32
+    } else {
+        0.0
+    };
 
     let json = format!("{{\"seres\":[{}]}}", seres_json.join(","));
     let texto = format!(
@@ -336,43 +447,72 @@ fn processar(arq: &Path, world: &VoxelWorld, pista: &Pista, passo: usize)
         100.0 * sentido,
     );
 
-    Some((json, LinhaResumo {
-        texto, avanco_max, avanco_med, mortes_por_setor: mortes_setor,
-        obediencia, sentido, vel_media_vivos: vel_media, n_mortos,
-    }))
+    Some((
+        json,
+        LinhaResumo {
+            texto,
+            avanco_max,
+            avanco_med,
+            mortes_por_setor: mortes_setor,
+            obediencia,
+            sentido,
+            vel_media_vivos: vel_media,
+            n_mortos,
+        },
+    ))
 }
 
-fn pista_semente(_w: &VoxelWorld) -> u64 { 0 }  // placeholder: a checagem real é por corrida
+fn pista_semente(_w: &VoxelWorld) -> u64 {
+    0
+} // placeholder: a checagem real é por corrida
 
 // ── VIEWER ────────────────────────────────────────────────────────────────────
 
-fn gerar_html(pista: &Pista,
-              mundos: &std::collections::HashMap<u64, (VoxelWorld, Pista)>,
-              gen_seeds: &[u64],
-              resumo: &[LinhaResumo], passo: usize, width: f32) -> String {
+fn gerar_html(
+    pista: &Pista,
+    mundos: &std::collections::HashMap<u64, (VoxelWorld, Pista)>,
+    gen_seeds: &[u64],
+    resumo: &[LinhaResumo],
+    passo: usize,
+    width: f32,
+) -> String {
     // Uma geometria por SEMENTE; o JS escolhe pela semente da geração em foco.
     let pistas: String = {
         let mut out = String::from("{");
         for (seed, (_, p)) in mundos {
-            let via: String = p.pts.iter().map(|(x, z)| format!("[{x:.1},{z:.1}]"))
-                .collect::<Vec<_>>().join(",");
-            let kap: String = p.kappa.iter().map(|k| format!("{k:.4}"))
-                .collect::<Vec<_>>().join(",");
+            let via: String = p
+                .pts
+                .iter()
+                .map(|(x, z)| format!("[{x:.1},{z:.1}]"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let kap: String = p
+                .kappa
+                .iter()
+                .map(|k| format!("{k:.4}"))
+                .collect::<Vec<_>>()
+                .join(",");
             out.push_str(&format!(
                 "{seed}:{{via:[{via}],kap:[{kap}],lap:{:.0},raio:{:.1},setor:{}}},",
-                p.lap, p.raio_min, p.setor_do_raio_min));
+                p.lap, p.raio_min, p.setor_do_raio_min
+            ));
         }
         out.push('}');
         out
     };
-    let gseeds: String = gen_seeds.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(",");
+    let gseeds: String = gen_seeds
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let res: String = resumo.iter().enumerate().map(|(g, l)| format!(
         "{{g:{g},med:{:.0},max:{:.0},mortos:{},obed:{:.3},sent:{:.3},vel:{:.2},mortes:[{}]}}",
         l.avanco_med, l.avanco_max, l.n_mortos, l.obediencia, l.sentido, l.vel_media_vivos,
         l.mortes_por_setor.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
     )).collect::<Vec<_>>().join(",\n");
 
-    format!(r##"<!DOCTYPE html><meta charset="utf-8"><title>Mapa — todas as gerações</title>
+    format!(
+        r##"<!DOCTYPE html><meta charset="utf-8"><title>Mapa — todas as gerações</title>
 <style>
 :root{{color-scheme:dark}}
 body{{margin:0;background:#0d1117;color:#c9d1d9;font:13px/1.5 ui-monospace,Menlo,monospace}}
@@ -643,8 +783,14 @@ function vivosAgora(){{
 carrega(0);
 </script>
 "##,
-        pistas = pistas, gseeds = gseeds, res = res, gmax = resumo.len().saturating_sub(1),
-        lap = pista.lap, width = width, passo = passo,
-        raio_min = pista.raio_min, setor_min = pista.setor_do_raio_min,
+        pistas = pistas,
+        gseeds = gseeds,
+        res = res,
+        gmax = resumo.len().saturating_sub(1),
+        lap = pista.lap,
+        width = width,
+        passo = passo,
+        raio_min = pista.raio_min,
+        setor_min = pista.setor_do_raio_min,
     )
 }
