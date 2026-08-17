@@ -412,3 +412,37 @@ Nota de método: minha primeira tentativa de verificar deu ganho NEGATIVO (−7%
 tinha esquecido de padronizar o alvo — sem intercepto o modelo gasta pesos reproduzindo
 a média (o freio tem média −0,852). Refeito com o protocolo correto, reproduzi o número
 do agente de forma independente (+20,7% contra os +23% dele).
+
+## Limite da lei da cobertura: só vale com demonstração BOA
+
+Estendi o caderno de 2 para 4 pistas esperando mais cobertura. Deu o contrário:
+
+| caderno | erro held-out | 9001 (casa) | 9007 (nunca vista) |
+|---|---|---|---|
+| 1 pista, n=1024 | 0,1794 | 114% | 84% |
+| **2 pistas, n=1024** | **0,1388** | 108% | **102%** |
+| 4 pistas, n=1024 | 0,1509 | 109% | 93% |
+| 4 pistas, n=2048 | 0,1470 | 110% | 100% |
+
+Dobrar a capacidade recupera de 93% para 100%, mas nunca alcança o caderno de 2 pistas.
+A causa não é capacidade — é a QUALIDADE do que foi acrescentado:
+
+| pista do dump | professor fora da pista |
+|---|---|
+| 9001 | 0,0% |
+| 9003 | 0,0% |
+| **8005** | **77,0%** |
+| **8200** | **87,5%** |
+
+As duas pistas novas são de PERFIL, e nelas o próprio campeão dirige fora da pista 77-87%
+do tempo (ele treinou só em 9001/9003, ambas procedurais). Metade do caderno virou
+demonstração de fracasso.
+
+**Enunciado do limite: cobertura > aglomeração vale enquanto o que se acrescenta é
+demonstração BOA. Acrescentar região onde o PROFESSOR falha não amplia cobertura —
+envenena o caderno.** Regra prática que sai disso: filtrar o caderno por qualidade do
+professor (`fora_pct ≈ 0`) antes de misturar; é um número que o `replay_obs` já dá.
+
+Corolário para o projeto, e é útil: as pistas onde o campeão falha (perfil) são as que
+valem EVOLUIR, não destilar. Destilação amplia o que o professor sabe; ela não inventa
+competência que ele não tem.
