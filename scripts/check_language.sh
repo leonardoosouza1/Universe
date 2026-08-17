@@ -409,6 +409,19 @@ resolve_base() {
         return 0
     fi
 
+    # An unresolvable candidate is not an error. CI passes `github.event.before`,
+    # which is all-zeros when a branch is created, and there is genuinely nothing to
+    # diff against in that case. Failing here would make the gate red for a reason
+    # that has nothing to do with language, and a gate that is red for structural
+    # reasons is one contributors learn to ignore.
+    if ! git rev-parse --verify --quiet "$candidate^{commit}" >/dev/null 2>&1; then
+        echo "check_language.sh: base '$candidate' does not resolve to a commit" >&2
+        echo "  (a new branch has no 'before' commit) — nothing to diff, skipping." >&2
+        BASE_SHA=""
+        BASE_NAME=""
+        return 1
+    fi
+
     BASE_SHA=$(git merge-base HEAD "$candidate" 2>/dev/null) || {
         echo "check_language.sh: cannot find a merge base with '$candidate'." >&2
         echo "  Fetch the base branch first, or set BASE_REF to something local." >&2
@@ -418,7 +431,12 @@ resolve_base() {
 }
 
 run_changed() {
-    resolve_base
+    # resolve_base returns 1 when there is no usable base (new branch): nothing was
+    # introduced that we can diff, so the gate passes instead of erroring out.
+    if ! resolve_base; then
+        echo "nothing to compare against — gate skipped."
+        return 0
+    fi
     load_allowlist
 
     local -a changed=()

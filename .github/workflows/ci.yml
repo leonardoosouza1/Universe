@@ -53,9 +53,19 @@ jobs:
       - name: Run the language checker
         env:
           # On a pull request, diff against the branch actually being targeted. On a
-          # push, leave it empty and let the script fall back to origin/main by itself
-          # (see resolve_base() in the script).
-          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+          # push, use the SHA the branch was at BEFORE the push: that is exactly what
+          # this push introduced.
+          #
+          # Falling back to origin/main is wrong on a long-lived branch and was measured
+          # to be so: race-world-v3 is 302 commits ahead of main, so `merge-base` lands
+          # at the fork point and every line added over months of work counts as "new",
+          # which makes even allowlisted files fail through the added-lines path. A gate
+          # that is red for structural reasons teaches contributors to ignore it.
+          #
+          # github.event.before is all-zeros when a branch is created; resolve_base()
+          # treats an unresolvable ref as "no base" and the step below skips the gate
+          # rather than failing on it.
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
         run: |
           if [ ! -f scripts/check_language.sh ]; then
             echo "::error::scripts/check_language.sh is missing. It is the gate for the"
