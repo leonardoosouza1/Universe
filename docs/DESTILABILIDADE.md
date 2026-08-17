@@ -446,3 +446,18 @@ professor (`fora_pct ≈ 0`) antes de misturar; é um número que o `replay_obs`
 Corolário para o projeto, e é útil: as pistas onde o campeão falha (perfil) são as que
 valem EVOLUIR, não destilar. Destilação amplia o que o professor sabe; ela não inventa
 competência que ele não tem.
+
+## Destilação ITERADA — predição registrada antes de rodar
+
+O piloto misto-2 dirige melhor que o campeão nas três pistas. Se destilação amplia o que
+o professor sabe, então destilar do PILOTO (professor melhor) deveria render um piloto
+ainda melhor — refino sem gastar uma única geração de GPU.
+
+Desenho: piloto misto-2 dirige em 9001 e 9003 com `--observar` → novo caderno → mesmo
+solve → piloto-g2. Avaliação nas mesmas três pistas, incluindo 9007 (nunca vista).
+
+**Predição: NÃO melhora — espero empate ou queda leve (dentro de ±5%).** Razão: o
+caderno novo é gravado na distribuição do PILOTO, não na do cérebro, e o que limita não
+é a qualidade do professor e sim o que a base consegue representar (o erro held-out do
+misto-2 já é 0,1388 com 202k features). Se melhorar acima de +5%, existe um laço de
+auto-melhoria sem evolução e isso muda a prioridade do projeto inteiro.
