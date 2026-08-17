@@ -1,8 +1,8 @@
 pub mod brain;
 pub mod brain_capacity;
-/// Núcleo matemático puro — funções sem dependência de GPU/Bevy (E1).
+/// Pure numeric core — functions with no GPU/Bevy dependency (E1).
 pub mod math;
-/// Métricas de ativação + guardas de runtime, construídas sobre `math::*` (E4).
+/// Activation metrics + runtime guards, built on top of `math::*` (E4).
 pub mod analysis;
 pub mod visao;
 pub mod pista_gen;
@@ -13,7 +13,7 @@ pub mod chaos;
 pub mod gate;
 pub mod engine;
 pub mod world;
-/// Núcleo de simulação em GPU, sem parte gráfica (Bevy vira só o visualizador).
+/// GPU simulation core, with no graphics (Bevy is only the visualizer on top).
 pub mod gpu;
 pub mod types;
 pub mod layers;
@@ -23,7 +23,7 @@ pub mod dense_layer;
 pub mod kan;
 pub mod resonance;
 pub mod cfc;
-/// Gerador determinístico único — ver `rng.rs` para o bug de sinal que motivou.
+/// The single deterministic generator — see `rng.rs` for the sign bug that motivated it.
 pub mod rng;
 pub mod perception;
 pub mod metabolism;

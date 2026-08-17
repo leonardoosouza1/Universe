@@ -1,41 +1,45 @@
-//! Simulação na GPU, sem parte gráfica.
+//! GPU simulation, with no graphics.
 //!
-//! # A arquitetura que o Leonardo pediu
+//! # The architecture the owner asked for
 //!
-//! > *"preciso que rode na gpu sem a parte grafica mesmo, pq era para ter isso na base do
-//! > projeto, formas de visualizar com bevy e sem, e a sem não é para renderizar o bevy —
-//! > bevy seria só um frontend que exibe em uma engine gráfica o que está acontecendo"*
+//! > *"I need it to run on the GPU with no graphics at all, because that was supposed to
+//! > be in the foundation of the project: ways to visualize with Bevy and without, and the
+//! > one without is not supposed to render Bevy — Bevy would be just a frontend that shows
+//! > in a graphics engine what is happening"* (translated from the original request)
 //!
-//! Ou seja: o núcleo é compute, e o Bevy é uma janela opcional sobre ele. Este módulo é o
-//! começo desse núcleo — ele fala com a GPU por `wgpu` (já na árvore via Bevy) **sem criar
-//! surface, sem swapchain e sem janela**, então roda com `env -u DISPLAY`, em cron, em
-//! máquina sem sessão gráfica.
+//! In other words: the core is compute, and Bevy is an optional window over it. This module
+//! is the start of that core — it talks to the GPU through `wgpu` (already in the tree via
+//! Bevy) **with no surface, no swapchain and no window**, so it runs under
+//! `env -u DISPLAY`, in cron, on a machine with no graphical session.
 //!
-//! # Por que a retina primeiro
+//! # Why the retina came first
 //!
-//! Medido em 2440 amostras de PERF das corridas de hoje:
+//! Measured over 2440 PERF samples from that day's races:
 //!
-//! | componente | fração do tempo |
+//! | component | share of the time |
 //! |---|---|
-//! | **retina** | **57,0%** |
-//! | física e resto | 26,9% |
-//! | cérebro | 14,3% |
-//! | percepção | 1,9% |
+//! | **retina** | **57.0%** |
+//! | physics and the rest | 26.9% |
+//! | brain | 14.3% |
+//! | perception | 1.9% |
 //!
-//! A retina é 14 linhas × 126 colunas × N seres — com 60 seres, **105.840 marchas DDA por
-//! tick**, todas independentes. É o trabalho mais paralelo do simulador e o mais caro. O
-//! cérebro, que é o que a tese estuda, custa um quarto disso.
+//! The retina is 14 rows × 126 columns × N beings — with 60 beings, **105,840 DDA marches
+//! per tick**, all independent. It is the most parallel work in the simulator and the most
+//! expensive. The brain, which is what the thesis studies, costs a quarter of that.
 //!
-//! # A regra inegociável
+//! # The non-negotiable rule
 //!
-//! O kernel tem de dar o MESMO resultado que a CPU, pixel por pixel. Um caminho GPU que
-//! responde diferente em silêncio invalidaria todo experimento já medido — e depois de um dia
-//! inteiro descobrindo constantes que carregavam suposições mortas, essa é exatamente a
-//! classe de erro que não pode entrar. `testes::gpu_igual_a_cpu` trava isso.
+//! The kernel has to give the SAME result as the CPU, pixel by pixel. A GPU path that
+//! silently answers differently would invalidate every experiment already measured — and
+//! after a full day of uncovering constants that carried dead assumptions, that is exactly
+//! the class of error that cannot get in. The original note here pointed at
+//! `testes::gpu_igual_a_cpu`; that test no longer exists in the tree (checked 2026-08-17,
+//! no match anywhere under `src/` or `tests/`). The equivalence check that does exist is
+//! the `src/bin/gpu_validate.rs` binary — run it before and after touching this module.
 
-// ── Núcleo de simulação em GPU, escrito em paralelo por agentes ───────────────
-// Cada módulo traz kernel WGSL + host wgpu. A regra é a mesma em todos: equivalência
-// com a CPU demonstrada antes de qualquer alegação de ganho.
+// ── GPU simulation core, written in parallel by agents ────────────────────────
+// Each module brings a WGSL kernel + its wgpu host. The rule is the same in all of them:
+// equivalence with the CPU demonstrated before any claim of speed-up.
 pub mod physics;
 pub mod brain;
 pub mod perception;
@@ -55,11 +59,12 @@ use wgpu::util::DeviceExt;
 use crate::config::iara::vision::{RETINA_COLS, RETINA_ROWS, RETINA_TOTAL};
 use crate::world::{VoxelType, VoxelWorld};
 
-/// Recurso Bevy que segura o contexto de GPU vivo entre ticks.
+/// Bevy resource that keeps the GPU context alive between ticks.
 ///
-/// Recriar o dispositivo e recompilar o shader por tick anularia todo o ganho, então isto
-/// vive na aplicação. A assinatura do mundo permite detectar troca de pista e resubir a
-/// grade — se isso passasse batido, os seres veriam a pista ANTERIOR e nada acusaria.
+/// Recreating the device and recompiling the shader once per tick would cancel out the
+/// whole gain, so this lives in the application. The world signature is what makes a track
+/// change detectable, so the grid can be re-uploaded — if that slipped through, the beings
+/// would see the PREVIOUS track and nothing would flag it.
 #[derive(bevy::prelude::Resource, Default)]
 pub struct RetinaGpuRes {
     pub ctx: Option<RetinaGpu>,
@@ -67,29 +72,29 @@ pub struct RetinaGpuRes {
 }
 
 impl RetinaGpuRes {
-    /// Devolve um contexto válido para este mundo, criando ou recriando se preciso.
-    /// `None` = sem GPU utilizável; o chamador cai na CPU em vez de derrubar a corrida.
+    /// Returns a context valid for this world, creating or recreating it when needed.
+    /// `None` = no usable GPU; the caller falls back to the CPU instead of killing the race.
     pub fn get_or_create(&mut self, world: &VoxelWorld, capacity: usize) -> Option<&RetinaGpu> {
         let sig = world_signature(world);
-        let precisa = self.ctx.is_none()
+        let needs_rebuild = self.ctx.is_none()
             || self.signature != sig
             || self.ctx.as_ref().map(|c| c.capacity < capacity).unwrap_or(true);
-        if precisa {
+        if needs_rebuild {
             self.ctx = RetinaGpu::new(world, capacity.max(64));
             self.signature = sig;
             if let Some(c) = &self.ctx {
-                println!("🖥  retina na GPU: {} ({} seres)", c.adapter, capacity);
+                println!("🖥  retina on the GPU: {} ({} beings)", c.adapter, capacity);
             } else {
-                println!("⚠️  sem GPU utilizável — retina fica na CPU");
+                println!("⚠️  no usable GPU — the retina stays on the CPU");
             }
         }
         self.ctx.as_ref()
     }
 }
 
-/// Barata e suficiente: tamanho, comprimento da volta e uma amostragem da grade.
-/// Exposta como pub para que motor.rs possa passar a mesma assinatura ao contexto de
-/// percepção GPU sem recomputar ou duplicar a lógica.
+/// Cheap and sufficient: size, lap length and a sampling of the grid.
+/// Exposed as `pub` so that motor.rs can pass the same signature to the GPU perception
+/// context without recomputing or duplicating the logic.
 pub fn world_signature(world: &VoxelWorld) -> u64 {
     let mut h = world.size as u64 ^ ((world.lap_distance as u64) << 20);
     let step = (world.grid.len() / 512).max(1);
@@ -99,25 +104,27 @@ pub fn world_signature(world: &VoxelWorld) -> u64 {
     h
 }
 
-/// Um pixel da retina, em grandezas FÍSICAS: o que um lidar entregaria.
+/// One retina pixel, in PHYSICAL quantities: what a lidar would hand back.
 ///
-/// A retina antiga devolvia um `i8` produzido por uma curva de salência escrita à mão, que
-/// media 4 níveis úteis para pista e 3 para grama (normalizava por 1200 m num raio travado
-/// em 33,3 m) e punha parede no topo da escala, de modo que o `max`-pool do consumo apagava
-/// a pista de qualquer bin com parede. Agora a decisão de o que importa sai daqui.
+/// The old retina returned an `i8` produced by a hand-written salience curve that resolved
+/// 4 useful levels for road and 3 for grass (it normalised by 1200 m while the ray was
+/// capped at 33.3 m) and put walls at the top of the scale, so the consumer's `max`-pool
+/// erased the road from any bin that contained a wall. The decision about what matters now
+/// happens downstream of here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pixel {
-    /// Distância até a primeira superfície opaca, em metros.
+    /// Distance to the first opaque surface, in metres.
     pub dist_m: f32,
-    /// 0 = Grass, 1 = Road, 2 = Wall, 3 = Hole (mesma ordem de `VoxelType`).
+    /// 0 = Grass, 1 = Road, 2 = Wall, 3 = Hole (same order as `VoxelType`).
     pub material: u8,
 }
 
-/// A codificação ANTIGA, reconstruída a partir do físico.
+/// The OLD encoding, reconstructed from the physical quantities.
 ///
-/// Existe por dois motivos, os dois de método: provar que o kernel de GPU é equivalente à
-/// CPU pixel a pixel, e permitir comparar física × codificada num A/B em vez de assumir que
-/// a nova é melhor. Assumir sem medir foi exatamente o erro de quem escreveu o 1200 m.
+/// It exists for two reasons, both methodological: to prove the GPU kernel is equivalent to
+/// the CPU pixel by pixel, and to allow comparing physical × encoded in an A/B instead of
+/// assuming the new one is better. Assuming without measuring was exactly the mistake of
+/// whoever wrote the 1200 m.
 pub fn legacy_encoding(px: Pixel) -> i8 {
     let d = px.dist_m;
     let depth_fade = (d / 1200.0).clamp(0.0, 1.0);
@@ -135,7 +142,7 @@ pub fn legacy_encoding(px: Pixel) -> i8 {
     v.clamp(-128.0, 127.0) as i8
 }
 
-/// Postura de um ser no instante do disparo: onde está e para onde olha.
+/// A being's pose at the instant of the dispatch: where it is and where it is looking.
 #[derive(Clone, Copy, Debug)]
 pub struct Pose {
     pub pos: Vec3,
@@ -144,14 +151,14 @@ pub struct Pose {
     pub gaze_yaw: f32,
 }
 
-// Deduplicado (E3): era a quinta cópia idêntica de `RetinaParamsGpu`/`PoseRaw`
-// (as outras quatro estavam em gpu_evolve.rs, gpu_loop.rs, cortex_evolve.rs e —
-// antes ainda — dentro deste mesmo arquivo sob nomes diferentes). Alias local para
-// não reescrever todos os literais `ParamsGpu { .. }` abaixo.
+// Deduplicated (E3): this was the fifth identical copy of `RetinaParamsGpu`/`PoseRaw`
+// (the other four were in gpu_evolve.rs, gpu_loop.rs, cortex_evolve.rs and — earlier
+// still — inside this very file under different names). Local alias so that every
+// `ParamsGpu { .. }` literal below did not have to be rewritten.
 use crate::gpu::retina_types::{RetinaParamsGpu as ParamsGpu, PoseRaw};
 
-/// Contexto de compute persistente. Criar isto custa (abre dispositivo, compila shader), então
-/// vive durante toda a corrida — recriar por tick anularia o ganho.
+/// Persistent compute context. Building this costs (opens a device, compiles a shader), so
+/// it lives for the whole race — recreating it per tick would cancel out the gain.
 pub struct RetinaGpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -168,34 +175,34 @@ pub struct RetinaGpu {
 }
 
 impl RetinaGpu {
-    /// Abre a GPU e sobe o mundo (estático por pista — sobe uma vez, não por tick).
+    /// Opens the GPU and uploads the world (static per track — uploaded once, not per tick).
     ///
-    /// Devolve `None` quando não há GPU utilizável, para o chamador poder cair na CPU sem
-    /// derrubar a simulação. Corrida de dias não pode morrer por falta de dispositivo.
+    /// Returns `None` when there is no usable GPU, so the caller can fall back to the CPU
+    /// without killing the simulation. A run that lasts days cannot die for want of a device.
     pub fn new(world: &VoxelWorld, capacity: usize) -> Option<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
         });
-        // `compatible_surface: None` é o ponto: pedimos adaptador para COMPUTE, sem janela.
+        // `compatible_surface: None` is the point: we ask for a COMPUTE adapter, no window.
         let adapter_obj = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         }))?;
-        let nome = adapter_obj.get_info().name.clone();
-        // percepcao.wgsl usa 6 storage buffers — acima do limite padrão de downlevel (4).
-        let mut limites = wgpu::Limits::downlevel_defaults();
-        limites.max_storage_buffers_per_shader_stage = 8;
+        let name = adapter_obj.get_info().name.clone();
+        // perception.wgsl uses 6 storage buffers — above the downlevel default limit (4).
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        limits.max_storage_buffers_per_shader_stage = 8;
         let (device, queue) = pollster::block_on(adapter_obj.request_device(&wgpu::DeviceDescriptor {
             label: Some("iara-compute"),
             required_features: wgpu::Features::empty(),
-            required_limits: limites,
+            required_limits: limits,
             memory_hints: wgpu::MemoryHints::Performance,
         }, None))
         .ok()?;
 
-        let modulo = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("retina"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("retina.wgsl"))),
         });
@@ -217,7 +224,7 @@ impl RetinaGpu {
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("retina-pipeline"),
             layout: Some(&pipe_layout),
-            module: &modulo,
+            module: &shader_module,
             entry_point: Some("main"),
             compilation_options: Default::default(),
             cache: None,
@@ -263,11 +270,11 @@ impl RetinaGpu {
             buf_poses,
             buf_output,
             buf_readback,
-            adapter: nome,
+            adapter: name,
         })
     }
 
-    /// Uma retina por ser, num único despacho. Devolve FÍSICA: distância e material.
+    /// One retina per being, in a single dispatch. Returns PHYSICS: distance and material.
     pub fn render(&self, poses_in: &[Pose]) -> Vec<Vec<Pixel>> {
         let n = poses_in.len().min(self.capacity);
         if n == 0 {
@@ -317,7 +324,7 @@ impl RetinaGpu {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            // 64 threads por grupo: 2 waves de 32 no RDNA2, que é o wave size desta GPU.
+            // 64 threads per group: 2 waves of 32 on RDNA2, which is this GPU's wave size.
             let total = (n * RETINA_TOTAL) as u32;
             pass.dispatch_workgroups(total.div_ceil(64), 1, 1);
         }
@@ -338,10 +345,10 @@ impl RetinaGpu {
         for s in 0..n {
             let mut r = Vec::with_capacity(RETINA_TOTAL);
             for p in 0..RETINA_TOTAL {
-                let bruto = vals[s * RETINA_TOTAL + p];
+                let raw = vals[s * RETINA_TOTAL + p];
                 r.push(Pixel {
-                    dist_m: (bruto >> 8) as f32 / 1000.0,
-                    material: (bruto & 0xFF) as u8,
+                    dist_m: (raw >> 8) as f32 / 1000.0,
+                    material: (raw & 0xFF) as u8,
                 });
             }
             out.push(r);
@@ -351,49 +358,53 @@ impl RetinaGpu {
         out
     }
 
-    /// O buffer de saída da retina, para outro kernel consumir DIRETO na VRAM.
+    /// The retina's output buffer, so another kernel can consume it DIRECTLY in VRAM.
     ///
-    /// É o ponto do porte da percepção: sem isto, os 1764 pixels por ser voltariam para a
-    /// CPU só para serem reduzidos a 223 canais e subirem de novo.
+    /// This is the whole point of porting perception: without it, the 1764 pixels per being
+    /// would travel back to the CPU only to be reduced to 223 channels and uploaded again.
+    /// (223 was the channel count when this was written; `SENSORY_WAVE_SIZE` is computed in
+    /// `config.rs:309` and is 192 today — read the constant, not this number.)
     pub fn output_buffer(&self) -> &wgpu::Buffer { &self.buf_output }
 
-    /// O dispositivo e a fila, para os outros kernels COMPARTILHAREM em vez de abrir outro.
-    /// Abrir um segundo VkDevice na mesma GPU desperdiça memória e alguns drivers recusam.
+    /// The device and the queue, for the other kernels to SHARE instead of opening another.
+    /// Opening a second VkDevice on the same GPU wastes memory and some drivers refuse it.
     pub fn device(&self) -> &wgpu::Device { &self.device }
     pub fn queue(&self) -> &wgpu::Queue { &self.queue }
 
-    /// A retina traduzida para a codificação antiga — só para a prova de equivalência e
-    /// para o A/B contra a física. Não use em caminho novo.
+    /// The retina translated into the old encoding — only for the equivalence proof and for
+    /// the A/B against the physical encoding. Do not use it on a new code path.
     pub fn render_legacy(&self, poses_in: &[Pose]) -> Vec<Vec<i8>> {
         self.render(poses_in).into_iter()
             .map(|r| r.into_iter().map(legacy_encoding).collect())
             .collect()
     }
 
-    /// Grava o dispatch da retina num `CommandEncoder` externo SEM fazer submit nem poll.
+    /// Records the retina dispatch into an external `CommandEncoder` WITHOUT submitting or
+    /// polling.
     ///
-    /// # Por que existe
+    /// # Why it exists
     ///
-    /// O `render_legacy()` fazia encoder + submit + poll(Wait) próprios, adicionando uma
-    /// barreira de sincronização. Com `dispatch_into`, a retina e a percepção podem ser
-    /// encadeadas no mesmo encoder e submetidas uma só vez.
+    /// `render_legacy()` created its own encoder + submit + poll(Wait), adding a
+    /// synchronisation barrier. With `dispatch_into`, the retina and perception can be
+    /// chained into the same encoder and submitted once.
     ///
-    /// O resultado fica em `self.buf_output` (VRAM) e em `self.buf_readback` (via copy no
-    /// mesmo encoder), mas o map só pode acontecer DEPOIS do submit + poll do chamador.
+    /// The result lands in `self.buf_output` (VRAM) and in `self.buf_readback` (via a copy
+    /// in the same encoder), but the map can only happen AFTER the caller's submit + poll.
     ///
-    /// # Fluxo esperado
+    /// # Expected flow
     ///
     /// ```text
-    /// 1. Gravar poses via queue.write_buffer() ANTES de chamar este método
-    /// 2. dispatch_into(&mut enc, n, device)     ← dispatch retina
-    /// 3. percept.bind_and_dispatch(&mut enc, ...) ← dispatch percepção
-    /// 4. queue.submit(enc.finish())              ← UM submit
-    /// 5. device.poll(Wait)                       ← UM bloqueio
-    /// 6. read_legacy_after_submit(n)             ← resultado retina
-    /// 7. percept.read_after_submit(n, bytes_out) ← resultado percepção
+    /// 1. Write poses via queue.write_buffer() BEFORE calling this method
+    /// 2. dispatch_into(&mut enc, n, device)      ← retina dispatch
+    /// 3. percept.bind_and_dispatch(&mut enc, ...) ← perception dispatch
+    /// 4. queue.submit(enc.finish())              ← ONE submit
+    /// 5. device.poll(Wait)                       ← ONE block
+    /// 6. read_legacy_after_submit(n)             ← retina result
+    /// 7. percept.read_after_submit(n, bytes_out) ← perception result
     /// ```
     ///
-    /// Retorna N seres despachados (para o chamador chamar `read_legacy_after_submit(N)`).
+    /// Returns the N beings dispatched (so the caller can call
+    /// `read_legacy_after_submit(N)`).
     pub fn dispatch_into(
         &self,
         enc:      &mut wgpu::CommandEncoder,
@@ -402,7 +413,8 @@ impl RetinaGpu {
         let n = poses_in.len().min(self.capacity);
         if n == 0 { return 0; }
 
-        // Prepara uniform + poses (write_buffer não bloqueia — os dados ficam na fila até submit).
+        // Prepare uniform + poses (write_buffer does not block — the data sits in the queue
+        // until submit).
         let mut pitches = [[0.0f32; 4]; 4];
         for row in 0..RETINA_ROWS {
             pitches[row / 4][row % 4] = crate::visao::pitch(row);
@@ -427,7 +439,7 @@ impl RetinaGpu {
                 dirs: [p.forward.x, p.forward.y, p.right.x, p.right.y],
             })
             .collect();
-        // write_buffer: CPU→GPU staging, sem bloqueio até submit.
+        // write_buffer: CPU→GPU staging, no blocking until submit.
         self.queue.write_buffer(&self.buf_poses, 0, bytemuck::cast_slice(&pose_data));
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -446,27 +458,27 @@ impl RetinaGpu {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            // 64 threads por grupo: 2 waves de 32 no RDNA2 (wave size desta GPU).
+            // 64 threads per group: 2 waves of 32 on RDNA2 (this GPU's wave size).
             let total = (n * RETINA_TOTAL) as u32;
             pass.dispatch_workgroups(total.div_ceil(64), 1, 1);
         }
-        // Copia para readback no mesmo encoder — DMA sem round-trip pela CPU.
+        // Copy into readback in the same encoder — DMA with no round trip through the CPU.
         enc.copy_buffer_to_buffer(&self.buf_output, 0, &self.buf_readback, 0, bytes);
 
         n
     }
 
-    /// Lê buf_readback da retina e decodifica para legacy [i8; RETINA_TOTAL] × N.
+    /// Reads the retina's buf_readback and decodes it into legacy [i8; RETINA_TOTAL] × N.
     ///
-    /// DEVE ser chamado após `device.poll(Wait)` do encoder que continha `dispatch_into`.
-    /// Sem o poll, o buffer não está disponível para map e o método panickará.
+    /// MUST be called after the `device.poll(Wait)` of the encoder that held `dispatch_into`.
+    /// Without that poll the buffer is not available for mapping and this method will panic.
     pub fn read_legacy_after_submit(&self, n: usize) -> Vec<[i8; RETINA_TOTAL]> {
         if n == 0 { return Vec::new(); }
         let bytes = (n * RETINA_TOTAL * 4) as u64;
         let slice = self.buf_readback.slice(0..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // Poll já foi feito pelo chamador com Wait — o recv() deve completar imediatamente.
+        // The caller already polled with Wait — the recv() should complete immediately.
         let _ = rx.recv();
 
         let data = slice.get_mapped_range();
@@ -474,10 +486,10 @@ impl RetinaGpu {
         let mut out = vec![[0i8; RETINA_TOTAL]; n];
         for s in 0..n {
             for p in 0..RETINA_TOTAL {
-                let bruto = vals[s * RETINA_TOTAL + p];
+                let raw = vals[s * RETINA_TOTAL + p];
                 let px = Pixel {
-                    dist_m: (bruto >> 8) as f32 / 1000.0,
-                    material: (bruto & 0xFF) as u8,
+                    dist_m: (raw >> 8) as f32 / 1000.0,
+                    material: (raw & 0xFF) as u8,
                 };
                 out[s][p] = legacy_encoding(px);
             }
@@ -514,8 +526,9 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// Só para o teste de equivalência não depender de detalhe interno.
+/// Only so the equivalence test does not have to depend on an internal detail.
 pub const COLS: usize = RETINA_COLS;
 
+/// Keeps the `VoxelType` import used even when no code path in this file names the type.
 #[allow(dead_code)]
-fn _tipos_usados(_: VoxelType) {}
+fn _types_used(_: VoxelType) {}

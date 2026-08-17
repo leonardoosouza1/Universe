@@ -41,6 +41,12 @@ const SWS: usize = SENSORY_WAVE_SIZE;
 // 100% do throttle e 79% do steer — impedindo evolução dos outputs mais
 // importantes e causando plateau em 664m. Priming A23 já provê valores
 // iniciais; evolução precisa de liberdade total para melhorar a partir daí.
+// Deliberately zero, which makes every `idx < PROTECTED_ZONE_SIZE` guard below a
+// no-op. Clippy reports those as `absurd_extreme_comparisons` and an audit read them
+// as a bug — they are not. The guards are kept so the mechanism stays visible and can
+// be switched back on by changing this one constant; the measured reason it is off is
+// in the comment above. If you re-enable it, re-read that measurement first.
+#[allow(clippy::absurd_extreme_comparisons)]
 const PROTECTED_ZONE_SIZE: usize = 0;
 
 /// Constrói o vetor de pesos do instinct_layer pré-semeado com os axiomas A1–A15.

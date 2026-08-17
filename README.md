@@ -19,8 +19,9 @@ brain actually allocates, not just watching it drive.
 The whole per-tick loop — retina, perception, both brains, physics — runs in WGSL on a
 **single `wgpu` device, with no window, no surface and no swapchain**. That means the
 simulator runs headless under `env -u DISPLAY`, in cron, on a machine without a graphics
-session; Bevy is an optional viewer bolted on top of the compute core, not a dependency of
-it (`src/gpu/mod.rs`, module header).
+session (`src/gpu/mod.rs`, module header). Bevy is still a build dependency — `wgpu` is
+pulled in through its tree, and `Cargo.toml` selects a trimmed feature set — but at runtime
+it is only a viewer over the compute core, never something the core has to go through.
 
 What the tick actually does, in order (`src/bin/gpu_evolve/context.rs`, `GpuCtx::tick`,
 one `CommandEncoder`, one `submit`):
@@ -117,9 +118,10 @@ env -u DISPLAY nice -n 5 ./target/release/gpu_evolve \
 - `--out` chooses where the run writes. **It defaults to `.`**, so pass it unless you want
   `evolve_best_genNNNN.bin` and `genNNNN.replay` landing in your working directory.
 - `--retomar` resumes from the most recent `evolve_best_gen*.bin` checkpoint.
-- Unknown flags are **silently ignored** (`src/bin/gpu_evolve/main.rs:744`) and there is no
-  `--help`. Check the `match` block at `src/bin/gpu_evolve/main.rs:541-745` for the full,
-  authoritative list before inventing a flag name.
+- Unknown flags are **silently ignored** (`src/bin/gpu_evolve/main.rs:743`, the `_ => {}`
+  arm) and there is no `--help`. Check the `match` block at
+  `src/bin/gpu_evolve/main.rs:541-744` for the full, authoritative list before inventing a
+  flag name.
 
 Useful extras:
 
@@ -184,7 +186,7 @@ scripts/rodar.sh <label> --headless --gens 1 --swarm 30
 | Path | What lives there |
 |---|---|
 | `src/gpu/` | the compute core: WGSL kernels plus their `wgpu` host code (retina, perception, both brains, physics, cortex sheet, genome I/O) |
-| `src/bin/` | ~29 command-line tools — evolution drivers, validators, DNA inspectors, replay analysers |
+| `src/bin/` | 29 command-line tools — evolution drivers, validators, DNA inspectors, replay analysers |
 | `src/simulation/` | the per-tick engine used by the Bevy path (`motor.rs`) and the `Racer` component |
 | `src/evolution/` | genetic algorithm pipeline, DNA serialisation (`dna_genesis.rs` is the source of truth), spawn, telemetry |
 | `src/math/` | activations, linear algebra, statistics, quantisation, thresholds, and the measured "laws" the project relies on |

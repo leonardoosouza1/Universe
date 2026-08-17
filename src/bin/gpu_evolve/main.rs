@@ -486,12 +486,12 @@ fn main() {
     /// `--centro-simetrico`: recuar SUBTRAI da fitness de centralização.
     let mut centro_simetrico = false;
     /// `--out-beta`: força da fadiga de saída. Padrão = o histórico.
-    let mut out_beta: f32 = universe::gpu::brain::OUT_BETA_PADRAO;
+    let mut out_beta: f32 = universe::gpu::brain::OUT_BETA_DEFAULT;
     /// `--ganho-saida`: ganho aplicado a l2_raw/bypass na ETAPA 2 antes do tanh
     /// (P1.5, `docs/PLANO_EVOLUCAO.md`). Padrão = a constante 2.0 histórica —
     /// o A/B pendente compara 2.0 vs 1.0 vs 0.5 contra a saturação de L2
     /// (48/48 neurônios ativos em 97,4% dos ticks).
-    let mut ganho_saida: f32 = universe::gpu::brain::OUT_GAIN_PADRAO;
+    let mut ganho_saida: f32 = universe::gpu::brain::OUT_GAIN_DEFAULT;
     /// `--norm-l2-por-desvio` / `--sem-norm-l2-por-desvio`: segunda alavanca de
     /// P1.5. LIGADA por padrão desde a auditoria P1.8 (docs/PLANO_EVOLUCAO.md,
     /// achado "L2 tem que funcionar") — normaliza l2_raw pelo desvio-padrão dos
@@ -906,7 +906,7 @@ fn main() {
         }
     }
     if ruido_sigma > 0.0 || ruido_drop > 0.0 {
-        ctx.brain.set_ruido(ruido_sigma, ruido_drop);
+        ctx.brain.set_noise(ruido_sigma, ruido_drop);
         println!("  [ruido] D3: sigma={ruido_sigma} dropout={ruido_drop}");
     }
     if clima_mu < 1.0 || vento_x != 0.0 || vento_z != 0.0 {
@@ -1001,15 +1001,15 @@ fn main() {
         println!("PILOTO FANTASMA ligado (ganho {piloto:+.1}) — o cérebro NÃO comanda o volante. \
                   Isto mede o CORPO, não o modelo.");
     }
-    if (out_beta - universe::gpu::brain::OUT_BETA_PADRAO).abs() > 1e-6 {
+    if (out_beta - universe::gpu::brain::OUT_BETA_DEFAULT).abs() > 1e-6 {
         println!("fadiga de saída: out_beta={out_beta:.2} (padrão {:.2}) — comando sustentado \
                   sai a {:.0}% da intenção",
-                 universe::gpu::brain::OUT_BETA_PADRAO, 100.0 * (1.0 - out_beta).max(0.0));
+                 universe::gpu::brain::OUT_BETA_DEFAULT, 100.0 * (1.0 - out_beta).max(0.0));
     }
-    if (ganho_saida - universe::gpu::brain::OUT_GAIN_PADRAO).abs() > 1e-6 {
+    if (ganho_saida - universe::gpu::brain::OUT_GAIN_DEFAULT).abs() > 1e-6 {
         println!("[P1.5] ganho de saída: out_gain={ganho_saida:.2} (padrão {:.2}) — ETAPA 2 \
                   (l2_raw e bypass) escalada antes da fadiga/tanh",
-                 universe::gpu::brain::OUT_GAIN_PADRAO);
+                 universe::gpu::brain::OUT_GAIN_DEFAULT);
     }
     if norm_l2_por_desvio {
         println!("[P1.5/P1.8] normalização de L2 por desvio-padrão LIGADA (padrão desde P1.8) \
@@ -1875,7 +1875,7 @@ fn main() {
                 escada::Veredito::Sobe(d) | escada::Veredito::Rece(d) => {
                     match d {
                         escada::Degrau::FuelK(k) => { FUEL_AUTO_K.store(*k, Ordering::Relaxed); }
-                        escada::Degrau::Ruido(sig) => { ctx.brain.set_ruido(*sig, 0.02); }
+                        escada::Degrau::Ruido(sig) => { ctx.brain.set_noise(*sig, 0.02); }
                         escada::Degrau::Dano(e) => { DANO_ESCALA.store(*e, Ordering::Relaxed); }
                         escada::Degrau::Clima(mu) => { ctx.phys_gpu.set_clima(*mu, 0.0, 0.0, 0.03); }
                         escada::Degrau::Fantasma => { fantasma_on = true; }

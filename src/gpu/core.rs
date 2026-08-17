@@ -1,49 +1,56 @@
-//! Gerente de estado residente na GPU — ponto único de dispositivo compartilhado.
+//! Manager of GPU-resident state — the single point where the device is shared.
 //!
-//! # Por que este arquivo existe
+//! # Why this file exists
 //!
-//! O módulo `gpu/mod.rs` (retina) abre seu próprio `wgpu::Device`. Quando física,
-//! cérebro e percepção fizeram o mesmo cada um, teríamos 3-4 dispositivos abertos em
-//! paralelo na mesma GPU, desperdiçando memória de command buffers e impossibilitando
-//! compartilhar buffers entre subsistemas (a retina produziria pixels num buffer que o
-//! cérebro não enxerga, exigindo readback+reupload). Este struct resolve isso: **um
-//! dispositivo, todos os buffers residentes**.
+//! The `gpu/mod.rs` module (retina) opens its own `wgpu::Device`. Once physics, brain and
+//! perception each did the same, we would have 3-4 devices open in parallel on the same
+//! GPU, wasting command-buffer memory and making it impossible to share buffers between
+//! subsystems (the retina would produce pixels into a buffer the brain cannot see, forcing
+//! a readback + re-upload). This struct solves that: **one device, all buffers resident**.
 //!
-//! # Conta de bytes em trânsito por tick (60 seres, configuração nominal)
+//! # Byte budget in flight per tick (60 beings, nominal configuration)
 //!
-//! Buffers que SOBEM da CPU uma vez por geração (estáticos por pista):
-//!   grade     : 320×320 × 4 bytes (u32) = 409.600 bytes
-//!   height_map: 320×320 × 4 bytes (f32) = 409.600 bytes
-//!   banking   : 320×320 × 4 bytes (f32) = 409.600 bytes
-//!   flow      : 320×320 × 8 bytes (Vec2 = [f32;2]) = 819.200 bytes
-//!   subtotal estático = 2.048.000 bytes ≈ 2 MB
+//! > **Stale figure, kept on purpose.** Every line below that involves the first layer was
+//! > computed with a sensory wave of 223 channels. `SENSORY_WAVE_SIZE` is *computed* in
+//! > `config.rs:309` and is **192** today, so the real W1 figures are smaller than the ones
+//! > recorded here: `192 × 96 = 18,432 f32` (73,728 bytes per being, 4,423,680 for 60),
+//! > weights subtotal 5,806,080 bytes ≈ 5.5 MB, stride 24,288 f32, buf_weights 5,829,120
+//! > bytes, resident total 8,301,440 bytes ≈ 7.9 MB. The numbers below are the original
+//! > measurement and are left intact; read the constant, never this comment.
 //!
-//! Buffers que SOBEM uma vez por geração por depender dos pesos do ser (vivos):
-//!   pesos instinct_layer (BitLinear 223→96, f32):
-//!     223 × 96 × 4 = 85.632 bytes × 60 seres = 5.137.920 bytes
-//!   pesos cortex_l2 (FloatLinear 96→48, f32):
-//!     96 × 48 × 4 = 18.432 bytes × 60 = 1.105.920 bytes
-//!   pesos cortex_l3 (FloatLinear 48→24, f32):
-//!     48 × 24 × 4 = 4.608 bytes × 60 = 276.480 bytes
-//!   subtotal pesos = 6.520.320 bytes ≈ 6,2 MB
+//! Buffers UPLOADED from the CPU once per generation (static per track):
+//!   grid      : 320×320 × 4 bytes (u32) = 409,600 bytes
+//!   height_map: 320×320 × 4 bytes (f32) = 409,600 bytes
+//!   banking   : 320×320 × 4 bytes (f32) = 409,600 bytes
+//!   flow      : 320×320 × 8 bytes (Vec2 = [f32;2]) = 819,200 bytes
+//!   static subtotal = 2,048,000 bytes ≈ 2 MB
 //!
-//! POR TICK — só o que MUDA entre ticks (o mínimo):
-//!   SUBIDA → CPU→GPU:
-//!     poses (posição+direção de cada ser vivo):
-//!       60 × 32 bytes (PosGpu: [f32;8]) = 1.920 bytes
-//!   DESCIDA → GPU→CPU:
-//!     intenção motora (throttle, steer, brake × 60 seres):
+//! Buffers UPLOADED once per generation because they depend on the being's weights (living):
+//!   instinct_layer weights (BitLinear 223→96, f32):
+//!     223 × 96 × 4 = 85,632 bytes × 60 beings = 5,137,920 bytes
+//!   cortex_l2 weights (FloatLinear 96→48, f32):
+//!     96 × 48 × 4 = 18,432 bytes × 60 = 1,105,920 bytes
+//!   cortex_l3 weights (FloatLinear 48→24, f32):
+//!     48 × 24 × 4 = 4,608 bytes × 60 = 276,480 bytes
+//!   weights subtotal = 6,520,320 bytes ≈ 6.2 MB
+//!
+//! PER TICK — only what CHANGES between ticks (the minimum):
+//!   UPLOAD → CPU→GPU:
+//!     poses (position + heading of every living being):
+//!       60 × 32 bytes (PosGpu: [f32;8]) = 1,920 bytes
+//!   DOWNLOAD → GPU→CPU:
+//!     motor intent (throttle, steer, brake × 60 beings):
 //!       60 × 3 × 4 bytes = 720 bytes
-//!   TOTAL POR TICK = 2.640 bytes ≈ 2,6 kB
+//!   TOTAL PER TICK = 2,640 bytes ≈ 2.6 kB
 //!
-//! Estado CfC (60×96 f32 = 23.040 bytes) FICA residente na GPU entre ticks.
-//! Só desce ao fim da geração para serializar a evolução.
+//! The CfC state (60×96 f32 = 23,040 bytes) STAYS resident on the GPU between ticks.
+//! It only comes down at the end of the generation, to serialise evolution.
 //!
-//! # Estado da retina por tick
+//! # Retina state per tick
 //!
-//! RETINA_TOTAL = 14×126 = 1.764 pixels × 4 bytes (u32) = 7.056 bytes × 60 seres = 423.360 bytes.
-//! Esses bytes NUNCA descem para a CPU no caminho quente — ficam num buf_retina_saida
-//! residente que o kernel do cérebro lê diretamente no passo seguinte.
+//! RETINA_TOTAL = 14×126 = 1,764 pixels × 4 bytes (u32) = 7,056 bytes × 60 beings =
+//! 423,360 bytes. Those bytes NEVER come down to the CPU on the hot path — they sit in a
+//! resident buf_retina_output that the brain kernel reads directly in the next step.
 
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
@@ -54,27 +61,31 @@ use crate::config::iara::{
 };
 use crate::world::VoxelWorld;
 
-// ─── Capacidade máxima de seres suportada pelo CoreGpu. ──────────────────
-// 60 é o nominal; alocamos 64 para alinhamento de 64 threads/workgroup e headroom.
+// ─── Maximum number of beings CoreGpu supports. ──────────────────────────
+// 60 is nominal; we allocate 64 for alignment with 64 threads/workgroup, plus headroom.
 const MAX_CAPACITY: usize = 64;
 
-// ─── Tamanho da grade do mundo. Declarado aqui para a conta de bytes. ───────
-// Lido de world.rs: `let size = 320`.
+// ─── World grid size. Declared here for the byte budget above. ─────────────
+// Taken from world.rs: `GRID_CELLS: f32 = 320.0` (world.rs:53), used as `size` in
+// `VoxelWorld::new` (world.rs:84).
 pub const GRID_SIZE: usize = 320;
 
-// ─── Dimensões dos pesos, por ser. ─────────────────────────────────────────
-// BitLinear 223→96: entrada é SENSORY_WAVE_SIZE (calculado = 223), saída L1=96.
-// FloatLinear 96→48: entrada L1_NEURONS, saída L2_NEURONS.
-// FloatLinear 48→24: entrada L2_NEURONS, saída L3_NEURONS.
-const W1_TOTAL: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 223×96 = 21.408 f32
-const W2_TOTAL: usize = L1_NEURONS * L2_NEURONS;         // 96×48  =  4.608 f32
-const W3_TOTAL: usize = L2_NEURONS * L3_NEURONS;         // 48×24  =  1.152 f32
+// ─── Weight dimensions, per being. ─────────────────────────────────────────
+// BitLinear 223→96: the input is SENSORY_WAVE_SIZE, the output L1=96. The "223" is the
+// value the constant had when this was written; it is COMPUTED in `config.rs:309` and is
+// 192 today, so the real product is 192×96 = 18,432 f32. The code reads the constant, so
+// only the comment was ever wrong.
+// FloatLinear 96→48: input L1_NEURONS, output L2_NEURONS.
+// FloatLinear 48→24: input L2_NEURONS, output L3_NEURONS.
+const W1_TOTAL: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 223×96 = 21,408 f32 (see note)
+const W2_TOTAL: usize = L1_NEURONS * L2_NEURONS;         // 96×48  =  4,608 f32
+const W3_TOTAL: usize = L2_NEURONS * L3_NEURONS;         // 48×24  =  1,152 f32
 
-// CfC state (96 dimensões, uma fatia por ser, f32).
+// CfC state (96 dimensions, one slice per being, f32).
 const CFC_DIM: usize = L1_NEURONS; // 96
 
-// ─── Layout de postura por ser (GPU-side). ─────────────────────────────────
-// 8 × f32 = 32 bytes, alinhado a 16 (requisito wgpu para storage buffer).
+// ─── Per-being pose layout (GPU side). ─────────────────────────────────────
+// 8 × f32 = 32 bytes, aligned to 16 (wgpu requirement for a storage buffer).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PosGpu {
@@ -83,7 +94,7 @@ pub struct PosGpu {
     pub dirs:     [f32; 4],
 }
 
-// ─── Intenção motora devolvida pela GPU por tick. ──────────────────────────
+// ─── Motor intent returned by the GPU each tick. ───────────────────────────
 // 3 × f32 + padding = 16 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
@@ -94,102 +105,102 @@ pub struct IntentGpu {
     pub _pad:     f32,
 }
 
-/// Contexto de GPU compartilhado por todos os kernels.
+/// GPU context shared by every kernel.
 ///
-/// Mantém um único `wgpu::Device` aberto sem surface (compute-only). Todos os
-/// buffers residentes ficam aqui — a retina, o cérebro e a física lêem e escrevem
-/// nesses buffers via bind groups, sem precisar de readback intermediário.
+/// Keeps a single `wgpu::Device` open with no surface (compute-only). Every resident buffer
+/// lives here — the retina, the brain and physics read and write those buffers through bind
+/// groups, with no intermediate readback.
 ///
-/// # Ciclo de vida
+/// # Life cycle
 ///
 /// ```text
-/// CoreGpu::new(mundo, capacidade)   ← uma vez por pista
+/// CoreGpu::new(world, capacity)    ← once per track
 ///     |
-///     ├── sobe grade, height_map, banking, flow  (estáticos)
-///     └── sobe pesos dos seres                   (uma vez por geração)
+///     ├── uploads grid, height_map, banking, flow  (static)
+///     └── uploads the beings' weights              (once per generation)
 ///
-/// tick(poses, ...)                     ← a cada tick da simulação
+/// tick(poses, ...)                     ← every simulation tick
 ///     |
-///     ├── escreve poses (2 kB)
-///     ├── dispatch percepção (ASSUMIDO: PercepcaoGpu via kernel externo)
-///     ├── dispatch cérebro  (ASSUMIDO: CerebroGpu via kernel externo)
-///     ├── dispatch física   (ASSUMIDO: FisicaGpu via kernel externo)
-///     └── readback intenção motora (720 bytes)
+///     ├── writes poses (2 kB)
+///     ├── perception dispatch (ASSUMED: PerceptionGpu via an external kernel)
+///     ├── brain dispatch      (ASSUMED: BrainGpu via an external kernel)
+///     ├── physics dispatch    (ASSUMED: PhysicsGpu via an external kernel)
+///     └── motor intent readback (720 bytes)
 ///
-/// baixar_estado_cfc()                  ← uma vez por geração, antes da evolução
+/// download_cfc_state()                 ← once per generation, before evolution
 /// ```
 pub struct CoreGpu {
     pub device:  wgpu::Device,
     pub queue:   wgpu::Queue,
     pub adapter: String,
 
-    // ── Buffers de mundo (estáticos por pista, sobem em `novo`) ─────────────
-    /// grade[320×320] → u32 (VoxelType cast).
+    // ── World buffers (static per track, uploaded in `new`) ────────────────
+    /// grid[320×320] → u32 (VoxelType cast).
     pub buf_grid:      wgpu::Buffer,
-    /// height_map[320×320] → f32 (metros).
+    /// height_map[320×320] → f32 (metres).
     pub buf_height:     wgpu::Buffer,
-    /// banking[320×320] → f32 (radianos).
+    /// banking[320×320] → f32 (radians).
     pub buf_banking:    wgpu::Buffer,
-    /// flow[320×320] → [f32;2] (direção normalizada na pista).
+    /// flow[320×320] → [f32;2] (normalised direction along the track).
     pub buf_flow:       wgpu::Buffer,
 
-    // ── Buffers de pesos (uma vez por geração) ────────────────────────────
-    /// Pesos concatenados: ser0:[W1|W2|W3|CfC_state], ser1:..., ...
-    /// W1 = L1_NEURONS × SENSORY_WAVE_SIZE f32 (instinct_layer, BitLinear, pesos são f32).
+    // ── Weight buffers (once per generation) ──────────────────────────────
+    /// Concatenated weights: being0:[W1|W2|W3|CfC_state], being1:..., ...
+    /// W1 = L1_NEURONS × SENSORY_WAVE_SIZE f32 (instinct_layer, BitLinear; weights are f32).
     /// W2 = L2_NEURONS × L1_NEURONS f32 (cortex_l2, FloatLinear).
     /// W3 = L3_NEURONS × L2_NEURONS f32 (cortex_l3, FloatLinear).
-    /// CfC_state = CFC_DIM f32 (estado temporal — atualizado pelo cérebro in-place).
+    /// CfC_state = CFC_DIM f32 (temporal state — updated in place by the brain).
     ///
-    /// Stride por ser = (W1_TOTAL + W2_TOTAL + W3_TOTAL + CFC_DIM) × sizeof(f32).
+    /// Stride per being = (W1_TOTAL + W2_TOTAL + W3_TOTAL + CFC_DIM) × sizeof(f32).
     pub buf_weights:      wgpu::Buffer,
 
-    // ── Buffers de estado por tick ────────────────────────────────────────
-    /// poses[capacidade] → PosGpu (escrito pela CPU a cada tick, 2 kB para 60 seres).
+    // ── Per-tick state buffers ────────────────────────────────────────────
+    /// poses[capacity] → PosGpu (written by the CPU each tick, 2 kB for 60 beings).
     pub buf_poses:      wgpu::Buffer,
-    /// retina_saida[capacidade × RETINA_TOTAL] → u32 (dist_mm<<8 | material).
-    /// NUNCA desce para a CPU no caminho quente. O kernel do cérebro lê daqui.
+    /// retina_output[capacity × RETINA_TOTAL] → u32 (dist_mm<<8 | material).
+    /// NEVER comes down to the CPU on the hot path. The brain kernel reads it from here.
     pub buf_retina_output: wgpu::Buffer,
-    /// intencao[capacidade] → IntencaoGpu (desce para a CPU a cada tick, 720 bytes).
+    /// intent[capacity] → IntentGpu (comes down to the CPU each tick, 720 bytes).
     pub buf_intent:   wgpu::Buffer,
-    /// Staging de leitura para intencao (MAP_READ).
+    /// Read staging for intent (MAP_READ).
     pub buf_intent_readback: wgpu::Buffer,
 
-    // ── Metadados ─────────────────────────────────────────────────────────
+    // ── Metadata ──────────────────────────────────────────────────────────
     pub capacity:    usize,
     pub grid_size:     u32,
     pub cell_size:     f32,
 
-    // ── Pipelines compilados ──────────────────────────────────────────────
-    // ASSUMIDO: os kernels de percepção, cérebro e física são compilados aqui
-    // quando seus módulos WGSL estiverem prontos. Por ora, placeholders.
+    // ── Compiled pipelines ────────────────────────────────────────────────
+    // ASSUMED: the perception, brain and physics kernels get compiled here once their
+    // WGSL modules are ready. For now, placeholders.
     //
-    // ASSUMIDO: pipeline_retina reutiliza o shader de src/gpu/retina.wgsl.
-    // ASSUMIDO: pipeline_percepcao virá de src/gpu/percepcao.wgsl (agente C).
-    // ASSUMIDO: pipeline_cerebro virá de src/gpu/cerebro.wgsl (agente B).
-    // ASSUMIDO: pipeline_fisica virá de src/gpu/fisica.wgsl (agente A).
+    // ASSUMED: pipeline_retina reuses the shader in src/gpu/retina.wgsl.
+    // ASSUMED: the perception pipeline will come from src/gpu/perception.wgsl (agent C).
+    // ASSUMED: the brain pipeline will come from src/gpu/brain.wgsl (agent B).
+    // ASSUMED: the physics pipeline will come from src/gpu/physics.wgsl (agent A).
     pub pipeline_retina: wgpu::ComputePipeline,
     pub layout_retina:   wgpu::BindGroupLayout,
 }
 
-// Stride de pesos por ser, em f32 (não em bytes).
+// Weight stride per being, in f32 (not in bytes).
 fn weights_stride_f32() -> usize {
     W1_TOTAL + W2_TOTAL + W3_TOTAL + CFC_DIM
 }
 
 impl CoreGpu {
-    /// Abre o dispositivo e sobe os dados estáticos do mundo.
+    /// Opens the device and uploads the world's static data.
     ///
-    /// Devolve `None` quando não há GPU utilizável — a simulação cai na CPU sem
-    /// travar. `capacidade` deve ser >= número de seres por geração (60 nominal).
+    /// Returns `None` when there is no usable GPU — the simulation falls back to the CPU
+    /// instead of hanging. `capacity` must be >= the number of beings per generation
+    /// (60 nominal).
     ///
-    /// `min(capacidade, MAX_CAPACITY)` seres são alocados; exceder 64 seres
-    /// exige aumentar MAX_CAPACITY e recompilar (tamanho de buffer fixo em
-    /// tempo de compilação para WGSL).
+    /// `min(capacity, MAX_CAPACITY)` beings are allocated; going past 64 beings requires
+    /// raising MAX_CAPACITY and recompiling (buffer size is fixed at compile time for WGSL).
     pub fn new(world: &VoxelWorld, capacity: usize) -> Option<Self> {
-        // ── Abre dispositivo: compute-only, sem surface, sem janela. ─────────
-        // `compatible_surface: None` é o ponto: pede adaptador para COMPUTE.
-        // O Bevy já faz isso no módulo de retina (mod.rs) — replicamos o mesmo
-        // padrão para não inventar API nova.
+        // ── Open the device: compute-only, no surface, no window. ────────────
+        // `compatible_surface: None` is the point: it asks for a COMPUTE adapter.
+        // Bevy already does this in the retina module (mod.rs) — we replicate the
+        // same pattern rather than inventing a new API.
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
@@ -214,9 +225,9 @@ impl CoreGpu {
 
         let cap = capacity.min(MAX_CAPACITY).max(1);
 
-        // ── Buffers estáticos do mundo ──────────────────────────────────────
-        // Subindo grade como u32 (VoxelType cast).
-        // 320×320 × 4 = 409.600 bytes.
+        // ── Static world buffers ────────────────────────────────────────────
+        // Uploading the grid as u32 (VoxelType cast).
+        // 320×320 × 4 = 409,600 bytes.
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
         let buf_grid = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("core-grid"),
@@ -224,22 +235,22 @@ impl CoreGpu {
             usage:    wgpu::BufferUsages::STORAGE,
         });
 
-        // height_map: 320×320 × 4 = 409.600 bytes.
+        // height_map: 320×320 × 4 = 409,600 bytes.
         let buf_height = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("core-height"),
             contents: bytemuck::cast_slice(&world.height_map),
             usage:    wgpu::BufferUsages::STORAGE,
         });
 
-        // banking: 320×320 × 4 = 409.600 bytes.
+        // banking: 320×320 × 4 = 409,600 bytes.
         let buf_banking = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("core-banking"),
             contents: bytemuck::cast_slice(&world.banking),
             usage:    wgpu::BufferUsages::STORAGE,
         });
 
-        // flow: Vec<Vec2> → [f32;2] por célula → 320×320×8 = 819.200 bytes.
-        // `Vec2` é bytemuck::Pod em bevy 0.16 (layout [f32; 2]).
+        // flow: Vec<Vec2> → [f32;2] per cell → 320×320×8 = 819,200 bytes.
+        // `Vec2` is bytemuck::Pod in bevy 0.16 (layout [f32; 2]).
         let flow_raw: Vec<[f32; 2]> = world.flow.iter().map(|v| [v.x, v.y]).collect();
         let buf_flow = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("core-flow"),
@@ -247,26 +258,29 @@ impl CoreGpu {
             usage:    wgpu::BufferUsages::STORAGE,
         });
 
-        // ── Buffer de pesos (por ser) ───────────────────────────────────────
-        // Aloca espaço para `cap` seres; preenchido por `carregar_pesos()` antes
-        // da primeira geração. COPY_DST para escrita pela CPU entre gerações.
-        // Stride por ser em bytes = weights_stride_f32() × 4.
-        // Para 60 seres: (21408+4608+1152+96) × 4 × 60 = 27264 × 4 × 60 = 6.543.360 bytes ≈ 6,2 MB.
+        // ── Weight buffer (per being) ───────────────────────────────────────
+        // Allocates room for `cap` beings; filled by `upload_weights()` before the first
+        // generation. COPY_DST so the CPU can write it between generations.
+        // Stride per being in bytes = weights_stride_f32() × 4.
+        // For 60 beings: (21408+4608+1152+96) × 4 × 60 = 27264 × 4 × 60 = 6,543,360 bytes
+        // ≈ 6.2 MB — computed with the old 223-channel wave; with SENSORY_WAVE_SIZE = 192
+        // it is 24288 × 4 × 60 = 5,829,120 bytes ≈ 5.6 MB.
         let bytes_weights = (weights_stride_f32() * cap * std::mem::size_of::<f32>()) as u64;
         let buf_weights = device.create_buffer(&wgpu::BufferDescriptor {
             label:               Some("core-weights"),
             size:                bytes_weights,
-            // COPY_SRC é necessário porque o estado recorrente (CfC) vive DENTRO deste
-            // buffer e precisa ser lido de volta no fim da geração. Sem a flag, o wgpu
-            // recusa o copy_buffer_to_buffer com erro de validação — foi o que aconteceu.
+            // COPY_SRC is required because the recurrent state (CfC) lives INSIDE this
+            // buffer and has to be read back at the end of the generation. Without the
+            // flag, wgpu rejects the copy_buffer_to_buffer with a validation error — which
+            // is exactly what happened.
             usage:               wgpu::BufferUsages::STORAGE
                                  | wgpu::BufferUsages::COPY_DST
                                  | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation:  false,
         });
 
-        // ── Buffers de tick ────────────────────────────────────────────────
-        // poses: 60 × 32 bytes = 1.920 bytes.
+        // ── Per-tick buffers ───────────────────────────────────────────────
+        // poses: 60 × 32 bytes = 1,920 bytes.
         let bytes_poses = (cap * std::mem::size_of::<PosGpu>()) as u64;
         let buf_poses = device.create_buffer(&wgpu::BufferDescriptor {
             label:               Some("core-poses"),
@@ -275,8 +289,8 @@ impl CoreGpu {
             mapped_at_creation:  false,
         });
 
-        // retina_saida: 60 × 1764 × 4 = 423.360 bytes.
-        // COPY_SRC para poder copiar para buf de leitura se precisar inspecionar.
+        // retina_output: 60 × 1764 × 4 = 423,360 bytes.
+        // COPY_SRC so it can be copied into a readback buffer when inspection is needed.
         let bytes_retina = (cap * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
         let buf_retina_output = device.create_buffer(&wgpu::BufferDescriptor {
             label:               Some("core-retina-output"),
@@ -285,7 +299,7 @@ impl CoreGpu {
             mapped_at_creation:  false,
         });
 
-        // intencao: 60 × 16 bytes = 960 bytes (IntencaoGpu tem padding).
+        // intent: 60 × 16 bytes = 960 bytes (IntentGpu carries padding).
         let bytes_intent = (cap * std::mem::size_of::<IntentGpu>()) as u64;
         let buf_intent = device.create_buffer(&wgpu::BufferDescriptor {
             label:               Some("core-intent"),
@@ -300,10 +314,10 @@ impl CoreGpu {
             mapped_at_creation:  false,
         });
 
-        // ── Pipeline da retina (reutiliza retina.wgsl) ─────────────────────
-        // ASSUMIDO: o shader retina.wgsl aceita exatamente o layout abaixo
-        // (uniform params, storage grade read-only, storage poses read-only,
-        // storage saida write-only). Este é o layout existente em mod.rs.
+        // ── Retina pipeline (reuses retina.wgsl) ───────────────────────────
+        // ASSUMED: the retina.wgsl shader accepts exactly the layout below
+        // (uniform params, read-only storage grid, read-only storage poses,
+        // write-only storage output). This is the layout already in mod.rs.
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("retina"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
@@ -314,9 +328,9 @@ impl CoreGpu {
             label:   Some("retina-layout"),
             entries: &[
                 uniform_entry(0),
-                storage_entry(1, true),  // grade
+                storage_entry(1, true),  // grid
                 storage_entry(2, true),  // poses
-                storage_entry(3, false), // saida
+                storage_entry(3, false), // output
             ],
         });
         let pipe_layout_retina = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -354,24 +368,23 @@ impl CoreGpu {
         })
     }
 
-    /// Sobe os pesos de todos os seres para a GPU.
+    /// Uploads every being's weights to the GPU.
     ///
-    /// Chamado uma vez por geração (antes do primeiro tick), quando a seleção/
-    /// mutação já produziu os pesos da nova geração. `n_seres` deve ser
-    /// `<= self.capacity`.
+    /// Called once per generation (before the first tick), once selection/mutation has
+    /// produced the new generation's weights. `n_beings` must be `<= self.capacity`.
     ///
-    /// Layout no buffer:
-    ///   ser 0: [W1: W1_TOTAL f32] [W2: W2_TOTAL f32] [W3: W3_TOTAL f32] [CfC: CFC_DIM f32]
-    ///   ser 1: idem, stride = weights_stride_f32() f32
+    /// Buffer layout:
+    ///   being 0: [W1: W1_TOTAL f32] [W2: W2_TOTAL f32] [W3: W3_TOTAL f32] [CfC: CFC_DIM f32]
+    ///   being 1: same, stride = weights_stride_f32() f32
     ///
-    /// ASSUMIDO: o chamador (CerebroGpu ou orquestrador) extrai os pesos de
-    /// `SovereignEngine::instinct_layer.weights`, `cortex_l2.weights`,
-    /// `cortex_l3.weights` e inicializa o estado CfC como zeros.
+    /// ASSUMED: the caller (BrainGpu or the orchestrator) extracts the weights from
+    /// `SovereignEngine::instinct_layer.weights`, `cortex_l2.weights`, `cortex_l3.weights`
+    /// and initialises the CfC state to zeros.
     pub fn upload_weights(
         &self,
-        weights_w1: &[f32], // [n_seres × W1_TOTAL]
-        weights_w2: &[f32], // [n_seres × W2_TOTAL]
-        weights_w3: &[f32], // [n_seres × W3_TOTAL]
+        weights_w1: &[f32], // [n_beings × W1_TOTAL]
+        weights_w2: &[f32], // [n_beings × W2_TOTAL]
+        weights_w3: &[f32], // [n_beings × W3_TOTAL]
         n_beings: usize,
     ) {
         let n = n_beings.min(self.capacity);
@@ -393,40 +406,41 @@ impl CoreGpu {
             let o3 = o2 + W2_TOTAL;
             interleaved[o3..o3 + W3_TOTAL]
                 .copy_from_slice(&weights_w3[w3s..w3s + W3_TOTAL]);
-            // CfC state: zeros (reset a cada geração, como CfCCell::reset()).
-            // bytes [o3+W3_TOTAL .. o3+W3_TOTAL+CFC_DIM] já são 0 por `vec![0.0]`.
+            // CfC state: zeros (reset every generation, like CfCCell::reset()).
+            // bytes [o3+W3_TOTAL .. o3+W3_TOTAL+CFC_DIM] are already 0 from `vec![0.0]`.
         }
         self.queue.write_buffer(&self.buf_weights, 0, bytemuck::cast_slice(&interleaved));
     }
 
-    /// Escreve as poses dos seres vivos e dispara os kernels em sequência.
+    /// Writes the living beings' poses and fires the kernels in sequence.
     ///
-    /// # Ordem de dispatch (uma única `CommandEncoder`, sem readbacks intermediários)
+    /// # Dispatch order (a single `CommandEncoder`, no intermediate readbacks)
     ///
-    ///   1. **retina** — lê grade + poses, escreve buf_retina_saida
-    ///   2. **percepção** — lê grade/flow/height/banking + buf_retina_saida + poses,
-    ///      escreve canais semânticos (ASSUMIDO: PercepcaoGpu via buf separado)
-    ///   3. **cérebro** — lê pesos + retina + canais semânticos + estado CfC,
-    ///      escreve buf_intencao + atualiza estado CfC in-place
-    ///   4. **física** — lê intencao + estado do corpo (ASSUMIDO: FisicaGpu via buf separado)
+    ///   1. **retina** — reads grid + poses, writes buf_retina_output
+    ///   2. **perception** — reads grid/flow/height/banking + buf_retina_output + poses,
+    ///      writes the semantic channels (ASSUMED: PerceptionGpu via a separate buffer)
+    ///   3. **brain** — reads weights + retina + semantic channels + CfC state,
+    ///      writes buf_intent and updates the CfC state in place
+    ///   4. **physics** — reads intent + body state (ASSUMED: PhysicsGpu via a separate
+    ///      buffer)
     ///
     /// # Readback
     ///
-    /// Só `buf_intencao` desce para a CPU (720 bytes nominais). O estado CfC
-    /// só desce ao fim da geração via `baixar_estado_cfc()`.
+    /// Only `buf_intent` comes down to the CPU (720 bytes nominal). The CfC state only
+    /// comes down at the end of the generation, via `download_cfc_state()`.
     ///
-    /// ASSUMIDO: percepção e física têm seus próprios bind groups, criados pelos
-    /// agentes B, C e A. Este método só chama o dispatch da retina; os demais
-    /// serão encadeados ao mesmo encoder na integração final (GPU_PLANO.md §D).
+    /// ASSUMED: perception and physics have their own bind groups, created by agents B, C
+    /// and A. This method only issues the retina dispatch; the others get chained into the
+    /// same encoder in the final integration (`docs/arquivo/GPU_PLANO.md` §D).
     ///
-    /// # Parâmetros
+    /// # Parameters
     ///
-    /// - `poses`: posturas dos seres vivos neste tick (len = n_vivos).
-    /// - `params_retina`: bytes do `ParamsGpu` do shader de retina (uniforme).
-    ///   ASSUMIDO: o chamador constrói `ParamsGpu` com `pitches`, `n_seres`,
-    ///   `grid_size`, `cell_size` e `fov_half`, exatamente como em `RetinaGpu::render`.
+    /// - `poses`: poses of the beings alive this tick (len = n_alive).
+    /// - `params_retina`: the bytes of the retina shader's `ParamsGpu` (uniform).
+    ///   ASSUMED: the caller builds `ParamsGpu` with `pitches`, `n_beings`, `grid_size`,
+    ///   `cell_size` and `fov_half`, exactly as in `RetinaGpu::render`.
     ///
-    /// Retorna as intenções motoras lidas da GPU: `Vec` de comprimento `n_vivos`.
+    /// Returns the motor intents read back from the GPU: a `Vec` of length `n_alive`.
     pub fn tick(
         &self,
         poses:         &[PosGpu],
@@ -438,22 +452,22 @@ impl CoreGpu {
             return Vec::new();
         }
 
-        // 1. Sobe poses (1.920 bytes para 60 seres — único tráfego CPU→GPU por tick).
+        // 1. Upload poses (1,920 bytes for 60 beings — the only CPU→GPU traffic per tick).
         self.queue.write_buffer(
             &self.buf_poses,
             0,
             bytemuck::cast_slice(&poses[..n]),
         );
 
-        // 2. Constrói o uniform de params da retina como buffer temporário.
-        //    Criamos por tick porque `n_seres` pode variar (mortes ao longo da geração).
+        // 2. Build the retina params uniform as a temporary buffer.
+        //    We create it per tick because `n_beings` can vary (deaths during a generation).
         let buf_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("core-params-retina"),
             contents: params_retina,
             usage:    wgpu::BufferUsages::UNIFORM,
         });
 
-        // 3. Bind group da retina (mesmo layout de mod.rs::RetinaGpu).
+        // 3. Retina bind group (same layout as mod.rs::RetinaGpu).
         let bg_retina = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   None,
             layout:  &self.layout_retina,
@@ -465,15 +479,15 @@ impl CoreGpu {
             ],
         });
 
-        // 4. CommandEncoder único — todos os dispatches sem readback intermediário.
+        // 4. A single CommandEncoder — every dispatch with no intermediate readback.
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("core-tick"),
         });
 
-        // ── Dispatch retina ──────────────────────────────────────────────────
-        // 64 threads/workgroup: 2 waves de 32 no RDNA2 (wave32 é o size correto).
-        // Total de threads = n × RETINA_TOTAL = 60 × 1764 = 105.840.
-        // Workgroups = ceil(105840 / 64) = 1.654.
+        // ── Retina dispatch ──────────────────────────────────────────────────
+        // 64 threads/workgroup: 2 waves of 32 on RDNA2 (wave32 is the correct size).
+        // Total threads = n × RETINA_TOTAL = 60 × 1764 = 105,840.
+        // Workgroups = ceil(105840 / 64) = 1,654.
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label:                    Some("pass-retina"),
@@ -485,32 +499,34 @@ impl CoreGpu {
             pass.dispatch_workgroups(total.div_ceil(64), 1, 1);
         }
 
-        // ── ASSUMIDO: dispatch percepção ─────────────────────────────────────
-        // PercepcaoGpu (agente C) expõe um método como:
-        //   fn bind_e_dispatch(enc: &mut CommandEncoder, nucleo: &CoreGpu, n: usize)
-        // que cria o bind group lendo buf_retina_saida + buf_grade + buf_flow + buf_height
-        // e escreve num buf_percepcao_saida (canais semânticos 16-127 + 128-191).
+        // ── ASSUMED: perception dispatch ─────────────────────────────────────
+        // PerceptionGpu (agent C) exposes a method like:
+        //   fn bind_and_dispatch(enc: &mut CommandEncoder, core: &CoreGpu, n: usize)
+        // which builds the bind group reading buf_retina_output + buf_grid + buf_flow +
+        // buf_height and writes into a perception output buffer (semantic channels 16-127
+        // + 128-191).
         //
-        // ASSUMIDO: buf_percepcao_saida é um campo de CoreGpu (a adicionar na integração)
-        // com tamanho = n × SENSORY_WAVE_SIZE × sizeof(i8).
-        //   Para 60 seres: 60 × 223 = 13.380 bytes.
+        // ASSUMED: that perception output buffer is a CoreGpu field (to be added during
+        // integration) sized n × SENSORY_WAVE_SIZE × sizeof(i8).
+        //   For 60 beings: 60 × 223 = 13,380 bytes (with today's SENSORY_WAVE_SIZE = 192,
+        //   60 × 192 = 11,520 bytes).
 
-        // ── ASSUMIDO: dispatch cérebro ───────────────────────────────────────
-        // CerebroGpu (agente B) expõe:
-        //   fn bind_e_dispatch(enc: &mut CommandEncoder, nucleo: &CoreGpu, n: usize)
-        // que lê buf_pesos (pesos + estado CfC) + buf_percepcao_saida,
-        // atualiza CfC state in-place no buf_pesos e escreve buf_intencao.
+        // ── ASSUMED: brain dispatch ──────────────────────────────────────────
+        // BrainGpu (agent B) exposes:
+        //   fn bind_and_dispatch(enc: &mut CommandEncoder, core: &CoreGpu, n: usize)
+        // which reads buf_weights (weights + CfC state) + the perception output buffer,
+        // updates the CfC state in place inside buf_weights and writes buf_intent.
         //
-        // ASSUMIDO: 1 workgroup por ser (60 workgroups), cada um processa seu
-        // forward completo: KAN → CfC → BitLinear(L1) → FloatLinear(L2) → FloatLinear(L3).
+        // ASSUMED: 1 workgroup per being (60 workgroups), each running its full forward
+        // pass: KAN → CfC → BitLinear(L1) → FloatLinear(L2) → FloatLinear(L3).
 
-        // ── ASSUMIDO: dispatch física ────────────────────────────────────────
-        // FisicaGpu (agente A) expõe:
-        //   fn bind_e_dispatch(enc: &mut CommandEncoder, nucleo: &CoreGpu, n: usize, dt: f32)
-        // que lê buf_intencao + estado do corpo (suspensão, velocidade — buf a adicionar)
-        // e integra o passo de física in-place.
+        // ── ASSUMED: physics dispatch ────────────────────────────────────────
+        // PhysicsGpu (agent A) exposes:
+        //   fn bind_and_dispatch(enc: &mut CommandEncoder, core: &CoreGpu, n: usize, dt: f32)
+        // which reads buf_intent + the body state (suspension, velocity — buffer to be
+        // added) and integrates the physics step in place.
 
-        // ── Readback de intencao (único readback por tick, 720 bytes) ─────────
+        // ── Intent readback (the only readback per tick, 720 bytes) ───────────
         let bytes_int = (n * std::mem::size_of::<IntentGpu>()) as u64;
         enc.copy_buffer_to_buffer(
             &self.buf_intent, 0,
@@ -520,10 +536,11 @@ impl CoreGpu {
 
         self.queue.submit(Some(enc.finish()));
 
-        // ── Mapeamento síncrono — bloqueia até GPU terminar. ──────────────────
-        // `device.poll(Wait)` drena a fila antes de mapear.
-        // Em produção, isso limita a ~1 frame de pipeline. Para a primeira versão
-        // (equivalência garantida) é aceitável; async mapping é a otimização seguinte.
+        // ── Synchronous mapping — blocks until the GPU finishes. ──────────────
+        // `device.poll(Wait)` drains the queue before mapping.
+        // In production this caps pipelining at ~1 frame. For the first version
+        // (guaranteed equivalence) that is acceptable; async mapping is the next
+        // optimisation.
         let slice = self.buf_intent_readback.slice(0..bytes_int);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -540,25 +557,25 @@ impl CoreGpu {
         out
     }
 
-    /// Desce o estado CfC de todos os seres para a CPU.
+    /// Brings every being's CfC state down to the CPU.
     ///
-    /// Chamado UMA VEZ por geração, antes da seleção evolutiva. O estado CfC é
-    /// runtime-only (não persiste em .dna), mas precisamos das últimas ativações
-    /// para telemetria e para o pipeline de evolução de neuromodulação.
+    /// Called ONCE per generation, before evolutionary selection. The CfC state is
+    /// runtime-only (it does not persist in .dna), but we need the last activations for
+    /// telemetry and for the neuromodulation evolution pipeline.
     ///
-    /// Retorna Vec<Vec<f32>> com `n_seres` fatias de `CFC_DIM` f32.
+    /// Returns a Vec<Vec<f32>> with `n_beings` slices of `CFC_DIM` f32.
     ///
-    /// # Custo
+    /// # Cost
     ///
-    /// Para 60 seres: 60 × 96 × 4 = 23.040 bytes de tráfego GPU→CPU.
-    /// Acontece 0 vezes por tick durante a geração, 1 vez ao fim.
+    /// For 60 beings: 60 × 96 × 4 = 23,040 bytes of GPU→CPU traffic.
+    /// It happens 0 times per tick during the generation, and once at the end.
     pub fn download_cfc_state(&self, n_beings: usize) -> Vec<Vec<f32>> {
         let n = n_beings.min(self.capacity);
         let stride = weights_stride_f32();
         let cfc_offset = (W1_TOTAL + W2_TOTAL + W3_TOTAL) as u64;
 
-        // Staging buffer para todo o bloco de pesos (precisamos só do CfC, mas
-        // wgpu exige copiar blocos alinhados; copiamos o stride inteiro e extraímos).
+        // Staging buffer for the whole weight block (we only need the CfC, but wgpu
+        // requires copying aligned blocks; we copy the entire stride and extract).
         let bytes_total_weights = (stride * n * std::mem::size_of::<f32>()) as u64;
         let buf_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label:               Some("core-cfc-staging"),
@@ -595,16 +612,17 @@ impl CoreGpu {
         out
     }
 
-    /// Expõe referência ao dispositivo para os kernels externos (fisica/cerebro/percepcao)
-    /// criarem seus próprios bind groups e pipelines sem abrir novo dispositivo.
+    /// Exposes a reference to the device so the external kernels (physics/brain/perception)
+    /// can build their own bind groups and pipelines without opening a new device.
     ///
-    /// ASSUMIDO: FisicaGpu, CerebroGpu, PercepcaoGpu recebem `&CoreGpu` e chamam
-    /// `nucleo.device` e `nucleo.fila` diretamente — nunca criam `wgpu::Instance` própria.
+    /// ASSUMED: PhysicsGpu, BrainGpu and PerceptionGpu receive `&CoreGpu` and use
+    /// `core.device` and `core.queue` directly — they never create their own
+    /// `wgpu::Instance`.
     pub fn device(&self) -> &wgpu::Device { &self.device }
     pub fn queue(&self) -> &wgpu::Queue   { &self.queue }
 
-    /// Constantes de dimensão expostas para que os kernels externos não precisem
-    /// importar as constantes de config diretamente (evita acoplamento de crate).
+    /// Dimension constants exposed so external kernels do not have to import the config
+    /// constants directly (avoids crate coupling).
     pub const fn retina_total()       -> usize { RETINA_TOTAL }
     pub const fn sensory_wave_size()  -> usize { SENSORY_WAVE_SIZE }
     pub const fn cfc_dim()            -> usize { CFC_DIM }
@@ -614,12 +632,12 @@ impl CoreGpu {
     pub const fn w3_total()           -> usize { W3_TOTAL }
 }
 
-// ── Helpers de bind group layout ────────────────────────────────────────────
-// Fonte canônica única (E3/REFACTOR_PLAN §2.3 "Deduplicação"). Antes desta
-// unificação existiam 14 cópias idênticas espalhadas por src/gpu/*.rs e
-// src/bin/*.rs — cada uma corrigida ou não conforme quem mexeu por último.
-// `pub` para que os bins (gpu_evolve, gpu_loop, cortex_evolve) e os demais
-// módulos de src/gpu/ importem em vez de duplicar.
+// ── Bind group layout helpers ───────────────────────────────────────────────
+// The single canonical source (E3 / REFACTOR_PLAN §2.3 "Deduplication"). Before this
+// unification there were 14 identical copies scattered across src/gpu/*.rs and
+// src/bin/*.rs — each one fixed or not depending on whoever touched it last.
+// `pub` so the binaries (gpu_evolve, gpu_loop, cortex_evolve) and the rest of the
+// src/gpu/ modules import them instead of duplicating them.
 
 pub fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -647,25 +665,29 @@ pub fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntr
     }
 }
 
-// ── Resumo de bytes por tick (para referência rápida em code review) ─────────
+// ── Per-tick byte summary (quick reference during code review) ───────────────
 //
-// BUFFERS RESIDENTES (não saem da GPU durante a geração):
-//   buf_grade        :   409.600 bytes  (320×320×4)
-//   buf_height       :   409.600 bytes  (320×320×4)
-//   buf_banking      :   409.600 bytes  (320×320×4)
-//   buf_flow         :   819.200 bytes  (320×320×8)
-//   buf_pesos        : 6.543.360 bytes  (stride=27264 f32 × 60 seres × 4)
-//   buf_retina_saida :   423.360 bytes  (60 × 1764 × 4)
-//   buf_intencao     :       960 bytes  (60 × 16)
-//   TOTAL RESIDENTE  : 9.015.680 bytes ≈ 8,6 MB
+// The buf_weights line and the resident total below were computed with the old
+// 223-channel sensory wave; with SENSORY_WAVE_SIZE = 192 (`config.rs:309`) they are
+// 5,829,120 bytes and 8,301,440 bytes ≈ 7.9 MB. The original figures are kept.
 //
-// POR TICK (tráfego real CPU↔GPU):
-//   SUBIDA  (write_buffer buf_poses)       :  1.920 bytes
-//   DESCIDA (copy+map buf_intencao_leit)   :    960 bytes (inclui padding)
-//   TOTAL POR TICK                         :  2.880 bytes ≈ 2,8 kB
+// RESIDENT BUFFERS (they never leave the GPU during a generation):
+//   buf_grid          :   409,600 bytes  (320×320×4)
+//   buf_height        :   409,600 bytes  (320×320×4)
+//   buf_banking       :   409,600 bytes  (320×320×4)
+//   buf_flow          :   819,200 bytes  (320×320×8)
+//   buf_weights       : 6,543,360 bytes  (stride=27264 f32 × 60 beings × 4)
+//   buf_retina_output :   423,360 bytes  (60 × 1764 × 4)
+//   buf_intent        :       960 bytes  (60 × 16)
+//   RESIDENT TOTAL    : 9,015,680 bytes ≈ 8.6 MB
 //
-// AO FIM DA GERAÇÃO (baixar_estado_cfc, 1×):
-//   DESCIDA buf_pesos completo (para extrair CfC)  : 6.543.360 bytes
-//   (otimização futura: copiar só a fatia CfC = 60×96×4 = 23.040 bytes
-//    via offsets — requer wgpu::CommandEncoder::copy_buffer_to_buffer com
-//    source_offset = ser * stride_bytes + offset_cfc_bytes)
+// PER TICK (real CPU↔GPU traffic):
+//   UPLOAD   (write_buffer buf_poses)          :  1,920 bytes
+//   DOWNLOAD (copy+map buf_intent_readback)    :    960 bytes (padding included)
+//   TOTAL PER TICK                             :  2,880 bytes ≈ 2.8 kB
+//
+// AT THE END OF A GENERATION (download_cfc_state, 1×):
+//   DOWNLOAD of the full buf_weights (to extract the CfC) : 6,543,360 bytes
+//   (future optimisation: copy only the CfC slice = 60×96×4 = 23,040 bytes
+//    via offsets — needs wgpu::CommandEncoder::copy_buffer_to_buffer with
+//    source_offset = being * stride_bytes + cfc_offset_bytes)

@@ -97,6 +97,53 @@ PATTERN_COM='(?<![A-Za-z0-9.])com(?![A-Za-z0-9])'
 PATTERN="${PATTERN_ACCENT}|${PATTERN_WORDS}|${PATTERN_COM}"
 
 # ---------------------------------------------------------------------------
+# Escape hatch.
+#
+# Some English text has to quote Portuguese: this checker's own word list, the
+# migration tracker's table of legacy file names, a doc comment citing the old
+# name of a symbol. Without a hatch those documents would be unwritable, and the
+# usual workaround -- deleting the quote -- loses information.
+#
+#   check-language: allow        suppress this one line
+#   check-language: off          suppress from here
+#   check-language: on           resume checking
+#
+# The marker works in any comment syntax, including an HTML comment inside
+# Markdown, which renders as nothing. Use it to quote, never to postpone: a whole
+# source file that needs it belongs on the allowlist instead.
+# ---------------------------------------------------------------------------
+MARKER_ALLOW='check-language:[[:space:]]*allow'
+MARKER_OFF='check-language:[[:space:]]*off'
+MARKER_ON='check-language:[[:space:]]*on'
+
+# suppressed_lines <path> -> line numbers exempted by a marker
+suppressed_lines() {
+    awk -v m_allow="$MARKER_ALLOW" -v m_off="$MARKER_OFF" -v m_on="$MARKER_ON" '
+        $0 ~ m_off   { off = 1; print NR; next }
+        $0 ~ m_on    { off = 0; print NR; next }
+        off          { print NR; next }
+        $0 ~ m_allow { print NR }
+    ' "$1" 2>/dev/null
+}
+
+# drop_suppressed <path> — filters "line:text" on stdin, removing exempted lines
+drop_suppressed() {
+    local sup
+    # Fast path: the overwhelming majority of files carry no marker at all.
+    if ! grep -qE "$MARKER_ALLOW|$MARKER_OFF" "$1" 2>/dev/null; then
+        cat
+        return 0
+    fi
+    sup=$(mktemp) || return 1
+    suppressed_lines "$1" > "$sup"
+    awk -F: -v supfile="$sup" '
+        BEGIN { while ((getline l < supfile) > 0) skip[l + 0] = 1 }
+        !(($1 + 0) in skip)
+    '
+    rm -f "$sup"
+}
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -123,6 +170,18 @@ is_in_scope() {
         .github/*.md | .github/*/*.md) return 0 ;;
     esac
 
+    return 1
+}
+
+# is_product_doc <path> -> 0 for documentation that ships with the project
+is_product_doc() {
+    local path="$1" doc
+    for doc in "${ENGLISH_DOCS[@]}"; do
+        [ "$path" = "$doc" ] && return 0
+    done
+    case "$path" in
+        .github/*.md | .github/*/*.md) return 0 ;;
+    esac
     return 1
 }
 
@@ -153,7 +212,7 @@ is_allowlisted() {
 
 # scan_whole_file <path> -> emits "line:text" for every offending line
 scan_whole_file() {
-    grep -nPi -- "$PATTERN" "$1" 2>/dev/null
+    grep -nPi -- "$PATTERN" "$1" 2>/dev/null | drop_suppressed "$1"
 }
 
 # scan_added_lines <path> -> emits "line:text" for offending lines this branch ADDED
@@ -175,7 +234,7 @@ scan_added_lines() {
             next
         }
         /^\+/ { print lineno ":" substr($0, 2); lineno++ }
-    ' | grep -Pi -- "$PATTERN"
+    ' | grep -Pi -- "$PATTERN" | drop_suppressed "$path"
 }
 
 # check_one <path> <full|added> <label>
@@ -193,6 +252,19 @@ check_one() {
     else
         out=$(scan_whole_file "$path")
     fi
+
+    # Make suppression visible. A `check-language: off` with no matching `on`
+    # silences the rest of the file, which is exactly the abuse this rule invites,
+    # so the count of exempted lines is printed in the CI log where a reviewer
+    # will see it.
+    local raw exempt
+    raw=$(grep -cPi -- "$PATTERN" "$path" 2>/dev/null || true)
+    [ -z "$raw" ] && raw=0
+    exempt=$((raw - $(printf '%s' "$out" | grep -c . || true)))
+    if [ "$mode" = full ] && [ "$exempt" -gt 0 ]; then
+        printf '  %s: %d line(s) exempted by check-language markers\n' "$path" "$exempt"
+    fi
+
     [ -z "$out" ] && return 0
 
     while IFS= read -r line; do
@@ -247,7 +319,14 @@ run_all() {
     while IFS= read -r path; do
         is_in_scope "$path" || continue
         [ "$path" = "$ALLOWLIST_FILE" ] && continue
-        count=$(grep -cPi -- "$PATTERN" "$path" 2>/dev/null || true)
+        # Product documentation is written under the current policy and is never
+        # excused: if README.md picks up Portuguese, that is a bug to fix, not a
+        # legacy file to schedule. Keep it out of the generated allowlist so a
+        # regeneration cannot quietly grant it an exemption.
+        if [ "$quiet" = "generate" ] && is_product_doc "$path"; then
+            continue
+        fi
+        count=$(scan_whole_file "$path" | wc -l)
         [ -z "$count" ] && count=0
         if [ "$count" -gt 0 ]; then
             printf '%s\t%s\n' "$count" "$path" >> "$tmp"
@@ -256,7 +335,7 @@ run_all() {
         fi
     done < <(git ls-files)
 
-    if [ "$quiet" != "quiet" ]; then
+    if [ "$quiet" = "" ]; then
         echo "Portuguese still present, by file (English-only scope: .${CODE_EXTENSIONS// /, .} + product docs)"
         echo "-------------------------------------------------------------------------------"
         printf '%8s  %s\n' "LINES" "FILE"
@@ -282,7 +361,7 @@ run_all() {
 # Mode: --generate-allowlist
 # ---------------------------------------------------------------------------
 run_generate_allowlist() {
-    run_all quiet
+    run_all generate
     {
         cat <<EOF
 # scripts/language_allowlist.txt — files that still contain Portuguese.

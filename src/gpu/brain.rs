@@ -1,28 +1,32 @@
-// ── CÉREBRO NA GPU — host Rust ────────────────────────────────────────────────
-//
-// Empacota os pesos de todos os seres em buffers SoA, despacha o kernel
-// `cerebro.wgsl` e devolve `final_intent[96]` por ser.
-//
-// Contexto wgpu: reutilizamos o dispositivo que já foi aberto pelo `RetinaGpu`.
-// O `CerebroGpu` aceebe um `Arc<wgpu::Device>` + `Arc<wgpu::Queue>` para não
-// abrir um segundo dispositivo (GPU tem um único VkDevice lógico; abrir dois é
-// ineficiente e pode falhar em Vulkan com certas versões de driver AMD).
-//
-// Buffers residentes entre ticks:
-//   - buf_wave:   sobre-escrito por tick (sensory input muda a cada tick)
-//   - buf_kan:    sobre-escrito em spawn/evolução (pesos evoluem só entre gens)
-//   - buf_l1w:    idem
-//   - buf_l2w:    idem
-//   - buf_intent: resultado, lido pela CPU a cada tick
-//   - buf_cfc:    estado recorrente, NUNCA baixa a CPU por tick
-//                 (só em spawn: host inicializa zeros; em death: host lê pra log)
-//
-// # Por que Arc e não referências?
-//
-// `RetinaGpu` e `CerebroGpu` vivem como campos de recursos Bevy distintos.
-// Bevy não permite dois recursos mutáveis do mesmo tipo, então os contextos GPU
-// ficam em recursos separados. Arc permite compartilhar device/queue sem lifetime
-// fight. Custo: 1 atomic increment por tick (negligível).
+//! Brain on the GPU — the Rust host side.
+//!
+//! Packs every being's weights into SoA buffers, dispatches the `brain.wgsl` kernel
+//! and returns `final_intent[96]` per being.
+//!
+//! # wgpu context
+//!
+//! We reuse the device that `RetinaGpu` already opened. `BrainGpu` takes an
+//! `Arc<wgpu::Device>` + `Arc<wgpu::Queue>` so it does not open a second device: a GPU
+//! has a single logical `VkDevice`, and opening two is wasteful and can fail outright
+//! under Vulkan with some AMD driver versions.
+//!
+//! # Buffers that stay resident between ticks
+//!
+//! | Buffer | Rewritten |
+//! |---|---|
+//! | `buf_wave` | every tick (the sensory input changes every tick) |
+//! | `buf_kan` | on spawn / evolution (weights only change between generations) |
+//! | `buf_l1w` | same |
+//! | `buf_l2w` | same |
+//! | `buf_intent` | result, read back by the CPU every tick |
+//! | `buf_cfc` | recurrent state, NEVER downloaded to the CPU per tick (only on spawn, where the host writes zeros, and on death, where the host reads it for a log) |
+//!
+//! # Why `Arc` and not references?
+//!
+//! `RetinaGpu` and `BrainGpu` live as two distinct Bevy resources. Bevy does not allow
+//! two mutable resources of the same type, so the GPU contexts have to sit in separate
+//! resources. `Arc` shares device/queue without a lifetime fight. Cost: one atomic
+//! increment per tick, which is negligible.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -31,239 +35,263 @@ use wgpu::util::DeviceExt;
 use crate::engine::SovereignEngine;
 use crate::config::iara::brain::{SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS};
 
-// ── CONSTANTES DERIVADAS DAS DIMENSÕES DO CÉREBRO ────────────────────────────
+// ── CONSTANTS DERIVED FROM THE BRAIN DIMENSIONS ──────────────────────────────
 
-/// Pesos L1 por ser: SENSORY_WAVE_SIZE × L1_NEURONS floats
-const L1_WEIGHTS_PER_SER: usize = SENSORY_WAVE_SIZE * L1_NEURONS;  // 223 × 96 = 21.408
-
-/// Pesos L2 por ser: L1_NEURONS × L2_NEURONS floats
-const L2_WEIGHTS_PER_SER: usize = L1_NEURONS * L2_NEURONS;          // 96 × 48  = 4.608
-
-/// Knots KAN por ser: SENSORY_WAVE_SIZE canais × 16 knots
+/// KAN knots per sensory channel (`kan.rs`: `spline_coeffs: [f32; 16]`).
 const KAN_KNOTS: usize = 16;
-const KAN_WEIGHTS_PER_SER: usize = SENSORY_WAVE_SIZE * KAN_KNOTS;   // 223 × 16 = 3.568
 
-/// Fadiga de saída herdada: 0,85. Documentada em `BrainParams::out_beta`.
-pub const OUT_BETA_PADRAO: f32 = 0.85;
-
-/// Ganho de saída herdado: 2,0. Documentado em `BrainParams::out_gain`.
+/// L1 weights per being: `SENSORY_WAVE_SIZE × L1_NEURONS` floats = 192 × 96 = 18 432.
 ///
-/// Era a constante `2.0` hardcoded na ETAPA 2 de `brain.wgsl` (`l2_raw = acc *
-/// (2.0/127.0)` e `raw_bp = w_l1r[tid] * 2.0`) e em `engine.rs` (`raw = val *
-/// 2.0` nos dois loops). Virou parâmetro (P1.5, `docs/PLANO_EVOLUCAO.md`) para
-/// o A/B contra a saturação de L2 (48/48 neurônios ativos em 97,4% dos ticks,
-/// entropia da política 0,301 nats — abaixo do limiar de 0,50). Quem não passar
-/// `--ganho-saida` continua com exatamente este valor.
-pub const OUT_GAIN_PADRAO: f32 = 2.0;
+/// `SENSORY_WAVE_SIZE` is *computed* (`config.rs:309`), so the constant is right no
+/// matter what the comment says. The comment that used to sit here still quoted the
+/// pre-migration wave of 223 channels ("223 × 96 = 21 408"); `src/CLAUDE.md` cites this
+/// very line as the example of a comment lying while the code is correct.
+const L1_WEIGHTS_PER_BEING: usize = SENSORY_WAVE_SIZE * L1_NEURONS;
 
-/// Estado CfC por ser: 96 floats (state) + 1 u32 (counter, bitcast como f32) = 97 f32
-const CFC_SLOTS_PER_SER: usize = L1_NEURONS + 1;  // 97
+/// L2 weights per being: `L1_NEURONS × L2_NEURONS` floats = 96 × 48 = 4 608.
+const L2_WEIGHTS_PER_BEING: usize = L1_NEURONS * L2_NEURONS;
 
-/// P1.7 (docs/PLANO_EVOLUCAO.md) — cérebro assíncrono. Metadados por neurônio,
-/// layout SoA por ser, espelha `buf_neuron_meta` em `brain.wgsl` byte a byte:
+/// KAN knots per being: `SENSORY_WAVE_SIZE` channels × 16 knots = 192 × 16 = 3 072.
+/// (The old comment said "223 × 16 = 3 568", from the 223-channel wave.)
+const KAN_WEIGHTS_PER_BEING: usize = SENSORY_WAVE_SIZE * KAN_KNOTS;
+
+/// Inherited output fatigue: 0.85. Documented on `BrainParams::out_beta`.
+pub const OUT_BETA_DEFAULT: f32 = 0.85;
+
+/// Inherited output gain: 2.0. Documented on `BrainParams::out_gain`.
+///
+/// This was the hardcoded constant `2.0` in STAGE 2 of `brain.wgsl` (`l2_raw = acc *
+/// (2.0/127.0)` and `raw_bp = w_l1r[tid] * 2.0`) and in `engine.rs` (`raw = val * 2.0`
+/// in both loops). It became a parameter (P1.5, `docs/PLANO_EVOLUCAO.md`) for the A/B
+/// against L2 saturation (48/48 neurons active in 97.4% of the ticks, policy entropy
+/// 0.301 nats — below the 0.50 threshold). Anyone who does not pass `--ganho-saida`
+/// keeps exactly this value.
+pub const OUT_GAIN_DEFAULT: f32 = 2.0;
+
+/// CfC state per being: 96 floats (state) + 1 u32 (counter, bitcast as f32) = 97 f32.
+const CFC_SLOTS_PER_BEING: usize = L1_NEURONS + 1;  // 97
+
+/// P1.7 (`docs/PLANO_EVOLUCAO.md`) — asynchronous brain. Per-neuron metadata, SoA
+/// layout per being, mirroring `buf_neuron_meta` in `brain.wgsl` byte for byte:
 /// `[l1_alpha(96), l1_period(96), l1_threshold(96), l1_activation(96), l2_alpha(48),
-/// l2_activation(48)]` = 480 f32 por ser. Ver `NEURON_META_PER_SER` no shader.
-pub const NEURON_META_PER_SER: usize = L1_NEURONS * 4 + L2_NEURONS * 2;  // 480
+/// l2_activation(48)]` = 480 f32 per being. See `NEURON_META_PER_BEING` in the shader.
+pub const NEURON_META_PER_BEING: usize = L1_NEURONS * 4 + L2_NEURONS * 2;  // 480
 
-/// P1.7 — estado persistente da memória EMA (mecanismo 1), por neurônio de L1+L2.
-/// `[l1_mem(96), l2_mem(48)]` = 144 f32 por ser. Espelha `NEURON_MEM_PER_SER` no shader.
-pub const NEURON_MEM_PER_SER: usize = L1_NEURONS + L2_NEURONS;  // 144
+/// P1.7 — persistent state of the EMA memory (mechanism 1), one slot per L1+L2 neuron.
+/// `[l1_mem(96), l2_mem(48)]` = 144 f32 per being. Mirrors `NEURON_MEM_PER_BEING` in
+/// the shader.
+pub const NEURON_MEM_PER_BEING: usize = L1_NEURONS + L2_NEURONS;  // 144
 
-/// Fadiga adaptativa por ser: 192 floats.
-/// Slots [0..96]  = fadiga de input do CfC (estado recorrente, já existia).
-/// Slots [96..192] = fadiga de saída (output fatigue, quebra ponto fixo de final_intent).
-/// Expandido de 96 → 192 para suportar o OUT_ALPHA/OUT_BETA em brain.wgsl.
-const FATIGUE_PER_SER: usize = L1_NEURONS * 2;  // 192
+/// Adaptive fatigue per being: 192 floats.
+/// Slots `[0..96]`   = CfC input fatigue (recurrent state, present from the start).
+/// Slots `[96..192]` = output fatigue, which breaks the `final_intent` fixed point.
+/// Grown from 96 → 192 to support `OUT_ALPHA`/`OUT_BETA` in `brain.wgsl`.
+const FATIGUE_PER_BEING: usize = L1_NEURONS * 2;  // 192
 
-/// Dimensão do final_intent (96 slots, engine.rs:472)
+/// Width of `final_intent` (96 slots, `engine.rs:472`).
 const INTENT_DIM: usize = L1_NEURONS;  // 96
 
-// ── STRUCT REPR(C) PARA UNIFORM ───────────────────────────────────────────────
+// ── #[repr(C)] STRUCT FOR THE UNIFORM ────────────────────────────────────────
 
-/// Parâmetros globais passados como uniform buffer.
+/// Global parameters passed in as a uniform buffer.
 ///
-/// `#[repr(C)]` garante layout previsível. `bytemuck::Pod` exige que todos os
-/// campos sejam tipos primitivos sem padding implícito — aqui estamos no limite:
-/// 4 campos de 4 bytes = 16 bytes, alinhado a 16 bytes (requisito WGSL uniform).
+/// `#[repr(C)]` guarantees a predictable layout. `bytemuck::Pod` requires every field
+/// to be a primitive with no implicit padding — this struct sits right on that edge:
+/// 12 fields of 4 bytes = 48 bytes, a multiple of the 16-byte WGSL uniform alignment.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BrainParams {
     pub n_beings: u32,
     pub dt: f32,
-    /// Quando 1: lê o sensory_wave do binding 8 (buf_percept, saída de percepcao.wgsl,
-    /// 56 u32 por ser) em vez do binding 1 (buf_wave, i32 sign-extended da CPU).
-    /// Elimina o round-trip percepção→CPU→GPU por tick. O gpu_validate passa 0.
+    /// When 1: read the sensory wave from binding 8 (`buf_percept`, the output of
+    /// `perception.wgsl`, 48 u32 per being) instead of binding 1 (`buf_wave`, i32
+    /// sign-extended by the CPU). This removes the perception→CPU→GPU round trip per
+    /// tick. `gpu_validate` passes 0.
     pub use_percept_direct: u32,
-    /// Força da fadiga de SAÍDA (`OUT_BETA`), antes uma constante de shader.
+    /// Strength of the OUTPUT fatigue (`OUT_BETA`), previously a shader constant.
     ///
-    /// Em regime permanente `out_fat → |raw|`, então a saída vira `(1 - out_beta)·|raw|`:
-    /// com 0,85 um comando SUSTENTADO sai a 15% da intenção, em ~1 s. Isso é adaptação a
-    /// estímulo constante — ótimo num sensor (detecta novidade), veneno num comando motor,
-    /// onde segurar o acelerador na reta é justamente o que se quer. E como o operador é
-    /// aplicado DEPOIS do L2, nenhum peso do genoma escapa dele.
+    /// In steady state `out_fat → |raw|`, so the output becomes `(1 - out_beta)·|raw|`:
+    /// at 0.85 a SUSTAINED command comes out at 15% of the intent, within about 1 s.
+    /// That is adaptation to a constant stimulus — excellent in a sensor (it detects
+    /// novelty), poison in a motor command, where holding the throttle down on the
+    /// straight is precisely what you want. And because the operator is applied AFTER
+    /// L2, no genome weight escapes it.
     ///
-    /// Vira parâmetro para poder ser MEDIDO em teste pareado em vez de discutido.
-    /// O padrão 0,85 é o histórico: sem passar nada, o comportamento é o de antes.
+    /// It became a parameter so it could be MEASURED in a paired test instead of
+    /// argued about. The default 0.85 is the historical value: pass nothing and the
+    /// behaviour is what it always was.
     pub out_beta: f32,
-    /// Ganho aplicado a `l2_raw` (via L2) e ao bypass L1 antes da fadiga/tanh na
-    /// ETAPA 2. Era a constante `2.0` hardcoded no shader. Ver `OUT_GAIN_PADRAO`
-    /// — o A/B de P1.5 mede 2.0 vs 1.0 vs 0.5 contra a saturação de L2.
+    /// Gain applied to `l2_raw` (through L2) and to the L1 bypass before the
+    /// fatigue/tanh in STAGE 2. Used to be the hardcoded constant `2.0` in the shader.
+    /// See `OUT_GAIN_DEFAULT` — the P1.5 A/B measures 2.0 vs 1.0 vs 0.5 against L2
+    /// saturation.
     pub out_gain: f32,
-    /// P1.5, segunda alavanca (padrão 0 = DESLIGADA): 1 = normaliza `l2_raw`
-    /// pelo desvio-padrão dos 48 `l2_raw` do MESMO ser antes do ganho/tanh —
-    /// ataca a ESCALA da entrada de L2 (que pode crescer com a mutação ao longo
-    /// das gerações) em vez de só o ganho de saída. `u32` porque bool não é
-    /// `bytemuck::Pod` de forma portável entre plataformas; 0/1 é o contrato.
+    /// P1.5, second lever (default 0 = OFF): 1 normalises `l2_raw` by the standard
+    /// deviation of the 48 `l2_raw` values of the SAME being before the gain/tanh — it
+    /// attacks the SCALE of the L2 input (which mutation can grow across generations)
+    /// rather than only the output gain. It is a `u32` because `bool` is not portably
+    /// `bytemuck::Pod` across platforms; 0/1 is the contract.
     pub norm_l2_by_std: u32,
-    /// P1.7 — máscara de bits, um por mecanismo do cérebro assíncrono (braço de
-    /// controle do A/B, `gpu_evolve --sem-*`). Era `_pad0` (padding morto).
-    /// bit0=memória bit1=período bit2=limiar bit3=ativação heterogênea — 1 = a
-    /// leitura do genoma é IGNORADA para aquele mecanismo (tratado como neutro),
-    /// não importa o que a mutação tenha gravado. Ver `brain.wgsl::Params` para
-    /// a semântica completa por bit.
+    /// P1.7 — bitmask, one bit per mechanism of the asynchronous brain: the control arm
+    /// of the A/B, driven by the four `gpu_evolve` opt-out flags parsed at
+    /// `src/bin/gpu_evolve/main.rs:586-601` (their names are still Portuguese; renaming a
+    /// CLI flag breaks existing scripts, so it is deferred — see `NAMING.md`).
+    /// This field used to be `_pad0`, dead padding.
+    /// bit0 = memory, bit1 = period, bit2 = threshold, bit3 = heterogeneous activation.
+    /// A set bit means the genome reading for that mechanism is IGNORED (treated as
+    /// neutral), whatever mutation wrote there. See `brain.wgsl::Params` for the full
+    /// per-bit semantics.
     pub mech_off_mask: u32,
     _pad1: u32,
-    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — ruído sensorial: desvio-padrão do
-    /// ruído gaussiano aproximado somado a CADA canal da sensory_wave, POR
-    /// TICK, em unidades de canal i8 (-127..127). Ex.: `sigma=6` ≈ 5% da faixa
-    /// (127 = amplitude de um lado). Aplicado ANTES do KAN, na leitura da onda
-    /// (ver `brain.wgsl::apply_sensor_noise`). `0.0` (padrão) = nenhum ruído,
-    /// comportamento idêntico ao histórico.
+    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — sensor noise: standard deviation of the
+    /// approximate Gaussian noise added to EVERY channel of the sensory wave, EVERY
+    /// tick, in i8 channel units (-127..127). For example `sigma=6` ≈ 5% of the range
+    /// (127 being the one-sided amplitude). Applied BEFORE the KAN, while the wave is
+    /// read (see `brain.wgsl::apply_sensor_noise`). `0.0` (the default) means no noise
+    /// and behaviour identical to the historical path.
     pub noise_sigma: f32,
-    /// D3 — falha de canal (dropout sensorial): probabilidade `[0,1]` de o
-    /// canal ser ZERADO neste tick ("sensor não respondeu"), sorteada por
-    /// canal por tick via hash determinístico (mesmo padrão do denoise do
-    /// CfC, `brain.wgsl::apply_sensor_noise`). `0.0` (padrão) = nenhum canal
-    /// falha, comportamento idêntico ao histórico.
+    /// D3 — channel failure (sensor dropout): probability in `[0,1]` that the channel
+    /// is ZEROED on this tick ("the sensor did not answer"), drawn per channel per tick
+    /// through a deterministic hash (the same pattern as the CfC denoise, see
+    /// `brain.wgsl::apply_sensor_noise`). `0.0` (the default) means no channel fails
+    /// and behaviour identical to the historical path.
     pub dropout_prob: f32,
-    /// Padding: mantém o uniform buffer em múltiplo de 16 bytes (12 campos ×
-    /// 4 bytes = 48, mesma convenção do struct original — 8×4=32). Zero
-    /// determinístico via `bytemuck::Zeroable`, nunca lido pelo shader.
+    /// Padding: keeps the uniform buffer a multiple of 16 bytes (12 fields × 4 bytes =
+    /// 48, the same convention as the original struct, which was 8 × 4 = 32).
+    /// Deterministically zero through `bytemuck::Zeroable`, never read by the shader.
     _pad2: u32,
     _pad3: u32,
 }
 
-// ── INPUT POR SER ─────────────────────────────────────────────────────────────
+// ── PER-BEING INPUT ──────────────────────────────────────────────────────────
 
-/// O que o chamador entrega por tick, por ser.
+/// What the caller hands over per tick, per being.
 pub struct BrainInput<'a> {
-    /// Referência ao engine do ser (para ler pesos e estado CfC).
+    /// Reference to this being's engine (used to read weights and CfC state).
     pub engine: &'a SovereignEngine,
-    /// sensory_wave[SENSORY_WAVE_SIZE] já calculado pelo motor.rs.
+    /// `sensory_wave[SENSORY_WAVE_SIZE]`, already computed by `motor.rs`.
     pub wave: &'a [i8; SENSORY_WAVE_SIZE],
 }
 
-// ── CONTEXTO PERSISTENTE ──────────────────────────────────────────────────────
+// ── PERSISTENT CONTEXT ───────────────────────────────────────────────────────
 
-/// Contexto GPU do forward pass cerebral. Vive durante toda a geração.
+/// GPU context of the brain forward pass. It lives for a whole generation.
 ///
-/// Invariante: todos os buffers têm capacidade >= `capacidade` seres.
-/// Se capacidade mudar (spawn de mais seres do que o previsto), recriar com
-/// `BrainGpu::new`.
+/// Invariant: every buffer has capacity >= `capacity` beings. If the capacity has to
+/// change (more beings spawn than were budgeted for), rebuild it with `BrainGpu::new`.
 pub struct BrainGpu {
     device:   Arc<wgpu::Device>,
     queue:     Arc<wgpu::Queue>,
     pipeline: wgpu::ComputePipeline,
     layout:   wgpu::BindGroupLayout,
 
-    // Buffers persistentes (tamanho fixo durante a geração)
-    buf_wave:   wgpu::Buffer,  // i32 × (cap × WAVE) — sobre-escrito por tick
-    buf_kan:    wgpu::Buffer,  // f32 × (cap × KAN_WEIGHTS_PER_SER) — por geração
-    buf_l1w:    wgpu::Buffer,  // f32 × (cap × L1_WEIGHTS_PER_SER)  — por geração
-    buf_l2w:    wgpu::Buffer,  // f32 × (cap × L2_WEIGHTS_PER_SER)  — por geração
-    buf_intent: wgpu::Buffer,  // f32 × (cap × INTENT_DIM)          — lido por tick
-    buf_cfc:     wgpu::Buffer,  // f32 × (cap × CFC_SLOTS_PER_SER)   — residente
-    /// Fadiga adaptativa (spike-frequency adaptation): estado lento por neurônio.
-    /// Cresce quando |state[i]| é alto, satura quando o neurônio dispara forte por muito tempo.
-    /// Inicializado em zeros; atualizado a cada tick pelo kernel brain.wgsl.
-    buf_fatigue: wgpu::Buffer,  // f32 × (cap × FATIGUE_PER_SER)     — residente
+    // Persistent buffers (fixed size for the whole generation)
+    buf_wave:   wgpu::Buffer,  // i32 × (cap × WAVE) — rewritten every tick
+    buf_kan:    wgpu::Buffer,  // f32 × (cap × KAN_WEIGHTS_PER_BEING) — per generation
+    buf_l1w:    wgpu::Buffer,  // f32 × (cap × L1_WEIGHTS_PER_BEING)  — per generation
+    buf_l2w:    wgpu::Buffer,  // f32 × (cap × L2_WEIGHTS_PER_BEING)  — per generation
+    buf_intent: wgpu::Buffer,  // f32 × (cap × INTENT_DIM)            — read every tick
+    buf_cfc:     wgpu::Buffer,  // f32 × (cap × CFC_SLOTS_PER_BEING)  — resident
 
-    /// Banco de τ: taxa de decaimento do CfC por canal por ser, em s⁻¹ (d = 1/τ).
+    /// Adaptive fatigue (spike-frequency adaptation): slow per-neuron state.
+    /// It grows while `|state[i]|` is high and saturates when a neuron fires hard for a
+    /// long time. Initialised to zeros; updated every tick by the `brain.wgsl` kernel.
+    buf_fatigue: wgpu::Buffer,  // f32 × (cap × FATIGUE_PER_BEING)    — resident
+
+    /// The τ bank: the CfC decay rate per channel per being, in s⁻¹ (d = 1/τ).
     ///
-    /// Constante durante a geração, como os pesos: τ é herdado do genoma e não muda na
-    /// vida do ser. Enviado por `upload_tau`. Nasce em `DECAY_DEFAULT` (τ = 2,0 s em todos
-    /// os canais) para que quem não chamar `upload_tau` obtenha o comportamento antigo.
-    buf_tau:    wgpu::Buffer,   // f32 × (cap × L1_NEURONS)          — por geração
+    /// Constant for the whole generation, like the weights: τ is inherited from the
+    /// genome and does not change during a being's life. Uploaded by `upload_tau`. It
+    /// is born at `DECAY_DEFAULT` (τ = 2.0 s on every channel) so that a caller who
+    /// never calls `upload_tau` gets the old behaviour.
+    buf_tau:    wgpu::Buffer,   // f32 × (cap × L1_NEURONS)           — per generation
 
-    /// P1.7 — metadados por neurônio (alfa/período/limiar/ativação), read-only,
-    /// subido uma vez por geração. Ver `NEURON_META_PER_SER`.
-    buf_neuron_meta: wgpu::Buffer,  // f32 × (cap × NEURON_META_PER_SER) — por geração
+    /// P1.7 — per-neuron metadata (alpha / period / threshold / activation), read-only,
+    /// uploaded once per generation. See `NEURON_META_PER_BEING`.
+    buf_neuron_meta: wgpu::Buffer,  // f32 × (cap × NEURON_META_PER_BEING) — per generation
 
-    /// P1.7 — estado persistente da memória EMA por neurônio (mecanismo 1).
-    /// COPIA O PADRÃO de `buf_cfc`: read_write, residente, resetado em
-    /// spawn/entre gerações via `reset_cfc` (mesmo método, estendido).
-    buf_neuron_mem: wgpu::Buffer,   // f32 × (cap × NEURON_MEM_PER_SER)  — residente
-    buf_gates: wgpu::Buffer,        // f32 × (cap × 4) — M4: gate por região, 1,0 = neutro
+    /// P1.7 — persistent state of the per-neuron EMA memory (mechanism 1).
+    /// FOLLOWS THE PATTERN of `buf_cfc`: read_write, resident, cleared on spawn and
+    /// between generations through `reset_cfc` (the same method, extended).
+    buf_neuron_mem: wgpu::Buffer,   // f32 × (cap × NEURON_MEM_PER_BEING)  — resident
 
-    /// Buffer de debug temporário: exporta l1_raw + inputs CfC/KAN para ser 0.
-    /// Layout: [l1_raw[0..95], cfc_in[0..95], kan_in[96..222]] = 319 f32
+    /// M4: per-region gate, 4 f32 per being; 1.0 is neutral.
+    buf_gates: wgpu::Buffer,        // f32 × (cap × 4)
+
+    /// Temporary debug buffer: exports `l1_raw` plus the CfC/KAN inputs of being 0.
+    /// Layout: `[l1_raw[0..96], cfc_in[0..96], kan_in[96..223]]` = 319 f32. The last
+    /// block is still sized for the 223-channel wave; with `SENSORY_WAVE_SIZE = 192`
+    /// the shader only fills its first 96 entries (the guard `j < 127u` never binds,
+    /// because only 96 threads reach it), so slots 288..319 hold whatever was there
+    /// before. Harmless, but do not read past `192 + 96`.
     buf_debug:  wgpu::Buffer,
 
-    // Buffer de readback CPU (MAP_READ, tamanho = buf_intent)
+    /// CPU readback buffer (`MAP_READ`, same size as `buf_intent`).
     buf_readback: wgpu::Buffer,
 
-    /// Buffer placeholder para binding 8 quando use_percept_direct == 0 (cpu path).
-    /// O gpu_validate e forward() usam buf_wave (binding 1) e precisam de algo
-    /// válido no binding 8 para que create_bind_group não falhe. Tamanho = 4 bytes.
+    /// Placeholder for binding 8 when `use_percept_direct == 0` (the CPU path).
+    /// `gpu_validate` and `forward()` use `buf_wave` (binding 1) but still need
+    /// something valid at binding 8 or `create_bind_group` fails. Size: 4 bytes.
     buf_percept_dummy: wgpu::Buffer,
 
-    /// Força da fadiga de saída usada nos dispatches. Ver `BrainParams::out_beta`.
+    /// Output fatigue strength used by the dispatches. See `BrainParams::out_beta`.
     pub out_beta: f32,
 
-    /// Ganho de saída usado nos dispatches via `bind_and_dispatch`. Ver
-    /// `BrainParams::out_gain` / `OUT_GAIN_PADRAO`. Só `bind_and_dispatch` lê este
-    /// campo — `forward()` (usado por `gpu_validate`) sempre usa `OUT_GAIN_PADRAO`
-    /// hardcoded, o mesmo contrato que já existia para `out_beta`.
+    /// Output gain used by dispatches through `bind_and_dispatch`. See
+    /// `BrainParams::out_gain` / `OUT_GAIN_DEFAULT`. Only `bind_and_dispatch` reads this
+    /// field — `forward()` (used by `gpu_validate`) always hardcodes `OUT_GAIN_DEFAULT`,
+    /// the same contract `out_beta` already had.
     pub out_gain: f32,
 
-    /// Normalização de `l2_raw` pelo desvio-padrão dos 48 valores do ser, antes
-    /// do ganho/tanh. Ver `BrainParams::norm_l2_by_std`. Padrão `false` —
-    /// idêntico ao comportamento histórico (sem normalização).
+    /// Normalise `l2_raw` by the standard deviation of the being's 48 values, before
+    /// the gain/tanh. See `BrainParams::norm_l2_by_std`. Defaults to `false` —
+    /// identical to the historical behaviour (no normalisation).
     pub norm_l2_by_std: bool,
 
-    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — desvio-padrão do ruído sensorial,
-    /// em unidades de canal i8. Ver `BrainParams::noise_sigma`. Padrão `0.0`
-    /// — idêntico ao comportamento histórico (sem ruído). Só `bind_and_dispatch`
-    /// lê este campo (mesmo contrato de `out_beta`/`out_gain`); `forward()`
-    /// sempre usa `0.0` hardcoded, o caminho de equivalência CPU/GPU.
+    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — standard deviation of the sensor noise, in
+    /// i8 channel units. See `BrainParams::noise_sigma`. Defaults to `0.0`, identical to
+    /// the historical behaviour (no noise). Only `bind_and_dispatch` reads this field
+    /// (the same contract as `out_beta`/`out_gain`); `forward()` always hardcodes `0.0`,
+    /// since it is the CPU/GPU equivalence path.
     pub noise_sigma: f32,
 
-    /// D3 — probabilidade de falha (dropout) por canal por tick. Ver
-    /// `BrainParams::dropout_prob`. Padrão `0.0` — idêntico ao comportamento
-    /// histórico (nenhum canal falha). Mesmo contrato de `noise_sigma` acima.
+    /// D3 — per-channel per-tick failure (dropout) probability. See
+    /// `BrainParams::dropout_prob`. Defaults to `0.0`, identical to the historical
+    /// behaviour (no channel fails). Same contract as `noise_sigma` above.
     pub dropout_prob: f32,
 
-    /// P1.7 — braço de controle por mecanismo (`gpu_evolve --sem-*`). Padrão
-    /// `false` nos quatro: os mecanismos LEEM o genoma normalmente (que nasce
-    /// neutro — ver `gpu::evolution::Genome`). Combinados em `mech_off_mask()`
-    /// para o uniform. Ver a doc de `BrainParams::mech_off_mask`.
+    /// P1.7 — per-mechanism control arm, set from the `gpu_evolve` opt-out flags
+    /// (`src/bin/gpu_evolve/main.rs:977-980`). All four default to
+    /// `false`: the mechanisms READ the genome normally (and the genome is born neutral
+    /// — see `gpu::evolution::Genome`). They are combined in `mech_off_mask()` for the
+    /// uniform. See the doc on `BrainParams::mech_off_mask`.
     pub mem_off: bool,
     pub period_off: bool,
     pub threshold_off: bool,
     pub activation_off: bool,
 
-    /// Número máximo de seres suportado com estes buffers.
+    /// Maximum number of beings these buffers support.
     pub capacity: usize,
 
     pub adapter: String,
 
-    /// P1.8, achado "KAN sensorial congelado na identidade" — `eng.kan_filters`
-    /// nunca é tocado por `apply_to_engine`/mutação no `gpu_evolve` (não está no
-    /// `Genome`), então TODO ser de TODA geração sobe exatamente os mesmos 3072
-    /// coeficientes identity (`[1.0; 16]` por canal). Subir de novo a cada geração
-    /// é banda desperdiçada — `true` depois do primeiro `upload_weights` pula o
-    /// bloco KAN nas chamadas seguintes. Comportamento idêntico: a única forma de
-    /// isto ficar errado seria `kan_filters` passar a variar por ser/geração no
-    /// futuro, o que hoje não acontece em nenhum ponto do código (confirmado por
-    /// grep: `apply_to_engine` só copia l1/l2/slow).
+    /// P1.8, finding "the sensory KAN is frozen at the identity" — `eng.kan_filters` is
+    /// never touched by `apply_to_engine` or by mutation in `gpu_evolve` (it is not part
+    /// of `Genome`), so EVERY being of EVERY generation uploads exactly the same 3 072
+    /// identity coefficients (`[1.0; 16]` per channel). Re-uploading them every
+    /// generation is wasted bandwidth — once this is `true` (after the first
+    /// `upload_weights`), later calls skip the KAN block. Behaviour is identical: the
+    /// only way this could go wrong is if `kan_filters` started varying per being or per
+    /// generation, which happens nowhere in the code today (confirmed by grep:
+    /// `apply_to_engine` only copies l1/l2/slow).
     kan_uploaded: std::sync::atomic::AtomicBool,
 }
 
 impl BrainGpu {
-    /// Cria novo contexto GPU. Recebe device/queue compartilhados com a retina.
+    /// Creates a new GPU context, taking the device/queue shared with the retina.
     ///
-    /// `capacidade`: número máximo de seres por dispatch. Dimensiona todos os
-    /// buffers. Se o número de seres vivos superar isso, o caller deve recriar.
+    /// `capacity` is the maximum number of beings per dispatch and sizes every buffer.
+    /// If the number of living beings ever exceeds it, the caller must rebuild.
     pub fn new(
         device: Arc<wgpu::Device>,
         queue:   Arc<wgpu::Queue>,
@@ -278,20 +306,20 @@ impl BrainGpu {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("brain-layout"),
             entries: &[
-                uniform_entry(0),              // params (inclui use_percept_direct)
+                uniform_entry(0),              // params (includes use_percept_direct)
                 storage_entry(1, true),         // buf_wave: i32 sign-extended (CPU path)
                 storage_entry(2, true),         // buf_kan  (read)
                 storage_entry(3, true),         // buf_l1w  (read)
                 storage_entry(4, true),         // buf_l2w  (read)
                 storage_entry(5, false),        // buf_intent (read_write)
-                storage_entry(6, false),        // buf_cfc    (read_write, estado recorrente)
-                storage_entry(7, false),        // buf_debug  (diagnóstico temporário)
-                storage_entry(8, true),         // buf_percept: u32 de percepcao.wgsl (GPU path)
-                storage_entry(9, false),        // buf_fatigue (read_write, fadiga adaptativa)
-                storage_entry(10, true),        // buf_tau     (read, banco de τ por canal)
-                storage_entry(11, true),        // buf_neuron_meta (read, P1.7 — alfa/período/limiar/ativação)
-                storage_entry(12, false),       // buf_neuron_mem  (read_write, P1.7 — memória EMA residente)
-                storage_entry(13, true),        // buf_gates (read, M4 — gate por região, 4 f32/ser)
+                storage_entry(6, false),        // buf_cfc    (read_write, recurrent state)
+                storage_entry(7, false),        // buf_debug  (temporary diagnostics)
+                storage_entry(8, true),         // buf_percept: u32 from perception.wgsl (GPU path)
+                storage_entry(9, false),        // buf_fatigue (read_write, adaptive fatigue)
+                storage_entry(10, true),        // buf_tau     (read, per-channel τ bank)
+                storage_entry(11, true),        // buf_neuron_meta (read, P1.7 — alpha/period/threshold/activation)
+                storage_entry(12, false),       // buf_neuron_mem  (read_write, P1.7 — resident EMA memory)
+                storage_entry(13, true),        // buf_gates (read, M4 — per-region gate, 4 f32/being)
             ],
         });
 
@@ -312,8 +340,8 @@ impl BrainGpu {
 
         // ── Buffers ─────────────────────────────────────────────────────────
 
-        // Sensory wave: i32 por canal (sign-extended de i8, para evitar bit
-        // manipulation no shader). 4 bytes × WAVE × cap.
+        // Sensory wave: one i32 per channel (sign-extended from i8, to keep bit
+        // manipulation out of the shader). 4 bytes × WAVE × cap.
         let bytes_wave = (capacity * SENSORY_WAVE_SIZE * 4) as u64;
         let buf_wave = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-wave"),
@@ -322,8 +350,8 @@ impl BrainGpu {
             mapped_at_creation: false,
         });
 
-        // KAN: f32 por knot. Sobre-escrito em spawn/evolução, não por tick.
-        let bytes_kan = (capacity * KAN_WEIGHTS_PER_SER * 4) as u64;
+        // KAN: one f32 per knot. Rewritten on spawn/evolution, not per tick.
+        let bytes_kan = (capacity * KAN_WEIGHTS_PER_BEING * 4) as u64;
         let buf_kan = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-kan"),
             size: bytes_kan,
@@ -331,8 +359,8 @@ impl BrainGpu {
             mapped_at_creation: false,
         });
 
-        // L1 weights: f32. Maior buffer: 60 × 21.408 × 4 = ~5.1 MB.
-        let bytes_l1w = (capacity * L1_WEIGHTS_PER_SER * 4) as u64;
+        // L1 weights: f32, the largest buffer — 60 × 18 432 × 4 ≈ 4.4 MB.
+        let bytes_l1w = (capacity * L1_WEIGHTS_PER_BEING * 4) as u64;
         let buf_l1w = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-l1w"),
             size: bytes_l1w,
@@ -340,8 +368,8 @@ impl BrainGpu {
             mapped_at_creation: false,
         });
 
-        // L2 weights: f32. 60 × 4.608 × 4 = ~1.1 MB.
-        let bytes_l2w = (capacity * L2_WEIGHTS_PER_SER * 4) as u64;
+        // L2 weights: f32. 60 × 4 608 × 4 ≈ 1.1 MB.
+        let bytes_l2w = (capacity * L2_WEIGHTS_PER_BEING * 4) as u64;
         let buf_l2w = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-l2w"),
             size: bytes_l2w,
@@ -349,7 +377,7 @@ impl BrainGpu {
             mapped_at_creation: false,
         });
 
-        // Intent: f32 × 96 × cap. Saída do kernel.
+        // Intent: f32 × 96 × cap. The kernel's output.
         let bytes_intent = (capacity * INTENT_DIM * 4) as u64;
         let buf_intent = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-intent"),
@@ -358,34 +386,34 @@ impl BrainGpu {
             mapped_at_creation: false,
         });
 
-        // CfC state: f32 × 97 × cap. Estado recorrente — inicializado em zeros.
-        // Zeros são o estado inicial correto (CfCCell::new zeros state, counter=0).
-        let bytes_cfc = (capacity * CFC_SLOTS_PER_SER * 4) as u64;
+        // CfC state: f32 × 97 × cap. Recurrent state, initialised to zeros — which is
+        // the correct initial state (`CfCCell::new` zeroes the state and sets counter=0).
+        let bytes_cfc = (capacity * CFC_SLOTS_PER_BEING * 4) as u64;
         let cfc_zeros: Vec<u8> = vec![0u8; bytes_cfc as usize];
         let buf_cfc = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-cfc"),
             contents: &cfc_zeros,
             usage: wgpu::BufferUsages::STORAGE
-                 | wgpu::BufferUsages::COPY_SRC  // para leitura em spawn/death
-                 | wgpu::BufferUsages::COPY_DST, // para reset em spawn
+                 | wgpu::BufferUsages::COPY_SRC  // read back on spawn/death
+                 | wgpu::BufferUsages::COPY_DST, // reset on spawn
         });
 
-        // Fadiga adaptativa: f32 × 96 × cap. Estado lento por neurônio CfC.
-        // Inicializado em zeros: ser recém-nascido não tem fadiga acumulada.
-        // Resetado junto com o CfC em spawn/death via reset_cfc.
-        let bytes_fatigue = (capacity * FATIGUE_PER_SER * 4) as u64;
+        // Adaptive fatigue: f32 × 192 × cap. Slow state per CfC neuron, initialised to
+        // zeros — a newborn being has no accumulated fatigue. Cleared together with the
+        // CfC on spawn/death through `reset_cfc`.
+        let bytes_fatigue = (capacity * FATIGUE_PER_BEING * 4) as u64;
         let fatigue_zeros: Vec<u8> = vec![0u8; bytes_fatigue as usize];
         let buf_fatigue = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-fatigue"),
             contents: &fatigue_zeros,
             usage: wgpu::BufferUsages::STORAGE
-                 | wgpu::BufferUsages::COPY_DST  // para reset em spawn
-                 | wgpu::BufferUsages::COPY_SRC, // para diagnóstico de fadiga
+                 | wgpu::BufferUsages::COPY_DST  // reset on spawn
+                 | wgpu::BufferUsages::COPY_SRC, // fatigue diagnostics
         });
 
-        // Banco de τ: f32 × 96 × cap. Nasce em DECAY_DEFAULT (τ = 2,0 s), que é o valor
-        // único que o cérebro usava — assim o caminho que não chama `upload_tau` continua
-        // idêntico ao de antes em vez de rodar com τ = 0 (decay = 1, memória infinita).
+        // τ bank: f32 × 96 × cap. Born at DECAY_DEFAULT (τ = 2.0 s), the single value the
+        // brain used to use — so a path that never calls `upload_tau` stays identical to
+        // before instead of running with τ = 0 (decay = 1, i.e. infinite memory).
         let taus_init: Vec<f32> = vec![crate::cfc::DECAY_DEFAULT; capacity * L1_NEURONS];
         let buf_tau = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-tau"),
@@ -393,37 +421,38 @@ impl BrainGpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // P1.7 — metadados por neurônio (alfa/período/limiar/ativação). Zero-init:
-        // um zero em cada campo já é neutro para alfa/limiar/ativação (0.0), e para
-        // período o shader trata 0 como "1" via `max(...,1u)` — ver o comentário no
-        // shader. Quem não chamar `upload_neuron_meta` (ex.: `gpu_validate`/`forward()`,
-        // que também força `mech_off_mask` para desligar os mecanismos por completo)
-        // continua com o comportamento histórico.
-        let neuron_meta_zeros: Vec<u8> = vec![0u8; capacity * NEURON_META_PER_SER * 4];
+        // P1.7 — per-neuron metadata (alpha/period/threshold/activation). Zero-init: a
+        // zero is already neutral for alpha/threshold/activation (0.0), and for the
+        // period the shader reads 0 as "1" through `max(...,1u)` — see the comment in
+        // the shader. Anyone who does not call `upload_neuron_meta` (for instance
+        // `gpu_validate`/`forward()`, which also force `mech_off_mask` to switch the
+        // mechanisms off entirely) keeps the historical behaviour.
+        let neuron_meta_zeros: Vec<u8> = vec![0u8; capacity * NEURON_META_PER_BEING * 4];
         let buf_neuron_meta = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-neuron-meta"),
             contents: &neuron_meta_zeros,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // P1.7 — estado persistente da memória EMA (mecanismo 1). Zeros = COPIA O
-        // PADRÃO de `buf_cfc`/`buf_fatigue` (estado inicial correto: memória vazia).
-        let neuron_mem_zeros: Vec<u8> = vec![0u8; capacity * NEURON_MEM_PER_SER * 4];
+        // P1.7 — persistent state of the EMA memory (mechanism 1). Zeros FOLLOW THE
+        // PATTERN of `buf_cfc`/`buf_fatigue` (the correct initial state: empty memory).
+        let neuron_mem_zeros: Vec<u8> = vec![0u8; capacity * NEURON_MEM_PER_BEING * 4];
         let buf_neuron_mem = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-neuron-mem"),
             contents: &neuron_mem_zeros,
             usage: wgpu::BufferUsages::STORAGE
                  | wgpu::BufferUsages::COPY_DST
-                 | wgpu::BufferUsages::COPY_SRC, // reset por-ser via write_buffer + eventual diagnóstico
+                 | wgpu::BufferUsages::COPY_SRC, // per-being reset via write_buffer + future diagnostics
         });
-        // M4: gates começam NEUTROS (1,0) — flag off nunca escreve de novo.
+
+        // M4: the gates start NEUTRAL (1.0) — with the flag off they are never rewritten.
         let buf_gates = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brain-gates"),
             contents: bytemuck::cast_slice(&vec![1.0f32; capacity * 4]),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Readback: MAP_READ separado (não pode combinar com STORAGE em wgpu).
+        // Readback: a separate MAP_READ buffer (wgpu forbids combining it with STORAGE).
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-readback"),
             size: bytes_intent,
@@ -431,8 +460,8 @@ impl BrainGpu {
             mapped_at_creation: false,
         });
 
-        // Debug: exporta l1_raw[96] + cfc_in[96] + kan_in[127] = 319 f32 para ser 0.
-        // Tamanho fixo (não escalado com cap): só ser 0.
+        // Debug: exports l1_raw[96] + cfc_in[96] + kan_in[127] = 319 f32 for being 0.
+        // Fixed size (it does not scale with cap): being 0 only.
         let buf_debug = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-debug"),
             size: (319 * 4) as u64,  // 96 + 96 + 127 = 319 f32
@@ -440,9 +469,9 @@ impl BrainGpu {
             mapped_at_creation: false,
         });
 
-        // Placeholder para binding 8 (buf_percept) quando use_percept_direct == 0.
-        // O wgpu exige que todos os slots declarados no layout tenham um buffer no
-        // bind group — mesmo que o shader não os leia. 4 bytes é o mínimo permitido.
+        // Placeholder for binding 8 (buf_percept) when use_percept_direct == 0. wgpu
+        // requires every slot declared in the layout to have a buffer in the bind group,
+        // even one the shader never reads. 4 bytes is the smallest allowed.
         let buf_percept_dummy = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-percept-dummy"),
             size: 4,
@@ -466,8 +495,8 @@ impl BrainGpu {
             buf_neuron_meta,
             buf_neuron_mem,
             buf_gates,
-            out_beta: OUT_BETA_PADRAO,
-            out_gain: OUT_GAIN_PADRAO,
+            out_beta: OUT_BETA_DEFAULT,
+            out_gain: OUT_GAIN_DEFAULT,
             norm_l2_by_std: false,
             noise_sigma: 0.0,
             dropout_prob: 0.0,
@@ -484,37 +513,38 @@ impl BrainGpu {
         }
     }
 
-    // ── UPLOAD DE PESOS (por geração, não por tick) ────────────────────────
+    // ── WEIGHT UPLOAD (per generation, not per tick) ───────────────────────
 
-    /// Sobe pesos KAN, L1, L2 de todos os seres para a GPU.
+    /// Uploads every being's KAN, L1 and L2 weights to the GPU.
     ///
-    /// Chamar em spawn e depois de evolução (mutação de pesos). NÃO chamar por
-    /// tick — pesos não mudam durante uma geração.
+    /// Call this on spawn and after evolution (weight mutation). Do NOT call it per
+    /// tick — weights do not change during a generation.
     ///
-    /// Layout SoA: ser 0 inteiro, depois ser 1 inteiro, etc.
+    /// SoA layout: all of being 0, then all of being 1, and so on.
     pub fn upload_weights(&self, engines: &[&SovereignEngine]) {
         let n = engines.len().min(self.capacity);
 
         // ── KAN ─────────────────────────────────────────────────────────────
-        // SensoryPreFilter: Vec<KanAxiomFilter>, cada um com spline_coeffs [f32; 16].
-        // Layout: ser × WAVE × KAN_KNOTS (SoA por ser).
+        // SensoryPreFilter: Vec<KanAxiomFilter>, each holding spline_coeffs [f32; 16].
+        // Layout: being × WAVE × KAN_KNOTS (SoA per being).
         //
-        // P1.8, achado "KAN sensorial congelado na identidade — adapt() nunca é
-        // chamado, não está no Genome do gpu_evolve": `eng.kan_filters` é SEMPRE
-        // `[1.0; 16]` por canal, pra TODO ser, em TODA geração (nada muta isso).
-        // Subir os mesmos 3072×n floats de novo a cada geração é banda pura —
-        // sobe uma vez (primeira chamada de `upload_weights`) e pula nas
-        // seguintes. Ver doc de `kan_uploaded`.
+        // P1.8, finding "the sensory KAN is frozen at the identity — adapt() is never
+        // called and it is not part of gpu_evolve's Genome": `eng.kan_filters` is ALWAYS
+        // `[1.0; 16]` per channel, for EVERY being, in EVERY generation (nothing mutates
+        // it). Re-uploading the same 3072×n floats each generation is pure bandwidth, so
+        // upload once (on the first `upload_weights` call) and skip afterwards. See the
+        // doc on `kan_uploaded`.
         if !self.kan_uploaded.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            let mut kan_data: Vec<f32> = Vec::with_capacity(n * KAN_WEIGHTS_PER_SER);
+            let mut kan_data: Vec<f32> = Vec::with_capacity(n * KAN_WEIGHTS_PER_BEING);
             for eng in engines[..n].iter() {
                 for filter in eng.kan_filters.filters.iter().take(SENSORY_WAVE_SIZE) {
                     kan_data.extend_from_slice(&filter.spline_coeffs);
                 }
-                // Padding se num filters < SENSORY_WAVE_SIZE (não deve ocorrer, mas defensivo)
+                // Pad if there are fewer filters than SENSORY_WAVE_SIZE (should not
+                // happen, but this is defensive).
                 let missing = SENSORY_WAVE_SIZE.saturating_sub(eng.kan_filters.filters.len());
                 for _ in 0..missing {
-                    // Coeficientes identity = 1.0 (sem deformação)
+                    // Identity coefficients = 1.0 (no deformation).
                     for _ in 0..KAN_KNOTS {
                         kan_data.push(1.0);
                     }
@@ -524,59 +554,62 @@ impl BrainGpu {
         }
 
         // ── L1 (instinct_layer: BitLinear WAVE→96) ───────────────────────
-        // weights: Vec<f32>, row-major: weights[j * WAVE + i] = peso do neurônio j para input i
-        let mut l1_data: Vec<f32> = Vec::with_capacity(n * L1_WEIGHTS_PER_SER);
+        // weights: Vec<f32>, row-major — weights[j * WAVE + i] is the weight of output
+        // neuron j for input i.
+        let mut l1_data: Vec<f32> = Vec::with_capacity(n * L1_WEIGHTS_PER_BEING);
         for eng in engines[..n].iter() {
-            // Pesos estão em Vec<f32> com len = WAVE * L1_OUT (layers.rs:40)
+            // The weights live in a Vec<f32> of len = WAVE * L1_OUT (layers.rs:40).
             let w = &eng.instinct_layer.weights;
-            debug_assert_eq!(w.len(), L1_WEIGHTS_PER_SER,
-                "L1 weights size mismatch: {} vs {}", w.len(), L1_WEIGHTS_PER_SER);
+            debug_assert_eq!(w.len(), L1_WEIGHTS_PER_BEING,
+                "L1 weights size mismatch: {} vs {}", w.len(), L1_WEIGHTS_PER_BEING);
             l1_data.extend_from_slice(w);
         }
         self.queue.write_buffer(&self.buf_l1w, 0, bytemuck::cast_slice(&l1_data));
 
         // ── L2 (cortex_l2: FloatLinear 96→48) ────────────────────────────
-        // weights: Vec<f32>, row-major: weights[j * L1_OUT + i]
-        let mut l2_data: Vec<f32> = Vec::with_capacity(n * L2_WEIGHTS_PER_SER);
+        // weights: Vec<f32>, row-major — weights[j * L1_OUT + i].
+        let mut l2_data: Vec<f32> = Vec::with_capacity(n * L2_WEIGHTS_PER_BEING);
         for eng in engines[..n].iter() {
             let w = &eng.cortex_l2.weights;
-            debug_assert_eq!(w.len(), L2_WEIGHTS_PER_SER,
-                "L2 weights size mismatch: {} vs {}", w.len(), L2_WEIGHTS_PER_SER);
+            debug_assert_eq!(w.len(), L2_WEIGHTS_PER_BEING,
+                "L2 weights size mismatch: {} vs {}", w.len(), L2_WEIGHTS_PER_BEING);
             l2_data.extend_from_slice(w);
         }
         self.queue.write_buffer(&self.buf_l2w, 0, bytemuck::cast_slice(&l2_data));
     }
 
-    /// Envia o banco de τ: `n × L1_NEURONS` taxas de decaimento em s⁻¹, em ordem de ser.
+    /// Uploads the τ bank: `n × L1_NEURONS` decay rates in s⁻¹, in being order.
     ///
-    /// Chamado uma vez por geração, junto com os pesos — τ é herdado, não muda por tick.
-    /// Quem não chamar fica com o `DECAY_DEFAULT` da inicialização, que é o τ = 2,0 s
-    /// uniforme de antes; assim o controle do experimento é o comportamento histórico.
+    /// Called once per generation, together with the weights — τ is inherited, it does
+    /// not change per tick. A caller who skips it keeps the `DECAY_DEFAULT` from
+    /// initialisation, which is the old uniform τ = 2.0 s; that way the experiment's
+    /// control arm *is* the historical behaviour.
     pub fn upload_tau(&self, taus: &[f32], n: usize) {
-        assert!(n <= self.capacity, "n={n} excede capacidade {}", self.capacity);
-        // Comprimento errado aqui seria um bug MUDO: o kernel leria τ do ser seguinte
-        // (ou lixo do fim do buffer) e a condição "heterogênea" viraria ruído embaralhado
-        // sem nenhum sintoma visível. Foi exatamente essa classe de erro — stride errado
-        // na onda sensorial — que já embaralhou a entrada do cérebro lento neste projeto.
+        assert!(n <= self.capacity, "n={n} exceeds capacity {}", self.capacity);
+        // A wrong length here would be a SILENT bug: the kernel would read the next
+        // being's τ (or garbage past the end of the buffer) and the "heterogeneous"
+        // condition would turn into shuffled noise with no visible symptom. That exact
+        // class of error — a wrong stride on the sensory wave — has already scrambled
+        // the slow brain's input in this project.
         assert_eq!(taus.len(), n * L1_NEURONS,
-            "banco de τ tem {} valores, esperava {} ({n} seres × {L1_NEURONS} canais)",
+            "tau bank has {} values, expected {} ({n} beings × {L1_NEURONS} channels)",
             taus.len(), n * L1_NEURONS);
         self.queue.write_buffer(&self.buf_tau, 0, bytemuck::cast_slice(taus));
     }
 
-    /// P1.7 — envia os metadados por neurônio (alfa/período/limiar/ativação) de
-    /// `n` seres. Mesmo contrato de `upload_tau`: uma vez por geração, layout SoA
-    /// (`NEURON_META_PER_SER` floats por ser, ver o comentário do campo).
+    /// P1.7 — uploads the per-neuron metadata (alpha/period/threshold/activation) of
+    /// `n` beings. Same contract as `upload_tau`: once per generation, SoA layout
+    /// (`NEURON_META_PER_BEING` floats per being, see the field's comment).
     pub fn upload_neuron_meta(&self, meta: &[f32], n: usize) {
-        assert!(n <= self.capacity, "n={n} excede capacidade {}", self.capacity);
-        assert_eq!(meta.len(), n * NEURON_META_PER_SER,
-            "metadados de neurônio (P1.7) têm {} valores, esperava {} ({n} seres × {NEURON_META_PER_SER})",
-            meta.len(), n * NEURON_META_PER_SER);
+        assert!(n <= self.capacity, "n={n} exceeds capacity {}", self.capacity);
+        assert_eq!(meta.len(), n * NEURON_META_PER_BEING,
+            "neuron metadata (P1.7) has {} values, expected {} ({n} beings × {NEURON_META_PER_BEING})",
+            meta.len(), n * NEURON_META_PER_BEING);
         self.queue.write_buffer(&self.buf_neuron_meta, 0, bytemuck::cast_slice(meta));
     }
 
-    /// P1.7 — combina as quatro flags de controle num único bitmask para o uniform.
-    /// Ver a doc de `BrainParams::mech_off_mask` para o significado de cada bit.
+    /// P1.7 — folds the four control flags into a single bitmask for the uniform.
+    /// See the doc on `BrainParams::mech_off_mask` for what each bit means.
     fn mech_off_mask(&self) -> u32 {
         (self.mem_off as u32)
             | ((self.period_off as u32) << 1)
@@ -584,35 +617,35 @@ impl BrainGpu {
             | ((self.activation_off as u32) << 3)
     }
 
-    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — ajusta ruído sensorial (σ) e
-    /// probabilidade de falha de canal (dropout) para os PRÓXIMOS dispatches.
+    /// D3 (`docs/ESCADA_DIFICULDADE.md`) — sets the sensor noise (σ) and the channel
+    /// failure probability (dropout) for the NEXT dispatches.
     ///
-    /// Não existe buffer separado para "re-upload": `bind_and_dispatch` cria um
-    /// uniform buffer novo a cada chamada a partir de `self.noise_sigma` /
-    /// `self.dropout_prob` (mesmo contrato de `out_beta`/`out_gain`/
-    /// `norm_l2_by_std`, que também são campos públicos sem setter dedicado —
-    /// ver `gpu_evolve/main.rs: ctx.brain.out_beta = ...`). Aqui expomos um
-    /// método porque os dois parâmetros de D3 sempre se movem juntos (a escada
-    /// aperta os dois como um único degrau).
+    /// There is no separate "re-upload" buffer: `bind_and_dispatch` builds a fresh
+    /// uniform buffer on every call out of `self.noise_sigma` / `self.dropout_prob` (the
+    /// same contract as `out_beta`/`out_gain`/`norm_l2_by_std`, which are also public
+    /// fields with no dedicated setter — see `gpu_evolve/main.rs: ctx.brain.out_beta =
+    /// ...`). A method exists here because D3's two parameters always move together (the
+    /// ladder tightens both as one rung).
     ///
-    /// `sigma`: desvio-padrão do ruído por canal, em unidades de canal i8
-    /// (-127..127) — ex. `6.0` ≈ 5% da faixa de um lado (127). `0.0` desliga.
-    /// `dropout`: probabilidade `[0,1]` de um canal zerar no tick. `0.0` desliga.
-    pub fn set_ruido(&mut self, sigma: f32, dropout: f32) {
+    /// `sigma`: per-channel noise standard deviation, in i8 channel units (-127..127) —
+    /// e.g. `6.0` ≈ 5% of the one-sided range (127). `0.0` switches it off.
+    /// `dropout`: probability in `[0,1]` that a channel is zeroed on a tick. `0.0`
+    /// switches it off.
+    pub fn set_noise(&mut self, sigma: f32, dropout: f32) {
         self.noise_sigma = sigma;
         self.dropout_prob = dropout;
     }
 
-    // ── DOWNLOAD DO ESTADO CFC (diagnóstico) ──────────────────────────────
+    // ── CFC STATE DOWNLOAD (diagnostics) ───────────────────────────────────
 
-    /// Lê buf_cfc da GPU e devolve o state[0..96] de cada ser.
-    /// Usado pelo gpu_validate para comparar CfC pós-forward com a CPU.
-    /// Custo: uma cópia de GPU→CPU (readback). Não usar em hot-path de tick.
+    /// Reads `buf_cfc` back from the GPU and returns `state[0..96]` for each being.
+    /// `gpu_validate` uses it to compare the post-forward CfC against the CPU.
+    /// Cost: one GPU→CPU copy (readback). Do not use it in the per-tick hot path.
     pub fn download_cfc_state(&self, n: usize) -> Vec<Vec<f32>> {
         let n = n.min(self.capacity);
-        let bytes = (n * CFC_SLOTS_PER_SER * 4) as u64;
+        let bytes = (n * CFC_SLOTS_PER_BEING * 4) as u64;
 
-        // Buffer MAP_READ temporário para readback do CfC
+        // Temporary MAP_READ buffer for the CfC readback.
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-cfc-readback"),
             size: bytes,
@@ -633,25 +666,29 @@ impl BrainGpu {
         let data = slice.get_mapped_range();
         let vals: &[f32] = bytemuck::cast_slice(&data);
 
-        // Cada ser tem CFC_SLOTS_PER_SER=97 f32: state[0..96] + counter (bitcast f32)
+        // Each being holds CFC_SLOTS_PER_BEING=97 f32: state[0..96] + counter (bitcast).
         (0..n).map(|s| {
-            let base = s * CFC_SLOTS_PER_SER;
-            vals[base..base + 96].to_vec()  // só o state, sem o counter
+            let base = s * CFC_SLOTS_PER_BEING;
+            vals[base..base + 96].to_vec()  // the state only, without the counter
         }).collect()
     }
 
-    /// M4: sobe os gates por região (4 f32/ser). Chamado 1×/8 ticks pelo tick()
-    /// quando --neuromod-regioes está ligado; nunca chamado = neutro 1,0.
+    /// M4: uploads the per-region gates (4 f32 per being). Called once every 8 ticks by
+    /// `tick()` when `--neuromod-regioes` is on; never calling it leaves them neutral
+    /// at 1.0.
     pub fn upload_gates(&self, gates: &[f32], n: usize) {
         debug_assert_eq!(gates.len(), n * 4);
         self.queue.write_buffer(&self.buf_gates, 0, bytemuck::cast_slice(gates));
     }
 
-    // ── DOWNLOAD DO BUFFER DE DEBUG (diagnóstico) ─────────────────────────
+    // ── DEBUG BUFFER DOWNLOAD (diagnostics) ────────────────────────────────
 
-    /// Lê buf_debug da GPU: l1_raw[0..96], cfc_in[0..96], kan_in[96..222] para ser 0.
-    /// Retorna (l1_raw, cfc_inputs, kan_inputs).
-    /// Usado pelo gpu_validate para comparar L1 raw diretamente com a CPU.
+    /// Reads `buf_debug` back from the GPU: `l1_raw[0..96]`, `cfc_in[0..96]` and
+    /// `kan_in[96..223]` for being 0. Returns `(l1_raw, cfc_inputs, kan_inputs)`.
+    /// `gpu_validate` uses it to compare L1 raw directly against the CPU.
+    ///
+    /// Only the first 96 entries of the third block are written on the current wave of
+    /// 192 channels — see the `buf_debug` field doc.
     pub fn download_debug(&self) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         let bytes = (319 * 4) as u64;
 
@@ -681,15 +718,15 @@ impl BrainGpu {
         (l1_raw, cfc_in, kan_in)
     }
 
-    // ── DOWNLOAD DO BUFFER DE FADIGA (diagnóstico) ───────────────────────────
+    // ── FATIGUE BUFFER DOWNLOAD (diagnostics) ──────────────────────────────
 
-    /// Lê buf_fatigue da GPU para diagnóstico.
-    /// Retorna (n × FATIGUE_PER_SER) floats:
-    ///   slots [0..96]   por ser = fadiga input CfC
-    ///   slots [96..192] por ser = fadiga output (out_fat para cada canal)
+    /// Reads `buf_fatigue` back from the GPU for diagnostics.
+    /// Returns `n × FATIGUE_PER_BEING` floats:
+    ///   slots `[0..96]`   per being = CfC input fatigue
+    ///   slots `[96..192]` per being = output fatigue (`out_fat` for each channel)
     pub fn download_fatigue(&self, n: usize) -> Vec<f32> {
         let n = n.min(self.capacity);
-        let bytes = (n * FATIGUE_PER_SER * 4) as u64;
+        let bytes = (n * FATIGUE_PER_BEING * 4) as u64;
 
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-fatigue-readback"),
@@ -712,56 +749,57 @@ impl BrainGpu {
         bytemuck::cast_slice::<u8, f32>(&data).to_vec()
     }
 
-    // ── RESET DE ESTADO CFC PARA UM SER ───────────────────────────────────
+    // ── CFC STATE RESET FOR ONE BEING ──────────────────────────────────────
 
-    /// Reseta o estado CfC, a fadiga adaptativa e a memória EMA por neurônio (P1.7)
-    /// de um ser específico para zeros.
+    /// Resets one being's CfC state, adaptive fatigue and per-neuron EMA memory (P1.7)
+    /// to zeros.
     ///
-    /// Equivalente a `CfCCell::reset()`. Escreve zeros nos 97 f32 do CfC, nos
-    /// 192 f32 da fadiga do ser (96 input + 96 output) e nos 144 f32 da memória
-    /// por neurônio (mecanismo 1, P1.7 — COPIA O PADRÃO deste mesmo método),
-    /// preservando o estado dos outros. Chamado em spawn/death — garante que ser
-    /// recém-nascido começa sem fadiga E sem memória herdada do ocupante anterior
-    /// do slot (sem isto, o filho nasceria "lembrando" o que o pai sentiu por
-    /// último — o mesmo bug de estado vazando entre gerações que motivou resetar
-    /// `buf_cfc`/`buf_fatigue` aqui).
-    pub fn reset_cfc(&self, ser_idx: usize) {
-        if ser_idx >= self.capacity { return; }
-        // Reseta CfC state + counter (97 f32)
-        let cfc_offset = (ser_idx * CFC_SLOTS_PER_SER * 4) as u64;
-        let cfc_zeros: Vec<u8> = vec![0u8; CFC_SLOTS_PER_SER * 4];
+    /// Equivalent to `CfCCell::reset()`. It writes zeros over the being's 97 CfC f32,
+    /// its 192 fatigue f32 (96 input + 96 output) and its 144 per-neuron memory f32
+    /// (mechanism 1, P1.7 — FOLLOWING THE PATTERN of this same method), leaving every
+    /// other being untouched. Called on spawn/death: it guarantees a newborn starts with
+    /// no fatigue AND no memory inherited from the slot's previous occupant. Without it
+    /// the child would be born "remembering" what the parent last felt — the same
+    /// state-leaking-across-generations bug that motivated resetting `buf_cfc` and
+    /// `buf_fatigue` here.
+    pub fn reset_cfc(&self, being_idx: usize) {
+        if being_idx >= self.capacity { return; }
+        // Reset the CfC state + counter (97 f32).
+        let cfc_offset = (being_idx * CFC_SLOTS_PER_BEING * 4) as u64;
+        let cfc_zeros: Vec<u8> = vec![0u8; CFC_SLOTS_PER_BEING * 4];
         self.queue.write_buffer(&self.buf_cfc, cfc_offset, &cfc_zeros);
-        // Reseta fadiga adaptativa: 192 f32 por ser (slots [0..96] input + [96..192] output).
-        let fat_offset = (ser_idx * FATIGUE_PER_SER * 4) as u64;
-        let fat_zeros: Vec<u8> = vec![0u8; FATIGUE_PER_SER * 4];
+        // Reset the adaptive fatigue: 192 f32 per being (slots [0..96] input,
+        // [96..192] output).
+        let fat_offset = (being_idx * FATIGUE_PER_BEING * 4) as u64;
+        let fat_zeros: Vec<u8> = vec![0u8; FATIGUE_PER_BEING * 4];
         self.queue.write_buffer(&self.buf_fatigue, fat_offset, &fat_zeros);
-        // P1.7 — reseta a memória EMA por neurônio: 144 f32 por ser (96 L1 + 48 L2).
-        let mem_offset = (ser_idx * NEURON_MEM_PER_SER * 4) as u64;
-        let mem_zeros: Vec<u8> = vec![0u8; NEURON_MEM_PER_SER * 4];
+        // P1.7 — reset the per-neuron EMA memory: 144 f32 per being (96 L1 + 48 L2).
+        let mem_offset = (being_idx * NEURON_MEM_PER_BEING * 4) as u64;
+        let mem_zeros: Vec<u8> = vec![0u8; NEURON_MEM_PER_BEING * 4];
         self.queue.write_buffer(&self.buf_neuron_mem, mem_offset, &mem_zeros);
     }
 
-    // ── FORWARD PASS (por tick) ───────────────────────────────────────────
+    // ── FORWARD PASS (per tick) ────────────────────────────────────────────
 
-    /// Executa o forward pass do cérebro de todos os seres na GPU.
+    /// Runs the brain forward pass for every being on the GPU.
     ///
-    /// Entradas:
-    ///   `inputs`: slice de `(engine, wave)` por ser, na mesma ordem do spawn.
-    ///   `dt`: delta de tempo deste tick (seg).
+    /// Inputs:
+    ///   `inputs`: a slice of `(engine, wave)` per being, in spawn order.
+    ///   `dt`: this tick's time delta, in seconds.
     ///
-    /// Saída:
-    ///   Vec de `[f32; INTENT_DIM]`, um por ser, na mesma ordem.
-    ///   Equivalente a `engine.final_intent` pós `execute_cycle`, excluindo
-    ///   Trinity, axiom_policy e efeitos colaterais de metabolism.
+    /// Output:
+    ///   one `[f32; INTENT_DIM]` per being, in the same order. Equivalent to
+    ///   `engine.final_intent` after `execute_cycle`, excluding Trinity, `axiom_policy`
+    ///   and the side effects of metabolism.
     ///
-    /// # Nota de equivalência
+    /// # Equivalence note
     ///
-    /// O caller (motor.rs) deve:
-    /// 1. Chamar este método para obter final_intent GPU.
-    /// 2. Aplicar axiom_policy e Trinity (Gate+Reflex+Sentinel) na CPU,
-    ///    exatamente como fazia antes — esses caminhos não mudaram.
-    /// 3. NÃO chamar `engine.execute_cycle` para os seres que foram para a GPU
-    ///    (senão o estado CfC seria atualizado duas vezes).
+    /// The caller (`motor.rs`) must:
+    /// 1. Call this method to obtain the GPU `final_intent`.
+    /// 2. Apply `axiom_policy` and Trinity (Gate + Reflex + Sentinel) on the CPU exactly
+    ///    as before — those paths did not change.
+    /// 3. NOT call `engine.execute_cycle` for the beings that went to the GPU, or the
+    ///    CfC state would be updated twice.
     pub fn forward(
         &self,
         inputs: &[BrainInput<'_>],
@@ -770,8 +808,8 @@ impl BrainGpu {
         let n = inputs.len().min(self.capacity);
         if n == 0 { return Vec::new(); }
 
-        // ── Upload da sensory_wave (muda a cada tick) ────────────────────
-        // Converte i8 → i32 (sign-extend) para o shader leia sem bit-tricks.
+        // ── Sensory-wave upload (changes every tick) ─────────────────────
+        // Converts i8 → i32 (sign-extend) so the shader reads it without bit tricks.
         let mut wave_data: Vec<i32> = Vec::with_capacity(n * SENSORY_WAVE_SIZE);
         for input in inputs[..n].iter() {
             for &b in input.wave.iter() {
@@ -781,24 +819,24 @@ impl BrainGpu {
         self.queue.write_buffer(&self.buf_wave, 0, bytemuck::cast_slice(&wave_data));
 
         // ── Uniform params ───────────────────────────────────────────────
-        // use_percept_direct = 0: lê do buf_wave (binding 1), path CPU.
-        // O gpu_validate usa forward() — nunca deve passar 1 aqui.
+        // use_percept_direct = 0: read from buf_wave (binding 1), the CPU path.
+        // gpu_validate goes through forward() — it must never pass 1 here.
         let params = BrainParams {
             n_beings: n as u32,
             dt,
             use_percept_direct: 0,
-            out_beta: crate::gpu::brain::OUT_BETA_PADRAO,
-            out_gain: crate::gpu::brain::OUT_GAIN_PADRAO,
+            out_beta: crate::gpu::brain::OUT_BETA_DEFAULT,
+            out_gain: crate::gpu::brain::OUT_GAIN_DEFAULT,
             norm_l2_by_std: 0,
-            // forward() é o caminho de EQUIVALÊNCIA CPU/GPU (usado por gpu_validate) —
-            // mesmo contrato que out_beta/out_gain/norm_l2_by_std já tinham aqui: SEMPRE
-            // o comportamento histórico, os três mecanismos de P1.7 desligados (0b1111),
-            // nunca expõe os novos parâmetros. `bind_and_dispatch` (produção) é quem lê
-            // `self.mech_off_mask`.
+            // forward() is the CPU/GPU EQUIVALENCE path (used by gpu_validate) — same
+            // contract out_beta/out_gain/norm_l2_by_std already had here: ALWAYS the
+            // historical behaviour, with P1.7's mechanisms switched off (0b1111), never
+            // exposing the new parameters. `bind_and_dispatch` (production) is the one
+            // that reads `self.mech_off_mask`.
             mech_off_mask: 0b1111,
             _pad1: 0,
-            // D3: forward() nunca expõe ruído sensorial — mesmo contrato acima,
-            // sempre 0.0 (comportamento histórico, sem ruído/dropout).
+            // D3: forward() never exposes sensor noise — same contract as above, always
+            // 0.0 (the historical behaviour, no noise and no dropout).
             noise_sigma: 0.0,
             dropout_prob: 0.0,
             _pad2: 0,
@@ -811,8 +849,8 @@ impl BrainGpu {
         });
 
         // ── Bind group ───────────────────────────────────────────────────
-        // Binding 8 = buf_percept_dummy (placeholder, não lido com use_percept_direct=0).
-        // Binding 9 = buf_fatigue (fadiga adaptativa, residente entre ticks).
+        // Binding 8 = buf_percept_dummy (placeholder, unread with use_percept_direct=0).
+        // Binding 9 = buf_fatigue (adaptive fatigue, resident between ticks).
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout,
@@ -835,14 +873,14 @@ impl BrainGpu {
         });
 
         // ── Dispatch ─────────────────────────────────────────────────────
-        // 1 workgroup por ser. Workgroup size = 128 threads (WGSL).
+        // One workgroup per being. Workgroup size = 128 threads (set in the WGSL).
         let bytes_intent = (n * INTENT_DIM * 4) as u64;
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &group, &[]);
-            // Dispatch exato: 1 workgroup = 1 ser. Sem arredondamento necessário.
+            // Exact dispatch: 1 workgroup = 1 being. No rounding needed.
             pass.dispatch_workgroups(n as u32, 1, 1);
         }
         enc.copy_buffer_to_buffer(&self.buf_intent, 0, &self.buf_readback, 0, bytes_intent);
@@ -852,10 +890,10 @@ impl BrainGpu {
         let slice = self.buf_readback.slice(0..bytes_intent);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // poll(Wait) bloqueia até o GPU terminar. Para uso em Bevy system isso é
-        // aceitável porque o system já bloqueia a thread do scheduler de qualquer forma.
-        // Alternativa async (não bloqueia a thread) exigiria reestruturar o system
-        // para dois stages (submit / collect) — melhoria futura se necessário.
+        // poll(Wait) blocks until the GPU finishes. Inside a Bevy system that is
+        // acceptable, because the system already blocks the scheduler thread anyway. An
+        // async alternative (which would not block the thread) would mean restructuring
+        // the system into two stages (submit / collect) — a future improvement if needed.
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
@@ -875,63 +913,66 @@ impl BrainGpu {
         result
     }
 
-    // ── MÉTODOS DE ENCADEAMENTO (sem submit próprio) ──────────────────────────
+    // ── CHAINING METHODS (no submit of their own) ──────────────────────────────
 
-    /// Prepara a sensory_wave e grava o dispatch do cérebro num CommandEncoder externo.
+    /// Prepares the sensory wave and records the brain dispatch into an external
+    /// `CommandEncoder`.
     ///
-    /// # Por que existe
+    /// # Why it exists
     ///
-    /// `forward()` fazia encoder + submit + poll próprios, adicionando ~0.3–0.5 ms de
-    /// round-trip por tick (medido: overhead de command buffer + sincronização de fila).
-    /// Com `bind_and_dispatch`, retina → percepção → cérebro ficam num único encoder e
-    /// um único submit, eliminando 2 round-trips intermediários por tick.
+    /// `forward()` created its own encoder, submit and poll, which added roughly
+    /// 0.3–0.5 ms of round trip per tick (measured: command-buffer overhead plus queue
+    /// synchronisation). With `bind_and_dispatch`, retina → perception → brain share a
+    /// single encoder and a single submit, removing 2 intermediate round trips per tick.
     ///
-    /// # Contrato
+    /// # Contract
     ///
-    /// 1. Chamar `queue.write_buffer(&self.buf_wave, ...)` ANTES deste método (ou passar
-    ///    `wave_data_i32` aqui — feito internamente).
-    /// 2. Gravar no encoder externo com este método.
-    /// 3. Copiar `buf_intent → buf_readback` no mesmo encoder via `enc.copy_buffer_to_buffer`.
+    /// 1. Call `queue.write_buffer(&self.buf_wave, ...)` BEFORE this method (or pass
+    ///    `wave_data_i32` here — it is done internally).
+    /// 2. Record into the external encoder with this method.
+    /// 3. Copy `buf_intent → buf_readback` in the same encoder via
+    ///    `enc.copy_buffer_to_buffer`.
     /// 4. `queue.submit(enc.finish())` + `device.poll(Wait)`.
-    /// 5. Chamar `read_intent_after_submit(n)` para ler o resultado.
+    /// 5. Call `read_intent_after_submit(n)` to read the result.
     ///
-    /// Retorna `bytes_intent` para o copy subsequente.
+    /// Returns `bytes_intent` for the subsequent copy.
     ///
-    /// Modo CPU (wave_data_i32 fornecido, buf_percept = None):
-    ///   Sobe wave via write_buffer. use_percept_direct = 0. Usado pelo gpu_validate.
+    /// CPU mode (`wave_data_i32` supplied, `buf_percept = None`): uploads the wave via
+    ///   `write_buffer`, `use_percept_direct = 0`. Used by `gpu_validate`.
     ///
-    /// Modo GPU (wave_data_i32 ignorado, buf_percept = Some(&buf)):
-    ///   O shader lê o wave direto do buf_percept (saída de percepcao.wgsl, 56 u32/ser).
-    ///   use_percept_direct = 1. Usado pelo gpu_loop. Zero readback intermediário.
+    /// GPU mode (`wave_data_i32` ignored, `buf_percept = Some(&buf)`): the shader reads
+    ///   the wave straight out of `buf_percept` (the output of `perception.wgsl`,
+    ///   48 u32 per being), `use_percept_direct = 1`. Used by `gpu_loop`, with no
+    ///   intermediate readback at all.
     pub fn bind_and_dispatch(
         &self,
         enc:          &mut wgpu::CommandEncoder,
         n:            usize,
-        wave_data_i32: &[i32],               // usado APENAS quando buf_percept = None
+        wave_data_i32: &[i32],               // used ONLY when buf_percept = None
         dt:           f32,
         buf_percept:  Option<&wgpu::Buffer>, // Some = GPU path (use_percept_direct=1)
     ) -> u64 {
         let n = n.min(self.capacity);
         if n == 0 { return 0; }
 
-        // Decide o modo de leitura do wave.
+        // Decide how the wave is read.
         let use_percept_direct: u32;
         let percept_binding: &wgpu::Buffer;
 
         if let Some(pb) = buf_percept {
-            // GPU path: buf_percept contém saída de percepcao.wgsl.
-            // NÃO subimos wave_data_i32 — seria uma escrita inútil e custaria PCIe.
+            // GPU path: buf_percept holds the output of perception.wgsl. We do NOT
+            // upload wave_data_i32 — that would be a useless write and would cost PCIe.
             use_percept_direct = 1;
             percept_binding = pb;
         } else {
-            // CPU path: sobe wave_data_i32 via write_buffer (sem bloqueio até submit).
-            // wave_data_i32 deve ter len = n × SENSORY_WAVE_SIZE.
+            // CPU path: upload wave_data_i32 via write_buffer (non-blocking until
+            // submit). wave_data_i32 must have len = n × SENSORY_WAVE_SIZE.
             self.queue.write_buffer(&self.buf_wave, 0, bytemuck::cast_slice(wave_data_i32));
             use_percept_direct = 0;
             percept_binding = &self.buf_percept_dummy;
         };
 
-        // Uniform: 16 bytes, custo negligível.
+        // Uniform: 48 bytes, negligible cost.
         let params = BrainParams {
             n_beings: n as u32,
             dt,
@@ -941,9 +982,9 @@ impl BrainGpu {
             norm_l2_by_std: if self.norm_l2_by_std { 1 } else { 0 },
             mech_off_mask: self.mech_off_mask(),
             _pad1: 0,
-            // D3 (ESCADA_DIFICULDADE.md): ruído sensorial + dropout de canal.
-            // Lido de `self.*` a cada chamada — `set_ruido` só atualiza estes
-            // campos, o upload acontece aqui, no próximo dispatch.
+            // D3 (ESCADA_DIFICULDADE.md): sensor noise + channel dropout. Read from
+            // `self.*` on every call — `set_noise` only updates those fields; the upload
+            // happens here, on the next dispatch.
             noise_sigma: self.noise_sigma,
             dropout_prob: self.dropout_prob,
             _pad2: 0,
@@ -976,7 +1017,7 @@ impl BrainGpu {
             ],
         });
 
-        // 1 workgroup por ser — sem arredondamento.
+        // One workgroup per being — no rounding.
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label:            Some("pass-brain"),
@@ -989,16 +1030,17 @@ impl BrainGpu {
 
         let bytes_intent = (n * INTENT_DIM * 4) as u64;
 
-        // Copia no mesmo encoder — DMA sem round-trip.
+        // Copy inside the same encoder — DMA with no round trip.
         enc.copy_buffer_to_buffer(&self.buf_intent, 0, &self.buf_readback, 0, bytes_intent);
 
         bytes_intent
     }
 
-    /// Lê o buf_readback do cérebro após device.poll(Wait) do encoder externo.
+    /// Reads the brain's `buf_readback` after the external encoder's `device.poll(Wait)`.
     ///
-    /// Deve ser chamado APENAS depois que o CommandEncoder que continha `bind_and_dispatch`
-    /// foi submetido e `device.poll(Wait)` retornou. Sem isso o buffer não estará mapeado.
+    /// Call this ONLY once the `CommandEncoder` holding `bind_and_dispatch` has been
+    /// submitted and `device.poll(Wait)` has returned. Otherwise the buffer is not
+    /// mapped.
     pub fn read_intent_after_submit(&self, n: usize) -> Vec<[f32; INTENT_DIM]> {
         let n = n.min(self.capacity);
         if n == 0 { return Vec::new(); }
@@ -1007,12 +1049,12 @@ impl BrainGpu {
         let slice = self.buf_readback.slice(0..bytes_intent);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // TRAVAMENTO CORRIGIDO: `map_async` registra um callback que só é SERVIDO por um
-        // `poll` POSTERIOR. O comentário anterior dizia "poll já foi feito pelo caller,
-        // recv() completa imediatamente" — e estava errado: o poll do chamador acontece
-        // ANTES do map_async, então o callback nunca era servido e `recv()` bloqueava para
-        // sempre. Era isso que prendia `gpu_loop` no tick de aquecimento, sem erro e sem
-        // saída. O poll tem de vir DEPOIS do pedido de mapeamento.
+        // FIXED HANG: `map_async` registers a callback that is only SERVED by a LATER
+        // `poll`. The previous comment claimed "the caller already polled, so recv()
+        // returns immediately" — and it was wrong: the caller's poll happens BEFORE the
+        // map_async, so the callback was never served and `recv()` blocked forever. That
+        // is what pinned `gpu_loop` on the warm-up tick, with no error and no output. The
+        // poll has to come AFTER the map request.
         self.device.poll(wgpu::Maintain::Wait);
         let _ = rx.recv();
 
@@ -1030,29 +1072,34 @@ impl BrainGpu {
         result
     }
 
-    /// Referência ao buf_intent (VRAM) para outros kernels consumirem o output direto.
+    /// Reference to `buf_intent` (in VRAM), so other kernels can consume the output
+    /// directly.
     pub fn buf_intent(&self) -> &wgpu::Buffer { &self.buf_intent }
 }
 
-// ── RECURSO BEVY ─────────────────────────────────────────────────────────────
+// ── BEVY RESOURCE ────────────────────────────────────────────────────────────
 
-/// Recurso Bevy que mantém o contexto cerebral GPU entre ticks.
+/// Bevy resource that keeps the brain GPU context alive between ticks.
 ///
-/// Segue o padrão de `RetinaGpuRes`: `ctx: Option<BrainGpu>`, recriado se
-/// a capacidade for insuficiente ou se o dispositivo for perdido.
+/// It follows the `RetinaGpuRes` pattern: `ctx: Option<BrainGpu>`, rebuilt when the
+/// capacity is insufficient or the device is lost.
 ///
-/// O caller deve verificar `IARA_CEREBRO_CPU=1` (env var) para forçar CPU,
-/// exatamente como a retina usa `IARA_RETINA_CPU=1` — permite A/B controlado.
+/// TODO: the original comment here stated that the caller should honour an environment
+/// variable to force the CPU path, mirroring the retina. The retina's switch is real —
+/// `IARA_RETINA_CPU` is read at `src/simulation/motor.rs:424` — but the brain's
+/// equivalent exists nowhere in the tree (verified by grep), so there is currently no way
+/// to run a controlled brain CPU/GPU A/B from the environment. Either implement the
+/// switch or drop the claim; do not assume it works.
 #[derive(bevy::prelude::Resource, Default)]
 pub struct BrainGpuRes {
     pub ctx: Option<BrainGpu>,
 }
 
 impl BrainGpuRes {
-    /// Devolve contexto válido, criando se necessário.
+    /// Returns a valid context, creating one if necessary.
     ///
-    /// Recebe device/queue do `RetinaGpu` para reutilizar o mesmo dispositivo.
-    /// `None` = sem GPU utilizável; o caller usa CPU.
+    /// Takes device/queue from `RetinaGpu` so the same device is reused. `None` means
+    /// there is no usable GPU and the caller should fall back to the CPU.
     pub fn get_or_create(
         &mut self,
         device: Arc<wgpu::Device>,
@@ -1065,14 +1112,14 @@ impl BrainGpuRes {
         if needs_alloc {
             self.ctx = Some(BrainGpu::new(device, queue, name, capacity.max(64)));
             if let Some(c) = &self.ctx {
-                println!("🧠 cérebro na GPU ({} seres)", c.capacity);
+                println!("🧠 brain on the GPU ({} beings)", c.capacity);
             }
         }
         self.ctx.as_ref()
     }
 }
 
-// ── HELPERS (mesmos de mod.rs, duplicados para não quebrar regra de não editar mod.rs) ─
+// ── HELPERS (same as in mod.rs, duplicated so mod.rs does not have to be edited) ─
 
 fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -1100,40 +1147,37 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-// ── COMO TESTAR EQUIVALÊNCIA (sem rodar nada) ─────────────────────────────────
+// ── HOW CPU/GPU EQUIVALENCE IS TESTED ────────────────────────────────────────
 //
-// O arnês de validação `src/bin/gpu_valida.rs` (agente D) executará:
+// The validation harness is `src/bin/gpu_validate.rs`. It does the following:
 //
-// 1. Criação de um SovereignEngine com pesos aleatórios mas determinísticos
-//    (semente fixada, igual na CPU e na GPU).
+// 1. Builds a `SovereignEngine` with random but deterministic weights (fixed seed,
+//    identical on the CPU and on the GPU).
 //
-// 2. Vetor de inputs fixos (sensory_wave conhecido).
+// 2. Uses a fixed input vector (a known sensory wave).
 //
-// 3. CPU: chama `engine.execute_cycle(wave, 0.0, DT)` com DT=1/64, depois
-//    lê `engine.final_intent[0..96]`.
+// 3. CPU: calls `engine.execute_cycle(wave, 0.0, DT)` with DT = 1/64, then reads
+//    `engine.final_intent[0..96]`.
 //
-// 4. GPU: chama `cerebro.forward(&[BrainInput{engine, wave}], DT)`, obtém
+// 4. GPU: calls `brain.forward(&[BrainInput{engine, wave}], DT)` and takes
 //    `intent_gpu[0..96]`.
 //
-// 5. Compara par a par: `|cpu[i] - gpu[i]| <= 2e-5` (tolerância ≤ 2 ULP pra
-//    f32 em [-1, 1], contrato do GPU_PLANO.md).
-//    Para o estado CfC acumulado após N ticks: medir a deriva e declarar
-//    (não assumir zero drift).
+// 5. Compares element by element: `|cpu[i] - gpu[i]| <= 2e-5` (a tolerance of ≤ 2 ULP
+//    for f32 in [-1, 1], the contract in `GPU_PLANO.md`). For the CfC state accumulated
+//    over N ticks: measure the drift and state it — do not assume zero drift.
 //
-// 6. ATENÇÃO: desabilitar no teste o `metabolism.can_process()` e tudo que
-//    modifica state fora do caminho neural puro (cortisol, dopamina, etc.),
-//    para que a comparação seja justa (esses efeitos ficam na CPU e não entram
-//    no kernel).
+// 6. CAUTION: the test must disable `metabolism.can_process()` and everything else that
+//    modifies state outside the pure neural path (cortisol, dopamine, and so on), so the
+//    comparison is fair — those effects stay on the CPU and never enter the kernel.
 //
-// 7. ATENÇÃO 2: `execute_cycle` incrementa `denoise_counter` via `cfc_state.update`.
-//    Na GPU, o counter começa em 0 e é salvo em `buf_cfc`. Para o teste ser
-//    comparável, inicializar ambos com counter = 0 e rodar exactamente N ticks.
+// 7. CAUTION 2: `execute_cycle` increments `denoise_counter` through `cfc_state.update`.
+//    On the GPU the counter starts at 0 and is stored in `buf_cfc`. For the test to be
+//    comparable, initialise both with counter = 0 and run exactly N ticks.
 //
-// 8. DIVERGÊNCIAS ESPERADAS DOCUMENTADAS:
+// 8. DOCUMENTED EXPECTED DIVERGENCES:
 //    - tanh: ≤ 1 ULP (IEEE 754)
 //    - exp:  ≤ 1 ULP
-//    - Matmul L1 (WAVE=223 ops): acumulação f32 sequencial, mesma ordem.
-//      Diferença esperada: < 1e-6 por neurônio (223 fma em f32, drift < 1e-5).
-//    - Saída quantizada i8 pós-tanh: diferença ≤ 1 LSB = 1/127 ≈ 0.008.
-//
-// Este comentário substitui um arquivo de teste que o agente D vai implementar.
+//    - L1 matmul (WAVE = 192 operations): sequential f32 accumulation, in the same
+//      order on both sides. Expected difference: < 1e-6 per neuron (192 f32 FMAs,
+//      drift < 1e-5).
+//    - i8-quantised output after tanh: difference ≤ 1 LSB = 1/127 ≈ 0.008.

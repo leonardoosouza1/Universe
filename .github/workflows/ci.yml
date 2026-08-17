@@ -1,0 +1,257 @@
+# Universe CI
+#
+# Two jobs, deliberately split by what they need:
+#
+#   language — pure bash, no Rust toolchain, no GPU. Runs on any clone, always.
+#   rust     — needs the out-of-tree `iara-runtime` crates (see the job's first step).
+#
+# Honesty notes, so nobody reads this file as a claim that the tree is clean:
+#
+#   * `cargo fmt` and `cargo clippy` are NON-BLOCKING today. Both fail on the current
+#     tree; the measurements are recorded on each step. They are wired up now so the
+#     debt is visible and so they can be flipped to blocking in one line each once it
+#     is paid. Do not delete them, and do not pretend they pass.
+#   * No step runs on a GPU. The only test that opens a real device is `#[ignore]`d
+#     (see the test step) and `cargo test` skips it by default.
+#
+# Last measured against the tree on 2026-08-17.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A new push to the same branch cancels the previous run — release builds of a Bevy
+# project are expensive and queueing them up helps nobody.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────────
+  # Language gate: the repository is English-only (CONTRIBUTING.md § Language policy).
+  # Cheap, dependency-free, and the one gate that works today on a plain clone.
+  # ───────────────────────────────────────────────────────────────────────────────
+  language:
+    name: Language check (English-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # fetch-depth: 0 is required. In its default (gate) mode check_language.sh diffs
+      # the branch against a base ref via `git merge-base`; a shallow clone has no
+      # merge base and the script exits 2 with "cannot find a merge base".
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run the language checker
+        env:
+          # On a pull request, diff against the branch actually being targeted. On a
+          # push, leave it empty and let the script fall back to origin/main by itself
+          # (see resolve_base() in the script).
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: |
+          if [ ! -f scripts/check_language.sh ]; then
+            echo "::error::scripts/check_language.sh is missing. It is the gate for the"
+            echo "::error::English-only policy described in CONTRIBUTING.md. Restore it"
+            echo "::error::rather than removing this step."
+            exit 1
+          fi
+          bash scripts/check_language.sh
+
+      # Progress meter, not a gate: --all scans the whole repository and always exits 0.
+      # It runs even when the gate above fails so the log always carries the current
+      # size of the migration debt.
+      - name: Migration progress (informational, never fails)
+        if: always()
+        run: bash scripts/check_language.sh --all || true
+
+  # ───────────────────────────────────────────────────────────────────────────────
+  # Build, lint and test.
+  # ───────────────────────────────────────────────────────────────────────────────
+  rust:
+    name: Build, test and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # The repository is checked out into a SUBDIRECTORY on purpose: Cargo.toml
+      # points at `../iara-runtime/...`, so the sibling crates have to sit next to
+      # the checkout, not inside it.
+      #
+      #   $GITHUB_WORKSPACE/
+      #   ├── Universe/       ← this repository
+      #   └── iara-runtime/   ← fetched by the next step
+      - name: Check out Universe
+        uses: actions/checkout@v4
+        with:
+          path: Universe
+
+      # KNOWN BLOCKER — see CONTRIBUTING.md § "the repository does not build from a
+      # fresh clone yet". `iara-perception` and `iara-cfc` are path dependencies on a
+      # directory that is not in this repository and is not a submodule. Measured on
+      # 2026-08-17, an untouched export of HEAD cannot even resolve its manifest:
+      #
+      #   $ git archive HEAD | tar -x -C /tmp/clonetest && cd /tmp/clonetest
+      #   $ cargo metadata --format-version 1 --no-deps
+      #   error: failed to load manifest for dependency `iara-cfc`
+      #   Caused by: failed to read `/tmp/iara-runtime/iara-cfc/Cargo.toml`
+      #   Caused by: No such file or directory (os error 2)
+      #
+      # This step therefore FAILS LOUDLY instead of skipping the build and reporting
+      # a green run that never happened.
+      #
+      # TODO (maintainer): pick one and this whole step becomes a no-op —
+      #   (a) publish iara-runtime and set the `IARA_RUNTIME_REPO` repository variable
+      #       (Settings → Secrets and variables → Actions → Variables), optionally with
+      #       `IARA_RUNTIME_REF` to pin a branch or tag;
+      #   (b) add it as a git submodule and enable `submodules: recursive` above;
+      #   (c) vendor the two crates into this tree and drop the `../` paths.
+      - name: Fetch the out-of-tree path dependencies (iara-runtime)
+        env:
+          IARA_RUNTIME_REPO: ${{ vars.IARA_RUNTIME_REPO }}
+          IARA_RUNTIME_REF: ${{ vars.IARA_RUNTIME_REF }}
+        run: |
+          set -euo pipefail
+          if [ -z "${IARA_RUNTIME_REPO}" ]; then
+            echo "::error::Cargo.toml depends on ../iara-runtime/iara-perception and"
+            echo "::error::../iara-runtime/iara-cfc, which are NOT part of this repository."
+            echo "::error::A clone of this repo cannot resolve its own manifest, so there"
+            echo "::error::is nothing here to build."
+            echo "::error::Fix: set the IARA_RUNTIME_REPO repository variable to the URL of"
+            echo "::error::the iara-runtime repository, or vendor the crates in-tree, or add"
+            echo "::error::a submodule. See CONTRIBUTING.md."
+            exit 1
+          fi
+          git clone --depth 1 ${IARA_RUNTIME_REF:+--branch "$IARA_RUNTIME_REF"} \
+            "$IARA_RUNTIME_REPO" iara-runtime
+          test -f iara-runtime/iara-cfc/Cargo.toml
+          test -f iara-runtime/iara-perception/Cargo.toml
+
+      # Bevy is built here with default-features = false (see Cargo.toml), but the
+      # enabled set still includes bevy_winit + x11, which link against system
+      # libraries. This is Bevy's documented Linux dependency set; the minimum needed
+      # for this exact feature list has NOT been measured (no CI run exists yet), so
+      # trim it only with a green run to show for it.
+      - name: Install Bevy's Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libasound2-dev \
+            libx11-dev libxkbcommon-dev libwayland-dev
+
+      # Cargo.toml declares rust-version = "1.85.0" and edition = "2024". `stable` is
+      # used rather than a pin so the lint output tracks the compiler contributors
+      # actually have; the MSRV is enforced by Cargo itself from that field.
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          cargo --version && rustc --version && cargo clippy --version && rustfmt --version
+
+      # target/ is cached too: a cold Bevy release build is the dominant cost here.
+      # Watch the size — locally `du -sh target/release` measured 3.6 GB on 2026-08-17
+      # and GitHub silently stops saving a cache above 10 GB. If saves start being
+      # skipped, drop `Universe/target` from the paths rather than letting the cache
+      # go stale in silence.
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Universe/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Universe/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # ── Formatting ────────────────────────────────────────────────────────────────
+      # NON-BLOCKING, TEMPORARILY. Measured 2026-08-17 on this tree:
+      #
+      #   $ cargo fmt -p universe --check | grep -oP '^Diff in \K[^ :]+' | sort -u | wc -l
+      #   121          (out of 127 .rs files)
+      #
+      # As a hard gate it would fail every pull request on day one, including the ones
+      # that fix it. Scoped with `-p universe` on purpose: plain `cargo fmt --all`
+      # reaches into ../iara-runtime and would report another project's formatting as
+      # this project's failure (measured 2026-08-17: 145 files, 8 of them outside this
+      # repository, in iara-runtime/iara-{byte,cfc,dna,gate,hdc,...}).
+      #
+      # TO FLIP THIS TO BLOCKING: land a formatting-only commit (`cargo fmt -p universe`,
+      # no behaviour change), confirm this step is green, then delete `continue-on-error`.
+      - name: cargo fmt --check (non-blocking — see comment)
+        continue-on-error: true
+        working-directory: Universe
+        run: cargo fmt -p universe --check
+
+      # ── Clippy ────────────────────────────────────────────────────────────────────
+      # NON-BLOCKING, TEMPORARILY. `-D warnings` is not even the issue: clippy fails on
+      # this tree with its own deny-by-default correctness lints. Measured 2026-08-17
+      # with `cargo clippy --release --all-targets`:
+      #
+      #   warning: `universe` (lib) generated 186 warnings
+      #   error: could not compile `universe` (lib) due to 9 previous errors
+      #   warning: `universe` (lib test) generated 217 warnings (183 duplicates)
+      #   error: could not compile `universe` (lib test) due to 11 previous errors
+      #
+      # The 9 library errors are correctness lints, not style, and at least two look
+      # like real defects rather than noise:
+      #   * src/evolution/spawn.rs:325  absurd_extreme_comparisons —
+      #     `if idx < PROTECTED_ZONE_SIZE` is always false, so the guard never fires.
+      #   * src/evolution/spawn.rs:117  erasing_op — `weights[0 * SWS + 64]`.
+      #   * src/gpu/evolution.rs:783    never_loop — the Box-Muller `loop` always
+      #     returns on its first pass.
+      #   * src/gpu/evolution.rs:292    approx_constant — a literal FRAC_PI_6.
+      #
+      # --release so the artifacts are shared with the build and test steps below
+      # instead of paying for a second full compile in debug.
+      #
+      # TO FLIP THIS TO BLOCKING: clear the deny-by-default errors first (they are few
+      # and they are bugs), then the warnings, then delete `continue-on-error`.
+      - name: cargo clippy -D warnings (non-blocking — see comment)
+        continue-on-error: true
+        working-directory: Universe
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+
+      # ── Build ─────────────────────────────────────────────────────────────────────
+      # BLOCKING. The tree compiles today; keep it that way.
+      # --locked: Cargo.lock is tracked and was verified current on 2026-08-17
+      # (`cargo metadata --locked` exits 0). A PR that needs a lockfile update has to
+      # commit it.
+      - name: cargo build --release
+        working-directory: Universe
+        run: cargo build --release --locked
+
+      # ── Tests ─────────────────────────────────────────────────────────────────────
+      # BLOCKING, and GPU-free.
+      #
+      # The simulation runs on wgpu/WGSL, but the test suite does not need a device:
+      # exactly one test opens a real adapter and it is `#[ignore]`d for that reason —
+      #
+      #   src/gpu/retina_digest_parity_test.rs:143
+      #   #[ignore = "abre GPU real — rodar manualmente: cargo test --release --lib -- --ignored retina_digest_parity"]
+      #   fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks()
+      #
+      # `cargo test` skips `#[ignore]`d tests by default, so this step never touches a
+      # GPU. DO NOT add `--include-ignored` or `-- --ignored` here: hosted runners have
+      # no usable adapter (that test would fall through its `let Some(..) else` and
+      # report a pass it never performed, which is worse than skipping).
+      # WGSL shaders are still covered — tests/wgsl_validation.rs type-checks them on
+      # the CPU with naga, no device involved.
+      - name: cargo test --release
+        working-directory: Universe
+        run: cargo test --release --locked
+
+      # The genome serialiser is written by hand and has silently dropped fields twice
+      # (the slow brain's 1091 weights, the 96-entry tau bank). `cargo test --release`
+      # above already covers this, but the binary's suite is called out separately so a
+      # failure here reads as "the genome no longer survives a disk round-trip" instead
+      # of being buried in the full run.
+      - name: cargo test --bin gpu_evolve (genome disk round-trip)
+        working-directory: Universe
+        run: cargo test --release --locked --bin gpu_evolve

@@ -1,116 +1,118 @@
-// ── CÉREBRO NA GPU ────────────────────────────────────────────────────────────
+// ── BRAIN ON THE GPU ──────────────────────────────────────────────────────────
 //
-// # Papel no sistema
+// # Role in the system
 //
-// Este kernel substitui a parte NEURAL de `SovereignEngine::execute_cycle` para
-// todos os seres em um único dispatch. A CPU continua dona do pipeline de evolução,
-// dos timers de fadiga/metabolism, da Trinity (Gate + Reflex + Sentinel) e de tudo
-// que tem branches pesados sobre state não-tensor.
+// This kernel replaces the NEURAL part of `SovereignEngine::execute_cycle` for every
+// being in a single dispatch. The CPU still owns the evolution pipeline, the
+// fatigue/metabolism timers, the Trinity (Gate + Reflex + Sentinel) and everything with
+// heavy branching over non-tensor state.
 //
-// O que o kernel produz: `final_intent[0..96]` f32 por ser, equivalente ao campo
-// `SovereignEngine::final_intent` ANTES da Trinity e do axiom_policy.
+// What the kernel produces: `final_intent[0..96]` f32 per being, equivalent to the field
+// `SovereignEngine::final_intent` BEFORE the Trinity and `axiom_policy`.
 //
-// # Pipeline por ser (1 workgroup de 128 threads)
+// # Pipeline per being (one workgroup of 128 threads)
 //
-//   sensory_wave[WAVE=192] ──► KAN por-canal (spline 16-knots)
-//                       ──► CfC pré-processador (canais 0..96, state residente)
-//                       ──► BitLinear L1  (192→96, pesos f32, input i8)
-//                       ──► tanh × 127 → i8  (quantiza pra L2)
-//                       ──► FloatLinear L2 (96→48, pesos f32)
-//                       ──► [opcional, params.norm_l2_by_std] / desvio-padrão dos 48
+//   sensory_wave[WAVE=192] ──► per-channel KAN (16-knot spline)
+//                       ──► CfC pre-processor (channels 0..96, resident state)
+//                       ──► BitLinear L1  (192→96, f32 weights, i8 input)
+//                       ──► tanh × 127 → i8  (quantise for L2)
+//                       ──► FloatLinear L2 (96→48, f32 weights)
+//                       ──► [optional, params.norm_l2_by_std] / std dev of the 48
 //                       ──► final_intent[0..48]  = tanh(l2_raw × params.out_gain)
 //                       + l1_raw[48..96] → tanh(× params.out_gain) → final_intent[48..96]
-//                       (cortex_l3 NÃO é usado na CPU — omitido aqui)
+//                       (cortex_l3 is NOT used on the CPU — omitted here)
 //
-//   `params.out_gain` (padrão 2.0, idêntico ao hardcode histórico) e
-//   `params.norm_l2_by_std` (padrão 1/LIGADO desde P1.8 — ver docs/PLANO_EVOLUCAO.md
-//   seção "P1.8", achado "L2 tem que funcionar") são os dois parâmetros do A/B
-//   de P1.5 contra a saturação de L2 (48/48 neurônios ativos em 97,4% dos ticks,
-//   entropia 0,301 nats). Ver `BrainParams` no host (`brain.rs`) e a ETAPA 2 abaixo.
+//   `params.out_gain` (default 2.0, identical to the historical hardcode) and
+//   `params.norm_l2_by_std` (default 1/ON since P1.8 — see docs/PLANO_EVOLUCAO.md
+//   section "P1.8", finding "L2 has to work") are the two parameters of the P1.5 A/B
+//   against L2 saturation (48/48 neurons active in 97.4% of the ticks, entropy
+//   0.301 nats). See `BrainParams` on the host (`brain.rs`) and STAGE 2 below.
 //
-//   # P1.8 (revisado 2026-08-14) — o que cada fatia de final_intent alimenta
+//   # P1.8 (revised 2026-08-14) — what each slice of final_intent feeds
 //
-//   TREINO (`gpu_evolve`): só [0..3) — throttle/steer/brake via `kan_eval`
-//   (context.rs:954-957). Câmbio é automático por RPM; [3]/[4] NUNCA são lidos
-//   nesse pipeline (a versão anterior deste comentário dizia "0-4 via shift" —
-//   isso vale só no Bevy). ENGINE BEVY: [0..3) atuadores (motor.rs:2026-2097),
-//   [3]/[4] câmbio (motor.rs:2451-2452), [0..64) entram em mielinização/coerência
-//   MAS `myelinate()` é no-op deliberado desde a migração F32 (layers.rs:55-62)
-//   e `axiom_policy` só escreve bias[0..3). RESUMO: [5..48) de L2 e o bypass
-//   [48..96) não alimentam decisão em NENHUM pipeline — são "feature neurons
-//   for evolution to explore" (commit 9ac2cdd) que nunca ganharam consumidor.
-//   Evidência completa: docs/PLANO_EVOLUCAO.md "P1.8" + investigação L2
-//   2026-08-14 (linhas cegas ≈ linhas lidas por carona genética do elitismo).
-// # Layout de memória (SoA — Structure of Arrays)
+//   TRAINING (`gpu_evolve`): only [0..3) — throttle/steer/brake through `kan_eval`
+//   (context.rs:954-957). The gearbox is automatic by RPM; [3] and [4] are NEVER read in
+//   that pipeline (an earlier version of this comment said "0-4 through shift" — that
+//   only holds in Bevy). BEVY ENGINE: [0..3) are actuators (motor.rs:2026-2097), [3]/[4]
+//   the gearbox (motor.rs:2451-2452), and [0..64) enter myelination/coherence — BUT
+//   `myelinate()` has been a deliberate no-op since the F32 migration (layers.rs:55-62)
+//   and `axiom_policy` only writes bias[0..3). SUMMARY: [5..48) of L2 and the bypass
+//   [48..96) feed no decision in ANY pipeline — they are "feature neurons for evolution
+//   to explore" (commit 9ac2cdd) that never gained a consumer. Full evidence:
+//   docs/PLANO_EVOLUCAO.md "P1.8" plus the L2 investigation of 2026-08-14 (blind lines ≈
+//   read lines, carried along by elitism's genetic hitchhiking).
 //
-// Por que SoA e não AoS?
-// Com 60 seres e 223×96 = 21.408 pesos em L1 por ser, o total de L1 é ~1.3 MB.
-// Matmul de L1: thread `j` (output neuron j) lê a linha inteira
-// weights[j*WAVE .. (j+1)*WAVE] da memória do seu ser.
-// Com SoA (ser0 inteiro → ser1 inteiro → ...) os 96 threads do mesmo workgroup
-// lêem linhas distintas do MESMO ser — burst de leitura sequencial na VRAM.
-// Com AoS (ser0_w0, ser1_w0, ..., ser0_w1, ser1_w1, ...) os acessos seriam
-// intercalados entre seres → sem coalescência. SoA é a escolha correta.
+// # Memory layout (SoA — Structure of Arrays)
 //
-// # Estado recorrente (CfC state) residente na GPU
+// Why SoA and not AoS?
+// With 60 beings and 192 × 96 = 18 432 L1 weights each, all of L1 is 60 × 18 432 × 4 B ≈
+// 4.4 MB. (The earlier comment quoted "223 × 96 = 21 408 weights, ~1.3 MB", which matched
+// neither the pre-migration wave nor the current one.) The L1 matmul has thread `j`
+// (output neuron j) read the whole row weights[j*WAVE .. (j+1)*WAVE] out of its own
+// being's memory. With SoA (all of being 0 → all of being 1 → …) the 96 threads of one
+// workgroup read distinct rows of the SAME being — a sequential burst read from VRAM.
+// With AoS (being0_w0, being1_w0, …, being0_w1, being1_w1, …) the accesses would be
+// interleaved across beings, with no coalescing. SoA is the right choice.
 //
-// `buf_cfc` (binding 6) persiste entre ticks. O kernel lê o state, aplica a
-// equação CfC e escreve de volta. A CPU só acessa este buffer em:
-//   - spawn: inicializa zeros via `reset_cfc(ser_idx)`
-//   - death: pode baixar para log (operação rara, não bloqueia tick)
+// # Recurrent state (CfC state) resident on the GPU
 //
-// # Memória de workgroup
+// `buf_cfc` (binding 6) survives between ticks. The kernel reads the state, applies the
+// CfC equation and writes it back. The CPU only touches this buffer:
+//   - on spawn: writes zeros through `reset_cfc(being_idx)`
+//   - on death: may download it for a log (a rare operation that does not block a tick)
 //
-// Um workgroup por ser, 128 threads. LDS usada:
-//   w_kan[223]  i32 pós-KAN         : 223×4 =  892 B
-//   w_cfc[96]   i32 pós-CfC         :  96×4 =  384 B
-//   w_l1r[96]   f32 acumuladores L1 :  96×4 =  384 B
-//   w_l1a[96]   i32 l1 quantizado   :  96×4 =  384 B
-//   w_l2r[48]   f32 l2_raw pré-ganho:  48×4 =  192 B  (P1.5, norm_l2_by_std)
-//   Total: ~2,2 KB por workgroup. RDNA2 garante ≥ 32 KB LDS por workgroup.
+// # Workgroup memory
 //
-// # Divergência GPU×CPU esperada
+// One workgroup per being, 128 threads. LDS in use:
+//   w_kan[223]  i32, post-KAN          : 223 × 4 =  892 B
+//   w_cfc[96]   i32, post-CfC          :  96 × 4 =  384 B
+//   w_l1r[96]   f32, L1 accumulators   :  96 × 4 =  384 B
+//   w_l1a[96]   i32, quantised L1      :  96 × 4 =  384 B
+//   w_l2r[48]   f32, l2_raw pre-gain   :  48 × 4 =  192 B  (P1.5, norm_l2_by_std)
+//   Total: ~2.2 KB per workgroup. RDNA2 guarantees ≥ 32 KB of LDS per workgroup.
 //
-// 1. tanh/exp: WGSL IEEE 754-like, ≤ 1 ULP para |x| < 4. A saturação em ±1
-//    ocorre nos dois lados antes de qualquer quantização. Diferença ≤ 1 LSB pós-i8.
+// # Expected GPU × CPU divergence
 //
-// 2. Matmul L1/L2: acumulação f32 sequencial dentro de cada thread, mesma ordem
-//    que a CPU (in_idx de 0 a N). Divergência esperada < 1e-5 por neurônio.
+// 1. tanh/exp: WGSL is IEEE 754-like, ≤ 1 ULP for |x| < 4. Saturation at ±1 happens on
+//    both sides before any quantisation. Difference ≤ 1 LSB after the i8 step.
 //
-// 3. CfC — ruído determinístico: hash u32 com wrapping — identico à CPU
-//    (Rust wrapping_mul = WGSL u32 operação que wraps por padrão).
-//    ATENÇÃO: `denoise_counter` é salvo junto com o state em buf_cfc.
+// 2. L1/L2 matmul: sequential f32 accumulation inside each thread, in the same order as
+//    the CPU (in_idx from 0 to N). Expected divergence < 1e-5 per neuron.
 //
-// 4. KAN axiom 1 (|x| < 0.001 → 0): f32 sem FTZ — identico à CPU.
+// 3. CfC deterministic noise: a u32 hash with wrapping — identical to the CPU (Rust
+//    `wrapping_mul` == a WGSL u32 operation, which wraps by default).
+//    NOTE: `denoise_counter` is stored alongside the state in buf_cfc.
 //
-// # O que ficou na CPU e por quê
+// 4. KAN axiom 1 (|x| < 0.001 → 0): f32 without FTZ — identical to the CPU.
 //
-// - Trinity (Gate + Reflex + Sentinel): lê SafetyState com campos opcionais do
-//   Bevy (opt_body), acessa estado global de ablação (`crate::neuro::ablada()`).
-//   Custo: ~2% do total. Branches pesados e divergentes.
+// # What stayed on the CPU, and why
 //
-// - axiom_policy: 25+ branches sobre flags booleanas por ser. Altamente
-//   divergente numa GPU — as lanes se serializam. rayon na CPU paraleliza bem.
+// - Trinity (Gate + Reflex + Sentinel): it reads a SafetyState with optional Bevy fields
+//   (opt_body) and touches global ablation state (`crate::neuro::ablada()`).
+//   Cost: ~2% of the total. Heavy, divergent branching.
 //
-// - Mielinização (sort top-K por resonance_coherence): evento raro, sort para
-//   N=96 seria possível mas não vale o código.
+// - axiom_policy: 25+ branches over per-being boolean flags. Highly divergent on a GPU —
+//   the lanes serialise. rayon parallelises it well on the CPU.
 //
-// - predictive coding, mirror neurons, metabolism: dependem de state Bevy não
-//   tensorizado. Custo < 0.5% do total.
+// - Myelination (top-K sort by resonance_coherence): a rare event; sorting N=96 would be
+//   possible but is not worth the code.
 //
-// - SlowBrain (CfC-64 → Dense → Dense, roda 1/8 ticks): custo ~1.7% do tick,
-//   não vale portar o estado DenseLayer separadamente.
+// - Predictive coding, mirror neurons, metabolism: they depend on Bevy state that was
+//   never tensorised. Cost < 0.5% of the total.
+//
+// - SlowBrain (CfC-64 → Dense → Dense, runs once every 8 ticks): ~1.7% of a tick, not
+//   worth porting the DenseLayer state separately.
 
-// ── CONSTANTES ────────────────────────────────────────────────────────────────
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
 
-// Tamanho da sensory_wave (config.rs: SENSORY_WAVE_SIZE = 223)
+// Sensory-wave size (config.rs:309, SENSORY_WAVE_SIZE, computed — currently 192).
 const WAVE:      u32 = 192u;
 
-// Palavras u32 da onda empacotada (4 canais i8 por u32). DEVE bater com o
-// WAVE_U32S dos shaders de percepção (perception*.wgsl = 48). Era 56u hardcoded aqui
-// (de quando a onda tinha 223 canais); ao reduzir para 192 esqueci este sítio, e o
-// cérebro passou a ler a percepção com stride 56 enquanto ela é escrita com 48 —
-// cada ser lia dados do vizinho. Bug medido e corrigido nesta sessão.
+// u32 words of the packed wave (4 i8 channels per u32). This MUST match WAVE_U32S in the
+// perception shaders (perception*.wgsl = 48). It was hardcoded to 56u here, from the days
+// when the wave had 223 channels; when the wave shrank to 192 this site was missed, so the
+// brain read perception with stride 56 while it was written with stride 48 — every being
+// read its neighbour's data. Measured and fixed in that session.
 const WAVE_U32S: u32 = 48u;   // ceil(192/4)
 
 // L1: BitLinear WAVE→96 (config.rs: L1_NEURONS = 96)
@@ -119,137 +121,143 @@ const L1_OUT:    u32 = 96u;
 // L2: FloatLinear 96→48 (config.rs: L2_NEURONS = 48)
 const L2_OUT:    u32 = 48u;
 
-// KAN: 16 knots por canal (kan.rs: spline_coeffs [f32; 16])
+// KAN: 16 knots per channel (kan.rs: spline_coeffs [f32; 16])
 const KAN_KNOTS: u32 = 16u;
 
-// Parâmetros CfC.
+// CfC parameters.
 //
-// τ DEIXOU DE SER CONSTANTE. Aqui havia `CFC_DECAY_RATE = 0.5` e `CFC_INPUT_GAIN = 1.0`:
-// um τ de 2,0 s idêntico nos 96 canais, inclusive nos de parede, curvatura e velocidade.
-// Agora a taxa vem de `buf_tau` — um valor por canal por ser, herdado do genoma
-// (espelha `cfc.rs: decay_rates`).
+// τ IS NO LONGER A CONSTANT. This is where `CFC_DECAY_RATE = 0.5` and
+// `CFC_INPUT_GAIN = 1.0` used to live: one τ of 2.0 s identical across all 96 channels,
+// walls, curvature and speed alike. The rate now comes from `buf_tau` — one value per
+// channel per being, inherited from the genome (mirroring `cfc.rs: decay_rates`).
 //
-// `CFC_DC_GAIN` é o ganho em regime permanente, IGUAL para todo τ. O par antigo dava
-// input_gain/decay = 1,0/0,5 = 2,0, então 2,0 mantém a escala do sinal. Sem essa
-// normalização um canal rápido sairia ~80× mais fraco e seria descartado por ser mudo,
-// não por ser rápido (ver `cfc.rs: dc_gain`).
+// `CFC_DC_GAIN` is the steady-state gain, the SAME for every τ. The old pair gave
+// input_gain/decay = 1.0/0.5 = 2.0, so 2.0 preserves the signal's scale. Without that
+// normalisation a fast channel would come out ~80× weaker and be discarded for being
+// mute rather than for being fast (see `cfc.rs: dc_gain`).
 const CFC_DC_GAIN:     f32 = 2.0;
 const CFC_CLAMP:       f32 = 2.0;
-const CFC_DENOISE_MAG: f32 = 0.10;  // ~14% dos canais perturbados por tick
+const CFC_DENOISE_MAG: f32 = 0.10;  // ~14% of the channels perturbed per tick
 
-// Parâmetros de fadiga adaptativa (spike-frequency adaptation)
+// Adaptive fatigue parameters (spike-frequency adaptation).
 //
-// Mecanismo: neurônio que dispara forte por muito tempo reduz seu próprio ganho.
-// É o que o cérebro real faz para evitar ponto fixo e saturação irreversível.
+// Mechanism: a neuron that fires hard for a long time reduces its own gain. It is what a
+// real brain does to avoid a fixed point and irreversible saturation.
 //
-// Equação por canal i (a cada tick):
+// Equation per channel i, every tick:
 //   fatigue[i] += FATIGUE_ALPHA * (|state[i]| - fatigue[i]) * dt
-//   x_efetivo[i] = sign(x[i]) * max(0, |x[i]| - FATIGUE_BETA * fatigue[i])
+//   x_effective[i] = sign(x[i]) * max(0, |x[i]| - FATIGUE_BETA * fatigue[i])
 //
-// FATIGUE_ALPHA = 1.0: filtro passa-baixa com τ ≈ 1s sobre |state|.
-//   Com dt=1/64, alpha*dt ≈ 0.0156 → sobe em ~64 ticks (1s) para 63% do valor alvo.
-//   Estado saturado em 2.0 → fatigue atinge ~1.8 em ~2s (128 ticks).
-//   Mais rápido que a versão 0.3: garante que a fadiga sobe antes do ponto fixo
-//   se consolidar (que ocorria em ~1000-1200 ticks com alpha=0.3).
+// FATIGUE_ALPHA = 1.0: a low-pass filter with τ ≈ 1 s over |state|.
+//   With dt=1/64, alpha*dt ≈ 0.0156 → it rises to 63% of the target in ~64 ticks (1 s).
+//   With the state saturated at 2.0, fatigue reaches ~1.8 in ~2 s (128 ticks).
+//   Faster than the 0.3 version: it guarantees fatigue rises before the fixed point
+//   consolidates (which happened in ~1000-1200 ticks with alpha=0.3).
 //
-// FATIGUE_BETA = 0.4: limiar aplicado sobre a MAGNITUDE do input.
-//   Com fatigue=1.8 e beta=0.4 o limiar é 0.72: o canal PERDE ganho enquanto está
-//   saturado sem emudecer, e recupera assim que a fadiga cede. O ponto fixo de entrada
-//   máxima sustentada é s = 2/(1+2β) = 1.111 (saída 102/127) — o canal continua
-//   informando, que é o contrato testado em `cfc.rs`. Com β=0.8 seria 0.769 (saída 82).
-//   NÃO inverte o sinal: a versão anterior subtraía direto e uma entrada positiva
-//   sustentada saía NEGATIVA, o que quebra os contratos testados em cfc.rs.
-//   Driving normal: ser oscila entre aceleração/esterço → |state| varia → fat varia →
-//   fadiga não sobe ao máximo (só sob disparo sustentado, i.e., ponto fixo).
+// FATIGUE_BETA = 0.4: a threshold applied to the MAGNITUDE of the input.
+//   With fatigue=1.8 and beta=0.4 the threshold is 0.72: the channel LOSES gain while it
+//   is saturated without going mute, and recovers as soon as the fatigue eases. The fixed
+//   point for a sustained maximum input is s = 2/(1+2β) = 1.111 (output 102/127) — the
+//   channel keeps informing, which is the contract tested in `cfc.rs`. With β=0.8 it
+//   would be 0.769 (output 82).
+//   It does NOT invert the sign: the previous version subtracted directly, and a
+//   sustained positive input came out NEGATIVE, which breaks the contracts tested in
+//   cfc.rs. Normal driving: the being oscillates between throttle and steering → |state|
+//   varies → fat varies → fatigue never climbs to its maximum (only sustained firing,
+//   i.e. a fixed point, does that).
 const FATIGUE_ALPHA: f32 = 1.0;
-const FATIGUE_BETA:  f32 = 0.4;  // ver cfc.rs: 2/(1+2β) preserva resposta sustentada
+const FATIGUE_BETA:  f32 = 0.4;  // see cfc.rs: 2/(1+2β) preserves the sustained response
 
-// Fadiga adaptativa na SAÍDA (output fatigue, slots [96..192] do buf_fatigue por ser)
+// Adaptive fatigue on the OUTPUT (output fatigue, slots [96..192] of buf_fatigue per being)
 //
-// Problema diagnosticado: intent[0] (throttle) saturou em +1.0 desde o tick 10
-// e nunca soltou — 46.249 alertas de |v|>0.9. A fadiga do CfC (input) quebra ponto
-// fixo no estado recorrente, mas não alcança a saída L2/bypass diretamente.
+// Diagnosed problem: intent[0] (throttle) saturated at +1.0 from tick 10 onwards and
+// never let go — 46 249 alerts of |v|>0.9. The CfC (input) fatigue breaks a fixed point
+// in the recurrent state, but it does not reach the L2/bypass output directly.
 //
-// Mecanismo: mesmo filtro passa-baixa aplicado na saída final_intent.
+// Mechanism: the same low-pass filter, applied to the final_intent output.
 //   out_fat[i] += OUT_ALPHA * (|intent_raw[i]| - out_fat[i]) * dt
 //   intent_final[i] = tanh(sign(raw) * max(0, |raw| - params.out_beta * out_fat[i]))
 //
-// OUT_ALPHA = 4.0: τ ≈ 0.25s (sobe em ~16 ticks para 63% do alvo).
-//   Resposta mais rápida: o throttle trava em 10 ticks, então a fadiga precisa agir
-//   antes de 16 ticks para quebrar o ponto fixo de saída.
-//   (v2: 2.0→4.0 para convergência mais rápida — com 2.0 levava 32 ticks para 63%
-//    do alvo, lento demais quando l2_raw é grande e a subtração marginal não bastava.)
+// OUT_ALPHA = 4.0: τ ≈ 0.25 s (it rises to 63% of the target in ~16 ticks).
+//   A faster response: the throttle locks in 10 ticks, so the fatigue has to act inside
+//   16 ticks to break the output fixed point.
+//   (v2: 2.0→4.0 for faster convergence — at 2.0 it took 32 ticks to reach 63% of the
+//    target, far too slow when l2_raw is large and the marginal subtraction was not
+//    enough.)
 //
-// OUT_BETA = 0.85: encolher a magnitude do raw em 0.85 × fat antes do tanh.
-//   Simétrico por construção — `out_fat` rastreia |raw|, então subtrair com sinal
-//   amplificava o lado negativo e atenuava o positivo (viés para baixo em toda a
-//   população). O encolhimento sobre a magnitude trata os dois lados igual.
-//   Em regime permanente (out_fat → |l2_raw|), intent → tanh(|l2_raw| × (1-0.85))
-//                                                         = tanh(|l2_raw| × 0.15)
-//   Com |l2_raw| = 3.8 (típico saturado): tanh(0.57) ≈ 0.54 → abaixo de 0.90 ✓
-//   Com |l2_raw| = 4.5 (caso extremo):    tanh(0.675) ≈ 0.59 → abaixo de 0.90 ✓
-//   Sinal variado (l2_raw oscilando): out_fat não converge para |l2_raw_max|,
-//   fica em nível intermediário, sem penalidade excessiva sobre sinal legítimo.
-//   (v2: 0.6→0.85 — com 0.6, em regime permanente ficava tanh(l2_raw*0.4) que para
-//    l2_raw=3.8 ainda dava tanh(1.52)≈0.91, marginalmente acima do limiar de 0.90.)
+// OUT_BETA = 0.85: shrink the magnitude of raw by 0.85 × fat before the tanh.
+//   Symmetric by construction — `out_fat` tracks |raw|, so subtracting with the sign
+//   amplified the negative side and attenuated the positive one (a downward bias across
+//   the whole population). Shrinking the magnitude treats both sides alike.
+//   In steady state (out_fat → |l2_raw|), intent → tanh(|l2_raw| × (1-0.85))
+//                                                  = tanh(|l2_raw| × 0.15)
+//   With |l2_raw| = 3.8 (typical when saturated): tanh(0.57) ≈ 0.54 → below 0.90 ✓
+//   With |l2_raw| = 4.5 (extreme case):           tanh(0.675) ≈ 0.59 → below 0.90 ✓
+//   With a varying signal (l2_raw oscillating), out_fat does not converge to
+//   |l2_raw_max| and settles at an intermediate level, so a legitimate signal is not
+//   penalised excessively.
+//   (v2: 0.6→0.85 — with 0.6, steady state was tanh(l2_raw*0.4), which for l2_raw=3.8
+//    still gave tanh(1.52) ≈ 0.91, marginally above the 0.90 threshold.)
 const OUT_ALPHA: f32 = 4.0;
-// OUT_BETA saiu daqui: agora vem de `params.out_beta`, por ser.
+// OUT_BETA left this file: it now comes from `params.out_beta`, per being.
 
 // ── STRUCTS ───────────────────────────────────────────────────────────────────
 
 struct Params {
     n_beings:          u32,
     dt:                f32,
-    // Quando 1: ignora buf_wave (binding 1) e desempacota o sensory_wave direto
-    // de buf_percept (binding 8), que contém a saída de percepcao.wgsl (56 u32
-    // por ser, i8 empacotados em little-endian). Elimina o readback percepção→CPU
-    // e o write_buffer CPU→GPU que existia antes. O gpu_validate passa 0 aqui.
+    // When 1: ignore buf_wave (binding 1) and unpack the sensory wave straight out of
+    // buf_percept (binding 8), which holds the output of perception.wgsl (48 u32 per
+    // being, i8 packed little-endian). This removes the perception→CPU readback and the
+    // CPU→GPU write_buffer that used to happen. gpu_validate passes 0 here.
     use_percept_direct: u32,
-    // Força da fadiga de saída. Era `const OUT_BETA = 0.85`; virou parâmetro para
-    // poder ser medida em teste pareado (ver `BrainParams::out_beta` no host).
+    // Output fatigue strength. Used to be `const OUT_BETA = 0.85`; it became a parameter
+    // so it could be measured in a paired test (see `BrainParams::out_beta` on the host).
     out_beta:          f32,
-    // P1.5: ganho aplicado a l2_raw e ao bypass L1 antes da fadiga/tanh na ETAPA 2.
-    // Era `l2_raw = acc * (2.0/127.0)` e `raw_bp = w_l1r[tid] * 2.0` — dois `2.0`
-    // hardcoded. Padrão 2.0 (`BrainParams::OUT_GAIN_PADRAO`) = comportamento
-    // idêntico ao histórico; o A/B testa 2.0 vs 1.0 vs 0.5 (docs/PLANO_EVOLUCAO.md
-    // P1.5) contra a saturação de L2 (48/48 neurônios ativos em 97,4% dos ticks).
+    // P1.5: gain applied to l2_raw and to the L1 bypass before the fatigue/tanh in
+    // STAGE 2. Used to be `l2_raw = acc * (2.0/127.0)` and `raw_bp = w_l1r[tid] * 2.0` —
+    // two hardcoded `2.0`s. The default of 2.0 (`brain.rs::OUT_GAIN_DEFAULT`) reproduces
+    // the historical behaviour exactly; the A/B tests 2.0 vs 1.0 vs 0.5
+    // (docs/PLANO_EVOLUCAO.md P1.5) against L2 saturation (48/48 neurons active in 97.4%
+    // of the ticks).
     out_gain:          f32,
-    // P1.5, segunda alavanca (padrão DESLIGADA=0): 1 = normaliza l2_raw pelo
-    // desvio-padrão dos 48 l2_raw do MESMO ser antes do ganho/tanh — ataca a
-    // ESCALA da entrada de L2 (que pode crescer com a mutação ao longo das
-    // gerações) em vez de só o ganho de saída. Ver ETAPA 2 abaixo.
+    // P1.5, second lever (default OFF=0): 1 normalises l2_raw by the standard deviation
+    // of the 48 l2_raw values of the SAME being before the gain/tanh — it attacks the
+    // SCALE of the L2 input (which mutation can grow across generations) rather than only
+    // the output gain. See STAGE 2 below.
     norm_l2_by_std:    u32,
-    // P1.7 (docs/PLANO_EVOLUCAO.md) — braço de controle dos três mecanismos
-    // assíncronos, um bit por mecanismo. Era `_pad0` (padding morto).
-    // bit0 = memória (mecanismo 1) desligada: alfa tratado como 0.0 no shader,
-    //        INDEPENDENTE do que o genoma carrega (mesmo contrato de `--sem-lento`:
-    //        o dado pode existir e ter mutado, o bit é que decide se ele é LIDO).
-    // bit1 = período (mecanismo 2) desligado: período tratado como 1 (recalcula
-    //        todo tick, igual hoje).
-    // bit2 = limiar (mecanismo 2) desligado: limiar tratado como 0.0 (nunca zera
-    //        contribuição por fraqueza).
-    // bit3 = ativação heterogênea (mecanismo 3) desligada: id tratado como 0
-    //        (tanh, a não-linearidade única de hoje).
-    // 0 (padrão) = todos os mecanismos LEEM o genoma normalmente. Um genoma
-    // recém-nascido (`Genome::random`) tem os quatro campos em valor neutro
-    // (0.0/1.0/0.0/0), então mesmo com a máscara em 0 a saída da geração 0 é
-    // idêntica à fórmula antiga — testado em
-    // `gpu::evolution::tests::genoma_novo_tem_mecanismos_p17_neutros`.
+    // P1.7 (docs/PLANO_EVOLUCAO.md) — the control arm of the asynchronous mechanisms, one
+    // bit each. This field used to be `_pad0`, dead padding.
+    // bit0 = memory (mechanism 1) off: alpha treated as 0.0 in the shader, REGARDLESS of
+    //        what the genome carries (the same contract as the slow-brain ablation flag
+    //        at main.rs:547: the data may exist and may have mutated, but the bit is what
+    //        decides whether it is READ).
+    // bit1 = period (mechanism 2) off: period treated as 1 (recompute every tick, as
+    //        today).
+    // bit2 = threshold (mechanism 2) off: threshold treated as 0.0 (a contribution is
+    //        never zeroed for being weak).
+    // bit3 = heterogeneous activation (mechanism 3) off: the id is treated as 0 (tanh,
+    //        today's single non-linearity).
+    // 0 (the default) means every mechanism READS the genome normally. A newborn genome
+    // (`Genome::random`) has all four fields at their neutral value (0.0/1.0/0.0/0), so
+    // even with the mask at 0 the output of generation 0 is identical to the old formula
+    // — tested in `gpu::evolution::tests::genoma_novo_tem_mecanismos_p17_neutros`.
     mech_off_mask:     u32,
     _pad1:             u32,
-    // D3 (docs/ESCADA_DIFICULDADE.md) — ruído sensorial: desvio-padrão do ruído
-    // gaussiano aproximado somado a CADA canal da sensory_wave, POR TICK, em
-    // unidades de canal i8 (-127..127). Ex.: sigma=6 ≈ 5% da faixa de um lado
-    // (127). Aplicado ANTES do KAN, na ETAPA 0A (ver `apply_sensor_noise`).
-    // 0.0 (padrão) = nenhum ruído, comportamento idêntico ao histórico.
+    // D3 (docs/ESCADA_DIFICULDADE.md) — sensor noise: standard deviation of the
+    // approximate Gaussian noise added to EVERY sensory-wave channel, EVERY tick, in i8
+    // channel units (-127..127). For example sigma=6 ≈ 5% of the one-sided range (127).
+    // Applied BEFORE the KAN, in STAGE 0A (see `apply_sensor_noise`).
+    // 0.0 (the default) = no noise, behaviour identical to the historical path.
     noise_sigma:       f32,
-    // D3 — falha de canal (dropout sensorial): probabilidade [0,1] de o canal
-    // ser ZERADO neste tick ("sensor não respondeu"), sorteada por canal por
-    // tick via hash determinístico (mesmo padrão do denoise do CfC abaixo).
-    // 0.0 (padrão) = nenhum canal falha, comportamento idêntico ao histórico.
+    // D3 — channel failure (sensor dropout): probability in [0,1] that the channel is
+    // ZEROED on this tick ("the sensor did not answer"), drawn per channel per tick
+    // through a deterministic hash (the same pattern as the CfC denoise below).
+    // 0.0 (the default) = no channel fails, behaviour identical to the historical path.
     dropout_prob:      f32,
-    // Padding: mantém o uniform em múltiplo de 16 bytes (12 campos × 4 = 48,
-    // mesma convenção do struct original — 8×4=32). Espelha `BrainParams` no host.
+    // Padding: keeps the uniform a multiple of 16 bytes (12 fields × 4 = 48, the same
+    // convention as the original struct, which was 8 × 4 = 32). Mirrors `BrainParams` on
+    // the host.
     _pad2:             u32,
     _pad3:             u32,
 }
@@ -258,81 +266,86 @@ struct Params {
 
 @group(0) @binding(0) var<uniform>            params:     Params;
 
-// sensory_wave como i32 (sign-extended de i8 pelo host, evita bit-tricks no shader)
-// Layout: ser * WAVE + canal
+// The sensory wave as i32 (sign-extended from i8 by the host, which keeps bit tricks out
+// of the shader). Layout: being * WAVE + channel
 @group(0) @binding(1) var<storage, read>      buf_wave:   array<i32>;
 
-// KAN: spline_coeffs[16] por canal por ser
-// Layout: ser * WAVE * KAN_KNOTS + canal * KAN_KNOTS + knot_idx
+// KAN: spline_coeffs[16] per channel per being.
+// Layout: being * WAVE * KAN_KNOTS + channel * KAN_KNOTS + knot_idx
 @group(0) @binding(2) var<storage, read>      buf_kan:    array<f32>;
 
-// L1 pesos (BitLinear WAVE→96, f32 runtime)
-// Layout SoA: ser * (L1_OUT * WAVE) + neurônio_saída * WAVE + canal_entrada
+// L1 weights (BitLinear WAVE→96, f32 at runtime).
+// SoA layout: being * (L1_OUT * WAVE) + output_neuron * WAVE + input_channel
 @group(0) @binding(3) var<storage, read>      buf_l1w:    array<f32>;
 
-// L2 pesos (FloatLinear 96→48, f32)
-// Layout SoA: ser * (L2_OUT * L1_OUT) + neurônio_saída * L1_OUT + canal_entrada
+// L2 weights (FloatLinear 96→48, f32).
+// SoA layout: being * (L2_OUT * L1_OUT) + output_neuron * L1_OUT + input_channel
 @group(0) @binding(4) var<storage, read>      buf_l2w:    array<f32>;
 
-// Saída: final_intent[96] f32 por ser
-// Layout: ser * 96 + neurônio
+// Output: final_intent[96] f32 per being.
+// Layout: being * 96 + neuron
 @group(0) @binding(5) var<storage, read_write> buf_intent: array<f32>;
 
-// Estado CfC residente entre ticks (96 floats de state + 1 u32 counter)
-// Layout por ser: [state[0], ..., state[95], counter_u32_bitcast_f32]  = 97 × f32
-// Offset por ser: ser * 97
+// CfC state, resident between ticks (96 state floats + 1 u32 counter).
+// Layout per being: [state[0], …, state[95], counter_u32_bitcast_f32] = 97 × f32
+// Offset per being: being * 97
 @group(0) @binding(6) var<storage, read_write> buf_cfc:    array<f32>;
 
-// DEBUG TEMPORÁRIO: exporta l1_raw (96 f32) + inputs para ser 0 (96+127 i32)
-// Layout: [l1_raw[0..95], input_cfc[0..95], input_kan[96..222]]
-// Tamanho: 96*4 + 96*4 + 127*4 = 1276 bytes
+// TEMPORARY DEBUG: exports l1_raw (96 f32) plus the inputs of being 0 (96 + 127 i32).
+// Layout: [l1_raw[0..96], input_cfc[0..96], input_kan[96..223]]
+// Size: 96*4 + 96*4 + 127*4 = 1276 bytes. The third block is still sized for the
+// 223-channel wave; with WAVE=192 only its first 96 entries are ever written (see the
+// `j < 127u` guard in STAGE 1, which never binds because only 96 threads reach it).
 @group(0) @binding(7) var<storage, read_write> buf_debug:  array<f32>;
 
-// Saída de percepcao.wgsl: 56 u32 por ser (223 i8 empacotados em little-endian).
-// Layout: buf_percept[ser * 56 + ch/4], byte (ch % 4), interpretado como i8.
-// Usado APENAS quando params.use_percept_direct == 1 (gpu_loop); ignorado pelo
-// gpu_validate que usa buf_wave (binding 1) com i32 sign-extended da CPU.
-// O tipo é u32 e não atomic<u32> porque aqui apenas LEMOS (percepcao.wgsl já terminou).
+// Output of perception.wgsl: WAVE_U32S = 48 u32 per being (192 i8 packed little-endian).
+// Layout: buf_percept[being * WAVE_U32S + ch/4], byte (ch % 4), read as i8.
+// Used ONLY when params.use_percept_direct == 1 (gpu_loop); ignored by gpu_validate,
+// which uses buf_wave (binding 1) with i32 sign-extended by the CPU.
+// The type is u32 rather than atomic<u32> because we only READ here (perception.wgsl has
+// already finished).
 @group(0) @binding(8) var<storage, read>       buf_percept: array<u32>;
 
-// Fadiga adaptativa por neurônio CfC — estado lento residente entre ticks.
-// Layout: ser * L1_OUT + canal  (96 f32 por ser, inicializados em 0.0)
-// Não salva counter separado: usa o mesmo counter do buf_cfc.
-// Cresce quando |state[i]| é alto; subtrai do input CfC quebrando ponto fixo.
+// Adaptive fatigue per CfC neuron — slow state, resident between ticks.
+// Layout: being * L1_OUT + channel (96 f32 per being, initialised to 0.0).
+// It does not keep its own counter: it uses the same counter as buf_cfc.
+// It grows when |state[i]| is high, and is subtracted from the CfC input, breaking the
+// fixed point.
 @group(0) @binding(9) var<storage, read_write> buf_fatigue: array<f32>;
 
-// Constantes de tempo do CfC, uma por canal por ser — o "banco de τ".
-// Layout: ser * L1_OUT + canal  (96 f32 por ser). Guarda a TAXA DE DECAIMENTO em s⁻¹
-// (d = 1/τ), não τ, porque é a forma que entra direto no exponencial.
-// Somente leitura: τ é herdado do genoma e fixo na vida do ser. Modular τ em tempo real
-// foi medido e não paga (+0,11%); TER τ variado é que é selecionado (40× vs 5,3×).
+// CfC time constants, one per channel per being — the "τ bank".
+// Layout: being * L1_OUT + channel (96 f32 per being). It stores the DECAY RATE in s⁻¹
+// (d = 1/τ), not τ, because that is the form that goes straight into the exponential.
+// Read-only: τ is inherited from the genome and fixed for the being's life. Modulating τ
+// in real time was measured and does not pay (+0.11%); HAVING varied τ is what gets
+// selected (40× versus 5.3× in the control).
 @group(0) @binding(10) var<storage, read>      buf_tau:     array<f32>;
 
-// ── P1.7 — CÉREBRO ASSÍNCRONO (docs/PLANO_EVOLUCAO.md §P1.7) ──────────────────
+// ── P1.7 — ASYNCHRONOUS BRAIN (docs/PLANO_EVOLUCAO.md §P1.7) ──────────────────
 //
-// Três mecanismos herdáveis, todos por-neurônio, todos nascendo NEUTROS (idênticos
-// ao cérebro de hoje) — ver `gpu::evolution::Genome` para os campos e `evolve()`
-// para a mutação. Crítica do Leonardo que motivou isto: *"o que estou pedindo é um
-// cérebro ASSÍNCRONO; ele vai trabalhar em dimensões, neurônios e partes diferentes
-// conforme está na pista; se você fica sempre no mesmo tanh só está queimando
-// tempo."* — hoje os 20 usos de tanh neste arquivo são a ÚNICA não-linearidade, e
-// os 96+48 neurônios de L1/L2 disparam em TODO tick (medido, não suposto).
+// Three heritable mechanisms, all per-neuron, all born NEUTRAL (identical to today's
+// brain) — see `gpu::evolution::Genome` for the fields and `evolve()` for the mutation.
+// The owner's critique that motivated this: *"what I am asking for is an ASYNCHRONOUS
+// brain; it should work on different dimensions, neurons and parts depending on where it
+// is on the track; if you stay on the same tanh forever you are just burning time."* —
+// today the 20 uses of tanh in this file are the ONLY non-linearity, and the 96+48
+// neurons of L1/L2 fire on EVERY tick (measured, not assumed).
 //
-// Metadados por neurônio — READ-ONLY, subido uma vez por geração (mesmo padrão de
-// `buf_tau`: o dado é herdado do genoma e fixo na vida do ser).
-// Layout por ser, NEURON_META_PER_SER=480 f32, contíguo em blocos:
-//   [0..96)    l1_alpha       (mecanismo 1 — memória L1, ∈[0,0.95])
-//   [96..192)  l1_period      (mecanismo 2 — período de recálculo L1, inteiro ≥1
-//                              armazenado como f32, mesma convenção de disco/genoma
-//                              de todo campo — só f32, ver genome_io.rs)
-//   [192..288) l1_threshold   (mecanismo 2 — limiar de contribuição L1, ∈[0,~1))
-//   [288..384) l1_activation  (mecanismo 3 — id de ativação L1: 0=tanh 1=relu
-//                              2=linear 3=leaky-relu(0.01), armazenado como f32)
-//   [384..432) l2_alpha       (mecanismo 1 — memória L2, ∈[0,0.95])
-//   [432..480) l2_activation  (mecanismo 3 — id de ativação L2)
-const NEURON_META_PER_SER: u32 = 480u;
-// Offsets dos blocos dentro de cada bloco-de-ser de `buf_neuron_meta` (ver layout
-// acima). `l1_alpha` fica no offset 0 (implícito, sem constante própria).
+// Per-neuron metadata — READ-ONLY, uploaded once per generation (the same pattern as
+// `buf_tau`: the data is inherited from the genome and fixed for the being's life).
+// Layout per being, NEURON_META_PER_BEING = 480 f32, contiguous blocks:
+//   [0..96)    l1_alpha       (mechanism 1 — L1 memory, ∈[0,0.95])
+//   [96..192)  l1_period      (mechanism 2 — L1 recompute period, an integer ≥1 stored as
+//                              f32, the same disk/genome convention as every other field
+//                              — f32 only, see genome_io.rs)
+//   [192..288) l1_threshold   (mechanism 2 — L1 contribution threshold, ∈[0,~1))
+//   [288..384) l1_activation  (mechanism 3 — L1 activation id: 0=tanh 1=relu 2=linear
+//                              3=leaky-relu(0.01), stored as f32)
+//   [384..432) l2_alpha       (mechanism 1 — L2 memory, ∈[0,0.95])
+//   [432..480) l2_activation  (mechanism 3 — L2 activation id)
+const NEURON_META_PER_BEING: u32 = 480u;
+// Offsets of the blocks inside each per-being block of `buf_neuron_meta` (see the layout
+// above). `l1_alpha` sits at offset 0, implicitly, with no constant of its own.
 const NEURON_META_L1_PERIOD_OFF:     u32 = 96u;
 const NEURON_META_L1_THRESHOLD_OFF:  u32 = 192u;
 const NEURON_META_L1_ACTIVATION_OFF: u32 = 288u;
@@ -340,202 +353,204 @@ const NEURON_META_L2_ALPHA_OFF:      u32 = 384u;
 const NEURON_META_L2_ACTIVATION_OFF: u32 = 432u;
 @group(0) @binding(11) var<storage, read>      buf_neuron_meta: array<f32>;
 
-// Estado persistente da memória EMA por neurônio (mecanismo 1) — COPIA O PADRÃO de
-// `buf_cfc`: reside na GPU entre ticks, read_write, resetado em spawn/entre gerações
-// (`BrainGpu::reset_cfc` agora zera este buffer junto com buf_cfc/buf_fatigue — ver
-// host), NUNCA baixado por tick. Guarda h[n-1] — ver a conta do ganho de amplitude no
-// comentário de `apply_neuron_memory` abaixo.
-// Layout por ser, NEURON_MEM_PER_SER=144 f32: [0..96) memória L1, [96..144) memória L2.
-const NEURON_MEM_PER_SER: u32 = 144u;
+// Persistent state of the per-neuron EMA memory (mechanism 1) — FOLLOWS THE PATTERN of
+// `buf_cfc`: it lives on the GPU between ticks, read_write, is cleared on spawn and
+// between generations (`BrainGpu::reset_cfc` now zeroes this buffer alongside
+// buf_cfc/buf_fatigue — see the host), and is NEVER downloaded per tick. It holds h[n-1]
+// — see the amplitude-gain derivation in the comment on `neuron_mem_gain` below.
+// Layout per being, NEURON_MEM_PER_BEING = 144 f32: [0..96) L1 memory, [96..144) L2.
+const NEURON_MEM_PER_BEING: u32 = 144u;
 @group(0) @binding(12) var<storage, read_write> buf_neuron_mem: array<f32>;
 
-// M4 (REGIOES_CEREBRAIS.md): gate multiplicativo por REGIÃO — 4 f32 por ser
-// (blocos de 24 neurônios de L1: visão/parede/corpo/associativo), escrito pela
-// CPU a partir do cérebro lento + reserva. 1,0 = neutro (flag off ou reserva
-// esgotada). Aplicado na ATIVAÇÃO de L1 antes da quantização pra L2 e do bypass.
+// M4 (REGIOES_CEREBRAIS.md): a multiplicative gate per REGION — 4 f32 per being (blocks
+// of 24 L1 neurons: vision / wall / body / associative), written by the CPU from the slow
+// brain plus its reserve. 1.0 is neutral (flag off, or the reserve exhausted). Applied to
+// the L1 ACTIVATION, before the quantisation for L2 and before the bypass.
 @group(0) @binding(13) var<storage, read>      buf_gates:  array<f32>;
 
-// ── MEMÓRIA DE WORKGROUP ──────────────────────────────────────────────────────
+// ── WORKGROUP MEMORY ──────────────────────────────────────────────────────────
 
-var<workgroup> w_kan: array<i32, 223>;  // pós-KAN, pré-CfC: todos os canais
-var<workgroup> w_cfc: array<i32, 96>;   // saída CfC (tanh(state) × 127, como i32)
-var<workgroup> w_l1r: array<f32, 96>;   // acumuladores raw do L1 (pré-tanh)
-var<workgroup> w_l1a: array<i32, 96>;   // L1 quantizado para entrada no L2 (i8 × 127)
-var<workgroup> w_l2r: array<f32, 48>;   // l2_raw PRÉ-ganho (acc/127, sem params.out_gain)
-                                          // — usado só quando params.norm_l2_by_std==1
+// w_kan is still sized 223, from the pre-migration wave; only [0, WAVE) is ever used.
+var<workgroup> w_kan: array<i32, 223>;  // post-KAN, pre-CfC: every channel
+var<workgroup> w_cfc: array<i32, 96>;   // CfC output (tanh(state) × 127, as i32)
+var<workgroup> w_l1r: array<f32, 96>;   // raw L1 accumulators (pre-tanh)
+var<workgroup> w_l1a: array<i32, 96>;   // L1 quantised as L2 input (i8 × 127)
+var<workgroup> w_l2r: array<f32, 48>;   // l2_raw PRE-gain (acc/127, without params.out_gain)
+                                          // — used only when params.norm_l2_by_std == 1
 
-// ── KAN filter_pulse (equivalente a KanAxiomFilter::filter_pulse, kan.rs:18-29) ─
+// ── KAN filter_pulse (equivalent to KanAxiomFilter::filter_pulse, kan.rs:18-29) ─
 
-// Variante que recebe raw_i32 (sinal inteiro em [-127,127]) e devolve o valor
-// quantizado após KAN, já em escala de i32 (equivalente a i8).
+// A variant that takes raw_i32 (an integer signal in [-127,127]) and returns the value
+// quantised after the KAN, already on the i32 (i.e. i8-equivalent) scale.
 //
-// CORREÇÃO NUMÉRICA: a versão anterior fazia raw_f32 = raw_i32/127.0, depois
-// filtered = raw_f32 * coeff, depois w_kan = i32(filtered * 127.0).
-// Isso equivale a raw_i32 / 127.0 * coeff * 127.0. O round-trip /127 *127
-// introduzia 1 ULP de diferença em relação à CPU, causando boundary crossing
-// em alguns valores (ex: -18/127*1.0*127 != -18 exato em f32 no GPU).
-// Evitar o round-trip: usar raw_i32 * coeff diretamente, sem dividir/multiplicar
-// por 127. O resultado é clamp(raw_i32 * coeff, -127, 127).
+// NUMERICAL FIX: the previous version computed raw_f32 = raw_i32/127.0, then
+// filtered = raw_f32 * coeff, then w_kan = i32(filtered * 127.0). That amounts to
+// raw_i32 / 127.0 * coeff * 127.0. The /127 *127 round trip introduced 1 ULP of
+// difference against the CPU, causing a boundary crossing for some values (for instance
+// -18/127*1.0*127 is not exactly -18 in f32 on the GPU). Avoid the round trip: use
+// raw_i32 * coeff directly, without dividing and multiplying by 127. The result is
+// clamp(raw_i32 * coeff, -127, 127).
 fn kan_filter_int(raw_i32: i32, knots_base: u32) -> i32 {
     let raw_f32: f32 = f32(raw_i32);
 
-    // Axiom 1: sinal zero não carrega direção (kan.rs:20-21)
-    // Em escala de i32: |raw_i32| = 0 (identicamente zero) → 0.
-    // Threshold original: |raw_f32/127| < 0.001 → |raw_f32| < 0.127 → |raw_i32| < 1 em inteiro.
-    // Como raw_i32 é inteiro: apenas raw_i32 == 0 satisfaz estritamente |raw_i32| < 0.127.
-    // NOTA: valor 1 em i8 → raw_f32_original = 1/127 ≈ 0.00787, que é > 0.001 → não zerado.
-    // Logo o threshold correto em i32 é: raw_i32 == 0.
+    // Axiom 1: a zero signal carries no direction (kan.rs:20-21).
+    // On the i32 scale: |raw_i32| = 0 (identically zero) → 0.
+    // The original threshold was |raw_f32/127| < 0.001 → |raw_f32| < 0.127 → |raw_i32| < 1
+    // in integers. Since raw_i32 is an integer, only raw_i32 == 0 strictly satisfies
+    // |raw_i32| < 0.127.
+    // NOTE: the value 1 in i8 gives raw_f32_original = 1/127 ≈ 0.00787, which is > 0.001,
+    // so it is not zeroed. Hence the correct threshold in i32 is: raw_i32 == 0.
     if raw_i32 == 0 { return 0; }
 
-    // Índice do spline: mapeado de raw_f32_normalized ∈ [-1,1] para [0,15].
-    // raw_f32_normalized = raw_i32 / 127.0 (mas podemos calcular o idx sem dividir)
+    // Spline index: mapped from raw_f32_normalized ∈ [-1,1] onto [0,15].
+    // raw_f32_normalized = raw_i32 / 127.0 (but the index can be computed without dividing)
     // idx = (raw_i32/127.0 + 1.0) * 7.5 = (raw_i32 + 127.0) * 7.5 / 127.0
     //     = (f32(raw_i32) + 127.0) * (7.5 / 127.0)
     let idx_f: f32 = (raw_f32 + 127.0) * (7.5 / 127.0);
     let idx: u32   = u32(clamp(idx_f, 0.0, 15.0));
     let c: f32     = buf_kan[knots_base + idx];
 
-    // Resultado sem round-trip: raw_i32 * coeff (em escala de i8 / 127)
-    // Equivalente a: (raw_i32/127 * coeff) * 127 = raw_i32 * coeff
+    // Result without the round trip: raw_i32 * coeff (on the i8 / 127 scale).
+    // Equivalent to: (raw_i32/127 * coeff) * 127 = raw_i32 * coeff
     return i32(clamp(raw_f32 * c, -127.0, 127.0));
 }
 
-// ── P1.7: ativação heterogênea por neurônio (mecanismo 3) ─────────────────────
+// ── P1.7: heterogeneous per-neuron activation (mechanism 3) ───────────────────
 //
-// ids: 0=tanh (padrão, hoje) · 1=ReLU · 2=linear · 3=leaky-ReLU(0.01).
-// Mesmas fórmulas de `math::activations` (src/math/activations.rs) — NÃO
-// reimplementa lógica nova, só espelha o que já existe lá (regra da tarefa: "as
-// funções JÁ EXISTEM, use de lá"). O clamp para a faixa i8 acontece no CHAMADOR
-// (`clamp(activated * 127.0, -127.0, 127.0)`), igual ao que já existia para tanh —
-// linear/ReLU sem essa saturação natural do tanh dependem inteiramente desse
-// clamp externo para não estourar a quantização.
+// ids: 0=tanh (the default, today) · 1=ReLU · 2=linear · 3=leaky-ReLU(0.01).
+// Same formulas as `math::activations` (src/math/activations.rs) — this does NOT
+// reimplement new logic, it only mirrors what already lives there (task rule: "the
+// functions ALREADY EXIST, use them from there"). The clamp to the i8 range happens in
+// the CALLER (`clamp(activated * 127.0, -127.0, 127.0)`), exactly as it already did for
+// tanh — linear and ReLU, which lack tanh's natural saturation, depend entirely on that
+// external clamp not to overflow the quantisation.
 //
-// CUSTO DE DIVERGÊNCIA DE WARP (RDNA2, wave32): as 32 lanes de uma wave executam
-// em LOCKSTEP (SIMD). Se os neurônios mapeados nas lanes de uma MESMA wave tiverem
-// ids diferentes, o hardware precisa percorrer os branches que QUALQUER lane da
-// wave tomou — cada lane só grava o resultado do seu próprio caso (predicação),
-// mas o tempo pago é o de executar todos os casos distintos presentes na wave, não
-// só o seu. Com 96 neurônios de L1 = 3 waves de 32 (RDNA2 wave size, ver
-// CLAUDE.md do projeto) e mutação de ativação numa taxa BAIXA (ver `evolve()` em
-// `gpu/evolution.rs`), a fração de waves heterogêneas cresce devagar ao longo das
-// gerações — o custo é real (não é grátis) mas pequeno: os 4 casos são ALU pura
-// (sem acesso a memória divergente), poucas instruções cada.
+// COST OF WARP DIVERGENCE (RDNA2, wave32): the 32 lanes of a wave execute in LOCKSTEP
+// (SIMD). If the neurons mapped onto the lanes of the SAME wave carry different ids, the
+// hardware has to walk every branch that ANY lane of the wave took — each lane only
+// stores the result of its own case (predication), but the time paid is that of executing
+// every distinct case present in the wave, not just its own. With 96 L1 neurons = 3 waves
+// of 32 (the RDNA2 wave size, see the project's CLAUDE.md) and a LOW activation mutation
+// rate (see `evolve()` in `gpu/evolution.rs`), the fraction of heterogeneous waves grows
+// slowly across generations — the cost is real (not free) but small: the 4 cases are pure
+// ALU (no divergent memory access), a handful of instructions each.
 fn apply_activation(id: u32, x: f32) -> f32 {
     if id == 1u { return max(x, 0.0); }                     // ReLU
-    if id == 2u { return x; }                                // linear (satura no clamp do chamador)
+    if id == 2u { return x; }                                // linear (saturates in the caller's clamp)
     if id == 3u { return select(x, x * 0.01, x < 0.0); }      // leaky-ReLU(0.01)
-    return tanh(x);                                           // 0 = tanh (padrão, idêntico a hoje)
+    return tanh(x);                                           // 0 = tanh (the default, identical to today)
 }
 
-// ── P1.7: memória por neurônio (mecanismo 1) ───────────────────────────────────
+// ── P1.7: per-neuron memory (mechanism 1) ─────────────────────────────────────
 //
-// h[n] = h[n-1]·alfa + x[n]·(1-alfa) — combinação convexa, coeficientes somam 1.
-// Para ENTRADA CONSTANTE isso já tem ganho DC=1 em QUALQUER alfa (resolve h*=h*·alfa
-// + x·(1-alfa) ⇒ h*=x), diferente do CfC (`buf_cfc` acima), que precisa do fator
-// `CFC_DC_GAIN·(1-decay)` porque ali o "ganho" e o "decaimento" são parâmetros
-// livres independentes. Aqui não há esse artefato — mas há OUTRO: a AMPLITUDE
-// (variância) de um sinal que FLUTUA tick a tick (o caso real dos canais
-// sensoriais — parede/curvatura/velocidade nunca são constantes) É atenuada por um
-// filtro passa-baixa, mesmo com ganho DC exato em 1. Modelando x[n] como
-// aproximadamente ruído branco de variância σx² (resposta ao impulso do filtro:
-// h[n] = (1-alfa)·Σ_{k=0}^{n} alfa^k·x[n-k]):
+// h[n] = h[n-1]·alpha + x[n]·(1-alpha) — a convex combination, the coefficients sum to 1.
+// For a CONSTANT INPUT this already has DC gain 1 at ANY alpha (solve h* = h*·alpha +
+// x·(1-alpha) ⇒ h* = x), unlike the CfC (`buf_cfc` above), which needs the
+// `CFC_DC_GAIN·(1-decay)` factor because there the "gain" and the "decay" are independent
+// free parameters. There is no such artefact here — but there is ANOTHER one: the
+// AMPLITUDE (variance) of a signal that FLUCTUATES tick to tick (the real case for the
+// sensory channels — wall, curvature and speed are never constant) IS attenuated by a
+// low-pass filter, even with the DC gain exactly at 1. Modelling x[n] as approximately
+// white noise of variance σx² (the filter's impulse response being
+// h[n] = (1-alpha)·Σ_{k=0}^{n} alpha^k·x[n-k]):
 //
-//   Var(h) = (1-alfa)²·σx²·Σ alfa^{2k} = (1-alfa)²/(1-alfa²)·σx² = (1-alfa)/(1+alfa)·σx²
+//   Var(h) = (1-alpha)²·σx²·Σ alpha^{2k} = (1-alpha)²/(1-alpha²)·σx²
+//          = (1-alpha)/(1+alpha)·σx²
 //
-// Em alfa=0.95, Var(h)/Var(x) ≈ 0,026 — o neurônio pareceria 97% mais fraco (MUDO)
-// e seria descartado por fraco, não por lento (GAP 11 do CLAUDE.md do projeto).
-// O ganho que RESTAURA Var(saída)=Var(x) é o inverso da raiz desse fator:
+// At alpha=0.95, Var(h)/Var(x) ≈ 0.026 — the neuron would look 97% weaker (MUTE) and be
+// discarded for being weak, not for being slow (GAP 11 of the project's CLAUDE.md). The
+// gain that RESTORES Var(output) = Var(x) is the inverse square root of that factor:
 //
-//   gain(alfa) = sqrt((1+alfa)/(1-alfa))         [gain(0)=1 — sem mudança em alfa=0]
+//   gain(alpha) = sqrt((1+alpha)/(1-alpha))     [gain(0)=1 — nothing changes at alpha=0]
 //
-// Em alfa=0.95, gain≈6,24 — grande, mas finito porque alfa é clampado em 0.95 em
-// `evolve()` (alfa≥1 diverge, condição de estabilidade da equação a diferenças:
-// o polo do filtro fica em |alfa|<1). `max(1.0-alfa, 1e-3)` é só uma segunda trava
-// numérica (o clamp de `evolve()` já impede alfa=1, isto é defesa em profundidade
-// contra um genoma corrompido/legado fora de faixa).
+// At alpha=0.95, gain ≈ 6.24 — large, but finite because alpha is clamped at 0.95 in
+// `evolve()` (alpha≥1 diverges; the stability condition of the difference equation puts
+// the filter's pole at |alpha|<1). `max(1.0-alpha, 1e-3)` is only a second numerical
+// guard (the clamp in `evolve()` already forbids alpha=1; this is defence in depth
+// against a corrupted or legacy genome out of range).
 const NEURON_MEM_GAIN_EPS: f32 = 1e-3;
-fn neuron_mem_gain(alfa: f32) -> f32 {
-    return sqrt((1.0 + alfa) / max(1.0 - alfa, NEURON_MEM_GAIN_EPS));
+fn neuron_mem_gain(alpha: f32) -> f32 {
+    return sqrt((1.0 + alpha) / max(1.0 - alpha, NEURON_MEM_GAIN_EPS));
 }
 
-// ── D3 (docs/ESCADA_DIFICULDADE.md): ruído sensorial + falha de canal ─────────
+// ── D3 (docs/ESCADA_DIFICULDADE.md): sensor noise + channel failure ───────────
 //
-// Aplicado na ETAPA 0A, ANTES do KAN (`kan_filter_int`) — simula sensor
-// ruidoso/instável na leitura da onda, antes de qualquer processamento neural
-// (o filtro KAN e o CfC recebem o sinal já degradado, igual a um sensor real).
+// Applied in STAGE 0A, BEFORE the KAN (`kan_filter_int`) — it simulates a noisy or
+// unstable sensor at the point where the wave is read, before any neural processing (the
+// KAN filter and the CfC receive an already degraded signal, just like a real sensor).
 //
-// # Hash determinístico — mesmo padrão do CfC denoise acima
-// (`h = counter*2654435761u + i`, hash de Knuth, wrapping u32 — Rust
-// `wrapping_mul`/`wrapping_add` == WGSL u32 que wrap por padrão).
+// # Deterministic hash — the same pattern as the CfC denoise above
+// (`h = counter*2654435761u + i`, Knuth's hash, wrapping u32 — Rust `wrapping_mul` /
+// `wrapping_add` == WGSL u32, which wraps by default).
 //
-// Estendido com `being * 40503u`: o CfC denoise usa só `counter*prime + canal`
-// porque ali o counter já é POR-SER (lido de buf_cfc[being*97+96]) — mas aqui
-// precisamos do MESMO counter para os 223 canais de um ser dentro do MESMO
-// dispatch, então lemos o counter UMA VEZ (`sensor_counter`, ver ETAPA 0A) — e
-// ele é idêntico entre seres na mesma geração (todos incrementam 1/tick em
-// lockstep). Sem o termo `being`, dois seres diferentes veriam o MESMO
-// ruído no MESMO canal no MESMO tick — degenerescência que o CfC denoise não
-// tem (seu counter já é lido do buf_cfc DAQUELE ser). `40503u` é só outro
-// multiplicador ímpar grande (não precisa ser primo do Knuth) para misturar
-// `being` sem colidir com o termo de canal.
+// Extended with `being * 40503u`: the CfC denoise uses only `counter*prime + channel`
+// because there the counter is already PER BEING (read from buf_cfc[being*97+96]) — but
+// here we need the SAME counter for all of a being's channels inside the SAME dispatch,
+// so we read the counter ONCE (`sensor_counter`, see STAGE 0A) — and it is identical
+// across beings in the same generation (they all increment once per tick in lockstep).
+// Without the `being` term, two different beings would see the SAME noise on the SAME
+// channel on the SAME tick — a degeneracy the CfC denoise does not have (its counter is
+// already read from THAT being's buf_cfc). `40503u` is just another large odd multiplier
+// (it does not have to be Knuth's prime) to mix `being` in without colliding with the
+// channel term.
 //
-// Depende de (tick via sensor_counter, being, canal) — replay determinístico
-// preservado: mesma semente + mesma sequência de ticks ⇒ mesmo ruído.
+// It depends on (tick, through sensor_counter; being; channel) — deterministic replay is
+// preserved: the same seed and the same sequence of ticks give the same noise.
 //
-// # Gaussiano aproximado
+// # Approximate Gaussian
 //
-// Soma de 3 uniformes(0,1) independentes (3 hashes encadeados, cada um
-// extraindo os bits [8..31] do hash — mesma extração de `f32(h>>8u)/16777216.0`
-// que o CfC denoise já usa) menos a média 1,5, escalado por 2:
+// The sum of 3 independent uniforms on (0,1) — 3 chained hashes, each taking bits [8..31]
+// of the hash, the same extraction `f32(h>>8u)/16777216.0` the CfC denoise already uses —
+// minus the mean 1.5, scaled by 2:
 //
-//   Var(U(0,1)) = 1/12  ⇒  Var(soma de 3) = 3/12 = 0,25  ⇒  desvio = 0,5
-//   (soma - 1,5) tem média 0, desvio 0,5 → ×2 normaliza para desvio ≈ 1,0
+//   Var(U(0,1)) = 1/12  ⇒  Var(sum of 3) = 3/12 = 0.25  ⇒  std dev = 0.5
+//   (sum - 1.5) has mean 0 and std dev 0.5 → ×2 normalises it to a std dev of ≈ 1.0
 //
-// Aproximação por CLT (Teorema Central do Limite) com poucos termos — NÃO é
-// gaussiana exata (para isso precisaria de ~12 termos, truque clássico
-// Irwin-Hall onde a soma de 12 U(0,1) já tem desvio exatamente 1 sem escalar),
-// mas 3 termos já quebra a forma retangular de um único uniforme e dá uma
-// distribuição em sino, suficiente para simular ruído de sensor. Documentado,
-// não escondido: NÃO é Box-Muller (custaria log/sin/cos por canal por tick ×
-// 223 canais × N seres — caro demais para o ganho de fidelidade).
+// A CLT (Central Limit Theorem) approximation with few terms — it is NOT an exact
+// Gaussian (that would need ~12 terms, the classic Irwin-Hall trick where the sum of 12
+// U(0,1) already has a std dev of exactly 1 without scaling), but 3 terms already break
+// the rectangular shape of a single uniform and give a bell-shaped distribution, which is
+// enough to simulate sensor noise. Documented, not hidden: this is NOT Box-Muller, which
+// would cost a log/sin/cos per channel per tick × 192 channels × N beings — far too
+// expensive for the fidelity it would buy.
 //
-// `noise_sigma` está em UNIDADES DE CANAL i8 (-127..127): sigma=6 ≈ 5% da
-// faixa de um lado (127 = amplitude, não os 254 de ponta a ponta).
+// `noise_sigma` is in i8 CHANNEL UNITS (-127..127): sigma=6 ≈ 5% of the one-sided range
+// (127 is the amplitude, not the 254 end to end).
 //
-// # Dropout (falha de canal)
+// # Dropout (channel failure)
 //
-// Hash separado (`counter+7u`, mesma mistura de being/canal) para não
-// correlacionar o sorteio de queda com o sorteio de ruído acima — um canal
-// pode cair mesmo em tick/being/canal onde o ruído sorteou perto de zero, e
-// vice-versa. Sensor "falhou": o canal sai ZERADO para o resto do pipeline
-// (KAN vê 0 → axioma 1 do kan_filter_int já trata raw==0 como "sem direção").
+// A separate hash (`counter+7u`, with the same being/channel mixing) so the failure draw
+// does not correlate with the noise draw above — a channel can drop even on a
+// tick/being/channel where the noise happened to land near zero, and vice versa. When the
+// sensor "fails", the channel comes out ZEROED for the rest of the pipeline (the KAN sees
+// 0, and axiom 1 of kan_filter_int already treats raw==0 as "no direction").
 fn apply_sensor_noise(raw_i32: i32, being: u32, ch: u32, counter: u32) -> i32 {
     var v: i32 = raw_i32;
 
     if params.noise_sigma > 0.0 {
-        let h0: u32 = counter * 2654435761u + being * 40503u + ch;  // hash de Knuth + being + canal
-        let h1: u32 = h0 * 2654435761u + 1u;                         // 2º estágio encadeado
-        let h2: u32 = h1 * 2654435761u + 1u;                         // 3º estágio encadeado
-        let u0: f32 = f32(h0 >> 8u) / 16777216.0;                    // uniforme [0,1)
+        let h0: u32 = counter * 2654435761u + being * 40503u + ch;  // Knuth hash + being + channel
+        let h1: u32 = h0 * 2654435761u + 1u;                         // 2nd chained stage
+        let h2: u32 = h1 * 2654435761u + 1u;                         // 3rd chained stage
+        let u0: f32 = f32(h0 >> 8u) / 16777216.0;                    // uniform [0,1)
         let u1: f32 = f32(h1 >> 8u) / 16777216.0;
         let u2: f32 = f32(h2 >> 8u) / 16777216.0;
-        let gauss_approx: f32 = (u0 + u1 + u2 - 1.5) * 2.0;           // média 0, desvio ≈1,0
+        let gauss_approx: f32 = (u0 + u1 + u2 - 1.5) * 2.0;           // mean 0, std dev ≈ 1.0
         let noisy: f32 = f32(v) + gauss_approx * params.noise_sigma;
         v = i32(clamp(noisy, -127.0, 127.0));
     }
 
     if params.dropout_prob > 0.0 {
-        let hd: u32 = (counter + 7u) * 2654435761u + being * 40503u + ch;  // hash independente do de ruído
+        let hd: u32 = (counter + 7u) * 2654435761u + being * 40503u + ch;  // hash independent of the noise one
         let ud: f32 = f32(hd >> 8u) / 16777216.0;
         if ud < params.dropout_prob {
-            v = 0;  // sensor falhou: canal zerado neste tick
+            v = 0;  // the sensor failed: the channel is zeroed on this tick
         }
     }
 
     return v;
 }
 
-// ── KERNEL PRINCIPAL ──────────────────────────────────────────────────────────
+// ── MAIN KERNEL ───────────────────────────────────────────────────────────────
 
 @compute @workgroup_size(128)
 fn main(
@@ -543,65 +558,67 @@ fn main(
     @builtin(local_invocation_id)  lid:  vec3<u32>,
     @builtin(workgroup_id)         wgid: vec3<u32>,
 ) {
-    let being = wgid.x;    // um workgroup por ser
-    let tid = lid.x;       // thread local [0, 127]
+    let being = wgid.x;    // one workgroup per being
+    let tid = lid.x;       // local thread [0, 127]
 
-    // Mais workgroups do que seres vivos: guard padrão (sem dispatch arredondado)
+    // More workgroups than living beings: the standard guard (the dispatch is not rounded).
     if being >= params.n_beings { return; }
 
     let wave_base: u32 = being * WAVE;
     let kan_base:  u32 = being * WAVE * KAN_KNOTS;
 
-    // D3 (docs/ESCADA_DIFICULDADE.md) — contador do ser, o MESMO usado pelo
-    // denoise do CfC (buf_cfc[being*97+96]), lido AQUI (ETAPA 0A) — ou seja,
-    // ANTES do incremento que a ETAPA 0B faz mais abaixo. Os 223 canais dos
-    // dois passes desta etapa usam este MESMO valor: hash determinístico por
-    // (tick, being, canal) via `apply_sensor_noise`, ver a doc da função.
+    // D3 (docs/ESCADA_DIFICULDADE.md) — the being's counter, the SAME one the CfC denoise
+    // uses (buf_cfc[being*97+96]), read HERE (STAGE 0A) — that is, BEFORE the increment
+    // STAGE 0B performs further down. Both passes of this stage use this SAME value for
+    // every channel: a deterministic hash over (tick, being, channel) through
+    // `apply_sensor_noise`; see that function's documentation.
     let sensor_counter: u32 = bitcast<u32>(buf_cfc[being * 97u + 96u]);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ETAPA 0A: KAN per-channel (SensoryPreFilter::apply, kan.rs:72-79)
+    // STAGE 0A: per-channel KAN (SensoryPreFilter::apply, kan.rs:72-79)
     //
-    // WAVE = 223: precisa de 2 passes de 128 threads.
-    //   Pass 1: tid ∈ [0,127] → canal tid       (todos os 128 threads ativam)
-    //   Pass 2: tid ∈ [0, 94] → canal tid+128   (canais 128..222)
-    // As escritas em w_kan são em posições disjuntas — sem conflito.
+    // WAVE = 192 needs 2 passes of 128 threads.
+    //   Pass 1: tid ∈ [0,127] → channel tid       (all 128 threads active)
+    //   Pass 2: tid ∈ [0, 63] → channel tid+128   (channels 128..191)
+    // The writes into w_kan land on disjoint positions — no conflict.
     //
-    // FONTE DO WAVE: dois caminhos controlados por params.use_percept_direct.
-    //   0 = buf_wave (binding 1): i32 sign-extended, enviado pela CPU via write_buffer.
-    //       Usado pelo gpu_validate, que constrói o wave na CPU e passa para a GPU.
-    //   1 = buf_percept (binding 8): 56 u32 por ser, saída de percepcao.wgsl.
-    //       Layout: byte ch = (buf_percept[ser*56 + ch/4] >> ((ch%4)*8)) & 0xFF,
-    //       interpretado como i8 two's-complement.
-    //       Usado pelo gpu_loop: percepção → cérebro DENTRO da VRAM, zero readback.
+    // WHERE THE WAVE COMES FROM: two paths, chosen by params.use_percept_direct.
+    //   0 = buf_wave (binding 1): i32 sign-extended, uploaded by the CPU through
+    //       write_buffer. Used by gpu_validate, which builds the wave on the CPU and
+    //       hands it to the GPU.
+    //   1 = buf_percept (binding 8): WAVE_U32S = 48 u32 per being, the output of
+    //       perception.wgsl.
+    //       Layout: byte ch = (buf_percept[being*WAVE_U32S + ch/4] >> ((ch%4)*8)) & 0xFF,
+    //       read as two's-complement i8.
+    //       Used by gpu_loop: perception → brain INSIDE VRAM, with zero readback.
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Desempacota o canal `ch` do sensory_wave de acordo com o modo de leitura.
-    // Inline nos dois passes abaixo para evitar sobrecarga de chamada de função.
+    // Unpacks channel `ch` of the sensory wave according to the read mode. Inlined into
+    // both passes below to avoid the function-call overhead.
 
-    // Pass 1: canais 0..127
+    // Pass 1: channels 0..127
     {
         let ch: u32 = tid;
-        // ch < 128 sempre verdadeiro aqui; WAVE=223 > 128, sem guard necessário
+        // ch < 128 always holds here; WAVE=192 > 128, so no guard is needed.
         var raw_i32: i32;
         if params.use_percept_direct == 1u {
-            // Desempacota i8 two's-complement de buf_percept (saída de percepcao.wgsl).
-            // 56 u32 por ser: byte ch está em word (ch/4), shift ((ch%4)*8).
+            // Unpack a two's-complement i8 from buf_percept (perception.wgsl's output).
+            // WAVE_U32S u32 per being: byte ch lives in word (ch/4), at shift ((ch%4)*8).
             let percept_base: u32 = being * WAVE_U32S;
             let word: u32   = buf_percept[percept_base + ch / 4u];
             let byte_u: u32 = (word >> ((ch % 4u) * 8u)) & 0xFFu;
-            // Extensão de sinal u8 → i32 two's-complement:
-            // se bit 7 estiver ligado (byte >= 128), o valor é byte - 256.
+            // Sign extension u8 → two's-complement i32: if bit 7 is set (byte >= 128),
+            // the value is byte - 256.
             raw_i32 = select(i32(byte_u), i32(byte_u) - 256, byte_u >= 128u);
         } else {
             raw_i32 = buf_wave[wave_base + ch];
         }
-        // D3: ruído sensorial + falha de canal, ANTES do KAN. No-op quando
-        // noise_sigma==0 e dropout_prob==0 (comportamento histórico).
+        // D3: sensor noise + channel failure, BEFORE the KAN. A no-op when
+        // noise_sigma==0 and dropout_prob==0 (the historical behaviour).
         raw_i32 = apply_sensor_noise(raw_i32, being, ch, sensor_counter);
         w_kan[ch] = kan_filter_int(raw_i32, kan_base + ch * KAN_KNOTS);
     }
-    // Pass 2: canais 128..222 (95 canais, 128-127=1 canal a mais que threads 0..94)
+    // Pass 2: channels 128..191 (64 channels, so threads 64..127 do nothing)
     {
         let ch: u32 = tid + 128u;
         if ch < WAVE {
@@ -614,7 +631,7 @@ fn main(
             } else {
                 raw_i32 = buf_wave[wave_base + ch];
             }
-            // D3: mesmo tratamento do Pass 1 — ver comentário acima.
+            // D3: same treatment as Pass 1 — see the comment above.
             raw_i32 = apply_sensor_noise(raw_i32, being, ch, sensor_counter);
             w_kan[ch] = kan_filter_int(raw_i32, kan_base + ch * KAN_KNOTS);
         }
@@ -623,72 +640,74 @@ fn main(
     workgroupBarrier();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ETAPA 0B: CfC pré-processador (CfCCell::update, cfc.rs:59-86)
+    // STAGE 0B: CfC pre-processor (CfCCell::update, cfc.rs:59-86)
     //
-    // Atualiza state[0..96] e escreve filtered_retina em w_cfc[0..96].
-    // Apenas 96 threads (tid < 96) trabalham — 32 ficam ociosas.
+    // Updates state[0..96] and writes filtered_retina into w_cfc[0..96].
+    // Only 96 threads (tid < 96) work — the other 32 idle.
     //
-    // State layout em buf_cfc (por ser):
-    //   [state[0], ..., state[95], counter_u32_bitcast_f32] = 97 × f32
-    //   offset por ser: ser * 97
+    // State layout in buf_cfc (per being):
+    //   [state[0], …, state[95], counter_u32_bitcast_f32] = 97 × f32
+    //   offset per being: being * 97
     //
-    // Counter: incrementado ANTES do loop de canais (cfc.rs:68: wrapping_add(1)).
-    // Todos os threads lêem o mesmo counter_old e calculam counter_new idêntico.
-    // Apenas tid==0 escreve counter_new de volta (um write, sem race).
+    // Counter: incremented BEFORE the channel loop (cfc.rs:68: wrapping_add(1)). Every
+    // thread reads the same counter_old and computes an identical counter_new. Only
+    // tid==0 writes counter_new back (a single write, no race).
     // ─────────────────────────────────────────────────────────────────────────
 
-    if tid < L1_OUT {  // L1_OUT = 96 = tamanho do CfC
+    if tid < L1_OUT {  // L1_OUT = 96 = the CfC width
         let i: u32        = tid;
         let cfc_base: u32 = being * 97u;
 
-        // Estado atual do canal i
+        // Current state of channel i
         var s: f32 = buf_cfc[cfc_base + i];
 
-        // Fadiga adaptativa: lê estado lento de buf_fatigue.
-        // Layout: buf_fatigue tem 192 slots por ser (FATIGUE_PER_SER = L1_OUT * 2).
-        //   slots [0..96]   por ser = fadiga de INPUT do CfC (este bloco)
-        //   slots [96..192] por ser = fadiga de SAÍDA (L2 + bypass, bloco etapa 2)
+        // Adaptive fatigue: read the slow state from buf_fatigue.
+        // Layout: buf_fatigue holds 192 slots per being (FATIGUE_PER_BEING = L1_OUT * 2).
+        //   slots [0..96]   per being = CfC INPUT fatigue (this block)
+        //   slots [96..192] per being = OUTPUT fatigue (L2 + bypass, the STAGE 2 block)
         //
-        // CRÍTICO: usar being * (L1_OUT * 2u) — NOT being * L1_OUT.
-        //   sendo * L1_OUT (= being * 96) faz ser N>0 acessar slots da fadiga de saída
-        //   do ser anterior, causando cross-contamination e drift > 1.0 em 100 ticks.
-        //   O fator 2u garante pulo de 192 slots por ser (tamanho real do bloco).
+        // CRITICAL: use being * (L1_OUT * 2u) — NOT being * L1_OUT.
+        //   being * L1_OUT (= being * 96) makes being N>0 read the previous being's output
+        //   fatigue slots, which cross-contaminates and produced a drift > 1.0 in 100
+        //   ticks. The factor 2u guarantees a stride of 192 slots per being, the real
+        //   block size.
         let fat_base: u32 = being * (L1_OUT * 2u);
         var fat: f32 = buf_fatigue[fat_base + i];
 
-        // Counter: lido por todos, incrementado por um (cfc.rs:68)
+        // Counter: read by everyone, incremented by one (cfc.rs:68)
         let counter_old: u32  = bitcast<u32>(buf_cfc[cfc_base + 96u]);
-        let counter_new: u32  = counter_old + 1u;  // wrapping em u32 por padrão em WGSL
+        let counter_new: u32  = counter_old + 1u;  // u32 wraps by default in WGSL
 
         let dt: f32     = params.dt;
-        // τ POR CANAL: taxa de decaimento herdada do genoma, em s⁻¹.
+        // PER-CHANNEL τ: the decay rate inherited from the genome, in s⁻¹.
         let d: f32       = buf_tau[being * L1_OUT + i];
         let decay: f32   = exp(-d * dt);
-        // Ganho DC normalizado — reaproveita o `decay` já calculado, sem exp extra.
-        // Estacionário: s* = x·G·(1-decay)/(1-decay) = x·G, para qualquer τ.
+        // Normalised DC gain — reuses the `decay` already computed, with no extra exp.
+        // Steady state: s* = x·G·(1-decay)/(1-decay) = x·G, for any τ.
         let gain_dt: f32 = CFC_DC_GAIN * (1.0 - decay);
 
-        // x = input normalizado do canal, com fadiga aplicada como LIMIAR SUAVE:
-        //   x_efetivo = sign(x) * max(0, |x| - beta * fat)
-        // Espelha `cfc.rs` exatamente. A forma anterior (`x - beta*fat`, subtração crua)
-        // INVERTIA o sinal: com fat≈1,8 e beta=0,8 ela tira 1,44 de um x∈[-1,1], então
-        // entrada positiva sustentada saía negativa, e sem entrada alguma o estado era
-        // empurrado para longe de zero. Os testes `update_stabilizes_on_constant_input` e
-        // `state_decays_to_zero_without_input` em cfc.rs cobrem os dois casos.
+        // x = the channel's normalised input, with fatigue applied as a SOFT THRESHOLD:
+        //   x_effective = sign(x) * max(0, |x| - beta * fat)
+        // This mirrors `cfc.rs` exactly. The earlier form (`x - beta*fat`, a raw
+        // subtraction) INVERTED the sign: with fat ≈ 1.8 and beta = 0.8 it removes 1.44
+        // from an x ∈ [-1,1], so a sustained positive input came out negative, and with no
+        // input at all the state was pushed away from zero. The tests
+        // `update_stabilizes_on_constant_input` and `state_decays_to_zero_without_input` in
+        // cfc.rs cover both cases.
         let x_raw: f32   = f32(w_kan[i]) / 127.0;
         let threshold: f32  = FATIGUE_BETA * fat;
         let x: f32       = sign(x_raw) * max(0.0, abs(x_raw) - threshold);
 
-        // Equação CfC (cfc.rs:72): state = state * decay + x * gain_dt
+        // CfC equation (cfc.rs:72): state = state * decay + x * gain_dt
         s = s * decay + x * gain_dt;
 
-        // Ruído determinístico por hash (cfc.rs:74-80)
-        // ~14% dos canais atingidos por tick (condição h % 7 == 0)
-        // Não usando `if CFC_DENOISE_MAG > 0.0` como bloco externo porque WGSL
-        // avalia constantes em compile-time — o branch será eliminado pelo compilador.
-        let h: u32 = counter_new * 2654435761u + i;  // hash de Knuth (cfc.rs:75)
+        // Deterministic hash noise (cfc.rs:74-80).
+        // ~14% of the channels are hit per tick (the condition h % 7 == 0).
+        // This is not wrapped in an `if CFC_DENOISE_MAG > 0.0` block because WGSL
+        // evaluates constants at compile time — the compiler eliminates the branch.
+        let h: u32 = counter_new * 2654435761u + i;  // Knuth hash (cfc.rs:75)
         if (h % 7u) == 0u {
-            // Noise em [-CFC_DENOISE_MAG, +CFC_DENOISE_MAG] (cfc.rs:77-78)
+            // Noise in [-CFC_DENOISE_MAG, +CFC_DENOISE_MAG] (cfc.rs:77-78)
             let noise: f32 = (f32(h >> 8u) / 16777216.0 - 0.5) * 2.0 * CFC_DENOISE_MAG;
             s = s + noise;
         }
@@ -696,20 +715,20 @@ fn main(
         // Clamp (cfc.rs:82)
         s = clamp(s, -CFC_CLAMP, CFC_CLAMP);
 
-        // Atualiza fadiga: filtro passa-baixa sobre |state| (spike-frequency adaptation).
+        // Update the fatigue: a low-pass filter over |state| (spike-frequency adaptation).
         // fat += alpha * (|s| - fat) * dt
-        // Com alpha=0.3, dt=1/64: fat cresce ~0.0047 por tick quando |s|=2.0.
-        // Atinge 90% do valor de saturação em ~τ = 1/alpha ≈ 3.3 s ≈ 210 ticks.
+        // With alpha=0.3 and dt=1/64, fat grows ~0.0047 per tick while |s|=2.0, and
+        // reaches 90% of its saturation value in about τ = 1/alpha ≈ 3.3 s ≈ 210 ticks.
         fat = fat + FATIGUE_ALPHA * (abs(s) - fat) * dt;
         buf_fatigue[fat_base + i] = fat;
 
-        // Salva state atualizado (residente — lido no próximo tick)
+        // Store the updated state (resident — read again on the next tick)
         buf_cfc[cfc_base + i] = s;
 
         // filtered = tanh(state) → i8 (cfc.rs:84-85)
         w_cfc[i] = i32(clamp(tanh(s) * 127.0, -127.0, 127.0));
 
-        // Apenas tid==0 atualiza o counter (evita race condition de escrita)
+        // Only tid==0 updates the counter (this avoids a write race)
         if i == 0u {
             buf_cfc[cfc_base + 96u] = bitcast<f32>(counter_new);
         }
@@ -718,61 +737,61 @@ fn main(
     workgroupBarrier();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ETAPA 1: BitLinear L1 — WAVE→96 (layers.rs:40-51)
+    // STAGE 1: BitLinear L1 — WAVE→96 (layers.rs:40-51)
     //
     //   l1_raw[j] = Σ_{i=0}^{WAVE-1} weights[j*WAVE+i] * input[i] / 127
     //
-    // Input composto: w_cfc[0..96] (pós-CfC) ++ w_kan[96..WAVE] (pós-KAN)
-    // 96 threads ativas (tid < 96), uma por neurônio de saída.
-    // Threads 96..127 ficam ociosas — ok, RDNA2 fica 3 waves com 1 wave ociosa.
+    // Composite input: w_cfc[0..96] (post-CfC) ++ w_kan[96..WAVE] (post-KAN).
+    // 96 threads active (tid < 96), one per output neuron. Threads 96..127 idle — fine,
+    // on RDNA2 that leaves 3 waves with one of them idle.
     //
-    // Ordem de acumulação: i de 0 a WAVE-1, sequencial, igual à CPU.
-    // Divergência de matmul esperada: < 1e-5 por neurônio (223 FMA f32).
+    // Accumulation order: i from 0 to WAVE-1, sequential, same as the CPU.
+    // Expected matmul divergence: < 1e-5 per neuron (192 f32 FMAs).
     //
-    // Layout buf_l1w: ser*(L1_OUT*WAVE) + j*WAVE + i  (row-major por ser)
+    // buf_l1w layout: being*(L1_OUT*WAVE) + j*WAVE + i  (row-major per being)
     // ─────────────────────────────────────────────────────────────────────────
 
     if tid < L1_OUT {
         let j: u32 = tid;
         let l1_base: u32 = being * (L1_OUT * WAVE) + j * WAVE;
-        // CORREÇÃO: acumula SEM normalizar a cada passo — multiplica por norm
-        // UMA VEZ no final, idêntico à CPU (layers.rs:47-49):
-        //   acc += w[i] * input[i]  (sem norm)
-        //   output[j] = acc * norm_factor  (norm no final)
-        // Aplicar norm a cada passo introduz erro de FP de ~5e-4 por acumulação,
-        // que ao cruzar um limiar i8 amplifica para ~1.5e-2 na saída L2.
+        // FIX: accumulate WITHOUT normalising at each step — multiply by norm ONCE at the
+        // end, identical to the CPU (layers.rs:47-49):
+        //   acc += w[i] * input[i]  (no norm)
+        //   output[j] = acc * norm_factor  (norm at the end)
+        // Applying norm at every step introduces ~5e-4 of FP error per accumulation,
+        // which, once it crosses an i8 threshold, is amplified to ~1.5e-2 at the L2 output.
         var acc: f32     = 0.0;
 
-        // Parte CfC: canais 0..96 (w_cfc contém filtered_retina)
-        // ANTI-FMA: armazena produto em var antes de somar, evitando fusão em FMA
-        // (GPU pode fundir a*b+c em FMA, gerando resultado diferente da CPU que faz
-        //  separado: product = a*b; acc += product. Forçar a mesma ordem garante bit-a-bit.)
+        // CfC part: channels 0..96 (w_cfc holds filtered_retina).
+        // ANTI-FMA: store the product in a var before adding, which prevents fusion into
+        // an FMA (a GPU may fuse a*b+c into an FMA and get a different result from the CPU,
+        // which does it separately: product = a*b; acc += product. Forcing the same order
+        // guarantees bit-for-bit agreement.)
         for (var i: u32 = 0u; i < L1_OUT; i = i + 1u) {
             let prod: f32 = buf_l1w[l1_base + i] * f32(w_cfc[i]);
             acc = acc + prod;
         }
-        // Parte KAN-only: canais 96..222 (passaram pelo KAN mas não pelo CfC)
+        // KAN-only part: channels 96..WAVE (they went through the KAN but not the CfC).
         for (var i: u32 = L1_OUT; i < WAVE; i = i + 1u) {
             let prod: f32 = buf_l1w[l1_base + i] * f32(w_kan[i]);
             acc = acc + prod;
         }
 
-        // Normaliza por 127 uma vez só — idêntico à CPU (layers.rs:49)
+        // Normalise by 127 exactly once — identical to the CPU (layers.rs:49).
         w_l1r[j] = acc * (1.0 / 127.0);
 
-        // DEBUG (ser 0 apenas): exporta l1_raw + inputs CfC/KAN para diagnóstico
-        // Layout buf_debug: [l1_raw[0..95], cfc_in[0..95], kan_in[96..222]]
+        // DEBUG (being 0 only): exports l1_raw plus the CfC/KAN inputs for diagnostics.
+        // buf_debug layout: [l1_raw[0..96], cfc_in[0..96], kan_in[96..223]]
         if being == 0u {
             // l1_raw[j]
             buf_debug[j] = w_l1r[j];
-            // inputs CfC (canais 0..95)
+            // CfC inputs (channels 0..96)
             if j < L1_OUT {
                 buf_debug[96u + j] = f32(w_cfc[j]);
             }
-            // inputs KAN (canais 96..222, 127 valores)
-            // Cada thread j escreve 127/96 ≈ 1-2 entradas do KAN
-            // Mais simples: só tid=0 escreve tudo (96 threads disponíveis, só 127 valores)
-            // Alternativa: cada thread j escreve kan_in[j+96] se j < 127
+            // KAN inputs (channels 96 onwards). The `j < 127u` bound is a leftover from
+            // the 223-channel wave; only 96 threads reach this line, so with WAVE=192 it
+            // writes exactly the 96 KAN-only channels and never binds.
             if j < 127u {
                 buf_debug[192u + j] = f32(w_kan[j + 96u]);
             }
@@ -781,73 +800,74 @@ fn main(
 
     workgroupBarrier();
 
-    // Quantização l1_raw → l1_act (engine.rs:461-463), estendida com P1.7:
-    //   l1_act[i] = clamp(ATIVAÇÃO(MEMÓRIA(PERÍODO/LIMIAR(l1_raw[i]))) × 127, -127, 127)
+    // Quantisation l1_raw → l1_act (engine.rs:461-463), extended with P1.7:
+    //   l1_act[i] = clamp(ACTIVATION(MEMORY(PERIOD/THRESHOLD(l1_raw[i]))) × 127, -127, 127)
     //
-    // Os quatro passos (mecanismo 2 → 1 → 3) vivem no MESMO bloco `if tid < L1_OUT`
-    // que já existia (não abrem barreira nova): cada thread só lê/escreve o SEU
-    // próprio índice em `w_l1r`/`buf_neuron_mem` — sem dependência cruzada entre
-    // neurônios — então cabe dentro do bloco de quantização sem risco de race.
-    // `w_l1r[tid]` é SOBRESCRITO com o valor pós-mecanismos: o bypass de L1
-    // (ETAPA 2, threads 48..95, mais abaixo) lê o MESMO array e portanto herda o
-    // efeito automaticamente — correto, porque memória/período/limiar são
-    // propriedades do NEURÔNIO, não de "para onde o sinal vai depois".
+    // The four steps (mechanism 2 → 1 → 3) live in the SAME `if tid < L1_OUT` block that
+    // already existed (they open no new barrier): each thread only reads and writes its
+    // OWN index in `w_l1r`/`buf_neuron_mem` — no cross-neuron dependency — so they fit
+    // inside the quantisation block with no risk of a race. `w_l1r[tid]` is OVERWRITTEN
+    // with the post-mechanism value: the L1 bypass (STAGE 2, threads 48..95, further
+    // below) reads the SAME array and therefore inherits the effect automatically — which
+    // is correct, because memory, period and threshold are properties of the NEURON, not
+    // of "where the signal goes next".
     if tid < L1_OUT {
         let j: u32 = tid;
-        let meta_base: u32 = being * NEURON_META_PER_SER;
-        let mem_base:  u32 = being * NEURON_MEM_PER_SER;
+        let meta_base: u32 = being * NEURON_META_PER_BEING;
+        let mem_base:  u32 = being * NEURON_MEM_PER_BEING;
         let off = params.mech_off_mask;
 
-        // ── Mecanismo 2 (período) — decide se ESTE tick recalcula a memória ────
-        // HONESTIDADE (CLAUDE.md/tarefa): na GPU todas as 96 threads rodam de
-        // qualquer forma a cada dispatch — período > 1 NÃO poupa tempo de GPU, só
-        // decide SE a memória é atualizada com o x[n] deste tick ou se mantém o
-        // valor anterior. O ganho é de REPRESENTAÇÃO (escalas de tempo
-        // convivendo — o pedido original do Leonardo), não de velocidade.
+        // ── Mechanism 2 (period) — decides whether THIS tick recomputes the memory ──
+        // HONESTY (project CLAUDE.md / the task): on the GPU all 96 threads run anyway on
+        // every dispatch — a period > 1 does NOT save GPU time, it only decides WHETHER
+        // the memory is updated with this tick's x[n] or keeps the previous value. The
+        // gain is in REPRESENTATION (time scales coexisting — the owner's original
+        // request), not in speed.
         let period_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_PERIOD_OFF + j];
         let period_off: bool = (off & 2u) != 0u;
-        // +0.5 antes do truncamento u32(): arredonda em vez de truncar pra baixo
-        // (período salvo como 2.999999 por erro de ponto flutuante não viraria 2).
-        // max(...,1u): período 0 (buffer não inicializado, ex. `forward()`/
-        // `gpu_validate`, que nunca sobe este buffer) cai em "recalcula todo tick",
-        // igual ao comportamento de hoje — nunca "nunca recalcula".
+        // The +0.5 before the u32() truncation rounds instead of truncating downwards (a
+        // period stored as 2.999999 through floating-point error would otherwise become 2).
+        // max(...,1u): a period of 0 (an uninitialised buffer, e.g. `forward()` /
+        // `gpu_validate`, which never upload this buffer) falls back to "recompute every
+        // tick", matching today's behaviour — never "never recompute".
         let period: u32 = select(max(u32(period_raw + 0.5), 1u), 1u, period_off);
-        // counter_new já foi escrito em buf_cfc por tid==0 na ETAPA 0B, antes da
-        // primeira workgroupBarrier() — visível aqui para todas as 96 threads.
+        // counter_new was already written into buf_cfc by tid==0 in STAGE 0B, before the
+        // first workgroupBarrier() — so it is visible here to all 96 threads.
         let tick_counter: u32 = bitcast<u32>(buf_cfc[being * 97u + 96u]);
         let fires: bool = period <= 1u || (tick_counter % period) == 0u;
 
-        // ── Mecanismo 1 (memória) — EMA com ganho de amplitude ──────────────────
-        // Ver a conta completa em `neuron_mem_gain` acima do kernel.
-        let alfa_raw: f32 = buf_neuron_meta[meta_base + j];
+        // ── Mechanism 1 (memory) — an EMA with amplitude gain ───────────────────
+        // The full derivation is in `neuron_mem_gain`, above the kernel.
+        let alpha_raw: f32 = buf_neuron_meta[meta_base + j];
         let mem_off: bool = (off & 1u) != 0u;
-        let alfa: f32 = select(alfa_raw, 0.0, mem_off);
+        let alpha: f32 = select(alpha_raw, 0.0, mem_off);
         var h: f32 = buf_neuron_mem[mem_base + j];
         if fires {
-            // x[n] = l1_raw deste tick (matmul da ETAPA 1, ainda intocado aqui).
-            h = h * alfa + w_l1r[j] * (1.0 - alfa);
+            // x[n] = this tick's l1_raw (the STAGE 1 matmul, still untouched here).
+            h = h * alpha + w_l1r[j] * (1.0 - alpha);
             buf_neuron_mem[mem_base + j] = h;
         }
-        // fora do tick do neurônio (!fires): `h` já é o valor guardado da última
-        // vez que ele disparou — "mantém o valor anterior", sem tocar o buffer.
-        var v_eff: f32 = h * neuron_mem_gain(alfa);
+        // Outside the neuron's own tick (!fires), `h` is already the value stored the last
+        // time it fired — "keep the previous value", without touching the buffer.
+        var v_eff: f32 = h * neuron_mem_gain(alpha);
 
-        // ── Mecanismo 2 (limiar) — abaixo dele, contribui zero ──────────────────
+        // ── Mechanism 2 (threshold) — below it, the contribution is zero ────────
         let thr_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_THRESHOLD_OFF + j];
         let threshold_off: bool = (off & 4u) != 0u;
         let threshold: f32 = select(thr_raw, 0.0, threshold_off);
         if abs(v_eff) < threshold { v_eff = 0.0; }
 
-        // Bypass (ETAPA 2, tid 48..95) e a quantização abaixo leem o valor final.
+        // The bypass (STAGE 2, tid 48..95) and the quantisation below read the final value.
         w_l1r[j] = v_eff;
 
-        // ── Mecanismo 3 (ativação heterogênea) ──────────────────────────────────
+        // ── Mechanism 3 (heterogeneous activation) ──────────────────────────────
         let act_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_ACTIVATION_OFF + j];
         let activation_off: bool = (off & 8u) != 0u;
         let act_id: u32 = select(u32(act_raw + 0.5), 0u, activation_off);
         let activated: f32 = apply_activation(act_id, v_eff);
-        // M4: gate multiplicativo da REGIÃO deste neurônio (bloco = tid/24).
-        // 1,0 = neutro (flag off). Aplicado ANTES da quantização → afeta L2 E bypass.
+        // M4: the multiplicative gate of this neuron's REGION (block = tid/24).
+        // 1.0 is neutral (flag off). Applied BEFORE the quantisation → it affects both L2
+        // and the bypass.
         let gate: f32 = buf_gates[being * 4u + tid / 24u];
         w_l1a[tid] = i32(clamp(activated * gate * 127.0, -127.0, 127.0));
     }
@@ -855,41 +875,41 @@ fn main(
     workgroupBarrier();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ETAPA 2: FloatLinear L2 — 96→48 (float_layers.rs:23-34)
-    //          + bypass L1→final_intent[48..96]
+    // STAGE 2: FloatLinear L2 — 96→48 (float_layers.rs:23-34)
+    //          + the L1 bypass into final_intent[48..96]
     //
     // ENGINE (engine.rs:465-472):
-    //   final_intent[0..48]  = tanh(l2_raw × out_gain)       — via L2
-    //   final_intent[48..96] = tanh(l1_raw[48..96] × out_gain) — bypass de L2
-    //   (`out_gain` era a constante `2.0` hardcoded; ver `params.out_gain` — P1.5)
+    //   final_intent[0..48]  = tanh(l2_raw × out_gain)         — through L2
+    //   final_intent[48..96] = tanh(l1_raw[48..96] × out_gain) — bypassing L2
+    //   (`out_gain` used to be the hardcoded constant `2.0`; see `params.out_gain` — P1.5)
     //
-    // Por que bypass? L2 tem 48 outputs mas final_intent tem 96 slots.
-    // Os slots 48..95 são preenchidos diretamente com l1_raw (pré-L2).
+    // Why a bypass? L2 has 48 outputs but final_intent has 96 slots. Slots 48..95 are
+    // filled directly with l1_raw (pre-L2).
     //
-    // Threads 0..47:  calculam L2 e escrevem final_intent[0..47]
-    // Threads 48..95: escrevem bypass final_intent[48..95]
-    // Threads 96..127: ociosas
+    // Threads 0..47:  compute L2 and write final_intent[0..47]
+    // Threads 48..95: write the bypass into final_intent[48..95]
+    // Threads 96..127: idle
     //
-    // Layout buf_l2w: ser*(L2_OUT*L1_OUT) + j*L1_OUT + i
+    // buf_l2w layout: being*(L2_OUT*L1_OUT) + j*L1_OUT + i
     // ─────────────────────────────────────────────────────────────────────────
 
     let intent_base: u32 = being * 96u;
 
-    // ── Sub-etapa 2a: matmul L2, guarda l2_raw PRÉ-ganho em LDS ────────────────
+    // ── Sub-stage 2a: L2 matmul, storing the PRE-gain l2_raw in LDS ────────────
     //
-    // Separado do resto (fadiga+tanh) porque a normalização por desvio (item 3
-    // de P1.5, `params.norm_l2_by_std`) precisa dos 48 valores de l2_raw do MESMO
-    // ser prontos ao mesmo tempo — cada thread só calcula o SEU neurônio j, mas o
-    // desvio-padrão é sobre os 48. `w_l2r` guarda a mesma grandeza que
-    // `float_layers.rs::forward` devolve na CPU (acc/127, SEM ganho nenhum).
+    // Separated from the rest (fatigue + tanh) because the std-dev normalisation (item 3
+    // of P1.5, `params.norm_l2_by_std`) needs all 48 l2_raw values of the SAME being ready
+    // at once — each thread only computes ITS neuron j, but the standard deviation is over
+    // all 48. `w_l2r` holds the same quantity `float_layers.rs::forward` returns on the
+    // CPU (acc/127, with NO gain at all).
     if tid < L2_OUT {
         let j: u32 = tid;
         let l2_base: u32 = being * (L2_OUT * L1_OUT) + j * L1_OUT;
-        // CORREÇÃO: acumula sem norm por passo — aplica 1/127 uma vez no final
+        // FIX: accumulate without a per-step norm — apply 1/127 once at the end
         // (float_layers.rs:29-34: acc += w[i] * input[i]; output = acc * norm_factor)
         var acc: f32     = 0.0;
 
-        // ANTI-FMA: same pattern as L1 — store product to var before adding
+        // ANTI-FMA: same pattern as L1 — store the product in a var before adding.
         for (var i: u32 = 0u; i < L1_OUT; i = i + 1u) {
             let prod: f32 = buf_l2w[l2_base + i] * f32(w_l1a[i]);
             acc = acc + prod;
@@ -897,47 +917,45 @@ fn main(
 
         let raw_l2: f32 = acc * (1.0 / 127.0);
 
-        // ── P1.7, mecanismo 1 (memória) para L2 — sem período/limiar: a tarefa
-        // pede período/limiar só para L1 ("a assincronia de verdade" mira a
-        // ENTRADA sensorial, onde escalas de tempo diferentes fazem sentido físico;
-        // L2 já lê L1 inteiro todo tick). L2 sempre "dispara" — `fires` implícito.
-        // Mesma conta de ganho de `neuron_mem_gain` acima do kernel.
-        let l2_meta_base: u32 = being * NEURON_META_PER_SER + NEURON_META_L2_ALPHA_OFF;
-        let l2_mem_base:  u32 = being * NEURON_MEM_PER_SER + L1_OUT;  // slots [96..144) = L2
-        let alfa_l2_raw: f32 = buf_neuron_meta[l2_meta_base + j];
+        // ── P1.7, mechanism 1 (memory) for L2 — with no period and no threshold: the task
+        // asks for period/threshold on L1 only ("real asynchrony" targets the SENSORY
+        // input, where different time scales make physical sense; L2 already reads all of
+        // L1 every tick). L2 always "fires" — `fires` is implicit here. Same gain
+        // derivation as `neuron_mem_gain` above the kernel.
+        let l2_meta_base: u32 = being * NEURON_META_PER_BEING + NEURON_META_L2_ALPHA_OFF;
+        let l2_mem_base:  u32 = being * NEURON_MEM_PER_BEING + L1_OUT;  // slots [96..144) = L2
+        let alpha_l2_raw: f32 = buf_neuron_meta[l2_meta_base + j];
         let mem_off_l2: bool = (params.mech_off_mask & 1u) != 0u;
-        let alfa_l2: f32 = select(alfa_l2_raw, 0.0, mem_off_l2);
+        let alpha_l2: f32 = select(alpha_l2_raw, 0.0, mem_off_l2);
         var h_l2: f32 = buf_neuron_mem[l2_mem_base + j];
-        h_l2 = h_l2 * alfa_l2 + raw_l2 * (1.0 - alfa_l2);
+        h_l2 = h_l2 * alpha_l2 + raw_l2 * (1.0 - alpha_l2);
         buf_neuron_mem[l2_mem_base + j] = h_l2;
 
-        w_l2r[j] = h_l2 * neuron_mem_gain(alfa_l2);
+        w_l2r[j] = h_l2 * neuron_mem_gain(alpha_l2);
     }
 
-    // Barrier em CONTROLE UNIFORME — TODAS as 128 threads passam por aqui, mesmo
-    // as que não escreveram w_l2r (tid >= 48), porque WGSL exige que
-    // workgroupBarrier() não fique dentro de um `if` que só parte das threads
-    // executa (senão as que não entram no `if` nunca alcançam a barreira e o
-    // driver trava ou diverge — a barreira DEVE estar em código não-divergente).
+    // A barrier under UNIFORM CONTROL — ALL 128 threads reach it, including those that did
+    // not write w_l2r (tid >= 48), because WGSL requires workgroupBarrier() not to sit
+    // inside an `if` that only some threads execute (otherwise the threads that skip the
+    // `if` never reach the barrier and the driver hangs or diverges — the barrier MUST be
+    // in non-divergent code).
     workgroupBarrier();
 
-    // ── Sub-etapa 2b: desvio-padrão populacional dos 48 l2_raw deste ser ───────
+    // ── Sub-stage 2b: population standard deviation of this being's 48 l2_raw ──
     //
-    // Só entra em jogo quando `params.norm_l2_by_std == 1`; com a flag OFF
-    // (padrão) `l2_std` fica em 1.0 e a divisão abaixo é um no-op exato — não
-    // muda um bit do resultado histórico. Toda thread recalcula o mesmo valor
-    // (redundante, mas 48 somas é desprezível ao lado do matmul 96×48 acima) —
-    // mais barato que mais um workgroup array + mais uma barreira só para
-    // broadcast de um escalar.
+    // This only comes into play when `params.norm_l2_by_std == 1`; with the flag OFF (the
+    // default) `l2_std` stays at 1.0 and the division below is an exact no-op — it does
+    // not change a single bit of the historical result. Every thread recomputes the same
+    // value (redundant, but 48 additions are negligible next to the 96×48 matmul above) —
+    // cheaper than another workgroup array plus another barrier just to broadcast a scalar.
     //
-    // Desvio POPULACIONAL (divisor N, não N-1): aqui a finalidade é normalizar
-    // amplitude, não inferir a variância de uma amostra — mesmo espírito de
-    // layer norm. NÃO subtrai a média: a hipótese em teste é que a SATURAÇÃO
-    // vem da ESCALA de l2_raw crescendo com a mutação ao longo das gerações
-    // (docs/PLANO_EVOLUCAO.md P1.5), não de um viés direcional — subtrair a
-    // média removeria também um eventual sinal direcional genuíno (ex.: "vira
-    // mais pra direita que pra esquerda nesta pista"), o que não é o que se
-    // quer atacar aqui.
+    // POPULATION standard deviation (divisor N, not N-1): the purpose here is to normalise
+    // amplitude, not to infer a sample's variance — the same spirit as layer norm. It does
+    // NOT subtract the mean: the hypothesis under test is that the SATURATION comes from
+    // the SCALE of l2_raw growing with mutation across generations
+    // (docs/PLANO_EVOLUCAO.md P1.5), not from a directional bias — subtracting the mean
+    // would also remove any genuine directional signal (e.g. "it turns right more than
+    // left on this track"), which is not what we want to attack here.
     var l2_std: f32 = 1.0;
     if params.norm_l2_by_std == 1u {
         var sum: f32 = 0.0;
@@ -948,71 +966,72 @@ fn main(
             sum_sq = sum_sq + v * v;
         }
         let mean: f32 = sum / f32(L2_OUT);
-        // max(0.0, ...): variância nunca é negativa por definição, mas o cálculo
-        // via soma-de-quadrados (E[x²] - E[x]²) pode dar um epsilon negativo por
-        // cancelamento de ponto flutuante quando os 48 valores são quase iguais.
+        // max(0.0, …): a variance is never negative by definition, but computing it as a
+        // sum of squares (E[x²] - E[x]²) can produce a negative epsilon through
+        // floating-point cancellation when the 48 values are nearly identical.
         let variance: f32 = max(0.0, sum_sq / f32(L2_OUT) - mean * mean);
-        // NORM_EPS evita explosão no início do treino, quando os 48 l2_raw ainda
-        // são quase todos ~0 (pesos recém-sorteados, σ=0.30 diluído por 96
-        // entradas) — dividir por um desvio ~0 amplificaria RUÍDO numérico, não
-        // sinal. 1e-3 está bem abaixo de qualquer desvio genuíno observado
-        // (l2_raw típico saturado ~3.8, ver comentário de OUT_BETA acima).
+        // NORM_EPS avoids an explosion at the start of training, when the 48 l2_raw are
+        // still almost all ~0 (freshly drawn weights, σ=0.30 diluted across 96 inputs) —
+        // dividing by a near-zero deviation would amplify numerical NOISE, not signal.
+        // 1e-3 sits well below any genuine deviation observed (a typical saturated l2_raw
+        // is ~3.8, see the OUT_BETA comment above).
         const NORM_EPS: f32 = 1e-3;
         l2_std = max(sqrt(variance), NORM_EPS);
     }
 
     if tid < L2_OUT {
-        // Thread tid ∈ [0,47]: neurônio j de L2
+        // Thread tid ∈ [0,47]: L2 neuron j
         let j: u32 = tid;
 
-        // Normaliza pela ESCALA (l2_std=1.0 e a divisão é no-op se a flag estiver
-        // desligada), depois aplica o ganho de saída — mesma ordem de grandeza
-        // que `acc * (2.0/127.0)` tinha antes quando out_gain=2.0 e a normalização
-        // está OFF: w_l2r[j] * out_gain == acc*(1/127)*2.0 == acc*(2.0/127.0).
+        // Normalise by the SCALE (with the flag off, l2_std=1.0 and the division is a
+        // no-op), then apply the output gain — the same order of magnitude that
+        // `acc * (2.0/127.0)` had before, when out_gain=2.0 and normalisation is OFF:
+        // w_l2r[j] * out_gain == acc*(1/127)*2.0 == acc*(2.0/127.0).
         let l2_scaled: f32 = w_l2r[j] / l2_std;
         let l2_raw: f32 = l2_scaled * params.out_gain;
 
-        // Fadiga de saída: lê slot [96+j] do buf_fatigue (segunda metade do buffer expandido).
-        // Rastreia |intent| para canal j; subtrai params.out_beta * out_fat do raw antes do tanh.
-        // Quebra o ponto fixo de saída sem afetar canais que variam normalmente.
-        let out_fat_base: u32 = being * L1_OUT * 2u + L1_OUT;  // slots [96..192] por ser
+        // Output fatigue: reads slot [96+j] of buf_fatigue (the second half of the widened
+        // buffer). It tracks |intent| for channel j and subtracts params.out_beta *
+        // out_fat from raw before the tanh. This breaks the output fixed point without
+        // affecting channels that vary normally.
+        let out_fat_base: u32 = being * L1_OUT * 2u + L1_OUT;  // slots [96..192] per being
         var out_fat: f32 = buf_fatigue[out_fat_base + j];
         out_fat = out_fat + OUT_ALPHA * (abs(l2_raw) - out_fat) * params.dt;
         buf_fatigue[out_fat_base + j] = out_fat;
 
-        // Fadiga de saída como LIMIAR SUAVE sobre a MAGNITUDE:
+        // Output fatigue as a SOFT THRESHOLD on the MAGNITUDE:
         //   intent = tanh(sign(raw) * max(0, |raw| - params.out_beta * out_fat))
-        // `out_fat` rastreia |raw|, então a forma anterior (`raw - OUT_BETA*out_fat`)
-        // era ASSIMÉTRICA: com raw sustentado negativo ela subtraía um termo positivo
-        // do já-negativo e empurrava para a saturação (-0,999), enquanto com raw
-        // positivo atenuava para 0,15·raw. A fadiga enviesava toda a população para
-        // baixo. Agora encolhe a magnitude e preserva o sinal, nos dois lados.
+        // `out_fat` tracks |raw|, so the earlier form (`raw - OUT_BETA*out_fat`) was
+        // ASYMMETRIC: with a sustained negative raw it subtracted a positive term from an
+        // already-negative value and pushed it into saturation (-0.999), while with a
+        // positive raw it attenuated to 0.15·raw. The fatigue biased the whole population
+        // downwards. It now shrinks the magnitude and preserves the sign, on both sides.
         let adapted: f32 = sign(l2_raw) * max(0.0, abs(l2_raw) - params.out_beta * out_fat);
 
-        // P1.7, mecanismo 3 — ativação heterogênea de L2 (a não-linearidade FINAL
-        // de L2, antes hardcoded como tanh). O bypass de L1 (abaixo) continua com
-        // tanh fixo — squashing de SAÍDA MOTORA, não "ativação do neurônio de L1"
-        // (que já foi decidida na quantização, ETAPA 1).
-        let l2_act_base: u32 = being * NEURON_META_PER_SER + NEURON_META_L2_ACTIVATION_OFF;
+        // P1.7, mechanism 3 — L2's heterogeneous activation (the FINAL non-linearity of
+        // L2, previously hardcoded as tanh). The L1 bypass (below) keeps a fixed tanh — it
+        // is MOTOR OUTPUT squashing, not "the L1 neuron's activation" (which was already
+        // decided at the quantisation, STAGE 1).
+        let l2_act_base: u32 = being * NEURON_META_PER_BEING + NEURON_META_L2_ACTIVATION_OFF;
         let act_raw_l2: f32 = buf_neuron_meta[l2_act_base + j];
         let activation_off_l2: bool = (params.mech_off_mask & 8u) != 0u;
         let act_id_l2: u32 = select(u32(act_raw_l2 + 0.5), 0u, activation_off_l2);
-        // clamp: o comentário de apply_activation prometia "satura no clamp do
-        // chamador", mas nenhum chamador clampava — ativação linear (id=2) vazava
-        // valor CRU (medido no laboratório: slots 16/31/45 do campeão a até 3,19)
-        // e inflava toda métrica que assume intent ∈ [-1,1] (saturação, dims_sat,
-        // intent_mag). Motor (0..3) nunca foi afetado: kan_eval/context clampam.
+        // clamp: the comment on apply_activation promised "it saturates in the caller's
+        // clamp", but no caller clamped — the linear activation (id=2) leaked a RAW value
+        // (measured in the lab: slots 16/31/45 of the champion reaching up to 3.19) and
+        // inflated every metric that assumes intent ∈ [-1,1] (saturation, dims_sat,
+        // intent_mag). The motor channels (0..3) were never affected: kan_eval/context
+        // clamp them.
         buf_intent[intent_base + j] = clamp(apply_activation(act_id_l2, adapted), -1.0, 1.0);
     }
 
-    // Threads 48..95: bypass de L1 → final_intent[48..95]
-    // (engine.rs:469-471): final_intent[i] = tanh(l1_raw[i] × out_gain) para i ∈ [48,95]
-    // A normalização por desvio (params.norm_l2_by_std) NÃO se aplica aqui — o
-    // nome é "norm_l2_by_std" porque mede e corrige a escala de l2_raw
-    // especificamente; o bypass não passa pela matmul de L2, então não há
-    // "l2_raw" aqui para normalizar.
+    // Threads 48..95: the L1 bypass → final_intent[48..95]
+    // (engine.rs:469-471): final_intent[i] = tanh(l1_raw[i] × out_gain) for i ∈ [48,95].
+    // The std-dev normalisation (params.norm_l2_by_std) does NOT apply here — the name is
+    // "norm_l2_by_std" because it measures and corrects the scale of l2_raw specifically;
+    // the bypass does not go through the L2 matmul, so there is no "l2_raw" to normalise.
     if tid >= L2_OUT && tid < L1_OUT {
-        // Mesmo mecanismo de fadiga de saída para o bypass.
+        // The same output-fatigue mechanism, applied to the bypass.
         let raw_bp: f32 = w_l1r[tid] * params.out_gain;
         let out_fat_base_bp: u32 = being * L1_OUT * 2u + L1_OUT;
         var out_fat_bp: f32 = buf_fatigue[out_fat_base_bp + tid];
@@ -1023,6 +1042,6 @@ fn main(
         buf_intent[intent_base + tid] = tanh(adapted_bp);
     }
 
-    // Nota: não há barreira necessária no final — cada thread escreve em posição
-    // disjunta de buf_intent e não há leitura posterior neste dispatch.
+    // Note: no barrier is needed at the end — every thread writes to a disjoint position
+    // in buf_intent and nothing reads it back inside this dispatch.
 }

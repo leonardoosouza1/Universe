@@ -1,278 +1,169 @@
+# Universe — working notes for agents
+
+Neuroevolution simulator in Rust + WGSL. Beings with a brain
+(perception → KAN → CfC → BitLinear L1 → FloatLinear L2 → motor) drive procedural
+tracks; a genetic algorithm selects them. The whole tick runs on the GPU through
+`wgpu`, headless — Bevy is an optional window over it, never a dependency of the core.
+
+**Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before changing anything.** It has the tick
+diagram, the module map, the genome format and the invariants that break silently.
+Style rules are in [`docs/STYLE.md`](docs/STYLE.md); the contribution flow is in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
-## Regra de continuidade (Leonardo, 2026-08-03)
+## Commands
 
-> **Quando Leonardo avisa que vai sair, reportar NÃO é parar.** O turno só acaba quando ele
-> voltar. Ele deixa a máquina ligada horas contando com isso — parar depois do relatório
-> desperdiça o tempo todo.
+```bash
+cargo build --release                        # the whole workspace
+cargo test  --release                        # everything; GPU tests are #[ignore]d
+cargo test  --release --bin gpu_evolve       # genome round-trip, track rotation, pilot ordering
+cargo test  --release --test wgsl_validation # parses and type-checks the WGSL, no GPU needed
+bash scripts/check_language.sh               # language gate: only what this branch changed
+bash scripts/check_language.sh --all         # progress meter for the whole repo, never fails
+```
 
-Como cumprir, sem depender de memória:
+`cargo build` only checks that the WGSL is a valid *string* (`include_str!`), which is
+why `wgsl_validation` exists. Run it after touching any `.wgsl`.
 
-1. **Nunca reportar com a máquina ociosa.** Deixar processo rodando (`nohup`) ANTES de escrever.
-2. **Agendar o próprio re-acionamento** com `/loop` (auto-pacing) ou `ScheduleWakeup`. Ao
-   acordar: checar o que os processos produziram, validar, seguir para o próximo alvo.
-3. **Fila de alvos explícita** — quando um fecha, o próximo já está definido, sem perguntar.
-4. **Agentes em paralelo** para frentes independentes, com posse de arquivo sem sobreposição.
+A short smoke run, before any long battery:
 
----
+```bash
+env -u DISPLAY ./target/release/gpu_evolve --gens 2 --seres 12 --ticks 600 \
+    --seed 7 --same-start --out /your/own/scratch/smoke
+```
 
-## Gaps recorrentes do Claude neste projeto — e o conserto (Leonardo, 2026-08-11)
-
-> *"vc tem tudo na mão mas não faz, só chuta e chuta"*
-
-Cada item abaixo foi um erro REAL, cometido e medido nesta sessão ou nas anteriores. Não é
-lista de boas intenções: é a lista dos modos de falha que se repetem, cada um com o
-procedimento que o mata. Ler antes de afirmar qualquer coisa sobre comportamento do modelo.
-
-### 1. Inferir grandeza que está GRAVADA
-
-**O erro:** calculei o tick como `índice × passo`. O `ReplayFrame` tem campo `tick`. O
-`gpu_evolve` grava a 16 Hz (`tick_i % 4 == 0`), então meu eixo de tempo ficou **4× errado** e
-produzi "306 m a 25 m/s" com pico medido de 21,9 — impossível, e só impossível porque o
-denominador era inventado. Mesma família: stride da onda sensorial inferido em 56 quando a
-percepção escreve 48 (cada ser lia dados do vizinho); "24/24 voltas" que era o denominador
-de um grep.
-
-**Conserto:** antes de derivar um número, procurar se ele é gravado. Se for, LER. Derivar
-grandeza registrada é proibido. Se derivar por necessidade, checar contra o registrado uma
-vez e imprimir a diferença.
-
-### 2. Descrever comportamento sem medir o comportamento
-
-**O erro:** afirmei "eles chegam na curva e param" sem nunca medir o volante naquele ponto.
-Leonardo abriu o mapa e viu que **eles não viram a curva de jeito nenhum**. Antes disso:
-"eles saem da pista" (o dado dizia 100% na pista, 0 excursões), "seguram o volante às cegas"
-(a correlação era +0,53).
-
-**Conserto:** toda afirmação sobre comportamento vem acompanhada do número que a produziu e
-do comando que gera o número. Sem número, escrever "não medi" — nunca a descrição.
-
-### 3. Snapshot único virando conclusão sobre evolução
-
-**O erro:** analisei UM replay (uma geração, uma semente) e tirei conclusão sobre a
-população e sobre a evolução.
-
-**Conserto:** afirmação sobre EVOLUÇÃO exige a trajetória entre gerações, não um instante.
-Afirmação sobre POPULAÇÃO exige a distribuição, não o campeão. Mínimo: primeira, meio e
-última geração; ≥3 sementes pareadas.
-
-### 4. Não calcular o teto da métrica antes de evoluir contra ela
-
-**O erro:** rodei `--ticks 1200` e reportei "muro em 256 m". A 15,5 m/s, 1200 ticks são
-18,75 s = **290 m de teto físico** — o muro era o fim dos ticks. Antes: "≥2 voltas = 0%"
-quando o carro dava 1,86 de 2 por limite de corpo.
-
-**Conserto:** ANTES de rodar, calcular o valor máximo que a métrica pode assumir com aquela
-configuração (ticks, vida, velocidade possível) e escrever esse número no log. Zero ou 100%
-cravado = métrica no limite, não modelo falhando.
-
-### 5. Média sobre a população errada
-
-**O erro:** reportei "rastejam a 1,7 m/s" por vinte mensagens. Era média diluída por ~2.000
-ticks de CADÁVER: vivos, eles fazem 79 km/h. O simulador trava `throttle=0, freio=1` em
-quem morre (`gpu_evolve.rs:843`), e eu contei isso como "escolheram frear".
-
-**Conserto:** toda estatística declara sobre QUEM foi tirada (vivos? no fim da vida? todos os
-ticks?). Excluir morto de média de comportamento. Ferramenta que mostra estado tem de
-mostrar contagem de MORTOS ao lado.
-
-### 6. Editar com `str.replace` sem verificar que aplicou
-
-**O erro:** três vezes num dia, `.replace()` em Python não casou e imprimiu sucesso. Uma
-delas produziu uma bateria inteira com "3 sementes" que eram a mesma população, e um
-**25,29σ falso**.
-
-**Conserto:** `assert s.count(old) == 1` antes de toda substituição. Sem exceção.
-
-### 7. Campo novo no genoma sem atualizar o disco
-
-**O erro:** adicionei `slow` (1091 pesos) ao `Genome` e não toquei em `save_genome`. O
-campeão perdia o cérebro lento em cada `--carregar`, em silêncio. Eu tinha até escrito o
-comentário reconhecendo o buraco.
-
-**Conserto:** o teste `genoma_sobrevive_ida_e_volta_no_disco` (em `gpu_evolve.rs`) compara
-campo a campo os dois lados do disco com valores-marca. Ele falha se alguém acrescentar
-campo e esquecer o serializador. Rodar `cargo test --release --bin gpu_evolve` depois de
-mexer no `Genome`.
-
-### 8. Aceitar relatório de subagente sem verificar
-
-**O erro:** dois agentes de auditoria ancoraram num comentário desatualizado (`// 223 × 96`)
-e quase me fizeram propagar um "bug crítico de stride" inexistente.
-
-**Conserto:** toda afirmação de agente é hipótese até eu abrir o `arquivo:linha` e colar o
-trecho. Comentário do código NÃO é evidência — vários mentem neste repositório.
-
-### 9. O canário: números idênticos onde deveriam diferir
-
-Apareceu **8+ vezes** nesta sessão e **nunca mentiu**. Causas encontradas: binário velho,
-caminho de código diferente, edição que não aplicou, teto não-vinculante, mudança só de
-exibição sem tocar a seleção, artefato de unidade.
-
-**Conserto:** ao ver dois números iguais em condições que deveriam divergir, PARAR e achar
-a causa antes de qualquer outra coisa. Nunca explicar como coincidência.
-
-### 10. Não olhar o que já existe antes de construir
-
-**O erro:** o Codex fundacional (homeostase, entropia, poços de potencial) está em
-`init/part1.md`, `part2.md`, `part3.md`, `init/index.md` e eu não tinha lido. `engine_temp`,
-`oil_temp`, `fuel`, `life_left` são calculados e **nunca chegam ao cérebro**. `cortex_l3`
-tem 1152 pesos mutados e não está no forward. O KAN sensorial está congelado na identidade
-(`adapt()` nunca é chamado, 3072 coeficientes).
-
-**Conserto:** antes de propor mecanismo novo, grep pelo que já existe e checar se está
-LIGADO. Estado calculado e não lido é gap de fiação, e sai mais barato que qualquer
-arquitetura nova.
-
-### 11. Normalização esquecida transformando experimento em artefato
-
-**O erro (evitado por pouco):** ao dar τ por canal, variar só a taxa de decaimento faria o
-canal de 25 ms sair **80× mais fraco** que o de 2 s — a evolução o descartaria por ser MUDO,
-não por ser rápido. Consertado com ganho DC normalizado.
-
-**Conserto:** ao tornar um parâmetro heterogêneo, verificar analiticamente o que mais muda
-com ele e neutralizar. Escrever a conta no comentário.
-
-### Ordem obrigatória antes de anunciar resultado
-
-1. Teto da métrica calculado e no log.
-2. Divergência confirmada: as condições produzem números DIFERENTES.
-3. ≥3 sementes pareadas; média das últimas N gerações, **nunca** o melhor de todas.
-4. Tamanho do efeito acompanhado conforme n cresce — não σ.
-5. Visual conferido: mapa da população em ≥3 gerações, com mortos contados.
-6. Comando que reproduz, colado no relatório.
+`--out` defaults to `.` (`src/bin/gpu_evolve/main.rs:395`), so always pass your own
+directory — see rule 5.
 
 ---
 
-## PARAR É PROIBIDO (Leonardo, 2026-08-11)
+## Rules for any agent working here
 
-> *"SE VOCÊ VÊ A MERDA DE UM BUG, RESOLVA E TESTE. Se você acha tal coisa, DUVIDE DE SI,
-> porque você não debuga de verdade. Você para por NADA. Se eu saio e não voltei e ficou
-> parado, eu joguei dinheiro no lixo."*
+Every rule below is a real mistake that was made in this repository and paid for in GPU
+hours. The one-line lesson attached to each is the incident, not an illustration.
 
-**Achar um bug e reportar NÃO é entregar.** O turno só fecha quando o bug está corrigido,
-testado e o número novo está medido. Sem exceção, sem pedir permissão.
+### 1. A claim about behaviour ships with the number and the command that produced it
 
-O ciclo obrigatório, sempre completo:
+If you did not measure it, write "not measured" — never a description standing in for a
+measurement. State *who* the statistic is about: the simulator pins `throttle=0,
+brake=1` on a dead being, and averaging that in is how "they crawl at 1.7 m/s" survived
+twenty messages while the living ones were doing 79 km/h.
 
-1. **Achou o bug** → conserta na hora.
-2. **Consertou** → roda o teste que prova o conserto.
-3. **Testou** → mede o efeito no alvo real (o ser dá a volta?).
-4. **Não resolveu** → volta ao passo 1 com a próxima hipótese. Não relata e para.
-5. **Resolveu** → procura o próximo gargalo. O alvo é autonomia completa: o ser vê,
-   decide, vira, sobrevive e completa voltas. Nada abaixo disso é "pronto".
+### 2. Identical numbers where they should differ are an alarm, not a confirmation
 
-**Proibido terminar o turno com:**
-- "achei X, vou consertar" — conserta antes de escrever
-- "o próximo passo é Y" — faz Y
-- "recomendo Z" — Z é seu trabalho, não recomendação
-- a GPU ociosa, em qualquer circunstância
+This canary appeared 8+ times in one session and never once lied. Causes found: a stale
+binary, a different code path, an edit that never applied, a non-binding ceiling, a
+display-only change that never touched selection, a unit artefact. Stop and find the
+cause before concluding anything.
 
-A única razão válida para parar é o Leonardo instruir explicitamente que pare.
+### 3. New physics or perception enters behind a flag that is off by default, with a paired A/B
 
-### E duvide de si
+The code already says it, at `src/bin/gpu_evolve/main.rs:715-718` for
+`--visao-periferica-real`: *off by default — it changes the input distribution, so an
+old champion needs a paired A/B, not faith.* Paired means same seeds, `--same-start`,
+one arm per flag state. Ablate by silencing the signal, not by deleting the organ
+(`src/bin/gpu_evolve/statics.rs:41-48`): removing the organ changes two things at once.
 
-Quando concluir "é assim e ponto final", essa é a hora de checar. Nesta sessão eu afirmei
-que o ser enxergava (correlação 1,000) enquanto o sensor estava saturado em 99% da pista;
-afirmei que o corpo não respondia ao volante comparando distância quando volante constante
-faz círculo; afirmei que o câmbio travava a velocidade quando não travava. Três certezas,
-três erradas, todas desfeitas por uma medição de dois minutos que eu não fiz porque já
-tinha decidido.
+### 4. Compute the ceiling of the metric before you evolve against it
 
-**A visão do ser funcionava antes.** Se ela não funciona agora, a suspeita número um é o
-que eu mudei — não o modelo, não o Bevy, não a evolução.
+`--ticks 1200` produced a reported "wall at 256 m". At 15.5 m/s, 1200 ticks at 64 Hz is
+18.75 s = 290 m of physical ceiling — the wall was the end of the tick budget. A hard 0%
+or a hard 100% is a metric hitting its limit, not a model failing. Write the ceiling into
+the log before the run.
 
----
+### 5. Heavy outputs go outside the repository, through `--out`
 
-## Método padrão: workflows de agents com validação adversarial (Leonardo, 2026-08-11)
+Never `/tmp`, never next to the source. Replays are the expensive artefact: recording
+every generation × 16 races produced 31 GB once. On a long run, record only the first,
+middle and last generation.
 
-> *"essa sessão de agents foi a melhor que você fez, todas as próximas sessões, baterias de
-> teste e afins têm que ser assim agora."*
+### 6. A code comment is not evidence — open the `file:line`
 
-Toda investigação, bateria ou conserto substantivo neste projeto usa **Workflow de agents em
-paralelo**, no padrão que funcionou:
+Verified example: `src/gpu/brain.rs:37` says `// 223 × 96 = 21.408`, but
+`SENSORY_WAVE_SIZE` is 192 (`src/config.rs:309`), so the real figure is 18 432. The
+constant is computed, so the code is right and only the comment lies. The same rule
+applies to another agent's report: it is a hypothesis until you open the line and read it.
 
-1. **Diagnóstico em paralelo** — um agente por frente independente (só leitura), cada um
-   obrigado a entregar `arquivo:linha` + trecho colado como evidência. Regras fixas no
-   prompt: não confiar em comentário do código (vários mentem), distinguir "sem fonte" de
-   "fonte não alimentada" de "só varia no tempo", escrever NÃO CONFIRMADO quando for o caso.
-2. **Conserto sequencial** — UM agente aplica tudo (os consertos tocam os mesmos arquivos;
-   paralelizar aqui dá conflito, não velocidade). Ele reconfirma sozinho qualquer proposta
-   de confiança baixa antes de aplicar, compila após cada item e roda os testes do genoma.
-3. **Validação com duas sementes** — números idênticos entre sementes diferentes = alarme
-   a investigar, nunca aprovação. Instrução explícita: não maquiar; se piorou, reportar.
-4. Fixar `model` nos agentes de conserto/validação (config da sessão já quebrou agentes
-   com erro de effort duas vezes; `sonnet` funcionou).
-5. O resultado da validação alimenta o PRÓXIMO workflow — o loop não termina no relatório,
-   termina quando o alvo (ser com autonomia completa, voltas completas) é atingido.
+### Also, before announcing a result
 
-Foi esse padrão que achou e consertou em uma passada: canais 111-113/118-120/123 mortos,
-corrupção em cascata em `set_all_weights`, e um bug na própria auditoria (rastrear ser 0
-morto congelava o σ temporal — pego pela divergência entre sementes).
-
-**Se um workflow morrer ou a máquina ficar ociosa:** relançar o mesmo padrão sobre a
-próxima ponta solta — auditar sensores de novo, validar persistência, medir a curva,
-evoluir. Sempre há próxima ponta; a fila nunca está vazia.
+Claims about **evolution** need a trajectory (first, middle, last generation), not one
+snapshot; claims about the **population** need the distribution, not the champion. Use
+≥3 paired seeds and the mean of the last N generations — never the best of all of them.
+Follow the effect size as n grows, not σ.
 
 ---
 
-## BATERIAS E AUDITORIAS = WORKFLOWS DE AGENTES (Leonardo, 2026-08-11)
+## Where to look
 
-> *"essa sessão de agents foi a melhor que você fez. Todas as próximas sessões, baterias
-> de teste e afins têm que ser assim agora."*
+| You are touching | Read first |
+|---|---|
+| Anything at all | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| Naming, comments, file size, tests | [`docs/STYLE.md`](docs/STYLE.md) |
+| Branch, commit and PR flow | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| A name that is still Portuguese | [`NAMING.md`](NAMING.md), [`docs/MIGRATION.md`](docs/MIGRATION.md) |
+| Library code | [`src/CLAUDE.md`](src/CLAUDE.md) |
+| Kernels, buffers, genome I/O | [`src/gpu/CLAUDE.md`](src/gpu/CLAUDE.md) |
+| The evolution binary | [`src/bin/gpu_evolve/CLAUDE.md`](src/bin/gpu_evolve/CLAUDE.md) |
+| Experiment records | [`docs/CLAUDE.md`](docs/CLAUDE.md) |
 
-Trabalho substancial neste projeto (bateria, auditoria, caça a bug, validação de
-subsistema) roda como **workflow de agentes**, não como eu sozinho serializando. O
-formato validado em 2026-08-11 (auditoria dos 192 canais: 5 diagnósticos paralelos →
-conserto → validação, achou e consertou até bug na própria auditoria):
-
-1. **Diagnóstico em paralelo, só leitura** — um agente por frente independente (grupo de
-   canais, subsistema, hipótese). Cada um entrega schema estruturado com `causa`,
-   `evidencia` (arquivo:linha + trecho COLADO) e `confianca`. Regras no prompt:
-   não confiar em comentários (vários mentem), distinguir "sem fonte" de "fonte não
-   alimentada" de "só varia no tempo", "NÃO CONFIRMADO" é resposta válida.
-2. **Conserto sequencial, UM agente** — consertos tocam os mesmos arquivos; paralelizar
-   aqui gera conflito, não velocidade. Rejeita consertos de confiança baixa que ele
-   não reconfirmar sozinho. Compila após cada item.
-3. **Validação na GPU real, DUAS sementes** — números idênticos entre sementes = alarme
-   a investigar, não aprovação. Instrução explícita: "não maquie; número ruim se reporta".
-4. **Teste de 2 segundos antes de bateria de 30 minutos** — `--auditar-visao`,
-   `pista_check`, ablação de 1 gen. Bateria longa só depois do smoke.
-5. **Falha de agente por erro de API** (`effort xhigh not supported`): fixar
-   `model: 'sonnet'` no agent() e retomar com `{scriptPath, resumeFromRunId}` — o
-   que já rodou volta do cache, só o que falhou re-executa.
-6. **Enquanto o workflow roda**, o turno principal não fica ocioso: memória, índice,
-   ferramentas de diagnóstico, leitura do próximo suspeito.
-
-Ao me reacionar sem instrução nova do Leonardo: repetir exatamente este ciclo —
-nova auditoria com agentes validando cada ponta (sensores, persistência, fitness,
-física, evolução) + rodada de evolução medindo a curva.
+**Language: English everywhere** — identifiers, comments, doc comments, log and panic
+messages, test names, commit messages. The Portuguese-comment rule that used to live in
+`NAMING.md` was revoked on 2026-08-17. Translating must never cost content: every
+measurement, seed, `file:line` and command inside a comment survives intact.
 
 ---
 
-## ARMAZENAMENTO (2026-08-12)
+## Maintainer notes
 
-Partição dedicada **`/media/llm-data` (90 GB)** para tudo que é pesado — o disco do
-sistema NÃO pode encher de novo (em 2026-08-11 chegou a 340 MB livres e matou baterias):
+Everything below is specific to the owner's machine and working style. It is not
+required to contribute, and an outside contributor can ignore it entirely.
 
-- Saídas de bateria/replay: `--out /media/llm-data/universe-runs/<nome>` (NUNCA /tmp)
-- Snapshots de código/genoma: `/media/llm-data/snapshots/`
-- Modelos/pesos: `/media/llm-data/models/`
-- Rascunho pesado: `/media/llm-data/scratch/`
-- Em bateria longa, gravar replay só de gen 0/meio/última (lição de 2026-08-11: replay
-  de toda gen × 16 corridas = 31 GB).
+**Storage.** The development machine keeps simulation output on a dedicated 90 GB
+partition, `/media/llm-data`, and treats the system disk as source-code only — batteries
+in progress were killed when the system disk fell to 340 MB free, and `/media/llm-data`
+itself once hit 100% with 803 MB left.
 
----
+- Run output and replays: `--out /media/llm-data/universe-runs/<name>/`
+- Genome and code snapshots: `/media/llm-data/snapshots/`
+- Models and weights: `/media/llm-data/models/`
+- Heavy scratch: `/media/llm-data/scratch/`
+- Permanent target: 20-30 GB free. Every watch cycle starts with
+  `df -h /media/llm-data`; below 20 GB, run `~/projects/LLM/tools/limpeza-dados.sh --real`.
+- A finished battery whose verdict is already recorded in `docs/` is disposable data:
+  replays go, the lineage `.bin` and `run.log` stay.
+- Before launching a battery, estimate what it will produce (generations × ~30 MB × beings
+  recorded) and check it fits without breaking the target.
 
-## ESPAÇO EM DISCO — VIGILÂNCIA OBRIGATÓRIA (Leonardo, 2026-08-16)
+No production code path depends on that partition. Two hardcoded `/media/llm-data` paths
+remain, both inside a `#[cfg(test)]` block (`src/bin/gpu_evolve/piloto_forja.rs:366-367`),
+and that test states honestly that without the partition mounted it does not run — which
+is not a PASS (`piloto_forja.rs:518`).
 
-> Medido: /media/llm-data chegou a 100% (803 MB livres) com baterias rodando.
+**Continuity (owner's standing instruction).** When the owner says he is stepping away,
+writing a report is not stopping — the shift ends when he is back. Never report with the
+machine idle: leave a process running first, then schedule the next wake-up, then write.
+Keep an explicit queue of targets so the next one starts without asking. Finding a bug and
+reporting it is not delivery either: fix it, run the test that proves the fix, measure the
+effect on the real target, and only then move to the next bottleneck.
 
-1. **Alvo permanente: 20-30 GB livres** em /media/llm-data. TODO ciclo de
-   vigília começa com `df -h /media/llm-data`; abaixo de 20 GB → rodar
-   `~/projects/LLM/tools/limpeza-dados.sh --real` (tem modo agressivo automático).
-2. **Bateria concluída com veredito REGISTRADO nos docs = dados descartáveis**:
-   replays somem (agressivo), ficam .bin da linhagem + run.log.
-3. Antes de LANÇAR bateria nova: estimar o que ela gera (gens × ~30 MB × seres
-   gravados) e conferir que cabe SEM furar o alvo.
+**Agent workflows (the pattern that worked, 2026-08-11).** Substantial work here — a
+battery, an audit, a bug hunt, a subsystem validation — runs as a workflow of agents:
+
+1. **Parallel diagnosis, read-only.** One agent per independent front. Each returns
+   `cause`, `evidence` (`file:line` + pasted snippet) and `confidence`. Rules in the
+   prompt: do not trust comments (several lie); distinguish "no source" from "source not
+   fed" from "only varies in time"; "NOT CONFIRMED" is a valid answer.
+2. **Sequential repair, one agent.** Fixes touch the same files; parallelism here produces
+   conflicts, not speed. Low-confidence proposals get re-confirmed before being applied.
+   Compile after each item; run the genome tests.
+3. **Validation on the real GPU, two seeds.** Identical numbers between seeds are an alarm
+   to investigate, never an approval. Explicit instruction: do not dress it up; a bad
+   number gets reported.
+4. **A 2-second smoke test before a 30-minute battery** — `--auditar-visao`, `pista_check`,
+   a single-generation ablation.
+5. While the workflow runs, the main turn does not idle: memory, indexes, diagnostic tools,
+   reading the next suspect.
+
+This pattern found and fixed in one pass: dead channels 111-113/118-120/123, cascading
+corruption in `set_all_weights`, and a bug in the audit itself.

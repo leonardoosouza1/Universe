@@ -1,63 +1,62 @@
-//! MOVIDO do binário gpu_evolve para a lib (2026-08-14, P1.9): o genoma_view
-//! mantinha um parser DUPLICADO que quebrou em silêncio quando os blocos P1.6/P1.7
-//! entraram no formato (lia neuron_activation achando que era τ — 'espalhamento 0,0×'
-//! num campeão com 3,2× real). Parser canônico vive AQUI; binários importam.
-//! Persistência de genomas em disco: `save_genome` / `load_genome`.
+//! MOVED out of the gpu_evolve binary into the library (2026-08-14, P1.9): genoma_view
+//! kept a DUPLICATE parser that broke in silence when the P1.6/P1.7 blocks entered the
+//! format (it read neuron_activation believing it was τ — reporting 'spread 0.0×' for a
+//! champion whose real spread was 3.2×). The canonical parser lives HERE; binaries import
+//! it. On-disk genome persistence: `save_genome` / `load_genome`.
 //!
-//! # Formato v2 (com cabeçalho) — E3 (REFACTOR_PLAN.md §2.3, item 3)
+//! # Format v2 (with a header) — E3 (REFACTOR_PLAN.md §2.3, item 3)
 //!
 //! ```text
 //! magic:   4 bytes  = b"UGEN"
-//! versao:  4 bytes  = u32 LE = 2
+//! version: 4 bytes  = u32 LE = 2
 //! L1:      N_L1_WEIGHTS  × f32 LE
 //! L2:      N_L2_WEIGHTS  × f32 LE
 //! KAN:     3*KAN_OUT_KNOTS × f32 LE
-//! slow:    N_SLOW_WEIGHTS × f32 LE   (opcional — lido só se o arquivo for grande o bastante)
-//! tau:     N_CFC_CHANNELS × f32 LE   (opcional — idem)
-//! sensors: N_SENSOR_GENES × f32 LE   (opcional — idem; FASE SENSORES, degrau 1)
-//! neuron_alpha:       (L1+L2) × f32 LE  (opcional — idem; P1.7, mecanismo 1)
-//! neuron_period_l1:   L1      × f32 LE  (opcional — idem; P1.7, mecanismo 2)
-//! neuron_threshold_l1: L1     × f32 LE  (opcional — idem; P1.7, mecanismo 2)
-//! neuron_activation:  (L1+L2) × f32 LE  (opcional — idem; P1.7, mecanismo 3)
+//! slow:    N_SLOW_WEIGHTS × f32 LE   (optional — read only if the file is large enough)
+//! tau:     N_CFC_CHANNELS × f32 LE   (optional — same rule)
+//! sensors: N_SENSOR_GENES × f32 LE   (optional — same rule; SENSOR PHASE, step 1)
+//! neuron_alpha:       (L1+L2) × f32 LE  (optional — same rule; P1.7, mechanism 1)
+//! neuron_period_l1:   L1      × f32 LE  (optional — same rule; P1.7, mechanism 2)
+//! neuron_threshold_l1: L1     × f32 LE  (optional — same rule; P1.7, mechanism 2)
+//! neuron_activation:  (L1+L2) × f32 LE  (optional — same rule; P1.7, mechanism 3)
 //! ```
 //!
-//! # Compatibilidade com o formato legado (SEM cabeçalho)
+//! # Compatibility with the legacy format (NO header)
 //!
-//! Antes desta versão o arquivo começava direto nos bytes de L1 — sem magic, sem
-//! versão. `load_genome` faz *sniff* dos primeiros 4 bytes: se forem exatamente
-//! `b"UGEN"`, lê a versão e pula o cabeçalho (8 bytes); caso contrário, assume
-//! formato legado e lê os blocos a partir do byte 0, exatamente como antes.
+//! Before this version the file started straight at the L1 bytes — no magic, no version.
+//! `load_genome` *sniffs* the first 4 bytes: if they are exactly `b"UGEN"`, it reads the
+//! version and skips the 8-byte header; otherwise it assumes the legacy format and reads
+//! the blocks from byte 0, exactly as before.
 //!
-//! Isso preserva a garantia original: um `.bin` legado gravado antes do cérebro
-//! lento e do banco de τ existirem ainda carrega (caindo no default documentado em
-//! `load_genome`), e agora um `.bin` v2 também é reconhecido sem ambiguidade — o
-//! sniff nunca confunde os dois porque 4 bytes de peso f32 aleatório colidirem com
-//! exatamente `b"UGEN"` tem probabilidade ~2⁻³² por arquivo.
+//! That preserves the original guarantee: a legacy `.bin` written before the slow brain
+//! and the τ bank existed still loads (falling back to the default documented in
+//! `load_genome`), and now a v2 `.bin` is recognised unambiguously too — the sniff can
+//! never confuse the two, because 4 bytes of random f32 weight colliding with exactly
+//! `b"UGEN"` has probability ~2⁻³² per file.
 //!
-//! **NÃO reordenar os campos de `Genome` nem a ordem de escrita abaixo** — o disco
-//! não tem nomes de campo, só posição. Reordenar corrompe `.bin` existentes em
-//! silêncio (regra R5 do REFACTOR_PLAN.md). Todo campo novo em `Genome` exige
-//! atualizar `save_genome` E `load_genome` juntos — os testes em `tests.rs` pegam o
-//! esquecimento.
+//! **DO NOT reorder `Genome`'s fields or the write order below** — the disk has no field
+//! names, only positions. Reordering corrupts existing `.bin` files silently (rule R5 of
+//! REFACTOR_PLAN.md). Every new field in `Genome` requires updating `save_genome` AND
+//! `load_genome` together — the tests in `tests.rs` catch the omission.
 
 use crate::gpu::evolution::Genome;
 use crate::kan::KAN_OUT_KNOTS;
 use crate::evolution::dna_genesis::default_kan_knots;
 
-/// Magic do cabeçalho v2 — 4 bytes ASCII, "Universe GENome".
+/// Magic of the v2 header — 4 ASCII bytes, "Universe GENome".
 const MAGIC: &[u8; 4] = b"UGEN";
-/// Versão atual do formato. Bump aqui SEMPRE que o layout dos blocos mudar
-/// (campo novo, ordem nova) — `load_genome` decide o que ler a partir dela.
+/// Current format version. Bump it here WHENEVER the block layout changes (new field, new
+/// order) — `load_genome` decides what to read from it.
 const FORMAT_VERSION: u32 = 2;
 
-/// Salva o melhor genoma: cabeçalho v2 + L1 | L2 | KAN | lento | banco de τ, tudo
-/// f32 little-endian.
+/// Saves the best genome: v2 header + L1 | L2 | KAN | slow | τ bank, all f32 little-endian.
 ///
-/// O lento estava faltando historicamente. Salvar só L1/L2/KAN significava que o
-/// campeão perdia os 1091 pesos do cérebro lento ao ser recarregado por
-/// `--carregar`: voltava com a inicialização padrão, idêntica para todo mundo.
-/// Gerações de seleção sobre a modulação eram descartadas em silêncio a cada
-/// retomada.
+/// The slow brain was historically missing. Saving only L1/L2/KAN meant the champion lost
+/// the slow brain's 1091 weights when reloaded through `--carregar`: it came back with the
+/// default initialisation, identical for everyone. Generations of selection over modulation
+/// were silently discarded on every resume. (`--carregar` is the flag name from when the
+/// bug happened; the resume flag today is `--retomar`, parsed at
+/// `src/bin/gpu_evolve/main.rs:741`.)
 pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
@@ -71,30 +70,30 @@ pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     for w in &genome.slow { f.write_all(&w.to_le_bytes())?; }
     for d in &genome.tau  { f.write_all(&d.to_le_bytes())?; }
     for s in &genome.sensors { f.write_all(&s.to_le_bytes())?; }
-    // P1.7 (docs/PLANO_EVOLUCAO.md) — cérebro assíncrono: memória, período/limiar,
-    // ativação heterogênea. Mesma regra dos blocos acima: campo novo aqui SEM
-    // atualizar `load_genome` junto é o gap 7 do CLAUDE.md do projeto (perdemos
-    // 1091 pesos em silêncio uma vez por esquecer isto) — `tests.rs` cobre.
+    // P1.7 (docs/PLANO_EVOLUCAO.md) — asynchronous brain: memory, period/threshold,
+    // heterogeneous activation. Same rule as the blocks above: a new field here WITHOUT
+    // updating `load_genome` alongside it is gap 7 of the project's CLAUDE.md (we lost
+    // 1091 weights in silence once by forgetting exactly this) — `tests.rs` covers it.
     for a in &genome.neuron_alpha { f.write_all(&a.to_le_bytes())?; }
     for p in &genome.neuron_period_l1 { f.write_all(&p.to_le_bytes())?; }
     for t in &genome.neuron_threshold_l1 { f.write_all(&t.to_le_bytes())?; }
     for a in &genome.neuron_activation { f.write_all(&a.to_le_bytes())?; }
-    // M4: gates do maestro (16 f32) — bloco opcional, sempre por último.
+    // M4: the maestro's gates (16 f32) — optional block, always last.
     for a in &genome.gates_w { f.write_all(&a.to_le_bytes())?; }
     Ok(())
 }
 
-/// Tenta carregar genoma de um arquivo salvo por `save_genome` — v2 (com cabeçalho
-/// `UGEN`) OU legado (sem cabeçalho, bytes de L1 direto no início do arquivo).
+/// Tries to load a genome from a file written by `save_genome` — v2 (with the `UGEN`
+/// header) OR legacy (no header, the L1 bytes straight at the start of the file).
 pub fn load_genome(path: &str) -> Option<Genome> {
     let bytes = std::fs::read(path).ok()?;
 
-    // Sniff dos primeiros 4 bytes: distingue v2 de legado sem ambiguidade prática.
+    // Sniff the first 4 bytes: separates v2 from legacy with no practical ambiguity.
     let base_off = if bytes.len() >= 8 && &bytes[0..4] == MAGIC {
-        let versao = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
-        // Só existe a v2 até agora; versão desconhecida (maior) ainda tenta ler
-        // com o layout atual — arquivo de versão MENOR não deveria ter magic.
-        debug_assert!(versao <= FORMAT_VERSION, "genoma salvo por versão futura ({versao})");
+        let version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+        // Only v2 exists so far; an unknown (higher) version still attempts to read with
+        // the current layout — a file of a LOWER version should not carry the magic.
+        debug_assert!(version <= FORMAT_VERSION, "genome saved by a future version ({version})");
         8usize
     } else {
         0usize
@@ -106,10 +105,10 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     let expected = base_off + (n_l1 + n_l2 + n_kan) * 4;
     if bytes.len() < expected { return None; }
 
-    // Leitura por deslocamento explícito. A versão com closure mutando `off` não passa
-    // no borrow-check assim que alguém precisa consultar `off` de fora dela — e precisar
-    // é inevitável aqui, porque os blocos finais são opcionais e a decisão de lê-los
-    // depende de comparar `off` com o tamanho do arquivo.
+    // Reading by explicit offset. The version with a closure mutating `off` does not pass
+    // the borrow checker as soon as someone needs to read `off` from outside it — and
+    // needing to is unavoidable here, because the final blocks are optional and the
+    // decision to read them depends on comparing `off` against the file size.
     fn read_at(bytes: &[u8], off: usize, n: usize) -> Vec<f32> {
         bytes[off..off + n * 4].chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
@@ -126,9 +125,9 @@ pub fn load_genome(path: &str) -> Option<Genome> {
             kan_knots[o][k] = kan_flat[o * KAN_OUT_KNOTS + k];
         }
     }
-    // Blocos opcionais, lidos só se o arquivo os contiver. Arquivo gravado antes destes
-    // campos cai no padrão — que é a verdade, não uma invenção: aquele genoma realmente
-    // não carregava o dado.
+    // Optional blocks, read only if the file contains them. A file written before these
+    // fields existed falls back to the default — which is the truth, not an invention:
+    // that genome really did not carry the data.
     let n_slow = crate::engine::SlowBrain::new().all_weights().len();
     let n_tau  = crate::gpu::evolution::N_CFC_CHANNELS;
 
@@ -142,9 +141,9 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     } else {
         vec![crate::cfc::DECAY_DEFAULT; n_tau]
     };
-    // FASE SENSORES (degrau 1) — mesmo padrão opcional de slow/tau: arquivo gravado
-    // antes deste campo existir cai no default, que é a verdade (aquele genoma
-    // realmente rodava com os hardcodes de hoje, não com um valor inventado).
+    // SENSOR PHASE (step 1) — same optional pattern as slow/tau: a file written before
+    // this field existed falls back to the default, which is the truth (that genome really
+    // did run with today's hardcoded values, not with an invented one).
     let n_sensors = crate::gpu::evolution::N_SENSOR_GENES;
     let sensors = if bytes.len() >= off + n_sensors * 4 {
         let v = read_at(&bytes, off, n_sensors); off += n_sensors * 4; v
@@ -152,10 +151,10 @@ pub fn load_genome(path: &str) -> Option<Genome> {
         crate::gpu::evolution::SENSOR_DEFAULTS.to_vec()
     };
 
-    // P1.7 — mesmo padrão opcional de slow/tau/sensors: arquivo gravado antes
-    // destes campos existirem cai no NEUTRO (idêntico ao cérebro de hoje — ver
-    // `Genome::random`), que é a verdade, não uma invenção: aquele genoma
-    // realmente rodava sem memória/período/limiar/ativação heterogênea.
+    // P1.7 — same optional pattern as slow/tau/sensors: a file written before these fields
+    // existed falls back to NEUTRAL (identical to today's brain — see `Genome::random`),
+    // which is the truth, not an invention: that genome really did run without
+    // memory/period/threshold/heterogeneous activation.
     let n_l1 = crate::gpu::evolution::N_L1_NEURONS;
     let n_l2 = crate::gpu::evolution::N_L2_NEURONS;
     let neuron_alpha = if bytes.len() >= off + (n_l1 + n_l2) * 4 {
@@ -178,7 +177,7 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     } else {
         vec![0.0; n_l1 + n_l2]
     };
-    // M4: gates do maestro (opcional; genoma antigo → zeros = gates neutros 1,0).
+    // M4: the maestro's gates (optional; an old genome → zeros = neutral gates of 1.0).
     let gates_w = if bytes.len() >= off + 16 * 4 {
         read_at(&bytes, off, 16)
     } else {
@@ -192,16 +191,17 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     })
 }
 
-/// Semente do genoma inicial do ser `i` sob a semente de população `pop_seed`.
+/// Seed of being `i`'s initial genome under the population seed `pop_seed`.
 ///
-/// Existia em TRÊS ramos distintos (checkpoint falhou / sem checkpoint / do zero) e eu
-/// semeei apenas um, sem conferir qual roda. Resultado: uma bateria inteira de 6 corridas
-/// com "três sementes" que eram a MESMA população — `gen 0` idêntico até o tempo de parede
-/// nas três, e um efeito pareado de 25σ que era uma amostra repetida três vezes.
+/// This used to exist in THREE separate branches (checkpoint failed / no checkpoint / from
+/// scratch) and only one of them was seeded, without checking which one actually runs. The
+/// result: a whole battery of 6 runs with "three seeds" that were the SAME population —
+/// `gen 0` identical down to the wall-clock time in all three, and a paired effect of 25σ
+/// that was one sample repeated three times.
 ///
-/// Com a função única, semear é impossível de esquecer num ramo.
+/// With a single function, forgetting to seed a branch is impossible.
 pub fn population_seed_for(pop_seed: u64, index: usize) -> u64 {
-    // Multiplicador primo grande separa as famílias de sementes: populações de `pop_seed`
-    // diferentes não compartilham nenhum genoma inicial.
+    // A large prime multiplier separates the seed families: populations from different
+    // `pop_seed` values share no initial genome.
     pop_seed.wrapping_mul(1_000_003).wrapping_add(index as u64)
 }

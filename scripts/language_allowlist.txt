@@ -120,7 +120,6 @@ src/layers.rs
 src/memory.rs
 src/simulation/mod.rs
 docs/arquivo/dirs/iara_genesis/src/neural/svd.rs
-NAMING.md
 tests/ablacao_cortex.rs
 docs/arquivo/dirs/iara_genesis/src/math/chebyshev.rs
 docs/arquivo/dirs/iara_genesis/src/math/sparse.rs
