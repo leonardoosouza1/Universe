@@ -23,16 +23,23 @@
 //! documentada nos comentários dos próprios shaders.
 
 fn validar_wgsl(nome: &str, fonte: &str) {
-    let module = naga::front::wgsl::parse_str(fonte)
-        .unwrap_or_else(|e| panic!("{nome}: falhou o PARSE de WGSL:\n{}", e.emit_to_string(fonte)));
+    let module = naga::front::wgsl::parse_str(fonte).unwrap_or_else(|e| {
+        panic!(
+            "{nome}: falhou o PARSE de WGSL:\n{}",
+            e.emit_to_string(fonte)
+        )
+    });
 
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
     );
-    validator
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{nome}: falhou a VALIDAÇÃO (type-check) de WGSL:\n{}", e.emit_to_string(fonte)));
+    validator.validate(&module).unwrap_or_else(|e| {
+        panic!(
+            "{nome}: falhou a VALIDAÇÃO (type-check) de WGSL:\n{}",
+            e.emit_to_string(fonte)
+        )
+    });
 }
 
 /// Editado na FASE CANAIS: ch101 (curvatura 260m, reusa `curv_at_d`) e ch109

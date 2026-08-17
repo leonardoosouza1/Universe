@@ -11,20 +11,32 @@
 use universe::{
     chaos::ChaosInput,
     engine::SovereignEngine,
-    neuro::{definir_ablacao, Via},
+    neuro::{Via, definir_ablacao},
     safety::SafetyState,
 };
 
 fn calmo() -> SafetyState {
     SafetyState {
-        speed_kmh: 30.0, yaw_rate: 0.0, slip_avg: 0.0, ttc_forward: 10.0,
-        wall_left: 5.0, wall_right: 5.0, stall_timer: 0.0, pinado_timer: 0.0,
-        rain: 0.0, curv25: 0.0, current_thr: 0.5,
+        speed_kmh: 30.0,
+        yaw_rate: 0.0,
+        slip_avg: 0.0,
+        ttc_forward: 10.0,
+        wall_left: 5.0,
+        wall_right: 5.0,
+        stall_timer: 0.0,
+        pinado_timer: 0.0,
+        rain: 0.0,
+        curv25: 0.0,
+        current_thr: 0.5,
     }
 }
 
 fn sem_caos() -> ChaosInput {
-    ChaosInput { yaw_rate: 0.0, slip_avg: 0.0, retina_temporal_var: 0.0 }
+    ChaosInput {
+        yaw_rate: 0.0,
+        slip_avg: 0.0,
+        retina_temporal_var: 0.0,
+    }
 }
 
 #[test]
@@ -43,7 +55,8 @@ fn cortex_ablado_faz_a_intencao_do_cortex_nao_importar() {
             (a[i] - b[i]).abs() < 1e-6,
             "com o córtex ablado a saída não pode depender da intenção do córtex, \
              mas o eixo {i} deu {} contra {}",
-            a[i], b[i]
+            a[i],
+            b[i]
         );
     }
 }
