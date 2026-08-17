@@ -501,3 +501,47 @@ desperdiça orçamento); em malha fechada, filtrar é SEGURANÇA (centro ruim é
 que a trajetória pisa, porque a própria dinâmica carrega o controlador para lá).
 Corolário: onde o professor falha, em malha fechada é território de EVOLUIR; em malha
 aberta é só espaço desperdiçado.
+
+## A PONTE: a política destilada volta para dentro do genoma (cirurgia de L2)
+
+O piloto dirige melhor que o campeão mas NÃO é um genoma — não dá para semear evolução
+com ele. A ponte é uma cirurgia por forma fechada: congelar L1 e recalcular só as três
+linhas de L2 que produzem acelerador/volante/freio, tendo o PILOTO como alvo.
+
+**Para isso foi preciso reconstruir a cadeia de decisão fora da GPU**, e a reconstrução
+foi ganhando precisão à medida que cada mecanismo entrou:
+
+| modelo | erro vs intent gravado | corr (acel/volante/freio) |
+|---|---|---|
+| L1 → L2 → tanh | 0,1841 | 0,975 / 0,871 / 0,860 |
+| + memória e limiar de L1 | 0,0833 | 0,984 / 0,944 / 0,909 |
+| + PERÍODO por neurônio | **0,0531** | **0,993 / 0,981 / 0,958** |
+
+O período era a peça grande: **76 dos 96 neurônios de L1 têm período > 1** (só 20
+recalculam todo tick). Sem ele, qualquer análise offline do cérebro erra ~2× mais.
+Ferramenta nova: `genoma_dump` (dump pelo parser CANÔNICO — nunca reimplementar o
+formato, ver o bug do parser duplicado) com modo `--patch-l2`.
+
+**Resultado, e a âncora é o que decide:**
+
+| condição | 9001 (treino) | 9007 (nunca vista) |
+|---|---|---|
+| cérebro original | 6592 | 5932 |
+| piloto por fórmula (não herdável) | 7139 | 6072 |
+| genoma operado, encolhimento para ZERO | 7134 (108%) | **600 (10%)** |
+| **genoma operado, encolhimento para W₀ (λ=1)** | **7083 (107,4%)** | **5846 (98,5%)** |
+| genoma operado, âncora forte (λ=100) | 7217 (109%) | 3738 (63%) |
+
+Encolher para ZERO reproduz a política em casa e DESTRÓI a generalização — a mesma
+assinatura do clone linear (600 m, o mesmo ponto de trava). Encolher para os pesos
+ORIGINAIS mantém a estrutura que o cérebro tinha e absorve só o ganho: **+7,4% em casa
+com 98,5% preservado na pista nova.**
+
+> **A destilação fecha o ciclo: campeão → fórmula melhor → de volta ao genoma, herdável
+> pela evolução.** O que a evolução herda não é a fórmula (que é uma pirâmide de 202k
+> features), é o efeito dela nas três linhas de L2 que viram ação.
+
+Ressalvas honestas: uma corrida por condição; λ=100 saiu pior que λ=1 em 9007 (3738 vs
+5846), não-monotônico — pode ser ruído de corrida única em malha caótica, não medi
+réplicas. E a reconstrução ainda erra 0,053: a cirurgia é feita sobre um modelo BOM, não
+exato, o que provavelmente explica parte da perda fora da distribuição.
