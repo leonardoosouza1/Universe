@@ -3,3 +3,6 @@
 /ffmpeg-7.0.2-amd64-static
 race_reports.md
 /telemetry
+
+# Derived data: semantic index is rebuilt locally (tools/semantic_index.py --build)
+/.semantic-index

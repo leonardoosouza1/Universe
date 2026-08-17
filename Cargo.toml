@@ -11,6 +11,7 @@ name = "universe"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.85.0" # Versão estável em 2026
+license = "MIT"
 default-run = "universe"
 
 [dependencies]
