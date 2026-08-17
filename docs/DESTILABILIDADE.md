@@ -461,3 +461,43 @@ caderno novo é gravado na distribuição do PILOTO, não na do cérebro, e o qu
 é a qualidade do professor e sim o que a base consegue representar (o erro held-out do
 misto-2 já é 0,1388 com 202k features). Se melhorar acima de +5%, existe um laço de
 auto-melhoria sem evolução e isso muda a prioridade do projeto inteiro.
+
+## Destilação ITERADA — VEREDITO: não há almoço grátis, e a métrica de ajuste MENTE
+
+Predição registrada (empate ou queda leve) confirmada, pelo lado da queda:
+
+| pista | cérebro | piloto g1 (do cérebro) | piloto g2 (do piloto) | g2 vs g1 |
+|---|---|---|---|---|
+| 9001 | 6592 | 7139 | 6961 | −2,5% |
+| 9003 | 5242 | 5575 | 5177 | −7,1% |
+| 9007 (nunca vista) | 5932 | 6072 | 5536 | **−8,8%** |
+
+**O achado não é a queda — é a DISSOCIAÇÃO.** O erro held-out do ajuste CAIU 60%
+(0,1388 → 0,0549, com volante em 0,024 e freio em 0,067) enquanto dirigir piorou até
+8,8%. Copiar o piloto é fácil justamente porque ele é uma função suave e determinística
+de X; copiar bem não acrescenta nada.
+
+Duas consequências práticas:
+
+1. **Não existe laço de auto-melhoria por re-destilação.** Refino de verdade exige
+   informação NOVA do mundo — que é o que a evolução fornece e a cópia não. A queda é
+   pior na pista nunca vista (−8,8%), ou seja, o que se perde primeiro é generalização:
+   a cópia herda os pontos cegos do pai e não vê nada além deles.
+2. **Erro de ajuste deixa de ser proxy de desempenho assim que se destila um
+   destilado.** Se eu tivesse aceitado o 0,0549 como progresso, teria publicado uma
+   melhora de 60% que na pista é uma piora. Vale como canário: quando a métrica de
+   ajuste melhora MUITO sem que nada no mundo tenha mudado, medir no mundo antes de
+   comemorar.
+
+## Veneno por malha — fecha a dicotomia (medição da sessão-forja)
+
+Eles rodaram o espelho do nosso teste: 25% do caderno vindo de texto onde o modelo denso
+vai mal. Resultado **inerte** em malha aberta (prosa 3,138→3,089; código +0,06,
+explicável pelo orçamento menor de centros bons; diálogo empate).
+
+**Enunciado conjunto:** a qualidade do professor é critério de seleção de dados
+PROPORCIONAL ao fechamento da malha. Em malha aberta, filtrar é economia (centro ruim
+desperdiça orçamento); em malha fechada, filtrar é SEGURANÇA (centro ruim é armadilha
+que a trajetória pisa, porque a própria dinâmica carrega o controlador para lá).
+Corolário: onde o professor falha, em malha fechada é território de EVOLUIR; em malha
+aberta é só espaço desperdiçado.
