@@ -1,0 +1,8 @@
+# VENDORED COPY — see vendor/iara-cfc/Cargo.toml for why and for the migration path.
+[package]
+name = "iara-hdc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iara-byte = { path = "../iara-byte" }

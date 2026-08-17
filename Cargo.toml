@@ -16,12 +16,12 @@ default-run = "universe"
 
 [dependencies]
 iara_genesis = { path = "docs/arquivo/dirs/iara_genesis" }
-iara-perception = { path = "../iara-runtime/iara-perception" }
+iara-perception = { path = "vendor/iara-perception" }
 # Já era dependência TRANSITIVA via iara-perception (RetinaPerception usa CfcCell
 # internamente). Tornada direta para que `src/math/cfc_perception.rs` possa referenciar
 # `iara_cfc::CfcCell` sem duplicar a equação — ver doc daquele módulo. Mesma crate,
 # mesma versão que iara-perception já resolve; não adiciona código novo ao grafo.
-iara-cfc = { path = "../iara-runtime/iara-cfc" }
+iara-cfc = { path = "vendor/iara-cfc" }
 bevy = { version = "0.16.0", default-features = false, features = [
     "bevy_pbr",
     "bevy_render",

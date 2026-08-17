@@ -1,0 +1,22 @@
+# VENDORED COPY — upstream lives outside this repository.
+#
+# Universe depended on ../iara-runtime, which is not tracked here and is not even a
+# git repository, so a fresh clone could not build at all. These two crates (1556
+# lines total) are the only ones Universe uses, so they were copied in on 2026-08-17
+# to make the repository self-contained for outside contributors.
+#
+# TRADE-OFF, stated rather than hidden: byte-language-lab also consumes
+# ../iara-runtime, so this copy can drift from that one. scripts/check_vendor.sh
+# reports the difference when the upstream path exists. The long-term fix is to
+# publish iara-runtime and depend on it by git URL or version, which removes the
+# copy entirely — see docs/MIGRATION.md.
+[package]
+name = "iara-perception"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iara-cfc = { path = "../iara-cfc" }
+iara-hdc = { path = "../iara-hdc" }
+iara-byte = { path = "../iara-byte" }
+iara-gate = { path = "../iara-gate" }
