@@ -239,11 +239,7 @@ pub fn recharge_all(stations: &mut [EnergyStation], cfg: &StationConfig) {
 /// scarce inside one tick, the lower index drinks first. That order is deterministic
 /// and matches the existing CPU fuel loop, so runs stay reproducible.
 /// Each being drains only its nearest in-radius station on a given tick.
-pub fn step(
-    stations: &mut [EnergyStation],
-    beings: &[BeingFuel],
-    cfg: &StationConfig,
-) -> Vec<f32> {
+pub fn step(stations: &mut [EnergyStation], beings: &[BeingFuel], cfg: &StationConfig) -> Vec<f32> {
     let takes = beings
         .iter()
         .map(|b| {
@@ -394,8 +390,8 @@ mod tests {
                 charge: 0.9,
             },
         ];
-        let hit = nearest_charged(&stations, capacity, Vec2::ZERO)
-            .expect("one charged station exists");
+        let hit =
+            nearest_charged(&stations, capacity, Vec2::ZERO).expect("one charged station exists");
         assert_eq!(hit.index, 1, "the drained near station must be skipped");
         assert!((hit.dist_m - 50.0).abs() < 1e-4);
         assert!((hit.charge_frac - 0.9).abs() < 1e-6);
@@ -427,7 +423,13 @@ mod tests {
         // Out of radius: nothing moves regardless of hunger.
         let before = st.charge;
         assert_eq!(
-            try_drain(&mut st, Vec2::new(cfg.radius_m + 0.1, 0.0), 0.0, 0.195, &cfg),
+            try_drain(
+                &mut st,
+                Vec2::new(cfg.radius_m + 0.1, 0.0),
+                0.0,
+                0.195,
+                &cfg
+            ),
             0.0
         );
         assert_eq!(st.charge, before);
@@ -466,7 +468,10 @@ mod tests {
         ];
         let takes = step(&mut stations, &beings, &cfg);
         assert_eq!(takes[0], 0.0, "dead being drank");
-        assert!((takes[1] - 0.6).abs() < 1e-6, "first living index drinks first");
+        assert!(
+            (takes[1] - 0.6).abs() < 1e-6,
+            "first living index drinks first"
+        );
         assert!(
             (takes[2] - 0.4).abs() < 1e-6,
             "second in index order gets the remainder: got {}",

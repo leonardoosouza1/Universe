@@ -37,11 +37,11 @@ impl Default for WheelState {
 
 #[derive(Component)]
 pub struct TireComponent {
-    pub mu_peak: f32, // Peak friction coefficient (1.5-1.8 for a GT3 slick)
+    pub mu_peak: f32,             // Peak friction coefficient (1.5-1.8 for a GT3 slick)
     pub cornering_stiffness: f32, // N/rad
-    pub wheel_radius: f32, // meters (0.33 GT3)
-    pub wheel_inertia: f32, // kg·m² (I = m*r², ~1.5 for GT3 wheel+tire)
-    pub optimal_temp: f32, // Ideal temperature (0.5 = middle of the range)
+    pub wheel_radius: f32,        // meters (0.33 GT3)
+    pub wheel_inertia: f32,       // kg·m² (I = m*r², ~1.5 for GT3 wheel+tire)
+    pub optimal_temp: f32,        // Ideal temperature (0.5 = middle of the range)
 }
 
 impl Default for TireComponent {

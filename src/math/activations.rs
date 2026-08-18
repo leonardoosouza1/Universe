@@ -129,11 +129,7 @@ mod tests {
     #[test]
     fn sigmoid_de_zero_e_meio() {
         let s = sigmoid(0.0);
-        assert!(
-            (s - 0.5).abs() < 1e-6,
-            "sigmoid(0) must be 0.5, got {}",
-            s
-        );
+        assert!((s - 0.5).abs() < 1e-6, "sigmoid(0) must be 0.5, got {}", s);
     }
 
     #[test]
@@ -164,12 +160,7 @@ mod tests {
             let approx = tanh_approx(xi);
             let exact = xi.tanh();
             let err = (approx - exact).abs();
-            assert!(
-                err < 0.015,
-                "tanh_approx({}) error={} near zero",
-                xi,
-                err
-            );
+            assert!(err < 0.015, "tanh_approx({}) error={} near zero", xi, err);
         }
     }
 
@@ -325,10 +316,7 @@ mod tests {
             out.is_finite(),
             "non-finite output with near-zero deviation: {out}"
         );
-        assert!(
-            out.abs() <= 1.0,
-            "tanh must saturate in [-1,1], got {out}"
-        );
+        assert!(out.abs() <= 1.0, "tanh must saturate in [-1,1], got {out}");
     }
 
     /// `math::stats::population_std_dev` feeding `out_stage` end-to-end:
@@ -343,7 +331,10 @@ mod tests {
         // generations of mutation) — most near 3.0, with slight variation.
         let l2_raw: Vec<f32> = (0..48).map(|i| 2.8 + 0.05 * (i as f32 % 5.0)).collect();
         let std = population_std_dev(&l2_raw);
-        assert!(std > 0.0, "deviation should be > 0 for a non-constant vector");
+        assert!(
+            std > 0.0,
+            "deviation should be > 0 for a non-constant vector"
+        );
 
         let sat_sem_norm = l2_raw
             .iter()

@@ -238,12 +238,12 @@ pub struct Racer {
     pub wall_cooldown: f32, // Time until a new wall hit is registered
     pub last_waypoint: usize, // Last waypoint reached, for healing
     pub track_progress: f32, // Real progress along the track polyline (arc-length)
-    pub grace_ticks: u32, // Frame counter since spawn; immune to time_scale (real grace of ~10s)
+    pub grace_ticks: u32,  // Frame counter since spawn; immune to time_scale (real grace of ~10s)
     pub reverse_timer: f32, // >0 while in an emergency reverse maneuver; decrements with dt
     pub progress_checkpoint: f32, // Last track_progress that marked real advance (+3m)
     pub progress_stall: f32, // Accumulated seconds WITHOUT gaining 3m of track (anti-donut)
-    pub wall_ema_l: f32,  // EMA of distance to the left wall (decay ~1s) — persistent sensation
-    pub wall_ema_r: f32,  // EMA of distance to the right wall
+    pub wall_ema_l: f32,   // EMA of distance to the left wall (decay ~1s) — persistent sensation
+    pub wall_ema_r: f32,   // EMA of distance to the right wall
     pub wall_dist_prev_l: f32, // Distance to the left wall in the previous frame (m) — for the approach-rate computation
     pub wall_dist_prev_r: f32, // Distance to the right wall in the previous frame (m)
     pub wall_dist_prev_f: f32, // Distance to the front wall in the previous frame (m)

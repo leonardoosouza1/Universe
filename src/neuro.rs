@@ -606,7 +606,10 @@ mod testes_priming {
         assert!(PRIMING.contains(&(2, 79)) && PRIMING.contains(&(2, 78)));
         // steering has the four from the asphalt tracker
         for ch in 90..94 {
-            assert!(PRIMING.contains(&(1, ch)), "channel {ch} missing on steering");
+            assert!(
+                PRIMING.contains(&(1, ch)),
+                "channel {ch} missing on steering"
+            );
         }
     }
 

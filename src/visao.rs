@@ -151,7 +151,10 @@ mod testes {
         for alvo in [20.0f32, 50.0, 80.0, 120.0] {
             let min_pitch = -(ALTURA_OLHO / alvo);
             let d = ALTURA_OLHO / -min_pitch;
-            assert!((d - alvo).abs() < 0.01, "asked for {alvo} m and the math gave {d} m");
+            assert!(
+                (d - alvo).abs() < 0.01,
+                "asked for {alvo} m and the math gave {d} m"
+            );
         }
     }
 

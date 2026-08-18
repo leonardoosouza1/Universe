@@ -1935,17 +1935,17 @@ mod testes_curriculo_populacao {
         let mut val = 5;
         let (n, _) =
             decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1, Some(FRACAO_PARA_SUBIR + 0.05));
-        assert_eq!(n, 2, "with the fraction above the threshold, climb one step");
+        assert_eq!(
+            n, 2,
+            "with the fraction above the threshold, climb one step"
+        );
     }
 
     #[test]
     fn sobe_no_maximo_um_degrau_por_geracao() {
         let mut val = 5;
         let (n, _) = decide_next_env_level_pop(&mut val, 99999.0, 1658.0, 1, Some(0.95));
-        assert_eq!(
-            n, 2,
-            "never two steps at once, no matter how good it was"
-        );
+        assert_eq!(n, 2, "never two steps at once, no matter how good it was");
     }
 
     #[test]
@@ -2004,7 +2004,10 @@ mod testes_largura_populacao {
         for _ in 0..10 {
             passo_largura(&mut e, 0.08);
         }
-        assert_eq!(e, 0.0, "with 8% of the population, the track must not narrow");
+        assert_eq!(
+            e, 0.0,
+            "with 8% of the population, the track must not narrow"
+        );
     }
 
     #[test]

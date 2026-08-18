@@ -368,7 +368,9 @@ fn headless_autostart(
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     if ui_auto.0 {
-        println!("🎮 UI AUTO-START | --seed passed in graphical mode, entering the simulation directly");
+        println!(
+            "🎮 UI AUTO-START | --seed passed in graphical mode, entering the simulation directly"
+        );
         next_state.set(AppState::Simulation);
         return;
     }

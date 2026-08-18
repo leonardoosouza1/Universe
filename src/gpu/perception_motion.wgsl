@@ -44,12 +44,53 @@
 //
 // O shader usa atomicOr para escrever bytes individuais em buf_output, igual aos outros
 // kernels de percepção. Garante ausência de corrida com spatial e temporal (canais distintos).
+//
+// # BODY BLOCK — ownership handoff (BODY PHASE, 2026-08-17)
+//
+// CONTRACT WITH THE INTEGRATOR, registered decision (mission rule 7):
+//
+//   params.body_on == 0 (DEFAULT) -> THIS kernel writes ch98 and ch114-117, exactly
+//                                    as before, bit for bit.
+//   params.body_on == 1           -> this kernel writes NONE of the five;
+//                                    perception_temporal.wgsl writes all five from
+//                                    the BODY BLOCK (buf_temporal[58-65]).
+//
+// ch21-27 (per-row motion) and ch83-84 (hemispheric flow) are NOT part of the
+// handoff — they keep coming out of here in both states. Only the five channels
+// MEASURED constant for a whole run change owner (`piloto_forja.rs:49`: "`sd` has 6
+// degenerate channels (98, 114, 115, 116, 117, 124) with `sd = 1e-12`"; the sixth,
+// ch124, was never this kernel's).
+//
+// Why the guard is on BOTH sides and not just one: buf_output is written with
+// atomicOr over a zeroed buffer. Two kernels writing the same byte raise no error
+// and no panic — they produce the OR of the two values, a plausible number. Neither
+// side writing raises no error either: it produces a mute channel. Both failures are
+// silent, which is why both sides read THE SAME field of THE SAME uniform, built
+// once per tick from ONE static (gpu::perception::BODY_CHANNELS_ON). There is no
+// state in which the two can disagree.
+//
+// Detection, if they ever do disagree: `cargo test --release --test wgsl_validation`
+// (parse/type-check) does not see semantics; what does is `--auditar-visao`
+// (per-index variance: a mute channel shows sigma=0, a double write shows a value
+// outside the registered range) and the parity test in `perception_body_test.rs`.
 
+// Uniform shared by the THREE perception pipelines (spatial/temporal/motion) — the
+// same `buf_params`. The layout mirrors `ParamsGpu` in perception.rs (32 bytes, a
+// multiple of 16 because WGSL aligns a uniform struct that way). Change it here and
+// you change it in all three .wgsl AND on the host, in the same commit.
 struct Params {
-    grid_size: u32,
-    n_beings:  u32,
-    cell_size: f32,
-    _pad:      f32,
+    grid_size:  u32,
+    n_beings:   u32,
+    cell_size:  f32,
+    perif_real: f32,  // unused in this kernel; present so the layout matches
+    // BODY BLOCK (BODY PHASE, 2026-08-17): 1.0 = body-block channels on. Comes from
+    // ONE single static (gpu::perception::BODY_CHANNELS_ON), read once per tick on
+    // the host — which is why temporal.wgsl and motion.wgsl can NEVER disagree about
+    // who writes ch98/ch114-117.
+    body_on:    f32,
+    _pad0:      f32,
+    _pad1:      f32,
+    _pad2:      f32,
 }
 
 @group(0) @binding(0) var<uniform>         params       : Params;
@@ -171,9 +212,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         let motion = i32(clamp((delta_sum / MOTION_NORM) * 127.0, 0.0, 127.0));
 
         // row 0-6 → ch 21-27; row 7 → ch 98
+        // BODY BLOCK: with params.body_on, ch98 becomes PredatorBearing and is
+        // written by perception_temporal.wgsl — this kernel GOES SILENT. See the
+        // "BODY BLOCK — ownership handoff" block at the top of this file.
         if row < 7u {
             write_channel(being, 21u + row, motion);
-        } else {
+        } else if params.body_on <= 0.5 {
             write_channel(being, 98u, motion);
         }
         return;
@@ -203,8 +247,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         let val = i32(clamp((sum_l / HEMI_NORM) * 127.0, 0.0, 127.0));
         write_channel(being, 83u, val);
         // ch114: approach hemisférico esquerdo, COM SINAL — ver bloco "FASE CANAIS" acima.
-        let approach_l = i32(clamp((signed_l / HEMI_NORM) * 127.0, -127.0, 127.0));
-        write_channel_signed(being, 114u, approach_l);
+        // BODY BLOCK: with body_on, ch114 becomes StationBearing (temporal.wgsl) and
+        // this kernel goes silent — ch83 above is still written in both states.
+        if params.body_on <= 0.5 {
+            let approach_l = i32(clamp((signed_l / HEMI_NORM) * 127.0, -127.0, 127.0));
+            write_channel_signed(being, 114u, approach_l);
+        }
         return;
     }
 
@@ -227,8 +275,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         let val = i32(clamp((sum_r / HEMI_NORM) * 127.0, 0.0, 127.0));
         write_channel(being, 84u, val);
         // ch115: approach hemisférico direito, COM SINAL.
-        let approach_r = i32(clamp((signed_r / HEMI_NORM) * 127.0, -127.0, 127.0));
-        write_channel_signed(being, 115u, approach_r);
+        // BODY BLOCK: with body_on, ch115 becomes StationProx (temporal.wgsl) — silent here.
+        if params.body_on <= 0.5 {
+            let approach_r = i32(clamp((signed_r / HEMI_NORM) * 127.0, -127.0, 127.0));
+            write_channel_signed(being, 115u, approach_r);
+        }
         return;
     }
 
@@ -236,7 +287,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     // FASE CANAIS 2026-08-14. Row 6 (RETINA_ROWS/2 - 1, a mesma "frontal" do
     // motor.rs), colunas 24..40 (~±15° centrais, a fóvea) — ver bloco "FASE
     // CANAIS" acima para a derivação de FOVEA_NORM e a adaptação de sinal.
-    if tid == 10u {
+    // BODY BLOCK: with body_on, ch116/117 become StationCharge/OwnFuel
+    // (temporal.wgsl) and this whole thread has nothing left to write — the guard
+    // sits at the top, which also skips the 16-column loop.
+    if tid == 10u && params.body_on <= 0.5 {
         let row = RETINA_ROWS / 2u - 1u; // row 6
         var signed_sum: f32 = 0.0;
         var abs_sum: f32 = 0.0;

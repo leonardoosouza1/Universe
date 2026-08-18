@@ -144,10 +144,7 @@ fn run_single(
 
     let frames = reader.frames_of(being_idx);
     if frames.is_empty() {
-        eprintln!(
-            "NO frames for being_idx={}. Check the file.",
-            being_idx
-        );
+        eprintln!("NO frames for being_idx={}. Check the file.", being_idx);
         std::process::exit(1);
     }
 

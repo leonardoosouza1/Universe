@@ -441,9 +441,7 @@ fn main() {
         println!(
             "Probable cause: many var<private> arrays at once (omegas/tire_temps/slip_ratios/slip_angles + nloads/scomp)."
         );
-        println!(
-            "Register pressure: ~14 arrays × 4 floats = 56 local f32s besides the rest."
-        );
+        println!("Register pressure: ~14 arrays × 4 floats = 56 local f32s besides the rest.");
         return;
     }
 
@@ -472,9 +470,7 @@ fn main() {
         println!(
             "Confirmed cause: the additional floats of the Pacejka computation (f_long/f_lat/sa/sr/vr/comb/scale)"
         );
-        println!(
-            "added to all the other local arrays exceed the ACO's register capacity."
-        );
+        println!("added to all the other local arrays exceed the ACO's register capacity.");
         println!(
             "The ACO RDNA2 compiler does not spill to local memory automatically in this case."
         );
@@ -513,9 +509,7 @@ fn main() {
     // If we got here, the full shader should work — but we know it does not.
     // This would be a compilation crash in the final link/optimization, not in an isolated phase.
     println!();
-    println!(
-        "RESULT: all isolated phases run. The crash happens only with the FULL shader."
-    );
+    println!("RESULT: all isolated phases run. The crash happens only with the FULL shader.");
     println!("Probable cause: the RADV ACO/NIR compiler does not support the shader's total size.");
     println!("Solution: split into multiple kernels (one per phase).");
 

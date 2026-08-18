@@ -107,6 +107,45 @@ pub struct PosePerception {
 /// percepção nova entra atrás de flag, com A/B pareado (regra do projeto).
 pub static PERIF_REAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// BODY BLOCK (BODY PHASE, 2026-08-17) — turns on the CPU-fed body/hostile-world
+/// channels described in `perception::channels::BODY_SLOTS`. **Off by default**
+/// (project rule 3: new perception enters behind a default-off flag, with a paired
+/// A/B — `main.rs:715-718`).
+///
+/// # The single switch, and why there is exactly one
+///
+/// This one static becomes the uniform field `body_on`, which is built ONCE per
+/// tick (`reduce`/`bind_and_dispatch`) into the ONE `buf_params` shared by all
+/// three perception pipelines. `perception_temporal.wgsl` starts writing ch98 and
+/// ch114-117 when it is set, and `perception_motion.wgsl` stops writing them —
+/// from the same field, in the same uniform, read in the same tick. Two independent
+/// params could disagree for one tick and produce either a double `atomicOr` (bit
+/// garbage, no error) or a mute channel (also no error). One field cannot.
+///
+/// Read with `Relaxed`, like `PERIF_REAL`: it is stored once at start-up by `main`
+/// before any dispatch, never toggled mid-run.
+pub static BODY_CHANNELS_ON: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Uniform shared by the three perception pipelines.
+///
+/// # Layout is a contract with THREE shaders
+///
+/// 32 bytes, and it must stay a multiple of 16: WGSL rounds a uniform struct up to
+/// its 16-byte alignment, so a host struct of 5 f32 (20 bytes) against a shader
+/// struct that WGSL sizes as 32 would be a binding smaller than the shader demands.
+/// The explicit `_pad0.._pad2` make both sides read the same 32 bytes with no
+/// implicit padding to reason about. Same precedent as `brain.wgsl`'s `Params`
+/// (`tests/wgsl_validation.rs`: "gained `out_gain` + `norm_l2_by_std` (+ padding to
+/// keep the uniform a multiple of 16 bytes)").
+///
+/// Growing this struct is the SAFE direction and only that one — `min_binding_size:
+/// None` (`uniform_entry`) lets the buffer be larger than a shader's declaration, so
+/// a kernel that declares fewer fields keeps reading the original bytes
+/// bit-identically (`src/gpu/CLAUDE.md`). Shrinking, reordering or inserting a field
+/// in the middle is the silent-corruption case. **If you change this struct, change
+/// the `Params` struct in perception.wgsl, perception_temporal.wgsl AND
+/// perception_motion.wgsl in the same commit** — all three bind this same buffer.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParamsGpu {
@@ -116,6 +155,13 @@ struct ParamsGpu {
     /// 1.0 = visão periférica REAL (ver perception.wgsl). 0.0 = legado (a periférica
     /// era cópia bit-a-bit da fóvea — 16 canais redundantes de 192).
     perif_real: f32,
+    /// 1.0 = BODY BLOCK on (see `BODY_CHANNELS_ON`). Read by the temporal kernel
+    /// (starts writing the block's channels) and by the motion kernel (stops writing
+    /// ch98/114-117) — one field, so they can never disagree.
+    body_on: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 /// Número de f32 no buffer de estado temporal por ser.
@@ -185,13 +231,36 @@ struct ParamsGpu {
 ///  [56] steer_mem     — phys.steer suavizado [-1,1] → ch121
 ///  [57] brake_mem     — phys.brake_cmd [0,1] → ch122
 ///
+/// NOVOS slots v5 (expandidos de 58 → 66) — BODY BLOCK (BODY PHASE, 2026-08-17):
+///  [58-65] the `BODY_K` = 8 values of the body / hostile-world block, injected by
+///          `update_body_channels()`. The slot->channel map is the canonical
+///          registry `perception::channels::BODY_SLOTS` — deliberately NOT repeated
+///          here (`src/CLAUDE.md` rule 1: a channel index comes from the registry,
+///          one copy only).
+///          Read by the temporal shader only when `params.body_on == 1.0`.
+///
 /// Campos [16-18] são injetados pela CPU em `update_dist_temporal()` ANTES do dispatch.
 /// Campos [20-31] são injetados pela CPU em `update_proprioception_temporal()` ANTES do dispatch.
 /// Campos [32] e [33-48] são injetados em `update_extra_temporal()` ANTES do dispatch.
 /// Campos [49-57] são injetados em `update_extra2_temporal()` APÓS readback (dentro do tick).
+/// Slots [58-65] are injected by `update_body_channels()` BEFORE the dispatch.
 /// Elimina loops sobre `grid` no shader temporal, prevenindo o crash do compilador ACO
 /// do RADV que ocorria com loops sobre storage buffers em workgroup_size=1.
-pub const TEMPORAL_STRIDE: usize = 58;
+pub const TEMPORAL_STRIDE: usize = 58 + crate::perception::channels::BODY_K;
+
+/// First `buf_temporal` slot of the BODY BLOCK — the base the shader adds
+/// `BODY_SLOTS`'s slot index to.
+///
+/// It is the old `TEMPORAL_STRIDE` (58): the block was APPENDED, so every slot
+/// already measured keeps its index and no existing channel moves. Locked to the
+/// stride by `body_block_fecha_o_stride` below — the guarded-stride pattern that
+/// `EXTRA_OUT_STRIDE = 19` uses in `retina_digest.rs:88`, after writes past the end
+/// of one being's region landed on the NEXT being's channels 0-15.
+///
+/// CRITICAL: `perception_temporal.wgsl` hardcodes the same two numbers (its
+/// `TEMPORAL_STRIDE` and `BODY_SLOT_BASE` consts). WGSL cannot import a Rust const,
+/// so the agreement is by test, not by compiler — see `body_block_fecha_o_stride`.
+pub const BODY_SLOT_BASE: usize = 58;
 
 /// Contexto de compute persistente para o kernel de percepção.
 ///
@@ -536,6 +605,13 @@ impl PerceptionGpu {
                 // [33-48] cfc_hidden = 0.0 (CfC sem histórico → primeira percepção zerada)
                 // Slots v3 [49-57] — zeros: sem slip, sem joy, sem stress no tick 0.
                 // Serão sobrescritos pela CPU via update_extra2_temporal() antes do dispatch.
+                // Slots v5 [58-65] BODY BLOCK — zero is the NEUTRAL value by
+                // construction: bearing 0 = target dead ahead AND "no target";
+                // proximity 0 = at or beyond range; fuel/charge 0 = empty tank/station;
+                // thermal 0 = cold. None of them triggers behaviour on tick 0, and the
+                // CPU overwrites all of them via update_body_channels() before the
+                // dispatch while the flag is on. With the flag OFF they stay zero for
+                // the whole run and are never read.
             }
             v
         };
@@ -654,6 +730,16 @@ impl PerceptionGpu {
             } else {
                 0.0
             },
+            // BODY BLOCK: read ONCE here, so the temporal and motion kernels of this
+            // tick see the same value (see `BODY_CHANNELS_ON`).
+            body_on: if BODY_CHANNELS_ON.load(std::sync::atomic::Ordering::Relaxed) {
+                1.0
+            } else {
+                0.0
+            },
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         };
         let buf_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("percep-params"),
@@ -1069,6 +1155,54 @@ impl PerceptionGpu {
         }
     }
 
+    /// BODY BLOCK — injects the `BODY_K` body / hostile-world values of every being
+    /// into `buf_temporal[BODY_SLOT_BASE .. BODY_SLOT_BASE + BODY_K]`, BEFORE the
+    /// dispatch.
+    ///
+    /// # Contract with the integrator (owner of context.rs / main.rs)
+    ///
+    /// - `values[i][slot]` is the value of `BODY_SLOTS[slot]` for being `i`, in the
+    ///   order the beings are dispatched — the same indexing as `update_memory0`
+    ///   and `update_proprioception_temporal`. Beings past `capacity` are dropped.
+    /// - The HOST normalises; the shader only encodes. Bearings arrive in [-1, 1]
+    ///   (bearing/π, negative = left of `fwd`), everything else in [0, 1]. The
+    ///   reference distance of a proximity ramp is a host-side dose, never a kernel
+    ///   constant — so changing `--predador-percep` never touches WGSL.
+    /// - Values outside those ranges are NOT rejected here: they clamp in the shader,
+    ///   exactly like every other channel. Passing metres where [0,1] was asked for
+    ///   therefore produces a saturated channel, not an error — a canary that a
+    ///   channel is pinned at 127 is the alarm for it.
+    /// - Call it EVERY tick while `BODY_CHANNELS_ON` is set. `buf_temporal` is
+    ///   resident: skip a tick and the shader re-reads the PREVIOUS tick's values
+    ///   without any error, which reads as a working-but-stale signal.
+    /// - With `BODY_CHANNELS_ON` unset, calling this is harmless (the shader never
+    ///   reads the slots) and skipping it is free. There is no need to gate the call.
+    ///
+    /// # Cost
+    ///
+    /// One `write_buffer` of `BODY_K * 4` = 32 bytes per being — 48 beings = 1 536
+    /// bytes/tick, the same order as `update_proprioception_temporal`'s 48 bytes ×
+    /// N. Kept as one write per being (instead of one big write) for the same reason
+    /// as every sibling here: the slots of consecutive beings are not contiguous,
+    /// they are `TEMPORAL_STRIDE` apart.
+    pub fn update_body_channels(
+        &self,
+        queue: &wgpu::Queue,
+        values: &[[f32; crate::perception::channels::BODY_K]],
+    ) {
+        let n = values.len().min(self.capacity);
+        if n == 0 {
+            return;
+        }
+        for i in 0..n {
+            queue.write_buffer(
+                &self.buf_temporal,
+                body_slot_byte_offset(i),
+                bytemuck::cast_slice(&values[i]),
+            );
+        }
+    }
+
     /// Grava o dispatch da percepção num `CommandEncoder` externo SEM fazer submit nem poll.
     ///
     /// # Por que existe
@@ -1126,6 +1260,16 @@ impl PerceptionGpu {
             } else {
                 0.0
             },
+            // BODY BLOCK: read ONCE here, so the temporal and motion kernels of this
+            // tick see the same value (see `BODY_CHANNELS_ON`).
+            body_on: if BODY_CHANNELS_ON.load(std::sync::atomic::Ordering::Relaxed) {
+                1.0
+            } else {
+                0.0
+            },
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         };
         let buf_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("percep-params-chain"),
@@ -1368,6 +1512,48 @@ impl PerceptionGpu {
         self.buf_readback.unmap();
         out
     }
+}
+
+// ─── BODY BLOCK — packing tests (no GPU) + GPU parity (#[ignore]) ──────────────
+// A separate file because perception.rs is already past the 600-line cap of
+// docs/STYLE.md 2; same pattern as `retina_digest.rs:345-348`.
+#[cfg(test)]
+#[path = "perception_body_test.rs"]
+mod perception_body_test;
+
+// ─── BODY BLOCK — packing and encoding (pure, testable without a GPU) ────────
+
+/// Byte offset of being `i`'s body block inside `buf_temporal`.
+///
+/// Split out of `update_body_channels` so the packing can be tested WITHOUT a GPU:
+/// the arithmetic is the whole risk here. An off-by-one in the base or a stride that
+/// disagrees with the shader writes into the neighbouring slot with no error and no
+/// panic — the exact failure mode `gpu/CLAUDE.md` records for `retina_digest`
+/// ("wrote 16 extra words into `buf_output` … those writes landed on the *next*
+/// being's channels 0-15").
+#[inline]
+pub fn body_slot_byte_offset(being: usize) -> u64 {
+    (being * TEMPORAL_STRIDE + BODY_SLOT_BASE) as u64 * 4
+}
+
+/// Host-side twin of the shader's encoding for a SIGNED body value:
+/// `i32(clamp(v * 127.0, -127.0, 127.0))`.
+///
+/// Not used by the production path (the shader does the conversion on the GPU) —
+/// it exists as the oracle the parity test compares the GPU against, and as the
+/// answer to "what will the brain actually see for this value?" without a GPU.
+/// Note the range is [-127, 127], not [-128, 127]: same as every other signed
+/// channel in the registry.
+#[inline]
+pub fn encode_body_signed(v: f32) -> i8 {
+    (v * 127.0).clamp(-127.0, 127.0) as i8
+}
+
+/// Host-side twin of the shader's encoding for an UNSIGNED body value:
+/// `i32(clamp(v * 127.0, 0.0, 127.0))`. See `encode_body_signed`.
+#[inline]
+pub fn encode_body_unsigned(v: f32) -> i8 {
+    (v * 127.0).clamp(0.0, 127.0) as i8
 }
 
 // ─── Helpers de bind group layout (copiados de mod.rs para manter o módulo autônomo) ──

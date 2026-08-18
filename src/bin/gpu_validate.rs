@@ -40,8 +40,7 @@ fn run_in_child<F: FnOnce()>(f: F) -> bool {
         let pid = libc::fork();
         if pid < 0 {
             // fork failed — run in the current process (no isolation)
-            let _ =
-                std::io::stderr().write_all(b"  WARNING: fork() failed, no crash isolation.\n");
+            let _ = std::io::stderr().write_all(b"  WARNING: fork() failed, no crash isolation.\n");
             f();
             return true;
         }
@@ -806,7 +805,9 @@ fn validate_brain() {
         .map(|v| v.abs())
         .sum::<f32>()
         / (n * intent_cpu.first().map(|v| v.len()).unwrap_or(1)).max(1) as f32;
-    println!("  mean |final_intent| on the CPU: {mag_intent:.4e}  (PASS with zero is a false positive)");
+    println!(
+        "  mean |final_intent| on the CPU: {mag_intent:.4e}  (PASS with zero is a false positive)"
+    );
 
     let tol = 5e-4_f32;
     let mut comp_total = 0usize;
@@ -1111,7 +1112,7 @@ fn validate_physics(world: &VoxelWorld) {
         cmp!(c, "current_rpm", cp.current_rpm, gp.current_rpm);
         cmp!(c, "engine_temp", cp.engine_temp, gp.engine_temp);
         cmp!(c, "oil_temp", cp.oil_temp, gp.oil_temp);
-    // is_stalled exact
+        // is_stalled exact
         total += 1;
         if cp.is_stalled == gp.is_stalled {
             iguais += 1;

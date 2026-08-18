@@ -99,6 +99,20 @@ pub struct BeingState {
     pub re_falhas: u8,
     /// Segundos desde a última SAÍDA de ré (para detectar re-encalhe rápido).
     pub re_desde_saida: f32,
+    /// Tyre temperature of the CPU-side thermal model (`universe::tire_thermal`),
+    /// NORMALISED: 0.0 = ambient, 1.0 = 120 C — the same scale ch70 already uses
+    /// (`perception_temporal.wgsl:82`), so it reaches the brain without rescaling.
+    ///
+    /// It is CPU state on purpose. The live GPU pipeline passes the tyre temperature
+    /// through untouched (`physics_c.wgsl:295`, `c.wheels[1].x`), and `wheels[1].x` is
+    /// initialised to 60.0 while kernel B compares it against `optimal_temp = 0.5`
+    /// (`physics_b.wgsl:190`) — a unit mismatch that pins the kernel's own grip factor
+    /// at the constant 0.70. That constant is left ALONE by `--pneu-termico`: it is
+    /// identical in both arms of the A/B, so it cancels, whereas "fixing" it would move
+    /// the tyre envelope under both arms at once. The thermal model reaches the physics
+    /// through `phys.env_grip` instead, which is per being and multiplies `mu_base`
+    /// directly (`physics_b.wgsl:141`), and reaches the brain through BODY BLOCK slot 6.
+    pub tire_temp: f32,
     /// D4: dano acumulado ∈[0,1] — envelhecimento do corpo dentro da vida.
     /// Acumula por RPM alto e parede; degrada acelerador/direção; SEM sensor
     /// direto (oculto). Zera no respawn. Ver ESCADA_DIFICULDADE.md.

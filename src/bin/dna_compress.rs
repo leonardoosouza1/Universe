@@ -159,9 +159,7 @@ fn cmd_tensor_svd_restore(input: &str, output: &str) {
 
     // Parse DNA V4 format to get TSVD chunk
     let genesis = GenesisPayload::from_bytes(&dna_bytes[6..]).expect("Genesis parse failure");
-    let chunk = genesis
-        .find_chunk(b"TSVD")
-        .expect("Not a Tensor SVD DNA");
+    let chunk = genesis.find_chunk(b"TSVD").expect("Not a Tensor SVD DNA");
 
     let mut payload = chunk.data.as_slice();
     let rows = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
@@ -379,7 +377,8 @@ fn cmd_decompress(input: &str, output: &str) {
         return;
     }
 
-    let genesis = GenesisPayload::from_bytes(&dna_bytes[6..]).expect("Failed to read GenesisPayload");
+    let genesis =
+        GenesisPayload::from_bytes(&dna_bytes[6..]).expect("Failed to read GenesisPayload");
 
     let ucmp = genesis
         .find_chunk(b"UCMP")

@@ -243,9 +243,13 @@ fn main() {
             pct(dir)
         );
         if media_ass.abs() > 0.3 && (pct(esq) > 80.0 || pct(dir) > 80.0) {
-            println!("  ⇒ STEERING PINNED to one side only: the being drives in a CIRCLE, not a curve.");
+            println!(
+                "  ⇒ STEERING PINNED to one side only: the being drives in a CIRCLE, not a curve."
+            );
             println!("    A circle inside a wide track neither leaves the layout nor crashes —");
-            println!("    it vanishes from every aggregate metric and only shows as stalled progress.");
+            println!(
+                "    it vanishes from every aggregate metric and only shows as stalled progress."
+            );
         }
 
         if med < 0.05 && p90 < 0.2 {
@@ -282,7 +286,9 @@ fn main() {
             println!("  correlation steering × curvature 25 m ahead: {:+.3}", r);
             println!("  steering variance: {:.4}", var_st);
             if r.abs() < 0.15 {
-                println!("  ⇒ does NOT follow: the command is practically independent of the layout.");
+                println!(
+                    "  ⇒ does NOT follow: the command is practically independent of the layout."
+                );
                 println!("    The being is not driving, it is holding the wheel in one position.");
             } else if r > 0.3 {
                 println!(

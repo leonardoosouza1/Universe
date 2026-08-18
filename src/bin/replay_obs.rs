@@ -481,7 +481,9 @@ fn resumo_grupos(r: &[Retrato], lap: f32, k: usize) {
             a(&|x| x.str_invers_s),
             a(&|x| x.parado_pct)
         );
-        println!("  The next generation will be a copy of this — this is the style selection rewards.");
+        println!(
+            "  The next generation will be a copy of this — this is the style selection rewards."
+        );
     }
     let _ = lap;
 }
@@ -548,7 +550,9 @@ fn quem_bate(r: &[Retrato]) {
         "  correlation crashes × progress:         {:+.2}",
         correlacao(&prog, &bat)
     );
-    println!("  (positive with progress = who tries more, crashes more — crashing is the cost of trying)");
+    println!(
+        "  (positive with progress = who tries more, crashes more — crashing is the cost of trying)"
+    );
 }
 
 fn quem_acelera(r: &[Retrato]) {
@@ -594,10 +598,7 @@ fn comparar_geracoes(antes: &[Retrato], agora: &[Retrato], lap: f32, pa: &PathBu
         ("stopped %", &|x: &Retrato| x.parado_pct),
         ("crashes", &|x: &Retrato| x.batidas as f32),
     ];
-    println!(
-        "  {:<16} {:>9} {:>9} {:>9}",
-        "metric", "before", "now", "Δ"
-    );
+    println!("  {:<16} {:>9} {:>9} {:>9}", "metric", "before", "now", "Δ");
     for (nome, f) in linhas {
         let a = m(antes, f);
         let b = m(agora, f);

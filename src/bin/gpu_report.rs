@@ -1273,10 +1273,7 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
     }
 
     let n = snapshots.len();
-    lines.push(format!(
-        "  Snapshots captured: {} (one per stuck being)",
-        n
-    ));
+    lines.push(format!("  Snapshots captured: {} (one per stuck being)", n));
 
     // 1. Saturated dimensions per snapshot
     let mut total_sat_dims = 0usize;
@@ -1441,9 +1438,7 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
             n_ve_parede, n_reage
         ));
     } else {
-        lines.push(
-            "  *** DIAGNOSIS: mixed pattern — analyze individually above. ***".to_string(),
-        );
+        lines.push("  *** DIAGNOSIS: mixed pattern — analyze individually above. ***".to_string());
     }
 
     lines
@@ -1601,16 +1596,16 @@ fn auto_diagnostico(
         ));
         if perto > longe {
             diags.push(
-                "  -> Majority NEAR the wall — wall visible. See SENSORY VERDICT."
-                    .to_string(),
+                "  -> Majority NEAR the wall — wall visible. See SENSORY VERDICT.".to_string(),
             );
         } else {
-            diags.push("  -> Majority FAR from the wall — possible stall on an open stretch (zero speed).".to_string());
+            diags.push(
+                "  -> Majority FAR from the wall — possible stall on an open stretch (zero speed)."
+                    .to_string(),
+            );
         }
     } else {
-        diags.push(
-            "  Frontal dist at stall: NOT MEASURED (snapshots unavailable).".to_string(),
-        );
+        diags.push("  Frontal dist at stall: NOT MEASURED (snapshots unavailable).".to_string());
     }
 
     diags
@@ -2412,10 +2407,7 @@ fn main() {
     if sat_tracker.alertas.is_empty() {
         rln!("  No persistent saturation detected.");
     } else {
-        rln!(
-            "  {} alerts (first 20 shown):",
-            sat_tracker.alertas.len()
-        );
+        rln!("  {} alerts (first 20 shown):", sat_tracker.alertas.len());
         for a in sat_tracker.alertas.iter().take(20) {
             rln!("{}", a);
         }
@@ -2542,7 +2534,9 @@ fn main() {
         "(series sampled every tick; compressed to {} ASCII columns)",
         PERFIL_COLS
     );
-    rln!("Useful to see whether the being accelerates, where it loses speed, and its braking pattern.");
+    rln!(
+        "Useful to see whether the being accelerates, where it loses speed, and its braking pattern."
+    );
     rln!();
     for (idx, ser_idx) in (0..vel_series.len()).enumerate() {
         let titulo = format!(

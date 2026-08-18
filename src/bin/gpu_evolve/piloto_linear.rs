@@ -272,7 +272,12 @@ impl PilotoLinear {
 
     pub fn agir(&mut self, x: &[f32]) -> [f32; 3] {
         let c = self.n_entradas();
-        debug_assert_eq!(x.len(), c, "pilot: X with {} channels, expected {c}", x.len());
+        debug_assert_eq!(
+            x.len(),
+            c,
+            "pilot: X with {} channels, expected {c}",
+            x.len()
+        );
         if !self.iniciado {
             self.h_a = x.to_vec();
             self.h_b = x.to_vec();

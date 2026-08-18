@@ -219,10 +219,7 @@ impl ReplayReader {
         file.read_to_end(&mut data)?;
 
         if data.len() < 64 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "file too short",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "file too short"));
         }
 
         let header_bytes: [u8; 64] = data[..64].try_into().unwrap();

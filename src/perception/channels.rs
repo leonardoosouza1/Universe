@@ -202,8 +202,12 @@ pub enum Channel {
     /// índice de marcha puro, é escalado ×20 para ocupar a faixa i8.
     Gear = 69,
     /// Temperatura dos pneus normalizada (média das 4 rodas / 120 °C). [0, 127].
+    /// BODY BLOCK: with `BODY_CHANNELS_ON` the SOURCE becomes slot 6 of the block
+    /// (CPU-side thermal model), same encoding — see `BODY_SLOTS`.
     TireTemp = 70,
     /// Temperatura do motor normalizada ((engine_temp - 20) / 130). [0, 127].
+    /// BODY BLOCK: with `BODY_CHANNELS_ON` the SOURCE becomes slot 7 of the block,
+    /// same formula — see `BODY_SLOTS`.
     TempMotor = 71,
     /// Risco cinético = speed_norm × curvatura_aparente (diferença edge_row6/7). [0, 127].
     RiscoCinetico = 72,
@@ -245,15 +249,20 @@ pub enum Channel {
     // dados de MotionMag0/1, thread 8-10) — ver comentário "FASE CANAIS" lá.
     /// Approach hemisférico ESQUERDO, COM SINAL: positivo = parede se
     /// aproximando (distância caindo), rows 6+8, colunas 0..63. [-127, 127].
+    /// BODY BLOCK: with `BODY_CHANNELS_ON` this channel changes MEANING —
+    /// it becomes `StationBearing` (slot 0). See `BODY_SLOTS`.
     ApproachHemiL = 114,
     /// Approach hemisférico DIREITO, mesma fórmula de `ApproachHemiL`,
     /// colunas 63..126. [-127, 127].
+    /// BODY BLOCK: becomes `StationProx` (slot 1) while the flag is on.
     ApproachHemiR = 115,
     /// Approach na fóvea (±15° centrais), COM SINAL: positivo = parede vindo de
     /// frente. Row 6, colunas 24..40. [-127, 127].
+    /// BODY BLOCK: becomes `StationCharge` (slot 2) while the flag is on.
     FoveaApproach = 116,
     /// Movimento absoluto na fóvea (qualquer direção), mesma amostra de
     /// `FoveaApproach`. [0, 127].
+    /// BODY BLOCK: becomes `OwnFuel` (slot 3) while the flag is on.
     FoveaMotionAbs = 117,
 
     // ── EMA distância lateral (temporal.wgsl ch 85-86) ───────────────────────
@@ -280,6 +289,9 @@ pub enum Channel {
     /// MESMA fórmula de `MotionDelta0..6`, aplicada à retina row 7 — NÃO é uma
     /// aceleração (derivada segunda); é o 8º canal da família motion-delta,
     /// escrito por um thread separado no mesmo kernel. [0, 127].
+    /// BODY BLOCK: with `BODY_CHANNELS_ON` this channel changes MEANING — it
+    /// becomes `PredatorBearing` (slot 4) and is written by temporal.wgsl, with
+    /// motion.wgsl going silent. See `BODY_SLOTS`.
     MotionDelta7 = 98,
 
     // ── Edge density retina (temporal.wgsl slots 54-55, ch 99-100) ───────────
@@ -373,6 +385,8 @@ pub enum Channel {
     // JoyStreak=125, Spinning=126, CompStress=127) — corrigido aqui.
     /// Flag de rodopio: |av_y|>1.5 rad/s E speed<2.0 m/s. Shader:
     /// `select(0, -128, is_spinning>0.5)` — codificação {0, -128}, NÃO {0,127}.
+    /// BODY BLOCK: with `BODY_CHANNELS_ON` it changes MEANING AND RANGE — it
+    /// becomes `PredatorProx` (slot 5), [0,127] instead of {0,-128}. See `BODY_SLOTS`.
     Spinning = 124,
     /// Estresse de proximidade (congestionamento): 0.0 = líder/ninguém perto,
     /// 0.5 = no meio do pelotão sem vizinho perto, 1.0 = alguém <20m à frente
@@ -731,6 +745,43 @@ pub enum ChannelSource {
 /// zero_dead_inputs continua no lugar para o próximo canal genuinamente morto).
 pub const DEAD_L1_INPUTS: &[(usize, &str)] = &[];
 
+/// Canonical channel families: `(name, start_inclusive, end_exclusive)`.
+///
+/// One export instead of two copies. The same table lived only in
+/// `tools/destilabilidade.py:121-138` and the D8 specification asks for it to become
+/// an export of this module (`docs/SPECS_MUNDO_HOSTIL.md`, D8 "Mechanism"): a second
+/// copy of a channel range is exactly the failure `src/CLAUDE.md` rule 1 forbids, and
+/// D8 charges a per-family subscription, so a family boundary that drifts between the
+/// analysis tool and the pressure would tax a family the report does not name.
+///
+/// The ranges tile `0..N_CHANNELS` with no gap and no overlap — `families_tile_the_wave`
+/// fails the build otherwise. Two consequences worth stating: every channel pays under
+/// exactly one family, and `sum(|F|) == N_CHANNELS`, so the D8 weight `|F| / 192` sums
+/// to 1 and the cost of a being at reference use is exactly `DOSE` life/tick.
+pub const CHANNEL_FAMILIES: &[(&str, usize, usize)] = &[
+    ("retina", 0, 16),
+    ("wall_dist", 16, 32),
+    ("wall_curv", 32, 40),
+    ("road_near_far", 40, 56),
+    ("material_escape", 56, 64),
+    ("body", 64, 76),
+    ("proximity", 76, 96),
+    ("derived", 96, 120),
+    ("memory", 120, 123),
+    ("whisker_spin_stress", 123, 126),
+    ("dopamine", 126, 128),
+    ("fovea", 128, 144),
+    ("peripheral", 144, 160),
+    ("horizon", 160, 192),
+];
+
+/// Family index of channel `ch`, or `None` when `ch >= N_CHANNELS`.
+pub fn family_of(ch: usize) -> Option<usize> {
+    CHANNEL_FAMILIES
+        .iter()
+        .position(|&(_, lo, hi)| ch >= lo && ch < hi)
+}
+
 // ─── BODY BLOCK (BODY PHASE, 2026-08-17) — hostile-world + interoception ────────
 //
 // CONTRACT FOR THE INTEGRATOR (owner of context.rs/main.rs):
@@ -739,10 +790,29 @@ pub const DEAD_L1_INPUTS: &[(usize, &str)] = &[];
 // the being's own body to the sensory wave: the CPU computes `BODY_K` f32 values
 // per being per tick and calls `PerceptionGpu::update_body_channels()`
 // (src/gpu/perception.rs), which writes them into `buf_temporal` slots
-// [BODY_SLOT_BASE .. BODY_SLOT_BASE+BODY_K). `perception_temporal.wgsl` converts
-// each slot to the i8 channel listed below ONLY when the flag
-// `gpu::perception::BODY_CHANNELS_ON` is set (same pattern as `PERIF_REAL`,
-// perception.rs — main.rs stores true, e.g. main.rs:990 for PERIF_REAL).
+// [`gpu::perception::BODY_SLOT_BASE` .. `BODY_SLOT_BASE + BODY_K`).
+// `perception_temporal.wgsl` converts each slot to the i8 channel listed below
+// ONLY when the flag `gpu::perception::BODY_CHANNELS_ON` is set (same pattern as
+// `PERIF_REAL`, perception.rs:108 — `main.rs:990` is the store site for
+// `PERIF_REAL`: `universe::gpu::perception::PERIF_REAL.store(true, Ordering::Relaxed)`).
+//
+// ONE MECHANISM, NOT ONE PER SPEC — REGISTERED DECISION (mission rule 7). The D7
+// spec asked to widen `update_extra2_temporal` from `[f32; 9]` to `[f32; 13]`, and
+// the predator spec asked to widen the SAME array to `[f32; 11]`
+// (docs/SPECS_MUNDO_HOSTIL.md:132: "alargar [f32;9]→[f32;11]"). Two specs widening
+// one array to two different lengths is a merge conflict by construction, and each
+// new pressure would widen it again. Instead the body block is ONE generic array
+// with a fixed, documented `BODY_K` and its own slot range, so a new body signal
+// costs a row in `BODY_SLOTS` and nothing else. `update_extra2_temporal` stays at
+// `[f32; 9]` and keeps its slots 49-57 — untouched, so nothing already measured moves.
+//
+// HOST NORMALISES, SHADER ONLY ENCODES. Every value in this block arrives from the
+// CPU already normalised to the range stated in its row (`[-1,1]` or `[0,1]`); the
+// shader does nothing but `clamp(v * 127.0)`. Consequence for the integrator: the
+// reference distance of a proximity ramp is a HOST-side dose, not a constant frozen
+// in a kernel — the D7 station ramp is fixed at 300 m, and the predator ramp is the
+// `--predador-percep` dose (default 60 m, docs/SPECS_MUNDO_HOSTIL.md:114). Changing
+// a dose must never require touching WGSL.
 //
 // OWNERSHIP HANDOFF, REGISTERED DECISION (mission rule 7): channels 98 and
 // 114-117 are written by `perception_motion.wgsl` when the flag is OFF (the
@@ -760,14 +830,25 @@ pub const DEAD_L1_INPUTS: &[(usize, &str)] = &[];
 // temp) carried in this block.
 //
 // Declared out and why (do not silently drop sibling requirements):
-// - life_left interoception: ALREADY live as ch67 `VidaFrac` — context.rs:592-594
-//   feeds `vida_frac = life_left/life_cap` into prop[3] (`let vida_frac =
-//   (states[i].life_left as f32 / life_cap().max(1) as f32)`). Not duplicated.
-// - damage ("dano"): manifests as `life_left`, i.e. it is already sensed through
-//   ch67; no separate dead channel remains for a dedicated damage channel (all
-//   six measured-dead channels are allocated below). Next candidates would need
-//   ch144-159, which the D8 spec reserves as its pruning positive control.
-// - oil_temp: still orphan; same reason (no dead channel left).
+// - life_left interoception: ALREADY live as ch67 `VidaFrac` — context.rs:591-592
+//   feeds it into prop[3]: `let vida_frac = (states[i].life_left as f32 /
+//   life_cap().max(1) as f32).clamp(0.0, 1.0);`, and context.rs:521 pins the slot
+//   with `assert!(Channel::VidaFrac.index() == 67, "prop[3] = vida_frac")`.
+//   Not duplicated.
+// - engine_temp: ALSO already live, as ch71 — context.rs:593 `let temp_motor =
+//   ((p.engine_temp - 20.0) / 130.0).clamp(0.0, 1.0);` into prop[7], pinned by
+//   context.rs:525 `assert!(Channel::TempMotor.index() == 71, "prop[7] = temp_motor")`.
+//   The mission brief listed engine_temp and life_left as orphan states that never
+//   reach the brain; the code says otherwise, so slot 7 below is a SOURCE move, not
+//   a new signal (see its row). The two states that are genuinely orphan are `fuel`
+//   (slot 3 closes it) and `oil_temp`.
+// - damage ("dano") as a RATE: a per-tick damage rate is not derivable from ch67,
+//   which is a level and the brain has no previous-tick copy of it. It is left out
+//   for lack of a channel, not for lack of value — the six MEASURED-dead channels
+//   are exactly ch98, ch114-117 and ch124, and all six are allocated below.
+// - oil_temp: same reason (no dead channel left).
+// Next candidates for either would have to come from ch144-159, which the D8 spec
+// reserves as its pruning positive control — do not take them without registering it.
 
 /// Number of f32 body values injected per being per tick. Fixed and part of the
 /// CPU↔GPU contract — must match `[f32; BODY_K]` in
@@ -784,10 +865,26 @@ pub const BODY_K: usize = 8;
 /// encoding, like the enum variants above do.
 ///
 /// Bearings use the same signed encoding as the wall probes: host value in
-/// [-1, 1] (negative = target to the LEFT of `fwd`, positive = RIGHT,
-/// bearing/π), shader does `i32(clamp(v * 127.0, -127.0, 127.0))`.
-/// Proximities are `1 - min(d / 300m, 1)` in [0, 1] (1 = on top of it,
-/// 0 = ≥300 m away), shader `i32(clamp(v * 127.0, 0.0, 127.0))`.
+/// [-1, 1], shader does `i32(clamp(v * 127.0, -127.0, 127.0))`.
+///
+/// SIGN, STATED AS A BASIS AND NOT AS A WORD (integrator correction, BODY PHASE):
+/// the host computes `atan2(rel · lat, rel · fwd) / PI`, where `lat` is the body
+/// basis vector the physics state carries — `lat = [fwd.z, 0, -fwd.x]`
+/// (`gpu/physics.rs:105`). Positive therefore means "toward `+lat`". The row docs
+/// used to say "negative = LEFT", which is a claim about the world's handedness that
+/// no `file:line` in this repository states; the basis is checkable and the word is
+/// not. `bearing_sign_follows_the_lat_basis` in `gpu_evolve/context.rs` pins it, so
+/// the sign cannot flip silently — and a flipped bearing is invisible to every
+/// aggregate statistic, which is why it gets a test instead of a comment.
+/// Proximities are a host-side ramp `1 - min(d / R, 1)` in [0, 1] (1 = on top of
+/// it, 0 = at or beyond R), shader `i32(clamp(v * 127.0, 0.0, 127.0))`. R is the
+/// integrator's dose and lives on the host, never in WGSL — see the block header.
+///
+/// The 0 that a proximity emits when there is no target is INDISTINGUISHABLE from
+/// "target exactly at range R". That is deliberate and matches the wall probes
+/// (`EmaDistL`: far = 0), and it is why every proximity here is paired with a
+/// bearing: a live target at R has a bearing, an absent one is pinned to 0 too.
+/// Both being 0 is the "nothing there" code.
 pub const BODY_SLOTS: &[(usize, usize, &str, &str)] = &[
     (
         0,
@@ -799,7 +896,7 @@ pub const BODY_SLOTS: &[(usize, usize, &str, &str)] = &[
         1,
         115,
         "StationProx",
-        "proximity to that station: 1 - min(d/300m, 1), [0,1] -> [0,127]; 0 when none",
+        "proximity to that station: host ramp 1 - min(d/R, 1) with R = 300 m (D7 spec), [0,1] -> [0,127]; 0 when none",
     ),
     (
         2,
@@ -823,21 +920,73 @@ pub const BODY_SLOTS: &[(usize, usize, &str, &str)] = &[
         5,
         124,
         "PredatorProx",
-        "proximity to that predator: 1 - min(d/300m, 1), [0,1] -> [0,127]; replaces the {0,-128} spinning flag while the flag is on",
+        "proximity to that predator: host ramp 1 - min(d/R, 1) with R = --predador-percep (default 60 m), [0,1] -> [0,127]; replaces the {0,-128} spinning flag while the flag is on",
     ),
     (
         6,
         70,
         "TireTempReal",
-        "REAL tire temperature from the CPU-side thermal model, avg(temp)/120C in [0,1] -> [0,127]; overrides prop[6] (GPU passthrough temp) while on",
+        "REAL tire temperature from the CPU-side thermal model, avg(temp)/120C in [0,1] -> [0,127]; overrides prop[6] while on — SOURCE move, ch70 is already alive (139-validation battery, see DEAD_L1_INPUTS above)",
     ),
     (
         7,
         71,
         "EngineTempReal",
-        "engine temperature (engine_temp - 20)/130 in [0,1] -> [0,127]; same encoding as prop[7], but sourced with the rest of the body block while on",
+        "engine temperature (engine_temp - 20)/130 in [0,1] -> [0,127] — SOURCE move, NOT a new signal: context.rs:593 already feeds this exact formula through prop[7]. Pass the same value and ch71 is bit-identical with the flag on; the slot exists so every body signal has ONE assembly point (M4/neuromodulation needs the body state in one place)",
     ),
 ];
+
+/// Body-block slot that feeds sensory channel `ch`, or `None` if `ch` is not part
+/// of the block. Linear scan over `BODY_K` = 8 rows: this is registry lookup, not
+/// a hot path.
+///
+/// Use it instead of writing the slot number down a second time — a second copy of
+/// a channel index is exactly the failure `src/CLAUDE.md` rule 1 forbids.
+pub fn body_slot_for_channel(ch: usize) -> Option<usize> {
+    BODY_SLOTS
+        .iter()
+        .find(|&&(_, c, _, _)| c == ch)
+        .map(|&(slot, _, _, _)| slot)
+}
+
+/// Sensory channel written by body-block slot `slot`, or `None` if out of range.
+pub fn body_channel_for_slot(slot: usize) -> Option<usize> {
+    BODY_SLOTS
+        .iter()
+        .find(|&&(s, _, _, _)| s == slot)
+        .map(|&(_, ch, _, _)| ch)
+}
+
+/// Name of `ch` while `BODY_CHANNELS_ON` is set — the block's name when the channel
+/// belongs to it, and the ordinary `name_for(ch)` otherwise.
+///
+/// Exists so a tool (audit, `--auditar-visao`, the distillability report) prints the
+/// meaning the channel actually carries in the run being inspected instead of the
+/// flag-off name. Reporting `Spinning` for a channel that is carrying predator
+/// proximity is the "identical numbers where they should differ" alarm in reverse:
+/// different meaning under the same label.
+pub fn name_for_with_body(ch: usize, body_on: bool) -> &'static str {
+    if body_on {
+        if let Some(&(_, _, name, _)) = BODY_SLOTS.iter().find(|&&(_, c, _, _)| c == ch) {
+            return name;
+        }
+    }
+    name_for(ch)
+}
+
+/// `source_for(ch)`, corrected for the body block when `body_on`.
+///
+/// With the flag ON the ownership of ch98 and ch114-117 moves from
+/// `perception_motion.wgsl` to `perception_temporal.wgsl`, and ch70/71/124 change
+/// which host array feeds them. An audit that keeps calling plain `source_for()`
+/// during a body-block run reports the wrong kernel — it would blame motion.wgsl
+/// for a channel motion.wgsl is deliberately not writing.
+pub fn source_for_with_body(ch: usize, body_on: bool) -> &'static str {
+    if body_on && body_slot_for_channel(ch).is_some() {
+        return "temporal.wgsl (BODY BLOCK, injected by the CPU: update_body_channels)";
+    }
+    source_for(ch)
+}
 
 /// Retorna o kernel/arquivo que escreve o canal `ch` na onda sensorial.
 ///
@@ -1247,6 +1396,155 @@ mod tests {
                 "DEAD_L1_INPUTS ch{ch} sem motivo documentado"
             );
         }
+    }
+
+    // ─── CHANNEL FAMILIES (D8 charges a subscription per family) ────────────
+
+    /// The families tile `0..N_CHANNELS` exactly: no gap, no overlap, in order.
+    ///
+    /// D8 taxes `DOSE * sum_F (|F| / N_CHANNELS) * u_F`. A gap would make a channel
+    /// free to keep (an untaxed family is a hiding place for the pruning the pressure
+    /// is supposed to select against); an overlap would tax one channel twice and the
+    /// weights would no longer sum to 1, so "cost at reference use == DOSE" — the
+    /// number the metric ceiling is computed from — would silently be false.
+    #[test]
+    fn families_tile_the_wave() {
+        let mut next = 0usize;
+        for &(name, lo, hi) in CHANNEL_FAMILIES {
+            assert_eq!(lo, next, "family {name} starts at {lo}, expected {next}");
+            assert!(hi > lo, "family {name} is empty ({lo}..{hi})");
+            next = hi;
+        }
+        assert_eq!(
+            next, N_CHANNELS,
+            "families stop at {next}, the sensory wave is {N_CHANNELS} wide"
+        );
+        let widths: usize = CHANNEL_FAMILIES.iter().map(|&(_, lo, hi)| hi - lo).sum();
+        assert_eq!(widths, N_CHANNELS, "family widths must sum to the wave");
+    }
+
+    /// Every channel belongs to exactly one family, and out-of-range answers `None`.
+    #[test]
+    fn family_of_is_total_inside_the_wave() {
+        for ch in 0..N_CHANNELS {
+            let f = family_of(ch).unwrap_or_else(|| panic!("ch{ch} has no family"));
+            let (_, lo, hi) = CHANNEL_FAMILIES[f];
+            assert!(ch >= lo && ch < hi, "ch{ch} mapped to the wrong family");
+        }
+        assert_eq!(family_of(N_CHANNELS), None);
+    }
+
+    // ─── BODY BLOCK (BODY PHASE, 2026-08-17) ────────────────────────────────
+
+    /// The block's slots are exactly `0..BODY_K`, each appearing once, in order.
+    /// A duplicated or skipped slot would make `update_body_channels` write one
+    /// value over another with no error — the same class of silent corruption as a
+    /// wrong stride (`gpu/CLAUDE.md`, "host and shader must agree on layout").
+    #[test]
+    fn body_slots_cover_0_to_body_k_with_no_gap() {
+        assert_eq!(
+            BODY_SLOTS.len(),
+            BODY_K,
+            "BODY_SLOTS has {} rows but BODY_K = {BODY_K}",
+            BODY_SLOTS.len()
+        );
+        for (i, &(slot, _, _, _)) in BODY_SLOTS.iter().enumerate() {
+            assert_eq!(
+                slot, i,
+                "BODY_SLOTS[{i}] declares slot {slot}, expected {i}"
+            );
+        }
+    }
+
+    /// Two slots writing the same channel = one overwrites the other in the shader,
+    /// silently. And a channel index outside the wave writes into another being's
+    /// data (the `retina_digest` failure already paid for, `gpu/CLAUDE.md`).
+    #[test]
+    fn body_slots_have_unique_channels_inside_the_wave() {
+        let mut seen: Vec<usize> = Vec::new();
+        for &(slot, ch, name, doc) in BODY_SLOTS {
+            assert!(
+                ch < N_CHANNELS,
+                "BODY_SLOTS slot {slot} points at ch{ch} >= N_CHANNELS={N_CHANNELS}"
+            );
+            assert!(
+                !seen.contains(&ch),
+                "BODY_SLOTS: ch{ch} appears in two slots (the second would overwrite the first)"
+            );
+            seen.push(ch);
+            assert!(!name.is_empty(), "BODY_SLOTS slot {slot} has no name");
+            assert!(!doc.is_empty(), "BODY_SLOTS slot {slot} has no doc");
+        }
+    }
+
+    /// The block may only land on channels that were MEASURED dead (ch98, 114-117,
+    /// 124 — `piloto_forja.rs:49`, "`sd` has 6 degenerate channels (98, 114, 115,
+    /// 116, 117, 124) with `sd = 1e-12`") or on the two documented SOURCE moves
+    /// (ch70, ch71 — same meaning, same encoding, different feeder).
+    ///
+    /// This is the test that stops the block from quietly eating a live channel: if
+    /// someone adds a row pointing at, say, ch65 (speed, L1 magnitude ≈ 23), the
+    /// build fails here instead of the champion silently going blind.
+    #[test]
+    fn body_slots_only_take_measured_dead_channels_or_source_moves() {
+        const MEASURED_DEAD: [usize; 6] = [98, 114, 115, 116, 117, 124];
+        const SOURCE_MOVES: [usize; 2] = [70, 71];
+        for &(slot, ch, name, _) in BODY_SLOTS {
+            assert!(
+                MEASURED_DEAD.contains(&ch) || SOURCE_MOVES.contains(&ch),
+                "BODY_SLOTS slot {slot} ({name}) takes ch{ch}, which is neither a \
+                 measured-dead channel {MEASURED_DEAD:?} nor a documented source move \
+                 {SOURCE_MOVES:?}"
+            );
+        }
+    }
+
+    /// The two lookups are inverses of each other over the whole block.
+    #[test]
+    fn body_slot_and_channel_are_inverses() {
+        for &(slot, ch, _, _) in BODY_SLOTS {
+            assert_eq!(body_slot_for_channel(ch), Some(slot));
+            assert_eq!(body_channel_for_slot(slot), Some(ch));
+        }
+        // A channel outside the block has no slot, with the flag on or off.
+        assert_eq!(body_slot_for_channel(Channel::SpeedFwd.index()), None);
+        assert_eq!(body_channel_for_slot(BODY_K), None);
+    }
+
+    /// With the flag OFF nothing changes — the audit keeps seeing the old names and
+    /// the old kernels. Project rule 3: default-off means bit-for-bit the old world.
+    #[test]
+    fn body_off_changes_no_channel_name_or_source() {
+        for ch in 0..N_CHANNELS {
+            assert_eq!(name_for_with_body(ch, false), name_for(ch));
+            assert_eq!(source_for_with_body(ch, false), source_for(ch));
+        }
+    }
+
+    /// With the flag ON, exactly the block's channels change name and source — and
+    /// no others. ch98/114-117 must stop being reported as `motion.wgsl`: motion is
+    /// deliberately silent on them, and blaming it would send the next debugger to
+    /// the wrong kernel.
+    #[test]
+    fn body_on_switches_name_and_source_of_exactly_the_block_channels() {
+        for ch in 0..N_CHANNELS {
+            let in_block = body_slot_for_channel(ch).is_some();
+            let name_changed = name_for_with_body(ch, true) != name_for(ch);
+            let source_changed = source_for_with_body(ch, true) != source_for(ch);
+            assert_eq!(
+                name_changed, in_block,
+                "ch{ch}: name changed={name_changed} but in_block={in_block}"
+            );
+            assert_eq!(
+                source_changed, in_block,
+                "ch{ch}: source changed={source_changed} but in_block={in_block}"
+            );
+        }
+        // Anchors: the handoff away from motion.wgsl, and a name that changes meaning.
+        assert_eq!(source_for(98), "motion.wgsl");
+        assert!(source_for_with_body(98, true).starts_with("temporal.wgsl"));
+        assert_eq!(name_for_with_body(124, true), "PredatorProx");
+        assert_eq!(name_for_with_body(124, false), "Spinning");
     }
 
     /// Retorna todas as variantes do enum (lista mantida manualmente).

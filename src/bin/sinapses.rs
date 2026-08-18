@@ -239,10 +239,7 @@ const GRUPOS: [(&str, &[(usize, usize)]); 6] = [
         "walls and whiskers",
         &[(16, 31), (76, 77), (94, 97), (114, 115)],
     ),
-    (
-        "track ahead",
-        &[(40, 55), (90, 93), (108, 110), (118, 119)],
-    ),
+    ("track ahead", &[(40, 55), (90, 93), (108, 110), (118, 119)]),
     ("body telemetry", &[(56, 75), (124, 125)]),
     ("motion and TTC", &[(82, 84), (98, 107), (116, 117)]),
 ];
@@ -294,7 +291,9 @@ fn mapa(pesos: &[f32]) {
         println!("  {l}");
     }
     println!("\n  Sorted by weight PER CHANNEL — otherwise a large group would look important");
-    println!("  just for having many channels. The '%' column is the share of the total, for comparison.");
+    println!(
+        "  just for having many channels. The '%' column is the share of the total, for comparison."
+    );
 
     println!("\n=== WHAT EACH NEURON LISTENS TO ===");
     println!("for each unit: the group that dominates its input and the strongest channel\n");

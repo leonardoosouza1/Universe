@@ -36,7 +36,7 @@ pub struct RaceSettings {
     pub elite_clusters: Vec<usize>,
     pub champion_path: Vec<Vec3>, // Path of the last champion (spawn → last position)
     pub champion_net_dist: f32,   // NET distance of the last champion (for the path label)
-    pub gens_since_crown: u32,    // Consecutive gens without crowning — unlocks the threshold if > N
+    pub gens_since_crown: u32, // Consecutive gens without crowning — unlocks the threshold if > N
     /// Fraction of the POPULATION that completed ≥1 lap in the previous generation.
     /// Governs the environment curriculum (see `pipeline::decide_next_env_level_pop`). It
     /// used to be governed by the CHAMPION's distance, and a single lucky car took all 60
@@ -52,9 +52,9 @@ pub struct RaceSettings {
     pub last_gen_path: Vec<Vec3>, // Path of the last gen's best (always refreshed)
     pub last_gen_net: f32,        // NET of the last gen's best
     pub last_gen_was_grid: bool,  // true if the best was born on the grid (eligible for crowning)
-    pub is_validation_gen: bool,  // next gen runs a fixed env (level 0); only validates the DNA without noise
+    pub is_validation_gen: bool, // next gen runs a fixed env (level 0); only validates the DNA without noise
     pub gens_until_validation: u32, // counts down to the next validation (default: every 3 gens)
-    pub env_level: u8,            // curriculum level applied in the current gen (0..=3)
+    pub env_level: u8,           // curriculum level applied in the current gen (0..=3)
     // Batched spawn: avoids a freeze when spawning N cars at once. Each gen sets
     // Some((0, swarm_count)); drain_spawn_queue consumes it in blocks of SPAWN_BATCH_SIZE
     // per frame until it becomes None. The sim keeps running between batches — the UI

@@ -182,9 +182,14 @@ fn main() {
     let act_max = act_mean.iter().cloned().fold(0.0_f32, f32::max);
     if act_max < 1e-6 {
         println!("NOT MEASURED: all mean activations are zero.");
-        println!("Reason: the sheet received no signal after {} ticks.", N_TICKS);
+        println!(
+            "Reason: the sheet received no signal after {} ticks.",
+            N_TICKS
+        );
         println!("Check: (1) upload_wave correct? (2) did the afference kernel run?");
-        println!("(3) buf_afw initialized at 1.0 but the EPS gaussian may be filtering everything.");
+        println!(
+            "(3) buf_afw initialized at 1.0 but the EPS gaussian may be filtering everything."
+        );
         return;
     }
 
@@ -559,9 +564,7 @@ fn main() {
                 "  ✗ PREDICTION P1 REFUTED — ratio {:.2}× < threshold {:.0}×",
                 razao, threshold
             );
-            println!(
-                "    Intra-region correlation is NOT significantly higher than inter-region."
-            );
+            println!("    Intra-region correlation is NOT significantly higher than inter-region.");
             println!(
                 "    Hebb with {} ticks did not segregate the modalities.",
                 N_TICKS
@@ -570,9 +573,7 @@ fn main() {
                 "    Hypotheses: (1) ETA=0.005 too small for {} ticks.",
                 N_TICKS
             );
-            println!(
-                "               (2) σ²=64 too large — modalities do not separate spatially."
-            );
+            println!("               (2) σ²=64 too large — modalities do not separate spatially.");
             println!("               (3) The prediction requires far more ticks than allowed.");
         } else {
             println!(
@@ -776,7 +777,9 @@ fn main() {
                 razao_alometrica
             );
             println!("    Wrong calibration: fast units (short τ) do not respond to the input.");
-            println!("    Possible cause: synthetic input varies slowly → short τ already decayed.");
+            println!(
+                "    Possible cause: synthetic input varies slowly → short τ already decayed."
+            );
         } else {
             println!(
                 "  ✓ IN THE BIOLOGICAL RANGE [0.5, 16]: ratio {:.2}",

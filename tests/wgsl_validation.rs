@@ -24,12 +24,8 @@
 //! documented in the shaders' own comments.
 
 fn validar_wgsl(nome: &str, fonte: &str) {
-    let module = naga::front::wgsl::parse_str(fonte).unwrap_or_else(|e| {
-        panic!(
-            "{nome}: WGSL PARSE failed:\n{}",
-            e.emit_to_string(fonte)
-        )
-    });
+    let module = naga::front::wgsl::parse_str(fonte)
+        .unwrap_or_else(|e| panic!("{nome}: WGSL PARSE failed:\n{}", e.emit_to_string(fonte)));
 
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),

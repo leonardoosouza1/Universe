@@ -70,10 +70,7 @@ mod tests {
         for g in [0usize, 4, 7, 40, 4000] {
             let a = pista_da_gen(&pistas, g);
             let b = pista_da_gen(&pistas, g);
-            assert_eq!(
-                a, b,
-                "gen {g}: two calls with the same set diverged"
-            );
+            assert_eq!(a, b, "gen {g}: two calls with the same set diverged");
         }
     }
 

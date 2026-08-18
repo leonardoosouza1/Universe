@@ -14,10 +14,7 @@ fn main() {
     let dna = match load_champion_dna(&path) {
         Some(d) => d,
         None => {
-            eprintln!(
-                "❌ Failed to load {}. File missing or corrupted.",
-                path
-            );
+            eprintln!("❌ Failed to load {}. File missing or corrupted.", path);
             std::process::exit(1);
         }
     };
@@ -126,7 +123,9 @@ fn main() {
         println!();
         f32_input_channel_stats(craw, 128, 64);
     } else {
-        println!("⚠  No CRAW chunk (pre-V6 DNA) — channel analysis uses legacy ternary fast_weights");
+        println!(
+            "⚠  No CRAW chunk (pre-V6 DNA) — channel analysis uses legacy ternary fast_weights"
+        );
         input_channel_stats(&dna.fast_weights, 128, 64);
     }
 }

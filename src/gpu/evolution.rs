@@ -1337,9 +1337,7 @@ mod tests {
         let pai = genomes
             .iter()
             .find(|g| g.l2[corte..] == filho.l2[corte..])
-            .expect(
-                "child's blind rows match no parent: they mutated despite the freeze",
-            );
+            .expect("child's blind rows match no parent: they mutated despite the freeze");
         // And the read rows MUST have mutated (p_mutate=1.0 → 480 weights, all perturbed).
         assert_ne!(
             pai.l2[..corte],
@@ -1772,11 +1770,7 @@ mod tests {
         let total = (n_beings * N_L1_NEURONS) as f64; // 384
         let periods = vec![2.0f32; n_beings * N_L1_NEURONS];
         let (media, desvio) = simulate_l1_fire_counts(&periods, n_beings, 200);
-        assert_eq!(
-            media,
-            total / 2.0,
-            "period=2 should fire 50% on average"
-        );
+        assert_eq!(media, total / 2.0, "period=2 should fire 50% on average");
         // Two-point distribution (0 or total, 50/50): deviation = total/2 exactly.
         assert_eq!(
             desvio,

@@ -278,7 +278,9 @@ fn main() {
 
     println!("\n═══════════════════════════════════════════════════════════════════");
     println!("DIVERGENCE PROOF — synthetic retina, after the motor.rs 2026-08-04 fix");
-    println!("Each channel of the 6 groups MUST have a value different from the other 3 in its group.");
+    println!(
+        "Each channel of the 6 groups MUST have a value different from the other 3 in its group."
+    );
     println!("Chan  | Val | Group | Observation");
     println!("------|-----|-------|------------------------------------------");
 

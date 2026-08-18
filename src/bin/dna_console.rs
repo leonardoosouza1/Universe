@@ -105,10 +105,7 @@ fn main() {
                             dirty: false,
                         });
                     }
-                    None => println!(
-                        "❌ failed to load {} (missing or corrupted)",
-                        args[0]
-                    ),
+                    None => println!("❌ failed to load {} (missing or corrupted)", args[0]),
                 }
             }
             "save" => {

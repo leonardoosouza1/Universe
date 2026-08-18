@@ -36,11 +36,23 @@
 
 // ─── Structs ───────────────────────────────────────────────────────────────────
 
+// Uniform shared by the THREE perception pipelines (spatial/temporal/motion) — the
+// same `buf_params`. The layout mirrors `ParamsGpu` in perception.rs (32 bytes, a
+// multiple of 16 because WGSL aligns a uniform struct that way). Change it here and
+// you change it in all three .wgsl AND on the host, in the same commit.
 struct Params {
-    grid_size: u32,
-    n_beings:  u32,
-    cell_size: f32,
-    _pad:      f32,
+    grid_size:  u32,
+    n_beings:   u32,
+    cell_size:  f32,
+    perif_real: f32,  // unused in this kernel; present so the layout matches
+    // BODY BLOCK (BODY PHASE, 2026-08-17): 1.0 = body-block channels on. Comes from
+    // ONE single static (gpu::perception::BODY_CHANNELS_ON), read once per tick on
+    // the host — which is why temporal.wgsl and motion.wgsl can NEVER disagree about
+    // who writes ch98/ch114-117.
+    body_on:    f32,
+    _pad0:      f32,
+    _pad1:      f32,
+    _pad2:      f32,
 }
 
 struct Pose {
@@ -60,7 +72,8 @@ struct Pose {
 @group(0) @binding(4) var<storage, read>       poses:    array<Pose>;
 @group(0) @binding(5) var<storage, read>       retina:   array<u32>;      // não usado
 @group(0) @binding(6) var<storage, read_write> output:   array<atomic<u32>>;
-// Estado temporal por ser — 58 f32 por ser (TEMPORAL_STRIDE=58).
+// Per-being temporal state — 66 f32 per being (TEMPORAL_STRIDE=66; it was 58 before
+// the BODY BLOCK of the BODY PHASE, 2026-08-17).
 // Layout:
 //   [0-4]   prev_dist_l/r/f, wall_ema_l/r
 //   [5]     proximity_sustain
@@ -102,15 +115,28 @@ struct Pose {
 //   [55]    edge_row7     — edge density linha 7 retina [0,1] → ch100
 //   [56]    steer_mem     — phys.steer [-1,1] → ch121
 //   [57]    brake_mem     — phys.brake_cmd [0,1] → ch122
+// ── NEW slots (v5) — BODY BLOCK, injected by update_body_channels() ──────────
+//   [58-65] the 8 values of the body / hostile-world block. Read ONLY when
+//           params.body_on == 1.0. The slot->channel map is the canonical registry
+//           `perception::channels::BODY_SLOTS` (Rust); the "BODY BLOCK" section
+//           below repeats that mapping as CODE, and the test
+//           `shader_reads_every_slot_and_writes_every_channel_of_the_registry`
+//           (perception_body_test.rs) proves the two agree — WGSL cannot import a
+//           Rust const, so the agreement is by test, not by compiler.
 @group(0) @binding(7) var<storage, read_write> temporal: array<f32>;
 
 // ─── Constantes ────────────────────────────────────────────────────────────────
 
 // TEMPORAL_STRIDE expandido de 50 → 58:
 //   slots 0-48 existentes + 1 (slip_signal) + 4 (joy/spin/stress) + 4 (edge/steer/brake) = 58.
-// CRÍTICO: deve bater exatamente com TEMPORAL_STRIDE em perception.rs.
-// Slots 32-57 são injetados pela CPU via write_buffer antes do dispatch.
-const TEMPORAL_STRIDE: u32 = 58u;
+// And from 58 to 66 in the BODY PHASE (2026-08-17): + 8 for the BODY BLOCK (slots
+// 58-65). CRITICAL: must match TEMPORAL_STRIDE in perception.rs exactly. The block
+// was APPENDED at the end on purpose — no slot already measured changed index.
+// Slots 32-65 are injected by the CPU via write_buffer before the dispatch.
+const TEMPORAL_STRIDE: u32 = 66u;
+
+// First slot of the BODY BLOCK. Mirrors `BODY_SLOT_BASE` in perception.rs.
+const BODY_SLOT_BASE: u32 = 58u;
 const WAVE_U32S:       u32 = 48u;  // ceil(192/4)
 
 // ─── Utilitário: escreve canal i8 no buf_output via atomicOr ──────────────────
@@ -360,11 +386,34 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     write_channel(being, 68u, i32(clamp(prop_rpm_ratio * 127.0, 0.0, 127.0)));
     // ch69: marcha — 20 por marcha (marcha 6 → 120, max ~127)
     write_channel(being, 69u, i32(clamp(prop_gear * 20.0, 0.0, 127.0)));
-    // ch70: temperatura dos pneus — 127 = 120°C (ótima)
-    write_channel(being, 70u, i32(clamp(prop_tire_temp * 127.0, 0.0, 127.0)));
+    // ── BODY BLOCK (BODY PHASE, 2026-08-17) — slots 58-65 ────────────────────
+    // ALWAYS read (a storage read is cheap and has no side effect); only the WRITES
+    // below are conditioned on body_on. Reading unconditionally keeps a divergent
+    // branch away from a buffer access — the pattern that crashed ACO.
+    let body_on       = params.body_on > 0.5;
+    let bb            = tb + BODY_SLOT_BASE;
+    let body_bearing0 = temporal[bb + 0u];  // slot 0 → ch114 StationBearing   [-1,1]
+    let body_prox0    = temporal[bb + 1u];  // slot 1 → ch115 StationProx      [0,1]
+    let body_charge   = temporal[bb + 2u];  // slot 2 → ch116 StationCharge    [0,1]
+    let body_fuel     = temporal[bb + 3u];  // slot 3 → ch117 OwnFuel          [0,1]
+    let body_bearing1 = temporal[bb + 4u];  // slot 4 → ch98  PredatorBearing  [-1,1]
+    let body_prox1    = temporal[bb + 5u];  // slot 5 → ch124 PredatorProx     [0,1]
+    let body_tire     = temporal[bb + 6u];  // slot 6 → ch70  TireTempReal     [0,1]
+    let body_engine   = temporal[bb + 7u];  // slot 7 → ch71  EngineTempReal   [0,1]
+
+    // ch70: tyre temperature — 127 = 120 C (optimal).
+    // BODY BLOCK: with body_on the SOURCE becomes slot 6 (the real thermal model,
+    // computed on the CPU) instead of prop[6]. Same encoding, same range — a source
+    // change, not a semantic one. ONE write only (select on the VALUE, not two
+    // write_channel calls): two atomicOr on the same byte with different values
+    // would produce silent garbage.
+    let tire_src = select(prop_tire_temp, body_tire, body_on);
+    write_channel(being, 70u, i32(clamp(tire_src * 127.0, 0.0, 127.0)));
     // ch71: temperatura do motor — o slot era downforce mas foi sobrescrito; a CPU injeta
     //       temp_motor via temporal[27]. Acima de 105°C a potência cai (physics.wgsl:402).
-    write_channel(being, 71u, i32(clamp(prop_downforce * 127.0, 0.0, 127.0)));
+    // BODY BLOCK: with body_on the source becomes slot 7 (same host formula).
+    let engine_src = select(prop_downforce, body_engine, body_on);
+    write_channel(being, 71u, i32(clamp(engine_src * 127.0, 0.0, 127.0)));
     // ch72: temperatura do óleo — slot era in_draft, sobrescrito pela CPU com temp_oleo
     //       via temporal[28]. Mais lento que o motor (τ ≈ 500-1000 ticks).
     write_channel(being, 72u, i32(clamp(prop_in_draft * 127.0, 0.0, 127.0)));
@@ -426,8 +475,18 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     write_channel(being, 127u, i32(clamp(joy_streak_n * 127.0, 0.0, 127.0)));
 
     // ch124: dor de rodopio — -128 se girando (|av_y|>1.5 && speed<2.0). Motor.rs:1384.
+    // BODY BLOCK: with body_on this channel changes MEANING AND RANGE — it becomes
+    // PredatorProx (slot 5), [0,127] instead of {0,-128}. It is the block's most
+    // aggressive swap (the spin signal disappears while the predator is on); recorded
+    // in the registry (`Channel::Spinning`) and justified by spin being one of the 6
+    // channels MEASURED constant for a whole run (piloto_forja.rs:49).
     let is_spin = temporal[tb + 52u];
-    write_channel(being, 124u, select(0, -128, is_spin > 0.5));
+    let ch124_val = select(
+        select(0, -128, is_spin > 0.5),
+        i32(clamp(body_prox1 * 127.0, 0.0, 127.0)),
+        body_on,
+    );
+    write_channel(being, 124u, ch124_val);
 
     // ch125: estresse de proximidade — 64 se atrás, 127 se alguém a <20m à frente. Motor.rs:1379.
     // Escala: 0→líder, 0.5→meio pelotão, 1.0→alguém próximo.
@@ -451,6 +510,31 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     // ch122: brake_mem = phys.brake_cmd [0,1]. Motor.rs:1661 (racer.memory[2]).
     let brake_mem = temporal[tb + 57u];
     write_channel(being, 122u, i32(clamp(brake_mem * 127.0, 0.0, 127.0)));
+
+    // ── BODY BLOCK: the 5 channels that CHANGE OWNER (ch98, ch114-117) ───────
+    //
+    // With body_on, THIS kernel writes those five and perception_motion.wgsl writes
+    // none of them (same `params.body_on`, same uniform, same tick). With body_on
+    // off it is the other way round and nothing here runs — the old behaviour stays
+    // bit for bit intact (project rule 3).
+    //
+    // Why the guard is mandatory and not cosmetic: buf_output is written with
+    // atomicOr over a zeroed buffer (perception.rs, clear_buffer). If both kernels
+    // wrote the same byte, the result would be the OR of the two values — a
+    // plausible number, no error, no panic. A single boolean field on both sides
+    // makes the double write impossible by construction.
+    if body_on {
+        // ch114 StationBearing / ch98 PredatorBearing — SIGNED, same encoding as
+        // the probes: the host sends bearing/pi in [-1,1].
+        write_channel(being, 114u, i32(clamp(body_bearing0 * 127.0, -127.0, 127.0)));
+        write_channel(being,  98u, i32(clamp(body_bearing1 * 127.0, -127.0, 127.0)));
+        // ch115 StationProx / ch116 StationCharge / ch117 OwnFuel — [0,1] from the
+        // host. The proximity ramp (1 - min(d/R,1)) is computed on the CPU: R is a
+        // dose, not a kernel constant.
+        write_channel(being, 115u, i32(clamp(body_prox0  * 127.0, 0.0, 127.0)));
+        write_channel(being, 116u, i32(clamp(body_charge * 127.0, 0.0, 127.0)));
+        write_channel(being, 117u, i32(clamp(body_fuel   * 127.0, 0.0, 127.0)));
+    }
 
     // ── Atualiza estado temporal para o próximo tick ──────────────────────────
     // Salva as distâncias ATUAIS como "anteriores" para o próximo approach_rate.

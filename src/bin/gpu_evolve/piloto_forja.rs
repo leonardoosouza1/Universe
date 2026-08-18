@@ -178,9 +178,7 @@ impl PilotoForja {
         let formato = bruto("formato").unwrap_or_default();
         let base = bruto("base").unwrap_or_default();
         if !formato.starts_with("piloto-v2/") {
-            eprintln!(
-                "[piloto-forja] unknown format {formato:?} in {path} — expected piloto-v2/*"
-            );
+            eprintln!("[piloto-forja] unknown format {formato:?} in {path} — expected piloto-v2/*");
             return None;
         }
 

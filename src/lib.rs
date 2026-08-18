@@ -25,11 +25,15 @@ pub mod neuro;
 pub mod perception;
 pub mod physics;
 pub mod pista_gen;
+/// D9 scripted predator — pure chase policy, no GPU (hostile-world spec).
+pub mod predator;
 pub mod prefabs;
 pub mod reality;
 pub mod replay;
 pub mod repominer;
 pub mod resonance;
+/// D7 scarce resource — energy stations, pure state machine, no GPU.
+pub mod resources;
 /// The single deterministic generator — see `rng.rs` for the sign bug that motivated it.
 pub mod rng;
 pub mod safety;
@@ -37,6 +41,8 @@ pub mod scenery;
 pub mod simulation;
 pub mod specialist;
 pub mod substrate;
+/// Tyre thermal model — heat, Newtonian cooling and the grip curve, no GPU.
+pub mod tire_thermal;
 pub mod types;
 pub mod ui;
 pub mod ui_menu;

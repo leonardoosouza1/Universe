@@ -28,6 +28,21 @@
 //! | `STEER_FIXO`, `THR_FIXO`, `STEER_ESCALA` | `main()` (flags de diagnóstico bruto) | `context.rs::tick()` (override final, depois de tudo) |
 //! | `PILOTO_SENSOR` | `main()` (flag `--piloto-sensor`) | `context.rs::tick()` (piloto sensorial, raios de parede) |
 //! | `ATIVACAO_ON`, `ATIVACAO_N` | `main()` (flags `--ativacao`/`--ativacao-n`) | `context.rs::tick()` (decide se/quando amostra L1/L2) |
+//!
+//! ## Hostile world (BODY PHASE, 2026-08-17) — English rows, new code
+//!
+//! | Static | Written by | Read by |
+//! |---|---|---|
+//! | `universe::gpu::perception::BODY_CHANNELS_ON` (library, reached here through [`body_channels_on`]) | `main()` (flag `--interocepcao`, and any flag that needs the block) | `context.rs::tick()` (decides whether to pack + upload the body block) and `gpu::perception` (builds the `body_on` uniform field) |
+//! | `STATIONS_N`, `STATION_CAPACITY`, `STATION_REGEN`, `STATION_RADIUS_M`, `STATION_TRANSFER` | `main()` (flags `--recurso-*`) | `main()` (places the stations once per generation) + `context.rs::tick()` (drain/recharge + the station channels) |
+//! | `PREDATOR_SPEED_FRAC`, `PREDATOR_DRAIN`, `PREDATOR_RADIUS_M`, `PREDATOR_PERCEPT_M`, `PREDATOR_GRACE_TICKS`, `PREDATOR_SPAWN_BACK_M` | `main()` (flags `--predador*`) | `main()` (spawns once per generation) + `context.rs::tick()` (step, life drain, predator channels) |
+//! | `TIRE_THERMAL_GAIN` | `main()` (flag `--pneu-termico`) | `main()` (builds the per-being `ThermalParams` once per generation) + `context.rs::tick()` (integrates the temperature and writes `env_grip`) |
+//! | `SENSOR_COST`, `SENSOR_COST_K`, `SENSOR_COST_CAP` | `main()` (flags `--custo-sensor*`) | `main()` (recomputes the per-being subscription once per generation, next to the wiring cost) — the tick only reads the resulting `ctx.sensor_cost` vector |
+//!
+//! State, as opposed to dose, is deliberately NOT here: the station charges, the
+//! predator pose, the per-being tyre temperature and the per-being subscription all
+//! live in `GpuCtx` / `BeingState`. A static is a knob the CLI turns; simulation
+//! state in a process global is how two runs in one process contaminate each other.
 
 use std::sync::atomic::Ordering;
 
@@ -221,3 +236,99 @@ pub static PILOTO_SENSOR: AtomicF32 = AtomicF32::new();
 pub static ATIVACAO_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// `--ativacao-n <N>`: período de amostragem em ticks. Padrão 64 (REFACTOR_PLAN.md §E4).
 pub static ATIVACAO_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(64);
+
+// ─── HOSTILE WORLD (BODY PHASE, 2026-08-17) ────────────────────────────────────
+//
+// Everything below is dose, never state (see the ownership table in the header).
+// Every one of these is off at its default, so a run without the new flags is the
+// old run — the bit-for-bit guarantee the A/B needs (CLAUDE.md rule 3).
+
+/// Typical sustained speed of a healthy being, m/s. MEASURED, not chosen: the
+/// energy round-2 calibration recorded 1875 m in ~100 s, and the `--fuel-auto`
+/// rule of three above is built on the same number. It is the denominator that
+/// turns `--predador <f>` from "m/s" into "fraction of what a being can do", so a
+/// dose reads the same on every track.
+pub const TYPICAL_SPEED_MS: f32 = 18.75;
+
+/// Whether the BODY BLOCK is feeding the sensory wave this run.
+///
+/// There is ONE flag, and it lives in the library (`gpu::perception`), because the
+/// perception kernels build their `body_on` uniform field from it once per tick. A
+/// second copy here would be a second source of truth for a value two kernels must
+/// agree on, which is precisely how a channel ends up written by both kernels
+/// (`atomicOr` corruption) or by neither. This function exists so the ownership
+/// table has a row and `context.rs` has one name to call.
+#[inline]
+pub fn body_channels_on() -> bool {
+    universe::gpu::perception::BODY_CHANNELS_ON.load(Ordering::Relaxed)
+}
+
+/// Reference distance of the station proximity ramp (`1 - min(d/R, 1)` → ch115),
+/// metres. Fixed by the D7 specification; it is a host-side dose by contract, so
+/// changing it never touches WGSL (`perception/channels.rs`, BODY BLOCK header).
+pub const STATION_PROX_REF_M: f32 = 300.0;
+
+/// D7 `--recurso-escasso <M>`: number of energy stations on the track. 0 = off.
+///
+/// The point of the degree is that M < N beings, so for the first time what one
+/// being does (draining a station) changes the world another being finds. It also
+/// REPLACES the per-sector refill — leaving both on would keep an infinite fuel
+/// source next to a scarce one, which is a pressure that is off wearing the costume
+/// of a pressure that is on (the `--fuel-auto` denominator bug, ESCADA_DIFICULDADE.md).
+pub static STATIONS_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// `--recurso-carga <C>`: max and initial charge of each station, fuel units.
+pub static STATION_CAPACITY: AtomicF32 = AtomicF32::new();
+/// `--recurso-regen <R>`: passive recharge per tick, fuel units. Deliberately below
+/// idle consumption (0.002/64 = 3.125e-5/tick) so camping on a drained station is a
+/// net LOSS — the anti-degeneration lock of the D7 spec.
+pub static STATION_REGEN: AtomicF32 = AtomicF32::new();
+/// `--recurso-raio <m>`: drive-through radius, metres.
+pub static STATION_RADIUS_M: AtomicF32 = AtomicF32::new();
+/// `--recurso-transfer <f>`: fuel per tick transferred to one being inside the radius.
+pub static STATION_TRANSFER: AtomicF32 = AtomicF32::new();
+
+/// `--predador <f>`: top speed of the predator as a fraction of [`TYPICAL_SPEED_MS`].
+/// 0 = off. Escapability is by construction while f < 1: a healthy being outruns it
+/// on a straight, so the pressure bites the slow and the cornering, and the dose stays
+/// sweepable instead of being a coin flip.
+pub static PREDATOR_SPEED_FRAC: AtomicF32 = AtomicF32::new();
+/// `--predador-dreno <D>`: life ticks per tick drained at zero distance. The ramp is
+/// continuous and quadratic, `D * (1 - d/R)^2`, so contact is never an instant kill —
+/// a step function would make mortality a threshold artefact rather than a dose.
+pub static PREDATOR_DRAIN: AtomicF32 = AtomicF32::new();
+/// `--predador-raio <m>`: radius of the drain ramp, metres.
+pub static PREDATOR_RADIUS_M: AtomicF32 = AtomicF32::new();
+/// `--predador-percep <m>`: reference distance of the ch124 proximity ramp, metres.
+pub static PREDATOR_PERCEPT_M: AtomicF32 = AtomicF32::new();
+/// `--predador-gracia <ticks>`: immunity at the start of a generation. Without it the
+/// arithmetic says a newborn (LIFE_START = 640) dies in 128 ticks = 2 s at D = 4, i.e.
+/// before it could possibly have fled — that is the metric hitting a limit, not a being
+/// failing (CLAUDE.md rule 4).
+pub static PREDATOR_GRACE_TICKS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(1280);
+/// `--predador-spawn <m>`: how far BEHIND the generation's start line the predator is
+/// placed, in metres of track arc.
+pub static PREDATOR_SPAWN_BACK_M: AtomicF32 = AtomicF32::new();
+
+/// `--pneu-termico <gain>`: depth of the tyre-thermal grip curve. 0 = off.
+///
+/// The dose scales how far grip can fall away from the optimal temperature:
+/// `floor = 1 - gain * (1 - 0.70)`. gain = 0 gives floor 1.0, i.e. `grip_factor ≡ 1`
+/// and the mechanism is exactly off; gain = 1 is the legacy floor 0.70. The DC gain is
+/// re-normalised to 1.0 at every dose (`tire_thermal::normalize_dc`), so a bigger dose
+/// is a WIDER SWING, never less grip on average — otherwise the A/B would measure "less
+/// grip is harder" instead of the dynamic, the confound this project already paid for.
+pub static TIRE_THERMAL_GAIN: AtomicF32 = AtomicF32::new();
+
+/// D8 `--custo-sensor <DOSE>`: life/tick charged for perception at reference use.
+/// 0 = off. The subscription is per FAMILY of channels (`channels::CHANNEL_FAMILIES`),
+/// so pruning one family removes a whole term. E-REG1 failed because its tax was the
+/// mean of 18 432 weights, whose inter-individual variance goes to zero by the CLT —
+/// a constant tax does not select. A family sum has somewhere to go.
+pub static SENSOR_COST: AtomicF32 = AtomicF32::new();
+/// `--custo-sensor-k <K>`: size of the per-family top-K tail. Default 4.
+pub static SENSOR_COST_K: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(4);
+/// `--custo-sensor-cap <C>`: ceiling of the normalised per-family use `u_F`. Default
+/// 2.0, which also bounds the whole tax at `2 * DOSE` — the ceiling the metric plan is
+/// computed against.
+pub static SENSOR_COST_CAP: AtomicF32 = AtomicF32::new();

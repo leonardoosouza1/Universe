@@ -25,15 +25,19 @@ use std::fmt;
 // ---------------------------------------------------------------------------
 
 /// Um degrau da escada: o mecanismo ativo (docs/ESCADA_DIFICULDADE.md linhas
-/// 18-27, tabela D1-D8) e a dose correspondente.
+/// 18-27, table D1-D8) and the dose that goes with it.
 ///
-/// Só os degraus com dose fechada entram no plano padrão. D2 (largada
-/// aleatória) fica DE FORA do enum: ela roda desde a gen 0 junto com D1 e
-/// nunca é promovida por mérito (docs:40 — "começa D1(k=1,4)+D2"), não é um
-/// degrau que a escada liga/aperta. D7/D8 ficam de fora porque o doc ainda os
-/// marca "spec" sem dose fechada (docs:26-27) — adicionar variante quando a
-/// dose for definida, não antes (REGRA DE OURO do handbook: se não está
-/// definido, não inventa).
+/// Only the rungs with a closed dose join the default plan. D2 (random start) is
+/// deliberately OUT of the enum: it runs from generation 0 alongside D1 and is never
+/// promoted on merit (docs:40 — "starts with D1(k=1.4)+D2"), so it is not a rung the
+/// ladder switches on or tightens.
+///
+/// D7 and D8 JOINED on 2026-08-17 (BODY PHASE), when they got a mechanism and a
+/// closed dose in `docs/SPECS_MUNDO_HOSTIL.md`. Before that, the rule stated just
+/// above (an undefined dose does not become a variant) is what kept them out, and it
+/// still holds for the rest. The PREDATOR stays out on purpose: its own spec makes
+/// `Degrau::Predator(f)` conditional on the dose canary closing first, and a variant
+/// with no measured dose is a rung the ladder would promote blind.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Degrau {
     /// D1 — fuel-auto k apertando (docs:20). Dose = valor de k.
@@ -53,6 +57,18 @@ pub enum Degrau {
     /// D6 — fantasma do campeão anterior na pista (docs:25). Sem dose própria
     /// — é liga/desliga.
     Fantasma,
+    /// D7 — scarce resource (docs:26): M energy stations with M < N beings.
+    /// The dose is M, and it TIGHTENS DOWNWARD (fewer stations = more contention),
+    /// the opposite direction from noise and damage. First COMPETITIVE pressure of
+    /// the ladder: the only rung where what one being does (draining a station)
+    /// changes the world another being finds. Spec doses: 16 -> 12 -> 8 -> 6 -> 4.
+    Resource(u32),
+    /// D8 — perception costs energy (docs:27): a per-channel-family subscription
+    /// paid in LIFE, proportional to the use L1 makes of the family. The dose is
+    /// life/tick at reference use and it tightens UPWARD. Fine steps (0.15 -> 0.30
+    /// -> 0.45 -> 0.60) because the fuel curve taught that the cliff lives between
+    /// two coarse jumps (docs:103-104).
+    SensorCost(f32),
 }
 
 impl fmt::Display for Degrau {
@@ -63,6 +79,8 @@ impl fmt::Display for Degrau {
             Degrau::Dano(dose) => write!(f, "D4 dano oculto dose={:.2}", dose),
             Degrau::Clima(mu) => write!(f, "D5 clima μ_min={:.2}", mu),
             Degrau::Fantasma => write!(f, "D6 fantasma do campeão anterior"),
+            Degrau::Resource(m) => write!(f, "D7 scarce resource M={m} stations"),
+            Degrau::SensorCost(d) => write!(f, "D8 perception costs energy dose={d:.2}"),
         }
     }
 }
@@ -199,6 +217,34 @@ impl Escada {
                 Degrau::Clima(0.70),
                 Degrau::Clima(0.55),
                 Degrau::Fantasma,
+                // D7 and D8 (BODY PHASE, 2026-08-17), doses from
+                // docs/SPECS_MUNDO_HOSTIL.md.
+                //
+                // They come AFTER the ghost because they are the first two pressures
+                // that are not "the world got harder": D7 is competitive (what one being
+                // does changes another's world) and D8 charges for perception itself.
+                // The order is the spec's: "D7 enters after D6 in the curriculum" and
+                // "the sensor rung enters the SENSOR PHASE, after D7".
+                //
+                // D7 tightens DOWNWARD 16->12->8->6->4. The spec's supply/demand
+                // arithmetic says M=16 already leaves half the population out (53% of
+                // full demand) and M=4 covers 25% — no dose is decoration and no dose is
+                // impossible by construction, which are the two failure modes that
+                // energy round 2 and the fuel-auto denominator already produced here.
+                Degrau::Resource(16),
+                Degrau::Resource(12),
+                Degrau::Resource(8),
+                Degrau::Resource(6),
+                Degrau::Resource(4),
+                // D8 is deliberately fine: the fuel cliff sat between k=5 and k=3 and is
+                // invisible to anyone stepping 8 at a time. The spec stops at 0.60
+                // because above ~1.2 the ceiling arithmetic says a being recovering from
+                // a slow corner enters an irreversible deficit and the population
+                // collapses in the first generation.
+                Degrau::SensorCost(0.15),
+                Degrau::SensorCost(0.30),
+                Degrau::SensorCost(0.45),
+                Degrau::SensorCost(0.60),
             ],
             ativo: 0,
             aprovacoes_seguidas: 0,
@@ -297,8 +343,8 @@ impl Escada {
     /// Sobe um degrau, ou segura se já estiver no fim do plano.
     fn subir(&mut self) -> Veredito {
         if self.ativo + 1 >= self.plano.len() {
-            // Fim do plano: segura. Não há próximo degrau — Fantasma (D6) é
-            // o topo até D7/D8 ganharem dose fechada.
+            // End of plan: hold. The top is D8's hardest dose; the next mechanism
+            // to enter here is the predator, and only after its dose canary closes.
             return Veredito::Mantem;
         }
         self.ativo += 1;
@@ -374,10 +420,20 @@ mod tests {
             matches!(e.plano[0], Degrau::FuelK(_)),
             "escada começa pelo combustível"
         );
-        assert_eq!(*e.plano.last().unwrap(), Degrau::Fantasma, "fantasma fecha");
+        assert!(
+            matches!(e.plano.last().unwrap(), Degrau::SensorCost(_)),
+            "the SENSOR PHASE (D8) closes the ladder; the ghost stopped being the top \
+             when D7/D8 got a closed dose"
+        );
         let (mut ult_fuel, mut ult_ruido) = (f32::INFINITY, 0.0f32);
         let (mut ult_dano, mut ult_clima) = (0.0f32, f32::INFINITY);
+        let (mut ult_recurso, mut ult_sensor) = (u32::MAX, 0.0f32);
         let (mut n_fuel, mut n_ruido, mut n_dano, mut n_clima) = (0, 0, 0, 0);
+        let (mut n_recurso, mut n_sensor) = (0, 0);
+        // Order between mechanisms: D7 only after the ghost, D8 only after D7
+        // (docs/SPECS_MUNDO_HOSTIL.md). A competitive rung before the ghost would move
+        // TWO axes on one promotion, which is exactly what "one at a time" forbids.
+        let (mut viu_fantasma, mut viu_recurso) = (false, false);
         for d in &e.plano {
             match d {
                 Degrau::FuelK(k) => {
@@ -403,9 +459,35 @@ mod tests {
                     ult_clima = *mu;
                     n_clima += 1;
                 }
-                Degrau::Fantasma => {}
+                Degrau::Fantasma => {
+                    viu_fantasma = true;
+                }
+                Degrau::Resource(m) => {
+                    assert!(viu_fantasma, "D7 (resource) must come after the ghost");
+                    assert!(
+                        *m < ult_recurso,
+                        "the resource tightens DOWNWARD (fewer stations = more \
+                         contention): {m} is not < {ult_recurso}"
+                    );
+                    ult_recurso = *m;
+                    viu_recurso = true;
+                    n_recurso += 1;
+                }
+                Degrau::SensorCost(dose) => {
+                    assert!(viu_recurso, "D8 (sensor cost) must come after D7");
+                    assert!(*dose > ult_sensor, "the sensor cost must rise");
+                    ult_sensor = *dose;
+                    n_sensor += 1;
+                }
             }
         }
+        // D8's top dose respects the ceiling computed BEFORE running: above
+        // ~1.2 life/tick the spec's arithmetic says a being recovering from a corner
+        // enters an irreversible deficit and the population collapses in generation 1.
+        assert!(
+            ult_sensor <= 1.2,
+            "sensor dose {ult_sensor} exceeds the computed ceiling (1.2 life/tick)"
+        );
         // Cada mecanismo precisa de degraus suficientes para CHEGAR a morder antes
         // de ceder a vez — a lição das 34 gerações com mortalidade 0%.
         for (nome, n) in [
@@ -413,6 +495,8 @@ mod tests {
             ("ruído", n_ruido),
             ("dano", n_dano),
             ("clima", n_clima),
+            ("resource", n_recurso),
+            ("sensor cost", n_sensor),
         ] {
             assert!(
                 n >= 3,

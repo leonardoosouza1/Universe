@@ -329,11 +329,7 @@ mod tests {
             })
             .collect();
         let pr = participation_ratio(&acts).expect("PR must exist");
-        assert!(
-            (pr - 1.0).abs() < 0.05,
-            "rank-1 PR must be ≈ 1, got {}",
-            pr
-        );
+        assert!((pr - 1.0).abs() < 0.05, "rank-1 PR must be ≈ 1, got {}", pr);
     }
 
     /// Insufficient samples → None.
@@ -365,11 +361,7 @@ mod tests {
         let n = 3usize;
         let m = vec![0.0_f32; n * n];
         let r = spectral_radius(&m, n, 50);
-        assert!(
-            r < 1e-10,
-            "spectral radius of zeros must be 0, got {}",
-            r
-        );
+        assert!(r < 1e-10, "spectral radius of zeros must be 0, got {}", r);
     }
 
     /// Spectral radius of scalar 2 = 2.0.

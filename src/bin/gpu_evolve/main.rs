@@ -163,6 +163,37 @@ fn tanque_por_setor(lap_dist: f64, k: f32) -> f32 {
     (setor_m / 18.75) * 0.006 * k
 }
 
+/// Base tyre-thermal parameters for a dose, DC-normalised — the population's shared
+/// shape, before the per-being spread.
+///
+/// The dose scales the DEPTH of the grip curve: `floor = 1 - gain * (1 - 0.70)`, so
+/// gain 0 gives floor 1.0 (`grip_factor` is identically 1: the mechanism is exactly
+/// off, not approximately off) and gain 1 gives the legacy floor 0.70.
+///
+/// `max_factor` is DERIVED, not chosen. `normalize_dc` finds the trim that makes mean
+/// applied grip exactly 1.0 over the reference band, and that trim grows as the floor
+/// drops (deeper bell, lower raw mean). A fixed cap of 1.20 is enough for gain 1 but
+/// BINDS at gain 2 — the trim would be clamped, the mean would land below 1.0, and the
+/// "ON" arm would silently be "less grip everywhere". That is the DC-gain confound this
+/// project already paid for, reappearing one dose later. So the cap is set just above
+/// the trim the band requires (5% slack) and can never bind inside the band.
+///
+/// Concretely: raw mean over the band is `g0`; the trim converges to `1/g0`; the peak
+/// applied factor is `1 * (1/g0)`, which is `< 1.05/g0 = max_factor`.
+fn thermal_base_params(gain: f32) -> universe::tire_thermal::ThermalParams {
+    use universe::tire_thermal as th;
+    let floor = (1.0 - gain * (1.0 - th::DEFAULT_FLOOR)).clamp(0.0, 1.0);
+    let band = th::reference_band();
+    let mut p = th::ThermalParams {
+        floor,
+        max_factor: f32::INFINITY,
+        ..Default::default()
+    };
+    let g0 = th::dc_gain(&band, &p).max(1e-6);
+    p.max_factor = 1.05 / g0;
+    th::normalize_dc(&p, &band)
+}
+
 fn frente_do_waypoint(wps: &[bevy::math::Vec2], wi: usize) -> [f32; 3] {
     let n = wps.len();
     let wp = wps[wi];
@@ -204,6 +235,38 @@ fn avaliar_held_out(
     for i in 0..n_seres {
         ctx.brain.reset_cfc(i);
     }
+    // ── HOSTILE WORLD: suspended for the held-out run (BODY PHASE) ────────────
+    //
+    // Same contamination the `l1_samples.clear()` below already fixes, one layer
+    // deeper: `ctx` is shared with the training loop, so without this the D7 stations
+    // would still be sitting at the coordinates of the TRAINING track — placed from
+    // `world.waypoints_world` a moment ago, now floating over a different geometry —
+    // and the predator would be hunting on the reserved track too. Both would move the
+    // held-out number for reasons that have nothing to do with the route generalising,
+    // which is the only question this function asks.
+    //
+    // It is also the choice already recorded for `--fuel` in this function's header:
+    // held-out measures whether the ROUTE generalises, not whether tank management
+    // does. Scarce stations, a predator and a tyre thermal are three more survival
+    // budgets, and they belong on the same side of that line.
+    //
+    // Saved and restored rather than rebuilt: the station charges are mid-generation
+    // state, and rebuilding them would silently refill the field the training
+    // generation had already drained.
+    let hostile_saved = (
+        std::mem::take(&mut ctx.stations),
+        ctx.predator.take(),
+        std::mem::take(&mut ctx.thermal),
+        std::mem::take(&mut ctx.sensor_cost),
+    );
+    let telemetry_saved = (
+        ctx.tel_dry_beings,
+        ctx.tel_predator_ticks,
+        ctx.tel_predator_life,
+        ctx.tel_station_fuel,
+        ctx.tel_tire_temp_sum,
+        ctx.tel_tire_temp_n,
+    );
 
     let lap_dist = world_ho.lap_distance as f64;
     let n_wp = world_ho.waypoints_world.len();
@@ -237,6 +300,7 @@ fn avaliar_held_out(
                 shift_up_prev: 0.0,
                 shift_down_prev: 0.0,
                 nm_reserva: [1.0; 4],
+                tire_temp: universe::tire_thermal::DEFAULT_AMBIENT,
                 re_falhas: 0,
                 re_desde_saida: 999.0,
                 dano: 0.0,
@@ -357,6 +421,20 @@ fn avaliar_held_out(
     // com `l1_samples`/`l2_samples` — mesmo risco de contaminação, mesmo conserto.
     ctx.regiao_l1.clear();
     ctx.regiao_l2.clear();
+    // Hostile world back exactly as the training generation left it, including the
+    // per-generation telemetry counters: the held-out ticks ran with the mechanisms
+    // suspended, so anything they added to those counters would be a number attributed
+    // to a generation that did not produce it.
+    ctx.stations = hostile_saved.0;
+    ctx.predator = hostile_saved.1;
+    ctx.thermal = hostile_saved.2;
+    ctx.sensor_cost = hostile_saved.3;
+    ctx.tel_dry_beings = telemetry_saved.0;
+    ctx.tel_predator_ticks = telemetry_saved.1;
+    ctx.tel_predator_life = telemetry_saved.2;
+    ctx.tel_station_fuel = telemetry_saved.3;
+    ctx.tel_tire_temp_sum = telemetry_saved.4;
+    ctx.tel_tire_temp_n = telemetry_saved.5;
 
     let mediana = |mut v: Vec<f64>| -> f64 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -850,6 +928,122 @@ fn main() {
                 "--escada" => {
                     escada_on = true;
                 }
+                // ── HOSTILE WORLD (BODY PHASE, 2026-08-17) ───────────────────
+                //
+                // INTEROCEPTION — turns the BODY BLOCK on: eight CPU-computed values
+                // per being per tick reach the sensory wave (registry
+                // `perception::channels::BODY_SLOTS`). Off by default: it changes the
+                // input distribution of ch98/ch114-117, so an existing champion needs
+                // a paired A/B, not faith (CLAUDE.md rule 3, same contract as
+                // `--visao-periferica-real` above).
+                //
+                // Two of the eight slots are SOURCE MOVES that carry the same number
+                // the old path carried (ch70 with the thermal model off, ch71 always),
+                // so the flag's real content is: OwnFuel becomes visible, and the five
+                // measured-dead channels stop being constant. That is why it deserves
+                // its own flag instead of riding along with a world pressure.
+                "--interocepcao" => {
+                    universe::gpu::perception::BODY_CHANNELS_ON.store(true, Ordering::Relaxed);
+                }
+                // D7 — scarce resource: M energy stations, M < N beings.
+                "--recurso-escasso" => {
+                    i += 1;
+                    if i < args.len() {
+                        STATIONS_N.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
+                    }
+                }
+                "--recurso-carga" => {
+                    i += 1;
+                    if i < args.len() {
+                        STATION_CAPACITY.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--recurso-regen" => {
+                    i += 1;
+                    if i < args.len() {
+                        STATION_REGEN.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--recurso-raio" => {
+                    i += 1;
+                    if i < args.len() {
+                        STATION_RADIUS_M.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--recurso-transfer" => {
+                    i += 1;
+                    if i < args.len() {
+                        STATION_TRANSFER.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                // PREDATOR — dose is a FRACTION of the measured typical speed, so the
+                // same number means the same pressure on every track.
+                "--predador" => {
+                    i += 1;
+                    if i < args.len() {
+                        PREDATOR_SPEED_FRAC
+                            .store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--predador-dreno" => {
+                    i += 1;
+                    if i < args.len() {
+                        PREDATOR_DRAIN.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--predador-raio" => {
+                    i += 1;
+                    if i < args.len() {
+                        PREDATOR_RADIUS_M.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--predador-percep" => {
+                    i += 1;
+                    if i < args.len() {
+                        PREDATOR_PERCEPT_M.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--predador-gracia" => {
+                    i += 1;
+                    if i < args.len() {
+                        PREDATOR_GRACE_TICKS.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
+                    }
+                }
+                "--predador-spawn" => {
+                    i += 1;
+                    if i < args.len() {
+                        PREDATOR_SPAWN_BACK_M
+                            .store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                // TYRE THERMAL — dose = depth of the grip curve; DC gain re-normalised
+                // to 1.0 at every dose, so a bigger dose is a wider SWING, never less
+                // grip on average (see TIRE_THERMAL_GAIN in statics.rs).
+                "--pneu-termico" => {
+                    i += 1;
+                    if i < args.len() {
+                        TIRE_THERMAL_GAIN.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                // D8 — perception costs energy: a per-family subscription paid in life.
+                "--custo-sensor" => {
+                    i += 1;
+                    if i < args.len() {
+                        SENSOR_COST.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                    }
+                }
+                "--custo-sensor-k" => {
+                    i += 1;
+                    if i < args.len() {
+                        SENSOR_COST_K.store(args[i].parse().unwrap_or(4), Ordering::Relaxed);
+                    }
+                }
+                "--custo-sensor-cap" => {
+                    i += 1;
+                    if i < args.len() {
+                        SENSOR_COST_CAP.store(args[i].parse().unwrap_or(2.0), Ordering::Relaxed);
+                    }
+                }
                 // PILOTO POR FÓRMULA (PILOTO_POR_FORMULA.md): ser 0 dirigido pelo
                 // controlador ridge destilado do replay do campeão.
                 "--piloto-formula" => {
@@ -1340,6 +1534,16 @@ fn main() {
     };
     let mut fantasma_atual: fantasma::Fantasma = fantasma::Fantasma::default();
     let mut hist_med_escada: Vec<f64> = Vec::new();
+    /// D8 — per-family reference use `ref_F`, FROZEN at the first generation the flag
+    /// is on and never recomputed.
+    ///
+    /// Frozen because a reference that follows the population is not a tax, it is a
+    /// ranking: if `ref_F` is always the current median, half the population always
+    /// pays above reference no matter how much everyone prunes, and the pressure can
+    /// never be satisfied — the incentive to prune disappears exactly when the
+    /// population starts responding to it. A frozen reference means "cheaper than the
+    /// population WAS" is a real, reachable win.
+    let mut ref_familias: Vec<f32> = Vec::new();
     if CAMBIO_CURRICULO.load(Ordering::Relaxed) {
         // O valor de --cambio-teto vira o MÁXIMO; o teto vivo começa em 2 (≡ travado).
         CAMBIO_TETO_MAX.store(CAMBIO_TETO.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -1391,6 +1595,203 @@ fn main() {
         }
     }
     SETOR_PAGA.store(setor_paga, Ordering::Relaxed);
+    // ── HOSTILE WORLD: defaults, refusals and the ceilings (BODY PHASE) ───────
+    //
+    // Runs AFTER `SETOR_PAGA` on purpose: D7 has to be able to take the sector
+    // refill away, and it can only do that once the flag has been stored.
+    //
+    // Everything printed here is arithmetic done BEFORE any run (CLAUDE.md rule 4).
+    // The point is not decoration: a hard 0% or a hard 100% is a metric hitting its
+    // limit, and the only way to tell that apart from a result is to have written the
+    // limit down first.
+    {
+        use universe::gpu::perception::BODY_CHANNELS_ON;
+
+        // Defaults for the dose knobs. `AtomicF32::new()` is 0.0, and 0.0 means "off"
+        // for the master switches (`--recurso-escasso`, `--predador`, `--pneu-termico`,
+        // `--custo-sensor`) but would mean "broken" for the shape knobs — a station
+        // with radius 0 can never be reached, and that is a pressure that is silently
+        // off, the exact failure the dose canary exists to catch.
+        let default_f32 = |s: &AtomicF32, v: f32| {
+            if s.load(Ordering::Relaxed) <= 0.0 {
+                s.store(v, Ordering::Relaxed);
+            }
+        };
+        default_f32(&STATION_CAPACITY, universe::resources::DEFAULT_CAPACITY);
+        default_f32(
+            &STATION_REGEN,
+            universe::resources::DEFAULT_RECHARGE_PER_TICK,
+        );
+        default_f32(&STATION_RADIUS_M, universe::resources::DEFAULT_RADIUS_M);
+        default_f32(
+            &STATION_TRANSFER,
+            universe::resources::DEFAULT_TRANSFER_PER_TICK,
+        );
+        default_f32(&PREDATOR_DRAIN, 4.0);
+        default_f32(&PREDATOR_RADIUS_M, 12.0);
+        default_f32(&PREDATOR_PERCEPT_M, 60.0);
+        default_f32(&PREDATOR_SPAWN_BACK_M, 150.0);
+        default_f32(&SENSOR_COST_CAP, 2.0);
+
+        let n_stations = STATIONS_N.load(Ordering::Relaxed);
+        let pred_frac = PREDATOR_SPEED_FRAC.load(Ordering::Relaxed);
+        let thermal_gain = TIRE_THERMAL_GAIN.load(Ordering::Relaxed);
+        let sensor_dose = SENSOR_COST.load(Ordering::Relaxed);
+        let body_on = BODY_CHANNELS_ON.load(Ordering::Relaxed);
+
+        if n_stations > 0 {
+            // REFUSAL, not a warning. `--recurso-escasso` without fuel consumption is
+            // "decoration by construction" (D7 spec): the stations would hand out a
+            // resource nothing spends, every dose would produce the same number, and
+            // the run would look like a measurement of a pressure that never existed.
+            if !FUEL_ON.load(Ordering::Relaxed) {
+                eprintln!(
+                    "[recurso] ERROR: --recurso-escasso {n_stations} requires --fuel or \
+                     --fuel-auto. With nothing consuming it, a station is decoration and every \
+                     dose would produce the same number."
+                );
+                std::process::exit(2);
+            }
+            // D7 REPLACES the per-sector refill; it does not sit next to it. Leaving
+            // both on keeps an infinite fuel source beside a scarce one — the being
+            // would top up at every checkpoint and the stations would never be
+            // contested, which is a pressure that is off wearing the costume of one
+            // that is on (the `--fuel-auto` denominator bug, ESCADA_DIFICULDADE.md).
+            // REGISTERED DECISION (mission rule 7): the flag loses to the degree.
+            if SETOR_PAGA.load(Ordering::Relaxed) {
+                println!(
+                    "  [recurso] per-SECTOR refill disabled — the {n_stations} stations become \
+                     the only fuel source (D7 replaces the refill, it does not add to it)."
+                );
+                SETOR_PAGA.store(false, Ordering::Relaxed);
+            }
+            // Same reason, for the lap refill: `REFUEL_LAPS` is read at every closed
+            // lap. Pushed out of reach instead of adding a branch, so the existing
+            // refill code path is untouched.
+            REFUEL_LAPS.store(u32::MAX, Ordering::Relaxed);
+
+            // Ceiling, computed here and printed: supply against full demand.
+            let tank = FUEL_TANK.load(Ordering::Relaxed) as f64;
+            let cap = STATION_CAPACITY.load(Ordering::Relaxed) as f64;
+            let regen = STATION_REGEN.load(Ordering::Relaxed) as f64;
+            // Cruise consumption at thr ~= 0.7: (0.002 + 0.7^2 * 0.004) / 64 per tick,
+            // the same formula the tick charges (context.rs, fuel block).
+            let per_tick = (0.002 + 0.7 * 0.7 * 0.004) / 64.0;
+            let demand = per_tick * n_ticks as f64 * n_seres as f64;
+            let supply = n_seres as f64 * tank + n_stations as f64 * (cap + regen * n_ticks as f64);
+            println!(
+                "  [recurso] CEILING before running: supply {supply:.2} u vs full demand \
+                 {demand:.2} u = {:.0}% — sustains ~{:.0} of {n_seres} beings for the whole \
+                 generation (stations {n_stations}, charge {cap:.2}, tank {tank:.4}).",
+                100.0 * supply / demand.max(1e-9),
+                supply / (per_tick * n_ticks as f64).max(1e-9),
+            );
+            if supply >= demand {
+                println!(
+                    "  [recurso] WARNING: supply covers 100% of demand — at this dose the \
+                     resource is NOT scarce and the number will match the off arm."
+                );
+            }
+        }
+
+        if pred_frac > 0.0 {
+            let v_pred = pred_frac * TYPICAL_SPEED_MS;
+            let d_max = PREDATOR_DRAIN.load(Ordering::Relaxed);
+            let cap_life = life_cap() as f32;
+            // Fastest possible death: a STOPPED being in contact loses d_max + 1
+            // life/tick (the drain plus the ordinary one-per-tick).
+            let ticks_to_die = cap_life / (d_max + 1.0).max(1e-6);
+            // Physical mortality ceiling: the predator drains one target at a time.
+            let max_deaths = (n_ticks as f32 / ticks_to_die.max(1e-6)).floor();
+            println!(
+                "  [predador] CEILING before running: v_pred {v_pred:.2} m/s vs cruise \
+                 {TYPICAL_SPEED_MS:.2} m/s (gap {:+.2} — a straight is an escape while the gap \
+                 is >0); fastest possible death {ticks_to_die:.0} ticks from a full cap; \
+                 physically possible mortality <= {max_deaths:.0}/{n_seres} = {:.0}%.",
+                TYPICAL_SPEED_MS - v_pred,
+                100.0 * max_deaths / n_seres as f32,
+            );
+            if pred_frac >= 1.0 {
+                println!(
+                    "  [predador] WARNING: dose >= 1.0 — the predator is faster than the \
+                     measured cruise, escaping on a straight stops existing, and mortality \
+                     becomes luck of the start rather than competence."
+                );
+            }
+        }
+
+        if thermal_gain > 0.0 {
+            // Ceiling of the thermal metric: the equilibrium temperature of each
+            // sustained regime, closed form, before any run.
+            let p = thermal_base_params(thermal_gain);
+            let band = universe::tire_thermal::reference_band();
+            let dc = universe::tire_thermal::dc_gain(&band, &p);
+            println!(
+                "  [pneu] CEILING before running: grip floor {:.2}, DC trim {:.3} \
+                 (measured DC gain {dc:.4} — 1.000 means the ON arm has the SAME mean grip as \
+                 the off arm, so the A/B measures the dynamic and not a nerf).",
+                p.floor, p.gain_trim,
+            );
+            for (nome, slip) in [
+                ("parked", 0.00f32),
+                ("cruise", 0.05),
+                ("proper corner", 0.15),
+                ("over-driven", 0.30),
+                ("sustained slide", 0.60),
+            ] {
+                let u = universe::tire_thermal::equilibrium_temp(slip, TYPICAL_SPEED_MS, 1.0, &p);
+                println!(
+                    "  [pneu]   {nome:<14} slip {slip:.2} → T* {u:.3} ({:.0} C) → grip {:.3}",
+                    universe::tire_thermal::celsius(u),
+                    universe::tire_thermal::grip_factor(u, &p),
+                );
+            }
+            if (dc - 1.0).abs() > 1e-3 {
+                println!(
+                    "  [pneu] WARNING: DC gain {dc:.4} != 1.000 — at this dose the ON arm has \
+                     a different mean grip from the off arm and the A/B would measure the offset."
+                );
+            }
+        }
+
+        if sensor_dose > 0.0 {
+            let k = SENSOR_COST_K.load(Ordering::Relaxed);
+            let cap_u = SENSOR_COST_CAP.load(Ordering::Relaxed);
+            // The differential of pruning ONE family of 16 channels, in life ticks over
+            // a whole generation — the number that says whether selection can see it.
+            let dif = sensor_dose * 16.0 / 192.0;
+            println!(
+                "  [sensor] CEILING before running: tax at reference use = {sensor_dose:.3} \
+                 life/tick, maximum {:.3} (u cap {cap_u:.1}), top-K tail = {k}; pruning ONE \
+                 family of 16 channels saves {dif:.4} life/tick = {:.0} ticks out of {n_ticks} — \
+                 if that is smaller than the typical difference between individuals the pressure \
+                 does not select (E-REG1b's negative).",
+                sensor_dose * cap_u,
+                dif * n_ticks as f32,
+            );
+        }
+
+        // A pressure the being cannot feel is a pressure that cannot be learned. It is
+        // still a legitimate arm (it separates "the world got harder" from "the brain
+        // got more input"), so this warns instead of refusing — but it warns LOUDLY,
+        // because reading a flat dose curve as "the mechanism is weak" when the signal
+        // simply never reached the brain is how a session gets spent.
+        if !body_on && (n_stations > 0 || pred_frac > 0.0 || thermal_gain > 0.0) {
+            println!(
+                "  [aviso] hostile-world pressure ON and --interocepcao OFF: the being does \
+                 NOT feel station/predator/temperature (ch70, ch98, ch114-117, ch124 keep their \
+                 old source). Valid arm, but the dose measures the world, not the brain."
+            );
+        }
+        if body_on {
+            println!(
+                "  [interocepcao] BODY BLOCK on: {} CPU channels -> sensory wave (registry \
+                 BODY_SLOTS). ch70/ch71 are a SOURCE MOVE — with the thermal model off they \
+                 carry the same number as before.",
+                universe::perception::channels::BODY_K
+            );
+        }
+    }
     AUDITAR.store(auditar_visao, Ordering::Relaxed);
     PORTAL_CURVA.store(portal_curva, Ordering::Relaxed);
     SLOW_STEER_AUTH.store(slow_steer_auth, Ordering::Relaxed);
@@ -1828,6 +2229,100 @@ fn main() {
                 ctx.fiacao_custo.clear();
             }
         }
+        // ── D8 — sensory subscription per being (`--custo-sensor`) ────────────
+        //
+        // Same site and same lifetime as the wiring cost above: the weights do not
+        // change inside a generation, so neither does the tax; recomputing it per tick
+        // would be 18 432 reads × 48 beings × 20 000 ticks for a constant.
+        //
+        // Why per FAMILY and not per weight — the mechanism, not the intention. E-REG1
+        // taxed the mean of 18 432 terms, whose inter-individual variance the CLT
+        // drives to zero: the measured spread was 0.2491 vs 0.2493 against a chance
+        // value of 0.25, i.e. a constant tax, and a constant tax does not select (same
+        // shape as the Landauer control). Here the unit is a family: zeroing the
+        // peripheral family removes its whole term, `DOSE * 16/192`, which is a
+        // difference a genome can actually own.
+        //
+        // The tail (top-K per family, K = `--custo-sensor-k`) rather than the family
+        // mean, for the same reason E-REG1b moved to a tail: the mean over a family is
+        // again an average that concentrates, while the strongest few columns are where
+        // genomes differ.
+        //
+        // `m_i` (mean |w| over the whole layer) is the DC normaliser: without it,
+        // shrinking every weight uniformly would cut the tax without pruning anything —
+        // the "normalise the DC gain" lesson, in its cheapest possible disguise.
+        {
+            let dose = SENSOR_COST.load(Ordering::Relaxed);
+            if dose > 0.0 {
+                use universe::config::iara::brain::{L1_NEURONS, SENSORY_WAVE_SIZE};
+                use universe::perception::channels::CHANNEL_FAMILIES;
+                let k_tail = SENSOR_COST_K.load(Ordering::Relaxed).max(1) as usize;
+                let cap_u = SENSOR_COST_CAP.load(Ordering::Relaxed).max(1e-3);
+                // a_F for every being: the top-K mean of the normalised column sums of
+                // the family.
+                let a_por_ser: Vec<Vec<f32>> = genomes
+                    .iter()
+                    .map(|g| {
+                        let total: f32 = (0..L1_NEURONS * SENSORY_WAVE_SIZE)
+                            .map(|w| (g.l1[w] as f32).abs())
+                            .sum();
+                        let m_i = (total / (L1_NEURONS * SENSORY_WAVE_SIZE) as f32).max(1e-6);
+                        let col: Vec<f32> = (0..SENSORY_WAVE_SIZE)
+                            .map(|c| {
+                                let s: f32 = (0..L1_NEURONS)
+                                    .map(|j| (g.l1[j * SENSORY_WAVE_SIZE + c] as f32).abs())
+                                    .sum();
+                                s / (L1_NEURONS as f32 * m_i)
+                            })
+                            .collect();
+                        CHANNEL_FAMILIES
+                            .iter()
+                            .map(|&(_, lo, hi)| {
+                                let mut v: Vec<f32> = col[lo..hi].to_vec();
+                                v.sort_by(|a, b| b.total_cmp(a));
+                                let k = k_tail.min(v.len());
+                                v[..k].iter().sum::<f32>() / k as f32
+                            })
+                            .collect()
+                    })
+                    .collect();
+                // Freeze the reference on the first generation the flag is on. Floor
+                // eps = 0.05 so a family the population already ignores cannot make
+                // `a_F / ref_F` explode (that is what the cap is the second guard for).
+                if ref_familias.is_empty() && !a_por_ser.is_empty() {
+                    ref_familias = (0..CHANNEL_FAMILIES.len())
+                        .map(|f| {
+                            let mut col: Vec<f32> = a_por_ser.iter().map(|a| a[f]).collect();
+                            col.sort_by(|a, b| a.total_cmp(b));
+                            col[col.len() / 2].max(0.05)
+                        })
+                        .collect();
+                    println!(
+                        "  [sensor] reference FROZEN at gen {gen_abs} (population median per \
+                         family): {}",
+                        CHANNEL_FAMILIES
+                            .iter()
+                            .zip(ref_familias.iter())
+                            .map(|(&(nome, _, _), r)| format!("{nome}={r:.2}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                }
+                ctx.sensor_cost = a_por_ser
+                    .iter()
+                    .map(|a| {
+                        let mut c = 0.0f32;
+                        for (f, &(_, lo, hi)) in CHANNEL_FAMILIES.iter().enumerate() {
+                            let u = (a[f] / ref_familias[f]).min(cap_u);
+                            c += ((hi - lo) as f32 / SENSORY_WAVE_SIZE as f32) * u;
+                        }
+                        dose * c
+                    })
+                    .collect();
+            } else {
+                ctx.sensor_cost.clear();
+            }
+        }
         if NEUROMOD_REGIOES.load(Ordering::Relaxed) {
             ctx.gates_w = genomes
                 .iter()
@@ -1980,6 +2475,11 @@ fn main() {
                     re_falhas: 0,
                     re_desde_saida: 999.0,
                     dano: 0.0,
+                    // Ambient, not zero: `step_temp` clamps to `[ambient, 1.0]`, so a
+                    // tyre born at 0 would jump to ambient on its first tick and the
+                    // first tick of every generation would read as a transient that is
+                    // not there. Unused while `--pneu-termico` is off.
+                    tire_temp: universe::tire_thermal::DEFAULT_AMBIENT,
                     joy_tick: 0.0,
                     joy_streak: 0.0,
                     edge_row6: 0.0,
@@ -1991,6 +2491,108 @@ fn main() {
                 }
             })
             .collect();
+
+        // ── HOSTILE WORLD: per-generation setup (BODY PHASE, 2026-08-17) ───────
+        //
+        // Everything here is rebuilt every generation, for the same reason the
+        // recurrent brain state is reset a few lines above: state that survives the
+        // generation boundary makes the champion's re-evaluation non-deterministic. A
+        // half-drained station field or a predator still standing where it caught
+        // someone last generation is exactly that, and it is invisible in every
+        // aggregate the report prints.
+        //
+        // Determinism: the station seed and the predator pose are functions of
+        // `(gen_abs, pop_seed, seed_gen)` only, so every being of a generation meets
+        // the SAME world, and two runs with the same seeds meet the same world too —
+        // the comparability contract the shared start (D2) already relies on.
+        {
+            ctx.reset_hostile_telemetry();
+
+            // D7 — stations.
+            let m_postos = STATIONS_N.load(Ordering::Relaxed) as usize;
+            ctx.station_cfg = universe::resources::StationConfig {
+                capacity: STATION_CAPACITY.load(Ordering::Relaxed),
+                recharge_per_tick: STATION_REGEN.load(Ordering::Relaxed),
+                radius_m: STATION_RADIUS_M.load(Ordering::Relaxed),
+                transfer_per_tick: STATION_TRANSFER.load(Ordering::Relaxed),
+            };
+            ctx.stations = if m_postos > 0 {
+                let seed_postos = (gen_abs as u64)
+                    .wrapping_mul(0x9E3779B97F4A7C15)
+                    .wrapping_add(pop_seed)
+                    ^ seed_gen;
+                universe::resources::place_stations(
+                    seed_postos,
+                    m_postos,
+                    &world.waypoints_world,
+                    &world.waypoint_arcs,
+                    track_width,
+                    ctx.station_cfg.capacity,
+                )
+            } else {
+                Vec::new()
+            };
+
+            // PREDATOR — spawned on the track axis, `--predador-spawn` metres of ARC
+            // behind where the generation starts.
+            //
+            // Behind, and on the axis, and not on a seed-derived circle around the
+            // start: with `--largada-aleatoria` the start moves every generation, and a
+            // predator placed by a raw circle would sometimes land in front of the
+            // pack. "In front" is not a harder dose, it is a different mechanism (a
+            // head-on obstacle), and mixing the two makes the dose curve unreadable.
+            let pred_frac = PREDATOR_SPEED_FRAC.load(Ordering::Relaxed);
+            ctx.predator_params = universe::predator::PredatorParams {
+                speed_cap: pred_frac * TYPICAL_SPEED_MS,
+                catch_radius_m: PREDATOR_RADIUS_M.load(Ordering::Relaxed),
+                ..Default::default()
+            };
+            ctx.predator_grace_ticks = PREDATOR_GRACE_TICKS.load(Ordering::Relaxed) as usize;
+            ctx.predator = if pred_frac > 0.0 {
+                let arcs = &world.waypoint_arcs;
+                let lap = arcs.last().copied().unwrap_or(1.0).max(1e-3);
+                let wi_start = if largada_aleatoria { wi_gen } else { 0 };
+                let arc_start = arcs.get(wi_start).copied().unwrap_or(0.0);
+                let back = PREDATOR_SPAWN_BACK_M.load(Ordering::Relaxed);
+                let s = (arc_start - back).rem_euclid(lap);
+                let (pos, tangent) =
+                    universe::resources::point_at_arc(&world.waypoints_world, arcs, s);
+                Some(universe::predator::Predator {
+                    pos,
+                    vel: bevy::math::Vec2::ZERO,
+                    // Facing along the track, i.e. toward the start line it is behind.
+                    heading: tangent,
+                })
+            } else {
+                None
+            };
+
+            // TYRE THERMAL — one parameter set per being, each DC-normalised on its own.
+            //
+            // Heterogenising a parameter WITHOUT re-normalising its DC gain is a mistake
+            // already paid for here: a being whose optimum sits away from the band the
+            // track visits is simply slower on average, so selection picks the PARAMETER
+            // instead of the behaviour and the knob becomes a handicap wearing a
+            // diversity costume. `heterogeneous_normalized` does both in one call.
+            let thermal_gain = TIRE_THERMAL_GAIN.load(Ordering::Relaxed);
+            ctx.thermal = if thermal_gain > 0.0 {
+                let base = thermal_base_params(thermal_gain);
+                let band = universe::tire_thermal::reference_band();
+                (0..n_seres)
+                    .map(|i| {
+                        universe::tire_thermal::ThermalParams::heterogeneous_normalized(
+                            pop_seed,
+                            i,
+                            universe::tire_thermal::DEFAULT_OPTIMAL_SPREAD,
+                            &base,
+                            &band,
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        }
 
         // ── Odômetro ───────────────────────────────────────────────────────────
         let mut dist_acum: Vec<f64> = vec![0.0; n_seres];
@@ -2502,10 +3104,123 @@ fn main() {
                     escada::Degrau::Fantasma => {
                         fantasma_on = true;
                     }
+                    // D7 — the ladder turning the scarce resource on/tighter.
+                    //
+                    // It takes the sector refill away at the same moment, exactly as
+                    // the CLI path does: D7 REPLACES the refill, and leaving both on
+                    // would put an infinite fuel source next to a scarce one, which is
+                    // a pressure that reads as on and behaves as off. Done here rather
+                    // than once at start-up because the ladder can reach D7 in the
+                    // middle of a battery that began with the refill enabled.
+                    escada::Degrau::Resource(m) => {
+                        STATIONS_N.store(*m, Ordering::Relaxed);
+                        if SETOR_PAGA.load(Ordering::Relaxed) {
+                            SETOR_PAGA.store(false, Ordering::Relaxed);
+                            REFUEL_LAPS.store(u32::MAX, Ordering::Relaxed);
+                            println!(
+                                "  [recurso] D7 turned on by the ladder: per-sector refill \
+                                 DISABLED, {m} stations become the only source."
+                            );
+                        }
+                        // The being cannot learn a pressure it cannot sense. The ladder
+                        // is autonomous, so it turns the body block on rather than
+                        // leaving a silent unsensed degree running for 200 generations.
+                        if !universe::gpu::perception::BODY_CHANNELS_ON.load(Ordering::Relaxed) {
+                            universe::gpu::perception::BODY_CHANNELS_ON
+                                .store(true, Ordering::Relaxed);
+                            println!(
+                                "  [interocepcao] turned on by the ladder together with D7 — \
+                                 without the station channels (ch114-116) the rung would be a \
+                                 pressure the being cannot feel."
+                            );
+                        }
+                    }
+                    // D8 — the ladder tightening the sensory subscription. The frozen
+                    // reference `ref_familias` is computed on the first generation the
+                    // dose is non-zero (see the block next to the wiring cost).
+                    escada::Degrau::SensorCost(dose) => {
+                        SENSOR_COST.store(*dose, Ordering::Relaxed);
+                    }
                 },
                 escada::Veredito::Mantem => {}
             }
             println!("{}", ctl.descrever());
+        }
+        // ── HOSTILE WORLD: telemetry, one line per mechanism per generation ────
+        //
+        // These lines are the dose canary's readout. The rule they exist to serve:
+        // different doses must produce DIFFERENT numbers, including the arm with the
+        // mechanism off — a dose that does not differentiate is not weak pressure, it
+        // is pressure that is switched off (ESCADA_DIFICULDADE.md, permanent canary).
+        // Two silent bugs were caught by exactly this before, and neither showed up in
+        // the fitness.
+        if !ctx.stations.is_empty() {
+            let cap = ctx.station_cfg.capacity.max(1e-6);
+            let carga_med: f32 =
+                ctx.stations.iter().map(|s| s.charge).sum::<f32>() / ctx.stations.len() as f32;
+            // Spread of fuel among the LIVING. Competition should OPEN the spread;
+            // an unchanged spread with the stations on says nobody actually lost the
+            // dispute. Corpses are excluded — a dead being's tank is frozen at whatever
+            // killed it, and averaging that in is the "say who the statistic is about"
+            // rule (CLAUDE.md rule 1).
+            let vivos: Vec<f64> = states
+                .iter()
+                .filter(|s| s.life_left > 0.0)
+                .map(|s| s.fuel)
+                .collect();
+            let (med_f, dp_f) = if vivos.is_empty() {
+                (0.0, 0.0)
+            } else {
+                let m = vivos.iter().sum::<f64>() / vivos.len() as f64;
+                let v = vivos.iter().map(|f| (f - m) * (f - m)).sum::<f64>() / vivos.len() as f64;
+                (m, v.sqrt())
+            };
+            println!(
+                "  [recurso] stations {} (exhausted {}), mean charge {carga_med:.3}/{cap:.2}, \
+                 fuel transferred {:.3} u, beings that ran dry {}/{n_seres}, \
+                 fuel of the LIVING mean {med_f:.4} sd {dp_f:.4} (n={})",
+                ctx.stations.len(),
+                ctx.stations_exhausted(),
+                ctx.tel_station_fuel,
+                ctx.tel_dry_beings,
+                vivos.len(),
+            );
+        }
+        if ctx.predator.is_some() {
+            // Being-ticks under the drain, not "beings caught": the drain is a ramp, so
+            // there is no moment of capture to count, and a threshold invented for the
+            // log would report a number the mechanism does not have.
+            println!(
+                "  [predador] v_cap {:.2} m/s, being-ticks under drain {} ({:.2}% of the {} \
+                 being-ticks of the generation), life drained {:.0} ticks (mean {:.1}/being)",
+                ctx.predator_params.speed_cap,
+                ctx.tel_predator_ticks,
+                100.0 * ctx.tel_predator_ticks as f64 / (n_ticks as f64 * n_seres as f64).max(1.0),
+                n_ticks * n_seres,
+                ctx.tel_predator_life,
+                ctx.tel_predator_life / n_seres as f64,
+            );
+        }
+        if !ctx.thermal.is_empty() && ctx.tel_tire_temp_n > 0 {
+            let med = ctx.tel_tire_temp_sum / ctx.tel_tire_temp_n as f64;
+            println!(
+                "  [pneu] mean normalised temperature {med:.3} ({:.0} C) over {} being-ticks; \
+                 population mean optimum {:.3}",
+                universe::tire_thermal::celsius(med as f32),
+                ctx.tel_tire_temp_n,
+                ctx.thermal.iter().map(|p| p.optimal).sum::<f32>() / ctx.thermal.len() as f32,
+            );
+        }
+        if !ctx.sensor_cost.is_empty() {
+            let m = ctx.sensor_cost.iter().sum::<f32>() / ctx.sensor_cost.len() as f32;
+            let lo = ctx.sensor_cost.iter().copied().fold(f32::MAX, f32::min);
+            let hi = ctx.sensor_cost.iter().copied().fold(f32::MIN, f32::max);
+            println!(
+                "  [sensor] tax life/tick: mean {m:.4} min {lo:.4} max {hi:.4} \
+                 (spread {:.4} — if it is ~0 the tax became a constant and does not select, \
+                 which is how E-REG1 failed)",
+                hi - lo,
+            );
         }
         hist_lap.push(lap_dist);
         hist_max.push(r.dist_max);

@@ -104,6 +104,14 @@ struct Params {
     // Com a flag: a fóvea vira o miolo (dobro de resolução angular no centro) e a
     // periférica vira as bordas — informação que nunca existiu.
     perif_real: f32,
+    // BODY BLOCK (BODY PHASE, 2026-08-17): 1.0 = body-block channels on.
+    // This kernel writes NO channel of the block — the field exists so the layout
+    // matches `ParamsGpu` (perception.rs) and the other two kernels, which share
+    // this same `buf_params`.
+    body_on:    f32,
+    _pad0:      f32,
+    _pad1:      f32,
+    _pad2:      f32,
 }
 
 // Pose de um ser no tick atual.

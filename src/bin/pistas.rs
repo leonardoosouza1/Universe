@@ -183,9 +183,7 @@ fn main() {
         println!("{l}");
     }
     println!("{}", "-".repeat(104));
-    println!(
-        "\nSorted by ANTICIPATION DEMAND (braking distance required at the worst curve),"
-    );
+    println!("\nSorted by ANTICIPATION DEMAND (braking distance required at the worst curve),");
     println!(
         "not by minimum radius: the same curve is easy after another curve and hard at the end of a straight."
     );
@@ -199,7 +197,9 @@ fn main() {
         return;
     }
     println!("When the required probe exceeds 40 m, the car NEEDS the 70/120 m reading —");
-    println!("which is the most anticipated and the noisiest. That is where the brain starts to matter.");
+    println!(
+        "which is the most anticipated and the noisiest. That is where the brain starts to matter."
+    );
 }
 
 // ---------------------------------------------------------------------------------------

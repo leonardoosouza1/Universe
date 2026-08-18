@@ -23,8 +23,8 @@ gens. Fora disso = dose errada (ajustar ANTES de concluir) — lição teto6/ene
 | D4 | DANO oculto acumulado (RPM alto + parede degradam torque/direção na vida; sem sensor direto — o estado lento do maestro/EXP10) | `--dano` | IMPLEMENTADO 2026-08-16 |
 | D5 | clima: μ por trecho + vento lateral | `--clima` | spec |
 | D6 | fantasma do campeão anterior na pista | `--fantasma` | spec |
-| D7 | competição por recurso (M<N postos de energia) | `--recurso-escasso` | spec (1ª frente competitiva) |
-| D8 | percepção custa energia (canal = gene com preço) | `--custo-sensor` | spec (liga em FASE SENSORES) |
+| D7 | competição por recurso (M<N postos de energia) | `--recurso-escasso M` | IMPLEMENTADO 2026-08-17 (BODY PHASE) — doses 16→12→8→6→4 no plano; falta CANÁRIO |
+| D8 | percepção custa energia (canal = gene com preço) | `--custo-sensor DOSE` | IMPLEMENTADO 2026-08-17 (BODY PHASE) — doses 0,15→0,30→0,45→0,60 no plano; falta CANÁRIO |
 
 ## D4 — DANO (detalhe, porque é o que destrava o maestro)
 dano_i ∈ [0,1], começa 0 a cada vida; acumula por tick:
@@ -115,3 +115,64 @@ pressão age TRAVANDO, não matando — mortalidade 0% em toda a varredura, enqu
 promoção varia de 98% a 0%. Exigir mortalidade ≥5% tornava a janela inalcançável e
 a escada só enxergava "boa" ou "ruim", passando reto pela dose calibrada.
 `avaliar()` agora usa mortalidade só como teto.
+
+## BODY PHASE (2026-08-17) — o que entrou e o que AINDA NÃO foi medido
+
+Integração dos quatro mecanismos do mundo hostil no `gpu_evolve`. **Nenhum número
+de corrida saiu daqui**: a regra 1 desta fase proíbe treino de GPU, então tudo
+abaixo é código + teste de CPU + aritmética de teto. A curva de dose de cada um
+é dívida aberta, e até ela fechar nenhuma dose está calibrada.
+
+| flag | mecanismo | moeda | canais que o ser sente |
+|---|---|---|---|
+| `--interocepcao` | liga o BODY BLOCK (8 valores CPU→onda sensorial) | — | ch70, ch71, ch98, ch114-117, ch124 |
+| `--recurso-escasso M` | D7: M postos < N seres; SUBSTITUI o refil por setor | fuel → vida | ch114 (rumo), ch115 (proximidade), ch116 (carga) |
+| `--predador f` | perseguidor CPU a `f × 18,75 m/s`, dreno `D·(1−d/R)²` | VIDA | ch98 (rumo), ch124 (proximidade) |
+| `--pneu-termico g` | térmica CPU-side → `env_grip` por ser | aderência | ch70 (temperatura real) |
+| `--custo-sensor D` | D8: assinatura por família de canais | VIDA | — (é imposto, não sinal) |
+
+**Correção de registro (medida, não inferida).** A térmica do pipeline VIVO estava
+travada de um jeito que nenhuma auditoria tinha nomeado: `wheels[1].x` nasce em
+**60.0** (`gpu/physics.rs:104`, `WheelGpu::from_cpu(..., tire_temp = 60.0, ...)`) e
+o kernel B compara esse valor contra `optimal_temp = 0.5` em
+`clamp(1 − |T − 0,5|·0,5, 0.7, 1.0)` (`physics_b.wgsl:190`). Celsius contra
+normalizado: o fator satura no piso e vale a CONSTANTE **0,70** a corrida inteira.
+E `prop[6] = média(wheels[j*2+1][0])/120` (`context.rs`) dá **0,5 constante**, ou
+seja **ch70 era canal morto no gpu_evolve** — não "passthrough vivo".
+
+Consequência para o A/B: `--pneu-termico` NÃO toca `wheels[1].x` nem os
+`config_flags`. Aquele 0,70 é idêntico nos dois braços e cancela; consertar a
+unidade mexeria no envelope de pneu dos DOIS braços ao mesmo tempo. A térmica real
+chega à física por `env_grip` (por ser, multiplica `mu_base` em
+`physics_b.wgsl:141`) e ao cérebro pelo slot 6 do BODY BLOCK.
+
+**Ganho DC normalizado em TODA dose.** Medido (teste
+`every_thermal_dose_keeps_unit_dc_gain`): ganho DC = 1,00000 em g ∈ {0,5; 1; 1,5;
+2; 3}. A tabela de equilíbrio a 18,75 m/s, calculada ANTES de rodar:
+
+| dose | piso | trim | parado | cruzeiro | curva certa | forçada | derrapagem |
+|---|---|---|---|---|---|---|---|
+| g=1 | 0,70 | 1,1372 | 0,922 | 1,001 | 1,130 | 0,847 | 0,796 |
+| g=2 | 0,40 | 1,3179 | 0,818 | 1,001 | 1,302 | 0,645 | 0,528 |
+| g=3 | 0,10 | 1,5671 | 0,676 | 1,003 | 1,538 | 0,366 | 0,157 |
+
+Dose maior é BALANÇO MAIOR, nunca menos aderência média — senão o A/B mediria o
+offset em vez da dinâmica (a lição do ganho DC, de novo). O teto `max_factor` é
+DERIVADO da banda, não fixo: com o 1,20 herdado o trim de g=2 (1,3179) seria
+cortado e o braço LIGADO viraria um nerf global. A mutação que fixa 1,20 derruba o
+teste — conferido.
+
+**CANÁRIO DE DOSE: dívida aberta para os quatro.** A regra permanente desta seção
+exige, na CONFIG DA BATERIA, que doses diferentes deem números DIFERENTES incluindo
+o braço desligado. Nada disso foi rodado. Até rodar:
+
+- D7: braços `off / 16 / 8 / 4`, exigir que os quatro difiram; se M=16 ≈ off,
+  procurar bug mudo (a oferta/demanda impressa em `[recurso] CEILING` já diz se a
+  dose é escassa por construção — se ela cobre 100%, a pressão está desligada).
+- Predador: braços `off / 0,40 / 0,55 / 0,70 / 0,85`; mortalidade e ser-ticks sob
+  dreno têm de ser MONOTÔNICOS na dose.
+- Pneu: braços `off / 0,5 / 1,0 / 2,0`; a linha `[pneu]` tem de mostrar temperatura
+  média DIFERENTE por dose (igual = a térmica não está integrando).
+- D8: braços `off / 0,15 / 0,30 / 0,45 / 0,60`; a linha `[sensor]` tem de mostrar
+  LEQUE de imposto entre indivíduos — leque ~0 é o modo de falha do E-REG1
+  (imposto constante não seleciona), e é o mesmo alarme dos números iguais.

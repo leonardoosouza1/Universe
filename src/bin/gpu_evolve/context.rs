@@ -124,6 +124,50 @@ pub struct GpuCtx {
     /// de pistas, `--pistas`/`--pista-held-out`) para nunca medir curvatura da pista
     /// errada depois de uma troca.
     track_curvatura: CurvaturaPista,
+
+    // ── HOSTILE WORLD (BODY PHASE, 2026-08-17) ──────────────────────────────
+    //
+    // STATE, not dose. The dose knobs are in `statics.rs` and its ownership table
+    // says why: a static is a knob the CLI turns once, and simulation state in a
+    // process global is how one run contaminates the next inside the same process.
+    // All four are inert at their defaults (empty vector / `None` / 0), so a run
+    // without the new flags takes exactly the old code path.
+    /// D7 energy stations of the CURRENT generation. Empty = `--recurso-escasso` off.
+    /// Placed by `main()` once per generation (same seed ⇒ same field for every being
+    /// of the generation, the D2 comparability contract); drained and recharged here.
+    pub stations: Vec<universe::resources::EnergyStation>,
+    /// Dose of the station field, rebuilt by `main()` from the `--recurso-*` statics.
+    pub station_cfg: universe::resources::StationConfig,
+    /// Scripted predator of the CURRENT generation. `None` = `--predador` off.
+    pub predator: Option<universe::predator::Predator>,
+    /// Dose of the predator, rebuilt by `main()` from the `--predador*` statics.
+    pub predator_params: universe::predator::PredatorParams,
+    /// Tick index below which the predator does not drain — `--predador-gracia`.
+    pub predator_grace_ticks: usize,
+    /// Per-being tyre-thermal parameters. Empty = `--pneu-termico` off. One entry per
+    /// being because the optimum is heterogeneous; each entry is DC-normalised
+    /// separately, so selection sees the behaviour and not the parameter.
+    pub thermal: Vec<universe::tire_thermal::ThermalParams>,
+    /// D8 per-being sensory subscription, life/tick. Same shape and lifetime as
+    /// `fiacao_custo`: constant during a generation because the weights are. Empty = off.
+    pub sensor_cost: Vec<f32>,
+
+    // ── Telemetry of the hostile world, accumulated over one generation ──────
+    // `main()` zeroes these at the start of every generation and prints them in the
+    // `[recurso]` / `[predador]` / `[pneu]` lines. They are counters, not decisions:
+    // nothing in the tick reads them back.
+    /// Beings whose fuel reached zero this generation (each being counted once).
+    pub tel_dry_beings: u32,
+    /// Being-ticks spent inside the predator's drain radius.
+    pub tel_predator_ticks: u64,
+    /// Total life ticks the predator took this generation.
+    pub tel_predator_life: f64,
+    /// Fuel actually transferred by the stations this generation, fuel units.
+    pub tel_station_fuel: f64,
+    /// Sum over sampled being-ticks of the normalised tyre temperature, and the count —
+    /// the mean is the honest way to report a per-tick state in one number.
+    pub tel_tire_temp_sum: f64,
+    pub tel_tire_temp_n: u64,
 }
 
 /// Contexto físico (curvatura/velocidade/dist_parede) de UM ser neste tick, para
@@ -131,6 +175,30 @@ pub struct GpuCtx {
 /// não closure) de propósito: evita qualquer disputa de borrow com `self` no ponto de
 /// chamada, que já mistura leitura de `states`/`phys_states` com `self.l1_samples.push`
 /// no mesmo bloco — ver `tick()`.
+/// Signed bearing of `rel` in the being's own basis, normalised to `[-1, 1]`.
+///
+/// `atan2(rel · lat, rel · fwd) / PI`, with `fwd`/`lat` the unit basis vectors the
+/// physics state carries (`lat = [fwd.z, 0, -fwd.x]`, `gpu/physics.rs:105`). Positive
+/// means "toward `+lat`" — stated as a basis rather than as "right", because no
+/// `file:line` in this repository fixes the world's handedness, and a word that is
+/// wrong reads exactly like a word that is right.
+///
+/// A zero vector answers 0.0, the same code the block uses for "no target". That
+/// collision is deliberate and matches the wall probes: a target sitting exactly on
+/// the being is not distinguishable from no target, and the paired proximity channel
+/// is what separates them (`perception/channels.rs`, BODY_SLOTS doc).
+///
+/// Pinned by `bearing_sign_follows_the_lat_basis` — the sign of a bearing is invisible
+/// to every aggregate statistic this project prints, so it gets a test, not a comment.
+fn signed_bearing(rel: bevy::math::Vec2, fwd: bevy::math::Vec2, lat: bevy::math::Vec2) -> f32 {
+    let f = rel.dot(fwd);
+    let l = rel.dot(lat);
+    if f == 0.0 && l == 0.0 {
+        return 0.0;
+    }
+    l.atan2(f) / std::f32::consts::PI
+}
+
 fn contexto_regiao(
     track: &CurvaturaPista,
     p: &PhysicsStateGpu,
@@ -302,7 +370,40 @@ impl GpuCtx {
             regiao_l1: Vec::new(),
             regiao_l2: Vec::new(),
             track_curvatura,
+            stations: Vec::new(),
+            station_cfg: universe::resources::StationConfig::default(),
+            predator: None,
+            predator_params: universe::predator::PredatorParams::default(),
+            predator_grace_ticks: 0,
+            thermal: Vec::new(),
+            sensor_cost: Vec::new(),
+            tel_dry_beings: 0,
+            tel_predator_ticks: 0,
+            tel_predator_life: 0.0,
+            tel_station_fuel: 0.0,
+            tel_tire_temp_sum: 0.0,
+            tel_tire_temp_n: 0,
         })
+    }
+
+    /// Zeroes the hostile-world telemetry counters. Called by `main()` at the start of
+    /// every generation, for the same reason `audit::nova_geracao()` exists: a counter
+    /// that accumulates across generations reports the run, and the question is always
+    /// about THIS generation.
+    pub fn reset_hostile_telemetry(&mut self) {
+        self.tel_dry_beings = 0;
+        self.tel_predator_ticks = 0;
+        self.tel_predator_life = 0.0;
+        self.tel_station_fuel = 0.0;
+        self.tel_tire_temp_sum = 0.0;
+        self.tel_tire_temp_n = 0;
+    }
+
+    /// Stations that are drained below the useful threshold — the `[recurso]` number
+    /// that says whether the field was actually contested.
+    pub fn stations_exhausted(&self) -> usize {
+        let floor = universe::resources::MIN_USEFUL_CHARGE_FRAC * self.station_cfg.capacity;
+        self.stations.iter().filter(|s| s.charge < floor).count()
     }
 
     /// Carrega pesos dos engines na GPU.
@@ -346,6 +447,177 @@ impl GpuCtx {
                     .all(|v| v.is_finite()),
                 "NaN/Inf detectado em posições antes do submit GPU (tick {tick_idx})"
             );
+        }
+
+        // ── HOSTILE WORLD (BODY PHASE, 2026-08-17) ────────────────────────────
+        //
+        // Tyre thermal, D7 stations and the predator, all CPU-side, all default-off.
+        // They run HERE, at the top of the tick, for one reason: everything below —
+        // perception, brain, physics — has to see the same world this block produced,
+        // and the body block that carries these signals to the brain is packed a few
+        // dozen lines down. Running them after the physics would feed the brain a
+        // world one tick older than the one it is driving in, which is the class of
+        // ordering bug the pilot-override marker test exists to prevent.
+        //
+        // The inputs they read (`wheels[..]` slip, positions) are the OUTPUT of last
+        // tick's physics, so there is exactly one tick of lag and it is the same lag
+        // the retina and the proprioception already carry.
+        //
+        // Every branch is gated on state that is empty/`None` at its default, so with
+        // no new flag this block compiles to three predictable-not-taken tests: flag
+        // off is bit-for-bit the old tick (CLAUDE.md rule 3).
+        let body_on = body_channels_on();
+        let mut body_vals: Vec<[f32; universe::perception::channels::BODY_K]> = if body_on {
+            vec![[0.0; universe::perception::channels::BODY_K]; n]
+        } else {
+            Vec::new()
+        };
+        {
+            use bevy::math::Vec2;
+            let pos2 = |p: &PhysicsStateGpu| Vec2::new(p.pos[0], p.pos[2]);
+
+            // 1. TYRE THERMAL (`--pneu-termico`) — see `universe::tire_thermal`.
+            //
+            // The grip factor is applied through `phys.env_grip`, which is per being
+            // and multiplies `mu_base` in the LIVE kernel (`physics_b.wgsl:141`). The
+            // kernel's own legacy temperature factor (`physics_b.wgsl:190`) is left
+            // untouched: `wheels[1].x` starts at 60.0 and is compared against
+            // `optimal_temp = 0.5`, so it is pinned at the constant 0.70 — identical in
+            // both arms of the A/B, therefore it cancels. Writing a real temperature
+            // into `wheels[1].x` would make the kernel apply grip a SECOND time.
+            //
+            // `mu` fed back is the one actually used (post-factor): friction heating is
+            // proportional to friction power, so a tyre that lost grip also makes less
+            // heat. That negative feedback plus the floor is what bounds the overheat
+            // spiral (`tire_thermal::overheat_feedback_is_bounded_by_the_floor`).
+            if !self.thermal.is_empty() {
+                for i in 0..n {
+                    let p = &states[i].phys;
+                    let speed = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
+                    // Aggregate slip, averaged over the four wheels. `wheels[j*2]` is
+                    // `[omega, slip_ratio, slip_angle, normal_load]`
+                    // (`gpu/physics.rs:49`, written back at `physics_c.wgsl:294`).
+                    let mut slip = 0.0f32;
+                    for j in 0..4 {
+                        slip += p.wheels[j * 2][1].abs() + p.wheels[j * 2][2].abs();
+                    }
+                    slip *= 0.25;
+                    let tp = self.thermal[i.min(self.thermal.len() - 1)];
+                    let mu_used = p.mu_peak * p.terrain_grip * p.env_grip;
+                    let t = universe::tire_thermal::step_temp(
+                        states[i].tire_temp,
+                        slip,
+                        speed,
+                        mu_used,
+                        dt,
+                        &tp,
+                    );
+                    states[i].tire_temp = t;
+                    states[i].phys.env_grip = universe::tire_thermal::grip_factor(t, &tp);
+                    self.tel_tire_temp_sum += t as f64;
+                    self.tel_tire_temp_n += 1;
+                }
+            }
+
+            // 2. D7 STATIONS (`--recurso-escasso`) — `universe::resources`.
+            //
+            // One `step` call per tick, never `try_drain` + `recharge_all` separately
+            // (the module contract): `step` drains in index order and recharges once,
+            // and doing it by hand would double-recharge or reorder the scarcity.
+            if !self.stations.is_empty() {
+                let tank = FUEL_TANK.load(Ordering::Relaxed);
+                let beings: Vec<universe::resources::BeingFuel> = (0..n)
+                    .map(|i| universe::resources::BeingFuel {
+                        pos: pos2(&states[i].phys),
+                        fuel: states[i].fuel as f32,
+                        tank,
+                        alive: states[i].life_left > 0.0,
+                    })
+                    .collect();
+                let takes =
+                    universe::resources::step(&mut self.stations, &beings, &self.station_cfg);
+                for i in 0..n {
+                    if takes[i] > 0.0 {
+                        states[i].fuel = (states[i].fuel + takes[i] as f64).min(tank as f64);
+                        self.tel_station_fuel += takes[i] as f64;
+                    }
+                }
+            }
+
+            // 3. PREDATOR (`--predador`) — `universe::predator`.
+            //
+            // Paid in LIFE, never in fitness: the Crossed-Currency Law, the same choice
+            // the ghost already encodes (`fantasma.rs:9-18`). Charging it in distance
+            // would teach the population not to move, which is the failure the wall cost
+            // already produced and paid for (`types.rs`, `life_left`).
+            //
+            // The ramp is continuous and quadratic, `D * (1 - d/R)^2`. A step function
+            // would turn mortality into a threshold artefact — the dose would look like
+            // a coin flip instead of a curve, and the canary could not read it.
+            if let Some(pred) = self.predator {
+                let targets: Vec<Vec2> = (0..n).map(|i| pos2(&states[i].phys)).collect();
+                let alive: Vec<bool> = (0..n).map(|i| states[i].life_left > 0.0).collect();
+                let next = pred.step(&targets, &alive, dt, &self.predator_params);
+                self.predator = Some(next);
+                let r = PREDATOR_RADIUS_M.load(Ordering::Relaxed);
+                let d_max = PREDATOR_DRAIN.load(Ordering::Relaxed);
+                if tick_idx >= self.predator_grace_ticks && r > 0.0 && d_max > 0.0 {
+                    for i in 0..n {
+                        if states[i].life_left <= 0.0 {
+                            continue;
+                        }
+                        let d = next.pos.distance(targets[i]);
+                        if d < r {
+                            let ramp = 1.0 - d / r;
+                            let drain = (d_max * ramp * ramp) as f64;
+                            states[i].life_left -= drain;
+                            self.tel_predator_ticks += 1;
+                            self.tel_predator_life += drain;
+                        }
+                    }
+                }
+            }
+
+            // 4. BODY BLOCK slots 0-5 (the world half). Slots 6-7 are the body half and
+            // are filled in the proprioception loop below, where their values already
+            // exist — passing the SAME number keeps ch70/ch71 bit-identical when the
+            // thermal model is off, which is what makes this flag's A/B readable.
+            //
+            // The host normalises and the shader only encodes, so every reference
+            // distance here is a host-side dose: changing `--predador-percep` never
+            // touches WGSL (`perception/channels.rs`, BODY BLOCK header).
+            if body_on {
+                let cap = self.station_cfg.capacity.max(1e-6);
+                let tank = FUEL_TANK.load(Ordering::Relaxed);
+                let pred_ref = PREDATOR_PERCEPT_M.load(Ordering::Relaxed).max(1e-3);
+                for i in 0..n {
+                    let p = &states[i].phys;
+                    let me = pos2(p);
+                    let fwd = Vec2::new(p.fwd[0], p.fwd[2]);
+                    let lat = Vec2::new(p.lat[0], p.lat[2]);
+                    let v = &mut body_vals[i];
+                    if let Some(ns) = universe::resources::nearest_charged(&self.stations, cap, me)
+                    {
+                        v[0] = signed_bearing(self.stations[ns.index].pos - me, fwd, lat);
+                        v[1] = 1.0 - (ns.dist_m / STATION_PROX_REF_M).min(1.0);
+                        v[2] = ns.charge_frac;
+                    }
+                    // OwnFuel. With `--fuel` off the tank is 0 and there is no fuel
+                    // constraint at all, so the honest constant is "full", not "empty":
+                    // 0.0 would tell the brain it is about to die every tick of every
+                    // run that does not use fuel.
+                    v[3] = if tank > 0.0 {
+                        (states[i].fuel as f32 / tank).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    if let Some(pred) = self.predator {
+                        let rel = pred.pos - me;
+                        v[4] = signed_bearing(rel, fwd, lat);
+                        v[5] = 1.0 - (rel.length() / pred_ref).min(1.0);
+                    }
+                }
+            }
         }
 
         // ── Poses retina ──────────────────────────────────────────────────────
@@ -613,9 +885,36 @@ impl GpuCtx {
                     p.steer.abs().clamp(0.0, 1.0),
                     estagnado,
                 ]);
+                // BODY BLOCK slots 6-7 — the body half, filled HERE because the values
+                // exist here and a second copy of a formula is a second thing to keep
+                // in sync (`src/CLAUDE.md` rule 1).
+                //
+                // Both are SOURCE MOVES, not new signals: with the thermal model off,
+                // slot 6 carries the exact `tt` that prop[6] carries and slot 7 the
+                // exact `temp_motor` that prop[7] carries, so ch70/ch71 are
+                // bit-identical with the flag on. That is what lets `--interocepcao`
+                // be A/B-ed as "the four genuinely new signals", instead of as "eight
+                // channels changed at once".
+                if body_on {
+                    let v = &mut body_vals[i];
+                    v[6] = if self.thermal.is_empty() {
+                        tt.clamp(0.0, 1.0)
+                    } else {
+                        states[i].tire_temp.clamp(0.0, 1.0)
+                    };
+                    v[7] = temp_motor;
+                }
             }
             self.percept
                 .update_proprioception_temporal(&self.queue, &prop[..n]);
+            // One upload per tick, AFTER every slot is filled. Skipping a tick is not
+            // an error: `buf_temporal` is resident, so the shader would silently re-read
+            // the previous tick's values — a working-but-stale signal
+            // (`gpu/perception.rs::update_body_channels`, contract).
+            if body_on {
+                self.percept
+                    .update_body_channels(&self.queue, &body_vals[..n]);
+            }
         }
 
         // ── Reverse timer + CfC percepção → buf_temporal[32-48] ──────────────
@@ -1119,6 +1418,20 @@ impl GpuCtx {
                     states[i].life_left -=
                         self.fiacao_custo[i.min(self.fiacao_custo.len() - 1)] as f64;
                 }
+                // D8 — sensory subscription (`--custo-sensor`, see statics.rs).
+                //
+                // Same shape and same site as the wiring cost above, and deliberately
+                // so: both are per-being constants for the whole generation because the
+                // weights are, both are paid in LIFE (crossed currency — perception
+                // protects the fitness, so it must not be charged in fitness), and both
+                // are recomputed by `main()` where the genomes live. What differs is the
+                // statistic: this one is a per-FAMILY sum, so pruning one family removes
+                // a whole term instead of nudging a mean over 18 432 weights whose
+                // inter-individual variance the CLT drives to zero (E-REG1's negative).
+                if !self.sensor_cost.is_empty() && states[i].life_left > 0.0 {
+                    states[i].life_left -=
+                        self.sensor_cost[i.min(self.sensor_cost.len() - 1)] as f64;
+                }
                 // Custo de estagnação: parar sem avançar QUEIMA VIDA (Conserto 1, 2026-08-12).
                 // Sintoma medido: ser para em 272 m com life=3010 ticks e fica ESTÁTICO até
                 // hp=0 (tick 4020), sem tentar sair. Com life-earn, parar é de graça porque a
@@ -1136,6 +1449,14 @@ impl GpuCtx {
                     states[i].fuel -= (0.002 + thr * thr * 0.004) / 64.0;
                     if states[i].fuel <= 0.0 {
                         states[i].life_left = 0.0;
+                        // `[recurso]` telemetry: tank-empty CROSSINGS, not ticks spent
+                        // empty (the `fuel > 0.0` guard above is what makes it a
+                        // crossing). In practice that is once per being per generation,
+                        // because running dry sets `life_left = 0` and a dead being
+                        // neither reaches a checkpoint (sector refill) nor drains a
+                        // station (`alive: false` in the `BeingFuel` built above). If a
+                        // future refill path breaks that, the label has to change too.
+                        self.tel_dry_beings += 1;
                     }
                 }
                 if states[i].life_left > 0.0 {
@@ -1706,5 +2027,153 @@ mod testes_ordem {
             1,
             "marca do piloto duplicada no código"
         );
+    }
+}
+
+#[cfg(test)]
+mod hostile_world_tests {
+    use super::signed_bearing;
+    use bevy::math::Vec2;
+
+    /// `fwd`/`lat` exactly as `gpu::physics::make_physics_state` builds them:
+    /// `lat = [fwd.z, 0, -fwd.x]`, projected onto the XZ plane.
+    fn basis(fwd: Vec2) -> (Vec2, Vec2) {
+        (fwd, Vec2::new(fwd.y, -fwd.x))
+    }
+
+    /// The bearing's sign follows the `lat` basis vector, and nothing else.
+    ///
+    /// Why a test and not a comment: a flipped bearing is invisible to every aggregate
+    /// this binary prints. The being would steer away from the station it should reach
+    /// and into the predator it should flee, the fitness would just be lower, and the
+    /// conclusion on the page would be "the pressure does not select", which is exactly
+    /// the sentence the whole BODY PHASE exists to test. The `-0.5` case is the load
+    /// bearing one: `-lat` is where the doc's word "left" is either right or wrong, and
+    /// the basis is the only thing checkable.
+    #[test]
+    fn bearing_sign_follows_the_lat_basis() {
+        for fwd in [
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(0.7071, 0.7071),
+        ] {
+            let (f, l) = basis(fwd);
+            assert!(
+                (f.length() - 1.0).abs() < 1e-4 && (l.length() - 1.0).abs() < 1e-4,
+                "basis must stay unit-length"
+            );
+            assert!(f.dot(l).abs() < 1e-4, "basis must stay orthogonal");
+            assert!(
+                signed_bearing(f * 10.0, f, l).abs() < 1e-5,
+                "straight ahead is 0"
+            );
+            assert!(
+                (signed_bearing(l * 10.0, f, l) - 0.5).abs() < 1e-5,
+                "toward +lat is +0.5 (a quarter turn = pi/2, over pi)"
+            );
+            assert!(
+                (signed_bearing(-l * 10.0, f, l) + 0.5).abs() < 1e-5,
+                "toward -lat is -0.5"
+            );
+            assert!(
+                (signed_bearing(-f * 10.0, f, l).abs() - 1.0).abs() < 1e-5,
+                "directly behind saturates at |1|"
+            );
+        }
+    }
+
+    /// The encoded range never leaves `[-1, 1]`, at any distance and any direction.
+    ///
+    /// The shader clamps, so an out-of-range host value does not error — it pins the
+    /// channel at 127, which reads as a working sensor stuck on maximum. That failure
+    /// mode is why the range is asserted on the host side, where it is still a bug.
+    #[test]
+    fn bearing_stays_inside_the_encodable_range() {
+        let (f, l) = basis(Vec2::new(0.0, 1.0));
+        for step in 0..360 {
+            let a = (step as f32).to_radians();
+            for d in [0.001f32, 1.0, 350.0] {
+                let b = signed_bearing(Vec2::new(a.cos(), a.sin()) * d, f, l);
+                assert!(b >= -1.0 && b <= 1.0, "bearing {b} outside [-1,1]");
+            }
+        }
+        // A target exactly on top of the being answers the same 0.0 as "no target".
+        // Deliberate, documented, and paired with a proximity channel that separates
+        // the two — asserted so nobody "fixes" it into a NaN.
+        assert_eq!(signed_bearing(Vec2::ZERO, f, l), 0.0);
+    }
+
+    /// `--pneu-termico 0` must be EXACTLY off, not approximately off.
+    ///
+    /// The dose scales the depth of the grip curve, so gain 0 puts the floor at 1.0 and
+    /// the whole curve collapses onto the constant 1.0 — `env_grip` is then the same
+    /// 1.0 the physics state is born with. A dose whose "off" is 0.999 would make the
+    /// off arm of the A/B a different world from the no-flag run, and the paired
+    /// comparison would be measuring the difference between two ON arms.
+    #[test]
+    fn thermal_gain_zero_is_exactly_neutral() {
+        let p = crate::thermal_base_params(0.0);
+        for i in 0..=100 {
+            let t = i as f32 / 100.0;
+            let g = universe::tire_thermal::grip_factor(t, &p);
+            assert!(
+                (g - 1.0).abs() < 1e-5,
+                "gain 0 must give grip 1.0 at every temperature, got {g} at {t}"
+            );
+        }
+    }
+
+    /// Every dose keeps the DC gain at 1.0, so the arms differ in WHEN grip is
+    /// available and never in how much of it there is on average.
+    ///
+    /// This is the confound the project already paid for: a curve whose mean is 0.879
+    /// makes "thermal on" also mean "12% less grip everywhere", and the A/B then cannot
+    /// tell the dynamic from the offset. The deep doses are the ones at risk, because
+    /// the trim they need grows past a fixed cap — which is why `thermal_base_params`
+    /// derives `max_factor` from the band instead of hardcoding it.
+    #[test]
+    fn every_thermal_dose_keeps_unit_dc_gain() {
+        let band = universe::tire_thermal::reference_band();
+        for gain in [0.5f32, 1.0, 1.5, 2.0, 3.0] {
+            let p = crate::thermal_base_params(gain);
+            let dc = universe::tire_thermal::dc_gain(&band, &p);
+            assert!(
+                (dc - 1.0).abs() < 1e-3,
+                "dose {gain}: DC gain {dc} != 1.0 — the ON arm would be a grip nerf"
+            );
+            assert!(
+                p.max_factor > p.gain_trim,
+                "dose {gain}: cap {} would clamp the trim {} and the mean could not \
+                 reach 1.0",
+                p.max_factor,
+                p.gain_trim
+            );
+        }
+    }
+
+    /// A deeper dose must be a WIDER SWING, not a lower average — the property that
+    /// makes the dose sweep readable at all.
+    #[test]
+    fn deeper_thermal_dose_widens_the_swing() {
+        let band = universe::tire_thermal::reference_band();
+        let mut prev = 0.0f32;
+        for gain in [0.5f32, 1.0, 1.5, 2.0] {
+            let p = crate::thermal_base_params(gain);
+            let lo = band
+                .iter()
+                .map(|&t| universe::tire_thermal::grip_factor(t, &p))
+                .fold(f32::MAX, f32::min);
+            let hi = band
+                .iter()
+                .map(|&t| universe::tire_thermal::grip_factor(t, &p))
+                .fold(f32::MIN, f32::max);
+            let swing = hi - lo;
+            assert!(
+                swing > prev,
+                "dose {gain} swing {swing} is not wider than the previous {prev}"
+            );
+            prev = swing;
+        }
     }
 }

@@ -192,7 +192,9 @@ fn main() {
         1.0 / without_fatigue.pc1_frac.max(1e-9)
     );
     if without_fatigue.mean_corr < with_fatigue.mean_corr - 0.05 {
-        println!("  ⇒ FATIGUE is the cause of the common mode: turning it off separates the outputs.");
+        println!(
+            "  ⇒ FATIGUE is the cause of the common mode: turning it off separates the outputs."
+        );
     } else {
         println!("  ⇒ fatigue does NOT explain the common mode — the cause lies before it.");
     }
