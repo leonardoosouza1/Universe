@@ -1758,7 +1758,18 @@ fn main() {
             // the same formula the tick charges (context.rs, fuel block).
             let per_tick = (0.002 + 0.7 * 0.7 * 0.004) / 64.0;
             let demand = per_tick * n_ticks as f64 * n_seres as f64;
-            let supply = n_seres as f64 * tank + n_stations as f64 * (cap + regen * n_ticks as f64);
+            // Split, because the total hid the only term the dose controls. Measured
+            // 2026-08-26 sweeping stations 16/8/4/2 at charge 0.15: distance moved 2726,
+            // 2799, 2981, 2944 m — a 255 m spread against the ~1000 m the flag costs just
+            // by being on. The reason is here: `n_seres * tank` is 48.00 u of a 59.40 u
+            // demand, 81%, and `--recurso-escasso M` cannot touch it. The stations
+            // contribute 8.80 u at M=16 down to 1.10 u at M=2, so the whole dial can only
+            // move supply between 81% and 96%. It is structurally unable to make the
+            // resource scarce; the knob that can is `--fuel-tank`.
+            let supply_tanques = n_seres as f64 * tank;
+            let supply_postos = n_stations as f64 * (cap + regen * n_ticks as f64);
+            let supply = supply_tanques + supply_postos;
+            let frac_postos = supply_postos / demand.max(1e-9);
             println!(
                 "  [recurso] CEILING before running: supply {supply:.2} u vs full demand \
                  {demand:.2} u = {:.0}% — sustains ~{:.0} of {n_seres} beings for the whole \
@@ -1766,10 +1777,26 @@ fn main() {
                 100.0 * supply / demand.max(1e-9),
                 supply / (per_tick * n_ticks as f64).max(1e-9),
             );
+            println!(
+                "  [recurso]   of which starting tanks {supply_tanques:.2} u ({:.0}% of demand, \
+                 NOT touched by the dose) and stations {supply_postos:.2} u ({:.0}%) — the \
+                 stations are the only part `--recurso-escasso` moves.",
+                100.0 * supply_tanques / demand.max(1e-9),
+                100.0 * frac_postos,
+            );
             if supply >= demand {
                 println!(
                     "  [recurso] WARNING: supply covers 100% of demand — at this dose the \
                      resource is NOT scarce and the number will match the off arm."
+                );
+            }
+            if frac_postos < 0.25 {
+                println!(
+                    "  [recurso] WARNING: the stations are only {:.0}% of demand, so changing \
+                     their number cannot change much. Starting tanks already cover {:.0}%. \
+                     Lower --fuel-tank (or raise --recurso-carga) before reading M as a dose.",
+                    100.0 * frac_postos,
+                    100.0 * supply_tanques / demand.max(1e-9),
                 );
             }
         }
@@ -3283,6 +3310,15 @@ fn main() {
         }
         if !ctx.thermal.is_empty() && ctx.tel_tire_temp_n > 0 {
             let med = ctx.tel_tire_temp_sum / ctx.tel_tire_temp_n as f64;
+            // The SWING is the dose canary, not the mean — see `tel_tire_temp_sq`.
+            let dp = (ctx.tel_tire_temp_sq / ctx.tel_tire_temp_n as f64 - med * med)
+                .max(0.0)
+                .sqrt();
+            println!(
+                "  [pneu] temperature swing sd {dp:.4} ({:.1} C) — THIS is the dose canary; \
+                 an sd that does not move with the dose means the model is not integrating.",
+                dp * universe::tire_thermal::T_SCALE_CELSIUS as f64,
+            );
             println!(
                 "  [pneu] mean normalised temperature {med:.3} ({:.0} C) over {} being-ticks; \
                  population mean optimum {:.3}",

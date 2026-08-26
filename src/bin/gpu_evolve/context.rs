@@ -167,6 +167,15 @@ pub struct GpuCtx {
     /// Sum over sampled being-ticks of the normalised tyre temperature, and the count —
     /// the mean is the honest way to report a per-tick state in one number.
     pub tel_tire_temp_sum: f64,
+    /// Sum of SQUARED normalised temperature, for the standard deviation.
+    ///
+    /// The mean is the wrong canary for this mechanism and the sweep of 2026-08-26 showed
+    /// why: `normalize_dc` exists precisely to hold the MEAN grip fixed across doses, so
+    /// asking the mean temperature to move is asking the DC normaliser to fail. Measured,
+    /// the mean barely budges (0.531 at g=0.5 against 0.488 at g=2.0) while the dose is a
+    /// factor of four. What the dose controls is the SWING, so that is what has to be
+    /// printed, or the canary passes a mechanism that is not integrating.
+    pub tel_tire_temp_sq: f64,
     pub tel_tire_temp_n: u64,
 }
 
@@ -382,6 +391,7 @@ impl GpuCtx {
             tel_predator_life: 0.0,
             tel_station_fuel: 0.0,
             tel_tire_temp_sum: 0.0,
+            tel_tire_temp_sq: 0.0,
             tel_tire_temp_n: 0,
         })
     }
@@ -396,6 +406,7 @@ impl GpuCtx {
         self.tel_predator_life = 0.0;
         self.tel_station_fuel = 0.0;
         self.tel_tire_temp_sum = 0.0;
+        self.tel_tire_temp_sq = 0.0;
         self.tel_tire_temp_n = 0;
     }
 
@@ -515,6 +526,7 @@ impl GpuCtx {
                     states[i].tire_temp = t;
                     states[i].phys.env_grip = universe::tire_thermal::grip_factor(t, &tp);
                     self.tel_tire_temp_sum += t as f64;
+                    self.tel_tire_temp_sq += (t as f64) * (t as f64);
                     self.tel_tire_temp_n += 1;
                 }
             }

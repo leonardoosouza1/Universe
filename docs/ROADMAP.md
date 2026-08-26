@@ -43,7 +43,12 @@ Everything else — laps, medians, mortality — is instrumentation for these tw
 - **D8 perception costs energy**: channel families charge life proportional to the
   brain's use of them. The sensor budget becomes evolvable.
 - **Predator**: a scripted hunter on the track, life-drain by proximity (continuous
-  ramp, never instant death — sparse rewards taught nothing before). Speed is the dose.
+  ramp, never instant death — sparse rewards taught nothing before). ~~Speed is the
+  dose.~~ **REFUTED 2026-08-26** by the sweep in `docs/M0_DOSE_CANARIES.md`: drain is an
+  inverted U in predator speed, peaking at 0.55 (32 638 being-ticks under drain) and
+  falling away on both sides (22 656 at 0.40, 8 349 at 0.85). A faster hunter arrives
+  sooner but dwells less, and the product has an interior maximum. The ceiling is small
+  either way — at the best dose the drain removes 3% of the life budget.
 - **Tire thermal (CPU-side) + feelable weather**: temperature accumulates with slip and
   speed, degrades grip, and finally feeds ch70 — closing the loop weather → grip →
   slip → heat → *sensation*.
