@@ -457,6 +457,86 @@ fn avaliar_held_out(
 
 // ── Ponto de entrada ──────────────────────────────────────────────────────────
 
+/// Finds the highest-numbered `evolve_best_gen*.bin` in `dir`, or `None`.
+///
+/// This used to be written inline as `for g in 0..n_gens`, bounding the search by the
+/// number of generations about to run instead of by what is on disk. With `--gens 1` it
+/// only ever looked for `evolve_best_gen0000.bin`, so `--retomar` on a directory holding
+/// `evolve_best_gen0043.bin` found nothing and fell through to a RANDOM population — while
+/// the header had already printed "resuming from checkpoint". Measured 2026-08-25: a day
+/// of "champion" analysis ran on default genomes and only the τ telemetry gave it away
+/// (p10 = median = p90 = 2.000 s, which is `DECAY_DEFAULT`, not an evolved bank).
+///
+/// Read the directory. Never bound this by `n_gens`.
+fn latest_checkpoint(dir: &str) -> Option<(usize, String)> {
+    let mut latest: Option<(usize, String)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("evolve_best_gen") else {
+            continue;
+        };
+        let Some(digits) = rest.strip_suffix(".bin") else {
+            continue;
+        };
+        let Ok(gen_id) = digits.parse::<usize>() else {
+            continue;
+        };
+        if latest.as_ref().is_none_or(|(best, _)| gen_id > *best) {
+            latest = Some((gen_id, entry.path().to_string_lossy().into_owned()));
+        }
+    }
+    latest
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::latest_checkpoint;
+
+    /// The regression: a checkpoint numbered far above `--gens` must still be found.
+    #[test]
+    fn finds_a_checkpoint_numbered_above_gens() {
+        let dir = std::env::temp_dir().join(format!("uni_ckpt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().into_owned();
+
+        assert!(latest_checkpoint(&d).is_none(), "empty dir must give None");
+
+        for nome in ["evolve_best_gen0043.bin", "evolve_best_gen0007.bin"] {
+            std::fs::write(dir.join(nome), b"x").unwrap();
+        }
+        // Files that must NOT be picked up.
+        for nome in [
+            "evolve_best_gen.bin",
+            "evolve_best_genABCD.bin",
+            "outra.bin",
+        ] {
+            std::fs::write(dir.join(nome), b"x").unwrap();
+        }
+
+        let (gen_id, path) = latest_checkpoint(&d).expect("must find gen 43");
+        assert_eq!(
+            gen_id, 43,
+            "must take the HIGHEST generation, not the first listed"
+        );
+        assert!(
+            path.ends_with("evolve_best_gen0043.bin"),
+            "wrong path: {path}"
+        );
+
+        // The bug in one line: the old code searched `0..n_gens`, so with n_gens = 1 it
+        // looked only at gen 0000 and missed this file entirely.
+        assert!(gen_id >= 1, "43 is far above any plausible --gens 1");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_directory_gives_none() {
+        assert!(latest_checkpoint("/definitely/not/a/directory/1234").is_none());
+    }
+}
+
 fn main() {
     // Força ICD Vulkan da Radeon (evita SIGSEGV com múltiplos ICDs).
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
@@ -1888,14 +1968,7 @@ fn main() {
     // com o resto do design de `--retomar-mix`).
     let mut elite_carregado_do_checkpoint = false;
     let mut genomes: Vec<Genome> = if retomar {
-        // Procura o arquivo de melhor genoma mais recente.
-        let mut latest: Option<(usize, String)> = None;
-        for g in 0..n_gens {
-            let path = format!("{}/evolve_best_gen{:04}.bin", out_dir, g);
-            if std::path::Path::new(&path).exists() {
-                latest = Some((g, path));
-            }
-        }
+        let latest = latest_checkpoint(&out_dir);
         if let Some((gen_id, path)) = latest {
             println!("Retomando a partir de gen {:4}: {}", gen_id, path);
             if let Some(best) = load_genome(&path) {
@@ -1950,10 +2023,17 @@ fn main() {
                     .collect()
             }
         } else {
-            println!("Nenhum arquivo de checkpoint encontrado — população aleatória.");
-            (0..n_seres)
-                .map(|i| Genome::random(population_seed_for(pop_seed, i)))
-                .collect()
+            // Hard error, not a fallback. Silently swapping the requested champion for a
+            // random population is what made a day of measurements meaningless on
+            // 2026-08-25: the run reports normally, the numbers look plausible, and
+            // nothing in the output says the brain under test is not the one asked for.
+            eprintln!(
+                "[ERRO] --retomar: no evolve_best_gen*.bin found in {out_dir}\n\
+                 [ERRO] Refusing to fall back to a random population — that would report\n\
+                 [ERRO] plausible numbers for a brain you did not ask for.\n\
+                 [ERRO] Copy the checkpoint into the directory, or drop --retomar."
+            );
+            std::process::exit(1);
         }
     } else {
         // População aleatória do zero.
