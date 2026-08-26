@@ -82,6 +82,22 @@ checkpoint starts on track 8005 (lap 1639 m) at ladder stage 0, not where genera
 actually was — and it is now a question that can be asked, because the champion is
 finally the thing under test.
 
+## How much history it invalidated: none
+
+Audited across all 83 runs under `/media/llm-data/universe-runs` that kept a `run.log`.
+Fifty-four of them asked for `--retomar`, and **all fifty-four resumed correctly** — every
+one carries the `Retomando a partir de gen NNNN` line. A second, independent check agrees:
+no run's `[tau]` telemetry ever printed `espalha 1.0×`, the signature of a default genome.
+
+The reason is worth stating, because it is what made the bug survive so long. Training
+runs pass `--gens` in the 60-200 range, so the `0..n_gens` loop happened to cover any
+checkpoint number they could hold. The bug only bites when `--gens` is SMALLER than the
+generation being resumed — which is to say, in evaluation-only runs, `--gens 1`.
+
+That is exactly the workflow this project moved to when training was put on hold. The
+defect was latent for as long as the only thing anyone did was train, and it fired on the
+first day of measuring instead.
+
 ## The rule this earns
 
 **A silent fallback is worse than a crash.** A crash costs minutes; a fallback that
