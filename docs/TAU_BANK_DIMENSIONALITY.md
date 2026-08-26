@@ -81,57 +81,80 @@ PR = 4.68   out of 96 live channels     (all 96 alive)
 **Mode 0 tracks speed**: `corr(mode 0, velocity) = −0.797`. Five modes carry 72% of
 everything 96 channels of liquid memory represent.
 
-## 4. Well over half the state is an affine function of two dials
+## 4. The dashboard explains the REGIME, not the command
 
-Least squares from raw telemetry to all 96 post-CfC channels, aggregate R²:
+A global least squares from telemetry to the 96 post-CfC channels and to the command
+`intent[0..3)` looks damning at first:
 
-| predictors | R² |
-|---|---|
-| speed alone | 0.417 |
-| **speed + rpm + squares + speed·rpm** | **0.585** |
-| the clock alone (t, t²) | **0.092** |
-
-And on the command the physics receives, `intent[0..3)`:
-
-| predictors | R² |
-|---|---|
-| speed + rpm (+ squares) | **0.542** |
-| all 96 post-CfC channels | 0.839 |
-
-The clock control is what makes this readable. On the parked being it explained 53.2% of
-the state and poisoned everything; on a driving being it explains 9.2%. What is left is
-not a time artifact: **58.5% of a 96-channel liquid memory is a smooth function of speed
-and rpm, and 54.2% of the steering, throttle and brake the car receives comes from those
-two numbers alone** — no vision, no track, no memory.
-
-## 5. Parked versus driving, and why the difference is worth keeping
-
-| quantity | parked being (invalid) | driving being |
+| target | predictors | global R² |
 |---|---|---|
-| PR | 3.77 | 4.68 |
-| mode 0 share | 47.0% | 43.1% |
-| corr(mode 0, speed) | −0.923 | −0.797 |
-| R² state ← speed+rpm | 0.758 | 0.585 |
-| R² state ← clock only | 0.532 | 0.092 |
-| R² command ← speed+rpm | 0.541 | 0.542 |
+| post-CfC state | speed + rpm + squares | 0.585 |
+| command | speed + rpm + squares | 0.542 |
+| command | all 96 post-CfC channels | 0.839 |
+| post-CfC state | the clock alone (t, t²) | 0.092 |
 
-Everything weakened except the one number that did not move at all: the fraction of the
-motor command explained by speed and rpm, 0.541 against 0.542. A quantity that survives
-its own measurement being invalidated is the one to trust.
+Read as "half the driving is dashboard-following", which is what an earlier version of this
+file claimed. **That reading is wrong**, and the control that kills it is stratification by
+speed.
 
-## 6. Why this matters for the roadmap
+The being spends 49% of its ticks below 1 m/s and 26% above 20 m/s. That is a bimodal
+regime, and a global regression on speed buys the separation between "stopped" and "fast"
+for free — which is not the same as predicting what the being does. Repeat the fit inside
+speed bins and compare like with like:
 
-`docs/ROADMAP.md` makes distillability the project's first number: a closed-form ridge
-pilot beats the champion (7139 m vs 6592 m), and the target is to drive that down. This is
-a mechanism for it rather than a restatement — if over half the command a pilot has to
-reproduce is a smooth function of two dashboard readings, a closed form is not clever, it
-is sufficient. A world that demands a brain has to make the command depend on something a
-regression on speed and rpm cannot reach.
+| target | global | within speed bins |
+|---|---|---|
+| state ← dashboard | 0.585 | **0.123** |
+| command ← dashboard | 0.542 | **0.113** |
+| command ← 96 post-CfC channels | 0.839 | **0.815** |
 
-It also gives the M0 mechanisms a cheaper test than lap distance: re-run this measurement
-with `--recurso-escasso`, `--predador` or `--interocepcao` on and see whether
-R²(speed, rpm → command) falls from 0.54. A hostile mechanism that leaves it there did not
-change what the being computes, whatever it did to the distance.
+The brain's number barely moves. The dashboard's collapses by a factor of five. Within a
+regime the 96 channels explain 0.815 of the command against the dashboard's 0.113 — the
+brain contributes about **seven times** what speed and rpm do, and the surplus is +0.70.
+
+Bins used: [0,1), [1,5), [5,12), [12,20), [20,40) m/s, averaged over the bins holding at
+least 400 ticks. Stratification is itself a strong control — conditioning on speed removes
+part of the very variance being tested — so 0.113 is a floor and 0.542 a ceiling. What is
+not ambiguous is the CONTRAST: one number survives the control and the other does not.
+
+**The being is not following its own dashboard.** That conclusion replaces the opposite
+one, drawn here on the same day from the same data without this control.
+
+## 5. What this measurement cannot do
+
+The natural next step was to rank the M0 mechanisms by whether they reduce the command's
+dependence on the dashboard. Measured, on the frozen champion, average of the surplus
+(brain minus dashboard) over speed bins:
+
+| arm | dashboard | brain | surplus |
+|---|---|---|---|
+| off | 0.113 | 0.815 | 0.701 |
+| `--interocepcao` | 0.127 | 0.824 | 0.697 |
+| `--pneu-termico 2.0` | 0.140 | 0.848 | 0.708 |
+| `--predador 0.70` | 0.183 | 0.812 | 0.629 |
+
+They are the same to within the spread. **The metric does not separate the mechanisms**,
+and the reason is structural rather than a matter of dose: a frozen genome computes one
+fixed function, so switching on a world pressure can only change its INPUT distribution,
+never what it computes. "This world demands more brain" is a claim about what EVOLUTION
+selects, and no single-generation evaluation can hold it.
+
+The honest boundary of every measurement in this file, then: it can show that a mechanism
+is wired, that it is inert when its flag is off, and what dose stalls the being. It cannot
+rank mechanisms by difficulty. That needs a training run.
+
+## 6. What survives for the roadmap
+
+`docs/ROADMAP.md` opens on distillability: a closed-form ridge pilot beats the champion
+(7139 m vs 6592 m). Section 4 was written as a mechanism for that result and does not
+support it — within a regime, a regression on two dials reaches 0.113 of the command, so
+the pilot's success is not explained by the being being trivially predictable from its own
+telemetry. Where the closed form's advantage does come from remains open, and
+`docs/DESTILABILIDADE.md` still owns the question.
+
+What section 3 does contribute stands on its own: 96 channels of liquid memory span 4.68
+effective dimensions, and one mode holding 43% of the variance tracks speed. That is a
+statement about capacity, and it is the input the `src/brain_capacity.rs` criterion needs.
 
 ## 7. A separate gap, independent of all the above
 
