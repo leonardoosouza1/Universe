@@ -24,8 +24,9 @@ that does not need evolution.
 | 0.30 | 3150 m | −611 m | 0% | 1.27 m/s |
 | 0.45 | 2991 m | −770 m | 0% | 0.44 m/s |
 
-**Canary passed**: every dose gives a different number, monotonically, including the off
-arm. **Mortality is 0% across the whole sweep** — this pressure STALLS rather than kills,
+**Canary passed** on the ROADMAP's criterion: every dose gives a different number,
+monotonically, including the off arm. Read it with the replication section below — these
+are single runs, and the one effect that was replicated shrank by 2.2×. **Mortality is 0% across the whole sweep** — this pressure STALLS rather than kills,
 the same signature the fuel sweep already showed, so mortality must be read as a ceiling
 here and never as a floor.
 
@@ -52,6 +53,46 @@ This is a ceiling computed before spending generations on it, and it says D8 as 
 shaped is unlikely to select for sensor pruning at any usable dose. Widening the gradient
 means changing the mechanism — charging per channel family more steeply, or making the
 saved life buy something other than time — not turning the dial further.
+
+## The replication that shrank every number here
+
+`--seed` does not vary anything under `--retomar`: the population is the champion plus
+attenuated clones, with no random genome anywhere. Measured — seeds 77, 78 and 79 give a
+median of exactly 3761 m. **Every dose number above is therefore n = 1 with no error bar.**
+
+Replication has to come from somewhere else, so it came from neighbouring checkpoints of
+the same training run — near-identical genomes, biological replicates. One contrast,
+`--pneu-termico 1.0` against off, paired across five of them:
+
+| genome | off | thermal 1.0 | effect |
+|---|---|---|---|
+| gen 41 | 2186 m | 2313 m | **+127 m** |
+| gen 42 | 3299 m | 2962 m | −337 m |
+| gen 43 | 3761 m | 2951 m | −810 m |
+| gen 44 | 3270 m | 2845 m | −425 m |
+| gen 45 | 4074 m | 3680 m | −394 m |
+
+Mean effect −368 m, sd across replicates 334 m, same sign in 4 of 5, paired
+t = −2.46 on 4 df, **p = 0.069**.
+
+Three things follow, and they apply to every table on this page:
+
+1. **The single-run number was 2.2× too large.** gen 43 gave −810 m and the five-genome
+   mean is −368 m. gen 43 is the largest of the five, and it is the one this session
+   happened to pick. Following the effect SIZE as n grows is the rule here, not the sigma.
+2. **The effect does not clear significance at n = 5** (p = 0.069), and one replicate
+   changes sign outright. It is suggestive, not established.
+3. **Genome-to-genome variation dominates the dose.** The off arm alone ranges 2186 m to
+   4074 m across five adjacent generations — sd 716 m, 1.9× the mean dose effect. Any
+   comparison of two doses measured on ONE genome is reading a difference smaller than the
+   noise it did not measure.
+
+The canary criterion in `docs/ROADMAP.md` — "off / weak / strong must produce different
+numbers" — passes all three families here (5 of 5 distinct doses each) and is too weak to
+mean anything: distinct numbers are what noise produces. None of the three families is
+monotone in its dose. The criterion should be an ORDERED response that survives
+replication, and the cheapest replication available is a handful of neighbouring
+checkpoints.
 
 ## What could not be decided without training
 

@@ -52,8 +52,14 @@ Everything else — laps, medians, mortality — is instrumentation for these tw
 - **Tire thermal (CPU-side) + feelable weather**: temperature accumulates with slip and
   speed, degrades grip, and finally feeds ch70 — closing the loop weather → grip →
   slip → heat → *sensation*.
-- Gate for all: the dose canary. Off / weak / strong must produce different numbers in
-  the battery config, or the mechanism goes back.
+- Gate for all: the dose canary. ~~Off / weak / strong must produce different numbers in
+  the battery config, or the mechanism goes back.~~ **Criterion strengthened 2026-08-26**
+  after it passed all three families while none of them was monotone in its dose
+  (`docs/M0_DOSE_CANARIES.md`). Distinct numbers are what noise produces. The gate is now:
+  an ORDERED response to the dose, replicated across at least three neighbouring
+  checkpoints. `--seed` cannot supply the replication — under `--retomar` it changes
+  nothing, measured. Genome-to-genome variation is 1.9× the largest dose effect found, so
+  a single-genome comparison reads a difference smaller than noise it never measured.
 
 ### M1 — The body reaches the brain
 - `--interocepcao`: fuel, hidden damage, engine temp, life into the dead channels
