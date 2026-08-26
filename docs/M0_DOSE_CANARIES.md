@@ -75,13 +75,47 @@ the same training run — near-identical genomes, biological replicates. One con
 Mean effect −368 m, sd across replicates 334 m, same sign in 4 of 5, paired
 t = −2.46 on 4 df, **p = 0.069**.
 
+### A second, independent replication axis — and together they settle it
+
+`--largada-aleatoria` makes `--seed` choose the generation's starting waypoint
+(`main.rs:2509,2661`), which gives a replication axis that varies the START instead of the
+genome. Predicted from the hash before running — seeds 77/78/79/80 → waypoints
+0/18/36/54 — and the `[largada]` line confirmed all four.
+
+| start | off | thermal 1.0 | effect |
+|---|---|---|---|
+| wp 0 | 4139 m | 3293 m | −846 m |
+| wp 18 | 2417 m | 2423 m | **+6 m** |
+| wp 36 | 3674 m | 2966 m | −708 m |
+| wp 54 | 4243 m | 3302 m | −941 m |
+
+Mean −622 m, sd 430 m, paired t = −2.90 on 3 df, p = 0.063. On its own, again not
+significant.
+
+**Pooled across both axes — genome and start are independent sources of variation:**
+
+| axis | n | mean effect | negative | p |
+|---|---|---|---|---|
+| genome (gen 41-45) | 5 | −368 m | 4/5 | 0.069 |
+| start (wp 0/18/36/54) | 4 | −622 m | 3/4 | 0.063 |
+| **pooled** | **9** | **−481 m** | **7/9** | **0.0051** |
+
+Neither design clears 0.05 alone; together they do, comfortably. Two independent
+conditions with the same slope are worth more than one with a flattering sigma — the rule
+this project already paid for. **The thermal effect on a frozen champion is real, at about
+−481 m.** The single run reported earlier in the day, −810 m, overstated it by 1.7×.
+
+Note what still dwarfs it: the off arm alone spans 1888 m across genomes and 1826 m across
+starts, roughly 4× the effect. That is precisely why n = 1 could not see it.
+
 Three things follow, and they apply to every table on this page:
 
 1. **The single-run number was 2.2× too large.** gen 43 gave −810 m and the five-genome
    mean is −368 m. gen 43 is the largest of the five, and it is the one this session
    happened to pick. Following the effect SIZE as n grows is the rule here, not the sigma.
-2. **The effect does not clear significance at n = 5** (p = 0.069), and one replicate
-   changes sign outright. It is suggestive, not established.
+2. **One replication axis is not enough.** Neither n = 5 by genome (p = 0.069) nor n = 4
+   by start (p = 0.063) clears 0.05; pooled they reach p = 0.0051. A single axis of
+   replication on this simulator buys less than it looks like it should.
 3. **Genome-to-genome variation dominates the dose.** The off arm alone ranges 2186 m to
    4074 m across five adjacent generations — sd 716 m, 1.9× the mean dose effect. Any
    comparison of two doses measured on ONE genome is reading a difference smaller than the
