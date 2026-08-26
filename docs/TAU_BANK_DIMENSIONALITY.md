@@ -1,5 +1,27 @@
 # What the CfC's 96 channels are actually worth
 
+> ## CORRECTION 2026-08-25 — sections 2 to 5 are MEASURED ON A PARKED CAR. Do not cite them.
+>
+> Every measurement below marked (†) was taken from `obs.f32` after `--retomar`, and
+> `--observar` always dumps **being 0**, which after a resume is the exact reloaded elite.
+> That being does not drive: median speed 0.069 m/s, never above 1.9 m/s, 12 m covered in
+> 62 s, median throttle 0. See `docs/CHAMPION_RELOAD.md` — the champion that scored
+> 9870 m reproduces at 118-124 m on reload, in five different configurations.
+>
+> A state measured on a stationary car cannot support any claim about what a *driving*
+> being computes. "76% of the state is an affine function of speed" is, on that data,
+> mostly a statement about a speed that barely varies.
+>
+> What survives: **section 1** (the closed form and its validation against the
+> iara-semente session — nothing to do with this repository) and **section 6** (the τ
+> range, read from the genome file, not from a run). Sections 2-5 have to be re-measured
+> against a being that actually drives before any of it can be believed.
+>
+> The process failure is worth naming: this file checked the semantics of the CfC columns
+> carefully and never checked whether the car was moving. The cheapest possible sanity
+> check — print the median speed — would have caught it before any of the analysis.
+
+
 > Derived 2026-08-25 from the spectral analysis of the iara-semente τ bands (session
 > "Ondas de Tau"). A closed form was carried over from that session, **predicted a number
 > for this repository, and was refuted here**. What survived the refutation is a measured
@@ -36,7 +58,7 @@ real Wikipedia-PT surprise signal — not fitted to them:
 
 Worst error 0.040. The law is sound where its premise is: **one signal, many filters.**
 
-## 2. It does not transfer here — and that is the point
+## 2. (†) It does not transfer here — and that is the point
 
 Prediction registered before measuring: build the 96×96 matrix `r(τᵢ/τⱼ)` from the
 champion's own τ bank and it should reproduce the measured correlation of the post-CfC
@@ -66,7 +88,7 @@ Two naming traps found while doing this, both worth fixing separately:
 * `obs.f32` columns 10..106, read back as `cfc_in`, are the **post**-CfC output —
   `brain.wgsl:375` declares `w_cfc` as "CfC output (tanh(state) × 127)".
 
-## 3. What survived: the state spans 3.77 of 96 dimensions
+## 3. (†) The state spans 3.77 of 96 dimensions
 
 Participation ratio of the post-CfC correlation matrix, measured:
 
@@ -92,7 +114,7 @@ joins it. Removing that one mode lifts PR from 3.77 to 6.29.
 Half the representational budget of a 96-channel liquid memory is one scalar the being
 already receives directly.
 
-## 4. Three quarters of the state is an affine function of the dashboard
+## 4. (†) Three quarters of the state is an affine function of the dashboard
 
 Least squares from raw telemetry columns to all 96 post-CfC channels, aggregate R²:
 
@@ -118,7 +140,7 @@ any result that leans on those two columns is suspect. It survives anyway: speed
 with no clock term reach 0.758, and adding the clock on top of the full model moves
 nothing (0.795 → 0.795). Speed and rpm subsume the clock, not the other way round.
 
-## 5. Why this matters for the roadmap
+## 5. (†) Why this would matter for the roadmap
 
 `docs/ROADMAP.md` makes distillability the project's first number: a closed-form ridge
 pilot beats the champion (7139 m vs 6592 m), and the target is to drive that down. This is
