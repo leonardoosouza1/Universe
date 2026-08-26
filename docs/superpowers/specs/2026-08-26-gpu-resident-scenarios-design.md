@@ -1,0 +1,193 @@
+# Design — GPU-resident simulation and fast scenario screening
+
+Owner request (2026-08-26): *"testar vários cenários em minutos... não deveria ter nada
+na CPU mais, só GPU, se falta faça kernel"* and *"alocar blocos da GPU e rodar os seres
+ali, estados globais, para nada ter que ir para a CPU"*.
+
+Everything below is ordered by **measured** payoff. Where a number is a guess it says so.
+
+## 1. The measured baseline
+
+All figures from 2026-08-26, RX 6750 XT, champion `ereg-m4-m4-s77` gen 43 reloaded,
+one generation, evaluation only.
+
+**Cost model, fitted from a scaling sweep at 12/48/192/768 beings:**
+
+```
+ms per tick = 0.88 + 0.0333 × n_beings
+              ^^^^   ^^^^^^
+              fixed  marginal
+```
+
+| beings | ms/tick | per generation (20k ticks) |
+|---|---|---|
+| 32 | 1.95 | 17.6 s waiting + 21.3 s working |
+| 864 | 29.65 | 17.6 s waiting + 575 s working |
+| 3200 | 107.44 | 17.6 s waiting + 2131 s working |
+
+**Where the marginal cost is NOT.** Ablation at 768 beings, 1500 ticks:
+
+| configuration | ms/tick | share |
+|---|---|---|
+| complete | 33.61 | — |
+| `--sem-lento` (no slow brain) | 29.92 | slow brain = 11% |
+| `--brain-skip 1000` (no fast brain) | 28.41 | fast brain = 15% |
+| both off | 26.53 | **both brains = 21%** |
+
+**79% of the cost is perception and physics.** With no brain at all a being still costs
+34.5 µs per tick. Optimising the brain is optimising a fifth of the problem.
+
+**The GPU is not the constraint.** At 768 beings: **24 W of ~200 W**, utilisation 66%
+(peak 89%). Utilisation here means "work was queued", not "shaders were busy". A being
+tick is roughly 25k MACs for the brain; 33 µs for that is ~0.7 GFLOP/s against a card
+that does ~13 TFLOP/s. The work is latency-bound, most plausibly the retina's voxel
+raycast (uncoalesced VRAM reads), which is consistent with both the low power and the
+time scaling with population.
+
+**The per-tick CPU round trip.** `src/bin/gpu_evolve/context.rs:1302-1303`:
+
+```rust
+self.queue.submit(Some(enc.finish()));
+self.device.poll(wgpu::Maintain::Wait);   // full pipeline flush, every tick
+```
+
+The tick is: GPU perception+brain → CPU reads intents → CPU assembles `phys_states` →
+GPU physics → CPU reads back. `BeingState` (`types.rs:13`) lives on the CPU, as do
+life/fuel accounting and the four hostile mechanisms added earlier today (tyre thermal,
+predator, stations, sensor tax).
+
+**Honest bound on removing it:** the flush is the `0.88 ms` fixed term. It is half the
+time at 32 beings and **3% at 864**. Eliminating CPU involvement is necessary to batch
+ticks, but on its own it does not deliver "minutes" at matrix scale. The upside beyond
+that is real but **unmeasured**: 24 W with 66% queued occupancy suggests bubbles between
+dispatches, and those inflate the marginal term too. Phase 0 settles it.
+
+**No per-kernel timing exists.** `rocprofv3` produced an empty trace: wgpu runs on
+Vulkan/RADV and rocprof instruments HIP/HSA. The wgpu timestamp path is unused —
+`timestamp_writes: None` at `core.rs:503`, `cortex_sheet.rs:521`, `retina_digest.rs:249`.
+Every optimisation proposed without this instrument is a guess, including the one above.
+
+## 2. Phase 0 — the instrument (blocks Phase 1, not Phase 2)
+
+Enable `wgpu::Features::TIMESTAMP_QUERY` and populate the `timestamp_writes` fields that
+already exist on every compute pass. Emit, once per N ticks, a table of milliseconds per
+kernel and the gaps between them.
+
+Deliverable: for a given `--seres`, a breakdown of the 33.6 ms/tick across
+retina / perception / brain / slow brain / physics_a,b,c / **idle gaps**.
+
+Acceptance: the sum of the parts plus gaps reconstructs the wall-clock ms/tick within
+10%. If it does not, the instrument is wrong and nothing built on it can be trusted.
+
+This is small — the fields are present and set to `None` — and it converts every later
+decision from opinion into measurement. It also answers, at no extra cost, whether the
+CPU-side hostile mechanisms are expensive when switched on, since the ablation above ran
+with them off.
+
+### Ordering note
+
+Phase 0 and Phase 1 make the engine faster. **Phase 2 makes the question cheaper, and it
+depends on neither.** It is the phase that actually delivers "many scenarios in minutes",
+because it removes the physics from the loop instead of accelerating it. Phases 0 and 2
+can therefore start in either order or together; Phase 1 needs Phase 0 first, and Phase 3
+wants whatever speed exists by then.
+
+If only one phase is ever built, it should be Phase 2.
+
+## 3. Phase 1 — GPU-resident state and multi-tick dispatch
+
+The owner's architecture, adopted: all per-being state lives in GPU buffers; the CPU
+issues work and does not participate in the tick.
+
+**State moves to the GPU.** `BeingState`'s CPU fields (`prev_steer`, `stagnation_ticks`,
+`wall_ticks`, `joy_tick`, `joy_streak`, `edge_row6/7`) join the existing physics buffer.
+Life and fuel accounting become a kernel. The four hostile mechanisms are ported to WGSL
+— this is the "se falta faça kernel" instruction, and Phase 0 says whether it is urgent
+or merely tidy.
+
+**K ticks per submit.** With no CPU dependency inside the tick, the encoder chains K
+ticks before a single `submit` + `poll`. The fixed term falls by ~K. K is bounded by how
+often telemetry has to be observed, not by the GPU: any per-tick readback forces K = 1,
+which is why the telemetry constraint below is part of this phase and not an afterthought.
+
+**Then attack whatever Phase 0 names.** The prior is the retina, and `retina_digest.wgsl`
+plus its parity test suggest that path is already partly cut. The target is chosen by the
+measurement, not here.
+
+**Constraints that do not bend:** telemetry that today reads back per tick either moves
+to a GPU-side accumulator or becomes opt-in and off by default. `--observar` stays
+available for analysis runs; it simply forces K = 1.
+
+**Acceptance:** with the feature off, `obs.f32` is byte-identical to the current binary
+(same sha256). This check has caught three real problems in this repository today; it is
+the gate, not a formality.
+
+## 4. Phase 2 — open-loop screening
+
+This is what actually delivers "many scenarios in minutes", and it does not need the
+engine to be fast.
+
+Distilling a controller from a recorded champion is already proven here: a closed-form
+ridge pilot fitted to the champion's own replay drove **7156 m against the champion's
+6592 m** (`docs/DESTILABILIDADE.md`). The same document measures where a clone stops
+working: per-tick error **0.26 compounds** in closed loop and the clone stalls, **0.18
+does not** and it drives.
+
+That threshold is a calibrated rejection filter. Scoring a candidate brain against
+recorded states is a forward pass with no physics: ~500 MFLOP over 20k states, versus
+~18 s for one closed-loop evaluation. **Three orders of magnitude per candidate.**
+
+**Two limits, stated up front because they bound what this can ever do:**
+
+* **Necessary, not sufficient.** Above 0.26 the candidate is rejected with confidence.
+  Passing does not prove it drives — 0.26 to 0.18 is a grey band. The funnel saves time
+  on rejects, not on survivors.
+* **Blind to genuine novelty.** The screen only recognises behaviour resembling the
+  champion that produced the recording. A brain that is different *and better* scores as
+  divergent and is rejected. That directly limits the later goals (different brain
+  shapes, self-modifying weights): the funnel accelerates search near what exists and
+  cannot see what is new. Any use of it for novel architectures needs a separate,
+  closed-loop arm.
+
+## 5. Phase 3 — the world matrix (sketch)
+
+Approved earlier in this conversation and unchanged in intent; it rides on whatever speed
+Phases 0-2 produce.
+
+Unit is the **cell**: `{world_seed, own population, own elite, own telemetry}`. Selection
+never crosses cells. Generations are grouped by world so cells sharing a world enter one
+dispatch; a world swap costs **60 ms**, measured (7.11 s vs 5.37 s over 29 extra swaps),
+which is 0.5% of a multi-hour run.
+
+Per cell: participation ratio globally and per region block (visão / parede / corpo /
+associativo — four blocks of 24, `main.rs:2134`), using `brain_capacity::participation_ratio`.
+Today's baseline is **PR = 4.68 of 96**: the current world occupies 5% of the brain.
+
+Replication is not optional. The same contrast measured today gave −810 m at n=1 and
+−481 m at n=9. Recommended shape: 3 worlds × 3 population variants × 3 replicates.
+
+Cross-evaluation grid `T[i][j]` = champion of cell i evaluated in world j, normalised
+**per column** (worlds have laps of 1639/2377/2928 m; raw metres compare track length).
+The scientific content is the interaction term: if `T` is rank-1, `T[i][j] ≈ a_i · b_j`,
+nothing specialised — there are merely good champions and easy worlds. Measured by the
+share of variance in the first singular value.
+
+## 6. What this design deliberately does not do
+
+* **No new brain architectures in these phases.** A different brain shape changes the
+  genome layout, the buffer sizes and the mutation operator. Mixing it in is what turns
+  weeks into months. It gets its own spec once the matrix runs.
+* **No self-modifying weights yet.** It is only *evaluable* once the matrix can show what
+  an expensive geometry looks like. Without that there is nothing to compare against.
+* **No persistent-kernel rewrite.** K-ticks-per-submit gets most of the benefit of a
+  fully persistent kernel without fighting wgpu's execution model.
+
+## 7. Verification rules for every phase
+
+1. Feature off ⇒ byte-identical `obs.f32` (sha256), against a binary built before the
+   change.
+2. Determinism: same configuration twice ⇒ identical output.
+3. Any performance claim carries the command that produced it and the hardware state
+   (power and utilisation), because 66% "utilisation" at 24 W already fooled this
+   analysis once.
+4. No GPU training run without the owner's explicit release.
