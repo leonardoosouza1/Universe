@@ -26,6 +26,7 @@ and are on the queue in `MIGRATION.md`. Anything written from now on is English.
 | `REGIOES_CEREBRAIS.md` | The brain-regions thesis and its experiment ladder. Note line 61: *prediction registered BEFORE each battery; a negative result documented with its mechanism* |
 | `CEREBRO_VIRTUAL.md` | Long-term master plan: functional regions, support cells, and an energy economy where thinking costs |
 | `DESTILABILIDADE.md` | Distillability — what "a clone beat the champion" meant. Opens with a ⚠ correction from the 2026-08-16 adversarial audit putting the whole document under review. This is the model to copy: the wrong conclusion stays visible, with the reason it fell |
+| `SCREEN_CALIBRATION.md` | The open-loop screen (`src/bin/screen.rs`) calibrated against closed-loop ground truth, 85 candidates, 2026-08-27. A negative result: the screen is bit-exact and 46× cheaper than the closed loop, but its 0.26 threshold rejects brains that drive better than the recording champion, and its score does not rank by quality (ρ = −0.05). Corrects the speed and threshold claims in `superpowers/specs/2026-08-26-gpu-resident-scenarios-design.md` §4 |
 | `UNIVERSO_ALEM_DO_CARRO.md` | Expansion brainstorm — the Universe beyond the car |
 | `arquivo/` | Records from earlier sessions, kept for provenance. Also holds `arquivo/dirs/iara_genesis`, a workspace member (see the comment at the top of `Cargo.toml`) |
 | `lab_specs/`, `dna_v4_genesis/`, `superpowers/` | Lab run specs (JSON), the DNA-V4 note, and older plans/specs |

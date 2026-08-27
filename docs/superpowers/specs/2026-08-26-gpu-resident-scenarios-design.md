@@ -6,6 +6,14 @@ ali, estados globais, para nada ter que ir para a CPU"*.
 
 Everything below is ordered by **measured** payoff. Where a number is a guess it says so.
 
+> **⚠ Correction, 2026-08-27 — section 4 (Phase 2, open-loop screening) is substantially
+> wrong and has a correction block inside it.** Its speed claim ("three orders of
+> magnitude per candidate") was 46× when measured, its rejection threshold (0.26) rejects
+> brains that drive *better* than the recording champion, and the score does not rank
+> candidates by quality at all (Spearman −0.05 over 85 candidates). Evidence, commands and
+> the re-scoped proposal: **`docs/SCREEN_CALIBRATION.md`**. Sections 1-3 and 5 are not
+> affected.
+
 ## 1. The measured baseline
 
 All figures from 2026-08-26, RX 6750 XT, champion `ereg-m4-m4-s77` gen 43 reloaded,
@@ -156,6 +164,53 @@ recorded states is a forward pass with no physics: ~500 MFLOP over 20k states, v
   shapes, self-modifying weights): the funnel accelerates search near what exists and
   cannot see what is new. Any use of it for novel architectures needs a separate,
   closed-loop arm.
+
+> ### ⚠ Correction, 2026-08-27 — everything above about the SPEED and the THRESHOLD is wrong
+>
+> Measured in Task 6 against closed-loop ground truth, 85 candidates, one `--gens 1`
+> evaluation each. Full record and commands: **`docs/SCREEN_CALIBRATION.md`**. The
+> original text is left in place because it is the only evidence of how the error was
+> possible; every claim it makes that the measurement contradicts is listed here.
+>
+> **1. "Three orders of magnitude per candidate" — no. Measured 46×, best case.**
+> The `~18 s` closed-loop figure was never measured; it is 0.97-1.06 s per genome
+> (`/usr/bin/time` around 48 beings × 20 000 ticks: 46.37 s and 51.07 s, two repeats).
+> The screen costs 208.6 ms/genome at the full window with `--batch 48`, and 21.8 ms at
+> the 2 000-tick window this calibration recommends — **4.8× and 46× cheaper**
+> respectively. Unbatched (`--batch 1`) it is 8 404 ms/genome, i.e. **8.4× MORE expensive
+> than simulating the whole world**. The FLOP count is what produced the wrong estimate:
+> both sides are launch-latency bound, so arithmetic was the one thing neither side was
+> limited by.
+>
+> **2. "Above 0.26 the candidate is rejected with confidence" — no. 6 of 7 rejects drive.**
+> Of 85 candidates, the screen rejects 7. Six of them drive at ≥75% of the recording
+> champion and two drive *better* than it: `noi050_s2` (score 0.4287, 123% of champion)
+> and `gen30` (score 0.2618, **162%**, 41/48 beings completing a lap against the
+> champion's 22). `gen30` is not a synthetic perturbation — it is
+> `ereg-m4-m4-s77/evolve_best_gen0030.bin`, a champion this lineage's own selection
+> produced. Only `noi200_s1` (a brain destroyed by σ = 2.0 noise, 71 m) is a true reject.
+> **The 0.26 threshold is unsafe for pruning and must not be used to discard candidates.**
+> It was transplanted from `docs/DESTILABILIDADE.md`, where it was measured for a
+> *distilled pilot* replacing the brain — not for genomes of the same architecture — and
+> the transplant was never checked until now.
+>
+> **3. The screen does not rank.** Spearman of the score against closed-loop driving
+> distance is **−0.05** over the 85 candidates, and negative at every replay window of
+> both candidate sets. It is not monotone in genome distance either (13.5% of
+> strictly-ordered pairs inverted; three perturbation directions of identical magnitude
+> score 3.2× apart).
+>
+> **4. "Blind to genuine novelty" was right, and is worse than stated.** The bullet
+> treats this as a limit on *novel architectures*. It is not: `gen30` is the same
+> architecture, from the same lineage, twelve generations from the recording genome, and
+> it is rejected. The blindness bites inside the existing search, not only outside it.
+>
+> **What survives.** The screen is bit-exact (the recording genome scores 0.0000 at all
+> 20 000 ticks) and it reliably separates a *destroyed* brain from a functioning one:
+> 0.9066 for `noi200_s1` against ≤0.4287 for everything that could still drive. Phase 2
+> is therefore re-scoped from a rejection funnel to a **tripwire at ≈0.60**, at 21.8 ms
+> per candidate. Anything more than that needs a reference that is not one champion —
+> see `docs/SCREEN_CALIBRATION.md` §6.
 
 ## 5. Phase 3 — the world matrix (sketch)
 
