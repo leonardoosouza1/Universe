@@ -48,6 +48,15 @@ pub struct GpuCtx {
     /// LABORATÓRIO DE OBSERVAÇÃO (`--observar`): destino da gravação por tick do
     /// ser 0 — ver o bloco de captura em `tick()` para o layout (394 f32/linha).
     pub obs_writer: Option<std::io::BufWriter<std::fs::File>>,
+    /// `--gravar-onda <path>`: raw 192-channel sensory-wave recording for being 0, one
+    /// row per tick (`gpu::wave_record`, 195 f32/row). Records the SAME being
+    /// `--observar` does, so the two files line up tick for tick — that alignment is
+    /// what the Task 5 open-loop screen cross-checks against. Forces a per-tick
+    /// readback of the whole wave buffer (`percept.read_after_submit`), so it must stay
+    /// off by default; once Phase 1 (the open-loop brain-kernel screen) exists, using
+    /// this flag together with it must force `K = 1` (one candidate replayed per pass,
+    /// not a batch), because a batched replay could not also afford this readback.
+    pub wave_writer: Option<std::io::BufWriter<std::fs::File>>,
     /// E-REG1: custo de fiação por ser (constante durante a geração — pesos não
     /// mudam no meio). Preenchido pelo main a cada aplicação de genomas; drenado
     /// da vida por tick quando CUSTO_FIACAO > 0. Vazio = sem custo.
@@ -382,6 +391,7 @@ impl GpuCtx {
             brain,
             slow,
             obs_writer: None,
+            wave_writer: None,
             fiacao_custo: Vec::new(),
             piloto_formula: None,
             piloto_forja: None,
@@ -1987,6 +1997,32 @@ impl GpuCtx {
             use std::io::Write as _;
             if let Some(w) = self.obs_writer.as_mut() {
                 let _ = w.write_all(bytemuck::cast_slice(&row));
+            }
+        }
+
+        // ── OPEN-LOOP WAVE RECORDING (`--gravar-onda`) ──────────────────────────
+        // Records the raw 192-channel sensory wave for being 0, plus the three
+        // commands the recording being actually issued (`intents[0][0..3]`, the same
+        // raw pre-KAN values `obs.f32` stores at columns 298..301). Gated on
+        // `brain_fires` for the same reason `--observar` is: on a skipped tick
+        // `intents` is a copy of the last decision, not a fresh one, and recording it
+        // again would duplicate a row instead of adding information — this also keeps
+        // `wave.f32` in row-for-row lockstep with `obs.f32`, which is what lets Task 5
+        // cross-check one against the other.
+        //
+        // Reuses `percept.read_after_submit` exactly as `--auditar-visao` does above
+        // (same function, same `map_async` → `poll` → `recv` path) rather than adding a
+        // second readback route for the same buffer.
+        if self.wave_writer.is_some() && brain_fires {
+            use universe::gpu::perception::WAVE_U32S;
+            let bytes = (n * WAVE_U32S * 4) as u64;
+            let ondas = self.percept.read_after_submit(&self.device, n, bytes);
+            if let Some(wave0) = ondas.first() {
+                let wave_f32: Vec<f32> = wave0.iter().map(|&v| v as f32).collect();
+                let intent = [intents[0][0], intents[0][1], intents[0][2]];
+                if let Some(w) = self.wave_writer.as_mut() {
+                    let _ = universe::gpu::wave_record::write_row(w, &wave_f32, &intent);
+                }
             }
         }
 

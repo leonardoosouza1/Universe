@@ -558,6 +558,7 @@ fn main() {
     let mut mascara_regioes: bool = false;
     let mut tau_semeado: bool = false;
     let mut observar_path: Option<String> = None;
+    let mut gravar_onda_path: Option<String> = None;
     let mut trocar_ao_completar: usize = 0; // 0 = rotacao por geracao (comportamento atual)
     /// P1.8, achado "currículo avança com UM ser rastejando promove a turma"
     /// (`--trocar-ao-completar 1` deixava um único ser lento fechar a lição pra
@@ -1283,6 +1284,16 @@ fn main() {
                         observar_path = Some(args[i].clone());
                     }
                 }
+                // Open-loop screen, input side: records the raw 192-channel sensory
+                // wave for being 0 (the same being --observar records), one row per
+                // tick (195 f32/row, see gpu::wave_record). Off by default — forces a
+                // per-tick readback of the whole wave buffer.
+                "--gravar-onda" => {
+                    i += 1;
+                    if i < args.len() {
+                        gravar_onda_path = Some(args[i].clone());
+                    }
+                }
                 "--portal-curva" => {
                     portal_curva = true;
                 }
@@ -1649,6 +1660,22 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("ERRO --observar {path}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(ref path) = gravar_onda_path {
+        match std::fs::File::create(path) {
+            Ok(f) => {
+                ctx.wave_writer = Some(std::io::BufWriter::new(f));
+                println!(
+                    "  [gravar-onda] recording being 0's raw sensory wave to {path} \
+                     ({} f32/row)",
+                    universe::gpu::wave_record::ROW_F32
+                );
+            }
+            Err(e) => {
+                eprintln!("ERROR --gravar-onda {path}: {e}");
                 std::process::exit(1);
             }
         }
