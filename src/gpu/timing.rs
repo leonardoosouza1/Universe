@@ -1,0 +1,132 @@
+//! Per-kernel GPU timing.
+//!
+//! Why this exists: on 2026-08-26 `rocprofv3` produced an EMPTY trace against this
+//! binary. wgpu runs on Vulkan/RADV and rocprof instruments HIP/HSA, so no external
+//! profiler can see these kernels. Without this module every optimisation is a guess.
+//! The `timestamp_writes` fields were already present on every compute pass, set to
+//! `None` (`core.rs:503`, `cortex_sheet.rs:521`, `retina_digest.rs:249`).
+
+/// Milliseconds between two GPU timestamps.
+///
+/// `period_ns` is `Queue::get_timestamp_period()`, nanoseconds per tick. Returns 0.0
+/// when the counter went backwards (wrap) rather than a negative duration.
+pub fn ticks_to_ms(begin: u64, end: u64, period_ns: f32) -> f32 {
+    if end <= begin {
+        return 0.0;
+    }
+    (end - begin) as f32 * period_ns / 1.0e6
+}
+
+/// Owns one `QuerySet` and the buffers to get its values back to the CPU.
+///
+/// Two timestamps per scope (begin, end). `max_passes` is the number of scopes per
+/// frame; the set is allocated once and reused.
+pub struct GpuTimer {
+    set: wgpu::QuerySet,
+    resolve_buf: wgpu::Buffer,
+    read_buf: wgpu::Buffer,
+    labels: Vec<&'static str>,
+    max_passes: usize,
+}
+
+impl GpuTimer {
+    /// `None` when the device was created without `Features::TIMESTAMP_QUERY`.
+    pub fn new(device: &wgpu::Device, max_passes: usize) -> Option<GpuTimer> {
+        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return None;
+        }
+        let count = (max_passes * 2) as u32;
+        let bytes = (count as u64) * 8;
+        Some(GpuTimer {
+            set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("kernel-timing"),
+                ty: wgpu::QueryType::Timestamp,
+                count,
+            }),
+            resolve_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("timing-resolve"),
+                size: bytes,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }),
+            read_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("timing-read"),
+                size: bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+            labels: Vec::with_capacity(max_passes),
+            max_passes,
+        })
+    }
+
+    /// Call once per frame before recording passes.
+    pub fn begin_frame(&mut self) {
+        self.labels.clear();
+    }
+
+    /// Returns the `timestamp_writes` to hand to `begin_compute_pass`.
+    /// Silently returns `None` past `max_passes` rather than panicking mid-run.
+    pub fn scope(&mut self, label: &'static str) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+        if self.labels.len() >= self.max_passes {
+            return None;
+        }
+        let i = self.labels.len() as u32;
+        self.labels.push(label);
+        Some(wgpu::ComputePassTimestampWrites {
+            query_set: &self.set,
+            beginning_of_pass_write_index: Some(i * 2),
+            end_of_pass_write_index: Some(i * 2 + 1),
+        })
+    }
+
+    /// Record the resolve + copy. Must be on the same encoder as the passes.
+    pub fn resolve(&mut self, enc: &mut wgpu::CommandEncoder) {
+        let n = (self.labels.len() * 2) as u32;
+        if n == 0 {
+            return;
+        }
+        enc.resolve_query_set(&self.set, 0..n, &self.resolve_buf, 0);
+        enc.copy_buffer_to_buffer(&self.resolve_buf, 0, &self.read_buf, 0, (n as u64) * 8);
+    }
+
+    /// Read back after the submit has been polled. One entry per scope, in order.
+    pub fn read_ms(&self, device: &wgpu::Device, period_ns: f32) -> Vec<(&'static str, f32)> {
+        let n = self.labels.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let slice = self.read_buf.slice(..(n as u64) * 16);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let raw: &[u64] = bytemuck::cast_slice(&data);
+        let out = self
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (*l, ticks_to_ms(raw[i * 2], raw[i * 2 + 1], period_ns)))
+            .collect();
+        drop(data);
+        self.read_buf.unmap();
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ticks_to_ms;
+
+    /// The timestamp period is nanoseconds per tick and comes from the queue.
+    /// RADV reports 1.0 on this card; a wrong period silently scales every
+    /// measurement, which is the failure mode that makes a profiler lie.
+    #[test]
+    fn converts_timestamp_ticks_to_milliseconds() {
+        // 1_000_000 ticks at 1 ns each = 1 ms.
+        assert!((ticks_to_ms(0, 1_000_000, 1.0) - 1.0).abs() < 1e-6);
+        // A 40 ns period makes the same span 40 ms.
+        assert!((ticks_to_ms(0, 1_000_000, 40.0) - 40.0).abs() < 1e-3);
+        // Counters wrap; a smaller end must not produce a negative duration.
+        assert_eq!(ticks_to_ms(500, 100, 1.0), 0.0);
+    }
+}

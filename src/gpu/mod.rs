@@ -50,6 +50,7 @@ pub mod physics;
 pub mod retina_digest;
 pub mod retina_types;
 pub mod slow_brain;
+pub mod timing;
 
 use std::borrow::Cow;
 
