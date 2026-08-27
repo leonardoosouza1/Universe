@@ -562,11 +562,14 @@ Two things would have to change before the screen could prune:
    <!-- check-language: allow --> the pilot's override never reached the motor, so 7156 m
    was the *champion* running with one contaminated memory channel, not a distilled
    controller driving. The corrected linear-ridge figure is 1027 m, 15.6% (`:350`). The
-   premise survives via the v2 non-linear closed-form pilot (7485 m, 113.5%; 102.4% on an
-   unseen track), at different numbers. Both corrections are now in the spec. The general
-   lesson is worth more than either: **a constant imported from another document inherits
-   that document's corrections, and this repository's records are corrected in place
-   precisely so that they can be re-read.**
+   premise survives via the v2 non-linear closed-form pilot, at different numbers — but
+   these are two distinct fits, not one: the single-track v2 pilot reaches 7485 m,
+   113.5% on its own training track but only 84.0% on a track it had never seen, while a
+   separate *mixed-notebook* variant reaches 102.4% on that same unseen track. Both
+   corrections are now in the spec. The general lesson is worth more than either: **a
+   constant imported from another document inherits that document's corrections, and
+   this repository's records are corrected in place precisely so that they can be
+   re-read.**
 
 ---
 

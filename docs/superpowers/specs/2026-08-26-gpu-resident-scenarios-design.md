@@ -22,8 +22,16 @@ Everything below is ordered by **measured** payoff. Where a number is a guess it
 > 2026-08-27 for the *specific* failure mode found here — a constant imported from another
 > document without a check — and cite no external-document constants; their own numbers
 > (the cost model, the ablation table, the 60 ms world swap, PR = 4.68) were measured in
-> this repository on 2026-08-26 and carry their own commands. They are **unaudited by
-> measurement**, not verified.
+> this repository on 2026-08-26 and carry their own commands.
+>
+> **Update, final whole-branch review, 2026-08-27: §1's ablation table WAS found wrong by
+> measurement, separately from Task 6's audit.** The `share` column and the "79% of the
+> cost is perception and physics" paragraph were both computed against the `complete` row's
+> already-superseded 33.61 ms/tick denominator, and Task 0/3's own kernel-timing instrument
+> (`docs/KERNEL_TIMING.md`) refutes them directly: the brain measures at 2.2% of the tick,
+> not 21%. Both are now struck out in place, in §1. The cost model, the 60 ms world swap and
+> PR = 4.68 in §3/§5 remain **unaudited by measurement**, not verified — this update covers
+> only what was actually re-measured.
 
 ## 1. The measured baseline
 
@@ -49,9 +57,9 @@ ms per tick = 0.88 + 0.0333 × n_beings
 | configuration | ms/tick | share |
 |---|---|---|
 | complete (SUPERSEDED — see note below) | 33.61 | — |
-| `--sem-lento` (no slow brain) | 29.92 | slow brain = 11% |
-| `--brain-skip 1000` (no fast brain) | 28.41 | fast brain = 15% |
-| both off | 26.53 | **both brains = 21%** |
+| `--sem-lento` (no slow brain) | 29.92 | ~~slow brain = 11%~~ (SUPERSEDED) |
+| `--brain-skip 1000` (no fast brain) | 28.41 | ~~fast brain = 15%~~ (SUPERSEDED) |
+| both off | 26.53 | ~~**both brains = 21%**~~ (SUPERSEDED) |
 
 **Note added during Task 3 (kernel-timing instrument, 2026-08-26):** the `complete`
 row's 33.61 ms/tick disagrees with the fitted cost model above (`0.88 + 0.0333 × 768 =
@@ -61,8 +69,24 @@ scaling sweep re-run during Task 3's review round (~27.8-27.9 ms/tick). The `com
 row was not reproduced; treat 33.61 as wrong rather than as a real regression the
 brains introduce, and use the fitted model or a fresh measurement instead.
 
-**79% of the cost is perception and physics.** With no brain at all a being still costs
-34.5 µs per tick. Optimising the brain is optimising a fifth of the problem.
+**The `share` column is superseded for the same reason and is contradicted directly, not
+just arithmetically.** Every percentage above was computed against the retired 33.61 ms
+denominator; with the corrected ~26.6-28.2 ms/tick, `--sem-lento` (29.92) and
+`--brain-skip 1000` (28.41) are *slower* than complete — turning brain work off would cost
+more, which is impossible for a real cost and marks the ablation as GPU clock state, not
+brain cost. Task 3's kernel-timing instrument (`--perfil-kernel`, see
+`docs/KERNEL_TIMING.md`) settles it directly instead of by subtraction: at 768 beings, 16
+steady-state samples, `brain 0.6082 ms + slow 0.0118 ms + slow.gather 0.0055 ms = 0.625 ms`
+of a 28.2 ms tick — **2.2%**, not 21%.
+
+**~~79% of the cost is perception and physics.~~ SUPERSEDED — see the kernel measurement
+above.** With no brain at all a being still costs 34.5 µs per tick, and that number is not
+disputed; what is wrong is the inference drawn from it. ~~Optimising the brain is
+optimising a fifth of the problem.~~ The brain measures at **2.2%** of the tick
+(`docs/KERNEL_TIMING.md`), not a fifth — whoever plans Phase 1 should read that document's
+cost model (`ms/tick ≈ 0.86 + 0.032 × n_beings`) before choosing a target, because this
+paragraph pointed at the brain and the instrument this branch built says the brain is not
+where the cost is.
 
 **The GPU is not the constraint.** At 768 beings: **24 W of ~200 W**, utilisation 66%
 (peak 89%). Utilisation here means "work was queued", not "shaders were busy". A being
@@ -100,11 +124,21 @@ Enable `wgpu::Features::TIMESTAMP_QUERY` and populate the `timestamp_writes` fie
 already exist on every compute pass. Emit, once per N ticks, a table of milliseconds per
 kernel and the gaps between them.
 
-Deliverable: for a given `--seres`, a breakdown of the 33.6 ms/tick across
-retina / perception / brain / slow brain / physics_a,b,c / **idle gaps**.
+Deliverable: for a given `--seres`, a breakdown of the ms/tick across
+retina / perception / brain / slow brain / physics_a,b,c / **idle gaps**. (Corrected — the
+33.6 ms/tick this section originally named as the thing to break down is the same
+retired `complete` ablation figure struck out in §1; it was never reproduced. The
+instrument this section specifies does not depend on that number, and its own delivered
+result — a breakdown of the real ~26.6-28.2 ms/tick, plus the cost model and the
+per-kernel table — lives in `docs/KERNEL_TIMING.md`.)
 
 Acceptance: the sum of the parts plus gaps reconstructs the wall-clock ms/tick within
 10%. If it does not, the instrument is wrong and nothing built on it can be trusted.
+(Met: `gaps` is defined as the remainder, so kernels + physics + gaps sum to wall clock
+by construction. The informative number is what fraction is GPU kernels alone —
+`docs/KERNEL_TIMING.md` measures a median of ~13-16% across two independent ≥25-sample
+sweeps, with the remainder attributed to per-being CPU/readback cost, not idle GPU time
+— see that document for the full accounting and why it is reported as a band.)
 
 This is small — the fields are present and set to `None` — and it converts every later
 decision from opinion into measurement. It also answers, at no extra cost, whether the
@@ -132,10 +166,21 @@ Life and fuel accounting become a kernel. The four hostile mechanisms are ported
 — this is the "se falta faça kernel" instruction, and Phase 0 says whether it is urgent
 or merely tidy.
 
-**K ticks per submit.** With no CPU dependency inside the tick, the encoder chains K
-ticks before a single `submit` + `poll`. The fixed term falls by ~K. K is bounded by how
-often telemetry has to be observed, not by the GPU: any per-tick readback forces K = 1,
-which is why the telemetry constraint below is part of this phase and not an afterthought.
+**K ticks per submit — corrected rationale.** This paragraph originally sold "the fixed
+term falls by ~K" as Phase 1's mechanism. `docs/KERNEL_TIMING.md`'s measurement refutes
+that: the fixed per-submit cost is 0.86 ms, **3%** of a ~27 ms tick at 768 beings, so
+collapsing K submits into one recovers 3% at best, not a multiple of it. **~85% of the
+tick scales with `n_beings` instead** — per-being CPU readbacks and the per-being CPU
+loop that assembles `phys_states` between the GPU passes (`context.rs:1302-1303` and
+around it) — and neither shrinks by batching submits; they shrink only by moving that
+work off the CPU entirely, which is what "State moves to the GPU" above already commits
+to doing. The **direction** of this phase survives unchanged — get the tick off the CPU
+— but the mechanism is the state migration, not submit batching. K ticks per submit is
+still worth doing once the CPU is out of the loop (it removes the remaining 3%, and cuts
+the number of driver round-trips), but it is not the lever that makes Phase 1 pay off; do
+not plan Phase 1's effort around it. K is bounded by how often telemetry has to be
+observed, not by the GPU: any per-tick readback forces K = 1, which is why the telemetry
+constraint below is part of this phase and not an afterthought.
 
 **Then attack whatever Phase 0 names.** The prior is the retina, and `retina_digest.wgsl`
 plus its parity test suggest that path is already partly cut. The target is chosen by the

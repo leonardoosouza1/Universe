@@ -430,6 +430,16 @@ D=/media/llm-data/scratch/perf; rm -rf $D; mkdir -p $D; cp $G $D/
 
 The spec's acceptance: the parts plus the gaps must reconstruct wall-clock ms/tick within 10%. Measured wall clock at 768 beings is **33.61 ms/tick** (1500 ticks, `--sem-lento` off, brain on).
 
+> **Corrected 2026-08-27, final review.** This 33.61 ms/tick figure is the same `complete`
+> ablation row retired during Task 3's own execution (design spec §1): it was never
+> reproduced. Two later, independent direct measurements at the same 768-being config gave
+> ~27.6-28.1 ms/tick (`time` around a 1500-tick evaluation, 4 runs) and ~27.8-27.9 ms/tick
+> (a scaling-sweep re-run during Task 3's review round). Task 3's actual acceptance check
+> used the fitted cost model / a fresh measurement instead of this number — see
+> `docs/KERNEL_TIMING.md` for the measured table and the per-kernel breakdown this step
+> produced. Left in place because it is what the implementer actually ran against; do not
+> reuse it for a new measurement.
+
 ```bash
 time ./target/release/gpu_evolve --retomar --out $D --gens 1 --seres 768 --ticks 1500 \
   --width 28 --out-beta 0.0 --pistas 8005 --seed 77
@@ -850,9 +860,27 @@ Compare the open-loop ranking at each window against the closed-loop distance ra
 
 Time the screen for N candidates at the chosen window. The spec claims three orders of magnitude versus ~18 s closed-loop; the estimate came from counting FLOPs, whereas the measured brain kernel is 15% of 33.61 ms/tick at 768 beings. **Write down the measured number even if it is worse than the claim** — the claim is the thing to correct.
 
+> **Corrected 2026-08-27, final review.** This step's own instruction was followed and the
+> claim it names WAS corrected — that correction is what `docs/SCREEN_CALIBRATION.md`
+> is. Recording the final numbers here so a reader of the plan is not left with only the
+> pre-registered guess: the closed loop measures 0.97-1.06 s/genome, not ~18 s (`/usr/bin/time`,
+> 48 beings × 20 000 ticks, two repeats) — batch-of-1 was never how `gpu_evolve` runs, so
+> the "~18 s" comparison point never existed. The screen measures **46× cheaper** at a
+> 2 000-tick window with `--batch 48` (208.6 ms/genome at the full window, 21.8 ms at the
+> 2 000-tick window), not three orders of magnitude, and unbatched (`--batch 1`) it is
+> **8.4× more expensive** than the closed loop it was meant to replace. "33.61 ms/tick" is
+> also retired (see the Step 5 correction above and `docs/KERNEL_TIMING.md`); the brain
+> kernel's measured share of a tick is 2.2%, not 15% of that figure.
+
 - [ ] **Step 5: Write the calibration doc and commit**
 
 Record: the window, the ranking agreement, the measured cost per candidate, and — most importantly — the false-negative rate. A candidate scoring above 0.26 that nevertheless drives well is a false reject, and the funnel's whole value rests on that being rare. If any of the five mixes is a false reject, say so plainly and mark the threshold as unsafe for pruning.
+
+> **Corrected 2026-08-27, final review.** The commit template below still carries the
+> placeholder "18 s closed loop" from this task's original guess. The commit that was
+> actually made (`b294d3a`) used the real measured numbers instead — see the correction
+> above and `docs/SCREEN_CALIBRATION.md` §5. Left in place as the template it was; do not
+> copy "18 s" into a new commit message.
 
 ```bash
 git add docs/SCREEN_CALIBRATION.md
