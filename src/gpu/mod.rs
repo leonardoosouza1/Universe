@@ -210,7 +210,11 @@ impl RetinaGpu {
         let (device, queue) = pollster::block_on(adapter_obj.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("iara-compute"),
-                required_features: wgpu::Features::empty(),
+                // TIMESTAMP_QUERY is requested only when the adapter offers it: asking for a
+                // feature the adapter lacks makes request_device return None, and losing the
+                // whole device to gain a profiler is a bad trade. `GpuTimer::new` returns None
+                // when it was not granted, and the caller prints nothing rather than lying.
+                required_features: adapter_obj.features() & wgpu::Features::TIMESTAMP_QUERY,
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
