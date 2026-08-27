@@ -472,6 +472,21 @@ impl GpuCtx {
             return false;
         }
 
+        // `--perfil-kernel <N>`: this single check gates EVERY instrumentation side
+        // effect in this function -- `begin_frame`, every `mark_begin`/`resolve` call,
+        // this CPU `Instant` (which wraps the WHOLE function body, so `gaps` at the end
+        // means what it says), and physics's own CPU-wall measurement further down. A
+        // run with the flag off (`n_tick == 0`, the default) never calls
+        // `write_timestamp`, never resolves the query set, and never starts a stray
+        // `Instant` -- so a baseline taken with the flag off is not contaminated by
+        // having the capability, only by actually using it. `mark_end` no-ops on
+        // `None` by construction, so it does not need its own gate.
+        let n_tick = perfil_kernel();
+        let prints_this_tick = n_tick > 0 && (tick_idx as u32) % n_tick == 0;
+        let tick_t0 = prints_this_tick.then(std::time::Instant::now);
+        let mut total_gpu_ms: f32 = 0.0;
+        let mut physics_ms: f32 = 0.0;
+
         // Guarda de runtime (E4, REFACTOR_PLAN.md §E4 "NaN-check"): detecta posição
         // não-finita ANTES de submeter à GPU. Só em debug — em release (`cfg!` avaliado
         // em compile-time, custo zero no binário de produção) o guard real fica nas
@@ -1216,8 +1231,10 @@ impl GpuCtx {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("evolve-tick"),
             });
-        if let Some(t) = self.timer.as_mut() {
-            t.begin_frame();
+        if prints_this_tick {
+            if let Some(t) = self.timer.as_mut() {
+                t.begin_frame();
+            }
         }
 
         // Retina.
@@ -1266,11 +1283,13 @@ impl GpuCtx {
         // is called from here, where `&mut enc` is already in hand, instead of inside
         // `begin_compute_pass` — see `timing.rs` for why (this label also folds in
         // `copy_retina_prev`'s buffer copy, which runs just before the pass).
-        let t_retina = self
-            .timer
-            .as_mut()
-            .map(|t| t.mark_begin(&mut enc, "retina"))
-            .unwrap_or(false);
+        let t_retina = if prints_this_tick {
+            self.timer
+                .as_mut()
+                .and_then(|t| t.mark_begin(&mut enc, "retina"))
+        } else {
+            None
+        };
         self.percept
             .copy_retina_prev(&mut enc, &self.buf_retina_out);
         {
@@ -1288,11 +1307,13 @@ impl GpuCtx {
         }
 
         // Percepção.
-        let t_percept = self
-            .timer
-            .as_mut()
-            .map(|t| t.mark_begin(&mut enc, "perception"))
-            .unwrap_or(false);
+        let t_percept = if prints_this_tick {
+            self.timer
+                .as_mut()
+                .and_then(|t| t.mark_begin(&mut enc, "perception"))
+        } else {
+            None
+        };
         self.percept.bind_and_dispatch(
             &mut enc,
             &self.device,
@@ -1312,11 +1333,13 @@ impl GpuCtx {
         // canais. Roda ANTES do cérebro, para que `brain.bind_and_dispatch` já veja
         // ch192-207 preenchidos. Substitui o antigo readback de 340 KB/tick (retina
         // inteira) + laço Rust — ver `gpu::retina_digest` para o antes/depois completo.
-        let t_digest = self
-            .timer
-            .as_mut()
-            .map(|t| t.mark_begin(&mut enc, "retina_digest"))
-            .unwrap_or(false);
+        let t_digest = if prints_this_tick {
+            self.timer
+                .as_mut()
+                .and_then(|t| t.mark_begin(&mut enc, "retina_digest"))
+        } else {
+            None
+        };
         let extra_bytes = self.retina_digest.bind_and_dispatch(
             &mut enc,
             &self.device,
@@ -1348,11 +1371,13 @@ impl GpuCtx {
         if brain_fires {
             // No bracket recorded when `brain_fires` is false — an absent label reads
             // as "did not fire this tick" instead of a misleading 0.000 ms.
-            let t_brain = self
-                .timer
-                .as_mut()
-                .map(|t| t.mark_begin(&mut enc, "brain"))
-                .unwrap_or(false);
+            let t_brain = if prints_this_tick {
+                self.timer
+                    .as_mut()
+                    .and_then(|t| t.mark_begin(&mut enc, "brain"))
+            } else {
+                None
+            };
             self.brain
                 .bind_and_dispatch(&mut enc, n, &[], dt, Some(self.percept.buf_output()));
             if let Some(t) = self.timer.as_mut() {
@@ -1362,30 +1387,39 @@ impl GpuCtx {
 
         // Cérebro lento — colhe 48 canais da onda que já está na GPU e roda.
         // Encadeado no MESMO encoder: nenhum readback intermediário, nenhuma volta à CPU.
-        let t_slow_gather = self
-            .timer
-            .as_mut()
-            .map(|t| t.mark_begin(&mut enc, "slow.gather"))
-            .unwrap_or(false);
+        let t_slow_gather = if prints_this_tick {
+            self.timer
+                .as_mut()
+                .and_then(|t| t.mark_begin(&mut enc, "slow.gather"))
+        } else {
+            None
+        };
         self.slow
             .dispatch_gather(&mut enc, self.percept.buf_output(), n);
         if let Some(t) = self.timer.as_mut() {
             t.mark_end(&mut enc, t_slow_gather);
         }
-        let t_slow = self
-            .timer
-            .as_mut()
-            .map(|t| t.mark_begin(&mut enc, "slow"))
-            .unwrap_or(false);
+        let t_slow = if prints_this_tick {
+            self.timer
+                .as_mut()
+                .and_then(|t| t.mark_begin(&mut enc, "slow"))
+        } else {
+            None
+        };
         self.slow.dispatch(&mut enc, n, dt);
         if let Some(t) = self.timer.as_mut() {
             t.mark_end(&mut enc, t_slow);
         }
 
         // Resolve must be on the same encoder as the marks above (`timing.rs`), so it
-        // happens right before this encoder's own submit.
-        if let Some(t) = self.timer.as_mut() {
-            t.resolve(&mut enc);
+        // happens right before this encoder's own submit -- gated on `prints_this_tick`
+        // like every other instrumentation call above, so a non-printing tick neither
+        // resolves stale slots left over from the last printing tick nor pays for the
+        // `resolve_query_set` + buffer copy at all.
+        if prints_this_tick {
+            if let Some(t) = self.timer.as_mut() {
+                t.resolve(&mut enc);
+            }
         }
 
         // Submit único.
@@ -1398,8 +1432,6 @@ impl GpuCtx {
         // synchronous submit+readback later in this function, so no timestamp written
         // from this encoder can reach inside it. It is measured separately, on the
         // CPU, right around that call — see the `[perfil] physics.step` print below.
-        let n_tick = perfil_kernel();
-        let prints_this_tick = n_tick > 0 && (tick_idx as u32) % n_tick == 0;
         if prints_this_tick && self.timer.is_none() {
             // `--perfil-kernel` was asked for but this device never got a `GpuTimer`
             // (no `Features::TIMESTAMP_QUERY` at construction, see `GpuCtx::new`) — say
@@ -1412,16 +1444,16 @@ impl GpuCtx {
                 let period = self.queue.get_timestamp_period();
                 let rows = t.read_ms(&self.device, period);
                 if rows.is_empty() {
-                    // An empty `Vec` here means one of two things, and printing "0.000 ms"
-                    // for either would hide a real problem (this is the failure mode the
-                    // task brief called out explicitly). `read_ms` already `eprintln!`s the
-                    // mapping-failure case itself, so: a stderr line just above means the
-                    // buffer map failed (device lost, already mapped, driver hiccup); no
-                    // stderr line means `can_mark_in_encoder` is false, i.e. the device was
-                    // granted `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`,
-                    // so every `mark_begin` this tick returned `false` and nothing was ever
-                    // pushed into `labels` — the `retina` bracket runs unconditionally every
-                    // tick, so a `Some(timer)` with zero rows can only mean that.
+                    // An empty `Vec` here can mean two different things, and printing
+                    // "0.000 ms" for either would hide a real problem (the failure mode
+                    // the task brief called out explicitly). Which one it is is NOT
+                    // decidable from this branch alone -- `read_ms` already `eprintln!`s
+                    // the mapping-failure case itself, so check stderr: a line there means
+                    // the buffer map failed (device lost, already mapped, driver hiccup);
+                    // no line there means `can_mark_in_encoder` is false (device granted
+                    // `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`), so
+                    // every `mark_begin` this tick returned `None` and nothing was ever
+                    // pushed into `labels`.
                     println!("  [perfil] no GPU-timed labels this tick (see stderr for why)");
                 } else {
                     let soma: f32 = rows.iter().map(|(_, ms)| ms).sum();
@@ -1429,9 +1461,10 @@ impl GpuCtx {
                         println!("  [perfil] {label:<22} {ms:8.4} ms");
                     }
                     println!(
-                        "  [perfil] {:<22} {soma:8.4} ms (soma dos kernels GPU)",
+                        "  [perfil] {:<22} {soma:8.4} ms (sum of GPU kernels)",
                         "TOTAL"
                     );
+                    total_gpu_ms = soma;
                 }
             }
         }
@@ -2047,20 +2080,18 @@ impl GpuCtx {
         // exactly because the call is synchronous — the wall time it reports IS the
         // real cost (three kernels' GPU execution plus the driver round-trip for the
         // blocking readback), not an approximation of it. Labelled distinctly in the
-        // printout so a reader never mistakes it for a `GpuTimer` measurement.
-        // Independent of `self.timer`: this is a CPU `Instant`, not a GPU query, so it
-        // works even on a device that never got `TIMESTAMP_QUERY`.
-        let perfil_this_tick = {
-            let n_tick = perfil_kernel();
-            n_tick > 0 && (tick_idx as u32) % n_tick == 0
-        };
-        let physics_t0 = perfil_this_tick.then(std::time::Instant::now);
+        // printout so a reader never mistakes it for a `GpuTimer` measurement. Reuses
+        // the SAME `prints_this_tick` computed at the top of this function -- an
+        // `Instant` is cheap enough that a second gate is not needed for overhead
+        // reasons, but a single source of truth for "is this a printing tick" is what
+        // keeps this row and the GPU rows above sampled on the SAME tick.
+        let physics_t0 = prints_this_tick.then(std::time::Instant::now);
         let ok = self.phys_gpu.step(&mut phys_states);
         if let Some(t0) = physics_t0 {
+            physics_ms = t0.elapsed().as_secs_f32() * 1000.0;
             println!(
                 "  [perfil] {:<22} {:8.4} ms (CPU wall, blocking submit)",
-                "physics.step",
-                t0.elapsed().as_secs_f32() * 1000.0
+                "physics.step", physics_ms
             );
         }
         if !ok {
@@ -2098,6 +2129,25 @@ impl GpuCtx {
         // memory0 → temporal.
         let mem0: Vec<f32> = (0..n).map(|i| intents[i][0].clamp(0.0, 1.0)).collect();
         self.percept.update_memory0(&self.queue, &mem0[..n]);
+
+        // `--perfil-kernel <N>`: the deliverable this instrument exists to produce.
+        // `TOTAL` and `physics.step` only cover what got a bracket or an `Instant`;
+        // everything else in this function -- buffer/bind-group rebuilds, the
+        // per-being Rust loops before and after `phys_gpu.step`, submission and
+        // scheduling latency for the two device round trips -- is invisible to both.
+        // Wrapping the WHOLE function body in one CPU `Instant` and subtracting what
+        // was already measured turns that invisible remainder into a number instead
+        // of a guess. Not clamped to zero: a negative value would mean `tick_t0` was
+        // started after some of the work it is supposed to cover, which is a bug in
+        // this instrument worth seeing, not worth hiding.
+        if let Some(t0) = tick_t0 {
+            let tick_ms = t0.elapsed().as_secs_f32() * 1000.0;
+            let gaps_ms = tick_ms - total_gpu_ms - physics_ms;
+            println!(
+                "  [perfil] {:<22} {gaps_ms:8.4} ms (tick wall {tick_ms:.4} - TOTAL - physics.step)",
+                "gaps"
+            );
+        }
 
         true
     }

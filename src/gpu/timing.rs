@@ -83,7 +83,7 @@ impl GpuTimer {
     }
 
     /// Reserves the next label slot and writes its "begin" timestamp directly on
-    /// `enc`, outside any compute pass.
+    /// `enc`, outside any compute pass. Returns the reserved slot index on success.
     ///
     /// Why this exists next to `scope`: `scope` times one pass (`SetPipeline` through
     /// the end of that `ComputePass`), so the gap BETWEEN two consecutive dispatches —
@@ -93,31 +93,35 @@ impl GpuTimer {
     /// own) from the outside captures that gap as part of the measurement instead of
     /// hiding it, at the cost of losing visibility into the sub-passes it contains.
     ///
-    /// Returns `false` — writing nothing — when the device lacks
+    /// Returns `None` — writing nothing — when the device lacks
     /// `TIMESTAMP_QUERY_INSIDE_ENCODERS` or `max_passes` slots are already used this
-    /// frame. The caller must feed that value into the matching `mark_end`: an
-    /// unconditional `mark_end` after a dropped `mark_begin` would write an "end"
-    /// timestamp into whatever slot happens to be last, corrupting an unrelated label.
+    /// frame. The caller feeds the returned index into `mark_end`, which writes the
+    /// "end" timestamp at THAT slot rather than assuming "whatever is last" — an
+    /// earlier version took a `bool` and looked up `labels.len() - 1`, which is only
+    /// correct if `mark_begin`/`mark_end` pairs never interleave with `scope` or with
+    /// each other; returning the index removes that assumption instead of documenting
+    /// it as a caller obligation.
     #[must_use]
-    pub fn mark_begin(&mut self, enc: &mut wgpu::CommandEncoder, label: &'static str) -> bool {
+    pub fn mark_begin(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        label: &'static str,
+    ) -> Option<usize> {
         if !self.can_mark_in_encoder || self.labels.len() >= self.max_passes {
-            return false;
+            return None;
         }
-        let i = self.labels.len() as u32;
+        let i = self.labels.len();
         self.labels.push(label);
-        enc.write_timestamp(&self.set, i * 2);
-        true
+        enc.write_timestamp(&self.set, (i as u32) * 2);
+        Some(i)
     }
 
-    /// Writes the "end" timestamp paired with the most recent successful
-    /// `mark_begin`. `began` must be the value that call returned; `false` is a no-op,
-    /// so a skipped begin never writes a mismatched end.
-    pub fn mark_end(&mut self, enc: &mut wgpu::CommandEncoder, began: bool) {
-        if !began {
-            return;
+    /// Writes the "end" timestamp for the slot `mark_begin` returned. `None` is a
+    /// no-op, so a dropped `mark_begin` never writes a mismatched end.
+    pub fn mark_end(&mut self, enc: &mut wgpu::CommandEncoder, slot: Option<usize>) {
+        if let Some(i) = slot {
+            enc.write_timestamp(&self.set, (i as u32) * 2 + 1);
         }
-        let i = (self.labels.len() - 1) as u32;
-        enc.write_timestamp(&self.set, i * 2 + 1);
     }
 
     /// Call once per frame before recording passes.

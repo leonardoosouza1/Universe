@@ -29,10 +29,18 @@ ms per tick = 0.88 + 0.0333 × n_beings
 
 | configuration | ms/tick | share |
 |---|---|---|
-| complete | 33.61 | — |
+| complete (SUPERSEDED — see note below) | 33.61 | — |
 | `--sem-lento` (no slow brain) | 29.92 | slow brain = 11% |
 | `--brain-skip 1000` (no fast brain) | 28.41 | fast brain = 15% |
 | both off | 26.53 | **both brains = 21%** |
+
+**Note added during Task 3 (kernel-timing instrument, 2026-08-26):** the `complete`
+row's 33.61 ms/tick disagrees with the fitted cost model above (`0.88 + 0.0333 × 768 =
+26.45`) and with two later, independent direct measurements at the same 768-being
+config — `time` around a 1500-tick evaluation (~27.6-28.1 ms/tick, 4 runs) and a
+scaling sweep re-run during Task 3's review round (~27.8-27.9 ms/tick). The `complete`
+row was not reproduced; treat 33.61 as wrong rather than as a real regression the
+brains introduce, and use the fitted model or a fresh measurement instead.
 
 **79% of the cost is perception and physics.** With no brain at all a being still costs
 34.5 µs per tick. Optimising the brain is optimising a fifth of the problem.
