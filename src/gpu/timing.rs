@@ -91,14 +91,47 @@ impl GpuTimer {
     }
 
     /// Read back after the submit has been polled. One entry per scope, in order.
+    ///
+    /// Follows this repository's documented readback order, `map_async` → `poll` →
+    /// `recv` (`src/gpu/CLAUDE.md:86`): polling before `map_async` is a silent
+    /// deadlock, already paid for once in `brain.rs:1196-1199` (a poll issued before
+    /// the map request never serves the callback, so `recv()` blocks forever with no
+    /// error).
+    ///
+    /// Unlike the readbacks this pattern is copied from (`core.rs:549-555`,
+    /// `brain.rs:696-700`), which forward the map result through the channel and then
+    /// discard it with `let _ = rx.recv();`, this one inspects it. A timing readback is
+    /// diagnostic-only — it must never crash a race over a missing frame of
+    /// measurements — so a mapping failure (device lost, buffer already mapped, a
+    /// driver hiccup) is reported with `eprintln!` and an empty `Vec` instead of
+    /// surfacing as an opaque panic inside `get_mapped_range()`.
     pub fn read_ms(&self, device: &wgpu::Device, period_ns: f32) -> Vec<(&'static str, f32)> {
         let n = self.labels.len();
         if n == 0 {
             return Vec::new();
         }
         let slice = self.read_buf.slice(..(n as u64) * 16);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         device.poll(wgpu::Maintain::Wait);
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                eprintln!(
+                    "GpuTimer::read_ms: buffer mapping failed ({e:?}) — no timings this frame"
+                );
+                return Vec::new();
+            }
+            Err(_) => {
+                eprintln!(
+                    "GpuTimer::read_ms: mapping callback channel closed before responding \
+                     (GPU likely lost) — no timings this frame"
+                );
+                return Vec::new();
+            }
+        }
         let data = slice.get_mapped_range();
         let raw: &[u64] = bytemuck::cast_slice(&data);
         let out = self
