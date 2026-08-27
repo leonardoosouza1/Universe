@@ -23,9 +23,12 @@ spec assumes it to be.**
   accept/reject partition that 0.26 produces at 20 000 — the score moves with the window.
 * **The metric is not monotone in genome distance** (13.5% of strictly-ordered pairs are
   inverted; three perturbation directions of identical magnitude score 3.2× apart), and it
-  **does not rank by quality at all**: Spearman against closed-loop driving distance is
-  **−0.05** over 85 candidates, negative at essentially every window. It is a filter at
-  best, and the filter is wrong.
+  **does not rank by quality**: Spearman against closed-loop driving distance is **−0.05**
+  over 85 candidates. The sign is the one a filter wants (more divergent ↔ drives worse);
+  the magnitude is the problem, and it is near zero because two subgroups cancel — ρ =
+  **−0.618** among the 27 candidates worse than the reference, ρ = **+0.382**, inverted,
+  among the 56 that are better. A distance from one point cannot tell the two directions
+  apart. It is a filter at best, and the filter is wrong.
 * **False rejects: 6 of the 7 candidates the screen rejects drive at ≥75% of the recording
   champion; 2 of the 7 drive better than it.** `gen30` — a real champion from the
   recording's own lineage — scores 0.2618 (rejected) and drives **162%** of the champion.
@@ -229,15 +232,45 @@ per replay window and per candidate set:
 
 **−0.05 over 85 candidates.** Per set: −0.36 (Set A, 25 degraded copies) and −0.10
 (Set B, 60 real champions), at the full window; the sign is negative at essentially every
-window of both sets. The screen's score carries **no usable information about driving
-quality**, and what little signal there is points the wrong way: within this candidate
-population, being *more* divergent from the recording champion is weakly associated with
-driving *better*.
+window of both sets.
 
-The mechanism is not mysterious: the recording champion `gen43` is one point in a
-population where 56 of the 85 candidates outdrive it on this track (closed-loop medians
-span 71 m to 4 949 m). A metric whose zero is pinned at that one point measures distance
-from a mediocre reference, and distance from a mediocre reference is not quality.
+**The sign is the direction the funnel assumes — it is the MAGNITUDE that is fatal.**
+A negative ρ means a higher score pairs with a shorter distance, i.e. more divergent
+drives worse, which is what a rejection filter needs. |ρ| ≈ 0.02-0.08 means it does so
+with no usable resolution. (An earlier version of this paragraph read the sign backwards
+and claimed the correlation "points the wrong way". It does not; corrected here in the
+fix round of 2026-08-27, with the original claim named rather than quietly deleted,
+because the wrong reading overstated the negative result.)
+
+**Why the correlation is near zero: two subgroups with opposite signs, cancelling.**
+Split the 85 rows at the reference's own 2 418 m (the two rows that *are* the reference —
+`mix100` and `gen43` are the same genome — sit exactly on the boundary and belong to
+neither side):
+
+| subgroup | n | ρ(score, closed-loop median) |
+|---|---:|---:|
+| drives **worse** than the reference | 27 | **−0.618** |
+| drives **better** than the reference | 56 | **+0.382** |
+| all rows | 85 | **−0.050** |
+
+(Counting the two boundary rows into the worse side instead gives n = 29, ρ = −0.692;
+into the better side, n = 58, ρ = +0.444. The split's sign structure does not depend on
+the convention.)
+
+That is the mechanism, and it is not a statistical accident: **a distance from one point
+cannot tell "better" from "worse", because both directions look the same to it.** Among
+candidates that are worse than the reference the screen works well (−0.618). Among the 56
+that are better it is *inverted* (+0.382) — the further from the reference, the further
+they drive. The two halves cancel to −0.05. This is why the reference matters more than
+the metric: `gen43` is outdriven by 56 of the 85 candidates on this track (closed-loop
+medians span 71 m to 4 949 m), so most of the population sits in the half where the screen
+is actively backwards.
+
+**Leverage: one point carries most of what is left.** The whole-set correlation is
+−0.0499 with `noi200_s1` (the destroyed brain) and **−0.0155 without it** (n = 84). On the
+8200 control below, −0.4909 with it and −0.3212 without (n = 10). Stated because it
+strengthens rather than weakens the reading: outside the one candidate that is obviously
+broken, there is essentially nothing there.
 
 **The over-fitting explanation does not rescue it.** `gen43` was selected on track 8200
 (generation index 43 mod 3 = 1 of `--pistas 8005,8200,9001`) and everything above is
@@ -261,14 +294,23 @@ It was tested — the same 11 candidates re-run on 8200, the champion's own trac
 `ρ(score, 8200 median) = −0.491` (n = 11), against `ρ(score, 8005 median) = −0.382` over
 the same 11.
 
-The correlation is *more* negative on the champion's home track, not less. (Caveat on this
-control: 8200's lap is ~2 377 m and 20 000 ticks at 64 Hz allow ≈6 900-7 300 m, so the top
-rows here are close to the tick-budget ceiling and their ordering among themselves is not
-to be trusted. The sign of the correlation does not depend on them.)
+**Read carefully, because this cuts the other way from what an earlier draft of this
+document claimed.** More negative means the screen tracks quality BETTER on `gen43`'s home
+track (−0.491 there against −0.382 on 8005 over the same 11). That is weak evidence *for*
+the over-fitting hypothesis, not against it: away from the track it was selected on, the
+champion is a worse reference and the screen degrades further. The control therefore does
+not kill the escape — **it does not need to**, because the escape was never a defence of
+the threshold. Even on its home track, and even at ρ = −0.491, the screen rejects
+`noi050_s2`, which drives 4 316 m there against the champion's 4 193 m. Two caveats on this
+control, both of which say to lean on it less rather than more: n = 11, and 8200's lap is
+~2 377 m while 20 000 ticks at 64 Hz allow ≈6 900-7 300 m, so the top rows are close to the
+tick-budget ceiling and their ordering among themselves is not to be trusted.
 
 **Verdict on question 2: the screen is neither a ranker nor a trustworthy filter at 0.26.**
 It is a *similarity* measure that behaves monotonically only along a single fixed
-perturbation direction, and similarity to this champion is uncorrelated with fitness.
+perturbation direction; its correlation with fitness has the right sign and no usable
+magnitude, and it is *inverted* over the 56 candidates that matter most — the ones better
+than the reference.
 
 ---
 
@@ -412,9 +454,17 @@ Columns 250…20000 are the screen's error/tick at that replay window.
 | `gen30` | 0.396 | 0.6159 | 0.6124 | 0.5870 | 0.4434 | 0.3518 | 0.3314 | 0.2618 | 3906 | 41/48 | 162% | REJECT |
 | `gen11` | 0.397 | 0.5251 | 0.5179 | 0.5051 | 0.4075 | 0.3576 | 0.3439 | 0.2753 | 2083 | 15/48 | 86% | REJECT |
 
-(`gen51` and `gen52` are byte-identical — `cmp` confirms; the elite was carried through
-that generation unchanged — which is why their rows agree exactly. Identical numbers with
-a found cause, per `CLAUDE.md` rule 2. Set B is 60 files, 59 distinct genomes.)
+**The 85 rows are 83 distinct genomes.** Two duplicate pairs, both verified with `md5sum`
+and both benign, but both disclosed because identical numbers are an alarm until they have
+a cause (`CLAUDE.md` rule 2):
+
+* `gen51` and `gen52` are byte-identical — the elite was carried through that generation
+  unchanged. Set B is 60 files, 59 distinct genomes.
+* `mix100` (Set A) and `gen43` (Set B) are the same file: the recording genome itself,
+  which is the zero point of both sets by construction. Its row appears once in each
+  table and is counted twice in the n = 85 totals. Removing the duplicate changes ρ over
+  the whole set in the third decimal and changes no verdict; it is the reason the
+  subgroup split above has two rows sitting exactly on the boundary.
 
 ---
 
@@ -461,16 +511,27 @@ to 2 000 ticks and 48 candidates batched per dispatch.
 
 Rejected: **pruning at 0.26**. 6 of 7 rejects drive; 2 beat the champion.
 
-Rejected: **ranking**. ρ = −0.05 against closed-loop quality over 85 candidates.
+Rejected: **ranking**. ρ = −0.05 against closed-loop quality over 85 candidates — right
+sign, no magnitude, and *inverted* (+0.382) over the 56 candidates that outdrive the
+reference.
 
 What survives is much narrower. The single thing the screen did reliably is separate a
 *destroyed* brain from a functioning one: `noi200_s1` scored 0.9066 while every candidate
 that could still drive scored ≤0.4287 — a factor of 2.1 with nothing in between. As a
-**tripwire for catastrophic divergence**, with a threshold around **0.60** (conservatively
-above the highest-scoring brain that still drove, and well below the destroyed one), it
-costs 21.8 ms per candidate and, on this evidence, produces no false rejects. That is a
-much smaller claim than the funnel the spec describes, and it is the only one the data
-supports.
+**tripwire for catastrophic divergence**, with a threshold around **0.60** (above the
+highest-scoring brain that still drove, below the destroyed one), it costs 21.8 ms per
+candidate and, on this evidence, produces no false rejects.
+
+**That 0.60 is n = 1 on each side, and this document is not entitled to forget it.** One
+destroyed brain at 0.9066, one highest survivor at 0.4287; the gap is wide, but a gap
+defined by two points is a hypothesis, not a calibration. The paragraph above demands that
+thresholds be measured rather than transplanted, and 0.60 has not yet met that bar — it is
+the *shape* the next calibration should test (several genuinely broken brains, several
+marginal ones), not a number to start pruning with. What is measured is the ordering:
+every brain that still drove scored below every brain that did not.
+
+That is a much smaller claim than the funnel the spec describes, and it is the only one
+the data supports.
 
 **Limits of this calibration, stated so the next reader does not over-generalise it.**
 One recording, one champion (`ereg-m4-m4-s77` gen 43), one track for the ground truth
@@ -493,6 +554,19 @@ Two things would have to change before the screen could prune:
    controller replacing the brain entirely — not for perturbed genomes of the same
    architecture. The spec adopted it across that gap without a check. This document is
    that check, and it fails.
+
+   **The same document was borrowed from twice, and the second import was also wrong.**
+   The spec's §4 justifies Phase 2 existing at all with "a closed-form ridge pilot ...
+   drove 7156 m against the champion's 6592 m". `DESTILABILIDADE.md:140-147` files that
+   number under *HISTÓRICO — a versão anterior deste veredito (fiação com bug)*:
+   <!-- check-language: allow --> the pilot's override never reached the motor, so 7156 m
+   was the *champion* running with one contaminated memory channel, not a distilled
+   controller driving. The corrected linear-ridge figure is 1027 m, 15.6% (`:350`). The
+   premise survives via the v2 non-linear closed-form pilot (7485 m, 113.5%; 102.4% on an
+   unseen track), at different numbers. Both corrections are now in the spec. The general
+   lesson is worth more than either: **a constant imported from another document inherits
+   that document's corrections, and this repository's records are corrected in place
+   precisely so that they can be re-read.**
 
 ---
 

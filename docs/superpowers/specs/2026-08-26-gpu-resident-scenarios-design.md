@@ -8,11 +8,22 @@ Everything below is ordered by **measured** payoff. Where a number is a guess it
 
 > **⚠ Correction, 2026-08-27 — section 4 (Phase 2, open-loop screening) is substantially
 > wrong and has a correction block inside it.** Its speed claim ("three orders of
-> magnitude per candidate") was 46× when measured, its rejection threshold (0.26) rejects
-> brains that drive *better* than the recording champion, and the score does not rank
-> candidates by quality at all (Spearman −0.05 over 85 candidates). Evidence, commands and
-> the re-scoped proposal: **`docs/SCREEN_CALIBRATION.md`**. Sections 1-3 and 5 are not
-> affected.
+> magnitude per candidate") was 46× when measured; its rejection threshold (0.26) rejects
+> brains that drive *better* than the recording champion; the score does not rank
+> candidates by quality (Spearman −0.05 over 85 candidates); and **both** of the numbers
+> §4 borrows from `docs/DESTILABILIDADE.md` were taken across a gap that was never
+> checked — the 0.26/0.18 pair and the "7156 m against 6592 m" claim, the second of which
+> that document files under *HISTÓRICO — a versão anterior deste veredito (fiação com
+> bug)* (`:140-147`). <!-- check-language: allow --> Evidence, commands and the re-scoped
+> proposal: **`docs/SCREEN_CALIBRATION.md`**.
+>
+> **Scope of what was audited, stated precisely so this banner does not certify more than
+> it checked.** Task 6 measured §4 and only §4. §1-3 and §5 were re-read in the review of
+> 2026-08-27 for the *specific* failure mode found here — a constant imported from another
+> document without a check — and cite no external-document constants; their own numbers
+> (the cost model, the ablation table, the 60 ms world swap, PR = 4.68) were measured in
+> this repository on 2026-08-26 and carry their own commands. They are **unaudited by
+> measurement**, not verified.
 
 ## 1. The measured baseline
 
@@ -144,8 +155,9 @@ This is what actually delivers "many scenarios in minutes", and it does not need
 engine to be fast.
 
 Distilling a controller from a recorded champion is already proven here: a closed-form
-ridge pilot fitted to the champion's own replay drove **7156 m against the champion's
-6592 m** (`docs/DESTILABILIDADE.md`). The same document measures where a clone stops
+ridge pilot fitted to the champion's own replay drove ~~**7156 m against the champion's
+6592 m**~~ (`docs/DESTILABILIDADE.md`). [**Superseded — see the correction below; the
+premise survives, this number does not.**] The same document measures where a clone stops
 working: per-tick error **0.26 compounds** in closed loop and the clone stalls, **0.18
 does not** and it drives.
 
@@ -165,7 +177,7 @@ recorded states is a forward pass with no physics: ~500 MFLOP over 20k states, v
   cannot see what is new. Any use of it for novel architectures needs a separate,
   closed-loop arm.
 
-> ### ⚠ Correction, 2026-08-27 — everything above about the SPEED and the THRESHOLD is wrong
+> ### ⚠ Correction, 2026-08-27 — the SPEED, the THRESHOLD and BOTH borrowed constants are wrong
 >
 > Measured in Task 6 against closed-loop ground truth, 85 candidates, one `--gens 1`
 > evaluation each. Full record and commands: **`docs/SCREEN_CALIBRATION.md`**. The
@@ -195,12 +207,34 @@ recorded states is a forward pass with no physics: ~500 MFLOP over 20k states, v
 > the transplant was never checked until now.
 >
 > **3. The screen does not rank.** Spearman of the score against closed-loop driving
-> distance is **−0.05** over the 85 candidates, and negative at every replay window of
-> both candidate sets. It is not monotone in genome distance either (13.5% of
-> strictly-ordered pairs inverted; three perturbation directions of identical magnitude
-> score 3.2× apart).
+> distance is **−0.05** over the 85 candidates. The sign is the one a rejection filter
+> wants (more divergent ↔ drives worse); the magnitude is the problem, and it is near zero
+> because two subgroups cancel: ρ = **−0.618** among the 27 candidates that drive worse
+> than the reference, ρ = **+0.382**, *inverted*, among the 56 that drive better. A
+> distance from one point cannot tell the two directions apart, and most of this
+> population sits in the half where the screen is backwards. It is not monotone in genome
+> distance either (13.5% of strictly-ordered pairs inverted; three perturbation directions
+> of identical magnitude score 3.2× apart).
 >
-> **4. "Blind to genuine novelty" was right, and is worse than stated.** The bullet
+> **4. The "7156 m against 6592 m" that justifies Phase 2 existing at all is a
+> superseded number from a buggy run.** `docs/DESTILABILIDADE.md:140-147` files it under
+> *"HISTÓRICO — a versão anterior deste veredito (fiação com bug)"*
+> <!-- check-language: allow --> — the pilot's override never reached the motor, so 7156 m
+> was **the champion itself** running with one contaminated memory channel (ch120), not a
+> distilled controller driving. The corrected figure for the linear ridge pilot the
+> sentence describes is **1027 m, 15.6% of the champion** (`:350`).
+>
+> The *premise* of Phase 2 nevertheless survives, and it is worth being exact about what
+> was salvaged: the same corrected table shows a **non-linear** closed-form pilot (pyramid
+> basis + arctanh, still solved in closed form) at **7485 m, 113.5%** on the training
+> track and a mixed-notebook version at **102.4% on a track it had never seen**. So
+> "distilling a controller from a recorded champion is proven here" is true — for the v2
+> non-linear pilot, at different numbers, and not for the linear ridge the sentence names.
+> Two constants were imported from that document into this section and neither was checked
+> against its own corrections; Task 6 audited the 0.26/0.18 pair and this one was found in
+> the review of that work.
+>
+> **5. "Blind to genuine novelty" was right, and is worse than stated.** The bullet
 > treats this as a limit on *novel architectures*. It is not: `gen30` is the same
 > architecture, from the same lineage, twelve generations from the recording genome, and
 > it is rejected. The blindness bites inside the existing search, not only outside it.
@@ -209,8 +243,10 @@ recorded states is a forward pass with no physics: ~500 MFLOP over 20k states, v
 > 20 000 ticks) and it reliably separates a *destroyed* brain from a functioning one:
 > 0.9066 for `noi200_s1` against ≤0.4287 for everything that could still drive. Phase 2
 > is therefore re-scoped from a rejection funnel to a **tripwire at ≈0.60**, at 21.8 ms
-> per candidate. Anything more than that needs a reference that is not one champion —
-> see `docs/SCREEN_CALIBRATION.md` §6.
+> per candidate — with the caveat that 0.60 is itself n = 1 per side (one destroyed brain,
+> one highest survivor) and is a hypothesis to be calibrated, not a number to start pruning
+> with. Anything more than that needs a reference that is not one champion — see
+> `docs/SCREEN_CALIBRATION.md` §6.
 
 ## 5. Phase 3 — the world matrix (sketch)
 
