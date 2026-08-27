@@ -242,8 +242,21 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ## Task 2: Request the feature, and degrade honestly when it is absent
 
 **Files:**
-- Modify: `src/gpu/mod.rs:208-215` (the `request_device` call)
+- Modify: `src/bin/gpu_evolve/context.rs:254` (`GpuCtx::new`, label `"iara-evolve"`) — **this is the device that matters**
+- Modify: `src/gpu/mod.rs:208-215` (`RetinaGpu::new`, used by the Bevy and `gpu_validate` paths)
 - Test: `tests/timing_feature.rs` (create)
+
+> **Corrected 2026-08-26 during execution.** This task originally named only
+> `src/gpu/mod.rs`. That was wrong: `gpu_evolve` never constructs a `RetinaGpu` — it opens
+> its OWN device at `context.rs:254`, and Task 3 wires the timer into `context.rs` and
+> consumes `self.device`. With only `mod.rs` patched, `GpuTimer::new` returns `None` inside
+> the one binary that matters and `--perfil-kernel` prints an empty table in silence. There
+> are 10 `request_device` sites in this tree; the other 8 belong to other binaries and stay
+> untouched — no test justifies changing them.
+>
+> The inertness proof inherits the same defect: with the changed line unreachable from
+> `gpu_evolve`, a byte-identical `obs.f32` proves nothing, because it would be identical
+> with the change deleted. Run it only after `context.rs` is patched.
 
 **Interfaces:**
 - Consumes: `GpuTimer::new` from Task 1.

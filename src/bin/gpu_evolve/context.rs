@@ -254,7 +254,14 @@ impl GpuCtx {
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("iara-evolve"),
-                required_features: wgpu::Features::empty(),
+                // TIMESTAMP_QUERY is requested only when the adapter offers it: asking for a
+                // feature the adapter lacks makes request_device return None, and losing the
+                // whole device to gain a profiler is a bad trade. `src/gpu/timing.rs`'s
+                // `GpuTimer::new` is the consumer — it gates on this bit and returns None
+                // (silently, no timings) when it was not granted. This is the device
+                // `gpu_evolve` actually runs the tick on; `src/gpu/mod.rs`'s `RetinaGpu`
+                // is a separate device used by the Bevy/`gpu_validate` path only.
+                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
