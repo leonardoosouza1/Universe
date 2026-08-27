@@ -197,10 +197,16 @@ pub fn read_all(path: &str) -> std::io::Result<(Vec<f32>, Vec<[f32; 3]>, WaveCon
         )));
     }
     let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    if version > FORMAT_VERSION {
+    // `version == 0` used to fall through the old `version > FORMAT_VERSION` check and
+    // be read as v1 — a 0 here is not an old format to fall back to (the magic-sniff
+    // check above already requires the `UWAV` header, so nothing that predates
+    // versioning gets this far); it is a corrupt or hand-edited file, and must be
+    // rejected the same as a version newer than this binary understands.
+    if version == 0 || version > FORMAT_VERSION {
         return Err(invalid_data(format!(
-            "{path}: UWAV version {version} is newer than this binary understands \
-             ({FORMAT_VERSION}). Rebuild the screen before reading it."
+            "{path}: UWAV version {version} is not a supported version (this binary \
+             understands {FORMAT_VERSION}). Rebuild the screen if this file is newer, \
+             or re-record it if it is corrupt."
         )));
     }
     let config: WaveConfig = *bytemuck::from_bytes(&bytes[8..header_len]);
@@ -275,10 +281,28 @@ mod tests {
         }
     }
 
-    fn temp_path(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("wave_{tag}_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("w.f32")
+    /// Owns a per-test scratch directory and removes it on drop, including on a
+    /// panicking assertion — a manual `remove_dir_all` at the end of the test body
+    /// never runs in that case, which is how this file's tests leaked 60 `/tmp/wave_*`
+    /// directories across roughly a dozen `cargo test` runs before this guard existed.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("wave_{tag}_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+
+        fn file(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     /// The format has silently dropped fields before (the slow brain's 1091 weights,
@@ -286,7 +310,8 @@ mod tests {
     /// round-tripped before anything depends on it.
     #[test]
     fn a_recording_survives_the_disk_with_its_header() {
-        let path = temp_path("rt");
+        let dir = TempDir::new("rt");
+        let path = dir.file("w.f32");
         let cfg = sample_config();
         let wave_a: Vec<f32> = (0..WAVE_CHANNELS).map(|i| i as f32 * 0.5).collect();
         let wave_b: Vec<f32> = (0..WAVE_CHANNELS).map(|i| -(i as f32)).collect();
@@ -308,7 +333,8 @@ mod tests {
 
     #[test]
     fn a_legacy_headerless_file_is_rejected_not_defaulted() {
-        let path = temp_path("legacy");
+        let dir = TempDir::new("legacy");
+        let path = dir.file("w.f32");
         // Pre-header format: rows straight from byte 0, no magic.
         let wave = vec![0.0f32; WAVE_CHANNELS];
         {
@@ -322,9 +348,30 @@ mod tests {
         );
     }
 
+    /// Regression: `if version > FORMAT_VERSION` let version 0 through as if it were v1,
+    /// silently accepting a corrupt or hand-edited header instead of naming the problem.
+    #[test]
+    fn a_zero_version_header_is_rejected_not_read_as_v1() {
+        let dir = TempDir::new("v0");
+        let path = dir.file("w.f32");
+        {
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+            f.write_all(MAGIC).unwrap();
+            f.write_all(&0u32.to_le_bytes()).unwrap();
+            let cfg = sample_config();
+            f.write_all(bytemuck::bytes_of(&cfg)).unwrap();
+        }
+        let err = read_all(path.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.to_string().contains("version 0"),
+            "must name the bad version, got: {err}"
+        );
+    }
+
     #[test]
     fn sensor_noise_makes_a_recording_irreproducible_and_it_is_rejected() {
-        let path = temp_path("noise");
+        let dir = TempDir::new("noise");
+        let path = dir.file("w.f32");
         let mut cfg = sample_config();
         cfg.noise_sigma = 6.0;
         {
@@ -337,7 +384,8 @@ mod tests {
 
     #[test]
     fn a_ghost_pilot_recording_is_rejected() {
-        let path = temp_path("pilot");
+        let dir = TempDir::new("pilot");
+        let path = dir.file("w.f32");
         let mut cfg = sample_config();
         cfg.pilot_active = 1;
         {
@@ -350,7 +398,8 @@ mod tests {
 
     #[test]
     fn a_truncated_file_is_an_error_not_a_short_read() {
-        let path = temp_path("trunc");
+        let dir = TempDir::new("trunc");
+        let path = dir.file("w.f32");
         {
             let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
             write_header(&mut f, &sample_config()).unwrap();

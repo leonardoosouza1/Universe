@@ -1388,6 +1388,28 @@ fn main() {
         }
     }
 
+    // `--gravar-onda` writes the UWAV header once, before the generation loop
+    // (`ctx.wave_writer` setup, below) — but the loop itself resets CfC state and runs a
+    // fresh JIT warm-up tick every generation (`ctx.reset_cfc` and the warm-up `ctx.tick`
+    // call further down). With `--gens > 1` that makes an N-generation recording N
+    // independent episodes concatenated with no boundary marker: `WaveConfig` has no
+    // `gens` field, and `screen.rs` treats only row 0 as warm-up and replays everything
+    // after it as one continuous episode. Every row past generation 1 would then be
+    // scored against a `ScreenBrain` whose state never reset — wrong numbers, no error.
+    // Refusing here is cheaper than a format bump and does not touch the existing
+    // calibration recording, which was always made with `--gens 1`.
+    if gravar_onda_path.is_some() && n_gens > 1 {
+        eprintln!(
+            "ERROR --gravar-onda requires --gens 1: the recording format has no generation \
+             boundary marker, so a multi-generation run would concatenate N independent \
+             episodes into one file that screen.rs would replay as a single continuous \
+             episode (CfC/period-counter state never resets across generations in the \
+             recording, but it does reset in every generation of the run that produced it). \
+             Pass --gens 1, or record each generation into its own file."
+        );
+        std::process::exit(2);
+    }
+
     let inicio = if retomar {
         "retomando de checkpoint"
     } else {
@@ -2832,7 +2854,15 @@ fn main() {
             .collect();
         let mut pos_prev: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
 
-        // Tick de aquecimento (compilação JIT — descartado).
+        // Warm-up tick (JIT compilation). Only the RETURN VALUE is discarded (`let _ =`)
+        // — its side effects (CfC state, the P1.7 period counters, `--observar`'s and
+        // `--gravar-onda`'s row 0) are not, and reach every recording this run produces.
+        // Before Task 5 this line was merely misleading; it is now load-bearing: the
+        // open-loop screen's bit-exact parity (`screen.rs`) depends on row 0 being
+        // recorded here and replayed there, because the P1.7 per-neuron recompute
+        // counter only advances once per brain dispatch. `--observar`/`--gravar-onda`
+        // record this tick deliberately — do not "fix" it to discard its side effects
+        // without re-deriving screen.rs's warm-up replay, or parity breaks silently.
         let _ = ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, &kan_knots_global);
 
         // ── N ticks de simulação ───────────────────────────────────────────────

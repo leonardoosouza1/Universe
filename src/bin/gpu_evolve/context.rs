@@ -492,7 +492,13 @@ impl GpuCtx {
         // having the capability, only by actually using it. `mark_end` no-ops on
         // `None` by construction, so it does not need its own gate.
         let n_tick = perfil_kernel();
-        let prints_this_tick = n_tick > 0 && (tick_idx as u32) % n_tick == 0;
+        // `tick_idx == 0` is the JIT warm-up tick (`main.rs`'s `let _ = ctx.tick(..., 0,
+        // ...)`, before the scored loop starts at `tick_idx == 1`). Modulo alone would
+        // always match it (`0 % n_tick == 0` for any `n_tick`), making the FIRST sample
+        // of every profiling run the warm-up tick rather than a steady-state one —
+        // exactly how a retired 4-sample figure went wrong once already (5.9x spread,
+        // one of the four being an outlier this large). Excluded explicitly.
+        let prints_this_tick = n_tick > 0 && tick_idx > 0 && (tick_idx as u32) % n_tick == 0;
         let tick_t0 = prints_this_tick.then(std::time::Instant::now);
         let mut total_gpu_ms: f32 = 0.0;
         let mut physics_ms: f32 = 0.0;

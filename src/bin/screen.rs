@@ -12,8 +12,19 @@
 //!
 //! ```text
 //! ./target/release/screen --wave <wave.f32> --genomes <dir of .bin> \
-//!     [--ticks N] [--threshold 0.26] [--batch 48]
+//!     [--ticks N] [--threshold 0.60] [--batch 48]
 //! ```
+//!
+//! **On `--threshold`, read `docs/SCREEN_CALIBRATION.md` §6 before changing it.** This
+//! binary was originally built as a rejection funnel at 0.26 (`docs/DESTILABILIDADE.md`'s
+//! figure for a *distilled pilot replacing the brain*, never for genomes of this
+//! architecture). Calibrated against 85 candidates and closed-loop ground truth, that
+//! transplant was refuted: 6 of the 7 candidates it rejects drive, 2 of them better than
+//! the recording champion, and the score does not rank by quality (Spearman −0.05). The
+//! default here is **0.60**, re-scoped from a pruning threshold to a tripwire for
+//! catastrophic divergence — a destroyed brain scored 0.9066 against ≤0.4287 for every
+//! candidate that still drove. That gap is real but **0.60 is n = 1 on each side**, a
+//! hypothesis to be calibrated with more reference brains, not a validated cutoff.
 //!
 //! All ten runtime flags that change the brain's forward pass (`out_beta`, `out_gain`,
 //! `norm_l2_by_std`, sensor noise/dropout, the four P1.7 mechanism switches,
@@ -28,9 +39,12 @@ use universe::gpu::genome_io::load_genome;
 use universe::gpu::screen_brain::ScreenBrain;
 use universe::gpu::wave_record::{self, WAVE_CHANNELS};
 
-/// Mean absolute error per tick across the three commands — the quantity
-/// `docs/DESTILABILIDADE.md` calibrated: 0.26 compounds in closed loop and the clone
-/// stalls, 0.18 does not and it drives.
+/// Mean absolute error per tick across the three commands. This is NOT the
+/// `docs/DESTILABILIDADE.md` 0.26/0.18 pair — that pair was measured for a distilled
+/// pilot replacing the brain and was refuted as a threshold for genomes of this
+/// architecture in `docs/SCREEN_CALIBRATION.md` §6 (6 of 7 rejects at 0.26 drive, 2
+/// better than the champion). The score is real and bit-exact against its own
+/// recording; only its use as a pruning cutoff was refuted.
 fn error_per_tick(pred: &[[f32; 3]], real: &[[f32; 3]]) -> f32 {
     let n = pred.len().min(real.len());
     if n == 0 {
@@ -72,7 +86,7 @@ fn main() {
     let mut wave_path = String::new();
     let mut genomes_dir = String::new();
     let mut ticks_max = usize::MAX;
-    let mut threshold = 0.26f32;
+    let mut threshold = 0.60f32;
     let mut batch_size = 48usize;
     let mut i = 1;
     while i < args.len() {
@@ -93,7 +107,7 @@ fn main() {
             }
             "--threshold" => {
                 i += 1;
-                threshold = next_value(&args, i, "--threshold").parse().unwrap_or(0.26);
+                threshold = next_value(&args, i, "--threshold").parse().unwrap_or(0.60);
             }
             "--batch" => {
                 i += 1;
@@ -107,7 +121,7 @@ fn main() {
     let (waves, real, config) = wave_record::read_all(&wave_path)
         .unwrap_or_else(|e| panic!("[ERROR] recording {wave_path}: {e}"));
 
-    // Row 0 is a JIT warm-up tick (`gpu_evolve/main.rs:2799`): its return value is
+    // Row 0 is a JIT warm-up tick (`gpu_evolve/main.rs:2857`): its return value is
     // discarded but its side effects are not, so a 20 000-tick run produces 20 001
     // rows, and by the time row 1 (the first SCORED tick) happens, the true recording
     // has already advanced its CfC state, its P1.7 period counter, and (with
@@ -244,7 +258,7 @@ fn main() {
             if partial {
                 println!("  {name:<34} error/tick {e:.4}  (partial window, no verdict)");
             } else {
-                let verdict = if e > threshold { "REJECT" } else { "keep" };
+                let verdict = if e > threshold { "DIVERGED" } else { "keep" };
                 println!("  {name:<34} error/tick {e:.4}  {verdict}");
             }
         }
