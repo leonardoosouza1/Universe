@@ -917,6 +917,14 @@ fn main() {
                         brain_skip = args[i].parse().unwrap_or(1).max(1);
                     }
                 }
+                "--perfil-kernel" => {
+                    i += 1;
+                    if i < args.len() {
+                        // 0 = off (default). Prints per-kernel GPU milliseconds every N
+                        // ticks — see `statics::PERFIL_KERNEL` and `context.rs::tick()`.
+                        PERFIL_KERNEL.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
+                    }
+                }
                 "--wall-life" => {
                     i += 1;
                     if i < args.len() {

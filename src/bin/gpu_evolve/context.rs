@@ -22,6 +22,7 @@ use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu};
 use universe::gpu::retina_digest::RetinaDigestGpu;
 use universe::gpu::retina_types::{PoseRaw, RetinaParamsGpu};
 use universe::gpu::slow_brain::SlowBrainGpu;
+use universe::gpu::timing::GpuTimer;
 use universe::kan::KAN_OUT_KNOTS;
 use universe::perception::channels::Channel;
 use universe::simulation::racing_line::RacingLine;
@@ -90,6 +91,12 @@ pub struct GpuCtx {
     /// `gpu::retina_digest` para o antes/depois completo.
     pub retina_digest: RetinaDigestGpu,
     pub capacity: usize,
+    /// Per-kernel GPU timing (`--perfil-kernel`, gated by `statics::perfil_kernel()`).
+    /// `None` when the device lacks `TIMESTAMP_QUERY` (checked once at construction).
+    /// Lives here rather than in `statics.rs` because it owns a `QuerySet` and two
+    /// buffers — device-backed state, not a CLI knob (see the ownership table in
+    /// `statics.rs` for why state and dose are kept apart).
+    pub timer: Option<GpuTimer>,
 
     // ── Amostras de ativação (E4, `--ativacao`) ─────────────────────────────
     // Todas bounded por geração: `main.rs` faz `std::mem::take` no relatório de
@@ -254,14 +261,22 @@ impl GpuCtx {
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("iara-evolve"),
-                // TIMESTAMP_QUERY is requested only when the adapter offers it: asking for a
-                // feature the adapter lacks makes request_device return None, and losing the
-                // whole device to gain a profiler is a bad trade. `src/gpu/timing.rs`'s
-                // `GpuTimer::new` is the consumer — it gates on this bit and returns None
-                // (silently, no timings) when it was not granted. This is the device
-                // `gpu_evolve` actually runs the tick on; `src/gpu/mod.rs`'s `RetinaGpu`
-                // is a separate device used by the Bevy/`gpu_validate` path only.
-                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+                // TIMESTAMP_QUERY and TIMESTAMP_QUERY_INSIDE_ENCODERS are requested only when
+                // the adapter offers them: asking for a feature the adapter lacks makes
+                // request_device return None, and losing the whole device to gain a profiler
+                // is a bad trade. `src/gpu/timing.rs`'s `GpuTimer::new` gates on the first bit
+                // and returns None (silently, no timings) when it was not granted; the second
+                // bit is checked separately inside `GpuTimer` (`can_mark_in_encoder`) because
+                // `scope` does not need it but `mark_begin`/`mark_end` do — those call
+                // `CommandEncoder::write_timestamp` directly, which is a different wgpu
+                // feature from the pass-level `ComputePassTimestampWrites` `scope` uses.
+                // Confirmed present on this adapter (RADV/RX 6750 XT) 2026-08-26: both bits
+                // set in `adapter.features()`. This is the device `gpu_evolve` actually runs
+                // the tick on; `src/gpu/mod.rs`'s `RetinaGpu` is a separate device used by the
+                // Bevy/`gpu_validate` path only.
+                required_features: adapter.features()
+                    & (wgpu::Features::TIMESTAMP_QUERY
+                        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::Performance,
             },
@@ -270,6 +285,10 @@ impl GpuCtx {
         .ok()?;
         let device = Arc::new(raw_device);
         let queue = Arc::new(raw_queue);
+        // 16 label slots: `tick()` uses at most 6 this session (retina, perception,
+        // retina_digest, brain, slow.gather, slow) plus headroom for the next kernel
+        // someone adds without having to revisit this constant.
+        let timer = GpuTimer::new(&device, 16);
         let cap = capacity.max(1);
 
         // COPY_DST: permite `reload_world()` trocar de pista via `write_buffer` sem
@@ -379,6 +398,7 @@ impl GpuCtx {
             phys_gpu,
             retina_digest,
             capacity: cap,
+            timer,
             l1_samples: Vec::new(),
             l2_samples: Vec::new(),
             policy_samples: Vec::new(),
@@ -1196,6 +1216,9 @@ impl GpuCtx {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("evolve-tick"),
             });
+        if let Some(t) = self.timer.as_mut() {
+            t.begin_frame();
+        }
 
         // Retina.
         let mut pitches_arr = [[0.0f32; 4]; 4];
@@ -1239,6 +1262,15 @@ impl GpuCtx {
             ],
         });
 
+        // Bracketed with `mark_begin`/`mark_end` rather than `scope`: `write_timestamp`
+        // is called from here, where `&mut enc` is already in hand, instead of inside
+        // `begin_compute_pass` — see `timing.rs` for why (this label also folds in
+        // `copy_retina_prev`'s buffer copy, which runs just before the pass).
+        let t_retina = self
+            .timer
+            .as_mut()
+            .map(|t| t.mark_begin(&mut enc, "retina"))
+            .unwrap_or(false);
         self.percept
             .copy_retina_prev(&mut enc, &self.buf_retina_out);
         {
@@ -1251,8 +1283,16 @@ impl GpuCtx {
             let total = (n * RETINA_TOTAL) as u32;
             pass.dispatch_workgroups(total.div_ceil(64), 1, 1);
         }
+        if let Some(t) = self.timer.as_mut() {
+            t.mark_end(&mut enc, t_retina);
+        }
 
         // Percepção.
+        let t_percept = self
+            .timer
+            .as_mut()
+            .map(|t| t.mark_begin(&mut enc, "perception"))
+            .unwrap_or(false);
         self.percept.bind_and_dispatch(
             &mut enc,
             &self.device,
@@ -1260,6 +1300,9 @@ impl GpuCtx {
             &poses_percept[..n],
             &self.buf_retina_out,
         );
+        if let Some(t) = self.timer.as_mut() {
+            t.mark_end(&mut enc, t_percept);
+        }
 
         // CfC de percepção + min_wall_ahead + edge_row6/7 — TUDO na GPU agora.
         //
@@ -1269,6 +1312,11 @@ impl GpuCtx {
         // canais. Roda ANTES do cérebro, para que `brain.bind_and_dispatch` já veja
         // ch192-207 preenchidos. Substitui o antigo readback de 340 KB/tick (retina
         // inteira) + laço Rust — ver `gpu::retina_digest` para o antes/depois completo.
+        let t_digest = self
+            .timer
+            .as_mut()
+            .map(|t| t.mark_begin(&mut enc, "retina_digest"))
+            .unwrap_or(false);
         let extra_bytes = self.retina_digest.bind_and_dispatch(
             &mut enc,
             &self.device,
@@ -1277,6 +1325,9 @@ impl GpuCtx {
             &self.buf_retina_out,
             self.percept.buf_output(),
         );
+        if let Some(t) = self.timer.as_mut() {
+            t.mark_end(&mut enc, t_digest);
+        }
 
         // Cérebro rápido — só dispara a cada `brain_skip` ticks.
         //
@@ -1295,19 +1346,95 @@ impl GpuCtx {
             || self.last_intents.len() != n
             || (self.brain_tick % self.brain_skip) == 0;
         if brain_fires {
+            // No bracket recorded when `brain_fires` is false — an absent label reads
+            // as "did not fire this tick" instead of a misleading 0.000 ms.
+            let t_brain = self
+                .timer
+                .as_mut()
+                .map(|t| t.mark_begin(&mut enc, "brain"))
+                .unwrap_or(false);
             self.brain
                 .bind_and_dispatch(&mut enc, n, &[], dt, Some(self.percept.buf_output()));
+            if let Some(t) = self.timer.as_mut() {
+                t.mark_end(&mut enc, t_brain);
+            }
         }
 
         // Cérebro lento — colhe 48 canais da onda que já está na GPU e roda.
         // Encadeado no MESMO encoder: nenhum readback intermediário, nenhuma volta à CPU.
+        let t_slow_gather = self
+            .timer
+            .as_mut()
+            .map(|t| t.mark_begin(&mut enc, "slow.gather"))
+            .unwrap_or(false);
         self.slow
             .dispatch_gather(&mut enc, self.percept.buf_output(), n);
+        if let Some(t) = self.timer.as_mut() {
+            t.mark_end(&mut enc, t_slow_gather);
+        }
+        let t_slow = self
+            .timer
+            .as_mut()
+            .map(|t| t.mark_begin(&mut enc, "slow"))
+            .unwrap_or(false);
         self.slow.dispatch(&mut enc, n, dt);
+        if let Some(t) = self.timer.as_mut() {
+            t.mark_end(&mut enc, t_slow);
+        }
+
+        // Resolve must be on the same encoder as the marks above (`timing.rs`), so it
+        // happens right before this encoder's own submit.
+        if let Some(t) = self.timer.as_mut() {
+            t.resolve(&mut enc);
+        }
 
         // Submit único.
         self.queue.submit(Some(enc.finish()));
         self.device.poll(wgpu::Maintain::Wait);
+
+        // `--perfil-kernel <N>`: print the GPU-kernel table every N ticks. This covers
+        // everything recorded into the single encoder above (retina through slow);
+        // `physics.step` is NOT here — it opens its own encoder and does its own
+        // synchronous submit+readback later in this function, so no timestamp written
+        // from this encoder can reach inside it. It is measured separately, on the
+        // CPU, right around that call — see the `[perfil] physics.step` print below.
+        let n_tick = perfil_kernel();
+        let prints_this_tick = n_tick > 0 && (tick_idx as u32) % n_tick == 0;
+        if prints_this_tick && self.timer.is_none() {
+            // `--perfil-kernel` was asked for but this device never got a `GpuTimer`
+            // (no `Features::TIMESTAMP_QUERY` at construction, see `GpuCtx::new`) — say
+            // so explicitly instead of printing nothing, which would look identical to
+            // the flag being off.
+            println!("  [perfil] no GpuTimer on this device (TIMESTAMP_QUERY not granted)");
+        }
+        if let Some(t) = self.timer.as_ref() {
+            if prints_this_tick {
+                let period = self.queue.get_timestamp_period();
+                let rows = t.read_ms(&self.device, period);
+                if rows.is_empty() {
+                    // An empty `Vec` here means one of two things, and printing "0.000 ms"
+                    // for either would hide a real problem (this is the failure mode the
+                    // task brief called out explicitly). `read_ms` already `eprintln!`s the
+                    // mapping-failure case itself, so: a stderr line just above means the
+                    // buffer map failed (device lost, already mapped, driver hiccup); no
+                    // stderr line means `can_mark_in_encoder` is false, i.e. the device was
+                    // granted `TIMESTAMP_QUERY` but not `TIMESTAMP_QUERY_INSIDE_ENCODERS`,
+                    // so every `mark_begin` this tick returned `false` and nothing was ever
+                    // pushed into `labels` — the `retina` bracket runs unconditionally every
+                    // tick, so a `Some(timer)` with zero rows can only mean that.
+                    println!("  [perfil] no GPU-timed labels this tick (see stderr for why)");
+                } else {
+                    let soma: f32 = rows.iter().map(|(_, ms)| ms).sum();
+                    for (label, ms) in &rows {
+                        println!("  [perfil] {label:<22} {ms:8.4} ms");
+                    }
+                    println!(
+                        "  [perfil] {:<22} {soma:8.4} ms (soma dos kernels GPU)",
+                        "TOTAL"
+                    );
+                }
+            }
+        }
 
         // Leitura do intent.
         // ── AUDITORIA DA VISÃO ────────────────────────────────────────────────
@@ -1912,7 +2039,30 @@ impl GpuCtx {
             }
         }
 
+        // `PhysicsGpu::step` opens its OWN `CommandEncoder`, submits it, and blocks on
+        // a synchronous `map_async` → `poll` → `recv` readback before returning — a
+        // completely separate submission from the single per-tick encoder timed above,
+        // on the same device. No GPU timestamp written from that other encoder can reach in
+        // here, so this is measured on the CPU instead: `Instant` is the RIGHT tool
+        // exactly because the call is synchronous — the wall time it reports IS the
+        // real cost (three kernels' GPU execution plus the driver round-trip for the
+        // blocking readback), not an approximation of it. Labelled distinctly in the
+        // printout so a reader never mistakes it for a `GpuTimer` measurement.
+        // Independent of `self.timer`: this is a CPU `Instant`, not a GPU query, so it
+        // works even on a device that never got `TIMESTAMP_QUERY`.
+        let perfil_this_tick = {
+            let n_tick = perfil_kernel();
+            n_tick > 0 && (tick_idx as u32) % n_tick == 0
+        };
+        let physics_t0 = perfil_this_tick.then(std::time::Instant::now);
         let ok = self.phys_gpu.step(&mut phys_states);
+        if let Some(t0) = physics_t0 {
+            println!(
+                "  [perfil] {:<22} {:8.4} ms (CPU wall, blocking submit)",
+                "physics.step",
+                t0.elapsed().as_secs_f32() * 1000.0
+            );
+        }
         if !ok {
             return false;
         }

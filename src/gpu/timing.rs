@@ -5,6 +5,19 @@
 //! profiler can see these kernels. Without this module every optimisation is a guess.
 //! The `timestamp_writes` fields were already present on every compute pass, set to
 //! `None` (`core.rs:503`, `cortex_sheet.rs:521`, `retina_digest.rs:249`).
+//!
+//! Two ways to place a timestamp, both writing into the same `QuerySet`: `scope`
+//! hands `ComputePassTimestampWrites` to `begin_compute_pass`, timing exactly one
+//! pass — the only option when the pass is opened where the timer cannot reach
+//! (`gpu_evolve`'s first caller found several: `PerceptionGpu::bind_and_dispatch`,
+//! `BrainGpu::bind_and_dispatch`, `SlowBrainGpu::dispatch`/`dispatch_gather` all open
+//! their passes inside shared library methods called from several binaries, and
+//! threading a timer parameter through all of them would touch every caller).
+//! `mark_begin`/`mark_end` instead call `CommandEncoder::write_timestamp` directly
+//! from the call site that already has `&mut CommandEncoder` in hand, bracketing
+//! the whole library call — coarser (no visibility into the sub-passes it contains)
+//! but reachable without changing any shared signature, and it also captures the gap
+//! BETWEEN consecutive dispatches that a per-pass `scope` hides.
 
 /// Milliseconds between two GPU timestamps.
 ///
@@ -27,6 +40,12 @@ pub struct GpuTimer {
     read_buf: wgpu::Buffer,
     labels: Vec<&'static str>,
     max_passes: usize,
+    /// Whether the device also granted `Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`,
+    /// checked once here at construction. `scope` never needs it (it writes through
+    /// `ComputePassTimestampWrites`, gated by plain `TIMESTAMP_QUERY` alone); only
+    /// `mark_begin`/`mark_end` do, since they call `CommandEncoder::write_timestamp`
+    /// directly, outside any pass.
+    can_mark_in_encoder: bool,
 }
 
 impl GpuTimer {
@@ -57,7 +76,48 @@ impl GpuTimer {
             }),
             labels: Vec::with_capacity(max_passes),
             max_passes,
+            can_mark_in_encoder: device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
         })
+    }
+
+    /// Reserves the next label slot and writes its "begin" timestamp directly on
+    /// `enc`, outside any compute pass.
+    ///
+    /// Why this exists next to `scope`: `scope` times one pass (`SetPipeline` through
+    /// the end of that `ComputePass`), so the gap BETWEEN two consecutive dispatches —
+    /// driver overhead, a barrier, CPU-side bind-group setup recorded into the same
+    /// encoder — falls outside every scope and is invisible. Bracketing the whole call
+    /// (e.g. one `PerceptionGpu::bind_and_dispatch`, which opens several passes of its
+    /// own) from the outside captures that gap as part of the measurement instead of
+    /// hiding it, at the cost of losing visibility into the sub-passes it contains.
+    ///
+    /// Returns `false` — writing nothing — when the device lacks
+    /// `TIMESTAMP_QUERY_INSIDE_ENCODERS` or `max_passes` slots are already used this
+    /// frame. The caller must feed that value into the matching `mark_end`: an
+    /// unconditional `mark_end` after a dropped `mark_begin` would write an "end"
+    /// timestamp into whatever slot happens to be last, corrupting an unrelated label.
+    #[must_use]
+    pub fn mark_begin(&mut self, enc: &mut wgpu::CommandEncoder, label: &'static str) -> bool {
+        if !self.can_mark_in_encoder || self.labels.len() >= self.max_passes {
+            return false;
+        }
+        let i = self.labels.len() as u32;
+        self.labels.push(label);
+        enc.write_timestamp(&self.set, i * 2);
+        true
+    }
+
+    /// Writes the "end" timestamp paired with the most recent successful
+    /// `mark_begin`. `began` must be the value that call returned; `false` is a no-op,
+    /// so a skipped begin never writes a mismatched end.
+    pub fn mark_end(&mut self, enc: &mut wgpu::CommandEncoder, began: bool) {
+        if !began {
+            return;
+        }
+        let i = (self.labels.len() - 1) as u32;
+        enc.write_timestamp(&self.set, i * 2 + 1);
     }
 
     /// Call once per frame before recording passes.

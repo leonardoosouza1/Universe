@@ -38,6 +38,7 @@
 //! | `PREDATOR_SPEED_FRAC`, `PREDATOR_DRAIN`, `PREDATOR_RADIUS_M`, `PREDATOR_PERCEPT_M`, `PREDATOR_GRACE_TICKS`, `PREDATOR_SPAWN_BACK_M` | `main()` (flags `--predador*`) | `main()` (spawns once per generation) + `context.rs::tick()` (step, life drain, predator channels) |
 //! | `TIRE_THERMAL_GAIN` | `main()` (flag `--pneu-termico`) | `main()` (builds the per-being `ThermalParams` once per generation) + `context.rs::tick()` (integrates the temperature and writes `env_grip`) |
 //! | `SENSOR_COST`, `SENSOR_COST_K`, `SENSOR_COST_CAP` | `main()` (flags `--custo-sensor*`) | `main()` (recomputes the per-being subscription once per generation, next to the wiring cost) — the tick only reads the resulting `ctx.sensor_cost` vector |
+//! | `PERFIL_KERNEL` | `main()` (flag `--perfil-kernel <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
 //! predator pose, the per-being tyre temperature and the per-being subscription all
@@ -332,3 +333,13 @@ pub static SENSOR_COST_K: std::sync::atomic::AtomicU32 = std::sync::atomic::Atom
 /// 2.0, which also bounds the whole tax at `2 * DOSE` — the ceiling the metric plan is
 /// computed against.
 pub static SENSOR_COST_CAP: AtomicF32 = AtomicF32::new();
+
+/// `--perfil-kernel <N>`: print per-kernel GPU milliseconds every N ticks. 0 = off
+/// (the default — this instrument is diagnostic-only and must not change what a run
+/// measures). First per-kernel timing this project has ever had; see
+/// `src/gpu/timing.rs` for why no external profiler could produce this before.
+pub static PERFIL_KERNEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[inline]
+pub fn perfil_kernel() -> u32 {
+    PERFIL_KERNEL.load(Ordering::Relaxed)
+}
