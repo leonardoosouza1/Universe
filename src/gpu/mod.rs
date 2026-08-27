@@ -49,6 +49,7 @@ pub mod perception;
 pub mod physics;
 pub mod retina_digest;
 pub mod retina_types;
+pub mod screen_brain;
 pub mod slow_brain;
 pub mod timing;
 pub mod wave_record;

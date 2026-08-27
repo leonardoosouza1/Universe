@@ -36,6 +36,8 @@ use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
 use crate::engine::SovereignEngine;
 use crate::gpu::evolution::Genome;
 
+mod screen;
+
 // ── CONSTANTS DERIVED FROM THE BRAIN DIMENSIONS ──────────────────────────────
 
 /// KAN knots per sensory channel (`kan.rs`: `spline_coeffs: [f32; 16]`).
@@ -301,7 +303,12 @@ impl BrainGpu {
     ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("brain"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("brain.wgsl"))),
+            // `brain.wgsl` stays at `src/gpu/brain.wgsl`, one level up from this file
+            // (`src/gpu/brain/mod.rs`) — moving it alongside would also require
+            // updating `tests/wgsl_validation.rs`'s hardcoded path and every doc
+            // comment's bare `brain.wgsl` reference for no benefit; `include_str!`
+            // crossing one directory level is the smaller, well-trodden change.
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../brain.wgsl"))),
         });
 
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1221,116 +1228,6 @@ impl BrainGpu {
     /// directly.
     pub fn buf_intent(&self) -> &wgpu::Buffer {
         &self.buf_intent
-    }
-
-    // ── SCREEN (Task 5): standalone construction from a genome ─────────────
-
-    /// Builds a brain context sized for exactly one being and uploads `genome`'s
-    /// weights, τ bank and P1.7 neuron metadata — the three per-generation uploads
-    /// `gpu_evolve/main.rs` performs before a generation runs (`upload_weights`,
-    /// `upload_tau`, `upload_neuron_meta`; see `main.rs:2473-2488`).
-    ///
-    /// Opens its own `wgpu` device instead of sharing one, the same pattern
-    /// `gpu_validate.rs::validate_brain` uses: the screen has no simulation running
-    /// alongside it to share a device with.
-    ///
-    /// `out_beta`/`out_gain` are left at `OUT_BETA_DEFAULT`/`OUT_GAIN_DEFAULT` — today's
-    /// `gpu_evolve` defaults. `norm_l2_by_std` is forced to `true`: `new` itself defaults
-    /// it to `false`, but `gpu_evolve/main.rs:685` has overridden it to `true`
-    /// unconditionally since P1.8, so `true` is the value any current recording was
-    /// actually made under. A caller screening a recording made under a *different*
-    /// override — output fatigue, output gain, or the L2-normalisation arm switched
-    /// back off — must set the matching `pub` field on the returned `BrainGpu` before
-    /// calling `step_from_wave`: the wave file has no header recording which flags the
-    /// source run used.
-    ///
-    /// M4 region gates (`buf_gates`) stay at their neutral default (1.0, set in `new`).
-    /// They are produced by the slow brain plus a per-tick CPU reserve integral
-    /// (`gpu_evolve/context.rs`, gated on `NEUROMOD_REGIOES`) that depends on the whole
-    /// generation's tick history, not on the genome or the recorded wave alone —
-    /// reproducing them would mean re-simulating the slow brain and the reserve state
-    /// tick by tick, which is outside the brain KERNEL this screen replays. See the
-    /// Task 5 report for the measured effect of this approximation on the parity check.
-    pub fn new_for_genome(genome: &Genome) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .ok_or_else(|| {
-            "no Vulkan adapter found. On the RX 6750 XT this usually means the gfx override \
-             is missing: export HSA_OVERRIDE_GFX_VERSION=10.3.0 and retry. Check \
-             `vulkaninfo --summary` for a visible device."
-                .to_string()
-        })?;
-
-        // 13 storage bindings (1..=13) + 1 uniform, the same layout `bind_and_dispatch`
-        // uses in production. 16 mirrors `gpu_evolve/context.rs:269` (the limit the
-        // brain kernel already runs under there) rather than `gpu_validate.rs`'s 12,
-        // which predates `buf_gates`/`buf_neuron_mem` and is one short of what `new`
-        // actually binds today.
-        let mut limits = wgpu::Limits::downlevel_defaults();
-        limits.max_storage_buffers_per_shader_stage = 16;
-        let (device_raw, queue_raw) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("brain-screen"),
-                required_features: wgpu::Features::empty(),
-                required_limits: limits,
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
-        .map_err(|e| format!("request_device: {e}"))?;
-
-        let adapter_name = adapter.get_info().name.clone();
-        let device = Arc::new(device_raw);
-        let queue = Arc::new(queue_raw);
-        let mut brain = Self::new(Arc::clone(&device), Arc::clone(&queue), adapter_name, 1);
-        brain.norm_l2_by_std = true;
-
-        let mut eng = SovereignEngine::new();
-        genome.apply_to_engine(&mut eng);
-        brain.upload_weights(&[&eng]);
-        brain.upload_tau(&Genome::pack_taus(std::slice::from_ref(genome)), 1);
-        brain.upload_neuron_meta(&Genome::pack_neuron_meta(std::slice::from_ref(genome)), 1);
-
-        Ok(brain)
-    }
-
-    /// Runs one tick of the brain kernel for the single being `new_for_genome` built
-    /// this context for, from a raw sensory wave, and returns the three motor commands
-    /// `[throttle, steer, brake]` — `final_intent[0..3)`, the same slots
-    /// `gpu_evolve/context.rs` reads to record the wave (see the comment above
-    /// `wave_writer` there).
-    ///
-    /// `wave` must hold `SENSORY_WAVE_SIZE` (192) values, each an i8 channel value
-    /// already widened to f32 — the layout `wave_record::read_all` returns. `dt` is the
-    /// tick's time delta in seconds; `gpu_evolve` runs at 1/64 s.
-    ///
-    /// Uses the CPU-wave path of `bind_and_dispatch` (`buf_percept = None`), the same
-    /// one `gpu_validate.rs` exercises: it uploads `wave` into `buf_wave` and never
-    /// touches the GPU perception buffer, which this screen never populates.
-    pub fn step_from_wave(&self, wave: &[f32], dt: f32) -> [f32; 3] {
-        assert_eq!(
-            wave.len(),
-            SENSORY_WAVE_SIZE,
-            "wave has {} channels, expected {SENSORY_WAVE_SIZE}",
-            wave.len()
-        );
-        // Each value is an i8 channel widened to f32 by `wave_record` (and, before
-        // that, by the recorder in `context.rs`) — casting back to i32 is exact, not a
-        // rounding operation.
-        let wave_i32: Vec<i32> = wave.iter().map(|&v| v as i32).collect();
-
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        self.bind_and_dispatch(&mut enc, 1, &wave_i32, dt, None);
-        self.queue.submit(Some(enc.finish()));
-        self.device.poll(wgpu::Maintain::Wait);
-
-        let intent = self.read_intent_after_submit(1);
-        let full = intent.into_iter().next().unwrap_or([0.0; INTENT_DIM]);
-        [full[0], full[1], full[2]]
     }
 }
 

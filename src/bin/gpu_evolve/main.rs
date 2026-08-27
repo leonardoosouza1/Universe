@@ -1953,6 +1953,42 @@ fn main() {
     ctx.brain.period_off = sem_periodo_neuronal;
     ctx.brain.threshold_off = sem_limiar_neuronal;
     ctx.brain.activation_off = sem_ativacao_heterogenea;
+    // `--gravar-onda`'s config header (Task 5 review round): written here, once, after
+    // every flag above that changes the brain's forward pass has its final value, and
+    // before the tick loop starts. `set_noise` runs earlier (ruido_sigma/ruido_drop are
+    // already in `ctx.brain`, but reading the pre-`set_noise` locals directly is exactly
+    // as accurate and avoids relying on the field names staying `pub`).
+    //
+    // Captures the STARTING configuration, not necessarily every value for the whole
+    // run: a multi-generation battery whose difficulty ladder changes noise mid-run
+    // (`set_noise` is also called from the ladder, `main.rs:3238`) would need this header
+    // re-checked per generation, which `--gravar-onda`'s existing single-being,
+    // single-run design does not need to handle today.
+    if let Some(w) = ctx.wave_writer.as_mut() {
+        let wave_cfg = universe::gpu::wave_record::WaveConfig {
+            dt: 1.0 / 64.0, // gpu_evolve's fixed tick length, see this file's `let dt` sites
+            out_beta,
+            out_gain: ganho_saida,
+            norm_l2_by_std: norm_l2_por_desvio as u32,
+            noise_sigma: ruido_sigma,
+            dropout_prob: ruido_drop,
+            // check-language: off -- existing Portuguese locals from this file's own
+            // flag parsing (`sem_memoria_neuronal` etc., already on the allowlist);
+            // referencing them here is not new Portuguese prose.
+            mem_off: sem_memoria_neuronal as u32,
+            period_off: sem_periodo_neuronal as u32,
+            threshold_off: sem_limiar_neuronal as u32,
+            activation_off: sem_ativacao_heterogenea as u32,
+            // check-language: on
+            neuromod_regioes: NEUROMOD_REGIOES.load(Ordering::Relaxed) as u32,
+            brain_skip,
+            pilot_active: (ctx.piloto_forja.is_some() || ctx.piloto_formula.is_some()) as u32,
+        };
+        if let Err(e) = universe::gpu::wave_record::write_header(w, &wave_cfg) {
+            eprintln!("ERROR --gravar-onda: failed to write the UWAV config header: {e}");
+            std::process::exit(1);
+        }
+    }
     PILOTO_GANHO.store(piloto, Ordering::Relaxed);
     PILOTO_THR.store(
         if piloto_thr > 0.0 { piloto_thr } else { 0.45 },

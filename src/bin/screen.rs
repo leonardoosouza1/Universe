@@ -1,25 +1,32 @@
-//! Screen — replays a recorded sensory wave through the real brain kernel to score
-//! candidate genomes open-loop, in milliseconds instead of the ~18 s a closed-loop
-//! physics evaluation costs. Task 4 built the recording; this binary is the payoff.
+//! Screen — replays a recorded sensory wave through the real brain kernel (fast brain
+//! + M4 region gates) to score candidate genomes open-loop, batched across many
+//! candidates per GPU dispatch.
 //!
-//! Reuses `gpu::brain::BrainGpu` end to end — no perception, no physics, and NO CPU
-//! reimplementation of KAN/CfC/BitLinear/periods/thresholds/activations. This
-//! repository has already shipped two disjoint brains once (`cortex_evolve` ended up
-//! with zero references to `SovereignEngine`/`SlowBrain`); a CPU replica of the brain
-//! kernel would reintroduce exactly that failure with no test able to see it.
+//! Reuses `gpu::brain::BrainGpu`, `gpu::slow_brain::SlowBrainGpu` and
+//! `gpu::screen_brain::ScreenBrain` end to end — no perception, no physics, and NO CPU
+//! reimplementation of KAN/CfC/BitLinear/periods/thresholds/activations/the M4
+//! conductor. This repository has already shipped two disjoint brains once
+//! (`cortex_evolve` ended up with zero references to `SovereignEngine`/`SlowBrain`); a
+//! CPU replica of any of these layers would reintroduce exactly that failure with no
+//! test able to see it.
 //!
 //! ```text
 //! ./target/release/screen --wave <wave.f32> --genomes <dir of .bin> \
-//!     [--ticks N] [--threshold 0.26] [--out-beta 0.85]
+//!     [--ticks N] [--threshold 0.26] [--batch 48]
 //! ```
+//!
+//! All ten runtime flags that change the brain's forward pass (`out_beta`, `out_gain`,
+//! `norm_l2_by_std`, sensor noise/dropout, the four P1.7 mechanism switches,
+//! `--neuromod-regioes`), plus `dt`, `--brain-skip` and whether a ghost pilot was
+//! active, are read from the recording's own `wave_record::WaveConfig` header — there
+//! is no `--out-beta`-style flag on this CLI to guess wrong. `read_all` refuses a
+//! legacy (headerless), noisy, or pilot-driven recording outright rather than
+//! defaulting: see `wave_record.rs`'s module doc for why.
 
-use universe::gpu::brain::BrainGpu;
+use universe::gpu::evolution::Genome;
 use universe::gpu::genome_io::load_genome;
+use universe::gpu::screen_brain::ScreenBrain;
 use universe::gpu::wave_record::{self, WAVE_CHANNELS};
-
-/// Tick length `gpu_evolve` runs at (64 Hz). The recordings this screen replays were
-/// made at this rate, and the brain kernel's CfC integration is `dt`-dependent.
-const DT: f32 = 1.0 / 64.0;
 
 /// Mean absolute error per tick across the three commands — the quantity
 /// `docs/DESTILABILIDADE.md` calibrated: 0.26 compounds in closed loop and the clone
@@ -36,6 +43,16 @@ fn error_per_tick(pred: &[[f32; 3]], real: &[[f32; 3]]) -> f32 {
         }
     }
     (sum / (n as f64 * 3.0)) as f32
+}
+
+/// Reads the value following `flag` at `args[i]`, or exits with a usage error. A
+/// trailing flag with no value (`screen --wave`) used to index out of bounds and
+/// panic with no explanation — this names the flag that was left dangling.
+fn next_value(args: &[String], i: usize, flag: &str) -> String {
+    args.get(i).cloned().unwrap_or_else(|| {
+        eprintln!("[ERROR] {flag} requires a value");
+        std::process::exit(2);
+    })
 }
 
 fn main() {
@@ -56,61 +73,100 @@ fn main() {
     let mut genomes_dir = String::new();
     let mut ticks_max = usize::MAX;
     let mut threshold = 0.26f32;
-    let mut out_beta = universe::gpu::brain::OUT_BETA_DEFAULT;
+    let mut batch_size = 48usize;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--wave" => {
                 i += 1;
-                wave_path = args[i].clone();
+                wave_path = next_value(&args, i, "--wave");
             }
             "--genomes" => {
                 i += 1;
-                genomes_dir = args[i].clone();
+                genomes_dir = next_value(&args, i, "--genomes");
             }
             "--ticks" => {
                 i += 1;
-                ticks_max = args[i].parse().unwrap_or(usize::MAX);
+                ticks_max = next_value(&args, i, "--ticks")
+                    .parse()
+                    .unwrap_or(usize::MAX);
             }
             "--threshold" => {
                 i += 1;
-                threshold = args[i].parse().unwrap_or(0.26);
+                threshold = next_value(&args, i, "--threshold").parse().unwrap_or(0.26);
             }
-            "--out-beta" => {
+            "--batch" => {
                 i += 1;
-                // Per-run CLI override in `gpu_evolve` (`--fadiga-saida`), not stored in
-                // the genome — the wave file carries no header of the source run's
-                // brain parameters. Default is `OUT_BETA_DEFAULT`, today's production
-                // value; pass this when screening against a recording made under a
-                // different override.
-                out_beta = args[i].parse().unwrap_or(out_beta);
+                batch_size = next_value(&args, i, "--batch").parse().unwrap_or(48).max(1);
             }
             _ => {}
         }
         i += 1;
     }
 
-    let (waves, real) = wave_record::read_all(&wave_path)
+    let (waves, real, config) = wave_record::read_all(&wave_path)
         .unwrap_or_else(|e| panic!("[ERROR] recording {wave_path}: {e}"));
 
-    // Skip row 0: `gpu_evolve/main.rs:2799` runs a JIT warm-up tick whose return value
-    // is discarded but whose side effects (the CfC state it advances) are not, so a
-    // 20 000-tick run produces 20 001 rows. Row 0 is that warm-up tick, carrying CfC
-    // state this screen never reproduces (every genome starts at the true zero initial
-    // state) — scoring it would compare a tick this screen structurally cannot match.
+    // Row 0 is a JIT warm-up tick (`gpu_evolve/main.rs:2799`): its return value is
+    // discarded but its side effects are not, so a 20 000-tick run produces 20 001
+    // rows, and by the time row 1 (the first SCORED tick) happens, the true recording
+    // has already advanced its CfC state, its P1.7 period counter, and (with
+    // `--neuromod-regioes`) its M4 reserve by one dispatch.
+    //
+    // The first cut of this screen skipped row 0 outright, reasoning that "the CfC
+    // state it left behind is not reproducible anyway". That reasoning was WRONG in a
+    // way that mattered a lot more than expected: the P1.7 period mechanism gates each
+    // L1 neuron's recompute on a per-neuron COUNTER that only advances once per brain
+    // dispatch. Skipping row 0 puts every genome's counter permanently one dispatch
+    // BEHIND the recording's — not a decaying transient, but a standing phase offset
+    // for the rest of the run, since the counter never resynchronises on its own. That
+    // was the real cause of the review round's "flat, non-decaying 0.04-0.05 floor"
+    // finding (C1) — M4 gates were a real, smaller contributor, not the dominant one.
+    //
+    // The fix: REPLAY row 0 through the exact same kernel (fast brain + M4 gate
+    // machinery), from the true zero initial state — that is what production ALSO
+    // does; a fresh being's CfC/reserve state was never anything but zero/neutral —
+    // and discard only its OWN prediction, never comparing it against `real[0]`. Row 1
+    // onward then lines up counter-for-counter with the recording, and this warm-up
+    // replay is the reason the parity check below reproduces `real` bit-for-bit.
     assert!(
         real.len() >= 2,
         "[ERROR] {wave_path}: {} row(s), need at least 2 (row 0 is the warm-up tick)",
         real.len()
     );
+    let warmup_wave = waves[0..WAVE_CHANNELS].to_vec();
     let waves = &waves[WAVE_CHANNELS..];
     let real = &real[1..];
 
-    let n_ticks = real.len().min(ticks_max);
+    let n_ticks_full = real.len();
+    let n_ticks = n_ticks_full.min(ticks_max);
+    let partial = n_ticks < n_ticks_full;
+
+    if config.brain_skip != 1 {
+        println!(
+            "[WARN] recording made with --brain-skip {} — replay uses this recording's own \
+             `dt` ({:.5} s) per row, which matches what the brain kernel actually integrated \
+             over per firing regardless of brain_skip (see WaveConfig::dt's doc); untested \
+             beyond that.",
+            config.brain_skip, config.dt
+        );
+    }
     println!(
-        "recording {n_ticks} ticks (row 0 skipped as warm-up) \
-         · threshold {threshold:.3} · out_beta {out_beta:.2}"
+        "recording {n_ticks}/{n_ticks_full} ticks (row 0 replayed as warm-up, not scored) \
+         · threshold {threshold:.3} · dt {:.5} · out_beta {:.2} · neuromod_regioes {}",
+        config.dt,
+        config.out_beta,
+        config.neuromod_regioes != 0
     );
+    if partial {
+        println!(
+            "[WARN] --ticks {ticks_max} scores a PARTIAL window ({n_ticks} of \
+             {n_ticks_full}) — verdicts are suppressed because a partial window is known \
+             to flip them: against this recording's own gen0000 checkpoint, 2000 ticks \
+             scores 0.2790 (would REJECT at threshold 0.26) while the full 20000 scores \
+             0.2240 (keep) — measured on this exact recording, not a hypothetical."
+        );
+    }
 
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&genomes_dir)
         .unwrap_or_else(|e| panic!("[ERROR] {genomes_dir}: {e}"))
@@ -119,38 +175,84 @@ fn main() {
         .filter(|p| p.extension().is_some_and(|x| x == "bin"))
         .collect();
     files.sort();
-    println!("{} candidate(s)", files.len());
+    println!("{} candidate(s), batch size {batch_size}", files.len());
 
-    for path in &files {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let Some(genome) = load_genome(path.to_str().unwrap()) else {
-            println!("  {name:<34} [ERROR] could not load");
+    for chunk in files.chunks(batch_size) {
+        let mut names: Vec<String> = Vec::with_capacity(chunk.len());
+        let mut genomes: Vec<Genome> = Vec::with_capacity(chunk.len());
+        for path in chunk {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            match load_genome(path.to_str().unwrap()) {
+                Some(g) => {
+                    names.push(name);
+                    genomes.push(g);
+                }
+                None => println!("  {name:<34} [ERROR] could not load"),
+            }
+        }
+        if genomes.is_empty() {
             continue;
-        };
+        }
 
         let t0 = std::time::Instant::now();
-        let mut brain = match BrainGpu::new_for_genome(&genome) {
-            Ok(b) => b,
+        let mut screen = match ScreenBrain::new_for_genomes(&genomes, config.neuromod_regioes != 0)
+        {
+            Ok(s) => s,
             Err(e) => {
-                println!("  {name:<34} [ERROR] {e}");
+                for name in &names {
+                    println!("  {name:<34} [ERROR] {e}");
+                }
                 continue;
             }
         };
-        brain.out_beta = out_beta;
+        // `new_for_genomes` leaves the brain at `gpu_evolve`'s DEFAULTS
+        // (out_beta/out_gain=OUT_*_DEFAULT, norm_l2_by_std=true, all P1.7 mechanisms
+        // on) — the recording's own header is what says whether THIS run actually
+        // matched those defaults. Wiring it here is exactly the step the first cut of
+        // this screen skipped, which is how it silently scored 0.4772 against a
+        // recording made under out_beta=0.0 while reporting out_beta as if it were
+        // 0.85 nowhere at all.
+        screen.brain.out_beta = config.out_beta;
+        screen.brain.out_gain = config.out_gain;
+        screen.brain.norm_l2_by_std = config.norm_l2_by_std != 0;
+        screen.brain.mem_off = config.mem_off != 0;
+        screen.brain.period_off = config.period_off != 0;
+        screen.brain.threshold_off = config.threshold_off != 0;
+        screen.brain.activation_off = config.activation_off != 0;
 
-        let mut pred: Vec<[f32; 3]> = Vec::with_capacity(n_ticks);
+        // Warm-up: row 0's wave, replayed once to advance CfC state, the P1.7 period
+        // counter and the M4 reserve from the true zero/neutral initial state —
+        // exactly what the recording's own row 1 was scored against. Its own
+        // prediction is discarded; see the long comment above `warmup_wave` for why
+        // this (not skipping row 0 outright) is what makes row 1 onward line up.
+        let _ = screen.step(&warmup_wave, config.dt);
+
+        let mut preds: Vec<Vec<[f32; 3]>> = vec![Vec::with_capacity(n_ticks); genomes.len()];
         for t in 0..n_ticks {
             let wave = &waves[t * WAVE_CHANNELS..(t + 1) * WAVE_CHANNELS];
-            pred.push(brain.step_from_wave(wave, DT));
+            let step = screen.step(wave, config.dt);
+            for (g, cmd) in step.into_iter().enumerate() {
+                preds[g].push(cmd);
+            }
         }
         let elapsed = t0.elapsed();
+        let per_genome_ms = elapsed.as_secs_f64() * 1000.0 / genomes.len() as f64;
+        let ticks_per_s = (n_ticks * genomes.len()) as f64 / elapsed.as_secs_f64();
 
-        let e = error_per_tick(&pred, &real[..n_ticks]);
-        let verdict = if e > threshold { "REJECT" } else { "keep" };
+        for (g, name) in names.iter().enumerate() {
+            let e = error_per_tick(&preds[g], &real[..n_ticks]);
+            if partial {
+                println!("  {name:<34} error/tick {e:.4}  (partial window, no verdict)");
+            } else {
+                let verdict = if e > threshold { "REJECT" } else { "keep" };
+                println!("  {name:<34} error/tick {e:.4}  {verdict}");
+            }
+        }
         println!(
-            "  {name:<34} error/tick {e:.4}  {verdict}  ({:.1} ms/genome, {:.0} ticks/s)",
-            elapsed.as_secs_f64() * 1000.0,
-            n_ticks as f64 / elapsed.as_secs_f64()
+            "  [batch of {}] {:.1} ms/genome, {:.0} ticks/s aggregate",
+            genomes.len(),
+            per_genome_ms,
+            ticks_per_s
         );
     }
 }
