@@ -500,6 +500,12 @@ impl GpuCtx {
         // one of the four being an outlier this large). Excluded explicitly.
         let prints_this_tick = n_tick > 0 && tick_idx > 0 && (tick_idx as u32) % n_tick == 0;
         let tick_t0 = prints_this_tick.then(std::time::Instant::now);
+        // CPU-side phase breakdown, only when profiling. The GPU kernels reconstruct
+        // ~8.5% of the tick at 768 beings; the other ~84% is this side, and until now
+        // it was one opaque `gaps` number. Optimising it without this split is the same
+        // guess that made an ablation report the brain at 21% when the kernel timer
+        // measures 1.9%.
+        let mut cpu_phases: Vec<(&'static str, f32)> = Vec::new();
         let mut total_gpu_ms: f32 = 0.0;
         let mut physics_ms: f32 = 0.0;
 
@@ -1439,8 +1445,18 @@ impl GpuCtx {
         }
 
         // Submit único.
+        if let (Some(t0), true) = (tick_t0, prints_this_tick) {
+            // Everything before the submit: write_buffer uploads, bind-group creation and
+            // command recording. Measured 2026-08-27 because `gaps` had 5.8 ms nobody
+            // could name, and an unnamed 23% of the tick is not a diagnosis.
+            cpu_phases.push(("cpu.record", t0.elapsed().as_secs_f32() * 1000.0));
+        }
         self.queue.submit(Some(enc.finish()));
+        let t_poll = prints_this_tick.then(std::time::Instant::now);
         self.device.poll(wgpu::Maintain::Wait);
+        if let Some(t) = t_poll {
+            cpu_phases.push(("cpu.poll", t.elapsed().as_secs_f32() * 1000.0));
+        }
 
         // `--perfil-kernel <N>`: print the GPU-kernel table every N ticks. This covers
         // everything recorded into the single encoder above (retina through slow);
@@ -1505,6 +1521,7 @@ impl GpuCtx {
             }
         }
 
+        let t_ri = prints_this_tick.then(std::time::Instant::now);
         let mut intents = if brain_fires {
             let v = self.brain.read_intent_after_submit(n);
             if v.len() == n {
@@ -1516,7 +1533,14 @@ impl GpuCtx {
             // skip > 1), cai em zero — que é "não faz nada", não um comando inventado.
             self.last_intents.clone()
         };
+        if let Some(t) = t_ri {
+            cpu_phases.push(("cpu.read_intent", t.elapsed().as_secs_f32() * 1000.0));
+        }
+        let t_rs = prints_this_tick.then(std::time::Instant::now);
         let slow_out = self.slow.read_outputs(n);
+        if let Some(t) = t_rs {
+            cpu_phases.push(("cpu.read_slow", t.elapsed().as_secs_f32() * 1000.0));
+        }
         // ── M4: MAESTRO DE REGIÕES (ver REGIOES_CEREBRAIS.md, spec M4) ─────────
         // gate_b = 1 + 0,5·tanh(w·slow_out + b), atenuado pela RESERVA da região;
         // usar o gate longe de 1,0 GASTA reserva (burnout), que repõe com τ=30 s.
@@ -1577,10 +1601,16 @@ impl GpuCtx {
         // O laço de vida abaixo (wall_ticks/dreno, estagnação, combustível, -1 tick de
         // life_left) CONTINUA na CPU — só passa a consumir `min_wall_ahead` já pronto
         // em vez de recalculá-lo dos pixels.
+        let mut t_dl_outer = None;
         {
+            let t_rd = prints_this_tick.then(std::time::Instant::now);
             let extra = self
                 .retina_digest
                 .read_after_submit(&self.device, n, extra_bytes);
+            if let Some(t) = t_rd {
+                cpu_phases.push(("cpu.read_digest", t.elapsed().as_secs_f32() * 1000.0));
+            }
+            t_dl_outer = prints_this_tick.then(std::time::Instant::now);
             for i in 0..n {
                 let min_wall_ahead = extra[i][0];
                 // Um tick "colado" é um tick com parede a menos de WALL_NEAR_M à frente.
@@ -1731,6 +1761,10 @@ impl GpuCtx {
         let kan_eval =
             |out_idx: usize, x: f32| -> f32 { universe::kan::eval_knots(kan_knots, out_idx, x) };
 
+        if let Some(t) = t_dl_outer {
+            cpu_phases.push(("cpu.digest_loop", t.elapsed().as_secs_f32() * 1000.0));
+        }
+        let t_asm = prints_this_tick.then(std::time::Instant::now);
         // MARCA-ORDEM-FISICA (lida pelo teste piloto_entra_antes_da_fisica)
         let mut phys_states: Vec<PhysicsStateGpu> = (0..n)
             .map(|i| {
@@ -2128,6 +2162,9 @@ impl GpuCtx {
         // reasons, but a single source of truth for "is this a printing tick" is what
         // keeps this row and the GPU rows above sampled on the SAME tick.
         let physics_t0 = prints_this_tick.then(std::time::Instant::now);
+        if let Some(t) = t_asm {
+            cpu_phases.push(("cpu.assemble_phys", t.elapsed().as_secs_f32() * 1000.0));
+        }
         let ok = self.phys_gpu.step(&mut phys_states);
         if let Some(t0) = physics_t0 {
             physics_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -2188,6 +2225,24 @@ impl GpuCtx {
             println!(
                 "  [perfil] {:<22} {gaps_ms:8.4} ms (tick wall {tick_ms:.4} - TOTAL - physics.step)",
                 "gaps"
+            );
+            // Breakdown of the `gaps` number above. Anything unaccounted for is Rust
+            // work outside these five phases; print it explicitly rather than letting
+            // the reader assume the phases sum to the gap.
+            let somado: f32 = cpu_phases.iter().map(|(_, ms)| ms).sum();
+            for (label, ms) in &cpu_phases {
+                println!("  [perfil]   {label:<20} {ms:8.4} ms");
+            }
+            // The CPU phases decompose the TICK WALL, not `gaps`. The GPU kernels
+            // execute INSIDE `cpu.poll` — that is what the CPU is blocked waiting for —
+            // so `gaps = wall - TOTAL - physics` double-subtracts them and the phases
+            // legitimately sum to more than it. Measured 2026-08-27: phases 20.96 ms
+            // against a gaps of 19.96, the 1.0 ms difference being the kernel time
+            // counted on both sides. Report against the wall.
+            println!(
+                "  [perfil]   {:<20} {:8.4} ms (wall {tick_ms:.4} - phases; kernels run INSIDE cpu.poll)",
+                "cpu.unaccounted",
+                tick_ms - somado - physics_ms
             );
         }
 
