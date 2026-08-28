@@ -119,117 +119,129 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 2: Kill the twelve per-tick allocations
+## Task 1 result — what it redirected
+
+Measured (`--gens 1 --seres 768 --ticks 400 --perfil-kernel 10`, n=40, median with range):
+
+| pass | median ms | share of `rec.cpu_prep` |
+|---|---|---|
+| **`prep.racing_line`** | **3.742** (3.140–5.595) | **52.5%** |
+| `prep.extra2` (holds the O(n²) block) | 1.362 | 19.1% |
+| `prep.dists` | 0.787 | 11.0% |
+| `prep.extra` | 0.640 | 9.0% |
+| `prep.prop` | 0.594 | 8.3% |
+| `prep.retina_view`, `prep.body`, `prep.encoder_setup` | 0.010 | 0.1% |
+| sum | 7.136 | 100.13% of `rec.cpu_prep` |
+
+**The plan's original Tasks 2 and 3 were aimed at noise.** Killing the six per-tick `Vec`
+allocations and fusing passes together address, at most, the 47.5% that is not
+`racing_line` — and allocation is a small part of even that. One function is 52% of the
+prep and 15.5% of the whole tick. Tasks 2-4 below are rewritten to attack it.
+
+The mechanism, read from the code rather than assumed:
+
+- `RacingLine::project(pos)` (`src/simulation/racing_line.rs:143`) is a **full linear scan
+  over every track segment**, with a `normalize_or_zero()` (a square root) inside the
+  best-so-far branch.
+- `lateral_offset_from_line` (`:176`) calls `project` once.
+- `lookahead_offset` (`:194`) calls `project` **again, with the same `pos`**, then runs a
+  **second linear scan** over `self.arc` to find the target segment.
+
+Per being, per tick: two full projections of the same point plus one more linear scan.
+At 768 beings and ~77-129 segments per track that is roughly 200 000 segment evaluations
+per tick, which is the 3.74 ms.
+
+---
+
+## Task 2: Project once per being instead of twice
 
 **Files:**
-- Create: `src/bin/gpu_evolve/tick_buffers.rs`
-- Modify: `src/bin/gpu_evolve/context.rs` (prep region), `src/bin/gpu_evolve/mod.rs` or wherever the binary's modules are declared
+- Modify: `src/simulation/racing_line.rs:176-230`
+- Test: `src/simulation/racing_line.rs` (`#[cfg(test)] mod tests`)
 
 **Interfaces:**
-- Consumes: Task 1's `prep.*` measurement, to say which allocations mattered.
+- Consumes: nothing from earlier tasks.
 - Produces:
-  - `pub struct TickScratch { pub dists: Vec<[f32; 3]>, pub rv: Vec<[f32; 6]>, pub prop: Vec<[f32; 12]>, pub extra: Vec<[f32; 17]>, pub extra2: Vec<[f32; 9]>, pub body: Vec<[f32; universe::perception::channels::BODY_K]> }`
-  - `pub fn new() -> TickScratch`
-  - `pub fn reset_for(&mut self, n: usize)` — clears each vector's length to 0 while keeping its capacity, growing capacity to `n` once.
+  - `pub struct Projection { pub seg: usize, pub t: f32, pub point: Vec2, pub tangent: Vec2 }`
+  - `pub fn project_at(&self, pos: Vec2) -> Option<Projection>` — the existing private `project`, made public and returning a named struct instead of a 4-tuple.
+  - `pub fn lateral_offset_from(&self, p: &Projection, pos: Vec2) -> f32`
+  - `pub fn lookahead_offset_from(&self, p: &Projection, s: f32) -> f32`
+  - The existing `lateral_offset_from_line` and `lookahead_offset` stay, implemented in terms of the new pair, so no other caller breaks.
 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
 #[cfg(test)]
-mod tests {
-    use super::TickScratch;
+mod projection_reuse_tests {
+    use super::*;
 
-    /// The whole point is that capacity survives a reset: a `Vec` that reallocates
-    /// every tick is 20 000 allocations per generation per buffer, which is what this
-    /// type exists to remove. A reset that shrinks capacity would silently keep the
-    /// allocation cost while looking like a fix.
+    /// A shared projection must produce bit-identical results to projecting twice.
+    /// This is the whole point of the task: it is a caching change, not a numerical
+    /// one, and the simulation's output is gated on nothing moving.
     #[test]
-    fn reset_keeps_capacity_and_clears_length() {
-        let mut s = TickScratch::new();
-        s.reset_for(768);
-        s.dists.push([1.0, 2.0, 3.0]);
-        s.extra2.push([0.0; 9]);
-        let cap_dists = s.dists.capacity();
-        let cap_extra2 = s.extra2.capacity();
-        assert!(cap_dists >= 768, "reset_for must reserve up front, got {cap_dists}");
+    fn sharing_one_projection_matches_projecting_twice() {
+        let line = RacingLine::from_points(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            Vec2::new(200.0, 50.0),
+            Vec2::new(300.0, 50.0),
+        ]);
+        for &(x, y) in &[(10.0, 3.0), (150.0, -8.0), (250.0, 60.0), (299.0, 49.0)] {
+            let pos = Vec2::new(x, y);
+            let p = line.project_at(pos).expect("projection");
 
-        s.reset_for(768);
-        assert_eq!(s.dists.len(), 0, "length must be cleared");
-        assert_eq!(s.extra2.len(), 0, "length must be cleared");
-        assert_eq!(s.dists.capacity(), cap_dists, "capacity must survive the reset");
-        assert_eq!(s.extra2.capacity(), cap_extra2, "capacity must survive the reset");
-    }
+            let lat_old = line.lateral_offset_from_line(pos, Vec2::ZERO);
+            let lat_new = line.lateral_offset_from(&p, pos);
+            assert_eq!(
+                lat_old.to_bits(),
+                lat_new.to_bits(),
+                "lateral differs at {pos:?}: {lat_old} vs {lat_new}"
+            );
 
-    /// Growing the population must not silently keep a too-small buffer.
-    #[test]
-    fn reset_grows_for_a_larger_population() {
-        let mut s = TickScratch::new();
-        s.reset_for(48);
-        s.reset_for(768);
-        assert!(s.prop.capacity() >= 768, "capacity must grow with n");
+            for &s in &[5.0f32, 20.0, 80.0] {
+                let look_old = line.lookahead_offset(pos, s);
+                let look_new = line.lookahead_offset_from(&p, s);
+                assert_eq!(
+                    look_old.to_bits(),
+                    look_new.to_bits(),
+                    "lookahead differs at {pos:?}, s={s}: {look_old} vs {look_new}"
+                );
+            }
+        }
     }
 }
 ```
+
+If `RacingLine` has no `from_points` constructor, read the file and use whichever
+constructor exists; do not add one for the test's convenience.
 
 - [ ] **Step 2: Run it and watch it fail**
 
-Run: `cargo test --release --bin gpu_evolve tick_buffers 2>&1 | tail -20`
-Expected: FAIL — unresolved module `tick_buffers`.
+Run: `cargo test --release --lib projection_reuse 2>&1 | tail -20`
+Expected: FAIL — `project_at`, `lateral_offset_from`, `lookahead_offset_from` not found.
 
-- [ ] **Step 3: Write the module**
+- [ ] **Step 3: Implement**
 
-```rust
-//! Per-tick scratch buffers, allocated once instead of twelve times per tick.
-//!
-//! Measured 2026-08-27 (`--perfil-kernel`, 768 beings): `rec.cpu_prep` is 7.58 ms of a
-//! 24.10 ms tick, and the region allocated twelve `Vec`s every tick — 20 000 ticks per
-//! generation, so 240 000 allocations per buffer per generation. Capacity is reserved
-//! once and reused; `reset_for` clears length without touching it.
-
-/// Scratch space reused across ticks. One field per per-being pass in `context.rs`.
-#[derive(Default)]
-pub struct TickScratch {
-    pub dists: Vec<[f32; 3]>,
-    pub rv: Vec<[f32; 6]>,
-    pub prop: Vec<[f32; 12]>,
-    pub extra: Vec<[f32; 17]>,
-    pub extra2: Vec<[f32; 9]>,
-    pub body: Vec<[f32; universe::perception::channels::BODY_K]>,
-}
-
-impl TickScratch {
-    pub fn new() -> TickScratch {
-        TickScratch::default()
-    }
-
-    /// Clears every buffer's length and guarantees capacity for `n` beings.
-    ///
-    /// `clear()` keeps capacity by contract; `reserve` on an empty vector then only
-    /// allocates when `n` grew. Do not replace this with `Vec::with_capacity` — that is
-    /// the allocation this type was written to remove.
-    pub fn reset_for(&mut self, n: usize) {
-        macro_rules! reset {
-            ($($f:ident),+ $(,)?) => { $( self.$f.clear(); self.$f.reserve(n); )+ };
-        }
-        reset!(dists, rv, prop, extra, extra2, body);
-    }
-}
-```
+Rename the private `project` to `project_at`, make it public, and return `Projection`
+instead of the tuple. Split the two public functions so the projection is a parameter.
+**Move the arithmetic, do not rewrite it** — every expression stays byte-for-byte the same,
+or the `to_bits()` assertions above will catch it.
 
 - [ ] **Step 4: Run it and watch it pass**
 
-Run: `cargo test --release --bin gpu_evolve tick_buffers 2>&1 | grep "test result"`
-Expected: `test result: ok. 2 passed`
+Run: `cargo test --release --lib projection_reuse 2>&1 | grep "test result"`
+Expected: `test result: ok. 1 passed`
 
-- [ ] **Step 5: Use it in the tick**
+- [ ] **Step 5: Use the shared projection in the tick**
 
-Add `scratch: TickScratch` to the context struct, call `self.scratch.reset_for(n)` once at the top of `tick()`, and replace each `let mut x: Vec<..> = Vec::with_capacity(n);` in the prep region with a borrow of the matching field. **Change nothing else in those passes** — same order, same arithmetic, same pushes.
+In `src/bin/gpu_evolve/context.rs`, inside the pass timed as `prep.racing_line`, call
+`project_at` once per being and pass the result to both `_from` functions.
 
-- [ ] **Step 6: Prove it changed no number**
+- [ ] **Step 6: Prove no simulated number moved**
 
 ```bash
-cargo build --release --bin gpu_evolve
-D=/media/llm-data/scratch/scr; rm -rf $D; mkdir -p $D
+cargo build --release
+D=/media/llm-data/scratch/proj; rm -rf $D; mkdir -p $D
 cp /media/llm-data/universe-runs/ereg-m4-m4-s77/evolve_best_gen0043.bin $D/
 ./target/release/gpu_evolve --retomar --out $D --gens 1 --seres 48 --ticks 20000 \
     --width 28 --out-beta 0.0 --mascara-regioes --neuromod-regioes \
@@ -237,121 +249,250 @@ cp /media/llm-data/universe-runs/ereg-m4-m4-s77/evolve_best_gen0043.bin $D/
 sha256sum $D/obs.f32
 ```
 
-Expected: `5f1cf08e4764c78bec1b9341f625ce62afd7adc760becbf88884b4c81ee5fa35`, median `2939m`. **If it differs, revert — a buffer refactor that changes the simulation is a bug, not a trade-off.**
+Expected: `5f1cf08e4764c78bec1b9341f625ce62afd7adc760becbf88884b4c81ee5fa35`, median `2939m`.
+**If it differs, revert.** A projection that is computed once instead of twice must give
+the same answer; a difference means the two call sites were not passing the same `pos`,
+which is a finding worth reporting, not patching over.
 
-- [ ] **Step 7: Measure the effect, median over ≥25 samples**
+- [ ] **Step 7: Measure and commit**
 
-Re-run the Task 1 Step 3 command and compare `rec.cpu_prep` before and after. Report median and range for both. If the improvement is under 5%, say so plainly — allocation was then not the cost, and Task 3 carries the weight.
-
-- [ ] **Step 8: Commit**
-
-```bash
-cargo fmt -p universe
-git add -A
-git commit -m "perf(gpu_evolve): reuse per-tick scratch instead of twelve allocations
-
-[before/after rec.cpu_prep medians with ranges and the command]
-
-obs.f32 byte-identical: 5f1cf08e...
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
+Re-run the Task 1 profiling command and report `prep.racing_line` median and range before
+and after. Expected direction: roughly halved. Put both numbers and the command in the
+commit message.
 
 ---
 
-## Task 3: Fuse the per-being passes
+## Task 3: Binary-search the arc scan
 
 **Files:**
-- Modify: `src/bin/gpu_evolve/context.rs` (prep region)
+- Modify: `src/simulation/racing_line.rs` (`lookahead_offset_from`)
+- Test: same module
 
 **Interfaces:**
-- Consumes: `TickScratch` from Task 2; Task 1's `prep.*` table, which says which passes are worth fusing.
-- Produces: no new public API. One pass over `states[..n]` filling several scratch buffers, where there were several passes.
+- Consumes: `Projection` and `lookahead_offset_from` from Task 2.
+- Produces: no new API. The linear `for k in 0..self.arc.len() - 1` becomes a binary search.
 
-- [ ] **Step 1: Pick the fusion set from Task 1's numbers**
-
-Fuse only passes that (a) read the same `states[i]` fields and (b) together account for a meaningful share of `rec.cpu_prep`. **Do not fuse everything on principle** — a fused pass that reads fields no other pass needs gains nothing and costs readability. Record in the report which passes you fused and which you left alone, with the measured share of each.
-
-- [ ] **Step 2: Fuse them, one at a time**
-
-Each fusion is one commit. The arithmetic inside must be copied verbatim, not rewritten — this is a loop-structure change, not a numerical one. The shape, using two real passes from the file as the worked example:
-
-Before — two passes, each walking `states[..n]` and touching the same `phys`:
+- [ ] **Step 1: Write the failing test**
 
 ```rust
-for i in 0..n {
-    let p = &states[i].phys;
-    let dist_l = /* ... existing expression, unchanged ... */;
-    let dist_r = /* ... */;
-    let dist_f = /* ... */;
-    scratch.dists.push([dist_l, dist_r, dist_f]);
-}
-// ... unrelated code between them stays where it is ...
-for i in 0..n {
-    let p = &states[i].phys;
-    let speed = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
-    scratch.rv.push([/* ... six existing expressions, unchanged ... */]);
+#[cfg(test)]
+mod arc_search_tests {
+    use super::*;
+
+    /// `self.arc` is cumulative arc length and therefore sorted ascending, so the
+    /// segment containing a target can be found by binary search. The test pins the
+    /// EQUIVALENCE, not the algorithm: it compares against the linear scan the code
+    /// used before, at every segment boundary and at points either side of one.
+    #[test]
+    fn binary_search_finds_the_same_segment_as_a_linear_scan() {
+        let line = RacingLine::from_points(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            Vec2::new(200.0, 50.0),
+            Vec2::new(300.0, 50.0),
+        ]);
+        let arc = &line.arc;
+        assert!(arc.len() >= 3, "need a few segments to search");
+
+        let linear = |target: f32| -> usize {
+            let mut j = 0usize;
+            for k in 0..arc.len() - 1 {
+                if arc[k] <= target && target <= arc[k + 1] {
+                    j = k;
+                    break;
+                }
+            }
+            j
+        };
+
+        let mut targets: Vec<f32> = Vec::new();
+        for k in 0..arc.len() {
+            targets.push(arc[k]);
+            if k + 1 < arc.len() {
+                targets.push((arc[k] + arc[k + 1]) * 0.5);
+            }
+        }
+        for t in targets {
+            assert_eq!(
+                super::segment_for_arc(arc, t),
+                linear(t),
+                "segment mismatch at target {t}"
+            );
+        }
+    }
 }
 ```
 
-After — one pass, both buffers filled, every expression byte-for-byte the same:
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `cargo test --release --lib arc_search 2>&1 | tail -20`
+Expected: FAIL — `segment_for_arc` not found.
+
+- [ ] **Step 3: Implement**
 
 ```rust
-for i in 0..n {
-    let p = &states[i].phys;
-
-    let dist_l = /* ... same expression, moved not rewritten ... */;
-    let dist_r = /* ... */;
-    let dist_f = /* ... */;
-    scratch.dists.push([dist_l, dist_r, dist_f]);
-
-    let speed = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
-    scratch.rv.push([/* ... same six expressions ... */]);
+/// Index of the segment containing `target` in the sorted cumulative-arc table.
+///
+/// `arc` is cumulative arc length, so it is ascending and `partition_point` applies.
+/// Replaces a linear scan that ran once per being per tick: at ~129 segments and 768
+/// beings that was ~99 000 comparisons a tick for a value a binary search finds in
+/// seven. Clamped to the last valid segment so a target at or past the end behaves
+/// exactly like the linear scan's fallthrough, which left `j` at its last match.
+pub(crate) fn segment_for_arc(arc: &[f32], target: f32) -> usize {
+    if arc.len() < 2 {
+        return 0;
+    }
+    let k = arc.partition_point(|&a| a <= target);
+    k.saturating_sub(1).min(arc.len() - 2)
 }
 ```
 
-Two rules that make the difference between a fusion and a bug:
+Then call it from `lookahead_offset_from` in place of the loop.
 
-* **Only fuse passes with nothing order-dependent between them.** If code between the two passes writes to `states`, or reads a buffer the first pass fills, they are not independent and fusing reorders the program. Check before moving.
-* **Never merge two accumulations into one expression.** `a + b + c` computed in a different order is a different `f32`. Keep each push exactly as it was; the loop header is the only thing that changes.
+- [ ] **Step 4: Run it and watch it pass**
 
-- [ ] **Step 3: Prove each fusion changed no number**
+Run: `cargo test --release --lib arc_search 2>&1 | grep "test result"`
+Expected: `test result: ok. 1 passed`
 
-After EACH fusion, run the Step 6 command from Task 2. Expected: sha256 `5f1cf08e4764c78bec1b9341f625ce62afd7adc760becbf88884b4c81ee5fa35`, median `2939m`. A fusion that changes the hash reordered a floating-point accumulation; revert it and say which.
+- [ ] **Step 5: Prove no simulated number moved**
 
-- [ ] **Step 4: Measure and commit each fusion**
+Run the Step 6 command from Task 2. Expected: same sha256, median `2939m`.
 
-Report `rec.cpu_prep` median and range before and after each one, with the command.
+**One difference matters and you must check it.** The old linear scan started at `j = 0`
+and, if no segment matched, left `j = 0`. `segment_for_arc` clamps instead. Those differ
+for a target below `arc[0]` or above the last entry. Read `lookahead_offset_from` and
+decide whether such a target can occur — `rem_euclid(total_len)` should prevent it. State
+your reasoning in the report either way; if it can occur, match the old behaviour exactly
+rather than the "better" one, because this task is a speedup and not a bug fix.
+
+- [ ] **Step 6: Measure and commit**
 
 ---
 
-## Task 4: The 13.28 ms wait — measure before touching
+## Task 4: Warm-start the projection from the previous tick
 
 **Files:**
-- Modify: `src/bin/gpu_evolve/context.rs` (the submit/poll boundary), only if Step 2 says it is still worth it.
+- Modify: `src/simulation/racing_line.rs`, `src/bin/gpu_evolve/types.rs` (one field on `BeingState`), `src/bin/gpu_evolve/context.rs`
+- Test: `src/simulation/racing_line.rs`
 
 **Interfaces:**
-- Consumes: the tick after Tasks 2-3.
-- Produces: a decision, recorded in `docs/KERNEL_TIMING.md`, and the change only if the measurement justifies it.
+- Consumes: `project_at` and `Projection` from Task 2.
+- Produces: `pub fn project_near(&self, pos: Vec2, hint: usize, window: usize) -> Option<Projection>` — searches `hint ± window` segments and **falls back to the full scan** when the best result lands on the window's edge.
 
-- [ ] **Step 1: Re-measure the whole tick after Tasks 2-3**
+**Why the fallback is not optional.** A being moves roughly 0.3 m per tick, so its nearest
+segment almost never changes — that is what makes the hint work. But a track that loops
+back near itself has two segments at similar distance, and a purely local search can lock
+onto the wrong one and stay there. The edge check is what makes this a speedup rather than
+a silent behaviour change: if the local winner sits at the window boundary, a better
+segment may lie outside, so redo the full scan.
 
-Run the Task 1 Step 3 command. Report every phase, median over ≥25 samples with range, plus `rocm-smi --showgpuclocks --showpower` sampled ten times during the run.
+- [ ] **Step 1: Write the failing test**
 
-- [ ] **Step 2: Decide from the number, and write the decision down**
+```rust
+#[cfg(test)]
+mod warm_start_tests {
+    use super::*;
 
-The card sits at DPM level 1 (1205-1995 MHz, 21-24 W of a ~2600 MHz / ~200 W ceiling) **because it idles most of every tick**. Removing CPU work raises the duty cycle, which may raise the clock, which shortens both the kernels and the wait — for free.
+    /// A hinted search must return exactly what the full scan returns, for every
+    /// segment index used as a hint — including deliberately wrong hints, which is
+    /// where a local search silently diverges.
+    #[test]
+    fn a_hinted_projection_matches_the_full_scan_from_any_hint() {
+        let line = RacingLine::from_points(vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            Vec2::new(200.0, 50.0),
+            Vec2::new(300.0, 50.0),
+            Vec2::new(300.0, 150.0),
+            Vec2::new(200.0, 200.0),
+        ]);
+        let n_seg = line.points.len() - 1;
+        for &(x, y) in &[(10.0, 3.0), (150.0, -8.0), (250.0, 60.0), (299.0, 120.0)] {
+            let pos = Vec2::new(x, y);
+            let full = line.project_at(pos).expect("full");
+            for hint in 0..n_seg {
+                let near = line.project_near(pos, hint, 2).expect("near");
+                assert_eq!(
+                    near.seg, full.seg,
+                    "hint {hint} at {pos:?} gave segment {} instead of {}",
+                    near.seg, full.seg
+                );
+                assert_eq!(near.t.to_bits(), full.t.to_bits(), "t differs for hint {hint}");
+            }
+        }
+    }
+}
+```
 
-- If `cpu.poll` fell substantially and the clock rose, **stop here.** Record it in `docs/KERNEL_TIMING.md` and do not restructure the synchronisation. That is the cheapest possible outcome and it must be allowed to happen.
-- If `cpu.poll` is still the dominant term, continue to Step 3.
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `cargo test --release --lib warm_start 2>&1 | tail -20`
+Expected: FAIL — `project_near` not found.
+
+- [ ] **Step 3: Implement `project_near` with the edge fallback**
+
+The window scan is the same arithmetic as `project_at`, over `hint.saturating_sub(window) ..= (hint + window).min(n_seg - 1)`, wrapping is NOT required for correctness because the fallback covers it. If the best index equals either end of the searched range and that end is not also the track's end, return `self.project_at(pos)` instead.
+
+- [ ] **Step 4: Run it and watch it pass**
+
+Run: `cargo test --release --lib warm_start 2>&1 | grep "test result"`
+Expected: `test result: ok. 1 passed`
+
+- [ ] **Step 5: Store the hint per being**
+
+Add `pub last_seg: usize` to `BeingState` (`src/bin/gpu_evolve/types.rs`), default 0. In the
+`prep.racing_line` pass, call `project_near(pos, states[i].last_seg, 3)` and write the
+result's `seg` back. **Reset it to 0 whenever the world changes** — `context.rs` rebuilds
+the world on track rotation, and a stale hint from another track is exactly the case the
+fallback exists to survive, but resetting is cheaper than relying on it.
+
+- [ ] **Step 6: Prove no simulated number moved**
+
+Run the Step 6 command from Task 2. Expected: same sha256, median `2939m`. **This is the
+task where a silent divergence is most likely** — if the hash differs, the fallback is not
+firing when it should. Report the divergence rather than widening the window until it
+passes.
+
+- [ ] **Step 7: Measure and commit**
+
+Report `prep.racing_line` and the whole-tick wall before and after, median with range.
+
+---
+
+## Task 5: Re-measure, then decide about the 13 ms wait
+
+**Files:**
+- Modify: `docs/KERNEL_TIMING.md`
+- Modify: `src/bin/gpu_evolve/context.rs`, only if Step 2 says it is still worth it.
+
+- [ ] **Step 1: Re-measure the whole tick after Tasks 2-4**
+
+Run the Task 1 profiling command. Report every phase, median over ≥25 samples with range,
+plus `rocm-smi --showgpuclocks --showpower` sampled ten times during the run.
+
+- [ ] **Step 2: Decide from the number and write it down**
+
+The card sits at DPM level 1 (1205-1995 MHz, 21-24 W of a ~2600 MHz / ~200 W ceiling)
+**because it idles most of every tick**. Removing CPU work raises the duty cycle, which may
+raise the clock, which shortens both the kernels and the wait — for free.
+
+- If `cpu.poll` fell substantially and the clock rose, **stop here.** Record it in
+  `docs/KERNEL_TIMING.md` and do not restructure the synchronisation. A task that ends in a
+  recorded decision and no diff is complete, not skipped.
+- If `cpu.poll` is still dominant, continue.
 
 - [ ] **Step 3: Only then, pipeline the submit**
 
-The change is to stop blocking on every tick: submit tick N+1's commands before waiting on N's results. This is the one task here that is NOT a pure refactor — it changes when the CPU observes GPU state, and anything reading back per tick (`--observar`, `--gravar-onda`, `--perfil-kernel`, `--auditar-visao`) forces the old path. Gate it behind a flag, off by default, and make those flags force the synchronous path with a printed line saying so.
+Stop blocking every tick: submit tick N+1's commands before waiting on N's results. This is
+the only task here that is not a pure refactor — it changes when the CPU observes GPU state.
+Anything reading back per tick (`--observar`, `--gravar-onda`, `--perfil-kernel`,
+`--auditar-visao`) forces the old path. Gate it behind a flag, off by default, and make
+those flags force the synchronous path with a printed line saying so.
 
-- [ ] **Step 4: The gate is unchanged, and it is stricter here**
+- [ ] **Step 4: The gate is unchanged and stricter here**
 
-Expected: sha256 `5f1cf08e4764c78bec1b9341f625ce62afd7adc760becbf88884b4c81ee5fa35`, median `2939m`, with the flag both off and on. A pipelined tick that changes the hash is reading stale state — revert.
+Expected: same sha256 and median with the flag both off and on. A pipelined tick that
+changes the hash is reading stale state — revert.
 
 - [ ] **Step 5: Commit with the before/after table**
 
@@ -359,5 +500,6 @@ Expected: sha256 `5f1cf08e4764c78bec1b9341f625ce62afd7adc760becbf88884b4c81ee5fa
 
 ## Not in this plan
 
-- **Porting the prep to WGSL.** Tasks 2-3 are mechanical and reversible; a kernel port changes where the sensory inputs are computed and needs its own spec and a paired A/B under `docs/CLAUDE.md` rule 3. Revisit only if Tasks 2-3 leave `rec.cpu_prep` dominant.
+- **Porting the prep to WGSL.** Tasks 2-4 are mechanical and reversible; a kernel port changes where the sensory inputs are computed and needs its own spec and a paired A/B under `docs/CLAUDE.md` rule 3. Revisit only if they leave `rec.cpu_prep` dominant.
+- **The six per-tick `Vec` allocations, and fusing the passes.** These were the original Tasks 2-3. Task 1's measurement demoted them: together the passes they target are 47.5% of `rec.cpu_prep`, and allocation is a small part of even that, against one function at 52%. Revisit after Tasks 2-4 if the remainder is worth a commit.
 - **The `comp_stress` O(n²) block.** Measured and refuted as the cause: `rec.cpu_prep` scales 8.2× for 8× beings against 64× if quadratic, and the block sits behind `--interocepcao`. It becomes relevant only when that flag is on at large populations, and then it is its own task.
