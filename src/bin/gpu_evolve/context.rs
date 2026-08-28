@@ -509,6 +509,14 @@ impl GpuCtx {
         let mut total_gpu_ms: f32 = 0.0;
         let mut physics_ms: f32 = 0.0;
 
+        // Sub-profile of `rec.cpu_prep` (Task 1, 2026-08-27-tick-cpu-cost): eight
+        // timers partition the WHOLE prep region contiguously, from here to the
+        // `rec.cpu_prep` push right before the first GPU call, so nothing in between
+        // is left unbracketed. `prep.*` rows are children of `rec.cpu_prep`, not
+        // siblings -- the printing code below excludes `rec.cpu_prep` from the leaf
+        // sum for the same reason it already excludes `cpu.record`.
+        let t_prep_body = prints_this_tick.then(std::time::Instant::now);
+
         // Guarda de runtime (E4, REFACTOR_PLAN.md §E4 "NaN-check"): detecta posição
         // não-finita ANTES de submeter à GPU. Só em debug — em release (`cfg!` avaliado
         // em compile-time, custo zero no binário de produção) o guard real fica nas
@@ -695,8 +703,12 @@ impl GpuCtx {
                 }
             }
         }
+        if let Some(t) = t_prep_body {
+            cpu_phases.push(("prep.body", t.elapsed().as_secs_f32() * 1000.0));
+        }
 
         // ── Poses retina ──────────────────────────────────────────────────────
+        let t_prep_retina_view = prints_this_tick.then(std::time::Instant::now);
         let pose_raw: Vec<PoseRaw> = (0..n)
             .map(|i| {
                 let p = &states[i].phys;
@@ -725,11 +737,15 @@ impl GpuCtx {
                 }
             })
             .collect();
+        if let Some(t) = t_prep_retina_view {
+            cpu_phases.push(("prep.retina_view", t.elapsed().as_secs_f32() * 1000.0));
+        }
 
         // ── Distâncias laterais/frontais (CPU) → buf_temporal[16-18] ─────────
         // 'dists' fica acessível fora do bloco de distâncias para que o bloco de
         // racing_line possa usar dist_l/r/f sem recalcular (conserta ch118/119/123
         // que antes recebiam 0.5/0.8/0.7 hardcoded).
+        let t_prep_dists = prints_this_tick.then(std::time::Instant::now);
         let tick_dists: Vec<[f32; 3]> = {
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
@@ -790,6 +806,9 @@ impl GpuCtx {
         }
         self.percept
             .update_dist_temporal(&self.queue, &tick_dists[..n]);
+        if let Some(t) = t_prep_dists {
+            cpu_phases.push(("prep.dists", t.elapsed().as_secs_f32() * 1000.0));
+        }
 
         // ── Racing line (CPU) → buf_temporal[10-15] ───────────────────────────
         // cpu_fwd_norm / cpu_corridor / cpu_whisker_norm agora são calculados a partir
@@ -817,6 +836,7 @@ impl GpuCtx {
                 "rv[5] = cpu_whisker_norm"
             );
         };
+        let t_prep_racing_line = prints_this_tick.then(std::time::Instant::now);
         {
             let hw = self.racing_line.half_width.max(1.0);
             let mut rv: Vec<[f32; 6]> = Vec::with_capacity(n);
@@ -857,6 +877,9 @@ impl GpuCtx {
             self.percept
                 .update_racing_line_temporal(&self.queue, &rv[..n]);
         }
+        if let Some(t) = t_prep_racing_line {
+            cpu_phases.push(("prep.racing_line", t.elapsed().as_secs_f32() * 1000.0));
+        }
 
         // ── Propriocepção → buf_temporal[20-31] ───────────────────────────────
         // prop[i] alimenta ch(64+i) no shader (perception_temporal.wgsl:324-349).
@@ -879,6 +902,7 @@ impl GpuCtx {
             assert!(Channel::SteerAbs.index() == 74, "prop[10] = |steer|");
             assert!(Channel::Estagnacao.index() == 75, "prop[11] = estagnado");
         };
+        let t_prep_prop = prints_this_tick.then(std::time::Instant::now);
         {
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
@@ -992,9 +1016,13 @@ impl GpuCtx {
                     .update_body_channels(&self.queue, &body_vals[..n]);
             }
         }
+        if let Some(t) = t_prep_prop {
+            cpu_phases.push(("prep.prop", t.elapsed().as_secs_f32() * 1000.0));
+        }
 
         // ── Reverse timer + CfC percepção → buf_temporal[32-48] ──────────────
         {
+            let t_prep_extra = prints_this_tick.then(std::time::Instant::now);
             // Deduplicado (E3, REFACTOR_PLAN.md §2.3) para
             // universe::config::iara::reverse_maneuver — ver doc do módulo: a constante
             // local `REVERSE_TRIGGER_DIST=3.0` daqui era MORTA (nunca lida; o gatilho
@@ -1116,6 +1144,9 @@ impl GpuCtx {
                 extra.push(val);
             }
             self.percept.update_extra_temporal(&self.queue, &extra[..n]);
+            if let Some(t) = t_prep_extra {
+                cpu_phases.push(("prep.extra", t.elapsed().as_secs_f32() * 1000.0));
+            }
 
             // ── Extra2: slip, dopamina, dor, stress, edge (slots 49-57) ───────
             //
@@ -1156,6 +1187,7 @@ impl GpuCtx {
                 assert!(Channel::SteerMem.index() == 121, "ch121 = steer_mem");
                 assert!(Channel::BrakeMem.index() == 122, "ch122 = brake_mem");
             };
+            let t_prep_extra2 = prints_this_tick.then(std::time::Instant::now);
             {
                 // Posições para comp_stress O(n²): 2304 pares para n=48, irrelevante.
                 let positions: Vec<[f32; 2]> = (0..n)
@@ -1244,10 +1276,19 @@ impl GpuCtx {
                 }
                 self.percept
                     .update_extra2_temporal(&self.queue, &extra2[..n]);
+                if let Some(t) = t_prep_extra2 {
+                    cpu_phases.push(("prep.extra2", t.elapsed().as_secs_f32() * 1000.0));
+                }
             }
         }
 
         // ── Encoder único ─────────────────────────────────────────────────────
+        // `prep.encoder_setup`: not a per-being pass -- it is the remainder of the
+        // prep region (command encoder + retina uniform buffer creation) that runs
+        // AFTER the last per-being loop and BEFORE `rec.cpu_prep` closes. Without it
+        // the `prep.*` rows would fall short of `rec.cpu_prep` by exactly this much,
+        // which is the unmeasured-remainder failure mode this task exists to close.
+        let t_prep_encoder_setup = prints_this_tick.then(std::time::Instant::now);
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1278,6 +1319,9 @@ impl GpuCtx {
                 contents: bytemuck::bytes_of(&retina_params),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
+        if let Some(t) = t_prep_encoder_setup {
+            cpu_phases.push(("prep.encoder_setup", t.elapsed().as_secs_f32() * 1000.0));
+        }
         if let (Some(t0), true) = (tick_t0, prints_this_tick) {
             // Everything before the first GPU call: per-being Rust loops building the
             // sensory extras, plus their uploads. Split out from `cpu.record` because
@@ -2242,14 +2286,19 @@ impl GpuCtx {
             // the reader assume the phases sum to the gap.
             // `cpu.record` is the PARENT of `rec.cpu_prep` + `rec.gpu_record`; summing it
             // as a sibling double-counts and printed a -6.68 ms residual. Sum the leaves.
+            // `rec.cpu_prep` is itself now a PARENT too (Task 1, 2026-08-27-tick-cpu-cost):
+            // the `prep.*` rows sub-profile it, so it gets the same exclusion `cpu.record`
+            // already has, for the same reason.
             let somado: f32 = cpu_phases
                 .iter()
-                .filter(|(l, _)| *l != "cpu.record")
+                .filter(|(l, _)| *l != "cpu.record" && *l != "rec.cpu_prep")
                 .map(|(_, ms)| ms)
                 .sum();
             for (label, ms) in &cpu_phases {
                 let marca = if *label == "cpu.record" {
                     " (= rec.* above)"
+                } else if *label == "rec.cpu_prep" {
+                    " (= prep.* above)"
                 } else {
                     ""
                 };
