@@ -1278,6 +1278,14 @@ impl GpuCtx {
                 contents: bytemuck::bytes_of(&retina_params),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
+        if let (Some(t0), true) = (tick_t0, prints_this_tick) {
+            // Everything before the first GPU call: per-being Rust loops building the
+            // sensory extras, plus their uploads. Split out from `cpu.record` because
+            // "the CPU spends 7 ms recording commands" and "the CPU spends 7 ms
+            // computing per-being inputs" call for opposite fixes.
+            cpu_phases.push(("rec.cpu_prep", t0.elapsed().as_secs_f32() * 1000.0));
+        }
+        let t_rec_gpu = prints_this_tick.then(std::time::Instant::now);
         let bg_retina = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout_retina,
@@ -1445,6 +1453,9 @@ impl GpuCtx {
         }
 
         // Submit único.
+        if let Some(t) = t_rec_gpu {
+            cpu_phases.push(("rec.gpu_record", t.elapsed().as_secs_f32() * 1000.0));
+        }
         if let (Some(t0), true) = (tick_t0, prints_this_tick) {
             // Everything before the submit: write_buffer uploads, bind-group creation and
             // command recording. Measured 2026-08-27 because `gaps` had 5.8 ms nobody
@@ -2229,9 +2240,20 @@ impl GpuCtx {
             // Breakdown of the `gaps` number above. Anything unaccounted for is Rust
             // work outside these five phases; print it explicitly rather than letting
             // the reader assume the phases sum to the gap.
-            let somado: f32 = cpu_phases.iter().map(|(_, ms)| ms).sum();
+            // `cpu.record` is the PARENT of `rec.cpu_prep` + `rec.gpu_record`; summing it
+            // as a sibling double-counts and printed a -6.68 ms residual. Sum the leaves.
+            let somado: f32 = cpu_phases
+                .iter()
+                .filter(|(l, _)| *l != "cpu.record")
+                .map(|(_, ms)| ms)
+                .sum();
             for (label, ms) in &cpu_phases {
-                println!("  [perfil]   {label:<20} {ms:8.4} ms");
+                let marca = if *label == "cpu.record" {
+                    " (= rec.* above)"
+                } else {
+                    ""
+                };
+                println!("  [perfil]   {label:<20} {ms:8.4} ms{marca}");
             }
             // The CPU phases decompose the TICK WALL, not `gaps`. The GPU kernels
             // execute INSIDE `cpu.poll` — that is what the CPU is blocked waiting for —
