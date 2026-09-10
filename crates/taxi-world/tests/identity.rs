@@ -11,35 +11,39 @@
 //!   cargo test -p taxi-world --release -- --ignored
 //! ```
 //!
-//! **Known blocker as of 2026-09-10, external to this crate — P0/P1 pass, P2/P3
-//! do not yet.** The `traco_ref.json` produced so far (`e81`, and its sanitized
-//! copy) is missing `mapa.fase_preco` — confirmed by reading
-//! `neuromod-lab/src/campo.py:94,124,154`: `gerar_mapa` DOES compute a real,
-//! per-district random `fase_preco` and `Campo.__init__` DOES read it back, but
-//! this trace's `mapa` dict in the JSON has no such key at all (`Trace::to_world`
-//! already documents this gap and defaults it to zero, `src/trace.rs`). Since
-//! `physics::update_daily_prices` (SPEC §3.1 item 2) is a sine function OF that
-//! phase, every `price_mul` value from tick 1 onward is wrong in this build
-//! whenever `fase_preco != 0` for a district — which cascades into fares
-//! (`passengers::step_passengers`), service cost/affordability
-//! (`services::service_state`), and, whenever a masked-service argmax is close,
-//! `decision::decide`'s own choice. Diagnosed during this task by finding that
-//! `run_gate`'s STATE divergence in `GateLevel::FirstDay` is isolated ENTIRELY
-//! to price-derived variables (`dinh`, `fuel`, `res`) — `pos_x`/`pos_y`/`fome`/
-//! `agua`/`vida`/`calor`/`fad` are bit-for-bit correct for the whole first day —
-//! and by hand-computing one being's actual fare discrepancy (being 11, tick 0)
-//! against the real map: Rust's own formula reproduces Rust's own output
-//! exactly (5.821678 vs a hand computation of 5.8216776), so the DISCREPANCY
-//! against Python (3.078934) has to be an input difference, not a formula bug —
-//! and `pmul*(1 - aliq) = 0.6875` back-solves to a `fase_preco` nowhere near 0.
-//! The plan's own risk table already names this class of problem (plan risk
-//! #10, about a different gap: don't loosen the tolerance because of it): the
-//! fix is T0 regenerating the trace with `fase_preco` included (the
-//! task brief that started this work already says a corrected copy was queued,
-//! ETA "1-2h" as of the reference trace's timestamp), not loosening these
-//! tests' tolerances. Rerun P2/P3 once a trace with `mapa.fase_preco` present is
-//! available; P0/P1 need no rerun (`obs()`'s very first call, at `t=0`, uses
-//! `s.pmul = s.pmul0.clone()` verbatim — `fase_preco` only enters from `t=1`).
+//! **History (2026-09-10) — two bugs found and fixed by running against two
+//! trace generations, kept here because both were invisible without the
+//! second trace.**
+//!
+//! 1. The first `traco_ref.json` (`e81`, and its sanitized copy) was missing
+//!    `mapa.fase_preco` (`neuromod-lab/src/campo.py:94,124,154`: `gerar_mapa`
+//!    DOES compute a real, per-district random `fase_preco`, but that export
+//!    predated the field being added to the JSON — `Trace::to_world` already
+//!    documented the gap and defaulted it to zero, `src/trace.rs`). Against
+//!    THAT trace, P0/P1 passed (`t=0` never needs a day-price adjustment) but
+//!    P2/P3 showed state divergence isolated ENTIRELY to price-derived
+//!    variables (`dinh`/`fuel`/`res` wrong, `pos`/`fome`/`agua`/`vida`/`calor`/
+//!    `fad` bit-exact) — diagnosed by hand-computing one being's fare with
+//!    Rust's own formula (it matched Rust's own output exactly), so the
+//!    mismatch against Python had to be an input, not a formula.
+//! 2. Once a corrected trace (with real, non-zero `fase_preco`) arrived, P0/P1
+//!    THEMSELVES started failing (`max|ΔF|` jumped from 2.4e-7 to 0.94) — a
+//!    second, genuine bug this crate had: `tick::Sim::new` seeded `price_mul`
+//!    by calling `physics::update_daily_prices` at `t=0`, which computes
+//!    `pmul0·(1 + amp·sin(2π·(0 + fase_preco)))` — NOT `pmul0` itself unless
+//!    `fase_preco = 0`. Python's own `s.pmul` starts as `s.pmul0.clone()`
+//!    verbatim (`campo.py:149`); the sine adjustment (SPEC §3.1 item 2) only
+//!    ever runs inside `passo()`, i.e. from the FIRST `step()` call onward,
+//!    never before it. With the first trace's `fase_preco = 0` this bug was
+//!    invisible (the wrong formula degenerates to the right answer at phase
+//!    zero) — fixed in `tick.rs` (`Sim::new` now copies `price_mul_base`
+//!    directly).
+//!
+//! With both fixed, P0-P3 all pass against the corrected trace: 100% action
+//! agreement at every level, state within f32 rounding
+//! (`dinh` 3.8e-6, `fuel` 7.5e-9, `vida` 6.9e-3), and `t_vida`/`rec` bit-exact
+//! for all 16 beings over the full 2400 ticks (see this crate's final report
+//! for the numbers).
 
 use std::path::{Path, PathBuf};
 

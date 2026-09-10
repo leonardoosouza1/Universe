@@ -50,18 +50,29 @@ pub struct Sim {
 }
 
 impl Sim {
-    /// Builds a `Sim` and seeds `price_mul` at day 0's value for every world
-    /// (SPEC §3.1 item 2, `campo.py:149`'s `s.pmul = s.pmul0.clone()`) — the
-    /// very first `observe()` call must see the district's BASE multiplier, not
-    /// a stale zero, since `update_daily_prices` only runs inside `step`'s
-    /// `passo()` half, AFTER that first `observe()`.
+    /// Builds a `Sim` and seeds `price_mul` at the map's BASE multiplier for
+    /// every world (SPEC §3.1, `campo.py:149`'s `s.pmul = s.pmul0.clone()`) —
+    /// the very first `observe()` call must see `pmul0` UNADJUSTED, not the
+    /// day-0 sine value.
+    ///
+    /// **Bug fixed during this task, caught only once a trace with non-zero
+    /// `fase_preco` existed (SPEC §3.1 item 2's `sin(2π·(day/period +
+    /// fase_preco))` is 0 at `fase_preco = 0`, which made the WRONG formula
+    /// below degenerate to the right answer against the first, `fase_preco`-
+    /// less trace — P0/P1 passed anyway, `max|ΔF|` ~2e-7, and only failed loud
+    /// once a corrected trace with real per-district phases arrived).** This
+    /// used to call `update_daily_prices(..., t=0)` here, which computes `day
+    /// = floor(0/day_ticks) = 0` and therefore `pmul0·(1 + amp·sin(2π·(0 +
+    /// fase_preco)))` — NOT `pmul0` itself unless `fase_preco = 0`. Python's
+    /// OWN `s.pmul` starts as `s.pmul0.clone()` verbatim (`campo.py:149`); the
+    /// sine adjustment (item 2) only ever runs INSIDE `passo()`, i.e. starting
+    /// with the FIRST `step()` call this crate makes, never before it. Seeding
+    /// with `update_daily_prices` amounted to running item 2 an extra, unpaired
+    /// time before tick 0's `observe()` even happens.
     pub fn new(beings: Beings, worlds: Vec<World>, cfg: Config, genome: Genome) -> Sim {
-        let total_districts: usize = worlds.iter().map(|w| w.tax.len()).sum();
-        let mut price_mul = vec![0.0f32; total_districts];
-        let offsets = map_price_offsets(&worlds);
-        for (k, world) in worlds.iter().enumerate() {
-            let len = world.tax.len();
-            update_daily_prices(&mut price_mul[offsets[k]..offsets[k] + len], world, &cfg, 0);
+        let mut price_mul = Vec::new();
+        for world in &worlds {
+            price_mul.extend_from_slice(&world.price_mul_base);
         }
         Sim { beings, worlds, cfg, genome, price_mul, t: 0 }
     }
