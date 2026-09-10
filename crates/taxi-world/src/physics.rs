@@ -31,34 +31,23 @@ use crate::beings::Beings;
 use crate::constants::{Config, DIRS, G, N_SERVICES, N_TYPES};
 use crate::world::World;
 
-/// Stand-in for T3's `senses::NearestCache` (plan §T3 "Interface") — nearest
-/// service point/distance per being, per service type, `TIPOS` order
-/// (`N_TYPES = 5`: posto, comida, agua, descanso, oficina).
+/// The one shared "nearest service" cache the whole crate uses (SPEC §2.3
+/// `_perto_exata`) — nearest point/distance per being, per service type, `TIPOS`
+/// order (`N_TYPES = 5`: posto, comida, agua, descanso, oficina). Computed once
+/// per tick by `senses::observe` and reused, UNCHANGED, by this module (a
+/// breakdown tow targets `nearest.points`, item 19) and by T4's `services.rs`
+/// (service-radius/need reads `nearest.dist`) for the SAME tick.
 ///
-/// `step_physics` needs only `points[.., 0]` (nearest fuel station), for the
-/// breakdown tow (item 19). T3's `senses.rs` does not exist yet, so this crate has
-// check-language: off -- the next three lines quote the plan verbatim
-/// no single shared home for the type; the plan explicitly tells T2 to use "dublês
-/// triviais" for now (plan §T2: "Enquanto T3/T4 não existem, o implementador usa
-/// dublês triviais... os testes desta tarefa não dependem deles para nada além de
-/// assinatura").
-// check-language: on
-///
-/// **Ownership note for whoever lands T3 next.** This must become the ONE
-/// `NearestCache` the crate has — either `senses.rs` re-exports this
-/// (`pub use crate::physics::NearestCache;`) or the type moves to a shared module
-/// both files import. Two structurally-identical-but-distinct `NearestCache` types
-/// would each compile fine alone and then collide the moment `senses::observe` and
-/// `physics::step_physics` are called from the same `tick.rs` (T5) with
-/// incompatible types — the exact multi-implementer collision plan §4 exists to
-/// avoid, so resolve it by picking one, not by keeping both.
-#[derive(Debug, Clone)]
-pub struct NearestCache {
-    /// Nearest point of each type, `n * N_TYPES`, `TIPOS` order.
-    pub points: Vec<[f32; 2]>,
-    /// Distance to that point, `n * N_TYPES`, same layout as `points`.
-    pub dist: Vec<f32>,
-}
+/// **T5 reconciliation (2026-09-10, task brief's "what to do" list, item a).** T2 originally
+/// declared its OWN `NearestCache` here, structurally identical to
+/// `senses::NearestCache` — exactly the multi-implementer collision this struct's
+/// old doc comment warned about (two types that each compile fine alone, then
+/// clash the moment `tick.rs` calls `senses::observe` and `physics::step_physics`
+/// with the same value). `senses.rs` keeps the one real definition (it is the
+/// type `observe()`'s own signature already returns); this is now a re-export,
+/// not a second struct — `taxi_world::physics::NearestCache` still resolves, so
+/// no caller import changes.
+pub use crate::senses::NearestCache;
 
 /// `hora() = ((t + fase) mod dia) / dia * 24` (SPEC §3.2, `campo.py:243`). Called
 /// with the PRE-increment `t` by `senses::observe` (T3) and the POST-increment `t`
@@ -76,6 +65,103 @@ pub fn hour(t: i64, phase: f32, cfg: &Config) -> f32 {
 pub fn is_night(t: i64, phase: f32, cfg: &Config) -> bool {
     let h = hour(t, phase, cfg);
     h >= 22.0 || h < 6.0
+}
+
+/// The result of SPEC §3.1 items 3-9 for one being: whether it was free to act
+/// this tick (item 3, using the PRE-tick `stopped_ticks`/`life` — no mutation),
+/// whether it actually moved (item 5/8, after the pane check), whether it broke
+/// down for lack of fuel (item 8), and the position item 9 commits it to.
+struct MoveStep {
+    /// `livre` (item 3) — read-only: the caller still owns the `stopped_ticks`
+    /// decrement (SPEC §13.8, armadilha 8: decrement AFTER reading `livre`, and
+    /// exactly once per tick, so this helper must not do it itself — it may be
+    /// called from `preview_movement`, which runs BEFORE `step_physics` and must
+    /// not double-decrement what `step_physics` decrements later).
+    livre: bool,
+    /// `mov` (item 5, minus the item 8 pane correction) — true only if the being
+    /// actually displaces this tick.
+    mov: bool,
+    /// `pane` (item 8) — out of fuel for the attempted move.
+    pane: bool,
+    /// `pos` after item 9's clamp — the FINAL position for this tick (services
+    /// and passengers never move a being further).
+    new_pos: [f32; 2],
+    /// `cu = custo_em(pos)` (item 7) — the OLD position's terrain cost, needed
+    /// again by items 11-13.
+    cu: f32,
+    /// `peso` (item 7) — needed again by item 11.
+    peso: f32,
+}
+
+/// Items 3-9 (SPEC §3.1), position-only, no mutation — the single implementation
+/// `step_physics` itself calls (so its behaviour cannot silently diverge from
+/// `preview_movement`'s) and that `preview_movement` also calls, read-only, to
+/// tell T5's `tick.rs` what position item 22's SECOND `service_state` call must
+/// use (see this module's header: "T2 cannot compute it standalone").
+fn resolve_move(b: &Beings, world: &World, cfg: &Config, t: i64, i: usize, esc: u32) -> MoveStep {
+    // 3 (read-only half: the decrement is the caller's job, see MoveStep::livre).
+    let vivo = b.life[i] > 0.0;
+    let livre = b.stopped_ticks[i] <= 0.0 && vivo;
+
+    // 4
+    let nv = is_night(t, b.phase[i], cfg);
+    let v = if nv { cfg.night_speed } else { cfg.day_speed };
+
+    // 5-6
+    let mut mov = livre && esc < G as u32 && esc != G as u32 - 1;
+    let dir = DIRS[esc.min(G as u32 - 1) as usize];
+
+    // 7
+    let cu = world.terrain_cost_at(b.pos_x[i], b.pos_y[i]);
+    let carrying_term = if b.carrying[i] >= 0.0 { 1.0 } else { 0.0 };
+    let peso = 1.0 + 0.15 * carrying_term + 0.002 * b.reserve[i];
+
+    // 8
+    let pane = mov && b.fuel[i] < cfg.fuel_per_tick * cu * peso;
+    mov = mov && !pane;
+    let mov_f = if mov { 1.0 } else { 0.0 };
+
+    // 9
+    let new_x = (b.pos_x[i] + mov_f * v * dir[0]).clamp(0.0, world.side);
+    let new_y = (b.pos_y[i] + mov_f * v * dir[1]).clamp(0.0, world.side);
+
+    MoveStep { livre, mov, pane, new_pos: [new_x, new_y], cu, peso }
+}
+
+/// Per-being `livre` (item 3) and post-movement position (item 9), for every
+/// being in `b`, WITHOUT mutating `b` — T5's `tick.rs` calls this between
+/// `decision::decide()` (which fixes `choice`) and its second `services::
+/// service_state()` call (item 22's application-time availability, which needs
+/// the NEW position) and BEFORE calling `step_physics` (which needs that same
+/// call's `service_avail`/`service_cost` as input). See this module's header:
+/// "Wiring the two in the right order... is T5's `tick.rs` job" — this function
+/// is that wiring's other half, on the physics side.
+///
+/// `t` must be the SAME post-increment tick counter the following
+/// `step_physics` call will receive — `resolve_move` reads no mutable state, so
+/// calling it twice (once here, once inside `step_physics`) with identical
+/// inputs reproduces identical output, by construction, not by convention.
+pub struct MovementPreview {
+    pub free: Vec<bool>,
+    pub new_pos: Vec<[f32; 2]>,
+}
+
+pub fn preview_movement(
+    b: &Beings,
+    w: &[World],
+    cfg: &Config,
+    t: i64,
+    choice: &[u32],
+) -> MovementPreview {
+    let mut free = Vec::with_capacity(b.n);
+    let mut new_pos = Vec::with_capacity(b.n);
+    for i in 0..b.n {
+        let world = &w[b.map_idx[i] as usize];
+        let step = resolve_move(b, world, cfg, t, i, choice[i]);
+        free.push(step.livre);
+        new_pos.push(step.new_pos);
+    }
+    MovementPreview { free, new_pos }
 }
 
 /// Item 2 (SPEC §3.1): the daily price sine wave, one call per MAP per tick — `pmul
@@ -120,36 +206,35 @@ pub fn step_physics(
 ) {
     for i in 0..b.n {
         let world = &w[b.map_idx[i] as usize];
+        let esc = choice[i];
 
-        // 3: livre reads the OLD stopped_ticks, THEN it is decremented (SPEC
-        // §13.8/armadilha 8: get this order backwards and a being with
-        // stopped_ticks == 1 wrongly becomes free THIS tick instead of next).
+        // 3-9: the shared helper (see its own doc comment on why this is a
+        // function and not inlined here). `livre` reads the OLD stopped_ticks,
+        // THEN it is decremented (SPEC §13.8/armadilha 8: get this order
+        // backwards and a being with stopped_ticks == 1 wrongly becomes free
+        // THIS tick instead of next) — `resolve_move` only READS
+        // `stopped_ticks`, so the decrement stays here, exactly once per tick.
         let vivo = b.life[i] > 0.0;
-        let livre = b.stopped_ticks[i] <= 0.0 && vivo;
+        let step = resolve_move(b, world, cfg, t, i, esc);
+        let livre = step.livre;
         b.stopped_ticks[i] = (b.stopped_ticks[i] - 1.0).max(0.0);
 
-        // 4
+        // 4 (recomputed here too — `resolve_move` needs it only to pick the
+        // speed for item 9's displacement; item 12 needs the SAME `v` again for
+        // the EMA denominator, so it is not worth threading through `MoveStep`
+        // for one extra field).
         let nv = is_night(t, b.phase[i], cfg);
         let v = if nv { cfg.night_speed } else { cfg.day_speed };
 
-        // 5-6
-        let esc = choice[i];
-        let mut mov = livre && esc < G as u32 && esc != G as u32 - 1;
-        let dir = DIRS[esc.min(G as u32 - 1) as usize];
-
-        // 7
-        let cu = world.terrain_cost_at(b.pos_x[i], b.pos_y[i]);
-        let carrying_term = if b.carrying[i] >= 0.0 { 1.0 } else { 0.0 };
-        let peso = 1.0 + 0.15 * carrying_term + 0.002 * b.reserve[i];
-
-        // 8
-        let pane = mov && b.fuel[i] < cfg.fuel_per_tick * cu * peso;
-        mov = mov && !pane;
+        let mov = step.mov;
+        let pane = step.pane;
         let mov_f = if mov { 1.0 } else { 0.0 };
+        let cu = step.cu;
+        let peso = step.peso;
 
-        // 9
-        b.pos_x[i] = (b.pos_x[i] + mov_f * v * dir[0]).clamp(0.0, world.side);
-        b.pos_y[i] = (b.pos_y[i] + mov_f * v * dir[1]).clamp(0.0, world.side);
+        // 9 (commit the position `resolve_move` already computed).
+        b.pos_x[i] = step.new_pos[0];
+        b.pos_y[i] = step.new_pos[1];
 
         // 10
         let marcha = livre && !mov;
@@ -250,14 +335,20 @@ pub fn step_physics(
         }
         b.money[i] -= spend;
 
-        // 24
+        // 24: `services::apply_refuel` is the single source of truth for this
+        // formula (T5 reconciliation, task brief's "what to do" list, item d) — this module
+        // used to duplicate the same arithmetic inline, while `services.rs`
+        // carried an independent copy purely for its own unit test
+        // (`overflow_beyond_a_hundred_liters_goes_to_the_reserve_minus_fifteen_percent`).
+        // Two copies of one formula is how a future edit silently diverges; the
+        // counters (`refuels`/`liters`) stay here because `apply_refuel`'s own
+        // contract (plan/services.rs doc comment) is fuel/reserve only.
         let litros =
             usa[0] * 25.0 + usa[1] * 50.0 + usa[2] * 75.0 + usa[3] * 100.0 + usa[4] * 150.0;
-        let novo = b.fuel[i] + litros;
-        let sobra = (novo - 100.0).max(0.0);
-        b.fuel[i] = novo.min(100.0);
-        b.reserve[i] = (b.reserve[i] + sobra * (1.0 - cfg.reserve_storage_loss_frac))
-            .min(cfg.reserve_max);
+        let (new_fuel, new_reserve) =
+            crate::services::apply_refuel(b.fuel[i], b.reserve[i], litros, cfg);
+        b.fuel[i] = new_fuel;
+        b.reserve[i] = new_reserve;
         if litros > 0.0 {
             b.refuels[i] += 1.0;
         }
