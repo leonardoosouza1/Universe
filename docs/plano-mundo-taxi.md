@@ -660,3 +660,9 @@ por ser, o mapa em buffers read-only e o estado em SoA read_write.
 | UI Bevy do mundo do táxi | o Universe não tem câmera 2D nem sprites; tudo é `Mesh3d` (`src/world.rs:707`). O caminho barato é `bevy_gizmos` (`Cargo.toml:32`) sobre uma câmera ortográfica | v1, como `TaxiWorldPlugin` no crate `universe`, dependendo de `taxi-world` |
 | integração com `UGEN v2` / `.dna` V8 / o GA de `src/gpu/evolution.rs` | parâmetros e formato incompatíveis (§1.1) | não planejado. Se for pedido, é uma ponte de conversão, não uma unificação |
 | migração do táxi para dentro de `gpu_evolve` ou de `motor.rs` | os dois runtimes já não compartilham tique (`ARCHITECTURE.md:41`); um terceiro isolado é a escolha honesta | não planejado |
+
+## Decisão do dono (10/09 11:10)
+Sem Bevy, sem visual: "a parte visual com Bevy não é necessária; era usada para os sensores do carro (CPU–GPU); hoje tudo roda na
+GPU no modo headless; com replay não precisa mais". Logo: v0 = tique na CPU SÓ como portão de identidade contra o traço do Python;
+v1 = tique inteiro em WGSL headless (wgpu compute, padrão do `gpu_evolve`), replay em arquivo para olhar. `TaxiWorldPlugin` (Bevy)
+sai do plano.
