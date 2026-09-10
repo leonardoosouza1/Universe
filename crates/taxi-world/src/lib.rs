@@ -32,18 +32,17 @@
 //! T2's `Beings` type, and this task's hard rules forbid creating `beings.rs`).
 
 pub mod constants;
-pub mod decision;
 pub mod genome;
-pub mod senses;
 pub mod trace;
 pub mod world;
-
-// Not part of T1 (plan §4) — left commented so the module names are discoverable
-// without pre-committing to their shape:
 pub mod beings;
 pub mod physics;
-// pub mod services;
-// pub mod passengers;
+pub mod senses;
+pub mod decision;
+pub mod services;
+pub mod passengers;
+
+// T5/T6 (plan §4) — left commented so the module names are discoverable:
 // pub mod tick;
 // pub mod gate;
 // pub mod evolution;
