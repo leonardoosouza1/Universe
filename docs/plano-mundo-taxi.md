@@ -666,3 +666,6 @@ Sem Bevy, sem visual: "a parte visual com Bevy não é necessária; era usada pa
 GPU no modo headless; com replay não precisa mais". Logo: v0 = tique na CPU SÓ como portão de identidade contra o traço do Python;
 v1 = tique inteiro em WGSL headless (wgpu compute, padrão do `gpu_evolve`), replay em arquivo para olhar. `TaxiWorldPlugin` (Bevy)
 sai do plano.
+
+## 10/09 16:20 — pred 174 ✗ e o portão que falta (P4)
+Mesmo genoma, 128 cópias: Rust +9.6 % fit, +12 % rec, n_come +16 %, oficina +31 %, panes iguais. Fórmulas conferidas linha a linha (Sonnet): tarifa, respawn, preço diário, berço/passageiros, custos, guincho. O portão P0–P3 roda com `respawn 1e9` (passageiros injetados) — o caminho de respawn/novo passageiro com RNG próprio nunca foi validado. **P4**: traço com respawn 20, T 7200, B 128 e cfg do cenário (`Sim::from_trace_with_cfg`); comparar distribuições (n_come, n_posto, litros/abast, rec, t_vida) Rust × Python com tolerância 3 %, não bit a bit. Até lá o Rust não entra em análise; o linear evolui no kernel HIP (`neuromod-lab/src/hip/vida.cu`, 143×, +2.5 % no juiz).
