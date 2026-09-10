@@ -38,8 +38,8 @@ pub mod world;
 
 // Not part of T1 (plan §4) — left commented so the module names are discoverable
 // without pre-committing to their shape:
-// pub mod beings;
-// pub mod physics;
+pub mod beings;
+pub mod physics;
 // pub mod senses;
 // pub mod decision;
 // pub mod services;
