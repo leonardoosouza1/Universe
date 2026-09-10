@@ -41,10 +41,10 @@ pub mod senses;
 pub mod decision;
 pub mod services;
 pub mod passengers;
+pub mod tick;
+pub mod gate;
 
-// T5/T6 (plan §4) — left commented so the module names are discoverable:
-// pub mod tick;
-// pub mod gate;
+// T6 (plan §4) — left commented so the module names are discoverable:
 // pub mod evolution;
 // pub mod judge;
 

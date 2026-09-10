@@ -317,7 +317,14 @@ fn perceived_distance(dist: f32, cfg: &Config) -> f32 {
 /// "sees" a phantom passenger in `d_alvo`; SPEC is explicit this must NOT be
 /// fixed in v0, it would break the identity gate). Ties broken by first
 /// occurrence, matching `torch.argmin`.
-fn compute_target(input: &SensesInput, b: usize) -> [f32; 2] {
+///
+/// `pub(crate)` (T5 reconciliation, task brief's "what to do" list): `tick.rs`'s
+/// `StepRecord.alvo` needs to report exactly the alvo `observe()` used this
+/// tick, and `observe()` itself does not return it — re-deriving it with a
+/// second, hand-copied implementation in `tick.rs` would be the same
+/// single-source-of-truth risk item (d) of the plan's reconciliation list flags
+/// for `apply_refuel`, so `tick.rs` calls this function directly instead.
+pub(crate) fn compute_target(input: &SensesInput, b: usize) -> [f32; 2] {
     let mut best_d = f32::INFINITY;
     let mut best = [0.0f32; 2];
     for slot in 0..NPX {
