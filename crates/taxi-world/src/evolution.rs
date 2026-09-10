@@ -76,10 +76,28 @@ pub struct GaParams {
     pub elite_frac: f32,
     pub clamp: f32,
     pub ticks: usize,
+    /// `W0` (SPEC §10 "Inicialização"): `None` seeds the population `~ N(0,
+    /// 0.8²)` (today's only behaviour); `Some(champion)` seeds it
+    /// `champion + N(0, SIGMA_ESPINHA²)` instead — every individual starts a
+    /// small mutation away from a known-good genome rather than from scratch.
+    pub seed_from: Option<Genome>,
+    /// How the champion is picked out of the final generation (SPEC §10
+    /// `--campeao`). See [`ChampionMode`].
+    pub champion_mode: ChampionMode,
+    /// `crn` (SPEC §10 `--crn`): `false` = `'rotativo'` (today's only
+    /// behaviour — the per-generation world seed is `777_000 + 13*it`, a
+    /// different world every generation); `true` = `'fixo'` (common random
+    /// numbers — every generation scores against the SAME world seed,
+    /// `777_000`, so a fitness delta between two generations' champions is
+    /// never a world-draw artifact).
+    pub crn: bool,
 }
 
 impl Default for GaParams {
     /// The v0 protocol's own defaults (SPEC §10 table: "valor do protocolo v0").
+    /// `seed_from`/`champion_mode`/`crn` all default to the pre-T7 behaviour
+    /// (no seeding, `'ultimo'`, `'rotativo'`) — every test written before T7
+    /// keeps passing unchanged.
     fn default() -> Self {
         Self {
             pop: 128,
@@ -91,13 +109,16 @@ impl Default for GaParams {
             elite_frac: 0.15,
             clamp: 5.0,
             ticks: 7200,
+            seed_from: None,
+            champion_mode: ChampionMode::Last,
+            crn: false,
         }
     }
 }
 
 /// The winner of one evolution seed's run (SPEC §10 step 7: `campeao = W[si][0]`
-/// of the last generation — this crate implements ONLY the `campeao='ultimo'` mode,
-/// see this module's doc comment and the crate's final report for `'reavaliado'`).
+/// of the last generation). T7 adds the second mode SPEC §10 documents
+/// (`campeao='reavaliado'`) — see [`ChampionMode`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Champion {
     pub genome: Genome,
@@ -107,6 +128,42 @@ pub struct Champion {
     /// `e43_campo.py:96`).
     pub hist: Vec<f32>,
 }
+
+/// How [`evolve`] picks the champion out of the final generation (SPEC §10,
+/// `--campeao`). Named `ChampionMode`, not `Champion`, because that name is
+/// already the RESULT struct above — the plan/task brief's own "`Champion::Last |
+/// Reevaluated`" phrasing collides with it, so this is the T7 divergence from
+/// that literal wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChampionMode {
+    /// `campeao='ultimo'` (today's only behaviour, and the default): the
+    /// argmax of the LAST generation, `populations[si][0]` verbatim. SPEC §10's
+    /// own note on this mode: "maldição do vencedor com SNR .72" — a noisy
+    /// last-generation fitness estimate biases the argmax toward genomes that
+    /// got a lucky world draw, not necessarily the best genome.
+    #[default]
+    Last,
+    /// `campeao='reavaliado'` (SPEC §10, pred 166): the WHOLE final elite (not
+    /// just rank 0) is re-scored once more on a fresh world seed
+    /// (`REEVAL_SEED`, below — distinct from both the training rotation
+    /// `777_000 + 13*it` and `judge::JUDGE_SEED = 7777`), and the champion is
+    /// whichever elite genome maximizes the AVERAGE of its last-generation
+    /// fitness and this fresh one — "~.25% do custo do run" per SPEC, since
+    /// only the elite (not the whole population) is re-scored, once.
+    Reevaluated,
+}
+
+/// σ of the champion-seeded population's noise (SPEC §10 "Inicialização",
+/// `sigma_espinha`). Not a `GaParams` field: this crate's `Genome` is always
+/// exactly `NP` weights with no genes "beyond the spine" (see `judge.rs`'s doc
+/// comment on `DOF_V0`), so SPEC §10's OTHER seeding constant, `sigma0` (noise
+/// for genes beyond the spine), has nothing to apply to here and is left out.
+const SIGMA_ESPINHA: f32 = 0.05;
+
+/// World seed [`evolve`] uses for the [`ChampionMode::Reevaluated`] re-score —
+/// picked to land in neither the training rotation's range (`777_000 + 13*it`,
+/// `it` up to a few hundred) nor `judge::JUDGE_SEED = 7777`.
+const REEVAL_SEED: u64 = 611_000;
 
 /// Runs the GA independently for every seed in `p.seeds`, sharing ONE per-generation
 /// batch call to `sim.avaliar` across all seeds (SPEC §10: `evoluir_sementes` stacks
@@ -125,26 +182,51 @@ pub fn evolve(
     assert!(s > 0, "evolve: GaParams::seeds must not be empty");
     assert!(p.pop >= 2, "evolve: GaParams::pop must be at least 2 (elite needs >= 2)");
 
+    if p.champion_mode == ChampionMode::Reevaluated {
+        assert!(
+            p.generations >= 1,
+            "evolve: ChampionMode::Reevaluated needs at least one generation to have run, \
+             to have an elite to reevaluate"
+        );
+    }
+
     let mut rngs: Vec<TaxiRng> = p.seeds.iter().map(|&sd| TaxiRng::new(sd)).collect();
-    // SPEC §10 "Inicialização": no W0 (seeding a population from a prior champion)
-    // -> W ~ N(0, 0.8^2), shape (P, NP), one Generator per seed (`lab.py:1722`).
-    // Seeding from a champion (sigma_espinha .05 / sigma0 .2, `lab.py:1724-1729`) is
-    // NOT exposed here: it would need a field beyond `GaParams`'s plan-specified
-    // set, so it is left out — see this crate's final report.
+    // SPEC §10 "Inicialização": no W0 -> W ~ N(0, 0.8^2), shape (P, NP), one
+    // Generator per seed (`lab.py:1722`). With W0 (`p.seed_from`, T7): every
+    // individual starts `champion + N(0, SIGMA_ESPINHA^2)` instead
+    // (`lab.py:1724-1729`'s "sigma_espinha" branch — `sigma0`, the OTHER half of
+    // that branch, has no gene dimension to apply to here, see `SIGMA_ESPINHA`'s
+    // own doc comment).
     let mut populations: Vec<Vec<Genome>> = rngs
         .iter_mut()
         .map(|rng| {
             (0..p.pop)
-                .map(|_| Genome((0..NP).map(|_| gaussian(rng) * 0.8).collect()))
+                .map(|_| match &p.seed_from {
+                    None => Genome((0..NP).map(|_| gaussian(rng) * 0.8).collect()),
+                    Some(champion) => Genome(
+                        champion
+                            .0
+                            .iter()
+                            .map(|&w| w + gaussian(rng) * SIGMA_ESPINHA)
+                            .collect(),
+                    ),
+                })
                 .collect()
         })
         .collect();
 
     let mut hist: Vec<Vec<f32>> = vec![Vec::new(); s];
+    // The final generation's elite, `(genome, fitness-at-that-generation)`, one
+    // `Vec` per seed — overwritten every iteration, so after the loop it holds
+    // ONLY the last generation's elite. Only read by `ChampionMode::Reevaluated`
+    // (T7); `Last` mode ignores it entirely (`populations[si][0]` already IS
+    // that same elite's rank-0 genome).
+    let mut last_elite: Vec<Vec<(Genome, f32)>> = vec![Vec::new(); s];
 
     for it in 0..p.generations {
-        // crn='rotativo' (SPEC §10 table default; `lab.py:1732`).
-        let gen_seed = 777_000u64 + (it as u64) * 13;
+        // crn='rotativo' (SPEC §10 table default; `lab.py:1732`) unless `p.crn`
+        // asks for 'fixo' (T7): the SAME world seed every generation.
+        let gen_seed = if p.crn { 777_000u64 } else { 777_000u64 + (it as u64) * 13 };
 
         let mut batch: Vec<Genome> = Vec::with_capacity(s * p.pop);
         for pop in &populations {
@@ -161,8 +243,15 @@ pub fn evolve(
         for si in 0..s {
             let start = si * p.pop;
             let seed_fitness = &fitness[start..start + p.pop];
-            let (next, best) = select_and_breed(&populations[si], seed_fitness, p, &mut rngs[si]);
+            let (next, best, elite_fitness) =
+                select_and_breed(&populations[si], seed_fitness, p, &mut rngs[si]);
             hist[si].push(best);
+            last_elite[si] = next
+                .iter()
+                .take(elite_fitness.len())
+                .cloned()
+                .zip(elite_fitness.iter().copied())
+                .collect();
             next_populations.push(next);
         }
         populations = next_populations;
@@ -184,14 +273,59 @@ pub fn evolve(
     }
 
     let mut champions = BTreeMap::new();
-    for (si, &seed) in p.seeds.iter().enumerate() {
-        champions.insert(
-            seed,
-            Champion {
-                genome: populations[si][0].clone(),
-                hist: hist[si].clone(),
-            },
-        );
+    match p.champion_mode {
+        ChampionMode::Last => {
+            for (si, &seed) in p.seeds.iter().enumerate() {
+                champions.insert(
+                    seed,
+                    Champion {
+                        genome: populations[si][0].clone(),
+                        hist: hist[si].clone(),
+                    },
+                );
+            }
+        }
+        ChampionMode::Reevaluated => {
+            // One combined re-score batch across every seed's elite (mirrors the
+            // main loop's own "MEGA-LOTE de sementes" batching), on a fresh world
+            // seed (`REEVAL_SEED`) none of the training generations ever used.
+            let mut batch: Vec<Genome> = Vec::new();
+            let mut bounds: Vec<usize> = vec![0];
+            for elite in &last_elite {
+                batch.extend(elite.iter().map(|(g, _)| g.clone()));
+                bounds.push(batch.len());
+            }
+            let reeval = sim.avaliar(&batch, worlds, cfg, p.ticks as u32, REEVAL_SEED, p.replicas as u32);
+            assert_eq!(
+                reeval.len(),
+                batch.len(),
+                "Simulador::avaliar must return exactly one fitness value per genome in `genomas`"
+            );
+
+            for (si, &seed) in p.seeds.iter().enumerate() {
+                let elite = &last_elite[si];
+                let reeval_slice = &reeval[bounds[si]..bounds[si + 1]];
+                let (best_genome, _) = elite
+                    .iter()
+                    .zip(reeval_slice.iter())
+                    .map(|((genome, orig_fit), &new_fit)| (genome.clone(), (orig_fit + new_fit) / 2.0))
+                    .fold(None, |acc: Option<(Genome, f32)>, (genome, avg)| match acc {
+                        Some((best_genome, best_avg)) if best_avg >= avg => Some((best_genome, best_avg)),
+                        _ => Some((genome, avg)),
+                    })
+                    .expect(
+                        "evolve: ChampionMode::Reevaluated needs a non-empty elite \
+                         (elite_frac must select at least one genome)",
+                    );
+                champions.insert(
+                    seed,
+                    Champion {
+                        genome: best_genome,
+                        hist: hist[si].clone(),
+                    },
+                );
+            }
+        }
     }
     champions
 }
@@ -199,13 +333,18 @@ pub fn evolve(
 /// One generation's selection + mutation for a SINGLE seed's population (SPEC §10
 /// steps 2-5). Exposed on its own (not just inlined in [`evolve`]) so this module's
 /// own tests can check the elite/mutation contract directly, without running a
-/// multi-generation loop end to end. Returns `(next_population, best_fitness)`.
+/// multi-generation loop end to end. Returns `(next_population, best_fitness,
+/// elite_fitness)` — `elite_fitness[k]` is `next[k]`'s fitness AT THIS
+/// generation (i.e. BEFORE the next call re-scores it), length `ne`; added in
+/// T7 for [`ChampionMode::Reevaluated`], which needs the elite's ORIGINAL
+/// (pre-reevaluation) fitness alongside its genome, not just the population's
+/// new shape.
 pub fn select_and_breed(
     population: &[Genome],
     fitness: &[f32],
     p: &GaParams,
     rng: &mut TaxiRng,
-) -> (Vec<Genome>, f32) {
+) -> (Vec<Genome>, f32, Vec<f32>) {
     assert_eq!(
         population.len(),
         fitness.len(),
@@ -222,6 +361,7 @@ pub fn select_and_breed(
             .expect("select_and_breed: fitness must not be NaN")
     });
     let best = fitness[order[0]];
+    let elite_fitness: Vec<f32> = order[..ne].iter().map(|&i| fitness[i]).collect();
 
     // SPEC §10 step 3: the elite passes through UNCHANGED.
     let mut next: Vec<Genome> = order[..ne].iter().map(|&i| population[i].clone()).collect();
@@ -242,7 +382,7 @@ pub fn select_and_breed(
         next.push(child);
     }
 
-    (next, best)
+    (next, best, elite_fitness)
 }
 
 /// `ne = max(2, int(P*elite))` (SPEC §10 step 2), clamped to `pop` so a
@@ -290,12 +430,13 @@ mod tests {
             ..GaParams::default()
         };
         let mut rng = TaxiRng::new(1);
-        let (next, best) = select_and_breed(&population, &fitness, &params, &mut rng);
+        let (next, best, elite_fitness) = select_and_breed(&population, &fitness, &params, &mut rng);
 
         assert_eq!(best, 9.0, "best fitness must be the max, not the first entry");
         assert_eq!(next[0], population[9], "the top genome must be bit-exact");
         assert_eq!(next[1], population[8], "the runner-up must be bit-exact");
         assert_eq!(next.len(), 10);
+        assert_eq!(elite_fitness, vec![9.0, 8.0], "elite_fitness must be next[0..ne]'s own fitness, descending");
     }
 
     #[test]
@@ -312,7 +453,7 @@ mod tests {
             ..GaParams::default()
         };
         let mut rng = TaxiRng::new(7);
-        let (next, _) = select_and_breed(&population, &fitness, &params, &mut rng);
+        let (next, _, _) = select_and_breed(&population, &fitness, &params, &mut rng);
 
         assert_eq!(next.len(), 4);
         for child in &next[2..] {
@@ -476,5 +617,200 @@ mod tests {
         };
         let _ = evolve(&mut sim, &[], &Config::default(), &params);
         assert!(!sim.saw_wrong_length);
+    }
+
+    // --- T7: seed_from / champion_mode / crn ---------------------------------
+
+    #[test]
+    fn seed_from_seeds_every_individual_near_the_champion_not_at_n_0_64() {
+        // generations: 0 -> evolve() never calls `sim.avaliar` at all (the loop
+        // body never runs), so `populations[si][0]` comes straight out of the
+        // (T7) seeded initializer, untouched — exactly what this test wants to
+        // inspect. A `Simulador` that panics if called doubles as an assertion
+        // that seeding really does skip the whole generation loop.
+        struct PanicsIfCalled;
+        impl Simulador for PanicsIfCalled {
+            fn avaliar(&mut self, _: &[Genome], _: &[World], _: &Config, _: u32, _: u64, _: u32) -> Vec<f32> {
+                panic!("avaliar must not be called when GaParams::generations == 0");
+            }
+        }
+        let champion = Genome(vec![5.0; NP]);
+        let params = GaParams {
+            pop: 2,
+            generations: 0,
+            patience: None,
+            seeds: vec![9],
+            seed_from: Some(champion.clone()),
+            ..GaParams::default()
+        };
+        let mut sim = PanicsIfCalled;
+        let champions = evolve(&mut sim, &[], &Config::default(), &params);
+
+        let seeded = &champions[&9].genome;
+        assert_eq!(seeded.0.len(), NP);
+        let mut any_gene_moved = false;
+        for (i, (&w, &c)) in seeded.0.iter().zip(champion.0.iter()).enumerate() {
+            assert!(
+                (w - c).abs() < 0.3,
+                "gene {i} = {w} strayed too far from the champion's {c} for N(0, {SIGMA_ESPINHA}^2) noise"
+            );
+            if w != c {
+                any_gene_moved = true;
+            }
+        }
+        assert!(any_gene_moved, "seed_from must add SOME noise, not pass the champion through untouched");
+    }
+
+    #[test]
+    fn without_seed_from_the_population_still_starts_at_n_0_64_around_zero() {
+        // Regression guard for "comportamento antigo intacto": the default
+        // (`seed_from: None`) path must still be the wide N(0, 0.8^2) draw, not
+        // accidentally routed through the champion-seeding branch.
+        struct PanicsIfCalled;
+        impl Simulador for PanicsIfCalled {
+            fn avaliar(&mut self, _: &[Genome], _: &[World], _: &Config, _: u32, _: u64, _: u32) -> Vec<f32> {
+                panic!("avaliar must not be called when GaParams::generations == 0");
+            }
+        }
+        let params = GaParams { pop: 2, generations: 0, patience: None, seeds: vec![9], ..GaParams::default() };
+        let mut sim = PanicsIfCalled;
+        let champions = evolve(&mut sim, &[], &Config::default(), &params);
+        let seeded = &champions[&9].genome;
+        // N(0, 0.8^2) over 40 genes: at least one gene landing outside +-0.3 is
+        // overwhelmingly likely (each gene independently has ~73% chance of
+        // being outside +-0.3; the chance ALL 40 land inside is ~0.73^40 ~ 6e-6).
+        assert!(
+            seeded.0.iter().any(|&w| w.abs() > 0.3),
+            "default seeding must be the wide N(0, 0.8^2) draw, got a suspiciously narrow genome {:?}",
+            seeded.0
+        );
+    }
+
+    #[test]
+    fn crn_true_scores_every_generation_against_the_same_world_seed() {
+        struct SeedSpy {
+            seen: Vec<u64>,
+        }
+        impl Simulador for SeedSpy {
+            fn avaliar(&mut self, genomas: &[Genome], _: &[World], _: &Config, _: u32, seed: u64, _: u32) -> Vec<f32> {
+                self.seen.push(seed);
+                vec![0.0; genomas.len()]
+            }
+        }
+        let params = GaParams {
+            pop: 2,
+            generations: 4,
+            patience: None,
+            seeds: vec![1],
+            crn: true,
+            ..GaParams::default()
+        };
+        let mut sim = SeedSpy { seen: Vec::new() };
+        let _ = evolve(&mut sim, &[], &Config::default(), &params);
+        assert_eq!(sim.seen, vec![777_000, 777_000, 777_000, 777_000], "crn=true (fixo) must reuse ONE world seed every generation");
+    }
+
+    #[test]
+    fn crn_false_rotates_the_world_seed_by_generation_matching_777000_plus_13_times_it() {
+        struct SeedSpy {
+            seen: Vec<u64>,
+        }
+        impl Simulador for SeedSpy {
+            fn avaliar(&mut self, genomas: &[Genome], _: &[World], _: &Config, _: u32, seed: u64, _: u32) -> Vec<f32> {
+                self.seen.push(seed);
+                vec![0.0; genomas.len()]
+            }
+        }
+        let params = GaParams { pop: 2, generations: 3, patience: None, seeds: vec![1], ..GaParams::default() };
+        let mut sim = SeedSpy { seen: Vec::new() };
+        let _ = evolve(&mut sim, &[], &Config::default(), &params);
+        assert_eq!(sim.seen, vec![777_000, 777_013, 777_026], "crn=false (default, rotativo) must be 777_000 + 13*it");
+    }
+
+    #[test]
+    fn champion_mode_reevaluated_can_overturn_the_last_generations_argmax() {
+        // pop = elite_frac = 1.0 -> ne = pop = 2, zero children: `next` is
+        // always the SAME two `Genome` objects, only ever REORDERED by fitness,
+        // so their identity (via `Genome`'s `PartialEq`) is trackable across
+        // generations without needing to hand-predict any gaussian draw.
+        //
+        // Script (one training generation, then the T7 reeval call):
+        //   training gen 0: genome A scores 5.0, genome B scores 1.0 -> A "wins"
+        //     the naive argmax (ChampionMode::Last would report A).
+        //   reeval (fresh world, REEVAL_SEED): A scores 0.0, B scores 10.0.
+        //   averages: A = (5.0+0.0)/2 = 2.5; B = (1.0+10.0)/2 = 5.5 -> B must win
+        //     under ChampionMode::Reevaluated — the "maldição do vencedor"
+        //     correction SPEC §10 describes.
+        struct Scripted {
+            call: usize,
+            captured_gen0: Option<Vec<Genome>>,
+        }
+        impl Simulador for Scripted {
+            fn avaliar(&mut self, genomas: &[Genome], _: &[World], _: &Config, _: u32, seed: u64, _: u32) -> Vec<f32> {
+                self.call += 1;
+                if self.call == 1 {
+                    self.captured_gen0 = Some(genomas.to_vec());
+                    vec![5.0, 1.0]
+                } else {
+                    assert_eq!(seed, REEVAL_SEED, "the reeval call must use REEVAL_SEED, not the training rotation");
+                    // Order must be [A, B] again: `last_elite` mirrors `next[0..ne]`,
+                    // and with ne == pop, `next` after gen 0 is genomas reordered by
+                    // gen-0 fitness descending -- i.e. still [A, B] (A already won).
+                    vec![0.0, 10.0]
+                }
+            }
+        }
+        let params = GaParams {
+            pop: 2,
+            generations: 1,
+            patience: None,
+            seeds: vec![1],
+            elite_frac: 1.0,
+            champion_mode: ChampionMode::Reevaluated,
+            ..GaParams::default()
+        };
+        let mut sim = Scripted { call: 0, captured_gen0: None };
+        let champions = evolve(&mut sim, &[], &Config::default(), &params);
+
+        let gen0 = sim.captured_gen0.expect("gen 0 must have called avaliar");
+        let genome_a = &gen0[0];
+        let genome_b = &gen0[1];
+        assert_ne!(genome_a, genome_b, "the test needs two DISTINGUISHABLE genomes");
+        assert_eq!(
+            champions[&1].genome, *genome_b,
+            "Reevaluated must pick B (avg 5.5), not A (avg 2.5, the naive last-gen argmax)"
+        );
+    }
+
+    #[test]
+    fn champion_mode_last_is_still_the_default_and_ignores_the_reeval_axis() {
+        // Same script as above, but `champion_mode` left at its default
+        // (`ChampionMode::Last`): must pick A (gen 0's argmax) and must NEVER
+        // call `avaliar` a second time (no reeval batch at all).
+        struct Scripted {
+            call: usize,
+        }
+        impl Simulador for Scripted {
+            fn avaliar(&mut self, _: &[Genome], _: &[World], _: &Config, _: u32, _: u64, _: u32) -> Vec<f32> {
+                self.call += 1;
+                assert!(self.call <= 1, "ChampionMode::Last must never call avaliar a second time");
+                vec![5.0, 1.0]
+            }
+        }
+        let params = GaParams {
+            pop: 2,
+            generations: 1,
+            patience: None,
+            seeds: vec![1],
+            elite_frac: 1.0,
+            ..GaParams::default()
+        };
+        let mut sim = Scripted { call: 0 };
+        let champions = evolve(&mut sim, &[], &Config::default(), &params);
+        assert_eq!(sim.call, 1);
+        // A is whichever genome scored 5.0 at the only generation that ran --
+        // reuse `select_and_breed` directly to name it without hand-predicting
+        // the gaussian population.
+        assert_eq!(champions[&1].hist, vec![5.0]);
     }
 }
