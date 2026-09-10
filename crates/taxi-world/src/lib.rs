@@ -10,21 +10,22 @@
 //! machine also runs (plan §4, "Comando" rule: always `nice -n 10`, never steal a
 //! launch-bound core from a battery in progress).
 //!
-//! # Scope of this crate right now (T1 only)
+//! # Scope of this crate right now (T1..T4 and T6; T5 pending)
 //!
-//! This is task T1 (plan §"T1 — Esqueleto do crate, carregador de mapa e
-//! geometria"): the crate skeleton, fixed dimensions (`constants`), map geometry
-//! (`world`), the read-only reference-trace loader (`trace`) and the on-disk genome
-//! format (`genome`). Tasks T2..T6 (plan §4) each own one or more modules that are
-//! deliberately NOT declared below, so a later `git merge` between implementers
-//! collides on nothing but this file's `mod` list:
+//! T1..T4 (plan §4) are in: the crate skeleton, fixed dimensions (`constants`), map
+//! geometry (`world`), the read-only reference-trace loader (`trace`), the on-disk
+//! genome format (`genome`), the SoA being state and per-tick physics
+//! (`beings`/`physics`), senses/decision (`senses`/`decision`) and
+//! services/passengers (`services`/`passengers`). T6 (`evolution`, `judge`) is also
+//! in — the GA loop and the "vida" fitness judge, written against a minimal
+//! `Simulador`/`LifeSampler` trait pair rather than T5's tick function (T5 was
+//! being written in parallel and does not exist in this crate yet — see
+//! `evolution.rs`'s and `judge.rs`'s own doc comments for the full contract and the
+//! divergence from the plan's literal `evolve`/`judge` signatures). T5
+//! (`tick`, `gate`) is the one task still deliberately NOT declared below:
 //!
 //! ```text
-//! T2  beings, physics       — the SoA being state and the per-tick physics
-//! T3  senses, decision      — observe() -> F, the 29-term score, argmax
-//! T4  services, passengers  — service availability/cost, boarding/delivery
 //! T5  tick, gate            — the full tick, and the identity gate against SPEC §11
-//! T6  evolution, judge      — the GA loop and the "vida" fitness judge
 //! ```
 //!
 //! `Trace::initial_beings` is listed in the plan's own T1 interface block but is
@@ -42,11 +43,11 @@ pub mod decision;
 pub mod services;
 pub mod passengers;
 
-// T5/T6 (plan §4) — left commented so the module names are discoverable:
+// T5 (plan §4) — left commented so the module names are discoverable:
 // pub mod tick;
 // pub mod gate;
-// pub mod evolution;
-// pub mod judge;
+pub mod evolution;
+pub mod judge;
 
 pub use constants::{Config, DIRS, G, GRID, N_SERVICES, N_TYPES, NF, NP, NPX, S, TEX};
 pub use genome::{Genome, GenomeError};
