@@ -5,7 +5,7 @@
 # `generic_dna`), only the path became stale and broke EVERY `cargo build` of the
 # workspace. Repointed to the new path; files were not moved back (avoids conflicting with
 # the cleanup already done).
-members = [".", "docs/arquivo/dirs/iara_genesis"]
+members = [".", "docs/arquivo/dirs/iara_genesis", "crates/taxi-world"]
 
 [package]
 name = "universe"
