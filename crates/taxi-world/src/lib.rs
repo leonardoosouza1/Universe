@@ -32,7 +32,9 @@
 //! T2's `Beings` type, and this task's hard rules forbid creating `beings.rs`).
 
 pub mod constants;
+pub mod decision;
 pub mod genome;
+pub mod senses;
 pub mod trace;
 pub mod world;
 
@@ -40,8 +42,6 @@ pub mod world;
 // without pre-committing to their shape:
 // pub mod beings;
 // pub mod physics;
-// pub mod senses;
-// pub mod decision;
 // pub mod services;
 // pub mod passengers;
 // pub mod tick;
