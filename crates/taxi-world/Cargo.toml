@@ -1,0 +1,17 @@
+[package]
+name = "taxi-world"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT"
+description = "Headless, GPU-free port of the taxi survival world (see docs/plano-mundo-taxi.md). No dependency on `universe` or Bevy by design (plan §1.2)."
+
+[dependencies]
+# Only what the plan allows for T1 (plan §1.2): reading the reference trace and the
+# genome disk format. `wgpu`/`bytemuck`/`rand`/`rayon` are listed in the plan for
+# LATER tasks (T5/T6, v1 GPU port) and are deliberately not added here.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Already resolved at 2.0.18 by the workspace lockfile (transitive dependency of
+# something else), so adding it directly here does not widen the dependency graph.
+thiserror = "2"
