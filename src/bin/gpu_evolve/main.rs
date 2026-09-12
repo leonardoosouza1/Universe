@@ -576,6 +576,9 @@ fn main() {
     let mut n_ticks: usize = 8_000; // 8.000 ticks = 125s @ 64Hz por geração
     let mut n_gens: usize = 100;
     let mut retomar: bool = false;
+    // `--replay-cada N`: write the leader replay only every N generations (and on the last
+    // one). Rule 5 of CLAUDE.md: a 60-generation run at 30 000 ticks is ~58 MB per replay.
+    let mut replay_every: usize = 1;
     let mut l1_vivos: usize = 0; // 0 = todos os 96 (sem ablacao)
     let mut retomar_mix: f32 = 0.85; // fracao do campeao preservada nos filhos
     let mut congela_l2_cegas: bool = false;
@@ -1424,6 +1427,12 @@ fn main() {
                     i += 1;
                     if i < args.len() {
                         held_out_cada = args[i].parse().unwrap_or(5).max(1);
+                    }
+                }
+                "--replay-cada" => {
+                    i += 1;
+                    if i < args.len() {
+                        replay_every = args[i].parse().unwrap_or(1).max(1);
                     }
                 }
                 "--retomar" => {
@@ -2428,14 +2437,19 @@ fn main() {
         // 9001 faria o replay MENTIR sobre qual pista produziu aquele arquivo —
         // risco item do mapa P1. Sem `--pistas`, `seed_gen == 9001` sempre, e este
         // campo do arquivo fica idêntico ao que já era.
-        let mut replay_writer = universe::replay::ReplayWriter::create(
-            &replay_path,
-            universe::replay::SOURCE_CORTEX,
-            n_grav as u8,
-            64.0,
-            seed_gen,
-        )
-        .ok();
+        let replay_this_gen = generation_idx % replay_every == 0 || generation_idx + 1 == n_gens;
+        let mut replay_writer = if replay_this_gen {
+            universe::replay::ReplayWriter::create(
+                &replay_path,
+                universe::replay::SOURCE_CORTEX,
+                n_grav as u8,
+                64.0,
+                seed_gen,
+            )
+            .ok()
+        } else {
+            None
+        };
         let t_gen = Instant::now();
 
         // ── Aplica genomas nos engines ─────────────────────────────────────────
