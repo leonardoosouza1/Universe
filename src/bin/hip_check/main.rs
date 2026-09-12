@@ -431,7 +431,10 @@ fn run_sectors(hip_path: &str, genome_path: Option<&str>) -> ! {
     println!("hip_check --setores — per-sector memory, CPU only");
     println!("  telemetry {hip_path}   rows {}", rows.len());
     if let Some(p) = genome_path {
-        println!("  genome    {p}\n  genes     {}", gene_line(&load_hip_genes(p)));
+        println!(
+            "  genome    {p}\n  genes     {}",
+            gene_line(&load_hip_genes(p))
+        );
         println!(
             "  NOTE: the first-pass bias can only be ~0 if the resting bias above is ~0 — \
              the constant 1.0 column of the read is present from tick 0."

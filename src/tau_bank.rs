@@ -224,7 +224,11 @@ fn spectral_bank(genes: &[f32]) -> Vec<f32> {
     }
     let lambda = genes[0].clamp(D_LO, D_HI);
     // A one-channel bank has no spectrum to ride; it is the flat case by construction.
-    let diffusion = if n >= 2 { diffusion_from(genes[1]) } else { 0.0 };
+    let diffusion = if n >= 2 {
+        diffusion_from(genes[1])
+    } else {
+        0.0
+    };
     let span = D_HI - D_LO;
     (0..n)
         .map(|k| {
@@ -354,7 +358,11 @@ mod tests {
             diffusion_from(crate::cfc::DECAY_DEFAULT)
         );
         assert_eq!(diffusion_from(0.75), 1.0, "D saturates at 0.75 s^-1");
-        assert_eq!(diffusion_from(D_HI), 1.0, "gene ceiling stays inside [0, 1]");
+        assert_eq!(
+            diffusion_from(D_HI),
+            1.0,
+            "gene ceiling stays inside [0, 1]"
+        );
         assert_eq!(diffusion_from(-10.0), 0.0, "below the floor still clamps");
     }
 

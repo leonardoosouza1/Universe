@@ -1993,7 +1993,10 @@ mod tests {
             hip_sigma: 0.2,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
-        assert!(genomes.iter().all(|g| g.hip.iter().all(|&w| w == 0.0)), "hip must be born at zero");
+        assert!(
+            genomes.iter().all(|g| g.hip.iter().all(|&w| w == 0.0)),
+            "hip must be born at zero"
+        );
 
         // Same defense as `evolve_muta_mecanismos_p17_e_flags_sem_x_congelam_no_neutro`:
         // restore the atomic even if an `assert!` below panics, so a failure here does not
@@ -2012,15 +2015,34 @@ mod tests {
         let filho = &ligado[1];
         assert_eq!(filho.hip.len(), crate::gpu::hippocampus::N_HIP_GENES);
         let movidos = filho.hip.iter().filter(|&&w| w != 0.0).count();
-        assert_eq!(movidos, filho.hip.len(), "with hip_p = 1 all 29 genes move; moved {movidos}");
-        assert!(filho.hip.iter().all(|w| w.abs() <= 2.0), "hip genes stay clamped to ±2");
+        assert_eq!(
+            movidos,
+            filho.hip.len(),
+            "with hip_p = 1 all 29 genes move; moved {movidos}"
+        );
+        assert!(
+            filho.hip.iter().all(|w| w.abs() <= 2.0),
+            "hip genes stay clamped to ±2"
+        );
         assert!(
             filho.hip.iter().any(|w| w.abs() > 0.05),
             "σ = 0.2 has to produce steps well above the old 0.075 regime"
         );
-        assert!(desligado[1].hip.iter().all(|&w| w == 0.0), "gate off: hip frozen at birth");
-        assert_eq!(ligado[1].l1, desligado[1].l1, "hip draws must not move the l1 stream");
-        assert_eq!(ligado[1].slow, desligado[1].slow, "hip draws must not move the slow stream");
-        assert_eq!(ligado[0].hip, desligado[0].hip, "elite passes untouched either way");
+        assert!(
+            desligado[1].hip.iter().all(|&w| w == 0.0),
+            "gate off: hip frozen at birth"
+        );
+        assert_eq!(
+            ligado[1].l1, desligado[1].l1,
+            "hip draws must not move the l1 stream"
+        );
+        assert_eq!(
+            ligado[1].slow, desligado[1].slow,
+            "hip draws must not move the slow stream"
+        );
+        assert_eq!(
+            ligado[0].hip, desligado[0].hip,
+            "elite passes untouched either way"
+        );
     }
 }

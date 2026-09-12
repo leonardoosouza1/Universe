@@ -52,8 +52,14 @@ fn recomputation_matches_a_synthetic_recording_exactly() {
     let rows = parse_rows(&synthetic_stream(&genes, 200)).expect("well-formed stream");
     assert_eq!(rows.len(), 200);
     let rep = check(&genes, &rows);
-    assert_eq!(rep.max_diff, 0.0, "same function, same order: must be exact");
-    assert!(rep.max_abs_bias > 0.0, "the fixture must exercise the organ");
+    assert_eq!(
+        rep.max_diff, 0.0,
+        "same function, same order: must be exact"
+    );
+    assert!(
+        rep.max_abs_bias > 0.0,
+        "the fixture must exercise the organ"
+    );
     assert_eq!(rep.rows, 200);
 }
 
@@ -63,7 +69,10 @@ fn a_corrupted_bias_value_is_caught() {
     let genes = synthetic_genes();
     let mut stream = synthetic_stream(&genes, 50);
     stream[30 * hip::HIP_OBS_COLS + COL_BIAS + 1] += 0.25; // steer of row 30
-    let rep = check(&genes, &parse_rows(&stream).expect("well-formed, only wrong"));
+    let rep = check(
+        &genes,
+        &parse_rows(&stream).expect("well-formed, only wrong"),
+    );
     assert!(
         (rep.max_diff - 0.25).abs() < 1e-6,
         "expected the injected 0.25, got {}",
@@ -94,7 +103,10 @@ fn zero_gain_genome_reproduces_an_all_zero_recording() {
     let mut genes = synthetic_genes();
     genes[hip::GENE_READ_GAIN] = 0.0;
     let rows = parse_rows(&synthetic_stream(&genes, 40)).unwrap();
-    assert_eq!(peak(&rows.iter().flat_map(|r| r.bias).collect::<Vec<_>>()), 0.0);
+    assert_eq!(
+        peak(&rows.iter().flat_map(|r| r.bias).collect::<Vec<_>>()),
+        0.0
+    );
     assert_eq!(check(&genes, &rows).max_diff, 0.0);
 }
 
@@ -148,9 +160,16 @@ fn sector_stats_split_the_first_pass_from_the_later_ones() {
     }
     let rows = parse_rows(&stream).unwrap();
     for (s, st) in sector_stats(&rows).iter().enumerate() {
-        assert_eq!((st.passes, st.ticks[0], st.ticks[1]), (2, 2, 2), "sector {s}");
+        assert_eq!(
+            (st.passes, st.ticks[0], st.ticks[1]),
+            (2, 2, 2),
+            "sector {s}"
+        );
         assert_eq!(st.here_sum[0], 0.0, "sector {s} first pass must be empty");
-        assert_eq!(st.next_sum[0], 0.0, "sector {s} lookahead must be empty too");
+        assert_eq!(
+            st.next_sum[0], 0.0,
+            "sector {s} lookahead must be empty too"
+        );
         assert!(
             (mean(st.here_sum[1], st.ticks[1]) - 0.5).abs() < 1e-6,
             "sector {s} later pass must carry the memory"

@@ -7,7 +7,6 @@
 use super::{MOVE_THRESHOLD, Reach};
 use crate::gpu::contribution::OUTPUT_NAMES;
 
-
 /// The verdict for one group. `Blind` and `OffPathMoved` are the two that fail the gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
