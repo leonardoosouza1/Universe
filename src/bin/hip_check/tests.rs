@@ -184,3 +184,25 @@ fn the_generation_number_is_read_from_the_file_name() {
     assert_eq!(generation_in_name("evolve_best_gen0079.bin"), Some(79));
     assert_eq!(generation_in_name("champion.bin"), None);
 }
+
+/// Every flag renamed to English on 2026-09-12 must still accept its old Portuguese
+/// spelling, resolved to the canonical name (`flags::canonical` is the pure half of
+/// `flags::resolve`, so this checks the mapping without a warning landing on stderr).
+#[test]
+fn deprecated_aliases_resolve_to_their_canonical_name() {
+    assert_eq!(flags::canonical("--genoma"), Some("--genome"));
+    assert_eq!(flags::canonical("--tolerancia"), Some("--tolerance"));
+    assert_eq!(flags::canonical("--setores"), Some("--sectors"));
+}
+
+/// A canonical name maps to itself, and a flag with no Portuguese past (or an unknown
+/// one) is not the alias table's concern — the caller matches it as-is.
+#[test]
+fn canonical_names_and_unrelated_flags_are_unaffected() {
+    assert_eq!(flags::canonical("--genome"), Some("--genome"));
+    assert_eq!(flags::canonical("--tolerance"), Some("--tolerance"));
+    assert_eq!(flags::canonical("--sectors"), Some("--sectors"));
+    assert_eq!(flags::canonical("--hip"), None);
+    assert_eq!(flags::canonical("--memory"), None);
+    assert_eq!(flags::canonical("--bogus"), None);
+}

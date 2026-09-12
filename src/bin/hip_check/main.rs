@@ -8,24 +8,30 @@
 //! the run actually added to the commands.
 //!
 //! ```text
-//! ./target/release/hip_check --genoma <evolve_best_genN.bin> --hip <hip_genN.f32>
-//! ./target/release/hip_check --hip <hip_genN.f32> --setores [--genoma <g.bin>]
-//! ./target/release/hip_check --genoma <g.bin> --hip <hip_genN.f32> --memory
+//! ./target/release/hip_check --genome <evolve_best_genN.bin> --hip <hip_genN.f32>
+//! ./target/release/hip_check --hip <hip_genN.f32> --sectors [--genome <g.bin>]
+//! ./target/release/hip_check --genome <g.bin> --hip <hip_genN.f32> --memory
 //! ```
 //!
-//! `--setores` and `--memory` answer different questions and the second one exists
-//! because the first cannot be read as an answer to it: `--setores` takes the MAX over
+//! `--genome`, `--tolerance` and `--sectors` used to be `--genoma`, `--tolerancia` and
+//! `--setores` (renamed 2026-09-12, English-only per `docs/STYLE.md` §1); the old
+//! spellings still work and print a one-time deprecation warning — see `flags.rs`.
+//!
+//! `--sectors` and `--memory` answer different questions and the second one exists
+//! because the first cannot be read as an answer to it: `--sectors` takes the MAX over
 //! the three command components, so a constant brake offset can hide a memory-driven
 //! throttle swing. See `memory.rs`.
 //!
 //! Exit codes: `0` the recomputation matched, `1` it did not (or a row is corrupt),
 //! `2` bad usage or unreadable input.
 //!
-//! The unit tests live in `tests.rs` next to this file (the directory-binary layout
-//! `src/bin/gpu_evolve/` already uses), so both files stay under the 600-line cap of
-//! `docs/STYLE.md` §2. The binary is still `./target/release/hip_check`; Cargo discovers
-//! `src/bin/<name>/main.rs` on its own, so no `[[bin]]` entry is needed — the same rule
-//! `sensitivity` follows (`src/bin/sensitivity.rs`, a single-file binary).
+//! The unit tests live in `tests.rs`, the `--memory` report in `memory.rs`, and the
+//! deprecated-flag table in `flags.rs`, all next to this file (the directory-binary
+//! layout `src/bin/gpu_evolve/` already uses), so no file here needs to grow past the
+//! 600-line cap of `docs/STYLE.md` §2. The binary is still `./target/release/hip_check`;
+//! Cargo discovers `src/bin/<name>/main.rs` on its own, so no `[[bin]]` entry is needed
+//! — the same rule `sensitivity` follows (`src/bin/sensitivity.rs`, a single-file
+//! binary).
 //!
 //! # WHICH genome belongs to `hip_gen<N>.f32` — read this before trusting a mismatch
 //!
@@ -47,7 +53,7 @@
 //! `evolve_best_gen0003.bin` it is `1.175e-3`, the whole recorded bias. All five telemetry
 //! files pass under the offset-by-one pairing. The rule is what the data says, not an
 //! inference from the code alone. A name mismatch prints a HINT and never a failure, and
-//! `--tolerancia` exists so a deliberate cross-pairing can still be inspected.
+//! `--tolerance` exists so a deliberate cross-pairing can still be inspected.
 //!
 //! # The bias columns are POST-authority
 //!
@@ -64,6 +70,7 @@
 //! `read_gated`). Under that flag a genome with non-zero `W` on the memory columns will
 //! disagree here, and the disagreement is the ablation, not a bug.
 
+mod flags;
 mod memory;
 
 #[cfg(test)]
@@ -195,7 +202,7 @@ fn parse_rows(floats: &[f32]) -> Result<Vec<HipRow>, RowError> {
     Ok(out)
 }
 
-/// The verdict of `--genoma` + `--hip`.
+/// The verdict of `--genome` + `--hip`.
 #[derive(Debug, Default)]
 struct CheckReport {
     rows: usize,
@@ -299,13 +306,16 @@ fn usage() -> ! {
     eprintln!(
         "hip_check — verifies the C1 hippocampus formulas against recorded data (no GPU)\n\
          \n\
-         ./target/release/hip_check --genoma <evolve_best_genN.bin> --hip <hip_genN.f32> \\\n\
-         \x20                         [--tolerancia <f32>]\n\
-         ./target/release/hip_check --hip <hip_genN.f32> --setores [--genoma <g.bin>]\n\
-         ./target/release/hip_check --genoma <g.bin> --hip <hip_genN.f32> --memory\n\
+         ./target/release/hip_check --genome <evolve_best_genN.bin> --hip <hip_genN.f32> \\\n\
+         \x20                         [--tolerance <f32>]\n\
+         ./target/release/hip_check --hip <hip_genN.f32> --sectors [--genome <g.bin>]\n\
+         ./target/release/hip_check --genome <g.bin> --hip <hip_genN.f32> --memory\n\
+         \n\
+         --genoma, --tolerancia and --setores are deprecated aliases of --genome,\n\
+         --tolerance and --sectors; each prints a one-time warning and still works.\n\
          \n\
          --memory reports, per command component, how much of the bias the MEMORY\n\
-         content explains: delta_b = b(x_t) - b(x_empty). --setores maxes over the\n\
+         content explains: delta_b = b(x_t) - b(x_empty). --sectors maxes over the\n\
          three components and a constant offset hides the memory term there.\n\
          \n\
          NOTE: being 0 of generation N is the ELITE, i.e. the genome of\n\
@@ -373,7 +383,7 @@ fn gene_line(genes: &[f32]) -> String {
     )
 }
 
-/// `--genoma` + `--hip`: the recomputation gate.
+/// `--genome` + `--hip`: the recomputation gate.
 fn run_check(genome_path: &str, hip_path: &str, tolerance: f32) -> ! {
     let genes = load_hip_genes(genome_path);
     let rows = load_rows(hip_path);
@@ -438,12 +448,12 @@ fn run_check(genome_path: &str, hip_path: &str, tolerance: f32) -> ! {
     std::process::exit(1);
 }
 
-/// `--setores`: the per-sector first-pass / later-pass table.
+/// `--sectors`: the per-sector first-pass / later-pass table.
 fn run_sectors(hip_path: &str, genome_path: Option<&str>) -> ! {
     let rows = load_rows(hip_path);
     let stats = sector_stats(&rows);
 
-    println!("hip_check --setores — per-sector memory, CPU only");
+    println!("hip_check --sectors — per-sector memory, CPU only");
     println!("  telemetry {hip_path}   rows {}", rows.len());
     if let Some(p) = genome_path {
         println!(
@@ -531,29 +541,32 @@ fn main() {
     while i < args.len() {
         let a = args[i].clone();
         i += 1;
-        match a.as_str() {
-            // The flag names match the recording side (`--hippocampus-sector`) and the sibling
-            // tool (`sensitivity --genoma`); renaming them here would split one vocabulary
-            // in two. check-language: allow -- CLI flags kept in sync with gpu_evolve
-            "--genoma" => {
-                genome_path = Some(next_value(&args, i, "--genoma"));
+        // `flags::resolve` maps a deprecated Portuguese spelling onto its canonical
+        // English name (and warns once on stderr); every arm below matches only the
+        // canonical name, so a rename here is one row in `flags.rs`, not a second
+        // place to edit.
+        let name: &str = match flags::resolve(&a) {
+            Some(canonical) => canonical,
+            None => a.as_str(),
+        };
+        match name {
+            "--genome" => {
+                genome_path = Some(next_value(&args, i, "--genome"));
                 i += 1;
             }
             "--hip" => {
                 hip_path = Some(next_value(&args, i, "--hip"));
                 i += 1;
             }
-            "--tolerancia" => {
-                let v = next_value(&args, i, "--tolerancia");
+            "--tolerance" => {
+                let v = next_value(&args, i, "--tolerance");
                 i += 1;
                 tolerance = v.parse().unwrap_or_else(|_| {
-                    eprintln!("[ERROR] --tolerancia expects a number, got '{v}'");
+                    eprintln!("[ERROR] --tolerance expects a number, got '{v}'");
                     std::process::exit(2);
                 });
             }
-            "--setores" => sectors_mode = true,
-            // English, per docs/STYLE.md 1: flags added after 2026-09-12 are English even
-            // though the older ones above keep the recording side's spelling.
+            "--sectors" => sectors_mode = true,
             "--memory" => memory_mode = true,
             "--help" | "-h" => usage(),
             other => {
@@ -571,7 +584,7 @@ fn main() {
         run_sectors(&hip_path, genome_path.as_deref());
     }
     let Some(genome_path) = genome_path else {
-        eprintln!("[ERROR] --genoma is required unless --setores is given");
+        eprintln!("[ERROR] --genome is required unless --sectors is given");
         usage();
     };
     if memory_mode {
