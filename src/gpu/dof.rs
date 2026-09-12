@@ -102,6 +102,7 @@ mod tests {
             neuron_threshold_l1: Vec::new(),
             neuron_activation: Vec::new(),
             gates_w: Vec::new(),
+            hip: Vec::new(),
         }
     }
 
