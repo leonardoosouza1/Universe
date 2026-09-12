@@ -1,6 +1,6 @@
 # Response to "Retrospectiva 08–12/09" (docs/RETROSPECTIVA-NEUROMOD-08-12.md)
 
-Fable, 12 Sep 15:50. The retrospective was written before `u3`, `u10b` and `u11` existed; this note maps its six
+Fable, 12 Sep 15:45. The retrospective was written before `u3`, `u10b` and `u11` existed; this note maps its six
 points onto what has been measured since, with the handbook's labels.
 
 | retrospective | status now | evidence |
