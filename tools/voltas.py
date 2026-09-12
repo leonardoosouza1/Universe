@@ -21,23 +21,40 @@ give exactly the numbers they always gave.
 A partial lap has NO comparable time or distance (its `tick_end - tick_start`
 and `dist` cover a fragment), so it is excluded from every lap COUNT (med
 voltas, >=1V, >=2V) and from `lap2/lap1`. What it does carry honestly is
-`sector_ticks`: a sector it reached was really driven a second time.
+`sector_ticks` FOR THE SECTORS IT FINISHED — not the one it died in (or the one
+the generation ended in): that sector has no comparable time either, for the
+same reason the whole lap does not. Found by `interrupted_sector()`: sectors
+are driven in increasing index order between crossings
+(`LapTracker::on_sector`, only advances on the next expected checkpoint,
+`main.rs:3241-3250`), so the interrupted one is the highest index reached,
+EXCLUDING `CLOSE_SLOT` (23) — see its definition below for why. BUG FIXED
+2026-09-12 (external review): before this exclusion, a being that entered a
+sector and died 1 tick later contributed r = 1/200 = 0.005, a fake 99.5 %
+speed-up, because any `sector_ticks[s] > 0` counted as a "2nd pass" with no
+regard for whether the being was still alive when it left that sector.
 
 PRIMARY METRIC (U6 amendment, `docs/PREDICOES-CEREBRO.md`): per-sector time on
 the 2nd pass against the 1st, in ticks. The 1st lap must be CLOSED (lap 1 of the
 being); the 2nd pass is lap 2 if it closed, ELSE the partial lap 2. For every
 sector s with `t1 = lap1.sector_ticks[s] > 0` and `t2 = lap2.sector_ticks[s] >
-0`: r = t2/t1 -> median per being -> population median. r < 1 means the 2nd pass
-was faster, which is what the hippocampus is supposed to buy. Sectors the
-partial never reached have `t2 = 0` and drop out by the same rule that already
-drops sector 23 — no special case.
+0`, EXCLUDING the interrupted sector when the 2nd pass is partial: r = t2/t1 ->
+median per being -> population median. r < 1 means the 2nd pass was faster,
+which is what the hippocampus is supposed to buy. Sectors the partial never
+reached have `t2 = 0` and drop out by the same rule that already drops sector
+23; the sector it DID reach but never finished driving is dropped on purpose.
 
 TWO SECTOR SLOTS ARE A LEDGER ARTEFACT, not driving (checked on
 `u0c_valida_hip`, 2026-09-12):
-  * sector 23 — the lap closes when the being ENTERS sector 23
+  * sector 23 (`CLOSE_SLOT`) — the lap closes when the being ENTERS sector 23
     (`main.rs:3263-3267`, `checkpoint % 24 == 0`), so `lap1.sector_ticks[23]` is
-    always 0 (27/27 and 21/21 of the >=2-lap beings in gens 0 and 3). The
-    `t1 > 0` rule drops it on its own.
+    always 0 (27/27 and 21/21 of the >=2-lap beings in gens 0 and 3) on ANY
+    closed lap, not just lap 1 — the `t1 > 0` rule drops it on its own. The lap
+    that follows a close TILES from that same sector (`LapTracker::on_lap`,
+    `laps.rs:113-132`, "opens the next at the same tick, odometer and sector"),
+    so on the NEXT lap 23 is the FIRST sector driven, a full and legitimate
+    pass — not the last, and `interrupted_sector()` must not pick it as the
+    interrupted one, or it would exclude a complete sector and let the real
+    interrupted one (a lower index) slip back into the metric.
   * sector 0 — `LapTracker::new` opens lap 1 in slot 0 at tick 0, so that slot
     holds "everything before the first crossing" plus the real pass (median
     3 760 ticks on lap 1 against 238 on lap 2, gen 0). Including it injects a
@@ -91,6 +108,11 @@ DEFAULT_OUT = (
 )
 N_SECTORS = 24  # statics.rs:128 N_CHECKPOINTS
 START_SLOT = 0  # slot LapTracker::new opens at tick 0 (contaminated on lap 1)
+CLOSE_SLOT = N_SECTORS - 1  # 23: every lap closes on ENTERING this sector
+# (main.rs:3241-3311, `checkpoint % N_CHECKPOINTS == 0` fires on that crossing), so it is
+# ALWAYS 0 on a closed lap and, on the lap that follows, the FIRST sector driven (laps
+# tile, laps.rs:113-132) — never the last. `interrupted_sector()` excludes it from its
+# search for exactly that reason.
 ALPHA = 0.05
 POWER = 0.80
 
@@ -176,18 +198,46 @@ def second_pass(being: dict) -> tuple[dict, dict, bool] | None:
     return done[0], tail, True
 
 
+def interrupted_sector(sector_ticks) -> int | None:
+    """The sector a PARTIAL lap died in (or the generation ended in) — not a completed
+    pass, so it must not enter the primary metric or its coverage count.
+
+    Sectors are driven in increasing index order between crossings
+    (`LapTracker::on_sector` only advances on the next expected checkpoint,
+    `main.rs:3241-3250`), so within a partial lap the reached sectors are a contiguous
+    run and the interrupted one is the HIGHEST index among them — EXCLUDING `CLOSE_SLOT`
+    (23) from the search. `CLOSE_SLOT` is always the first sector of the lap that follows
+    a close (see its definition above), never the last, and `lap1.sector_ticks[CLOSE_SLOT]`
+    is always 0 so it can never form a pair anyway; picking it as "interrupted" by raw
+    index would exclude a complete sector and leave the REAL interrupted one (a lower
+    index) in the metric — the exact bug this function exists to prevent.
+
+    Returns None when the partial reached nothing at all (dies within the same tick the
+    previous lap closed): nothing to exclude, `sector_pairs` already yields no pairs.
+    """
+    reached = [s for s in range(CLOSE_SLOT) if sector_ticks[s] > 0]  # 0..22
+    return max(reached) if reached else None
+
+
 def sector_pairs(being: dict, with_start_slot: bool) -> list[tuple[int, int, int]]:
-    """(sector, t1, t2) for every sector driven on lap 1 AND on the 2nd pass."""
+    """(sector, t1, t2) for every sector driven on lap 1 AND on the 2nd pass.
+
+    On a PARTIAL 2nd pass the sector the being died in (`interrupted_sector`) is excluded
+    too: it has no comparable time, same as the lap it belongs to (see module doc).
+    """
     pas = second_pass(being)
     if pas is None:
         return []
-    lap1, lap2, _ = pas
+    lap1, lap2, is_partial = pas
     t1 = lap1["sector_ticks"]
     t2 = lap2["sector_ticks"]
+    excluded = interrupted_sector(t2) if is_partial else None
     pairs = []
     for s in range(min(N_SECTORS, len(t1), len(t2))):
         if s == START_SLOT and not with_start_slot:
             continue  # start slot: lap 1 also holds the pre-crossing ticks (see module doc)
+        if s == excluded:
+            continue  # the sector the partial died in: not a completed 2nd pass
         if t1[s] > 0 and t2[s] > 0:
             pairs.append((s, t1[s], t2[s]))
     return pairs
@@ -534,6 +584,52 @@ def _synthetic_being_parcial(i: int, factor: float, reached: int) -> dict:
     }
 
 
+def _being_with_explicit_ticks(
+    i: int, t1_full: int, t2_ticks: dict[int, int], lap2_tick_start: int, lap2_dist: float
+) -> dict:
+    """1 closed lap (uniform `t1_full` ticks/sector, sector 23 empty) + a partial lap 2
+    with an explicit, arbitrary `sector_ticks` map (unset sectors default to 0).
+
+    Used for the interrupted-sector regression cases (T7B): unlike
+    `_synthetic_being_parcial`, this lets a "reached" sector carry FEWER ticks than a
+    full pass — the actual shape `LapTracker::finish` writes for a being that dies mid
+    sector, which `_synthetic_being_parcial` cannot express (it only knows "full" or "0").
+    """
+    t1 = [t1_full] * N_SECTORS
+    t1[CLOSE_SLOT] = 0  # lap closes on entering CLOSE_SLOT
+    t2 = [0] * N_SECTORS
+    for sector, ticks in t2_ticks.items():
+        t2[sector] = ticks
+    return {
+        "being": i,
+        "seed": 800 + i,
+        "laps": [
+            {
+                "lap": 1,
+                "tick_start": 0,
+                "tick_end": sum(t1),
+                "dist": 1600.0,
+                "sector_ticks": t1,
+                "grass_ticks": 0,
+                "damage": 0.0,
+                "dry_events": 0,
+                "parcial": False,
+            },
+            {
+                "lap": 2,
+                "tick_start": lap2_tick_start,
+                "tick_end": lap2_tick_start + sum(t2),
+                "dist": lap2_dist,
+                "sector_ticks": t2,
+                "grass_ticks": 0,
+                "damage": 0.0,
+                "dry_events": 0,
+                "parcial": True,
+            },
+        ],
+    }
+
+
 def _with_empty_parcial(being: dict) -> dict:
     """The same being as the new binary would write it: one empty partial appended.
 
@@ -604,14 +700,16 @@ def self_test() -> int:
     est = paired_t(np.array([0.0, 0.0, 0.0]))
     check("sd = 0 e t indefinido no par identico", est["sd"] == 0.0 and est["t"] is None)
 
-    # T5 - a PARTIAL 2nd pass enters the primary metric and nothing else.
-    # 4 beings, lap 2 died after 6 sectors at 10 % faster: slots 1..5 pair up (slot 0
-    # is the dirty start, slots 6..23 were never reached on lap 2).
+    # T5 - a PARTIAL 2nd pass enters the primary metric, minus its interrupted sector.
+    # 4 beings, lap 2 died after 6 sectors at 10 % faster: slots 0..5 hold ticks, but slot
+    # 0 is the dirty start (excluded as always) AND slot 5 is where the being died — this
+    # fixture cannot tell "drove sector 5 fully then died at the boundary" from "died mid
+    # sector 5", so `interrupted_sector` must drop 5 too. Only 1..4 pair up.
     parciais = [_synthetic_being_parcial(i, 0.9, 6) for i in range(4)]
     mp = gen_metrics(parciais, with_start_slot=False)
     check("2a passagem parcial da r = 0.9", mp["r_mediana"] == 0.9, f"r={mp['r_mediana']}")
-    check("5 setores por ser (1..5 dos 6 alcancados)", mp["setores_por_ser"] == 5.0,
-          f"n={mp['setores_por_ser']}")
+    check("4 setores por ser (1..4; 0 e largada, 5 e o interrompido)",
+          mp["setores_por_ser"] == 4.0, f"n={mp['setores_por_ser']}")
     check("cobertura parcial contada em separado", (mp["n_r_parcial"], mp["n_r_2v"]) == (4, 0),
           f"par={mp['n_r_parcial']} 2v={mp['n_r_2v']}")
     check("volta parcial NAO conta como volta", mp["voltas_medianas"] == 1.0,
@@ -620,15 +718,17 @@ def self_test() -> int:
     check("lap2/lap1 limpo fica n/a (fragmento nao e volta)",
           mp["lap2_lap1_ticks"] is None and mp["lap2_lap1_ticks_bruto"] is None)
 
-    # T6 - a partial that reached ONLY slot 0 gives no pair by default (and one with
-    # --com-setor-inicial), so a being that died before the 1st crossing of lap 2 is
-    # visible in the ledger without entering the metric.
+    # T6 - a partial that reached ONLY slot 0 gives no pair, with or without
+    # --com-setor-inicial: slot 0 is both the start slot AND the only sector reached, so
+    # it is also the interrupted one — the two exclusions overlap, neither flag brings it
+    # back. A being that died before the 1st crossing of lap 2 stays visible in the
+    # ledger (it is not dropped from the file) but never enters the metric.
     so_largada = [_synthetic_being_parcial(i, 0.9, 1) for i in range(4)]
     ms = gen_metrics(so_largada, with_start_slot=False)
     check("parcial so no setor 0 nao entra na metrica",
           ms["n_seres_r"] == 0 and ms["r_mediana"] is None)
-    check("com --com-setor-inicial ele entra com 1 setor",
-          gen_metrics(so_largada, with_start_slot=True)["setores_por_ser"] == 1.0)
+    check("interrupted sector holds even under --com-setor-inicial (slot 0 is also it)",
+          gen_metrics(so_largada, with_start_slot=True)["n_seres_r"] == 0)
 
     # T7 - mixed population: 2 closed lap 2 at 0.9 and 2 partial at 0.8 => median 0.85
     # over 4 beings, with the coverage split 2/2.
@@ -641,6 +741,40 @@ def self_test() -> int:
           (mm["n_r_2v"], mm["n_r_parcial"]) == (2, 2))
     check("mistura: lap2/lap1 limpo vem so das fechadas", mm["lap2_lap1_ticks"] == 0.9,
           f"={mm['lap2_lap1_ticks']}")
+
+    # T7B - the external reviewer's exact cases for the interrupted-sector bug
+    # (2026-09-12): a partial lap's LAST sector is where the being died, not a real pass.
+
+    # Case 1: first pass closes at 200 ticks/sector; the partial second pass enters ONE
+    # sector, survives 1 tick, dies. Before the fix this sector paired as r = 1/200 =
+    # 0.005 (a fake 99.5 % speed-up) and the being counted; now it must count NOTHING.
+    one_tick_death = [
+        _being_with_explicit_ticks(
+            i, t1_full=200, t2_ticks={5: 1}, lap2_tick_start=200 * 23, lap2_dist=0.1
+        )
+        for i in range(4)
+    ]
+    r1 = gen_metrics(one_tick_death, with_start_slot=False)
+    check("1-tick death in a sector does not count as a 2nd pass",
+          r1["n_seres_r"] == 0 and r1["r_mediana"] is None,
+          f"n_seres_r={r1['n_seres_r']} r={r1['r_mediana']}")
+
+    # Case 2: sectors 0..5 fully driven, sector 6 interrupted (fewer ticks) then dies.
+    # Sectors 1..5 must count (0 is the start slot, as always); 6 must not.
+    six_interrupted = [
+        _being_with_explicit_ticks(
+            i,
+            t1_full=200,
+            t2_ticks={0: 200, 1: 200, 2: 200, 3: 200, 4: 200, 5: 200, 6: 30},
+            lap2_tick_start=200 * 23,
+            lap2_dist=900.0,
+        )
+        for i in range(4)
+    ]
+    r2 = gen_metrics(six_interrupted, with_start_slot=False)
+    check("sectors 1..5 count, interrupted sector 6 does not",
+          r2["setores_por_ser"] == 5.0 and r2["r_mediana"] == 1.0,
+          f"setores={r2['setores_por_ser']} r={r2['r_mediana']}")
 
     # T8 - THE BACK-COMPATIBILITY CHECK: the same beings with the empty partial the new
     # binary appends must give a byte-for-byte identical metrics dict. If this fails,
