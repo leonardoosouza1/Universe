@@ -1578,7 +1578,7 @@ fn main() {
         }
     );
     println!(
-        "  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}",  // check-language: allow -- historical log line, parsed by tools
+        "  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}", // check-language: allow -- historical log line, parsed by tools
         evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney, evo_hip_p, evo_hip_sigma
     );
     println!(
