@@ -50,6 +50,24 @@ the row here in the same commit so the next person inherits the decision.
 
 Modules in `src/gpu/mod.rs`: `pub mod physics; pub mod brain; pub mod perception; pub mod core;`
 
+## CLI flags
+
+**Decided 2026-09-12: every flag of `gpu_evolve` has an English canonical name, and
+every Portuguese spelling keeps working as a deprecated alias.** The table that owns
+them is `src/bin/gpu_evolve/cli_flags.rs`, not this file: 112 rows of canonical name,
+aliases, whether the flag takes a value, and one help line. Nothing is ever deleted
+from `aliases`, so a battery request written months ago is still a valid input, and it
+prints one deprecation warning per alias per run.
+
+A rename is therefore: change `name`, move the old spelling into `aliases`. The tests
+in `cli_flags_tests.rs` read `main.rs` with `include_str!` and fail if the table and
+the parser disagree in either direction — which is what makes this safe to do at all.
+The same file carries `VALUE_ALIASES` for a flag whose VALUES are an enum (today only
+`--tau-bank`: `livre`/`log-fixo`/`espectral` -> `free`/`log-fixed`/`spectral`).
+
+`cortex_evolve`, `gpu_loop` and `gpu_report` still parse `--seres` with their own
+loops and no registry; each needs its own pass before that flag can be renamed.
+
 ## Types
 
 | from | to |
@@ -134,7 +152,12 @@ When you carry one out, move the row up into the tables above.
 | `veredito` | `verdict` |
 | `degrau` | `step` / `rung` |
 | `coesao` | `cohesion` |
-| `--pista-held-out` / `--held-out-cada` (CLI) | TODO — flags are user-facing; renaming them breaks scripts, so decide with the owner |
+Performed on 2026-09-12, so do not propose them again: every `gpu_evolve` flag (see
+the CLI flags section above, including `--pista-held-out` -> `--track-held-out` and
+`--held-out-cada` -> `--held-out-every`), `tau_bank::banco_tau` -> `tau_bank`,  <!-- check-language: allow -->
+`src/bin/sensibilidade.rs` -> `src/bin/sensitivity.rs` (binary `sensitivity`),
+`tools/voltas.py` -> `tools/laps.py`, and the `LapRecord` wire key `parcial` ->
+`partial`.
 
 <!-- check-language: on -->
 

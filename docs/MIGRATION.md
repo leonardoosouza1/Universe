@@ -46,9 +46,14 @@ debt to schedule. `--generate-allowlist` refuses to excuse them for the same rea
 > As of this snapshot, `README.md` and `CONTRIBUTING.md` each fail the checker on
 > lines that quote Portuguese CLI flags and legacy test names. Both are legitimate
 > quotations: mark them with `<!-- check-language: allow -->` rather than deleting the
-> quote. `--pista-held-out` and `--held-out-cada` are real flags parsed at <!-- check-language: allow -->
-> `src/bin/gpu_evolve/main.rs:739-740`; renaming them is a user-facing change and
-> needs the owner's decision (tracked in `NAMING.md`).
+> quote.
+>
+> **Resolved 2026-09-12.** The owner's decision on user-facing flags was taken and
+> carried out: `gpu_evolve`'s 112 flags all have English canonical names, and every
+> Portuguese spelling keeps working as a deprecated alias through the registry in
+> `src/bin/gpu_evolve/cli_flags.rs`. `--pista-held-out` is now `--track-held-out`
+> and `--held-out-cada` is `--held-out-every`. Flag quotations in `README.md` and  <!-- check-language: allow -->
+> `CONTRIBUTING.md` can now be updated to the canonical name instead of marked.
 
 ---
 
@@ -279,6 +284,44 @@ pending.
 
 ---
 
+## Done outside the file queue — the rename pass of 2026-09-12
+
+This pass is orthogonal to the table above: it renamed NAMES across files instead of
+translating one file end to end, so nothing here ticks a row to `done`. Recorded so
+the next contributor does not redo it.
+
+| Migrated | Status |
+|---|---|
+| `gpu_evolve` CLI flags: 83 of 112 renamed to English canonical names, all Portuguese spellings kept as aliases in `src/bin/gpu_evolve/cli_flags.rs` | done |
+| `--tau-bank` VALUES (`livre`/`log-fixo`/`espectral` -> `free`/`log-fixed`/`spectral`, old accepted) | done |
+| `tau_bank::banco_tau` -> `tau_bank::tau_bank`, 16 call sites | done |
+| `src/bin/sensibilidade.rs` -> `src/bin/sensitivity.rs`, binary `sensitivity` | done |
+| `tools/voltas.py` -> `tools/laps.py`, English flags, labels and JSON keys | done |
+| `LapRecord` wire key `parcial` -> `partial`, reader accepts both | done |
+| `Evolução:` run-header line -> `Evolution:` | done |  <!-- check-language: allow -->
+| Every comment, doc comment and message repo-wide that named a renamed flag | done |
+
+**What this pass deliberately did NOT do**, and why:
+
+- **84 lines that still carry Portuguese prose keep naming the old flag.** They are
+  all in files on `scripts/language_allowlist.txt`. Touching one would oblige this
+  branch to translate it, and the rule above is one file per PR, not half a file. The
+  old spellings still resolve, so the lines are stale, not wrong; they get fixed when
+  their file is migrated.
+- **`--seres` in `cortex_evolve`, `gpu_loop` and `gpu_report`.** Each parses its own
+  arguments with no registry, so renaming the literal breaks the flag with nothing to
+  catch it. One registry pass per binary.
+- **`sensitivity`'s own flags (`--genoma`, `--onda`, `--onda-sintetica`) and its
+  `SENSIBILIDADE ok` / `FALHOU` gate lines**, and **`hip_check`'s `--genoma`,
+  `--tolerancia`, `--setores`.** These are the machine contract of
+  `docs/PRD-CEREBRO-NEUROMOD.md` §C3, greped verbatim by a lab workflow. Renaming
+  them needs the PRD amended in the same commit.
+- **Portuguese log prefixes in `main.rs`** (`[ERRO]`, `[AVISO]`, `[recurso]`) and the
+  run header's Portuguese sentences. That is `main.rs`'s own row in the queue (856
+  lines), the largest one there is.
+
+---
+
 ## Out of scope
 
 Not migration targets, and not scanned by `scripts/check_language.sh`:
@@ -307,6 +350,12 @@ Not migration targets, and not scanned by `scripts/check_language.sh`:
 | 2026-08-17 | 170 | 12,242 |
 | 2026-08-17 (wave 1, `3a69928`) | 91 | 4,014 |
 | 2026-08-17 (wave 2) | 80 | 3,725 |
+| 2026-09-12 (rename pass, this branch) | 87 | 3,714 |
+
+The rename pass moved names, not prose, so the line count barely moves: it is down 11
+and the file count is UP 7, because `--all` now also counts the `crates/taxi-world/`
+files added since wave 2. No file finished, so the allowlist did not shrink — see the
+pass's own section below for what it did do.
 
 Add a row when you finish a batch, so the trend is visible without re-reading the git
 history.
