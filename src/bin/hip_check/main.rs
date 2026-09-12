@@ -10,7 +10,13 @@
 //! ```text
 //! ./target/release/hip_check --genoma <evolve_best_genN.bin> --hip <hip_genN.f32>
 //! ./target/release/hip_check --hip <hip_genN.f32> --setores [--genoma <g.bin>]
+//! ./target/release/hip_check --genoma <g.bin> --hip <hip_genN.f32> --memory
 //! ```
+//!
+//! `--setores` and `--memory` answer different questions and the second one exists
+//! because the first cannot be read as an answer to it: `--setores` takes the MAX over
+//! the three command components, so a constant brake offset can hide a memory-driven
+//! throttle swing. See `memory.rs`.
 //!
 //! Exit codes: `0` the recomputation matched, `1` it did not (or a row is corrupt),
 //! `2` bad usage or unreadable input.
@@ -57,6 +63,8 @@
 //! (`context.rs:2224-2226` reads the slots directly; `hippocampus_bias` reads through
 //! `read_gated`). Under that flag a genome with non-zero `W` on the memory columns will
 //! disagree here, and the disagreement is the ablation, not a bug.
+
+mod memory;
 
 #[cfg(test)]
 mod tests;
@@ -249,13 +257,15 @@ struct SectorStat {
 /// Splits every sector's ticks into pass 1 (`[0]`) and passes ≥ 2 (`[1]`).
 fn sector_stats(rows: &[HipRow]) -> [SectorStat; hip::N_SECTORS] {
     let mut out = [SectorStat::default(); hip::N_SECTORS];
+    // `memory::pass_kind` owns the first-pass rule, so this table and `--memory` can
+    // never disagree about which rows are a first pass.
+    let kinds = memory::pass_kind(rows);
     let mut prev: Option<usize> = None;
-    for row in rows {
+    for (row, &k) in rows.iter().zip(&kinds) {
         let s = row.sector;
         if prev != Some(s) {
             out[s].passes += 1;
         }
-        let k = usize::from(out[s].passes > 1);
         out[s].ticks[k] += 1;
         out[s].bias_sum[k] += peak(&row.bias) as f64;
         out[s].here_sum[k] += peak(row.here()) as f64;
@@ -292,6 +302,11 @@ fn usage() -> ! {
          ./target/release/hip_check --genoma <evolve_best_genN.bin> --hip <hip_genN.f32> \\\n\
          \x20                         [--tolerancia <f32>]\n\
          ./target/release/hip_check --hip <hip_genN.f32> --setores [--genoma <g.bin>]\n\
+         ./target/release/hip_check --genoma <g.bin> --hip <hip_genN.f32> --memory\n\
+         \n\
+         --memory reports, per command component, how much of the bias the MEMORY\n\
+         content explains: delta_b = b(x_t) - b(x_empty). --setores maxes over the\n\
+         three components and a constant offset hides the memory term there.\n\
          \n\
          NOTE: being 0 of generation N is the ELITE, i.e. the genome of\n\
          evolve_best_gen<N-1>.bin — see this file's header."
@@ -510,6 +525,7 @@ fn main() {
     let mut hip_path: Option<String> = None;
     let mut tolerance = DEFAULT_TOLERANCE;
     let mut sectors_mode = false;
+    let mut memory_mode = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -536,6 +552,9 @@ fn main() {
                 });
             }
             "--setores" => sectors_mode = true,
+            // English, per docs/STYLE.md 1: flags added after 2026-09-12 are English even
+            // though the older ones above keep the recording side's spelling.
+            "--memory" => memory_mode = true,
             "--help" | "-h" => usage(),
             other => {
                 eprintln!("[ERROR] unknown flag '{other}'");
@@ -555,5 +574,10 @@ fn main() {
         eprintln!("[ERROR] --genoma is required unless --setores is given");
         usage();
     };
+    if memory_mode {
+        // The genome is not optional here: x_empty and therefore the resting bias are a
+        // property of W, which the telemetry does not carry.
+        memory::run(&genome_path, &hip_path);
+    }
     run_check(&genome_path, &hip_path, tolerance);
 }
