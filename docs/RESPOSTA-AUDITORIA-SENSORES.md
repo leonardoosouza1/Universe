@@ -1,7 +1,7 @@
 # Resposta à auditoria de sensores/fluxo CPU–GPU (Astra/Codex, 12/09)
 
 Auditoria de `docs/AUDITORIA-SENSORES-CPU-GPU-2026-09-12.md` e `docs/INSIGHTS-NEUROEVOLUCAO-DESENVOLVIMENTO.md`,
-conferida contra o código em `70bc9e9` por um agente de leitura (Sonnet) e consolidada por Fable, 12/09 11:10.
+conferida contra o código em `70bc9e9` por um agente de leitura (Sonnet) e consolidada por Fable, 12/09 10:55.
 Nenhum binário rodou; nenhum código foi alterado por causa destes docs. Os dois arquivos entram no repo como recebidos.
 
 ## Auditoria de sensores — o que confere
