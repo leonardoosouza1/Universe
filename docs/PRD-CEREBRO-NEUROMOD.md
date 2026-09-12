@@ -72,9 +72,9 @@ Grafo: **C0 ∥ C1 ∥ C3 ∥ C4** (independentes) → smoke (C4) → **bateria*
 **Entrega.**
 - `dof`: por geração e por ser, nº de genes novos com `|w| > 0.5` (`hip`, `tal`, `gates_w`), no log e no `laps_gen<N>.jsonl` (`dof_hip`, `dof_tal`).
 - Contribuição: média de `|bias_hip|` por saída e de `|g_f − 1|` por família, por geração (no mesmo jsonl).
-- `src/bin/sensibilidade.rs` (sem GPU): para cada grupo de genes novos, perturba ±δ e mede Δ dos comandos num traço open-loop gravado (`src/gpu/brain/screen.rs`); imprime matriz grupo × saída; falha se algum grupo não move nenhuma saída. É o `testes_sentidos.py` do lab (`neuromod-lab/src/testes_sentidos.py:1-3`), que teria pego em 30 s o achado 84.
+- `src/bin/sensitivity.rs` (sem GPU): para cada grupo de genes novos, perturba ±δ e mede Δ dos comandos num traço open-loop gravado (`src/gpu/brain/screen.rs`); imprime matriz grupo × saída; falha se algum grupo não move nenhuma saída. É o `testes_sentidos.py` do lab (`neuromod-lab/src/testes_sentidos.py:1-3`), que teria pego em 30 s o achado 84.
 
-**Aceite.** `sensibilidade` verde para `hip` (C1) antes de qualquer pedido na fila; `dof` = 0 na geração 0 dos dois braços.
+**Aceite.** `sensitivity` verde para `hip` (C1) antes de qualquer pedido na fila; `dof` = 0 na geração 0 dos dois braços.
 
 ### C4 — Fila, smoke, bateria, predições
 
@@ -95,7 +95,7 @@ Grafo: **C0 ∥ C1 ∥ C3 ∥ C4** (independentes) → smoke (C4) → **bateria*
 
 ### C5 — Análise
 
-`tools/voltas.py` (Python padrão + matplotlib, CPU, sem torch): lê `laps_gen*.jsonl` dos 6 runs; tabela pareada por semente (controle × hip) de `lap2/lap1`, `≥2V/gen`, `net_max`, `dof_hip`, `|bias|`; t pareado, MDE; curva por geração; PNG em `<out>/voltas.png`. Lê também `u2` (mem × apagar). Saída Markdown ≤ 40 linhas para o doc de veredito.
+`tools/laps.py` (Python padrão + matplotlib, CPU, sem torch): lê `laps_gen*.jsonl` dos 6 runs; tabela pareada por semente (controle × hip) de `lap2/lap1`, `≥2V/gen`, `net_max`, `dof_hip`, `|bias|`; t pareado, MDE; curva por geração; PNG em `<out>/voltas.png`. Lê também `u2` (mem × apagar). Saída Markdown ≤ 40 linhas para o doc de veredito.
 
 ## 3. Ordem de lançamento
 

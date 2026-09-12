@@ -25,7 +25,7 @@
 //! `src/bin/gpu_evolve/` already uses), so both files stay under the 600-line cap of
 //! `docs/STYLE.md` §2. The binary is still `./target/release/hip_check`; Cargo discovers
 //! `src/bin/<name>/main.rs` on its own, so no `[[bin]]` entry is needed — the same rule
-//! the Cargo.toml comment states for `sensibilidade`.
+//! `sensitivity` follows (`src/bin/sensitivity.rs`, a single-file binary).
 //!
 //! # WHICH genome belongs to `hip_gen<N>.f32` — read this before trusting a mismatch
 //!
@@ -39,7 +39,7 @@
 //! generation N carries the genome of
 //! `evolve_best_gen<N-1>.bin`**, and equals `evolve_best_gen<N>.bin` only when the elite
 //! also won generation `N`. Generation 0 has no previous elite at all: being 0 is random
-//! (or whatever `--retomar` loaded), so nothing on disk is guaranteed to be it.
+//! (or whatever `--resume` loaded), so nothing on disk is guaranteed to be it.
 //!
 //! Measured on `/media/llm-data/universe-runs/neuromod-lab-taxi/u0c_valida_hip/`
 //! (2026-09-12): over the 30 001 rows of `hip_gen0003.f32` the maximum absolute difference
@@ -58,7 +58,7 @@
 //!
 //! # What a mismatch can legitimately mean
 //!
-//! `--hipocampo-apagar` makes the being read `ERASED_READ` (memory zeroed, bias column
+//! `--hippocampus-erase` makes the being read `ERASED_READ` (memory zeroed, bias column
 //! intact) while the telemetry still records the REAL memory in columns 2..10
 //! (`context.rs:2224-2226` reads the slots directly; `hippocampus_bias` reads through
 //! `read_gated`). Under that flag a genome with non-zero `W` on the memory columns will
@@ -414,7 +414,7 @@ fn run_check(genome_path: &str, hip_path: &str, tolerance: f32) -> ! {
     ) {
         (Some(_), Some(0)) => println!(
             "  NOTE: generation 0 has no previous elite — being 0 is a random (or \
-             --retomar) genome, so no evolve_best_gen*.bin is guaranteed to be it. \
+             --resume) genome, so no evolve_best_gen*.bin is guaranteed to be it. \
              A PASS here with an all-zero hip block only says both sides are zero."
         ),
         (Some(gg), Some(hg)) if gg + 1 != hg => println!(
@@ -433,7 +433,7 @@ fn run_check(genome_path: &str, hip_path: &str, tolerance: f32) -> ! {
     println!(
         "  VERDICT: FAIL (tolerance {tolerance:.1e}). Either this genome is not the being \
          the telemetry recorded (see HINT / the header's elite rule), or the run used \
-         --hipocampo-apagar, or the formula changed since the recording."
+         --hippocampus-erase, or the formula changed since the recording."
     );
     std::process::exit(1);
 }
@@ -532,8 +532,8 @@ fn main() {
         let a = args[i].clone();
         i += 1;
         match a.as_str() {
-            // The flag names match the recording side (`--hipocampo-setor`) and the sibling
-            // tool (`sensibilidade --genoma`); renaming them here would split one vocabulary
+            // The flag names match the recording side (`--hippocampus-sector`) and the sibling
+            // tool (`sensitivity --genoma`); renaming them here would split one vocabulary
             // in two. check-language: allow -- CLI flags kept in sync with gpu_evolve
             "--genoma" => {
                 genome_path = Some(next_value(&args, i, "--genoma"));

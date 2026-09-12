@@ -1,9 +1,9 @@
 //! Diagnostic pilots: purely geometric/sensory controllers that REPLACE the brain
 //! behind a flag, to separate blame on the BODY from blame on the BRAIN.
 //!
-//! - **Sensory pilot** (`--piloto-sensor`): drives only by wall rays — measures the
+//! - **Sensory pilot** (`--pilot-sensor`): drives only by wall rays — measures the
 //!   ceiling of the available sensory information.
-//! - **Ghost pilot** (`--piloto`): drives along the racing line (an oracle the being
+//! - **Ghost pilot** (`--pilot`): drives along the racing line (an oracle the being
 //!   does not have) — measures whether the BODY can complete the track, isolating the
 //!   brain's competence.
 //!

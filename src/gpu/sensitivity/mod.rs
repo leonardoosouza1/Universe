@@ -56,7 +56,7 @@
 //! That third case is the one to watch, because it is the only one a *synthetic input*
 //! can fix. When C1 lands `Genome::hip`, this gate keeps it honest by feeding the
 //! hippocampus a fixed non-zero memory instead of the zero a replay would produce — the
-//! `--mem-sintetico` flag of `src/bin/sensibilidade.rs`. The flag is NOT implemented on
+//! `--mem-sintetico` flag of `src/bin/sensitivity.rs`. The flag is NOT implemented on
 //! this branch: there is no `hip` block to inject into, and a flag that silently does
 //! nothing is worse than a documented absence. See that binary's header.
 //!

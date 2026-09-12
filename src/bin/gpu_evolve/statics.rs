@@ -15,7 +15,7 @@
 //!
 //! | Static | Escrito por | Lido por |
 //! |---|---|---|
-//! | `SLOW_ABLATED` | `main()` (flag `--sem-lento`) | `slow_ablated()` em `context.rs::tick()` |
+//! | `SLOW_ABLATED` | `main()` (flag `--no-slow`) | `slow_ablated()` em `context.rs::tick()` |
 //! | `FUEL_ON`, `FUEL_TANK`, `REFUEL_LAPS`, `SETOR_PAGA` | `main()` (flags `--fuel*`) | `main()` (laço de geração, mecânica de combustível) |
 //! | `AUDITAR` | `main()` (flag `--auditar-visao`) | `context.rs::tick()` (decide se acumula auditoria) + `main()` (relatório final) |
 //! | `SLOW_STEER_AUTH` | `main()` (flag `--slow-steer`) | `context.rs::tick()` (viés do volante do cérebro lento) |
@@ -24,22 +24,22 @@
 //! | `WALL_LIFE_DRAIN`, `STAG_LIFE_DRAIN` | `main()` (flags `--wall-life`/`--stag-life-drain`) | `context.rs::tick()` (custo de vida) |
 //! | `LIFE_CAP_TICKS` | `main()` (flag `--life-cap`) | `context.rs::tick()` + `main()`, via `life_cap()` |
 //! | `LIFE_EARN` | `main()` (flag `--life-earn`) | `main()` (laço de geração, ganho de vida por avanço) |
-//! | `PILOTO_GANHO`, `PILOTO_THR` | `main()` (flags `--piloto*`) | `context.rs::tick()` (override do piloto fantasma) |
+//! | `PILOTO_GANHO`, `PILOTO_THR` | `main()` (flags `--pilot*`) | `context.rs::tick()` (override do piloto fantasma) |
 //! | `STEER_FIXO`, `THR_FIXO`, `STEER_ESCALA` | `main()` (flags de diagnóstico bruto) | `context.rs::tick()` (override final, depois de tudo) |
-//! | `PILOTO_SENSOR` | `main()` (flag `--piloto-sensor`) | `context.rs::tick()` (piloto sensorial, raios de parede) |
+//! | `PILOTO_SENSOR` | `main()` (flag `--pilot-sensor`) | `context.rs::tick()` (piloto sensorial, raios de parede) |
 //! | `ATIVACAO_ON`, `ATIVACAO_N` | `main()` (flags `--ativacao`/`--ativacao-n`) | `context.rs::tick()` (decide se/quando amostra L1/L2) |
 //!
 //! ## Hostile world (BODY PHASE, 2026-08-17) — English rows, new code
 //!
 //! | Static | Written by | Read by |
 //! |---|---|---|
-//! | `universe::gpu::perception::BODY_CHANNELS_ON` (library, reached here through [`body_channels_on`]) | `main()` (flag `--interocepcao`, and any flag that needs the block) | `context.rs::tick()` (decides whether to pack + upload the body block) and `gpu::perception` (builds the `body_on` uniform field) |
+//! | `universe::gpu::perception::BODY_CHANNELS_ON` (library, reached here through [`body_channels_on`]) | `main()` (flag `--interoception`, and any flag that needs the block) | `context.rs::tick()` (decides whether to pack + upload the body block) and `gpu::perception` (builds the `body_on` uniform field) |
 //! | `STATIONS_N`, `STATION_CAPACITY`, `STATION_REGEN`, `STATION_RADIUS_M`, `STATION_TRANSFER` | `main()` (flags `--recurso-*`) | `main()` (places the stations once per generation) + `context.rs::tick()` (drain/recharge + the station channels) |
-//! | `PREDATOR_SPEED_FRAC`, `PREDATOR_DRAIN`, `PREDATOR_RADIUS_M`, `PREDATOR_PERCEPT_M`, `PREDATOR_GRACE_TICKS`, `PREDATOR_SPAWN_BACK_M` | `main()` (flags `--predador*`) | `main()` (spawns once per generation) + `context.rs::tick()` (step, life drain, predator channels) |
-//! | `TIRE_THERMAL_GAIN` | `main()` (flag `--pneu-termico`) | `main()` (builds the per-being `ThermalParams` once per generation) + `context.rs::tick()` (integrates the temperature and writes `env_grip`) |
-//! | `SENSOR_COST`, `SENSOR_COST_K`, `SENSOR_COST_CAP` | `main()` (flags `--custo-sensor*`) | `main()` (recomputes the per-being subscription once per generation, next to the wiring cost) — the tick only reads the resulting `ctx.sensor_cost` vector |
-//! | `universe::tau_bank::MODE` (library, reached here through [`tau_bank_mode`] / [`set_tau_bank_mode`]) | `main()` (flag `--banco-tau <livre\|log-fixo\|espectral>`) | `gpu::evolution::Genome::pack_taus` (builds the bank uploaded once per generation) and `main()` (the `[tau]` diagnostic line) |
-//! | `PERFIL_KERNEL` | `main()` (flag `--perfil-kernel <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
+//! | `PREDATOR_SPEED_FRAC`, `PREDATOR_DRAIN`, `PREDATOR_RADIUS_M`, `PREDATOR_PERCEPT_M`, `PREDATOR_GRACE_TICKS`, `PREDATOR_SPAWN_BACK_M` | `main()` (flags `--predator*`) | `main()` (spawns once per generation) + `context.rs::tick()` (step, life drain, predator channels) |
+//! | `TIRE_THERMAL_GAIN` | `main()` (flag `--tire-thermal`) | `main()` (builds the per-being `ThermalParams` once per generation) + `context.rs::tick()` (integrates the temperature and writes `env_grip`) |
+//! | `SENSOR_COST`, `SENSOR_COST_K`, `SENSOR_COST_CAP` | `main()` (flags `--sensor-cost*`) | `main()` (recomputes the per-being subscription once per generation, next to the wiring cost) — the tick only reads the resulting `ctx.sensor_cost` vector |
+//! | `universe::tau_bank::MODE` (library, reached here through [`tau_bank_mode`] / [`set_tau_bank_mode`]) | `main()` (flag `--tau-bank <free\|log-fixed\|spectral>`) | `gpu::evolution::Genome::pack_taus` (builds the bank uploaded once per generation) and `main()` (the `[tau]` diagnostic line) |
+//! | `PERFIL_KERNEL` | `main()` (flag `--kernel-profile <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
 //! predator pose, the per-being tyre temperature and the per-being subscription all
@@ -248,7 +248,7 @@ pub static ATIVACAO_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU
 /// Typical sustained speed of a healthy being, m/s. MEASURED, not chosen: the
 /// energy round-2 calibration recorded 1875 m in ~100 s, and the `--fuel-auto`
 /// rule of three above is built on the same number. It is the denominator that
-/// turns `--predador <f>` from "m/s" into "fraction of what a being can do", so a
+/// turns `--predator <f>` from "m/s" into "fraction of what a being can do", so a
 /// dose reads the same on every track.
 pub const TYPICAL_SPEED_MS: f32 = 18.75;
 
@@ -265,7 +265,7 @@ pub fn body_channels_on() -> bool {
     universe::gpu::perception::BODY_CHANNELS_ON.load(Ordering::Relaxed)
 }
 
-/// Which parametrisation builds the CfC decay-rate bank this run (`--banco-tau`).
+/// Which parametrisation builds the CfC decay-rate bank this run (`--tau-bank`).
 ///
 /// Same shape as [`body_channels_on`] above, and for the same reason: the flag lives in
 /// the library (`universe::tau_bank`) because the reader is `Genome::pack_taus`, a
@@ -290,7 +290,7 @@ pub fn set_tau_bank_mode(m: universe::tau_bank::TauBankMode) {
 /// changing it never touches WGSL (`perception/channels.rs`, BODY BLOCK header).
 pub const STATION_PROX_REF_M: f32 = 300.0;
 
-/// D7 `--recurso-escasso <M>`: number of energy stations on the track. 0 = off.
+/// D7 `--resource-scarce <M>`: number of energy stations on the track. 0 = off.
 ///
 /// The point of the degree is that M < N beings, so for the first time what one
 /// being does (draining a station) changes the world another being finds. It also
@@ -298,41 +298,41 @@ pub const STATION_PROX_REF_M: f32 = 300.0;
 /// source next to a scarce one, which is a pressure that is off wearing the costume
 /// of a pressure that is on (the `--fuel-auto` denominator bug, ESCADA_DIFICULDADE.md).
 pub static STATIONS_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// `--recurso-carga <C>`: max and initial charge of each station, fuel units.
+/// `--resource-load <C>`: max and initial charge of each station, fuel units.
 pub static STATION_CAPACITY: AtomicF32 = AtomicF32::new();
-/// `--recurso-regen <R>`: passive recharge per tick, fuel units. Deliberately below
+/// `--resource-regen <R>`: passive recharge per tick, fuel units. Deliberately below
 /// idle consumption (0.002/64 = 3.125e-5/tick) so camping on a drained station is a
 /// net LOSS — the anti-degeneration lock of the D7 spec.
 pub static STATION_REGEN: AtomicF32 = AtomicF32::new();
-/// `--recurso-raio <m>`: drive-through radius, metres.
+/// `--resource-radius <m>`: drive-through radius, metres.
 pub static STATION_RADIUS_M: AtomicF32 = AtomicF32::new();
-/// `--recurso-transfer <f>`: fuel per tick transferred to one being inside the radius.
+/// `--resource-transfer <f>`: fuel per tick transferred to one being inside the radius.
 pub static STATION_TRANSFER: AtomicF32 = AtomicF32::new();
 
-/// `--predador <f>`: top speed of the predator as a fraction of [`TYPICAL_SPEED_MS`].
+/// `--predator <f>`: top speed of the predator as a fraction of [`TYPICAL_SPEED_MS`].
 /// 0 = off. Escapability is by construction while f < 1: a healthy being outruns it
 /// on a straight, so the pressure bites the slow and the cornering, and the dose stays
 /// sweepable instead of being a coin flip.
 pub static PREDATOR_SPEED_FRAC: AtomicF32 = AtomicF32::new();
-/// `--predador-dreno <D>`: life ticks per tick drained at zero distance. The ramp is
+/// `--predator-drain <D>`: life ticks per tick drained at zero distance. The ramp is
 /// continuous and quadratic, `D * (1 - d/R)^2`, so contact is never an instant kill —
 /// a step function would make mortality a threshold artefact rather than a dose.
 pub static PREDATOR_DRAIN: AtomicF32 = AtomicF32::new();
-/// `--predador-raio <m>`: radius of the drain ramp, metres.
+/// `--predator-radius <m>`: radius of the drain ramp, metres.
 pub static PREDATOR_RADIUS_M: AtomicF32 = AtomicF32::new();
-/// `--predador-percep <m>`: reference distance of the ch124 proximity ramp, metres.
+/// `--predator-perception <m>`: reference distance of the ch124 proximity ramp, metres.
 pub static PREDATOR_PERCEPT_M: AtomicF32 = AtomicF32::new();
-/// `--predador-gracia <ticks>`: immunity at the start of a generation. Without it the
+/// `--predator-grace <ticks>`: immunity at the start of a generation. Without it the
 /// arithmetic says a newborn (LIFE_START = 640) dies in 128 ticks = 2 s at D = 4, i.e.
 /// before it could possibly have fled — that is the metric hitting a limit, not a being
 /// failing (CLAUDE.md rule 4).
 pub static PREDATOR_GRACE_TICKS: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(1280);
-/// `--predador-spawn <m>`: how far BEHIND the generation's start line the predator is
+/// `--predator-spawn <m>`: how far BEHIND the generation's start line the predator is
 /// placed, in metres of track arc.
 pub static PREDATOR_SPAWN_BACK_M: AtomicF32 = AtomicF32::new();
 
-/// `--pneu-termico <gain>`: depth of the tyre-thermal grip curve. 0 = off.
+/// `--tire-thermal <gain>`: depth of the tyre-thermal grip curve. 0 = off.
 ///
 /// The dose scales how far grip can fall away from the optimal temperature:
 /// `floor = 1 - gain * (1 - 0.70)`. gain = 0 gives floor 1.0, i.e. `grip_factor ≡ 1`
@@ -342,20 +342,20 @@ pub static PREDATOR_SPAWN_BACK_M: AtomicF32 = AtomicF32::new();
 /// grip is harder" instead of the dynamic, the confound this project already paid for.
 pub static TIRE_THERMAL_GAIN: AtomicF32 = AtomicF32::new();
 
-/// D8 `--custo-sensor <DOSE>`: life/tick charged for perception at reference use.
+/// D8 `--sensor-cost <DOSE>`: life/tick charged for perception at reference use.
 /// 0 = off. The subscription is per FAMILY of channels (`channels::CHANNEL_FAMILIES`),
 /// so pruning one family removes a whole term. E-REG1 failed because its tax was the
 /// mean of 18 432 weights, whose inter-individual variance goes to zero by the CLT —
 /// a constant tax does not select. A family sum has somewhere to go.
 pub static SENSOR_COST: AtomicF32 = AtomicF32::new();
-/// `--custo-sensor-k <K>`: size of the per-family top-K tail. Default 4.
+/// `--sensor-cost-k <K>`: size of the per-family top-K tail. Default 4.
 pub static SENSOR_COST_K: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(4);
-/// `--custo-sensor-cap <C>`: ceiling of the normalised per-family use `u_F`. Default
+/// `--sensor-cost-cap <C>`: ceiling of the normalised per-family use `u_F`. Default
 /// 2.0, which also bounds the whole tax at `2 * DOSE` — the ceiling the metric plan is
 /// computed against.
 pub static SENSOR_COST_CAP: AtomicF32 = AtomicF32::new();
 
-/// `--perfil-kernel <N>`: print per-kernel GPU milliseconds every N ticks. 0 = off
+/// `--kernel-profile <N>`: print per-kernel GPU milliseconds every N ticks. 0 = off
 /// (the default — this instrument is diagnostic-only and must not change what a run
 /// measures). First per-kernel timing this project has ever had; see
 /// `src/gpu/timing.rs` for why no external profiler could produce this before.
@@ -372,16 +372,16 @@ pub fn perfil_kernel() -> u32 {
 //
 // | Static | Written by | Read by |
 // |---|---|---|
-// | `HIPPOCAMPUS_ON` | `main()` (flag `--hipocampo-setor`) | `main()` (write at the sector crossing, per-generation `hip_gen<N>.f32`) and `context.rs::tick()` (read + bias) |
-// | `HIPPOCAMPUS_ERASE` | `main()` (flag `--hipocampo-apagar`) | `context.rs::tick()` (the read returns `ERASED_READ`) |
-// | `HIPPOCAMPUS_DISABLED` | `main()` (flag `--sem-hipocampo`) | `context.rs::tick()` (bias forced to zero); also flips `gpu::evolution::HIPPOCAMPUS_MUTATE_ON` off at parse time |  // check-language: allow -- quoting the flag name verbatim
+// | `HIPPOCAMPUS_ON` | `main()` (flag `--hippocampus-sector`) | `main()` (write at the sector crossing, per-generation `hip_gen<N>.f32`) and `context.rs::tick()` (read + bias) |
+// | `HIPPOCAMPUS_ERASE` | `main()` (flag `--hippocampus-erase`) | `context.rs::tick()` (the read returns `ERASED_READ`) |
+// | `HIPPOCAMPUS_DISABLED` | `main()` (flag `--no-hippocampus`) | `context.rs::tick()` (bias forced to zero); also flips `gpu::evolution::HIPPOCAMPUS_MUTATE_ON` off at parse time |  // check-language: allow -- quoting the flag name verbatim
 //
 // The state itself (24 slots per being) is NOT here — it lives on `GpuCtx`, for the
 // reason the ownership table at the top of this file gives: a static is a knob the CLI
 // turns, and simulation state in a process global is how two runs in one process
 // contaminate each other.
 
-/// `--hipocampo-setor`: turns the organ on — per-sector write, per-tick read, command
+/// `--hippocampus-sector`: turns the organ on — per-sector write, per-tick read, command
 /// bias. OFF by default, so a run that does not ask for it takes exactly the old code
 /// path (the bias is `[0, 0, 0]` and is added to commands that are then clamped exactly
 /// as before).
@@ -392,7 +392,7 @@ pub fn hippocampus_on() -> bool {
     HIPPOCAMPUS_ON.load(Ordering::Relaxed)
 }
 
-/// `--hipocampo-apagar`: the read returns `hippocampus::ERASED_READ` — memory zeroed,
+/// `--hippocampus-erase`: the read returns `hippocampus::ERASED_READ` — memory zeroed,
 /// bias column still 1.0.
 ///
 /// **This is the memory ablation, not the organ ablation, and the difference is
@@ -401,7 +401,7 @@ pub fn hippocampus_on() -> bool {
 /// asks in `u2`: does the CONTENT of the memory pay? A champion that loses nothing when
 /// its memory is erased was carrying decoration, and that is a result too.
 ///
-/// To remove the ORGAN, use `--sem-hipocampo`. The two are different experiments; running  // check-language: allow -- quoting the flag name verbatim
+/// To remove the ORGAN, use `--no-hippocampus`. The two are different experiments; running  // check-language: allow -- quoting the flag name verbatim
 /// the wrong one answers a question nobody asked.
 pub static HIPPOCAMPUS_ERASE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -410,15 +410,15 @@ pub fn hippocampus_erase() -> bool {
     HIPPOCAMPUS_ERASE.load(Ordering::Relaxed)
 }
 
-/// `--sem-hipocampo`: the control arm with the SAME genome layout.  // check-language: allow -- quoting the flag name verbatim
+/// `--no-hippocampus`: the control arm with the SAME genome layout.  // check-language: allow -- quoting the flag name verbatim
 ///
 /// Forces the bias to `[0, 0, 0]` regardless of what the genome carries (so a champion
-/// resumed with `--retomar` from a run that already evolved a hippocampus cannot smuggle
+/// resumed with `--resume` from a run that already evolved a hippocampus cannot smuggle
 /// it in) and freezes the mutation of `Genome::hip` (`HIPPOCAMPUS_MUTATE_ON` off). The
 /// genome still carries and still serialises the 29 genes, so both arms write the same
 /// `.bin` layout and a lineage stays comparable across the A/B.
 ///
-/// Same shape as `--sem-memoria-neuronal` and the rest of the P1.7 control flags: freeze  // check-language: allow -- quoting the flag name verbatim
+/// Same shape as `--no-neuron-memory` and the rest of the P1.7 control flags: freeze  // check-language: allow -- quoting the flag name verbatim
 /// the field AND ignore it downstream, which is strictly stronger than either alone.
 pub static HIPPOCAMPUS_DISABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -430,7 +430,7 @@ pub fn hippocampus_disabled() -> bool {
 /// Is the hippocampus allowed to bias the commands this tick?
 ///
 /// One function so that `context.rs` cannot get the precedence between the three flags
-/// wrong: `--sem-hipocampo` beats `--hipocampo-setor`, and without `--hipocampo-setor`  // check-language: allow -- quoting the flag name verbatim
+/// wrong: `--no-hippocampus` beats `--hippocampus-sector`, and without `--hippocampus-sector`  // check-language: allow -- quoting the flag name verbatim
 /// there is nothing to bias with in the first place.
 #[inline]
 pub fn hippocampus_active() -> bool {

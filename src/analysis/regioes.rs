@@ -6,7 +6,7 @@
 //! depending on where it is on the track, and that needs to be measured."*
 //!
 //! We had never crossed the two sides that already existed separately:
-//!   - activation samples (`--ativacao`), collected in `gpu_evolve/context.rs`
+//!   - activation samples (`--activation`), collected in `gpu_evolve/context.rs`
 //!     (`l1_samples`/`l2_samples`) — *what* the brain does;
 //!   - track geometry, in the same discrete curvature-κ definition that
 //!     `src/bin/replay_mapa.rs::Pista::medir` uses for `ω_exigido = v·κ`
@@ -75,7 +75,7 @@ impl CurvaturaPista {
     }
 
     /// |κ| (1/m) of the waypoint nearest to `(x, z)`. Linear search — only called on the
-    /// sampled ticks (stride of `--ativacao-n`, typically 1 in 64), never in the hot
+    /// sampled ticks (stride of `--activation-n`, typically 1 in 64), never in the hot
     /// physics loop; with a few hundred waypoints the cost is irrelevant.
     pub fn curvatura_em(&self, x: f32, z: f32) -> f32 {
         if self.pts.is_empty() {

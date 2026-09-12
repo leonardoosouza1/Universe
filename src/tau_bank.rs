@@ -13,7 +13,7 @@
 //! | [`TauBankMode::Spectral`] | 2 | offset + a 1-D Laplacian spectrum |
 //!
 //! Why at UPLOAD time and never in `Genome::tau` itself: the genome stays the genome.
-//! Checkpoints written under one mode load under another, `--retomar` keeps working
+//! Checkpoints written under one mode load under another, `--resume` keeps working
 //! across modes, and the mutation operator in `evolve()` is untouched. The non-free
 //! modes are a LENS on the genes, not a rewrite of them — which also means the genes
 //! the lens ignores keep mutating and keep being carried on disk, costing nothing but
@@ -47,26 +47,31 @@ pub const D_LO: f32 = 1.0 / crate::cfc::TAU_MAX_S;
 
 /// How the decay-rate bank uploaded to the GPU is built from the genome's `tau` genes.
 ///
-/// Selected once per run by `gpu_evolve --banco-tau <mode>`; [`TauBankMode::Free`] is
+/// Selected once per run by `gpu_evolve --tau-bank <mode>`; [`TauBankMode::Free`] is
 /// the default and the control arm.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TauBankMode {
-    /// `--banco-tau livre`: the bank IS `genome.tau`. Identity, no arithmetic.
+    /// `--tau-bank free`: the bank IS `genome.tau`. Identity, no arithmetic.
     Free,
-    /// `--banco-tau log-fixo`: fixed log-spaced ladder × `tau[0]/DECAY_DEFAULT`.
+    /// `--tau-bank log-fixed`: fixed log-spaced ladder × `tau[0]/DECAY_DEFAULT`.
     LogFixed,
-    /// `--banco-tau espectral`: offset + diffusion × a 1-D Laplacian spectrum.
+    /// `--tau-bank spectral`: offset + diffusion × a 1-D Laplacian spectrum.
     Spectral,
 }
 
 impl TauBankMode {
-    /// Parses the CLI spelling. Returns `None` for anything else, so the caller can
-    /// report the three valid values instead of silently running the control arm.
+    /// Parses the CANONICAL CLI spelling. Returns `None` for anything else, so the
+    /// caller can report the three valid values instead of silently running the control
+    /// arm.
+    ///
+    /// The three values were Portuguese until 2026-09-12. This function does not know
+    /// about the old spellings on purpose: deprecation lives in ONE place,
+    /// `gpu_evolve`'s `cli_flags::VALUE_ALIASES`, which maps them here and warns once.
     pub fn from_flag(s: &str) -> Option<Self> {
         match s {
-            "livre" => Some(Self::Free),
-            "log-fixo" => Some(Self::LogFixed),
-            "espectral" => Some(Self::Spectral),
+            "free" => Some(Self::Free),
+            "log-fixed" => Some(Self::LogFixed),
+            "spectral" => Some(Self::Spectral),
             _ => None,
         }
     }
@@ -74,9 +79,9 @@ impl TauBankMode {
     /// The CLI spelling, for the run header. Round-trips with [`Self::from_flag`].
     pub fn as_flag(self) -> &'static str {
         match self {
-            Self::Free => "livre",
-            Self::LogFixed => "log-fixo",
-            Self::Spectral => "espectral",
+            Self::Free => "free",
+            Self::LogFixed => "log-fixed",
+            Self::Spectral => "spectral",
         }
     }
 
@@ -136,7 +141,7 @@ pub fn set_mode(m: TauBankMode) {
 /// Every value except in [`TauBankMode::Free`] is clamped to `[D_LO, D_HI]`; `Free`
 /// returns the genes untouched, because `evolve()` already clamps them there and a
 /// clamp here would be a second source of truth for the same invariant.
-pub fn banco_tau(mode: TauBankMode, genes: &[f32]) -> Vec<f32> {
+pub fn tau_bank(mode: TauBankMode, genes: &[f32]) -> Vec<f32> {
     match mode {
         TauBankMode::Free => genes.to_vec(),
         TauBankMode::LogFixed => log_fixed_bank(genes),
@@ -253,7 +258,7 @@ mod tests {
     use super::*;
 
     /// The control arm has to be an identity, not "an identity up to rounding" — the
-    /// whole value of the `livre` mode is that a battery run under it is comparable to
+    /// whole value of the `free` mode is that a battery run under it is comparable to
     /// every battery run before this module existed.
     #[test]
     fn free_mode_returns_the_genes_untouched() {
@@ -263,8 +268,8 @@ mod tests {
             vec![0.25, 40.0, 0.5, 1.0, 7.3, -1.0, f32::MAX],
             crate::cfc::log_uniform_decays(12345, 96),
         ] {
-            let out = banco_tau(TauBankMode::Free, &genes);
-            assert_eq!(out, genes, "livre must be bit-for-bit the input");
+            let out = tau_bank(TauBankMode::Free, &genes);
+            assert_eq!(out, genes, "free must be bit-for-bit the input");
         }
     }
 
@@ -274,7 +279,7 @@ mod tests {
     #[test]
     fn log_fixed_at_birth_is_the_untouched_ladder() {
         let genes = vec![crate::cfc::DECAY_DEFAULT; 96];
-        let bank = banco_tau(TauBankMode::LogFixed, &genes);
+        let bank = tau_bank(TauBankMode::LogFixed, &genes);
         assert_eq!(bank.len(), 96);
         assert!(
             (bank[0] - D_LO).abs() < 1e-5,
@@ -291,7 +296,7 @@ mod tests {
     #[test]
     fn log_fixed_is_monotone_in_k() {
         let genes = vec![crate::cfc::DECAY_DEFAULT; 96];
-        let bank = banco_tau(TauBankMode::LogFixed, &genes);
+        let bank = tau_bank(TauBankMode::LogFixed, &genes);
         for k in 1..bank.len() {
             assert!(
                 bank[k] > bank[k - 1],
@@ -311,8 +316,8 @@ mod tests {
         base[0] = crate::cfc::DECAY_DEFAULT; // scale 1.0
         let mut lifted = base.clone();
         lifted[0] = crate::cfc::DECAY_DEFAULT * 1.5; // scale 1.5
-        let a = banco_tau(TauBankMode::LogFixed, &base);
-        let b = banco_tau(TauBankMode::LogFixed, &lifted);
+        let a = tau_bank(TauBankMode::LogFixed, &base);
+        let b = tau_bank(TauBankMode::LogFixed, &lifted);
         let mut checked = 0;
         for k in 0..a.len() {
             if a[k] <= D_LO * 1.001 || b[k] >= D_HI * 0.999 {
@@ -341,8 +346,8 @@ mod tests {
         a[0] = 0.6;
         b[0] = 0.6;
         assert_eq!(
-            banco_tau(TauBankMode::LogFixed, &a),
-            banco_tau(TauBankMode::LogFixed, &b),
+            tau_bank(TauBankMode::LogFixed, &a),
+            tau_bank(TauBankMode::LogFixed, &b),
             "genes 1.. must not reach the bank"
         );
     }
@@ -372,7 +377,7 @@ mod tests {
     #[test]
     fn spectral_at_birth_has_the_historical_floor_and_half_diffusion() {
         let genes = vec![crate::cfc::DECAY_DEFAULT; 96];
-        let bank = banco_tau(TauBankMode::Spectral, &genes);
+        let bank = tau_bank(TauBankMode::Spectral, &genes);
         let span = D_HI - D_LO;
         assert!(
             (bank[0] - (crate::cfc::DECAY_DEFAULT + 0.5 * span / (96.0 * 96.0))).abs() < 1e-4,
@@ -391,7 +396,7 @@ mod tests {
         let mut genes = vec![crate::cfc::DECAY_DEFAULT; 96];
         genes[0] = 0.5; // lambda = 0.5 s^-1, the historical tau = 2 s
         genes[1] = 0.5; // D = 0.5 at birth
-        let bank = banco_tau(TauBankMode::Spectral, &genes);
+        let bank = tau_bank(TauBankMode::Spectral, &genes);
         assert_eq!(bank.len(), 96);
         for k in 1..bank.len() {
             assert!(
@@ -410,14 +415,14 @@ mod tests {
     }
 
     /// `D = 0` is the historical brain: one τ on every channel. It is REACHABLE — the
-    /// gene floor `evolve()` clamps to, 0.25 s⁻¹, maps to exactly 0 — so `espectral` can
+    /// gene floor `evolve()` clamps to, 0.25 s⁻¹, maps to exactly 0 — so `spectral` can
     /// evolve its way back to the single-τ bank instead of only approaching it.
     #[test]
     fn spectral_with_zero_diffusion_is_flat_at_lambda() {
         let mut genes = vec![crate::cfc::DECAY_DEFAULT; 96];
         genes[0] = 0.5;
         genes[1] = D_LO; // the gene's own floor, not an unreachable value
-        let bank = banco_tau(TauBankMode::Spectral, &genes);
+        let bank = tau_bank(TauBankMode::Spectral, &genes);
         for (k, &d) in bank.iter().enumerate() {
             assert_eq!(
                 d, 0.5,
@@ -433,7 +438,7 @@ mod tests {
             let mut genes = vec![crate::cfc::DECAY_DEFAULT; 96];
             genes[0] = g0;
             genes[1] = 0.75; // D = 1, the spectrum climbs as far as it can
-            let bank = banco_tau(TauBankMode::Spectral, &genes);
+            let bank = tau_bank(TauBankMode::Spectral, &genes);
             let lambda = g0.clamp(D_LO, D_HI);
             assert!(
                 bank[0] >= lambda - 1e-4,
@@ -456,8 +461,8 @@ mod tests {
         b[0] = 0.5;
         b[1] = 0.6;
         assert_eq!(
-            banco_tau(TauBankMode::Spectral, &a),
-            banco_tau(TauBankMode::Spectral, &b),
+            tau_bank(TauBankMode::Spectral, &a),
+            tau_bank(TauBankMode::Spectral, &b),
             "genes 2.. must not reach the bank"
         );
     }
@@ -471,7 +476,7 @@ mod tests {
         ] {
             assert_eq!(TauBankMode::from_flag(m.as_flag()), Some(m));
         }
-        assert_eq!(TauBankMode::from_flag("laplaciano"), None);
+        assert_eq!(TauBankMode::from_flag("laplacian"), None);
     }
 
     /// The default has to be the control arm, or a run that forgets the flag silently

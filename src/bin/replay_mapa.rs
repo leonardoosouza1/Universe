@@ -133,7 +133,7 @@ fn main() {
     // ── ONE WORLD PER GENERATION ──────────────────────────────────────────────
     //
     // Before, the FIRST file's track was drawn for the whole race. That held while every
-    // race had a single track. With the curriculum (`--pistas` + merit-based switching),
+    // race had a single track. With the curriculum (`--tracks` + merit-based switching),
     // one race crosses 8 geometries: the trajectories of the later generations were drawn
     // over the wrong track and looked as if the being had left the racing line — which led
     // Leonardo to ask "do they not follow the track, or did it change?".

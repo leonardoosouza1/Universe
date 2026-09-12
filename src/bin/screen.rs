@@ -28,7 +28,7 @@
 //!
 //! All ten runtime flags that change the brain's forward pass (`out_beta`, `out_gain`,
 //! `norm_l2_by_std`, sensor noise/dropout, the four P1.7 mechanism switches,
-//! `--neuromod-regioes`), plus `dt`, `--brain-skip` and whether a ghost pilot was
+//! `--neuromod-regions`), plus `dt`, `--brain-skip` and whether a ghost pilot was
 //! active, are read from the recording's own `wave_record::WaveConfig` header — there
 //! is no `--out-beta`-style flag on this CLI to guess wrong. `read_all` refuses a
 //! legacy (headerless), noisy, or pilot-driven recording outright rather than
@@ -125,7 +125,7 @@ fn main() {
     // discarded but its side effects are not, so a 20 000-tick run produces 20 001
     // rows, and by the time row 1 (the first SCORED tick) happens, the true recording
     // has already advanced its CfC state, its P1.7 period counter, and (with
-    // `--neuromod-regioes`) its M4 reserve by one dispatch.
+    // `--neuromod-regions`) its M4 reserve by one dispatch.
     //
     // The first cut of this screen skipped row 0 outright, reasoning that "the CfC
     // state it left behind is not reproducible anyway". That reasoning was WRONG in a

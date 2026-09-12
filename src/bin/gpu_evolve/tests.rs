@@ -418,7 +418,7 @@ fn genoma_legado_carregado_do_disco_nao_e_reescalado() {
     );
 }
 
-// ── Prediction 186: `--banco-tau` through the upload path ──────────────────────
+// ── Prediction 186: `--tau-bank` through the upload path ──────────────────────
 //
 // `BrainGpu::upload_tau` itself is NOT exercised here: it needs a `wgpu::Device`, and
 // this project does not mock GPUs (docs/STYLE.md §6). What IS exercised is everything
@@ -441,7 +441,7 @@ impl Drop for RestoreFreeTauBank {
 }
 
 /// The control arm has to survive the upload path unchanged, or every battery run
-/// before `--banco-tau` existed stops being comparable to a `livre` run after it.
+/// before `--tau-bank` existed stops being comparable to a `free` run after it.
 #[test]
 fn free_mode_packs_the_raw_genes() {
     let _lock = TAU_BANK_MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -461,7 +461,7 @@ fn free_mode_packs_the_raw_genes() {
 }
 
 /// Layout and content of the two structured modes, plus the invariant that makes
-/// `--retomar` work across modes: packing never writes back into `Genome::tau`.
+/// `--resume` work across modes: packing never writes back into `Genome::tau`.
 #[test]
 fn structured_modes_keep_the_layout_and_never_rewrite_the_genome() {
     let _lock = TAU_BANK_MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -489,7 +489,7 @@ fn structured_modes_keep_the_layout_and_never_rewrite_the_genome() {
             let slice = &packed[i * n_channels..(i + 1) * n_channels];
             assert_eq!(
                 slice,
-                universe::tau_bank::banco_tau(mode, &g.tau),
+                universe::tau_bank::tau_bank(mode, &g.tau),
                 "{mode:?}: being {i} did not get its own bank"
             );
             assert_eq!(

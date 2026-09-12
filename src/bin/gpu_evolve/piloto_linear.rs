@@ -6,8 +6,8 @@
 //! purpose, see the dump's meta.json). Runtime: 2 state EMAs + 1 matvec
 //! [576×3] per tick — negligible.
 //!
-//! Usage: `--piloto-formula <piloto.json>` → being 0 is driven by the formula
-//! (via download_debug, the same channel as --observar); the others follow the brain.
+//! Usage: `--pilot-formula <piloto.json>` → being 0 is driven by the formula
+//! (via download_debug, the same channel as --observe); the others follow the brain.
 //! Validation compares being 0's metres against the original champion and the median.
 
 use std::io::Read;
@@ -42,9 +42,9 @@ pub struct PilotoLinear {
     thr_abster: f32,     // threshold in SQUARED distance
     pub abstencoes: u64, // telemetry: how many ticks the brain took back over
     pub decisoes: u64,
-    /// Control: FIXED abstention probability (flag --portao-aleatorio).
+    /// Control: FIXED abstention probability (flag --random-gate).
     pub prob_aleatoria: f32,
-    /// Seed of the control's draw (--portao-semente).
+    /// Seed of the control's draw (--gate-seed).
     pub semente: u64,
     contador: u64,
     /// Length of the contiguous abstention SEQUENCES. It is what separates "the gate
@@ -213,7 +213,7 @@ impl PilotoLinear {
     /// being updated even during abstention — the pilot keeps "watching" so it does
     /// not come back with stale memory when the state returns to known territory.
     pub fn agir_com_portao(&mut self, x: &[f32]) -> Option<[f32; 3]> {
-        // GATE CONTROL (--portao-aleatorio p): abstains with a FIXED probability p,
+        // GATE CONTROL (--random-gate p): abstains with a FIXED probability p,
         // ignoring the state. Without this control there is no telling whether the
         // gate picks the RIGHT ticks or whether any brain intervention at the same
         // dose would already save the race — the difference between "knows it does
@@ -221,7 +221,7 @@ impl PilotoLinear {
         // deterministic.
         if self.prob_aleatoria > 0.0 {
             self.contador = self.contador.wrapping_add(1);
-            // Own seed (--portao-semente): INDEPENDENT draws at the same dose, to
+            // Own seed (--gate-seed): INDEPENDENT draws at the same dose, to
             // measure race-to-race variance. Without it every run repeats the same
             // draw and three "replicas" would be the same thing (the mistake of the
             // 3 seeds that were the same population, CLAUDE.md gap 6).

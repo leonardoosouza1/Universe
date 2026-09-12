@@ -113,8 +113,8 @@ fn a_being_that_never_closes_a_lap_records_one_partial() {
 }
 
 /// The case the U6 amendment needs: one closed lap and HALF of the second. Two records,
-/// the second `parcial`, only the sectors the half-lap reached non-zero — those are the
-/// second passes `tools/voltas.py` may compare, sector by sector.
+/// the second `partial`, only the sectors the half-lap reached non-zero — those are the
+/// second passes `tools/laps.py` may compare, sector by sector.
 #[test]
 fn one_lap_and_a_half_yields_a_partial_with_only_the_visited_sectors() {
     let mut t = LapTracker::new(1);
@@ -254,7 +254,7 @@ fn a_summary_of_zero_beings_does_not_panic() {
     println!("[laps] empty population: {}", s.log_line(0));
 }
 
-/// `--portal-curva` crosses gates whose index goes past 24, and an out-of-range being
+/// `--curve-portal` crosses gates whose index goes past 24, and an out-of-range being
 /// index can only be a caller bug: neither may abort a generation.
 #[test]
 fn out_of_range_sector_and_being_are_absorbed() {
@@ -295,16 +295,16 @@ fn the_jsonl_has_one_line_per_being_with_the_documented_keys() {
     assert_eq!(first["laps"][1]["dist"], 1100.0);
     let sectors = first["laps"][0]["sector_ticks"].as_array().expect("array");
     assert_eq!(sectors.len(), N_SECTORS);
-    assert_eq!(first["laps"][0]["parcial"], false, "wire name is `parcial`");
+    assert_eq!(first["laps"][0]["partial"], false, "wire name is `partial`");
     // The exact BYTES of a closed lap. `serde_json::Value` cannot check this — its map is
     // a `BTreeMap` and sorts the keys on parse (the same reason `write_jsonl` formats
     // `being`/`seed` by hand) — so the assertion is on the raw line: every field the OLD
-    // binary wrote, in its order, with `,"parcial":false` appended and nothing else moved.
+    // binary wrote, in its order, with `,"partial":false` appended and nothing else moved.
     let zeros = ["0"; N_SECTORS].join(",");
     let expected_bytes = format!(
         "{{\"lap\":1,\"tick_start\":0,\"tick_end\":1000,\"dist\":1000.0,\
          \"sector_ticks\":[{zeros}],\"grass_ticks\":0,\"damage\":0.0,\
-         \"dry_events\":0,\"parcial\":false}}"
+         \"dry_events\":0,\"partial\":false}}"
     );
     assert!(
         lines[0].contains(&expected_bytes),
@@ -319,8 +319,8 @@ fn the_jsonl_has_one_line_per_being_with_the_documented_keys() {
     println!("[laps] jsonl line 0: {}", lines[0]);
 }
 
-/// A partial lap on the wire: `"parcial":true` and the unvisited sectors at 0, which is
-/// exactly what `tools/voltas.py` reads to decide a sector saw a second pass.
+/// A partial lap on the wire: `"partial":true` and the unvisited sectors at 0, which is
+/// exactly what `tools/laps.py` reads to decide a sector saw a second pass.
 #[test]
 fn the_jsonl_marks_a_partial_lap_and_keeps_its_unvisited_sectors_at_zero() {
     let mut t = LapTracker::new(1);
@@ -330,7 +330,7 @@ fn the_jsonl_marks_a_partial_lap_and_keeps_its_unvisited_sectors_at_zero() {
     for k in 0..20 {
         t.on_tick(0, tick + k, 500.0 + k as f32, false, 0.0, false);
     }
-    let path = std::env::temp_dir().join("universe_laps_gen_parcial_test.jsonl");
+    let path = std::env::temp_dir().join("universe_laps_gen_partial_test.jsonl");
     let path = path.to_str().expect("temp path is utf-8");
     crate::laps::write_jsonl(path, &t.finish(), &[3]).expect("wrote");
     let text = std::fs::read_to_string(path).expect("read back");
@@ -338,8 +338,8 @@ fn the_jsonl_marks_a_partial_lap_and_keeps_its_unvisited_sectors_at_zero() {
 
     let line: serde_json::Value =
         serde_json::from_str(text.lines().next().expect("a line")).expect("the line is JSON");
-    assert_eq!(line["laps"][0]["parcial"], false);
-    assert_eq!(line["laps"][1]["parcial"], true);
+    assert_eq!(line["laps"][0]["partial"], false);
+    assert_eq!(line["laps"][1]["partial"], true);
     assert_eq!(line["laps"][1]["sector_ticks"][0], 20);
     assert_eq!(line["laps"][1]["sector_ticks"][1], 0);
     assert_eq!(line["laps"][1]["tick_end"], 69);

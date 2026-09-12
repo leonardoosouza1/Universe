@@ -8,8 +8,8 @@
 //! to the steering.
 //!
 //! ```text
-//! ./target/release/sensibilidade --genoma <champion.bin> --onda <record.uwav>
-//! ./target/release/sensibilidade --genoma <champion.bin> --onda-sintetica 64
+//! ./target/release/sensitivity --genoma <champion.bin> --onda <record.uwav>
+//! ./target/release/sensitivity --genoma <champion.bin> --onda-sintetica 64
 //! ```
 //!
 //! Exit codes: `0` the gate passed, `1` the gate failed (at least one group is blind, or
@@ -56,9 +56,12 @@
 //! is nothing to inject into, and the flag is not accepted: a flag that silently does
 //! nothing is worse than a documented absence. C1 adds the block, the group, and this
 //! flag together.
-// check-language: allow -- the two gate lines below and this binary's name are the
-// machine contract fixed by docs/PRD-CEREBRO-NEUROMOD.md §C3; a workflow greps them
-// verbatim. Everything else in this file is English, per docs/STYLE.md §1.
+// check-language: allow -- the two gate lines below (`SENSIBILIDADE ok` /
+// `SENSIBILIDADE FALHOU`) and the five flag names are the machine contract fixed by
+// docs/PRD-CEREBRO-NEUROMOD.md §C3, greped verbatim by a workflow, so they outlive the
+// 2026-09-12 English pass that renamed the FILE and the BINARY (`sensibilidade` ->
+// `sensitivity`). Renaming them needs the PRD amended in the same commit; everything
+// else in this file is English, per docs/STYLE.md §1.
 
 use universe::gpu::dof::{DEFAULT_GENE_THRESHOLD, dof_by_block};
 use universe::gpu::genome_io::load_genome;
@@ -73,7 +76,7 @@ const DEFAULT_DT: f32 = 1.0 / 64.0;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: sensibilidade --genoma <genome.bin> \
+        "usage: sensitivity --genoma <genome.bin> \
          (--onda <record.uwav> | --onda-sintetica <ticks>) [--dt <seconds>] [--delta <d>]...\n\
          \n\
          --genoma           UGEN v1/v2 genome, read with the canonical parser \

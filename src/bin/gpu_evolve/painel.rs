@@ -1,4 +1,4 @@
-//! Real-time HTTP panel — REFACTOR_PLAN.md §E5 / §3, enabled by `--painel`.
+//! Real-time HTTP panel — REFACTOR_PLAN.md §E5 / §3, enabled by `--panel`.
 //!
 //! Minimalist HTTP server (`std::net::TcpListener`, no framework) on its own thread
 //! inside the `gpu_evolve` process. It exists so Leonardo can SEE the race while it runs —
@@ -7,7 +7,7 @@
 //!
 //! # Cost when off
 //!
-//! Without `--painel` no thread is launched, no `Arc`/`Mutex` is allocated — `main.rs` only
+//! Without `--panel` no thread is launched, no `Arc`/`Mutex` is allocated — `main.rs` only
 //! builds `Option<PainelHandle>` and every update point is `if let Some(p) = &painel`.
 //!
 //! # Two levels of activation detail (E4)
@@ -58,7 +58,7 @@ pub struct PainelState {
     pub life_mediana: f32,
     pub fuel_mediana: f32,
 
-    // --- activation (updated at the end of each generation, only with --ativacao) ---
+    // --- activation (updated at the end of each generation, only with --activation) ---
     pub activation_alarms: Vec<String>,
     pub dead_pct_l1: f32,
     pub saturated_pct_l1: f32,
@@ -120,7 +120,7 @@ pub struct ActivationSnapshot {
 const HTML: &str = include_str!("painel.html");
 
 /// Panel handle: what `main.rs`/`context.rs` call to publish data. Launching
-/// (`launch`) only makes sense with `--painel`; without the flag `main.rs` never builds this.
+/// (`launch`) only makes sense with `--panel`; without the flag `main.rs` never builds this.
 pub struct PainelHandle {
     state: Arc<Mutex<PainelState>>,
     beings: Arc<Mutex<Vec<BeingSnapshot>>>,
@@ -198,7 +198,7 @@ impl PainelHandle {
         st.slope = slope;
     }
 
-    /// L1/L2 activation (E4, only called when `--ativacao` is on). Feeds both the
+    /// L1/L2 activation (E4, only called when `--activation` is on). Feeds both the
     /// summary in `PainelState` (L1) and the full detail of `/api/activation` (L1+L2).
     pub fn update_activation(&self, layers: Vec<LayerSnapshot>, alarms: Vec<String>) {
         if let Some(l1) = layers.iter().find(|l| l.name == "L1") {

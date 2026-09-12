@@ -35,16 +35,19 @@
 //!
 //!   cd ~/projects/LLM/Universe
 //!   env -u DISPLAY nice -n 19 ./target/release/gpu_evolve \
-//!       --seres 60 --ticks 8000 --gens 100
+//!       --beings 60 --ticks 8000 --gens 100
 //!
 //!   # Para retomar de onde parou:
 //!   env -u DISPLAY nice -n 19 ./target/release/gpu_evolve \
-//!       --seres 60 --ticks 8000 --gens 100 --retomar
+//!       --beings 60 --ticks 8000 --gens 100 --resume
 
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 mod audit;
+mod cli_flags;
+#[cfg(test)]
+mod cli_flags_tests;
 mod context;
 mod escada;
 mod fantasma;
@@ -119,7 +122,7 @@ use universe::gpu::physics::{make_physics_state, pos_of};
 /// replay/painel/dopamina/combustível/ativação, e tocar naquele bloco aumentaria o
 /// risco de mudar o comportamento do A/B em andamento por acidente. Ficam de fora
 /// de propósito (e não afetam a fórmula de nenhum `--fitness`):
-/// - `--portal-curva`: held-out sempre usa setor UNIFORME. Comparar `razao` exige
+/// - `--curve-portal`: held-out sempre usa setor UNIFORME. Comparar `razao` exige
 ///   a mesma contagem de setores nos dois lados; misturar contagens (43 portais no
 ///   treino, 24 setores no held-out) tornaria a razão incomparável.
 /// - `--fuel`: held-out mede se a ROTA generaliza, não se a gestão de tanque
@@ -136,7 +139,7 @@ use universe::gpu::physics::{make_physics_state, pos_of};
 /// (`world.rs`, `waypoints.push(waypoints[0])`). Nascer nesse último índice dava
 /// `wp == wp_next` → `dx = dz = 0` → com o antigo `.max(1e-6)` o versor saía
 /// `[0,0,0]`: orientação DEGENERADA. Efeito medido em 2026-08-16 (pista 8200,
-/// `--largada-aleatoria` sorteou wi=105/106): velocidade EXATAMENTE 0,00 a
+/// `--random-start` sorteou wi=105/106): velocidade EXATAMENTE 0,00 a
 /// corrida inteira com acelerador 0,4-0,6 aplicado e RPM girando, hodômetro 0 m,
 /// 48/48 mortos e `fitness 2377..2377 · valores distintos 1/48` — uma geração
 /// inteira de SELEÇÃO CEGA. Reproduzido em 10 s com `--seed 405` (wi=105) contra
@@ -438,7 +441,7 @@ fn avaliar_held_out(
     ctx.slow_samples.clear();
     ctx.policy_samples.clear();
     ctx.nan_seres.clear();
-    // `regiao_l1`/`regiao_l2` (`--regioes`, src/analysis/regioes.rs) andam em lockstep
+    // `regiao_l1`/`regiao_l2` (`--regions`, src/analysis/regioes.rs) andam em lockstep
     // com `l1_samples`/`l2_samples` — mesmo risco de contaminação, mesmo conserto.
     ctx.regiao_l1.clear();
     ctx.regiao_l2.clear();
@@ -485,7 +488,7 @@ fn avaliar_held_out(
 ///
 /// This used to be written inline as `for g in 0..n_gens`, bounding the search by the
 /// number of generations about to run instead of by what is on disk. With `--gens 1` it
-/// only ever looked for `evolve_best_gen0000.bin`, so `--retomar` on a directory holding
+/// only ever looked for `evolve_best_gen0000.bin`, so `--resume` on a directory holding
 /// `evolve_best_gen0043.bin` found nothing and fell through to a RANDOM population — while
 /// the header had already printed "resuming from checkpoint". Measured 2026-08-25: a day
 /// of "champion" analysis ran on default genomes and only the τ telemetry gave it away
@@ -576,7 +579,7 @@ fn main() {
     let mut n_ticks: usize = 8_000; // 8.000 ticks = 125s @ 64Hz por geração
     let mut n_gens: usize = 100;
     let mut retomar: bool = false;
-    // `--replay-cada N`: write the leader replay only every N generations (and on the last
+    // `--replay-every N`: write the leader replay only every N generations (and on the last
     // one). Rule 5 of CLAUDE.md: a 60-generation run at 30 000 ticks is ~58 MB per replay.
     let mut replay_every: usize = 1;
     let mut l1_vivos: usize = 0; // 0 = todos os 96 (sem ablacao)
@@ -605,7 +608,7 @@ fn main() {
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
     let mut evo_sigma: f32 = 0.05;
     let mut evo_p_mutate: f32 = 0.02;
-    // C1: rate/σ of the `hip` block (see `EvoParams::hip_p`); only used with `--hipocampo-setor`.
+    // C1: rate/σ of the `hip` block (see `EvoParams::hip_p`); only used with `--hippocampus-sector`.
     let mut evo_hip_p: f32 = 1.0;
     let mut evo_hip_sigma: f32 = 0.2;
     // Semente da população inicial. Sem isto, repetições da mesma condição são
@@ -698,12 +701,12 @@ fn main() {
     let mut centro_simetrico = false;
     /// `--out-beta`: força da fadiga de saída. Padrão = o histórico.
     let mut out_beta: f32 = universe::gpu::brain::OUT_BETA_DEFAULT;
-    /// `--ganho-saida`: ganho aplicado a l2_raw/bypass na ETAPA 2 antes do tanh
+    /// `--output-gain`: ganho aplicado a l2_raw/bypass na ETAPA 2 antes do tanh
     /// (P1.5, `docs/PLANO_EVOLUCAO.md`). Padrão = a constante 2.0 histórica —
     /// o A/B pendente compara 2.0 vs 1.0 vs 0.5 contra a saturação de L2
     /// (48/48 neurônios ativos em 97,4% dos ticks).
     let mut ganho_saida: f32 = universe::gpu::brain::OUT_GAIN_DEFAULT;
-    /// `--norm-l2-por-desvio` / `--sem-norm-l2-por-desvio`: segunda alavanca de
+    /// `--norm-l2-by-deviation` / `--no-norm-l2-by-deviation`: segunda alavanca de
     /// P1.5. LIGADA por padrão desde a auditoria P1.8 (docs/PLANO_EVOLUCAO.md,
     /// achado "L2 tem que funcionar") — normaliza l2_raw pelo desvio-padrão dos
     /// 48 valores do MESMO ser antes do ganho/tanh. Ataca a ESCALA da entrada de
@@ -733,13 +736,13 @@ fn main() {
     // thread é lançada — zero overhead (REFACTOR_PLAN.md §3.7).
     let mut painel_on = false;
     let mut painel_porta: u16 = 3200;
-    /// `--pistas "9001,9002,..."`: conjunto de pistas de TREINO, rotacionadas
+    /// `--tracks "9001,9002,..."`: conjunto de pistas de TREINO, rotacionadas
     /// deterministicamente por geração (`pista_da_gen`, gen_abs % len). Vazio
     /// (padrão) = comportamento anterior a esta flag: pista 9001 fixa — o A/B em
     /// andamento (campeão treinado só nela, `--same-start`) continua reproduzível
     /// sem tocar em nada.
     let mut pistas: Vec<u64> = Vec::new();
-    /// `--pista-held-out <seed>`: pista RESERVADA, nunca sorteada por `pista_da_gen`
+    /// `--track-held-out <seed>`: pista RESERVADA, nunca sorteada por `pista_da_gen`
     /// pro treino — só para MEDIR generalização (ver bloco `[generalizacao]`).
     /// `None` (padrão) desliga a medição inteira: nenhum tick extra roda.
     let mut pista_held_out: Option<u64> = None;
@@ -749,8 +752,15 @@ fn main() {
     {
         let mut i = 1;
         while i < args.len() {
-            match args[i].as_str() {
-                "--seres" => {
+            // Every arm below matches the CANONICAL English name, once, from
+            // `cli_flags::FLAGS`. `resolve` maps a deprecated spelling onto it and warns
+            // once per alias, so a battery request already in the queue keeps working
+            // without this loop carrying two literals per flag. An unknown argument
+            // keeps its own text and falls through to `_ => {}`, exactly as before.
+            let raw = args[i].as_str();
+            let arg = cli_flags::resolve(raw).map_or(raw, |f| f.name);
+            match arg {
+                "--beings" => {
                     i += 1;
                     if i < args.len() {
                         n_seres = args[i].parse().unwrap_or(60);
@@ -792,25 +802,25 @@ fn main() {
                         evo_hip_sigma = args[i].parse().unwrap_or(0.2);
                     }
                 }
-                "--sem-lento" => {
+                "--no-slow" => {
                     SLOW_ABLATED.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 // Curva de capacidade: quantos dos 96 neuronios de L1 ficam vivos.
                 // O PR mede 6,7 dimensoes em uso; esta flag testa se isso se traduz em
                 // metros — cortar ate onde o desempenho aguentar.
-                "--l1-vivos" => {
+                "--l1-alive" => {
                     i += 1;
                     if i < args.len() {
                         l1_vivos = args[i].parse().unwrap_or(0);
                     }
                 }
-                "--retomar-mix" => {
+                "--resume-mix" => {
                     i += 1;
                     if i < args.len() {
                         retomar_mix = args[i].parse().unwrap_or(0.85);
                     }
                 }
-                "--trocar-ao-completar" => {
+                "--switch-on-complete" => {
                     i += 1;
                     if i < args.len() {
                         trocar_ao_completar = args[i].parse().unwrap_or(1);
@@ -818,7 +828,7 @@ fn main() {
                 }
                 // P1.8: piso de velocidade mediana para a rota alternativa de promoção
                 // do currículo (ver doc de `curriculo_veloc_min` acima).
-                "--curriculo-veloc-min" => {
+                "--curriculum-min-speed" => {
                     i += 1;
                     if i < args.len() {
                         curriculo_veloc_min = args[i].parse().unwrap_or(curriculo_veloc_min);
@@ -831,27 +841,30 @@ fn main() {
                 }
                 // Prediction 186: which PARAMETRISATION builds the decay-rate bank that
                 // is uploaded, without ever rewriting `Genome::tau` (so checkpoints and
-                // `--retomar` cross modes). `livre` is the default and is today's
-                // behaviour bit for bit. See `universe::tau_bank`.
-                "--banco-tau" => {
+                // `--resume` cross modes). `free` is the default and is today's
+                // behaviour bit for bit. See `universe::tau_bank`. The three values had
+                // Portuguese spellings until 2026-09-12; `cli_flags::resolve_value`
+                // still accepts them, once per run, with a warning.
+                "--tau-bank" => {
                     i += 1;
                     if i >= args.len() {
                         eprintln!(
-                            "[ERRO] --banco-tau requires a value: livre | log-fixo | espectral.\n\
-                             [ERRO] `livre` is the default (96 free genes, historical behaviour)."
+                            "[ERROR] --tau-bank requires a value: free | log-fixed | spectral.\n\
+                             [ERROR] `free` is the default (96 free genes, historical behaviour)."
                         );
                         std::process::exit(1);
                     }
-                    match universe::tau_bank::TauBankMode::from_flag(&args[i]) {
+                    let given = args[i].as_str();
+                    let value = cli_flags::resolve_value(arg, given).unwrap_or(given);
+                    match universe::tau_bank::TauBankMode::from_flag(value) {
                         Some(m) => set_tau_bank_mode(m),
                         None => {
                             eprintln!(
-                                "[ERRO] --banco-tau {}: unknown mode.\n\
-                                 [ERRO] Valid values are: livre | log-fixo | espectral.\n\
-                                 [ERRO] Refusing to fall back to `livre` — a run that\n\
-                                 [ERRO] silently swaps the arm under test reports plausible\n\
-                                 [ERRO] numbers for a bank you did not ask for.",
-                                args[i]
+                                "[ERROR] --tau-bank {given}: unknown mode.\n\
+                                 [ERROR] Valid values are: free | log-fixed | spectral.\n\
+                                 [ERROR] Refusing to fall back to `free` — a run that\n\
+                                 [ERROR] silently swaps the arm under test reports plausible\n\
+                                 [ERROR] numbers for a bank you did not ask for."
                             );
                             std::process::exit(1);
                         }
@@ -861,20 +874,20 @@ fn main() {
                 // nasce com ganho espectral ≈ 1.0 em vez do ~7.0 cru medido com
                 // σ=0.30 i.i.d. — ver `gpu::evolution::Genome::random`). Esta flag
                 // DESLIGA para rodar o braço de controle do A/B.
-                "--sem-init-espectral" => {
+                "--no-spectral-init" => {
                     universe::gpu::evolution::SPECTRAL_INIT_ON.store(false, Ordering::Relaxed);
                 }
                 // FASE SENSORES (degrau 1): liga a evolução de FOV/alcances/lookaheads de
                 // curvatura (ver doc de `SENSORS_EVOLVE_ON`). Padrão DESLIGADA — sem esta
                 // flag, todo genoma nasce e permanece em `SENSOR_DEFAULTS` (os hardcodes de
                 // hoje), protegendo qualquer bateria em curso que não passe a flag nova.
-                "--sensores-evolutivos" => {
+                "--evolving-sensors" => {
                     universe::gpu::evolution::SENSORS_EVOLVE_ON.store(true, Ordering::Relaxed);
                 }
                 // Força de volta ao braço de controle (já é o padrão) — nome literal pedido
-                // pela tarefa. Vence se vier DEPOIS de `--sensores-evolutivos` na linha de
+                // pela tarefa. Vence se vier DEPOIS de `--evolving-sensors` na linha de
                 // comando, igual `--sem-lento`/`--sem-init-espectral` para outros experimentos.
-                "--sensores-fixos" => {
+                "--fixed-sensors" => {
                     universe::gpu::evolution::SENSORS_EVOLVE_ON.store(false, Ordering::Relaxed);
                 }
                 // P1.7 (docs/PLANO_EVOLUCAO.md) — braço de controle do cérebro
@@ -883,21 +896,21 @@ fn main() {
                 // genoma carregar (`BrainGpu::*_off`) — ver a doc das variáveis
                 // `sem_*` acima. Sem nenhuma destas flags (padrão), os três
                 // mecanismos mutam livremente a partir do neutro de nascença.
-                "--sem-memoria-neuronal" => {
+                "--no-neuron-memory" => {
                     sem_memoria_neuronal = true;
                     universe::gpu::evolution::NEURON_MEM_MUTATE_ON.store(false, Ordering::Relaxed);
                 }
-                "--sem-periodo-neuronal" => {
+                "--no-neuron-period" => {
                     sem_periodo_neuronal = true;
                     universe::gpu::evolution::NEURON_PERIOD_MUTATE_ON
                         .store(false, Ordering::Relaxed);
                 }
-                "--sem-limiar-neuronal" => {
+                "--no-neuron-threshold" => {
                     sem_limiar_neuronal = true;
                     universe::gpu::evolution::NEURON_THRESHOLD_MUTATE_ON
                         .store(false, Ordering::Relaxed);
                 }
-                "--sem-ativacao-heterogenea" => {
+                "--no-heterogeneous-activation" => {
                     sem_ativacao_heterogenea = true;
                     universe::gpu::evolution::NEURON_ACTIVATION_MUTATE_ON
                         .store(false, Ordering::Relaxed);
@@ -906,33 +919,33 @@ fn main() {
                 // C1 (docs/PRD-CEREBRO-NEUROMOD.md §C1) — sector hippocampus. Three
                 // flags, three questions; see the doc of each static in `statics.rs`.
                 //
-                // `--hipocampo-setor` is also what turns the MUTATION of `Genome::hip` on.
+                // `--hippocampus-sector` is also what turns the MUTATION of `Genome::hip` on.
                 // It has to: that block is the last consumer of `rng` in `evolve()`, so a
                 // run that does not ask for the hippocampus must not draw from it at all,
                 // or every other field of every being after the first would stop matching
                 // a run of the previous binary (see `HIPPOCAMPUS_MUTATE_ON`).
                 // The third flag below is the control arm, and it wins if it comes AFTER
                 // the first one on the command line — the same precedence rule as
-                // `--sensores-fixos` over `--sensores-evolutivos`.
+                // `--fixed-sensors` over `--evolving-sensors`.
                 //
                 // check-language: off -- the three flag NAMES below are Portuguese, like
-                // every other CLI flag this binary already accepts (`--sem-lento`,
-                // `--sem-memoria-neuronal`). The PRD names them; renaming them here would
+                // every other CLI flag this binary already accepts (`--no-slow`,
+                // `--no-neuron-memory`). The PRD names them; renaming them here would
                 // break the battery scripts of C4. Only the literals are exempted.
-                "--hipocampo-setor" => {
+                "--hippocampus-sector" => {
                     HIPPOCAMPUS_ON.store(true, Ordering::Relaxed);
                     universe::gpu::evolution::HIPPOCAMPUS_MUTATE_ON.store(true, Ordering::Relaxed);
                 }
-                "--hipocampo-apagar" => {
+                "--hippocampus-erase" => {
                     HIPPOCAMPUS_ERASE.store(true, Ordering::Relaxed);
                 }
-                "--sem-hipocampo" => {
+                "--no-hippocampus" => {
                     HIPPOCAMPUS_DISABLED.store(true, Ordering::Relaxed);
                     universe::gpu::evolution::HIPPOCAMPUS_MUTATE_ON.store(false, Ordering::Relaxed);
                 }
                 // check-language: on
                 // Cobra o recuo na fitness `centro` (ver a acumulação de `center_prog`).
-                "--centro-simetrico" => {
+                "--symmetric-center" => {
                     centro_simetrico = true;
                 }
                 // Força da fadiga de SAÍDA. 0,85 (padrão) faz comando sustentado sair a
@@ -945,7 +958,7 @@ fn main() {
                 }
                 // P1.5: ganho de saída (era a constante 2.0 hardcoded na ETAPA 2).
                 // Ver `BrainParams::out_gain` e o comentário de `ganho_saida` acima.
-                "--ganho-saida" => {
+                "--output-gain" => {
                     i += 1;
                     if i < args.len() {
                         ganho_saida = args[i].parse().unwrap_or(ganho_saida);
@@ -954,46 +967,46 @@ fn main() {
                 // P1.5/P1.8: normaliza l2_raw pelo desvio-padrão dos 48 valores do ser
                 // antes do ganho/tanh. LIGADA por padrão desde P1.8 — esta flag vira
                 // no-op explícito (mantida para não quebrar scripts existentes).
-                "--norm-l2-por-desvio" => {
+                "--norm-l2-by-deviation" => {
                     norm_l2_por_desvio = true;
                 }
                 // Braço de controle: desliga a normalização e volta ao comportamento
                 // histórico pré-P1.8 (l2_std fixo em 1.0, divisão é no-op no shader).
-                "--sem-norm-l2-por-desvio" => {
+                "--no-norm-l2-by-deviation" => {
                     norm_l2_por_desvio = false;
                 }
                 // Piloto fantasma: ganho do controlador geométrico. 0 = cérebro no comando.
-                "--piloto" => {
+                "--pilot" => {
                     i += 1;
                     if i < args.len() {
                         piloto = args[i].parse().unwrap_or(0.0);
                     }
                 }
-                "--piloto-thr" => {
+                "--pilot-thr" => {
                     i += 1;
                     if i < args.len() {
                         piloto_thr = args[i].parse().unwrap_or(0.45);
                     }
                 }
-                "--steer-fixo" => {
+                "--steer-fixed" => {
                     i += 1;
                     if i < args.len() {
                         steer_fixo = args[i].parse().unwrap_or(0.0);
                     }
                 }
-                "--steer-escala" => {
+                "--steer-scale" => {
                     i += 1;
                     if i < args.len() {
                         steer_escala = args[i].parse().unwrap_or(0.0);
                     }
                 }
-                "--piloto-sensor" => {
+                "--pilot-sensor" => {
                     i += 1;
                     if i < args.len() {
                         piloto_sensor = args[i].parse().unwrap_or(0.0);
                     }
                 }
-                "--thr-fixo" => {
+                "--thr-fixed" => {
                     i += 1;
                     if i < args.len() {
                         thr_fixo = args[i].parse().unwrap_or(0.0);
@@ -1017,7 +1030,7 @@ fn main() {
                         brain_skip = args[i].parse().unwrap_or(1).max(1);
                     }
                 }
-                "--perfil-kernel" => {
+                "--kernel-profile" => {
                     i += 1;
                     if i < args.len() {
                         // 0 = off (default). Prints per-kernel GPU milliseconds every N
@@ -1033,19 +1046,19 @@ fn main() {
                 }
                 // FÍSICA 1: vida/tick queimada por girar acima de 90% do RPM (0=off).
                 // E-REG1: λ do custo de fiação por distância (0=off). Ver statics.rs.
-                "--fiacao-cauda" => {
+                "--wiring-tail" => {
                     i += 1;
                     if i < args.len() {
                         FIACAO_CAUDA.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
                     }
                 }
-                "--custo-fiacao" => {
+                "--wiring-cost" => {
                     i += 1;
                     if i < args.len() {
                         CUSTO_FIACAO.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--custo-rpm" => {
+                "--rpm-cost" => {
                     i += 1;
                     if i < args.len() {
                         CUSTO_RPM.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
@@ -1063,44 +1076,44 @@ fn main() {
                 // D2 (ESCADA_DIFICULDADE.md): largada num waypoint ALEATÓRIO por geração
                 // (o MESMO para todos os seres da gen — comparável; derivado da seed da
                 // gen). Mata a decoração de traçado sem reintroduzir o ruído de largada.
-                "--largada-aleatoria" => {
+                "--random-start" => {
                     largada_aleatoria = true;
                     same_start = true;
                 }
                 // D4: dano oculto (0=off; 1=escala padrão). Ver ESCADA_DIFICULDADE.md.
-                "--dano" => {
+                "--damage" => {
                     i += 1;
                     if i < args.len() {
                         DANO_ESCALA.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
                 // D3: ruído sensorial (σ em unidades i8; 6 ≈ 5% da faixa) + prob de falha.
-                "--ruido-sensorial" => {
+                "--sensory-noise" => {
                     i += 1;
                     if i < args.len() {
                         ruido_sigma = args[i].parse().unwrap_or(0.0);
                     }
                 }
-                "--ruido-dropout" => {
+                "--dropout-noise" => {
                     i += 1;
                     if i < args.len() {
                         ruido_drop = args[i].parse().unwrap_or(0.0);
                     }
                 }
                 // D5: clima — μ base (<1 = escorregadio), freq espacial, vento N.
-                "--clima" => {
+                "--weather" => {
                     i += 1;
                     if i < args.len() {
                         clima_mu = args[i].parse().unwrap_or(1.0);
                     }
                 }
-                "--clima-freq" => {
+                "--weather-freq" => {
                     i += 1;
                     if i < args.len() {
                         clima_freq = args[i].parse().unwrap_or(0.0);
                     }
                 }
-                "--vento" => {
+                "--wind" => {
                     i += 1;
                     if i + 1 < args.len() {
                         vento_x = args[i].parse().unwrap_or(0.0);
@@ -1109,11 +1122,11 @@ fn main() {
                     }
                 }
                 // D6: fantasma do campeão anterior (bônus de vida por estar à frente).
-                "--fantasma" => {
+                "--ghost" => {
                     fantasma_on = true;
                 }
                 // ESCADA completa (controlador automático de dificuldade; ver escada.rs).
-                "--escada" => {
+                "--ladder" => {
                     escada_on = true;
                 }
                 // ── HOSTILE WORLD (BODY PHASE, 2026-08-17) ───────────────────
@@ -1123,42 +1136,42 @@ fn main() {
                 // `perception::channels::BODY_SLOTS`). Off by default: it changes the
                 // input distribution of ch98/ch114-117, so an existing champion needs
                 // a paired A/B, not faith (CLAUDE.md rule 3, same contract as
-                // `--visao-periferica-real` above).
+                // `--real-peripheral-vision` above).
                 //
                 // Two of the eight slots are SOURCE MOVES that carry the same number
                 // the old path carried (ch70 with the thermal model off, ch71 always),
                 // so the flag's real content is: OwnFuel becomes visible, and the five
                 // measured-dead channels stop being constant. That is why it deserves
                 // its own flag instead of riding along with a world pressure.
-                "--interocepcao" => {
+                "--interoception" => {
                     universe::gpu::perception::BODY_CHANNELS_ON.store(true, Ordering::Relaxed);
                 }
                 // D7 — scarce resource: M energy stations, M < N beings.
-                "--recurso-escasso" => {
+                "--resource-scarce" => {
                     i += 1;
                     if i < args.len() {
                         STATIONS_N.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
                     }
                 }
-                "--recurso-carga" => {
+                "--resource-load" => {
                     i += 1;
                     if i < args.len() {
                         STATION_CAPACITY.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--recurso-regen" => {
+                "--resource-regen" => {
                     i += 1;
                     if i < args.len() {
                         STATION_REGEN.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--recurso-raio" => {
+                "--resource-radius" => {
                     i += 1;
                     if i < args.len() {
                         STATION_RADIUS_M.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--recurso-transfer" => {
+                "--resource-transfer" => {
                     i += 1;
                     if i < args.len() {
                         STATION_TRANSFER.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
@@ -1166,38 +1179,38 @@ fn main() {
                 }
                 // PREDATOR — dose is a FRACTION of the measured typical speed, so the
                 // same number means the same pressure on every track.
-                "--predador" => {
+                "--predator" => {
                     i += 1;
                     if i < args.len() {
                         PREDATOR_SPEED_FRAC
                             .store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--predador-dreno" => {
+                "--predator-drain" => {
                     i += 1;
                     if i < args.len() {
                         PREDATOR_DRAIN.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--predador-raio" => {
+                "--predator-radius" => {
                     i += 1;
                     if i < args.len() {
                         PREDATOR_RADIUS_M.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--predador-percep" => {
+                "--predator-perception" => {
                     i += 1;
                     if i < args.len() {
                         PREDATOR_PERCEPT_M.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--predador-gracia" => {
+                "--predator-grace" => {
                     i += 1;
                     if i < args.len() {
                         PREDATOR_GRACE_TICKS.store(args[i].parse().unwrap_or(0), Ordering::Relaxed);
                     }
                 }
-                "--predador-spawn" => {
+                "--predator-spawn" => {
                     i += 1;
                     if i < args.len() {
                         PREDATOR_SPAWN_BACK_M
@@ -1207,26 +1220,26 @@ fn main() {
                 // TYRE THERMAL — dose = depth of the grip curve; DC gain re-normalised
                 // to 1.0 at every dose, so a bigger dose is a wider SWING, never less
                 // grip on average (see TIRE_THERMAL_GAIN in statics.rs).
-                "--pneu-termico" => {
+                "--tire-thermal" => {
                     i += 1;
                     if i < args.len() {
                         TIRE_THERMAL_GAIN.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
                 // D8 — perception costs energy: a per-family subscription paid in life.
-                "--custo-sensor" => {
+                "--sensor-cost" => {
                     i += 1;
                     if i < args.len() {
                         SENSOR_COST.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
                     }
                 }
-                "--custo-sensor-k" => {
+                "--sensor-cost-k" => {
                     i += 1;
                     if i < args.len() {
                         SENSOR_COST_K.store(args[i].parse().unwrap_or(4), Ordering::Relaxed);
                     }
                 }
-                "--custo-sensor-cap" => {
+                "--sensor-cost-cap" => {
                     i += 1;
                     if i < args.len() {
                         SENSOR_COST_CAP.store(args[i].parse().unwrap_or(2.0), Ordering::Relaxed);
@@ -1234,7 +1247,7 @@ fn main() {
                 }
                 // PILOTO POR FÓRMULA (PILOTO_POR_FORMULA.md): ser 0 dirigido pelo
                 // controlador ridge destilado do replay do campeão.
-                "--piloto-formula" => {
+                "--pilot-formula" => {
                     i += 1;
                     if i < args.len() {
                         piloto_formula_path = Some(args[i].clone());
@@ -1244,7 +1257,7 @@ fn main() {
                 // menos no held-out temporal que o linear (0,179 vs 0,261) — a pergunta
                 // que este flag responde é se isso passa do limiar em que o erro deixa
                 // de acumular em malha fechada.
-                "--piloto-forja" => {
+                "--pilot-forge" => {
                     i += 1;
                     if i < args.len() {
                         piloto_forja_path = Some(args[i].clone());
@@ -1253,13 +1266,13 @@ fn main() {
                 // Controle do portão: abstenção ALEATÓRIA na mesma dose (ver
                 // piloto_linear.rs). Responde "o portão escolhe bem ou qualquer
                 // intervenção do cérebro na mesma taxa já bastaria?".
-                "--portao-aleatorio" => {
+                "--random-gate" => {
                     i += 1;
                     if i < args.len() {
                         portao_aleatorio = args[i].parse().unwrap_or(0.0);
                     }
                 }
-                "--portao-semente" => {
+                "--gate-seed" => {
                     i += 1;
                     if i < args.len() {
                         portao_semente = args[i].parse().unwrap_or(0);
@@ -1310,7 +1323,7 @@ fn main() {
                 "--refuel-lap-only" => {
                     setor_paga = false;
                 }
-                "--auditar-visao" => {
+                "--audit-vision" => {
                     auditar_visao = true;
                 }
                 // Remove os buracos intencionais da pista (world.rs:141). Existia so no
@@ -1318,31 +1331,34 @@ fn main() {
                 // mostrou a POPULACAO estacionada em 1.076 m por 20 geracoes — 11 m antes
                 // do campo de buracos (1.087-1.092 m). Este A/B e o que separa "nao
                 // aprendem a desviar" de "os buracos sao a segunda parede".
-                "--sem-buracos" => {
+                "--no-holes" => {
                     universe::world::NO_HOLES.store(true, Ordering::Relaxed);
                 }
                 // Câmbio: travado (histórico, teto 21,5 m/s), auto (RPM, paridade Bevy)
                 // ou neural (auto + intent[3]/[4]). Ver CAMBIO_MODO em statics.rs.
-                "--cambio-curriculo" => {
+                "--gearbox-curriculum" => {
                     CAMBIO_CURRICULO.store(true, Ordering::Relaxed);
                 }
-                "--cambio-teto" => {
+                "--gearbox-ceiling" => {
                     i += 1;
                     if i < args.len() {
                         CAMBIO_TETO
                             .store(args[i].parse().unwrap_or(6).clamp(2, 6), Ordering::Relaxed);
                     }
                 }
-                "--cambio" => {
+                "--gearbox" => {
                     i += 1;
                     if i < args.len() {
                         let m = match args[i].as_str() {
                             "travado" => 0u32,
                             "auto" => 1,
                             "neural" => 2,
-                            outro => {
+                            other => {
+                                // check-language: allow -- the three MODE names are the
+                                // machine contract of the battery scripts; only the
+                                // sentence around them is translated here.
                                 eprintln!(
-                                    "--cambio '{outro}' inválido (travado|auto|neural); usando travado"
+                                    "--gearbox '{other}' is invalid (travado|auto|neural); using travado"
                                 );
                                 0
                             }
@@ -1352,48 +1368,48 @@ fn main() {
                 }
                 // Congela a mutação das linhas 5..48 de L2 (saídas que nenhum pipeline
                 // lê — "feature neurons" sem consumidor; 4.128 pesos de busca inerte).
-                "--l2-congelar-cegas" => {
+                "--l2-freeze-blind" => {
                     congela_l2_cegas = true;
                 }
                 // M3: regiões DIRIGIDAS (teto de referência) — ver evolution.rs::mascara_permite.
-                "--mascara-regioes" => {
+                "--region-mask" => {
                     mascara_regioes = true;
                 }
                 // E-REG2 (M2): semeia τ por BLOCO (mesmos 4 blocos do M3) — reflexo
                 // curto na parede/estrada, longo no associativo. Função segue tempo?
-                "--tau-semeado" => {
+                "--tau-seeded" => {
                     tau_semeado = true;
                 }
                 // Visão periférica REAL: ch144-159 deixam de ser cópia bit-a-bit da
                 // fóvea e passam a olhar as bordas da retina (ver perception.wgsl).
                 // Off por padrão — muda a DISTRIBUIÇÃO de entrada, então campeão
                 // antigo precisa de A/B pareado, não de fé.
-                "--visao-periferica-real" => {
+                "--real-peripheral-vision" => {
                     universe::gpu::perception::PERIF_REAL.store(true, Ordering::Relaxed);
                 }
                 // M4: maestro de regiões (lento→gates com reserva). Ver statics.rs.
-                "--neuromod-regioes" => {
+                "--neuromod-regions" => {
                     NEUROMOD_REGIOES.store(true, Ordering::Relaxed);
                 }
                 // Laboratório de observação: grava a cadeia neural do ser 0 por tick
                 // (394 f32/linha, ver context.rs). Usar com --retomar --gens 1.
-                "--observar" => {
+                "--observe" => {
                     i += 1;
                     if i < args.len() {
                         observar_path = Some(args[i].clone());
                     }
                 }
                 // Open-loop screen, input side: records the raw 192-channel sensory
-                // wave for being 0 (the same being --observar records), one row per
+                // wave for being 0 (the same being --observe records), one row per
                 // tick (195 f32/row, see gpu::wave_record). Off by default — forces a
                 // per-tick readback of the whole wave buffer.
-                "--gravar-onda" => {
+                "--record-wave" => {
                     i += 1;
                     if i < args.len() {
                         gravar_onda_path = Some(args[i].clone());
                     }
                 }
-                "--portal-curva" => {
+                "--curve-portal" => {
                     portal_curva = true;
                 }
                 "--slow-steer" => {
@@ -1432,53 +1448,53 @@ fn main() {
                         gen_offset = args[i].parse().unwrap_or(0);
                     }
                 }
-                "--ativacao" => {
+                "--activation" => {
                     ativacao_on = true;
                 }
-                "--ativacao-n" => {
+                "--activation-n" => {
                     i += 1;
                     if i < args.len() {
                         ativacao_n = args[i].parse().unwrap_or(64).max(1);
                     }
                 }
-                "--regioes" => {
+                "--regions" => {
                     regioes_on = true;
                 }
-                "--painel" => {
+                "--panel" => {
                     painel_on = true;
                 }
-                "--painel-porta" => {
+                "--panel-port" => {
                     i += 1;
                     if i < args.len() {
                         painel_porta = args[i].parse().unwrap_or(3200);
                         painel_on = true;
                     }
                 }
-                "--pistas" => {
+                "--tracks" => {
                     i += 1;
                     if i < args.len() {
                         pistas = parse_pistas(&args[i]);
                     }
                 }
-                "--pista-held-out" => {
+                "--track-held-out" => {
                     i += 1;
                     if i < args.len() {
                         pista_held_out = args[i].parse().ok();
                     }
                 }
-                "--held-out-cada" => {
+                "--held-out-every" => {
                     i += 1;
                     if i < args.len() {
                         held_out_cada = args[i].parse().unwrap_or(5).max(1);
                     }
                 }
-                "--replay-cada" => {
+                "--replay-every" => {
                     i += 1;
                     if i < args.len() {
                         replay_every = args[i].parse().unwrap_or(1).max(1);
                     }
                 }
-                "--retomar" => {
+                "--resume" => {
                     retomar = true;
                 }
                 "--out" => {
@@ -1493,7 +1509,7 @@ fn main() {
         }
     }
 
-    // `--gravar-onda` writes the UWAV header once, before the generation loop
+    // `--record-wave` writes the UWAV header once, before the generation loop
     // (`ctx.wave_writer` setup, below) — but the loop itself resets CfC state and runs a
     // fresh JIT warm-up tick every generation (`ctx.reset_cfc` and the warm-up `ctx.tick`
     // call further down). With `--gens > 1` that makes an N-generation recording N
@@ -1505,7 +1521,7 @@ fn main() {
     // calibration recording, which was always made with `--gens 1`.
     if gravar_onda_path.is_some() && n_gens > 1 {
         eprintln!(
-            "ERROR --gravar-onda requires --gens 1: the recording format has no generation \
+            "ERROR --record-wave requires --gens 1: the recording format has no generation \
              boundary marker, so a multi-generation run would concatenate N independent \
              episodes into one file that screen.rs would replay as a single continuous \
              episode (CfC/period-counter state never resets across generations in the \
@@ -1564,7 +1580,7 @@ fn main() {
             "período mutando (padrão) "
         },
         if sem_limiar_neuronal {
-            "· limiar CONGELADO (--sem-limiar-neuronal)"
+            "· limiar CONGELADO (--no-neuron-threshold)"
         } else {
             "· limiar mutando (padrão)"
         }
@@ -1578,11 +1594,11 @@ fn main() {
         }
     );
     println!(
-        "  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}", // check-language: allow -- historical log line, parsed by tools
+        "  Evolution: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}",
         evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney, evo_hip_p, evo_hip_sigma
     );
     println!(
-        "  [tau] bank: --banco-tau {} — {}",
+        "  [tau] bank: --tau-bank {} — {}",
         tau_bank_mode().as_flag(),
         tau_bank_mode().describe()
     );
@@ -1690,7 +1706,7 @@ fn main() {
     }
     println!();
 
-    // ── Painel HTTP tempo-real (E5, `--painel`) ────────────────────────────────
+    // ── Painel HTTP tempo-real (E5, `--panel`) ────────────────────────────────
     // Lançado ANTES do GPU subir de propósito: `GpuCtx::new` pode levar segundos, e o
     // traçado (`set_track`) já fica disponível em `/api/status` enquanto isso acontece.
     let painel: Option<painel::PainelHandle> = if painel_on {
@@ -1791,7 +1807,7 @@ fn main() {
                 println!("  [observar] gravando cadeia neural do ser 0 em {path} (394 f32/tick)");
             }
             Err(e) => {
-                eprintln!("ERRO --observar {path}: {e}");
+                eprintln!("ERRO --observe {path}: {e}");
                 std::process::exit(1);
             }
         }
@@ -1807,7 +1823,7 @@ fn main() {
                 );
             }
             Err(e) => {
-                eprintln!("ERROR --gravar-onda {path}: {e}");
+                eprintln!("ERROR --record-wave {path}: {e}");
                 std::process::exit(1);
             }
         }
@@ -1855,8 +1871,8 @@ fn main() {
         use universe::gpu::perception::BODY_CHANNELS_ON;
 
         // Defaults for the dose knobs. `AtomicF32::new()` is 0.0, and 0.0 means "off"
-        // for the master switches (`--recurso-escasso`, `--predador`, `--pneu-termico`,
-        // `--custo-sensor`) but would mean "broken" for the shape knobs — a station
+        // for the master switches (`--resource-scarce`, `--predator`, `--tire-thermal`,
+        // `--sensor-cost`) but would mean "broken" for the shape knobs — a station
         // with radius 0 can never be reached, and that is a pressure that is silently
         // off, the exact failure the dose canary exists to catch.
         let default_f32 = |s: &AtomicF32, v: f32| {
@@ -1887,13 +1903,13 @@ fn main() {
         let body_on = BODY_CHANNELS_ON.load(Ordering::Relaxed);
 
         if n_stations > 0 {
-            // REFUSAL, not a warning. `--recurso-escasso` without fuel consumption is
+            // REFUSAL, not a warning. `--resource-scarce` without fuel consumption is
             // "decoration by construction" (D7 spec): the stations would hand out a
             // resource nothing spends, every dose would produce the same number, and
             // the run would look like a measurement of a pressure that never existed.
             if !FUEL_ON.load(Ordering::Relaxed) {
                 eprintln!(
-                    "[recurso] ERROR: --recurso-escasso {n_stations} requires --fuel or \
+                    "[recurso] ERROR: --resource-scarce {n_stations} requires --fuel or \
                      --fuel-auto. With nothing consuming it, a station is decoration and every \
                      dose would produce the same number."
                 );
@@ -1929,7 +1945,7 @@ fn main() {
             // 2026-08-26 sweeping stations 16/8/4/2 at charge 0.15: distance moved 2726,
             // 2799, 2981, 2944 m — a 255 m spread against the ~1000 m the flag costs just
             // by being on. The reason is here: `n_seres * tank` is 48.00 u of a 59.40 u
-            // demand, 81%, and `--recurso-escasso M` cannot touch it. The stations
+            // demand, 81%, and `--resource-scarce M` cannot touch it. The stations
             // contribute 8.80 u at M=16 down to 1.10 u at M=2, so the whole dial can only
             // move supply between 81% and 96%. It is structurally unable to make the
             // resource scarce; the knob that can is `--fuel-tank`.
@@ -1947,7 +1963,7 @@ fn main() {
             println!(
                 "  [recurso]   of which starting tanks {supply_tanques:.2} u ({:.0}% of demand, \
                  NOT touched by the dose) and stations {supply_postos:.2} u ({:.0}%) — the \
-                 stations are the only part `--recurso-escasso` moves.",
+                 stations are the only part `--resource-scarce` moves.",
                 100.0 * supply_tanques / demand.max(1e-9),
                 100.0 * frac_postos,
             );
@@ -1961,7 +1977,7 @@ fn main() {
                 println!(
                     "  [recurso] WARNING: the stations are only {:.0}% of demand, so changing \
                      their number cannot change much. Starting tanks already cover {:.0}%. \
-                     Lower --fuel-tank (or raise --recurso-carga) before reading M as a dose.",
+                     Lower --fuel-tank (or raise --resource-load) before reading M as a dose.",
                     100.0 * frac_postos,
                     100.0 * supply_tanques / demand.max(1e-9),
                 );
@@ -2052,7 +2068,7 @@ fn main() {
         // simply never reached the brain is how a session gets spent.
         if !body_on && (n_stations > 0 || pred_frac > 0.0 || thermal_gain > 0.0) {
             println!(
-                "  [aviso] hostile-world pressure ON and --interocepcao OFF: the being does \
+                "  [aviso] hostile-world pressure ON and --interoception OFF: the being does \
                  NOT feel station/predator/temperature (ch70, ch98, ch114-117, ch124 keep their \
                  old source). Valid arm, but the dose measures the world, not the brain."
             );
@@ -2080,12 +2096,12 @@ fn main() {
     // em `BrainGpu`/`brain.wgsl`. Redundante quando o genoma nunca mutou (o campo já
     // está neutro), mas necessário quando `--retomar` carrega um genoma que já tinha
     // mutado ANTES da flag ser passada: sem isto, `--sem-X` deixaria de ser o braço
-    // de controle de verdade a partir do segundo `--retomar`.
+    // de controle de verdade a partir do segundo `--resume`.
     ctx.brain.mem_off = sem_memoria_neuronal;
     ctx.brain.period_off = sem_periodo_neuronal;
     ctx.brain.threshold_off = sem_limiar_neuronal;
     ctx.brain.activation_off = sem_ativacao_heterogenea;
-    // `--gravar-onda`'s config header (Task 5 review round): written here, once, after
+    // `--record-wave`'s config header (Task 5 review round): written here, once, after
     // every flag above that changes the brain's forward pass has its final value, and
     // before the tick loop starts. `set_noise` runs earlier (ruido_sigma/ruido_drop are
     // already in `ctx.brain`, but reading the pre-`set_noise` locals directly is exactly
@@ -2094,7 +2110,7 @@ fn main() {
     // Captures the STARTING configuration, not necessarily every value for the whole
     // run: a multi-generation battery whose difficulty ladder changes noise mid-run
     // (`set_noise` is also called from the ladder, `main.rs:3238`) would need this header
-    // re-checked per generation, which `--gravar-onda`'s existing single-being,
+    // re-checked per generation, which `--record-wave`'s existing single-being,
     // single-run design does not need to handle today.
     if let Some(w) = ctx.wave_writer.as_mut() {
         let wave_cfg = universe::gpu::wave_record::WaveConfig {
@@ -2117,7 +2133,7 @@ fn main() {
             pilot_active: (ctx.piloto_forja.is_some() || ctx.piloto_formula.is_some()) as u32,
         };
         if let Err(e) = universe::gpu::wave_record::write_header(w, &wave_cfg) {
-            eprintln!("ERROR --gravar-onda: failed to write the UWAV config header: {e}");
+            eprintln!("ERROR --record-wave: failed to write the UWAV config header: {e}");
             std::process::exit(1);
         }
     }
@@ -2258,10 +2274,10 @@ fn main() {
             // 2026-08-25: the run reports normally, the numbers look plausible, and
             // nothing in the output says the brain under test is not the one asked for.
             eprintln!(
-                "[ERRO] --retomar: no evolve_best_gen*.bin found in {out_dir}\n\
+                "[ERRO] --resume: no evolve_best_gen*.bin found in {out_dir}\n\
                  [ERRO] Refusing to fall back to a random population — that would report\n\
                  [ERRO] plausible numbers for a brain you did not ask for.\n\
-                 [ERRO] Copy the checkpoint into the directory, or drop --retomar."
+                 [ERRO] Copy the checkpoint into the directory, or drop --resume."
             );
             std::process::exit(1);
         }
@@ -2562,7 +2578,7 @@ fn main() {
                 ctx.fiacao_custo.clear();
             }
         }
-        // ── D8 — sensory subscription per being (`--custo-sensor`) ────────────
+        // ── D8 — sensory subscription per being (`--sensor-cost`) ────────────
         //
         // Same site and same lifetime as the wiring cost above: the weights do not
         // change inside a generation, so neither does the tax; recomputing it per tick
@@ -2576,7 +2592,7 @@ fn main() {
         // peripheral family removes its whole term, `DOSE * 16/192`, which is a
         // difference a genome can actually own.
         //
-        // The tail (top-K per family, K = `--custo-sensor-k`) rather than the family
+        // The tail (top-K per family, K = `--sensor-cost-k`) rather than the family
         // mean, for the same reason E-REG1b moved to a tail: the mean over a family is
         // again an average that concentrates, while the strongest few columns are where
         // genomes differ.
@@ -2822,7 +2838,7 @@ fn main() {
                     // Ambient, not zero: `step_temp` clamps to `[ambient, 1.0]`, so a
                     // tyre born at 0 would jump to ambient on its first tick and the
                     // first tick of every generation would read as a transient that is
-                    // not there. Unused while `--pneu-termico` is off.
+                    // not there. Unused while `--tire-thermal` is off.
                     tire_temp: universe::tire_thermal::DEFAULT_AMBIENT,
                     joy_tick: 0.0,
                     joy_streak: 0.0,
@@ -2877,11 +2893,11 @@ fn main() {
                 Vec::new()
             };
 
-            // PREDATOR — spawned on the track axis, `--predador-spawn` metres of ARC
+            // PREDATOR — spawned on the track axis, `--predator-spawn` metres of ARC
             // behind where the generation starts.
             //
             // Behind, and on the axis, and not on a seed-derived circle around the
-            // start: with `--largada-aleatoria` the start moves every generation, and a
+            // start: with `--random-start` the start moves every generation, and a
             // predator placed by a raw circle would sometimes land in front of the
             // pack. "In front" is not a harder dose, it is a different mechanism (a
             // head-on obstacle), and mixing the two makes the dose curve unreadable.
@@ -3002,12 +3018,12 @@ fn main() {
         let mut pos_prev: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
 
         // Warm-up tick (JIT compilation). Only the RETURN VALUE is discarded (`let _ =`)
-        // — its side effects (CfC state, the P1.7 period counters, `--observar`'s and
-        // `--gravar-onda`'s row 0) are not, and reach every recording this run produces.
+        // — its side effects (CfC state, the P1.7 period counters, `--observe`'s and
+        // `--record-wave`'s row 0) are not, and reach every recording this run produces.
         // Before Task 5 this line was merely misleading; it is now load-bearing: the
         // open-loop screen's bit-exact parity (`screen.rs`) depends on row 0 being
         // recorded here and replayed there, because the P1.7 per-neuron recompute
-        // counter only advances once per brain dispatch. `--observar`/`--gravar-onda`
+        // counter only advances once per brain dispatch. `--observe`/`--record-wave`
         // record this tick deliberately — do not "fix" it to discard its side effects
         // without re-deriving screen.rs's warm-up replay, or parity breaks silently.
         let _ = ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, &kan_knots_global);
@@ -3166,7 +3182,7 @@ fn main() {
                         // `states[i].dano` is D4's hidden damage, already normalised to
                         // [0, 1] — `SectorMemory::accumulate` stores the DIFFERENCE
                         // across the sector, so the slot says "this corner hurt" instead
-                        // of "I am an old car". With `--dano 0` (the default) the component is
+                        // of "I am an old car". With `--damage 0` (the default) the component is
                         // a constant 0, which is the truth for that run, not an invention.
                         if let Some(m) = ctx.hip_mem.get_mut(i) {
                             m.accumulate(spd, vox == 0, states[i].dano);
@@ -3728,7 +3744,7 @@ fn main() {
         // decided by what lap 2 cost against lap 1, which only this ledger holds. The
         // file name is padded like `evolve_best_gen<NNNN>.bin` next to it, so the whole
         // output directory sorts by generation.
-        // `finish` also writes each being's lap in progress, flagged `parcial` — the file
+        // `finish` also writes each being's lap in progress, flagged `partial` — the file
         // gains those records, this LINE does not: `laps::summary` counts closed laps
         // only, so `med` / `lap2/lap1` / `>=2V` stay comparable with every earlier run.
         let lap_records = lap_tracker.finish();
@@ -3795,7 +3811,7 @@ fn main() {
         // diferentes, e só `v1` bate com o texto que o log já imprime como "voltas
         // reais" (bloco `[setores]`, logo acima).
         //
-        // Achado "UM ser rastejando promove a turma inteira" (`--trocar-ao-completar 1`):
+        // Achado "UM ser rastejando promove a turma inteira" (`--switch-on-complete 1`):
         // a promoção agora exige UMA das duas rotas, não só o `N` cru do usuário:
         //   (a) `v1` cobre pelo menos 25% da população (amplitude — não foi 1 sortudo), OU
         //   (b) `v1` já bate o `N` configurado E a mediana de velocidade da geração supera
@@ -4364,7 +4380,7 @@ fn main() {
         // Reporta em SEGUNDOS (τ = 1/d) porque é a grandeza com significado físico:
         // dá para comparar direto com o tempo que o ser leva para atravessar a curva.
         //
-        // Reads `effective_tau()`, not `tau`: under `--banco-tau log-fixo`/`espectral`
+        // Reads `effective_tau()`, not `tau`: under `--tau-bank log-fixed`/`spectral`
         // the raw genes are no longer what the GPU sees, and printing them would answer
         // a question nobody asked — the dispersion that matters is the one the CfC runs
         // with. Under `livre` the two are the same vector, so the line is unchanged.
@@ -4395,12 +4411,12 @@ fn main() {
                 disp_pop
             );
             // The mode goes on its own line instead of into the format string above, so
-            // `livre` prints byte-identically to every run that predates `--banco-tau`
+            // `free` prints byte-identically to every run that predates `--tau-bank`
             // (the exact format quoted in docs/CHAMPION_RELOAD.md:50-51 included).
             let bank_mode = tau_bank_mode();
             if bank_mode != universe::tau_bank::TauBankMode::Free {
                 println!(
-                    "  [tau] the numbers above are the EFFECTIVE bank of --banco-tau {} — {}",
+                    "  [tau] the numbers above are the EFFECTIVE bank of --tau-bank {} — {}",
                     bank_mode.as_flag(),
                     bank_mode.describe()
                 );

@@ -1167,7 +1167,7 @@ impl PerceptionGpu {
     /// - The HOST normalises; the shader only encodes. Bearings arrive in [-1, 1]
     ///   (bearing/π, negative = left of `fwd`), everything else in [0, 1]. The
     ///   reference distance of a proximity ramp is a host-side dose, never a kernel
-    ///   constant — so changing `--predador-percep` never touches WGSL.
+    ///   constant — so changing `--predator-perception` never touches WGSL.
     /// - Values outside those ranges are NOT rejected here: they clamp in the shader,
     ///   exactly like every other channel. Passing metres where [0,1] was asked for
     ///   therefore produces a saturated channel, not an error — a canary that a

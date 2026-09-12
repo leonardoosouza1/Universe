@@ -6,7 +6,7 @@
 //! # Why "empty set = fixed track 9001"
 //!
 //! The current champion (99.25% initial-draw, see PLANO_EVOLUCAO.md) trains ALWAYS on
-//! the same track (seed 9001, `--same-start`) — it is the A/B in progress. `--pistas`
+//! the same track (seed 9001, `--same-start`) — it is the A/B in progress. `--tracks`
 //! has to be strictly additive: without the flag, `pistas` arrives empty at
 //! `pista_da_gen`, which returns 9001 for ANY generation — bit-for-bit the same
 //! hardcode `main.rs` had before this change (`VoxelWorld::new(9001, track_width)`,
@@ -15,9 +15,9 @@
 /// Track for generation `gen_abs`, by deterministic rotation (`pistas[gen_abs % len]`).
 ///
 /// An empty list returns 9001 — the fixed track the binary always used before
-/// `--pistas` existed. Deterministic by construction: the same `gen_abs` + the same
+/// `--tracks` existed. Deterministic by construction: the same `gen_abs` + the same
 /// `pistas` always return the same seed, which is what makes the battery reproducible
-/// (two processes with the same `--pistas` train on exactly the same sequence of
+/// (two processes with the same `--tracks` train on exactly the same sequence of
 /// tracks, generation by generation).
 pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
     if pistas.is_empty() {
@@ -27,12 +27,12 @@ pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
     }
 }
 
-/// Parses `--pistas "9001,9002,9003"` into a list of seeds.
+/// Parses `--tracks "9001,9002,9003"` into a list of seeds.
 ///
 /// Empty (flag absent or empty string) returns `Vec::new()` — the value that makes
 /// `pista_da_gen` fall into the control arm (fixed track 9001). Tokens that do not
 /// parse as `u64` are simply ignored (they do not abort the whole parse): a mistyped
-/// `--pistas` should fail visibly by having FEWER tracks than expected in the
+/// `--tracks` should fail visibly by having FEWER tracks than expected in the
 /// `[pista] gen ...` log, not lock up the whole binary over one wrong digit.
 pub fn parse_pistas(s: &str) -> Vec<u64> {
     s.split(',')
@@ -46,7 +46,7 @@ pub fn parse_pistas(s: &str) -> Vec<u64> {
 mod tests {
     use super::*;
 
-    /// Without `--pistas` (empty list), every generation uses 9001 — the A/B in
+    /// Without `--tracks` (empty list), every generation uses 9001 — the A/B in
     /// progress (champion trained only on seed 9001, `--same-start`) must not be
     /// invalidated by this change.
     #[test]
@@ -57,7 +57,7 @@ mod tests {
             assert_eq!(
                 pista_da_gen(&[], g),
                 9001,
-                "without --pistas, it must reproduce bit-for-bit the binary from before this change"
+                "without --tracks, it must reproduce bit-for-bit the binary from before this change"
             );
         }
     }
@@ -91,7 +91,7 @@ mod tests {
     }
 
     /// A single-track list behaves as a fixed track (any seed, not just 9001) —
-    /// covers `--pistas 42` as the equivalent of "fixed at 42".
+    /// covers `--tracks 42` as the equivalent of "fixed at 42".
     #[test]
     fn lista_de_uma_pista_e_fixa_nessa_pista() {
         let pistas = vec![777u64];
