@@ -1,5 +1,12 @@
 # Universe — working notes for agents
 
+## Scientific engineering handbook
+
+For code, metrics, and experiments, read the canonical sibling handbook:
+[`../neuromod-lab/docs/HANDBOOK-ENGENHARIA-CIENTIFICA.md`](../neuromod-lab/docs/HANDBOOK-ENGENHARIA-CIENTIFICA.md).
+This dependency is explicit; if the file is missing, ask to locate it rather than
+silently skipping it.
+
 Neuroevolution simulator in Rust + WGSL. Beings with a brain
 (perception → KAN → CfC → BitLinear L1 → FloatLinear L2 → motor) drive procedural
 tracks; a genetic algorithm selects them. The whole tick runs on the GPU through
