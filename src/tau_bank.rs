@@ -19,26 +19,24 @@
 //! the lens ignores keep mutating and keep being carried on disk, costing nothing but
 //! bytes.
 //!
-//! A caveat that has to be stated with numbers, because it bounds what the two
-//! structured modes can express. The scale genes are read out of `tau`, and `tau`
-//! lives in rate space: it is born at [`crate::cfc::DECAY_DEFAULT`] = 0.5 and
-//! `evolve()` clamps it to `[1/TAU_MAX_S, 1/TAU_MIN_S]` = [0.25, 40] s⁻¹. So a gene
-//! read as an unconstrained real is in fact confined to [0.25, 40]:
+//! **Every gene is read in RATE SPACE, never through an exponential.** This is the one
+//! thing that makes the three arms comparable, and getting it wrong once cost this
+//! module a rewrite. A `tau` gene is a decay rate in s⁻¹: born at
+//! [`crate::cfc::DECAY_DEFAULT`] = 0.5, mutated MULTIPLICATIVELY in log by `evolve()`
+//! (`d ← d·e^{σg}`, σ 0.20) and clamped by it to `[1/TAU_MAX_S, 1/TAU_MIN_S]` =
+//! [0.25, 40]. So the maps are ratios and affine maps of that range, and each one is
+//! neutral at birth:
 //!
-//! * [`TauBankMode::LogFixed`]'s scale is `exp(tau[0])` ∈ [1.28, e⁴⁰]. At birth
-//!   (`tau[0]` = 0.5) it is 1.65, which already pushes the top of the ladder past the
-//!   clamp — about the fastest 14 % of the channels pin at 40 s⁻¹ — and any upward
-//!   drift of `tau[0]` collapses the whole bank onto the ceiling. The mode can make
-//!   the bank uniformly faster; it cannot make it uniformly slower than 1.28× the
-//!   ladder.
-//! * [`TauBankMode::Spectral`]'s diffusion is `sigmoid(tau[1])` ∈ [0.562, 1.0], never
-//!   the 0 that would flatten the bank. The flat case exists in the maths (and the
-//!   tests exercise it) but not in the realizable gene range.
-//!
-//! Both follow from the two constraints the design is under — do not touch the
-//! mutation rule, do not rewrite `Genome::tau` — and both are measurable rather than
-//! hypothetical. If a battery shows `log-fixo` pinned at the ceiling from generation
-//! 1, that is this paragraph, not a bug.
+//! * [`TauBankMode::LogFixed`]'s scale is `tau[0] / DECAY_DEFAULT` — **1.0 at birth**,
+//!   so a newborn bank is the untouched ladder spanning [0.25, 40] end to end, and the
+//!   reachable range is [0.5, 80]. Because the gene is mutated by a ratio, one mutation
+//!   step multiplies every rate in the bank by that same ratio.
+//! * [`TauBankMode::Spectral`]'s `lambda` is `tau[0]` itself (no map at all — it is
+//!   already a rate, and at birth it puts the bank's floor exactly at the historical
+//!   τ = 2 s), and its diffusion is
+//!   `clamp((tau[1] - D_LO) / (2·(DECAY_DEFAULT - D_LO)), 0, 1)` — **0 at the gene
+//!   floor** (so the flat, single-τ bank is reachable, not just a limit), 0.5 at birth,
+//!   1 from `tau[1]` = 0.75 s⁻¹ up.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -55,7 +53,7 @@ pub const D_LO: f32 = 1.0 / crate::cfc::TAU_MAX_S;
 pub enum TauBankMode {
     /// `--banco-tau livre`: the bank IS `genome.tau`. Identity, no arithmetic.
     Free,
-    /// `--banco-tau log-fixo`: fixed log-spaced ladder × one evolvable scale gene.
+    /// `--banco-tau log-fixo`: fixed log-spaced ladder × `tau[0]/DECAY_DEFAULT`.
     LogFixed,
     /// `--banco-tau espectral`: offset + diffusion × a 1-D Laplacian spectrum.
     Spectral,
@@ -86,9 +84,11 @@ impl TauBankMode {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Free => "bank = genome.tau, 96 free genes (historical behaviour)",
-            Self::LogFixed => "fixed log ladder [4 s .. 25 ms] scaled by exp(tau[0]) — 1 gene",
+            Self::LogFixed => {
+                "fixed log ladder [4 s .. 25 ms] scaled by tau[0]/0.5 (1.0 at birth) — 1 gene"
+            }
             Self::Spectral => {
-                "lambda + D.mu_k, 1-D Laplacian spectrum over channel index — 2 genes"
+                "lambda=tau[0] + D.mu_k, 1-D Laplacian spectrum over channel index — 2 genes"
             }
         }
     }
@@ -146,13 +146,19 @@ pub fn banco_tau(mode: TauBankMode, genes: &[f32]) -> Vec<f32> {
 
 /// A fixed log-spaced ladder from `D_LO` to `D_HI`, multiplied by one scale gene.
 ///
-///   `bank[k] = exp(ln(D_LO) + (ln(D_HI) - ln(D_LO)) · k/(n-1)) · exp(genes[0])`
+///   `bank[k] = clamp(exp(ln(D_LO) + (ln(D_HI) - ln(D_LO)) · k/(n-1)) · genes[0]/DECAY_DEFAULT)`
 ///
 /// The ladder itself is `log_uniform_decays`'s distribution with the randomness taken
 /// out: the same coverage per decade, but deterministic and ordered. What evolution is
-/// left to tune is a single number — where the whole ladder sits. `genes[0]` is read as
-/// a LOG scale, so `genes[0] = 0` leaves the ladder exactly on the clamp range and a
-/// step of ±0.69 halves or doubles every rate at once.
+/// left to tune is a single number — where the whole ladder sits.
+///
+/// The scale is a RATIO, `genes[0] / DECAY_DEFAULT`, because `genes[0]` is a decay RATE
+/// like every other entry of `tau`: born at [`crate::cfc::DECAY_DEFAULT`] = 0.5 s⁻¹ and
+/// mutated multiplicatively in log by `evolve()`. So a newborn genome has scale exactly
+/// 1.0 and the bank IS the untouched ladder, spanning [0.25, 40] s⁻¹ end to end; the
+/// gene's own clamp `[0.25, 40]` puts the reachable scale in [0.5, 80], i.e. the whole
+/// ladder can be halved or multiplied by 80, and a mutation step that multiplies the
+/// gene by 1.15 multiplies every rate in the bank by 1.15.
 ///
 /// `genes[1..]` are ignored on purpose. They keep mutating in `evolve()` and keep being
 /// saved; they simply do not reach the GPU in this mode.
@@ -161,7 +167,7 @@ fn log_fixed_bank(genes: &[f32]) -> Vec<f32> {
     if n == 0 {
         return Vec::new();
     }
-    let scale = genes[0].exp();
+    let scale = genes[0] / crate::cfc::DECAY_DEFAULT;
     let lo = D_LO.ln();
     let hi = D_HI.ln();
     (0..n)
@@ -181,8 +187,18 @@ fn log_fixed_bank(genes: &[f32]) -> Vec<f32> {
 /// Offset plus a diffusion coefficient times a 1-D Laplacian spectrum.
 ///
 ///   `mu[k] = ((k+1)/n)² · (D_HI - D_LO)`
-///   `bank[k] = lambda + D · mu[k]`,  `lambda = softplus(genes[0]) + D_LO`,
-///   `D = sigmoid(genes[1])`
+///   `bank[k] = clamp(lambda + D · mu[k])`,  `lambda = clamp(genes[0])`,
+///   `D = clamp((genes[1] - D_LO) / (2·(DECAY_DEFAULT - D_LO)), 0, 1)`
+///
+/// Both genes are decay RATES (born at `DECAY_DEFAULT` = 0.5 s⁻¹, clamped by `evolve()`
+/// to [0.25, 40]), so neither is passed through an exponential. `lambda` needs no map at
+/// all — it already IS a rate, and a newborn genome puts the bank's floor exactly at the
+/// historical τ = 2 s. `D` is the affine map of the gene's own range onto [0, 1] that
+/// hits **0 at the gene floor** (`genes[1]` = `D_LO` = 0.25, the flat bank) and **0.5 at
+/// birth** (`genes[1]` = 0.5); it saturates at 1 from `genes[1]` = 0.75 s⁻¹ up. The
+/// denominator is `2·(DECAY_DEFAULT - D_LO)` = 0.5 and not `2·DECAY_DEFAULT - D_LO`
+/// = 0.75, because only the first gives both fixed points — the second would put birth
+/// at 1/3, and "birth = half diffusion" is the property this map exists to have.
 ///
 /// `mu` is the eigenvalue spectrum of the Dirichlet Laplacian on a chain of `n` nodes,
 /// whose eigenvalues grow like `k²` — the bank becomes "the k-th mode of a line of
@@ -206,9 +222,9 @@ fn spectral_bank(genes: &[f32]) -> Vec<f32> {
     if n == 0 {
         return Vec::new();
     }
-    let lambda = (D_LO + softplus(genes[0])).clamp(D_LO, D_HI);
+    let lambda = genes[0].clamp(D_LO, D_HI);
     // A one-channel bank has no spectrum to ride; it is the flat case by construction.
-    let diffusion = if n >= 2 { sigmoid(genes[1]) } else { 0.0 };
+    let diffusion = if n >= 2 { diffusion_from(genes[1]) } else { 0.0 };
     let span = D_HI - D_LO;
     (0..n)
         .map(|k| {
@@ -218,15 +234,14 @@ fn spectral_bank(genes: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// `ln(1 + eˣ)`, in the branch-stable form. The naive `(1+x.exp()).ln()` overflows to
-/// `inf` around x = 89 in f32 and returns `inf` where the answer is 89.
-fn softplus(x: f32) -> f32 {
-    x.max(0.0) + (-x.abs()).exp().ln_1p()
-}
-
-/// `1/(1+e⁻ˣ)`, saturating cleanly at both ends.
-fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
+/// Maps a decay-rate gene onto the diffusion coefficient `D ∈ [0, 1]`.
+///
+/// `0` at the gene floor `D_LO` = 0.25 s⁻¹ (the flat bank is reachable, not merely a
+/// limit), `0.5` at birth (`DECAY_DEFAULT` = 0.5 s⁻¹), `1` from 0.75 s⁻¹ up. Exposed as
+/// its own function only so the tests can state the fixed points without restating the
+/// arithmetic.
+pub fn diffusion_from(gene: f32) -> f32 {
+    ((gene - D_LO) / (2.0 * (crate::cfc::DECAY_DEFAULT - D_LO))).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -249,9 +264,12 @@ mod tests {
         }
     }
 
+    /// Birth is the fixed point that makes the arm interpretable: a newborn genome
+    /// (every gene at `DECAY_DEFAULT`) has scale exactly 1.0, so the bank is the raw
+    /// ladder and spans the whole admitted range with nothing clamped away.
     #[test]
-    fn log_fixed_spans_the_clamp_range_at_scale_zero() {
-        let genes = vec![0.0f32; 96];
+    fn log_fixed_at_birth_is_the_untouched_ladder() {
+        let genes = vec![crate::cfc::DECAY_DEFAULT; 96];
         let bank = banco_tau(TauBankMode::LogFixed, &genes);
         assert_eq!(bank.len(), 96);
         assert!(
@@ -268,7 +286,7 @@ mod tests {
 
     #[test]
     fn log_fixed_is_monotone_in_k() {
-        let genes = vec![0.0f32; 96];
+        let genes = vec![crate::cfc::DECAY_DEFAULT; 96];
         let bank = banco_tau(TauBankMode::LogFixed, &genes);
         for k in 1..bank.len() {
             assert!(
@@ -280,41 +298,44 @@ mod tests {
         }
     }
 
-    /// One gene, one effect: it multiplies every rate by the same factor. Checked below
-    /// the clamp so the ceiling does not hide the property being tested.
+    /// One gene, one effect: multiplying it by 1.5 multiplies every rate by 1.5 — which
+    /// is exactly what `evolve()`'s multiplicative mutation does to it. Entries sitting
+    /// on either clamp are skipped, because there the factor is by design lost.
     #[test]
     fn log_fixed_scale_gene_shifts_every_rate_by_one_factor() {
-        let mut base = vec![0.0f32; 96];
-        // -2.0 pulls the whole ladder down by e² = 7.39×, leaving the fast end at
-        // 40/7.39 = 5.4 s⁻¹ — clear of D_HI, so nothing clamps and the ratio is exact.
-        base[0] = -2.0;
+        let mut base = vec![crate::cfc::DECAY_DEFAULT; 96];
+        base[0] = crate::cfc::DECAY_DEFAULT; // scale 1.0
         let mut lifted = base.clone();
-        lifted[0] = -2.0 + 0.5;
+        lifted[0] = crate::cfc::DECAY_DEFAULT * 1.5; // scale 1.5
         let a = banco_tau(TauBankMode::LogFixed, &base);
         let b = banco_tau(TauBankMode::LogFixed, &lifted);
-        let expected = 0.5f32.exp();
+        let mut checked = 0;
         for k in 0..a.len() {
-            // Skip anything that hit the slow floor; there the factor is by design lost.
-            if a[k] <= D_LO * 1.001 {
+            if a[k] <= D_LO * 1.001 || b[k] >= D_HI * 0.999 {
                 continue;
             }
             let ratio = b[k] / a[k];
             assert!(
-                (ratio - expected).abs() < 1e-3,
-                "channel {k} scaled by {ratio}, every channel must scale by {expected}"
+                (ratio - 1.5).abs() < 1e-3,
+                "channel {k} scaled by {ratio}, every channel must scale by 1.5"
             );
+            checked += 1;
         }
+        assert!(
+            checked > 80,
+            "only {checked} channels were clear of both clamps — the test stopped testing"
+        );
     }
 
     #[test]
     fn log_fixed_ignores_every_gene_but_the_first() {
-        let mut a = vec![0.0f32; 96];
+        let mut a = vec![crate::cfc::DECAY_DEFAULT; 96];
         let mut b = a.clone();
         for (k, g) in b.iter_mut().enumerate().skip(1) {
-            *g = k as f32;
+            *g = 0.25 + k as f32;
         }
-        a[0] = 0.3;
-        b[0] = 0.3;
+        a[0] = 0.6;
+        b[0] = 0.6;
         assert_eq!(
             banco_tau(TauBankMode::LogFixed, &a),
             banco_tau(TauBankMode::LogFixed, &b),
@@ -322,11 +343,46 @@ mod tests {
         );
     }
 
+    /// The three fixed points of the diffusion map, stated as numbers so a change to
+    /// `DECAY_DEFAULT` or to the map cannot slide past review.
+    #[test]
+    fn diffusion_map_hits_zero_at_the_gene_floor_and_half_at_birth() {
+        assert_eq!(diffusion_from(D_LO), 0.0, "gene floor must give D = 0");
+        assert!(
+            (diffusion_from(crate::cfc::DECAY_DEFAULT) - 0.5).abs() < 1e-6,
+            "birth must give D = 0.5, got {}",
+            diffusion_from(crate::cfc::DECAY_DEFAULT)
+        );
+        assert_eq!(diffusion_from(0.75), 1.0, "D saturates at 0.75 s^-1");
+        assert_eq!(diffusion_from(D_HI), 1.0, "gene ceiling stays inside [0, 1]");
+        assert_eq!(diffusion_from(-10.0), 0.0, "below the floor still clamps");
+    }
+
+    /// A newborn genome puts the bank's floor at the historical τ = 2 s and rides half
+    /// the spectrum — neutral in the one sense that matters (`lambda` = `DECAY_DEFAULT`),
+    /// and not saturated in either direction.
+    #[test]
+    fn spectral_at_birth_has_the_historical_floor_and_half_diffusion() {
+        let genes = vec![crate::cfc::DECAY_DEFAULT; 96];
+        let bank = banco_tau(TauBankMode::Spectral, &genes);
+        let span = D_HI - D_LO;
+        assert!(
+            (bank[0] - (crate::cfc::DECAY_DEFAULT + 0.5 * span / (96.0 * 96.0))).abs() < 1e-4,
+            "channel 0 came out {}",
+            bank[0]
+        );
+        assert!(
+            (bank[95] - (crate::cfc::DECAY_DEFAULT + 0.5 * span)).abs() < 1e-3,
+            "channel 95 came out {} (expected lambda + 0.5.span)",
+            bank[95]
+        );
+    }
+
     #[test]
     fn spectral_is_monotone_in_k_and_clamped() {
-        let mut genes = vec![0.0f32; 96];
-        genes[0] = 0.5; // lambda
-        genes[1] = 2.0; // D = sigmoid(2) = 0.881
+        let mut genes = vec![crate::cfc::DECAY_DEFAULT; 96];
+        genes[0] = 0.5; // lambda = 0.5 s^-1, the historical tau = 2 s
+        genes[1] = 0.5; // D = 0.5 at birth
         let bank = banco_tau(TauBankMode::Spectral, &genes);
         assert_eq!(bank.len(), 96);
         for k in 1..bank.len() {
@@ -345,21 +401,19 @@ mod tests {
         }
     }
 
-    /// `D = 0` is the historical brain: one τ on every channel. Reached here with a gene
-    /// far below the realizable range (`evolve()` clamps `tau` to [0.25, 40], so the
-    /// smallest realizable D is sigmoid(0.25) = 0.562) — the maths has the flat case even
-    /// though the gene range does not, and this pins it.
+    /// `D = 0` is the historical brain: one τ on every channel. It is REACHABLE — the
+    /// gene floor `evolve()` clamps to, 0.25 s⁻¹, maps to exactly 0 — so `espectral` can
+    /// evolve its way back to the single-τ bank instead of only approaching it.
     #[test]
     fn spectral_with_zero_diffusion_is_flat_at_lambda() {
-        let mut genes = vec![0.0f32; 96];
+        let mut genes = vec![crate::cfc::DECAY_DEFAULT; 96];
         genes[0] = 0.5;
-        genes[1] = -40.0; // sigmoid(-40) = 4.2e-18
+        genes[1] = D_LO; // the gene's own floor, not an unreachable value
         let bank = banco_tau(TauBankMode::Spectral, &genes);
-        let lambda = D_LO + softplus(0.5);
         for (k, &d) in bank.iter().enumerate() {
-            assert!(
-                (d - lambda).abs() < 1e-6,
-                "channel {k} at {d}, flat bank must sit at lambda = {lambda}"
+            assert_eq!(
+                d, 0.5,
+                "channel {k} at {d}, flat bank must sit at lambda = 0.5"
             );
         }
     }
@@ -368,11 +422,11 @@ mod tests {
     fn spectral_lambda_is_the_floor_and_stays_in_range() {
         // Both extremes of the realizable gene range, plus one far outside it.
         for &g0 in &[0.25f32, 40.0, -50.0] {
-            let mut genes = vec![0.0f32; 96];
+            let mut genes = vec![crate::cfc::DECAY_DEFAULT; 96];
             genes[0] = g0;
-            genes[1] = 3.0;
+            genes[1] = 0.75; // D = 1, the spectrum climbs as far as it can
             let bank = banco_tau(TauBankMode::Spectral, &genes);
-            let lambda = (D_LO + softplus(g0)).clamp(D_LO, D_HI);
+            let lambda = g0.clamp(D_LO, D_HI);
             assert!(
                 bank[0] >= lambda - 1e-4,
                 "lambda = {lambda} must be a floor, channel 0 came out {}",
@@ -384,15 +438,15 @@ mod tests {
 
     #[test]
     fn spectral_ignores_every_gene_but_the_first_two() {
-        let mut a = vec![0.0f32; 96];
+        let mut a = vec![crate::cfc::DECAY_DEFAULT; 96];
         let mut b = a.clone();
         for (k, g) in b.iter_mut().enumerate().skip(2) {
-            *g = k as f32;
+            *g = 0.25 + k as f32;
         }
         a[0] = 0.5;
-        a[1] = 1.0;
+        a[1] = 0.6;
         b[0] = 0.5;
-        b[1] = 1.0;
+        b[1] = 0.6;
         assert_eq!(
             banco_tau(TauBankMode::Spectral, &a),
             banco_tau(TauBankMode::Spectral, &b),
@@ -424,13 +478,5 @@ mod tests {
         ] {
             assert_eq!(TauBankMode::from_u32(m.as_u32()), m);
         }
-    }
-
-    #[test]
-    fn softplus_does_not_overflow_at_the_top_of_the_gene_range() {
-        assert!((softplus(0.0) - std::f32::consts::LN_2).abs() < 1e-6);
-        assert!(softplus(100.0).is_finite(), "naive form returns inf here");
-        assert!((softplus(100.0) - 100.0).abs() < 1e-3);
-        assert!(softplus(-100.0) >= 0.0);
     }
 }
