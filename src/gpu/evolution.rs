@@ -1967,11 +1967,19 @@ mod tests {
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
         assert!(genomes.iter().all(|g| g.hip.iter().all(|&w| w == 0.0)), "hip must be born at zero");
 
-        let antes = HIPPOCAMPUS_MUTATE_ON.swap(true, Ordering::SeqCst);
+        // Same defense as `evolve_muta_mecanismos_p17_e_flags_sem_x_congelam_no_neutro`:
+        // restore the atomic even if an `assert!` below panics, so a failure here does not
+        // leak `true` into tests running after this one in the same process (review 12/09).
+        struct RestauraHip(bool);
+        impl Drop for RestauraHip {
+            fn drop(&mut self) {
+                HIPPOCAMPUS_MUTATE_ON.store(self.0, Ordering::SeqCst);
+            }
+        }
+        let _guard = RestauraHip(HIPPOCAMPUS_MUTATE_ON.swap(true, Ordering::SeqCst));
         let ligado = evolve(&genomes, &fitnesses, &params, 1, 77);
         HIPPOCAMPUS_MUTATE_ON.store(false, Ordering::SeqCst);
         let desligado = evolve(&genomes, &fitnesses, &params, 1, 77);
-        HIPPOCAMPUS_MUTATE_ON.store(antes, Ordering::SeqCst);
 
         let filho = &ligado[1];
         assert_eq!(filho.hip.len(), crate::gpu::hippocampus::N_HIP_GENES);
