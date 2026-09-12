@@ -4,9 +4,16 @@
 //! answer it: `fantasma.rs:101-113` keeps only the FIRST crossing of each sector (a
 //! reference trail, not a per-lap ledger) and `ReplayFrame` only lets it be derived
 //! offline, for the few beings a run records. This is the missing ledger — one
-//! [`LapRecord`] per COMPLETED lap per being; the lap in progress is dropped by
-//! [`LapTracker::finish`], because an unfinished lap has no comparable time or distance
-//! and counting it would inflate the very ratio the experiment reads.
+//! [`LapRecord`] per lap per being: the laps it CLOSED, then always one more for the lap
+//! still open when the generation ends, flagged `parcial` (`"parcial":true` on disk).
+//!
+//! It was DROPPED until 2026-09-12, and that cost the per-sector metric its coverage: a
+//! being closing lap 1 and dying mid lap 2 offered no second pass, so `u0c_valida_hip`
+//! gen 0 measured 27 of 60 beings while 54 of 60 closed lap 1. An unfinished lap has no
+//! time or distance — `tick_end - tick_start` and `dist` cover a fragment — so counting
+//! it would inflate the very ratio the experiment reads: [`summary`] and
+//! `tools/voltas.py` keep partials out of every lap COUNT and out of `lap2/lap1`. What a
+//! partial carries honestly is `sector_ticks` — every sector it reached is a real pass.
 //!
 //! Pure: no GPU, no globals, no clock. Fed at sites that already compute the values
 //! (`main.rs` crossing and lap close, `context.rs` surface/damage/dry), so the wiring
@@ -22,10 +29,15 @@ use std::io::Write;
 /// flag several portals share a slot: totals stay right, the per-slot split does not.
 pub const N_SECTORS: usize = N_CHECKPOINTS as usize;
 
-/// One COMPLETED lap of one being. `lap` is 1-based; ticks are the generation's own tick
-/// index (64 Hz), so `tick_end - tick_start` is the lap time; `dist` is odometer metres
-/// between them; `sector_ticks[s]` is ticks inside sector `s`; `damage` sums the per-tick
+/// One lap of one being. `lap` is 1-based; ticks are the generation's own tick index
+/// (64 Hz), so `tick_end - tick_start` is the lap time; `dist` is odometer metres between
+/// them; `sector_ticks[s]` is ticks inside sector `s`; `damage` sums the per-tick
 /// hidden-damage increments; `dry_events` counts tank-empty crossings.
+///
+/// On a `partial` record `tick_end` is the last tick the being was alive and `dist` the
+/// metres of the fragment — only `sector_ticks` compares. It is the LAST field, and the
+/// only new one, so a ledger written before it still reads key for key; its wire name
+/// stays `parcial`, the vocabulary `tools/voltas.py` reports in.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LapRecord {
     pub lap: u32,
@@ -36,15 +48,22 @@ pub struct LapRecord {
     pub grass_ticks: u32,
     pub damage: f32,
     pub dry_events: u32,
+    #[serde(rename = "parcial")]
+    pub partial: bool,
 }
 
-/// The lap in progress; becomes a [`LapRecord`] when `on_lap` closes it. Every `on_tick`
-/// is charged to `sector`, the sector the being is in.
+/// The lap in progress; becomes a [`LapRecord`] when `on_lap` closes it or when `finish`
+/// writes it as a partial. Every `on_tick` is charged to `sector` and moves
+/// `last_tick`/`last_dist` — where a partial's fragment ends, which nothing else could
+/// reconstruct: a corpse stops being ticked, so the tick count of the generation is NOT
+/// where this being stopped.
 #[derive(Clone, Default)]
 struct OpenLap {
     lap: u32,
     tick_start: u32,
     dist_start: f32,
+    last_tick: u32,
+    last_dist: f32,
     sector: usize,
     sector_ticks: [u32; N_SECTORS],
     grass_ticks: u32,
@@ -58,6 +77,8 @@ impl OpenLap {
             lap,
             tick_start,
             dist_start,
+            last_tick: tick_start,
+            last_dist: dist_start,
             sector,
             ..Default::default()
         }
@@ -106,29 +127,64 @@ impl LapTracker {
             grass_ticks: closed.grass_ticks,
             damage: closed.damage,
             dry_events: closed.dry_events,
+            partial: false,
         });
     }
 
-    /// One simulated tick of one being, charged to the sector it is currently in.
-    pub fn on_tick(&mut self, being: usize, on_grass: bool, damage_delta: f32, dry: bool) {
+    /// One simulated tick of one being, charged to the sector it is currently in. `tick`
+    /// and `dist` (odometer AFTER this step, the reading `on_lap` gets) are only stored:
+    /// they are where a partial lap ends, never a term in a count.
+    pub fn on_tick(
+        &mut self,
+        being: usize,
+        tick: u32,
+        dist: f32,
+        on_grass: bool,
+        damage_delta: f32,
+        dry: bool,
+    ) {
         let Some(open) = self.open.get_mut(being) else {
             return;
         };
+        open.last_tick = tick;
+        open.last_dist = dist;
         open.sector_ticks[open.sector] += 1;
         open.grass_ticks += u32::from(on_grass);
         open.damage += damage_delta;
         open.dry_events += u32::from(dry);
     }
 
-    /// Completed laps per being. The lap in progress is dropped — see the module header.
+    /// Every lap per being: the closed ones, then the still-open one as a `parcial`
+    /// record — ALWAYS, so a being has `closed + 1` records and coverage is readable in
+    /// the ledger instead of inferred from a missing line. A being that never crossed a
+    /// sector writes a partial holding only slot 0 (pre-crossing time, which
+    /// `tools/voltas.py` drops by default); one that never moved, a partial of zeros.
+    /// Both are measurements — writing nothing is what left the old ledger unable to
+    /// tell "reached no sector" from "never ran".
     pub fn finish(self) -> Vec<Vec<LapRecord>> {
-        self.done
+        let Self { mut done, open } = self;
+        for (laps, o) in done.iter_mut().zip(open) {
+            laps.push(LapRecord {
+                lap: o.lap,
+                tick_start: o.tick_start,
+                tick_end: o.last_tick,
+                dist: o.last_dist - o.dist_start,
+                sector_ticks: o.sector_ticks,
+                grass_ticks: o.grass_ticks,
+                damage: o.damage,
+                dry_events: o.dry_events,
+                partial: true,
+            });
+        }
+        done
     }
 }
 
-/// Population summary of one generation — what the `laps:` log line prints. `median_laps`
-/// counts ALL beings, zero-lap ones included; `lap2_over_lap1_dist` is the median of
-/// `lap2.dist / lap1.dist` over the `n_ge2` beings with at least two completed laps.
+/// Population summary of one generation — what the `laps:` log line prints. Every number
+/// counts CLOSED laps only; the partial record every being now ends with is skipped, so
+/// the line reads exactly as it did before partials were written. `median_laps` counts
+/// ALL beings, zero-lap ones included; `lap2_over_lap1_dist` is the median of
+/// `lap2.dist / lap1.dist` over the `n_ge2` beings with at least two closed laps.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LapSummary {
     pub median_laps: f32,
@@ -151,12 +207,16 @@ impl LapSummary {
     }
 }
 
-/// Summarises what [`LapTracker::finish`] returned. Empty input gives `0 / None / 0`: a
-/// generation where nobody closed a lap is a measurement, not a failure. A zero-metre lap
-/// 1 is dropped from the ratio instead of becoming an infinity.
+/// Summarises what [`LapTracker::finish`] returned, PARTIALS DROPPED. Empty input gives
+/// `0 / None / 0`: a generation where nobody closed a lap is a measurement, not a
+/// failure. A zero-metre lap 1 is dropped from the ratio instead of becoming an infinity.
 pub fn summary(records: &[Vec<LapRecord>]) -> LapSummary {
-    let mut laps: Vec<f32> = records.iter().map(|r| r.len() as f32).collect();
-    let mut ratios: Vec<f32> = records
+    let closed: Vec<Vec<&LapRecord>> = records
+        .iter()
+        .map(|r| r.iter().filter(|l| !l.partial).collect())
+        .collect();
+    let mut laps: Vec<f32> = closed.iter().map(|r| r.len() as f32).collect();
+    let mut ratios: Vec<f32> = closed
         .iter()
         .filter_map(|r| match (r.first(), r.get(1)) {
             (Some(l1), Some(l2)) if l1.dist > 0.0 => Some(l2.dist / l1.dist),
@@ -166,7 +226,7 @@ pub fn summary(records: &[Vec<LapRecord>]) -> LapSummary {
     LapSummary {
         median_laps: median(&mut laps).unwrap_or(0.0),
         lap2_over_lap1_dist: median(&mut ratios),
-        n_ge2: records.iter().filter(|r| r.len() >= 2).count(),
+        n_ge2: closed.iter().filter(|r| r.len() >= 2).count(),
     }
 }
 
@@ -184,7 +244,8 @@ fn median(v: &mut [f32]) -> Option<f32> {
 }
 
 /// Writes the ledger to `<out>/laps_gen<N>.jsonl` as JSON Lines, one object per being:
-/// `{"being":i,"seed":s,"laps":[…]}`; `seeds[i]` is the population seed
+/// `{"being":i,"seed":s,"laps":[…]}` — `laps` always ends with the `parcial` record, so
+/// it is never empty, not even for a being that never moved; `seeds[i]` is the seed
 /// (`population_seed_for`), a missing entry written as `0`. The two scalars are formatted
 /// by hand (both numeric, nothing to escape) to keep that key order — `json!` sorts.
 pub fn write_jsonl(path: &str, records: &[Vec<LapRecord>], seeds: &[u64]) -> std::io::Result<()> {

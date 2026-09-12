@@ -3077,12 +3077,23 @@ fn main() {
                 let dx = (p1[0] - pos_prev[i][0]) as f64;
                 let dz = (p1[2] - pos_prev[i][2]) as f64;
                 if states[i].life_left > 0.0 {
-                    // C0: one tick charged to the sector this being is in. Inside the
-                    // `life_left > 0` guard on purpose — a corpse is pinned to
-                    // `throttle=0, brake=1` and its ticks are not lap time.
-                    lap_tracker.on_tick(i, ctx.lap_grass[i], ctx.lap_damage[i], ctx.lap_dry[i]);
                     let passo = (dx * dx + dz * dz).sqrt();
                     dist_acum[i] += passo;
+                    // C0: one tick charged to the sector this being is in. Inside the
+                    // `life_left > 0` guard on purpose — a corpse is pinned to
+                    // `throttle=0, brake=1` and its ticks are not lap time. It follows
+                    // the odometer step so `dist_acum` is the SAME reading `on_lap` below
+                    // gets at a crossing; that pair (tick, odometer) is where the partial
+                    // lap `LapTracker::finish` writes ends, and a corpse never files one
+                    // past its own last tick.
+                    lap_tracker.on_tick(
+                        i,
+                        tick_i as u32,
+                        dist_acum[i] as f32,
+                        ctx.lap_grass[i],
+                        ctx.lap_damage[i],
+                        ctx.lap_dry[i],
+                    );
 
                     // Avanço na pista desde o tick anterior, com o salto da linha de
                     // chegada tratado nos dois sentidos. O clamp a 10% da volta descarta
@@ -3717,6 +3728,9 @@ fn main() {
         // decided by what lap 2 cost against lap 1, which only this ledger holds. The
         // file name is padded like `evolve_best_gen<NNNN>.bin` next to it, so the whole
         // output directory sorts by generation.
+        // `finish` also writes each being's lap in progress, flagged `parcial` — the file
+        // gains those records, this LINE does not: `laps::summary` counts closed laps
+        // only, so `med` / `lap2/lap1` / `>=2V` stay comparable with every earlier run.
         let lap_records = lap_tracker.finish();
         let lap_summary = laps::summary(&lap_records);
         println!("  {}", lap_summary.log_line(n_seres));
