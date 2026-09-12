@@ -605,6 +605,9 @@ fn main() {
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
     let mut evo_sigma: f32 = 0.05;
     let mut evo_p_mutate: f32 = 0.02;
+    // C1: rate/σ of the `hip` block (see `EvoParams::hip_p`); only used with `--hipocampo-setor`.
+    let mut evo_hip_p: f32 = 1.0;
+    let mut evo_hip_sigma: f32 = 0.2;
     // Semente da população inicial. Sem isto, repetições da mesma condição são
     // idênticas e não distinguem efeito de sorte — que é o ponto de repetir.
     let mut pop_seed: u64 = 0;
@@ -775,6 +778,18 @@ fn main() {
                     i += 1;
                     if i < args.len() {
                         evo_p_mutate = args[i].parse().unwrap_or(0.02);
+                    }
+                }
+                "--hip-p" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_hip_p = args[i].parse().unwrap_or(1.0);
+                    }
+                }
+                "--hip-sigma" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_hip_sigma = args[i].parse().unwrap_or(0.2);
                     }
                 }
                 "--sem-lento" => {
@@ -1535,8 +1550,8 @@ fn main() {
         }
     );
     println!(
-        "  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}",
-        evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney
+        "  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}",
+        evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney, evo_hip_p, evo_hip_sigma
     );
     println!("  SEM muletas motoras (escape_ticks, curvature_governor)");
     println!("  Fitness: distância contínua em metros (sem degrau de volta inteira)");
@@ -2292,6 +2307,8 @@ fn main() {
     let evo_params = EvoParams {
         p_mutate: evo_p_mutate,
         sigma: evo_sigma,
+        hip_p: evo_hip_p,
+        hip_sigma: evo_hip_sigma,
         n_elite: evo_n_elite,
         tournament_k: evo_tourney,
         congela_l2_cegas,

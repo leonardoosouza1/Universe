@@ -762,6 +762,15 @@ pub struct EvoParams {
     pub l2_linhas_lidas: usize,
     /// M3: reimposes the region mask after each mutation (see mascara_permite).
     pub mascara_regioes: bool,
+    /// C1 — per-gene mutation probability of the `hip` block (29 genes). Its own rate,
+    /// not a multiple of `p_mutate`: the smoke `u0c_valida_hip` (12/09, 5 gens, 60 beings,
+    /// 3×`p_mutate` = 0.06 and 1.5×`sigma` = 0.075) left max|bias| at 0.0012 — the bias is
+    /// tanh(gain)·tanh(W·x), a PRODUCT of two genes that both start at zero, so at the
+    /// base rate the block never becomes visible to selection inside a 60-generation battery.
+    /// `gpu_evolve --hip-p`. Only consumed when `HIPPOCAMPUS_MUTATE_ON` is set.
+    pub hip_p: f32,
+    /// C1 — σ of the gaussian step on each mutated `hip` gene (`gpu_evolve --hip-sigma`).
+    pub hip_sigma: f32,
 }
 
 /// L2 rows with a consumer in the Bevy pipeline (compat for tests and default).
@@ -806,6 +815,8 @@ impl Default for EvoParams {
             congela_l2_cegas: false,
             l2_linhas_lidas: L2_LINHAS_LIDAS,
             mascara_regioes: false,
+            hip_p: 1.0,
+            hip_sigma: 0.2,
         }
     }
 }
@@ -1099,13 +1110,14 @@ pub fn evolve(
         // state it used to. That is what makes `--sem-hipocampo` a control arm with the  // check-language: allow -- quoting the flag name verbatim
         // same genome layout rather than merely a similar one.
         //
-        // Same rate and σ as the `slow` block (3× `p_mutate`, 1.5× σ) and for the same
-        // reason: 29 genes against twenty-six thousand weights — at the base rate the
-        // block would barely be touched across a 60-generation battery.
+        // Own rate and σ (`params.hip_p`, `params.hip_sigma`; flags `--hip-p`/`--hip-sigma`),
+        // NOT a multiple of `p_mutate`: 29 genes against twenty-six thousand weights, and the
+        // bias is a product of two genes born at zero (see the `EvoParams::hip_p` doc — the
+        // 3×/1.5× rule of the `slow` block left max|bias| at 0.0012 after 5 generations).
         if HIPPOCAMPUS_MUTATE_ON.load(Ordering::Relaxed) {
             for w in filho.hip.iter_mut() {
-                if rng.f32() < params.p_mutate * 3.0 {
-                    *w += rng.gauss() * params.sigma * 1.5;
+                if rng.f32() < params.hip_p {
+                    *w += rng.gauss() * params.hip_sigma;
                     *w = w.clamp(-2.0, 2.0);
                 }
             }
@@ -1357,6 +1369,8 @@ mod tests {
             congela_l2_cegas: false,
             l2_linhas_lidas: L2_LINHAS_LIDAS,
             mascara_regioes: false,
+            hip_p: 1.0,
+            hip_sigma: 0.2,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -1389,6 +1403,8 @@ mod tests {
             congela_l2_cegas: true,
             l2_linhas_lidas: L2_LINHAS_LIDAS,
             mascara_regioes: false,
+            hip_p: 1.0,
+            hip_sigma: 0.2,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -1431,6 +1447,8 @@ mod tests {
             congela_l2_cegas: false,
             l2_linhas_lidas: L2_LINHAS_LIDAS,
             mascara_regioes: false,
+            hip_p: 1.0,
+            hip_sigma: 0.2,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -1684,6 +1702,8 @@ mod tests {
             congela_l2_cegas: false,
             l2_linhas_lidas: L2_LINHAS_LIDAS,
             mascara_regioes: false,
+            hip_p: 1.0,
+            hip_sigma: 0.2,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -1921,5 +1941,50 @@ mod tests {
                 "l2_activation[{i}]"
             );
         }
+    }
+
+    /// C1 — the `hip` block has its OWN mutation rate/σ (`hip_p`, `hip_sigma`), gated by
+    /// `HIPPOCAMPUS_MUTATE_ON`. With p = 1 and σ = 0.2 every one of the 29 genes of a
+    /// mutated child moves away from its birth value of 0.0; with the gate off (the
+    /// `--sem-hipocampo` control) none does, and the OTHER blocks of that child are
+    /// bit-identical between the two runs (the hip block is the last consumer of `rng`).
+    #[test]
+    fn evolve_hip_bloco_tem_taxa_propria_e_portao() {
+        use std::sync::atomic::Ordering;
+        let n = 10;
+        let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
+        let params = EvoParams {
+            p_mutate: 0.02,
+            sigma: 0.05,
+            n_elite: 1,
+            tournament_k: 3,
+            congela_l2_cegas: false,
+            l2_linhas_lidas: L2_LINHAS_LIDAS,
+            mascara_regioes: false,
+            hip_p: 1.0,
+            hip_sigma: 0.2,
+        };
+        let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        assert!(genomes.iter().all(|g| g.hip.iter().all(|&w| w == 0.0)), "hip must be born at zero");
+
+        let antes = HIPPOCAMPUS_MUTATE_ON.swap(true, Ordering::SeqCst);
+        let ligado = evolve(&genomes, &fitnesses, &params, 1, 77);
+        HIPPOCAMPUS_MUTATE_ON.store(false, Ordering::SeqCst);
+        let desligado = evolve(&genomes, &fitnesses, &params, 1, 77);
+        HIPPOCAMPUS_MUTATE_ON.store(antes, Ordering::SeqCst);
+
+        let filho = &ligado[1];
+        assert_eq!(filho.hip.len(), crate::gpu::hippocampus::N_HIP_GENES);
+        let movidos = filho.hip.iter().filter(|&&w| w != 0.0).count();
+        assert_eq!(movidos, filho.hip.len(), "with hip_p = 1 all 29 genes move; moved {movidos}");
+        assert!(filho.hip.iter().all(|w| w.abs() <= 2.0), "hip genes stay clamped to ±2");
+        assert!(
+            filho.hip.iter().any(|w| w.abs() > 0.05),
+            "σ = 0.2 has to produce steps well above the old 0.075 regime"
+        );
+        assert!(desligado[1].hip.iter().all(|&w| w == 0.0), "gate off: hip frozen at birth");
+        assert_eq!(ligado[1].l1, desligado[1].l1, "hip draws must not move the l1 stream");
+        assert_eq!(ligado[1].slow, desligado[1].slow, "hip draws must not move the slow stream");
+        assert_eq!(ligado[0].hip, desligado[0].hip, "elite passes untouched either way");
     }
 }
