@@ -10,17 +10,27 @@ Run it with this machine's python:
 
 INPUT, READ ONLY: `<run>/laps_gen<NNNN>.jsonl`, one line per being:
 `{"being":i,"seed":s,"laps":[{lap,tick_start,tick_end,dist,sector_ticks[24],
-grass_ticks,damage,dry_events}, ...]}` (`src/bin/gpu_evolve/laps.rs`). Only
-COMPLETED laps are in the file — `LapTracker::finish` drops the lap in progress,
-so a being that closes lap 1 and dies mid lap 2 contributes NO second pass, which
-is stricter than the "44/60 that close lap 1" the U6 amendment hoped for.
+grass_ticks,damage,dry_events,parcial}, ...]}` (`src/bin/gpu_evolve/laps.rs`).
+
+`parcial` (since 2026-09-12) marks the lap that was still OPEN when the
+generation ended — always a being's last record, one per being. A ledger written
+before that flag has no `parcial` key and every record in it is a closed lap;
+this tool reads `parcial` as False when the key is absent, so the old u1 files
+give exactly the numbers they always gave.
+
+A partial lap has NO comparable time or distance (its `tick_end - tick_start`
+and `dist` cover a fragment), so it is excluded from every lap COUNT (med
+voltas, >=1V, >=2V) and from `lap2/lap1`. What it does carry honestly is
+`sector_ticks`: a sector it reached was really driven a second time.
 
 PRIMARY METRIC (U6 amendment, `docs/PREDICOES-CEREBRO.md`): per-sector time on
-the 2nd pass against the 1st, in ticks. For every being with >= 2 completed laps
-and every sector s with `t1 = lap1.sector_ticks[s] > 0` and
-`t2 = lap2.sector_ticks[s] > 0`: r = t2/t1 -> median per being -> population
-median. r < 1 means the 2nd pass was faster, which is what the hippocampus is
-supposed to buy.
+the 2nd pass against the 1st, in ticks. The 1st lap must be CLOSED (lap 1 of the
+being); the 2nd pass is lap 2 if it closed, ELSE the partial lap 2. For every
+sector s with `t1 = lap1.sector_ticks[s] > 0` and `t2 = lap2.sector_ticks[s] >
+0`: r = t2/t1 -> median per being -> population median. r < 1 means the 2nd pass
+was faster, which is what the hippocampus is supposed to buy. Sectors the
+partial never reached have `t2 = 0` and drop out by the same rule that already
+drops sector 23 — no special case.
 
 TWO SECTOR SLOTS ARE A LEDGER ARTEFACT, not driving (checked on
 `u0c_valida_hip`, 2026-09-12):
@@ -34,14 +44,13 @@ TWO SECTOR SLOTS ARE A LEDGER ARTEFACT, not driving (checked on
     fake r ~ 0.06. It is EXCLUDED by default; `--com-setor-inicial` puts it back
     for inspection. 22 sectors per being remain.
 
-COVERAGE CAVEAT: a being that closes lap 1 and dies mid lap 2 has NO second
-pass here, because `LapTracker::finish` drops the lap in progress. So the
-primary metric covers only the >= 2-lap beings (27/60 in `u0c` gen 0, 6/60 in
-gen 1), not the "44/60 that close lap 1" the U6 amendment assumed. If a future
-`laps.rs` writes the partial lap as well (a flag on `finish`, marked
-incomplete), this tool needs no change for the ratio — only the rule "compare
-sectors the partial lap actually reached" — but until then the coverage is the
->= 2V column.
+COVERAGE, TWO NUMBERS: `seres r` is how many beings entered the primary metric,
+split into `r 2V` (a CLOSED lap 2) and `r par` (only a partial 2nd pass). The
+second column is the one the partial lap bought: on a ledger written before
+2026-09-12 it is always 0, and `u0c` gen 0 measured 27 of 60 beings while 54 of
+60 closed lap 1. The partial pass is a WEAKER measurement — fewer sectors per
+being, and the being died in it — so the two are reported apart instead of
+averaged into one coverage figure.
 
 Secondary: `lap2/lap1` in TICKS (not metres — per-lap distance moves with the
 racing line, U6 amendment), computed over the SAME clean sectors as the primary
@@ -106,7 +115,7 @@ def run_gens(run_dir: str) -> list[int]:
 
 
 def load_gen(run_dir: str, gen: int) -> list[dict]:
-    """One generation: list of beings, each with `laps` (completed laps only)."""
+    """One generation: list of beings, each with `laps` (closed laps + 1 partial)."""
     path = os.path.join(run_dir, f"laps_gen{gen:04d}.jsonl")
     with open(path, "r", errors="replace") as fh:
         lines = [ln.strip() for ln in fh if ln.strip()]
@@ -134,13 +143,47 @@ def resolve(name: str, base: str) -> str:
 # ----------------------------------------------------------------- metric ----
 
 
-def sector_pairs(being: dict, with_start_slot: bool) -> list[tuple[int, int, int]]:
-    """(sector, t1, t2) for every sector visited on BOTH first two completed laps."""
+def is_partial(lap: dict) -> bool:
+    """The lap was still open when the generation ended.
+
+    A ledger written before the flag existed has no `parcial` key, and every
+    record in it is a closed lap — hence the `False` default, which is what keeps
+    the old u1 numbers identical.
+    """
+    return bool(lap.get("parcial", False))
+
+
+def closed_laps(being: dict) -> list[dict]:
+    """The being's CLOSED laps, in order. This is what counts as a lap."""
+    return [lap for lap in (being.get("laps") or []) if not is_partial(lap)]
+
+
+def second_pass(being: dict) -> tuple[dict, dict, bool] | None:
+    """(lap1, lap2, lap2_is_partial) for the primary metric, or None.
+
+    Lap 1 must be closed. Lap 2 is the closed 2nd lap when there is one, else the
+    partial lap — which is a 2nd pass exactly for the sectors it reached.
+    """
     laps = being.get("laps") or []
-    if len(laps) < 2:
+    done = closed_laps(being)
+    if not done:
+        return None
+    if len(done) >= 2:
+        return done[0], done[1], False
+    tail = laps[-1] if laps and is_partial(laps[-1]) else None
+    if tail is None or tail.get("lap") != done[0].get("lap", 0) + 1:
+        return None  # the partial is not the lap right after lap 1
+    return done[0], tail, True
+
+
+def sector_pairs(being: dict, with_start_slot: bool) -> list[tuple[int, int, int]]:
+    """(sector, t1, t2) for every sector driven on lap 1 AND on the 2nd pass."""
+    pas = second_pass(being)
+    if pas is None:
         return []
-    t1 = laps[0]["sector_ticks"]
-    t2 = laps[1]["sector_ticks"]
+    lap1, lap2, _ = pas
+    t1 = lap1["sector_ticks"]
+    t2 = lap2["sector_ticks"]
     pairs = []
     for s in range(min(N_SECTORS, len(t1), len(t2))):
         if s == START_SLOT and not with_start_slot:
@@ -151,32 +194,41 @@ def sector_pairs(being: dict, with_start_slot: bool) -> list[tuple[int, int, int
 
 
 def sector_ratios(being: dict, with_start_slot: bool) -> list[float]:
-    """r = t2/t1 for each sector visited on BOTH of the first two completed laps."""
+    """r = t2/t1 for each sector driven on lap 1 AND on the 2nd pass."""
     return [t2 / t1 for _, t1, t2 in sector_pairs(being, with_start_slot)]
 
 
 def gen_metrics(beings: list[dict], with_start_slot: bool) -> dict:
     """(a) laps, (b) primary per-sector metric, (c) lap2/lap1 in ticks."""
     n = len(beings)
-    laps_n = np.array([len(b.get("laps") or []) for b in beings], dtype=float)
+    # A lap is a CLOSED lap: the partial record every being now ends with is not one.
+    laps_n = np.array([len(closed_laps(b)) for b in beings], dtype=float)
 
     per_being_r, sectors_used, lap21_clean = [], [], []
+    n_r_2v, n_r_parcial = 0, 0
     for being in beings:
         pairs = sector_pairs(being, with_start_slot)
-        if pairs:
-            per_being_r.append(float(np.median([t2 / t1 for _, t1, t2 in pairs])))
-            sectors_used.append(len(pairs))
-            # secondary, clean: whole lap restricted to the sectors the primary
-            # metric uses (normally 1..22), so it cannot import the dirty start.
+        if not pairs:
+            continue
+        parcial = second_pass(being)[2]
+        per_being_r.append(float(np.median([t2 / t1 for _, t1, t2 in pairs])))
+        sectors_used.append(len(pairs))
+        n_r_parcial += int(parcial)
+        n_r_2v += int(not parcial)
+        # secondary, clean: whole lap restricted to the sectors the primary metric
+        # uses (normally 1..22), so it cannot import the dirty start. Only beings
+        # with a CLOSED lap 2 enter it: over a partial 2nd pass this sum is a
+        # fragment against a whole lap, not a lap ratio.
+        if not parcial:
             soma1 = sum(t1 for _, t1, _ in pairs)
             lap21_clean.append(sum(t2 for _, _, t2 in pairs) / soma1)
 
     lap21_raw = []
     for being in beings:
-        laps = being.get("laps") or []
-        if len(laps) >= 2:
-            d1 = laps[0]["tick_end"] - laps[0]["tick_start"]
-            d2 = laps[1]["tick_end"] - laps[1]["tick_start"]
+        done = closed_laps(being)
+        if len(done) >= 2:
+            d1 = done[0]["tick_end"] - done[0]["tick_start"]
+            d2 = done[1]["tick_end"] - done[1]["tick_start"]
             if d1 > 0:
                 lap21_raw.append(d2 / d1)
 
@@ -189,6 +241,9 @@ def gen_metrics(beings: list[dict], with_start_slot: bool) -> dict:
         # primary
         "r_mediana": float(np.median(per_being_r)) if per_being_r else None,
         "n_seres_r": len(per_being_r),
+        # coverage split: closed 2nd lap vs partial 2nd pass (0 on old ledgers)
+        "n_r_2v": n_r_2v,
+        "n_r_parcial": n_r_parcial,
         "setores_por_ser": float(np.median(sectors_used)) if sectors_used else 0.0,
         # secondary: clean (22 sectors) and raw (tick_end - tick_start)
         "lap2_lap1_ticks": float(np.median(lap21_clean)) if lap21_clean else None,
@@ -290,16 +345,18 @@ def print_run(name: str, res: dict) -> None:
         return
     print(
         "  gen | seres | med voltas | >=1V | >=2V | r=t2/t1 (med pop) | seres r |"
-        " setores/ser | lap2/lap1 ticks | bruto"
+        " r 2V | r par | setores/ser | lap2/lap1 ticks | bruto"
     )
     for g, m in sorted(res["gens"].items()):
         print(
             f"  {g:4d}|{m['n_seres']:6d} |{m['voltas_medianas']:11.2f} |"
             f"{m['frac_1v']*100:5.0f}%|{m['frac_2v']*100:5.0f}%|"
             f"{fmt(m['r_mediana']):>18}|{m['n_seres_r']:8d} |"
+            f"{m['n_r_2v']:5d} |{m['n_r_parcial']:6d} |"
             f"{m['setores_por_ser']:12.0f} |{fmt(m['lap2_lap1_ticks']):>16} |"
             f"{fmt(m['lap2_lap1_ticks_bruto']):>7}"
         )
+    print("    r 2V = seres com volta 2 FECHADA | r par = so 2a passagem parcial")
 
 
 def print_pair(pair: dict) -> None:
@@ -307,11 +364,12 @@ def print_pair(pair: dict) -> None:
     if not pair["gens"]:
         print("    sem geracoes em comum com ledger — par ignorado.")
         return
-    print("  gen | r ctrl | r hip  |  delta (hip-ctrl) | >=2V ctrl/hip")
+    print("  gen | r ctrl | r hip  |  delta (hip-ctrl) | >=2V ctrl/hip | r par ctrl/hip")
     for row in pair["por_gen"]:
         print(
             f"  {row['gen']:4d}|{fmt(row['r_ctrl']):>8}|{fmt(row['r_hip']):>8}|"
-            f"{fmt(row['delta']):>19}| {row['n2v_ctrl']}/{row['n2v_hip']}"
+            f"{fmt(row['delta']):>19}|{row['n2v_ctrl']:>7}/{row['n2v_hip']:<7}|"
+            f"{row['npar_ctrl']:>7}/{row['npar_hip']:<7}"
         )
     print(
         f"  -> delta medio {fmt(pair['delta_medio'])} | mediano "
@@ -347,6 +405,11 @@ def compare_pair(ctrl_name, hip_name, base, gens_spec, with_start_slot) -> dict:
                 "delta": d,
                 "n2v_ctrl": mc["n_2v"],
                 "n2v_hip": mh["n_2v"],
+                # coverage of the PRIMARY metric, split: closed lap 2 vs partial pass
+                "nr2v_ctrl": mc["n_r_2v"],
+                "nr2v_hip": mh["n_r_2v"],
+                "npar_ctrl": mc["n_r_parcial"],
+                "npar_hip": mh["n_r_parcial"],
                 "lap21_ctrl": mc["lap2_lap1_ticks"],
                 "lap21_hip": mh["lap2_lap1_ticks"],
                 "lap21_bruto_ctrl": mc["lap2_lap1_ticks_bruto"],
@@ -402,7 +465,9 @@ def _synthetic_being(i: int, factor: float | None) -> dict:
     """A being with 2 laps: 200 ticks per sector on lap 1, `factor`*200 on lap 2.
 
     Reproduces both real artefacts: lap 1 slot 0 inflated by the start, and lap 1
-    slot 23 empty (the lap closes when ENTERING sector 23).
+    slot 23 empty (the lap closes when ENTERING sector 23). Written WITHOUT the
+    `parcial` key, exactly like the ledgers the old binary left on disk — so every
+    check built on it is also a check that those files still read as before.
     """
     if factor is None:  # a being that never closed a lap
         return {"being": i, "seed": 900 + i, "laps": []}
@@ -424,6 +489,73 @@ def _synthetic_being(i: int, factor: float | None) -> dict:
         }
 
     return {"being": i, "seed": 900 + i, "laps": [lap(1, t1, 0), lap(2, t2, sum(t1))]}
+
+
+def _synthetic_being_parcial(i: int, factor: float, reached: int) -> dict:
+    """1 closed lap + a lap 2 that DIED after `reached` sectors (`parcial`).
+
+    Lap 2 holds `factor`*200 ticks in slots 0..reached-1 and 0 everywhere else,
+    which is what `LapTracker::finish` writes for a being that dies mid lap: the
+    sectors it drove, and zeros for the sectors it never saw.
+    """
+    t1 = [200] * N_SECTORS
+    t1[0] = 1000  # dirty start
+    t1[23] = 0  # lap closes on entering 23
+    t2 = [0] * N_SECTORS
+    for sec in range(reached):
+        t2[sec] = int(round(200 * factor))
+    return {
+        "being": i,
+        "seed": 700 + i,
+        "laps": [
+            {
+                "lap": 1,
+                "tick_start": 0,
+                "tick_end": sum(t1),
+                "dist": 1600.0,
+                "sector_ticks": t1,
+                "grass_ticks": 0,
+                "damage": 0.0,
+                "dry_events": 0,
+                "parcial": False,
+            },
+            {
+                "lap": 2,
+                "tick_start": sum(t1),
+                "tick_end": sum(t1) + sum(t2),
+                "dist": 400.0,  # a fragment, not a lap distance
+                "sector_ticks": t2,
+                "grass_ticks": 0,
+                "damage": 0.0,
+                "dry_events": 0,
+                "parcial": True,
+            },
+        ],
+    }
+
+
+def _with_empty_parcial(being: dict) -> dict:
+    """The same being as the new binary would write it: one empty partial appended.
+
+    A being that closes a lap and is never ticked again still files the open lap
+    (`laps.rs::finish`). Nothing in this tool may move because of it.
+    """
+    laps = [dict(lap, parcial=False) for lap in being["laps"]]
+    last = laps[-1]["lap"] if laps else 0
+    laps.append(
+        {
+            "lap": last + 1,
+            "tick_start": 0,
+            "tick_end": 0,
+            "dist": 0.0,
+            "sector_ticks": [0] * N_SECTORS,
+            "grass_ticks": 0,
+            "damage": 0.0,
+            "dry_events": 0,
+            "parcial": True,
+        }
+    )
+    return dict(being, laps=laps)
 
 
 def self_test() -> int:
@@ -472,7 +604,56 @@ def self_test() -> int:
     est = paired_t(np.array([0.0, 0.0, 0.0]))
     check("sd = 0 e t indefinido no par identico", est["sd"] == 0.0 and est["t"] is None)
 
-    # T5 - the printed MDE formula is the one the code applies.
+    # T5 - a PARTIAL 2nd pass enters the primary metric and nothing else.
+    # 4 beings, lap 2 died after 6 sectors at 10 % faster: slots 1..5 pair up (slot 0
+    # is the dirty start, slots 6..23 were never reached on lap 2).
+    parciais = [_synthetic_being_parcial(i, 0.9, 6) for i in range(4)]
+    mp = gen_metrics(parciais, with_start_slot=False)
+    check("2a passagem parcial da r = 0.9", mp["r_mediana"] == 0.9, f"r={mp['r_mediana']}")
+    check("5 setores por ser (1..5 dos 6 alcancados)", mp["setores_por_ser"] == 5.0,
+          f"n={mp['setores_por_ser']}")
+    check("cobertura parcial contada em separado", (mp["n_r_parcial"], mp["n_r_2v"]) == (4, 0),
+          f"par={mp['n_r_parcial']} 2v={mp['n_r_2v']}")
+    check("volta parcial NAO conta como volta", mp["voltas_medianas"] == 1.0,
+          f"med={mp['voltas_medianas']}")
+    check("frac >=2V = 0 com lap 2 parcial", mp["frac_2v"] == 0.0 and mp["n_2v"] == 0)
+    check("lap2/lap1 limpo fica n/a (fragmento nao e volta)",
+          mp["lap2_lap1_ticks"] is None and mp["lap2_lap1_ticks_bruto"] is None)
+
+    # T6 - a partial that reached ONLY slot 0 gives no pair by default (and one with
+    # --com-setor-inicial), so a being that died before the 1st crossing of lap 2 is
+    # visible in the ledger without entering the metric.
+    so_largada = [_synthetic_being_parcial(i, 0.9, 1) for i in range(4)]
+    ms = gen_metrics(so_largada, with_start_slot=False)
+    check("parcial so no setor 0 nao entra na metrica",
+          ms["n_seres_r"] == 0 and ms["r_mediana"] is None)
+    check("com --com-setor-inicial ele entra com 1 setor",
+          gen_metrics(so_largada, with_start_slot=True)["setores_por_ser"] == 1.0)
+
+    # T7 - mixed population: 2 closed lap 2 at 0.9 and 2 partial at 0.8 => median 0.85
+    # over 4 beings, with the coverage split 2/2.
+    mistura = [_synthetic_being(i, 0.9) for i in range(2)] + [
+        _synthetic_being_parcial(10 + i, 0.8, 6) for i in range(2)
+    ]
+    mm = gen_metrics(mistura, with_start_slot=False)
+    check("mistura: r mediana = 0.85", abs(mm["r_mediana"] - 0.85) < 1e-12, f"r={mm['r_mediana']}")
+    check("mistura: cobertura 2 fechadas / 2 parciais",
+          (mm["n_r_2v"], mm["n_r_parcial"]) == (2, 2))
+    check("mistura: lap2/lap1 limpo vem so das fechadas", mm["lap2_lap1_ticks"] == 0.9,
+          f"={mm['lap2_lap1_ticks']}")
+
+    # T8 - THE BACK-COMPATIBILITY CHECK: the same beings with the empty partial the new
+    # binary appends must give a byte-for-byte identical metrics dict. If this fails,
+    # every u1 number already published moved.
+    novo = [_with_empty_parcial(b) for b in beings]
+    velho_m = gen_metrics(beings, with_start_slot=False)
+    check("parcial vazio nao muda NENHUM numero",
+          gen_metrics(novo, with_start_slot=False) == velho_m,
+          f"novo={gen_metrics(novo, with_start_slot=False)}")
+    check("ledger antigo (sem a chave parcial) le como fechado",
+          velho_m["n_r_2v"] == 4 and velho_m["n_r_parcial"] == 0)
+
+    # T9 - the printed MDE formula is the one the code applies.
     d = mde(0.01, 3)
     check("MDE aprox = 3.0965*sd (n=3)", abs(d["aprox"] - 3.0965 * 0.01) < 1e-5, f"={d['aprox']:.6f}")
     check("MDE exata > aproximada (t nao-central)", d["exata"] > d["aprox"], f"exata={d['exata']:.6f}")
