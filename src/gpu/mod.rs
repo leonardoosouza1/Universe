@@ -41,8 +41,15 @@
 // Each module brings a WGSL kernel + its wgpu host. The rule is the same in all of them:
 // equivalence with the CPU demonstrated before any claim of speed-up.
 pub mod brain;
+// C3 of docs/PRD-CEREBRO-NEUROMOD.md — the three method rulers the Universe did not
+// have: how many genes of a block are on (`dof`), how much a block moves the command
+// (`contribution`), and whether a block can move it at all (`sensitivity`). All three
+// are PURE and GPU-free on purpose: the sensitivity gate has to be runnable before
+// anything is queued on the shared GPU.
+pub mod contribution;
 pub mod core;
 pub mod cortex_sheet;
+pub mod dof;
 pub mod evolution;
 pub mod genome_io;
 pub mod perception;
@@ -50,6 +57,7 @@ pub mod physics;
 pub mod retina_digest;
 pub mod retina_types;
 pub mod screen_brain;
+pub mod sensitivity;
 pub mod slow_brain;
 pub mod timing;
 pub mod wave_record;
