@@ -193,6 +193,21 @@ pub struct GpuCtx {
     /// printed, or the canary passes a mechanism that is not integrating.
     pub tel_tire_temp_sq: f64,
     pub tel_tire_temp_n: u64,
+
+    // ── C0 per-tick lap telemetry (PRD `docs/PRD-CEREBRO-NEUROMOD.md` §C0) ──
+    // Three per-being vectors rewritten from scratch every `tick()`, which `main()`
+    // reads right after the call and hands to `laps::LapTracker::on_tick`. They live
+    // here, and not in `main()`, because the three values are produced at three
+    // different points INSIDE this function (grass in the proprioception block, dry in
+    // the fuel drain, damage in the hidden-damage block); recomputing them outside
+    // would be a second copy of three formulas. Length `n` after every `tick()`.
+    // Nothing in the tick reads them back — they are telemetry, not state.
+    /// Being standing on a grass voxel this tick (the value behind `prop[9]`).
+    pub lap_grass: Vec<bool>,
+    /// Hidden damage actually added to the being this tick, after the 1.0 clamp.
+    pub lap_damage: Vec<f32>,
+    /// The being's tank reached zero this tick (the `tel_dry_beings` event).
+    pub lap_dry: Vec<bool>,
 }
 
 /// Contexto físico (curvatura/velocidade/dist_parede) de UM ser neste tick, para
@@ -430,6 +445,9 @@ impl GpuCtx {
             tel_tire_temp_sum: 0.0,
             tel_tire_temp_sq: 0.0,
             tel_tire_temp_n: 0,
+            lap_grass: Vec::new(),
+            lap_damage: Vec::new(),
+            lap_dry: Vec::new(),
         })
     }
 
@@ -903,6 +921,14 @@ impl GpuCtx {
             assert!(Channel::Estagnacao.index() == 75, "prop[11] = estagnado");
         };
         let t_prep_prop = prints_this_tick.then(std::time::Instant::now);
+        // C0 lap telemetry: cleared here, so a being that is never reached by one of the
+        // three sites below reports the neutral value and not last tick's.
+        self.lap_grass.clear();
+        self.lap_grass.resize(n, false);
+        self.lap_damage.clear();
+        self.lap_damage.resize(n, 0.0);
+        self.lap_dry.clear();
+        self.lap_dry.resize(n, false);
         {
             let gs = self.grid_size_cpu as usize;
             let cs = self.cell_size_cpu;
@@ -935,6 +961,7 @@ impl GpuCtx {
                 let tt: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum::<f32>() / 4.0 / 120.0;
                 let voxel = voxel_at_cpu(p.pos[0], p.pos[2]);
                 let on_grass = if voxel == 0 { 1.0_f32 } else { 0.0 };
+                self.lap_grass[i] = voxel == 0; // C0: same voxel, no second lookup
                 // ── PROPRIOCEPÇÃO: quatro slots eram CONSTANTES ────────────────
                 //
                 // `prop[3]=1.0` (HP sempre cheio), `prop[7]=0`, `prop[8]=0`, `prop[11]=0`
@@ -1737,6 +1764,7 @@ impl GpuCtx {
                         // station (`alive: false` in the `BeingFuel` built above). If a
                         // future refill path breaks that, the label has to change too.
                         self.tel_dry_beings += 1;
+                        self.lap_dry[i] = true; // C0: same crossing, per lap
                     }
                 }
                 if states[i].life_left > 0.0 {
@@ -1960,7 +1988,11 @@ impl GpuCtx {
                     {
                         inc += 0.0004;
                     }
+                    // C0: the increment after the 1.0 clamp, which is the damage the
+                    // being actually took — `inc * dano_escala` overstates it at the cap.
+                    let damage_before = states[i].dano;
                     states[i].dano = (states[i].dano + inc * dano_escala).min(1.0);
+                    self.lap_damage[i] = states[i].dano - damage_before;
                     let d = states[i].dano;
                     s.throttle = s.throttle * (1.0 - 0.5 * d);
                     s.steer = s.steer * (1.0 - 0.3 * d);

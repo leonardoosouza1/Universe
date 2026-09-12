@@ -49,6 +49,9 @@ mod context;
 mod escada;
 mod fantasma;
 mod genome_io;
+mod laps;
+#[cfg(test)]
+mod laps_tests;
 mod painel;
 mod piloto_forja;
 mod piloto_linear;
@@ -2849,6 +2852,9 @@ fn main() {
             );
         }
         let mut voltas_reais: Vec<u32> = vec![0; n_seres];
+        // C0 (`laps.rs`): per-lap ledger of THIS generation. `voltas_reais` counts laps;
+        // this records what each one cost — ticks per sector, metres, grass, damage.
+        let mut lap_tracker = laps::LapTracker::new(n_seres);
         let mut prog_prev: Vec<f32> = (0..n_seres)
             .map(|i| world.get_track_progress(states[i].phys.pos[0], states[i].phys.pos[2]))
             .collect();
@@ -2930,6 +2936,10 @@ fn main() {
                 let dx = (p1[0] - pos_prev[i][0]) as f64;
                 let dz = (p1[2] - pos_prev[i][2]) as f64;
                 if states[i].life_left > 0.0 {
+                    // C0: one tick charged to the sector this being is in. Inside the
+                    // `life_left > 0` guard on purpose — a corpse is pinned to
+                    // `throttle=0, brake=1` and its ticks are not lap time.
+                    lap_tracker.on_tick(i, ctx.lap_grass[i], ctx.lap_damage[i], ctx.lap_dry[i]);
                     let passo = (dx * dx + dz * dz).sqrt();
                     dist_acum[i] += passo;
 
@@ -3058,6 +3068,9 @@ fn main() {
                         // se há fantasma ativo, paga o bônus de estar à frente (moeda
                         // cruzada: VIDA; assimétrico — atrás não perde, ver fantasma.rs).
                         cruzamentos[i].push((checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32));
+                        // C0: same event. `setor` is the sector the being actually
+                        // entered, not the `checkpoint + 1` index the ghost stores.
+                        lap_tracker.on_sector(i, setor, tick_i as u32);
                         if fantasma_on {
                             let v = fantasma_atual
                                 .vantagem(checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32);
@@ -3085,6 +3098,9 @@ fn main() {
                         }
                         if checkpoint[i] % total.max(1) == 0 {
                             voltas_reais[i] += 1;
+                            // C0: a lap closes where `voltas_reais` says it closes —
+                            // one definition of a lap in this binary, not two.
+                            lap_tracker.on_lap(i, tick_i as u32, dist_acum[i] as f32);
                             // FECHAR VOLTA REABASTECE — o incentivo que faltava.
                             // Na f1-world era a cada 3 voltas; aqui a cada volta, porque
                             // partindo de ZERO voltas exigir três seria um degrau que a
@@ -3498,6 +3514,25 @@ fn main() {
             v1,
             v2
         );
+
+        // ── C0: per-lap ledger and its one-line summary (PRD §C0) ──────────────
+        // `[setores]` above counts how many laps closed; the hippocampus experiment is
+        // decided by what lap 2 cost against lap 1, which only this ledger holds. The
+        // file name is padded like `evolve_best_gen<NNNN>.bin` next to it, so the whole
+        // output directory sorts by generation.
+        let lap_records = lap_tracker.finish();
+        let lap_summary = laps::summary(&lap_records);
+        println!("  {}", lap_summary.log_line(n_seres));
+        let lap_seeds: Vec<u64> = (0..n_seres)
+            .map(|i| population_seed_for(pop_seed, i))
+            .collect();
+        let lap_path = format!("{}/laps_gen{:04}.jsonl", out_dir, gen_abs);
+        if let Err(e) = laps::write_jsonl(&lap_path, &lap_records, &lap_seeds) {
+            eprintln!(
+                "[gen {:4}] WARNING: could not write {}: {}",
+                gen_abs, lap_path, e
+            );
+        }
 
         // ── Painel: fim de geração (E5) ─────────────────────────────────────────
         // Fica AQUI (não logo após `hist_med.push`, mais acima) porque é onde `checkpoint`
