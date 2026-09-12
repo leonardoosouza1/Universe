@@ -19,6 +19,9 @@
 //! neuron_period_l1:   L1      × f32 LE  (optional — same rule; P1.7, mechanism 2)
 //! neuron_threshold_l1: L1     × f32 LE  (optional — same rule; P1.7, mechanism 2)
 //! neuron_activation:  (L1+L2) × f32 LE  (optional — same rule; P1.7, mechanism 3)
+//! gates_w:            16      × f32 LE  (optional — same rule; M4 conductor gates)
+//! hip:                29      × f32 LE  (optional — same rule; C1 sector hippocampus,
+//!                                        ALWAYS LAST)
 //! ```
 //!
 //! # Compatibility with the legacy format (NO header)
@@ -98,8 +101,16 @@ pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     for a in &genome.neuron_activation {
         f.write_all(&a.to_le_bytes())?;
     }
-    // M4: the maestro's gates (16 f32) — optional block, always last.
+    // M4: the maestro's gates (16 f32) — optional block.
     for a in &genome.gates_w {
+        f.write_all(&a.to_le_bytes())?;
+    }
+    // C1 (docs/PRD-CEREBRO-NEUROMOD.md §C1): sector hippocampus, 29 f32 — optional block,
+    // ALWAYS LAST. A file written before C1 existed simply ends here, and `load_genome`
+    // falls back to all-zero, which is the truth and not an invention: that genome really
+    // did run without a hippocampus, and all-zero is exactly the "no hippocampus"
+    // behaviour (bias `[0, 0, 0]`, see `gpu::hippocampus`).
+    for a in &genome.hip {
         f.write_all(&a.to_le_bytes())?;
     }
     Ok(())
@@ -224,9 +235,21 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     };
     // M4: the maestro's gates (optional; an old genome → zeros = neutral gates of 1.0).
     let gates_w = if bytes.len() >= off + 16 * 4 {
-        read_at(&bytes, off, 16)
+        let v = read_at(&bytes, off, 16);
+        off += 16 * 4;
+        v
     } else {
         vec![0.0; 16]
+    };
+    // C1: sector hippocampus (optional; an old genome → zeros = bias [0, 0, 0], i.e. the
+    // brain that genome actually ran with). A file that stops before `gates_w` also stops
+    // before this block: `off` did not advance, so the length test below fails too and
+    // both fall back together — the blocks cannot get out of phase.
+    let n_hip = crate::gpu::hippocampus::N_HIP_GENES;
+    let hip = if bytes.len() >= off + n_hip * 4 {
+        read_at(&bytes, off, n_hip)
+    } else {
+        vec![0.0; n_hip]
     };
 
     Some(Genome {
@@ -241,6 +264,7 @@ pub fn load_genome(path: &str) -> Option<Genome> {
         neuron_threshold_l1,
         neuron_activation,
         gates_w,
+        hip,
     })
 }
 

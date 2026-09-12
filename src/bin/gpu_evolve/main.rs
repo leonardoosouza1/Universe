@@ -262,6 +262,24 @@ fn avaliar_held_out(
         std::mem::take(&mut ctx.thermal),
         std::mem::take(&mut ctx.sensor_cost),
     );
+    // C1 — the hippocampus is suspended for the held-out run, on the same side of the
+    // same line as fuel, the stations and the predator above.
+    //
+    // Suspended and not merely paused: this loop never calls `accumulate` or `cross`, so
+    // leaving the bank in place would have every being reading, tick after tick, the
+    // memory of the TRAINING track's sectors while driving a different geometry — sector
+    // 7 of one track is not sector 7 of another. Held-out asks whether the ROUTE
+    // generalises; a frozen memory of the wrong track moves that number for a reason that
+    // has nothing to do with the question. The writer goes with it so the generation's
+    // `hip_gen<N>.f32` does not gain rows from a track it does not describe.
+    //
+    // Taken and restored, not rebuilt: the 24 slots are mid-generation state that the
+    // training loop is still accumulating into.
+    let hip_saved = (
+        std::mem::take(&mut ctx.hip_mem),
+        std::mem::take(&mut ctx.hip_genes),
+        ctx.hip_writer.take(),
+    );
     let telemetry_saved = (
         ctx.tel_dry_beings,
         ctx.tel_predator_ticks,
@@ -388,7 +406,7 @@ fn avaliar_held_out(
                 // Setor SEMPRE uniforme (ver doc da função — held-out ignora
                 // `--portal-curva` de propósito, pra manter a contagem de setores
                 // comparável entre treino e held-out).
-                let setor = ((cur / ld) * N_CHECKPOINTS as f32) as u32;
+                let setor = sector_of(cur, ld);
                 let esperado = checkpoint[i] % N_CHECKPOINTS.max(1);
                 if setor == esperado {
                     checkpoint[i] += 1;
@@ -438,6 +456,9 @@ fn avaliar_held_out(
     ctx.tel_station_fuel = telemetry_saved.3;
     ctx.tel_tire_temp_sum = telemetry_saved.4;
     ctx.tel_tire_temp_n = telemetry_saved.5;
+    ctx.hip_mem = hip_saved.0;
+    ctx.hip_genes = hip_saved.1;
+    ctx.hip_writer = hip_saved.2;
 
     let mediana = |mut v: Vec<f64>| -> f64 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -835,6 +856,35 @@ fn main() {
                     universe::gpu::evolution::NEURON_ACTIVATION_MUTATE_ON
                         .store(false, Ordering::Relaxed);
                 }
+
+                // C1 (docs/PRD-CEREBRO-NEUROMOD.md §C1) — sector hippocampus. Three
+                // flags, three questions; see the doc of each static in `statics.rs`.
+                //
+                // `--hipocampo-setor` is also what turns the MUTATION of `Genome::hip` on.
+                // It has to: that block is the last consumer of `rng` in `evolve()`, so a
+                // run that does not ask for the hippocampus must not draw from it at all,
+                // or every other field of every being after the first would stop matching
+                // a run of the previous binary (see `HIPPOCAMPUS_MUTATE_ON`).
+                // The third flag below is the control arm, and it wins if it comes AFTER
+                // the first one on the command line — the same precedence rule as
+                // `--sensores-fixos` over `--sensores-evolutivos`.
+                //
+                // check-language: off -- the three flag NAMES below are Portuguese, like
+                // every other CLI flag this binary already accepts (`--sem-lento`,
+                // `--sem-memoria-neuronal`). The PRD names them; renaming them here would
+                // break the battery scripts of C4. Only the literals are exempted.
+                "--hipocampo-setor" => {
+                    HIPPOCAMPUS_ON.store(true, Ordering::Relaxed);
+                    universe::gpu::evolution::HIPPOCAMPUS_MUTATE_ON.store(true, Ordering::Relaxed);
+                }
+                "--hipocampo-apagar" => {
+                    HIPPOCAMPUS_ERASE.store(true, Ordering::Relaxed);
+                }
+                "--sem-hipocampo" => {
+                    HIPPOCAMPUS_DISABLED.store(true, Ordering::Relaxed);
+                    universe::gpu::evolution::HIPPOCAMPUS_MUTATE_ON.store(false, Ordering::Relaxed);
+                }
+                // check-language: on
                 // Cobra o recuo na fitness `centro` (ver a acumulação de `center_prog`).
                 "--centro-simetrico" => {
                     centro_simetrico = true;
@@ -2351,6 +2401,22 @@ fn main() {
         let replay_path = std::path::PathBuf::from(&out_dir)
             .join(format!("gen{gen_num:04}.replay", gen_num = gen_abs));
         let _ = std::fs::create_dir_all(&out_dir);
+        // C1 — `hip_gen<N>.f32`: being 0's memory and bias, one row per tick. Opened here
+        // so it lands in `--out` with the replay, never next to the source (rule 5 of this
+        // project's CLAUDE.md). Small: 13 f32 × ticks ≈ 1 MB at 20 000 ticks.
+        ctx.hip_writer = if hippocampus_on() {
+            let hip_path = std::path::PathBuf::from(&out_dir)
+                .join(format!("hip_gen{gen_num:04}.f32", gen_num = gen_abs));
+            match std::fs::File::create(&hip_path) {
+                Ok(f) => Some(std::io::BufWriter::new(f)),
+                Err(e) => {
+                    eprintln!("[hipocampo] could not open {}: {e}", hip_path.display());
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // TODOS os seres, não só o líder.
         //
         // Gravar só quem está na frente esconde exatamente o que interessa: por que os
@@ -2531,6 +2597,17 @@ fn main() {
                 .iter()
                 .flat_map(|g| g.gates_w.iter().copied())
                 .collect();
+        }
+        // C1 — hippocampus: genes flattened once per generation (same lifetime and same
+        // reason as `gates_w`), and the 24 slots per being REBUILT, not carried. A new
+        // generation is a new life: memory crossing the boundary is the same family of
+        // bug as `buf_cfc` inheriting the parent's CfC state, which made the champion's
+        // re-evaluation non-deterministic (see this binary's CLAUDE.md, "Recurrent state
+        // crosses the generation boundary unless it is reset").
+        if hippocampus_on() {
+            ctx.hip_genes = genomes.iter().flat_map(|g| g.hip.iter().copied()).collect();
+            ctx.hip_mem =
+                vec![universe::gpu::hippocampus::SectorMemory::new(); genomes.len().max(n_seres)];
         }
         ctx.upload_engines(&engines);
         // Banco de τ: vai separado porque τ vive no genoma, não no `SovereignEngine`.
@@ -3002,6 +3079,23 @@ fn main() {
                             states[i].joy_streak = (states[i].joy_streak - dt * 2.0).max(0.0);
                         }
                         states[i].joy_tick = joy_tick;
+                        // C1 — hippocampus: one tick of evidence about the sector being
+                        // traversed. Written HERE and not at the crossing because this is
+                        // where `vox` and `spd` already exist; a second copy of the
+                        // voxel lookup would be a second thing to keep in sync
+                        // (`docs/STYLE.md` §4), and there is no extra cost.
+                        //
+                        // All three inputs are REAL, none is a placeholder: `spd` is the
+                        // speed this tick, `vox == 0` is grass (VoxelType order in
+                        // `world.rs`, the same table `surface_factor` reads above), and
+                        // `states[i].dano` is D4's hidden damage, already normalised to
+                        // [0, 1] — `SectorMemory::accumulate` stores the DIFFERENCE
+                        // across the sector, so the slot says "this corner hurt" instead
+                        // of "I am an old car". With `--dano 0` (the default) the component is
+                        // a constant 0, which is the truth for that run, not an invention.
+                        if let Some(m) = ctx.hip_mem.get_mut(i) {
+                            m.accumulate(spd, vox == 0, states[i].dano);
+                        }
                     }
 
                     // CENTRALIZAÇÃO: distância ao eixo pelo waypoint mais próximo,
@@ -3054,13 +3148,21 @@ fn main() {
                             .count()
                             .saturating_sub(1) as u32
                     } else {
-                        ((cur / ld) * N_CHECKPOINTS as f32) as u32
+                        sector_of(cur, ld)
                     };
                     let total = if PORTAL_CURVA.load(Ordering::Relaxed) {
                         n_port
                     } else {
                         N_CHECKPOINTS
                     };
+                    // C1 — hippocampus READ index: the GEOMETRIC sector, updated every
+                    // tick. Not `checkpoint[i]`: the ratchet only advances on the next
+                    // sector in sequence, so a being that went backwards or skipped one
+                    // would be handed the memory of a sector it is not in. The write side
+                    // does follow the ratchet — see `SectorMemory::read_sector`.
+                    if let Some(m) = ctx.hip_mem.get_mut(i) {
+                        m.set_read_sector(setor);
+                    }
                     let esperado = checkpoint[i] % total.max(1);
                     if setor == esperado {
                         checkpoint[i] += 1;
@@ -3071,6 +3173,37 @@ fn main() {
                         // C0: same event. `setor` is the sector the being actually
                         // entered, not the `checkpoint + 1` index the ghost stores.
                         lap_tracker.on_sector(i, setor, tick_i as u32);
+                        // C1 — hippocampus WRITE: close the sector just traversed, open
+                        // the one just entered. `cross` writes the sector the being is
+                        // LEAVING, never `setor`, because the accumulated evidence
+                        // describes the stretch already driven and `read` expects
+                        // `mem[s]` to mean "what happened while I was in s".
+                        //
+                        // DISCREPANCY WITH THE PRD, recorded not resolved:
+                        // docs/PRD-CEREBRO-NEUROMOD.md §C1 describes this site as
+                        // "`cruzamentos[i]` receives `(setor, tick)`". It does not — the
+                        // line above pushes `checkpoint[i] % 24` AFTER the increment,
+                        // which is `(setor + 1) % 24`, the NEXT expected sector. That is
+                        // the ghost's own convention (`fantasma.rs:94-99`) and is left
+                        // alone; the hippocampus takes `setor` directly and does not read
+                        // `cruzamentos`, so the two are independent.
+                        //
+                        // α comes from the genome (`sigmoid(genes[27])`, 0.5 at birth),
+                        // per being — with the organ off the bank is empty and this is a
+                        // `None` match that costs one bounds check.
+                        if hippocampus_on() {
+                            let alpha = ctx
+                                .hip_genes
+                                .get(
+                                    i * universe::gpu::hippocampus::N_HIP_GENES
+                                        ..(i + 1) * universe::gpu::hippocampus::N_HIP_GENES,
+                                )
+                                .map(universe::gpu::hippocampus::write_rate)
+                                .unwrap_or(0.5);
+                            if let Some(m) = ctx.hip_mem.get_mut(i) {
+                                m.cross(setor, alpha);
+                            }
+                        }
                         if fantasma_on {
                             let v = fantasma_atual
                                 .vantagem(checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32);
