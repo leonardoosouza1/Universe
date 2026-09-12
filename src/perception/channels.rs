@@ -37,7 +37,7 @@
 ///
 /// # FASE CANAIS (2026-08-14) — auditoria dos 37 canais reprovados
 ///
-/// Ponto de partida: `--auditar-visao` (3 eixos) reprovou 37/192 canais em
+/// Ponto de partida: `--audit-vision` (3 eixos) reprovou 37/192 canais em
 /// `gpu_evolve` (o binário de TREINO — não usa `motor.rs`/Bevy). Investigação
 /// canal a canal, sem rodar GPU (2 baterias de currículo ocupando-a no momento —
 /// tudo abaixo é leitura de código + `cargo test`, não medição):
@@ -811,7 +811,7 @@ pub fn family_of(ch: usize) -> Option<usize> {
 // shader does nothing but `clamp(v * 127.0)`. Consequence for the integrator: the
 // reference distance of a proximity ramp is a HOST-side dose, not a constant frozen
 // in a kernel — the D7 station ramp is fixed at 300 m, and the predator ramp is the
-// `--predador-percep` dose (default 60 m, docs/SPECS_MUNDO_HOSTIL.md:114). Changing
+// `--predator-perception` dose (default 60 m, docs/SPECS_MUNDO_HOSTIL.md:114). Changing
 // a dose must never require touching WGSL.
 //
 // OWNERSHIP HANDOFF, REGISTERED DECISION (mission rule 7): channels 98 and
@@ -920,7 +920,7 @@ pub const BODY_SLOTS: &[(usize, usize, &str, &str)] = &[
         5,
         124,
         "PredatorProx",
-        "proximity to that predator: host ramp 1 - min(d/R, 1) with R = --predador-percep (default 60 m), [0,1] -> [0,127]; replaces the {0,-128} spinning flag while the flag is on",
+        "proximity to that predator: host ramp 1 - min(d/R, 1) with R = --predator-perception (default 60 m), [0,1] -> [0,127]; replaces the {0,-128} spinning flag while the flag is on",
     ),
     (
         6,
@@ -960,7 +960,7 @@ pub fn body_channel_for_slot(slot: usize) -> Option<usize> {
 /// Name of `ch` while `BODY_CHANNELS_ON` is set — the block's name when the channel
 /// belongs to it, and the ordinary `name_for(ch)` otherwise.
 ///
-/// Exists so a tool (audit, `--auditar-visao`, the distillability report) prints the
+/// Exists so a tool (audit, `--audit-vision`, the distillability report) prints the
 /// meaning the channel actually carries in the run being inspected instead of the
 /// flag-off name. Reporting `Spinning` for a channel that is carrying predator
 /// proximity is the "identical numbers where they should differ" alarm in reverse:

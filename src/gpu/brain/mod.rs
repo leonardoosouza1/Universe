@@ -67,7 +67,7 @@ pub const OUT_BETA_DEFAULT: f32 = 0.85;
 /// (2.0/127.0)` and `raw_bp = w_l1r[tid] * 2.0`) and in `engine.rs` (`raw = val * 2.0`
 /// in both loops). It became a parameter (P1.5, `docs/PLANO_EVOLUCAO.md`) for the A/B
 /// against L2 saturation (48/48 neurons active in 97.4% of the ticks, policy entropy
-/// 0.301 nats — below the 0.50 threshold). Anyone who does not pass `--ganho-saida`
+/// 0.301 nats — below the 0.50 threshold). Anyone who does not pass `--output-gain`
 /// keeps exactly this value.
 pub const OUT_GAIN_DEFAULT: f32 = 2.0;
 
@@ -720,7 +720,7 @@ impl BrainGpu {
     }
 
     /// M4: uploads the per-region gates (4 f32 per being). Called once every 8 ticks by
-    /// `tick()` when `--neuromod-regioes` is on; never calling it leaves them neutral
+    /// `tick()` when `--neuromod-regions` is on; never calling it leaves them neutral
     /// at 1.0.
     pub fn upload_gates(&self, gates: &[f32], n: usize) {
         debug_assert_eq!(gates.len(), n * 4);

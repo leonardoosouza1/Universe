@@ -5,14 +5,14 @@
 //! reference trail, not a per-lap ledger) and `ReplayFrame` only lets it be derived
 //! offline, for the few beings a run records. This is the missing ledger — one
 //! [`LapRecord`] per lap per being: the laps it CLOSED, then always one more for the lap
-//! still open when the generation ends, flagged `parcial` (`"parcial":true` on disk).
+//! still open when the generation ends, flagged `partial` (`"partial":true` on disk).
 //!
 //! It was DROPPED until 2026-09-12, and that cost the per-sector metric its coverage: a
 //! being closing lap 1 and dying mid lap 2 offered no second pass, so `u0c_valida_hip`
 //! gen 0 measured 27 of 60 beings while 54 of 60 closed lap 1. An unfinished lap has no
 //! time or distance — `tick_end - tick_start` and `dist` cover a fragment — so counting
 //! it would inflate the very ratio the experiment reads: [`summary`] and
-//! `tools/voltas.py` keep partials out of every lap COUNT and out of `lap2/lap1`. What a
+//! `tools/laps.py` keep partials out of every lap COUNT and out of `lap2/lap1`. What a
 //! partial carries honestly is `sector_ticks` — every sector it reached is a real pass.
 //!
 //! Pure: no GPU, no globals, no clock. Fed at sites that already compute the values
@@ -23,7 +23,7 @@ use crate::statics::N_CHECKPOINTS;
 use std::io::Write;
 
 /// Sector slots in a [`LapRecord`]; single source of truth is `statics::N_CHECKPOINTS`.
-/// `--portal-curva` runs more gates than this (43 curve portals against 24 uniform
+/// `--curve-portal` runs more gates than this (43 curve portals against 24 uniform
 /// sectors); [`LapTracker::on_sector`] folds with `% N_SECTORS`, the same fold the
 /// crossing site applies before pushing into `cruzamentos` (`main.rs:3060`) — under that
 /// flag several portals share a slot: totals stay right, the per-slot split does not.
@@ -36,8 +36,12 @@ pub const N_SECTORS: usize = N_CHECKPOINTS as usize;
 ///
 /// On a `partial` record `tick_end` is the last tick the being was alive and `dist` the
 /// metres of the fragment — only `sector_ticks` compares. It is the LAST field, and the
-/// only new one, so a ledger written before it still reads key for key; its wire name
-/// stays `parcial`, the vocabulary `tools/voltas.py` reports in.
+/// only new one, so a ledger written before it still reads key for key.
+///
+/// Its wire name was `parcial` for one day (2026-09-12) and is `partial` from the
+/// English pass of the same day; `tools/laps.py` reads BOTH keys and treats a record
+/// with neither as closed, so every ledger ever written still reports the same numbers.
+// check-language: allow -- the sentence above quotes the retired wire name.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LapRecord {
     pub lap: u32,
@@ -48,7 +52,6 @@ pub struct LapRecord {
     pub grass_ticks: u32,
     pub damage: f32,
     pub dry_events: u32,
-    #[serde(rename = "parcial")]
     pub partial: bool,
 }
 
@@ -154,11 +157,11 @@ impl LapTracker {
         open.dry_events += u32::from(dry);
     }
 
-    /// Every lap per being: the closed ones, then the still-open one as a `parcial`
+    /// Every lap per being: the closed ones, then the still-open one as a `partial`
     /// record — ALWAYS, so a being has `closed + 1` records and coverage is readable in
     /// the ledger instead of inferred from a missing line. A being that never crossed a
     /// sector writes a partial holding only slot 0 (pre-crossing time, which
-    /// `tools/voltas.py` drops by default); one that never moved, a partial of zeros.
+    /// `tools/laps.py` drops by default); one that never moved, a partial of zeros.
     /// Both are measurements — writing nothing is what left the old ledger unable to
     /// tell "reached no sector" from "never ran".
     pub fn finish(self) -> Vec<Vec<LapRecord>> {
@@ -244,7 +247,7 @@ fn median(v: &mut [f32]) -> Option<f32> {
 }
 
 /// Writes the ledger to `<out>/laps_gen<N>.jsonl` as JSON Lines, one object per being:
-/// `{"being":i,"seed":s,"laps":[…]}` — `laps` always ends with the `parcial` record, so
+/// `{"being":i,"seed":s,"laps":[…]}` — `laps` always ends with the `partial` record, so
 /// it is never empty, not even for a being that never moved; `seeds[i]` is the seed
 /// (`population_seed_for`), a missing entry written as `0`. The two scalars are formatted
 /// by hand (both numeric, nothing to escape) to keep that key order — `json!` sorts.

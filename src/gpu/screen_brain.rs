@@ -6,7 +6,7 @@
 //!
 //! The Task 5 review (finding C1) measured the first cut's parity floor — 0.053, flat
 //! across ticks 5000-14000 rather than decaying — and pointed at `buf_gates` being
-//! left neutral. `--neuromod-regioes` was on for the recording this screen calibrates
+//! left neutral. `--neuromod-regions` was on for the recording this screen calibrates
 //! against, and `run.log`'s own end-of-generation telemetry puts the gates within
 //! roughly ±16% of neutral (backed out from the reserve-depleted values printed at
 //! `gpu_evolve/main.rs:3631`), so leaving the gate at 1.0 was always scoring an
@@ -87,7 +87,7 @@ pub struct ScreenBrain {
     /// `[1.0; 4]` (neutral) — see the module doc's note on the one-tick lag.
     gate: Vec<[f32; 4]>,
     /// Per-genome: run the M4 integral for it at all? False when either
-    /// `--neuromod-regioes` was off for the recording being screened, or this genome
+    /// `--neuromod-regions` was off for the recording being screened, or this genome
     /// has no `gates_w` (mirrors `context.rs`'s own
     /// `NEUROMOD_REGIOES.load() && !gates_w.is_empty()` gate).
     active: Vec<bool>,

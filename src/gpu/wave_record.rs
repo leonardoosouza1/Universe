@@ -11,11 +11,11 @@
 //! forward pass and the recorded intent both depend on ten runtime flags
 // check-language: off -- quoting gpu_evolve's existing (Portuguese) CLI flag names
 // verbatim, for anyone grepping this doc against `main.rs`'s actual flag table.
-//! (`--out-beta`, `--ganho-saida`, `--norm-l2-por-desvio`/`--sem-norm-l2-por-desvio`,
-//! `--ruido-sensorial`, `--ruido-dropout`, `--sem-memoria-neuronal`,
-//! `--sem-periodo-neuronal`, `--sem-limiar-neuronal`, `--sem-ativacao-heterogenea`,
-//! `--neuromod-regioes`) plus `dt`, `--brain-skip` and whether a ghost pilot
-//! (`--piloto-forja`/`--piloto-formula`) was overwriting the recorded commands.
+//! (`--out-beta`, `--output-gain`, `--norm-l2-by-deviation`/`--no-norm-l2-by-deviation`,
+//! `--sensory-noise`, `--dropout-noise`, `--no-neuron-memory`,
+//! `--no-neuron-period`, `--no-neuron-threshold`, `--no-heterogeneous-activation`,
+//! `--neuromod-regions`) plus `dt`, `--brain-skip` and whether a ghost pilot
+//! (`--pilot-forge`/`--pilot-formula`) was overwriting the recorded commands.
 // check-language: on
 //! None of that lived in the file before this header: the screen had to guess `out_beta`
 //! (`--out-beta` on the screen's own CLI), and guessing is exactly what produced a
@@ -105,33 +105,33 @@ pub struct WaveConfig {
     pub dt: f32,
     /// `--out-beta`. `BrainGpu::out_beta` — output-fatigue shrinkage constant.
     pub out_beta: f32,
-    /// `--ganho-saida`. `BrainGpu::out_gain`.
+    /// `--output-gain`. `BrainGpu::out_gain`.
     pub out_gain: f32,
-    /// `--norm-l2-por-desvio` (1) / `--sem-norm-l2-por-desvio` (0). `BrainGpu::norm_l2_by_std`.  // check-language: allow -- quoting the flag name verbatim
+    /// `--norm-l2-by-deviation` (1) / `--no-norm-l2-by-deviation` (0). `BrainGpu::norm_l2_by_std`.  // check-language: allow -- quoting the flag name verbatim
     pub norm_l2_by_std: u32,
-    /// `--ruido-sensorial`. `BrainGpu::noise_sigma`, in i8 channel units. Non-zero
+    /// `--sensory-noise`. `BrainGpu::noise_sigma`, in i8 channel units. Non-zero
     /// makes a recording irreproducible at ANY setting (see `dropout_prob`) because the
     /// recorder captures the pre-noise wave (`percept.buf_output()`) while the commands
     /// were produced from the post-noise wave inside the shader.
     pub noise_sigma: f32,
-    /// `--ruido-dropout`. `BrainGpu::dropout_prob`. Same irreproducibility as
+    /// `--dropout-noise`. `BrainGpu::dropout_prob`. Same irreproducibility as
     /// `noise_sigma`, same reason.
     pub dropout_prob: f32,
-    /// `--sem-memoria-neuronal` (1 = mechanism forced OFF). `BrainGpu::mem_off`.  // check-language: allow -- quoting the flag name verbatim
+    /// `--no-neuron-memory` (1 = mechanism forced OFF). `BrainGpu::mem_off`.  // check-language: allow -- quoting the flag name verbatim
     pub mem_off: u32,
-    /// `--sem-periodo-neuronal` (1 = forced OFF). `BrainGpu::period_off`.  // check-language: allow -- quoting the flag name verbatim
+    /// `--no-neuron-period` (1 = forced OFF). `BrainGpu::period_off`.  // check-language: allow -- quoting the flag name verbatim
     pub period_off: u32,
-    /// `--sem-limiar-neuronal` (1 = forced OFF). `BrainGpu::threshold_off`.  // check-language: allow -- quoting the flag name verbatim
+    /// `--no-neuron-threshold` (1 = forced OFF). `BrainGpu::threshold_off`.  // check-language: allow -- quoting the flag name verbatim
     pub threshold_off: u32,
-    /// `--sem-ativacao-heterogenea` (1 = forced OFF). `BrainGpu::activation_off`.  // check-language: allow -- quoting the flag name verbatim
+    /// `--no-heterogeneous-activation` (1 = forced OFF). `BrainGpu::activation_off`.  // check-language: allow -- quoting the flag name verbatim
     pub activation_off: u32,
-    /// `--neuromod-regioes` (1 = M4 region gates active). When set, `buf_gates` is not
+    /// `--neuromod-regions` (1 = M4 region gates active). When set, `buf_gates` is not
     /// neutral — a screen that leaves it at 1.0 is scoring an approximation, not the
     /// literal recording; see `docs/` Task 5 reports for the measured effect.
     pub neuromod_regioes: u32,
     /// `--brain-skip` (ticks between brain firings; 1 = fires every tick, the default).
     pub brain_skip: u32,
-    /// 1 if `--piloto-forja` or `--piloto-formula` was active. Either one overwrites
+    /// 1 if `--pilot-forge` or `--pilot-formula` was active. Either one overwrites
     /// `intents[0]` (`context.rs:1693,1716`) BEFORE the recorder reads it
     /// (`context.rs:2022`) — the recorded "champion commands" would be a ghost
     /// pilot's output, not the brain's. A recording made this way cannot be screened
@@ -139,7 +139,7 @@ pub struct WaveConfig {
     pub pilot_active: u32,
 }
 
-/// Ticks recorded so far. Reserved for the writer side (`--gravar-onda`) to report a
+/// Ticks recorded so far. Reserved for the writer side (`--record-wave`) to report a
 /// row count without re-deriving it from bytes written; not yet read by anything.
 pub struct WaveRecord {
     pub ticks: usize,
@@ -192,7 +192,7 @@ pub fn read_all(path: &str) -> std::io::Result<(Vec<f32>, Vec<[f32; 3]>, WaveCon
             "{path}: no UWAV header found. This is a legacy recording (or not a wave \
              recording at all) — its runtime brain parameters (out_beta, noise, \
              neuromod-regioes, brain_skip, …) are unknown and CANNOT be safely assumed. \
-             Re-record it with the current gpu_evolve (--gravar-onda writes the header \
+             Re-record it with the current gpu_evolve (--record-wave writes the header \
              now)."
         )));
     }
@@ -217,14 +217,14 @@ pub fn read_all(path: &str) -> std::io::Result<(Vec<f32>, Vec<[f32; 3]>, WaveCon
              at any setting. The recorder captures the PRE-noise wave while the commands \
              were produced from the POST-noise wave inside the shader; there is no config \
              that makes replaying the pre-noise wave match. Re-record without \
-             --ruido-sensorial/--ruido-dropout.",
+             --sensory-noise/--dropout-noise.",
             config.noise_sigma, config.dropout_prob
         )));
     }
     if config.pilot_active != 0 {
         return Err(invalid_data(format!(
-            "{path}: recorded with a ghost pilot active (--piloto-forja or \
-             --piloto-formula) — the recorded commands are the pilot's output, not the \
+            "{path}: recorded with a ghost pilot active (--pilot-forge or \
+             --pilot-formula) — the recorded commands are the pilot's output, not the \
              brain's. Re-record without either flag."
         )));
     }

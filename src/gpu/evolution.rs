@@ -40,7 +40,7 @@
 //! `math/linalg.rs`), the factor hits the target exactly, not approximately.
 //!
 //! Controlled by [`SPECTRAL_INIT_ON`] (default: on) — the A/B control arm is
-//! `--sem-init-espectral` in `gpu_evolve`. It only touches `l1`: L2 does not enter the alarm
+//! `--no-spectral-init` in `gpu_evolve`. It only touches `l1`: L2 does not enter the alarm
 //! (`collect_activation_stats("L2", ..., w_rec: None, ...)` in `gpu_evolve/main.rs`),
 //! so there is no "what the alarm measures" for L2 to target. `load_genome` (genome coming from
 //! disk) NEVER goes through `Genome::random` — it builds the `Genome` directly via struct
@@ -57,7 +57,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 ///
 /// Default `true` (ON) — being born with spectral gain ≈ `thresholds::SPECTRAL_INIT_TARGET`
 /// is the recommended behavior, not a side experiment. `gpu_evolve
-/// --sem-init-espectral` turns it off (`store(false, ...)`) to run the A/B control
+/// --no-spectral-init` turns it off (`store(false, ...)`) to run the A/B control
 /// arm: a population born with the raw i.i.d. σ=0.30, no correction — the same brain
 /// from before hypothesis P0.5.
 ///
@@ -145,7 +145,7 @@ pub struct Genome {
     // allow it. `gpu_evolve --sem-X` turns off the corresponding atomic (mutation
     // freezes at neutral for the rest of the run) AND forces `BrainGpu::*_off = true`
     // (the shader ignores whatever the genome carries, even if inherited from a
-    // `--retomar` predating the flag) — the strongest possible control arm.
+    // `--resume` predating the flag) — the strongest possible control arm.
     /// Mechanism 1 (per-neuron memory): alpha of the EMA filter
     /// `h[n] = h[n-1]·alfa + x[n]·(1-alfa)`, one per neuron of L1(96)+L2(48).
     /// Born 0.0 (no memory = identical to today). Clamp in `evolve()`: [0, 0.95] —
@@ -180,7 +180,7 @@ pub struct Genome {
     /// + 1 read-gain gene. See `gpu::hippocampus` for the formulas.
     ///
     /// Born all-zero, which makes the bias `[0, 0, 0]` bit for bit for ANY memory content
-    /// — the birth-neutral contract below. Mutation is OFF unless `--hipocampo-setor`
+    /// — the birth-neutral contract below. Mutation is OFF unless `--hippocampus-sector`
     /// asks for it (`HIPPOCAMPUS_MUTATE_ON`), the same stronger gate `sensors` uses and
     /// for a stronger reason here: this block is the LAST consumer of `rng` in `evolve()`,
     /// so mutating it by default would shift the random stream of the NEXT child and every
@@ -201,21 +201,21 @@ pub const N_L2_NEURONS: usize = L2_NEURONS;
 /// P1.7 — control arm of mechanism 1's MUTATION (memory). Default `true`:
 /// `evolve()` mutates `neuron_alpha` like any other heritable field (same
 /// precedent as the τ bank, mutated unconditionally). `gpu_evolve
-/// --sem-memoria-neuronal` turns it off — the field stays FROZEN at 0.0 (the birth
+/// --no-neuron-memory` turns it off — the field stays FROZEN at 0.0 (the birth
 /// value) for the rest of the run, and `BrainGpu::mem_off` is turned on along with it (the shader
-/// ignores the field even if an earlier `--retomar` had already mutated something).
+/// ignores the field even if an earlier `--resume` had already mutated something).
 pub static NEURON_MEM_MUTATE_ON: AtomicBool = AtomicBool::new(true);
-/// P1.7 — same for mechanism 2, period sub-part (`--sem-periodo-neuronal`).
+/// P1.7 — same for mechanism 2, period sub-part (`--no-neuron-period`).
 pub static NEURON_PERIOD_MUTATE_ON: AtomicBool = AtomicBool::new(true);
-/// P1.7 — same for mechanism 2, threshold sub-part (`--sem-limiar-neuronal`).
+/// P1.7 — same for mechanism 2, threshold sub-part (`--no-neuron-threshold`).
 pub static NEURON_THRESHOLD_MUTATE_ON: AtomicBool = AtomicBool::new(true);
-/// P1.7 — same for mechanism 3, heterogeneous activation (`--sem-ativacao-heterogenea`).
+/// P1.7 — same for mechanism 3, heterogeneous activation (`--no-heterogeneous-activation`).
 pub static NEURON_ACTIVATION_MUTATE_ON: AtomicBool = AtomicBool::new(true);
 
 /// C1 — does `evolve()` mutate `Genome::hip`? Default **false**, unlike every P1.7 atomic
 /// above.
 ///
-/// `gpu_evolve --hipocampo-setor` turns it on; `--sem-hipocampo` turns it back off (and  // check-language: allow -- quoting the flag name verbatim
+/// `gpu_evolve --hippocampus-sector` turns it on; `--no-hippocampus` turns it back off (and  // check-language: allow -- quoting the flag name verbatim
 /// forces the bias to zero), so the control arm carries the same genome layout with the
 /// block frozen at its birth value.
 ///
@@ -350,16 +350,16 @@ pub const SENSOR_MUTATE_FRAC: f32 = 0.08;
 ///   (every genome is born identical — today's hardcodes) and `evolve()` NEVER mutates the
 ///   field. The behavior of any battery that does not pass a new flag is
 ///   bit-identical to before this change existed.
-/// - On (`--sensores-evolutivos`): `Genome::random` draws within
+/// - On (`--evolving-sensors`): `Genome::random` draws within
 ///   `SENSOR_RANGES` (heterogeneous from birth — different from the τ precedent,
 ///   which only varies via opt-in `randomize_tau`; here the task itself asked for a direct draw
 ///   in `Genome::random`) and `evolve()` mutates the field every generation.
 ///
-/// `--sensores-fixos` forces it back to `false` — it is the literal name requested by the
+/// `--fixed-sensors` forces it back to `false` — it is the literal name requested by the
 /// task. Even though it is already the default today, existing as a flag allows documenting the
 /// intent explicitly in a command (and it wins if it appears AFTER
-/// `--sensores-evolutivos` on the command line), the same way `--sem-lento` and
-/// `--sem-init-espectral` are the explicit control arms of other experiments.
+/// `--evolving-sensors` on the command line), the same way `--no-slow` and
+/// `--no-spectral-init` are the explicit control arms of other experiments.
 ///
 /// # What does NOT inherit from this field (CPU/GPU parity documented, not hidden)
 ///
@@ -513,7 +513,7 @@ impl Genome {
         // exactly, not by trial. It only touches L1: it is the only matrix the alarm
         // audits (L2 uses `w_rec: None` in the `collect_activation_stats` call).
         //
-        // `SPECTRAL_INIT_ON` is the A/B control arm (`--sem-init-espectral`,
+        // `SPECTRAL_INIT_ON` is the A/B control arm (`--no-spectral-init`,
         // default ON). A genome coming from disk (`load_genome`) never passes through here.
         if SPECTRAL_INIT_ON.load(Ordering::Relaxed) {
             let medido = linalg::largest_singular_value(&l1, L1_NEURONS, SENSORY_WAVE_SIZE);
@@ -598,21 +598,21 @@ impl Genome {
     }
 
     /// The decay-rate bank this genome actually uploads: `tau` seen through the
-    /// `--banco-tau` parametrisation in force (`crate::tau_bank`).
+    /// `--tau-bank` parametrisation in force (`crate::tau_bank`).
     ///
     /// Under the default `livre` it is a copy of `tau`; under `log-fixo`/`espectral` it
     /// is rebuilt from 1 or 2 of the genes. `tau` itself is NEVER rewritten — a
     /// checkpoint written in one mode reloads in any other, and the mutation operator
     /// below keeps seeing the same 96 genes whichever lens is on top.
     pub fn effective_tau(&self) -> Vec<f32> {
-        crate::tau_bank::banco_tau(crate::tau_bank::mode(), &self.tau)
+        crate::tau_bank::tau_bank(crate::tau_bank::mode(), &self.tau)
     }
 
     /// Flattens the τ bank of several genomes into the layout `BrainGpu::upload_tau` expects.
     ///
     /// `livre` (the default) keeps the original `extend_from_slice(&g.tau)` path, so the
     /// control arm allocates nothing extra and is byte-identical to the code that
-    /// predates `--banco-tau`.
+    /// predates `--tau-bank`.
     pub fn pack_taus(genomes: &[Genome]) -> Vec<f32> {
         let mode = crate::tau_bank::mode();
         let mut out = Vec::with_capacity(genomes.len() * N_CFC_CHANNELS);
@@ -620,7 +620,7 @@ impl Genome {
             if mode == crate::tau_bank::TauBankMode::Free {
                 out.extend_from_slice(&g.tau);
             } else {
-                out.extend_from_slice(&crate::tau_bank::banco_tau(mode, &g.tau));
+                out.extend_from_slice(&crate::tau_bank::tau_bank(mode, &g.tau));
             }
         }
         out
@@ -776,7 +776,7 @@ pub struct EvoParams {
     /// Rows 0..l2_linhas_lidas remain mutable.
     pub congela_l2_cegas: bool,
     /// How many L2 rows have a real consumer IN THE CURRENT MODE: 3 (throttle/steer/
-    /// brake) with gearbox locked/auto, 5 with `--cambio neural` (intent[3]/[4]).
+    /// brake) with gearbox locked/auto, 5 with `--gearbox neural` (intent[3]/[4]).
     /// Finding from the P1.9 battery: freezing with the fixed value 5 left rows 3-4
     /// mutable even with no reader in locked mode (default).
     pub l2_linhas_lidas: usize,
@@ -857,7 +857,7 @@ pub struct GenResult {
 /// Returns the new generation of genomes in the same order (0..pop_size).
 ///
 /// `pop_seed` (the CLI's `--seed`) ENTERS the mutation seed. Previously it did
-/// not: the seed was pure f(generation), and under `--retomar` (population
+/// not: the seed was pure f(generation), and under `--resume` (population
 /// derived from the champion, no `Genome::random`) two executions with `--seed 77` and
 /// `--seed 31` produced byte-identical genomes in every generation (measured via
 /// md5sum in pos-auditoria-s{77,31}, gens 0/5/10/15/18/19). `pop_seed=0`
@@ -1020,7 +1020,7 @@ pub fn evolve(
         // Rate 3× that of the weights for the same reason as the slow brain: 96 values against
         // 26 thousand, and at the base rate the τ bank would barely be touched in a lifetime of 30 generations.
         //
-        // This rule is UNCHANGED by `--banco-tau` (`crate::tau_bank`), and that is the
+        // This rule is UNCHANGED by `--tau-bank` (`crate::tau_bank`), and that is the
         // point: under `log-fixo` only `tau[0]` reaches the GPU and under `espectral`
         // only `tau[0..2]`, but those genes mutate here exactly as every other channel
         // does — multiplicative in log, σ 0.20, rate 3×p, clamped to [0.25, 40] s⁻¹. The
@@ -1135,7 +1135,7 @@ pub fn evolve(
         //
         // Gated by `HIPPOCAMPUS_MUTATE_ON`, which is off by default (see its doc): when
         // off, ZERO draws are taken here, so `rng` reaches the next child in exactly the
-        // state it used to. That is what makes `--sem-hipocampo` a control arm with the  // check-language: allow -- quoting the flag name verbatim
+        // state it used to. That is what makes `--no-hippocampus` a control arm with the  // check-language: allow -- quoting the flag name verbatim
         // same genome layout rather than merely a similar one.
         //
         // Own rate and σ (`params.hip_p`, `params.hip_sigma`; flags `--hip-p`/`--hip-sigma`),
@@ -1418,7 +1418,7 @@ mod tests {
         );
     }
 
-    /// `--l2-congelar-cegas`: L2 rows 5..48 do not mutate; 0..5 mutate normally.
+    /// `--l2-freeze-blind`: L2 rows 5..48 do not mutate; 0..5 mutate normally.
     #[test]
     fn evolve_congela_linhas_cegas_de_l2() {
         let n = 10;
@@ -1834,19 +1834,19 @@ mod tests {
         for g in &genomes2 {
             assert!(
                 g.neuron_alpha.iter().all(|&a| a == 0.0),
-                "--sem-memoria-neuronal should freeze alpha at 0.0"
+                "--no-neuron-memory should freeze alpha at 0.0"
             );
             assert!(
                 g.neuron_period_l1.iter().all(|&p| p == 1.0),
-                "--sem-periodo-neuronal should freeze period at 1.0"
+                "--no-neuron-period should freeze period at 1.0"
             );
             assert!(
                 g.neuron_threshold_l1.iter().all(|&t| t == 0.0),
-                "--sem-limiar-neuronal should freeze threshold at 0.0"
+                "--no-neuron-threshold should freeze threshold at 0.0"
             );
             assert!(
                 g.neuron_activation.iter().all(|&a| a == 0.0),
-                "--sem-ativacao-heterogenea should freeze activation at 0.0"
+                "--no-heterogeneous-activation should freeze activation at 0.0"
             );
         }
     }
@@ -1974,7 +1974,7 @@ mod tests {
     /// C1 — the `hip` block has its OWN mutation rate/σ (`hip_p`, `hip_sigma`), gated by
     /// `HIPPOCAMPUS_MUTATE_ON`. With p = 1 and σ = 0.2 every one of the 29 genes of a
     /// mutated child moves away from its birth value of 0.0; with the gate off (the
-    /// `--sem-hipocampo` control) none does, and the OTHER blocks of that child are  // check-language: allow -- quoting the flag name verbatim
+    /// `--no-hippocampus` control) none does, and the OTHER blocks of that child are  // check-language: allow -- quoting the flag name verbatim
     /// bit-identical between the two runs (the hip block is the last consumer of `rng`).
     #[test]
     fn evolve_hip_bloco_tem_taxa_propria_e_portao() {

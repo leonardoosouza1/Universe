@@ -58,7 +58,7 @@ const FORMAT_VERSION: u32 = 2;
 /// the slow brain's 1091 weights when reloaded through `--carregar`: it came back with the
 /// default initialisation, identical for everyone. Generations of selection over modulation
 /// were silently discarded on every resume. (`--carregar` is the flag name from when the
-/// bug happened; the resume flag today is `--retomar`, parsed at
+/// bug happened; the resume flag today is `--resume`, parsed at
 /// `src/bin/gpu_evolve/main.rs:741`.)
 pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     use std::io::Write;

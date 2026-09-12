@@ -48,9 +48,9 @@ pub struct GpuCtx {
     /// LABORATÓRIO DE OBSERVAÇÃO (`--observar`): destino da gravação por tick do
     /// ser 0 — ver o bloco de captura em `tick()` para o layout (394 f32/linha).
     pub obs_writer: Option<std::io::BufWriter<std::fs::File>>,
-    /// `--gravar-onda <path>`: raw 192-channel sensory-wave recording for being 0, one
+    /// `--record-wave <path>`: raw 192-channel sensory-wave recording for being 0, one
     /// row per tick (`gpu::wave_record`, 195 f32/row). Records the SAME being
-    /// `--observar` does, so the two files line up tick for tick — that alignment is
+    /// `--observe` does, so the two files line up tick for tick — that alignment is
     /// what the Task 5 open-loop screen cross-checks against. Forces a per-tick
     /// readback of the whole wave buffer (`percept.read_after_submit`), so it must stay
     /// off by default; once Phase 1 (the open-loop brain-kernel screen) exists, using
@@ -100,7 +100,7 @@ pub struct GpuCtx {
     /// `gpu::retina_digest` para o antes/depois completo.
     pub retina_digest: RetinaDigestGpu,
     pub capacity: usize,
-    /// Per-kernel GPU timing (`--perfil-kernel`, gated by `statics::perfil_kernel()`).
+    /// Per-kernel GPU timing (`--kernel-profile`, gated by `statics::perfil_kernel()`).
     /// `None` when the device lacks `TIMESTAMP_QUERY` (checked once at construction).
     /// Lives here rather than in `statics.rs` because it owns a `QuerySet` and two
     /// buffers — device-backed state, not a CLI knob (see the ownership table in
@@ -148,19 +148,19 @@ pub struct GpuCtx {
     // process global is how one run contaminates the next inside the same process.
     // All four are inert at their defaults (empty vector / `None` / 0), so a run
     // without the new flags takes exactly the old code path.
-    /// D7 energy stations of the CURRENT generation. Empty = `--recurso-escasso` off.
+    /// D7 energy stations of the CURRENT generation. Empty = `--resource-scarce` off.
     /// Placed by `main()` once per generation (same seed ⇒ same field for every being
     /// of the generation, the D2 comparability contract); drained and recharged here.
     pub stations: Vec<universe::resources::EnergyStation>,
     /// Dose of the station field, rebuilt by `main()` from the `--recurso-*` statics.
     pub station_cfg: universe::resources::StationConfig,
-    /// Scripted predator of the CURRENT generation. `None` = `--predador` off.
+    /// Scripted predator of the CURRENT generation. `None` = `--predator` off.
     pub predator: Option<universe::predator::Predator>,
-    /// Dose of the predator, rebuilt by `main()` from the `--predador*` statics.
+    /// Dose of the predator, rebuilt by `main()` from the `--predator*` statics.
     pub predator_params: universe::predator::PredatorParams,
-    /// Tick index below which the predator does not drain — `--predador-gracia`.
+    /// Tick index below which the predator does not drain — `--predator-grace`.
     pub predator_grace_ticks: usize,
-    /// Per-being tyre-thermal parameters. Empty = `--pneu-termico` off. One entry per
+    /// Per-being tyre-thermal parameters. Empty = `--tire-thermal` off. One entry per
     /// being because the optimum is heterogeneous; each entry is DC-normalised
     /// separately, so selection sees the behaviour and not the parameter.
     pub thermal: Vec<universe::tire_thermal::ThermalParams>,
@@ -213,7 +213,7 @@ pub struct GpuCtx {
     // STATE, not dose — same reasoning as the hostile-world block above, and the same
     // consequence: the three CLI knobs live in `statics.rs`, the 24 memory slots per
     // being live here. All three fields are inert at their defaults (empty vectors,
-    // `None`), so a run without `--hipocampo-setor` takes exactly the old code path.
+    // `None`), so a run without `--hippocampus-sector` takes exactly the old code path.
     /// One hippocampus per being, index-aligned with `states`. Empty = the organ was
     /// never switched on this run. Rebuilt (not carried) at the start of every
     /// generation by `main()`: memory that survives a generation boundary would make the
@@ -224,7 +224,7 @@ pub struct GpuCtx {
     /// change inside a generation, so flattening them once per generation beats reaching
     /// into the genome on every tick.
     pub hip_genes: Vec<f32>,
-    /// `--hipocampo-setor`: per-generation `hip_gen<N>.f32` recording of being 0, one row
+    /// `--hippocampus-sector`: per-generation `hip_gen<N>.f32` recording of being 0, one row
     /// of `HIP_OBS_COLS` f32 per tick. A SEPARATE file from `obs.f32` on purpose —
     /// `obs.f32` is 394 fixed columns and several tools index into it by offset.
     pub hip_writer: Option<std::io::BufWriter<std::fs::File>>,
@@ -469,7 +469,7 @@ impl GpuCtx {
             lap_damage: Vec::new(),
             lap_dry: Vec::new(),
             // C1: inert until `main()` sizes them, which it only does with
-            // `--hipocampo-setor`. `hippocampus_bias` returns [0, 0, 0] on an empty bank.
+            // `--hippocampus-sector`. `hippocampus_bias` returns [0, 0, 0] on an empty bank.
             hip_mem: Vec::new(),
             hip_genes: Vec::new(),
             hip_writer: None,
@@ -516,7 +516,7 @@ impl GpuCtx {
     /// not active for this run, when the bank has not been sized, or when the genes are
     /// all zero (`gpu::hippocampus::bias`, identity contract). Adding an exact `+0.0` to a
     /// finite command leaves its bits untouched, which is what keeps a run without
-    /// `--hipocampo-setor` identical to a run of the binary that predates C1.
+    /// `--hippocampus-sector` identical to a run of the binary that predates C1.
     ///
     /// (The one IEEE exception, recorded rather than hidden: `-0.0 + 0.0` is `+0.0`. To
     /// reach it, `kan_eval` and the slow brain's bias would both have to be exactly
@@ -558,7 +558,7 @@ impl GpuCtx {
             return false;
         }
 
-        // `--perfil-kernel <N>`: this single check gates EVERY instrumentation side
+        // `--kernel-profile <N>`: this single check gates EVERY instrumentation side
         // effect in this function -- `begin_frame`, every `mark_begin`/`resolve` call,
         // this CPU `Instant` (which wraps the WHOLE function body, so `gaps` at the end
         // means what it says), and physics's own CPU-wall measurement further down. A
@@ -635,7 +635,7 @@ impl GpuCtx {
             use bevy::math::Vec2;
             let pos2 = |p: &PhysicsStateGpu| Vec2::new(p.pos[0], p.pos[2]);
 
-            // 1. TYRE THERMAL (`--pneu-termico`) — see `universe::tire_thermal`.
+            // 1. TYRE THERMAL (`--tire-thermal`) — see `universe::tire_thermal`.
             //
             // The grip factor is applied through `phys.env_grip`, which is per being
             // and multiplies `mu_base` in the LIVE kernel (`physics_b.wgsl:141`). The
@@ -679,7 +679,7 @@ impl GpuCtx {
                 }
             }
 
-            // 2. D7 STATIONS (`--recurso-escasso`) — `universe::resources`.
+            // 2. D7 STATIONS (`--resource-scarce`) — `universe::resources`.
             //
             // One `step` call per tick, never `try_drain` + `recharge_all` separately
             // (the module contract): `step` drains in index order and recharges once,
@@ -704,7 +704,7 @@ impl GpuCtx {
                 }
             }
 
-            // 3. PREDATOR (`--predador`) — `universe::predator`.
+            // 3. PREDATOR (`--predator`) — `universe::predator`.
             //
             // Paid in LIFE, never in fitness: the Crossed-Currency Law, the same choice
             // the ghost already encodes (`fantasma.rs:9-18`). Charging it in distance
@@ -744,7 +744,7 @@ impl GpuCtx {
             // thermal model is off, which is what makes this flag's A/B readable.
             //
             // The host normalises and the shader only encodes, so every reference
-            // distance here is a host-side dose: changing `--predador-percep` never
+            // distance here is a host-side dose: changing `--predator-perception` never
             // touches WGSL (`perception/channels.rs`, BODY BLOCK header).
             if body_on {
                 let cap = self.station_cfg.capacity.max(1e-6);
@@ -1077,7 +1077,7 @@ impl GpuCtx {
                 // Both are SOURCE MOVES, not new signals: with the thermal model off,
                 // slot 6 carries the exact `tt` that prop[6] carries and slot 7 the
                 // exact `temp_motor` that prop[7] carries, so ch70/ch71 are
-                // bit-identical with the flag on. That is what lets `--interocepcao`
+                // bit-identical with the flag on. That is what lets `--interoception`
                 // be A/B-ed as "the four genuinely new signals", instead of as "eight
                 // channels changed at once".
                 if body_on {
@@ -1598,14 +1598,14 @@ impl GpuCtx {
             cpu_phases.push(("cpu.poll", t.elapsed().as_secs_f32() * 1000.0));
         }
 
-        // `--perfil-kernel <N>`: print the GPU-kernel table every N ticks. This covers
+        // `--kernel-profile <N>`: print the GPU-kernel table every N ticks. This covers
         // everything recorded into the single encoder above (retina through slow);
         // `physics.step` is NOT here — it opens its own encoder and does its own
         // synchronous submit+readback later in this function, so no timestamp written
         // from this encoder can reach inside it. It is measured separately, on the
         // CPU, right around that call — see the `[perfil] physics.step` print below.
         if prints_this_tick && self.timer.is_none() {
-            // `--perfil-kernel` was asked for but this device never got a `GpuTimer`
+            // `--kernel-profile` was asked for but this device never got a `GpuTimer`
             // (no `Features::TIMESTAMP_QUERY` at construction, see `GpuCtx::new`) — say
             // so explicitly instead of printing nothing, which would look identical to
             // the flag being off.
@@ -1783,7 +1783,7 @@ impl GpuCtx {
                     states[i].life_left -=
                         self.fiacao_custo[i.min(self.fiacao_custo.len() - 1)] as f64;
                 }
-                // D8 — sensory subscription (`--custo-sensor`, see statics.rs).
+                // D8 — sensory subscription (`--sensor-cost`, see statics.rs).
                 //
                 // Same shape and same site as the wiring cost above, and deliberately
                 // so: both are per-being constants for the whole generation because the
@@ -2238,17 +2238,17 @@ impl GpuCtx {
             }
         }
 
-        // ── OPEN-LOOP WAVE RECORDING (`--gravar-onda`) ──────────────────────────
+        // ── OPEN-LOOP WAVE RECORDING (`--record-wave`) ──────────────────────────
         // Records the raw 192-channel sensory wave for being 0, plus the three
         // commands the recording being actually issued (`intents[0][0..3]`, the same
         // raw pre-KAN values `obs.f32` stores at columns 298..301). Gated on
-        // `brain_fires` for the same reason `--observar` is: on a skipped tick
+        // `brain_fires` for the same reason `--observe` is: on a skipped tick
         // `intents` is a copy of the last decision, not a fresh one, and recording it
         // again would duplicate a row instead of adding information — this also keeps
         // `wave.f32` in row-for-row lockstep with `obs.f32`, which is what lets Task 5
         // cross-check one against the other.
         //
-        // Reuses `percept.read_after_submit` exactly as `--auditar-visao` does above
+        // Reuses `percept.read_after_submit` exactly as `--audit-vision` does above
         // (same function, same `map_async` → `poll` → `recv` path) rather than adding a
         // second readback route for the same buffer.
         if self.wave_writer.is_some() && brain_fires {
@@ -2407,7 +2407,7 @@ impl GpuCtx {
         let mem0: Vec<f32> = (0..n).map(|i| intents[i][0].clamp(0.0, 1.0)).collect();
         self.percept.update_memory0(&self.queue, &mem0[..n]);
 
-        // `--perfil-kernel <N>`: the deliverable this instrument exists to produce.
+        // `--kernel-profile <N>`: the deliverable this instrument exists to produce.
         // `TOTAL` and `physics.step` only cover what got a bracket or an `Instant`;
         // everything else in this function -- buffer/bind-group rebuilds, the
         // per-being Rust loops before and after `phys_gpu.step`, submission and
@@ -2513,7 +2513,7 @@ impl GpuCtx {
         self.grid_cpu = grid_u32;
 
         // κ(x,z) da pista NOVA — sem isto, depois de uma troca de pista (`--pistas`/
-        // `--pista-held-out`), `--regioes` continuaria medindo curvatura da pista
+        // `--track-held-out`), `--regions` continuaria medindo curvatura da pista
         // ANTERIOR contra amostras de ativação da pista atual: números com aparência
         // válida, silenciosamente errados.
         let wps: Vec<(f32, f32)> = world.waypoints_world.iter().map(|p| (p.x, p.y)).collect();
@@ -2634,7 +2634,7 @@ mod hostile_world_tests {
         assert_eq!(signed_bearing(Vec2::ZERO, f, l), 0.0);
     }
 
-    /// `--pneu-termico 0` must be EXACTLY off, not approximately off.
+    /// `--tire-thermal 0` must be EXACTLY off, not approximately off.
     ///
     /// The dose scales the depth of the grip curve, so gain 0 puts the floor at 1.0 and
     /// the whole curve collapses onto the constant 1.0 — `env_grip` is then the same

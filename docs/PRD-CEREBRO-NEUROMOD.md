@@ -72,9 +72,9 @@ Grafo: **C0 ∥ C1 ∥ C3 ∥ C4** (independentes) → smoke (C4) → **bateria*
 **Entrega.**
 - `dof`: por geração e por ser, nº de genes novos com `|w| > 0.5` (`hip`, `tal`, `gates_w`), no log e no `laps_gen<N>.jsonl` (`dof_hip`, `dof_tal`).
 - Contribuição: média de `|bias_hip|` por saída e de `|g_f − 1|` por família, por geração (no mesmo jsonl).
-- `src/bin/sensibilidade.rs` (sem GPU): para cada grupo de genes novos, perturba ±δ e mede Δ dos comandos num traço open-loop gravado (`src/gpu/brain/screen.rs`); imprime matriz grupo × saída; falha se algum grupo não move nenhuma saída. É o `testes_sentidos.py` do lab (`neuromod-lab/src/testes_sentidos.py:1-3`), que teria pego em 30 s o achado 84.
+- `src/bin/sensitivity.rs` (sem GPU): para cada grupo de genes novos, perturba ±δ e mede Δ dos comandos num traço open-loop gravado (`src/gpu/brain/screen.rs`); imprime matriz grupo × saída; falha se algum grupo não move nenhuma saída. É o `testes_sentidos.py` do lab (`neuromod-lab/src/testes_sentidos.py:1-3`), que teria pego em 30 s o achado 84.
 
-**Aceite.** `sensibilidade` verde para `hip` (C1) antes de qualquer pedido na fila; `dof` = 0 na geração 0 dos dois braços.
+**Aceite.** `sensitivity` verde para `hip` (C1) antes de qualquer pedido na fila; `dof` = 0 na geração 0 dos dois braços.
 
 ### C4 — Fila, smoke, bateria, predições
 

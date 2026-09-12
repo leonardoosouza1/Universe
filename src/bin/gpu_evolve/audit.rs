@@ -1,4 +1,4 @@
-//! VISION AUDIT (3 axes) — enabled by `--auditar-visao`.
+//! VISION AUDIT (3 axes) — enabled by `--audit-vision`.
 //!
 //! A channel is APPROVED if and only if:
 //!   (a) it varies over TIME (σ_temporal > 2.0 across ticks)
@@ -54,7 +54,7 @@ static AUDIT_ACUM: std::sync::LazyLock<std::sync::Mutex<AuditAcum>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(AuditAcum::new()));
 
 /// Bounds the accumulator's memory (risk R6 of REFACTOR_PLAN.md): without this,
-/// `--auditar-visao` in a battery of 100 generations × 8.000 ticks accumulates
+/// `--audit-vision` in a battery of 100 generations × 8.000 ticks accumulates
 /// 800.000 entries × 208 bytes ≈ 166 MB in `hist_ser0`, never freeing.
 ///
 /// Called once at the START of each generation (main.rs). Side effect: the final
@@ -68,7 +68,7 @@ pub fn nova_geracao() {
     g.n_ticks = 0;
 }
 
-/// Called every tick when `--auditar-visao` is active.
+/// Called every tick when `--audit-vision` is active.
 /// Records being 0's wave (temporal variance) and a snapshot of everyone (between-beings
 /// variance). `n_vivos` = how many beings have life_left > 0 this tick.
 pub fn auditoria_acumular(ondas: &[[i8; N_CH]], n: usize, ser_vivo: usize, n_vivos: usize) {
@@ -94,7 +94,7 @@ pub fn auditoria_relatorio() {
     let g = AUDIT_ACUM.lock().unwrap();
     let n_ticks = g.n_ticks;
     if n_ticks == 0 {
-        println!("[audit] no tick accumulated — enable --auditar-visao");
+        println!("[audit] no tick accumulated — enable --audit-vision");
         return;
     }
     let n_seres = g.ultimo_tick_4vivos.len();
@@ -277,7 +277,7 @@ pub fn auditoria_relatorio() {
 }
 
 /// Exists only so `auditoria_relatorio()` can decide whether there is accumulated data
-/// even when the `--auditar-visao` flag has already been consulted and cleared elsewhere.
+/// even when the `--audit-vision` flag has already been consulted and cleared elsewhere.
 pub fn n_ticks_acumulados() -> usize {
     AUDIT_ACUM.lock().unwrap().n_ticks
 }

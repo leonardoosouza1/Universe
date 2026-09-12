@@ -28,7 +28,7 @@ fn lcg_fill(seed: u64, n: usize) -> Vec<f32> {
 /// (a) An all-zero genome gives a bias of exactly `[0, 0, 0]`, for any memory content.
 ///
 /// This is THE birth-neutral contract (the P1.7 block of `evolve()`): generation 0 of
-/// the `--hipocampo-setor` arm has to be the old brain, bit for bit, or the paired A/B is
+/// the `--hippocampus-sector` arm has to be the old brain, bit for bit, or the paired A/B is
 /// comparing two different brains from the first tick. Asserting on the BITS and not just
 /// on `== 0.0` matters because `-0.0 == 0.0` is true in Rust while the bits differ, and a
 /// negative zero reaching the commands would be a silent difference between the arms.
@@ -180,12 +180,12 @@ fn read_concatenates_this_sector_the_next_and_the_bias_column() {
     );
 }
 
-/// (f) `--hipocampo-apagar` zeroes the memory and LEAVES the resting bias standing.
+/// (f) `--hippocampus-erase` zeroes the memory and LEAVES the resting bias standing.
 ///
 /// The distinction is the whole experiment. Erasing the memory asks "does the content
 /// pay?"; the resting bias `gain·tanh(W[:, 8])` is what the being evolved independently
 /// of any episode, and removing it too would be ablating the organ — a different
-/// question, which `--sem-hipocampo` answers. A test that only checked "the bias changed"  // check-language: allow -- quoting the flag name verbatim
+/// question, which `--no-hippocampus` answers. A test that only checked "the bias changed"  // check-language: allow -- quoting the flag name verbatim
 /// would pass on either implementation.
 #[test]
 fn erased_read_zeroes_the_memory_and_keeps_the_resting_bias() {
@@ -226,7 +226,7 @@ fn erased_read_zeroes_the_memory_and_keeps_the_resting_bias() {
     );
     assert!(
         dark.iter().all(|v| v.abs() > 1e-3),
-        "the resting bias must survive --hipocampo-apagar: {dark:?}"
+        "the resting bias must survive --hippocampus-erase: {dark:?}"
     );
 
     // And with episodic weights, erasure DOES change the command — otherwise the

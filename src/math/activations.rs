@@ -279,7 +279,7 @@ mod tests {
 
     /// `l2_std=None` and `l2_std=Some(1.0)` must be identical — dividing by 1.0
     /// is mathematically a no-op; confirms that normalization OFF (`None`, the
-    /// default of the `--norm-l2-por-desvio` flag being off) introduces no
+    /// default of the `--norm-l2-by-deviation` flag being off) introduces no
     /// spurious scale.
     #[test]
     fn out_stage_norm_none_e_std_um_sao_identicos() {

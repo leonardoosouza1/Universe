@@ -41,7 +41,7 @@ pub mod scenery;
 pub mod simulation;
 pub mod specialist;
 pub mod substrate;
-/// The CfC decay-rate bank under three parametrisations (`--banco-tau`).
+/// The CfC decay-rate bank under three parametrisations (`--tau-bank`).
 pub mod tau_bank;
 /// Tyre thermal model — heat, Newtonian cooling and the grip curve, no GPU.
 pub mod tire_thermal;

@@ -9,7 +9,7 @@
 //! The original `dna_view` reads the `.dna` format (ternary TLV, 128×64) of the Bevy
 //! path. The GPU evolution path saves another format — `UGEN` v2, with a 192×96 L1, a
 //! 96×48 L2, KAN knots, slow brain and τ bank. This binary reads THAT format and answers
-//! what the three-line report of `--ativacao` does not: **where** the competence lives
+//! what the three-line report of `--activation` does not: **where** the competence lives
 //! inside the brain.
 //!
 //! The activation report measures the brain RUNNING (needs a GPU and a world). This one

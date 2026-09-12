@@ -107,7 +107,7 @@ pub struct BeingState {
     /// through untouched (`physics_c.wgsl:295`, `c.wheels[1].x`), and `wheels[1].x` is
     /// initialised to 60.0 while kernel B compares it against `optimal_temp = 0.5`
     /// (`physics_b.wgsl:190`) — a unit mismatch that pins the kernel's own grip factor
-    /// at the constant 0.70. That constant is left ALONE by `--pneu-termico`: it is
+    /// at the constant 0.70. That constant is left ALONE by `--tire-thermal`: it is
     /// identical in both arms of the A/B, so it cancels, whereas "fixing" it would move
     /// the tyre envelope under both arms at once. The thermal model reaches the physics
     /// through `phys.env_grip` instead, which is per being and multiplies `mu_base`

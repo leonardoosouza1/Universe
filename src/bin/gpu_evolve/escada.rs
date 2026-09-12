@@ -7,7 +7,7 @@
 //!
 //! POSSE EXCLUSIVA deste arquivo: standalone, `mod escada;` é declarado e fiado
 //! pelo orquestrador (main.rs) — este módulo não lê CLI, não conhece flags
-//! (`--fuel-auto-k`, `--ruido-sensorial`, `--dano`, `--clima`, `--fantasma`),
+//! (`--fuel-auto-k`, `--sensory-noise`, `--damage`, `--weather`, `--ghost`),
 //! não sabe rodar bateria. Só decide o PRÓXIMO degrau a partir dos números que
 //! recebe por parâmetro.
 //!

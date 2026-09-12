@@ -23,7 +23,7 @@
 //!
 //! No GPU, no I/O, no globals — the same discipline as `src/predator.rs`: the mechanism
 //! is written and tested on its own, and stays "NOT wired" until `context.rs` calls it.
-//! The CLI flags (`--hipocampo-setor`, `--hipocampo-apagar`, `--sem-hipocampo`) live in  // check-language: allow -- quoting the flag names verbatim
+//! The CLI flags (`--hippocampus-sector`, `--hippocampus-erase`, `--no-hippocampus`) live in  // check-language: allow -- quoting the flag names verbatim
 //! the binary (`src/bin/gpu_evolve/statics.rs`) and reach this module as plain booleans,
 //! so every behaviour they select is reachable from a test with no process-global state.
 //!
@@ -51,7 +51,7 @@ pub const MEM_PER_SECTOR: usize = 4;
 ///
 /// The trailing 1.0 is a bias column, not data: it is what lets the 3×9 matrix express a
 /// RESTING command offset that does not depend on any memory at all. It is also why
-/// `--hipocampo-apagar` is an ablation of the MEMORY and not of the organ — see
+/// `--hippocampus-erase` is an ablation of the MEMORY and not of the organ — see
 /// [`SectorMemory::read_gated`].
 pub const HIP_READ_LEN: usize = 2 * MEM_PER_SECTOR + 1;
 
@@ -79,7 +79,7 @@ pub const GENE_READ_GAIN: usize = GENE_WRITE_RATE + 1;
 /// `context.rs`), which is the contract this block is sitting next to.
 pub const HIP_AUTHORITY: f32 = 0.5;
 
-/// The read a being gets with `--hipocampo-apagar`: memory zeroed, bias column intact.
+/// The read a being gets with `--hippocampus-erase`: memory zeroed, bias column intact.
 pub const ERASED_READ: [f32; HIP_READ_LEN] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 /// Speed used to normalise `speed_mean` into roughly [0, 1], in m/s.
@@ -193,7 +193,7 @@ impl SectorMemory {
         out
     }
 
-    /// The read under `--hipocampo-apagar` (`erased == true`): [`ERASED_READ`].
+    /// The read under `--hippocampus-erase` (`erased == true`): [`ERASED_READ`].
     ///
     /// **This is NOT a full ablation, and the difference is the whole point.** With the
     /// memory zeroed the bias column still carries 1.0, so the being keeps the RESTING
@@ -201,7 +201,7 @@ impl SectorMemory {
     /// That is the ablation the experiment wants: it answers "does the CONTENT of the
     /// memory pay?", not "does having the organ pay?".
     ///
-    /// To remove the organ instead, use `--sem-hipocampo`, which forces `bias` to  // check-language: allow -- quoting the flag name verbatim
+    /// To remove the organ instead, use `--no-hippocampus`, which forces `bias` to  // check-language: allow -- quoting the flag name verbatim
     /// `[0, 0, 0]` and freezes the genes — the control arm carrying the same genome
     /// layout. The two readings are different questions and the PRD asks for both.
     pub fn read_gated(&self, sector: usize, erased: bool) -> [f32; HIP_READ_LEN] {

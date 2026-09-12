@@ -2,7 +2,7 @@
 //!
 //! Split out of `sensitivity/mod.rs` (600-line cap, `docs/STYLE.md` §2): the parent is
 //! about WHICH genes to perturb and how; this file is about how the answer is classified
-//! and rendered. `run_gate` fills these types in; `src/bin/sensibilidade.rs` prints them.
+//! and rendered. `run_gate` fills these types in; `src/bin/sensitivity.rs` prints them.
 
 use super::{MOVE_THRESHOLD, Reach};
 use crate::gpu::contribution::OUTPUT_NAMES;
