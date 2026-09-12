@@ -1974,7 +1974,7 @@ mod tests {
     /// C1 — the `hip` block has its OWN mutation rate/σ (`hip_p`, `hip_sigma`), gated by
     /// `HIPPOCAMPUS_MUTATE_ON`. With p = 1 and σ = 0.2 every one of the 29 genes of a
     /// mutated child moves away from its birth value of 0.0; with the gate off (the
-    /// `--sem-hipocampo` control) none does, and the OTHER blocks of that child are
+    /// `--sem-hipocampo` control) none does, and the OTHER blocks of that child are  // check-language: allow -- quoting the flag name verbatim
     /// bit-identical between the two runs (the hip block is the last consumer of `rng`).
     #[test]
     fn evolve_hip_bloco_tem_taxa_propria_e_portao() {
@@ -1998,7 +1998,7 @@ mod tests {
             "hip must be born at zero"
         );
 
-        // Same defense as `evolve_muta_mecanismos_p17_e_flags_sem_x_congelam_no_neutro`:
+        // Same defense as `evolve_muta_mecanismos_p17_e_flags_sem_x_congelam_no_neutro`:  // check-language: allow -- test name quoted verbatim
         // restore the atomic even if an `assert!` below panics, so a failure here does not
         // leak `true` into tests running after this one in the same process (review 12/09).
         struct RestauraHip(bool);
