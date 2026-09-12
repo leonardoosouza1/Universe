@@ -91,16 +91,57 @@ pub fn fov_deg() -> f32 {
 /// sees**.
 #[inline]
 pub fn pitch(row: usize) -> f32 {
-    let p = params();
-    if (p.alcance_m - ALCANCE_PADRAO).abs() < 1e-3 {
+    pitch_at(params().alcance_m, row)
+}
+
+/// The pure half of [`pitch`]: the same arithmetic, with the range passed in instead of
+/// read from the process-wide `OnceLock`.
+///
+/// It exists so a test can exercise a NON-default range without setting the global —
+/// setting it would leak into every other test running in the same process and is
+/// irreversible (`OnceLock::set` succeeds once). Same reason `mutate_sensors` takes its
+/// generator from outside instead of reading `SENSORS_EVOLVE_ON`.
+#[inline]
+pub fn pitch_at(alcance_m: f32, row: usize) -> f32 {
+    if (alcance_m - ALCANCE_PADRAO).abs() < 1e-3 {
         return crate::config::iara::vision::RETINA_PITCHES[row.min(RETINA_ROWS - 1)];
     }
-    let min_pitch = -(ALTURA_OLHO / p.alcance_m.max(1.0)); // row 0, the farthest
+    let min_pitch = -(ALTURA_OLHO / alcance_m.max(1.0)); // row 0, the farthest
     if RETINA_ROWS <= 1 {
         return min_pitch;
     }
     let passo = (RETINA_MAX_PITCH - min_pitch) / (RETINA_ROWS as f32 - 1.0);
     min_pitch + passo * row.min(RETINA_ROWS - 1) as f32
+}
+
+/// Factor every RANGE-like perception parameter is multiplied by when the retina's own
+/// range is moved away from the default — see [`range_scale_of`].
+#[inline]
+pub fn range_scale() -> f32 {
+    range_scale_of(params().alcance_m)
+}
+
+/// The pure half of [`range_scale`]: `alcance_m / ALCANCE_PADRAO`, pinned to EXACTLY
+/// `1.0` inside the same ±1e-3 m window [`pitch_at`] uses for its own identity branch.
+///
+/// # Why one single factor
+///
+/// The horizon of this being is not the retina alone: the wall sweep reaches 60 m, the
+/// lateral sweep 40 m and the three curvature look-aheads 40/70/120 m, all of them well
+/// PAST the 33.3 m the retina can see. Shortening only the retina would leave those
+/// probes as a full-range replacement for it, and the run would measure nothing. So the
+/// flag scales the whole perceptual horizon by one ratio, and the relative shape between
+/// the probes is preserved.
+///
+/// The exact-`1.0` window is what makes the flag's absence bit-identical: the callers
+/// branch on `scale == 1.0` and take the untouched path, so no multiplication — not even
+/// by a float that rounds to one — ever happens on the default run.
+#[inline]
+pub fn range_scale_of(alcance_m: f32) -> f32 {
+    if (alcance_m - ALCANCE_PADRAO).abs() < 1e-3 {
+        return 1.0;
+    }
+    alcance_m.max(1.0) / ALCANCE_PADRAO
 }
 
 /// How far on the ground row `row` looks. Used for reports and for the tests.
@@ -156,6 +197,53 @@ mod testes {
                 "asked for {alvo} m and the math gave {d} m"
             );
         }
+    }
+
+    /// Identity of the `--retina-range` path: with the default range nothing moves.
+    ///
+    /// `pitch_at` must return the ORIGINAL const table (not a recomputation that merely
+    /// rounds to it), and `range_scale_of` must return exactly 1.0 so the packers take
+    /// their untouched branch.
+    #[test]
+    fn the_default_range_is_bit_identical() {
+        for row in 0..RETINA_ROWS {
+            let expected = crate::config::iara::vision::RETINA_PITCHES[row];
+            assert_eq!(
+                pitch_at(ALCANCE_PADRAO, row).to_bits(),
+                expected.to_bits(),
+                "row {row}: pitch_at must return the const table bit for bit"
+            );
+            assert_eq!(pitch(row).to_bits(), expected.to_bits());
+        }
+        assert_eq!(range_scale_of(ALCANCE_PADRAO).to_bits(), 1.0f32.to_bits());
+        // The global is untouched by this test, so `range_scale()` reads the default.
+        assert_eq!(range_scale().to_bits(), 1.0f32.to_bits());
+    }
+
+    /// A shortened range shortens the retina AND reports the ratio the sensor packer
+    /// applies to the wall/lateral/curvature probes. 10 m is the value U11b asks for.
+    #[test]
+    fn a_ten_metre_range_shortens_row_zero_and_scales_by_ten_over_default() {
+        let p0 = pitch_at(10.0, 0);
+        assert!(
+            (ALTURA_OLHO / -p0 - 10.0).abs() < 0.01,
+            "row 0 should reach 10 m, it reaches {:.2} m",
+            ALTURA_OLHO / -p0
+        );
+        // Row 13 (the tyres) is anchored: only the horizon moves.
+        assert!(
+            (pitch_at(10.0, RETINA_ROWS - 1) - RETINA_MAX_PITCH).abs() < 1e-6,
+            "the last row must stay at RETINA_MAX_PITCH"
+        );
+        let s = range_scale_of(10.0);
+        assert!(
+            (s - 10.0 / ALCANCE_PADRAO).abs() < 1e-6,
+            "scale {s} is not 10 / {ALCANCE_PADRAO}"
+        );
+        assert!(
+            (s - 0.3).abs() < 1e-3,
+            "10 / 33.33 should be ~0.30, got {s}"
+        );
     }
 
     #[test]

@@ -671,6 +671,18 @@ fn main() {
     let mut setor_paga = true;
     /// `--auditar-visao`: mede se os canais sensoriais respondem à pista real.
     let mut auditar_visao = false;
+    // `--retina-range <m>`: how far the whole perceptual horizon reaches.
+    //
+    // Default `ALCANCE_PADRAO` (33.3 m), the value the retina's geometry already had —
+    // omitting the flag changes not one uploaded bit (`visao::range_scale_of` pins the
+    // factor to exactly 1.0 and both packers branch on it).
+    //
+    // Why it exists: U6/U10b/U11 of `docs/PREDICOES-CEREBRO.md` all failed to make the
+    // second lap beatable, because on track 8005 at ~9 m/s nothing about the track is
+    // hidden — the being SEES every curve in time, so there is nothing a per-sector
+    // memory could know that perception does not already deliver. Shortening the
+    // horizon is what puts information beyond it.
+    let mut retina_range_m: f32 = universe::visao::ALCANCE_PADRAO;
     let mut portal_curva = false;
     let mut slow_steer_auth: f32 = 0.20;
     /// Teto de vida acumulável em ticks (0 = usar o padrão de 1920).
@@ -1326,6 +1338,24 @@ fn main() {
                 "--audit-vision" => {
                     auditar_visao = true;
                 }
+                // Perceptual horizon, metres. A value <= 0 (or unparseable) keeps the
+                // default rather than blinding the run: `visao::pitch_at` would clamp a
+                // zero to 1 m anyway, and a silent 1 m retina is not a control arm.
+                "--retina-range" => {
+                    i += 1;
+                    if i < args.len() {
+                        let v: f32 = args[i].parse().unwrap_or(universe::visao::ALCANCE_PADRAO);
+                        if v > 0.0 {
+                            retina_range_m = v;
+                        } else {
+                            eprintln!(
+                                "--retina-range {v} is not positive; keeping the default \
+                                 {:.1} m",
+                                universe::visao::ALCANCE_PADRAO
+                            );
+                        }
+                    }
+                }
                 // Remove os buracos intencionais da pista (world.rs:141). Existia so no
                 // caminho Bevy (main.rs:50); exposto aqui porque a bateria pos-refatoracao
                 // mostrou a POPULACAO estacionada em 1.076 m por 20 geracoes — 11 m antes
@@ -1691,6 +1721,36 @@ fn main() {
         t0.elapsed().as_secs_f64() * 1000.0,
         world_seed_atual
     );
+    // ── Perceptual horizon (`--retina-range`) ─────────────────────────────────
+    // Set BEFORE `GpuCtx::new`, which bakes `visao::pitch` into the retina uniform.
+    // `visao::definir` is a `OnceLock::set`, so this is the one and only call in the
+    // process; with the flag absent the value is `ALCANCE_PADRAO` and every consumer
+    // takes its identity branch (`pitch_at` returns the const table, `range_scale_of`
+    // returns exactly 1.0). Printed unconditionally, next to MAP DIAG: a run whose
+    // horizon you cannot read off the log is an unlabelled experiment. The four sensor
+    // numbers on the line are the BIRTH values (`SENSOR_DEFAULTS`) after scaling; under
+    // `--evolving-sensors` each being carries its own, scaled by the same factor.
+    universe::visao::definir(universe::visao::Params {
+        alcance_m: retina_range_m,
+        fov_deg: universe::config::iara::vision::FOV_DEG,
+    });
+    {
+        let s = universe::visao::range_scale();
+        let d = universe::gpu::evolution::SENSOR_DEFAULTS;
+        use universe::gpu::evolution::sensor_idx as sx;
+        println!(
+            "   [retina] range = {:.1} m (x{:.3}) · blind above {:.1} m/s · wall {:.1} m · \
+             lateral {:.1} m · curvature {:.0}/{:.0}/{:.0} m",
+            retina_range_m,
+            s,
+            universe::visao::velocidade_cega(retina_range_m, 11.4),
+            d[sx::WALL_RANGE_M] * s,
+            d[sx::LAT_RANGE_M] * s,
+            d[sx::CURV_NEAR_M] * s,
+            d[sx::CURV_MID_M] * s,
+            d[sx::CURV_FAR_M] * s,
+        );
+    }
     if !pistas.is_empty() {
         println!(
             "  [pistas] rotação LIGADA: {:?} (gen % {})",

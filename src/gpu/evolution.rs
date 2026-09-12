@@ -331,6 +331,33 @@ pub const SENSOR_RANGES: [(f32, f32); N_SENSOR_GENES] = [
     (80.0, 250.0),                              // curv_far_m
 ];
 
+/// The sensor genes whose unit is METRES, and which `--retina-range` therefore scales.
+///
+/// `sensor_idx::FOV_HALF_RAD` is deliberately absent: it is an ANGLE. Shrinking the
+/// horizon must not also narrow the aperture, or a run would move two axes at once and
+/// prove neither.
+///
+/// # What the flag does NOT reach
+///
+/// These five plus the retina's own depth (`visao::pitch_at`) are the whole of it. Every
+/// other distance in `perception.wgsl` is a literal inside the kernel and would need the
+/// shader's arithmetic edited to follow: the 15 m probe of BLOCK D (`wall_width_fov`),
+/// `road_ahead` NEAR 10..23.5 m (BLOCK F) and FAR 45..150 m (BLOCK G), the 20 m material
+/// look-ahead (BLOCK H), the 3..30 m frontal urgency probe (BLOCK L), the 10 m whiskers
+/// (BLOCK N) and the 30/120/1200 m bands of the legacy depth encoding. The curvature
+/// probes at 200/260/275/350 m live in `perception_temporal.wgsl`, a DIFFERENT pipeline
+/// with its own buffer. Nothing about the WORLD is scaled either — track width, the
+/// checkpoint/sector spacing the hippocampus indexes, the predator's reach and every
+/// fitness distance stay exactly where they were, which is the point: the flag hides
+/// information from the being without moving the task.
+pub const SENSOR_RANGE_GENES: [usize; 5] = [
+    sensor_idx::WALL_RANGE_M,
+    sensor_idx::LAT_RANGE_M,
+    sensor_idx::CURV_NEAR_M,
+    sensor_idx::CURV_MID_M,
+    sensor_idx::CURV_FAR_M,
+];
+
 /// Fraction of each gene's RANGE used as the σ of the gaussian mutation (see `mutate_sensors`).
 /// 8%: fast enough to explore the whole range in dozens of generations — same
 /// order of magnitude as the choice already made for `slow`/`tau` above (few genes against
@@ -628,10 +655,42 @@ impl Genome {
 
     /// Flattens the sensor bank of several genomes into the layout
     /// `PerceptionGpu::upload_sensors` expects — same pattern as `pack_taus`.
+    ///
+    /// The perceptual horizon in force (`visao::range_scale`, driven by
+    /// `--retina-range`) is applied HERE, at upload time, and never to the genome: a
+    /// checkpoint written under a shortened horizon reloads under any other, and the
+    /// mutation operator keeps seeing the same six genes. Exactly the lens `pack_taus`
+    /// puts over `tau`.
     pub fn pack_sensors(genomes: &[Genome]) -> Vec<f32> {
+        Self::pack_sensors_scaled(genomes, crate::visao::range_scale())
+    }
+
+    /// The pure half of [`Genome::pack_sensors`], with the horizon factor passed in
+    /// instead of read from the global — so a test can exercise a shortened horizon
+    /// without setting a process-wide `OnceLock` (same reason as `mutate_sensors`).
+    ///
+    /// `range_scale == 1.0` (the default, and the ONLY value the flag's absence can
+    /// produce) takes the original `extend_from_slice` path, so the uploaded buffer is
+    /// bit-identical to the code that predates `--retina-range`.
+    ///
+    /// The result is deliberately NOT clamped to `SENSOR_RANGES`. Those bounds guard the
+    /// MUTATION operator — they answer "what may evolution draw" — and at
+    /// `--retina-range 10` the honest wall range is 18 m, two metres under a floor that
+    /// was written for a 33.3 m retina. Clamping here would silently hand the run a
+    /// longer horizon than the flag asked for, which is the one failure this flag cannot
+    /// afford.
+    pub fn pack_sensors_scaled(genomes: &[Genome], range_scale: f32) -> Vec<f32> {
         let mut out = Vec::with_capacity(genomes.len() * N_SENSOR_GENES);
         for g in genomes {
+            let base = out.len();
             out.extend_from_slice(&g.sensors);
+            if range_scale != 1.0 {
+                for i in SENSOR_RANGE_GENES {
+                    if let Some(v) = out.get_mut(base + i) {
+                        *v *= range_scale;
+                    }
+                }
+            }
         }
         out
     }
@@ -1544,6 +1603,67 @@ mod tests {
                 "seed {seed}: sensors should be SENSOR_DEFAULTS"
             );
         }
+    }
+
+    /// IDENTITY of `--retina-range`: with the flag absent the uploaded sensor buffer is
+    /// the concatenation of the genomes' own banks, bit for bit.
+    ///
+    /// Compares `to_bits()`, not values: a factor that rounds to 1.0 would pass a `==`
+    /// on the floats while still being a multiplication that the old code never did.
+    #[test]
+    fn the_default_horizon_uploads_todays_sensor_buffer_bit_for_bit() {
+        let genomes: Vec<Genome> = [7u64, 8, 9].iter().map(|s| Genome::random(*s)).collect();
+        let packed = Genome::pack_sensors(&genomes);
+        let pure = Genome::pack_sensors_scaled(&genomes, 1.0);
+        let expected: Vec<f32> = genomes.iter().flat_map(|g| g.sensors.clone()).collect();
+        assert_eq!(packed.len(), genomes.len() * N_SENSOR_GENES);
+        for (i, e) in expected.iter().enumerate() {
+            assert_eq!(packed[i].to_bits(), e.to_bits(), "gene {i} moved");
+            assert_eq!(pure[i].to_bits(), e.to_bits(), "gene {i} moved (pure half)");
+        }
+        // And the default of the process really is the untouched branch.
+        assert_eq!(crate::visao::range_scale().to_bits(), 1.0f32.to_bits());
+    }
+
+    /// `--retina-range 10`: the five METRE genes come out at 10/33.33 of their default,
+    /// and the FOV gene — an angle — is untouched.
+    #[test]
+    fn a_ten_metre_horizon_scales_the_five_metre_genes_and_nothing_else() {
+        let scale = crate::visao::range_scale_of(10.0);
+        let genomes: Vec<Genome> = [7u64, 8].iter().map(|s| Genome::random(*s)).collect();
+        let packed = Genome::pack_sensors_scaled(&genomes, scale);
+        for (gi, g) in genomes.iter().enumerate() {
+            let base = gi * N_SENSOR_GENES;
+            assert_eq!(
+                packed[base + sensor_idx::FOV_HALF_RAD].to_bits(),
+                g.sensors[sensor_idx::FOV_HALF_RAD].to_bits(),
+                "the FOV gene is an angle and must not be scaled"
+            );
+            for i in SENSOR_RANGE_GENES {
+                assert_eq!(
+                    packed[base + i].to_bits(),
+                    (g.sensors[i] * scale).to_bits(),
+                    "gene {i} is not at {scale}x its genome value"
+                );
+            }
+        }
+        // The literal numbers the run header will report, against SENSOR_DEFAULTS —
+        // which is what `Genome::random` draws while sensor evolution is off, the
+        // default of this process (same precondition as the test above).
+        assert!(!SENSORS_EVOLVE_ON.load(Ordering::Relaxed));
+        assert!(
+            (packed[sensor_idx::WALL_RANGE_M] - 18.0).abs() < 0.01,
+            "wall"
+        );
+        assert!((packed[sensor_idx::LAT_RANGE_M] - 12.0).abs() < 0.01, "lat");
+        assert!(
+            (packed[sensor_idx::CURV_NEAR_M] - 12.0).abs() < 0.01,
+            "near"
+        );
+        assert!((packed[sensor_idx::CURV_MID_M] - 21.0).abs() < 0.01, "mid");
+        assert!((packed[sensor_idx::CURV_FAR_M] - 36.0).abs() < 0.01, "far");
+        // The genome itself is untouched: a checkpoint stays comparable across horizons.
+        assert_eq!(genomes[0].sensors, SENSOR_DEFAULTS.to_vec());
     }
 
     /// `random_sensors_within_ranges` is a pure function — testable without touching the atomic.
