@@ -417,3 +417,115 @@ fn genoma_legado_carregado_do_disco_nao_e_reescalado() {
          the legacy genome was re-scaled, and it should not have been"
     );
 }
+
+// ── Prediction 186: `--banco-tau` through the upload path ──────────────────────
+//
+// `BrainGpu::upload_tau` itself is NOT exercised here: it needs a `wgpu::Device`, and
+// this project does not mock GPUs (docs/STYLE.md §6). What IS exercised is everything
+// on the CPU side of that call — `Genome::pack_taus`, the function whose return value is
+// the buffer `upload_tau` copies verbatim. The layout it must keep is `n_beings × 96`
+// contiguous f32, being after being.
+
+/// The τ bank mode is process-global, and `cargo test` runs these in threads of ONE
+/// process. Without this lock, a test that flips the mode races every other test that
+/// packs a bank. Held for the whole body, released on unwind.
+static TAU_BANK_MODE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Restores the default (`livre`) even if the test fails midway, so a panic cannot leak
+/// a non-free bank into whatever runs next.
+struct RestoreFreeTauBank;
+impl Drop for RestoreFreeTauBank {
+    fn drop(&mut self) {
+        universe::tau_bank::set_mode(universe::tau_bank::TauBankMode::Free);
+    }
+}
+
+/// The control arm has to survive the upload path unchanged, or every battery run
+/// before `--banco-tau` existed stops being comparable to a `livre` run after it.
+#[test]
+fn free_mode_packs_the_raw_genes() {
+    let _lock = TAU_BANK_MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RestoreFreeTauBank;
+    universe::tau_bank::set_mode(universe::tau_bank::TauBankMode::Free);
+
+    let mut pop: Vec<Genome> = (0..4).map(|i| Genome::random(i as u64 + 77)).collect();
+    for (i, g) in pop.iter_mut().enumerate() {
+        g.randomize_tau(1000 + i as u64);
+    }
+    let expected: Vec<f32> = pop.iter().flat_map(|g| g.tau.iter().copied()).collect();
+    assert_eq!(
+        Genome::pack_taus(&pop),
+        expected,
+        "livre must upload the genes bit for bit"
+    );
+}
+
+/// Layout and content of the two structured modes, plus the invariant that makes
+/// `--retomar` work across modes: packing never writes back into `Genome::tau`.
+#[test]
+fn structured_modes_keep_the_layout_and_never_rewrite_the_genome() {
+    let _lock = TAU_BANK_MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RestoreFreeTauBank;
+    let n_channels = universe::gpu::evolution::N_CFC_CHANNELS;
+
+    let mut pop: Vec<Genome> = (0..3).map(|i| Genome::random(i as u64 + 31)).collect();
+    for (i, g) in pop.iter_mut().enumerate() {
+        g.randomize_tau(2000 + i as u64);
+    }
+    let genes_before: Vec<Vec<f32>> = pop.iter().map(|g| g.tau.clone()).collect();
+
+    for mode in [
+        universe::tau_bank::TauBankMode::LogFixed,
+        universe::tau_bank::TauBankMode::Spectral,
+    ] {
+        universe::tau_bank::set_mode(mode);
+        let packed = Genome::pack_taus(&pop);
+        assert_eq!(
+            packed.len(),
+            pop.len() * n_channels,
+            "{mode:?}: wrong length"
+        );
+        for (i, g) in pop.iter().enumerate() {
+            let slice = &packed[i * n_channels..(i + 1) * n_channels];
+            assert_eq!(
+                slice,
+                universe::tau_bank::banco_tau(mode, &g.tau),
+                "{mode:?}: being {i} did not get its own bank"
+            );
+            assert_eq!(
+                slice,
+                g.effective_tau(),
+                "{mode:?}: effective_tau and pack_taus disagree for being {i} — the \
+                 `[tau]` report and the GPU would be reading different banks"
+            );
+        }
+        for (i, g) in pop.iter().enumerate() {
+            assert_eq!(
+                g.tau, genes_before[i],
+                "{mode:?}: packing rewrote Genome::tau of being {i} — checkpoints would \
+                 stop being portable between modes"
+            );
+        }
+    }
+}
+
+/// The whole claim of `log-fixo` is "1 gene instead of 96". If two genomes that differ in
+/// 95 genes upload different banks, the claim is false and prediction U9 measures nothing.
+#[test]
+fn log_fixed_uploads_one_bank_when_only_ignored_genes_differ() {
+    let _lock = TAU_BANK_MODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = RestoreFreeTauBank;
+    universe::tau_bank::set_mode(universe::tau_bank::TauBankMode::LogFixed);
+
+    let mut a = Genome::random(4242);
+    a.randomize_tau(11);
+    let mut b = a.clone();
+    b.randomize_tau(22); // every channel redrawn …
+    b.tau[0] = a.tau[0]; // … except the one gene the mode reads
+    assert_ne!(a.tau, b.tau, "test precondition: the genes must differ");
+    assert_eq!(
+        Genome::pack_taus(std::slice::from_ref(&a)),
+        Genome::pack_taus(std::slice::from_ref(&b)),
+        "log-fixo uploaded two different banks for the same tau[0]"
+    );
+}

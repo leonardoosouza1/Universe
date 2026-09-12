@@ -597,11 +597,31 @@ impl Genome {
         self.tau = crate::cfc::log_uniform_decays(seed, N_CFC_CHANNELS);
     }
 
+    /// The decay-rate bank this genome actually uploads: `tau` seen through the
+    /// `--banco-tau` parametrisation in force (`crate::tau_bank`).
+    ///
+    /// Under the default `livre` it is a copy of `tau`; under `log-fixo`/`espectral` it
+    /// is rebuilt from 1 or 2 of the genes. `tau` itself is NEVER rewritten — a
+    /// checkpoint written in one mode reloads in any other, and the mutation operator
+    /// below keeps seeing the same 96 genes whichever lens is on top.
+    pub fn effective_tau(&self) -> Vec<f32> {
+        crate::tau_bank::banco_tau(crate::tau_bank::mode(), &self.tau)
+    }
+
     /// Flattens the τ bank of several genomes into the layout `BrainGpu::upload_tau` expects.
+    ///
+    /// `livre` (the default) keeps the original `extend_from_slice(&g.tau)` path, so the
+    /// control arm allocates nothing extra and is byte-identical to the code that
+    /// predates `--banco-tau`.
     pub fn pack_taus(genomes: &[Genome]) -> Vec<f32> {
+        let mode = crate::tau_bank::mode();
         let mut out = Vec::with_capacity(genomes.len() * N_CFC_CHANNELS);
         for g in genomes {
-            out.extend_from_slice(&g.tau);
+            if mode == crate::tau_bank::TauBankMode::Free {
+                out.extend_from_slice(&g.tau);
+            } else {
+                out.extend_from_slice(&crate::tau_bank::banco_tau(mode, &g.tau));
+            }
         }
         out
     }
@@ -999,6 +1019,14 @@ pub fn evolve(
         //
         // Rate 3× that of the weights for the same reason as the slow brain: 96 values against
         // 26 thousand, and at the base rate the τ bank would barely be touched in a lifetime of 30 generations.
+        //
+        // This rule is UNCHANGED by `--banco-tau` (`crate::tau_bank`), and that is the
+        // point: under `log-fixo` only `tau[0]` reaches the GPU and under `espectral`
+        // only `tau[0..2]`, but those genes mutate here exactly as every other channel
+        // does — multiplicative in log, σ 0.20, rate 3×p, clamped to [0.25, 40] s⁻¹. The
+        // genes the lens ignores keep mutating too; they simply are not uploaded. Nothing
+        // in this loop knows which mode is on, so the three arms share one mutation
+        // operator and the comparison between them is about the PARAMETRISATION only.
         let d_lo = 1.0 / crate::cfc::TAU_MAX_S;
         let d_hi = 1.0 / crate::cfc::TAU_MIN_S;
         for d in filho.tau.iter_mut() {

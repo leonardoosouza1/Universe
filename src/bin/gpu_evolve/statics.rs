@@ -38,6 +38,7 @@
 //! | `PREDATOR_SPEED_FRAC`, `PREDATOR_DRAIN`, `PREDATOR_RADIUS_M`, `PREDATOR_PERCEPT_M`, `PREDATOR_GRACE_TICKS`, `PREDATOR_SPAWN_BACK_M` | `main()` (flags `--predador*`) | `main()` (spawns once per generation) + `context.rs::tick()` (step, life drain, predator channels) |
 //! | `TIRE_THERMAL_GAIN` | `main()` (flag `--pneu-termico`) | `main()` (builds the per-being `ThermalParams` once per generation) + `context.rs::tick()` (integrates the temperature and writes `env_grip`) |
 //! | `SENSOR_COST`, `SENSOR_COST_K`, `SENSOR_COST_CAP` | `main()` (flags `--custo-sensor*`) | `main()` (recomputes the per-being subscription once per generation, next to the wiring cost) — the tick only reads the resulting `ctx.sensor_cost` vector |
+//! | `universe::tau_bank::MODE` (library, reached here through [`tau_bank_mode`] / [`set_tau_bank_mode`]) | `main()` (flag `--banco-tau <livre\|log-fixo\|espectral>`) | `gpu::evolution::Genome::pack_taus` (builds the bank uploaded once per generation) and `main()` (the `[tau]` diagnostic line) |
 //! | `PERFIL_KERNEL` | `main()` (flag `--perfil-kernel <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
@@ -262,6 +263,26 @@ pub const TYPICAL_SPEED_MS: f32 = 18.75;
 #[inline]
 pub fn body_channels_on() -> bool {
     universe::gpu::perception::BODY_CHANNELS_ON.load(Ordering::Relaxed)
+}
+
+/// Which parametrisation builds the CfC decay-rate bank this run (`--banco-tau`).
+///
+/// Same shape as [`body_channels_on`] above, and for the same reason: the flag lives in
+/// the library (`universe::tau_bank`) because the reader is `Genome::pack_taus`, a
+/// library function called from `main.rs`, from `gpu::brain::screen` and from tests. A
+/// copy here would be a second source of truth for which bank the GPU is about to get —
+/// the failure mode being a run that prints `espectral` in its header and uploads the
+/// free bank. These two functions exist so the ownership table has a row and `main.rs`
+/// has one name to call.
+#[inline]
+pub fn tau_bank_mode() -> universe::tau_bank::TauBankMode {
+    universe::tau_bank::mode()
+}
+
+/// Sets the τ bank parametrisation. Called once, from CLI parsing.
+#[inline]
+pub fn set_tau_bank_mode(m: universe::tau_bank::TauBankMode) {
+    universe::tau_bank::set_mode(m);
 }
 
 /// Reference distance of the station proximity ramp (`1 - min(d/R, 1)` → ch115),
