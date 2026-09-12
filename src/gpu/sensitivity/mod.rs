@@ -72,7 +72,7 @@ pub use replay::{replay_open_loop, synthetic_wave};
 pub use report::{GroupRow, SensitivityReport, Verdict, classify};
 
 use crate::config::iara::brain::SENSORY_WAVE_SIZE;
-use crate::gpu::contribution::{BlockContribution, OUTPUT_NAMES, contribution};
+use crate::gpu::contribution::{BlockContribution, contribution};
 use crate::gpu::evolution::Genome;
 
 /// Mean `|Δ|` on a command above which a block counts as having moved it. The PRD's
@@ -285,9 +285,9 @@ pub fn run_gate(
                         .ok_or_else(|| format!("group '{}' is not a Genome block", group.name))?;
                     let trace = replay_open_loop(&probe, waves, dt);
                     let c: BlockContribution = contribution(&trace, &baseline)?;
-                    for k in 0..3 {
-                        if c.mean_abs_delta[k] > peak[k] {
-                            peak[k] = c.mean_abs_delta[k];
+                    for (k, slot) in peak.iter_mut().enumerate() {
+                        if c.mean_abs_delta[k] > *slot {
+                            *slot = c.mean_abs_delta[k];
                         }
                         if c.sign_flip_frac[k] > peak_sign {
                             peak_sign = c.sign_flip_frac[k];

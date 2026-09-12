@@ -94,9 +94,11 @@ impl std::fmt::Display for SensitivityReport {
             deltas.join(", "),
             MOVE_THRESHOLD
         )?;
+        // The three `|d …|` headers are built from `OUTPUT_NAMES` rather than typed out,
+        // so a rename of a command cannot leave the table labelled with the old one.
         writeln!(
             f,
-            "{:<20} {:<9} {:>7} {:>8} {:>11} {:>11} {:>11} {:>6} {:>7}  {}",
+            "{:<20} {:<9} {:>7} {:>8} {:>11} {:>11} {:>11} {:>6} {:>7}  verdict",
             "group",
             "reach",
             "genes",
@@ -106,7 +108,6 @@ impl std::fmt::Display for SensitivityReport {
             format!("|d {}|", OUTPUT_NAMES[2]),
             "sign",
             "argmax",
-            "verdict"
         )?;
         for r in &self.rows {
             let reach = match r.reach {
