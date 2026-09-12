@@ -175,6 +175,21 @@ pub struct Genome {
     /// of the slow brain + bias) = 16 f32. gate_b = 1 + 0.5·tanh(w·slow_out + b).
     /// Heritable and mutated like the slow brain. OPTIONAL block on disk (genome_io).
     pub gates_w: Vec<f32>,
+    /// C1 (docs/PRD-CEREBRO-NEUROMOD.md) — sector hippocampus:
+    /// `N_HIP_GENES` = 27 weights of `W` (3 outputs × 9 read values) + 1 write-rate gene
+    /// + 1 read-gain gene. See `gpu::hippocampus` for the formulas.
+    ///
+    /// Born all-zero, which makes the bias `[0, 0, 0]` bit for bit for ANY memory content
+    /// — the birth-neutral contract below. Mutation is OFF unless `--hipocampo-setor`
+    /// asks for it (`HIPPOCAMPUS_MUTATE_ON`), the same stronger gate `sensors` uses and
+    /// for a stronger reason here: this block is the LAST consumer of `rng` in `evolve()`,
+    /// so mutating it by default would shift the random stream of the NEXT child and every
+    /// field of every other being would stop being reproducible against a run of the
+    /// previous binary.
+    ///
+    /// **LAST field of the struct and LAST block on disk** — ARCHITECTURE.md §4 rule 1.
+    /// Never reorder.
+    pub hip: Vec<f32>,
 }
 
 /// L1 and L2 neurons heritable by the P1.7 mechanisms — same numbers as
@@ -196,6 +211,23 @@ pub static NEURON_PERIOD_MUTATE_ON: AtomicBool = AtomicBool::new(true);
 pub static NEURON_THRESHOLD_MUTATE_ON: AtomicBool = AtomicBool::new(true);
 /// P1.7 — same for mechanism 3, heterogeneous activation (`--sem-ativacao-heterogenea`).
 pub static NEURON_ACTIVATION_MUTATE_ON: AtomicBool = AtomicBool::new(true);
+
+/// C1 — does `evolve()` mutate `Genome::hip`? Default **false**, unlike every P1.7 atomic
+/// above.
+///
+/// `gpu_evolve --hipocampo-setor` turns it on; `--sem-hipocampo` turns it back off (and  // check-language: allow -- quoting the flag name verbatim
+/// forces the bias to zero), so the control arm carries the same genome layout with the
+/// block frozen at its birth value.
+///
+/// Why the default is off, when the P1.7 blocks default to on: the `hip` mutation is the
+/// LAST thing to consume `rng` inside `evolve()`'s child loop, and `rng` is shared across
+/// children. Consuming a single extra draw for child k moves the entire stream for child
+/// k+1, so a default-on `hip` would silently change l1/l2/slow/τ/sensors of every being
+/// after the first — a run of this binary would stop reproducing a run of the previous
+/// one, with no symptom other than different numbers. Off by default, a run that does not
+/// ask for the hippocampus draws exactly the same random sequence it drew before C1
+/// existed. Same shape of gate as `SENSORS_EVOLVE_ON`, stronger reason.
+pub static HIPPOCAMPUS_MUTATE_ON: AtomicBool = AtomicBool::new(false);
 
 /// Number of heritable sensory parameters (SENSORS PHASE, step 1).
 ///
@@ -554,6 +586,9 @@ impl Genome {
             neuron_threshold_l1,
             neuron_activation,
             gates_w: vec![0.0; 16],
+            // C1: born all-zero ⇒ the hippocampus bias is exactly [0, 0, 0] for any
+            // memory content, so generation 0 of the new arm IS the old brain.
+            hip: vec![0.0; crate::gpu::hippocampus::N_HIP_GENES],
         }
     }
 
@@ -641,6 +676,9 @@ impl Genome {
             neuron_threshold_l1,
             neuron_activation,
             gates_w: vec![0.0; 16],
+            // C1: born all-zero ⇒ the hippocampus bias is exactly [0, 0, 0] for any
+            // memory content, so generation 0 of the new arm IS the old brain.
+            hip: vec![0.0; crate::gpu::hippocampus::N_HIP_GENES],
         }
     }
 
@@ -1044,6 +1082,31 @@ pub fn evolve(
             for act in filho.neuron_activation.iter_mut() {
                 if rng.f32() < ACT_MUTATE_RATE {
                     *act = (rng.f32() * 4.0).floor().min(3.0);
+                }
+            }
+        }
+
+        // ── C1 — sector hippocampus (docs/PRD-CEREBRO-NEUROMOD.md §C1) ─────────
+        //
+        // THE LAST BLOCK TO CONSUME `rng` IN THIS LOOP, and it has to stay last. Every
+        // block above — l1, l2, gates_w, slow, τ, sensors and the four P1.7 banks — keeps
+        // drawing exactly the sequence it drew before this block existed, because nothing
+        // was inserted ahead of it. Move this block up and the control arm stops being
+        // bit-identical to the previous binary.
+        //
+        // Gated by `HIPPOCAMPUS_MUTATE_ON`, which is off by default (see its doc): when
+        // off, ZERO draws are taken here, so `rng` reaches the next child in exactly the
+        // state it used to. That is what makes `--sem-hipocampo` a control arm with the  // check-language: allow -- quoting the flag name verbatim
+        // same genome layout rather than merely a similar one.
+        //
+        // Same rate and σ as the `slow` block (3× `p_mutate`, 1.5× σ) and for the same
+        // reason: 29 genes against twenty-six thousand weights — at the base rate the
+        // block would barely be touched across a 60-generation battery.
+        if HIPPOCAMPUS_MUTATE_ON.load(Ordering::Relaxed) {
+            for w in filho.hip.iter_mut() {
+                if rng.f32() < params.p_mutate * 3.0 {
+                    *w += rng.gauss() * params.sigma * 1.5;
+                    *w = w.clamp(-2.0, 2.0);
                 }
             }
         }

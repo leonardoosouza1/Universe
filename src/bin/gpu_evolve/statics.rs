@@ -343,3 +343,92 @@ pub static PERFIL_KERNEL: std::sync::atomic::AtomicU32 = std::sync::atomic::Atom
 pub fn perfil_kernel() -> u32 {
     PERFIL_KERNEL.load(Ordering::Relaxed)
 }
+
+// ── C1 — SECTOR HIPPOCAMPUS (docs/PRD-CEREBRO-NEUROMOD.md §C1) ───────────────────
+//
+// Three knobs, three different questions. They are not redundant and the PRD asks for
+// all three, so the table of who reads what:
+//
+// | Static | Written by | Read by |
+// |---|---|---|
+// | `HIPPOCAMPUS_ON` | `main()` (flag `--hipocampo-setor`) | `main()` (write at the sector crossing, per-generation `hip_gen<N>.f32`) and `context.rs::tick()` (read + bias) |
+// | `HIPPOCAMPUS_ERASE` | `main()` (flag `--hipocampo-apagar`) | `context.rs::tick()` (the read returns `ERASED_READ`) |
+// | `HIPPOCAMPUS_DISABLED` | `main()` (flag `--sem-hipocampo`) | `context.rs::tick()` (bias forced to zero); also flips `gpu::evolution::HIPPOCAMPUS_MUTATE_ON` off at parse time |  // check-language: allow -- quoting the flag name verbatim
+//
+// The state itself (24 slots per being) is NOT here — it lives on `GpuCtx`, for the
+// reason the ownership table at the top of this file gives: a static is a knob the CLI
+// turns, and simulation state in a process global is how two runs in one process
+// contaminate each other.
+
+/// `--hipocampo-setor`: turns the organ on — per-sector write, per-tick read, command
+/// bias. OFF by default, so a run that does not ask for it takes exactly the old code
+/// path (the bias is `[0, 0, 0]` and is added to commands that are then clamped exactly
+/// as before).
+pub static HIPPOCAMPUS_ON: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn hippocampus_on() -> bool {
+    HIPPOCAMPUS_ON.load(Ordering::Relaxed)
+}
+
+/// `--hipocampo-apagar`: the read returns `hippocampus::ERASED_READ` — memory zeroed,
+/// bias column still 1.0.
+///
+/// **This is the memory ablation, not the organ ablation, and the difference is
+/// deliberate.** The being keeps the resting bias `gain · tanh(W[:, 8])` it evolved; what
+/// disappears is what it learned about the sectors. That is the question the battery
+/// asks in `u2`: does the CONTENT of the memory pay? A champion that loses nothing when
+/// its memory is erased was carrying decoration, and that is a result too.
+///
+/// To remove the ORGAN, use `--sem-hipocampo`. The two are different experiments; running  // check-language: allow -- quoting the flag name verbatim
+/// the wrong one answers a question nobody asked.
+pub static HIPPOCAMPUS_ERASE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn hippocampus_erase() -> bool {
+    HIPPOCAMPUS_ERASE.load(Ordering::Relaxed)
+}
+
+/// `--sem-hipocampo`: the control arm with the SAME genome layout.  // check-language: allow -- quoting the flag name verbatim
+///
+/// Forces the bias to `[0, 0, 0]` regardless of what the genome carries (so a champion
+/// resumed with `--retomar` from a run that already evolved a hippocampus cannot smuggle
+/// it in) and freezes the mutation of `Genome::hip` (`HIPPOCAMPUS_MUTATE_ON` off). The
+/// genome still carries and still serialises the 29 genes, so both arms write the same
+/// `.bin` layout and a lineage stays comparable across the A/B.
+///
+/// Same shape as `--sem-memoria-neuronal` and the rest of the P1.7 control flags: freeze  // check-language: allow -- quoting the flag name verbatim
+/// the field AND ignore it downstream, which is strictly stronger than either alone.
+pub static HIPPOCAMPUS_DISABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn hippocampus_disabled() -> bool {
+    HIPPOCAMPUS_DISABLED.load(Ordering::Relaxed)
+}
+
+/// Is the hippocampus allowed to bias the commands this tick?
+///
+/// One function so that `context.rs` cannot get the precedence between the three flags
+/// wrong: `--sem-hipocampo` beats `--hipocampo-setor`, and without `--hipocampo-setor`  // check-language: allow -- quoting the flag name verbatim
+/// there is nothing to bias with in the first place.
+#[inline]
+pub fn hippocampus_active() -> bool {
+    hippocampus_on() && !hippocampus_disabled()
+}
+
+/// Sector index of a being, `0..N_CHECKPOINTS-1`, from its track progress.
+///
+/// THE one definition of this formula. It was written out twice — `avaliar_held_out` and
+/// the training loop of `main()` (`main.rs:388` and `main.rs:3047` before this change) —
+/// and the hippocampus would
+/// have made it three times — exactly the duplication `docs/STYLE.md` §4 says this project
+/// has already paid for twice, when `WAVE_U32S` was hand-declared six times and two copies
+/// were missed.
+///
+/// `progress_m` and `lap_dist_m` are both in metres. The cast truncates, so a being
+/// exactly on the finish line reads sector 0; `lap_dist_m <= 0` would be a degenerate
+/// track, and the `max(1.0)` keeps it from producing a NaN index.
+#[inline]
+pub fn sector_of(progress_m: f32, lap_dist_m: f32) -> u32 {
+    ((progress_m / lap_dist_m.max(1.0)) * N_CHECKPOINTS as f32) as u32
+}

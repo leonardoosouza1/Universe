@@ -55,6 +55,12 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
     original.neuron_activation[0] = 2.0;
     let ultima_ativacao = original.neuron_activation.len() - 1;
     original.neuron_activation[ultima_ativacao] = 3.0;
+    // C1 (sector hippocampus): marks outside the neutral (all zeros). Both ENDS of the
+    // block, because a serializer that writes the right COUNT of floats from the wrong
+    // offset passes a test that only checks the first one.
+    original.hip[0] = 0.246_8;
+    let ultimo_hip = original.hip.len() - 1;
+    original.hip[ultimo_hip] = -1.357_9;
 
     let path = std::env::temp_dir().join("universe_genoma_ida_volta.bin");
     let path = path.to_str().unwrap();
@@ -93,6 +99,15 @@ fn genoma_sobrevive_ida_e_volta_no_disco() {
     assert_eq!(
         lido.gates_w, original.gates_w,
         "M4: conductor gates did not survive the disk"
+    );
+    assert_eq!(
+        lido.hip, original.hip,
+        "C1: sector hippocampus did not survive the disk"
+    );
+    assert_eq!(
+        lido.hip.len(),
+        universe::gpu::hippocampus::N_HIP_GENES,
+        "C1: the hippocampus block has to be 29 genes — 27 for W plus rate plus gain"
     );
 }
 
@@ -164,6 +179,85 @@ fn genoma_antigo_sem_lento_nem_tau_ainda_carrega() {
         lido.neuron_activation,
         vec![0.0; n_l1 + n_l2],
         "legacy genome without P1.7 should load activation=0.0 (tanh)"
+    );
+    // C1: same requirement one block further down. All-zero is not merely a safe default
+    // here, it is the exact behaviour that genome ran with — zero genes give a bias of
+    // [0, 0, 0], which IS "no hippocampus".
+    assert_eq!(
+        lido.hip,
+        vec![0.0; universe::gpu::hippocampus::N_HIP_GENES],
+        "legacy genome without C1 should load hip = zeros (bias [0,0,0])"
+    );
+}
+
+/// A genome saved by the CURRENT format minus only the last block still loads, with the
+/// hippocampus neutral.
+///
+/// `genoma_antigo_sem_lento_nem_tau_ainda_carrega` above truncates the file right after  // check-language: allow -- quoting an existing test name verbatim
+/// KAN, which is far enough back that every optional block falls back together. This one
+/// truncates by exactly the last block, which is the case that actually ships: every
+/// champion `.bin` written before C1 existed is this file. If `load_genome` read the
+/// hippocampus from the wrong offset it would fabricate 29 genes out of whatever came
+/// before, and a resumed champion would start biasing its commands with garbage.
+#[test]
+fn genome_without_the_hippocampus_block_loads_it_neutral() {
+    let mut original = Genome::random(4242);
+    original.gates_w[0] = 0.777;
+    original.gates_w[15] = -0.555;
+    // What a pre-C1 `save_genome` produced: the same bytes, minus this block.
+    original.hip = Vec::new();
+
+    let path = std::env::temp_dir().join("universe_genome_without_hip.bin");
+    let path = path.to_str().unwrap();
+    save_genome(&original, path).expect("wrote");
+    let lido = load_genome(path).expect("read");
+    let _ = std::fs::remove_file(path);
+
+    assert_eq!(
+        lido.hip,
+        vec![0.0; universe::gpu::hippocampus::N_HIP_GENES],
+        "pre-C1 genome must load with a neutral hippocampus, never with garbage"
+    );
+    // The block BEFORE it has to be intact — that is what proves the fallback did not
+    // consume bytes that belonged to someone else.
+    assert_eq!(
+        lido.gates_w, original.gates_w,
+        "M4 gates corrupted by the hippocampus fallback"
+    );
+    // And the bias that neutral genome produces is exactly zero, for any memory.
+    let mem = universe::gpu::hippocampus::SectorMemory::new();
+    let b = universe::gpu::hippocampus::bias(&lido.hip, &mem.read(0));
+    assert_eq!(
+        b,
+        [0.0, 0.0, 0.0],
+        "neutral hippocampus must not bias anything"
+    );
+}
+
+/// The library's `N_SECTORS` and this binary's `N_CHECKPOINTS` are the same grid written
+/// in two places (the library cannot import a binary's constant). `docs/STYLE.md` §4 is
+/// the rule; `WAVE_U32S`, declared six times and missed twice, is why the rule exists.
+#[test]
+fn sector_count_matches_the_checkpoint_grid() {
+    assert_eq!(
+        universe::gpu::hippocampus::N_SECTORS as u32,
+        crate::statics::N_CHECKPOINTS,
+        "the hippocampus indexes sectors; if the checkpoint grid changes, it has to follow"
+    );
+}
+
+/// `sector_of` is the single definition of a formula that used to be written out twice —
+/// once in `avaliar_held_out` and once in the training loop of `main()`. This pins its two
+/// edges: progress 0 is sector 0,
+/// and progress one tick short of a full lap is the last sector, never sector 24.
+#[test]
+fn sector_of_covers_the_lap_without_overflowing_the_grid() {
+    let lap = 2928.0_f32;
+    assert_eq!(crate::statics::sector_of(0.0, lap), 0);
+    assert_eq!(crate::statics::sector_of(lap / 24.0, lap), 1);
+    assert_eq!(
+        crate::statics::sector_of(lap * 0.999, lap),
+        crate::statics::N_CHECKPOINTS - 1
     );
 }
 

@@ -193,6 +193,27 @@ pub struct GpuCtx {
     /// printed, or the canary passes a mechanism that is not integrating.
     pub tel_tire_temp_sq: f64,
     pub tel_tire_temp_n: u64,
+
+    // ── C1 — SECTOR HIPPOCAMPUS (docs/PRD-CEREBRO-NEUROMOD.md §C1) ──────────
+    //
+    // STATE, not dose — same reasoning as the hostile-world block above, and the same
+    // consequence: the three CLI knobs live in `statics.rs`, the 24 memory slots per
+    // being live here. All three fields are inert at their defaults (empty vectors,
+    // `None`), so a run without `--hipocampo-setor` takes exactly the old code path.
+    /// One hippocampus per being, index-aligned with `states`. Empty = the organ was
+    /// never switched on this run. Rebuilt (not carried) at the start of every
+    /// generation by `main()`: memory that survives a generation boundary would make the
+    /// champion's re-evaluation non-deterministic.
+    pub hip_mem: Vec<universe::gpu::hippocampus::SectorMemory>,
+    /// `n × N_HIP_GENES` hippocampus weights, filled once per generation by `main()` from
+    /// the genomes — the same lifetime and the same reason as `gates_w`: the genes do not
+    /// change inside a generation, so flattening them once per generation beats reaching
+    /// into the genome on every tick.
+    pub hip_genes: Vec<f32>,
+    /// `--hipocampo-setor`: per-generation `hip_gen<N>.f32` recording of being 0, one row
+    /// of `HIP_OBS_COLS` f32 per tick. A SEPARATE file from `obs.f32` on purpose —
+    /// `obs.f32` is 394 fixed columns and several tools index into it by offset.
+    pub hip_writer: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 /// Contexto físico (curvatura/velocidade/dist_parede) de UM ser neste tick, para
@@ -430,6 +451,11 @@ impl GpuCtx {
             tel_tire_temp_sum: 0.0,
             tel_tire_temp_sq: 0.0,
             tel_tire_temp_n: 0,
+            // C1: inert until `main()` sizes them, which it only does with
+            // `--hipocampo-setor`. `hippocampus_bias` returns [0, 0, 0] on an empty bank.
+            hip_mem: Vec::new(),
+            hip_genes: Vec::new(),
+            hip_writer: None,
         })
     }
 
@@ -465,6 +491,39 @@ impl GpuCtx {
             slow_w.extend_from_slice(&e.slow_brain.all_weights());
         }
         self.slow.upload_weights(&slow_w, refs.len());
+    }
+
+    /// C1 — the hippocampus bias for being `i`, ALREADY multiplied by `HIP_AUTHORITY`.
+    ///
+    /// Returns `[0.0, 0.0, 0.0]` — bit for bit, not approximately — whenever the organ is
+    /// not active for this run, when the bank has not been sized, or when the genes are
+    /// all zero (`gpu::hippocampus::bias`, identity contract). Adding an exact `+0.0` to a
+    /// finite command leaves its bits untouched, which is what keeps a run without
+    /// `--hipocampo-setor` identical to a run of the binary that predates C1.
+    ///
+    /// (The one IEEE exception, recorded rather than hidden: `-0.0 + 0.0` is `+0.0`. To
+    /// reach it, `kan_eval` and the slow brain's bias would both have to be exactly
+    /// `-0.0` on the same tick, and the result would still compare equal and propagate
+    /// identically through every later operation — the physics never divides by a command.)
+    fn hippocampus_bias(&self, i: usize) -> [f32; universe::gpu::hippocampus::HIP_OUTPUTS] {
+        use universe::gpu::hippocampus as hip;
+        if !hippocampus_active() || i >= self.hip_mem.len() {
+            return [0.0; hip::HIP_OUTPUTS];
+        }
+        let genes = match self
+            .hip_genes
+            .get(i * hip::N_HIP_GENES..(i + 1) * hip::N_HIP_GENES)
+        {
+            Some(g) => g,
+            None => return [0.0; hip::HIP_OUTPUTS],
+        };
+        let mem = &self.hip_mem[i];
+        let x = mem.read_gated(mem.read_sector(), hippocampus_erase());
+        let mut b = hip::bias(genes, &x);
+        for v in b.iter_mut() {
+            *v *= hip::HIP_AUTHORITY;
+        }
+        b
     }
 
     /// Executa um tick do laço GPU.
@@ -1858,10 +1917,26 @@ impl GpuCtx {
                 // memória; se não soltar mesmo com autoridade, o teto é o cérebro pequeno.
                 let steer_bias = slow[2] * SLOW_STEER_AUTH.load(Ordering::Relaxed);
 
-                let thr_kan =
-                    (kan_eval(0, intent[0]).max(0.0) + aggression).clamp(0.0, throttle_cap);
-                let steer_kan = (kan_eval(1, intent[1]) + steer_bias).clamp(-1.0, 1.0);
-                let brk_kan = kan_eval(2, intent[2]).max(0.0);
+                // ── C1: SECTOR HIPPOCAMPUS (docs/PRD-CEREBRO-NEUROMOD.md §C1) ────
+                //
+                // ORDER IS THE CONTRACT: KAN → slow → **hippocampus** → steering
+                // smoothing → clamps. The PRD fixes it (§3, "merge") and so does the
+                // mechanism: the bias is a COMMAND correction, so it has to land while
+                // the command is still a raw number, before `alfa` filters the steering
+                // and before the clamps decide what the motor may receive. Applied after
+                // the slow brain because the slow half is the modulator of record here —
+                // the hippocampus corrects the command the whole brain arrived at, it
+                // does not compete with one stage of it.
+                //
+                // `hip_bias` already carries `HIP_AUTHORITY` (0.5) and is exactly
+                // `[0, 0, 0]` when the organ is off, so these three lines are a no-op on
+                // the default path — see `hippocampus_bias`.
+                let hip_bias = self.hippocampus_bias(i);
+                let thr_kan = (kan_eval(0, intent[0]).max(0.0) + aggression + hip_bias[0])
+                    .clamp(0.0, throttle_cap);
+                let steer_kan =
+                    (kan_eval(1, intent[1]) + steer_bias + hip_bias[1]).clamp(-1.0, 1.0);
+                let brk_kan = (kan_eval(2, intent[2]) + hip_bias[2]).max(0.0);
                 // Alisamento do volante: `prev*(1-α) + novo*α`.
                 //
                 // Com α=0,50 o comando leva ~4 ticks para chegar a 90% de um alvo novo, o que
@@ -2091,6 +2166,43 @@ impl GpuCtx {
             debug_assert_eq!(row.len(), 394);
             use std::io::Write as _;
             if let Some(w) = self.obs_writer.as_mut() {
+                let _ = w.write_all(bytemuck::cast_slice(&row));
+            }
+        }
+
+        // ── C1: HIPPOCAMPUS OBSERVATION (`hip_gen<N>.f32`) ─────────────────────
+        //
+        // Being 0 only, every tick, `HIP_OBS_COLS` f32 per row:
+        //   [tick, sector, mem[s](4), mem[s+1](4), bias(3)]
+        // `obs.f32` is deliberately NOT touched: it is 394 fixed columns and tools index
+        // into it by offset, so a 395th column would silently shift every one of them.
+        //
+        // Written EVERY tick, not only when the brain fires (unlike `obs.f32` above): the
+        // memory and the bias exist on every tick regardless of `brain_skip`, and a file
+        // sampled on the brain's schedule could not be read against a per-tick lap trace.
+        //
+        // The bias here is recomputed rather than carried out of the command closure —
+        // 27 multiply-adds against the borrow gymnastics of threading a value out of a
+        // `map()` that already borrows `self`. It is the same function, so the row cannot
+        // drift from what the commands actually received — which also means the three
+        // bias columns are POST-authority (already × `HIP_AUTHORITY` = 0.5), i.e. the
+        // number that was added to the command, not the raw `tanh` output. Divide by 0.5
+        // to recover the organ's own output.
+        if self.hip_writer.is_some() && !self.hip_mem.is_empty() {
+            use universe::gpu::hippocampus as hip;
+            let sector = self.hip_mem[0].read_sector();
+            let here = self.hip_mem[0].slot(sector);
+            let next = self.hip_mem[0].slot(sector + 1);
+            let b = self.hippocampus_bias(0);
+            let mut row: Vec<f32> = Vec::with_capacity(hip::HIP_OBS_COLS);
+            row.push(tick_idx as f32);
+            row.push(sector as f32);
+            row.extend_from_slice(&here);
+            row.extend_from_slice(&next);
+            row.extend_from_slice(&b);
+            debug_assert_eq!(row.len(), hip::HIP_OBS_COLS);
+            use std::io::Write as _;
+            if let Some(w) = self.hip_writer.as_mut() {
                 let _ = w.write_all(bytemuck::cast_slice(&row));
             }
         }

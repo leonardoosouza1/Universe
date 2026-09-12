@@ -45,6 +45,7 @@ pub mod core;
 pub mod cortex_sheet;
 pub mod evolution;
 pub mod genome_io;
+pub mod hippocampus;
 pub mod perception;
 pub mod physics;
 pub mod retina_digest;
