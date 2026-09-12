@@ -95,7 +95,7 @@ Grafo: **C0 ∥ C1 ∥ C3 ∥ C4** (independentes) → smoke (C4) → **bateria*
 
 ### C5 — Análise
 
-`tools/voltas.py` (Python padrão + matplotlib, CPU, sem torch): lê `laps_gen*.jsonl` dos 6 runs; tabela pareada por semente (controle × hip) de `lap2/lap1`, `≥2V/gen`, `net_max`, `dof_hip`, `|bias|`; t pareado, MDE; curva por geração; PNG em `<out>/voltas.png`. Lê também `u2` (mem × apagar). Saída Markdown ≤ 40 linhas para o doc de veredito.
+`tools/laps.py` (Python padrão + matplotlib, CPU, sem torch): lê `laps_gen*.jsonl` dos 6 runs; tabela pareada por semente (controle × hip) de `lap2/lap1`, `≥2V/gen`, `net_max`, `dof_hip`, `|bias|`; t pareado, MDE; curva por geração; PNG em `<out>/voltas.png`. Lê também `u2` (mem × apagar). Saída Markdown ≤ 40 linhas para o doc de veredito.
 
 ## 3. Ordem de lançamento
 

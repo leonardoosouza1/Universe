@@ -2,25 +2,27 @@
 """u1 battery analysis — hippocampus per sector against control (PRD C5).
 
 Run it with this machine's python:
-    /home/leonardo/projects/LLM/.venv-rocm/bin/python tools/voltas.py <run> [<run> ...]
-    /home/leonardo/projects/LLM/.venv-rocm/bin/python tools/voltas.py \
-        --par u1_s031_ctrl:u1_s031_hip u1_s077_ctrl:u1_s077_hip u1_s113_ctrl:u1_s113_hip \
-        --gens ultimas 10
-    /home/leonardo/projects/LLM/.venv-rocm/bin/python tools/voltas.py --teste
+    /home/leonardo/projects/LLM/.venv-rocm/bin/python tools/laps.py <run> [<run> ...]
+    /home/leonardo/projects/LLM/.venv-rocm/bin/python tools/laps.py \
+        --pair u1_s031_ctrl:u1_s031_hip u1_s077_ctrl:u1_s077_hip u1_s113_ctrl:u1_s113_hip \
+        --gens last 10
+    /home/leonardo/projects/LLM/.venv-rocm/bin/python tools/laps.py --self-test
 
 INPUT, READ ONLY: `<run>/laps_gen<NNNN>.jsonl`, one line per being:
 `{"being":i,"seed":s,"laps":[{lap,tick_start,tick_end,dist,sector_ticks[24],
-grass_ticks,damage,dry_events,parcial}, ...]}` (`src/bin/gpu_evolve/laps.rs`).
+grass_ticks,damage,dry_events,partial}, ...]}` (`src/bin/gpu_evolve/laps.rs`).
 
-`parcial` (since 2026-09-12) marks the lap that was still OPEN when the
-generation ended — always a being's last record, one per being. A ledger written
-before that flag has no `parcial` key and every record in it is a closed lap;
-this tool reads `parcial` as False when the key is absent, so the old u1 files
-give exactly the numbers they always gave.
+`partial` (since 2026-09-12) marks the lap that was still OPEN when the
+generation ended — always a being's last record, one per being. THREE ledger
+vintages exist and all three read the same here: written before the flag (no
+key at all, every record a closed lap), written with the key spelled `parcial`
+(the flag's first day), and written with `partial` (the English pass of
+2026-09-12). `is_partial` accepts both spellings and defaults to False, so the
+old u1 files give exactly the numbers they always gave.
 
 A partial lap has NO comparable time or distance (its `tick_end - tick_start`
 and `dist` cover a fragment), so it is excluded from every lap COUNT (med
-voltas, >=1V, >=2V) and from `lap2/lap1`. What it does carry honestly is
+laps, >=1V, >=2V) and from `lap2/lap1`. What it does carry honestly is
 `sector_ticks` FOR THE SECTORS IT FINISHED — not the one it died in (or the one
 the generation ended in): that sector has no comparable time either, for the
 same reason the whole lap does not. Found by `interrupted_sector()`: sectors
@@ -58,10 +60,10 @@ TWO SECTOR SLOTS ARE A LEDGER ARTEFACT, not driving (checked on
   * sector 0 — `LapTracker::new` opens lap 1 in slot 0 at tick 0, so that slot
     holds "everything before the first crossing" plus the real pass (median
     3 760 ticks on lap 1 against 238 on lap 2, gen 0). Including it injects a
-    fake r ~ 0.06. It is EXCLUDED by default; `--com-setor-inicial` puts it back
+    fake r ~ 0.06. It is EXCLUDED by default; `--with-start-sector` puts it back
     for inspection. 22 sectors per being remain.
 
-COVERAGE, TWO NUMBERS: `seres r` is how many beings entered the primary metric,
+COVERAGE, TWO NUMBERS: `beings r` is how many beings entered the primary metric,
 split into `r 2V` (a CLOSED lap 2) and `r par` (only a partial 2nd pass). The
 second column is the one the partial lap bought: on a ledger written before
 2026-09-12 it is always 0, and `u0c` gen 0 measured 27 of 60 beings while 54 of
@@ -72,13 +74,13 @@ averaged into one coverage figure.
 Secondary: `lap2/lap1` in TICKS (not metres — per-lap distance moves with the
 racing line, U6 amendment), computed over the SAME clean sectors as the primary
 metric: sum(lap2.sector_ticks[clean]) / sum(lap1.sector_ticks[clean]), normally
-sectors 1..22. The raw `tick_end - tick_start` version is kept beside it as
-`bruto`: lap 1 starts at tick 0, so its raw duration carries the same start-up
-that contaminates sector 0, and `bruto` is optimistic for lap 2 for that reason
+sectors 1..22. The `tick_end - tick_start` version is kept beside it as
+`raw`: lap 1 starts at tick 0, so its raw duration carries the same start-up
+that contaminates sector 0, and `raw` is optimistic for lap 2 for that reason
 (u0c gen 0: 0.83 raw against 1.01 clean).
 
 NEVER writes into /media/llm-data or into a run directory: the only outputs are
-the `--saida` JSON and the optional `--png`.
+the `--out` JSON and the optional `--png`.
 """
 
 from __future__ import annotations
@@ -104,7 +106,7 @@ except Exception:  # pragma: no cover - environment without scipy
 DEFAULT_BASE = "/media/llm-data/universe-runs/neuromod-lab-taxi"
 DEFAULT_OUT = (
     "/tmp/claude-1000/-home-leonardo-projects-LLM/"
-    "a39cc9a1-b1be-48b6-9c7c-89e12aefeb1c/scratchpad/voltas.json"
+    "a39cc9a1-b1be-48b6-9c7c-89e12aefeb1c/scratchpad/laps.json"
 )
 N_SECTORS = 24  # statics.rs:128 N_CHECKPOINTS
 START_SLOT = 0  # slot LapTracker::new opens at tick 0 (contaminated on lap 1)
@@ -117,9 +119,9 @@ ALPHA = 0.05
 POWER = 0.80
 
 MDE_FORMULA = (
-    "MDE = (t_{1-alfa/2, n-1} + t_{poder, n-1}) * sd / sqrt(n); "
-    "n=3, alfa=0.05, poder=0.80 => (4.3027+1.0607)*sd/sqrt(3) = 3.0965*sd. "
-    "A 'exata' resolve poder = P(|T'(df=n-1, ncp=Delta*sqrt(n)/sd)| > t_crit) = 0.80."
+    "MDE = (t_{1-alpha/2, n-1} + t_{power, n-1}) * sd / sqrt(n); "
+    "n=3, alpha=0.05, power=0.80 => (4.3027+1.0607)*sd/sqrt(3) = 3.0965*sd. "
+    "The 'exact' one solves power = P(|T'(df=n-1, ncp=Delta*sqrt(n)/sd)| > t_crit) = 0.80."
 )
 
 
@@ -150,7 +152,7 @@ def load_gen(run_dir: str, gen: int) -> list[dict]:
             # this generation is being flushed right now. Anything else is a
             # corrupt ledger and must not be swallowed.
             if i == len(lines) - 1:
-                print(f"  aviso: ultima linha incompleta em {path} (run em andamento)",
+                print(f"  warning: last line of {path} is incomplete (run in progress)",
                       file=sys.stderr)
                 break
             raise
@@ -168,10 +170,13 @@ def resolve(name: str, base: str) -> str:
 def is_partial(lap: dict) -> bool:
     """The lap was still open when the generation ended.
 
-    A ledger written before the flag existed has no `parcial` key, and every
-    record in it is a closed lap — hence the `False` default, which is what keeps
-    the old u1 numbers identical.
+    Reads BOTH wire spellings: `partial` (current) and `parcial` (the flag's
+    first day, 2026-09-12). A ledger written before the flag existed has
+    neither key, and every record in it is a closed lap — hence the `False`
+    default, which is what keeps the old u1 numbers identical.
     """
+    if "partial" in lap:
+        return bool(lap["partial"])
     return bool(lap.get("parcial", False))
 
 
@@ -255,23 +260,23 @@ def gen_metrics(beings: list[dict], with_start_slot: bool) -> dict:
     laps_n = np.array([len(closed_laps(b)) for b in beings], dtype=float)
 
     per_being_r, sectors_used, lap21_clean = [], [], []
-    n_r_2v, n_r_parcial = 0, 0
+    n_r_2v, n_r_partial = 0, 0
     for being in beings:
         pairs = sector_pairs(being, with_start_slot)
         if not pairs:
             continue
-        parcial = second_pass(being)[2]
+        partial = second_pass(being)[2]
         per_being_r.append(float(np.median([t2 / t1 for _, t1, t2 in pairs])))
         sectors_used.append(len(pairs))
-        n_r_parcial += int(parcial)
-        n_r_2v += int(not parcial)
+        n_r_partial += int(partial)
+        n_r_2v += int(not partial)
         # secondary, clean: whole lap restricted to the sectors the primary metric
         # uses (normally 1..22), so it cannot import the dirty start. Only beings
         # with a CLOSED lap 2 enter it: over a partial 2nd pass this sum is a
         # fragment against a whole lap, not a lap ratio.
-        if not parcial:
-            soma1 = sum(t1 for _, t1, _ in pairs)
-            lap21_clean.append(sum(t2 for _, _, t2 in pairs) / soma1)
+        if not partial:
+            sum1 = sum(t1 for _, t1, _ in pairs)
+            lap21_clean.append(sum(t2 for _, _, t2 in pairs) / sum1)
 
     lap21_raw = []
     for being in beings:
@@ -283,21 +288,21 @@ def gen_metrics(beings: list[dict], with_start_slot: bool) -> dict:
                 lap21_raw.append(d2 / d1)
 
     return {
-        "n_seres": n,
-        "voltas_medianas": float(np.median(laps_n)) if n else 0.0,
+        "n_beings": n,
+        "median_laps": float(np.median(laps_n)) if n else 0.0,
         "frac_1v": float(np.mean(laps_n >= 1)) if n else 0.0,
         "frac_2v": float(np.mean(laps_n >= 2)) if n else 0.0,
         "n_2v": int((laps_n >= 2).sum()) if n else 0,
         # primary
-        "r_mediana": float(np.median(per_being_r)) if per_being_r else None,
-        "n_seres_r": len(per_being_r),
+        "r_median": float(np.median(per_being_r)) if per_being_r else None,
+        "n_beings_r": len(per_being_r),
         # coverage split: closed 2nd lap vs partial 2nd pass (0 on old ledgers)
         "n_r_2v": n_r_2v,
-        "n_r_parcial": n_r_parcial,
-        "setores_por_ser": float(np.median(sectors_used)) if sectors_used else 0.0,
+        "n_r_partial": n_r_partial,
+        "sectors_per_being": float(np.median(sectors_used)) if sectors_used else 0.0,
         # secondary: clean (22 sectors) and raw (tick_end - tick_start)
         "lap2_lap1_ticks": float(np.median(lap21_clean)) if lap21_clean else None,
-        "lap2_lap1_ticks_bruto": float(np.median(lap21_raw)) if lap21_raw else None,
+        "lap2_lap1_ticks_raw": float(np.median(lap21_raw)) if lap21_raw else None,
         "n_lap2_lap1": len(lap21_raw),
     }
 
@@ -306,10 +311,10 @@ def analyse_run(run_dir: str, gens: list[int] | None, with_start_slot: bool) -> 
     available = run_gens(run_dir)
     wanted = available if gens is None else [g for g in gens if g in available]
     return {
-        "caminho": run_dir,
-        "gens_disponiveis": available,
+        "path": run_dir,
+        "gens_available": available,
         "gens": {g: gen_metrics(load_gen(run_dir, g), with_start_slot) for g in wanted},
-        "existe": bool(available),
+        "exists": bool(available),
     }
 
 
@@ -317,12 +322,12 @@ def analyse_run(run_dir: str, gens: list[int] | None, with_start_slot: bool) -> 
 
 
 def select_gens(available: list[int], spec) -> list[int]:
-    """`--gens ultimas N` | `todas` | explicit list."""
+    """`--gens last N` | `all` | explicit list."""
     if spec is None:
         return list(available)
-    if spec[0] == "ultimas":
+    if spec[0] == "last":
         return list(available[-spec[1]:])
-    if spec[0] == "todas":
+    if spec[0] == "all":
         return list(available)
     wanted = set(spec[1])
     return [g for g in available if g in wanted]
@@ -340,7 +345,7 @@ def paired_t(deltas: np.ndarray) -> dict:
         # sd == 0 with a non-zero mean is a degenerate "infinite t", not a result.
         t = float("inf") if (n > 1 and sd == 0 and mean != 0) else None
         p = None
-    return {"n": n, "media": mean, "sd": sd, "t": t, "p": p, "df": n - 1}
+    return {"n": n, "mean": mean, "sd": sd, "t": t, "p": p, "df": n - 1}
 
 
 def mde(sd: float, n: int, alpha: float = ALPHA, power: float = POWER) -> dict:
@@ -353,7 +358,7 @@ def mde(sd: float, n: int, alpha: float = ALPHA, power: float = POWER) -> dict:
     this small the approximation is optimistic, so both are reported.
     """
     if n <= 1 or _st is None or not np.isfinite(sd) or sd <= 0:
-        return {"aprox": None, "exata": None, "formula": MDE_FORMULA}
+        return {"approx": None, "exact": None, "formula": MDE_FORMULA}
     df = n - 1
     t_crit = float(_st.t.ppf(1 - alpha / 2, df))
     approx = (t_crit + float(_st.t.ppf(power, df))) * sd / math.sqrt(n)
@@ -372,7 +377,7 @@ def mde(sd: float, n: int, alpha: float = ALPHA, power: float = POWER) -> dict:
             else:
                 hi = mid
         exact = 0.5 * (lo + hi)
-    return {"aprox": approx, "exata": exact, "formula": MDE_FORMULA}
+    return {"approx": approx, "exact": exact, "formula": MDE_FORMULA}
 
 
 # -------------------------------------------------------------- reporting ----
@@ -389,41 +394,41 @@ def fmt(x, places=4):
 
 
 def print_run(name: str, res: dict) -> None:
-    print(f"\n=== {name}  ({res['caminho']})")
-    if not res["existe"]:
-        print("    SEM laps_gen*.jsonl — run ainda nao rodou (ou ledger desligado).")
+    print(f"\n=== {name}  ({res['path']})")
+    if not res["exists"]:
+        print("    NO laps_gen*.jsonl — run has not started yet (or the ledger is off).")
         return
     print(
-        "  gen | seres | med voltas | >=1V | >=2V | r=t2/t1 (med pop) | seres r |"
-        " r 2V | r par | setores/ser | lap2/lap1 ticks | bruto"
+        "  gen |beings | med laps   | >=1V | >=2V | r=t2/t1 (pop med) |beings r |"
+        " r 2V | r par | sectors/bng | lap2/lap1 ticks |   raw"
     )
     for g, m in sorted(res["gens"].items()):
         print(
-            f"  {g:4d}|{m['n_seres']:6d} |{m['voltas_medianas']:11.2f} |"
+            f"  {g:4d}|{m['n_beings']:6d} |{m['median_laps']:11.2f} |"
             f"{m['frac_1v']*100:5.0f}%|{m['frac_2v']*100:5.0f}%|"
-            f"{fmt(m['r_mediana']):>18}|{m['n_seres_r']:8d} |"
-            f"{m['n_r_2v']:5d} |{m['n_r_parcial']:6d} |"
-            f"{m['setores_por_ser']:12.0f} |{fmt(m['lap2_lap1_ticks']):>16} |"
-            f"{fmt(m['lap2_lap1_ticks_bruto']):>7}"
+            f"{fmt(m['r_median']):>18}|{m['n_beings_r']:8d} |"
+            f"{m['n_r_2v']:5d} |{m['n_r_partial']:6d} |"
+            f"{m['sectors_per_being']:12.0f} |{fmt(m['lap2_lap1_ticks']):>16} |"
+            f"{fmt(m['lap2_lap1_ticks_raw']):>7}"
         )
-    print("    r 2V = seres com volta 2 FECHADA | r par = so 2a passagem parcial")
+    print("    r 2V = beings with lap 2 CLOSED | r par = partial 2nd pass only")
 
 
 def print_pair(pair: dict) -> None:
-    print(f"\n=== PAR {pair['ctrl']} x {pair['hip']}")
+    print(f"\n=== PAIR {pair['ctrl']} x {pair['hip']}")
     if not pair["gens"]:
-        print("    sem geracoes em comum com ledger — par ignorado.")
+        print("    no generation with a ledger in common — pair skipped.")
         return
     print("  gen | r ctrl | r hip  |  delta (hip-ctrl) | >=2V ctrl/hip | r par ctrl/hip")
-    for row in pair["por_gen"]:
+    for row in pair["per_gen"]:
         print(
             f"  {row['gen']:4d}|{fmt(row['r_ctrl']):>8}|{fmt(row['r_hip']):>8}|"
             f"{fmt(row['delta']):>19}|{row['n2v_ctrl']:>7}/{row['n2v_hip']:<7}|"
             f"{row['npar_ctrl']:>7}/{row['npar_hip']:<7}"
         )
     print(
-        f"  -> delta medio {fmt(pair['delta_medio'])} | mediano "
-        f"{fmt(pair['delta_mediano'])} | gens {pair['gens'][0]}..{pair['gens'][-1]}"
+        f"  -> mean delta {fmt(pair['delta_mean'])} | median "
+        f"{fmt(pair['delta_median'])} | gens {pair['gens'][0]}..{pair['gens'][-1]}"
     )
 
 
@@ -441,8 +446,8 @@ def compare_pair(ctrl_name, hip_name, base, gens_spec, with_start_slot) -> dict:
         mc = gen_metrics(load_gen(ctrl_dir, g), with_start_slot)
         mh = gen_metrics(load_gen(hip_dir, g), with_start_slot)
         d = (
-            mh["r_mediana"] - mc["r_mediana"]
-            if (mc["r_mediana"] is not None and mh["r_mediana"] is not None)
+            mh["r_median"] - mc["r_median"]
+            if (mc["r_median"] is not None and mh["r_median"] is not None)
             else None
         )
         if d is not None:
@@ -450,32 +455,32 @@ def compare_pair(ctrl_name, hip_name, base, gens_spec, with_start_slot) -> dict:
         rows.append(
             {
                 "gen": g,
-                "r_ctrl": mc["r_mediana"],
-                "r_hip": mh["r_mediana"],
+                "r_ctrl": mc["r_median"],
+                "r_hip": mh["r_median"],
                 "delta": d,
                 "n2v_ctrl": mc["n_2v"],
                 "n2v_hip": mh["n_2v"],
                 # coverage of the PRIMARY metric, split: closed lap 2 vs partial pass
                 "nr2v_ctrl": mc["n_r_2v"],
                 "nr2v_hip": mh["n_r_2v"],
-                "npar_ctrl": mc["n_r_parcial"],
-                "npar_hip": mh["n_r_parcial"],
+                "npar_ctrl": mc["n_r_partial"],
+                "npar_hip": mh["n_r_partial"],
                 "lap21_ctrl": mc["lap2_lap1_ticks"],
                 "lap21_hip": mh["lap2_lap1_ticks"],
-                "lap21_bruto_ctrl": mc["lap2_lap1_ticks_bruto"],
-                "lap21_bruto_hip": mh["lap2_lap1_ticks_bruto"],
-                "voltas_ctrl": mc["voltas_medianas"],
-                "voltas_hip": mh["voltas_medianas"],
+                "lap21_raw_ctrl": mc["lap2_lap1_ticks_raw"],
+                "lap21_raw_hip": mh["lap2_lap1_ticks_raw"],
+                "laps_ctrl": mc["median_laps"],
+                "laps_hip": mh["median_laps"],
             }
         )
     return {
         "ctrl": ctrl_name,
         "hip": hip_name,
         "gens": gens,
-        "por_gen": rows,
-        "delta_medio": float(np.mean(deltas)) if deltas else None,
-        "delta_mediano": float(np.median(deltas)) if deltas else None,
-        "n_gens_com_delta": len(deltas),
+        "per_gen": rows,
+        "delta_mean": float(np.mean(deltas)) if deltas else None,
+        "delta_median": float(np.median(deltas)) if deltas else None,
+        "n_gens_with_delta": len(deltas),
     }
 
 
@@ -487,14 +492,14 @@ def write_png(pairs: list[dict], path: str) -> None:
 
     fig, ax = plt.subplots(figsize=(9, 4.5))
     for pair in pairs:
-        gens = [r["gen"] for r in pair["por_gen"] if r["delta"] is not None]
-        ds = [r["delta"] for r in pair["por_gen"] if r["delta"] is not None]
+        gens = [r["gen"] for r in pair["per_gen"] if r["delta"] is not None]
+        ds = [r["delta"] for r in pair["per_gen"] if r["delta"] is not None]
         if gens:
             ax.plot(gens, ds, marker="o", label=f"{pair['hip']} - {pair['ctrl']}")
     ax.axhline(0.0, color="k", lw=0.8)
-    ax.set_xlabel("geracao")
+    ax.set_xlabel("generation")
     ax.set_ylabel("delta r = t2/t1 (hip - ctrl)")
-    ax.set_title("Hipocampo por setor: 2a passagem vs 1a (negativo = hip mais rapido)")
+    ax.set_title("Sector hippocampus: 2nd pass vs 1st (negative = hippocampus faster)")
     ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=110)
@@ -515,8 +520,8 @@ def _synthetic_being(i: int, factor: float | None) -> dict:
     """A being with 2 laps: 200 ticks per sector on lap 1, `factor`*200 on lap 2.
 
     Reproduces both real artefacts: lap 1 slot 0 inflated by the start, and lap 1
-    slot 23 empty (the lap closes when ENTERING sector 23). Written WITHOUT the
-    `parcial` key, exactly like the ledgers the old binary left on disk — so every
+    slot 23 empty (the lap closes when ENTERING sector 23). Written WITHOUT any
+    partial key, exactly like the ledgers the oldest binary left on disk — so every
     check built on it is also a check that those files still read as before.
     """
     if factor is None:  # a being that never closed a lap
@@ -541,8 +546,8 @@ def _synthetic_being(i: int, factor: float | None) -> dict:
     return {"being": i, "seed": 900 + i, "laps": [lap(1, t1, 0), lap(2, t2, sum(t1))]}
 
 
-def _synthetic_being_parcial(i: int, factor: float, reached: int) -> dict:
-    """1 closed lap + a lap 2 that DIED after `reached` sectors (`parcial`).
+def _synthetic_being_partial(i: int, factor: float, reached: int) -> dict:
+    """1 closed lap + a lap 2 that DIED after `reached` sectors (`partial`).
 
     Lap 2 holds `factor`*200 ticks in slots 0..reached-1 and 0 everywhere else,
     which is what `LapTracker::finish` writes for a being that dies mid lap: the
@@ -567,7 +572,7 @@ def _synthetic_being_parcial(i: int, factor: float, reached: int) -> dict:
                 "grass_ticks": 0,
                 "damage": 0.0,
                 "dry_events": 0,
-                "parcial": False,
+                "partial": False,
             },
             {
                 "lap": 2,
@@ -578,7 +583,7 @@ def _synthetic_being_parcial(i: int, factor: float, reached: int) -> dict:
                 "grass_ticks": 0,
                 "damage": 0.0,
                 "dry_events": 0,
-                "parcial": True,
+                "partial": True,
             },
         ],
     }
@@ -591,9 +596,9 @@ def _being_with_explicit_ticks(
     with an explicit, arbitrary `sector_ticks` map (unset sectors default to 0).
 
     Used for the interrupted-sector regression cases (T7B): unlike
-    `_synthetic_being_parcial`, this lets a "reached" sector carry FEWER ticks than a
+    `_synthetic_being_partial`, this lets a "reached" sector carry FEWER ticks than a
     full pass — the actual shape `LapTracker::finish` writes for a being that dies mid
-    sector, which `_synthetic_being_parcial` cannot express (it only knows "full" or "0").
+    sector, which `_synthetic_being_partial` cannot express (it only knows "full" or "0").
     """
     t1 = [t1_full] * N_SECTORS
     t1[CLOSE_SLOT] = 0  # lap closes on entering CLOSE_SLOT
@@ -613,7 +618,7 @@ def _being_with_explicit_ticks(
                 "grass_ticks": 0,
                 "damage": 0.0,
                 "dry_events": 0,
-                "parcial": False,
+                "partial": False,
             },
             {
                 "lap": 2,
@@ -624,19 +629,19 @@ def _being_with_explicit_ticks(
                 "grass_ticks": 0,
                 "damage": 0.0,
                 "dry_events": 0,
-                "parcial": True,
+                "partial": True,
             },
         ],
     }
 
 
-def _with_empty_parcial(being: dict) -> dict:
+def _with_empty_partial(being: dict) -> dict:
     """The same being as the new binary would write it: one empty partial appended.
 
     A being that closes a lap and is never ticked again still files the open lap
     (`laps.rs::finish`). Nothing in this tool may move because of it.
     """
-    laps = [dict(lap, parcial=False) for lap in being["laps"]]
+    laps = [dict(lap, partial=False) for lap in being["laps"]]
     last = laps[-1]["lap"] if laps else 0
     laps.append(
         {
@@ -648,18 +653,34 @@ def _with_empty_parcial(being: dict) -> dict:
             "grass_ticks": 0,
             "damage": 0.0,
             "dry_events": 0,
-            "parcial": True,
+            "partial": True,
         }
     )
     return dict(being, laps=laps)
 
 
+def _with_legacy_partial_key(being: dict) -> dict:
+    """The same being as the binary of 2026-09-12 wrote it, before the English pass:
+    the flag on the wire spelled `parcial` instead of `partial`.
+
+    Both spellings exist on disk under /media/llm-data/universe-runs, so reading only
+    the new one would silently reclassify every partial lap of that day's ledgers as a
+    CLOSED lap — inflating the lap counts and letting fragments into `lap2/lap1`.
+    """
+    laps = []
+    for lap in being["laps"]:
+        renamed = {k: v for k, v in lap.items() if k != "partial"}
+        renamed["parcial"] = lap["partial"]
+        laps.append(renamed)
+    return dict(being, laps=laps)
+
+
 def self_test() -> int:
-    root = tempfile.mkdtemp(prefix="voltas_teste_", dir=os.path.dirname(DEFAULT_OUT))
+    root = tempfile.mkdtemp(prefix="laps_self_test_", dir=os.path.dirname(DEFAULT_OUT))
     failures = []
 
     def check(name, cond, detail=""):
-        print(f"  [{'ok ' if cond else 'FALHA'}] {name} {detail}")
+        print(f"  [{'ok  ' if cond else 'FAIL'}] {name} {detail}")
         if not cond:
             failures.append(name)
 
@@ -667,80 +688,83 @@ def self_test() -> int:
     beings = [_synthetic_being(i, 0.9) for i in range(4)] + [_synthetic_being(9, None)]
     _write_synthetic(os.path.join(root, "sint_09"), 0, beings)
     m = gen_metrics(beings, with_start_slot=False)
-    check("r = 0.9 com 2a passagem 10% mais rapida", m["r_mediana"] == 0.9, f"r={m['r_mediana']}")
-    check("22 setores por ser (fora 0 e 23)", m["setores_por_ser"] == 22, f"n={m['setores_por_ser']}")
-    check("4 seres entram na metrica", m["n_seres_r"] == 4)
-    check("mediana de voltas = 2 com 4/5 seres a 2V", m["voltas_medianas"] == 2.0)
+    check("r = 0.9 when the 2nd pass is 10% faster", m["r_median"] == 0.9, f"r={m['r_median']}")
+    check("22 sectors per being (0 and 23 out)", m["sectors_per_being"] == 22,
+          f"n={m['sectors_per_being']}")
+    check("4 beings enter the metric", m["n_beings_r"] == 4)
+    check("median laps = 2 with 4/5 beings at 2 laps", m["median_laps"] == 2.0)
     check("frac >=2V = 0.8", abs(m["frac_2v"] - 0.8) < 1e-12)
     check(
-        "lap2/lap1 limpo = 3960/4400 = 0.9 (setores 1..22)",
+        "clean lap2/lap1 = 3960/4400 = 0.9 (sectors 1..22)",
         m["lap2_lap1_ticks"] == 0.9,
         f"={m['lap2_lap1_ticks']}",
     )
     check(
-        "lap2/lap1 bruto = (180*23+170)/5400 (largada suja puxa p/ baixo)",
-        abs(m["lap2_lap1_ticks_bruto"] - (180 * 23 + 170) / 5400) < 1e-12,
-        f"={m['lap2_lap1_ticks_bruto']:.4f}",
+        "raw lap2/lap1 = (180*23+170)/5400 (the dirty start drags it down)",
+        abs(m["lap2_lap1_ticks_raw"] - (180 * 23 + 170) / 5400) < 1e-12,
+        f"={m['lap2_lap1_ticks_raw']:.4f}",
     )
 
     # T2 - with the start slot the dirty 180/1000 enters and the count goes to 23.
     m0 = gen_metrics(beings, with_start_slot=True)
-    check("com --com-setor-inicial usa 23 setores", m0["setores_por_ser"] == 23)
+    check("--with-start-sector uses 23 sectors", m0["sectors_per_being"] == 23)
 
     # T3 - an arm 5 % slower on the 2nd pass => delta = +0.05 exactly.
     slower = [_synthetic_being(i, 0.95) for i in range(4)] + [_synthetic_being(9, None)]
     _write_synthetic(os.path.join(root, "sint_095"), 0, slower)
-    pair = compare_pair("sint_09", "sint_095", root, ("todas",), False)
-    check("delta sintetico = +0.05", abs(pair["delta_medio"] - 0.05) < 1e-12, f"d={pair['delta_medio']}")
+    pair = compare_pair("sint_09", "sint_095", root, ("all",), False)
+    check("synthetic delta = +0.05", abs(pair["delta_mean"] - 0.05) < 1e-12,
+          f"d={pair['delta_mean']}")
 
     # T4 - a run against an identical copy => delta 0 exactly, sd 0.
     _write_synthetic(os.path.join(root, "sint_09b"), 0, beings)
-    same = compare_pair("sint_09", "sint_09b", root, ("todas",), False)
-    check("par identico da delta 0 exato", same["delta_medio"] == 0.0, f"d={same['delta_medio']}")
+    same = compare_pair("sint_09", "sint_09b", root, ("all",), False)
+    check("an identical pair gives delta exactly 0", same["delta_mean"] == 0.0,
+          f"d={same['delta_mean']}")
     est = paired_t(np.array([0.0, 0.0, 0.0]))
-    check("sd = 0 e t indefinido no par identico", est["sd"] == 0.0 and est["t"] is None)
+    check("sd = 0 and t undefined on the identical pair", est["sd"] == 0.0 and est["t"] is None)
 
     # T5 - a PARTIAL 2nd pass enters the primary metric, minus its interrupted sector.
     # 4 beings, lap 2 died after 6 sectors at 10 % faster: slots 0..5 hold ticks, but slot
     # 0 is the dirty start (excluded as always) AND slot 5 is where the being died — this
     # fixture cannot tell "drove sector 5 fully then died at the boundary" from "died mid
     # sector 5", so `interrupted_sector` must drop 5 too. Only 1..4 pair up.
-    parciais = [_synthetic_being_parcial(i, 0.9, 6) for i in range(4)]
-    mp = gen_metrics(parciais, with_start_slot=False)
-    check("2a passagem parcial da r = 0.9", mp["r_mediana"] == 0.9, f"r={mp['r_mediana']}")
-    check("4 setores por ser (1..4; 0 e largada, 5 e o interrompido)",
-          mp["setores_por_ser"] == 4.0, f"n={mp['setores_por_ser']}")
-    check("cobertura parcial contada em separado", (mp["n_r_parcial"], mp["n_r_2v"]) == (4, 0),
-          f"par={mp['n_r_parcial']} 2v={mp['n_r_2v']}")
-    check("volta parcial NAO conta como volta", mp["voltas_medianas"] == 1.0,
-          f"med={mp['voltas_medianas']}")
-    check("frac >=2V = 0 com lap 2 parcial", mp["frac_2v"] == 0.0 and mp["n_2v"] == 0)
-    check("lap2/lap1 limpo fica n/a (fragmento nao e volta)",
-          mp["lap2_lap1_ticks"] is None and mp["lap2_lap1_ticks_bruto"] is None)
+    partials = [_synthetic_being_partial(i, 0.9, 6) for i in range(4)]
+    mp = gen_metrics(partials, with_start_slot=False)
+    check("a partial 2nd pass gives r = 0.9", mp["r_median"] == 0.9, f"r={mp['r_median']}")
+    check("4 sectors per being (1..4; 0 is the start, 5 the interrupted one)",
+          mp["sectors_per_being"] == 4.0, f"n={mp['sectors_per_being']}")
+    check("partial coverage counted apart", (mp["n_r_partial"], mp["n_r_2v"]) == (4, 0),
+          f"par={mp['n_r_partial']} 2v={mp['n_r_2v']}")
+    check("a partial lap is NOT counted as a lap", mp["median_laps"] == 1.0,
+          f"med={mp['median_laps']}")
+    check("frac >=2V = 0 when lap 2 is partial", mp["frac_2v"] == 0.0 and mp["n_2v"] == 0)
+    check("clean lap2/lap1 stays n/a (a fragment is not a lap)",
+          mp["lap2_lap1_ticks"] is None and mp["lap2_lap1_ticks_raw"] is None)
 
     # T6 - a partial that reached ONLY slot 0 gives no pair, with or without
-    # --com-setor-inicial: slot 0 is both the start slot AND the only sector reached, so
+    # --with-start-sector: slot 0 is both the start slot AND the only sector reached, so
     # it is also the interrupted one — the two exclusions overlap, neither flag brings it
     # back. A being that died before the 1st crossing of lap 2 stays visible in the
     # ledger (it is not dropped from the file) but never enters the metric.
-    so_largada = [_synthetic_being_parcial(i, 0.9, 1) for i in range(4)]
-    ms = gen_metrics(so_largada, with_start_slot=False)
-    check("parcial so no setor 0 nao entra na metrica",
-          ms["n_seres_r"] == 0 and ms["r_mediana"] is None)
-    check("interrupted sector holds even under --com-setor-inicial (slot 0 is also it)",
-          gen_metrics(so_largada, with_start_slot=True)["n_seres_r"] == 0)
+    start_only = [_synthetic_being_partial(i, 0.9, 1) for i in range(4)]
+    ms = gen_metrics(start_only, with_start_slot=False)
+    check("a partial that reached only sector 0 does not enter the metric",
+          ms["n_beings_r"] == 0 and ms["r_median"] is None)
+    check("interrupted sector holds even under --with-start-sector (slot 0 is also it)",
+          gen_metrics(start_only, with_start_slot=True)["n_beings_r"] == 0)
 
     # T7 - mixed population: 2 closed lap 2 at 0.9 and 2 partial at 0.8 => median 0.85
     # over 4 beings, with the coverage split 2/2.
-    mistura = [_synthetic_being(i, 0.9) for i in range(2)] + [
-        _synthetic_being_parcial(10 + i, 0.8, 6) for i in range(2)
+    mixture = [_synthetic_being(i, 0.9) for i in range(2)] + [
+        _synthetic_being_partial(10 + i, 0.8, 6) for i in range(2)
     ]
-    mm = gen_metrics(mistura, with_start_slot=False)
-    check("mistura: r mediana = 0.85", abs(mm["r_mediana"] - 0.85) < 1e-12, f"r={mm['r_mediana']}")
-    check("mistura: cobertura 2 fechadas / 2 parciais",
-          (mm["n_r_2v"], mm["n_r_parcial"]) == (2, 2))
-    check("mistura: lap2/lap1 limpo vem so das fechadas", mm["lap2_lap1_ticks"] == 0.9,
-          f"={mm['lap2_lap1_ticks']}")
+    mm = gen_metrics(mixture, with_start_slot=False)
+    check("mixture: median r = 0.85", abs(mm["r_median"] - 0.85) < 1e-12, f"r={mm['r_median']}")
+    check("mixture: coverage 2 closed / 2 partial",
+          (mm["n_r_2v"], mm["n_r_partial"]) == (2, 2))
+    check("mixture: clean lap2/lap1 comes from the closed ones only",
+          mm["lap2_lap1_ticks"] == 0.9, f"={mm['lap2_lap1_ticks']}")
 
     # T7B - the external reviewer's exact cases for the interrupted-sector bug
     # (2026-09-12): a partial lap's LAST sector is where the being died, not a real pass.
@@ -756,8 +780,8 @@ def self_test() -> int:
     ]
     r1 = gen_metrics(one_tick_death, with_start_slot=False)
     check("1-tick death in a sector does not count as a 2nd pass",
-          r1["n_seres_r"] == 0 and r1["r_mediana"] is None,
-          f"n_seres_r={r1['n_seres_r']} r={r1['r_mediana']}")
+          r1["n_beings_r"] == 0 and r1["r_median"] is None,
+          f"n_beings_r={r1['n_beings_r']} r={r1['r_median']}")
 
     # Case 2: sectors 0..5 fully driven, sector 6 interrupted (fewer ticks) then dies.
     # Sectors 1..5 must count (0 is the start slot, as always); 6 must not.
@@ -773,30 +797,40 @@ def self_test() -> int:
     ]
     r2 = gen_metrics(six_interrupted, with_start_slot=False)
     check("sectors 1..5 count, interrupted sector 6 does not",
-          r2["setores_por_ser"] == 5.0 and r2["r_mediana"] == 1.0,
-          f"setores={r2['setores_por_ser']} r={r2['r_mediana']}")
+          r2["sectors_per_being"] == 5.0 and r2["r_median"] == 1.0,
+          f"sectors={r2['sectors_per_being']} r={r2['r_median']}")
 
     # T8 - THE BACK-COMPATIBILITY CHECK: the same beings with the empty partial the new
     # binary appends must give a byte-for-byte identical metrics dict. If this fails,
     # every u1 number already published moved.
-    novo = [_with_empty_parcial(b) for b in beings]
-    velho_m = gen_metrics(beings, with_start_slot=False)
-    check("parcial vazio nao muda NENHUM numero",
-          gen_metrics(novo, with_start_slot=False) == velho_m,
-          f"novo={gen_metrics(novo, with_start_slot=False)}")
-    check("ledger antigo (sem a chave parcial) le como fechado",
-          velho_m["n_r_2v"] == 4 and velho_m["n_r_parcial"] == 0)
+    new_ledger = [_with_empty_partial(b) for b in beings]
+    old_metrics = gen_metrics(beings, with_start_slot=False)
+    check("an empty partial moves NO number",
+          gen_metrics(new_ledger, with_start_slot=False) == old_metrics,
+          f"new={gen_metrics(new_ledger, with_start_slot=False)}")
+    check("an old ledger (no partial key at all) reads as closed",
+          old_metrics["n_r_2v"] == 4 and old_metrics["n_r_partial"] == 0)
+
+    # T8B - the SAME beings with the key spelled `parcial`, the wire name of
+    # 2026-09-12 before the English pass. Both spellings must read identically, or
+    # the ledgers written that day stop being comparable with everything else.
+    legacy = [_with_legacy_partial_key(b) for b in new_ledger]
+    check("the `parcial` spelling reads exactly like `partial`",
+          gen_metrics(legacy, with_start_slot=False)
+          == gen_metrics(new_ledger, with_start_slot=False))
 
     # T9 - the printed MDE formula is the one the code applies.
     d = mde(0.01, 3)
-    check("MDE aprox = 3.0965*sd (n=3)", abs(d["aprox"] - 3.0965 * 0.01) < 1e-5, f"={d['aprox']:.6f}")
-    check("MDE exata > aproximada (t nao-central)", d["exata"] > d["aprox"], f"exata={d['exata']:.6f}")
+    check("MDE approx = 3.0965*sd (n=3)", abs(d["approx"] - 3.0965 * 0.01) < 1e-5,
+          f"={d['approx']:.6f}")
+    check("MDE exact > approx (noncentral t)", d["exact"] > d["approx"],
+          f"exact={d['exact']:.6f}")
 
     if failures:
-        print(f"\n  temporarios mantidos para inspecao: {root}")
+        print(f"\n  temporaries kept for inspection: {root}")
     else:
         shutil.rmtree(root, ignore_errors=True)
-    print("AUTO-TESTE: " + ("VERDE" if not failures else f"VERMELHO ({len(failures)} falhas)"))
+    print("SELF-TEST: " + ("GREEN" if not failures else f"RED ({len(failures)} failures)"))
     return 0 if not failures else 1
 
 
@@ -804,50 +838,57 @@ def self_test() -> int:
 
 
 def parse_gens(values):
+    """`last N` | `all` | an explicit list of generation numbers.
+
+    The Portuguese spellings (`ultimas`, `todas`) are still accepted: they are what
+    every recorded command in docs/ and in the lab's request files says.
+    """
     if not values:
         return None
     head = values[0].lower()
-    if head in ("ultimas", "últimas", "last"):
-        return ("ultimas", int(values[1]))
-    if head in ("todas", "all"):
-        return ("todas",)
-    return ("lista", [int(v) for v in values])
+    if head in ("last", "ultimas", "últimas"):
+        return ("last", int(values[1]))
+    if head in ("all", "todas"):
+        return ("all",)
+    return ("list", [int(v) for v in values])
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Analise da bateria u1 (PRD C5).")
-    ap.add_argument("runs", nargs="*", help="diretorios de run (nome sob --base ou absoluto)")
-    ap.add_argument("--par", nargs="+", default=[], metavar="CTRL:HIP",
-                    help="pares controle:hipocampo, um por semente")
+    ap = argparse.ArgumentParser(description="u1 battery analysis (PRD C5).")
+    ap.add_argument("runs", nargs="*", help="run directories (name under --base, or absolute)")
+    ap.add_argument("--pair", "--par", nargs="+", default=[], metavar="CTRL:HIP",
+                    dest="pair", help="control:hippocampus pairs, one per seed")
     ap.add_argument("--gens", nargs="+", default=None,
-                    help="'ultimas N' | 'todas' | lista de geracoes")
-    ap.add_argument("--base", default=DEFAULT_BASE, help="raiz dos runs")
-    ap.add_argument("--saida", default=DEFAULT_OUT, help="JSON de saida")
-    ap.add_argument("--png", default=None, help="curva de delta por geracao (opcional)")
-    ap.add_argument("--com-setor-inicial", action="store_true",
-                    help="inclui o setor 0 (slot da largada, contaminado) na metrica")
-    ap.add_argument("--teste", action="store_true", help="auto-teste com dados sinteticos")
+                    help="'last N' | 'all' | list of generations")
+    ap.add_argument("--base", default=DEFAULT_BASE, help="root of the runs")
+    ap.add_argument("--out", "--saida", default=DEFAULT_OUT, dest="out", help="output JSON")
+    ap.add_argument("--png", default=None, help="delta-per-generation curve (optional)")
+    ap.add_argument("--with-start-sector", "--com-setor-inicial", action="store_true",
+                    dest="with_start_sector",
+                    help="include sector 0 (the contaminated start slot) in the metric")
+    ap.add_argument("--self-test", "--teste", action="store_true", dest="self_test",
+                    help="self-test on synthetic data")
     args = ap.parse_args(argv)
 
-    if args.teste:
+    if args.self_test:
         return self_test()
 
     spec = parse_gens(args.gens)
-    with_start_slot = args.com_setor_inicial
+    with_start_slot = args.with_start_sector
     summary = {
-        "gerado_em": _dt.datetime.now().isoformat(timespec="seconds"),
+        "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "base": args.base,
-        "setor_inicial_incluido": with_start_slot,
-        "metrica_primaria": "mediana pop. da mediana por ser de r = t2/t1 por setor (ticks)",
+        "start_sector_included": with_start_slot,
+        "primary_metric": "pop. median of the per-being median of r = t2/t1 per sector (ticks)",
         "runs": {},
-        "pares": [],
-        "resumo_pareado": None,
+        "pairs": [],
+        "paired_summary": None,
     }
 
     names = list(args.runs)
-    for p in args.par:
+    for p in args.pair:
         if ":" not in p:
-            ap.error(f"--par espera CTRL:HIP, recebi {p!r}")
+            ap.error(f"--pair expects CTRL:HIP, got {p!r}")
         names += p.split(":", 1)
 
     seen = []
@@ -862,56 +903,56 @@ def main(argv=None) -> int:
         summary["runs"][name] = res
         print_run(name, res)
 
-    if args.par:
+    if args.pair:
         pairs = []
-        for p in args.par:
+        for p in args.pair:
             ctrl, hip = p.split(":", 1)
             pair = compare_pair(ctrl, hip, args.base, spec, with_start_slot)
             pairs.append(pair)
             print_pair(pair)
-        summary["pares"] = pairs
+        summary["pairs"] = pairs
 
-        deltas = np.array([q["delta_medio"] for q in pairs if q["delta_medio"] is not None])
+        deltas = np.array([q["delta_mean"] for q in pairs if q["delta_mean"] is not None])
         if len(deltas):
             est = paired_t(deltas)
             d = mde(est["sd"], est["n"])
-            summary["resumo_pareado"] = {
+            summary["paired_summary"] = {
                 **est,
                 "mde_80": d,
                 "deltas": deltas.tolist(),
-                "deltas_medianos": [q["delta_mediano"] for q in pairs
-                                    if q["delta_medio"] is not None],
-                "base_do_t": "delta medio por semente sobre as gens selecionadas",
+                "delta_medians": [q["delta_median"] for q in pairs
+                                  if q["delta_mean"] is not None],
+                "t_basis": "mean delta per seed over the selected generations",
             }
-            medians = [q["delta_mediano"] for q in pairs if q["delta_medio"] is not None]
-            print("\n=== PAREADO POR SEMENTE (metrica primaria, hip - ctrl)")
+            medians = [q["delta_median"] for q in pairs if q["delta_mean"] is not None]
+            print("\n=== PAIRED BY SEED (primary metric, hip - ctrl)")
             for q in pairs:
-                if q["delta_medio"] is None:
+                if q["delta_mean"] is None:
                     continue
-                print(f"  {q['hip']:<18} delta medio {fmt(q['delta_medio'])} | "
-                      f"mediano {fmt(q['delta_mediano'])}  ({q['n_gens_com_delta']} gens)")
-            print(f"  n pares            : {est['n']}")
-            print(f"  deltas medios      : {[round(float(x), 4) for x in deltas]}")
-            print(f"  deltas medianos    : {[round(float(x), 4) for x in medians]}")
-            print(f"  delta medio        : {fmt(est['media'])}"
-                  f"   (t e MDE abaixo usam o delta MEDIO por semente)")
+                print(f"  {q['hip']:<18} mean delta {fmt(q['delta_mean'])} | "
+                      f"median {fmt(q['delta_median'])}  ({q['n_gens_with_delta']} gens)")
+            print(f"  n pairs            : {est['n']}")
+            print(f"  mean deltas        : {[round(float(x), 4) for x in deltas]}")
+            print(f"  median deltas      : {[round(float(x), 4) for x in medians]}")
+            print(f"  mean delta         : {fmt(est['mean'])}"
+                  f"   (the t and MDE below use the MEAN delta per seed)")
             print(f"  sd                 : {fmt(est['sd'])}")
             print(f"  t (df={est['df']})         : {fmt(est['t'], 3)}"
                   + (f"   p = {fmt(est['p'], 4)}" if est["p"] is not None else "   p = n/a"))
-            print(f"  MDE 80% (aprox)    : {fmt(d['aprox'])}")
-            print(f"  MDE 80% (exata)    : {fmt(d['exata'])}")
+            print(f"  MDE 80% (approx)   : {fmt(d['approx'])}")
+            print(f"  MDE 80% (exact)    : {fmt(d['exact'])}")
             print(f"  formula            : {MDE_FORMULA}")
-            print("  leitura: r < 1 = 2a passagem mais rapida; delta < 0 = hipocampo ganha.")
+            print("  reading: r < 1 = faster 2nd pass; delta < 0 = the hippocampus wins.")
         else:
-            print("\n=== PAREADO: nenhum par com metrica (runs sem ledger?).")
+            print("\n=== PAIRED: no pair with a metric (runs without a ledger?).")
 
         if args.png:
             write_png(pairs, args.png)
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.saida)), exist_ok=True)
-    with open(args.saida, "w") as fh:
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w") as fh:
         json.dump(summary, fh, indent=1, default=str)
-    print(f"\nJSON: {args.saida}")
+    print(f"\nJSON: {args.out}")
     return 0
 
 

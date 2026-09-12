@@ -114,7 +114,7 @@ fn a_being_that_never_closes_a_lap_records_one_partial() {
 
 /// The case the U6 amendment needs: one closed lap and HALF of the second. Two records,
 /// the second `partial`, only the sectors the half-lap reached non-zero — those are the
-/// second passes `tools/voltas.py` may compare, sector by sector.
+/// second passes `tools/laps.py` may compare, sector by sector.
 #[test]
 fn one_lap_and_a_half_yields_a_partial_with_only_the_visited_sectors() {
     let mut t = LapTracker::new(1);
@@ -320,7 +320,7 @@ fn the_jsonl_has_one_line_per_being_with_the_documented_keys() {
 }
 
 /// A partial lap on the wire: `"partial":true` and the unvisited sectors at 0, which is
-/// exactly what `tools/voltas.py` reads to decide a sector saw a second pass.
+/// exactly what `tools/laps.py` reads to decide a sector saw a second pass.
 #[test]
 fn the_jsonl_marks_a_partial_lap_and_keeps_its_unvisited_sectors_at_zero() {
     let mut t = LapTracker::new(1);
