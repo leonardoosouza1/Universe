@@ -829,6 +829,34 @@ fn main() {
                 "--tau-hetero" => {
                     tau_hetero = true;
                 }
+                // Prediction 186: which PARAMETRISATION builds the decay-rate bank that
+                // is uploaded, without ever rewriting `Genome::tau` (so checkpoints and
+                // `--retomar` cross modes). `livre` is the default and is today's
+                // behaviour bit for bit. See `universe::tau_bank`.
+                "--banco-tau" => {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!(
+                            "[ERRO] --banco-tau requires a value: livre | log-fixo | espectral.\n\
+                             [ERRO] `livre` is the default (96 free genes, historical behaviour)."
+                        );
+                        std::process::exit(1);
+                    }
+                    match universe::tau_bank::TauBankMode::from_flag(&args[i]) {
+                        Some(m) => set_tau_bank_mode(m),
+                        None => {
+                            eprintln!(
+                                "[ERRO] --banco-tau {}: unknown mode.\n\
+                                 [ERRO] Valid values are: livre | log-fixo | espectral.\n\
+                                 [ERRO] Refusing to fall back to `livre` — a run that\n\
+                                 [ERRO] silently swaps the arm under test reports plausible\n\
+                                 [ERRO] numbers for a bank you did not ask for.",
+                                args[i]
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 // P0.5: inicialização espectral de L1 vem LIGADA por padrão (genoma
                 // nasce com ganho espectral ≈ 1.0 em vez do ~7.0 cru medido com
                 // σ=0.30 i.i.d. — ver `gpu::evolution::Genome::random`). Esta flag
@@ -1552,6 +1580,11 @@ fn main() {
     println!(
         "  Evolução: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}",
         evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney, evo_hip_p, evo_hip_sigma
+    );
+    println!(
+        "  [tau] bank: --banco-tau {} — {}",
+        tau_bank_mode().as_flag(),
+        tau_bank_mode().describe()
     );
     println!("  SEM muletas motoras (escape_ticks, curvature_governor)");
     println!("  Fitness: distância contínua em metros (sem degrau de volta inteira)");
@@ -4316,9 +4349,14 @@ fn main() {
         //
         // Reporta em SEGUNDOS (τ = 1/d) porque é a grandeza com significado físico:
         // dá para comparar direto com o tempo que o ser leva para atravessar a curva.
+        //
+        // Reads `effective_tau()`, not `tau`: under `--banco-tau log-fixo`/`espectral`
+        // the raw genes are no longer what the GPU sees, and printing them would answer
+        // a question nobody asked — the dispersion that matters is the one the CfC runs
+        // with. Under `livre` the two are the same vector, so the line is unchanged.
         {
             let campeao = &genomes[best_idx];
-            let mut taus: Vec<f32> = campeao.tau.iter().map(|&d| 1.0 / d).collect();
+            let mut taus: Vec<f32> = campeao.effective_tau().iter().map(|&d| 1.0 / d).collect();
             taus.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let p10 = taus[taus.len() / 10];
             let p50 = taus[taus.len() / 2];
@@ -4328,7 +4366,7 @@ fn main() {
             let disp_pop: f32 = genomes
                 .iter()
                 .map(|g| {
-                    let mut t: Vec<f32> = g.tau.iter().map(|&d| 1.0 / d).collect();
+                    let mut t: Vec<f32> = g.effective_tau().iter().map(|&d| 1.0 / d).collect();
                     t.sort_by(|a, b| a.partial_cmp(b).unwrap());
                     t[t.len() * 9 / 10] / t[t.len() / 10].max(1e-6)
                 })
@@ -4342,6 +4380,17 @@ fn main() {
                 p90 / p10.max(1e-6),
                 disp_pop
             );
+            // The mode goes on its own line instead of into the format string above, so
+            // `livre` prints byte-identically to every run that predates `--banco-tau`
+            // (the exact format quoted in docs/CHAMPION_RELOAD.md:50-51 included).
+            let bank_mode = tau_bank_mode();
+            if bank_mode != universe::tau_bank::TauBankMode::Free {
+                println!(
+                    "  [tau] the numbers above are the EFFECTIVE bank of --banco-tau {} — {}",
+                    bank_mode.as_flag(),
+                    bank_mode.describe()
+                );
+            }
         }
 
         // ── Held-out (P1) ───────────────────────────────────────────────────────
