@@ -658,12 +658,16 @@ fn main() {
     // FLY MAP (docs/FLY-MAP-BRAIN.md). Every one of these is inert without `--fly-map`:
     // no path, no map, no buffers, no genome block, no draws in `evolve()`.
     let mut fly_map_path: Option<String> = None;
+    let mut fly_spiking_on = false;
     let mut fly_tau_steps: u32 = universe::gpu::fly_map::DEFAULT_TAU_STEPS;
     let mut evo_fly_p_bind: f32 = 0.05;
     let mut evo_fly_p_off: f32 = 0.05;
     let mut evo_fly_p_on: f32 = 0.015;
     let mut evo_fly_sigma: f32 = 0.1;
     let mut fly_log_every: usize = 0;
+    let mut fly_spiking_trace_path: Option<String> = None;
+    let mut fly_spiking_trace_every: usize = 64;
+    let mut fly_spiking_trace_being: usize = 0;
     // Semente da população inicial. Sem isto, repetições da mesma condição são
     // idênticas e não distinguem efeito de sorte — que é o ponto de repetir.
     let mut pop_seed: u64 = 0;
@@ -1596,6 +1600,14 @@ fn main() {
                     FLY_BRAIN.store(true, Ordering::Relaxed);
                     universe::gpu::evolution::FLY_MUTATE_ON.store(true, Ordering::Relaxed);
                 }
+                "--fly-spiking" => {
+                    fly_spiking_on = true;
+                    FLY_SPIKING.store(true, Ordering::Relaxed);
+                    // Spiking is itself a command source. Enable the same fly genome
+                    // mutation path as --fly-brain so the selected connectome bindings
+                    // can evolve during the run.
+                    universe::gpu::evolution::FLY_MUTATE_ON.store(true, Ordering::Relaxed);
+                }
                 "--fly-tau" => {
                     i += 1;
                     if i < args.len() {
@@ -1630,6 +1642,24 @@ fn main() {
                     i += 1;
                     if i < args.len() {
                         fly_log_every = args[i].parse().unwrap_or(0);
+                    }
+                }
+                "--fly-spiking-trace" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_spiking_trace_path = Some(args[i].clone());
+                    }
+                }
+                "--fly-spiking-trace-every" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_spiking_trace_every = args[i].parse().unwrap_or(64).max(1);
+                    }
+                }
+                "--fly-spiking-trace-being" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_spiking_trace_being = args[i].parse().unwrap_or(0);
                     }
                 }
                 // Anatomical binding (docs/FLY-MAP-BRAIN.md "Eye binding"): every neuron
@@ -1710,10 +1740,40 @@ fn main() {
             }
         },
     };
-    if fly_map.is_none() && fly_brain() {
+    if fly_map.is_none() && (fly_brain() || fly_spiking()) {
         eprintln!(
-            "[ERROR] --fly-brain without --fly-map: there is no map to read commands from.\n\
-             [ERROR] Pass --fly-map <flymap v1 file>, or drop --fly-brain."
+            "[ERROR] --fly-brain/--fly-spiking without --fly-map: there is no map to read commands from.\n\
+             [ERROR] Pass --fly-map <flymap v2 file>, or drop the fly driver flag."
+        );
+        std::process::exit(1);
+    }
+    if fly_brain() && fly_spiking() {
+        eprintln!(
+            "[ERROR] --fly-brain and --fly-spiking select different fly numerical models; choose one."
+        );
+        std::process::exit(1);
+    }
+    if fly_spiking_on
+        && fly_map
+            .as_ref()
+            .map(|m| m.pre_csr.is_none())
+            .unwrap_or(false)
+    {
+        eprintln!(
+            "[ERROR] --fly-spiking requires a flymap v2 file with the presynaptic CSR (flags bit 0)."
+        );
+        std::process::exit(1);
+    }
+    if fly_spiking_trace_path.is_some() && !fly_spiking_on {
+        eprintln!(
+            "[ERROR] --fly-spiking-trace requires --fly-spiking: the trace reads the LIF state, not the rate model."
+        );
+        std::process::exit(1);
+    }
+    if fly_spiking_trace_being >= n_seres {
+        eprintln!(
+            "[ERROR] --fly-spiking-trace-being={} is outside the population of {} beings.",
+            fly_spiking_trace_being, n_seres
         );
         std::process::exit(1);
     }
@@ -1976,28 +2036,61 @@ fn main() {
     // `GpuCtx` owns the device, so the map shares it instead of opening a second one
     // (`src/gpu/CLAUDE.md`, "one device, all buffers resident").
     if let Some(map) = fly_map.as_ref() {
-        match universe::gpu::fly_map::FlyMapGpu::new(
-            std::sync::Arc::clone(&ctx.device),
-            std::sync::Arc::clone(&ctx.queue),
-            map,
-            n_seres,
-            fly_tau_steps,
-        ) {
-            Some(gpu) => {
-                println!(
-                    "  [fly-map] resident on the GPU · alpha = 1/{} · {}",
-                    fly_tau_steps,
-                    if fly_brain() {
-                        "DRIVING the beings (--fly-brain)"
-                    } else {
-                        "stepping only — the fast brain still drives"
-                    }
-                );
-                ctx.fly = Some(gpu);
+        // The two fly implementations own separate state layouts. Keep the selected
+        // model only: allocating the legacy rate buffers alongside the spiking ring
+        // needlessly duplicates the connectome's hot state on large maps.
+        if fly_spiking_on {
+            match universe::gpu::fly_map::FlySpikingGpu::new(
+                std::sync::Arc::clone(&ctx.device),
+                std::sync::Arc::clone(&ctx.queue),
+                map,
+                n_seres,
+                universe::fly_map::spiking::SpikingParams::default(),
+            ) {
+                Some(gpu) => {
+                    println!(
+                        "  [fly-spiking] delayed LIF + integer synapse accumulator resident on the GPU · {}",
+                        if fly_spiking() {
+                            "DRIVING the beings (--fly-spiking)"
+                        } else {
+                            "stepping only"
+                        }
+                    );
+                    ctx.fly_spiking = Some(gpu);
+                }
+                None => {
+                    eprintln!(
+                        "[ERROR] --fly-spiking: the map lacks a valid presynaptic CSR or does not fit on this device."
+                    );
+                    std::process::exit(1);
+                }
             }
-            None => {
-                eprintln!("[ERROR] --fly-map: the map does not fit on this device (see above).");
-                std::process::exit(1);
+        } else {
+            match universe::gpu::fly_map::FlyMapGpu::new(
+                std::sync::Arc::clone(&ctx.device),
+                std::sync::Arc::clone(&ctx.queue),
+                map,
+                n_seres,
+                fly_tau_steps,
+            ) {
+                Some(gpu) => {
+                    println!(
+                        "  [fly-map] resident on the GPU · alpha = 1/{} · {}",
+                        fly_tau_steps,
+                        if fly_brain() {
+                            "DRIVING the beings (--fly-brain)"
+                        } else {
+                            "stepping only — the fast brain still drives"
+                        }
+                    );
+                    ctx.fly = Some(gpu);
+                }
+                None => {
+                    eprintln!(
+                        "[ERROR] --fly-map: the map does not fit on this device (see above)."
+                    );
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -2098,6 +2191,18 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("ERROR --record-wave {path}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(ref path) = fly_spiking_trace_path {
+        match ctx.enable_spiking_trace(path, fly_spiking_trace_every, fly_spiking_trace_being) {
+            Ok(()) => println!(
+                "  [fly-spiking-trace] recording being {} every {} ticks to {} (compact GPU snapshot)",
+                fly_spiking_trace_being, fly_spiking_trace_every, path
+            ),
+            Err(e) => {
+                eprintln!("ERROR --fly-spiking-trace {path}: {e}");
                 std::process::exit(1);
             }
         }
@@ -2998,6 +3103,15 @@ fn main() {
         // its parent's membrane potentials would make the champion's re-evaluation
         // non-deterministic, which is the bug this binary already paid for with `buf_cfc`.
         if let (Some(fly), Some(l)) = (ctx.fly.as_ref(), universe::fly_map::layout()) {
+            let blocks: Vec<&[f32]> = genomes.iter().map(|g| g.fly.as_slice()).collect();
+            let sel = universe::fly_map::pack_selection(&blocks, l, n_seres);
+            fly.upload_selection(&sel, n_seres);
+            fly.reset_state();
+            if fly_log_every > 0 && gen_abs % fly_log_every == 0 && !genomes.is_empty() {
+                log_fly_elite(gen_abs, &genomes[0].fly, l);
+            }
+        }
+        if let (Some(fly), Some(l)) = (ctx.fly_spiking.as_ref(), universe::fly_map::layout()) {
             let blocks: Vec<&[f32]> = genomes.iter().map(|g| g.fly.as_slice()).collect();
             let sel = universe::fly_map::pack_selection(&blocks, l, n_seres);
             fly.upload_selection(&sel, n_seres);
@@ -4870,6 +4984,33 @@ fn main() {
         "  gerações: {} · seres: {} · ticks/gen: {}",
         n_gens, n_seres, n_ticks
     );
+    if let Some(fly) = ctx.fly_spiking.as_ref() {
+        let traffic = fly.traffic();
+        let ticks = traffic.ticks.max(1);
+        println!(
+            "  [fly-spiking][tráfego] CPU→GPU total {:.2} MiB ({} chamadas) · setup/reset {:.2} MiB",
+            traffic.cpu_to_gpu_bytes as f64 / (1024.0 * 1024.0),
+            traffic.cpu_to_gpu_calls,
+            traffic
+                .cpu_to_gpu_bytes
+                .saturating_sub(traffic.tick_cpu_to_gpu_bytes) as f64
+                / (1024.0 * 1024.0),
+        );
+        println!(
+            "  [fly-spiking][tráfego] CPU→GPU por tick {:.1} B ({:.2} uploads/tick) · GPU→CPU total {:.2} MiB ({} readbacks)",
+            traffic.tick_cpu_to_gpu_bytes as f64 / ticks as f64,
+            traffic.tick_cpu_to_gpu_calls as f64 / ticks as f64,
+            traffic.gpu_to_cpu_bytes as f64 / (1024.0 * 1024.0),
+            traffic.gpu_to_cpu_calls,
+        );
+        println!(
+            "  [fly-spiking][tráfego] GPU→CPU por tick {:.1} B ({:.2} mapas/tick) · cópias internas total {:.2} MiB, por tick {:.1} B",
+            traffic.tick_gpu_to_cpu_bytes as f64 / ticks as f64,
+            traffic.tick_gpu_to_cpu_calls as f64 / ticks as f64,
+            traffic.gpu_internal_copy_bytes as f64 / (1024.0 * 1024.0),
+            traffic.tick_gpu_internal_copy_bytes as f64 / ticks as f64,
+        );
+    }
     println!();
 
     // ── Última geração ─────────────────────────────────────────────────────────

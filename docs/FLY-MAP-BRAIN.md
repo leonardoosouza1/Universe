@@ -58,18 +58,15 @@ pre_indices u32[m]            presynaptic CSR: pre_indptr[j]..pre_indptr[j+1] ar
 pre_weights f32[m]            for which neuron j is the PRESYNAPTIC side; pre_indices[e] the
                                postsynaptic neuron, pre_weights[e] the SAME signed count the
                                postsynaptic CSR carries for that edge (duplicated, not
-                               cross-referenced). Not read by the rate path in this
-                               document — a future spiking kernel needs it (walking a spike
-                               OUT of a neuron the instant it fires needs the edges indexed
-                               by the FIRING neuron, which the postsynaptic CSR cannot do
-                               without an O(m) scan).
+                               cross-referenced). Not read by the rate path — the event-driven spiking path uses it to walk a
+                               spike OUT of a neuron at the instant it fires.
 pixel_of_neuron u32[n]    ── ONLY IF flags bit 1 ──
                                the rendered-retina pixel that drives neuron j, or
-                               NONE = 0xFFFFFFFF = not driven by the eye. Read by the rate
-                               path — see "Eye binding" below.
+                               NONE = 0xFFFFFFFF = not driven by the eye. Read by both the
+                               rate path and the event-driven spiking path.
 no_refractory u32[⌈n/32⌉] ── ONLY IF flags bit 2 ──
-                               packed bitmap, one bit per neuron. Not read by the rate
-                               path in this document — a future spiking kernel needs it.
+                               packed bitmap, one bit per neuron. The rate path ignores it;
+                               the spiking path uses it to exempt cells from refractoriness.
 ```
 Present blocks are written and read in EXACTLY that order (presynaptic CSR, then pixel
 binding, then the bitmap) regardless of which subset is present — a block's position is
@@ -95,6 +92,9 @@ u     = gain[b] · wave_i8(b, k) / 127            if in_group_of[j] = g and grou
 x_new = x + α · (−x + scale[b] · acc + u)         α = 1 / tau_steps (uniform, default 4)
 r_new = tanh(x_new) · type_mask[b][type_of[j]]    (mask ∈ {0, 1}: a pruned type emits nothing)
 ```
+Here `tau_steps` is a discrete Euler leak parameter, not a physical time constant. If a future kernel
+exposes `dt` and a physical `tau`, use the exact held-input coefficient `α = 1 − exp(−dt/tau)` and
+update the CPU reference and parity tests together; do not silently mix the two conventions.
 `r` is double-buffered (read `r_old`, write `r_new`, ping-pong bind groups per tick). Born
 state x = 0. The three commands, per being:
 
@@ -128,7 +128,7 @@ Per generation the host packs, per being: `group_to_input[k_in]` (u32, NONE defa
 channels bind the same group the higher channel wins), `out_pair[6]` u32, `gain`, `scale`,
 `type_mask[n_types]` f32 — uploaded with `queue.write_buffer` like `upload_gates`.
 
-## 4. GPU module `src/gpu/fly_map/` (host `mod.rs`, kernels `fly_map.wgsl`)
+## 4. GPU module `src/gpu/fly_map/` (rate host `mod.rs`, kernel `fly_map.wgsl`)
 
 Buffers (resident, created once from the map file like `buf_grid`): `indptr`, `indices`,
 `weights`, `type_of`, `in_group_of`, `out_indptr`, `out_members` (read-only storage; each
@@ -150,15 +150,42 @@ discipline as `read_intent_after_submit`. Cost estimate at B = 40, full map: ~2.
 per tick → 5–10 ms/tick (today's tick ≈ 1 ms); acceptable for the first closed-loop test; the
 `--min-weight 3` map is 3× cheaper.
 
+### 4.1 Event-driven LIF module (`spiking.rs` + `spiking.wgsl`)
+
+`FlySpikingGpu` is the separate state path selected by `--fly-spiking`. It requires the v2
+presynaptic CSR and keeps membrane potential, synaptic current, refractory counters, a delayed
+packed spike ring, integer synaptic accumulator, Poisson eye state and the K3 EMA on the device.
+One tick uploads a small batched uniform schedule, records all 0.1 ms substeps in one encoder,
+and reads only `[B][3]` commands after submit. The legacy rate `FlyMapGpu` is not allocated in
+this mode, so an experiment cannot accidentally step two command sources.
+
+K1 uses the row-skip baseline: one invocation covers each `(presynaptic neuron, packed-being
+word)` and returns before scanning its CSR row when the delayed word is zero. The accumulator is
+`atomic<i32>` in integer synapse units; construction rejects malformed CSRs and any destination
+whose worst-case absolute one-substep delivery could overflow `i32`. K2 uses exact
+`1-exp(-rate·dt)` Poisson probability and a counter-based hash. `Photoreceptor` mode reads
+darkness from the packed retina; `Motion` mode reads absolute current/previous brightness and is
+explicitly motion energy, not direction selectivity. K3 accumulates spike counts across all
+substeps in the tick, computes per-group means, then applies the 50 ms EMA.
+
 ## 5. Flags (register in `src/bin/gpu_evolve/cli_flags.rs`, consume in `main.rs`)
 
-`--fly-map <path>` (load map; required by the others), `--fly-brain` (use the map's commands
-instead of the fast brain's intents; sets `FLY_MUTATE_ON`), `--fly-tau <steps>` (default 4),
+`--fly-map <path>` (load map; required by the others), `--fly-brain` (use the rate model's
+commands instead of the fast brain's intents; sets `FLY_MUTATE_ON`), `--fly-spiking` (use the
+GPU-resident delayed LIF model as the command source; requires a v2 presynaptic CSR and sets
+`FLY_MUTATE_ON`), `--fly-tau <steps>` (default 4),
 `--fly-p-bind`, `--fly-p-off`, `--fly-p-on`, `--fly-sigma`, `--fly-log-every <gens>` (print, for
 the elite: bound channels → group names, out pairs, mask density), `--fly-eye` (§9: eye-bound
 neurons read the rendered retina instead of the genome's channel binding; needs a v2 map with
 the pixel-binding block, checked once `--fly-map` has loaded — otherwise a hard error, not a
-silent fallback). English names only; no deprecated aliases needed (new flags).
+silent fallback). `--kernel-profile N` prints the GPU timestamp table and CPU phase timings every
+N ticks. `--fly-spiking-trace PATH` enables a compact voltage/spike trace for one being; use
+`--fly-spiking-trace-every N` and `--fly-spiking-trace-being B` to control sampling. The static
+`fly_map_view` binary renders the map, type-to-type flow and optional trace without a server.
+The viewer bounds browser memory deliberately: it draws at most 12,000 edges and 6,000 neurons,
+summarises the 48 most connected cell types, and seeks at most 512 evenly spaced trace frames
+instead of decoding a full multi-gigabyte run.
+English names only; no deprecated aliases needed (new flags).
 
 ## 6. Tests and gates (all must pass before any GPU battery)
 
@@ -168,6 +195,9 @@ silent fallback). English names only; no deprecated aliases needed (new flags).
   channel drives 0; NONE handling; group means.
 - GPU parity (`#[ignore]`, run with `--ignored` like the other GPU parity tests): synthetic map,
   B = 3, 10 ticks, GPU vs `cpu_step` within 1e-5.
+- Spiking parity (`#[ignore]`): a two-neuron v2 map with an injected spike, exact 18-substep
+  delay, K3 command and CPU reference match; CPU tests separately pin Poisson, refractory and
+  delay semantics.
 - Genome: round-trip with and without the block; a genome from before this change loads with an
   empty block; mutation with `FLY_MUTATE_ON = false` leaves the rng stream and every other block
   byte-identical (same guard style as `evolve_hip_bloco_tem_taxa_propria_e_portao`).
@@ -178,6 +208,8 @@ silent fallback). English names only; no deprecated aliases needed (new flags).
 ## 7. First experiments (predictions go to `docs/PREDICOES-CEREBRO.md` before running)
 
 F1 smoke: `--fly-map … --fly-brain`, 2 gens, 5 000 ticks, 8 beings — runs, tick cost measured.
+F1b kernel smoke: `--fly-map … --fly-spiking --fly-eye`, a v2 map with a pixel binding, 1 gen,
+30 ticks, 1 being — verifies the full `GpuCtx` wiring before the real map gate.
 F2 closed loop, 3 seeds × 15 gens × 40 beings, track 8005, from a random population (not the
 champion — the champion's fast brain is bypassed): arms `real map` vs `shuffled-targets map`
 (export variant) vs `no fly` (today's brain from random init). Ruler: laps (≥ 1V, ≥ 2V), best
@@ -199,6 +231,9 @@ plan.
 | `src/fly_map.rs` (+ `src/fly_map_selection.rs`, `src/fly_map_tests.rs`) | GPU-free core: the `flymap` v1 reader/writer, the synthetic six-neuron map, `cpu_step`/`cpu_read` (§2) in the first file; the genome-block operators (§3) and `pack_selection` in the second, re-exported so callers see one module (600-line cap). `NONE` is defined once, in `fly_map.rs` |
 | `src/gpu/fly_map/mod.rs` | `FlyMapGpu`: seventeen buffers, two pipelines, `upload_selection` (per generation), `dispatch` (per tick), `read_commands_after_submit`, `reset_state` |
 | `src/gpu/fly_map/fly_map.wgsl` | `fly_step` + `fly_read`, 17 bindings. The only mirror of `NONE` |
+| `src/gpu/fly_map/spiking.rs` | `FlySpikingGpu`: delayed LIF state, batched substep uniforms, selection/reset, one command readback |
+| `src/gpu/fly_map/spiking.wgsl` | K1 propagation, K2 Poisson eye drive and K3 leaky readout |
+| `src/gpu/fly_map/spiking_parity_test.rs` | `#[ignore]`d two-neuron GPU/CPU delay and readout parity |
 | `src/gpu/fly_map/parity_test.rs` | `#[ignore]`d GPU parity: synthetic map, B = 3, 10 ticks, GPU vs the CPU reference |
 | `src/gpu/evolution.rs` | `Genome::fly` (new last field), `FLY_MUTATE_ON`, the four `EvoParams` rates, the mutation block (new last rng consumer), `evolve_fly_block_has_its_own_rates_and_gate` |
 | `src/gpu/genome_io.rs` | `fly` written and read as the new last block |
@@ -247,25 +282,31 @@ plan.
 
 ### What is NOT proven
 
-The seam `main() → GpuCtx::fly → tick()` has never been executed end to end: the task that
-produced this code forbade launching any run, so no `gpu_evolve` process has yet loaded a
-map. What IS proven: both kernels against the CPU reference on the real GPU, the CPU
-reference against hand-computed values, the genome block across the disk, the rng-stream
-guarantee, and that the flag table and the parser agree. The first smoke run (§7, F1) is
-still the first execution of the wiring.
+The full-map sugar→MN9 biological gate and a stable long-run benchmark still require a dedicated
+experiment. The real v2 map has now been loaded and stepped on the RX 6750 XT at B=1 and B=40;
+that confirms allocation, bindings, 156 substeps and command readback, but the short smoke cannot
+establish firing-rate statistics. What is proven: CPU equations, naga validation, GPU delay/readout
+parity, existing rate parity, the genome flag wiring, parser registry and the large-population
+dispatch split.
 
 ### Measured
 
 | Check | Result | Wall time |
 |---|---|---|
 | `cargo build --release` | ok, no new warnings | 2 m 13 s cold, 16 s warm |
-| `cargo test --release --lib` | 413 passed, 0 failed, 3 ignored | 0.21 s (after the build) |
+| `cargo test --release --lib` | 429 passed, 0 failed, 7 ignored | 0.19 s (after the build) |
 | `cargo test --release --bin gpu_evolve` | 77 passed, 0 failed | 0.06 s |
-| `cargo test --release --test wgsl_validation` | 6 passed, 0 failed | 0.00 s |
-| `cargo test --release --lib -- --ignored fly_map_parity` | 1 passed (GPU vs CPU within 1e-5, 10 ticks, B = 3) | 0.15 s |
+| `cargo test --release --test wgsl_validation` | 7 passed, 0 failed | 0.00 s |
+| `cargo test --release --lib -- --ignored fly_map_parity` | 2 passed (rate + eye GPU vs CPU within 1e-5) | 0.13 s |
+| `cargo test --release --lib -- --ignored fly_spiking_parity` | 1 passed (delayed LIF + K3 GPU vs CPU) | 0.11 s |
+| `gpu_evolve --fly-map /tmp/tiny.flymap --fly-spiking --fly-eye` | end-to-end smoke, 1 being × 30 ticks | 0.4 s |
+| `gpu_evolve` + full `flymap_783_v2.bin`, B=1, 2 ticks | real-map allocation and 156-substep smoke; fly-map GPU 17.9/11.2 ms | 0.2 s |
+| `gpu_evolve` + full `flymap_783_v2.bin`, B=40, 2 ticks | large-population dispatch smoke; fly-map GPU 85.6/114.4 ms | 0.5 s |
 
-The tick cost of the real map is NOT measured — no map file was available to this pass and
-no run was launched. The estimate in §4 (5-10 ms/tick at B = 40) stands as an estimate.
+The two full-map timings are diagnostic warm-up/steady-state samples, not a benchmark: the
+row-skip baseline is correct but misses the ≤12 ms target at B=40. The next performance step is
+event compaction or a measured reduction in substeps; neither should be enabled before repeating
+the sugar→MN9 gate.
 
 ### Measured tick cost (serial, `--kernel-profile 250`, 1 gen × 1 000 ticks, track 8005; 14/09/2026)
 
@@ -284,8 +325,8 @@ v1 = one thread per neuron looping over beings (cost linear in beings); v2 = lan
 
 ## 9. Eye binding (`--fly-eye`, 14/09/2026)
 
-Anatomical binding, rate path only: specific neurons are driven by specific pixels of the
-rendered retina, instead of by the genome's random channel binding. Fixes the measurement
+Anatomical binding for both paths: specific neurons are driven by specific pixels of the
+rendered retina, instead of by the genome's random channel binding. In the rate path this fixes the measurement
 that the real connectome performed no better than a degree-preserving shuffle — the senses
 were entering through the wrong organs (random afferent groups), not through the map's own
 sensory cells.
@@ -308,8 +349,9 @@ if --fly-eye is on AND pixel != NONE:
     material   = packed & 0xFF                                  0 Grass / 1 Road / 2 Wall / 3 Hole
     pixel_value = legacy_encoding(dist_m, material)              src/gpu/perception.wgsl:289-311, mirrored by
                                                                   universe::gpu::legacy_encoding (src/gpu/mod.rs:150)
-    brightness  = clamp(pixel_value / 127, 0, 1)
-    u = gain[b] * (1 - brightness)
+    brightness  = clamp((pixel_value + 128) / 255, 0, 1)
+    u_rate = gain[b] * (1 - brightness)                         (rate path)
+    drive_spike = bg_hz * max(gain[b], 0) * (1 - brightness)    (spiking path; K2)
 else:
     u = input_drive(b, g)                                        the existing §2 formula, unchanged
 ```
@@ -319,6 +361,11 @@ eye binding does not add a new gene, it redirects an existing one. Dark (Road, a
 negative `legacy_encoding`) clamps `brightness` to 0 and drives at the FULL gain; bright (a
 near Wall, +127) drives at 0 — the fly's photoreceptors inhibit downstream cells in the
 light, so darkness is the excitatory signal, not brightness.
+
+This is a renderer-to-rate proxy, not a calibrated photoreceptor model: distance and material are first
+collapsed into the legacy scalar encoding, then normalised as luminance. CPU/GPU parity proves that the
+implementation is identical; it does not prove biological brightness or motion selectivity. Spiking eye
+input follows the separate graded/motion contract in `KERNELS-FLY-SPIKING.md`.
 
 **What `--fly-eye` changes and what it does not:**
 
@@ -357,4 +404,3 @@ against the CPU reference on the synthetic six-neuron map instead.
 
 [`EyeFrame`]: ../src/fly_map_eye.rs
 [`eye_drive`]: ../src/fly_map_eye.rs
-

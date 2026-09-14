@@ -157,9 +157,9 @@ fn input_drive(being: u32, g: u32) -> f32 {
 
 // Eye binding (`--fly-eye`, docs/FLY-MAP-BRAIN.md "Eye binding"): what the rendered
 // retina drives into a neuron bound to `pixel`, replacing the genome's channel binding
-// for THAT neuron. `u_eye = gain * (1 - brightness)`, `brightness = clamp(pixel_value /
-// 127, 0, 1)` — dark (Road, very negative) clamps to brightness 0 and drives at full
-// gain; bright (a near Wall, +127) drives at 0.
+// for THAT neuron. `u_eye = gain * (1 - brightness)`, `brightness = clamp((pixel_value +
+// 128) / 255, 0, 1)` — dark (Road, very negative) clamps to brightness 0 and drives at
+// full gain; bright (a near Wall, +127) drives at 0.
 //
 // `pixel_value` is decoded and encoded exactly as the 192 sensory channels are, three
 // literal copies of the same formula because WGSL cannot `use` across shader modules

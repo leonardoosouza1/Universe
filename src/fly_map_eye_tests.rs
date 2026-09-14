@@ -172,6 +172,34 @@ fn flymap_v2_round_trip_carries_all_three_trailing_blocks() {
     assert_eq!(back.no_refractory, Some(no_refractory));
 }
 
+/// A pixel binding is an index into the fixed-size retina storage buffer. Reject an
+/// invalid value at load time instead of letting WGSL perform an out-of-bounds read whose
+/// result is implementation-dependent (and generally looks like a silent dark pixel).
+#[test]
+fn pixel_binding_out_of_range_is_rejected() {
+    let mut map = FlyMap::synthetic();
+    map.pixel_of_neuron = Some(vec![NONE; map.n()]);
+    let path = scratch_dir().join("flymap_bad_pixel_index.bin");
+    let path = path.to_str().unwrap().to_string();
+    map.write(&path).expect("write the valid fixture");
+
+    // Corrupt the final pixel word after the writer's own validation. The loader must
+    // still defend itself against files produced by an older exporter or external tool.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let last = bytes.len() - std::mem::size_of::<u32>();
+    bytes[last..]
+        .copy_from_slice(&(crate::config::iara::vision::RETINA_TOTAL as u32).to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    let err = FlyMap::load(&path).expect_err("an out-of-range retina index must be refused");
+    let _ = std::fs::remove_file(&path);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("pixel_of_neuron") && msg.contains("outside"),
+        "the error must identify the invalid pixel binding, got: {msg}"
+    );
+}
+
 /// A file that declares the pixel-binding flag but is cut off mid-block is refused with a
 /// message that names the block — the bare `io::Error` underneath ("failed to fill whole
 /// buffer") would not tell a reader which of the three new blocks was short.

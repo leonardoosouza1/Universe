@@ -121,3 +121,9 @@ fn fly_map_wgsl_is_valid() {
          fly_map.wgsl but this test's doc comment still describes it"
     );
 }
+
+#[test]
+fn fly_spiking_wgsl_is_valid() {
+    let fonte = include_str!("../src/gpu/fly_map/spiking.wgsl");
+    validar_wgsl("fly_map/spiking.wgsl", fonte);
+}

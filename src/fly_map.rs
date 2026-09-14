@@ -30,6 +30,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::iara::brain::SENSORY_WAVE_SIZE;
+use crate::config::iara::vision::RETINA_TOTAL;
 
 // The genome block and the per-being tables (§3). A separate file, re-exported here so
 // callers see one module — the 600-line cap of `docs/STYLE.md` §2 is what splits them,
@@ -50,6 +51,12 @@ pub use eye::{
     EyeFrame, FLAG_NO_REFRACTORY, FLAG_PIXEL_BINDING, FLAG_PRESYNAPTIC_CSR, PresynapticCsr,
     eye_drive,
 };
+
+// The v2 event-driven LIF reference. Kept separate from the rate model so the CPU
+// equations remain easy to compare with `neuromod-lab/src/flybrain/dynamics.py` and the
+// GPU host can import the same public constants without inflating this file.
+#[path = "fly_map_spiking.rs"]
+pub mod spiking;
 
 /// "no binding" / "no group": the u32 sentinel of the map file and of both kernels.
 ///
@@ -140,14 +147,14 @@ pub struct FlyMap {
     // ── v2 trailing blocks (docs/FLY-MAP-BRAIN.md §1) — all optional, all absent from a
     // v1 file. Stored on `FlyMap` so one load produces one value the whole run reads from;
     // none of them are re-derived from the postsynaptic CSR.
-    /// Presynaptic CSR (flag bit 0). Stored, never read by the rate path — a future
-    /// spiking kernel needs it.
+    /// Presynaptic CSR (flag bit 0). Stored, never read by the rate path — the spiking
+    /// kernel uses it.
     pub pre_csr: Option<PresynapticCsr>,
     /// The rendered-retina pixel driving each neuron, or [`NONE`] (flag bit 1). Read only
     /// by the eye extension of `cpu_step` and by `FlyMapGpu::new`'s upload.
     pub pixel_of_neuron: Option<Vec<u32>>,
     /// Packed bitmap, `ceil(n / 32)` words, one bit per neuron (flag bit 2). Stored, never
-    /// read by the rate path — a future spiking kernel needs it.
+    /// read by the rate path — the spiking kernel uses it.
     pub no_refractory: Option<Vec<u32>>,
 }
 
@@ -341,6 +348,11 @@ impl FlyMap {
                     csr.indptr.last().copied().unwrap_or(0)
                 )));
             }
+            if csr.indptr.windows(2).any(|w| w[1] < w[0]) {
+                return Err(bad_data(format!(
+                    "{path}: presynaptic CSR indptr is not monotonic"
+                )));
+            }
             if csr.indices.iter().any(|&i| i as usize >= n) {
                 return Err(bad_data(format!(
                     "{path}: the presynaptic CSR names a postsynaptic neuron outside 0..{n}"
@@ -352,6 +364,17 @@ impl FlyMap {
                 return Err(bad_data(format!(
                     "{path}: pixel_of_neuron has {} entries, expected n = {n}",
                     pix.len()
+                )));
+            }
+            // `NONE` is the only legal unbound value. Every other value is used as a
+            // flat retina index by both the CPU reference and WGSL; accepting an out of
+            // range index here would make the GPU silently read a different/zero element.
+            if pix
+                .iter()
+                .any(|&pixel| pixel != NONE && (pixel as usize) >= RETINA_TOTAL)
+            {
+                return Err(bad_data(format!(
+                    "{path}: pixel_of_neuron contains an index outside 0..{RETINA_TOTAL} (or NONE)"
                 )));
             }
         }
@@ -377,6 +400,10 @@ impl FlyMap {
     /// real export, and a writer that shares no parsing code with the reader is what makes
     /// a format test prove something.
     pub fn write(&self, path: &str) -> std::io::Result<()> {
+        // Keep the writer from producing a file that the loader/kernel would reject. This
+        // also makes programmatic exporters fail at the boundary instead of emitting a
+        // latent out-of-bounds retina binding.
+        self.validate(path)?;
         let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
         let flags = eye::compute_flags(self);
         f.write_all(if flags == 0 { MAGIC_V1 } else { MAGIC_V2 })?;

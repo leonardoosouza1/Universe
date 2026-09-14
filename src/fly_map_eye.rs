@@ -7,9 +7,9 @@
 //! callers see one module.
 //!
 //! Two of the three v2 blocks — the presynaptic CSR and the no-refractory bitmap — are
-//! parsed and stored here but read by NOTHING in this file: `docs/FLY-MAP-BRAIN.md` §1 is
-//! explicit that they exist for a future spiking kernel, not the rate path this task
-//! implements. Only the pixel-binding block feeds the dynamics, through [`eye_drive`].
+//! parsed and stored here but read by the separate GPU spiking module: `docs/FLY-MAP-BRAIN.md`
+//! §1 keeps those buffers out of the rate path. Only the pixel-binding block feeds the rate
+//! dynamics in this file, through [`eye_drive`].
 
 use std::io::{Read, Write};
 
@@ -26,10 +26,9 @@ pub const FLAG_NO_REFRACTORY: u32 = 1 << 2;
 /// which neuron `j` is the PRESYNAPTIC side (`indices[e]` the postsynaptic neuron,
 /// `weights[e]` the same signed count the postsynaptic CSR carries for that edge).
 ///
-/// Nothing in this crate reads it today. A spike has to walk OUT of a neuron the instant
-/// it fires, which the postsynaptic CSR (indexed by the RECEIVING neuron) cannot do
-/// without a full scan of `m` edges; this is here so the spiking kernel does not have to
-/// re-derive it from 15.1 M edges at load time.
+/// The spiking kernel walks OUT of a neuron the instant it fires. The postsynaptic CSR
+/// (indexed by the RECEIVING neuron) cannot do that without a full scan of `m` edges; this
+/// second index avoids re-deriving the adjacency from 15.1 M edges at load time.
 #[derive(Clone, Debug, Default)]
 pub struct PresynapticCsr {
     /// `n + 1` entries.
@@ -67,7 +66,7 @@ pub struct EyeFrame<'a> {
 /// the genome binding exactly as it would for an absent block).
 ///
 /// `docs/FLY-MAP-BRAIN.md` "Eye binding": `u_eye = gain · (1 - brightness)`, `brightness =
-/// clamp(pixel_value / 127, 0, 1)`, where `pixel_value` is the SAME signed byte the 192
+/// clamp((pixel_value + 128) / 255, 0, 1)`, where `pixel_value` is the SAME signed byte the 192
 /// sensory channels are built from — [`crate::gpu::legacy_encoding`]
 /// (`src/gpu/mod.rs:150-168`), the Rust reference `perception.wgsl:289-311`'s
 /// `legacy_encoding` mirrors and `gpu/fly_map/fly_map.wgsl`'s `eye_pixel_drive` copies a

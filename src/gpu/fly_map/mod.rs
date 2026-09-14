@@ -33,6 +33,9 @@ use crate::fly_map::{COMMANDS, FlyMap, FlySelection, NONE, OUT_SLOTS};
 use crate::gpu::core::{storage_entry, uniform_entry};
 use crate::gpu::perception::WAVE_U32S;
 
+pub mod spiking;
+pub use spiking::FlySpikingGpu;
+
 /// Binding cap of `downlevel_defaults` — the ceiling every single buffer here respects.
 const MAX_BINDING_BYTES: u64 = 128 * 1024 * 1024;
 

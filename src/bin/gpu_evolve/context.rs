@@ -15,9 +15,10 @@ use wgpu::util::DeviceExt;
 use universe::analysis::regioes::{ContextoAmostra, CurvaturaPista};
 use universe::config::iara::vision::{RETINA_ROWS, RETINA_TOTAL};
 use universe::engine::SovereignEngine;
+use universe::fly_map::spiking::EyeMode;
 use universe::gpu::brain::BrainGpu;
 use universe::gpu::core::{storage_entry, uniform_entry};
-use universe::gpu::fly_map::FlyMapGpu;
+use universe::gpu::fly_map::{FlyMapGpu, FlySpikingGpu};
 use universe::gpu::perception::{PerceptionGpu, PosePerception};
 use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu};
 use universe::gpu::retina_digest::RetinaDigestGpu;
@@ -58,6 +59,12 @@ pub struct GpuCtx {
     /// this flag together with it must force `K = 1` (one candidate replayed per pass,
     /// not a batch), because a batched replay could not also afford this readback.
     pub wave_writer: Option<std::io::BufWriter<std::fs::File>>,
+    /// Optional compact per-neuron spiking trace (`--fly-spiking-trace`). The writer is
+    /// deliberately owned by the context so the GPU snapshot is mapped and persisted at
+    /// the same tick boundary as the command readback.
+    pub spiking_trace_writer: Option<std::io::BufWriter<std::fs::File>>,
+    pub spiking_trace_every: usize,
+    pub spiking_trace_being: usize,
     /// E-REG1: custo de fiação por ser (constante durante a geração — pesos não
     /// mudam no meio). Preenchido pelo main a cada aplicação de genomas; drenado
     /// da vida por tick quando CUSTO_FIACAO > 0. Vazio = sem custo.
@@ -237,6 +244,9 @@ pub struct GpuCtx {
     /// State, not dose: it owns seventeen device buffers, so it lives here and not in
     /// `statics.rs` — the same line the ownership table there draws for `GpuTimer`.
     pub fly: Option<FlyMapGpu>,
+    /// Event-driven LIF fly map. Mutually exclusive with `fly`: both models would
+    /// otherwise consume the same connectome while only one command stream is applied.
+    pub fly_spiking: Option<FlySpikingGpu>,
 }
 
 /// Contexto físico (curvatura/velocidade/dist_parede) de UM ser neste tick, para
@@ -338,8 +348,8 @@ impl GpuCtx {
         .ok()?;
         let device = Arc::new(raw_device);
         let queue = Arc::new(raw_queue);
-        // 16 label slots: `tick()` uses at most 6 this session (retina, perception,
-        // retina_digest, brain, slow.gather, slow) plus headroom for the next kernel
+        // 16 label slots: `tick()` uses at most 7 this session (retina, perception,
+        // retina_digest, fly, brain, slow.gather, slow) plus headroom for the next kernel
         // someone adds without having to revisit this constant.
         let timer = GpuTimer::new(&device, 16);
         let cap = capacity.max(1);
@@ -436,6 +446,9 @@ impl GpuCtx {
             slow,
             obs_writer: None,
             wave_writer: None,
+            spiking_trace_writer: None,
+            spiking_trace_every: 64,
+            spiking_trace_being: 0,
             fiacao_custo: Vec::new(),
             piloto_formula: None,
             piloto_forja: None,
@@ -484,7 +497,41 @@ impl GpuCtx {
             hip_writer: None,
             // FLY MAP: `main()` fills this only when `--fly-map` was passed.
             fly: None,
+            fly_spiking: None,
         })
+    }
+
+    /// Enables the opt-in fly activation trace. The header is written once and each
+    /// sampled record is appended only after the corresponding GPU readback completed.
+    pub fn enable_spiking_trace(
+        &mut self,
+        path: &str,
+        every: usize,
+        being: usize,
+    ) -> std::io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let n = self
+            .fly_spiking
+            .as_ref()
+            .map(|fly| fly.neurons())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "spiking trace requires an active FlySpikingGpu",
+                )
+            })?;
+        if being >= self.capacity {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("trace being {being} is outside capacity {}", self.capacity),
+            ));
+        }
+        universe::fly_map::spiking::write_trace_header(&mut writer, n, being)?;
+        self.spiking_trace_writer = Some(writer);
+        self.spiking_trace_every = every.max(1);
+        self.spiking_trace_being = being;
+        Ok(())
     }
 
     /// Zeroes the hostile-world telemetry counters. Called by `main()` at the start of
@@ -586,6 +633,10 @@ impl GpuCtx {
         // exactly how a retired 4-sample figure went wrong once already (5.9x spread,
         // one of the four being an outlier this large). Excluded explicitly.
         let prints_this_tick = n_tick > 0 && tick_idx > 0 && (tick_idx as u32) % n_tick == 0;
+        let trace_sample = self.fly_spiking.is_some()
+            && self.spiking_trace_writer.is_some()
+            && tick_idx > 0
+            && tick_idx % self.spiking_trace_every.max(1) == 0;
         let tick_t0 = prints_this_tick.then(std::time::Instant::now);
         // CPU-side phase breakdown, only when profiling. The GPU kernels reconstruct
         // ~8.5% of the tick at 768 beings; the other ~84% is this side, and until now
@@ -1532,7 +1583,7 @@ impl GpuCtx {
         // load-bearing, unlike the three orderings listed in `src/gpu/CLAUDE.md`.
         //
         // With `--fly-map` absent this is `None` and nothing at all is recorded.
-        if self.fly.is_some() {
+        if self.fly.is_some() || self.fly_spiking.is_some() {
             let t_fly = if prints_this_tick {
                 self.timer
                     .as_mut()
@@ -1548,6 +1599,27 @@ impl GpuCtx {
                     universe::fly_map::eye_on(),
                     &self.buf_retina_out,
                 );
+            }
+            if let Some(fly) = self.fly_spiking.as_ref() {
+                // The retina is already resident in `buf_retina_out`; K1/K2/K3 remain
+                // in this encoder so no CPU round trip occurs between perception and
+                // the spiking readout. Motion mode is available to callers that bind
+                // temporal contrast; the CLI currently selects photoreceptor mode.
+                if trace_sample {
+                    fly.set_debug_being(self.spiking_trace_being);
+                }
+                fly.dispatch(
+                    &mut enc,
+                    n,
+                    &self.buf_retina_out,
+                    universe::fly_map::eye_on(),
+                    EyeMode::Photoreceptor,
+                    dt,
+                    0,
+                );
+                if trace_sample {
+                    fly.record_debug_snapshot(&mut enc, n);
+                }
             }
             if let Some(t) = self.timer.as_mut() {
                 t.mark_end(&mut enc, t_fly);
@@ -1728,9 +1800,32 @@ impl GpuCtx {
         // discipline as the intent above. Empty vector when the map is off, and an empty
         // vector is what the override below tests before touching anything.
         let t_rf = prints_this_tick.then(std::time::Instant::now);
-        let fly_cmd = match self.fly.as_ref() {
-            Some(fly) => fly.read_commands_after_submit(n),
-            None => Vec::new(),
+        let fly_cmd = if let Some(fly) = self.fly_spiking.as_ref() {
+            let commands = fly.read_commands_after_submit(n);
+            if trace_sample {
+                if let Some(mut frame) = fly.read_debug_snapshot_after_submit() {
+                    frame.commands = commands
+                        .get(self.spiking_trace_being)
+                        .copied()
+                        .unwrap_or([0.0; universe::fly_map::COMMANDS]);
+                    if let Some(writer) = self.spiking_trace_writer.as_mut() {
+                        if let Err(e) =
+                            universe::fly_map::spiking::write_trace_frame(writer, &frame)
+                        {
+                            eprintln!("[fly-spiking] trace write failed: {e}");
+                            self.spiking_trace_writer = None;
+                        }
+                    }
+                } else {
+                    eprintln!("[fly-spiking] trace snapshot readback failed; disabling trace");
+                    self.spiking_trace_writer = None;
+                }
+            }
+            commands
+        } else if let Some(fly) = self.fly.as_ref() {
+            fly.read_commands_after_submit(n)
+        } else {
+            Vec::new()
         };
         if let Some(t) = t_rf {
             cpu_phases.push(("cpu.read_fly", t.elapsed().as_secs_f32() * 1000.0));
@@ -1965,7 +2060,7 @@ impl GpuCtx {
         // `last_intents` moves with `intents`, or a tick on which the brain does not fire
         // (`--brain-skip > 1`) would replay the fast brain's last decision instead of the
         // map's.
-        if fly_brain() && fly_cmd.len() == n {
+        if (fly_brain() || fly_spiking()) && fly_cmd.len() == n {
             for i in 0..n {
                 let mut v = intents[i];
                 v[0] = fly_cmd[i][0];

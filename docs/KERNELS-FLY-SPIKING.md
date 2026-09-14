@@ -1,8 +1,29 @@
 # Kernel request — spiking fly brain on the GPU (for Astra)
 
-**Status:** request, not implemented. Written 14/09/2026 by Claude (Fable/Opus session) for Astra.
-**Who does what:** Astra writes the three kernels below and their host code; Claude wires them into
-`gpu_evolve`, writes the map/binding exporter, and runs the batteries. Leonardo says when Astra is done.
+**Status:** implemented in the Rust/WGSL tree on 14/09/2026. K1 (delayed event propagation), K2
+(optional retina Poisson drive) and K3 (leaky plus/minus readout) are exposed by
+`gpu::fly_map::FlySpikingGpu` and selected with `gpu_evolve --fly-spiking`. The CPU reference is
+`src/fly_map_spiking.rs`; the GPU source is `src/gpu/fly_map/spiking.wgsl`. The legacy rate path stays
+the default and remains available with `--fly-map`/`--fly-brain`.
+
+Validation already run: CPU delay/Poisson/refractory tests, naga WGSL validation, the ignored GPU
+two-neuron delay/readout parity test (`fly_spiking_parity`), both existing rate-model GPU parity
+tests, and short real-map runs at B=1 and B=40. The full-map sugar→MN9 gate and a stable ≤12 ms
+benchmark still require a dedicated long experiment; no biological claim is inferred from the
+short smoke.
+**Who does what:** the host owns allocation, selection upload and one command readback per tick;
+all substeps, propagation, integration, Poisson sampling and readout remain on the GPU.
+The final run report separates setup/reset uploads from per-tick uniform uploads and reports
+per-tick GPU→CPU maps, so a diagnostic trace cannot be mistaken for the production transfer path.
+
+The first implementation uses the documented wave-uniform row-skip baseline: K1 launches one
+invocation per `(presynaptic neuron, packed-being word)` and exits before walking the CSR when the
+delayed word is zero. It is event-driven in edge work, while retaining a predictable launch shape.
+Compaction of `(neuron, being)` events is a later optimization and must be enabled only after the
+full-map benchmark below establishes that row-skip misses the budget. That benchmark now exists:
+on the RX 6750 XT the real map measured 11.2–17.9 ms at B=1 and 85.6–114.4 ms at B=40 for the
+`fly_map` region over two diagnostic ticks. The baseline is therefore a correctness path, not yet
+a production-performance path.
 
 Read first: [`FLY-MAP-BRAIN.md`](FLY-MAP-BRAIN.md) (the rate model already merged, map file format,
 measured costs), [`../src/gpu/CLAUDE.md`](../src/gpu/CLAUDE.md) (buffer/binding rules, the traps),
@@ -24,9 +45,10 @@ model. A rate model with one step per tick cannot represent it: the pathway is 5
 **The cost argument that makes it feasible.** Dense evaluation at the LIF timestep is hopeless:
 15.1 M edges × 156 substeps (dt 0.1 ms in a 15.6 ms tick) = 2.35 G edge-ops per tick per being. But the
 brain is **sparse in time**: at the firing rates we measure, ~0.3 % of neurons spike per 0.1 ms step, so
-an event-driven kernel that only walks the rows of neurons that actually spiked touches
-15.1 M × 0.003 ≈ 45 k edges per substep ≈ 7 M edge-ops per tick — **330× less work than dense**, and
-comparable to what `fly_step` already does per tick. Event-driven is the whole design.
+an event-driven kernel that only walks the rows of neurons that actually spiked touches roughly
+15.1 M × 0.003 ≈ 45 k edges per substep. This is a rough upper-bound estimate, not an acceptance result:
+“420 active neurons over a one-second run” is not the same as a per-substep spike fraction. The kernel
+must report mean and p95 edges touched per substep on the exact stimulus before claiming a speedup.
 
 **Is the wiring worth the effort? Measured 14/09, and the answer is yes.** The same 20 sugar neurons at
 100 Hz, on the real map and on three controls that preserve the statistics:
@@ -55,26 +77,36 @@ will not show — which is why acceptance criterion 2 below is the sugar→MN9 g
 One substep of LIF for all beings, event-driven. Per neuron `j` and being `b`:
 
 ```
-v   ← v0 + (v − v0)·decay_v + g·(1 − decay_v)      (only if not refractory)
-g   ← g·decay_g                                     (only if not refractory)
-spike = v > v_th
-if spike: v ← v_rst ; g ← 0 ; refractory ← t_rfc    (except for neurons flagged no_rfc)
+v       ← v0 + (v − v0)·decay_v + i_syn·(1 − decay_v) (only if not refractory)
+i_syn   ← i_syn·decay_syn                            (only if not refractory)
+spike   = v > v_th
+if spike: v ← v_rst ; i_syn ← 0 ; refractory ← t_rfc (except for neurons flagged no_rfc)
 ```
-and the conductance delivered by spikes emitted `D` substeps ago:
+`i_syn` is a current-like voltage drive, matching `LifBrain`; it is not a conductance. A true
+conductance model needs a reversal potential and a voltage-dependent term such as `g·(E_rev − v)` and
+would be a different model. The drive delivered by spikes emitted `D` substeps ago is:
 
 ```
 for each neuron i that spiked at substep t−D, for each edge (i → k) of row i:
-    g[k, b] += w_syn · weight[e] · mask[b, type_of[k]]
+    s_i          = spike[i, b] · mask[b, type_of[i]]
+    i_syn[k, b] += w_syn · weight[e] · s_i · max(scale[b], 0)
 ```
+
+The mask is pre-synaptic: it controls whether a selected neuron emits a spike into all of its outgoing
+edges. Masking `type_of[k]` (the destination) changes the graph and does not match the Python reference.
 
 Constants (Shiu et al. 2024, `default_params`, already used by the Python reference
 `neuromod-lab/src/flybrain/dynamics.py`): `dt = 0.1 ms`, `v_0 = v_rst = −52 mV`, `v_th = −45 mV`,
-`t_mbr = 20 ms` → `decay_v = exp(−dt/t_mbr)`, `tau_syn = 5 ms` → `decay_g = exp(−dt/tau)`,
+`t_mbr = 20 ms` → `decay_v = exp(−dt/t_mbr)`, `tau_syn = 5 ms` → `decay_syn = exp(−dt/tau_syn)`,
 `t_rfc = 2.2 ms` → 22 substeps, `t_dly = 1.8 ms` → `D = 18` substeps, `w_syn = 0.275 mV` per synapse.
+The refractory state is a **remaining-step counter**: a neuron with `rfc_remaining > 0` skips the
+integration, then decrements once per substep; it is free exactly when the counter reaches zero. The
+test must assert the first allowed spike time, because assigning 22 and decrementing only on later ticks
+can accidentally produce 2.3 ms rather than 2.2 ms.
 
 **Data layout (fixed, do not change):** the map is CSR **by presynaptic neuron** for this kernel (the
 rate model uses CSR by postsynaptic; the exporter will ship both — see §3). Per-being state is
-**being-minor**: `v[j*B + b]`, `g[j*B + b]`, so lanes = beings coalesce, exactly like the `fly_step`
+**being-minor**: `v[j*B + b]`, `i_syn[j*B + b]`, so lanes = beings coalesce, exactly like the `fly_step`
 rewrite that took 98 ms → 7.9 ms at B = 40 (`@workgroup_size(32, 4)`, 32 lanes = 32 beings, 4 rows of
 neurons per workgroup, one wave walks one CSR row and the `indices`/`weights` loads are wave-uniform).
 
@@ -82,23 +114,26 @@ neurons per workgroup, one wave walks one CSR row and the `indices`/`weights` lo
 
 - **(a) Compaction.** A pass over `spiked[j*B + b]` builds a compact list of (neuron, being) pairs that
   spiked at substep `t − D`, then one thread per (pair, edge-chunk) walks only those rows and
-  `atomicAdd`s into `g`. Cost ∝ actual spikes. Needs an atomic counter and a scatter buffer sized for
+  `atomicAdd`s into `i_syn`. Cost ∝ actual spikes. Needs an atomic counter and a scatter buffer sized for
   the worst case (say 5 % of n×B).
 - **(b) Wave-uniform row skip.** Keep one wave per neuron row (lanes = beings, like `fly_step`) but read
-  a per-neuron "any being spiked" bit first and `continue` when it is zero. No atomics, no compaction,
-  but the work is ∝ (neurons with at least one being spiking) × row length, which degrades as B grows
+  a per-neuron "any being spiked" bit first and `continue` when it is zero. This is a useful baseline,
+  but it does **not** remove write conflicts: several presynaptic rows can target the same `i_syn[k,b]`.
+  It is correct only with an atomic representation or a separate gather/reduction pass. Its work is
+  proportional to (neurons with at least one being spiking) × row length, which degrades as B grows
   because different beings spike at different times.
 
 Our estimate: (a) wins at B ≥ 8, (b) may win at B = 1–4 and is far simpler. **Implement (b) first as the
 correctness baseline, then (a), and report both timings** — that is the same discipline that produced the
 6× on `fly_step`.
 
-Atomics: `g` is `f32` and WGSL has no `atomicAdd` on floats. Either accumulate into an `atomic<i32>`
-fixed-point buffer (g in µV as i32: `w_syn·weight` is a multiple of 0.275 mV, so 1 µV resolution loses
+Atomics: `i_syn` is `f32` and WGSL has no `atomicAdd` on floats. The correctness baseline must either
+accumulate into an `atomic<i32>`
+fixed-point buffer (`i_syn` in µV as i32: `w_syn·weight` is a multiple of 0.275 mV, so 1 µV resolution loses
 nothing and the range fits — state the bound you use), or give each of the 32 lanes its own being and
-make the writes per-being non-conflicting by construction (in (b) they already are: one wave owns one row
-and each lane owns one being, so `g[k*B + b]` is written by exactly one lane — **no atomics needed in
-(b)**, which is another reason to start there).
+use a destination-gather/reduction layout in which each `(k,b)` has one writer. Being-minor lanes alone
+do not make writes non-conflicting: different source rows still converge on the same destination.
+Benchmark compaction only after this baseline is bit-for-bit correct.
 
 **Delay ring.** `D = 18` substeps of spike bits: `ring[(t) % D][j*B + b]` as `u32` bitfields packed over
 beings (B ≤ 64 → two u32 per neuron) keeps it at 138 639 × 2 × 18 × 4 B = 20 MB. Fine.
@@ -138,13 +173,16 @@ the pixel it looks at (`pixel_of_neuron[u32]`, computed from the target cells' r
 probability for this substep:
 
 ```
-rate_hz = bg_hz · (1 − brightness)          brightness = pixel value normalised to [0,1]
-p_spike = rate_hz · dt_ms · 1e-3            (dark = high rate: R1-6 are histaminergic, light inhibits)
-spike   = rand < p_spike                    → same treatment as `PoissonInput` in the reference model:
-                                              v += w_syn · f_poi (f_poi = 250), no refractory
+rate_hz = max(0, bg_hz · max(gain[b], 0) · (1 − brightness))
+p_spike = 1 − exp(−rate_hz · dt_ms · 1e−3)  (exact Bernoulli probability for a Poisson process)
+spike   = rand < clamp(p_spike, 0, 1)        → v += w_syn · f_poi (f_poi = 250), no refractory
 ```
-One thread per (photoreceptor, being); the RNG must be a counter-based hash of (neuron, being, substep,
-run seed) so a run is reproducible and no state buffer is needed (`hash(pcg3d)` is fine — say which).
+One thread per (bound neuron, being); the RNG must be a counter-based hash of (neuron, being, substep,
+run seed) so a run is reproducible and no state buffer is needed. The map's `pixel_of_neuron` table
+only supplies luminance. It cannot produce motion selectivity by itself: a `motion` target must consume
+a temporal/spatial difference (for example, current minus previous retina or a precomputed T4/T5 drive)
+with an explicit time buffer and documented polarity. Feeding static brightness to T4/T5 is not a motion
+kernel and must not be presented as one.
 
 ### K3 — `fly_spike_readout`
 
@@ -152,9 +190,17 @@ Per being, per command `c ∈ {throttle, steer, brake}`: a leaky spike-count rea
 efferent groups (the `out_pair` selection the genome already carries):
 
 ```
-count_c ← count_c · decay_read + (spikes in plus group) − (spikes in minus group)
-cmd_c   = tanh(count_c / norm_c)            norm_c = mean group size, so the command is O(1)
+plus_mean  = (spikes in plus group)  / max(1, size(plus group))
+minus_mean = (spikes in minus group) / max(1, size(minus group))
+drive_c    = plus_mean − minus_mean
+count_c    ← count_c · decay_read + (1 − decay_read) · drive_c
+cmd_c      = tanh(count_c / norm_c)          norm_c = 1 by default (dimensionless)
 ```
+Normalising the difference by the mean of the two group sizes is biased when the groups have different
+sizes. Use per-group means as above; define an empty-group mean as 0. The `(1 − decay_read)` factor makes
+`count_c` an exponential moving average rather than an unbounded accumulated count, so `norm_c = 1` has
+a stable interpretation across tick rates and map topologies. Expose `norm_c` only if a deliberate gain
+change is measured.
 `decay_read = exp(−dt / 50 ms)` (a 50 ms integration window, the timescale of a fly's steering
 response). One thread per (being, command); groups come from `out_indptr`/`out_members`, already in the
 map file. The host reads `cmd[B][3]` once per tick, like `fly_read` does today.
@@ -167,20 +213,21 @@ map file. The host reads `cmd[B][3]` once per tick, like `fly_read` does today.
    `LifBrain` is the reference; `src/fly_map.rs` already has the CPU-side pattern for a synthetic map and
    a parity test (`src/gpu/fly_map/parity_test.rs`). A new `#[ignore]` GPU test must match spike *times*
    exactly (they are discrete) for 500 substeps on a 6-neuron map, B = 3, including: refractory blocks a
-   second spike, the delay is exactly 18 substeps, an inhibitory edge pushes `v` below rest, a pruned
-   cell type emits nothing.
+   second spike and frees it at the documented step, the delay is exactly 18 substeps, an inhibitory edge
+   pushes `v` below rest, a pruned pre-synaptic cell emits nothing, and eye Poisson input uses the exact
+   probability above.
 2. **The published gate reproduces.** (This is the SUGAR gate, not a visual one — see the box in K2:
    looming from photoreceptors is not achievable in a spiking model and is NOT required of you.) With the real map, 20 sugar GRNs driven at 100 Hz for 1 s:
    **MN9 (root id 720575940660219265) fires at 72 ± 10 Hz and 400 ± 100 neurons are active** — that is
    what our torch implementation measures (`neuromod-lab/src/fly_gate.py`, verified 14/09) and what the
    paper reports. A kernel that does not reproduce this is wrong, whatever the microbenchmarks say.
 3. **Budget.** ≤ 12 ms per Universe tick at B = 40 on the full map, including the 156 substeps. If that
-   is impossible, report the measured number and where it goes (edges touched per substep, occupancy,
+   is impossible, report the measured number and where it goes (mean/p95 edges touched per substep, occupancy,
    atomic contention) — a negative with the mechanism is a result, and we will cut substeps (dt 0.2 ms)
    or the map (`--min-weight 3`, 4.9 M edges) instead of guessing.
-4. **Everything on the GPU.** No per-substep host readback, no CPU loop over neurons or beings. The host
-   touches the fly brain exactly twice per tick: upload nothing (the selection is uploaded once per
-   generation) and read `cmd[B][3]` once.
+4. **Everything on the GPU.** No per-substep host readback, no CPU loop over neurons or beings. The
+   selection is uploaded once per generation; each tick performs one small batched uniform upload
+   (the substep schedule) and reads `cmd[B][3]` once. No neuron state crosses the host boundary.
 5. The existing rate path (`fly_step`/`fly_read`) keeps working unchanged and stays the default; the
    spiking path is a new flag (`--fly-spiking`), off by default, and with it off **every number in
    `gpu_validate` and the 414 lib / 77 bin tests is unchanged**.
