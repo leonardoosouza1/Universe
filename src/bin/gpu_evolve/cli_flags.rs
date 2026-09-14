@@ -190,6 +190,9 @@ pub const FLAGS: &[Flag] = &[
     flag("--fly-sigma",                   &[],                             VALUE,  "sigma of the log-normal step on the fly gain and scale (default 0.1)"),
     flag("--fly-log-every",               &[],                             VALUE,  "print the elite's fly selection every N generations"),
     flag("--fly-eye",                     &[],                             SWITCH, "specific neurons are driven by specific retina pixels (needs a v2 map with the pixel-binding block)"),
+    flag("--fly-readout",                 &[],                             VALUE,  "readout source for the three commands: genome | reflex (default genome; reflex needs a v3 map with the reflex-readout block)"),
+    flag("--fly-cruise-throttle",         &[],                             VALUE,  "constant throttle used when --fly-readout reflex's throttle slot is NONE (default 0.6)"),
+    flag("--fly-reflex-sign",             &[],                             VALUE,  "sign multiplied into the steer command under --fly-readout reflex: 1 or -1 (default 1)"),
     flag("--resume",                      &["--retomar"],                  SWITCH, "resume from the checkpoint in --out"),
     flag("--out",                         &[],                             VALUE,  "output directory"),
 ];
