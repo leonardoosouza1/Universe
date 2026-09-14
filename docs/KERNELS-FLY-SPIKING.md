@@ -103,13 +103,37 @@ and each lane owns one being, so `g[k*B + b]` is written by exactly one lane —
 **Delay ring.** `D = 18` substeps of spike bits: `ring[(t) % D][j*B + b]` as `u32` bitfields packed over
 beings (B ≤ 64 → two u32 per neuron) keeps it at 138 639 × 2 × 18 × 4 B = 20 MB. Fine.
 
-### K2 — `fly_photoreceptor_drive`
+### K2 — `fly_eye_drive`
 
-Turn the rendered retina into photoreceptor input, **on the GPU, no host roundtrip**. Input: the
+**Read this box before implementing K2 — a measurement on 14/09 changed what this kernel must target.**
+Driving the 7 932 R1-6 photoreceptors in the spiking model does NOT reach the visual outputs, at any
+rate. The lamina works (L1/L2 reach 26 Hz when photoreceptors are driven at 250 Hz) but the next stage
+is net inhibitory: Mi1 receives −3 214 synapse·Hz, Tm3 −1 348, T4 −1 059, T5 −1 997, HS −219. Nothing
+past hop 1 ever fires, and raising the drive only deepens the inhibition. The reason is biological: in
+the fly, photoreceptors and lamina/medulla neurons are **graded — they do not spike**; inhibition there
+modulates a tonic release. A leaky integrate-and-fire model without tonic excitation cannot represent
+that stage, and the reference model (Shiu et al. 2024) was validated on excitatory chains such as
+sugar → MN9, not on the optic lobe.
+
+The path downstream of the motion detectors IS spiking and works. Measured, same model, 100 Hz drive:
+
+| driven | LPLC2 | HS | VS | DNp01 (giant fiber) |
+|---|---|---|---|---|
+| T4 + T5 (12 246 cells) | 24.0 Hz | 250 Hz | 241 Hz | **95.6 Hz, 100 % of trials** |
+| LC4 + LPLC2 | — | — | — | **230 Hz** |
+
+**So K2 drives whatever neurons the map file says, not photoreceptors by name.** The map carries
+`pixel_of_neuron[u32]` (`0xFFFFFFFF` = not eye-driven) and the exporter decides the target set:
+`--eye-target photoreceptor` (for the rate model, which handles graded stages correctly) or
+`--eye-target motion` (T4/T5, for this spiking kernel). The kernel is identical either way — it reads
+the table. Full diagnosis: `neuromod-lab/PREDICOES.md` entry 189v and
+`neuromod-lab/src/fly_diag_vision.py`.
+
+Turn the rendered retina into eye-driven input, **on the GPU, no host roundtrip**. Input: the
 existing retina/perception buffer (`PerceptionGpu::buf_output`, 48 u32 per being, i8 channels; the raw
 retina is `GpuCtx::buf_retina_out`, 1 764 px per being = 14 rows × 126 cols, FOV 120°, pitch 0 to
 −0.06 rad). Plus a **binding table** shipped in the map file: for each of the 7 932 R1-6 photoreceptors,
-the pixel it looks at (`pixel_of_photoreceptor[u32]`, computed from the eye's retinotopy — Claude's
+the pixel it looks at (`pixel_of_neuron[u32]`, computed from the target cells' retinotopy — Claude's
 `neuromod-lab/src/flybrain/eye.py` produces it). Output: per (photoreceptor, being) a Poisson spike
 probability for this substep:
 
@@ -145,7 +169,8 @@ map file. The host reads `cmd[B][3]` once per tick, like `fly_read` does today.
    exactly (they are discrete) for 500 substeps on a 6-neuron map, B = 3, including: refractory blocks a
    second spike, the delay is exactly 18 substeps, an inhibitory edge pushes `v` below rest, a pruned
    cell type emits nothing.
-2. **The published gate reproduces.** With the real map, 20 sugar GRNs driven at 100 Hz for 1 s:
+2. **The published gate reproduces.** (This is the SUGAR gate, not a visual one — see the box in K2:
+   looming from photoreceptors is not achievable in a spiking model and is NOT required of you.) With the real map, 20 sugar GRNs driven at 100 Hz for 1 s:
    **MN9 (root id 720575940660219265) fires at 72 ± 10 Hz and 400 ± 100 neurons are active** — that is
    what our torch implementation measures (`neuromod-lab/src/fly_gate.py`, verified 14/09) and what the
    paper reports. A kernel that does not reproduce this is wrong, whatever the microbenchmarks say.
@@ -162,10 +187,12 @@ map file. The host reads `cmd[B][3]` once per tick, like `fly_read` does today.
 
 ## 3. What Claude ships so you can start
 
-- `flymap` **v2** file (extends v1, `FLY-MAP-BRAIN.md` §1): adds CSR **by presynaptic** neuron
-  (`pre_indptr`, `pre_indices`, `pre_weights`), `pixel_of_photoreceptor[u32]` (the K2 binding table,
-  `0xFFFFFFFF` = not a photoreceptor), and `no_refractory[u32]` bitmap (Poisson targets). Same header
-  style, version bumped, sidecar JSON with names and SHA-256. Ready before you start — ask if not.
+- `flymap` **v2** file: magic `FLYMAP02`, header `n, m, n_types, k_in, k_out, out_members_len, flags,
+  reserved` (flags bit 0 = presynaptic CSR, bit 1 = pixel binding, bit 2 = no-refractory bitmap), the v1
+  body unchanged, then the flagged blocks in order: presynaptic CSR (`pre_indptr u32[n+1]`,
+  `pre_indices u32[m]`, `pre_weights f32[m]`), `pixel_of_neuron u32[n]`, `no_refractory u32[ceil(n/32)]`.
+  Sidecar JSON with names, retina geometry, eye target and SHA-256. Being written now — if
+  `/media/llm-data/datasets/flywire/flymap_783_v2.bin` exists when you start, it is ready.
 - The three map variants for controls, already exported:
   `/media/llm-data/datasets/flywire/flymap_783{,_w3,_w3_nooptic,_shuf0}.bin`.
 - `neuromod-lab/src/flybrain/dynamics.py` (`LifBrain`) as the executable reference, and
