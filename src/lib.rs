@@ -10,6 +10,8 @@ pub mod engine;
 pub mod environment;
 pub mod evolution;
 pub mod float_layers;
+/// The Drosophila connectome as a fixed brain: map file, rate model, genome block.
+pub mod fly_map;
 pub mod gate;
 /// GPU simulation core, with no graphics (Bevy is only the visualizer on top).
 pub mod gpu;
