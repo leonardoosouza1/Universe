@@ -127,3 +127,21 @@ fn fly_spiking_wgsl_is_valid() {
     let fonte = include_str!("../src/gpu/fly_map/spiking.wgsl");
     validar_wgsl("fly_map/spiking.wgsl", fonte);
 }
+
+/// `retina.wgsl` itself was never in this suite — only the shaders that CONSUME its
+/// output (`retina_digest.wgsl`, `fly_map.wgsl`'s eye binding) were. Added for
+/// `--retina-beings` (docs/RETINA-BEINGS.md §2): `Params` grew by 16 bytes
+/// (`beings_on` + three `_pad*` fields) and gained an occlusion loop over `poses[]`
+/// inside the per-pixel kernel — exactly the kind of structural edit where a syntax or
+/// type error would only show up at `create_shader_module`, on a real GPU, which is
+/// what every other test in this file exists to catch without one.
+#[test]
+fn retina_wgsl_e_valido() {
+    let fonte = include_str!("../src/gpu/retina.wgsl");
+    validar_wgsl("retina.wgsl", fonte);
+    assert!(
+        fonte.contains("BEING_MATERIAL") && fonte.contains("beings_on"),
+        "the being-occlusion path (docs/RETINA-BEINGS.md §2) is missing from \
+         retina.wgsl but this test's doc comment still describes it"
+    );
+}

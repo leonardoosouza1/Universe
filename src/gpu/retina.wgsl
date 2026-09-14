@@ -33,6 +33,17 @@ struct Params {
     cell_size:  f32,
     fov_half:   f32,
     pitches:    array<vec4<f32>, 4>,  // 14 pitches in 4 vec4
+    // `--retina-beings` (docs/RETINA-BEINGS.md §2): 0 = off (default — the DDA result
+    // below is untouched, so this kernel is bit-for-bit what it was before this field
+    // existed), 1 = on (also intersect the ray with every other being's body). Mirrors
+    // `fly_map.wgsl`'s `params.eye_on` gate. `_pad0`/`_pad1`/`_pad2` keep this struct's
+    // WGSL size (rounded up to the 16-byte alignment `pitches` forces) equal to the Rust
+    // host's `RetinaParamsGpu` (`src/gpu/retina_types.rs`) — see the struct layout trap
+    // documented in `src/gpu/CLAUDE.md`.
+    beings_on:  u32,
+    _pad0:      u32,
+    _pad1:      u32,
+    _pad2:      u32,
 }
 
 struct Pose {
@@ -53,6 +64,15 @@ const RETINA_COLS: u32 = 126u;
 const RETINA_TOTAL: u32 = 1764u;
 const TAN_K: f32 = 1.25;
 const EYE_HEIGHT: f32 = 0.4;
+
+// `--retina-beings` (docs/RETINA-BEINGS.md §2). `BEING_MATERIAL` mirrors
+// `universe::gpu::BEING_MATERIAL` (`src/gpu/mod.rs`) — a code this kernel PRODUCES, never
+// a voxel `grid[]` stores. `BEING_RADIUS` mirrors `config::iara::vision::BEING_RADIUS_M`
+// (`src/config.rs`) — WGSL cannot `use` a Rust constant (docs/STYLE.md §4); the two are
+// kept from drifting apart by the Rust-side test
+// `gpu::being_radius_wgsl_mirror_matches_the_config_constant` (`src/gpu/mod.rs`).
+const BEING_MATERIAL: u32 = 4u;
+const BEING_RADIUS: f32 = 0.775;
 
 fn voxel_at(wx: f32, wz: f32) -> u32 {
     // The CPU uses `.round()`, NOT `.floor()` — switching shifts the read by half a cell.
@@ -154,6 +174,46 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if (dir_y < -0.001 && dist_to_ground <= 1200.0) {
         hit_dist = dist_to_ground;
         hit_voxel = voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);
+    }
+
+    // ── Being occlusion (`--retina-beings`, docs/RETINA-BEINGS.md §2) ──────────────────
+    // Off by default (`params.beings_on == 0u`): skipped entirely, so everything above is
+    // untouched. Cylinder test in the (x, z) plane only — the eye sits at
+    // EYE_HEIGHT = 0.4 m and the bodies are low, so a height/y test is skipped in v1
+    // (stated explicitly here rather than left implicit, per docs/RETINA-BEINGS.md §2).
+    //
+    // `t` uses the SAME parametrisation `hit_dist` already does above: world position =
+    // eye + (dir_x, dir_y, dir_z) * t (see the `voxel_at(eye.x + dir_x * hit_dist, ...)`
+    // calls above), so a nearer `t` can directly replace `hit_dist`. `a`, the ray
+    // direction's squared horizontal length, does not depend on which being is tested, so
+    // it is computed once, outside the loop over other beings — positions come from
+    // `poses[]`, which this kernel already binds for the ray origins, so no new buffer.
+    if (params.beings_on != 0u) {
+        let a = dir_x * dir_x + dir_z * dir_z;
+        if (a > 1e-9) {
+            for (var ob: u32 = 0u; ob < params.n_beings; ob = ob + 1u) {
+                if (ob == being) { continue; }
+                let other = poses[ob].pos_gaze;
+                let lx = eye.x - other.x;
+                let lz = eye.z - other.z;
+                let b = 2.0 * (lx * dir_x + lz * dir_z);
+                let c = lx * lx + lz * lz - BEING_RADIUS * BEING_RADIUS;
+                let disc = b * b - 4.0 * a * c;
+                if (disc < 0.0) { continue; }
+                let sq = sqrt(disc);
+                var t = (-b - sq) / (2.0 * a);
+                if (t < 0.0) {
+                    t = (-b + sq) / (2.0 * a);
+                    if (t < 0.0) { continue; }
+                    t = 0.0; // the eye is already inside the other being's cylinder
+                }
+                // Nearest wins.
+                if (t < hit_dist) {
+                    hit_dist = t;
+                    hit_voxel = BEING_MATERIAL;
+                }
+            }
+        }
     }
 
     let mm = u32(clamp(hit_dist, 0.0, 1200.0) * 1000.0);

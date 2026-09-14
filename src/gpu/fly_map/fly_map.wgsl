@@ -204,8 +204,16 @@ fn eye_pixel_drive(being: u32, pixel: u32) -> f32 {
         v = 40.0 - (depth_fade * 40.0);
     } else if mat == 1u { // Road
         v = -128.0 + (depth_fade * 96.0);
-    } else { // Hole (3)
+    } else if mat == 3u { // Hole
         v = 90.0 - (clamp(d / 50.0, 0.0, 1.0) * 30.0);
+    } else { // Being (mat == 4u; `--retina-beings`, docs/RETINA-BEINGS.md §2) — a code
+        // `retina.wgsl` PRODUCES, never a grid voxel. Flat -29, mirroring
+        // `universe::gpu::legacy_encoding`'s Being branch (`src/gpu/mod.rs:150`): the one
+        // gap no other material's formula reaches at any distance (Wall in [-25, 127],
+        // Grass in [0, 40], Hole in [60, 90], Road in [-128, -32]). This `else` used to be
+        // Hole's branch before Being existed; `mat` is guaranteed 0-4 by `retina.wgsl`, so
+        // there is nothing left for it to catch but Being.
+        v = -29.0;
     }
     // `trunc` because the CPU reference ends in `v.clamp(-128.0, 127.0) as i8`, and a Rust float
     // cast truncates toward zero. Without it the two implementations disagree by up to one unit
