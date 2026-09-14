@@ -216,3 +216,17 @@ still the first execution of the wiring.
 
 The tick cost of the real map is NOT measured — no map file was available to this pass and
 no run was launched. The estimate in §4 (5-10 ms/tick at B = 40) stands as an estimate.
+
+### Measured tick cost (serial, `--kernel-profile 250`, 1 gen × 1 000 ticks, track 8005; 14/09/2026)
+
+| map | beings | kernel v1 `fly_map` | kernel v2 `fly_map` | tick wall v2 |
+|---|---|---|---|---|
+| full (15.1 M edges) | 8 | 20.1 ms | — | — |
+| full | 16 | — | 6.8 ms | 8.5 ms |
+| full | 40 | 98.1 ms | **7.9 ms** | **10.0 ms** |
+| `_w3` (4.9 M) | 8 / 40 | 11.6 / 57.1 ms | — / 3.7 ms | — / 5.5 ms |
+| `_w3_nooptic` (2.15 M) | 8 | 5.1 ms | — | — |
+
+v1 = one thread per neuron looping over beings (cost linear in beings); v2 = lanes are beings
+(merge c0f86aa): flat in beings, the gather is served by the Infinity Cache.
+
