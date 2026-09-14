@@ -205,7 +205,11 @@ fn eye_pixel_drive(being: u32, pixel: u32) -> f32 {
     } else { // Hole (3)
         v = 90.0 - (clamp(d / 50.0, 0.0, 1.0) * 30.0);
     }
-    let raw: f32 = clamp(v, -128.0, 127.0);
+    // `trunc` because the CPU reference ends in `v.clamp(-128.0, 127.0) as i8`, and a Rust float
+    // cast truncates toward zero. Without it the two implementations disagree by up to one unit
+    // of the encoding — invisible while the negative half was being clamped to zero, and caught
+    // by `fly_map_parity_with_the_eye_on` the moment the full range started being used (14/09).
+    let raw: f32 = trunc(clamp(v, -128.0, 127.0));
     // Full i8 range, not [0, 127] — see the comment in `fly_map_eye.rs::eye_drive`: clamping the
     // negative half would make every road pixel identical and the eye blind to the track.
     let brightness: f32 = clamp((raw + 128.0) / 255.0, 0.0, 1.0);
