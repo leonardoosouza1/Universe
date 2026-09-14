@@ -48,11 +48,25 @@ With that, the gate is a 30-second test on this machine and the kernel earns the
 instead of inheriting it. Until then the spiking path is validated as *dynamics* (delay,
 refractory, readout on a tiny map) and not as *this connectome's behaviour*.
 
-**Criterion 3 — the ≤ 12 ms/tick budget at B = 40 on the full map — not measured here either.**
-Worth stating what the rate path costs for comparison, measured today on the same GPU: 7.9 ms of
-kernel and 10.0 ms of tick wall at 40 beings on the full map (`FLY-MAP-BRAIN.md` §8), after a
-rewrite that made cost flat in beings. The spiking path's 156 substeps per tick make this the
-interesting number of the whole delivery, and it is the one still missing.
+**Criterion 3 — the tick budget — MEASURED 14/09 18:00, and it is the number that matters most.**
+`gpu_evolve --fly-spiking --fly-eye`, 8 beings, 2 000 ticks, `flymap_783_motion_v2.bin`,
+`--kernel-profile 250`: the spiking kernel costs **108.5 ms per tick** (114.5 ms tick wall). The
+rate path on the same GPU costs 6.8 ms at 8 beings and 7.9 ms at 40 — it is flat in beings after
+today's rewrite. So the spiking path is **16× more expensive already at 8 beings**, against a
+target of ≤ 12 ms at 40. Full record: `PREDICOES-CEREBRO.md` F7v (prediction registered before
+the run).
+
+**The arithmetic points at a specific diagnostic, and it is one log line.** 108.5 ms over 156
+substeps is **0.70 ms per substep**. If the active fraction were the ~0.3 % this document's own
+cost argument assumes, a substep would touch ~45 000 edges, and 0.70 ms for that is ~64 M
+edge-operations per second — two orders of magnitude below what this GPU demonstrably does (the
+rate kernel moves all 15.1 M edges in 7.9 ms, ~1.9 G/s). **One of the two premises is therefore
+wrong: either the active fraction is far above 0.3 % on this connectome, or the kernel walks more
+than the active rows.** Please print, per substep, the number of neurons that spiked and the
+number of edges actually traversed (the `--fly-spiking-trace` already collects spikes; what is
+missing is the aggregate). Until that number exists, neither of us can say whether the path is
+optimisable or whether the event-driven premise does not hold here — and that distinction decides
+whether this is a kernel problem or a modelling one.
 
 ## 3. One correction to the request itself, from a measurement made after it was written
 
