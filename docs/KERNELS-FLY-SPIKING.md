@@ -191,8 +191,23 @@ map file. The host reads `cmd[B][3]` once per tick, like `fly_read` does today.
   reserved` (flags bit 0 = presynaptic CSR, bit 1 = pixel binding, bit 2 = no-refractory bitmap), the v1
   body unchanged, then the flagged blocks in order: presynaptic CSR (`pre_indptr u32[n+1]`,
   `pre_indices u32[m]`, `pre_weights f32[m]`), `pixel_of_neuron u32[n]`, `no_refractory u32[ceil(n/32)]`.
-  Sidecar JSON with names, retina geometry, eye target and SHA-256. Being written now — if
-  `/media/llm-data/datasets/flywire/flymap_783_v2.bin` exists when you start, it is ready.
+  Sidecar JSON with names, retina geometry, eye target and SHA-256.
+
+  **READY, verified 14/09 12:55** (magic, header and computed size checked byte for byte against the
+  file; 12/12 exporter tests pass):
+
+  | file | bytes | eye target | notes |
+  |---|---|---|---|
+  | `/media/llm-data/datasets/flywire/flymap_783_v2.bin` | 244 269 836 | photoreceptor (R1-6, 7 932 bound) | full map, flags = 7 |
+  | `/media/llm-data/datasets/flywire/flymap_783_motion_v2.bin` | 244 269 836 | motion (T4+T5, 12 246 bound) | **use this one for K2** |
+  | `/media/llm-data/datasets/flywire/flymap_783_w3_v2.bin` | 81 457 804 | photoreceptor | `--min-weight 3`, for quick iterations |
+
+  Header of the full file, read back: `n=138639 m=15091983 n_types=8866 k_in=268 k_out=516
+  out_members=1470 flags=7 reserved=0`. The binding uses `--eye-fit stretch` (the whole eye mapped onto
+  the retina's rows); the anatomically strict `strip` fit binds only 77 of 7 932 photoreceptors and
+  188 of 12 246 motion cells, because the car's rendered retina spans just 0.69–3.44 degrees of
+  elevation — the counts for both fits are in the sidecar JSON and in
+  `neuromod-lab/docs/96-flymap-v2.md`.
 - The three map variants for controls, already exported:
   `/media/llm-data/datasets/flywire/flymap_783{,_w3,_w3_nooptic,_shuf0}.bin`.
 - `neuromod-lab/src/flybrain/dynamics.py` (`LifBrain`) as the executable reference, and
