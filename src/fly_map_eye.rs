@@ -89,7 +89,11 @@ pub fn eye_drive(gain: f32, frame: &EyeFrame, being: usize, neuron: usize) -> Op
     let dist_m = (packed >> 8) as f32 / 1000.0;
     let material = (packed & 0xFF) as u8;
     let raw = crate::gpu::legacy_encoding(crate::gpu::Pixel { dist_m, material });
-    let brightness = (raw as f32 / 127.0).clamp(0.0, 1.0);
+    // The encoded pixel is a full i8: road is around -128, grass +40, a near wall +127. Mapping
+    // only [0, 127] onto brightness would clamp EVERY road pixel to 0 whatever its distance
+    // (measured 14/09: road spans raw -128..-104 from 2 m to 300 m), and the track is most of
+    // what the retina sees — the eye would be blind to the road. Map the whole i8 range instead.
+    let brightness = ((raw as f32 + 128.0) / 255.0).clamp(0.0, 1.0);
     Some(gain * (1.0 - brightness))
 }
 

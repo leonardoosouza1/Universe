@@ -457,3 +457,63 @@ fn eye_gate_off_leaves_cpu_step_byte_identical_to_before_the_extension() {
          nothing"
     );
 }
+
+/// The eye must still see the road. `legacy_encoding` puts asphalt in the NEGATIVE half of the
+/// i8 range (raw -128 at 2 m, -104 at 300 m), so a brightness that maps only [0, 127] collapses
+/// every road pixel to the same drive and the retina's majority surface carries no information.
+/// Measured 14/09/2026 before the fix: road at 2 m and at 300 m both gave drive == gain.
+#[test]
+fn eye_drive_separates_road_distances_and_every_material() {
+    let map = FlyMap::synthetic_with_eye();
+    let pixel_of_neuron = map
+        .pixel_of_neuron
+        .clone()
+        .expect("synthetic map carries the block");
+    let neuron = pixel_of_neuron
+        .iter()
+        .position(|&p| p != NONE)
+        .expect("at least one eye-bound neuron");
+    let pixel = pixel_of_neuron[neuron] as usize;
+    let stride = pixel + 1;
+    let drive_of = |dist_m: f32, material: u32| {
+        let mut retina = vec![0u32; stride];
+        retina[pixel] = (((dist_m * 1000.0) as u32) << 8) | material;
+        let frame = EyeFrame {
+            pixel_of_neuron: &pixel_of_neuron,
+            retina: &retina,
+            retina_stride: stride,
+        };
+        eye_drive(1.0, &frame, 0, neuron).expect("the neuron is eye-bound")
+    };
+    let near_road = drive_of(2.0, 1);
+    let far_road = drive_of(300.0, 1);
+    assert!(
+        (near_road - far_road).abs() > 1e-3,
+        "road at 2 m ({near_road}) and at 300 m ({far_road}) must differ"
+    );
+    // the four materials must be distinguishable at the same distance
+    let d = 20.0;
+    let (grass, road, wall, hole) = (
+        drive_of(d, 0),
+        drive_of(d, 1),
+        drive_of(d, 2),
+        drive_of(d, 3),
+    );
+    for (a, b) in [
+        (grass, road),
+        (grass, wall),
+        (grass, hole),
+        (road, wall),
+        (road, hole),
+        (wall, hole),
+    ] {
+        assert!(
+            (a - b).abs() > 1e-3,
+            "materials must not collapse: {a} vs {b}"
+        );
+    }
+    // and drive stays inside [0, gain]
+    for v in [near_road, far_road, grass, road, wall, hole] {
+        assert!((0.0..=1.0).contains(&v), "drive {v} outside [0, gain]");
+    }
+}

@@ -206,7 +206,9 @@ fn eye_pixel_drive(being: u32, pixel: u32) -> f32 {
         v = 90.0 - (clamp(d / 50.0, 0.0, 1.0) * 30.0);
     }
     let raw: f32 = clamp(v, -128.0, 127.0);
-    let brightness: f32 = clamp(raw / 127.0, 0.0, 1.0);
+    // Full i8 range, not [0, 127] — see the comment in `fly_map_eye.rs::eye_drive`: clamping the
+    // negative half would make every road pixel identical and the eye blind to the track.
+    let brightness: f32 = clamp((raw + 128.0) / 255.0, 0.0, 1.0);
     return gain_scale[being * 2u] * (1.0 - brightness);
 }
 
