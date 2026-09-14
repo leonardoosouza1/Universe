@@ -59,9 +59,15 @@
 // and not 98. The per-tick figures this mapping actually reached are in the commit that
 // introduced it and in `bench_test.rs`, which is the way to re-measure.
 //
-// Semantics are UNCHANGED and deliberately bit-for-bit: each being still accumulates its
-// row in ascending edge order e0..e1, so the sum is the same sequence of f32 multiply-adds
-// the CPU reference performs (`universe::fly_map::cpu_step`). Only WHO does it moved.
+// Semantics are UNCHANGED and bit-for-bit: each being still accumulates its row in
+// ascending edge order e0..e1, so the sum is the same sequence of f32 multiply-adds the
+// CPU reference performs (`universe::fly_map::cpu_step`). Only WHO does it moved.
+//
+// That is MEASURED, not argued. Both kernels ran five chained ticks at B = 40 on the full
+// map and `debug_read_state` was dumped: 5 545 560 floats, 5 458 454 of them non-zero,
+// BYTE-IDENTICAL (md5 389e1ac0e612783395c73ae24c8c5fa4 both sides). The six-neuron
+// synthetic map in `parity_test` could not have shown this on its own — its rows are too
+// short for a reordered sum to round differently — which is why the real map was used.
 
 // Mirrors `universe::fly_map::NONE` (`src/fly_map.rs`), the only other place this value is
 // written. The host also ships it in `params.none_id`, which is what the code below reads —
