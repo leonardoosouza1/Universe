@@ -64,6 +64,13 @@ struct FlyParams {
     /// production buffer (`GpuCtx::buf_retina_out`) and any test retina buffer must both
     /// be sized `n_beings * RETINA_TOTAL` u32 words for the stride to line up.
     retina_stride: u32,
+    /// `--fly-readout-norm`: 0 keeps the historical raw difference `mean(plus) - mean(minus)`,
+    /// 1 emits the normalised asymmetry index `(p - m) / (|p| + |m| + 1e-6)` — the quantity
+    /// the connectome measurements 191v/193v actually reported, and the one that does not
+    /// carry the two groups' standing imbalance into the command (F3v).
+    readout_norm: u32,
+    /// Padding: WGSL aligns this struct to 16 bytes and the host `#[repr(C)]` does not.
+    _pad_readout: u32,
 }
 
 /// The connectome, resident on the GPU, plus the per-being selection and state.
@@ -401,6 +408,8 @@ impl FlyMapGpu {
             k_out: self.k_out as u32,
             eye_on: eye_on as u32,
             retina_stride: RETINA_TOTAL as u32,
+            readout_norm: u32::from(crate::fly_map::readout_norm_on()),
+            _pad_readout: 0,
         };
         let buf_params = self
             .device

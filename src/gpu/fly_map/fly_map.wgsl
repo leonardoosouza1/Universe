@@ -104,6 +104,8 @@ struct FlyParams {
     k_out: u32,           // efferent groups
     eye_on: u32,          // `--fly-eye` gate (docs/FLY-MAP-BRAIN.md "Eye binding"); 0/1
     retina_stride: u32,   // pixels per being in `retina` — RETINA_TOTAL, host-injected
+    readout_norm: u32,    // 0 = raw difference (historical); 1 = normalised asymmetry index
+    _pad_readout: u32,    // keeps the struct 16-byte aligned on both sides
 };
 
 @group(0) @binding(0)  var<uniform>             params:         FlyParams;
@@ -342,5 +344,17 @@ fn fly_read(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let plus: u32 = out_pair[being * 6u + c * 2u];
     let minus: u32 = out_pair[being * 6u + c * 2u + 1u];
-    cmd[being * 3u + c] = group_mean(plus, being) - group_mean(minus, being);
+    let p: f32 = group_mean(plus, being);
+    let m: f32 = group_mean(minus, being);
+    // `readout_norm` (`--fly-readout-norm`, docs/FLY-MAP-BRAIN.md "Reflex readout"): the raw
+    // difference carries whatever standing imbalance the two groups have at rest, and on the
+    // real connectome that bias pins the steering to one side (measured 14/09: mean steer
+    // -0.295 with 40 % of beings dead against -0.030 on a shuffled map — F3v). The normalised
+    // asymmetry index is the quantity the laboratory actually measured (191v/193v): centred,
+    // scale-free, and bounded in [-1, 1].
+    if params.readout_norm != 0u {
+        cmd[being * 3u + c] = (p - m) / (abs(p) + abs(m) + 1e-6);
+    } else {
+        cmd[being * 3u + c] = p - m;
+    }
 }

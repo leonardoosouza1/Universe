@@ -103,6 +103,34 @@ pub fn readout_reflex_on() -> bool {
     FLY_READOUT_REFLEX_ON.load(Ordering::Relaxed)
 }
 
+/// `--fly-readout-norm`: emit the normalised asymmetry index `(p - m) / (|p| + |m| + eps)`
+/// instead of the raw difference `p - m`.
+///
+/// Why it exists, measured: the laboratory result that motivated the reflex readout
+/// (`neuromod-lab/PREDICOES.md` 191v/193v) is an asymmetry INDEX — centred and scale-free.
+/// The raw difference is not the same quantity: it carries whatever standing imbalance the
+/// two groups have at rest, and on the real connectome that bias pins the wheel to one side
+/// (F3v, 14/09: mean steer -0.295 and 40 % of beings dead on the real map against -0.030 and
+/// none dead on a shuffled one). Off by default, so every existing run is bit-identical.
+pub static FLY_READOUT_NORM_ON: AtomicBool = AtomicBool::new(false);
+
+/// Whether `--fly-readout-norm` is engaged in this process.
+pub fn readout_norm_on() -> bool {
+    FLY_READOUT_NORM_ON.load(Ordering::Relaxed)
+}
+
+/// The command a `(plus, minus)` group pair produces: the raw difference, or the normalised
+/// asymmetry index when [`readout_norm_on`]. One definition, used by both `cpu_read` and —
+/// mirrored in WGSL — `fly_read`, so the two cannot drift apart silently.
+#[inline]
+pub fn combine_readout(plus: f32, minus: f32, normalised: bool) -> f32 {
+    if normalised {
+        (plus - minus) / (plus.abs() + minus.abs() + 1e-6)
+    } else {
+        plus - minus
+    }
+}
+
 /// Perception channels a genome can bind to an afferent group — the full sensory wave.
 ///
 /// Reads `SENSORY_WAVE_SIZE` (`config.rs`) rather than the literal 192 of the spec: the
@@ -571,7 +599,7 @@ pub fn cpu_read(map: &FlyMap, sel: &FlySelection, r: &[f32]) -> Vec<[f32; COMMAN
         for c in 0..COMMANDS {
             let plus = group_mean(map, r, b_n, b, sel.out_pair[b * OUT_SLOTS + c * 2]);
             let minus = group_mean(map, r, b_n, b, sel.out_pair[b * OUT_SLOTS + c * 2 + 1]);
-            out[b][c] = plus - minus;
+            out[b][c] = combine_readout(plus, minus, readout_norm_on());
         }
     }
     out

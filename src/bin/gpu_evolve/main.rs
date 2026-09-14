@@ -1683,6 +1683,12 @@ fn main() {
                 // evolving a readout (docs/FLY-MAP-BRAIN.md "Reflex readout"): checked
                 // below, once the map itself has loaded, the same two-step shape as
                 // `--fly-eye`/`--fly-brain` needing `--fly-map`.
+                "--fly-readout-norm" => {
+                    // The measured quantity (191v/193v) is the normalised asymmetry index, not
+                    // the raw group difference; F3v showed the difference pins the wheel to one
+                    // side. Off by default so every historical run stays bit-identical.
+                    universe::fly_map::FLY_READOUT_NORM_ON.store(true, Ordering::Relaxed);
+                }
                 "--fly-readout" => {
                     i += 1;
                     if i >= args.len() {

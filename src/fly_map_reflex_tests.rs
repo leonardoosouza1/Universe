@@ -241,3 +241,34 @@ fn apply_reflex_host_override_substitutes_throttle_only_when_none_and_scales_onl
          reflex arm off must reproduce the historical numbers bit for bit"
     );
 }
+
+/// The normalised readout is the quantity the laboratory measured: centred on zero and
+/// bounded, where the raw difference carries the two groups' standing imbalance. Measured
+/// on the track (F3v, 14/09/2026): the raw difference gave a mean steer of −0.295 and killed
+/// 40 % of the beings, while the same map read as an index gives a command that is zero when
+/// the sides balance, whatever their absolute level.
+#[test]
+fn normalised_readout_is_centred_and_bounded_where_the_raw_difference_is_not() {
+    use crate::fly_map::combine_readout;
+    // equal sides: both forms are zero
+    assert_eq!(combine_readout(0.4, 0.4, false), 0.0);
+    assert_eq!(combine_readout(0.4, 0.4, true), 0.0);
+    // a standing imbalance: the raw difference scales with the absolute level, the index does not
+    assert!((combine_readout(0.5, 0.2, false) - 0.3).abs() < 1e-6);
+    assert!((combine_readout(5.0, 2.0, false) - 3.0).abs() < 1e-6);
+    let a = combine_readout(0.5, 0.2, true);
+    let b = combine_readout(5.0, 2.0, true);
+    assert!(
+        (a - b).abs() < 1e-6,
+        "the index must be scale-free: {a} vs {b}"
+    );
+    assert!((a - 3.0 / 7.0).abs() < 1e-6, "got {a}");
+    // bounded in [-1, 1] for every finite pair, including one silent side
+    for (p, m) in [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (9.0, -9.0), (0.0, 0.0)] {
+        let v = combine_readout(p, m, true);
+        assert!(
+            (-1.0..=1.0).contains(&v),
+            "index {v} out of range for ({p}, {m})"
+        );
+    }
+}
