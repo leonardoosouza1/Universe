@@ -37,8 +37,8 @@ use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 #[path = "fly_map_selection.rs"]
 mod selection;
 pub use selection::{
-    FlyLayout, FlySelection, birth_block, bound_channels, layout, mask_density, mutate_block,
-    pack_selection, random_block, set_layout,
+    FlyLayout, FlySelection, apply_reflex_readout, birth_block, bound_channels, layout,
+    mask_density, mutate_block, pack_selection, random_block, set_layout,
 };
 
 // The v2 trailing blocks (presynaptic CSR, pixel binding, no-refractory bitmap) and the
@@ -47,8 +47,9 @@ pub use selection::{
 #[path = "fly_map_eye.rs"]
 mod eye;
 pub use eye::{
-    EyeFrame, FLAG_NO_REFRACTORY, FLAG_PIXEL_BINDING, FLAG_PRESYNAPTIC_CSR, PresynapticCsr,
-    eye_drive,
+    EyeFrame, FLAG_NO_REFRACTORY, FLAG_PIXEL_BINDING, FLAG_PRESYNAPTIC_CSR, FLAG_REFLEX_READOUT,
+    PresynapticCsr, apply_reflex_host_override, eye_drive, readout_reflex_requires_the_block,
+    reflex_throttle_is_none,
 };
 
 /// "no binding" / "no group": the u32 sentinel of the map file and of both kernels.
@@ -82,6 +83,17 @@ pub static FLY_EYE_ON: AtomicBool = AtomicBool::new(false);
 /// Whether `--fly-eye` is engaged in this process.
 pub fn eye_on() -> bool {
     FLY_EYE_ON.load(Ordering::Relaxed)
+}
+
+/// Gate for `--fly-readout reflex` (docs/FLY-MAP-BRAIN.md "Reflex readout"). Default
+/// `false` (`genome`, today's behaviour); `true` (`reflex`) makes `apply_reflex_readout`
+/// overwrite `out_pair` for every being with the map's own `reflex_out` block, once per
+/// generation — same "off is never consulted" shape as [`FLY_EYE_ON`].
+pub static FLY_READOUT_REFLEX_ON: AtomicBool = AtomicBool::new(false);
+
+/// Whether `--fly-readout reflex` is engaged in this process.
+pub fn readout_reflex_on() -> bool {
+    FLY_READOUT_REFLEX_ON.load(Ordering::Relaxed)
 }
 
 /// Perception channels a genome can bind to an afferent group — the full sensory wave.
@@ -149,6 +161,10 @@ pub struct FlyMap {
     /// Packed bitmap, `ceil(n / 32)` words, one bit per neuron (flag bit 2). Stored, never
     /// read by the rate path — a future spiking kernel needs it.
     pub no_refractory: Option<Vec<u32>>,
+    /// (plus, minus) efferent GROUP per command — throttle, steer, brake, or [`NONE`]
+    /// meaning "the map does not produce this command" (flag bit 3, `docs/FLY-MAP-
+    /// BRAIN.md` "Reflex readout"). Read at the HOST level, by `apply_reflex_readout`.
+    pub reflex_out: Option<[u32; OUT_SLOTS]>,
 }
 
 impl FlyMap {
@@ -236,7 +252,7 @@ impl FlyMap {
         let in_group_of = read_u32s(&mut f, n)?;
         let out_indptr = read_u32s(&mut f, k_out + 1)?;
         let out_members = read_u32s(&mut f, out_len)?;
-        let (pre_csr, pixel_of_neuron, no_refractory) =
+        let (pre_csr, pixel_of_neuron, no_refractory, reflex_out) =
             eye::read_trailing_blocks(&mut f, path, n, m, flags)?;
         let map = FlyMap {
             type_of,
@@ -251,6 +267,7 @@ impl FlyMap {
             pre_csr,
             pixel_of_neuron,
             no_refractory,
+            reflex_out,
         };
         map.validate(path)?;
         Ok(map)
@@ -364,6 +381,14 @@ impl FlyMap {
                 )));
             }
         }
+        let k_out = self.k_out();
+        if let Some(r) = &self.reflex_out {
+            if r.iter().any(|&g| g != NONE && g as usize >= k_out) {
+                return Err(bad_data(format!(
+                    "{path}: reflex_out names an efferent group outside 0..{k_out}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -442,6 +467,7 @@ impl FlyMap {
             pre_csr: None,
             pixel_of_neuron: None,
             no_refractory: None,
+            reflex_out: None,
         }
     }
 }
