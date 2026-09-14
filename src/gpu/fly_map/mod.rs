@@ -386,7 +386,8 @@ impl FlyMapGpu {
             });
             pass.set_pipeline(&self.pipeline_step);
             pass.set_bind_group(0, &bg_step, &[]);
-            pass.dispatch_workgroups((self.n as u32).div_ceil(128), 1, 1);
+            let (gx, gy) = step_groups(self.n as u32);
+            pass.dispatch_workgroups(gx, gy, 1);
         }
 
         let bg_read = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -489,6 +490,27 @@ impl FlyMapGpu {
     }
 }
 
+/// Workgroups per neuron row-group for `fly_step`, split across x and y.
+///
+/// The kernel is `@workgroup_size(32, 4)`: 32 lanes are 32 beings, 4 rows are 4 consecutive
+/// neurons, so one workgroup covers [`STEP_ROWS`] neurons and the dispatch needs
+/// `ceil(n / STEP_ROWS)` of them. The full map needs 34 660, which fits in x alone (y = 1);
+/// the split exists so a map above 262 140 neurons does not silently exceed
+/// `maxComputeWorkgroupsPerDimension`. The kernel recombines them as
+/// `wg.y * num_workgroups.x + wg.x` and the overshoot returns early on `j >= n`.
+fn step_groups(n: u32) -> (u32, u32) {
+    const MAX_PER_DIM: u32 = 65535;
+    let groups = n.div_ceil(STEP_ROWS);
+    if groups <= MAX_PER_DIM {
+        return (groups.max(1), 1);
+    }
+    (MAX_PER_DIM, groups.div_ceil(MAX_PER_DIM))
+}
+
+/// Neurons per workgroup in `fly_step` — the `4` of its `@workgroup_size(32, 4)`. Kept in
+/// step with the kernel by `fly_step_workgroup_covers_every_neuron`.
+const STEP_ROWS: u32 = 4;
+
 fn make_pipeline(
     device: &wgpu::Device,
     module: &wgpu::ShaderModule,
@@ -566,3 +588,7 @@ fn zeroed(
 #[cfg(test)]
 #[path = "parity_test.rs"]
 mod parity_test;
+
+#[cfg(test)]
+#[path = "bench_test.rs"]
+mod bench_test;

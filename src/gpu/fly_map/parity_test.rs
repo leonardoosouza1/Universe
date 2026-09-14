@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use super::FlyMapGpu;
+use super::{FlyMapGpu, STEP_ROWS, step_groups};
 use crate::fly_map::{
     COMMANDS, FlyMap, IN_CHANNELS, OFF_GAIN, OFF_OUT_PAIR, OFF_SCALE, OFF_TYPE_MASK, OUT_SLOTS,
     cpu_read, cpu_step, pack_selection,
@@ -63,7 +63,7 @@ fn pack_wave(wave: &[i8]) -> Vec<u32> {
     words
 }
 
-async fn open_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(super) async fn open_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
         ..Default::default()
@@ -212,4 +212,45 @@ fn fly_map_parity_gpu_matches_the_cpu_reference() {
         cmd.iter().any(|c| c.iter().any(|v| v.abs() > 1e-6)),
         "every command is zero — the read kernel had nothing to prove"
     );
+}
+
+/// `fly_step` is `@workgroup_size(32, 4)`, and every neuron must be covered.
+///
+/// This one needs NO GPU, so it runs in the ordinary `cargo test --release --lib`. It is
+/// the guard on the pair that can drift apart in silence: the `4` in the kernel's
+/// `@workgroup_size` and [`STEP_ROWS`] on the host. Dispatch too few groups and the tail
+/// of the connectome never integrates — no error, just neurons frozen at whatever the
+/// previous tick left, which is exactly the failure a six-neuron synthetic map in the
+/// parity test above would never reach.
+#[test]
+fn fly_step_dispatch_covers_every_neuron() {
+    // The kernel text is the source of truth for the workgroup shape; read it, do not
+    // trust the comment next to the constant (CLAUDE.md rule 6).
+    let src = include_str!("fly_map.wgsl");
+    assert!(
+        src.contains("@workgroup_size(32, 4)"),
+        "the kernel's workgroup shape changed but STEP_ROWS did not"
+    );
+    assert_eq!(
+        STEP_ROWS, 4,
+        "STEP_ROWS must be the 4 of @workgroup_size(32, 4)"
+    );
+
+    // 138 639 is the full FlyWire 783 export; the rest are the edges around the split.
+    for n in [
+        1u32, 3, 4, 5, 6, 127, 128, 138_639, 262_140, 262_141, 1_000_000,
+    ] {
+        let (gx, gy) = step_groups(n);
+        assert!(
+            gx <= 65_535 && gy <= 65_535,
+            "n={n}: dispatch {gx}x{gy} exceeds the per-dimension cap"
+        );
+        let covered = u64::from(gx) * u64::from(gy) * u64::from(STEP_ROWS);
+        assert!(
+            covered >= u64::from(n),
+            "n={n}: {gx}x{gy} workgroups cover only {covered} neurons"
+        );
+    }
+    // A map of zero neurons must not ask for zero workgroups — wgpu rejects that.
+    assert_eq!(step_groups(0), (1, 1));
 }
