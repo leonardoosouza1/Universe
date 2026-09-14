@@ -23,9 +23,10 @@
 use std::sync::Arc;
 
 use super::{FlyMapGpu, STEP_ROWS, step_groups};
+use crate::config::iara::vision::RETINA_TOTAL;
 use crate::fly_map::{
-    COMMANDS, FlyMap, IN_CHANNELS, OFF_GAIN, OFF_OUT_PAIR, OFF_SCALE, OFF_TYPE_MASK, OUT_SLOTS,
-    cpu_read, cpu_step, pack_selection,
+    COMMANDS, EyeFrame, FlyMap, IN_CHANNELS, OFF_GAIN, OFF_OUT_PAIR, OFF_SCALE, OFF_TYPE_MASK,
+    OUT_SLOTS, cpu_read, cpu_step, pack_selection,
 };
 use crate::gpu::perception::WAVE_U32S;
 
@@ -76,8 +77,9 @@ pub(super) async fn open_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         })
         .await?;
     let mut limits = wgpu::Limits::downlevel_defaults();
-    // `fly_step` binds 12 storage buffers; the downlevel default is 4. `gpu_evolve`'s
-    // device asks for the same 16 (`context.rs`).
+    // `fly_step` binds 14 storage buffers (12 + the eye binding's `pixel_of_neuron` and
+    // `retina`); the downlevel default is 4. `gpu_evolve`'s device asks for the same 16
+    // (`context.rs`).
     limits.max_storage_buffers_per_shader_stage = 16;
     adapter
         .request_device(
@@ -142,6 +144,14 @@ fn fly_map_parity_gpu_matches_the_cpu_reference() {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    // The eye binding is off in this test (`eye_on: false`): a small unread buffer is
+    // enough — `--fly-eye` on/off is `fly_map_parity_with_the_eye_on` below.
+    let buf_retina_unused = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fly-parity-retina-unused"),
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
 
     let gpu = FlyMapGpu::new(
         Arc::clone(&device),
@@ -167,13 +177,13 @@ fn fly_map_parity_gpu_matches_the_cpu_reference() {
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("fly-parity-tick"),
         });
-        gpu.dispatch(&mut enc, N_BEINGS, &buf_wave);
+        gpu.dispatch(&mut enc, N_BEINGS, &buf_wave, false, &buf_retina_unused);
         queue.submit(Some(enc.finish()));
         device.poll(wgpu::Maintain::Wait);
         let gpu_cmd = gpu.read_commands_after_submit(N_BEINGS);
         let gpu_state = gpu.debug_read_state(N_BEINGS);
 
-        cpu_step(&map, &sel, &wave, alpha, &mut x, &r_a, &mut r_b);
+        cpu_step(&map, &sel, &wave, alpha, &mut x, &r_a, &mut r_b, None);
         std::mem::swap(&mut r_a, &mut r_b);
         let cpu_cmd = cpu_read(&map, &sel, &r_a);
 
@@ -211,6 +221,172 @@ fn fly_map_parity_gpu_matches_the_cpu_reference() {
     assert!(
         cmd.iter().any(|c| c.iter().any(|v| v.abs() > 1e-6)),
         "every command is zero — the read kernel had nothing to prove"
+    );
+}
+
+/// A deterministic retina frame, different per being and per tick — same "hash the
+/// indices" style as [`synthetic_wave`]. `FlyMap::synthetic_with_eye` only ever reads
+/// pixels 5, 900 and `RETINA_TOTAL - 1`, but the whole buffer is filled so a wrong
+/// `retina_stride` shows up as SOME neuron reading its NEIGHBOUR's frame instead of
+/// silently passing.
+fn synthetic_retina(tick: usize) -> Vec<u32> {
+    let mut r = vec![0u32; N_BEINGS * RETINA_TOTAL];
+    for b in 0..N_BEINGS {
+        for p in 0..RETINA_TOTAL {
+            let h = (p as u32)
+                .wrapping_mul(2246822519)
+                .wrapping_add((b as u32).wrapping_mul(83))
+                .wrapping_add((tick as u32).wrapping_mul(151));
+            let mm = h % 1_200_000; // millimetres, within the 1200 m legacy_encoding covers
+            let mat = (h >> 16) % 4; // 0 Grass / 1 Road / 2 Wall / 3 Hole
+            r[b * RETINA_TOTAL + p] = (mm << 8) | mat;
+        }
+    }
+    r
+}
+
+/// The eye binding (`--fly-eye`, `docs/FLY-MAP-BRAIN.md` "Eye binding") on the real GPU:
+/// same three-being, ten-tick, changing-every-tick shape as
+/// [`fly_map_parity_gpu_matches_the_cpu_reference`], on `FlyMap::synthetic_with_eye`
+/// (neuron 0 -> pixel 5, neuron 3 -> pixel 900, neuron 4 -> pixel `RETINA_TOTAL - 1`) —
+/// the SAME three DIFFERENT genome selections as that test, so a kernel that let the eye
+/// binding leak into a non-eye-driven neuron (or vice versa) fails here, not just on the
+/// CPU-only tests in `fly_map_eye_tests.rs`.
+#[test]
+#[ignore = "opens a real GPU — run manually: cargo test --release --lib -- --ignored fly_map_parity"]
+fn fly_map_parity_with_the_eye_on() {
+    let Some((device, queue)) = pollster::block_on(open_device()) else {
+        eprintln!("[fly_map_parity] no GPU available — test skipped");
+        return;
+    };
+    let map = FlyMap::synthetic_with_eye();
+    let layout = map.fly_layout();
+    assert!(
+        map.has_pixel_binding(),
+        "the map under test must carry the block"
+    );
+
+    let mut blocks: Vec<Vec<f32>> = Vec::new();
+    for b in 0..N_BEINGS {
+        let mut block = vec![-1.0f32; layout.block_len()];
+        match b {
+            0 => block[5] = 0.0,
+            1 => {
+                block[7] = 1.0;
+                block[9] = 0.0;
+            }
+            _ => block[11] = 1.0,
+        }
+        for s in 0..OUT_SLOTS {
+            block[OFF_OUT_PAIR + s] = ((s + b) % 2) as f32;
+        }
+        block[OFF_GAIN] = 1.0 + b as f32 * 0.5;
+        block[OFF_SCALE] = 1.0 - b as f32 * 0.25;
+        for t in 0..layout.n_types {
+            block[OFF_TYPE_MASK + t] = 1.0;
+        }
+        blocks.push(block);
+    }
+    let refs: Vec<&[f32]> = blocks.iter().map(|v| v.as_slice()).collect();
+    let sel = pack_selection(&refs, layout, N_BEINGS);
+
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+    let buf_wave = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fly-parity-eye-wave"),
+        size: (N_BEINGS * WAVE_U32S * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let buf_retina = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fly-parity-eye-retina"),
+        size: (N_BEINGS * RETINA_TOTAL * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let gpu = FlyMapGpu::new(
+        Arc::clone(&device),
+        Arc::clone(&queue),
+        &map,
+        N_BEINGS,
+        TAU_STEPS,
+    )
+    .expect("the synthetic map fits in any device");
+    assert!(gpu.upload_selection(&sel, N_BEINGS), "selection uploaded");
+    gpu.reset_state();
+
+    let alpha = gpu.alpha();
+    let n = map.n();
+    let mut x = vec![0.0f32; n * N_BEINGS];
+    let mut r_a = vec![0.0f32; n * N_BEINGS];
+    let mut r_b = vec![0.0f32; n * N_BEINGS];
+    let pixel_of_neuron = map
+        .pixel_of_neuron
+        .clone()
+        .expect("map carries the pixel-binding block");
+
+    for tick in 0..N_TICKS {
+        let wave = synthetic_wave(tick);
+        queue.write_buffer(&buf_wave, 0, bytemuck::cast_slice(&pack_wave(&wave)));
+        let retina = synthetic_retina(tick);
+        queue.write_buffer(&buf_retina, 0, bytemuck::cast_slice(&retina));
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("fly-parity-eye-tick"),
+        });
+        gpu.dispatch(&mut enc, N_BEINGS, &buf_wave, true, &buf_retina);
+        queue.submit(Some(enc.finish()));
+        device.poll(wgpu::Maintain::Wait);
+        let gpu_cmd = gpu.read_commands_after_submit(N_BEINGS);
+        let gpu_state = gpu.debug_read_state(N_BEINGS);
+
+        let frame = EyeFrame {
+            pixel_of_neuron: &pixel_of_neuron,
+            retina: &retina,
+            retina_stride: RETINA_TOTAL,
+        };
+        cpu_step(
+            &map,
+            &sel,
+            &wave,
+            alpha,
+            &mut x,
+            &r_a,
+            &mut r_b,
+            Some(&frame),
+        );
+        std::mem::swap(&mut r_a, &mut r_b);
+        let cpu_cmd = cpu_read(&map, &sel, &r_a);
+
+        for j in 0..n {
+            for b in 0..N_BEINGS {
+                let i = j * N_BEINGS + b;
+                assert!(
+                    (gpu_state[i] - r_a[i]).abs() < TOL,
+                    "eye on, tick {tick}, neuron {j}, being {b}: GPU {} vs CPU {}",
+                    gpu_state[i],
+                    r_a[i]
+                );
+            }
+        }
+        for b in 0..N_BEINGS {
+            for c in 0..COMMANDS {
+                assert!(
+                    (gpu_cmd[b][c] - cpu_cmd[b][c]).abs() < TOL,
+                    "eye on, tick {tick}, being {b}, command {c}: GPU {} vs CPU {}",
+                    gpu_cmd[b][c],
+                    cpu_cmd[b][c]
+                );
+            }
+        }
+    }
+
+    let moved = r_a.iter().filter(|v| v.abs() > 1e-6).count();
+    assert!(
+        moved > 0,
+        "every activation is zero — the eye-on run never moved, so the comparison proved \
+         nothing"
     );
 }
 

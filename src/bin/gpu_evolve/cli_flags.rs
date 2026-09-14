@@ -189,6 +189,7 @@ pub const FLAGS: &[Flag] = &[
     flag("--fly-p-on",                    &[],                             VALUE,  "probability a pruned cell type comes back (default 0.015)"),
     flag("--fly-sigma",                   &[],                             VALUE,  "sigma of the log-normal step on the fly gain and scale (default 0.1)"),
     flag("--fly-log-every",               &[],                             VALUE,  "print the elite's fly selection every N generations"),
+    flag("--fly-eye",                     &[],                             SWITCH, "specific neurons are driven by specific retina pixels (needs a v2 map with the pixel-binding block)"),
     flag("--resume",                      &["--retomar"],                  SWITCH, "resume from the checkpoint in --out"),
     flag("--out",                         &[],                             VALUE,  "output directory"),
 ];

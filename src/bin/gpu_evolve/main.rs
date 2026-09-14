@@ -1632,6 +1632,14 @@ fn main() {
                         fly_log_every = args[i].parse().unwrap_or(0);
                     }
                 }
+                // Anatomical binding (docs/FLY-MAP-BRAIN.md "Eye binding"): every neuron
+                // the exporter wired to a retina pixel is driven by that pixel instead of
+                // by the genome's channel binding. Requires a v2 map with the
+                // pixel-binding block — checked below, once the map itself has loaded,
+                // the same two-step shape as `--fly-brain` needing `--fly-map`.
+                "--fly-eye" => {
+                    universe::fly_map::FLY_EYE_ON.store(true, Ordering::Relaxed);
+                }
                 "--resume" => {
                     retomar = true;
                 }
@@ -1708,6 +1716,34 @@ fn main() {
              [ERROR] Pass --fly-map <flymap v1 file>, or drop --fly-brain."
         );
         std::process::exit(1);
+    }
+    // --fly-eye requires a v2 map that carries the pixel-binding block (docs/FLY-MAP-
+    // BRAIN.md "Eye binding") — checked here, not inside `FlyMapGpu`, so a run that asked
+    // for the eye and cannot have it fails before a single tick runs rather than silently
+    // reporting a fast brain nobody asked for (same rule as `--fly-brain`/`--resume`
+    // above and below).
+    if universe::fly_map::eye_on() {
+        match &fly_map {
+            None => {
+                eprintln!(
+                    "[ERROR] --fly-eye without --fly-map: there is no map to bind pixels \
+                     on.\n\
+                     [ERROR] Pass --fly-map <flymap v2 file with the pixel-binding block>, \
+                     or drop --fly-eye."
+                );
+                std::process::exit(1);
+            }
+            Some(m) if !m.has_pixel_binding() => {
+                eprintln!(
+                    "[ERROR] --fly-eye requires a flymap v2 file with the pixel-binding \
+                     block (flags bit 1).\n\
+                     [ERROR] The loaded map carries none — re-export with the Python \
+                     side's pixel-binding pass, or drop --fly-eye."
+                );
+                std::process::exit(1);
+            }
+            Some(_) => {}
+        }
     }
 
     let inicio = if retomar {

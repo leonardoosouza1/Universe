@@ -106,7 +106,7 @@ fn a_pruned_cell_type_emits_exactly_zero() {
     let mut r_a = vec![0.0f32; map.n()];
     let mut r_b = vec![0.0f32; map.n()];
     for _ in 0..8 {
-        cpu_step(&map, &sel, &wave, 0.25, &mut x, &r_a, &mut r_b);
+        cpu_step(&map, &sel, &wave, 0.25, &mut x, &r_a, &mut r_b, None);
         std::mem::swap(&mut r_a, &mut r_b);
     }
     assert_eq!(r_a[2], 0.0, "neuron 2 is a pruned type and must emit 0.0");
@@ -141,7 +141,7 @@ fn an_unbound_channel_drives_nothing() {
     let mut r_a = vec![0.0f32; map.n()];
     let mut r_b = vec![0.0f32; map.n()];
     for _ in 0..20 {
-        cpu_step(&map, &sel, &wave, 0.25, &mut x, &r_a, &mut r_b);
+        cpu_step(&map, &sel, &wave, 0.25, &mut x, &r_a, &mut r_b, None);
         std::mem::swap(&mut r_a, &mut r_b);
     }
     assert!(
@@ -201,7 +201,7 @@ fn the_state_is_being_minor_and_beings_do_not_leak_into_each_other() {
     let mut r_a = vec![0.0f32; map.n() * b_n];
     let mut r_b = vec![0.0f32; map.n() * b_n];
     for _ in 0..10 {
-        cpu_step(&map, &sel, &wave, 0.25, &mut x, &r_a, &mut r_b);
+        cpu_step(&map, &sel, &wave, 0.25, &mut x, &r_a, &mut r_b, None);
         std::mem::swap(&mut r_a, &mut r_b);
     }
     for j in 0..map.n() {
@@ -234,6 +234,7 @@ fn the_state_is_being_minor_and_beings_do_not_leak_into_each_other() {
             &mut x1,
             &r1a,
             &mut r1b,
+            None,
         );
         std::mem::swap(&mut r1a, &mut r1b);
     }
