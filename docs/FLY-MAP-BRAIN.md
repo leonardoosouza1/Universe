@@ -16,7 +16,9 @@ Python side (already built, `neuromod-lab/src/flybrain/`): loader, LIF reference
 
 ---
 
-## 1. Map file `flymap` v1 (little-endian, written by `neuromod-lab/src/fly_export.py`)
+## 1. Map file `flymap` v1 / v2 (little-endian, written by `neuromod-lab/src/fly_export.py`)
+
+v1, as designed and still the whole file for every export that carries no optional block:
 
 ```
 magic      8 bytes  "FLYMAP01"
@@ -35,6 +37,52 @@ Sidecar `flymap_783.json`: type names, in-group names, out-group names, source S
 (`min_weight`, `exclude_optic`). Full map: n = 138 639, m = 15 091 983 (indices 60 MB, weights
 60 MB). Variants for speed: `--min-weight 3` (4.9 M edges, 76 % of synapses), `--exclude-optic`
 (61 109 neurons, 6.6 M edges). Default file: `/media/llm-data/datasets/flywire/flymap_783.bin`.
+
+### v1 → v2 (2026-09-14): three optional trailing blocks
+
+v2 keeps every v1 field, in the same order, at the same offsets — **a v1 file is a valid v2
+file with every optional block absent**, and [`FlyMap::load`][fly_map.rs] accepts both
+magics through the same parser. What changes:
+
+```
+magic      8 bytes  "FLYMAP01" (no trailing block) or "FLYMAP02" (≥ 1 trailing block present)
+header     8 × u32  n, m, n_types, k_in, k_out, out_members_len, flags, reserved
+                    flags bit 0 = presynaptic CSR present
+                    flags bit 1 = pixel binding present
+                    flags bit 2 = no-refractory bitmap present
+                    v1 always writes flags = 0; a FLYMAP01 file with a set bit is refused
+                    as a contradiction (magic and flags disagree about the format)
+… the seven v1 fields above, byte-identical …
+pre_indptr  u32[n+1]      ── ONLY IF flags bit 0 ──
+pre_indices u32[m]            presynaptic CSR: pre_indptr[j]..pre_indptr[j+1] are the edges
+pre_weights f32[m]            for which neuron j is the PRESYNAPTIC side; pre_indices[e] the
+                               postsynaptic neuron, pre_weights[e] the SAME signed count the
+                               postsynaptic CSR carries for that edge (duplicated, not
+                               cross-referenced). Not read by the rate path in this
+                               document — a future spiking kernel needs it (walking a spike
+                               OUT of a neuron the instant it fires needs the edges indexed
+                               by the FIRING neuron, which the postsynaptic CSR cannot do
+                               without an O(m) scan).
+pixel_of_neuron u32[n]    ── ONLY IF flags bit 1 ──
+                               the rendered-retina pixel that drives neuron j, or
+                               NONE = 0xFFFFFFFF = not driven by the eye. Read by the rate
+                               path — see "Eye binding" below.
+no_refractory u32[⌈n/32⌉] ── ONLY IF flags bit 2 ──
+                               packed bitmap, one bit per neuron. Not read by the rate
+                               path in this document — a future spiking kernel needs it.
+```
+Present blocks are written and read in EXACTLY that order (presynaptic CSR, then pixel
+binding, then the bitmap) regardless of which subset is present — a block's position is
+never inferred from anything but the flag bits before it. A truncated trailing block is
+refused with an error naming the block (`"…could not read the pixel_of_neuron block…"`),
+not a bare `io::Error`.
+
+Implemented in `src/fly_map.rs` (the `FlyMap` struct's three new `Option` fields,
+`FlyMap::load`/`FlyMap::write`) and `src/fly_map_eye.rs` (the block readers/writers,
+`PresynapticCsr`, `FlyMap::has_pixel_binding`). This is the byte contract the Python writer
+(`fly_export.py`, a parallel task) must match to produce a map `--fly-eye` can load.
+
+[fly_map.rs]: ../src/fly_map.rs
 
 ## 2. Dynamics (rate model, one step per tick; identical to `flybrain.dynamics.RateBrain`)
 
@@ -107,8 +155,10 @@ per tick → 5–10 ms/tick (today's tick ≈ 1 ms); acceptable for the first cl
 `--fly-map <path>` (load map; required by the others), `--fly-brain` (use the map's commands
 instead of the fast brain's intents; sets `FLY_MUTATE_ON`), `--fly-tau <steps>` (default 4),
 `--fly-p-bind`, `--fly-p-off`, `--fly-p-on`, `--fly-sigma`, `--fly-log-every <gens>` (print, for
-the elite: bound channels → group names, out pairs, mask density). English names only; no
-deprecated aliases needed (new flags).
+the elite: bound channels → group names, out pairs, mask density), `--fly-eye` (§9: eye-bound
+neurons read the rendered retina instead of the genome's channel binding; needs a v2 map with
+the pixel-binding block, checked once `--fly-map` has loaded — otherwise a hard error, not a
+silent fallback). English names only; no deprecated aliases needed (new flags).
 
 ## 6. Tests and gates (all must pass before any GPU battery)
 
@@ -229,4 +279,82 @@ no run was launched. The estimate in §4 (5-10 ms/tick at B = 40) stands as an e
 
 v1 = one thread per neuron looping over beings (cost linear in beings); v2 = lanes are beings
 (merge c0f86aa): flat in beings, the gather is served by the Infinity Cache.
+
+---
+
+## 9. Eye binding (`--fly-eye`, 14/09/2026)
+
+Anatomical binding, rate path only: specific neurons are driven by specific pixels of the
+rendered retina, instead of by the genome's random channel binding. Fixes the measurement
+that the real connectome performed no better than a degree-preserving shuffle — the senses
+were entering through the wrong organs (random afferent groups), not through the map's own
+sensory cells.
+
+**Which neurons are eye-driven is decided by the exporter**, not by this document: the v2
+`pixel_of_neuron` block (§1) is a table the Python side (`neuromod-lab/src/flybrain/eye.py`,
+`fly_export.py --eye-target …`) computes from the target cells' retinotopy and ships in the
+map file. The Rust/WGSL side only has to honour that table — the same eye-binding pass also
+feeds the spiking kernels of `docs/KERNELS-FLY-SPIKING.md` (`--eye-target motion`), which is
+why the table's shape (one pixel index per neuron, `NONE` = not driven) is target-agnostic.
+
+**Drive formula**, added into the same `u` term of §2 the genome's channel binding computes,
+for neuron `j` of being `b`:
+
+```
+pixel = pixel_of_neuron[j]
+if --fly-eye is on AND pixel != NONE:
+    packed     = retina[b * RETINA_TOTAL + pixel]              (mm << 8) | material, src/gpu/retina.wgsl:159-160
+    dist_m     = (packed >> 8) / 1000
+    material   = packed & 0xFF                                  0 Grass / 1 Road / 2 Wall / 3 Hole
+    pixel_value = legacy_encoding(dist_m, material)              src/gpu/perception.wgsl:289-311, mirrored by
+                                                                  universe::gpu::legacy_encoding (src/gpu/mod.rs:150)
+    brightness  = clamp(pixel_value / 127, 0, 1)
+    u = gain[b] * (1 - brightness)
+else:
+    u = input_drive(b, g)                                        the existing §2 formula, unchanged
+```
+
+`gain[b]` is the SAME per-being gain gene `input_drive` already reads (`fly.gain`, §3) — the
+eye binding does not add a new gene, it redirects an existing one. Dark (Road, a very
+negative `legacy_encoding`) clamps `brightness` to 0 and drives at the FULL gain; bright (a
+near Wall, +127) drives at 0 — the fly's photoreceptors inhibit downstream cells in the
+light, so darkness is the excitatory signal, not brightness.
+
+**What `--fly-eye` changes and what it does not:**
+
+- Every neuron with `pixel_of_neuron[j] != NONE` is driven by the retina, REPLACING (not
+  adding to) that neuron's genome-driven term for as long as the flag is on.
+- The genome's `in_bind` slice keeps governing every neuron that is NOT eye-driven, unchanged
+  — no genome format change, no new gene, no RNG stream change. `--fly-eye` does not touch
+  `evolution.rs`'s mutation at all.
+- `--fly-eye` OFF (the default) is byte-identical to today: the branch above is never taken,
+  not merely predicated off, so the kernel executes the exact float sequence it did before
+  this feature existed.
+- `--fly-eye` requires a v2 map whose `pixel_of_neuron` block is present (`flags` bit 1); a
+  v1 map, or a v2 map exported without that pass, makes `gpu_evolve` refuse to start rather
+  than silently run with an empty binding.
+- No host round trip: `pixel_of_neuron` is uploaded once, with the rest of the map
+  (`FlyMapGpu::new`), and the retina buffer already resident for perception
+  (`GpuCtx::buf_retina_out`) is bound straight into `fly_step` — the only new per-tick cost
+  is one `u32` in the `FlyParams` uniform.
+
+Implemented in `src/fly_map_eye.rs` ([`EyeFrame`], [`eye_drive`], the CPU reference §2 calls
+through `cpu_step`'s `eye` parameter), `src/gpu/fly_map/fly_map.wgsl` (`eye_pixel_drive`,
+bindings 17-18), `src/gpu/fly_map/mod.rs` (`buf_pixel_of_neuron`, `FlyMapGpu::dispatch`'s
+`eye_on`/`retina_buf` parameters), and wired in `src/bin/gpu_evolve/{main,context}.rs`. Gate:
+`universe::fly_map::FLY_EYE_ON` (default off), read by `context.rs::tick()` as
+`fly_map::eye_on()`.
+
+**Verified against the real exporter, 14/09/2026**: `/media/llm-data/datasets/flywire/
+flymap_783_v2.bin` (244 269 836 bytes, the file `docs/KERNELS-FLY-SPIKING.md` §3 records as
+ready) loads through `FlyMap::load` with header `n=138639 m=15091983 n_types=8866 k_in=268
+k_out=516 out_members=1470 flags=7`, all three v2 blocks `Some`, and at least one neuron
+bound — `fly_map::eye::fly_map_eye_tests::flymap_v2_real_export_loads_and_matches_the_documented_header`
+(`#[ignore]`, needs the file). Not run on the GPU against the real map (out of scope for this
+pass — see the task's "keep every run under ~30 s, never launch `gpu_evolve`"); the
+`#[ignore]` `fly_map_parity_with_the_eye_on` (`gpu/fly_map/parity_test.rs`) proves the kernel
+against the CPU reference on the synthetic six-neuron map instead.
+
+[`EyeFrame`]: ../src/fly_map_eye.rs
+[`eye_drive`]: ../src/fly_map_eye.rs
 
