@@ -677,6 +677,8 @@ fn main() {
     // as an explicit experiment arm.
     let mut fly_cruise_throttle_v: f32 = 0.6;
     let mut fly_reflex_sign_v: f32 = 1.0;
+    let mut fly_reflex_alpha_v: f32 = 0.0;
+    let mut fly_reflex_gain_v: f32 = 1.0;
     // Semente da população inicial. Sem isto, repetições da mesma condição são
     // idênticas e não distinguem efeito de sorte — que é o ponto de repetir.
     let mut pop_seed: u64 = 0;
@@ -1683,6 +1685,18 @@ fn main() {
                 // evolving a readout (docs/FLY-MAP-BRAIN.md "Reflex readout"): checked
                 // below, once the map itself has loaded, the same two-step shape as
                 // `--fly-eye`/`--fly-brain` needing `--fly-map`.
+                "--fly-reflex-alpha" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_reflex_alpha_v = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--fly-reflex-gain" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_reflex_gain_v = args[i].parse().unwrap_or(1.0);
+                    }
+                }
                 "--fly-readout-norm" => {
                     // The measured quantity (191v/193v) is the normalised asymmetry index, not
                     // the raw group difference; F3v showed the difference pins the wheel to one
@@ -1905,6 +1919,8 @@ fn main() {
     }
     FLY_CRUISE_THROTTLE.store(fly_cruise_throttle_v, Ordering::Relaxed);
     FLY_REFLEX_SIGN.store(fly_reflex_sign_v, Ordering::Relaxed);
+    FLY_REFLEX_ALPHA.store(fly_reflex_alpha_v, Ordering::Relaxed);
+    FLY_REFLEX_GAIN.store(fly_reflex_gain_v, Ordering::Relaxed);
 
     let inicio = if retomar {
         "retomando de checkpoint"

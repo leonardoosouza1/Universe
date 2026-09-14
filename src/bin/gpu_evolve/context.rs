@@ -244,6 +244,9 @@ pub struct GpuCtx {
     /// State, not dose: it owns seventeen device buffers, so it lives here and not in
     /// `statics.rs` — the same line the ownership table there draws for `GpuTimer`.
     pub fly: Option<FlyMapGpu>,
+    /// Per-being steering adaptation for `--fly-readout reflex` (F4v). Empty and untouched
+    /// unless `--fly-reflex-alpha`/`--fly-reflex-gain` are asked for.
+    fly_reflex_adapt: Vec<universe::fly_map::ReflexAdaptation>,
     /// Event-driven LIF fly map. Mutually exclusive with `fly`: both models would
     /// otherwise consume the same connectome while only one command stream is applied.
     pub fly_spiking: Option<FlySpikingGpu>,
@@ -497,6 +500,7 @@ impl GpuCtx {
             hip_writer: None,
             // FLY MAP: `main()` fills this only when `--fly-map` was passed.
             fly: None,
+            fly_reflex_adapt: Vec::new(),
             fly_spiking: None,
         })
     }
@@ -2073,6 +2077,12 @@ impl GpuCtx {
                 universe::fly_map::readout_reflex_on() && fly_reflex_throttle_is_none();
             let cruise = fly_cruise_throttle();
             let sign = fly_reflex_sign();
+            let alpha = fly_reflex_alpha();
+            let gain = fly_reflex_gain();
+            if self.fly_reflex_adapt.len() < n {
+                self.fly_reflex_adapt
+                    .resize(n, universe::fly_map::ReflexAdaptation::default());
+            }
             for i in 0..n {
                 let mut v = intents[i];
                 let cmd = universe::fly_map::apply_reflex_host_override(
@@ -2082,7 +2092,9 @@ impl GpuCtx {
                     sign,
                 );
                 v[0] = cmd[0];
-                v[1] = cmd[1];
+                // `alpha == 0.0` and `gain == 1.0` (the defaults) make this the identity, so a
+                // run that does not ask for adaptation keeps the previous numbers exactly.
+                v[1] = self.fly_reflex_adapt[i].step(cmd[1], alpha, gain);
                 v[2] = cmd[2];
                 intents[i] = v;
                 if self.last_intents.len() == n {

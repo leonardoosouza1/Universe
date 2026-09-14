@@ -272,3 +272,39 @@ fn normalised_readout_is_centred_and_bounded_where_the_raw_difference_is_not() {
         );
     }
 }
+
+/// The high-pass removes a standing bias and the gain brings what is left into the wheel's
+/// range — the two halves of the F4v fix. With `alpha = 0` it degenerates to a pure gain, so
+/// a run that does not ask for adaptation keeps the previous behaviour.
+#[test]
+fn reflex_adaptation_removes_a_standing_bias_and_keeps_the_varying_part() {
+    use crate::fly_map::ReflexAdaptation;
+    // a constant command: whatever its level, the output decays to zero
+    let mut a = ReflexAdaptation::default();
+    let mut last: f32 = 1.0;
+    for _ in 0..500 {
+        last = a.step(0.133, 0.05, 1.0);
+    }
+    assert!(
+        last.abs() < 1e-3,
+        "a constant input must adapt away, got {last}"
+    );
+    // a bias plus a step: the step survives, scaled by the gain
+    let mut b = ReflexAdaptation::default();
+    for _ in 0..500 {
+        b.step(0.133, 0.05, 20.0);
+    }
+    let out = b.step(0.133 + 0.027, 0.05, 20.0);
+    assert!(
+        out > 0.4,
+        "a 0.027 deviation at gain 20 must reach the wheel, got {out}"
+    );
+    assert!(out <= 1.0, "the command must stay clamped, got {out}");
+    // alpha = 0 is a pure gain, no state
+    let mut c = ReflexAdaptation::default();
+    assert!((c.step(0.5, 0.0, 1.0) - 0.5f32).abs() < 1e-6);
+    assert!((c.step(0.5, 0.0, 2.0) - 1.0f32).abs() < 1e-6);
+    // and the clamp holds for an extreme input
+    let mut d = ReflexAdaptation::default();
+    assert!((d.step(5.0, 0.0, 10.0) - 1.0f32).abs() < 1e-6);
+}

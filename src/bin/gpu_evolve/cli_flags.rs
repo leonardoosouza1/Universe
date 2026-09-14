@@ -183,6 +183,8 @@ pub const FLAGS: &[Flag] = &[
     flag("--replay-every",                &["--replay-cada"],              VALUE,  "write a replay every N generations"),  // check-language: allow
     flag("--fly-map",                     &[],                             VALUE,  "path to a flymap v1 file; required by every other --fly-* flag"),
     flag("--fly-brain",                   &[],                             SWITCH, "the fly map's three commands replace the fast brain's intents"),
+    flag("--fly-reflex-alpha",            &[],                             VALUE,  "steering baseline adaptation rate per tick (0 = off)"),
+    flag("--fly-reflex-gain",             &[],                             VALUE,  "gain applied to the steering residual after adaptation"),
     flag("--fly-readout-norm",            &[],                             SWITCH, "readout emits the normalised asymmetry index instead of the raw group difference"),
     flag("--fly-spiking",                 &[],                             SWITCH, "GPU-resident delayed LIF fly map drives the three commands (requires v2 pre-CSR)"),
     flag("--fly-tau",                     &[],                             VALUE,  "time constant of the fly rate model, in ticks (default 4)"),

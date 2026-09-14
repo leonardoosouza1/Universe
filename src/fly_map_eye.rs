@@ -191,6 +191,42 @@ pub fn apply_reflex_host_override(
     ]
 }
 
+/// Per-being adaptive state for the reflex steering: the running baseline it subtracts.
+///
+/// Why it exists, measured (`docs/PREDICOES-CEREBRO.md` F4v, 14/09/2026). The readout's
+/// transfer curve is flat in the regime a track offers: a 20 % left/right drive imbalance
+/// moves the HS+VS asymmetry index by 0.027, while a fully one-sided stimulus — the
+/// laboratory condition of 191v/193v, which never happens when both eyes see road — moves it
+/// by 0.817. Worse, at perfect balance the index is +0.133 rather than 0, so the standing
+/// bias is five to ten times the usable signal and the wheel sits pinned to one side.
+/// Subtracting a running baseline and multiplying what is left is the smallest fix that
+/// addresses both, and it has the biological precedent the raw difference lacked: HS and VS
+/// adapt, they do not report an absolute level forever.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReflexAdaptation {
+    /// Exponential baseline of the steer command, per being. `None` until the first sample.
+    baseline: Option<f32>,
+}
+
+impl ReflexAdaptation {
+    /// One step of `steer <- gain * (steer - baseline)`, updating the baseline first with
+    /// `alpha` (0 disables the high-pass and makes this the identity beyond `gain`).
+    ///
+    /// `alpha` is the fraction of the new sample folded into the baseline each tick, so the
+    /// adaptation time constant is `1 / alpha` ticks; `gain` multiplies the residual.
+    pub fn step(&mut self, steer: f32, alpha: f32, gain: f32) -> f32 {
+        if alpha <= 0.0 {
+            return (steer * gain).clamp(-1.0, 1.0);
+        }
+        let base = match self.baseline {
+            None => steer,
+            Some(b) => b + alpha * (steer - b),
+        };
+        self.baseline = Some(base);
+        ((steer - base) * gain).clamp(-1.0, 1.0)
+    }
+}
+
 /// Whether a run started with `--fly-readout reflex` can proceed against `map`
 /// (`docs/FLY-MAP-BRAIN.md` "Reflex readout"): no map, or a map without the block, both
 /// refuse — the same two-step shape `--fly-eye` already checks against

@@ -482,6 +482,26 @@ pub fn fly_cruise_throttle() -> f32 {
 /// (`docs/FLY-MAP-BRAIN.md` "Reflex readout"), so this is an experiment arm. `1.0` is a
 /// bit-exact no-op (`x * 1.0 == x` for every finite `x`), which is what keeps a run that
 /// never asks for `--fly-reflex-sign` reproducing the historical numbers.
+/// `--fly-reflex-alpha` (default 0.0 = off): how fast the per-being steering baseline
+/// follows the command, so the reflex reports CHANGE instead of an absolute level. The
+/// adaptation time constant is `1 / alpha` ticks. Measured reason (F4v): at balanced drive
+/// the readout's index sits at +0.133 instead of 0 and moves only 0.027 for a 20 % left/right
+/// imbalance, so without this the wheel is pinned by a bias five to ten times the signal.
+pub static FLY_REFLEX_ALPHA: AtomicF32 = AtomicF32::new();
+#[inline]
+pub fn fly_reflex_alpha() -> f32 {
+    FLY_REFLEX_ALPHA.load(Ordering::Relaxed)
+}
+
+/// `--fly-reflex-gain` (default 1.0): multiplies the steering residual after the high-pass.
+/// The usable swing measured on the real map in a track's regime is ~0.027; the wheel needs
+/// O(0.5), which is what sets the useful range of this knob.
+pub static FLY_REFLEX_GAIN: AtomicF32 = AtomicF32::new();
+#[inline]
+pub fn fly_reflex_gain() -> f32 {
+    FLY_REFLEX_GAIN.load(Ordering::Relaxed)
+}
+
 pub static FLY_REFLEX_SIGN: AtomicF32 = AtomicF32::new();
 #[inline]
 pub fn fly_reflex_sign() -> f32 {

@@ -49,8 +49,8 @@ pub use selection::{
 mod eye;
 pub use eye::{
     EyeFrame, FLAG_NO_REFRACTORY, FLAG_PIXEL_BINDING, FLAG_PRESYNAPTIC_CSR, FLAG_REFLEX_READOUT,
-    PresynapticCsr, apply_reflex_host_override, eye_drive, readout_reflex_requires_the_block,
-    reflex_throttle_is_none,
+    PresynapticCsr, ReflexAdaptation, apply_reflex_host_override, eye_drive,
+    readout_reflex_requires_the_block, reflex_throttle_is_none,
 };
 
 // The v2 event-driven LIF reference. Kept separate from the rate model so the CPU
