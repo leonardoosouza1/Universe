@@ -234,6 +234,95 @@ fn genome_without_the_hippocampus_block_loads_it_neutral() {
     );
 }
 
+/// FLY MAP — a genome carrying the selection block survives the disk, and the block
+/// BEFORE it survives with it.
+///
+/// The `fly` block is the only one whose length is not a compile-time constant (it is
+/// `200 + n_types`), so `load_genome` reads "whatever is left after `hip`". That makes the
+/// boundary between the two the thing to test: a serializer that wrote `fly` before `hip`,
+/// or that forgot to advance the offset past `hip`, would hand back 29 fly genes as a
+/// hippocampus and the rest as a selection, with no error anywhere.
+#[test]
+fn genome_with_a_fly_block_survives_the_disk_round_trip() {
+    let layout = universe::fly_map::FlyLayout {
+        k_in: 7,
+        k_out: 4,
+        n_types: 11,
+    };
+    let mut original = Genome::random(2024);
+    // Marked at BOTH ends, like every other block in this file: a serializer that writes
+    // the right COUNT of floats from the wrong offset passes a test that checks only one.
+    original.fly = universe::fly_map::random_block(99, layout);
+    original.fly[0] = 3.0;
+    let last = original.fly.len() - 1;
+    original.fly[last] = 0.0;
+    original.hip[0] = 0.246_8;
+    let ultimo_hip = original.hip.len() - 1;
+    original.hip[ultimo_hip] = -1.357_9;
+
+    let path = std::env::temp_dir().join("universe_genome_with_fly.bin");
+    let path = path.to_str().unwrap();
+    save_genome(&original, path).expect("wrote");
+    let lido = load_genome(path).expect("read");
+    let _ = std::fs::remove_file(path);
+
+    assert_eq!(
+        lido.fly, original.fly,
+        "the fly selection did not survive the disk"
+    );
+    assert_eq!(
+        lido.fly.len(),
+        layout.block_len(),
+        "the block is 192 bindings + 6 out slots + gain + scale + n_types"
+    );
+    assert_eq!(
+        lido.hip, original.hip,
+        "the hippocampus was eaten by the fly block's offset"
+    );
+    assert_eq!(lido.l1, original.l1, "L1 changed on disk");
+    assert_eq!(lido.tau, original.tau, "the tau bank changed on disk");
+}
+
+/// FLY MAP — a genome written before this block existed loads with an EMPTY one.
+///
+/// Empty is the truth and not a fallback to invent: that genome really did run without a
+/// fly map. `fly_map::pack_selection` turns an empty block into an inert selection, so a
+/// resumed champion cannot smuggle in a random brain either.
+#[test]
+fn genome_written_before_the_fly_block_loads_with_an_empty_one() {
+    let mut original = Genome::random(31337);
+    original.hip[0] = 0.5;
+    // What a pre-fly-map `save_genome` produced: the same bytes, and nothing after `hip`.
+    original.fly = Vec::new();
+
+    let path = std::env::temp_dir().join("universe_genome_without_fly.bin");
+    let path = path.to_str().unwrap();
+    save_genome(&original, path).expect("wrote");
+    let lido = load_genome(path).expect("read");
+    let _ = std::fs::remove_file(path);
+
+    assert!(
+        lido.fly.is_empty(),
+        "a file that ends at `hip` must load an EMPTY fly block, got {} genes",
+        lido.fly.len()
+    );
+    assert_eq!(
+        lido.hip, original.hip,
+        "the last block of the old format must be intact"
+    );
+    // And an empty block commands nothing, whatever the map says.
+    let layout = universe::fly_map::FlyLayout {
+        k_in: 7,
+        k_out: 4,
+        n_types: 11,
+    };
+    let sel = universe::fly_map::pack_selection(&[&lido.fly], layout, 1);
+    assert!(
+        sel.out_pair.iter().all(|&g| g == universe::fly_map::NONE),
+        "an empty block must pack as an inert selection"
+    );
+}
+
 /// The library's `N_SECTORS` and this binary's `N_CHECKPOINTS` are the same grid written
 /// in two places (the library cannot import a binary's constant). `docs/STYLE.md` §4 is
 /// the rule; `WAVE_U32S`, declared six times and missed twice, is why the rule exists.

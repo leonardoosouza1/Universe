@@ -20,9 +20,20 @@
 //! neuron_threshold_l1: L1     × f32 LE  (optional — same rule; P1.7, mechanism 2)
 //! neuron_activation:  (L1+L2) × f32 LE  (optional — same rule; P1.7, mechanism 3)
 //! gates_w:            16      × f32 LE  (optional — same rule; M4 conductor gates)
-//! hip:                29      × f32 LE  (optional — same rule; C1 sector hippocampus,
-//!                                        ALWAYS LAST)
+//! hip:                29      × f32 LE  (optional — same rule; C1 sector hippocampus)
+//! fly:          200+n_types    × f32 LE  (optional; FLY MAP selection, ALWAYS LAST —
+//!                                        length = whatever is left in the file)
 //! ```
+//!
+//! # The one block whose length is not a constant
+//!
+//! Every block above has a length fixed at compile time, so `load_genome` knows where the
+//! next one starts. `fly` does not: it is `200 + n_types` and `n_types` comes from the map
+//! file the run loaded, which a reader of the `.bin` may not have. That is exactly why it
+//! is LAST: whatever remains after `hip` is the fly block, and nothing depends on
+//! knowing its length in advance. A block written against another map therefore loads at
+//! its own length and is treated as inert by `fly_map::pack_selection`, instead of being
+//! read at the wrong stride.
 //!
 //! # Compatibility with the legacy format (NO header)
 //!
@@ -111,6 +122,13 @@ pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     // did run without a hippocampus, and all-zero is exactly the "no hippocampus"
     // behaviour (bias `[0, 0, 0]`, see `gpu::hippocampus`).
     for a in &genome.hip {
+        f.write_all(&a.to_le_bytes())?;
+    }
+    // FLY MAP (docs/FLY-MAP-BRAIN.md §3): the selection on top of the connectome — optional
+    // block, ALWAYS LAST, and the only one whose length is not a compile-time constant (see
+    // the module header). Empty when the run had no `--fly-map`, in which case the file ends
+    // exactly where it used to and `load_genome` falls back to an empty block.
+    for a in &genome.fly {
         f.write_all(&a.to_le_bytes())?;
     }
     Ok(())
@@ -247,9 +265,23 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     // both fall back together — the blocks cannot get out of phase.
     let n_hip = crate::gpu::hippocampus::N_HIP_GENES;
     let hip = if bytes.len() >= off + n_hip * 4 {
-        read_at(&bytes, off, n_hip)
+        let v = read_at(&bytes, off, n_hip);
+        off += n_hip * 4;
+        v
     } else {
         vec![0.0; n_hip]
+    };
+    // FLY MAP: everything left in the file. It is the last block precisely so that its
+    // length does not have to be known here — a reader without the map file still gets the
+    // genes, and a file written before this block existed ends at `off` and yields an empty
+    // block, which is the truth: that genome really did run without a fly map.
+    //
+    // A trailing remainder that is not a whole number of f32 is a damaged file, not a fly
+    // block; it reads as empty rather than as a mis-strided vector.
+    let fly = if bytes.len() > off && (bytes.len() - off) % 4 == 0 {
+        read_at(&bytes, off, (bytes.len() - off) / 4)
+    } else {
+        Vec::new()
     };
 
     Some(Genome {
@@ -265,6 +297,7 @@ pub fn load_genome(path: &str) -> Option<Genome> {
         neuron_activation,
         gates_w,
         hip,
+        fly,
     })
 }
 

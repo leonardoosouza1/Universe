@@ -181,6 +181,14 @@ pub const FLAGS: &[Flag] = &[
     flag("--track-held-out",              &["--pista-held-out"],           VALUE,  "track seed reserved for measuring generalisation"),
     flag("--held-out-every",              &["--held-out-cada"],            VALUE,  "measure the held-out track every K generations (default 5)"),  // check-language: allow
     flag("--replay-every",                &["--replay-cada"],              VALUE,  "write a replay every N generations"),  // check-language: allow
+    flag("--fly-map",                     &[],                             VALUE,  "path to a flymap v1 file; required by every other --fly-* flag"),
+    flag("--fly-brain",                   &[],                             SWITCH, "the fly map's three commands replace the fast brain's intents"),
+    flag("--fly-tau",                     &[],                             VALUE,  "time constant of the fly rate model, in ticks (default 4)"),
+    flag("--fly-p-bind",                  &[],                             VALUE,  "probability a binding gene is redrawn (default 0.05)"),
+    flag("--fly-p-off",                   &[],                             VALUE,  "probability a live cell type is pruned (default 0.05)"),
+    flag("--fly-p-on",                    &[],                             VALUE,  "probability a pruned cell type comes back (default 0.015)"),
+    flag("--fly-sigma",                   &[],                             VALUE,  "sigma of the log-normal step on the fly gain and scale (default 0.1)"),
+    flag("--fly-log-every",               &[],                             VALUE,  "print the elite's fly selection every N generations"),
     flag("--resume",                      &["--retomar"],                  SWITCH, "resume from the checkpoint in --out"),
     flag("--out",                         &[],                             VALUE,  "output directory"),
 ];
