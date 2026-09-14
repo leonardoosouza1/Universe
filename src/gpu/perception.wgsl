@@ -303,8 +303,13 @@ fn legacy_encoding(d: f32, mat: u32) -> i32 {
         v = 40.0 - (depth_fade * 40.0);
     } else if mat == 1u { // Road
         v = -128.0 + (depth_fade * 96.0);
-    } else { // Hole (3) → 90..60
+    } else if mat == 3u { // Hole
         v = 90.0 - (clamp(d / 50.0, 0.0, 1.0) * 30.0);
+    } else { // Being (4), `--retina-beings`: flat -29, the one value no other material
+             // reaches at any distance. Was falling through to the Hole branch here while
+             // `gpu::legacy_encoding` and `fly_map.wgsl` already had the branch — exactly the
+             // drift the header of this copy warns about (14/09/2026).
+        v = -29.0;
     }
     return i32(clamp(v, -128.0, 127.0));
 }

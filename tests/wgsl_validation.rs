@@ -145,3 +145,36 @@ fn retina_wgsl_e_valido() {
          retina.wgsl but this test's doc comment still describes it"
     );
 }
+
+/// The four copies of `legacy_encoding` must agree on the Being branch.
+///
+/// There are four: `gpu::legacy_encoding` (Rust, the reference), and WGSL copies in
+/// `fly_map.wgsl::eye_pixel_drive`, `perception.wgsl` and `retina_digest.wgsl` — the last
+/// one's own header says "LITERAL COPY … any fix must touch both copies, plus
+/// `gpu::legacy_encoding`". When `--retina-beings` shipped, two of the four had the Being
+/// branch and two silently fell through to Hole. This test reads the shader sources and
+/// fails if any copy loses it again; it is a string check because a WGSL function cannot be
+/// called from Rust without a GPU, and the alternative — noticing months later that one
+/// pipeline saw beings as holes — is what this project calls a silent wrong answer.
+#[test]
+fn every_legacy_encoding_copy_handles_the_being_material() {
+    for (name, src) in [
+        ("perception.wgsl", include_str!("../src/gpu/perception.wgsl")),
+        ("retina_digest.wgsl", include_str!("../src/gpu/retina_digest.wgsl")),
+        ("fly_map.wgsl", include_str!("../src/gpu/fly_map/fly_map.wgsl")),
+    ] {
+        assert!(
+            src.contains("-29"),
+            "{name} lost the Being branch of legacy_encoding (encoded value -29)"
+        );
+    }
+    // and the Rust reference, which is the one the others copy
+    assert_eq!(
+        universe::gpu::legacy_encoding(universe::gpu::Pixel {
+            dist_m: 7.0,
+            material: universe::gpu::BEING_MATERIAL,
+        }),
+        -29,
+        "the Rust reference must encode Being as -29"
+    );
+}
