@@ -98,6 +98,26 @@ wheel, while the measured quantity is a normalised index (`F3v` in
 path is not blocked by the reflex work, and the reflex work is not blocked by the spiking path —
 they meet at `out_pair`, which both command sources write.
 
-**In order, what would make the spiking delivery land:** (1) the injection hook and the sugar
-gate; (2) the tick-cost number at B = 40; (3) the T4/T5 polarity table, if direction selectivity
-is wanted rather than motion energy.
+**In order, what would make the spiking delivery land:** (1) the per-substep counters — spiking
+neurons and edges traversed — because until that number exists nobody can say whether 108.5 ms is
+a kernel problem or a modelling one, and everything else depends on the answer; (2) the injection
+hook and the sugar gate; (3) the T4/T5 polarity table, if direction selectivity is wanted rather
+than motion energy.
+
+## 5. Context you should have before optimising anything
+
+The programme this kernel serves reached a negative result today, and it changes what "landing"
+means. The connectome's steering reflex is real (`191v`, `193v`) but it **cannot drive a car**,
+and the reason is measured rather than guessed (`F3v`→`F6v`): the readout swings by +1.92 between
+a localised object on the left and on the right — specific to the real wiring, −0.15 on a shuffled
+map — but only 0.027 for the diffuse left/right imbalance a bare track offers. The circuit needs a
+**discrete object** in the visual field, and the Universe retina renders none: it marches through
+the static voxel grid only, so the forty beings racing together are invisible to each other
+(`retina.wgsl:63`; the design to fix it is [`RETINA-BEINGS.md`](RETINA-BEINGS.md)).
+
+Two consequences for your side. First, the spiking path is not on the critical path for the
+reflex any more — the rate model reproduces the same asymmetry (+1.74/+1.92 against +2.000), so
+whatever the spiking kernel buys, it is not that. Second, the thing it could uniquely buy is the
+computation the rate model provably cannot represent: the sugar→MN9 pathway, which is 5 synapses
+deep with 1.8 ms delays and therefore lives entirely inside one 15.6 ms tick. That is exactly
+what criterion 2 tests, which is why the injection hook matters more than it looked.
