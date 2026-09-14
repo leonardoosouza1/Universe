@@ -847,7 +847,8 @@ impl GpuLoop {
             });
 
         // ── 4a. Retina ────────────────────────────────────────────────────────
-        // Uniform params for the retina (16 + 64 bytes = 80 bytes).
+        // Uniform params for the retina (16 + 64 + 16 bytes = 96 bytes — grown from 80
+        // for `--retina-beings`, docs/RETINA-BEINGS.md §2).
         let mut pitches_arr = [[0.0f32; 4]; 4];
         for row in 0..RETINA_ROWS {
             pitches_arr[row / 4][row % 4] = pitch(row);
@@ -858,6 +859,12 @@ impl GpuLoop {
             cell_size: self.cell_size,
             fov_half: (universe::visao::fov_deg() / 2.0).to_radians(),
             pitches: pitches_arr,
+            // `--retina-beings` is not wired into this binary — off, same as before the
+            // field existed.
+            beings_on: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         let buf_rp = self
             .device

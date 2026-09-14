@@ -44,6 +44,7 @@
 //! | `FLY_CRUISE_THROTTLE`, `FLY_REFLEX_SIGN` | `main()` (flags `--fly-cruise-throttle`/`--fly-reflex-sign`, default 0.6/1.0, stored unconditionally after parsing) | `context.rs::tick()` (the FLY BRAIN OVERRIDE site, via `fly_map::apply_reflex_host_override`) |
 //! | `FLY_REFLEX_THROTTLE_IS_NONE` | `main()`, once, from the loaded CPU-side `FlyMap::reflex_out` (`context.rs` never sees that struct, only `FlyMapGpu`) | `context.rs::tick()` (whether the reflex readout's throttle slot is NONE, i.e. `--fly-cruise-throttle` must substitute) |
 //! | `PERFIL_KERNEL` | `main()` (flag `--kernel-profile <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
+//! | `RETINA_BEINGS_ON` | `main()` (flag `--retina-beings`) | `context.rs::tick()` (sets the retina kernel's `beings_on` uniform field, `docs/RETINA-BEINGS.md` §2) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
 //! predator pose, the per-being tyre temperature and the per-being subscription all
@@ -367,6 +368,20 @@ pub static PERFIL_KERNEL: std::sync::atomic::AtomicU32 = std::sync::atomic::Atom
 #[inline]
 pub fn perfil_kernel() -> u32 {
     PERFIL_KERNEL.load(Ordering::Relaxed)
+}
+
+/// `--retina-beings` (`docs/RETINA-BEINGS.md` §2): the retina also intersects each ray
+/// with every OTHER being's body, a cylinder of radius
+/// `config::iara::vision::BEING_RADIUS_M`. OFF by default — it changes the input
+/// distribution of every existing champion (`CLAUDE.md` rule 3), so an old champion needs
+/// a paired A/B, not faith; with the flag off, `context.rs::tick()` sets the kernel's
+/// `beings_on` uniform field to 0 and the retina takes exactly the DDA-only path it had
+/// before this flag existed.
+pub static RETINA_BEINGS_ON: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn retina_beings_on() -> bool {
+    RETINA_BEINGS_ON.load(Ordering::Relaxed)
 }
 
 // ── C1 — SECTOR HIPPOCAMPUS (docs/PRD-CEREBRO-NEUROMOD.md §C1) ───────────────────
