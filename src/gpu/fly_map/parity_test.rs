@@ -63,7 +63,7 @@ fn pack_wave(wave: &[i8]) -> Vec<u32> {
     words
 }
 
-async fn open_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(super) async fn open_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
         ..Default::default()

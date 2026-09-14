@@ -566,3 +566,7 @@ fn zeroed(
 #[cfg(test)]
 #[path = "parity_test.rs"]
 mod parity_test;
+
+#[cfg(test)]
+#[path = "bench_test.rs"]
+mod bench_test;
