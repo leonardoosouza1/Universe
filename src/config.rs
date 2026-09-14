@@ -284,6 +284,23 @@ pub mod iara {
         /// Pitch angles per retina row (rad), auto-computed.
         /// Row 0 = high horizon (-0.10 rad), Row N-1 = ground (+0.05 rad).
         pub const RETINA_PITCHES: [f32; RETINA_ROWS] = compute_pitches();
+
+        /// Radius, in metres, of the vertical cylinder the retina tests each ray against
+        /// for every OTHER being's body (`--retina-beings`, `docs/RETINA-BEINGS.md` §2).
+        ///
+        /// No single "car body width" constant exists in the physics config. The closest
+        /// is `PhysicsStateGpu::track_width` / `VehicleChassis::track_width` — the
+        /// distance between the LEFT and RIGHT WHEEL CENTRES, not the outer bodywork —
+        /// whose production default for every being `gpu_evolve` spawns is 1.55 m
+        /// (`src/gpu/physics.rs`, `default_state()`). Half of that is used here. The real
+        /// car is somewhat wider than its wheel track (tyres and panels overhang the wheel
+        /// centres), so this UNDER-estimates the true hitbox — a conservative radius,
+        /// smaller and harder to occlude with, rather than an invented number.
+        ///
+        /// WGSL cannot `use` a Rust constant (`docs/STYLE.md` §4), so `src/gpu/retina.wgsl`
+        /// carries a literal mirror, `const BEING_RADIUS: f32 = 0.775;`, guarded against
+        /// drift by `gpu::being_radius_wgsl_mirror_matches_the_config_constant`.
+        pub const BEING_RADIUS_M: f32 = 0.775;
     }
 
     // ── BRAIN (source: src/simulation/motor.rs, src/engine.rs) ─────────

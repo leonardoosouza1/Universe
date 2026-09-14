@@ -963,12 +963,23 @@ impl VoxelWorld {
     /// `gaze_yaw` (rad): offset angular da fóvea relativa ao forward. Simula saccade ocular —
     /// a fóvea vira pro setor mais escuro detectado pela periférica. Periférica ignora gaze
     /// (sempre centrada no forward — é o "campo panorâmico" fixo do motorista).
+    ///
+    /// `other_beings`: world (x, y, z) of every OTHER being — this being's own position
+    /// excluded by the caller — for the occlusion test of `--retina-beings`
+    /// (`docs/RETINA-BEINGS.md` §2). **An empty slice reproduces this function's
+    /// behaviour exactly as it was before that flag existed** — the being loop below is
+    /// skipped entirely, not merely a no-op pass over zero elements, so the retina of
+    /// every caller that has not opted in stays bit-for-bit identical (see
+    /// `retina_beings_off_is_bit_identical_to_before` in this file's tests). This is the
+    /// CPU reference `gpu_validate --retina` compares the GPU kernel against
+    /// (`src/gpu/retina.wgsl`); the two occlusion tests must stay the same algorithm.
     pub fn render_binocular_retina(
         &self,
         pos: Vec3,
         forward: Vec3,
         right: Vec3,
         gaze_yaw: f32,
+        other_beings: &[Vec3],
     ) -> [i8; RETINA_TOTAL] {
         let mut pixels = [-128i8; RETINA_TOTAL];
         let eye_pos = pos + Vec3::Y * 0.4;
@@ -1097,6 +1108,47 @@ impl VoxelWorld {
                     hit_voxel = self.get_voxel_at(hit_px, hit_pz);
                 }
 
+                // ── Being occlusion (`--retina-beings`, docs/RETINA-BEINGS.md §2) ──────
+                // `other_beings.is_empty()` short-circuits the whole block, which is what
+                // makes an empty slice reproduce this function's pre-existing behaviour
+                // exactly. Same algorithm as `src/gpu/retina.wgsl`'s occlusion test: a
+                // vertical cylinder of radius `BEING_RADIUS_M` in the (x, z) plane, height
+                // skipped in v1 (the eye is at 0.4 m and the bodies are low). `hit_voxel`
+                // cannot represent Being — `VoxelType` (src/world.rs:30-35) stays
+                // Grass/Road/Wall/Hole only — so a hit is tracked in `hit_being` and the
+                // material is decided once, below, when the pixel is finally written.
+                let mut hit_being = false;
+                if !other_beings.is_empty() {
+                    let a = dir_x * dir_x + dir_z * dir_z;
+                    if a > 1e-9 {
+                        let r = crate::config::iara::vision::BEING_RADIUS_M;
+                        for &op in other_beings {
+                            let lx = eye_pos.x - op.x;
+                            let lz = eye_pos.z - op.z;
+                            let b = 2.0 * (lx * dir_x + lz * dir_z);
+                            let c = lx * lx + lz * lz - r * r;
+                            let disc = b * b - 4.0 * a * c;
+                            if disc < 0.0 {
+                                continue;
+                            }
+                            let sq = disc.sqrt();
+                            let mut t = (-b - sq) / (2.0 * a);
+                            if t < 0.0 {
+                                t = (-b + sq) / (2.0 * a);
+                                if t < 0.0 {
+                                    continue;
+                                }
+                                t = 0.0; // eye already inside the other being's cylinder
+                            }
+                            // Nearest wins.
+                            if t < hit_dist {
+                                hit_dist = t;
+                                hit_being = true;
+                            }
+                        }
+                    }
+                }
+
                 let depth_fade = (hit_dist / 1200.0).clamp(0.0, 1.0);
 
                 let pixel_val = match hit_voxel {
@@ -1132,7 +1184,19 @@ impl VoxelWorld {
                     }
                 };
 
-                pixels[index] = pixel_val.clamp(-128.0, 127.0) as i8;
+                // A being nearer than the DDA hit wins over whatever `hit_voxel` was left
+                // holding (`VoxelType` has no Being variant to match on above), so the
+                // canonical encoding — `gpu::legacy_encoding`, the same function
+                // `gpu/retina.wgsl` is proven against — decides the byte here instead of
+                // a fourth copy of its Being formula.
+                pixels[index] = if hit_being {
+                    crate::gpu::legacy_encoding(crate::gpu::Pixel {
+                        dist_m: hit_dist,
+                        material: crate::gpu::BEING_MATERIAL,
+                    })
+                } else {
+                    pixel_val.clamp(-128.0, 127.0) as i8
+                };
             }
         }
         pixels
@@ -1823,5 +1887,33 @@ mod tests {
         // Na própria largada, progresso deve ser ~0 (até 2m de tolerância pela quantização do grid).
         let p = w.get_track_progress(w.start_pos.x, w.start_pos.z);
         assert!(p < 2.0, "progresso na largada = {}, esperado ~0", p);
+    }
+
+    /// `docs/RETINA-BEINGS.md` §3.2: "off is bit-identical" — an empty `other_beings`
+    /// slice must reproduce this function's pre-`--retina-beings` behaviour exactly.
+    ///
+    /// Compares the empty-slice call against one with a being 1,000,000 m away: the
+    /// occlusion code runs (the slice is non-empty) but every ray's intersection test
+    /// must come back empty at that range, so if the two results ever differ, the
+    /// occlusion block is not properly gated by `other_beings.is_empty()`.
+    #[test]
+    fn retina_beings_off_is_bit_identical_to_before() {
+        let w = ref_world();
+        let pos = Vec3::new(w.start_pos.x, 0.0, w.start_pos.z);
+        let forward = Vec3::new(1.0, 0.0, 0.0);
+        let right = Vec3::new(0.0, 0.0, 1.0);
+
+        let off = w.render_binocular_retina(pos, forward, right, 0.0, &[]);
+        let far_away = Vec3::new(pos.x + 1_000_000.0, 0.0, pos.z);
+        let on_but_irrelevant = w.render_binocular_retina(pos, forward, right, 0.0, &[far_away]);
+        assert_eq!(
+            off, on_but_irrelevant,
+            "a being far outside any ray's reach changed the retina — the occlusion \
+             block is not properly gated"
+        );
+        assert!(
+            off.iter().all(|&v| v != -29),
+            "the beings-off retina must never encode a Being pixel (-29)"
+        );
     }
 }

@@ -1406,6 +1406,13 @@ fn main() {
                 "--audit-vision" => {
                     auditar_visao = true;
                 }
+                // `--retina-beings` (docs/RETINA-BEINGS.md §2): the retina also
+                // intersects each ray with every OTHER being's body. Off by default — it
+                // changes the input distribution of every existing champion (CLAUDE.md
+                // rule 3), so an old champion needs a paired A/B, not faith.
+                "--retina-beings" => {
+                    RETINA_BEINGS_ON.store(true, Ordering::Relaxed);
+                }
                 // Perceptual horizon, metres. A value <= 0 (or unparseable) keeps the
                 // default rather than blinding the run: `visao::pitch_at` would clamp a
                 // zero to 1 m anyway, and a silent 1 m retina is not a control arm.

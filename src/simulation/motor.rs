@@ -613,7 +613,17 @@ pub(super) fn update_racers(
                     .map(|&(e, pos, fwd, right)| {
                         (
                             e,
-                            world.render_binocular_retina(pos + Vec3::Y * 0.4, fwd, right, 0.0),
+                            // `--retina-beings` (docs/RETINA-BEINGS.md §2) is not wired
+                            // into the Bevy visualizer's CPU fallback path — out of scope
+                            // for that feature, which targets `gpu_evolve`. An empty
+                            // slice reproduces this call's pre-existing behaviour exactly.
+                            world.render_binocular_retina(
+                                pos + Vec3::Y * 0.4,
+                                fwd,
+                                right,
+                                0.0,
+                                &[],
+                            ),
                         )
                     })
                     .collect()

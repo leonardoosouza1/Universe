@@ -154,6 +154,7 @@ pub const FLAGS: &[Flag] = &[
     flag("--refuel-lap-only",             &[],                             SWITCH, "refuel on lap close only, not on every sector"),
     flag("--audit-vision",                &["--auditar-visao"],            SWITCH, "audit what the retina actually sees"),
     flag("--retina-range",                &[],                             VALUE,  "how far the retina and every metric sensor reach, metres (default 33.3)"),
+    flag("--retina-beings",               &[],                             SWITCH, "the retina also occludes on other beings' bodies (docs/RETINA-BEINGS.md)"),
     flag("--no-holes",                    &["--sem-buracos"],              SWITCH, "remove the intentional holes from the track"),  // check-language: allow
     flag("--gearbox-curriculum",          &["--cambio-curriculo"],         SWITCH, "raise the gear ceiling along the curriculum"),
     flag("--gearbox-ceiling",             &["--cambio-teto"],              VALUE,  "highest gear allowed, 2..6"),

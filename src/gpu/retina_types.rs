@@ -15,6 +15,18 @@
 //! layout is identical to the previous copies.
 
 /// Retina uniform: parameters shared by every being in the dispatch.
+///
+/// Grown by 16 bytes (80 → 96) for `--retina-beings` (`docs/RETINA-BEINGS.md` §2):
+/// `beings_on` gates the occlusion test the same way `fly_map::FlyParams::eye_on` gates
+/// the eye binding — 0 (default) takes the exact kernel path this struct had before the
+/// field existed. `_pad0`/`_pad1`/`_pad2` keep the Rust and WGSL sizes equal (both must
+/// be a multiple of the struct's 16-byte alignment, forced by `pitches`'
+/// `array<vec4<f32>, 4>` — see the "Host and shader must agree on struct layout" trap in
+/// `src/gpu/CLAUDE.md`). EVERY construction site of this struct across the tree
+/// (`gpu/mod.rs`, `gpu_evolve/context.rs`, `cortex_evolve.rs`, `gpu_loop.rs`, plus the
+/// independent local copies in `gpu_report.rs` and `gpu_validate.rs`) must set these
+/// four fields, or the buffer it uploads is 16 bytes short of what `retina.wgsl` now
+/// declares.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RetinaParamsGpu {
@@ -24,6 +36,11 @@ pub struct RetinaParamsGpu {
     pub fov_half: f32,
     /// 4 × vec4 = 4 rows × 4 pitches per row (rows 0-15).
     pub pitches: [[f32; 4]; 4],
+    /// `--retina-beings` gate: 0 = off, 1 = on. See the struct doc above.
+    pub beings_on: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
 }
 
 /// Pose of one being, packed for the retina shader.

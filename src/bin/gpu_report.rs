@@ -92,6 +92,10 @@ const SAT_MIN_TICKS: usize = 10;
 
 // ─── Local types (mirror gpu_loop.rs) ────────────────────────────────────────
 
+// `beings_on` + the three `_pad*` fields were added for `--retina-beings`
+// (docs/RETINA-BEINGS.md §2) — this struct feeds `retina.wgsl` (`include_str!` below),
+// so it must match that shader's `Params` byte for byte (`src/gpu/CLAUDE.md`'s "Host and
+// shader must agree on struct layout" trap).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct RetinaParamsGpu {
@@ -100,6 +104,10 @@ struct RetinaParamsGpu {
     cell_size: f32,
     fov_half: f32,
     pitches: [[f32; 4]; 4],
+    beings_on: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 #[repr(C)]
@@ -654,6 +662,12 @@ impl GpuLoop {
             cell_size: self.cell_size,
             fov_half: (universe::visao::fov_deg() / 2.0).to_radians(),
             pitches: pitches_arr,
+            // `--retina-beings` is not wired into this binary — off, same as before the
+            // field existed.
+            beings_on: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         let buf_rp = self
             .device

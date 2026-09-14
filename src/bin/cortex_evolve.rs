@@ -802,6 +802,12 @@ impl CortexCtx {
             cell_size: self.cell_size,
             fov_half: (universe::visao::fov_deg() / 2.0).to_radians(),
             pitches: pitches_arr,
+            // `--retina-beings` (docs/RETINA-BEINGS.md §2) is not wired into this
+            // binary — off, same as before the field existed.
+            beings_on: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         let buf_rp = self
             .device

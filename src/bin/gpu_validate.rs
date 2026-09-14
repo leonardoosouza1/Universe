@@ -70,7 +70,11 @@ fn run_in_child<F: FnOnce()>(f: F) -> bool {
 
 // ── Local ParamsGpu (identical to the internal layout of RetinaGpu/NucleoGpu) ─────
 // The internal type in mod.rs is private. This is a local copy used only here.
-// CRITICAL: keep in sync with mod.rs::ParamsGpu and retina.wgsl::Params.
+// CRITICAL: keep in sync with mod.rs::ParamsGpu and retina.wgsl::Params. `beings_on` +
+// the three `_pad*` fields were added for `--retina-beings` (docs/RETINA-BEINGS.md §2) —
+// see the struct layout trap documented in `src/gpu/CLAUDE.md`: this buffer feeds
+// `CoreGpu::tick`, which reuses `retina.wgsl` too, so it is 16 bytes short of what the
+// shader now declares if these are dropped.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LocalParamsGpu {
@@ -79,6 +83,10 @@ struct LocalParamsGpu {
     cell_size: f32,
     fov_half: f32,
     pitches: [[f32; 4]; 4],
+    beings_on: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 /// Output fatigue — the validator's CPU reference.
@@ -168,6 +176,7 @@ fn main() {
                 Vec3::new(p.forward.x, 0.0, p.forward.y),
                 Vec3::new(p.right.x, 0.0, p.right.y),
                 p.gaze_yaw,
+                &[], // beings off — this is the baseline comparison
             );
             for px in 0..RETINA_TOTAL {
                 let d = (cpu[px] as i32 - saida_gpu[i][px] as i32).abs();
@@ -199,6 +208,7 @@ fn main() {
                     Vec3::new(p.forward.x, 0.0, p.forward.y),
                     Vec3::new(p.right.x, 0.0, p.right.y),
                     p.gaze_yaw,
+                    &[], // beings off — timed against the same baseline as above
                 );
             }
         }
@@ -211,6 +221,129 @@ fn main() {
         );
 
         print_table_row("retina (legacy i8)", total, iguais, maxdif, maxdif <= 1);
+        println!();
+
+        // ── Beings ON (`--retina-beings`, docs/RETINA-BEINGS.md §2) ────────────────────
+        // Same comparison as above, over the SAME 48 poses, but every ray also tests
+        // every OTHER being's body. Most of these 48 are tens of metres apart along the
+        // lap, so this mainly exercises the "no being nearby" degenerate case (the
+        // per-being loop runs 47 times and finds nothing closer than the DDA hit) — real,
+        // because that is what most of a race looks like, but not a proof the feature
+        // does anything. `-29` is `legacy_encoding`'s Being value (see `gpu/mod.rs`) and,
+        // per `being_encoding_never_collides_with_a_grid_material`, no other material
+        // ever produces it — so counting `-29` in either array IS counting Being pixels,
+        // with no need for the physical `Pixel.material` field.
+        let others: Vec<Vec<Vec3>> = (0..poses.len())
+            .map(|i| {
+                poses
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != i)
+                    .map(|(_, p)| p.pos)
+                    .collect()
+            })
+            .collect();
+        let saida_gpu_beings = gpu.render_legacy_with_beings(&poses);
+        let mut total_b = 0usize;
+        let mut iguais_b = 0usize;
+        let mut maxdif_b = 0i32;
+        let mut being_px_lap = 0usize;
+        for (i, p) in poses.iter().enumerate() {
+            let cpu = world.render_binocular_retina(
+                p.pos,
+                Vec3::new(p.forward.x, 0.0, p.forward.y),
+                Vec3::new(p.right.x, 0.0, p.right.y),
+                p.gaze_yaw,
+                &others[i],
+            );
+            for px in 0..RETINA_TOTAL {
+                let d = (cpu[px] as i32 - saida_gpu_beings[i][px] as i32).abs();
+                if d == 0 {
+                    iguais_b += 1;
+                }
+                if d > maxdif_b {
+                    maxdif_b = d;
+                }
+                if cpu[px] == -29 {
+                    being_px_lap += 1;
+                }
+                total_b += 1;
+            }
+        }
+        println!(
+            "  [beings on, 48 poses around the lap] compared={total_b}  identical={iguais_b} \
+             ({:.4}%)  max_dif={maxdif_b}  Being pixels={being_px_lap}",
+            iguais_b as f64 / total_b as f64 * 100.0
+        );
+
+        // A dedicated close formation — three poses 3 m apart at the first waypoint — so
+        // at least one ray is GUARANTEED to cross another being's cylinder
+        // (`BEING_RADIUS_M` ~0.775 m), independent of how far apart the 48 poses above
+        // happen to land. This is the fraction docs/RETINA-BEINGS.md §3.4 asks for: zero
+        // here would mean the feature is not doing anything, regardless of the lap check.
+        let wp0 = world.waypoints_world[0];
+        let close_poses: Vec<Pose> = (0..3)
+            .map(|k| Pose {
+                pos: Vec3::new(wp0.x + k as f32 * 3.0, 0.0, wp0.y),
+                forward: Vec2::new(1.0, 0.0),
+                right: Vec2::new(0.0, -1.0),
+                gaze_yaw: 0.0,
+            })
+            .collect();
+        let close_others: Vec<Vec<Vec3>> = (0..close_poses.len())
+            .map(|i| {
+                close_poses
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != i)
+                    .map(|(_, p)| p.pos)
+                    .collect()
+            })
+            .collect();
+        let close_gpu = gpu.render_legacy_with_beings(&close_poses);
+        let mut close_total = 0usize;
+        let mut close_iguais = 0usize;
+        let mut close_maxdif = 0i32;
+        let mut being_px_close = 0usize;
+        for (i, p) in close_poses.iter().enumerate() {
+            let cpu = world.render_binocular_retina(
+                p.pos,
+                Vec3::new(p.forward.x, 0.0, p.forward.y),
+                Vec3::new(p.right.x, 0.0, p.right.y),
+                p.gaze_yaw,
+                &close_others[i],
+            );
+            for px in 0..RETINA_TOTAL {
+                let d = (cpu[px] as i32 - close_gpu[i][px] as i32).abs();
+                if d == 0 {
+                    close_iguais += 1;
+                }
+                if d > close_maxdif {
+                    close_maxdif = d;
+                }
+                if cpu[px] == -29 {
+                    being_px_close += 1;
+                }
+                close_total += 1;
+            }
+        }
+        println!(
+            "  [beings on, close formation] compared={close_total}  identical={close_iguais} \
+             ({:.4}%)  max_dif={close_maxdif}  Being pixels={being_px_close}/{close_total} \
+             ({:.2}%)",
+            close_iguais as f64 / close_total as f64 * 100.0,
+            being_px_close as f64 / close_total as f64 * 100.0
+        );
+
+        let beings_on_ok =
+            maxdif_b <= 1 && close_maxdif <= 1 && being_px_close > 0;
+        print_table_row(
+            "retina beings-on (legacy i8)",
+            total_b + close_total,
+            iguais_b + close_iguais,
+            maxdif_b.max(close_maxdif),
+            beings_on_ok,
+        );
         println!();
     }
 
@@ -279,6 +412,12 @@ fn main() {
             cell_size: world.cell_size,
             fov_half: (universe::visao::fov_deg() / 2.0).to_radians(),
             pitches,
+            // This section validates CORE (retina + brain fused), not the beings
+            // occlusion test — off, same as before the field existed.
+            beings_on: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         let poses_gpu: Vec<PosGpu> = poses
             .iter()
