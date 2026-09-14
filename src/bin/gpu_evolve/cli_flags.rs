@@ -194,6 +194,9 @@ pub const FLAGS: &[Flag] = &[
     flag("--fly-spiking-trace-every",     &[],                             VALUE,  "sample the spiking trace every N ticks (default 64)"),
     flag("--fly-spiking-trace-being",     &[],                             VALUE,  "being index recorded by the spiking trace (default 0)"),
     flag("--fly-eye",                     &[],                             SWITCH, "specific neurons are driven by specific retina pixels (needs a v2 map with the pixel-binding block)"),
+    flag("--fly-readout",                 &[],                             VALUE,  "readout source for the three commands: genome | reflex (default genome; reflex needs a v3 map with the reflex-readout block)"),
+    flag("--fly-cruise-throttle",         &[],                             VALUE,  "constant throttle used when --fly-readout reflex's throttle slot is NONE (default 0.6)"),
+    flag("--fly-reflex-sign",             &[],                             VALUE,  "sign multiplied into the steer command under --fly-readout reflex: 1 or -1 (default 1)"),
     flag("--resume",                      &["--retomar"],                  SWITCH, "resume from the checkpoint in --out"),
     flag("--out",                         &[],                             VALUE,  "output directory"),
 ];

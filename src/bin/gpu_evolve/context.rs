@@ -2045,7 +2045,8 @@ impl GpuCtx {
             }
         }
 
-        // ── FLY BRAIN OVERRIDE (`--fly-brain`, docs/FLY-MAP-BRAIN.md §2) ───────
+        // ── FLY BRAIN OVERRIDE (`--fly-brain`, docs/FLY-MAP-BRAIN.md §2 and "Reflex
+        // readout") ─────────────────────────────────────────────────────────────
         //
         // The three commands read out of the connectome REPLACE the fast brain's raw
         // intents, HERE, before `kan_eval` — so everything downstream (KAN, the slow
@@ -2060,12 +2061,29 @@ impl GpuCtx {
         // `last_intents` moves with `intents`, or a tick on which the brain does not fire
         // (`--brain-skip > 1`) would replay the fast brain's last decision instead of the
         // map's.
+        //
+        // `apply_reflex_host_override` is the host half of `--fly-readout reflex`
+        // ("Reflex readout"): with `throttle_is_none = false` and `sign = 1.0` (the
+        // defaults, or `--fly-readout genome`) it is a bit-exact no-op, so a run that
+        // never asks for the reflex arm sees exactly the numbers it always did. It
+        // applies to both command sources — the rate map (`--fly-brain`) and Astra's
+        // event-driven LIF (`--fly-spiking`), which write into the same `fly_cmd`.
         if (fly_brain() || fly_spiking()) && fly_cmd.len() == n {
+            let throttle_is_none =
+                universe::fly_map::readout_reflex_on() && fly_reflex_throttle_is_none();
+            let cruise = fly_cruise_throttle();
+            let sign = fly_reflex_sign();
             for i in 0..n {
                 let mut v = intents[i];
-                v[0] = fly_cmd[i][0];
-                v[1] = fly_cmd[i][1];
-                v[2] = fly_cmd[i][2];
+                let cmd = universe::fly_map::apply_reflex_host_override(
+                    fly_cmd[i],
+                    throttle_is_none,
+                    cruise,
+                    sign,
+                );
+                v[0] = cmd[0];
+                v[1] = cmd[1];
+                v[2] = cmd[2];
                 intents[i] = v;
                 if self.last_intents.len() == n {
                     self.last_intents[i] = v;

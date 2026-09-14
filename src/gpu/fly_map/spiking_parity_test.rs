@@ -33,6 +33,9 @@ fn tiny_map() -> FlyMap {
         }),
         pixel_of_neuron: Some(vec![NONE, NONE]),
         no_refractory: None,
+        // the reflex readout block (v3) is not what this test exercises: the spiking path
+        // reads `out_pair` from the packed selection either way
+        reflex_out: None,
     }
 }
 

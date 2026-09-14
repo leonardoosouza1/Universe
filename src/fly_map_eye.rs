@@ -1,15 +1,19 @@
-//! The `flymap` v2 trailing blocks, and the "Eye binding" extension of §2 that reads one
-//! of them.
+//! The `flymap` v2/v3 trailing blocks, the "Eye binding" extension of §2 that reads one
+//! of them, and the "Reflex readout" (`--fly-readout reflex`) that reads another.
 //!
 //! Split out of `fly_map.rs` for the 600-line cap (`docs/STYLE.md` §2), along the seam a
 //! reader already perceives: `fly_map.rs` is v1 (the map and the rate model as they were
-//! before this change), this file is everything v2 added. Re-exported by `fly_map`, so
+//! before this change), this file is everything v2/v3 added. Re-exported by `fly_map`, so
 //! callers see one module.
 //!
-//! Two of the three v2 blocks — the presynaptic CSR and the no-refractory bitmap — are
-//! parsed and stored here but read by the separate GPU spiking module: `docs/FLY-MAP-BRAIN.md`
-//! §1 keeps those buffers out of the rate path. Only the pixel-binding block feeds the rate
-//! dynamics in this file, through [`eye_drive`].
+//! Two of the four trailing blocks — the presynaptic CSR and the no-refractory bitmap —
+//! are parsed and stored here but read by the separate GPU spiking module
+//! (`gpu::fly_map::spiking`), never by the rate path in this file. The pixel-binding block
+//! feeds the rate dynamics, through [`eye_drive`]. The reflex-readout block (§1 v3,
+//! "Reflex readout") is read at the HOST level, not inside `cpu_step`/`fly_step`: it
+//! overwrites `FlySelection::out_pair` before upload ([`apply_reflex_readout`],
+//! `fly_map_selection.rs`), so the kernel that already computes `mean(plus) - mean(minus)`
+//! over `out_pair` needed no edit to serve it.
 
 use std::io::{Read, Write};
 
@@ -21,6 +25,12 @@ pub const FLAG_PRESYNAPTIC_CSR: u32 = 1 << 0;
 pub const FLAG_PIXEL_BINDING: u32 = 1 << 1;
 /// Bit 2: the no-refractory bitmap trails it.
 pub const FLAG_NO_REFRACTORY: u32 = 1 << 2;
+/// Bit 3: the reflex-readout block (`reflex_out: u32[OUT_SLOTS]`) trails it — v3,
+/// "Reflex readout" (`docs/FLY-MAP-BRAIN.md` §1). The last of the four trailing blocks,
+/// always written after the no-refractory bitmap regardless of which other bits are set.
+/// Its six entries are `(plus, minus)` pairs for throttle/steer/brake, the exact shape
+/// `FlySelection::out_pair` already carries per being — see [`apply_reflex_readout`].
+pub const FLAG_REFLEX_READOUT: u32 = 1 << 3;
 
 /// The connectome read the other way round: `indptr[j]..indptr[j + 1]` are the edges for
 /// which neuron `j` is the PRESYNAPTIC side (`indices[e]` the postsynaptic neuron,
@@ -120,6 +130,87 @@ impl FlyMap {
         map.pixel_of_neuron = Some(pixel_of_neuron);
         map
     }
+
+    /// Whether this map carries the reflex-readout block — what `--fly-readout reflex`
+    /// requires (`docs/FLY-MAP-BRAIN.md` "Reflex readout"). A v1/v2 file, or a v3 file
+    /// exported without the reflex-readout pass, answers `false`.
+    pub fn has_reflex_readout(&self) -> bool {
+        self.reflex_out.is_some()
+    }
+
+    /// A six-neuron map like [`FlyMap::synthetic`], additionally carrying a
+    /// reflex-readout block: throttle `(NONE, NONE)` — the map does not produce it, the
+    /// host supplies `--fly-cruise-throttle` — steer `(plus = group 0, minus = group 1)`,
+    /// brake `(plus = group 1, minus = group 0)`. Steer and brake are deliberately
+    /// swapped rather than identical, so a test that mixed the two command slots up
+    /// fails instead of passing by symmetry.
+    pub fn synthetic_with_reflex() -> FlyMap {
+        let mut map = FlyMap::synthetic();
+        map.reflex_out = Some([NONE, NONE, 0, 1, 1, 0]);
+        map
+    }
+}
+
+/// Whether the reflex-readout block's throttle pair is `(NONE, NONE)` — "the map does
+/// not produce this command; the host supplies it" (`docs/FLY-MAP-BRAIN.md` "Reflex
+/// readout"). Pure, so the substitution `apply_reflex_host_override` makes is
+/// unit-testable without a running `gpu_evolve` process; `context.rs` calls it once per
+/// tick (cheap: two comparisons) rather than caching the answer, since the map never
+/// changes after load and the cost of asking again is noise next to a tick.
+pub fn reflex_throttle_is_none(reflex_out: [u32; OUT_SLOTS]) -> bool {
+    reflex_out[0] == NONE && reflex_out[1] == NONE
+}
+
+/// The host-side half of `--fly-readout reflex` (`docs/FLY-MAP-BRAIN.md` "Reflex
+/// readout"), applied to one being's raw `[throttle, steer, brake]` command AFTER
+/// `fly_read`/`cpu_read` computed it from the (possibly overridden) `out_pair`:
+///
+/// * throttle is replaced by `cruise` exactly when `throttle_is_none` (from
+///   [`reflex_throttle_is_none`]) says the map produces no throttle command — otherwise
+///   the map's own command passes through unchanged;
+/// * steer is multiplied by `sign` (`--fly-reflex-sign`, {1, -1}) — the sign convention
+///   that maps "motion on the left" to a left or right turn is not documented anywhere
+///   in this repository, so this is an experiment arm, not a guess;
+/// * brake always passes through unchanged.
+///
+/// Pure, so `context.rs`'s FLY BRAIN OVERRIDE site is a thin per-being wrapper a test
+/// does not have to open a GPU to exercise. With `throttle_is_none = false` and
+/// `sign = 1.0` (the defaults when `--fly-readout reflex` is off, or its throttle slot
+/// is bound) this returns `cmd` unchanged: `x * 1.0` is bit-exact for every finite `x`,
+/// so a run that never asks for the reflex arm sees the historical numbers.
+pub fn apply_reflex_host_override(
+    cmd: [f32; crate::fly_map::COMMANDS],
+    throttle_is_none: bool,
+    cruise: f32,
+    sign: f32,
+) -> [f32; crate::fly_map::COMMANDS] {
+    [
+        if throttle_is_none { cruise } else { cmd[0] },
+        cmd[1] * sign,
+        cmd[2],
+    ]
+}
+
+/// Whether a run started with `--fly-readout reflex` can proceed against `map`
+/// (`docs/FLY-MAP-BRAIN.md` "Reflex readout"): no map, or a map without the block, both
+/// refuse — the same two-step shape `--fly-eye` already checks against
+/// `has_pixel_binding`. Pure and returning `Err(String)` rather than printing and
+/// exiting itself, so the refusal is unit-testable; `main()` prints the message and
+/// exits non-zero on `Err`.
+pub fn readout_reflex_requires_the_block(map: Option<&FlyMap>) -> Result<(), String> {
+    match map {
+        None => Err(
+            "--fly-readout reflex without --fly-map: there is no map to read the reflex \
+             block from."
+                .to_string(),
+        ),
+        Some(m) if !m.has_reflex_readout() => Err(
+            "--fly-readout reflex requires a flymap v3 file with the reflex-readout \
+             block (flags bit 3); the loaded map carries none."
+                .to_string(),
+        ),
+        Some(_) => Ok(()),
+    }
 }
 
 /// `flags` this map's `write()` must set — the mirror of [`read_trailing_blocks`].
@@ -134,12 +225,16 @@ pub(super) fn compute_flags(map: &FlyMap) -> u32 {
     if map.no_refractory.is_some() {
         flags |= FLAG_NO_REFRACTORY;
     }
+    if map.reflex_out.is_some() {
+        flags |= FLAG_REFLEX_READOUT;
+    }
     flags
 }
 
-/// Reads the v2 trailing blocks named by `flags`, in the fixed order of §1: presynaptic
-/// CSR, then pixel binding, then the no-refractory bitmap. `flags == 0` (every v1 file, and
-/// a v2 file exported with nothing extra) reads nothing and returns three `None`s.
+/// Reads the trailing blocks named by `flags`, in the fixed order of §1: presynaptic CSR,
+/// then pixel binding, then the no-refractory bitmap, then the reflex-readout block.
+/// `flags == 0` (every v1 file, and a v2/v3 file exported with nothing extra) reads
+/// nothing and returns four `None`s.
 ///
 /// Each read names its own block on a truncated file, rather than surfacing the bare
 /// "failed to fill whole buffer" `io::Error` the v1 fields already have to live with — the
@@ -150,7 +245,12 @@ pub(super) fn read_trailing_blocks(
     n: usize,
     m: usize,
     flags: u32,
-) -> std::io::Result<(Option<PresynapticCsr>, Option<Vec<u32>>, Option<Vec<u32>>)> {
+) -> std::io::Result<(
+    Option<PresynapticCsr>,
+    Option<Vec<u32>>,
+    Option<Vec<u32>>,
+    Option<[u32; OUT_SLOTS]>,
+)> {
     let pre_csr = if flags & FLAG_PRESYNAPTIC_CSR != 0 {
         let indptr = named_u32s(f, n + 1, path, "presynaptic CSR indptr")?;
         let indices = named_u32s(f, m, path, "presynaptic CSR indices")?;
@@ -173,11 +273,19 @@ pub(super) fn read_trailing_blocks(
     } else {
         None
     };
-    Ok((pre_csr, pixel_of_neuron, no_refractory))
+    let reflex_out = if flags & FLAG_REFLEX_READOUT != 0 {
+        let raw = named_u32s(f, OUT_SLOTS, path, "reflex_out")?;
+        // `named_u32s(f, OUT_SLOTS, ..)` reads exactly `OUT_SLOTS` words or fails, so this
+        // conversion cannot panic.
+        Some(raw.try_into().expect("named_u32s returned OUT_SLOTS words"))
+    } else {
+        None
+    };
+    Ok((pre_csr, pixel_of_neuron, no_refractory, reflex_out))
 }
 
-/// Writes the v2 trailing blocks present on `map`, in the same fixed order
-/// [`read_trailing_blocks`] reads them. A no-op when all three are `None` (a v1 file).
+/// Writes the trailing blocks present on `map`, in the same fixed order
+/// [`read_trailing_blocks`] reads them. A no-op when all four are `None` (a v1 file).
 pub(super) fn write_trailing_blocks(f: &mut impl Write, map: &FlyMap) -> std::io::Result<()> {
     if let Some(csr) = &map.pre_csr {
         write_u32s(f, &csr.indptr)?;
@@ -191,6 +299,9 @@ pub(super) fn write_trailing_blocks(f: &mut impl Write, map: &FlyMap) -> std::io
     }
     if let Some(bitmap) = &map.no_refractory {
         write_u32s(f, bitmap)?;
+    }
+    if let Some(reflex_out) = &map.reflex_out {
+        write_u32s(f, reflex_out)?;
     }
     Ok(())
 }
@@ -226,3 +337,7 @@ fn named_f32s(f: &mut impl Read, n: usize, path: &str, what: &str) -> std::io::R
 #[cfg(test)]
 #[path = "fly_map_eye_tests.rs"]
 mod fly_map_eye_tests;
+
+#[cfg(test)]
+#[path = "fly_map_reflex_tests.rs"]
+mod fly_map_reflex_tests;

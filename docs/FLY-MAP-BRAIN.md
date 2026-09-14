@@ -38,11 +38,11 @@ Sidecar `flymap_783.json`: type names, in-group names, out-group names, source S
 60 MB). Variants for speed: `--min-weight 3` (4.9 M edges, 76 % of synapses), `--exclude-optic`
 (61 109 neurons, 6.6 M edges). Default file: `/media/llm-data/datasets/flywire/flymap_783.bin`.
 
-### v1 → v2 (2026-09-14): three optional trailing blocks
+### v1 → v2 → v3 (2026-09-14): four optional trailing blocks
 
-v2 keeps every v1 field, in the same order, at the same offsets — **a v1 file is a valid v2
-file with every optional block absent**, and [`FlyMap::load`][fly_map.rs] accepts both
-magics through the same parser. What changes:
+v2 (and v3, which only adds a fourth block) keeps every v1 field, in the same order, at
+the same offsets — **a v1 file is a valid v2/v3 file with every optional block absent**,
+and [`FlyMap::load`][fly_map.rs] accepts every magic through the same parser. What changes:
 
 ```
 magic      8 bytes  "FLYMAP01" (no trailing block) or "FLYMAP02" (≥ 1 trailing block present)
@@ -50,6 +50,7 @@ header     8 × u32  n, m, n_types, k_in, k_out, out_members_len, flags, reserve
                     flags bit 0 = presynaptic CSR present
                     flags bit 1 = pixel binding present
                     flags bit 2 = no-refractory bitmap present
+                    flags bit 3 = reflex-readout block present (v3, "Reflex readout" below)
                     v1 always writes flags = 0; a FLYMAP01 file with a set bit is refused
                     as a contradiction (magic and flags disagree about the format)
 … the seven v1 fields above, byte-identical …
@@ -67,17 +68,26 @@ pixel_of_neuron u32[n]    ── ONLY IF flags bit 1 ──
 no_refractory u32[⌈n/32⌉] ── ONLY IF flags bit 2 ──
                                packed bitmap, one bit per neuron. The rate path ignores it;
                                the spiking path uses it to exempt cells from refractoriness.
+reflex_out u32[6]         ── ONLY IF flags bit 3 ──
+                               the (plus, minus) OUT-GROUP index for throttle, steer and
+                               brake, in that order — the SAME layout the genome's
+                               `out_pair[6]` carries per being (§3). NONE = 0xFFFFFFFF in
+                               a slot means "the map does not produce this command; the
+                               host supplies it". Read at the HOST level (it overwrites
+                               the packed `out_pair` before upload), not inside the
+                               kernel — see "Reflex readout" below.
 ```
 Present blocks are written and read in EXACTLY that order (presynaptic CSR, then pixel
-binding, then the bitmap) regardless of which subset is present — a block's position is
-never inferred from anything but the flag bits before it. A truncated trailing block is
-refused with an error naming the block (`"…could not read the pixel_of_neuron block…"`),
-not a bare `io::Error`.
+binding, then the bitmap, then the reflex-readout block) regardless of which subset is
+present — a block's position is never inferred from anything but the flag bits before it.
+A truncated trailing block is refused with an error naming the block (`"…could not read
+the pixel_of_neuron block…"`), not a bare `io::Error`.
 
-Implemented in `src/fly_map.rs` (the `FlyMap` struct's three new `Option` fields,
+Implemented in `src/fly_map.rs` (the `FlyMap` struct's four new `Option` fields,
 `FlyMap::load`/`FlyMap::write`) and `src/fly_map_eye.rs` (the block readers/writers,
-`PresynapticCsr`, `FlyMap::has_pixel_binding`). This is the byte contract the Python writer
-(`fly_export.py`, a parallel task) must match to produce a map `--fly-eye` can load.
+`PresynapticCsr`, `FlyMap::has_pixel_binding`, `FlyMap::has_reflex_readout`). This is the
+byte contract the Python writer (`fly_export.py`, a parallel task) must match to produce a
+map `--fly-eye`/`--fly-readout reflex` can load.
 
 [fly_map.rs]: ../src/fly_map.rs
 
@@ -178,7 +188,12 @@ GPU-resident delayed LIF model as the command source; requires a v2 presynaptic 
 the elite: bound channels → group names, out pairs, mask density), `--fly-eye` (§9: eye-bound
 neurons read the rendered retina instead of the genome's channel binding; needs a v2 map with
 the pixel-binding block, checked once `--fly-map` has loaded — otherwise a hard error, not a
-silent fallback). `--kernel-profile N` prints the GPU timestamp table and CPU phase timings every
+silent fallback), `--fly-readout {genome, reflex}` (§10: `reflex` overrides the packed
+`out_pair` with the map's own reflex block; needs a v3 map with that block, same two-step
+hard-error shape as `--fly-eye`), `--fly-cruise-throttle <f32>` (default 0.6, §10: the
+host-supplied throttle when the reflex block's throttle slot is NONE), `--fly-reflex-sign
+{1, -1}` (default 1, §10: multiplies the steer command only — the sign is an undocumented
+convention, so this is an experiment arm). `--kernel-profile N` prints the GPU timestamp table and CPU phase timings every
 N ticks. `--fly-spiking-trace PATH` enables a compact voltage/spike trace for one being; use
 `--fly-spiking-trace-every N` and `--fly-spiking-trace-being B` to control sampling. The static
 `fly_map_view` binary renders the map, type-to-type flow and optional trace without a server.
@@ -404,3 +419,88 @@ against the CPU reference on the synthetic six-neuron map instead.
 
 [`EyeFrame`]: ../src/fly_map_eye.rs
 [`eye_drive`]: ../src/fly_map_eye.rs
+
+## 10. Reflex readout (`--fly-readout reflex`, 14/09/2026)
+
+The fly's own wiring already contains a steering reflex — this section reads it straight
+off the map instead of evolving a readout on top of it (§3's `out_pair` genes).
+
+**Measured, not speculation.** Driving 2 000 motion-detector cells (T4/T5) on one side of
+the visual field and reading the wide-field cells HS/VS gives an asymmetry index that
+swings from −1.000 to +1.000 between the two sides (swing +2.000) in the spiking reference
+model (Shiu et al. 2024) and +1.74/+1.92 in the rate model this repository's kernel runs;
+across the whole descending population the swing is +0.88. On a degree-preserving shuffled
+map the swing disappears and the rates collapse. Full records:
+`neuromod-lab/PREDICOES.md` entries 191v and 193v. So instead of evolving a readout, the
+map can be read anatomically: `steer = mean(HS+VS on the right) − mean(HS+VS on the left)`
+— exactly the `mean(plus) − mean(minus)` `fly_read`/`cpu_read` already compute over an
+efferent group pair (§2), which is why serving this feature needed **no kernel edit**: only
+which group indices land in `out_pair` changes, not how they are read.
+
+**The map carries the readout, the host applies it.** The v3 `reflex_out` block (§1) is
+`u32[6]`, the SAME `(plus, minus)` layout as the genome's `out_pair[6]`: `[thr_plus,
+thr_minus, str_plus, str_minus, brk_plus, brk_minus]`. `NONE = 0xFFFFFFFF` in a slot means
+"the map does not produce this command; the host supplies it". The exporter appends four
+groups at the END of the existing out-group table, so every previously valid group index
+is unchanged:
+
+| group | neurons | what it is |
+|---|---:|---|
+| `REFLEX_STEER_RIGHT` | 19 | HS/VS cells on the right visual field |
+| `REFLEX_STEER_LEFT` | 19 | HS/VS cells on the left visual field |
+| `REFLEX_LOOM` | 210 | LPLC2 — the looming/collision-approach pathway |
+| `REFLEX_LOOM_CONTROL` | 943 | LC10/LC11 — a non-loom visual pathway, the control arm |
+
+The verified export, `/media/llm-data/datasets/flywire/flymap_783_reflex_v3.bin` (244 MB,
+`flags=0xf`, `n=138639 m=15091983 k_out=520`, all 12 246 T4/T5 bound, eye target = motion),
+ships `reflex_out = [NONE, NONE, 516, 517, 518, 519]`: throttle NONE (the host supplies
+`--fly-cruise-throttle`, default 0.6), steer `(plus = 516 REFLEX_STEER_RIGHT, minus = 517
+REFLEX_STEER_LEFT)`, brake `(plus = 518 REFLEX_LOOM, minus = 519 REFLEX_LOOM_CONTROL)`.
+
+**Where the override happens.** `apply_reflex_readout` (`fly_map_selection.rs`) overwrites
+`FlySelection::out_pair` for EVERY being, at the same site `main()` already calls
+`pack_selection` (once per generation, right before `upload_selection`) — the genome's own
+`fly` block (and therefore its `out_pair` genes) is never touched, only the packed copy.
+`--fly-readout {genome, reflex}` (default `genome`) gates this; `reflex` without a map
+carrying the block is a hard error (`readout_reflex_requires_the_block`), the same
+two-step shape `--fly-brain`/`--fly-eye` already enforce against `--fly-map`.
+
+**The NONE slot and `--fly-cruise-throttle`.** A NONE `(plus, minus)` pair already reads
+as exactly 0 through the existing "unbound group" rule (§2, `group_mean`) — no special
+case was needed on the GPU/CPU dynamics side for that. But a constant 0 throttle would
+stall the being, so `--fly-cruise-throttle <f32>` (default 0.6) is a HOST-side substitute:
+`context.rs`'s FLY BRAIN OVERRIDE site calls `apply_reflex_host_override`, which replaces
+`cmd[0]` with the constant exactly when `reflex_throttle_is_none(reflex_out)` is true
+(`--fly-readout reflex` on AND the throttle pair is `(NONE, NONE)`) — steer and brake
+always come straight from the map's own commands.
+
+**`--fly-reflex-sign {1, -1}` (default 1).** Multiplies the steer command only, after the
+NONE substitution above. The sign that maps "more motion detected on the left" to a LEFT
+or a RIGHT turn is not documented anywhere in this repository or in the Shiu et al. 2024
+reference this map was exported from — the fly's own HS/VS→motor wiring encodes it, but
+nothing in the pipeline that produced `flymap_783_reflex_v3.bin` recorded which way. Rather
+than guess a sign and bake it into `apply_reflex_readout`'s group order, the flag makes it
+an explicit experiment arm: run both, and the paired A/B (`docs/…CLAUDE.md` rule 3) decides
+which one actually steers away from the wall.
+
+Implemented in `src/fly_map_eye.rs` (`FLAG_REFLEX_READOUT`, `reflex_throttle_is_none`,
+`apply_reflex_host_override`, `readout_reflex_requires_the_block`,
+`FlyMap::has_reflex_readout`, `FlyMap::synthetic_with_reflex`), `src/fly_map_selection.rs`
+(`apply_reflex_readout`), `src/fly_map.rs` (`FlyMap::reflex_out`,
+`universe::fly_map::FLY_READOUT_REFLEX_ON`/`readout_reflex_on`), and wired in
+`src/bin/gpu_evolve/{cli_flags,main,statics,context}.rs`. No kernel edit: `fly_step`/
+`fly_read` (`gpu/fly_map/fly_map.wgsl`) already compute `mean(plus) − mean(minus)` over
+whatever `out_pair` holds, genome-selected or reflex-overridden — proved end to end by the
+`#[ignore]`d `fly_map_parity_with_reflex_readout` (`gpu/fly_map/parity_test.rs`), which
+packs three DIFFERENT genome `out_pair` choices, overrides all three with the SAME
+`reflex_out` block, and checks GPU against `cpu_step`/`cpu_read` for 10 ticks at B = 3.
+
+**Not proven**: the sign, and whether the reflex arm actually steers better than the
+evolved readout on the real map — both need a closed-loop run this task did not launch
+(no `gpu_evolve` process, per the task's own constraint). What IS proven: the block
+round-trips through disk with and without it, `apply_reflex_readout` overwrites every
+being's packed `out_pair` and leaves the genome untouched, the two host-side pure
+functions (`reflex_throttle_is_none`, `apply_reflex_host_override`) have unit tests for
+every branch, and the kernel needs no edit — see `src/fly_map_reflex_tests.rs` and
+`gpu/fly_map/parity_test.rs::fly_map_parity_with_reflex_readout`.
+

@@ -668,6 +668,15 @@ fn main() {
     let mut fly_spiking_trace_path: Option<String> = None;
     let mut fly_spiking_trace_every: usize = 64;
     let mut fly_spiking_trace_being: usize = 0;
+    // `--fly-readout reflex` (docs/FLY-MAP-BRAIN.md "Reflex readout"): the anatomical
+    // steering reflex measured in the connectome (asymmetry index swing +1.74/+1.92
+    // rate model, +0.88 across the descending population, `neuromod-lab/PREDICOES.md`
+    // 191v/193v) read straight off the map instead of evolved — `--fly-cruise-throttle`
+    // is the host-supplied constant for the slot the map declares NONE (only throttle,
+    // in the shipped export), `--fly-reflex-sign` the undocumented left/right convention
+    // as an explicit experiment arm.
+    let mut fly_cruise_throttle_v: f32 = 0.6;
+    let mut fly_reflex_sign_v: f32 = 1.0;
     // Semente da população inicial. Sem isto, repetições da mesma condição são
     // idênticas e não distinguem efeito de sorte — que é o ponto de repetir.
     let mut pop_seed: u64 = 0;
@@ -1670,6 +1679,68 @@ fn main() {
                 "--fly-eye" => {
                     universe::fly_map::FLY_EYE_ON.store(true, Ordering::Relaxed);
                 }
+                // Reads the anatomical steering reflex straight off the map instead of
+                // evolving a readout (docs/FLY-MAP-BRAIN.md "Reflex readout"): checked
+                // below, once the map itself has loaded, the same two-step shape as
+                // `--fly-eye`/`--fly-brain` needing `--fly-map`.
+                "--fly-readout" => {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!(
+                            "[ERROR] --fly-readout requires a value: genome | reflex.\n\
+                             [ERROR] `genome` is the default (the fly block's own \
+                             out_pair genes select the readout, as today)."
+                        );
+                        std::process::exit(1);
+                    }
+                    match args[i].as_str() {
+                        "genome" => {
+                            universe::fly_map::FLY_READOUT_REFLEX_ON
+                                .store(false, Ordering::Relaxed);
+                        }
+                        "reflex" => {
+                            universe::fly_map::FLY_READOUT_REFLEX_ON.store(true, Ordering::Relaxed);
+                        }
+                        other => {
+                            eprintln!(
+                                "[ERROR] --fly-readout {other}: unknown mode.\n\
+                                 [ERROR] Valid values are: genome | reflex.\n\
+                                 [ERROR] Refusing to fall back to `genome` — a run that \
+                                 silently swaps\n\
+                                 [ERROR] the readout arm under test reports plausible \
+                                 numbers for a\n\
+                                 [ERROR] command source nobody asked for."
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "--fly-cruise-throttle" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_cruise_throttle_v = args[i].parse().unwrap_or(fly_cruise_throttle_v);
+                    }
+                }
+                "--fly-reflex-sign" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_reflex_sign_v = match args[i].as_str() {
+                            "1" => 1.0,
+                            "-1" => -1.0,
+                            other => {
+                                eprintln!(
+                                    "[ERROR] --fly-reflex-sign {other}: only 1 or -1 are \
+                                     valid — the sign convention that maps \"motion on \
+                                     the left\" to a left or right turn is not \
+                                     documented anywhere in this repository \
+                                     (docs/FLY-MAP-BRAIN.md \"Reflex readout\"), so it \
+                                     is an experiment arm, not a free gain."
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                    }
+                }
                 "--resume" => {
                     retomar = true;
                 }
@@ -1805,6 +1876,29 @@ fn main() {
             Some(_) => {}
         }
     }
+    // --fly-readout reflex requires a v3 map carrying the reflex-readout block
+    // (docs/FLY-MAP-BRAIN.md "Reflex readout") — checked here, before a single tick
+    // runs, mirroring the --fly-eye check above and the --fly-brain check further up.
+    // `FLY_REFLEX_THROTTLE_IS_NONE` is decided HERE, once, from the CPU-side `FlyMap`
+    // (`context.rs::tick()` only ever sees `FlyMapGpu`, which does not carry
+    // `reflex_out`) — the same "publish the fact once, at load, through a static"
+    // pattern `tau_bank::MODE` and `FLY_BRAIN` already use.
+    if universe::fly_map::readout_reflex_on() {
+        if let Err(msg) = universe::fly_map::readout_reflex_requires_the_block(fly_map.as_ref()) {
+            eprintln!("[ERROR] {msg}\n[ERROR] Pass a v3 map, or drop --fly-readout reflex.");
+            std::process::exit(1);
+        }
+        let reflex_out = fly_map
+            .as_ref()
+            .and_then(|m| m.reflex_out)
+            .expect("readout_reflex_requires_the_block already confirmed the block");
+        FLY_REFLEX_THROTTLE_IS_NONE.store(
+            universe::fly_map::reflex_throttle_is_none(reflex_out),
+            Ordering::Relaxed,
+        );
+    }
+    FLY_CRUISE_THROTTLE.store(fly_cruise_throttle_v, Ordering::Relaxed);
+    FLY_REFLEX_SIGN.store(fly_reflex_sign_v, Ordering::Relaxed);
 
     let inicio = if retomar {
         "retomando de checkpoint"
@@ -3104,7 +3198,16 @@ fn main() {
         // non-deterministic, which is the bug this binary already paid for with `buf_cfc`.
         if let (Some(fly), Some(l)) = (ctx.fly.as_ref(), universe::fly_map::layout()) {
             let blocks: Vec<&[f32]> = genomes.iter().map(|g| g.fly.as_slice()).collect();
-            let sel = universe::fly_map::pack_selection(&blocks, l, n_seres);
+            let mut sel = universe::fly_map::pack_selection(&blocks, l, n_seres);
+            // `--fly-readout reflex` (docs/FLY-MAP-BRAIN.md "Reflex readout"): overrides
+            // the PACKED `out_pair` with the map's own reflex block, for every being,
+            // every generation — `genomes[i].fly` itself (the `Vec<f32>` blocks
+            // `pack_selection` just read) is never touched, only this copy.
+            if universe::fly_map::readout_reflex_on() {
+                if let Some(reflex_out) = fly_map.as_ref().and_then(|m| m.reflex_out) {
+                    universe::fly_map::apply_reflex_readout(&mut sel, reflex_out);
+                }
+            }
             fly.upload_selection(&sel, n_seres);
             fly.reset_state();
             if fly_log_every > 0 && gen_abs % fly_log_every == 0 && !genomes.is_empty() {

@@ -233,6 +233,22 @@ pub fn mutate_block(
     }
 }
 
+/// Overwrites `sel.out_pair` for EVERY being with the map's own `reflex_out` block
+/// (`--fly-readout reflex`, `docs/FLY-MAP-BRAIN.md` "Reflex readout") — the steering
+/// reflex the fly's own wiring already carries replaces whatever the genome's `out_pair`
+/// genes selected. Called once per generation, right after [`pack_selection`], at the
+/// same site `gpu_evolve`'s `main()` already packs the selection.
+///
+/// Only the PACKED copy changes: the genome blocks `pack_selection` read are untouched
+/// (this function never sees them, only `sel`), so a run switched back to
+/// `--fly-readout genome`, or a genome inspected on disk, sees the evolved `out_pair`
+/// genes exactly as it always did.
+pub fn apply_reflex_readout(sel: &mut FlySelection, reflex_out: [u32; OUT_SLOTS]) {
+    for b in 0..sel.n_beings {
+        sel.out_pair[b * OUT_SLOTS..b * OUT_SLOTS + OUT_SLOTS].copy_from_slice(&reflex_out);
+    }
+}
+
 /// Density of the pruning mask: the fraction of cell types still switched on.
 pub fn mask_density(block: &[f32], layout: FlyLayout) -> f32 {
     if block.len() != layout.block_len() || layout.n_types == 0 {

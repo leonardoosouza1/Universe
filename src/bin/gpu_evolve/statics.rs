@@ -41,6 +41,8 @@
 //! | `universe::tau_bank::MODE` (library, reached here through [`tau_bank_mode`] / [`set_tau_bank_mode`]) | `main()` (flag `--tau-bank <free\|log-fixed\|spectral>`) | `gpu::evolution::Genome::pack_taus` (builds the bank uploaded once per generation) and `main()` (the `[tau]` diagnostic line) |
 //! | `FLY_BRAIN` | `main()` (flag `--fly-brain`) | `context.rs::tick()` (decides whether the fly map's three commands REPLACE the fast brain's intents). The map, its buffers and its tau live on `GpuCtx` and in `main()`'s locals — device-backed state and one-shot setup, not hot-loop knobs |
 //! | `FLY_SPIKING` | `main()` (flag `--fly-spiking`) | `context.rs::tick()` (selects the GPU-resident event-driven LIF fly map and its command override) |
+//! | `FLY_CRUISE_THROTTLE`, `FLY_REFLEX_SIGN` | `main()` (flags `--fly-cruise-throttle`/`--fly-reflex-sign`, default 0.6/1.0, stored unconditionally after parsing) | `context.rs::tick()` (the FLY BRAIN OVERRIDE site, via `fly_map::apply_reflex_host_override`) |
+//! | `FLY_REFLEX_THROTTLE_IS_NONE` | `main()`, once, from the loaded CPU-side `FlyMap::reflex_out` (`context.rs` never sees that struct, only `FlyMapGpu`) | `context.rs::tick()` (whether the reflex readout's throttle slot is NONE, i.e. `--fly-cruise-throttle` must substitute) |
 //! | `PERFIL_KERNEL` | `main()` (flag `--kernel-profile <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
@@ -461,6 +463,41 @@ pub static FLY_SPIKING: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 #[inline]
 pub fn fly_spiking() -> bool {
     FLY_SPIKING.load(Ordering::Relaxed)
+}
+
+/// `--fly-cruise-throttle` (default 0.6): the constant throttle handed to the physics
+/// when `--fly-readout reflex` is on and the map's reflex block declares no throttle
+/// command (`docs/FLY-MAP-BRAIN.md` "Reflex readout"). Read by `context.rs::tick()`
+/// through `fly_map::apply_reflex_host_override`, never touched when
+/// [`FLY_REFLEX_THROTTLE_IS_NONE`] is false — steer and brake always come from the map.
+pub static FLY_CRUISE_THROTTLE: AtomicF32 = AtomicF32::new();
+#[inline]
+pub fn fly_cruise_throttle() -> f32 {
+    FLY_CRUISE_THROTTLE.load(Ordering::Relaxed)
+}
+
+/// `--fly-reflex-sign` (default 1.0, from `{1, -1}`): multiplies the steer command only,
+/// before it reaches `intents`. The sign convention that maps "motion on the left" to a
+/// left or right turn is not documented anywhere in this repository
+/// (`docs/FLY-MAP-BRAIN.md` "Reflex readout"), so this is an experiment arm. `1.0` is a
+/// bit-exact no-op (`x * 1.0 == x` for every finite `x`), which is what keeps a run that
+/// never asks for `--fly-reflex-sign` reproducing the historical numbers.
+pub static FLY_REFLEX_SIGN: AtomicF32 = AtomicF32::new();
+#[inline]
+pub fn fly_reflex_sign() -> f32 {
+    FLY_REFLEX_SIGN.load(Ordering::Relaxed)
+}
+
+/// Whether the loaded map's `reflex_out` throttle pair is `(NONE, NONE)` — decided once,
+/// in `main()`, from the CPU-side `FlyMap` (`context.rs` only ever sees `FlyMapGpu`,
+/// which does not carry `reflex_out`). `false` unless `--fly-readout reflex` is on and
+/// the map says so; `context.rs::tick()` reads it to decide whether
+/// [`fly_cruise_throttle`] substitutes for the map's own (structurally zero) throttle.
+pub static FLY_REFLEX_THROTTLE_IS_NONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn fly_reflex_throttle_is_none() -> bool {
+    FLY_REFLEX_THROTTLE_IS_NONE.load(Ordering::Relaxed)
 }
 
 /// Sector index of a being, `0..N_CHECKPOINTS-1`, from its track progress.
