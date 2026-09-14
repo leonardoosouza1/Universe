@@ -19,10 +19,15 @@
 //! the caller, two files for the 600-line cap. It is not in `gpu::evolution` because that
 //! file is already well over that cap.
 //!
+//! A fourth piece, the v2 trailing blocks and the eye binding they enable (`--fly-eye`,
+//! `docs/FLY-MAP-BRAIN.md` "Eye binding"), is in `fly_map_eye.rs` for the same reason and
+//! is likewise re-exported here.
+//!
 //! The sentinel [`NONE`] is defined here once and mirrored in exactly one other place,
 //! `gpu/fly_map/fly_map.wgsl`, with a comment pointing back at this constant.
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 
@@ -36,15 +41,48 @@ pub use selection::{
     pack_selection, random_block, set_layout,
 };
 
+// The v2 trailing blocks (presynaptic CSR, pixel binding, no-refractory bitmap) and the
+// eye-drive extension of §2 that reads the pixel-binding one. Split out for the same
+// 600-line reason as `selection`; re-exported so callers see one module.
+#[path = "fly_map_eye.rs"]
+mod eye;
+pub use eye::{
+    EyeFrame, FLAG_NO_REFRACTORY, FLAG_PIXEL_BINDING, FLAG_PRESYNAPTIC_CSR, PresynapticCsr,
+    eye_drive,
+};
+
 /// "no binding" / "no group": the u32 sentinel of the map file and of both kernels.
 ///
 /// Mirrored once, in `gpu/fly_map/fly_map.wgsl` (`NONE_ID`), because WGSL cannot import a
 /// Rust constant; the host also ships it in the params uniform, so the shader literal is a
-/// fallback and not a second source of truth.
+/// fallback and not a second source of truth. `pixel_of_neuron` (v2) reuses the same
+/// sentinel for "not driven by the eye".
 pub const NONE: u32 = 0xFFFF_FFFF;
 
-/// Magic of the `flymap` v1 file, written by `neuromod-lab/src/fly_export.py`.
-pub const MAGIC: &[u8; 8] = b"FLYMAP01";
+/// Magic of a `flymap` v1 file — no trailing blocks, `flags` (v2 sense) always 0.
+pub const MAGIC_V1: &[u8; 8] = b"FLYMAP01";
+/// Magic of a `flymap` v2 file — the v1 body plus the optional trailing blocks named by
+/// `flags` (docs/FLY-MAP-BRAIN.md §1). [`FlyMap::load`] accepts both; a v1 file loads with
+/// every v2 field `None`.
+pub const MAGIC_V2: &[u8; 8] = b"FLYMAP02";
+
+/// Gate for the eye binding of `--fly-eye` (docs/FLY-MAP-BRAIN.md "Eye binding"). Default
+/// `false`: with the flag off, `cpu_step`'s caller passes `eye: None` and the kernel's
+/// `params.eye_on` is 0, so neither reads the pixel-binding buffers at all — the same
+/// "last consumer decides nothing when off" shape as `gpu::evolution::FLY_MUTATE_ON`.
+///
+/// Read by `main()` (which also requires the loaded map to carry the pixel-binding block
+/// before setting this) and by `context.rs::tick()` (which decides the `eye_on` argument
+/// of `FlyMapGpu::dispatch`); `cpu_step` itself takes `eye: Option<&EyeFrame>` explicitly
+/// rather than reading this atomic, so the numerical reference stays a pure function like
+/// `random_block`/`mutate_block` — only the ORCHESTRATION layer (test or binary) reads the
+/// gate to decide what to pass in.
+pub static FLY_EYE_ON: AtomicBool = AtomicBool::new(false);
+
+/// Whether `--fly-eye` is engaged in this process.
+pub fn eye_on() -> bool {
+    FLY_EYE_ON.load(Ordering::Relaxed)
+}
 
 /// Perception channels a genome can bind to an afferent group — the full sensory wave.
 ///
@@ -98,6 +136,19 @@ pub struct FlyMap {
     pub n_types: usize,
     /// Number of afferent groups.
     pub k_in: usize,
+
+    // ── v2 trailing blocks (docs/FLY-MAP-BRAIN.md §1) — all optional, all absent from a
+    // v1 file. Stored on `FlyMap` so one load produces one value the whole run reads from;
+    // none of them are re-derived from the postsynaptic CSR.
+    /// Presynaptic CSR (flag bit 0). Stored, never read by the rate path — a future
+    /// spiking kernel needs it.
+    pub pre_csr: Option<PresynapticCsr>,
+    /// The rendered-retina pixel driving each neuron, or [`NONE`] (flag bit 1). Read only
+    /// by the eye extension of `cpu_step` and by `FlyMapGpu::new`'s upload.
+    pub pixel_of_neuron: Option<Vec<u32>>,
+    /// Packed bitmap, `ceil(n / 32)` words, one bit per neuron (flag bit 2). Stored, never
+    /// read by the rate path — a future spiking kernel needs it.
+    pub no_refractory: Option<Vec<u32>>,
 }
 
 impl FlyMap {
@@ -122,6 +173,10 @@ impl FlyMap {
         }
     }
     /// Bytes the map itself occupies on the GPU (the per-being state is not counted).
+    ///
+    /// Counts `pixel_of_neuron` when present — it becomes a real `FlyMapGpu` buffer
+    /// (`gpu/fly_map/mod.rs::buf_pixel_of_neuron`). Does NOT count `pre_csr` or
+    /// `no_refractory`: nothing uploads them (§1, "Store... but do not use them").
     pub fn resident_bytes(&self) -> usize {
         (self.indptr.len()
             + self.indices.len()
@@ -129,11 +184,14 @@ impl FlyMap {
             + self.type_of.len()
             + self.in_group_of.len()
             + self.out_indptr.len()
-            + self.out_members.len())
+            + self.out_members.len()
+            + self.pixel_of_neuron.as_ref().map_or(0, Vec::len))
             * 4
     }
 
-    /// Reads a `flymap` v1 file (§1).
+    /// Reads a `flymap` v1 or v2 file (§1). A v1 file (magic `FLYMAP01`) loads through
+    /// this same function with every v2 field `None` — v2 only ADDS optional trailing
+    /// blocks after the v1 body, it never changes how that body is read.
     ///
     /// Fails with a message naming the export that writes the format rather than a bare
     /// parse error: the caller is at a terminal with a run that will not start.
@@ -141,22 +199,31 @@ impl FlyMap {
         let mut f = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut magic = [0u8; 8];
         f.read_exact(&mut magic)?;
-        if &magic != MAGIC {
+        let is_v1 = &magic == MAGIC_V1;
+        if !is_v1 && &magic != MAGIC_V2 {
             return Err(bad_data(format!(
-                "{path}: not a flymap v1 file (magic {magic:?} is not FLYMAP01). Produce it \
-                 with neuromod-lab/src/fly_export.py, which writes the header this loader \
-                 expects."
+                "{path}: not a flymap file (magic {magic:?} is neither FLYMAP01 nor \
+                 FLYMAP02). Produce it with neuromod-lab/src/fly_export.py, which writes \
+                 the header this loader expects."
             )));
         }
         let head = read_u32s(&mut f, 8)?;
-        let (n, m, n_types, k_in, k_out, out_len) = (
+        let (n, m, n_types, k_in, k_out, out_len, flags) = (
             head[0] as usize,
             head[1] as usize,
             head[2] as usize,
             head[3] as usize,
             head[4] as usize,
             head[5] as usize,
+            head[6],
         );
+        if is_v1 && flags != 0 {
+            return Err(bad_data(format!(
+                "{path}: magic is FLYMAP01 (v1) but header word 6 (flags, v2 sense) is \
+                 {flags:#x} instead of 0 — a v1 file never sets a v2 flag bit. Truncated or \
+                 mislabeled export."
+            )));
+        }
         if n == 0 || n_types == 0 {
             return Err(bad_data(format!(
                 "{path}: header says n={n} neurons and n_types={n_types}; both must be > 0."
@@ -169,6 +236,8 @@ impl FlyMap {
         let in_group_of = read_u32s(&mut f, n)?;
         let out_indptr = read_u32s(&mut f, k_out + 1)?;
         let out_members = read_u32s(&mut f, out_len)?;
+        let (pre_csr, pixel_of_neuron, no_refractory) =
+            eye::read_trailing_blocks(&mut f, path, n, m, flags)?;
         let map = FlyMap {
             type_of,
             in_group_of,
@@ -179,6 +248,9 @@ impl FlyMap {
             out_members,
             n_types,
             k_in,
+            pre_csr,
+            pixel_of_neuron,
+            no_refractory,
         };
         map.validate(path)?;
         Ok(map)
@@ -242,17 +314,72 @@ impl FlyMap {
                 "{path}: an efferent group names a neuron outside 0..{n}"
             )));
         }
+        if let Some(csr) = &self.pre_csr {
+            let m = self.m();
+            if csr.indptr.len() != n + 1 {
+                return Err(bad_data(format!(
+                    "{path}: presynaptic CSR indptr has {} entries, expected n + 1 = {}",
+                    csr.indptr.len(),
+                    n + 1
+                )));
+            }
+            // §1: `pre_indices u32[m]`, `pre_weights f32[m]` — the SAME m as the
+            // postsynaptic CSR, because a presynaptic CSR re-indexes the same edges by
+            // their OTHER endpoint, it does not carry a different edge set.
+            if csr.indices.len() != m || csr.weights.len() != m {
+                return Err(bad_data(format!(
+                    "{path}: presynaptic CSR has {} indices and {} weights, expected m = {m} \
+                     for both — it must re-index the SAME edges as the postsynaptic CSR",
+                    csr.indices.len(),
+                    csr.weights.len()
+                )));
+            }
+            if csr.indptr.last().copied().unwrap_or(0) as usize != m {
+                return Err(bad_data(format!(
+                    "{path}: presynaptic CSR indptr[n] = {} but the file carries m = {m} \
+                     edges — truncated export",
+                    csr.indptr.last().copied().unwrap_or(0)
+                )));
+            }
+            if csr.indices.iter().any(|&i| i as usize >= n) {
+                return Err(bad_data(format!(
+                    "{path}: the presynaptic CSR names a postsynaptic neuron outside 0..{n}"
+                )));
+            }
+        }
+        if let Some(pix) = &self.pixel_of_neuron {
+            if pix.len() != n {
+                return Err(bad_data(format!(
+                    "{path}: pixel_of_neuron has {} entries, expected n = {n}",
+                    pix.len()
+                )));
+            }
+        }
+        if let Some(bitmap) = &self.no_refractory {
+            let expect = n.div_ceil(32);
+            if bitmap.len() != expect {
+                return Err(bad_data(format!(
+                    "{path}: no_refractory has {} words, expected ceil(n / 32) = {expect}",
+                    bitmap.len()
+                )));
+            }
+        }
         Ok(())
     }
 
-    /// Writes this map in the `flymap` v1 format — the round trip [`FlyMap::load`] reads.
+    /// Writes this map — the round trip [`FlyMap::load`] reads. Magic and `flags` follow
+    /// from what is populated: with `pre_csr`, `pixel_of_neuron` and `no_refractory` all
+    /// `None` the output is byte-for-byte the historical v1 file (magic `FLYMAP01`,
+    /// `flags` word 0); any of the three present writes v2 (`FLYMAP02`) with the matching
+    /// bit set and that block appended, in the fixed order of §1.
     ///
-    /// Exists for the tests: they build a six-neuron map instead of depending on the
-    /// 120 MB real export, and a writer that shares no parsing code with the reader is
-    /// what makes a format test prove something.
+    /// Exists for the tests: they build a small map instead of depending on the 120 MB
+    /// real export, and a writer that shares no parsing code with the reader is what makes
+    /// a format test prove something.
     pub fn write(&self, path: &str) -> std::io::Result<()> {
         let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-        f.write_all(MAGIC)?;
+        let flags = eye::compute_flags(self);
+        f.write_all(if flags == 0 { MAGIC_V1 } else { MAGIC_V2 })?;
         let head: [u32; 8] = [
             self.n() as u32,
             self.m() as u32,
@@ -260,7 +387,7 @@ impl FlyMap {
             self.k_in as u32,
             self.k_out() as u32,
             self.out_members.len() as u32,
-            0,
+            flags,
             0,
         ];
         for v in head {
@@ -275,6 +402,7 @@ impl FlyMap {
         write_u32s(&mut f, &self.in_group_of)?;
         write_u32s(&mut f, &self.out_indptr)?;
         write_u32s(&mut f, &self.out_members)?;
+        eye::write_trailing_blocks(&mut f, self)?;
         f.flush()
     }
 
@@ -311,6 +439,9 @@ impl FlyMap {
             out_members: vec![4, 5, 2, 3],
             n_types: 3,
             k_in: 2,
+            pre_csr: None,
+            pixel_of_neuron: None,
+            no_refractory: None,
         }
     }
 }
@@ -324,6 +455,13 @@ impl FlyMap {
 ///
 /// `wave` is the raw sensory wave, `n_beings × IN_CHANNELS` i8 values as perception writes
 /// them; the division by 127 is the same one the kernel does.
+///
+/// `eye` is the "Eye binding" extension (docs/FLY-MAP-BRAIN.md): `None` reproduces the
+/// pre-`--fly-eye` formula exactly (the branch below is simply never taken, so the
+/// generated float sequence is identical to the version of this function before the
+/// extension existed). `Some(frame)` makes every neuron with
+/// `frame.pixel_of_neuron[j] != NONE` read its `u` term from the retina instead of from
+/// `wave` via the genome's binding — see [`eye_drive`].
 pub fn cpu_step(
     map: &FlyMap,
     sel: &FlySelection,
@@ -332,6 +470,7 @@ pub fn cpu_step(
     x: &mut [f32],
     r_old: &[f32],
     r_new: &mut [f32],
+    eye: Option<&EyeFrame>,
 ) {
     let b_n = sel.n_beings;
     let k_in = sel.layout.k_in;
@@ -346,7 +485,10 @@ pub fn cpu_step(
             for e in e0..e1 {
                 acc += map.weights[e] * r_old[map.indices[e] as usize * b_n + b];
             }
-            let u = input_drive(sel, wave, b, g, k_in);
+            let u = match eye.and_then(|frame| eye_drive(sel.gain(b), frame, b, j)) {
+                Some(v) => v,
+                None => input_drive(sel, wave, b, g, k_in),
+            };
             let idx = j * b_n + b;
             let xn = x[idx] + alpha * (-x[idx] + sel.scale(b) * acc + u);
             x[idx] = xn;
