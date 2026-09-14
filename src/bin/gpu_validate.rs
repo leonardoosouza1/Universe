@@ -21,7 +21,7 @@
 //! - state accumulated over N ticks: drift measured and DECLARED, not assumed zero.
 
 use bevy::math::{Vec2, Vec3};
-use universe::config::iara::vision::RETINA_TOTAL;
+use universe::config::iara::vision::{RETINA_COLS, RETINA_TOTAL};
 use universe::gpu::core::{CoreGpu, PosGpu};
 use universe::gpu::{Pose, RetinaGpu};
 use universe::world::VoxelWorld;
@@ -166,10 +166,20 @@ fn main() {
         };
         println!("  GPU: {}  ·  {} beings", gpu.adapter, poses.len());
 
-        let saida_gpu = gpu.render_legacy(&poses);
+        let pixels_gpu = gpu.render(&poses);
+        let saida_gpu: Vec<Vec<i8>> = pixels_gpu
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .copied()
+                    .map(universe::gpu::legacy_encoding)
+                    .collect()
+            })
+            .collect();
         let mut total = 0usize;
         let mut iguais = 0usize;
         let mut maxdif = 0i32;
+        let mut divergent = Vec::new();
         for (i, p) in poses.iter().enumerate() {
             let cpu = world.render_binocular_retina(
                 p.pos,
@@ -186,6 +196,18 @@ fn main() {
                 if d > maxdif {
                     maxdif = d;
                 }
+                if d > 1 && divergent.len() < 32 {
+                    let gpu_px = pixels_gpu[i][px];
+                    divergent.push((
+                        i,
+                        px / RETINA_COLS,
+                        px % RETINA_COLS,
+                        cpu[px],
+                        saida_gpu[i][px],
+                        gpu_px.dist_m,
+                        gpu_px.material,
+                    ));
+                }
                 total += 1;
             }
         }
@@ -193,6 +215,12 @@ fn main() {
             "  compared={total}  identical={iguais} ({:.4}%)  max_dif={maxdif}",
             iguais as f64 / total as f64 * 100.0
         );
+        if !divergent.is_empty() {
+            println!("  divergent pixels (pose, row, col, cpu, gpu, gpu_dist_m, gpu_material): {divergent:?}");
+            for &(pose, _, _, _, _, _, _) in &divergent {
+                println!("  divergent pose {pose}: {:?}", poses[pose]);
+            }
+        }
 
         let reps = 20;
         let t0 = std::time::Instant::now();
@@ -335,8 +363,7 @@ fn main() {
             being_px_close as f64 / close_total as f64 * 100.0
         );
 
-        let beings_on_ok =
-            maxdif_b <= 1 && close_maxdif <= 1 && being_px_close > 0;
+        let beings_on_ok = maxdif_b <= 1 && close_maxdif <= 1 && being_px_close > 0;
         print_table_row(
             "retina beings-on (legacy i8)",
             total_b + close_total,
@@ -654,7 +681,7 @@ fn validate_brain() {
     // Reads output fatigue: checks whether out_fat is being accumulated (debug)
     {
         let fat = brain.download_fatigue(1); // being 0 only
-        // Slots [96..192] = output fatigue (slots [0..48] = L2, [48..96] = bypass)
+                                             // Slots [96..192] = output fatigue (slots [0..48] = L2, [48..96] = bypass)
         let out_fat_max = fat[96..192].iter().cloned().fold(0.0f32, f32::max);
         let out_fat_nonzero = fat[96..192].iter().filter(|&&v| v.abs() > 1e-6).count();
         println!("  [OUTPUT FATIGUE DIAGNOSTIC — being 0, tick 1]");
@@ -770,7 +797,7 @@ fn validate_brain() {
         let mut fi_cpu_manual = [0.0f32; 96];
         for j in 0..48 {
             let raw = l2_raw0[j] * 2.0; // l2_raw as in the shader (×2/127 × 127 = ×2)
-            // out_fat starts from zero: update first, then apply
+                                        // out_fat starts from zero: update first, then apply
             let out_fat = 0.0f32 + OUT_ALPHA_CPU * (raw.abs() - 0.0f32) * dt;
             fi_cpu_manual[j] = adapta_saida(raw, out_fat);
         }
@@ -1090,7 +1117,7 @@ fn validate_brain() {
 // ============================================================================
 
 fn validate_physics(world: &VoxelWorld) {
-    use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu, pack_config_flags};
+    use universe::gpu::physics::{pack_config_flags, PhysicsGpu, PhysicsStateGpu};
 
     let grid_u8: Vec<u8> = world.grid.iter().map(|v| *v as u8).collect();
     let phys_gpu =
@@ -2024,7 +2051,7 @@ fn perception_cpu(
         let ls = [1.0f32, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 33.0, 40.0];
         for (off, dir2d) in [(0u32, rgt), (1u32, Vec2::new(-rgt.x, -rgt.y))] {
             let mut dmin = 40.0f32; // sentinel = free (no wall within 40m)
-            // Replicates the shader exactly: stops at the FIRST sample that finds Wall/Hole.
+                                    // Replicates the shader exactly: stops at the FIRST sample that finds Wall/Hole.
             for &sd in &ls {
                 if matches!(
                     world.get_voxel_at(pos.x + dir2d.x * sd, pos.z + dir2d.y * sd),

@@ -111,8 +111,10 @@ fn packed_brightness(packed: u32) -> f32 {
         raw = 40.0 - depth_fade * 40.0;
     } else if mat == 1u { // Road
         raw = -128.0 + depth_fade * 96.0;
-    } else { // Hole
+    } else if mat == 3u { // Hole
         raw = 90.0 - clamp(d / 50.0, 0.0, 1.0) * 30.0;
+    } else { // Being (4): matches gpu::legacy_encoding and the rate path.
+        raw = -29.0;
     }
     // Rust's f32 -> i8 cast truncates toward zero; WGSL has trunc for the same contract.
     raw = trunc(clamp(raw, -128.0, 127.0));

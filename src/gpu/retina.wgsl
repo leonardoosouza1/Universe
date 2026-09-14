@@ -74,15 +74,38 @@ const EYE_HEIGHT: f32 = 0.4;
 const BEING_MATERIAL: u32 = 4u;
 const BEING_RADIUS: f32 = 0.775;
 
+// Rust's f32::round, used by VoxelWorld::get_voxel_at, breaks half-way ties away
+// from zero. WGSL `round` has a different tie rule on this driver, so spell out the
+// shared rule before indexing the grid. A ground ray exactly on a cell half-boundary
+// otherwise produced Wall on CPU and Road on GPU.
+fn round_away_from_zero(x: f32) -> i32 {
+    if (x >= 0.0) {
+        return i32(floor(x + 0.5));
+    }
+    return i32(ceil(x - 0.5));
+}
+
 fn voxel_at(wx: f32, wz: f32) -> u32 {
-    // The CPU uses `.round()`, NOT `.floor()` — switching shifts the read by half a cell.
-    let x = i32(round(wx / params.cell_size));
-    let y = i32(round(wz / params.cell_size));
+    // Match VoxelWorld::get_voxel_at, including its tie-away-from-zero behaviour.
+    let x = round_away_from_zero(wx / params.cell_size);
+    let y = round_away_from_zero(wz / params.cell_size);
     let n = i32(params.grid_size);
     if (x >= 0 && x < n && y >= 0 && y < n) {
         return grid[u32(y * n + x)];
     }
     return 2u; // outside the grid is Wall, same as the CPU
+}
+
+// Mirrors VoxelWorld::retina_ground_voxel_at. A ground intercept belongs to the cell
+// that contains it; this is deliberately separate from DDA's centre-based grid lookup.
+fn ground_voxel_at(wx: f32, wz: f32) -> u32 {
+    let x = i32(floor(wx / params.cell_size));
+    let z = i32(floor(wz / params.cell_size));
+    let n = i32(params.grid_size);
+    if (x >= 0 && x < n && z >= 0 && z < n) {
+        return grid[u32(z * n + x)];
+    }
+    return 2u;
 }
 
 @compute @workgroup_size(64)
@@ -167,13 +190,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Still holds, because it is GEOMETRY, not salience judgment.
         if (dir_y < -0.001 && d > dist_to_ground) {
             hit_dist = dist_to_ground;
-            hit_voxel = voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);
+            hit_voxel = ground_voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);
         } else {
             hit_dist = d;
         }
     } else if (dir_y < -0.001 && dist_to_ground <= 1200.0) {
         hit_dist = dist_to_ground;
-        hit_voxel = voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);
+        hit_voxel = ground_voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);
     }
 
     // ── Being occlusion (`--retina-beings`, docs/RETINA-BEINGS.md §2) ──────────────────

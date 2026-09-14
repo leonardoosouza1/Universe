@@ -216,6 +216,39 @@ fn frente_do_waypoint(wps: &[bevy::math::Vec2], wi: usize) -> [f32; 3] {
     [1.0, 0.0, 0.0]
 }
 
+const FORMATION_COLUMNS: usize = 4;
+const FORMATION_LATERAL_SPACING_M: f32 = 3.0;
+const FORMATION_LONGITUDINAL_SPACING_M: f32 = 3.5;
+
+/// Returns longitudinal and lateral offsets for a non-overlapping starting formation.
+fn formation_offset(being: usize) -> (f32, f32) {
+    let row = being / FORMATION_COLUMNS;
+    let col = being % FORMATION_COLUMNS;
+    let lateral =
+        (col as f32 - (FORMATION_COLUMNS as f32 - 1.0) * 0.5) * FORMATION_LATERAL_SPACING_M;
+    // The anchor waypoint faces the next road segment. Fill forward from it: stepping
+    // backwards at a sharp start-line turn put otherwise valid slots outside the road.
+    (row as f32 * FORMATION_LONGITUDINAL_SPACING_M, lateral)
+}
+
+#[cfg(test)]
+mod formation_tests {
+    use super::*;
+
+    #[test]
+    fn formation_slots_do_not_overlap() {
+        let mut slots: Vec<(f32, f32)> = Vec::new();
+        for being in 0..40 {
+            let (longitudinal, lateral) = formation_offset(being);
+            for &(other_longitudinal, other_lateral) in &slots {
+                let distance = (longitudinal - other_longitudinal).hypot(lateral - other_lateral);
+                assert!(distance >= 3.0, "slots {being} and another being overlap");
+            }
+            slots.push((longitudinal, lateral));
+        }
+    }
+}
+
 /// Retorna a MEDIANA da fitness held-out entre os seres que terminaram VIVOS
 /// (`life_left > 0`) — item 3 da TAREFA ("razão usa mediana dos vivos"). Se
 /// ninguém sobreviver, cai para a mediana de TODOS (avisado via `eprintln!`) em
@@ -701,6 +734,7 @@ fn main() {
     /// Todos os seres nascem no mesmo ponto. Torna a fitness comparável entre indivíduos
     /// — sem isso ela mede a largada, não o cérebro.
     let mut same_start = false;
+    let mut start_formation = false;
     let mut largada_aleatoria = false;
     let mut ruido_sigma: f32 = 0.0;
     let mut ruido_drop: f32 = 0.0;
@@ -1151,6 +1185,10 @@ fn main() {
                     }
                 }
                 "--same-start" => {
+                    same_start = true;
+                }
+                "--start-formation" => {
+                    start_formation = true;
                     same_start = true;
                 }
                 // D2 (ESCADA_DIFICULDADE.md): largada num waypoint ALEATÓRIO por geração
@@ -3359,7 +3397,7 @@ fn main() {
                 // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
                 let wi = if largada_aleatoria {
                     wi_gen
-                } else if same_start {
+                } else if same_start || start_formation {
                     0
                 } else {
                     (i * n_wp / n_seres).min(n_wp - 1)
@@ -3368,7 +3406,16 @@ fn main() {
                 // Ver `frente_do_waypoint`: o último waypoint REPETE o primeiro, e o
                 // versor ingênuo saía nulo ali — geração inteira imóvel e seleção cega.
                 let fwd = frente_do_waypoint(&world.waypoints_world, wi);
-                let pos = [wp.x, 0.0, wp.y];
+                let (longitudinal, lateral) = if start_formation {
+                    formation_offset(i)
+                } else {
+                    (0.0, 0.0)
+                };
+                let pos = [
+                    wp.x + fwd[0] * longitudinal - fwd[2] * lateral,
+                    0.0,
+                    wp.y + fwd[2] * longitudinal + fwd[0] * lateral,
+                ];
                 BeingState {
                     phys: make_physics_state(pos, fwd),
                     prev_steer: 0.0,

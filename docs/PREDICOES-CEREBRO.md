@@ -1,5 +1,7 @@
 # Predições — cérebro neuromod no Universe
 
+**Atualização RET1v, 14/09:** o dump mostrou que a falha CPU/GPU era uma amostra de chão na borda de célula. O voxel de impacto agora é definido como a célula que contém o ponto (`floor`) nos dois lados, sem mudar raio, distância ou DDA. `gpu_validate --retina`: **84 672 comparados, max_dif=1, PASS**; seres próximos: **5 292/5 292 idênticos, max_dif=0**. F8 anterior não é veredito: `--same-start` sobrepunha 40 corpos. A bateria substituta usa `--start-formation --retina-beings`; o smoke de 100 tiques só valida integração.
+
 Formato do `neuromod-lab/PREDICOES.md`: registrar ANTES de rodar; negativo com mecanismo é resultado. Números de aposta que dependem do smoke (`u0`) ficam marcados `[após u0]` e são preenchidos antes do `u1` entrar na fila — nunca depois de ler o `u1`.
 
 | nº | predição | aposta | veredito |

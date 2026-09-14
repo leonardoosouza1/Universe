@@ -621,6 +621,21 @@ impl VoxelWorld {
         }
     }
 
+    /// Returns the voxel containing a ground intercept.
+    ///
+    /// Ground contact is a point in a cell, so this deliberately uses `floor` rather
+    /// than the centre-based rounding used by DDA's integer cell coordinates. It avoids
+    /// a CPU/GPU tie ambiguity exactly at a half-cell boundary.
+    fn retina_ground_voxel_at(&self, wx: f32, wz: f32) -> VoxelType {
+        let x = (wx / self.cell_size).floor() as i32;
+        let z = (wz / self.cell_size).floor() as i32;
+        if x >= 0 && x < self.size as i32 && z >= 0 && z < self.size as i32 {
+            self.grid[z as usize * self.size + x as usize]
+        } else {
+            VoxelType::Wall
+        }
+    }
+
     pub fn get_flow_at(&self, wx: f32, wz: f32) -> Vec2 {
         let x = (wx / self.cell_size).round() as i32;
         let y = (wz / self.cell_size).round() as i32;
@@ -1096,7 +1111,7 @@ impl VoxelWorld {
                         hit_dist = dist_to_ground;
                         let hit_px = eye_pos.x + dir_x * hit_dist;
                         let hit_pz = eye_pos.z + dir_z * hit_dist;
-                        hit_voxel = self.get_voxel_at(hit_px, hit_pz);
+                        hit_voxel = self.retina_ground_voxel_at(hit_px, hit_pz);
                     } else {
                         hit_dist = current_dist;
                     }
@@ -1105,7 +1120,7 @@ impl VoxelWorld {
                     hit_dist = dist_to_ground;
                     let hit_px = eye_pos.x + dir_x * hit_dist;
                     let hit_pz = eye_pos.z + dir_z * hit_dist;
-                    hit_voxel = self.get_voxel_at(hit_px, hit_pz);
+                    hit_voxel = self.retina_ground_voxel_at(hit_px, hit_pz);
                 }
 
                 // ── Being occlusion (`--retina-beings`, docs/RETINA-BEINGS.md §2) ──────

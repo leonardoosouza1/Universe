@@ -144,6 +144,11 @@ fn retina_wgsl_e_valido() {
         "the being-occlusion path (docs/RETINA-BEINGS.md §2) is missing from \
          retina.wgsl but this test's doc comment still describes it"
     );
+    assert!(
+        fonte.contains("fn round_away_from_zero")
+            && fonte.contains("round_away_from_zero(wx / params.cell_size)"),
+        "retina.wgsl must make its grid rounding match Rust f32::round at half-cells"
+    );
 }
 
 /// The four copies of `legacy_encoding` must agree on the Being branch.
@@ -159,13 +164,26 @@ fn retina_wgsl_e_valido() {
 #[test]
 fn every_legacy_encoding_copy_handles_the_being_material() {
     for (name, src) in [
-        ("perception.wgsl", include_str!("../src/gpu/perception.wgsl")),
-        ("retina_digest.wgsl", include_str!("../src/gpu/retina_digest.wgsl")),
-        ("fly_map.wgsl", include_str!("../src/gpu/fly_map/fly_map.wgsl")),
+        (
+            "perception.wgsl",
+            include_str!("../src/gpu/perception.wgsl"),
+        ),
+        (
+            "retina_digest.wgsl",
+            include_str!("../src/gpu/retina_digest.wgsl"),
+        ),
+        (
+            "fly_map.wgsl",
+            include_str!("../src/gpu/fly_map/fly_map.wgsl"),
+        ),
+        (
+            "spiking.wgsl",
+            include_str!("../src/gpu/fly_map/spiking.wgsl"),
+        ),
     ] {
         assert!(
-            src.contains("-29"),
-            "{name} lost the Being branch of legacy_encoding (encoded value -29)"
+            src.contains("else if mat == 3u") && src.contains("-29"),
+            "{name} must encode Being separately from Hole as -29"
         );
     }
     // and the Rust reference, which is the one the others copy
