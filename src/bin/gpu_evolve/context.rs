@@ -1541,7 +1541,13 @@ impl GpuCtx {
                 None
             };
             if let Some(fly) = self.fly.as_ref() {
-                fly.dispatch(&mut enc, n, self.percept.buf_output());
+                fly.dispatch(
+                    &mut enc,
+                    n,
+                    self.percept.buf_output(),
+                    universe::fly_map::eye_on(),
+                    &self.buf_retina_out,
+                );
             }
             if let Some(t) = self.timer.as_mut() {
                 t.mark_end(&mut enc, t_fly);
