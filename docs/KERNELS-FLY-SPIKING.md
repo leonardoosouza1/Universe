@@ -28,6 +28,24 @@ an event-driven kernel that only walks the rows of neurons that actually spiked 
 15.1 M × 0.003 ≈ 45 k edges per substep ≈ 7 M edge-ops per tick — **330× less work than dense**, and
 comparable to what `fly_step` already does per tick. Event-driven is the whole design.
 
+**Is the wiring worth the effort? Measured 14/09, and the answer is yes.** The same 20 sugar neurons at
+100 Hz, on the real map and on three controls that preserve the statistics:
+
+| map | MN9 | trials firing | active neurons | spikes |
+|---|---|---|---|---|
+| real | **72.4 ± 5.0 Hz** | 30/30 | 420 | 340 k |
+| shuffled targets (same degrees, same signs) | **0.0 Hz** | 0/30 | 175 | 76 k |
+| shuffled weights (same graph, same signs) | **0.0 Hz** | 0/30 | 96 | 98 k |
+| shuffled signs (same graph, same weights) | 29.4 ± 24.2 Hz | 28/30 | **26 022** | **14.0 M** |
+
+Permuting the targets erases the pathway; permuting only the synapse *counts* also erases it (7 % of the
+edges carry 43 % of the synapses — the pathway is a narrow ridge of heavy edges); permuting the signs
+does not erase it but replaces it with a seizure, 62× more neurons active. So the connectome is not a
+generic reservoir: the specific targets AND the specific weights are the computation. The corollary for
+this document is that an approximation which blurs either one (random pruning, weight quantisation that
+flattens the tail, dropping edges below a threshold) can break the model in a way that microbenchmarks
+will not show — which is why acceptance criterion 2 below is the sugar→MN9 gate, not a timing number.
+
 ---
 
 ## 1. What the three kernels must do
