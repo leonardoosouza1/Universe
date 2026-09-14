@@ -26,7 +26,7 @@ use super::{FlyMapGpu, STEP_ROWS, step_groups};
 use crate::config::iara::vision::RETINA_TOTAL;
 use crate::fly_map::{
     COMMANDS, EyeFrame, FlyMap, IN_CHANNELS, OFF_GAIN, OFF_OUT_PAIR, OFF_SCALE, OFF_TYPE_MASK,
-    OUT_SLOTS, cpu_read, cpu_step, pack_selection,
+    OUT_SLOTS, apply_reflex_readout, cpu_read, cpu_step, pack_selection,
 };
 use crate::gpu::perception::WAVE_U32S;
 
@@ -387,6 +387,156 @@ fn fly_map_parity_with_the_eye_on() {
         moved > 0,
         "every activation is zero — the eye-on run never moved, so the comparison proved \
          nothing"
+    );
+}
+
+/// The reflex readout (`--fly-readout reflex`, `docs/FLY-MAP-BRAIN.md` "Reflex readout")
+/// on the real GPU. `apply_reflex_readout` overwrites `out_pair` on the HOST, before
+/// `upload_selection` — no kernel edit, because `fly_read` already computes
+/// `mean(plus) - mean(minus)` over whatever `out_pair` holds, genome-selected or not.
+/// This test is the proof: three beings get three DIFFERENT genome `out_pair` choices,
+/// all of them overridden by the SAME `reflex_out` block, and GPU vs CPU still agree —
+/// a kernel that read the genome's own pairs instead of the packed override would show
+/// three different commands here, not one.
+#[test]
+#[ignore = "opens a real GPU — run manually: cargo test --release --lib -- --ignored fly_map_parity"]
+fn fly_map_parity_with_reflex_readout() {
+    let Some((device, queue)) = pollster::block_on(open_device()) else {
+        eprintln!("[fly_map_parity] no GPU available — test skipped");
+        return;
+    };
+    let map = FlyMap::synthetic_with_reflex();
+    let layout = map.fly_layout();
+    let reflex_out = map
+        .reflex_out
+        .expect("map carries the reflex-readout block");
+
+    let mut blocks: Vec<Vec<f32>> = Vec::new();
+    for b in 0..N_BEINGS {
+        let mut block = vec![-1.0f32; layout.block_len()];
+        match b {
+            0 => block[5] = 0.0,
+            1 => {
+                block[7] = 1.0;
+                block[9] = 0.0;
+            }
+            _ => block[11] = 1.0,
+        }
+        // Three DIFFERENT genome out_pair choices, deliberately not matching
+        // `reflex_out` (which never draws odd/even the same way) — the override below
+        // must make all three agree.
+        for s in 0..OUT_SLOTS {
+            block[OFF_OUT_PAIR + s] = ((s + b) % 2) as f32;
+        }
+        block[OFF_GAIN] = 1.0 + b as f32 * 0.5;
+        block[OFF_SCALE] = 1.0 - b as f32 * 0.25;
+        for t in 0..layout.n_types {
+            block[OFF_TYPE_MASK + t] = 1.0;
+        }
+        blocks.push(block);
+    }
+    let refs: Vec<&[f32]> = blocks.iter().map(|v| v.as_slice()).collect();
+    let mut sel = pack_selection(&refs, layout, N_BEINGS);
+    let genome_out_pair = sel.out_pair.clone();
+    apply_reflex_readout(&mut sel, reflex_out);
+    assert_ne!(
+        sel.out_pair, genome_out_pair,
+        "the synthetic genome blocks were built to disagree with reflex_out; if they \
+         already match, this test cannot tell an override from a coincidence"
+    );
+    for b in 0..N_BEINGS {
+        assert_eq!(
+            &sel.out_pair[b * OUT_SLOTS..b * OUT_SLOTS + OUT_SLOTS],
+            &reflex_out,
+            "being {b}: apply_reflex_readout must write the SAME six indices to every being"
+        );
+    }
+
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+    let buf_wave = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fly-parity-reflex-wave"),
+        size: (N_BEINGS * WAVE_U32S * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    // The eye binding is off in this test too — the reflex readout and the eye binding
+    // are independent extensions, and mixing them would leave this test unable to tell
+    // which one produced a given divergence.
+    let buf_retina_unused = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fly-parity-reflex-retina-unused"),
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+
+    let gpu = FlyMapGpu::new(
+        Arc::clone(&device),
+        Arc::clone(&queue),
+        &map,
+        N_BEINGS,
+        TAU_STEPS,
+    )
+    .expect("the synthetic map fits in any device");
+    assert!(gpu.upload_selection(&sel, N_BEINGS), "selection uploaded");
+    gpu.reset_state();
+
+    let alpha = gpu.alpha();
+    let n = map.n();
+    let mut x = vec![0.0f32; n * N_BEINGS];
+    let mut r_a = vec![0.0f32; n * N_BEINGS];
+    let mut r_b = vec![0.0f32; n * N_BEINGS];
+
+    for tick in 0..N_TICKS {
+        let wave = synthetic_wave(tick);
+        queue.write_buffer(&buf_wave, 0, bytemuck::cast_slice(&pack_wave(&wave)));
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("fly-parity-reflex-tick"),
+        });
+        gpu.dispatch(&mut enc, N_BEINGS, &buf_wave, false, &buf_retina_unused);
+        queue.submit(Some(enc.finish()));
+        device.poll(wgpu::Maintain::Wait);
+        let gpu_cmd = gpu.read_commands_after_submit(N_BEINGS);
+        let gpu_state = gpu.debug_read_state(N_BEINGS);
+
+        cpu_step(&map, &sel, &wave, alpha, &mut x, &r_a, &mut r_b, None);
+        std::mem::swap(&mut r_a, &mut r_b);
+        let cpu_cmd = cpu_read(&map, &sel, &r_a);
+
+        for j in 0..n {
+            for b in 0..N_BEINGS {
+                let i = j * N_BEINGS + b;
+                assert!(
+                    (gpu_state[i] - r_a[i]).abs() < TOL,
+                    "reflex readout, tick {tick}, neuron {j}, being {b}: GPU {} vs CPU {}",
+                    gpu_state[i],
+                    r_a[i]
+                );
+            }
+        }
+        for b in 0..N_BEINGS {
+            for c in 0..COMMANDS {
+                assert!(
+                    (gpu_cmd[b][c] - cpu_cmd[b][c]).abs() < TOL,
+                    "reflex readout, tick {tick}, being {b}, command {c}: GPU {} vs CPU {}",
+                    gpu_cmd[b][c],
+                    cpu_cmd[b][c]
+                );
+            }
+        }
+    }
+
+    let moved = r_a.iter().filter(|v| v.abs() > 1e-6).count();
+    assert!(
+        moved > 0,
+        "every activation is zero — the reflex-readout run never moved, so the \
+         comparison proved nothing"
+    );
+    let cmd = cpu_read(&map, &sel, &r_a);
+    assert!(
+        cmd.iter().any(|c| c.iter().any(|v| v.abs() > 1e-6)),
+        "every command is zero — the reflex-bound groups had nothing to prove"
     );
 }
 
