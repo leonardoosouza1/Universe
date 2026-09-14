@@ -71,22 +71,31 @@ fn fly_map_bench_step_cost_per_tick() {
 
     for b in POPULATIONS {
         match bench_one(&device, &queue, &map, b) {
-            Some(ms) => println!(
-                "[fly_map_bench] B={b:<3} median {ms:.2} ms/tick  ({:.3} ms per being)",
-                ms / b as f64
+            Some((per_submit, batched)) => println!(
+                "[fly_map_bench] B={b:<3} median {per_submit:.2} ms/tick per submit, \
+                 {batched:.2} ms/tick batched ({:.3} ms per being)",
+                batched / b as f64
             ),
             None => println!("[fly_map_bench] B={b:<3} skipped (map does not fit)"),
         }
     }
 }
 
-/// One population size: build the buffers, run `N_TICKS`, return the median ms/tick.
+/// One population size: build the buffers, run `N_TICKS`, return
+/// `(median ms/tick submitted one at a time, ms/tick with all N_TICKS in one submit)`.
+///
+/// The two differ by the cost of getting a submission scheduled at all, which on a device
+/// already saturated by another run is a floor of its own — and a floor that does not
+/// shrink when the kernel does. The batched figure divides one submit across `N_TICKS`, so
+/// that floor is paid once and what is left is the kernel. Report both: the per-submit
+/// number is what a tick of `gpu_evolve` actually waits for, the batched one is what the
+/// kernel costs.
 fn bench_one(
     device: &Arc<wgpu::Device>,
     queue: &Arc<wgpu::Queue>,
     map: &FlyMap,
     n_beings: usize,
-) -> Option<f64> {
+) -> Option<(f64, f64)> {
     let layout = map.fly_layout();
     // A random selection per being, so the per-being tables are genuinely different and
     // the kernel cannot short-circuit on a uniform population.
@@ -135,5 +144,20 @@ fn bench_one(
         }
     }
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    Some(samples[samples.len() / 2])
+    let per_submit = samples[samples.len() / 2];
+
+    // The same work again, but recorded as ONE encoder. The state is recurrent, so the
+    // ticks still chain exactly as above — only the number of submissions changes.
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("fly-bench-batch"),
+    });
+    for _ in 0..N_TICKS {
+        gpu.dispatch(&mut enc, n_beings, &buf_wave);
+    }
+    let t0 = Instant::now();
+    queue.submit(Some(enc.finish()));
+    device.poll(wgpu::Maintain::Wait);
+    let batched = t0.elapsed().as_secs_f64() * 1000.0 / N_TICKS as f64;
+
+    Some((per_submit, batched))
 }
