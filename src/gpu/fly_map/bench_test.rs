@@ -127,13 +127,22 @@ fn bench_one(
         mapped_at_creation: false,
     });
     queue.write_buffer(&buf_wave, 0, bytemuck::cast_slice(&words));
+    // This benchmark measures the existing hot path (`--fly-brain`), not the eye binding
+    // (`--fly-eye`) — `eye_on: false` and an unread buffer, same as
+    // `parity_test::fly_map_parity_gpu_matches_the_cpu_reference`'s `buf_retina_unused`.
+    let buf_retina_unused = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fly-bench-retina-unused"),
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
 
     let mut samples: Vec<f64> = Vec::with_capacity(N_TICKS);
     for tick in 0..=N_TICKS {
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("fly-bench-tick"),
         });
-        gpu.dispatch(&mut enc, n_beings, &buf_wave);
+        gpu.dispatch(&mut enc, n_beings, &buf_wave, false, &buf_retina_unused);
         let t0 = Instant::now();
         queue.submit(Some(enc.finish()));
         device.poll(wgpu::Maintain::Wait);
@@ -152,7 +161,7 @@ fn bench_one(
         label: Some("fly-bench-batch"),
     });
     for _ in 0..N_TICKS {
-        gpu.dispatch(&mut enc, n_beings, &buf_wave);
+        gpu.dispatch(&mut enc, n_beings, &buf_wave, false, &buf_retina_unused);
     }
     let t0 = Instant::now();
     queue.submit(Some(enc.finish()));

@@ -103,12 +103,21 @@ fn retina_digest_wgsl_e_valido() {
 }
 
 /// FLY MAP (docs/FLY-MAP-BRAIN.md §4): two new entry points, `fly_step` and `fly_read`,
-/// in one module with 17 bindings — the largest binding set in the tree, and the first
-/// shader here to index a private array (`acc[64]`) with a runtime value inside a nested
-/// loop. Every one of those is a construct whose type error would only appear at
+/// in one module with 19 bindings (17 + the eye binding's `pixel_of_neuron` and `retina`,
+/// `docs/FLY-MAP-BRAIN.md` "Eye binding") — the largest binding set in the tree, and the
+/// first shader here to index a private array (`acc[64]`) with a runtime value inside a
+/// nested loop. Every one of those is a construct whose type error would only appear at
 /// `create_shader_module`, i.e. on a real GPU, in the middle of a run.
 #[test]
 fn fly_map_wgsl_is_valid() {
     let fonte = include_str!("../src/gpu/fly_map/fly_map.wgsl");
     validar_wgsl("fly_map.wgsl", fonte);
+    // The eye extension is easy to lose in a future edit of `integrate()` (it is a
+    // conditional inside an already-dense function, not a separate call site) — a no-GPU
+    // canary next to the parse check, cheaper than waiting for `fly_map_parity` to notice.
+    assert!(
+        fonte.contains("eye_pixel_drive") && fonte.contains("pixel_of_neuron"),
+        "the eye-binding drive (docs/FLY-MAP-BRAIN.md \"Eye binding\") is missing from \
+         fly_map.wgsl but this test's doc comment still describes it"
+    );
 }

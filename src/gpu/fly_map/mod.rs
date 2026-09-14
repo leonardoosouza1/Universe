@@ -16,8 +16,9 @@
 //!
 //! # Device requirement
 //!
-//! `fly_step` binds 12 storage buffers, so the device must have been created with
-//! `max_storage_buffers_per_shader_stage >= 12`. `gpu_evolve` already asks for 16
+//! `fly_step` binds 14 storage buffers (12 + the eye binding's `pixel_of_neuron` and
+//! `retina`, `docs/FLY-MAP-BRAIN.md` "Eye binding"), so the device must have been created
+//! with `max_storage_buffers_per_shader_stage >= 14`. `gpu_evolve` already asks for 16
 //! (`context.rs`), and the parity test asks for the same; `downlevel_defaults` alone
 //! (4) is not enough and `create_bind_group_layout` says so.
 
@@ -27,6 +28,7 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use crate::config::iara::vision::RETINA_TOTAL;
 use crate::fly_map::{COMMANDS, FlyMap, FlySelection, NONE, OUT_SLOTS};
 use crate::gpu::core::{storage_entry, uniform_entry};
 use crate::gpu::perception::WAVE_U32S;
@@ -48,6 +50,17 @@ struct FlyParams {
     wave_stride_u32: u32,
     none_id: u32,
     k_out: u32,
+    /// `--fly-eye` gate (docs/FLY-MAP-BRAIN.md "Eye binding"), 0/1. Grown onto the end of
+    /// the struct with `retina_stride` below — both sides (this struct and WGSL's
+    /// `FlyParams`) declare the full ten fields, so this is a symmetric extension, not the
+    /// one-side-unaware case `src/gpu/CLAUDE.md` warns is the only safe direction.
+    eye_on: u32,
+    /// Pixels per being in the retina buffer [`FlyMapGpu::dispatch`] binds. Always
+    /// `RETINA_TOTAL` (`crate::config::iara::vision`) — read from that single canonical
+    /// constant here, not threaded through as a call parameter (`docs/STYLE.md` §4): the
+    /// production buffer (`GpuCtx::buf_retina_out`) and any test retina buffer must both
+    /// be sized `n_beings * RETINA_TOTAL` u32 words for the stride to line up.
+    retina_stride: u32,
 }
 
 /// The connectome, resident on the GPU, plus the per-being selection and state.
@@ -68,6 +81,13 @@ pub struct FlyMapGpu {
     buf_in_group: wgpu::Buffer,
     buf_out_indptr: wgpu::Buffer,
     buf_out_members: wgpu::Buffer,
+    /// The eye binding's `pixel_of_neuron` (`docs/FLY-MAP-BRAIN.md` "Eye binding") —
+    /// uploaded once, here, alongside the rest of the fixed map, because it is a property
+    /// of the CONNECTOME (which neuron the exporter wired to which pixel), not of a
+    /// genome. `NONE`-filled when the loaded map carries no pixel-binding block, so
+    /// `fly_step` reads the same "nothing is eye-driven" answer a v1 map always gave, with
+    /// or without `--fly-eye`.
+    buf_pixel_of_neuron: wgpu::Buffer,
 
     // ── The selection: uploaded once per generation ─────────────────────────
     buf_group_to_input: wgpu::Buffer,
@@ -135,6 +155,10 @@ impl FlyMapGpu {
         // Two layouts, one per entry point, each carrying only what its kernel binds.
         // One shared layout would have to declare all 16 storage buffers, which is
         // exactly the device limit and leaves no room for the next binding.
+        //
+        // `fly_step` now binds 14 storage buffers (12 + the eye binding's
+        // `pixel_of_neuron`/`retina`, `docs/FLY-MAP-BRAIN.md` "Eye binding") — still under
+        // the 16 `gpu_evolve`'s device asks for (`context.rs`), with two spare.
         let layout_step = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fly-step-layout"),
             entries: &[
@@ -151,6 +175,8 @@ impl FlyMapGpu {
                 storage_entry(10, true),  // r_old
                 storage_entry(11, false), // r_new
                 storage_entry(12, false), // x
+                storage_entry(17, true),  // pixel_of_neuron (eye binding)
+                storage_entry(18, true),  // retina (eye binding, GpuCtx::buf_retina_out)
             ],
         });
         let layout_read = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -180,6 +206,16 @@ impl FlyMapGpu {
         let buf_in_group = init_u32(&device, "fly-in-group", &map.in_group_of, ro);
         let buf_out_indptr = init_u32(&device, "fly-out-indptr", &map.out_indptr, ro);
         let buf_out_members = init_u32(&device, "fly-out-members", &map.out_members, ro);
+        // Eye binding: a v1 map, or a v2 map exported without the pixel-binding pass,
+        // carries no `pixel_of_neuron` — upload it NONE-filled so `fly_step` reads
+        // "nothing is eye-driven" regardless of `params.eye_on` (`main()` also refuses
+        // `--fly-eye` outright against a map like this, `FlyMap::has_pixel_binding`).
+        let pixel_of_neuron_data: Vec<u32> = match &map.pixel_of_neuron {
+            Some(v) => v.clone(),
+            None => vec![NONE; n],
+        };
+        let buf_pixel_of_neuron =
+            init_u32(&device, "fly-pixel-of-neuron", &pixel_of_neuron_data, ro);
 
         // Selection tables: born INERT (every group unbound, mask on, gains 1), so a
         // dispatch that happens before the first `upload_selection` commands zero rather
@@ -231,6 +267,7 @@ impl FlyMapGpu {
             buf_in_group,
             buf_out_indptr,
             buf_out_members,
+            buf_pixel_of_neuron,
             buf_group_to_input,
             buf_out_pair,
             buf_gain_scale,
@@ -330,11 +367,21 @@ impl FlyMapGpu {
     ///
     /// `wave_buf` is `PerceptionGpu::buf_output()`, so this must be recorded AFTER the
     /// perception kernels have written the wave for this tick.
+    ///
+    /// `eye_on` and `retina_buf` are the eye binding (`--fly-eye`,
+    /// `docs/FLY-MAP-BRAIN.md` "Eye binding"). `retina_buf` is `GpuCtx::buf_retina_out`
+    /// (`src/bin/gpu_evolve/context.rs:363-367`) in production — it is ALWAYS bound, on
+    /// every dispatch, `eye_on` or not: with `eye_on == false` the kernel's `params.eye_on`
+    /// is 0 and `eye_pixel_drive` is never called, so binding an unused buffer costs
+    /// nothing and there is no host round trip either way (the buffer is already resident;
+    /// only the one `u32` flag in `params` changes per dispatch).
     pub fn dispatch(
         &self,
         enc: &mut wgpu::CommandEncoder,
         n_beings: usize,
         wave_buf: &wgpu::Buffer,
+        eye_on: bool,
+        retina_buf: &wgpu::Buffer,
     ) {
         let b = n_beings.min(self.capacity);
         if b == 0 || self.n == 0 {
@@ -349,6 +396,8 @@ impl FlyMapGpu {
             wave_stride_u32: WAVE_U32S as u32,
             none_id: NONE,
             k_out: self.k_out as u32,
+            eye_on: eye_on as u32,
+            retina_stride: RETINA_TOTAL as u32,
         };
         let buf_params = self
             .device
@@ -377,6 +426,8 @@ impl FlyMapGpu {
                 entry(10, &self.buf_r[old]),
                 entry(11, &self.buf_r[new]),
                 entry(12, &self.buf_x),
+                entry(17, &self.buf_pixel_of_neuron),
+                entry(18, retina_buf),
             ],
         });
         {

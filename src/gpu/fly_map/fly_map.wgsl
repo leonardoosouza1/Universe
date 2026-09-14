@@ -102,6 +102,8 @@ struct FlyParams {
     wave_stride_u32: u32, // u32 words per being in the sensory wave (48 = 192 channels)
     none_id: u32,         // NONE_ID, shipped by the host
     k_out: u32,           // efferent groups
+    eye_on: u32,          // `--fly-eye` gate (docs/FLY-MAP-BRAIN.md "Eye binding"); 0/1
+    retina_stride: u32,   // pixels per being in `retina` — RETINA_TOTAL, host-injected
 };
 
 @group(0) @binding(0)  var<uniform>             params:         FlyParams;
@@ -121,6 +123,10 @@ struct FlyParams {
 @group(0) @binding(14) var<storage, read>       out_members:    array<u32>;
 @group(0) @binding(15) var<storage, read>       out_pair:       array<u32>;
 @group(0) @binding(16) var<storage, read_write> cmd:            array<f32>;
+// ── Eye binding (`--fly-eye`, docs/FLY-MAP-BRAIN.md "Eye binding") — bound only into
+// `fly_step`'s layout, the same way `wave` (binding 6) is: `fly_read` never touches them.
+@group(0) @binding(17) var<storage, read>       pixel_of_neuron: array<u32>;
+@group(0) @binding(18) var<storage, read>       retina:          array<u32>;
 
 // One sensory channel of one being, sign-extended from the packed wave.
 //
@@ -149,15 +155,85 @@ fn input_drive(being: u32, g: u32) -> f32 {
     return gain_scale[being * 2u] * wave_i8(being, ch) / 127.0;
 }
 
+// Eye binding (`--fly-eye`, docs/FLY-MAP-BRAIN.md "Eye binding"): what the rendered
+// retina drives into a neuron bound to `pixel`, replacing the genome's channel binding
+// for THAT neuron. `u_eye = gain * (1 - brightness)`, `brightness = clamp(pixel_value /
+// 127, 0, 1)` — dark (Road, very negative) clamps to brightness 0 and drives at full
+// gain; bright (a near Wall, +127) drives at 0.
+//
+// `pixel_value` is decoded and encoded exactly as the 192 sensory channels are, three
+// literal copies of the same formula because WGSL cannot `use` across shader modules
+// (the same reason `retina_digest.wgsl:148-149` carries its own copy of
+// `legacy_encoding`):
+//   * `retina` packs `(mm << 8) | material` per pixel — `src/gpu/retina.wgsl:159-160`.
+//   * the decode (`pixel_dist_m` / `pixel_mat`) — `src/gpu/perception.wgsl:270-277`.
+//   * `legacy_encoding(d, mat)` — `src/gpu/perception.wgsl:289-311`, mirrored on the CPU
+//     by `universe::gpu::legacy_encoding` (`src/gpu/mod.rs:150-168`), the function
+//     `fly_map::eye_drive` (`src/fly_map_eye.rs`) calls directly — THAT copy and this one
+//     are what `fly_map_parity` (`gpu/fly_map/parity_test.rs`) checks agree.
+//
+// `retina` is BEING-MAJOR (`retina[being * retina_stride + pixel]`), unlike `r_old`/`x`
+// (neuron-major, being-minor): the gather below is therefore NOT the coalesced access
+// the rest of this kernel is built around (`being` varies per lane, so consecutive lanes
+// land `retina_stride` words apart) — one transaction per lane instead of one for the
+// wave. This is a deliberate, UNMEASURED trade-off: the map's own layout is fixed by
+// `retina.wgsl`, eye-driven neurons are expected to be a small minority of `n`, and the
+// branch that reaches this function is wave-uniform (every lane's `pixel_of_neuron[j]`
+// is the same value, so either the whole wave takes this path or none of it does — no
+// thread divergence, only the scattered gather itself).
+fn eye_pixel_drive(being: u32, pixel: u32) -> f32 {
+    let packed: u32 = retina[being * params.retina_stride + pixel];
+    let mm: u32 = packed >> 8u;
+    let mat: u32 = packed & 0xFFu;
+    let d: f32 = f32(mm) / 1000.0;
+    let depth_fade: f32 = clamp(d / 1200.0, 0.0, 1.0);
+    var v: f32;
+    if mat == 2u { // Wall
+        if d < 30.0 {
+            v = 127.0 - (sqrt(clamp(d / 30.0, 0.0, 1.0)) * 72.0);
+        } else if d < 120.0 {
+            v = 55.0 - (clamp((d - 30.0) / 90.0, 0.0, 1.0) * 55.0);
+        } else if d < 1200.0 {
+            v = 0.0 - (clamp((d - 120.0) / 480.0, 0.0, 1.0) * 25.0);
+        } else {
+            v = -25.0 - (clamp((d - 1200.0) / 1200.0, 0.0, 1.0) * 25.0);
+        }
+    } else if mat == 0u { // Grass
+        v = 40.0 - (depth_fade * 40.0);
+    } else if mat == 1u { // Road
+        v = -128.0 + (depth_fade * 96.0);
+    } else { // Hole (3)
+        v = 90.0 - (clamp(d / 50.0, 0.0, 1.0) * 30.0);
+    }
+    let raw: f32 = clamp(v, -128.0, 127.0);
+    let brightness: f32 = clamp(raw / 127.0, 0.0, 1.0);
+    return gain_scale[being * 2u] * (1.0 - brightness);
+}
+
 // The §2 integration for ONE (neuron, being): leaky integrate the gathered drive, then
 // emit through the pruning mask. Split out only so the two chunks below do not repeat it;
 // the arithmetic is identical to `cpu_step`'s, in the same order.
 //
 // `row` is `j * n_beings`, hoisted by the caller because it does not depend on the being.
-fn integrate(row: u32, b: u32, g: u32, t: u32, acc: f32) {
+// `j` is the neuron index itself, needed here (not derivable from `row`/`b` alone without
+// a division) only to look up `pixel_of_neuron[j]` — the eye binding is per NEURON, not
+// per afferent group, so it cannot be folded into `g` the way `input_drive` is.
+fn integrate(row: u32, j: u32, b: u32, g: u32, t: u32, acc: f32) {
     let idx: u32 = row + b;
     let xo: f32 = x[idx];
-    let xn: f32 = xo + params.alpha * (-xo + gain_scale[b * 2u + 1u] * acc + input_drive(b, g));
+    // Eye binding replaces the genome's channel drive for THIS neuron when both the
+    // `--fly-eye` gate is on (`params.eye_on`) and the map bound this neuron to a pixel
+    // (`pixel != NONE_ID`) — `params.eye_on == 0u` (the default) takes the exact same
+    // `input_drive` branch this kernel had before the eye extension existed, so the
+    // arithmetic below is byte-for-byte what it was with the flag off.
+    let pixel: u32 = pixel_of_neuron[j];
+    var u: f32;
+    if params.eye_on != 0u && pixel != params.none_id {
+        u = eye_pixel_drive(b, pixel);
+    } else {
+        u = input_drive(b, g);
+    }
+    let xn: f32 = xo + params.alpha * (-xo + gain_scale[b * 2u + 1u] * acc + u);
     x[idx] = xn;
     // A pruned cell type emits nothing. The state keeps integrating behind the mask —
     // pruning silences the output, it does not kill the neuron.
@@ -223,10 +299,10 @@ fn fly_step(
         }
 
         if b_a < bn {
-            integrate(row, b_a, g, t, acc_a);
+            integrate(row, j, b_a, g, t, acc_a);
         }
         if b_b < bn {
-            integrate(row, b_b, g, t, acc_b);
+            integrate(row, j, b_b, g, t, acc_b);
         }
         b0 = b0 + BEINGS_PER_PASS;
     }
