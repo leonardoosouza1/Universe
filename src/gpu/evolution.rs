@@ -182,14 +182,28 @@ pub struct Genome {
     /// Born all-zero, which makes the bias `[0, 0, 0]` bit for bit for ANY memory content
     /// — the birth-neutral contract below. Mutation is OFF unless `--hippocampus-sector`
     /// asks for it (`HIPPOCAMPUS_MUTATE_ON`), the same stronger gate `sensors` uses and
-    /// for a stronger reason here: this block is the LAST consumer of `rng` in `evolve()`,
-    /// so mutating it by default would shift the random stream of the NEXT child and every
-    /// field of every other being would stop being reproducible against a run of the
-    /// previous binary.
+    /// for a stronger reason here: mutating it by default would shift the random stream of
+    /// the NEXT child and every field of every other being would stop being reproducible
+    /// against a run of the previous binary.
+    ///
+    /// It was the LAST consumer of `rng` when it was written; `fly` (below) now sits after
+    /// it. The guarantee is unchanged — `fly` only draws when ITS gate is open, so with
+    /// both gates closed the stream is the one that predates either block.
+    pub hip: Vec<f32>,
+    /// FLY MAP (docs/FLY-MAP-BRAIN.md §3) — what this being SELECTS on top of the fixed
+    /// Drosophila connectome: `in_bind[192]` (perception channel → afferent group, or −1),
+    /// `out_pair[6]` (plus/minus efferent group per command), `gain`, `scale`, and
+    /// `type_mask[n_types]` (1 = cell type on, 0 = pruned). Layout and operators live in
+    /// `crate::fly_map`; the length is `200 + n_types` and comes from the loaded map.
+    ///
+    /// **EMPTY when no map is loaded**, which is the default: without `--fly-map` nothing
+    /// sizes this block, nothing packs it and nothing uploads it. Mutation is off unless
+    /// `--fly-brain` asks for it (`FLY_MUTATE_ON`) — the same gate as `hip`, and for the
+    /// same reason, now that this block is the one at the end of the rng stream.
     ///
     /// **LAST field of the struct and LAST block on disk** — ARCHITECTURE.md §4 rule 1.
     /// Never reorder.
-    pub hip: Vec<f32>,
+    pub fly: Vec<f32>,
 }
 
 /// L1 and L2 neurons heritable by the P1.7 mechanisms — same numbers as
@@ -219,15 +233,26 @@ pub static NEURON_ACTIVATION_MUTATE_ON: AtomicBool = AtomicBool::new(true);
 /// forces the bias to zero), so the control arm carries the same genome layout with the
 /// block frozen at its birth value.
 ///
-/// Why the default is off, when the P1.7 blocks default to on: the `hip` mutation is the
-/// LAST thing to consume `rng` inside `evolve()`'s child loop, and `rng` is shared across
-/// children. Consuming a single extra draw for child k moves the entire stream for child
+/// Why the default is off, when the P1.7 blocks default to on: the `hip` mutation sits at
+/// the END of `evolve()`'s child loop (it was the last block until `fly` was appended
+/// after it), and `rng` is shared across children. Consuming a single extra draw for child k moves the entire stream for child
 /// k+1, so a default-on `hip` would silently change l1/l2/slow/τ/sensors of every being
 /// after the first — a run of this binary would stop reproducing a run of the previous
 /// one, with no symptom other than different numbers. Off by default, a run that does not
 /// ask for the hippocampus draws exactly the same random sequence it drew before C1
 /// existed. Same shape of gate as `SENSORS_EVOLVE_ON`, stronger reason.
 pub static HIPPOCAMPUS_MUTATE_ON: AtomicBool = AtomicBool::new(false);
+
+/// Does `evolve()` mutate `Genome::fly`? Default **false**, exactly like
+/// `HIPPOCAMPUS_MUTATE_ON` and for the same reason, inherited: the `fly` block is now the
+/// LAST consumer of `rng` in the child loop, so a run that does not ask for the fly map
+/// must not draw from it at all — one extra draw for child k moves the whole stream for
+/// child k+1, and every other field of every later being would stop reproducing a run of
+/// the previous binary, with no symptom other than different numbers.
+///
+/// `gpu_evolve --fly-brain` turns it on. Without a loaded map the block is empty, so even
+/// with the flag on there is nothing to draw for.
+pub static FLY_MUTATE_ON: AtomicBool = AtomicBool::new(false);
 
 /// Number of heritable sensory parameters (SENSORS PHASE, step 1).
 ///
@@ -616,6 +641,11 @@ impl Genome {
             // C1: born all-zero ⇒ the hippocampus bias is exactly [0, 0, 0] for any
             // memory content, so generation 0 of the new arm IS the old brain.
             hip: vec![0.0; crate::gpu::hippocampus::N_HIP_GENES],
+            // FLY MAP: empty unless a map was loaded (`fly_map::set_layout`, called once by
+            // `gpu_evolve` before the first genome is born). Its own seed offset, so the
+            // bindings of being i are not a continuation of the sequence that drew its
+            // weights — the same precaution as `random_sensors_within_ranges`.
+            fly: crate::fly_map::birth_block(seed),
         }
     }
 
@@ -758,6 +788,11 @@ impl Genome {
             // C1: born all-zero ⇒ the hippocampus bias is exactly [0, 0, 0] for any
             // memory content, so generation 0 of the new arm IS the old brain.
             hip: vec![0.0; crate::gpu::hippocampus::N_HIP_GENES],
+            // FLY MAP: empty here whatever the process loaded. `SovereignEngine` is the
+            // CPU/Bevy path and has no fly map — same reason `sensors` falls back to the
+            // defaults — and an empty block packs as an inert selection, never as garbage
+            // (`fly_map::pack_selection`).
+            fly: Vec::new(),
         }
     }
 
@@ -850,6 +885,20 @@ pub struct EvoParams {
     pub hip_p: f32,
     /// C1 — σ of the gaussian step on each mutated `hip` gene (`gpu_evolve --hip-sigma`).
     pub hip_sigma: f32,
+    /// FLY MAP — probability that one binding gene is REDRAWN (`--fly-p-bind`, default
+    /// 0.05). It covers both slices that name a group: the 192 input bindings and the 6
+    /// efferent slots. Its own rate, not a multiple of `p_mutate`, for the same reason as
+    /// `hip_p`: 198 discrete choices against twenty-six thousand weights, and a rate that
+    /// works for a gaussian nudge leaves a discrete choice untouched for whole batteries.
+    pub fly_p_bind: f32,
+    /// FLY MAP — probability that a cell type that is ON is pruned (`--fly-p-off`, 0.05).
+    pub fly_p_off: f32,
+    /// FLY MAP — probability that a pruned cell type comes back (`--fly-p-on`, 0.015).
+    /// Deliberately smaller than `fly_p_off`: pruning is the operator under test, and a
+    /// symmetric pair would make the mask a random walk instead of a selection.
+    pub fly_p_on: f32,
+    /// FLY MAP — σ of the LOG-normal step on `gain` and `scale` (`--fly-sigma`, 0.1).
+    pub fly_sigma: f32,
 }
 
 /// L2 rows with a consumer in the Bevy pipeline (compat for tests and default).
@@ -896,6 +945,10 @@ impl Default for EvoParams {
             mascara_regioes: false,
             hip_p: 1.0,
             hip_sigma: 0.2,
+            fly_p_bind: 0.05,
+            fly_p_off: 0.05,
+            fly_p_on: 0.015,
+            fly_sigma: 0.1,
         }
     }
 }
@@ -1186,11 +1239,12 @@ pub fn evolve(
 
         // ── C1 — sector hippocampus (docs/PRD-CEREBRO-NEUROMOD.md §C1) ─────────
         //
-        // THE LAST BLOCK TO CONSUME `rng` IN THIS LOOP, and it has to stay last. Every
-        // block above — l1, l2, gates_w, slow, τ, sensors and the four P1.7 banks — keeps
-        // drawing exactly the sequence it drew before this block existed, because nothing
-        // was inserted ahead of it. Move this block up and the control arm stops being
-        // bit-identical to the previous binary.
+        // THE SECOND-TO-LAST BLOCK TO CONSUME `rng` IN THIS LOOP, and it has to stay at
+        // the end. Every block above — l1, l2, gates_w, slow, τ, sensors and the four P1.7
+        // banks — keeps drawing exactly the sequence it drew before this block existed,
+        // because nothing was inserted ahead of it. Move this block up and the control arm
+        // stops being bit-identical to the previous binary. `fly`, appended after it, is
+        // gated the same way, so with both gates closed the stream is unchanged.
         //
         // Gated by `HIPPOCAMPUS_MUTATE_ON`, which is off by default (see its doc): when
         // off, ZERO draws are taken here, so `rng` reaches the next child in exactly the
@@ -1207,6 +1261,35 @@ pub fn evolve(
                     *w += rng.gauss() * params.hip_sigma;
                     *w = w.clamp(-2.0, 2.0);
                 }
+            }
+        }
+
+        // ── FLY MAP — selection on top of the connectome (docs/FLY-MAP-BRAIN.md §3) ──
+        //
+        // THE LAST BLOCK TO CONSUME `rng`, the place `hip` used to hold. Everything above
+        // it — l1, l2, gates_w, slow, τ, sensors, the four P1.7 banks and `hip` — keeps
+        // drawing exactly the sequence it drew before this block existed, because nothing
+        // was inserted ahead of it. Move it up and the control arm stops being
+        // bit-identical to the previous binary.
+        //
+        // Gated by `FLY_MUTATE_ON` (off by default): when off, ZERO draws are taken here.
+        // The block is also empty when no map is loaded, so a run without `--fly-map`
+        // could not draw even if the gate were open.
+        //
+        // The operators are in `crate::fly_map::mutate_block` rather than inline: the four
+        // slices need four different operators (discrete rebinding, log-normal gains,
+        // asymmetric pruning) and this function is already 300 lines long.
+        if FLY_MUTATE_ON.load(Ordering::Relaxed) && !filho.fly.is_empty() {
+            if let Some(l) = crate::fly_map::layout() {
+                crate::fly_map::mutate_block(
+                    &mut filho.fly,
+                    l,
+                    params.fly_p_bind,
+                    params.fly_p_off,
+                    params.fly_p_on,
+                    params.fly_sigma,
+                    &mut rng,
+                );
             }
         }
 
@@ -1458,6 +1541,10 @@ mod tests {
             mascara_regioes: false,
             hip_p: 1.0,
             hip_sigma: 0.2,
+            fly_p_bind: 0.05,
+            fly_p_off: 0.05,
+            fly_p_on: 0.015,
+            fly_sigma: 0.1,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -1492,6 +1579,10 @@ mod tests {
             mascara_regioes: false,
             hip_p: 1.0,
             hip_sigma: 0.2,
+            fly_p_bind: 0.05,
+            fly_p_off: 0.05,
+            fly_p_on: 0.015,
+            fly_sigma: 0.1,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -1536,6 +1627,10 @@ mod tests {
             mascara_regioes: false,
             hip_p: 1.0,
             hip_sigma: 0.2,
+            fly_p_bind: 0.05,
+            fly_p_off: 0.05,
+            fly_p_on: 0.015,
+            fly_sigma: 0.1,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -1852,6 +1947,10 @@ mod tests {
             mascara_regioes: false,
             hip_p: 1.0,
             hip_sigma: 0.2,
+            fly_p_bind: 0.05,
+            fly_p_off: 0.05,
+            fly_p_on: 0.015,
+            fly_sigma: 0.1,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
 
@@ -2111,6 +2210,10 @@ mod tests {
             mascara_regioes: false,
             hip_p: 1.0,
             hip_sigma: 0.2,
+            fly_p_bind: 0.05,
+            fly_p_off: 0.05,
+            fly_p_on: 0.015,
+            fly_sigma: 0.1,
         };
         let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
         assert!(
@@ -2164,5 +2267,106 @@ mod tests {
             ligado[0].hip, desligado[0].hip,
             "elite passes untouched either way"
         );
+    }
+
+    /// FLY MAP — the `fly` block has its own four rates, its own gate, and it is the LAST
+    /// consumer of `rng`: with `FLY_MUTATE_ON` off, every other block of the same child is
+    /// bit-identical to a run with it on.
+    ///
+    /// That last clause is the whole reason the block sits where it does. The guard is
+    /// written the same way as `evolve_hip_bloco_tem_taxa_propria_e_portao` — including
+    /// the `Drop` that restores the atomic, so a failing assert does not leak `true` into
+    /// the tests running next to it in the same process.
+    #[test]
+    fn evolve_fly_block_has_its_own_rates_and_gate() {
+        use std::sync::atomic::Ordering;
+        // The layout is a process-wide `OnceLock`: read back whatever actually took, so
+        // this test is correct even if another test in the same binary set it first.
+        crate::fly_map::set_layout(crate::fly_map::FlyLayout {
+            k_in: 5,
+            k_out: 3,
+            n_types: 12,
+        });
+        let layout = crate::fly_map::layout().expect("a layout is set");
+
+        let n = 10;
+        let genomes: Vec<Genome> = (0..n).map(|i| Genome::random(i as u64)).collect();
+        assert_eq!(
+            genomes[0].fly.len(),
+            layout.block_len(),
+            "with a map loaded, a newborn genome carries the whole block"
+        );
+        assert_eq!(
+            crate::fly_map::mask_density(&genomes[0].fly, layout),
+            1.0,
+            "generation 0 prunes nothing"
+        );
+
+        let params = EvoParams {
+            p_mutate: 0.02,
+            sigma: 0.05,
+            n_elite: 1,
+            tournament_k: 3,
+            congela_l2_cegas: false,
+            l2_linhas_lidas: L2_LINHAS_LIDAS,
+            mascara_regioes: false,
+            hip_p: 1.0,
+            hip_sigma: 0.2,
+            // Every probability at 1 so one generation is enough to see the operator; the
+            // defaults (0.05/0.05/0.015/0.1) are what a real run uses.
+            fly_p_bind: 1.0,
+            fly_p_off: 1.0,
+            fly_p_on: 0.0,
+            fly_sigma: 0.3,
+        };
+        let fitnesses: Vec<f64> = (0..n).map(|i| i as f64).collect();
+
+        struct RestoreFly(bool);
+        impl Drop for RestoreFly {
+            fn drop(&mut self) {
+                FLY_MUTATE_ON.store(self.0, Ordering::SeqCst);
+            }
+        }
+        let _guard = RestoreFly(FLY_MUTATE_ON.swap(true, Ordering::SeqCst));
+        let on = evolve(&genomes, &fitnesses, &params, 1, 77);
+        FLY_MUTATE_ON.store(false, Ordering::SeqCst);
+        let off = evolve(&genomes, &fitnesses, &params, 1, 77);
+
+        assert_eq!(
+            crate::fly_map::mask_density(&on[1].fly, layout),
+            0.0,
+            "p_off = 1 prunes every cell type of a mutated child"
+        );
+        assert_eq!(
+            crate::fly_map::mask_density(&off[1].fly, layout),
+            1.0,
+            "gate off: the mask stays exactly as it was born"
+        );
+        assert_ne!(
+            on[1].fly, off[1].fly,
+            "with the gate on the block has to move, or the test proves nothing"
+        );
+        assert!(
+            crate::fly_map::bound_channels(&on[1].fly, layout)
+                .iter()
+                .all(|&(_, g)| (g as usize) < layout.k_in),
+            "a rebinding must never name a group the map does not have"
+        );
+        assert_eq!(
+            on[1].l1, off[1].l1,
+            "fly draws must not move the l1 stream — the block is the last rng consumer"
+        );
+        assert_eq!(
+            on[1].slow, off[1].slow,
+            "fly draws must not move the slow stream"
+        );
+        // `hip` is deliberately NOT compared. The sibling test toggles
+        // `HIPPOCAMPUS_MUTATE_ON`, the two run in parallel threads of the same process, and
+        // this assertion measured that atomic rather than anything about `fly` — it failed
+        // exactly that way once, with a mutated hip on one side and zeros on the other.
+        // `l1` and `slow` above are safe because they are drawn BEFORE `hip` inside the same
+        // child, so no gate downstream of them can move them, which is the property this
+        // test exists to pin.
+        assert_eq!(on[0].fly, off[0].fly, "elite passes untouched either way");
     }
 }

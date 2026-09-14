@@ -101,3 +101,14 @@ fn retina_digest_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/retina_digest.wgsl");
     validar_wgsl("retina_digest.wgsl", fonte);
 }
+
+/// FLY MAP (docs/FLY-MAP-BRAIN.md §4): two new entry points, `fly_step` and `fly_read`,
+/// in one module with 17 bindings — the largest binding set in the tree, and the first
+/// shader here to index a private array (`acc[64]`) with a runtime value inside a nested
+/// loop. Every one of those is a construct whose type error would only appear at
+/// `create_shader_module`, i.e. on a real GPU, in the middle of a run.
+#[test]
+fn fly_map_wgsl_is_valid() {
+    let fonte = include_str!("../src/gpu/fly_map/fly_map.wgsl");
+    validar_wgsl("fly_map.wgsl", fonte);
+}

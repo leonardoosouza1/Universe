@@ -51,6 +51,10 @@ pub mod core;
 pub mod cortex_sheet;
 pub mod dof;
 pub mod evolution;
+// Host + kernels of the fly map (`docs/FLY-MAP-BRAIN.md`). The map itself, its file
+// format and the CPU reference the kernels are compared against live in the GPU-free
+// `crate::fly_map`.
+pub mod fly_map;
 pub mod genome_io;
 pub mod hippocampus;
 pub mod perception;

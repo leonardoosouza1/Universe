@@ -39,6 +39,7 @@
 //! | `TIRE_THERMAL_GAIN` | `main()` (flag `--tire-thermal`) | `main()` (builds the per-being `ThermalParams` once per generation) + `context.rs::tick()` (integrates the temperature and writes `env_grip`) |
 //! | `SENSOR_COST`, `SENSOR_COST_K`, `SENSOR_COST_CAP` | `main()` (flags `--sensor-cost*`) | `main()` (recomputes the per-being subscription once per generation, next to the wiring cost) — the tick only reads the resulting `ctx.sensor_cost` vector |
 //! | `universe::tau_bank::MODE` (library, reached here through [`tau_bank_mode`] / [`set_tau_bank_mode`]) | `main()` (flag `--tau-bank <free\|log-fixed\|spectral>`) | `gpu::evolution::Genome::pack_taus` (builds the bank uploaded once per generation) and `main()` (the `[tau]` diagnostic line) |
+//! | `FLY_BRAIN` | `main()` (flag `--fly-brain`) | `context.rs::tick()` (decides whether the fly map's three commands REPLACE the fast brain's intents). The map, its buffers and its tau live on `GpuCtx` and in `main()`'s locals — device-backed state and one-shot setup, not hot-loop knobs |
 //! | `PERFIL_KERNEL` | `main()` (flag `--kernel-profile <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
@@ -435,6 +436,20 @@ pub fn hippocampus_disabled() -> bool {
 #[inline]
 pub fn hippocampus_active() -> bool {
     hippocampus_on() && !hippocampus_disabled()
+}
+
+/// `--fly-brain`: the three commands read out of the fly map REPLACE the fast brain's raw
+/// intents, before `kan_eval` (docs/FLY-MAP-BRAIN.md §2).
+///
+/// OFF by default, and off it costs nothing: without `--fly-map` no map is loaded, no
+/// buffer is created and `GpuCtx::fly` stays `None`, so the tick takes exactly the old
+/// path. The override is the full-brain-replacement pattern of `PILOTO_GANHO` — the
+/// governor, the sentinel and every clamp downstream of it are the same ones as today,
+/// which is what makes the arm comparable to a normal run.
+pub static FLY_BRAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn fly_brain() -> bool {
+    FLY_BRAIN.load(Ordering::Relaxed)
 }
 
 /// Sector index of a being, `0..N_CHECKPOINTS-1`, from its track progress.

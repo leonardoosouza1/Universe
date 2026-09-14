@@ -17,6 +17,7 @@ use universe::config::iara::vision::{RETINA_ROWS, RETINA_TOTAL};
 use universe::engine::SovereignEngine;
 use universe::gpu::brain::BrainGpu;
 use universe::gpu::core::{storage_entry, uniform_entry};
+use universe::gpu::fly_map::FlyMapGpu;
 use universe::gpu::perception::{PerceptionGpu, PosePerception};
 use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu};
 use universe::gpu::retina_digest::RetinaDigestGpu;
@@ -228,6 +229,14 @@ pub struct GpuCtx {
     /// of `HIP_OBS_COLS` f32 per tick. A SEPARATE file from `obs.f32` on purpose —
     /// `obs.f32` is 394 fixed columns and several tools index into it by offset.
     pub hip_writer: Option<std::io::BufWriter<std::fs::File>>,
+    /// FLY MAP (docs/FLY-MAP-BRAIN.md) — the Drosophila connectome, resident on this same
+    /// device, stepped once per tick. `None` unless `--fly-map` was given, and `None` is
+    /// the whole flag-off contract: no buffer is created, no kernel is recorded, no
+    /// readback happens and the tick is byte-for-byte the one that predates this field.
+    ///
+    /// State, not dose: it owns seventeen device buffers, so it lives here and not in
+    /// `statics.rs` — the same line the ownership table there draws for `GpuTimer`.
+    pub fly: Option<FlyMapGpu>,
 }
 
 /// Contexto físico (curvatura/velocidade/dist_parede) de UM ser neste tick, para
@@ -473,6 +482,8 @@ impl GpuCtx {
             hip_mem: Vec::new(),
             hip_genes: Vec::new(),
             hip_writer: None,
+            // FLY MAP: `main()` fills this only when `--fly-map` was passed.
+            fly: None,
         })
     }
 
@@ -1511,6 +1522,32 @@ impl GpuCtx {
             t.mark_end(&mut enc, t_digest);
         }
 
+        // ── FLY MAP (docs/FLY-MAP-BRAIN.md §4) ─────────────────────────────────
+        //
+        // Runs HERE for the same reason the slow brain's gather does: the sensory wave it
+        // reads (`percept.buf_output()`) is only complete after `perception` and
+        // `retina_digest` have written it, and it has to be read before this encoder is
+        // submitted. It neither reads nor writes anything the fast brain touches, so the
+        // two are independent within the encoder; the order between them is not
+        // load-bearing, unlike the three orderings listed in `src/gpu/CLAUDE.md`.
+        //
+        // With `--fly-map` absent this is `None` and nothing at all is recorded.
+        if self.fly.is_some() {
+            let t_fly = if prints_this_tick {
+                self.timer
+                    .as_mut()
+                    .and_then(|t| t.mark_begin(&mut enc, "fly_map"))
+            } else {
+                None
+            };
+            if let Some(fly) = self.fly.as_ref() {
+                fly.dispatch(&mut enc, n, self.percept.buf_output());
+            }
+            if let Some(t) = self.timer.as_mut() {
+                t.mark_end(&mut enc, t_fly);
+            }
+        }
+
         // Cérebro rápido — só dispara a cada `brain_skip` ticks.
         //
         // A percepção e a física continuam a 64 Hz: o que muda é a frequência de DECISÃO,
@@ -1680,6 +1717,17 @@ impl GpuCtx {
         let slow_out = self.slow.read_outputs(n);
         if let Some(t) = t_rs {
             cpu_phases.push(("cpu.read_slow", t.elapsed().as_secs_f32() * 1000.0));
+        }
+        // FLY MAP: 3 floats per being, read with the same `map_async` → `poll` → `recv`
+        // discipline as the intent above. Empty vector when the map is off, and an empty
+        // vector is what the override below tests before touching anything.
+        let t_rf = prints_this_tick.then(std::time::Instant::now);
+        let fly_cmd = match self.fly.as_ref() {
+            Some(fly) => fly.read_commands_after_submit(n),
+            None => Vec::new(),
+        };
+        if let Some(t) = t_rf {
+            cpu_phases.push(("cpu.read_fly", t.elapsed().as_secs_f32() * 1000.0));
         }
         // ── M4: MAESTRO DE REGIÕES (ver REGIOES_CEREBRAIS.md, spec M4) ─────────
         // gate_b = 1 + 0,5·tanh(w·slow_out + b), atenuado pela RESERVA da região;
@@ -1892,6 +1940,34 @@ impl GpuCtx {
                     v[2] = y[2];
                     intents[0] = v;
                     self.last_intents[0] = v;
+                }
+            }
+        }
+
+        // ── FLY BRAIN OVERRIDE (`--fly-brain`, docs/FLY-MAP-BRAIN.md §2) ───────
+        //
+        // The three commands read out of the connectome REPLACE the fast brain's raw
+        // intents, HERE, before `kan_eval` — so everything downstream (KAN, the slow
+        // brain's modulation, the hippocampus bias, the steering filter, the clamps, the
+        // gearbox) is bit-for-bit the pipeline a normal run uses. That is what makes this
+        // an arm and not a second simulator: only the source of the three numbers changes.
+        //
+        // Same shape as the full override of `PILOTO_GANHO` below, and placed before the
+        // assembly of `phys_states` for the same reason the pilot block is: an override
+        // recorded after it never reaches the motor, it only contaminates `mem0`.
+        //
+        // `last_intents` moves with `intents`, or a tick on which the brain does not fire
+        // (`--brain-skip > 1`) would replay the fast brain's last decision instead of the
+        // map's.
+        if fly_brain() && fly_cmd.len() == n {
+            for i in 0..n {
+                let mut v = intents[i];
+                v[0] = fly_cmd[i][0];
+                v[1] = fly_cmd[i][1];
+                v[2] = fly_cmd[i][2];
+                intents[i] = v;
+                if self.last_intents.len() == n {
+                    self.last_intents[i] = v;
                 }
             }
         }

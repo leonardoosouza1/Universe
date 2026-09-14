@@ -564,6 +564,50 @@ mod checkpoint_tests {
     }
 }
 
+/// One line describing what the elite SELECTED on top of the fly map (`--fly-log-every`).
+///
+/// Prints what evolution can actually change — the bindings, the command pairs, the mask
+/// density and the two gains — and nothing about the map itself, which is fixed. The first
+/// bindings are listed as `channel->group`; a full list of up to 192 pairs would be a wall
+/// of text, and the count plus the head is what a reader compares between generations.
+fn log_fly_elite(gen_abs: usize, block: &[f32], layout: universe::fly_map::FlyLayout) {
+    use universe::fly_map::{OFF_GAIN, OFF_OUT_PAIR, OFF_SCALE, bound_channels, mask_density};
+    if block.len() != layout.block_len() {
+        println!("  [fly-map] gen {gen_abs} elite: no fly block for this map");
+        return;
+    }
+    let bound = bound_channels(block, layout);
+    let head: Vec<String> = bound
+        .iter()
+        .take(8)
+        .map(|(ch, g)| format!("{ch}->{g}"))
+        .collect();
+    let slot = |s: usize| -> String {
+        let v = block[OFF_OUT_PAIR + s];
+        if v < 0.0 {
+            "none".to_string()
+        } else {
+            format!("{}", v as u32)
+        }
+    };
+    println!(
+        "  [fly-map] gen {gen_abs} elite: {} bound channels [{}{}] · out thr={}/{} str={}/{} \
+         brk={}/{} · mask {:.1}% on · gain {:.3} · scale {:.3}",
+        bound.len(),
+        head.join(" "),
+        if bound.len() > head.len() { " ..." } else { "" },
+        slot(0),
+        slot(1),
+        slot(2),
+        slot(3),
+        slot(4),
+        slot(5),
+        mask_density(block, layout) * 100.0,
+        block[OFF_GAIN],
+        block[OFF_SCALE],
+    );
+}
+
 fn main() {
     // Força ICD Vulkan da Radeon (evita SIGSEGV com múltiplos ICDs).
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
@@ -611,6 +655,15 @@ fn main() {
     // C1: rate/σ of the `hip` block (see `EvoParams::hip_p`); only used with `--hippocampus-sector`.
     let mut evo_hip_p: f32 = 1.0;
     let mut evo_hip_sigma: f32 = 0.2;
+    // FLY MAP (docs/FLY-MAP-BRAIN.md). Every one of these is inert without `--fly-map`:
+    // no path, no map, no buffers, no genome block, no draws in `evolve()`.
+    let mut fly_map_path: Option<String> = None;
+    let mut fly_tau_steps: u32 = universe::gpu::fly_map::DEFAULT_TAU_STEPS;
+    let mut evo_fly_p_bind: f32 = 0.05;
+    let mut evo_fly_p_off: f32 = 0.05;
+    let mut evo_fly_p_on: f32 = 0.015;
+    let mut evo_fly_sigma: f32 = 0.1;
+    let mut fly_log_every: usize = 0;
     // Semente da população inicial. Sem isto, repetições da mesma condição são
     // idênticas e não distinguem efeito de sorte — que é o ponto de repetir.
     let mut pop_seed: u64 = 0;
@@ -1524,6 +1577,61 @@ fn main() {
                         replay_every = args[i].parse().unwrap_or(1).max(1);
                     }
                 }
+                // ── FLY MAP (docs/FLY-MAP-BRAIN.md §5) ───────────────────────────
+                // `--fly-map` is the switch that turns the whole subsystem on: without a
+                // path there is no map, so `--fly-brain` and the four rates have nothing
+                // to act on and the run takes exactly the old code path.
+                "--fly-map" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_map_path = Some(args[i].clone());
+                    }
+                }
+                // Turns the map into the DRIVER (its three commands replace the fast
+                // brain's intents) and, with it, the mutation of the `fly` block — the
+                // same coupling `--hippocampus-sector` has, and for the same reason: that
+                // block is the last consumer of `rng`, so a run that does not ask for it
+                // must not draw from it at all.
+                "--fly-brain" => {
+                    FLY_BRAIN.store(true, Ordering::Relaxed);
+                    universe::gpu::evolution::FLY_MUTATE_ON.store(true, Ordering::Relaxed);
+                }
+                "--fly-tau" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_tau_steps = args[i].parse().unwrap_or(fly_tau_steps).max(1);
+                    }
+                }
+                "--fly-p-bind" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_fly_p_bind = args[i].parse().unwrap_or(evo_fly_p_bind);
+                    }
+                }
+                "--fly-p-off" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_fly_p_off = args[i].parse().unwrap_or(evo_fly_p_off);
+                    }
+                }
+                "--fly-p-on" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_fly_p_on = args[i].parse().unwrap_or(evo_fly_p_on);
+                    }
+                }
+                "--fly-sigma" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_fly_sigma = args[i].parse().unwrap_or(evo_fly_sigma);
+                    }
+                }
+                "--fly-log-every" => {
+                    i += 1;
+                    if i < args.len() {
+                        fly_log_every = args[i].parse().unwrap_or(0);
+                    }
+                }
                 "--resume" => {
                     retomar = true;
                 }
@@ -1559,6 +1667,47 @@ fn main() {
              Pass --gens 1, or record each generation into its own file."
         );
         std::process::exit(2);
+    }
+
+    // ── FLY MAP (docs/FLY-MAP-BRAIN.md §1) ────────────────────────────────────
+    //
+    // Loaded HERE, before the first genome exists: the `fly` block is `200 + n_types`
+    // floats long and `Genome::random` reads that shape from the layout this publishes.
+    // Without `--fly-map` nothing in this block runs, no genome carries the block, and no
+    // buffer is created.
+    //
+    // A map that was asked for and did not load is a hard error, never a fallback: the
+    // run would otherwise report plausible numbers for a brain nobody asked for — the
+    // same rule `--resume` already follows two hundred lines below.
+    let fly_map: Option<universe::fly_map::FlyMap> = match fly_map_path.as_deref() {
+        None => None,
+        Some(path) => match universe::fly_map::FlyMap::load(path) {
+            Ok(m) => {
+                println!(
+                    "  [fly-map] n={} m={} k_in={} k_out={} n_types={} · {:.1} MB · {}",
+                    m.n(),
+                    m.m(),
+                    m.k_in,
+                    m.k_out(),
+                    m.n_types,
+                    m.resident_bytes() as f64 / (1024.0 * 1024.0),
+                    path
+                );
+                universe::fly_map::set_layout(m.fly_layout());
+                Some(m)
+            }
+            Err(e) => {
+                eprintln!("[ERROR] --fly-map {path}: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+    if fly_map.is_none() && fly_brain() {
+        eprintln!(
+            "[ERROR] --fly-brain without --fly-map: there is no map to read commands from.\n\
+             [ERROR] Pass --fly-map <flymap v1 file>, or drop --fly-brain."
+        );
+        std::process::exit(1);
     }
 
     let inicio = if retomar {
@@ -1787,6 +1936,35 @@ fn main() {
         }
     };
     ctx.brain_skip = brain_skip;
+    // FLY MAP: the connectome goes resident on the SAME device as every other kernel —
+    // `GpuCtx` owns the device, so the map shares it instead of opening a second one
+    // (`src/gpu/CLAUDE.md`, "one device, all buffers resident").
+    if let Some(map) = fly_map.as_ref() {
+        match universe::gpu::fly_map::FlyMapGpu::new(
+            std::sync::Arc::clone(&ctx.device),
+            std::sync::Arc::clone(&ctx.queue),
+            map,
+            n_seres,
+            fly_tau_steps,
+        ) {
+            Some(gpu) => {
+                println!(
+                    "  [fly-map] resident on the GPU · alpha = 1/{} · {}",
+                    fly_tau_steps,
+                    if fly_brain() {
+                        "DRIVING the beings (--fly-brain)"
+                    } else {
+                        "stepping only — the fast brain still drives"
+                    }
+                );
+                ctx.fly = Some(gpu);
+            }
+            None => {
+                eprintln!("[ERROR] --fly-map: the map does not fit on this device (see above).");
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(ref p) = piloto_forja_path {
         match piloto_forja::PilotoForja::carregar(p) {
             Some(pf) => {
@@ -2349,6 +2527,31 @@ fn main() {
             .collect()
     };
 
+    // ── FLY MAP: give every being a usable selection ──────────────────────────
+    //
+    // A genome that came off disk carries no `fly` block at all (a checkpoint written
+    // before this feature) or one sized for another map. Either way it packs as INERT —
+    // every channel unbound, so the map would command exactly zero for the whole battery
+    // and the log would show a dead population with no stated reason. Reseeding at birth
+    // values is the honest fix, and it is announced: the rest of that genome is the
+    // champion's, only the selection is new.
+    if let Some(l) = universe::fly_map::layout() {
+        let mut reseeded = 0usize;
+        for i in 0..genomes.len() {
+            if genomes[i].fly.len() != l.block_len() {
+                genomes[i].fly = universe::fly_map::birth_block(population_seed_for(pop_seed, i));
+                reseeded += 1;
+            }
+        }
+        if reseeded > 0 {
+            println!(
+                "  [fly-map] {reseeded}/{} genomes carried no fly block for this map \
+                 (checkpoint from before it, or another map) — reseeded at birth values",
+                genomes.len()
+            );
+        }
+    }
+
     // Banco de τ heterogêneo: aplicado DEPOIS de montar a população, em qualquer um dos
     // caminhos acima (aleatória, de checkpoint, mista). Um sorteio por ser — τ é parte do
     // genoma desde o nascimento e daí em diante só muda por mutação e seleção.
@@ -2418,6 +2621,10 @@ fn main() {
         sigma: evo_sigma,
         hip_p: evo_hip_p,
         hip_sigma: evo_hip_sigma,
+        fly_p_bind: evo_fly_p_bind,
+        fly_p_off: evo_fly_p_off,
+        fly_p_on: evo_fly_p_on,
+        fly_sigma: evo_fly_sigma,
         n_elite: evo_n_elite,
         tournament_k: evo_tourney,
         congela_l2_cegas,
@@ -2748,6 +2955,20 @@ fn main() {
             ctx.hip_genes = genomes.iter().flat_map(|g| g.hip.iter().copied()).collect();
             ctx.hip_mem =
                 vec![universe::gpu::hippocampus::SectorMemory::new(); genomes.len().max(n_seres)];
+        }
+        // FLY MAP: the selection is the only part of this subsystem that changes between
+        // generations, and it changes exactly once — same lifetime and same reason as
+        // `gates_w` and `hip_genes` above. The state is reset with it: a child inheriting
+        // its parent's membrane potentials would make the champion's re-evaluation
+        // non-deterministic, which is the bug this binary already paid for with `buf_cfc`.
+        if let (Some(fly), Some(l)) = (ctx.fly.as_ref(), universe::fly_map::layout()) {
+            let blocks: Vec<&[f32]> = genomes.iter().map(|g| g.fly.as_slice()).collect();
+            let sel = universe::fly_map::pack_selection(&blocks, l, n_seres);
+            fly.upload_selection(&sel, n_seres);
+            fly.reset_state();
+            if fly_log_every > 0 && gen_abs % fly_log_every == 0 && !genomes.is_empty() {
+                log_fly_elite(gen_abs, &genomes[0].fly, l);
+            }
         }
         ctx.upload_engines(&engines);
         // Banco de τ: vai separado porque τ vive no genoma, não no `SovereignEngine`.

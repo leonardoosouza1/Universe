@@ -222,6 +222,8 @@ a field missing from this struct cannot pass that trait to its children.
 | `neuron_threshold_l1` | 96 f32 | Per-neuron threshold (P1.7 mechanism 2) |
 | `neuron_activation` | 96 + 48 f32 | Heterogeneous activation function selector (P1.7 mechanism 3) |
 | `gates_w` | 16 f32 | M4 neuromodulation "conductor" gates |
+| `hip` | 29 f32 | C1 sector hippocampus: 27 weights of `W` + write rate + read gain |
+| `fly` | 200 + `n_types` f32 | FLY MAP selection: 192 bindings + 6 efferent slots + gain + scale + pruning mask. EMPTY unless `--fly-map` loaded a map (`docs/FLY-MAP-BRAIN.md`) |
 
 Why `slow` is in the genome and not just in `SlowBrain::new()`: with fixed seeds every
 being would be born with identical slow weights, so modulation would be a constant for
@@ -249,7 +251,11 @@ neuron_alpha      (96+48)           × f32 LE   (optional)
 neuron_period_l1  96                × f32 LE   (optional)
 neuron_threshold  96                × f32 LE   (optional)
 neuron_activation (96+48)           × f32 LE   (optional)
-gates_w           16                × f32 LE   (optional, always last)
+gates_w           16                × f32 LE   (optional)
+hip               29                × f32 LE   (optional)
+fly               200 + n_types     × f32 LE   (optional, ALWAYS LAST — its length is
+                                                not a constant, so it is whatever
+                                                remains in the file)
 ```
 
 Legacy files (written before the header existed) start directly at the `l1` bytes.

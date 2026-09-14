@@ -103,6 +103,7 @@ mod tests {
             neuron_activation: Vec::new(),
             gates_w: Vec::new(),
             hip: Vec::new(),
+            fly: Vec::new(),
         }
     }
 
