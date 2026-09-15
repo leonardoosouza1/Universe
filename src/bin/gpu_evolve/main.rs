@@ -4703,19 +4703,16 @@ fn main() {
         // The curriculum gate, when armed, holds the costs at zero until the population's
         // MEDIAN uncosted fitness reaches the threshold. While the gate is shut `fitness`
         // is untouched, so the median read below is the uncosted one by construction.
-        if let Some(threshold) = cost_gate_progress {
-            if !cost_gate_open {
-                let median = objective_cost::population_median(&fitness[..n_seres]);
-                if median >= threshold {
-                    cost_gate_open = true;
-                    println!(
-                        "[cost-gate] gen {generation_idx} median {median:.1} m >= {threshold:.1} m: \
-                         wall/impact cost applies from the next generation"
-                    );
-                }
-            }
-        }
+        // The reading is taken BEFORE the gate is allowed to open and the costs are applied
+        // BEFORE it is re-read, in that order, so the generation that crosses the threshold
+        // is still scored without the cost and the pressure starts on the next one. Writing
+        // it the other way round -- opening the gate first -- charged the crossing
+        // generation too, which the six-generation smoke caught by comparing champion
+        // genomes against the no-cost arm.
         let costs_apply = cost_gate_progress.is_none() || cost_gate_open;
+        let uncosted_median = cost_gate_progress
+            .filter(|_| !cost_gate_open)
+            .map(|_| objective_cost::population_median(&fitness[..n_seres]));
         if costs_apply && (wall_cost > 0.0 || impact_cost > 0.0) {
             let sector_metres = lap_dist / N_CHECKPOINTS as f64;
             for (score, state) in fitness.iter_mut().zip(&states) {
@@ -4726,6 +4723,15 @@ fn main() {
                     state.collision_energy_j,
                     impact_cost,
                     sector_metres,
+                );
+            }
+        }
+        if let (Some(threshold), Some(median)) = (cost_gate_progress, uncosted_median) {
+            if median >= threshold {
+                cost_gate_open = true;
+                println!(
+                    "[cost-gate] gen {generation_idx} median {median:.1} m >= {threshold:.1} m: \
+                     wall/impact cost applies from the next generation"
                 );
             }
         }
