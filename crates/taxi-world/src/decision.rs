@@ -63,7 +63,11 @@ pub fn decide(
 
     let w = &genome.0;
     let total = G + S;
-    assert_eq!(out_scores.len(), n * total, "out_scores must be sized n*(G+S)");
+    assert_eq!(
+        out_scores.len(),
+        n * total,
+        "out_scores must be sized n*(G+S)"
+    );
     let bias = w[NF + S];
 
     for b in 0..n {
@@ -162,12 +166,30 @@ mod tests {
         let mut choice_a = [0u32; 1];
         let mut margin_a = [0.0f32; 1];
         let mut scores_a = vec![0.0f32; n * (G + S)];
-        decide(&f, &need, &avail, &Genome(genome_a), n, &mut choice_a, &mut margin_a, &mut scores_a);
+        decide(
+            &f,
+            &need,
+            &avail,
+            &Genome(genome_a),
+            n,
+            &mut choice_a,
+            &mut margin_a,
+            &mut scores_a,
+        );
 
         let mut choice_b = [0u32; 1];
         let mut margin_b = [0.0f32; 1];
         let mut scores_b = vec![0.0f32; n * (G + S)];
-        decide(&f, &need, &avail, &Genome(genome_b), n, &mut choice_b, &mut margin_b, &mut scores_b);
+        decide(
+            &f,
+            &need,
+            &avail,
+            &Genome(genome_b),
+            n,
+            &mut choice_b,
+            &mut margin_b,
+            &mut scores_b,
+        );
 
         for g in 0..G {
             assert!(
@@ -196,10 +218,25 @@ mod tests {
         let mut choice = [0u32; 1];
         let mut margin = [0.0f32; 1];
         let mut scores = vec![0.0f32; n * (G + S)];
-        decide(&f, &need, &avail, &Genome(genome), n, &mut choice, &mut margin, &mut scores);
+        decide(
+            &f,
+            &need,
+            &avail,
+            &Genome(genome),
+            n,
+            &mut choice,
+            &mut margin,
+            &mut scores,
+        );
 
-        assert_eq!(choice[0], 1, "tie between options 1 and 4 must pick the lower index");
-        assert!(margin[0].abs() < 1e-5, "a tied top score must give a zero margin");
+        assert_eq!(
+            choice[0], 1,
+            "tie between options 1 and 4 must pick the lower index"
+        );
+        assert!(
+            margin[0].abs() < 1e-5,
+            "a tied top score must give a zero margin"
+        );
     }
 
     #[test]
@@ -221,9 +258,21 @@ mod tests {
         let mut choice = [0u32; 1];
         let mut margin = [0.0f32; 1];
         let mut scores = vec![0.0f32; n * (G + S)];
-        decide(&f, &need, &avail, &Genome(genome), n, &mut choice, &mut margin, &mut scores);
+        decide(
+            &f,
+            &need,
+            &avail,
+            &Genome(genome),
+            n,
+            &mut choice,
+            &mut margin,
+            &mut scores,
+        );
 
-        assert!(choice[0] < G as u32, "with every service masked only a movement option can win");
+        assert!(
+            choice[0] < G as u32,
+            "with every service masked only a movement option can win"
+        );
     }
 
     #[test]
@@ -241,12 +290,25 @@ mod tests {
         let mut choice = [0u32; 1];
         let mut margin = [0.0f32; 1];
         let mut scores = vec![0.0f32; n * (G + S)];
-        decide(&f, &need, &avail, &Genome(genome), n, &mut choice, &mut margin, &mut scores);
+        decide(
+            &f,
+            &need,
+            &avail,
+            &Genome(genome),
+            n,
+            &mut choice,
+            &mut margin,
+            &mut scores,
+        );
 
         // Best raw = 10.0 (idx 0), runner-up raw = 7.0 (idx 2); centering
         // subtracts the SAME mean from every sc, so the gap between them
         // survives unchanged.
         assert_eq!(choice[0], 0);
-        assert!((margin[0] - 3.0).abs() < 1e-3, "expected gap 3.0, got {}", margin[0]);
+        assert!(
+            (margin[0] - 3.0).abs() < 1e-3,
+            "expected gap 3.0, got {}",
+            margin[0]
+        );
     }
 }

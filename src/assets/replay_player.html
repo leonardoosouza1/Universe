@@ -1,440 +1,106 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
+<!doctype html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>IARA Universe -- Replay</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #0a0a12; color: #e0e0f0; font-family: 'Courier New', monospace; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-#header { background: #12122a; padding: 8px 16px; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 16px; }
-#header h1 { font-size: 14px; color: #a0a0ff; }
-#main { display: flex; flex: 1; overflow: hidden; }
-#canvas-wrap { flex: 1; position: relative; }
-canvas { width: 100%; height: 100%; }
-#panel { width: 320px; background: #0e0e22; border-left: 1px solid #333; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.card { background: #161630; border-radius: 6px; padding: 10px; border: 1px solid #2a2a4a; }
-.card h3 { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-.metric { display: flex; justify-content: space-between; font-size: 12px; margin: 3px 0; }
-.metric .val { color: #7af; }
-.metric .label { color: #aaa; }
-.bar-row { display: flex; align-items: center; gap: 6px; font-size: 11px; margin: 3px 0; }
-.bar-bg { flex: 1; background: #1a1a3a; border-radius: 3px; height: 8px; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 3px; transition: width 0.05s; }
-.bar-thr { background: #33ff88; }
-.bar-brk { background: #ff4444; }
-.retina-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; margin-top: 6px; }
-.retina-cell { height: 18px; border-radius: 2px; display: flex; align-items: center; justify-content: center; font-size: 8px; }
-#controls { background: #12122a; padding: 8px 16px; border-top: 1px solid #333; display: flex; align-items: center; gap: 12px; }
-#controls button { background: #2a2a5a; border: 1px solid #555; color: #e0e0f0; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-#controls button:hover { background: #3a3a7a; }
-input[type=range] { flex: 1; }
-#frame-info { font-size: 11px; color: #888; min-width: 120px; }
-.legend { display: flex; gap: 10px; flex-wrap: wrap; }
-.leg-item { display: flex; align-items: center; gap: 4px; font-size: 10px; }
-.leg-dot { width: 10px; height: 10px; border-radius: 50%; }
-.ev-badge { font-size: 9px; padding: 1px 5px; border-radius: 8px; display: inline-block; margin: 2px; }
-.ev-gov { background: #804000; }
-.ev-sent { background: #800000; }
-.ev-ecas { background: #004080; }
-.ev-rev { background: #404000; }
-.diff-row { display: flex; justify-content: space-between; margin: 2px 0; font-size: 11px; }
-.diff-pos { color: #33ff88; }
-.diff-neg { color: #ff4444; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#080b0d">
+  <title>Universe Replay</title>
+  <style>__REPLAY_STYLE__
+__STUDY_STYLE__</style>
 </head>
 <body>
-<div id="header">
-  <h1>IARA Universe -- Replay Quadro a Quadro</h1>
-  <div class="legend" id="legend"></div>
-</div>
-<div id="main">
-  <div id="canvas-wrap" title="roda = zoom · arrastar = mover · duplo-clique = enquadrar"><canvas id="c" width="1000" height="1000"></canvas></div>
-  <div id="panel">
-    <div class="card">
-      <h3>Estado Fisico</h3>
-      <div class="metric"><span class="label">Tick</span><span class="val" id="m-tick">-</span></div>
-      <div class="metric"><span class="label">Velocidade</span><span class="val" id="m-spd">-</span></div>
-      <div class="metric"><span class="label">Arco</span><span class="val" id="m-arc">-</span></div>
-      <div class="metric"><span class="label">Voltas</span><span class="val" id="m-laps">-</span></div>
-    </div>
-    <div class="card">
-      <h3>Comandos</h3>
-      <div class="bar-row"><span style="width:55px;color:#aaa">Throttle</span><div class="bar-bg"><div class="bar-fill bar-thr" id="b-thr"></div></div><span class="val" id="v-thr" style="font-size:11px;min-width:35px;text-align:right"></span></div>
-      <div class="bar-row"><span style="width:55px;color:#aaa">Brake</span><div class="bar-bg"><div class="bar-fill bar-brk" id="b-brk"></div></div><span class="val" id="v-brk" style="font-size:11px;min-width:35px;text-align:right"></span></div>
-      <div class="bar-row"><span style="width:55px;color:#aaa">Steer</span>
-        <div class="bar-bg" style="position:relative">
-          <div style="position:absolute;left:50%;top:0;width:1px;height:100%;background:#555"></div>
-          <div class="bar-fill" id="b-str" style="position:absolute;height:100%;border-radius:3px;transition:all 0.05s"></div>
+  <a class="skip-link" href="#scene-stage">Skip to replay scene</a>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><strong>Universe</strong><span class="mode-pill">Observatory</span></div>
+      <div class="run-summary" aria-label="Recording details"><span id="run-source">Recorded simulation</span><span class="summary-separator"></span><span id="run-rate">-- Hz</span><span class="summary-separator"></span><span id="run-seed">seed --</span></div>
+      <nav class="view-tabs" aria-label="Study view"><button data-view="split" aria-pressed="true">Study</button><button data-view="track">Track</button><button data-view="brain">Brain 3D</button></nav>
+      <button id="toggle-inspector" class="icon-button inspector-toggle" type="button" aria-label="Toggle inspector" aria-expanded="true">Details</button>
+    </header>
+    <main class="workspace">
+      <div class="study-workspace" id="study-workspace">
+      <div class="study-scenes">
+      <section id="scene-stage" class="scene-stage" aria-label="Replay scene" tabindex="-1">
+        <canvas id="scene" tabindex="0">Track replay scene with recorded beings.</canvas><div class="scene-shade" aria-hidden="true"></div>
+        <div class="scene-tools" aria-label="Scene controls">
+          <button id="fit-track" class="tool-button" type="button">Fit Track</button>
+          <button id="inspect-hole" class="tool-button" type="button">Inspect hole</button>
+          <button id="focus-being" class="tool-button" type="button" aria-pressed="false">Follow</button>
+          <label class="tool-toggle"><input id="show-trail" type="checkbox" checked><span>Trail</span></label>
+          <label class="tool-toggle"><input id="show-sensors" type="checkbox" checked><span>Sensors</span></label>
         </div>
-        <span class="val" id="v-str" style="font-size:11px;min-width:35px;text-align:right"></span>
+        <div id="terrain-legend" class="terrain-legend" aria-label="Recorded terrain"></div>
+        <div class="scene-readout"><span id="scene-lap">Lap --</span><strong id="scene-speed">-- km/h</strong><span id="scene-progress">-- m</span></div>
+        <div id="run-outcome" class="run-outcome" aria-label="Measured recording outcome"></div>
+        <nav id="being-picker" class="being-picker" aria-label="Choose a being"></nav>
+        <div id="scene-empty" class="empty-state" hidden><strong>No movement was recorded</strong><span>The inspector can still show any metadata present in this replay.</span></div>
+      </section>
+      <section class="brain-stage" id="brain-stage" aria-label="Controller graph in three dimensions">
+        <header class="brain-tools"><div><span class="eyebrow" id="brain3d-kind">Controller topology</span><strong id="brain3d-name">Brain 3D</strong></div><button id="reset-brain" class="tool-button" type="button">Reset view</button></header>
+        <div class="brain-viewport">
+          <canvas id="brain3d" aria-label="Three-dimensional controller topology and sampled activity" tabindex="0"></canvas>
+          <div id="brain3d-message" class="brain-message" role="status">Loading recorded brain data…</div>
+        </div>
+        <div class="brain-bottom">
+          <p id="brain-connection-count" class="brain-focus">Lines show the selected unit's connections only.</p>
+          <div class="brain-select"><span id="native-layer-wrap"><label for="native-layer">Layer</label><select id="native-layer"><option>wave</option><option>sensory KAN</option><option>input CfC</option><option>L1</option><option>L2</option><option>motor head</option><option>slow input</option><option>slow CfC</option><option>slow dense</option><option>slow output</option></select></span><label for="neuron-index">Unit index</label><input id="neuron-index" type="number" min="0" value="0"><button id="select-neuron" class="tool-button" type="button">Inspect</button></div>
+          <div class="neuron-search" id="fly-neuron-search"><label for="neuron-query">Root ID / cell type</label><input id="neuron-query" type="search" placeholder="e.g. T5c"><button id="find-neuron" class="tool-button" type="button">Find</button><button id="next-neuron" class="tool-button" type="button">Next</button><span id="neuron-matches"></span></div>
+          <div class="telemetry-link"><span id="telemetry-being">Detailed neural telemetry unavailable.</span><button id="jump-telemetry-being" class="tool-button" type="button" hidden>Jump to recorded being</button></div>
+          <p id="neuron-detail"></p><p id="brain3d-state"></p><span class="brain-hint">Drag: rotate · Shift + drag: pan · Wheel: zoom</span>
+          <details id="native-topology-summary" class="native-topology-summary" hidden>
+            <summary>How to read this controller</summary>
+            <p><strong>Functional layout, not anatomy.</strong> All 758 functional units are displayed. Lines show only the selected unit's incoming and outgoing mappings; zero weights are hidden. Colours: <span class="native-key negative">negative weight</span>, <span class="native-key positive">positive weight</span>, <span class="native-key structural">fixed link</span>. A line is a stored parameter or mapping, not measured signal flow.</p>
+            <p>Fast: wave → per-channel sensory KAN; channels 0–95 then cross sensory CfC memory, while 96–191 bypass CfC. L1 mixes all 192 channels into 96 units, followed by L2 with 48 units and the three motor commands. Slow: 48-channel gather → CfC64 → Dense16 → three modulation signals. One-to-one filters do not imply a disconnected controller.</p>
+            <p>Grey units have no recorded activation. Local recurrent memory, normalization, filtering, fatigue and gates are not drawn as edges. Gear outputs and optional runtime consumers are not represented by the three motor-head units. This is a view of checkpoint weights, not the complete execution graph or proof of learning.</p>
+          </details>
+        </div>
+      </section>
       </div>
-      <div style="margin-top:6px;font-size:10px;color:#666">Intent bruto (linha pontilhada = final)</div>
-      <div class="bar-row" style="margin-top:3px"><span style="width:55px;color:#777">Raw Thr</span><div class="bar-bg"><div class="bar-fill bar-thr" id="b-ithr" style="opacity:0.5"></div></div><span class="val" id="v-ithr" style="font-size:11px;min-width:35px;text-align:right;color:#888"></span></div>
-    </div>
-    <div class="card">
-      <h3>Visao</h3>
-      <div class="metric"><span class="label">Parede Esq</span><span class="val" id="m-cl">-</span></div>
-      <div class="metric"><span class="label">Parede Dir</span><span class="val" id="m-cr">-</span></div>
-      <div class="metric"><span class="label">Parede Frente</span><span class="val" id="m-cf">-</span></div>
-      <div class="metric"><span class="label">Curv 40m</span><span class="val" id="m-c40">-</span></div>
-      <div class="metric"><span class="label">Curv 70m</span><span class="val" id="m-c70">-</span></div>
-      <div class="metric"><span class="label">Align Fluxo</span><span class="val" id="m-fl">-</span></div>
-      <div class="metric"><span class="label">Offset Linha</span><span class="val" id="m-lo">-</span></div>
-      <h3 style="margin-top:8px">Retina Fovea (8 bins)</h3>
-      <div class="retina-grid" id="retina-fov"></div>
-      <h3 style="margin-top:8px">Retina Periferica (8 bins)</h3>
-      <div class="retina-grid" id="retina-peri"></div>
-    </div>
-    <div class="card">
-      <h3>Neural</h3>
-      <div class="metric"><span class="label">Dims Saturadas</span><span class="val" id="m-ds">-</span></div>
-      <div class="metric"><span class="label">Safety Flags</span><span class="val" id="m-sf">-</span></div>
-    </div>
-    <div class="card" id="diff-card" style="display:none">
-      <h3>Diff A vs B</h3>
-      <div id="diff-content"></div>
-    </div>
+      <section class="study-dock" aria-label="Sensory and behavior evidence">
+        <div class="dock-tabs"><button data-tab="vision" aria-pressed="true">Vision</button><button data-tab="behavior">Behavior</button><button data-tab="signals">Signals</button><button id="next-impact" hidden>Next impact window →</button><span id="sample-stamp">No sensory sample</span></div>
+        <div class="dock-content" id="dock-vision"><div class="retina-main"><label class="vision-projection-label">Projection <select id="vision-projection"><option value="angular">Aligned angles</option><option value="raw">Raw sensor columns</option></select><span id="vision-axis">−60° · 0° · +60°</span></label><canvas id="retina-full" width="126" height="14" aria-label="Actual encoded retina"></canvas><div class="retina-legend"><span>Grass</span><span>Road</span><span>Wall</span><span>Hole</span><span>Being</span><span>Brightness = proximity</span></div></div><div class="sensor-explanation"><strong id="vision-resolution">Retina not recorded</strong><p id="vision-explanation"></p><p id="retina-hover">Hover a pixel to inspect its material, distance, azimuth and pitch.</p></div></div>
+        <div class="dock-content" id="dock-behavior" hidden><canvas id="behavior-chart" aria-label="Speed and motor command history"></canvas><div id="contact-stats" class="contact-stats"></div></div>
+        <div class="dock-content" id="dock-signals" hidden><div><span class="eyebrow">192 processed sensory channels</span><canvas id="sensory-wave" width="384" height="64"></canvas></div><div><span class="eyebrow">96 sensory CfC states (pre-L1)</span><canvas id="fast-state" width="384" height="64"></canvas><p id="signal-note" class="section-note"></p></div></div>
+      </section>
+      </div>
+      <aside id="inspector" class="inspector" aria-label="Selected being inspector">
+        <div class="inspector-head"><div><span class="eyebrow">Selected being</span><h1 id="being-name">--</h1></div><span id="being-state" class="state-badge">No frame</span></div>
+        <div class="primary-stats">
+          <div><span>Speed</span><strong id="stat-speed">--</strong><small>km/h</small></div>
+          <div><span>Completed laps</span><strong id="stat-lap">--</strong><small id="stat-arc">-- m</small></div>
+          <div><span>Gear</span><strong id="stat-gear">--</strong><small id="stat-yaw">-- rad/s</small></div>
+        </div>
+        <section class="inspector-section vitals-section">
+          <div class="section-heading"><h2>Body</h2><span id="body-status">Recorded state</span></div>
+          <div class="vital-row"><span>Life</span><div class="meter"><i id="life-meter"></i></div><output id="life-value">--</output></div>
+          <div class="vital-row"><span>Fuel</span><div class="meter"><i id="fuel-meter"></i></div><output id="fuel-value">--</output></div>
+        </section>
+        <section class="inspector-section">
+          <div class="section-heading"><h2>Actions</h2><span>intent → applied</span></div><div id="action-bars" class="action-bars"></div><div id="motor-stage-trace" class="motor-stage-trace"></div><p id="action-note" class="section-note"></p>
+        </section>
+        <section class="inspector-section">
+          <div class="section-heading"><h2>Wall Probes</h2><span id="sensor-phase">sample phase unknown</span></div>
+          <div class="probe-values"><div><span>Left</span><strong id="probe-left">--</strong></div><div><span>Front</span><strong id="probe-front">--</strong></div><div><span>Right</span><strong id="probe-right">--</strong></div></div>
+          <div class="retina-label"><span>Foveal retina</span><span id="retina-status"></span></div><div id="retina-foveal" class="retina-strip" aria-label="Foveal retina values"></div>
+          <div class="retina-label"><span>Peripheral retina</span></div><div id="retina-peripheral" class="retina-strip" aria-label="Peripheral retina values"></div>
+        </section>
+        <section class="inspector-section interventions-section">
+          <div class="section-heading"><h2>Control state</h2><span id="intent-strength">--</span></div><div id="safety-flags" class="safety-flags"></div><p id="phase-note" class="section-note"></p>
+        </section>
+      </aside>
+    </main>
+    <footer class="transport" aria-label="Replay transport">
+      <button id="play" class="play-button" type="button" aria-label="Play replay"><span class="play-icon" aria-hidden="true"></span></button>
+      <button id="step-back" class="step-button" type="button" aria-label="Previous recorded frame">−1</button><button id="step-forward" class="step-button" type="button" aria-label="Next recorded frame">+1</button>
+      <div class="timeline-wrap"><input id="timeline" name="replay-position" type="range" min="0" max="0" value="0" aria-label="Replay position"><div class="timeline-meta"><span id="time-readout">00:00.000</span><span id="playback-status" role="status">Paused · Space to play</span><span id="frame-readout">Tick 0 / 0</span></div></div>
+      <label class="speed-control"><span>Speed</span><select id="playback-speed" name="playback-speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>
+    </footer>
   </div>
-</div>
-<div id="controls">
-  <button id="btn-play">Play</button>
-  <button id="btn-pause">Pausa</button>
-  <button id="btn-prev">&lt; Frame</button>
-  <button id="btn-next">Frame &gt;</button>
-  <input type="range" id="scrubber" min="0" value="0">
-  <div id="frame-info">Frame 0 / 0</div>
-  <label style="font-size:11px;color:#888">Vel:
-    <select id="speed-sel" style="background:#1a1a3a;color:#e0e0f0;border:1px solid #444;font-size:11px">
-      <option value="8">1/8x</option>
-      <option value="4">1/4x</option>
-      <option value="2">1/2x</option>
-      <option value="1" selected>1x</option>
-      <option value="0.5">2x</option>
-      <option value="0.25">4x</option>
-      <option value="0.1">10x</option>
-    </select>
-  </label>
-  <label style="font-size:11px;color:#888"><input type="checkbox" id="chk-trail" checked> Rastro</label>
-  <label style="font-size:11px;color:#888"><input type="checkbox" id="chk-diff"> Diff mode</label>
-</div>
-
-<script>
-// DADOS INJETADOS PELO REPLAY_ANALYZE:
-// window.REPLAY_TRACK = [[x,z], ...]
-// window.REPLAY_BEINGS = [{label, frames:[{t,x,y,fx,fy,spd,thr,str,brk,ithr,istr,ibrk,cl,cr,cf,c40,c70,c120,fl,lo,ds,sf,laps,arc},...]}]
-
-const TRACK   = window.REPLAY_TRACK   || [];
-const BEINGS  = window.REPLAY_BEINGS  || [];
-const COLORS  = ["#ff4488","#44aaff","#44ff88","#ffaa00","#cc44ff","#00cccc","#ff8844","#88ff44"];
-
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const W = 1000, H = 1000;
-canvas.width = W; canvas.height = H;
-
-let frame_idx = 0;
-let playing = false;
-let play_timer = null;
-let show_trail = true;
-let diff_mode = false;
-
-// Legenda
-const legend = document.getElementById('legend');
-BEINGS.forEach((b, i) => {
-  const d = document.createElement('div');
-  d.className = 'leg-item';
-  const dot = document.createElement('div');
-  dot.className = 'leg-dot';
-  dot.style.background = COLORS[i % COLORS.length];
-  const txt = document.createElement('span');
-  txt.style.fontSize = '10px';
-  txt.textContent = b.label;
-  d.appendChild(dot);
-  d.appendChild(txt);
-  legend.appendChild(d);
-});
-
-const max_frames = Math.max(...BEINGS.map(b => b.frames.length), 1);
-const scrubber = document.getElementById('scrubber');
-scrubber.max = max_frames - 1;
-
-function frame_of(being, idx) {
-  if (!being.frames.length) return null;
-  return being.frames[Math.min(idx, being.frames.length - 1)];
-}
-
-function cell_color(v) {
-  // v: i8 [-128..127]. wall=positivo(branco), road=negativo(escuro), grass=~0(verde)
-  if (v > 80) return '#ffffff';
-  if (v > 40) return '#aaaaaa';
-  if (v > 10) return '#666666';
-  if (v > -10) return '#225522';
-  if (v > -60) return '#113311';
-  return '#001133';
-}
-
-// ── Câmera: zoom pela roda, arrasto pelo mouse, duplo-clique enquadra ──────────
-//
-// O player nascia sem câmera nenhuma: a pista era desenhada em coordenadas fixas de
-// 0..1000 e, se o traçado fosse maior que a janela, não havia como ver o resto. Com um
-// circuito de 2.928 m isso é o caso normal, não a exceção.
-const cam = { x: 0, y: 0, k: 1 };
-
-function fitTrack() {
-  // Enquadra a PISTA inteira (não o rastro do ser), com margem de 8%.
-  const pts = TRACK.length > 1 ? TRACK : BEINGS.flatMap(b => b.frames.map(f => [f.x, f.y]));
-  if (!pts.length) { cam.x = 0; cam.y = 0; cam.k = 1; return; }
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const [x, y] of pts) {
-    if (x < x0) x0 = x; if (x > x1) x1 = x;
-    if (y < y0) y0 = y; if (y > y1) y1 = y;
-  }
-  const lx = Math.max(x1 - x0, 1), ly = Math.max(y1 - y0, 1);
-  cam.k = Math.min(W / lx, H / ly) * 0.84;
-  cam.x = W / 2 - ((x0 + x1) / 2) * cam.k;
-  cam.y = H / 2 - ((y0 + y1) / 2) * cam.k;
-}
-
-canvas.addEventListener('wheel', ev => {
-  ev.preventDefault();
-  const r = canvas.getBoundingClientRect();
-  // Ponto do mundo sob o cursor tem de ficar parado durante o zoom, senão a navegação
-  // "foge" e fica impossível mirar num trecho da pista.
-  const mx = (ev.clientX - r.left) * (W / r.width);
-  const my = (ev.clientY - r.top) * (H / r.height);
-  const wx = (mx - cam.x) / cam.k, wy = (my - cam.y) / cam.k;
-  const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
-  cam.k = Math.max(0.05, Math.min(60, cam.k * f));
-  cam.x = mx - wx * cam.k;
-  cam.y = my - wy * cam.k;
-  draw();
-}, { passive: false });
-
-let arrastando = null;
-canvas.addEventListener('mousedown', ev => { arrastando = { x: ev.clientX, y: ev.clientY }; });
-window.addEventListener('mouseup', () => { arrastando = null; });
-window.addEventListener('mousemove', ev => {
-  if (!arrastando) return;
-  const r = canvas.getBoundingClientRect();
-  cam.x += (ev.clientX - arrastando.x) * (W / r.width);
-  cam.y += (ev.clientY - arrastando.y) * (H / r.height);
-  arrastando = { x: ev.clientX, y: ev.clientY };
-  draw();
-});
-canvas.addEventListener('dblclick', () => { fitTrack(); draw(); });
-canvas.style.cursor = 'grab';
-
-function draw() {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = '#0a0a12';
-  ctx.fillRect(0, 0, W, H);
-  ctx.setTransform(cam.k, 0, 0, cam.k, cam.x, cam.y);
-
-  // Pista
-  if (TRACK.length > 1) {
-    ctx.beginPath();
-    ctx.moveTo(TRACK[0][0], TRACK[0][1]);
-    for (let i = 1; i < TRACK.length; i++) {
-      ctx.lineTo(TRACK[i][0], TRACK[i][1]);
-    }
-    ctx.closePath();   // é uma VOLTA: o último waypoint liga no primeiro
-    ctx.strokeStyle = '#2a2a5a';
-    ctx.lineWidth = 18;
-    ctx.stroke();
-    ctx.strokeStyle = '#1a1a3a';
-    ctx.lineWidth = 14;
-    ctx.stroke();
-    // Linha de chegada, para dar referência de onde a volta começa e termina.
-    ctx.beginPath();
-    ctx.arc(TRACK[0][0], TRACK[0][1], 9, 0, Math.PI * 2);
-    ctx.fillStyle = '#00e0a0';
-    ctx.fill();
-  }
-
-  BEINGS.forEach((b, bi) => {
-    const color = COLORS[bi % COLORS.length];
-    const f = frame_of(b, frame_idx);
-    if (!f) return;
-
-    // Rastro
-    if (show_trail && frame_idx > 0) {
-      const trail_start = Math.max(0, frame_idx - 300);
-      ctx.beginPath();
-      const f0 = b.frames[trail_start];
-      ctx.moveTo(f0.x, f0.y);
-      for (let i = trail_start + 1; i <= Math.min(frame_idx, b.frames.length - 1); i++) {
-        ctx.lineTo(b.frames[i].x, b.frames[i].y);
-      }
-      ctx.strokeStyle = color + '60';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    // Ser
-    ctx.beginPath();
-    ctx.arc(f.x, f.y, 6, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-
-    // Heading
-    ctx.beginPath();
-    ctx.moveTo(f.x, f.y);
-    ctx.lineTo(f.x + f.fx, f.y + f.fy);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-
-    // Circulo magenta se governor interveio
-    if (Math.abs(f.ithr - f.thr) > 0.05) {
-      ctx.beginPath();
-      ctx.arc(f.x, f.y, 11, 0, Math.PI * 2);
-      ctx.strokeStyle = '#ff00ff80';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    // Sentinel = circulo vermelho
-    if (f.sf & 2) {
-      ctx.beginPath();
-      ctx.arc(f.x, f.y, 14, 0, Math.PI * 2);
-      ctx.strokeStyle = '#ff000080';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-  });
-
-  update_panel();
-}
-
-function update_panel() {
-  const b = BEINGS[0];
-  if (!b) return;
-  const f = frame_of(b, frame_idx);
-  if (!f) return;
-
-  document.getElementById('m-tick').textContent = f.t;
-  document.getElementById('m-spd').textContent  = f.spd.toFixed(1) + ' m/s (' + (f.spd * 3.6).toFixed(0) + ' km/h)';
-  document.getElementById('m-arc').textContent  = f.arc.toFixed(0) + 'm';
-  document.getElementById('m-laps').textContent = f.laps;
-
-  const pct = v => Math.max(0, Math.min(100, Math.abs(v) * 100)).toFixed(0) + '%';
-  document.getElementById('b-thr').style.width = pct(f.thr);
-  document.getElementById('v-thr').textContent  = f.thr.toFixed(2);
-  document.getElementById('b-brk').style.width  = pct(f.brk);
-  document.getElementById('v-brk').textContent  = f.brk.toFixed(2);
-  document.getElementById('b-ithr').style.width = pct(f.ithr);
-  document.getElementById('v-ithr').textContent  = f.ithr.toFixed(2);
-
-  const sb = document.getElementById('b-str');
-  const strPct = Math.abs(f.str) * 50;
-  if (f.str >= 0) {
-    sb.style.left = '50%';
-    sb.style.width = strPct + '%';
-    sb.style.background = '#0af';
-  } else {
-    sb.style.left = (50 - strPct) + '%';
-    sb.style.width = strPct + '%';
-    sb.style.background = '#fa0';
-  }
-  document.getElementById('v-str').textContent = f.str.toFixed(2);
-
-  document.getElementById('m-cl').textContent  = f.cl.toFixed(1) + 'm';
-  document.getElementById('m-cr').textContent  = f.cr.toFixed(1) + 'm';
-  document.getElementById('m-cf').textContent  = f.cf.toFixed(1) + 'm';
-  document.getElementById('m-c40').textContent = (f.c40 * 90).toFixed(0) + ' deg';
-  document.getElementById('m-c70').textContent = (f.c70 * 90).toFixed(0) + ' deg';
-  document.getElementById('m-fl').textContent  = f.fl.toFixed(2);
-  document.getElementById('m-lo').textContent  = f.lo.toFixed(1) + 'm';
-  document.getElementById('m-ds').textContent  = f.ds;
-
-  const sf = f.sf;
-  const flags = [];
-  if (sf & 1) flags.push('<span class="ev-badge ev-gov">GOV</span>');
-  if (sf & 2) flags.push('<span class="ev-badge ev-sent">SENT</span>');
-  if (sf & 4) flags.push('<span class="ev-badge ev-ecas">ECAS</span>');
-  if (sf & 8) flags.push('<span class="ev-badge ev-rev">REV</span>');
-  document.getElementById('m-sf').innerHTML = flags.join('') || '--';
-
-  // Retina
-  const fov_div  = document.getElementById('retina-fov');
-  const peri_div = document.getElementById('retina-peri');
-  if (f.fov && fov_div.children.length !== 8) {
-    fov_div.innerHTML = '';
-    peri_div.innerHTML = '';
-    for (let i = 0; i < 8; i++) {
-      const c1 = document.createElement('div'); c1.className = 'retina-cell'; fov_div.appendChild(c1);
-      const c2 = document.createElement('div'); c2.className = 'retina-cell'; peri_div.appendChild(c2);
-    }
-  }
-  if (f.fov) {
-    for (let i = 0; i < 8; i++) {
-      fov_div.children[i].style.background  = cell_color(f.fov[i]);
-      fov_div.children[i].textContent       = f.fov[i];
-      peri_div.children[i].style.background = cell_color(f.peri[i]);
-      peri_div.children[i].textContent      = f.peri[i];
-    }
-  }
-
-  // Diff mode
-  const diffCard = document.getElementById('diff-card');
-  if (diff_mode && BEINGS.length >= 2) {
-    diffCard.style.display = '';
-    const fb = frame_of(BEINGS[1], frame_idx);
-    if (fb) {
-      const spd_d = f.spd - fb.spd;
-      const thr_d = f.thr - fb.thr;
-      const str_d = f.str - fb.str;
-      const arc_d = f.arc - fb.arc;
-      function dc(v, label, unit) {
-        const cls = v > 0.01 ? 'diff-pos' : v < -0.01 ? 'diff-neg' : '';
-        return '<div class="diff-row"><span style="color:#aaa">' + label + '</span><span class="' + cls + '">' + (v > 0 ? '+' : '') + v.toFixed(2) + unit + '</span></div>';
-      }
-      document.getElementById('diff-content').innerHTML =
-        dc(spd_d, 'Speed (A-B)', ' m/s') +
-        dc(thr_d, 'Throttle (A-B)', '') +
-        dc(str_d, 'Steer (A-B)', '') +
-        dc(arc_d, 'Arc (A-B)', 'm');
-    }
-  } else {
-    diffCard.style.display = 'none';
-  }
-
-  document.getElementById('frame-info').textContent = 'Frame ' + frame_idx + ' / ' + (max_frames - 1);
-  scrubber.value = frame_idx;
-}
-
-function go_to(idx) {
-  frame_idx = Math.max(0, Math.min(max_frames - 1, idx));
-fitTrack();   // enquadra o circuito inteiro na abertura
-draw();
-}
-
-document.getElementById('btn-play').addEventListener('click',  () => { playing = true; tick(); });
-document.getElementById('btn-pause').addEventListener('click', () => { playing = false; clearTimeout(play_timer); });
-document.getElementById('btn-prev').addEventListener('click',  () => { playing = false; go_to(frame_idx - 1); });
-document.getElementById('btn-next').addEventListener('click',  () => { playing = false; go_to(frame_idx + 1); });
-scrubber.addEventListener('input', e => { playing = false; go_to(parseInt(e.target.value)); });
-document.getElementById('chk-trail').addEventListener('change', e => { show_trail = e.target.checked; draw(); });
-document.getElementById('chk-diff').addEventListener('change',  e => { diff_mode = e.target.checked; draw(); });
-
-function tick() {
-  if (!playing) return;
-  if (frame_idx >= max_frames - 1) { playing = false; return; }
-  frame_idx++;
-  draw();
-  const mult = parseFloat(document.getElementById('speed-sel').value);
-  play_timer = setTimeout(tick, 16 * mult);
-}
-
-document.addEventListener('keydown', e => {
-  if (e.key === ' ')           { playing = !playing; if (playing) tick(); else clearTimeout(play_timer); }
-  if (e.key === 'ArrowRight')  { playing = false; go_to(frame_idx + 1); }
-  if (e.key === 'ArrowLeft')   { playing = false; go_to(frame_idx - 1); }
-  if (e.key === 'ArrowUp')     { playing = false; go_to(frame_idx + 10); }
-  if (e.key === 'ArrowDown')   { playing = false; go_to(frame_idx - 10); }
-});
-
-draw();
-</script>
+  <script>__REPLAY_MODEL__</script>
+  <script>__BRAIN_3D__</script>
+  <script>__NATIVE_BRAIN_3D__</script>
+  <script>__REPLAY_STUDY__</script>
+  <script>__REPLAY_VIEW__</script>
 </body>
 </html>

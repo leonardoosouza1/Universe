@@ -42,8 +42,9 @@
 //
 // # Atomics
 //
-// O shader usa atomicOr para escrever bytes individuais em buf_output, igual aos outros
-// kernels de percepção. Garante ausência de corrida com spatial e temporal (canais distintos).
+// Most channels use atomicOr to write individual bytes into the zeroed output buffer.
+// Channels 21-27 are legacy overwrite slots: the spatial pass writes wall probes
+// there first, so this pass explicitly replaces each owned byte with retinal motion.
 //
 // # BODY BLOCK — ownership handoff (BODY PHASE, 2026-08-17)
 //
@@ -140,6 +141,17 @@ fn write_channel(being: u32, ch: u32, val: i32) {
     atomicOr(&output[word_idx], v << byte_pos);
 }
 
+// Replaces one packed byte while preserving the other three channels in its u32.
+// Rows 0-6 run concurrently and share packed words, so both operations must be atomic.
+fn overwrite_channel(being: u32, ch: u32, val: i32) {
+    let word_idx = being * WAVE_U32S + ch / 4u;
+    let byte_pos = (ch % 4u) * 8u;
+    let byte_mask = 0xFFu << byte_pos;
+    atomicAnd(&output[word_idx], ~byte_mask);
+    let v = u32(clamp(val, 0, 127)) & 0xFFu;
+    atomicOr(&output[word_idx], v << byte_pos);
+}
+
 // Idêntica a `write_channel`, mas preserva sinal (clamp em [-128,127] como
 // perception.wgsl/perception_temporal.wgsl fazem) — necessária para ch 114-116
 // (approach/fóvea COM SINAL: positivo = parede se aproximando).
@@ -187,9 +199,9 @@ const FOVEA_NORM: f32 = 4.0;
 // RDNA2 tem wave32; 11 threads = 1 wave incompleto mas executado em 1 wave (32 slots).
 // Não há ganho em aumentar para 16 — o trabalho é O(RETINA_COLS) = 126 por thread.
 @compute @workgroup_size(11, 1, 1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+fn main(@builtin(workgroup_id)        workgroup: vec3<u32>,
         @builtin(local_invocation_id)  lid: vec3<u32>) {
-    let being = gid.x;
+    let being = workgroup.x;
     let tid   = lid.x;  // 0-10: thread dentro do workgroup (11 threads, FASE CANAIS 2026-08-14)
 
     if being >= params.n_beings { return; }
@@ -216,7 +228,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         // written by perception_temporal.wgsl — this kernel GOES SILENT. See the
         // "BODY BLOCK — ownership handoff" block at the top of this file.
         if row < 7u {
-            write_channel(being, 21u + row, motion);
+            overwrite_channel(being, 21u + row, motion);
         } else if params.body_on <= 0.5 {
             write_channel(being, 98u, motion);
         }

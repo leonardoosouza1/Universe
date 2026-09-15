@@ -137,7 +137,7 @@ fn main() {
         }
         cpu_samples.push(cpus[0].output);
 
-        if t % 80 == 0 {
+        if t < 16 || t % 80 == 0 {
             println!(
                 "  t={:3}  cpu[0] = {:+.6} {:+.6} {:+.6}   gpu[0] = {:+.6} {:+.6} {:+.6}",
                 t,

@@ -36,8 +36,9 @@
 //
 // # CfC — identical to cfc.rs
 //
-//   decay = exp(-0.5 * dt)
-//   gain_dt = 1.0 * dt
+//   elapsed_dt = body_dt * tick_interval
+//   decay = exp(-0.5 * elapsed_dt)
+//   gain_dt = 2.0 * (1.0 - decay)
 //   x_raw = input_i32 / 127.0
 //   threshold = FATIGUE_BETA * fatigue[i]
 //   x = sign(x_raw) * max(0, |x_raw| - threshold)    ← soft shrinkage
@@ -82,7 +83,7 @@ const OFF_D2B:          u32 = 1088u;   // 1040 + 48
 
 // CfC parameters (same as cfc.rs and brain.wgsl)
 const CFC_DECAY_RATE:  f32 = 0.5;
-const CFC_INPUT_GAIN:  f32 = 1.0;
+const CFC_DC_GAIN:     f32 = 2.0;
 const CFC_CLAMP:       f32 = 2.0;
 const CFC_DENOISE_MAG: f32 = 0.10;
 const FATIGUE_ALPHA:   f32 = 1.0;
@@ -185,9 +186,13 @@ fn run_cfc(
     var s:   f32 = buf_state[state_base + OFF_CFC_STATE   + i];
     var fat: f32 = buf_state[state_base + OFF_CFC_FATIGUE + i];
 
-    let dt: f32     = params.dt;
+    // This organ runs one update for every eight body ticks. Using one body `dt`
+    // here stretched every time constant by 8x and made GPU memory disagree with
+    // `SlowBrain::tick`. The current input is a zero-order-held sample covering the
+    // elapsed interval.
+    let dt: f32     = params.dt * f32(TICK_INTERVAL);
     let decay: f32  = exp(-CFC_DECAY_RATE * dt);
-    let gain_dt:f32 = CFC_INPUT_GAIN * dt;
+    let gain_dt:f32 = CFC_DC_GAIN * (1.0 - decay);
 
     // Channel i input: channels 0..47 come from buf_input; channels 48..63 are zeros.
     var x_raw: f32;

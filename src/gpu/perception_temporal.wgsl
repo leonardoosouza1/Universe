@@ -72,7 +72,7 @@ struct Pose {
 @group(0) @binding(4) var<storage, read>       poses:    array<Pose>;
 @group(0) @binding(5) var<storage, read>       retina:   array<u32>;      // não usado
 @group(0) @binding(6) var<storage, read_write> output:   array<atomic<u32>>;
-// Per-being temporal state — 66 f32 per being (TEMPORAL_STRIDE=66; it was 58 before
+// Per-being temporal state — 73 f32 per being (TEMPORAL_STRIDE=73; it was 58 before
 // the BODY BLOCK of the BODY PHASE, 2026-08-17).
 // Layout:
 //   [0-4]   prev_dist_l/r/f, wall_ema_l/r
@@ -92,7 +92,7 @@ struct Pose {
 //   [23]    prop_hp_frac     — HP/HP_max ∈ [0,1]        → ch67
 //   [24]    prop_rpm_ratio   — rpm/rpm_max ∈ [0,1]      → ch68
 //   [25]    prop_gear        — marcha atual ∈ [0,7]      → ch69
-//   [26]    prop_tire_temp_n — media_temp/120°C ∈ [0,1]  → ch70
+//   [26]    prop_tire_temp_n — average normalised tyre temperature ∈ [0,1] → ch70
 //   [27]    prop_downforce_n — downforce/weight ∈ [0,1]  → ch71 (reservado=0)
 //   [28]    prop_in_draft    — 1.0=em draft, 0.0=não      → ch72 (reservado=0)
 //   [29]    prop_on_grass    — 1.0=grama, 0.0=pista       → ch73
@@ -123,6 +123,8 @@ struct Pose {
 //           `shader_reads_every_slot_and_writes_every_channel_of_the_registry`
 //           (perception_body_test.rs) proves the two agree — WGSL cannot import a
 //           Rust const, so the agreement is by test, not by compiler.
+//   [66-72] arc-length curve lookaheads: heritable near/mid/far, then
+//           350/200/275/260 metres. Host values are signed heading deltas / 90°.
 @group(0) @binding(7) var<storage, read_write> temporal: array<f32>;
 
 // ─── Constantes ────────────────────────────────────────────────────────────────
@@ -133,7 +135,7 @@ struct Pose {
 // 58-65). CRITICAL: must match TEMPORAL_STRIDE in perception.rs exactly. The block
 // was APPENDED at the end on purpose — no slot already measured changed index.
 // Slots 32-65 are injected by the CPU via write_buffer before the dispatch.
-const TEMPORAL_STRIDE: u32 = 66u;
+const TEMPORAL_STRIDE: u32 = 73u;
 
 // First slot of the BODY BLOCK. Mirrors `BODY_SLOT_BASE` in perception.rs.
 const BODY_SLOT_BASE: u32 = 58u;
@@ -148,42 +150,6 @@ fn write_channel(being: u32, ch: u32, val: i32) {
     atomicOr(&output[base], byte_val << ((ch % 4u) * 8u));
 }
 
-// ─── Auxiliar: curvatura via campo de fluxo ───────────────────────────────────
-//
-// Usado para ch111 (350m), ch112 (200m) e ch113 (275m) — lookaheads de curvatura
-// que estavam a cargo do motor.rs mas devem vir da GPU para evitar dependência
-// de um código path que só roda no modo headless CPU.
-//
-// flow[] não é percorrido em loop — é apenas uma leitura direta por coordenada
-// (nearest-neighbor), sem branch em cima de grid[], portanto não aciona o crash
-// do compilador ACO que motivou a separação deste shader.
-fn flow_at_temporal(wx: f32, wz: f32) -> vec2<f32> {
-    let x = i32(round(wx / params.cell_size));
-    let y = i32(round(wz / params.cell_size));
-    let n = i32(params.grid_size);
-    if x >= 0 && x < n && y >= 0 && y < n {
-        return flow[u32(y * n + x)];
-    }
-    return vec2<f32>(0.0, 0.0);
-}
-
-// Calcula curvatura (ângulo assinado entre forward e fluxo) em distância d.
-// Resultado: [-π/2, π/2] → [-127, 127].
-fn curv_at_d(pos_x: f32, pos_z: f32, fwd_x: f32, fwd_z: f32, d: f32) -> i32 {
-    let probe_x = pos_x + fwd_x * d;
-    let probe_z = pos_z + fwd_z * d;
-    let fl = flow_at_temporal(probe_x, probe_z);
-    let fmag2 = fl.x * fl.x + fl.y * fl.y;
-    if fmag2 < 1e-4 {
-        return 0;
-    }
-    let cross_y = fwd_x * fl.y - fwd_z * fl.x;
-    let dot = clamp(fwd_x * fl.x + fwd_z * fl.y, -1.0, 1.0);
-    let angle = atan2(cross_y, dot);
-    let HALF_PI: f32 = 1.5707963267948966;
-    return i32(clamp((angle / HALF_PI) * 127.0, -127.0, 127.0));
-}
-
 // ─── Kernel principal ──────────────────────────────────────────────────────────
 //
 // 1 workgroup por ser, 1 thread por workgroup.
@@ -196,13 +162,6 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     if being >= params.n_beings { return; }
 
     let tb = being * TEMPORAL_STRIDE;
-
-    // ── Posição e direção deste ser (para lookaheads de curvatura) ────────────
-    let pose  = poses[being];
-    let pos_x = pose.pos_x;
-    let pos_z = pose.pos_z;
-    let fwd_x = pose.fwd_x;
-    let fwd_z = pose.fwd_z;
 
     // ── Lê estado anterior ────────────────────────────────────────────────────
     let prev_dist_l  = temporal[tb + 0u];
@@ -323,22 +282,20 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     write_channel(being, 119u, i32(clamp(cpu_corridor      *  127.0,    0.0, 127.0)));
     write_channel(being, 123u, i32(clamp(cpu_whisker_norm  *  127.0,    0.0, 127.0)));
 
-    // ── Lookaheads de curvatura horizonte médio-longo (ch 111-113) ──────────────
-    // ch111 estava a cargo do motor.rs (linha 1782: sensory_wave[111] = c350) mas só
-    // era escrito no path CPU/headless — a GPU nunca o alimentava. Movido para cá
-    // para garantir alimentação consistente a qualquer tick.
-    // ch112 (200m) e ch113 (275m) eram slots zero sem fonte; preenchidos agora com
-    // curvatura em horizontes intermediários que complementam ch79 (70m) e ch80 (120m).
-    write_channel(being, 111u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 350.0));
-    write_channel(being, 112u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 200.0));
-    write_channel(being, 113u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 275.0));
+    // Medium/long track lookaheads (ch111-113). The host follows the racing line by
+    // arc length and supplies signed tangent changes, independent of body heading.
+    write_channel(being, 111u, i32(clamp(temporal[tb + 69u] * 127.0, -127.0, 127.0)));
+    write_channel(being, 112u, i32(clamp(temporal[tb + 70u] * 127.0, -127.0, 127.0)));
+    write_channel(being, 113u, i32(clamp(temporal[tb + 71u] * 127.0, -127.0, 127.0)));
 
-    // ── ch101: curvatura a 260m — FIX 2026-08-14 (FASE CANAIS) ────────────────
-    // ANTES: só motor.rs escrevia (`sensory_wave[101] = c260`, caminho Bevy CPU) —
-    // `gpu_evolve` (o binário de treino) não importa motor.rs, então este canal
-    // ficava sem fonte nenhuma nesse caminho. Reusa `curv_at_d`, a MESMA função já
-    // validada para ch111-113 (só muda o argumento de distância) — sem lógica nova.
-    write_channel(being, 101u, curv_at_d(pos_x, pos_z, fwd_x, fwd_z, 260.0));
+    // ch101: signed tangent change at +260m along the racing line.
+    write_channel(being, 101u, i32(clamp(temporal[tb + 72u] * 127.0, -127.0, 127.0)));
+
+    // Heritable near/mid/far curve horizons. These are owned here, after the
+    // spatial shader stopped sampling a straight Euclidean chord.
+    write_channel(being, 78u, i32(clamp(temporal[tb + 66u] * 127.0, -127.0, 127.0)));
+    write_channel(being, 79u, i32(clamp(temporal[tb + 67u] * 127.0, -127.0, 127.0)));
+    write_channel(being, 80u, i32(clamp(temporal[tb + 68u] * 127.0, -127.0, 127.0)));
 
     // ── Telemetria proprioceptiva (ch 64-75) — injetada via temporal[20-31] ──────
     //
@@ -356,7 +313,7 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     //   ch69: gear [0,7]      → gear*20 → i8 (127 = marcha 6+)
     //   ch70: tire_temp [0,1] → *127 → i8
     //   ch71: temperatura do motor [20-150°C → 0-1 → *127] (slot era downforce, sobrescrito)
-    //   ch72: temperatura do óleo [idem] (slot era draft, sobrescrito no mesmo commit)
+    //   ch72: lateral acceleration demand v²|kappa|/(mu*g), [0,1]
     //   ch73: on_grass 0/1    → -128 se grama (dor), 0 se pista
     //   ch74: steer_limit [0,1] → *127 → i8
     //   ch75: estagnação [0-64 ticks → 0-1 → *127] (slot era wetness, sobrescrito)
@@ -367,7 +324,7 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     let prop_hp_frac     = temporal[tb + 23u];  // HP/HP_max [0,1]
     let prop_rpm_ratio   = temporal[tb + 24u];  // rpm/rpm_max [0,1]
     let prop_gear        = temporal[tb + 25u];  // marcha atual [0,7]
-    let prop_tire_temp   = temporal[tb + 26u];  // media_temp/120°C [0,1]
+    let prop_tire_temp   = temporal[tb + 26u];  // normalised tyre temperature [0,1]
     let prop_downforce   = temporal[tb + 27u];  // downforce/weight [0,1]
     let prop_in_draft    = temporal[tb + 28u];  // 0.0 ou 1.0
     let prop_on_grass    = temporal[tb + 29u];  // 0.0 ou 1.0
@@ -401,6 +358,11 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     let body_tire     = temporal[bb + 6u];  // slot 6 → ch70  TireTempReal     [0,1]
     let body_engine   = temporal[bb + 7u];  // slot 7 → ch71  EngineTempReal   [0,1]
 
+    // ch20 was unowned on the native GPU path. It now carries fuel without enabling
+    // the optional station/predator remap, so the body can expose its resource state
+    // while preserving all visual-motion channels.
+    write_channel(being, 20u, i32(clamp(body_fuel * 127.0, 0.0, 127.0)));
+
     // ch70: tyre temperature — 127 = 120 C (optimal).
     // BODY BLOCK: with body_on the SOURCE becomes slot 6 (the real thermal model,
     // computed on the CPU) instead of prop[6]. Same encoding, same range — a source
@@ -414,8 +376,8 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     // BODY BLOCK: with body_on the source becomes slot 7 (same host formula).
     let engine_src = select(prop_downforce, body_engine, body_on);
     write_channel(being, 71u, i32(clamp(engine_src * 127.0, 0.0, 127.0)));
-    // ch72: temperatura do óleo — slot era in_draft, sobrescrito pela CPU com temp_oleo
-    //       via temporal[28]. Mais lento que o motor (τ ≈ 500-1000 ticks).
+    // ch72: lateral acceleration demand for the next 30m of track. This is a
+    // physical risk signal, not a retina edge heuristic or a brake command.
     write_channel(being, 72u, i32(clamp(prop_in_draft * 127.0, 0.0, 127.0)));
     // ch73: dor de grama — -128 = grama (penalidade severa), 0 = pista normal
     write_channel(being, 73u, select(0, -128, prop_on_grass > 0.5));
@@ -434,27 +396,11 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     let is_reversing = rev_timer > 0.0;
     write_channel(being, 89u, select(0, 127, is_reversing));
 
-    // ── CfC de percepção (ch 192-207) — estado recorrente injetado pela CPU ──
-    // O CfC de percepção (RetinaPerception em perception.rs) processa a retina
-    // com um pipeline CfC(16) e produz hidden[0..15].
-    // Esses valores são injetados em temporal[33-48] pela CPU antes do dispatch
-    // via update_cfc_percept_temporal().
-    //
-    // Formula: wave[192+i] = clamp(tanh(hidden[i]) * 127.0 * 0.3, -127, 127)
-    // Strength 0.3 = mesmo valor do motor.rs L1626-1628.
-    // Como buf_output foi zerado (clear_buffer), existing = 0, então simplifica:
-    //   val = tanh(h) * 38.1   (127 × 0.3 ≈ 38.1)
-    //
-    // Peso L1 total dos canais 192-207 no CHAMPION.dna = 7.1% — o maior item faltante.
-    // Sem esses canais o modelo não tem contexto temporal visual de longo prazo.
-    for (var ci = 0u; ci < 16u; ci++) {
-        let h = temporal[tb + 33u + ci];
-        // tanh aproximado: x/(1+|x|) tem erro < 2% para |x|<3, suficiente para i8.
-        let abs_h = abs(h);
-        let tanh_h = select(h / (1.0 + abs_h), sign(h) * 0.999, abs_h > 10.0);
-        let val = i32(clamp(tanh_h * 127.0 * 0.3, -127.0, 127.0));
-        write_channel(being, 192u + ci, val);
-    }
+    // Slots 33..48 still hold the retina-CfC state for diagnostics, but the native
+    // sensory wave has exactly 192 channels (0..191). An earlier version attempted
+    // to publish it as channels 192..207. Packed indexing made those writes land on
+    // channels 0..15 of the NEXT being, and beyond the final buffer for the last one.
+    // Keep the state private until the architecture reserves real in-range channels.
 
     // ── Canais dopaminérgicos e de stress (slots v3, injetados pela CPU) ─────
     // Os valores chegam via update_extra2_temporal(), calculados na CPU com dados

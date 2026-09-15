@@ -25,48 +25,8 @@ use universe::config::iara::vision::{RETINA_COLS, RETINA_TOTAL};
 use universe::gpu::core::{CoreGpu, PosGpu};
 use universe::gpu::{Pose, RetinaGpu};
 use universe::world::VoxelWorld;
-
-/// Runs `f()` in a child process (fork). Returns `true` if the child exited with exit 0,
-/// `false` if it died by signal (e.g. SIGSEGV=139) or with exit != 0.
-///
-/// Used to isolate GPU driver crashes that arrive as SIGSEGV and cannot be
-/// caught by std::panic::catch_unwind.
-///
-/// The child's output goes to stdout/stderr normally (fds are inherited).
-#[cfg(unix)]
-fn run_in_child<F: FnOnce()>(f: F) -> bool {
-    use std::io::Write;
-    unsafe {
-        let pid = libc::fork();
-        if pid < 0 {
-            // fork failed — run in the current process (no isolation)
-            let _ = std::io::stderr().write_all(b"  WARNING: fork() failed, no crash isolation.\n");
-            f();
-            return true;
-        }
-        if pid == 0 {
-            // Child: run and exit
-            f();
-            libc::_exit(0);
-        }
-        // Parent: waits for the child
-        let mut status: libc::c_int = 0;
-        libc::waitpid(pid, &mut status, 0);
-        // WIFEXITED and WEXITSTATUS — child exited normally with 0
-        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
-            true
-        } else {
-            false
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn run_in_child<F: FnOnce()>(f: F) -> bool {
-    // On non-unix, no fork — run directly (no isolation)
-    f();
-    true
-}
+mod gpu_validate_support;
+use gpu_validate_support::{failed, print_table_row, reset, run_in_child};
 
 // ── Local ParamsGpu (identical to the internal layout of RetinaGpu/NucleoGpu) ─────
 // The internal type in mod.rs is private. This is a local copy used only here.
@@ -100,7 +60,8 @@ fn adapta_saida(raw: f32, out_fat: f32) -> f32 {
     (raw.signum() * (raw.abs() - OUT_BETA * out_fat).max(0.0)).tanh()
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    reset();
     // SEGFAULT FIX (physics): multiple Vulkan ICDs (intel_hasvk, lvp, nouveau, asahi,
     // radeon, virtio…) cause a segfault when loading an ICD incompatible with the AMD GPU.
     // VK_ICD_FILENAMES MUST be set BEFORE the first wgpu::Instance::new —
@@ -161,7 +122,7 @@ fn main() {
                 print_table_row("retina (legacy i8)", 0, 0, -1, false);
                 println!();
                 // continue to the other sections
-                return;
+                return std::process::ExitCode::FAILURE;
             }
         };
         println!("  GPU: {}  ·  {} beings", gpu.adapter, poses.len());
@@ -216,7 +177,9 @@ fn main() {
             iguais as f64 / total as f64 * 100.0
         );
         if !divergent.is_empty() {
-            println!("  divergent pixels (pose, row, col, cpu, gpu, gpu_dist_m, gpu_material): {divergent:?}");
+            println!(
+                "  divergent pixels (pose, row, col, cpu, gpu, gpu_dist_m, gpu_material): {divergent:?}"
+            );
             for &(pose, _, _, _, _, _, _) in &divergent {
                 println!("  divergent pose {pose}: {:?}", poses[pose]);
             }
@@ -387,7 +350,7 @@ fn main() {
                 print_table_row("core (cfc zeros)", 0, 0, -1, false);
                 print_table_row("core (tick n beings)", 0, 0, -1, false);
                 println!();
-                return;
+                return std::process::ExitCode::FAILURE;
             }
         };
         println!("  GPU: {}  ·  capacity={}", core.adapter, core.capacity);
@@ -547,6 +510,11 @@ fn main() {
     println!("---");
     println!("NOT MEASURED = readback not publicly exposed, not that it passed.");
     println!("PASS only appears with the number that supports it.");
+    if failed() {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
 }
 
 // ============================================================================
@@ -574,16 +542,11 @@ fn validate_brain() {
             return;
         }
     };
-    // CerebroGpu needs storage buffers per shader stage:
-    //   buf_wave(1), buf_kan(2), buf_l1w(3), buf_l2w(4), buf_intent(5),
-    //   buf_cfc(6), buf_debug(7), buf_percept(8), buf_fatigue(9), buf_tau(10) = 10 storage.
-    // The old comment stopped at 9 (buf_tau, the per-channel τ bank, was added
-    // later in src/gpu/brain.rs and this file was never updated — same class of
-    // stale-limit bug already found and fixed in gpu_loop.rs in E3). We use
-    // 12 (same value as context.rs/gpu_loop.rs) to leave headroom for future bindings.
-    // downlevel_defaults() has max=4, insufficient.
+    // The current brain layout has 13 storage bindings. Request the same 16-slot
+    // limit as the evolution context; the old 12-slot request panicked before any
+    // numerical comparison could run. Unsupported adapters fail request_device below.
     let mut limits = wgpu::Limits::downlevel_defaults();
-    limits.max_storage_buffers_per_shader_stage = 12;
+    limits.max_storage_buffers_per_shader_stage = 16;
     let (device_raw, queue_raw) = match pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("brain-validate"),
@@ -681,7 +644,7 @@ fn validate_brain() {
     // Reads output fatigue: checks whether out_fat is being accumulated (debug)
     {
         let fat = brain.download_fatigue(1); // being 0 only
-                                             // Slots [96..192] = output fatigue (slots [0..48] = L2, [48..96] = bypass)
+        // Slots [96..192] = output fatigue (slots [0..48] = L2, [48..96] = bypass)
         let out_fat_max = fat[96..192].iter().cloned().fold(0.0f32, f32::max);
         let out_fat_nonzero = fat[96..192].iter().filter(|&&v| v.abs() > 1e-6).count();
         println!("  [OUTPUT FATIGUE DIAGNOSTIC — being 0, tick 1]");
@@ -797,7 +760,7 @@ fn validate_brain() {
         let mut fi_cpu_manual = [0.0f32; 96];
         for j in 0..48 {
             let raw = l2_raw0[j] * 2.0; // l2_raw as in the shader (×2/127 × 127 = ×2)
-                                        // out_fat starts from zero: update first, then apply
+            // out_fat starts from zero: update first, then apply
             let out_fat = 0.0f32 + OUT_ALPHA_CPU * (raw.abs() - 0.0f32) * dt;
             fi_cpu_manual[j] = adapta_saida(raw, out_fat);
         }
@@ -1116,8 +1079,8 @@ fn validate_brain() {
 // PHYSICS
 // ============================================================================
 
-fn validate_physics(world: &VoxelWorld) {
-    use universe::gpu::physics::{pack_config_flags, PhysicsGpu, PhysicsStateGpu};
+fn validate_physics(world: &VoxelWorld) -> bool {
+    use universe::gpu::physics::{PhysicsGpu, PhysicsStateGpu, pack_config_flags};
 
     let grid_u8: Vec<u8> = world.grid.iter().map(|v| *v as u8).collect();
     let phys_gpu =
@@ -1127,7 +1090,7 @@ fn validate_physics(world: &VoxelWorld) {
                 println!("  NOT MEASURED — no GPU.");
                 print_table_row("physics (1 step 6 scen)", 0, 0, -1, false);
                 print_table_row("physics (drift 100 steps)", 0, 0, -1, false);
-                return;
+                return false;
             }
         };
     println!("  GPU: {}  · cap={}", phys_gpu.adapter, phys_gpu.capacity);
@@ -1233,7 +1196,7 @@ fn validate_physics(world: &VoxelWorld) {
         println!("  NOT MEASURED — step() returned false.");
         print_table_row("physics (1 step 6 scen)", 0, 0, -1, false);
         print_table_row("physics (drift 100 steps)", 0, 0, -1, false);
-        return;
+        return false;
     }
 
     let n_cen = cen_names.len();
@@ -1342,6 +1305,7 @@ fn validate_physics(world: &VoxelWorld) {
 
     let mut derivas = Vec::with_capacity(100);
     let mut divergiu: Option<usize> = None;
+    let mut component_max = [0.0f32; 3]; // metres, metres/second, radians/second
 
     for tick in 0..100usize {
         let en = physics_step_cpu(ec, world);
@@ -1352,8 +1316,11 @@ fn validate_physics(world: &VoxelWorld) {
         for k in 0..3 {
             md = md.max((en.vel[k] - gn.vel[k]).abs());
             md = md.max((en.pos[k] - gn.pos[k]).abs());
+            component_max[0] = component_max[0].max((en.pos[k] - gn.pos[k]).abs());
+            component_max[1] = component_max[1].max((en.vel[k] - gn.vel[k]).abs());
         }
         md = md.max((en.av_y - gn.av_y).abs());
+        component_max[2] = component_max[2].max((en.av_y - gn.av_y).abs());
         if tick == 0 {
             println!(
                 "  [drift t=0] cpu_vel={:.4?} gpu_vel={:.4?}  cpu_pos={:.4?} gpu_pos={:.4?}  dif={md:.4e}",
@@ -1379,16 +1346,15 @@ fn validate_physics(world: &VoxelWorld) {
     if let Some(t) = divergiu {
         println!("  WARNING: drift>1.0 at tick {t}");
     } else {
-        println!(
-            "  growth {:.0}x — {}",
-            ratio,
-            if ratio < 50.0 {
-                "sub-linear (FP rounding)"
-            } else {
-                "supra-linear (investigate)"
-            }
-        );
+        println!("  observed drift ratio t100/t10 = {ratio:.2}; this does not identify its cause");
     }
+    println!(
+        "  maximum component errors: position={:.6} m velocity={:.6} m/s yaw_rate={:.6} rad/s",
+        component_max[0], component_max[1], component_max[2]
+    );
+    println!(
+        "  legacy gate: final mixed-component maximum < 0.5 and no step > 1.0; not bit identity"
+    );
     let drift_pass = d100 < 0.5 && divergiu.is_none();
     print_table_row(
         "physics (drift 100 steps)",
@@ -1397,6 +1363,7 @@ fn validate_physics(world: &VoxelWorld) {
         (d100 * 1000.0) as i32,
         drift_pass,
     );
+    fisica_pass && drift_pass
 }
 
 // Replica of the 5 phases of physics.rs — see the comment at the header of the PHYSICS section.
@@ -2051,7 +2018,7 @@ fn perception_cpu(
         let ls = [1.0f32, 3.0, 6.0, 9.0, 12.0, 16.0, 20.0, 26.0, 33.0, 40.0];
         for (off, dir2d) in [(0u32, rgt), (1u32, Vec2::new(-rgt.x, -rgt.y))] {
             let mut dmin = 40.0f32; // sentinel = free (no wall within 40m)
-                                    // Replicates the shader exactly: stops at the FIRST sample that finds Wall/Hole.
+            // Replicates the shader exactly: stops at the FIRST sample that finds Wall/Hole.
             for &sd in &ls {
                 if matches!(
                     world.get_voxel_at(pos.x + dir2d.x * sd, pos.z + dir2d.y * sd),
@@ -2064,16 +2031,17 @@ fn perception_cpu(
             w[76 + off as usize] = (dmin / 40.0 * 127.0).clamp(0.0, 127.0) as i8;
         }
 
-        // ch 94-97: diagonal whiskers
-        let angs = [-60.0f32, -30.0, 30.0, 60.0];
+        // Contract order from motor.rs: body-relative +30, -30, +60, -60 degrees.
+        // The old oracle permuted these channels as -60,-30,+30,+60.
+        let angs = [30.0f32, -30.0, 60.0, -60.0];
         let ws2 = [1.0f32, 3.0, 5.0, 7.0, 10.0];
         for (wi, &ang) in angs.iter().enumerate() {
             let r = ang.to_radians();
+            let heading = fwd.normalize_or_zero();
             let dn = Vec2::new(
-                fwd.x * r.cos() + rgt.x * r.sin(),
-                fwd.y * r.cos() + rgt.y * r.sin(),
-            )
-            .normalize_or_zero();
+                heading.x * r.cos() - heading.y * r.sin(),
+                heading.y * r.cos() + heading.x * r.sin(),
+            );
             let mut dmin = 10.0f32;
             for &sd in &ws2 {
                 if matches!(
@@ -2162,27 +2130,7 @@ fn state_base(dt: f32, flags: u32) -> universe::gpu::physics::PhysicsStateGpu {
 fn print_table_header() {
     println!(
         "{:<38} {:>11} {:>11} {:>10}  {}",
-        "subsystem", "compared", "identical", "max_dif", "verdict"
+        "subsystem", "compared", "matched", "max_dif", "verdict"
     );
     println!("{}", "-".repeat(90));
-}
-
-fn print_table_row(nome: &str, total: usize, iguais: usize, max_dif: i32, ok: bool) {
-    if max_dif < 0 {
-        println!(
-            "{:<38} {:>11} {:>11} {:>10}  NOT MEASURED",
-            nome, "—", "—", "—"
-        );
-    } else {
-        let pct = iguais as f64 / total.max(1) as f64 * 100.0;
-        let verd = if ok {
-            format!("PASS  ({pct:.4}% identical, max_dif={max_dif})")
-        } else {
-            format!("FAIL  (max_dif={max_dif}, {pct:.4}% identical)")
-        };
-        println!(
-            "{:<38} {:>11} {:>11} {:>10}  {}",
-            nome, total, iguais, max_dif, verd
-        );
-    }
 }

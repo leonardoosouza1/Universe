@@ -31,8 +31,8 @@
 //! ```
 
 use super::{
-    BODY_SLOT_BASE, PerceptionGpu, PosePerception, TEMPORAL_STRIDE, body_slot_byte_offset,
-    encode_body_signed, encode_body_unsigned,
+    BODY_SLOT_BASE, CURVE_SLOT_BASE, CURVE_SLOT_COUNT, PerceptionGpu, PosePerception,
+    TEMPORAL_STRIDE, body_slot_byte_offset, encode_body_signed, encode_body_unsigned,
 };
 use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 use crate::config::iara::vision::{RETINA_COLS, RETINA_TOTAL};
@@ -54,7 +54,7 @@ fn squeeze(src: &str) -> String {
 
 // ─── Packing (no GPU) ──────────────────────────────────────────────────────────
 
-/// The block is the LAST thing in the temporal stride, and it closes it exactly.
+/// The curve block immediately follows the body block and closes the stride.
 ///
 /// If `BODY_SLOT_BASE + BODY_K` were smaller than the stride there would be dead
 /// slots (harmless but undocumented); if it were larger, being `i`'s block would
@@ -63,13 +63,16 @@ fn squeeze(src: &str) -> String {
 /// and landed on the next being's channels 0-15 — hence the locked stride there
 /// (`EXTRA_OUT_STRIDE = 19`) and hence this test.
 #[test]
-fn body_block_closes_the_stride() {
+fn body_and_curve_blocks_close_the_stride() {
     assert_eq!(
         BODY_SLOT_BASE + BODY_K,
+        CURVE_SLOT_BASE,
+        "curve slots must start immediately after the body block"
+    );
+    assert_eq!(
+        CURVE_SLOT_BASE + CURVE_SLOT_COUNT,
         TEMPORAL_STRIDE,
-        "the BODY BLOCK ({BODY_SLOT_BASE}..{}) must end exactly at the end of the \
-         temporal stride ({TEMPORAL_STRIDE})",
-        BODY_SLOT_BASE + BODY_K
+        "curve slots must end exactly at the temporal stride"
     );
 }
 
@@ -110,7 +113,7 @@ fn block_offset_matches_and_never_overlaps_the_next_being() {
     // Numeric anchors: if the stride or the base moves, these move with it, and
     // whoever moves them is forced to look at them.
     assert_eq!(body_slot_byte_offset(0), 58 * 4);
-    assert_eq!(body_slot_byte_offset(1), (66 + 58) * 4);
+    assert_eq!(body_slot_byte_offset(1), (TEMPORAL_STRIDE + 58) as u64 * 4);
 }
 
 /// The host encoders are the twins of the shader's `clamp(v * 127.0, ...)`.

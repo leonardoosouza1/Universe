@@ -21,6 +21,9 @@
 //! | `SLOW_STEER_AUTH` | `main()` (flag `--slow-steer`) | `context.rs::tick()` (viés do volante do cérebro lento) |
 //! | `PORTAL_CURVA` | `main()` (flag `--portal-curva`) | `main()` (laço de geração, escolha de setor) |
 //! | `STEER_ALPHA` | `main()` (flag `--steer-alpha`) | `context.rs::tick()` (alisamento do volante) |
+//! | `MOTOR_HEAD_MODE` | `main()` (flag `--motor-head`) | `context.rs::tick()` (native output transfer) |
+//! | `THROTTLE_ARBITRATION_MODE` | `main()` (flag `--throttle-arbitration`) | `context.rs::tick()` (native throttle merge) |
+//! | `REVERSE_CONTROLLER_V2` | `main()` (flag `--reverse-controller-v2`) | `context.rs::tick()` (reverse state machine) |
 //! | `WALL_LIFE_DRAIN`, `STAG_LIFE_DRAIN` | `main()` (flags `--wall-life`/`--stag-life-drain`) | `context.rs::tick()` (custo de vida) |
 //! | `LIFE_CAP_TICKS` | `main()` (flag `--life-cap`) | `context.rs::tick()` + `main()`, via `life_cap()` |
 //! | `LIFE_EARN` | `main()` (flag `--life-earn`) | `main()` (laço de geração, ganho de vida por avanço) |
@@ -45,6 +48,7 @@
 //! | `FLY_REFLEX_THROTTLE_IS_NONE` | `main()`, once, from the loaded CPU-side `FlyMap::reflex_out` (`context.rs` never sees that struct, only `FlyMapGpu`) | `context.rs::tick()` (whether the reflex readout's throttle slot is NONE, i.e. `--fly-cruise-throttle` must substitute) |
 //! | `PERFIL_KERNEL` | `main()` (flag `--kernel-profile <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
 //! | `RETINA_BEINGS_ON` | `main()` (flag `--retina-beings`) | `context.rs::tick()` (sets the retina kernel's `beings_on` uniform field, `docs/RETINA-BEINGS.md` §2) |
+//! | `SOCIAL_SENSORS_ON` | `main()` (flag `--social-sensors`) | `context.rs::tick()` (allows population-relative proximity on channel 125) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
 //! predator pose, the per-being tyre temperature and the per-being subscription all
@@ -72,6 +76,31 @@ impl AtomicF32 {
 /// pesos) — só não INFORMA. É a ablação pareada correta: isola o efeito do sinal, não
 /// o efeito de existir. Comparar contra um binário sem o órgão mudaria duas coisas.
 pub static SLOW_ABLATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Population-relative observations are inappropriate while genomes are evaluated as
+/// independent drivers on identical copies of a track: changing a competitor would then
+/// change an elite's input and fitness. Multi-being worlds can opt in explicitly.
+pub static SOCIAL_SENSORS_ON: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+pub fn social_sensors_on() -> bool {
+    SOCIAL_SENSORS_ON.load(Ordering::Relaxed)
+}
+
+/// Opt-in repairs to sensory contracts; legacy remains the baseline for checkpoints.
+pub static SLOW_CANONICAL_KINEMATICS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub static CONTINUOUS_WALL_PROBES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn slow_canonical_kinematics() -> bool {
+    SLOW_CANONICAL_KINEMATICS.load(Ordering::Relaxed)
+}
+
+pub fn continuous_wall_probes() -> bool {
+    CONTINUOUS_WALL_PROBES.load(Ordering::Relaxed)
+}
 #[inline]
 pub fn slow_ablated() -> bool {
     SLOW_ABLATED.load(Ordering::Relaxed)
@@ -134,6 +163,27 @@ pub static PORTAL_CURVA: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 pub const N_CHECKPOINTS: u32 = 24;
 /// Peso do comando NOVO no alisamento do volante (1,0 = sem alisamento).
 pub static STEER_ALPHA: AtomicF32 = AtomicF32::new();
+/// Native motor-head transfer: 0 keeps the historical spline; 1 selects the
+/// diagnostic linear transfer. The default preserves every existing checkpoint.
+pub static MOTOR_HEAD_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[inline]
+pub fn motor_head_linear() -> bool {
+    MOTOR_HEAD_MODE.load(Ordering::Relaxed) == 1
+}
+/// Native throttle merge: 0 floors the head before modulation; 1 clamps after a signed merge.
+pub static THROTTLE_ARBITRATION_MODE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+#[inline]
+pub fn throttle_arbitration_signed() -> bool {
+    THROTTLE_ARBITRATION_MODE.load(Ordering::Relaxed) == 1
+}
+/// Enables the corrected reverse state machine. Off preserves the historical inline path.
+pub static REVERSE_CONTROLLER_V2: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn reverse_controller_v2() -> bool {
+    REVERSE_CONTROLLER_V2.load(Ordering::Relaxed)
+}
 /// Ticks de vida consumidos a mais por tick colado. Global porque o custo é aplicado
 /// dentro do laço de leitura da retina, longe do parsing de argumentos.
 /// FÍSICA POR PARTES (Leonardo 2026-08-15: "penalizar por partes, com flags de
@@ -184,9 +234,13 @@ pub static WALL_LIFE_DRAIN: std::sync::atomic::AtomicI64 = std::sync::atomic::At
 /// tentar sair; com drain=4 tem ~12 s. Análogo ao wall_drain mas trigado por AUSÊNCIA
 /// de movimento. Risco baixo se drain ≤ 2: quem reduz para curva tem stag=0 (speed≥1,5).
 pub static STAG_LIFE_DRAIN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-/// Fôlego inicial quando a vida é ganha: 640 ticks = 10 s @ 64 Hz.
-pub const LIFE_START: i64 = 640;
-/// Teto de fôlego acumulável, em ticks. Padrão 1920 = 30 s.
+/// Initial exploration budget when life must be earned: 1,920 ticks = 30 s at 64 Hz.
+/// At the default `life_earn = 12`, continued survival still requires new ordered
+/// progress above 64/12 = 5.33 m/s; stopping consumes this finite budget.
+pub const LIFE_START: i64 = 1920;
+/// Accumulated-life ceiling in ticks. The 60-second default is deliberately larger
+/// than the 30-second birth budget: early clean progress can be stored to cross a
+/// later slow corner, while a newborn that does not move still dies after 30 seconds.
 ///
 /// Era constante e virou o LIMITE REAL do experimento sem eu perceber: com earn=6 os seres
 /// convergiam para 9,2 m/s e viviam exatamente 1920 ticks — o teto, não a competência deles.
@@ -195,7 +249,7 @@ pub const LIFE_START: i64 = 640;
 ///
 /// É a mesma armadilha do orçamento de 8.000 ticks: uma constante que ninguém conferiu
 /// contra a tarefa vira o resultado.
-pub static LIFE_CAP_TICKS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1920);
+pub static LIFE_CAP_TICKS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(3840);
 #[inline]
 pub fn life_cap() -> i64 {
     LIFE_CAP_TICKS.load(Ordering::Relaxed)
@@ -328,7 +382,7 @@ pub static PREDATOR_RADIUS_M: AtomicF32 = AtomicF32::new();
 /// `--predator-perception <m>`: reference distance of the ch124 proximity ramp, metres.
 pub static PREDATOR_PERCEPT_M: AtomicF32 = AtomicF32::new();
 /// `--predator-grace <ticks>`: immunity at the start of a generation. Without it the
-/// arithmetic says a newborn (LIFE_START = 640) dies in 128 ticks = 2 s at D = 4, i.e.
+/// arithmetic says a newborn (LIFE_START = 1,920) dies in 384 ticks = 6 s at D = 4, i.e.
 /// before it could possibly have fled — that is the metric hitting a limit, not a being
 /// failing (CLAUDE.md rule 4).
 pub static PREDATOR_GRACE_TICKS: std::sync::atomic::AtomicU32 =

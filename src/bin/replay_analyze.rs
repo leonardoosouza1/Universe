@@ -21,8 +21,8 @@
 
 use std::path::PathBuf;
 use universe::replay::{
-    ReplayReader, ReplayWriter, SOURCE_CORTEX, SOURCE_MOTOR, detect_events, diff_replays,
-    generate_html_player, section_profile,
+    PlayerOptions, ReplayReader, ReplayWriter, SOURCE_CORTEX, SOURCE_MOTOR, detect_events,
+    diff_replays, generate_html_player_with_options, section_profile,
 };
 
 fn main() {
@@ -322,11 +322,16 @@ fn run_single(
         };
 
         let all_frames = reader.all_frames();
-        let labels: Vec<&str> = (0..all_frames.len())
-            .map(|i| if i == 0 { "Champion" } else { "Being" })
+        let names: Vec<String> = (0..all_frames.len())
+            .map(|id| format!("Being {id:02}"))
             .collect();
-
-        match generate_html_player(&track, &all_frames, &labels, html_path) {
+        let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+        let options =
+            PlayerOptions::from_replay(path, &reader.header, track_width).unwrap_or_else(|error| {
+                eprintln!("invalid replay metadata: {error}");
+                std::process::exit(1);
+            });
+        match generate_html_player_with_options(&track, &all_frames, &labels, html_path, &options) {
             Ok(_) => println!("HTML generated: {}", html_path.display()),
             Err(e) => eprintln!("ERROR generating HTML: {}", e),
         }
@@ -516,11 +521,14 @@ fn run_diff(
 
     // --- HTML diff ---
     if let Some(html_path) = html_out {
-        let track: Vec<[f32; 2]> = frames_a
-            .iter()
-            .step_by(5)
-            .map(|f| [f.pos[0], f.pos[2]])
-            .collect();
+        if ra.header.world_seed != rb.header.world_seed
+            || ra.header.tick_rate != rb.header.tick_rate
+        {
+            eprintln!("HTML comparison requires the same world seed and tick rate");
+            std::process::exit(1);
+        }
+        let world = universe::world::VoxelWorld::new(ra.header.world_seed, 18.0);
+        let track: Vec<[f32; 2]> = world.waypoints_world.iter().map(|p| [p.x, p.y]).collect();
 
         let all_a = ra.all_frames();
         let all_b = rb.all_frames();
@@ -542,7 +550,12 @@ fn run_diff(
         }
         let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
 
-        match generate_html_player(&track, &combined, &label_refs, html_path) {
+        let mut options = PlayerOptions::default();
+        options.metadata["tick_rate"] = serde_json::json!(ra.header.tick_rate);
+        options.metadata["world_seed"] = serde_json::json!(ra.header.world_seed);
+        options.metadata["source"] = serde_json::json!("A/B comparison");
+        match generate_html_player_with_options(&track, &combined, &label_refs, html_path, &options)
+        {
             Ok(_) => println!("HTML diff generated: {}", html_path.display()),
             Err(e) => eprintln!("ERROR generating HTML: {}", e),
         }

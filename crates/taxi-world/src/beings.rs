@@ -260,8 +260,7 @@ mod tests {
             assert_eq!(beings.since_pickup[i], 0.0);
             assert_eq!(beings.metabolism[i], 1.0);
             assert_eq!(
-                beings.consumption[i],
-                0.30,
+                beings.consumption[i], 0.30,
                 "cons = fuel_passo*2 = 0.15*2 (campo.py:159)"
             );
             assert_eq!(beings.stopped_ticks[i], 0.0);

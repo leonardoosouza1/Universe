@@ -16,7 +16,7 @@
 //! **Not touched by this module, on purpose:** `physics.rs`, `passengers.rs`
 //! (T2/T4's files).
 
-use crate::constants::{Config, DIRS, G, NF, NPX, N_TYPES};
+use crate::constants::{Config, DIRS, G, N_TYPES, NF, NPX};
 use crate::world::World;
 
 /// Width split of `F`'s `NF=29` columns (SPEC §4): 10 per-option columns
@@ -203,7 +203,11 @@ pub fn observe(
 
         let hora = hour_of(t, input.phase[b], cfg);
         let is_night = hora >= 22.0 || hora < 6.0;
-        let v = if is_night { cfg.night_speed } else { cfg.day_speed };
+        let v = if is_night {
+            cfg.night_speed
+        } else {
+            cfg.day_speed
+        };
 
         let alvo = match target {
             Some(slice) => [slice[b * 2], slice[b * 2 + 1]],
@@ -239,7 +243,11 @@ pub fn observe(
             let pm = price_mul[price_offsets[input.map_idx[b] as usize] + district as usize];
             out_f[base + 7] = pm;
             out_f[base + 8] = world.tax[district as usize];
-            out_f[base + 9] = if district == input.home_district[b] { 1.0 } else { 0.0 };
+            out_f[base + 9] = if district == input.home_district[b] {
+                1.0
+            } else {
+                0.0
+            };
         }
 
         // Body columns (10..28), identical across all 9 options (SPEC §4.2/4.3,

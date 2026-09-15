@@ -42,10 +42,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::evolution::{evolve, Champion, ChampionMode, GaParams};
-use crate::judge::{judge, measures_to_json, Measures};
+use crate::evolution::{Champion, ChampionMode, GaParams, evolve};
+use crate::judge::{Measures, judge, measures_to_json};
 use crate::sim_cpu::SimCpu;
 use crate::trace::Trace;
 use crate::world::World;
@@ -62,15 +62,20 @@ pub fn run(args: &[String]) -> Result<PathBuf, String> {
     let mapa_path = raw.required_path("mapa")?;
     let campeao_path = raw.required_path("campeao")?;
     let tag = raw.one("tag").unwrap_or("").to_string();
-    let saida_path = raw
-        .one("saida")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("/media/llm-data/universe-runs/neuromod-lab-taxi/e82/e43{tag}.json")));
+    let saida_path = raw.one("saida").map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "/media/llm-data/universe-runs/neuromod-lab-taxi/e82/e43{tag}.json"
+        ))
+    });
 
     let cenario_text = fs::read_to_string(&cenario_path)
         .map_err(|e| format!("could not read --cenario {}: {e}", cenario_path.display()))?;
-    let cenario: Value = serde_json::from_str(&cenario_text)
-        .map_err(|e| format!("could not parse --cenario JSON {}: {e}", cenario_path.display()))?;
+    let cenario: Value = serde_json::from_str(&cenario_text).map_err(|e| {
+        format!(
+            "could not parse --cenario JSON {}: {e}",
+            cenario_path.display()
+        )
+    })?;
 
     warn_about_unsupported_bracos(&cenario);
 
@@ -112,14 +117,24 @@ pub fn run(args: &[String]) -> Result<PathBuf, String> {
     );
 
     let mut sim = SimCpu::new();
-    let champion_mode = if protocol.campeao_str == "reavaliado" { ChampionMode::Reevaluated } else { ChampionMode::Last };
+    let champion_mode = if protocol.campeao_str == "reavaliado" {
+        ChampionMode::Reevaluated
+    } else {
+        ChampionMode::Last
+    };
     let crn = protocol.crn_str == "fixo";
 
     let mut all_measures: BTreeMap<u64, Measures> = BTreeMap::new();
     let mut all_champions: BTreeMap<u64, Champion> = BTreeMap::new();
 
     for &sd in &protocol.seeds {
-        let champ_genome = champion_for_seed(&campeao_w, &campeao_nomes_f, &canonical_nomes_f, sd, &campeao_path)?;
+        let champ_genome = champion_for_seed(
+            &campeao_w,
+            &campeao_nomes_f,
+            &canonical_nomes_f,
+            sd,
+            &campeao_path,
+        )?;
         let ga_params = GaParams {
             pop: protocol.pop,
             generations: protocol.generations,
@@ -152,7 +167,11 @@ pub fn run(args: &[String]) -> Result<PathBuf, String> {
         all_measures.insert(sd, measures);
     }
 
-    let report_params = GaParams { seeds: protocol.seeds.clone(), sigma_mut: protocol.sigma_mut, ..GaParams::default() };
+    let report_params = GaParams {
+        seeds: protocol.seeds.clone(),
+        sigma_mut: protocol.sigma_mut,
+        ..GaParams::default()
+    };
     let braco_value = measures_to_json(&all_measures, &all_champions, &report_params);
     let mut braco_obj = braco_value
         .as_object()
@@ -172,16 +191,26 @@ pub fn run(args: &[String]) -> Result<PathBuf, String> {
 
     let mut out = serde_json::Map::new();
     out.insert("nomes_f".to_string(), json!(canonical_nomes_f));
-    out.insert("cenario".to_string(), json!(cenario_path.display().to_string()));
+    out.insert(
+        "cenario".to_string(),
+        json!(cenario_path.display().to_string()),
+    );
     out.insert("bracos".to_string(), Value::Object(bracos));
 
     if let Some(parent) = saida_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| format!("could not create --saida directory {}: {e}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "could not create --saida directory {}: {e}",
+                    parent.display()
+                )
+            })?;
         }
     }
-    let text = serde_json::to_string_pretty(&Value::Object(out)).map_err(|e| format!("could not serialize output JSON: {e}"))?;
-    fs::write(&saida_path, text).map_err(|e| format!("could not write --saida {}: {e}", saida_path.display()))?;
+    let text = serde_json::to_string_pretty(&Value::Object(out))
+        .map_err(|e| format!("could not serialize output JSON: {e}"))?;
+    fs::write(&saida_path, text)
+        .map_err(|e| format!("could not write --saida {}: {e}", saida_path.display()))?;
 
     Ok(saida_path)
 }
@@ -239,7 +268,11 @@ fn build_config(cenario: &Value) -> (Config, Vec<String>) {
         if px.get("pax_cidade").and_then(Value::as_bool) == Some(true) {
             warnings.push("passageiros.pax_cidade = true is not supported in v0 (SPEC 12: out of scope); ignoring".to_string());
         }
-        if px.get("ponto").and_then(Value::as_f64).is_some_and(|v| v != 0.0) {
+        if px
+            .get("ponto")
+            .and_then(Value::as_f64)
+            .is_some_and(|v| v != 0.0)
+        {
             warnings.push(
                 "passageiros.ponto != 0 is not supported in v0 (SPEC 7.5: not implemented, \
                  consumes RNG and breaks determinism); ignoring"
@@ -264,7 +297,11 @@ fn build_config(cenario: &Value) -> (Config, Vec<String>) {
         if let Some(v) = corpo.get("fuel_pos_pane").and_then(Value::as_f64) {
             cfg.breakdown_fuel_refill = v as f32;
         }
-        if corpo.get("custo_gene").and_then(Value::as_f64).is_some_and(|v| v != 0.0) {
+        if corpo
+            .get("custo_gene")
+            .and_then(Value::as_f64)
+            .is_some_and(|v| v != 0.0)
+        {
             warnings.push(
                 "corpo.custo_gene != 0 is not supported in v0 (SPEC: gene_cost is always 0, \
                  the Linear brain has dof=0 -- judge.rs's DOF_V0/METABOLISM_V0); ignoring"
@@ -310,7 +347,11 @@ fn warn_about_unsupported_bracos(cenario: &Value) {
 }
 
 fn warn_about_side_mismatch(cenario: &Value, worlds: &[World]) {
-    let Some(l) = cenario.get("mundo").and_then(|m| m.get("L")).and_then(Value::as_f64) else {
+    let Some(l) = cenario
+        .get("mundo")
+        .and_then(|m| m.get("L"))
+        .and_then(Value::as_f64)
+    else {
         return;
     };
     for (i, w) in worlds.iter().enumerate() {
@@ -344,10 +385,18 @@ fn read_protocol(cenario: &Value, raw: &RawArgs) -> Result<Protocol, String> {
     let field_f64 = |name: &str| protocolo.and_then(|p| p.get(name)).and_then(Value::as_f64);
     let field_str = |name: &str| protocolo.and_then(|p| p.get(name)).and_then(Value::as_str);
 
-    let pop = raw.one_usize("P")?.unwrap_or_else(|| field_u64("P").unwrap_or(128) as usize);
-    let generations = raw.one_usize("G")?.unwrap_or_else(|| field_u64("G").unwrap_or(30) as usize);
-    let replicas = raw.one_usize("R")?.unwrap_or_else(|| field_u64("R").unwrap_or(4) as usize);
-    let sigma_mut = raw.one_f32("sigma-mut")?.unwrap_or_else(|| field_f64("sigma_mut").unwrap_or(0.1) as f32);
+    let pop = raw
+        .one_usize("P")?
+        .unwrap_or_else(|| field_u64("P").unwrap_or(128) as usize);
+    let generations = raw
+        .one_usize("G")?
+        .unwrap_or_else(|| field_u64("G").unwrap_or(30) as usize);
+    let replicas = raw
+        .one_usize("R")?
+        .unwrap_or_else(|| field_u64("R").unwrap_or(4) as usize);
+    let sigma_mut = raw
+        .one_f32("sigma-mut")?
+        .unwrap_or_else(|| field_f64("sigma_mut").unwrap_or(0.1) as f32);
     let patience = match raw.one_usize("paciencia")? {
         Some(v) => Some(v),
         None => field_u64("paciencia").map(|v| v as usize),
@@ -358,7 +407,10 @@ fn read_protocol(cenario: &Value, raw: &RawArgs) -> Result<Protocol, String> {
     let seeds: Vec<u64> = match raw.many("seeds") {
         Some(vs) => vs
             .iter()
-            .map(|s| s.parse::<u64>().map_err(|_| format!("--seeds: '{s}' is not a valid seed number")))
+            .map(|s| {
+                s.parse::<u64>()
+                    .map_err(|_| format!("--seeds: '{s}' is not a valid seed number"))
+            })
             .collect::<Result<_, _>>()?,
         None => protocolo
             .and_then(|p| p.get("seeds"))
@@ -372,15 +424,31 @@ fn read_protocol(cenario: &Value, raw: &RawArgs) -> Result<Protocol, String> {
 
     let ticks = ticks_from_mundo(cenario.get("mundo"));
 
-    Ok(Protocol { pop, generations, patience, replicas, seeds, sigma_mut, campeao_str, crn_str, ticks })
+    Ok(Protocol {
+        pop,
+        generations,
+        patience,
+        replicas,
+        seeds,
+        sigma_mut,
+        campeao_str,
+        crn_str,
+        ticks,
+    })
 }
 
 /// SPEC §10 `T_evo = T_aval`, `e43_campo.py`'s own rule: `horizonte='aberto'`
 /// uses `mundo.T_max` (a hard ceiling, `corte_vivos` stops earlier once
 /// everyone is dead); `horizonte='fixo'` (or missing) uses `240 * mundo.dias`.
 fn ticks_from_mundo(mundo: Option<&Value>) -> usize {
-    let dias = mundo.and_then(|m| m.get("dias")).and_then(Value::as_f64).unwrap_or(10.0);
-    let horizonte = mundo.and_then(|m| m.get("horizonte")).and_then(Value::as_str).unwrap_or("fixo");
+    let dias = mundo
+        .and_then(|m| m.get("dias"))
+        .and_then(Value::as_f64)
+        .unwrap_or(10.0);
+    let horizonte = mundo
+        .and_then(|m| m.get("horizonte"))
+        .and_then(Value::as_str)
+        .unwrap_or("fixo");
     if horizonte == "aberto" {
         mundo
             .and_then(|m| m.get("T_max"))
@@ -409,20 +477,27 @@ fn load_maps(path: &Path) -> Result<(Vec<World>, Vec<String>), String> {
         vec![path.to_path_buf()]
     };
     if files.is_empty() {
-        return Err(format!("--mapa {} has no .json trace files", path.display()));
+        return Err(format!(
+            "--mapa {} has no .json trace files",
+            path.display()
+        ));
     }
     files.sort();
 
     let mut worlds = Vec::with_capacity(files.len());
     let mut canonical_nomes_f: Option<Vec<String>> = None;
     for f in &files {
-        let trace = Trace::load(f).map_err(|e| format!("could not load map trace {}: {e}", f.display()))?;
+        let trace =
+            Trace::load(f).map_err(|e| format!("could not load map trace {}: {e}", f.display()))?;
         if canonical_nomes_f.is_none() {
             canonical_nomes_f = Some(trace.nomes_f.clone());
         }
         worlds.push(trace.to_world());
     }
-    Ok((worlds, canonical_nomes_f.expect("at least one file was loaded")))
+    Ok((
+        worlds,
+        canonical_nomes_f.expect("at least one file was loaded"),
+    ))
 }
 
 // --- campeao loading + gene-name alignment --------------------------------
@@ -435,17 +510,26 @@ type CampeaoWeights = HashMap<u64, Vec<f32>>;
 /// `nomes_f` if it declares one (some older `e43_*.json` files predate that
 /// key).
 fn load_campeao_map(path: &Path) -> Result<(CampeaoWeights, Option<Vec<String>>), String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("could not read --campeao {}: {e}", path.display()))?;
-    let doc: Value = serde_json::from_str(&text).map_err(|e| format!("could not parse --campeao JSON {}: {e}", path.display()))?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("could not read --campeao {}: {e}", path.display()))?;
+    let doc: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("could not parse --campeao JSON {}: {e}", path.display()))?;
 
     let nomes_f = doc.get("nomes_f").and_then(Value::as_array).map(|arr| {
-        arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<String>>()
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<String>>()
     });
 
     let w = doc
         .pointer("/bracos/linear/W")
         .and_then(Value::as_object)
-        .ok_or_else(|| format!("--campeao {} has no bracos.linear.W (only the 'linear' arm is supported in v0)", path.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "--campeao {} has no bracos.linear.W (only the 'linear' arm is supported in v0)",
+                path.display()
+            )
+        })?;
 
     let mut map = HashMap::new();
     for (key, value) in w {
@@ -456,12 +540,19 @@ fn load_campeao_map(path: &Path) -> Result<(CampeaoWeights, Option<Vec<String>>)
             .as_array()
             .ok_or_else(|| format!("--campeao bracos.linear.W['{key}'] is not an array"))?
             .iter()
-            .map(|x| x.as_f64().map(|f| f as f32).ok_or_else(|| format!("--campeao bracos.linear.W['{key}'] has a non-numeric weight")))
+            .map(|x| {
+                x.as_f64().map(|f| f as f32).ok_or_else(|| {
+                    format!("--campeao bracos.linear.W['{key}'] has a non-numeric weight")
+                })
+            })
             .collect::<Result<_, _>>()?;
         map.insert(seed, genome);
     }
     if map.is_empty() {
-        return Err(format!("--campeao {} has an empty bracos.linear.W", path.display()));
+        return Err(format!(
+            "--campeao {} has an empty bracos.linear.W",
+            path.display()
+        ));
     }
     Ok((map, nomes_f))
 }
@@ -492,7 +583,9 @@ fn champion_for_seed(
              (cyclic fallback, mirrors e43_campo.py's --init-from behaviour)",
             campeao_path.display()
         );
-        w_map.get(&fallback).expect("fallback key came from w_map's own keys")
+        w_map
+            .get(&fallback)
+            .expect("fallback key came from w_map's own keys")
     };
 
     let aligned: Vec<f32> = match src_nomes_f {
@@ -505,7 +598,10 @@ fn champion_for_seed(
                 ));
             }
             let pos: HashMap<&str, usize> = src.iter().map(String::as_str).zip(0..).collect();
-            canonical.iter().map(|name| pos.get(name.as_str()).map(|&i| raw[i]).unwrap_or(0.0)).collect()
+            canonical
+                .iter()
+                .map(|name| pos.get(name.as_str()).map(|&i| raw[i]).unwrap_or(0.0))
+                .collect()
         }
         _ => raw.clone(),
     };
@@ -533,7 +629,9 @@ impl RawArgs {
         while i < args.len() {
             let arg = &args[i];
             let Some(flag) = arg.strip_prefix("--") else {
-                return Err(format!("unexpected positional argument '{arg}' (every argument must be --flag value...)"));
+                return Err(format!(
+                    "unexpected positional argument '{arg}' (every argument must be --flag value...)"
+                ));
             };
             let mut values = Vec::new();
             let mut j = i + 1;
@@ -556,20 +654,28 @@ impl RawArgs {
     }
 
     fn required_path(&self, name: &str) -> Result<PathBuf, String> {
-        self.one(name).map(PathBuf::from).ok_or_else(|| format!("missing required --{name}"))
+        self.one(name)
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("missing required --{name}"))
     }
 
     fn one_usize(&self, name: &str) -> Result<Option<usize>, String> {
         match self.one(name) {
             None => Ok(None),
-            Some(s) => s.parse::<usize>().map(Some).map_err(|_| format!("--{name}: '{s}' is not a valid integer")),
+            Some(s) => s
+                .parse::<usize>()
+                .map(Some)
+                .map_err(|_| format!("--{name}: '{s}' is not a valid integer")),
         }
     }
 
     fn one_f32(&self, name: &str) -> Result<Option<f32>, String> {
         match self.one(name) {
             None => Ok(None),
-            Some(s) => s.parse::<f32>().map(Some).map_err(|_| format!("--{name}: '{s}' is not a valid number")),
+            Some(s) => s
+                .parse::<f32>()
+                .map(Some)
+                .map_err(|_| format!("--{name}: '{s}' is not a valid number")),
         }
     }
 }
@@ -585,7 +691,10 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let raw = RawArgs::parse(&args).unwrap();
-        assert_eq!(raw.many("seeds"), Some(["0".to_string(), "1".to_string(), "2".to_string()].as_slice()));
+        assert_eq!(
+            raw.many("seeds"),
+            Some(["0".to_string(), "1".to_string(), "2".to_string()].as_slice())
+        );
         assert_eq!(raw.one("P"), Some("8"));
         assert_eq!(raw.one("tag"), Some("x"));
         assert_eq!(raw.one("missing"), None);
@@ -597,7 +706,11 @@ mod tests {
         assert_eq!(ticks_from_mundo(Some(&aberto)), 7200);
         let fixo = serde_json::json!({"horizonte": "fixo", "dias": 5});
         assert_eq!(ticks_from_mundo(Some(&fixo)), 1200);
-        assert_eq!(ticks_from_mundo(None), 2400, "default: fixo, dias=10 -> 2400 ticks");
+        assert_eq!(
+            ticks_from_mundo(None),
+            2400,
+            "default: fixo, dias=10 -> 2400 ticks"
+        );
     }
 
     #[test]
@@ -629,9 +742,21 @@ mod tests {
         let mut w = HashMap::new();
         w.insert(0u64, raw.clone());
 
-        let genome = champion_for_seed(&w, &Some(src_nomes_f), &canonical, 0, Path::new("dummy.json")).unwrap();
+        let genome = champion_for_seed(
+            &w,
+            &Some(src_nomes_f),
+            &canonical,
+            0,
+            Path::new("dummy.json"),
+        )
+        .unwrap();
         for i in 0..40 {
-            assert_eq!(genome.0[i], raw[39 - i], "gene {i} ({}) misaligned", canonical[i]);
+            assert_eq!(
+                genome.0[i],
+                raw[39 - i],
+                "gene {i} ({}) misaligned",
+                canonical[i]
+            );
         }
     }
 
@@ -650,7 +775,17 @@ mod tests {
         let mut w = HashMap::new();
         w.insert(0u64, raw);
 
-        let genome = champion_for_seed(&w, &Some(src_nomes_f), &canonical, 0, Path::new("dummy.json")).unwrap();
-        assert_eq!(genome.0[1], 0.0, "a canonical name absent from the source must default to 0.0, not leak an unrelated weight");
+        let genome = champion_for_seed(
+            &w,
+            &Some(src_nomes_f),
+            &canonical,
+            0,
+            Path::new("dummy.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            genome.0[1], 0.0,
+            "a canonical name absent from the source must default to 0.0, not leak an unrelated weight"
+        );
     }
 }

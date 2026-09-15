@@ -39,9 +39,9 @@ use crate::beings::Beings;
 use crate::constants::{Config, NPX};
 use crate::evolution::Simulador;
 use crate::genome::Genome;
-use crate::judge::{life_fitness, LifeSample, LifeSampler};
+use crate::judge::{LifeSample, LifeSampler, life_fitness};
 use crate::passengers::TaxiRng;
-use crate::tick::{step, Sim};
+use crate::tick::{Sim, step};
 use crate::world::World;
 
 /// Max worker threads [`SimCpu::avaliar`] spawns across the genome axis (T7
@@ -75,7 +75,10 @@ impl Simulador for SimCpu {
         seed: u64,
         r: u32,
     ) -> Vec<f32> {
-        assert!(!mapas.is_empty(), "avaliar: Simulador needs at least one map");
+        assert!(
+            !mapas.is_empty(),
+            "avaliar: Simulador needs at least one map"
+        );
         if genomas.is_empty() {
             return Vec::new();
         }
@@ -127,7 +130,10 @@ impl LifeSampler for SimCpu {
         seed: u64,
         copies: u32,
     ) -> Vec<LifeSample> {
-        assert!(!mapas.is_empty(), "sample: LifeSampler needs at least one map");
+        assert!(
+            !mapas.is_empty(),
+            "sample: LifeSampler needs at least one map"
+        );
         let sim = run_genome(genome, mapas, cfg, t_max, seed, copies as usize);
         (0..sim.beings.n)
             .map(|i| LifeSample {
@@ -159,7 +165,14 @@ impl LifeSampler for SimCpu {
 /// 240 == 239`"; `corte_vivos = 0` here, i.e. only a FULLY dead batch stops
 /// early). Battery mode throughout (`rng: Some`, SPEC §11.3): passengers
 /// respawn, unlike the identity gate's `rng: None`.
-fn run_genome(genome: &Genome, mapas: &[World], cfg: &Config, t_max: u32, seed: u64, r: usize) -> Sim {
+fn run_genome(
+    genome: &Genome,
+    mapas: &[World],
+    cfg: &Config,
+    t_max: u32,
+    seed: u64,
+    r: usize,
+) -> Sim {
     let beings = build_batch(mapas, cfg, seed, r);
     let mut sim = Sim::new(beings, mapas.to_vec(), *cfg, genome.clone());
     let mut rng = TaxiRng::new(seed);
@@ -174,7 +187,14 @@ fn run_genome(genome: &Genome, mapas: &[World], cfg: &Config, t_max: u32, seed: 
     sim
 }
 
-fn score_genome(genome: &Genome, mapas: &[World], cfg: &Config, t_max: u32, seed: u64, r: usize) -> f32 {
+fn score_genome(
+    genome: &Genome,
+    mapas: &[World],
+    cfg: &Config,
+    t_max: u32,
+    seed: u64,
+    r: usize,
+) -> f32 {
     let sim = run_genome(genome, mapas, cfg, t_max, seed, r);
     let n = sim.beings.n;
     if n == 0 {
@@ -220,7 +240,12 @@ fn birth_cradle(world: &World, cfg: &Config, seed: u64) -> Cradle {
         px[slot] = p;
         pxd[slot] = d;
     }
-    Cradle { pos, home_district, px, pxd }
+    Cradle {
+        pos,
+        home_district,
+        px,
+        pxd,
+    }
 }
 
 /// `_perto(pos, 1)` then `_destino(po)` (SPEC §7.1, `campo.py:222-235`): a
@@ -370,7 +395,13 @@ mod tests {
             rent: vec![0.0],
             demand: vec![0.5],
             price_phase: vec![0.0],
-            services: [vec![[side / 2.0, side / 2.0]], vec![], vec![], vec![], vec![]],
+            services: [
+                vec![[side / 2.0, side / 2.0]],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+            ],
         }
     }
 
@@ -387,9 +418,17 @@ mod tests {
         let beings = build_batch(&worlds, &cfg, 123, 3);
 
         assert_eq!(beings.n, 6, "NC=2, r=3 -> n=6");
-        assert_eq!(beings.map_idx, vec![0, 0, 0, 1, 1, 1], "map outer, replica inner (c*r + rep)");
+        assert_eq!(
+            beings.map_idx,
+            vec![0, 0, 0, 1, 1, 1],
+            "map outer, replica inner (c*r + rep)"
+        );
         assert_eq!(beings.px.len(), 6 * NPX * 2);
-        assert_eq!(beings.px_ok, vec![1u32; 6 * NPX], "SPEC 1: every slot starts active");
+        assert_eq!(
+            beings.px_ok,
+            vec![1u32; 6 * NPX],
+            "SPEC 1: every slot starts active"
+        );
         for &f in &beings.fuel {
             assert_eq!(f, 85.0);
         }
@@ -446,7 +485,10 @@ mod tests {
         assert_eq!(out.len(), 2);
         for &f in &out {
             assert!(f.is_finite(), "fitness must be finite, got {f}");
-            assert!(f >= 0.0, "life_fitness starts at 0 and only grows over 40 ticks, got {f}");
+            assert!(
+                f >= 0.0,
+                "life_fitness starts at 0 and only grows over 40 ticks, got {f}"
+            );
         }
     }
 
@@ -459,7 +501,10 @@ mod tests {
 
         let a = sim.avaliar(&genomes, &worlds, &cfg, 60, 99, 2);
         let b = sim.avaliar(&genomes, &worlds, &cfg, 60, 99, 2);
-        assert_eq!(a, b, "same seed/genomes/ticks must reproduce bit-exact fitness");
+        assert_eq!(
+            a, b,
+            "same seed/genomes/ticks must reproduce bit-exact fitness"
+        );
     }
 
     #[test]
@@ -525,6 +570,9 @@ mod tests {
         let cfg = Config::default();
         let genome = flat_genome(0.0);
         let sim = run_genome(&genome, &worlds, &cfg, 17, 3, 2);
-        assert_eq!(sim.t, 17, "with nobody dying in 17 ticks, run_genome must run exactly t_max ticks");
+        assert_eq!(
+            sim.t, 17,
+            "with nobody dying in 17 ticks, run_genome must run exactly t_max ticks"
+        );
     }
 }

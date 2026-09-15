@@ -14,16 +14,25 @@ without silently breaking an experiment. Every claim below was checked against t
 source at the cited `file:line`. Where the code did not answer a question, this
 document says so and marks a `TODO` instead of guessing.
 
+The current body/brain contract, direct Fly control, sampled diagnostics and visual
+playback are described in [Brain/body interface](docs/BRAIN-BODY-INTERFACE.md).
+The primary scene replay and the boundaries for a future live viewer are documented
+in [Replay observatory](docs/REPLAY-OBSERVATORY.md). Its binary recording, export,
+brain-trace validation, browser model and rendering are separate modules.
+The retinal host, encoding, Bevy resource and tests now live in separate
+`src/gpu/retina*.rs` modules; `gpu/mod.rs` preserves their public re-exports.
+
 ---
 
 ## 1. What this project is
 
 Universe is a neuroevolution simulator. Procedurally generated tracks are populated
 with *beings* — vehicles driven by an evolved brain — and a genetic algorithm selects
-the genomes that travel the furthest before running out of life. The whole per-tick
-simulation (retina raycast, perception encoding, both brains, vehicle physics) runs on
-the GPU through `wgpu` compute shaders; the CPU only prepares inputs, applies
-bookkeeping and runs selection between generations.
+the genomes that travel the furthest before running out of life. Retina raycasting,
+perception encoding, neural dynamics and vehicle physics have `wgpu` compute paths.
+The headless loop still prepares body signals and transforms motor commands on the
+CPU, with synchronous readbacks between stages. GPU kernels do not yet imply a
+fully GPU-resident simulation loop.
 
 Rough size: 121 Rust files (~54.6k lines) under `src/`, plus 22 WGSL compute shaders,
 plus 28 command-line binaries under `src/bin/`.

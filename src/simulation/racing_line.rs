@@ -243,6 +243,63 @@ impl RacingLine {
         let u = ((target - self.arc[j]) / seg_l).clamp(0.0, 1.0);
         self.points[j] + (self.points[j + 1] - self.points[j]) * u
     }
+
+    /// Signed heading change between `forward` and the line tangent `distance`
+    /// metres ahead along the track arc.
+    ///
+    /// This is deliberately sampled by arc length. Projecting
+    /// `pos + forward * distance` follows a Euclidean chord and can land on grass,
+    /// another segment, or outside the world at a tight bend. The returned value is
+    /// normalised so a 90 degree left/right bend is +1/-1.
+    pub fn lookahead_heading(&self, pos: Vec2, forward: Vec2, distance: f32) -> f32 {
+        let Some((i, t, _proj, _tan)) = self.project(pos) else {
+            return 0.0;
+        };
+        if self.arc.len() < 2 || self.total_len <= 1e-4 {
+            return 0.0;
+        }
+
+        let seg_len = (self.arc[i + 1] - self.arc[i]).max(1e-4);
+        let current_arc = self.arc[i] + t * seg_len;
+        let target_arc = (current_arc + distance.max(0.0)).rem_euclid(self.total_len);
+        let segment = self
+            .arc
+            .partition_point(|&arc| arc <= target_arc)
+            .saturating_sub(1)
+            .min(self.points.len() - 2);
+        let target_tangent = (self.points[segment + 1] - self.points[segment]).normalize_or_zero();
+        let forward = forward.normalize_or_zero();
+        if target_tangent.length_squared() < 1e-6 || forward.length_squared() < 1e-6 {
+            return 0.0;
+        }
+
+        let cross = forward.x * target_tangent.y - forward.y * target_tangent.x;
+        let dot = forward.dot(target_tangent).clamp(-1.0, 1.0);
+        (cross.atan2(dot) / std::f32::consts::FRAC_PI_2).clamp(-1.0, 1.0)
+    }
+
+    /// Mean signed curvature over the next `distance` metres, in 1/metres.
+    /// The angle is measured between track tangents, so lateral displacement and
+    /// the car's current heading error do not contaminate the physical quantity.
+    pub fn mean_curvature_ahead(&self, pos: Vec2, distance: f32) -> f32 {
+        let Some((_, _, _, current_tangent)) = self.project(pos) else {
+            return 0.0;
+        };
+        let distance = distance.max(1.0);
+        let normalised_heading = self.lookahead_heading(pos, current_tangent, distance);
+        normalised_heading * std::f32::consts::FRAC_PI_2 / distance
+    }
+
+    /// Signed track turn over the next `distance` metres, normalised by 90°.
+    /// Unlike [`lookahead_heading`], this excludes the body's heading error; that
+    /// error has its own proprioceptive channel and must not make a straight road
+    /// look curved.
+    pub fn lookahead_curve(&self, pos: Vec2, distance: f32) -> f32 {
+        let Some((_, _, _, current_tangent)) = self.project(pos) else {
+            return 0.0;
+        };
+        self.lookahead_heading(pos, current_tangent, distance)
+    }
 }
 
 /// Resample a polyline at uniform arc-length `step`. Returns at least the
@@ -325,6 +382,45 @@ mod tests {
             off > 0.0,
             "probe to the LEFT should be positive, got {}",
             off
+        );
+    }
+
+    #[test]
+    fn arc_lookahead_sees_a_corner_before_reaching_it() {
+        let line = RacingLine::from_centerline(&square_track(), 18.0);
+        let pos = Vec2::new(70.0, 0.0);
+        let heading = line.lookahead_heading(pos, Vec2::X, 60.0);
+        assert!(
+            heading > 0.45,
+            "arc lookahead should report the upcoming left turn, got {heading}"
+        );
+    }
+
+    #[test]
+    fn curvature_is_angle_per_arc_length() {
+        let line = RacingLine::from_centerline(&square_track(), 18.0);
+        let pos = Vec2::new(70.0, 0.0);
+        let curvature = line.mean_curvature_ahead(pos, 60.0);
+        assert!(
+            curvature > 0.01,
+            "expected positive left curvature, got {curvature}"
+        );
+        assert!(
+            curvature < 0.04,
+            "mean curvature should stay in physical units, got {curvature}"
+        );
+    }
+
+    #[test]
+    fn curve_signal_is_independent_of_body_heading() {
+        let line = RacingLine::from_centerline(&square_track(), 18.0);
+        let pos = Vec2::new(30.0, 0.0);
+        let curve = line.lookahead_curve(pos, 10.0);
+        let heading_error = line.lookahead_heading(pos, Vec2::Y, 10.0);
+        assert!(curve.abs() < 0.05, "straight road should stay straight");
+        assert!(
+            heading_error.abs() > 0.9,
+            "body heading error remains observable elsewhere"
         );
     }
 }

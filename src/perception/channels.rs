@@ -114,7 +114,7 @@
 ///  33..=63  → perception.wgsl   (retina/flow estendido)
 ///  64..=75  → temporal.wgsl     (propriocepção + navegação)
 ///  76..=77  → perception.wgsl   (distância lateral)
-///  78..=80  → motor.rs          (curvatura por atan2)
+///  78..=80  → temporal.wgsl     (curvatura da pista por comprimento de arco)
 ///  81       → temporal.wgsl
 ///  82       → perception.wgsl   (urgência frontal)
 ///  83..=84  → motion.wgsl       (flow ótico hemisférico esq/dir)
@@ -153,6 +153,9 @@ pub const N_CHANNELS: usize = 192;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Channel {
+    /// Remaining fuel as a fraction of tank capacity. Native GPU body channel;
+    /// written from the resident temporal body buffer. [0, 127].
+    FuelFrac = 20,
     // ── Motion per-row (motion.wgsl ch 21-27) ────────────────────────────────
     /// Delta de posição retina linha 0 entre ticks consecutivos.
     /// GPU: encoded = clamp((delta_dist_m / 2000.0) * 127, 0, 127).
@@ -180,7 +183,7 @@ pub enum Channel {
     //   prop[3]  → ch67 = vida_frac = life_left / life_cap
     //   prop[4]  → ch68 = rpm_norm = current_rpm / max_rpm
     //   prop[5]  → ch69 = gear = current_gear as f32 (RAW; ×20 é no shader)
-    //   prop[6]  → ch70 = tire_temp = avg(wheels[*][0]) / 120
+    //   prop[6]  → ch70 = average normalised tyre temperature
     //   prop[7]  → ch71 = temp_motor = (engine_temp - 20) / 130
     //   prop[8]  → ch72 = risco_cinetico = speed_norm × curv_aparente
     //   prop[9]  → ch73 = on_grass (voxel==0 → 1.0, mas o shader codifica -128)
@@ -201,7 +204,7 @@ pub enum Channel {
     /// Marcha atual. Shader: clamp(current_gear * 20.0, 0, 127) — NÃO é o
     /// índice de marcha puro, é escalado ×20 para ocupar a faixa i8.
     Gear = 69,
-    /// Temperatura dos pneus normalizada (média das 4 rodas / 120 °C). [0, 127].
+    /// Normalised average tyre temperature: 0 = cold, 0.5 = optimum, 1 = hot. [0, 127].
     /// BODY BLOCK: with `BODY_CHANNELS_ON` the SOURCE becomes slot 6 of the block
     /// (CPU-side thermal model), same encoding — see `BODY_SLOTS`.
     TireTemp = 70,
@@ -209,7 +212,7 @@ pub enum Channel {
     /// BODY BLOCK: with `BODY_CHANNELS_ON` the SOURCE becomes slot 7 of the block,
     /// same formula — see `BODY_SLOTS`.
     TempMotor = 71,
-    /// Risco cinético = speed_norm × curvatura_aparente (diferença edge_row6/7). [0, 127].
+    /// Demanda lateral normalizada: clamp(v² × |κ30m| / (0.9g), 0, 1). [0, 127].
     RiscoCinetico = 72,
     /// Flag de grama. Shader: `select(0, -128, voxel==0)` — codificação é
     /// {0, -128}, NÃO {0, 127} como as outras flags do registro.
@@ -410,6 +413,7 @@ impl Channel {
     /// Nome legível do canal (identificador simbólico).
     pub const fn name(self) -> &'static str {
         match self {
+            Channel::FuelFrac => "FuelFrac",
             Channel::MotionDelta0 => "MotionDelta0",
             Channel::MotionDelta1 => "MotionDelta1",
             Channel::MotionDelta2 => "MotionDelta2",
@@ -496,7 +500,7 @@ impl Channel {
             Channel::VelAlign | Channel::VelLat => (-127, 127),
 
             // Velocidade fwd (módulo): não-negativo
-            Channel::SpeedFwd => (0, 127),
+            Channel::SpeedFwd | Channel::FuelFrac => (0, 127),
 
             // Propriocepção não-negativa
             Channel::VidaFrac
@@ -605,6 +609,7 @@ impl Channel {
     /// verificado" no topo do arquivo.
     pub const fn formula_doc(self) -> &'static str {
         match self {
+            Channel::FuelFrac => "fuel / tank capacity, [0,127] = [empty,full]",
             Channel::MotionDelta0
             | Channel::MotionDelta1
             | Channel::MotionDelta2
@@ -624,7 +629,7 @@ impl Channel {
             Channel::Gear => "clamp(current_gear * 20.0, 0, 127) — NÃO é cast puro",
             Channel::TireTemp => "avg(wheels[*].temp) / 120°C, [0,127]",
             Channel::TempMotor => "(engine_temp - 20) / 130, [0,127]",
-            Channel::RiscoCinetico => "speed_norm × |edge_row6 - edge_row7| (curvatura aparente)",
+            Channel::RiscoCinetico => "clamp(v² × |κ média nos próximos 30m| / (0.9g), 0, 1)",
             Channel::OnGrass => "select(0, -128, voxel == 0) — {0,-128}, NÃO {0,127}",
             Channel::SteerAbs => "|steer| atual, clamped [0,127]",
             Channel::Estagnacao => "stagnation_ticks / 64, [0,127]",
@@ -687,11 +692,17 @@ impl Channel {
             }
             Channel::LineLookAheadRL => "lookahead offset da racing line normalizado [-1,1]",
             Channel::Curv260m => {
-                "curvatura da pista a 260m via curv_at_d(d), [-127,127] — FIX 2026-08-14 (era só motor.rs)"
+                "variação da tangente da pista entre agora e +260m de arco, dividida por 90°, [-127,127]"
             }
-            Channel::Curv350m => "curvatura da pista a 350m via curv_at_d(d), [-127,127]",
-            Channel::Curv200m => "curvatura da pista a 200m via curv_at_d(d), [-127,127]",
-            Channel::Curv275m => "curvatura da pista a 275m via curv_at_d(d), [-127,127]",
+            Channel::Curv350m => {
+                "variação da tangente da pista até +350m de arco / 90°, [-127,127]"
+            }
+            Channel::Curv200m => {
+                "variação da tangente da pista até +200m de arco / 90°, [-127,127]"
+            }
+            Channel::Curv275m => {
+                "variação da tangente da pista até +275m de arco / 90°, [-127,127]"
+            }
             Channel::FwdDistNorm => "dist_f / (half_width * 3), [0,127]",
             Channel::CorridorNorm => "(dist_l + dist_r) / (half_width * 4), [0,127]",
             Channel::Memory0Cfc => {
@@ -1000,6 +1011,7 @@ pub fn source_for(ch: usize) -> &'static str {
     // Vários canais têm fontes múltiplas (GPU + motor.rs sobrescrevem);
     // listamos a GPU (última escrita) quando há sobreposição.
     match ch {
+        20 => "temporal.wgsl (BODY slot 3, injected by the CPU: fuel/tank)",
         // motion.wgsl escreve ch 21-27, 83-84, 98
         21..=27 => "motion.wgsl",
         83 | 84 => "motion.wgsl",
@@ -1009,13 +1021,14 @@ pub fn source_for(ch: usize) -> &'static str {
         81 => "temporal.wgsl",
         85 | 86 => "temporal.wgsl",
         88 | 89 => "temporal.wgsl",
-        // ch101: curvatura 260m via curv_at_d — FASE CANAIS 2026-08-14 (antes só
-        // o caminho Bevy interativo alimentava; ainda alimenta lá também).
+        // ch101: track-tangent change at +260m of arc length. The host computes it
+        // from the racing line and temporal.wgsl owns the final channel write.
         // NOTA: a string abaixo evita a substring "motor.rs" de propósito — ela
         // dispara o ramo Host em Channel::source() (ver match logo abaixo desta
         // função), e este canal É Kernel agora (temporal.wgsl escreve por último).
-        101 => "temporal.wgsl (curv_at_d 260m — FASE CANAIS 2026-08-14, era só caminho Bevy)",
+        101 => "temporal.wgsl (host arc-length racing-line lookahead, +260m)",
         102..=113 => "temporal.wgsl",
+        78..=80 => "temporal.wgsl (host arc-length racing-line lookahead, heritable horizons)",
         118..=120 => "temporal.wgsl",
         123 => "temporal.wgsl",
         // temporal.wgsl (injeção CPU — gravados pelo host via update_*_temporal):
@@ -1034,9 +1047,9 @@ pub fn source_for(ch: usize) -> &'static str {
         }
         121 | 122 => "temporal.wgsl (slots 56-57, injetado pela CPU: steer/brake_mem do phys)",
         124..=127 => "temporal.wgsl (slots 50-53, injetado pela CPU: joy/spinning/stress)",
-        // motor.rs (CPU, caminho Bevy interativo) escreve: ch 20, 28, 32, 78-80
-        20 | 28 | 32 => "motor.rs",
-        78..=80 => "motor.rs",
+        // motor.rs (CPU, caminho Bevy interativo) escreve: ch 28, 32. The native
+        // training path owns 78-80 in temporal.wgsl.
+        28 | 32 => "motor.rs",
         // ch114-117: approach hemisférico + fóvea via motion.wgsl — FASE CANAIS
         // 2026-08-14 (antes só o caminho Bevy interativo alimentava; ainda
         // alimenta lá também, sem conflito — binários distintos).
@@ -1061,6 +1074,7 @@ pub fn source_for(ch: usize) -> &'static str {
 pub fn name_for(ch: usize) -> &'static str {
     // Canais nomeados (variantes do enum):
     match ch {
+        20 => Channel::FuelFrac.name(),
         21 => Channel::MotionDelta0.name(),
         22 => Channel::MotionDelta1.name(),
         23 => Channel::MotionDelta2.name(),
@@ -1145,6 +1159,7 @@ pub fn name_for(ch: usize) -> &'static str {
 pub fn doc_for(ch: usize) -> &'static str {
     // Canais nomeados (variantes do enum):
     match ch {
+        20 => Channel::FuelFrac.formula_doc(),
         21 => Channel::MotionDelta0.formula_doc(),
         22 => Channel::MotionDelta1.formula_doc(),
         23 => Channel::MotionDelta2.formula_doc(),

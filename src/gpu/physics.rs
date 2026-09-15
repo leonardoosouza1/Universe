@@ -38,6 +38,10 @@ use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
+#[cfg(test)]
+#[path = "physics_contact_tests.rs"]
+mod physics_contact_tests;
+
 // ============================================================
 // === DATA STRUCTS (same as before)                         ===
 // ============================================================
@@ -84,6 +88,17 @@ pub fn pack_config_flags(
         | ((abs as u32) << 5)
 }
 
+/// Optional per-step wall-contact telemetry; bits 0..5 are existing physics flags.
+pub const CONTACT_DIAGNOSTICS_FLAG: u32 = 1 << 6;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContactDiagnostics {
+    pub contact_mask: u32,
+    pub impact_speed_mps: f32,
+    pub impulse_ns: f32,
+    pub energy_loss_j: f32,
+}
+
 /// Position extracted from `PhysicsStateGpu`, for distance comparison.
 ///
 /// Deduplicated (E3): an identical copy existed in `gpu_evolve.rs`, `gpu_loop.rs` and
@@ -101,7 +116,9 @@ pub fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] {
 /// the beings move, the movement is the BRAIN'S DECISION", not injected velocity).
 pub fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
     let normal_load = 1350.0 * 9.81 / 4.0;
-    let wheel = WheelGpu::from_cpu(0.0, 0.0, 0.0, normal_load, 60.0, 0.0, 0.0);
+    // Tyre temperature is dimensionless throughout the GPU kernels:
+    // 0 = cold, 0.5 = optimum, 1 = hot. The old 60.0 forced grip to its 0.70 floor.
+    let wheel = WheelGpu::from_cpu(0.0, 0.0, 0.0, normal_load, 0.5, 0.0, 0.0);
     let lat = [fwd[2], 0.0, -fwd[0]];
     // v0 = 0 m/s: no injected velocity. Movement = the brain's decision.
     let v0 = 0.0_f32;
@@ -235,6 +252,18 @@ pub struct PhysicsStateGpu {
     pub config_flags: u32,
     pub dt: f32,
     pub _pad_dt: f32,
+}
+
+impl PhysicsStateGpu {
+    /// Decode the four diagnostic values returned in output padding by Kernel C.
+    pub fn contact_diagnostics(&self) -> ContactDiagnostics {
+        ContactDiagnostics {
+            contact_mask: self._pad_pos.max(0.0) as u32,
+            impact_speed_mps: self._pad_fwd,
+            impulse_ns: self._pad_lat,
+            energy_loss_j: self._pad_dt,
+        }
+    }
 }
 
 /// Per-car output after kernel B.
@@ -1045,6 +1074,11 @@ fn apply_output(e: &mut PhysicsStateGpu, s: &PhysicsOutputGpu) {
     e.starter_timer = s.starter_timer;
     e.engine_temp = s.engine_temp;
     e.oil_temp = s.oil_temp;
+    // Output padding carries contact diagnostics when bit 6 was requested.
+    e._pad_pos = s._pad_pos;
+    e._pad_fwd = s._pad_fwd;
+    e._pad_lat = s._pad_lat;
+    e._pad_dt = s._pad_eng;
 }
 
 // ============================================================
@@ -1113,5 +1147,25 @@ impl PhysicsGpuRes {
             }
         }
         self.ctx.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn tyre_temperature_starts_at_normalised_optimum() {
+        let state = make_physics_state([0.0, 0.5, 0.0], [1.0, 0.0, 0.0]);
+
+        assert_eq!(state.optimal_temp.to_bits(), 0.5_f32.to_bits());
+        for index in [1_usize, 3, 5, 7] {
+            assert_eq!(
+                state.wheels[index][0].to_bits(),
+                state.optimal_temp.to_bits(),
+                "wheel {} must use the same normalised temperature unit as the tyre kernel",
+                index / 2
+            );
+        }
     }
 }

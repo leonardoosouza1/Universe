@@ -17,7 +17,8 @@ use std::fs::File;
 ///   being_idx: u8
 ///   ReplayFrame serialized binary (bytemuck::Pod)
 ///
-/// The writer guarantees BEING_IDX 0 = champion.
+/// Being indices follow the producer's convention. `gpu_evolve` uses stable
+/// population slots; slot zero must not be presented as a measured champion.
 ///
 /// # Reading
 ///
@@ -52,7 +53,7 @@ pub const FRAME_TAG: u8 = 0xFE;
 /// For long races (24000 ticks × 40 beings) = 960.000 frames ≈ 123 MB.
 /// Optional filtering: recording only the champion (IDX=0) reduces it to 3 MB.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ReplayFrame {
     // --- Physical state ---
     /// World position (x, y, z) in meters
@@ -73,6 +74,8 @@ pub struct ReplayFrame {
     pub hp_norm: u8,
     /// Normalized fuel [0..127]
     pub fuel_norm: u8,
+    /// Explicit bytes formerly occupied by implicit C-layout padding.
+    pub _alignment: [u8; 3],
     /// Absolute tick since the start of the generation
     pub tick: u32,
 
@@ -131,9 +134,7 @@ pub struct ReplayFrame {
 // Guarantees a fixed size — compilation failure if it changes without adjustment.
 const _: () = assert!(std::mem::size_of::<ReplayFrame>() == 128);
 
-// SAFETY: ReplayFrame is #[repr(C)] with only primitive types, no implicit padding.
-unsafe impl bytemuck::Pod for ReplayFrame {}
-unsafe impl bytemuck::Zeroable for ReplayFrame {}
+// Deriving Pod verifies that future edits cannot reintroduce implicit padding.
 
 // ── Header ───────────────────────────────────────────────────────────────────
 
@@ -240,6 +241,21 @@ impl ReplayReader {
                     "version {} not supported (expected {})",
                     header.version, REPLAY_VERSION
                 ),
+            ));
+        }
+
+        let entry_size = 2 + std::mem::size_of::<ReplayFrame>();
+        if header.n_beings == 0
+            || !header.tick_rate.is_finite()
+            || header.tick_rate <= 0.0
+            || (data.len() - 64) % entry_size != 0
+            || data[64..]
+                .chunks_exact(entry_size)
+                .any(|entry| entry[0] != FRAME_TAG || entry[1] >= header.n_beings)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid or truncated replay records/header",
             ));
         }
 
@@ -568,130 +584,14 @@ fn glam_like_dist(a: [f32; 3], b: [f32; 3]) -> f32 {
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
-// ── HTML player generator ────────────────────────────────────────────────────
+// Scene export is separate from the binary recording and analysis contracts.
+#[path = "replay/player.rs"]
+mod player;
+pub use player::{PlayerOptions, generate_html_player, generate_html_player_with_options};
 
-/// HTML template embedded at compile time (src/assets/replay_player.html).
-/// Contains all the visualization logic; the data is injected as window.REPLAY_*.
-static HTML_TEMPLATE: &str = include_str!("assets/replay_player.html");
+#[path = "replay/terrain.rs"]
+pub mod terrain;
 
-/// Builds a self-contained HTML with a frame-by-frame player.
-///
-/// `track_path`: track polyline in world coordinates [(x, z)].
-/// `being_frames`: Vec of frame sequences per being (index 0 = champion).
-/// `labels`: optional names for each being.
-///
-/// Injects `window.REPLAY_TRACK` and `window.REPLAY_BEINGS` before the template's `<script>`.
-pub fn generate_html_player(
-    track_path: &[[f32; 2]],
-    being_frames: &[Vec<ReplayFrame>],
-    labels: &[&str],
-    output_path: &Path,
-) -> io::Result<()> {
-    let file = File::create(output_path)?;
-    let mut w = BufWriter::new(file);
-
-    // --- Computes the track bounds for normalization ---
-    let (mut min_x, mut max_x, mut min_z, mut max_z) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-    for &[x, z] in track_path {
-        min_x = min_x.min(x);
-        max_x = max_x.max(x);
-        min_z = min_z.min(z);
-        max_z = max_z.max(z);
-    }
-    // Includes every being's positions in the bounds
-    for frames in being_frames {
-        for f in frames {
-            min_x = min_x.min(f.pos[0]);
-            max_x = max_x.max(f.pos[0]);
-            min_z = min_z.min(f.pos[2]);
-            max_z = max_z.max(f.pos[2]);
-        }
-    }
-
-    let range_x = (max_x - min_x).max(1.0);
-    let range_z = (max_z - min_z).max(1.0);
-
-    // --- Serializes data as JSON embedded in the HTML ---
-    // track_points: array of [px, py] normalized to [0..1000, 0..1000]
-    let mut track_json = String::from("[");
-    for (i, &[x, z]) in track_path.iter().enumerate() {
-        let px = ((x - min_x) / range_x * 980.0 + 10.0) as i32;
-        let py = ((z - min_z) / range_z * 980.0 + 10.0) as i32;
-        if i > 0 {
-            track_json.push(',');
-        }
-        track_json.push_str(&format!("[{},{}]", px, py));
-    }
-    track_json.push(']');
-
-    // beings_data: array of objects, each with an array of frames
-    let mut beings_json = String::from("[");
-    for (bi, frames) in being_frames.iter().enumerate() {
-        if bi > 0 {
-            beings_json.push(',');
-        }
-        let label = labels.get(bi).copied().unwrap_or("?");
-        beings_json.push_str(&format!("{{\"label\":\"{}\",\"frames\":[", label));
-
-        for (fi, f) in frames.iter().enumerate() {
-            if fi > 0 {
-                beings_json.push(',');
-            }
-            let px = ((f.pos[0] - min_x) / range_x * 980.0 + 10.0) as i32;
-            let py = ((f.pos[2] - min_z) / range_z * 980.0 + 10.0) as i32;
-            let fwd_px = (f.fwd[0] * 15.0) as i32;
-            let fwd_py = (f.fwd[1] * 15.0) as i32;
-            beings_json.push_str(&format!(
-                "{{\"t\":{},\"x\":{},\"y\":{},\"fx\":{},\"fy\":{},\
-                 \"spd\":{:.1},\"thr\":{:.2},\"str\":{:.2},\"brk\":{:.2},\
-                 \"ithr\":{:.2},\"istr\":{:.2},\"ibrk\":{:.2},\
-                 \"cl\":{:.1},\"cr\":{:.1},\"cf\":{:.1},\
-                 \"c40\":{:.2},\"c70\":{:.2},\"c120\":{:.2},\
-                 \"fl\":{:.2},\"lo\":{:.2},\
-                 \"ds\":{},\"sf\":{},\"laps\":{},\"arc\":{:.1}}}",
-                f.tick,
-                px,
-                py,
-                fwd_px,
-                fwd_py,
-                f.speed,
-                f.final_thr,
-                f.final_str,
-                f.final_brk,
-                f.intent_thr,
-                f.intent_str,
-                f.intent_brk,
-                f.dist_wall_l,
-                f.dist_wall_r,
-                f.dist_wall_f,
-                f.curv_40m,
-                f.curv_70m,
-                f.curv_120m,
-                f.flow_align,
-                f.line_offset,
-                f.dims_saturated,
-                f.safety_flags,
-                f.laps,
-                f.arc_prog,
-            ));
-        }
-        beings_json.push_str("]}");
-    }
-    beings_json.push(']');
-
-    // --- Inject the data into the HTML template ---
-    // The template expects window.REPLAY_TRACK and window.REPLAY_BEINGS
-    // defined BEFORE its <script>. We insert a <script> block with the
-    // data right before the template's </head>.
-    let data_script = format!(
-        "<script>\nwindow.REPLAY_TRACK = {};\nwindow.REPLAY_BEINGS = {};\n</script>\n",
-        track_json, beings_json
-    );
-
-    // Inserts the data block before </head>
-    let output_html = HTML_TEMPLATE.replacen("</head>", &format!("{}</head>", data_script), 1);
-
-    w.write_all(output_html.as_bytes())?;
-    w.flush()?;
-    Ok(())
-}
+#[cfg(test)]
+#[path = "replay/record_tests.rs"]
+mod record_tests;

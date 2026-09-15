@@ -3293,6 +3293,7 @@ pub(super) fn update_racers(
                             safety_flags: sf,
                             retina_fov,
                             retina_peri,
+                            _alignment: [0u8; 3],
                             _pad: [0u8; 8],
                         };
                         let _ = rw.write_frame(my_rank as u8, &replay_frame);

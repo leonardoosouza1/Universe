@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 
 use crate::constants::{G, NF, S};
-use crate::tick::{step, Sim};
+use crate::tick::{Sim, step};
 use crate::trace::Trace;
 
 /// One action disagreement between Rust's `decide()` and the reference trace,
@@ -106,7 +106,11 @@ impl GateReport {
         if let Some(first_bug) = self.bugs.first() {
             s += &format!(
                 "first BUG divergence: tick={} being={} esc_py={} esc_rust={} margin={:e}\n",
-                first_bug.tick, first_bug.being, first_bug.esc_py, first_bug.esc_rust, first_bug.margin
+                first_bug.tick,
+                first_bug.being,
+                first_bug.esc_py,
+                first_bug.esc_rust,
+                first_bug.margin
             );
         }
         for (k, v) in &self.max_abs {
@@ -171,10 +175,19 @@ pub fn run_gate(trace: &Trace, level: GateLevel) -> GateReport {
         GateLevel::FirstDay => (sim.cfg.day_ticks as usize).min(trace.t),
         GateLevel::FullLife => trace.t,
     };
-    assert!(acoes.len() >= ticks, "acoes_por_tique shorter than the requested horizon");
-    assert!(traco.len() >= ticks, "traco shorter than the requested horizon");
+    assert!(
+        acoes.len() >= ticks,
+        "acoes_por_tique shorter than the requested horizon"
+    );
+    assert!(
+        traco.len() >= ticks,
+        "traco shorter than the requested horizon"
+    );
 
-    let mut report = GateReport { first_divergence: vec![None; n], ..GateReport::default() };
+    let mut report = GateReport {
+        first_divergence: vec![None; n],
+        ..GateReport::default()
+    };
 
     // P0/P1 only ever look at tick 0, so these can stay borrowed from the raw
     // `serde_json::Value`s directly instead of being parsed unconditionally
@@ -183,13 +196,25 @@ pub fn run_gate(trace: &Trace, level: GateLevel) -> GateReport {
     // reads them).
     let nota_t0 = if level == GateLevel::Score {
         Some(
-            trace.nota_por_tique.as_array().and_then(|a| a.first()).cloned().unwrap_or_default(),
+            trace
+                .nota_por_tique
+                .as_array()
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or_default(),
         )
     } else {
         None
     };
     let f_t0 = if level == GateLevel::Senses {
-        Some(trace.f_primeiros_50.as_array().and_then(|a| a.first()).cloned().unwrap_or_default())
+        Some(
+            trace
+                .f_primeiros_50
+                .as_array()
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or_default(),
+        )
     } else {
         None
     };
@@ -207,7 +232,13 @@ pub fn run_gate(trace: &Trace, level: GateLevel) -> GateReport {
                 report.actions_equal += 1;
             } else {
                 let m = margem[tick][b];
-                let d = Divergence { tick, being: b, esc_py, esc_rust, margin: m };
+                let d = Divergence {
+                    tick,
+                    being: b,
+                    esc_py,
+                    esc_rust,
+                    margin: m,
+                };
                 match classify_divergence(m) {
                     DivergenceClass::Bug => {
                         if report.first_divergence[b].is_none() {
@@ -226,9 +257,13 @@ pub fn run_gate(trace: &Trace, level: GateLevel) -> GateReport {
         if level == GateLevel::Senses {
             if let Some(rows) = &f_t0 {
                 for b in 0..n {
-                    let row = rows[b].as_array().expect("F_primeiros_50[0][b] must be an array");
+                    let row = rows[b]
+                        .as_array()
+                        .expect("F_primeiros_50[0][b] must be an array");
                     for g in 0..G {
-                        let opt = row[g].as_array().expect("F_primeiros_50[0][b][g] must be an array");
+                        let opt = row[g]
+                            .as_array()
+                            .expect("F_primeiros_50[0][b][g] must be an array");
                         for feat in 0..NF {
                             let expected = opt[feat].as_f64().unwrap() as f32;
                             let got = record.f[(b * G + g) * NF + feat];
@@ -243,7 +278,9 @@ pub fn run_gate(trace: &Trace, level: GateLevel) -> GateReport {
             if let Some(rows) = &nota_t0 {
                 let total = G + S;
                 for b in 0..n {
-                    let row = rows[b].as_array().expect("nota_por_tique[0][b] must be an array");
+                    let row = rows[b]
+                        .as_array()
+                        .expect("nota_por_tique[0][b] must be an array");
                     for i in 0..total {
                         let expected = row[i].as_f64().unwrap() as f32;
                         let got = record.scores[b * total + i];
@@ -283,7 +320,8 @@ pub fn run_gate(trace: &Trace, level: GateLevel) -> GateReport {
         // (not `tick + 1`) is therefore the row aligned with THIS iteration's
         // result.
         if matches!(level, GateLevel::FirstDay | GateLevel::FullLife) {
-            if let (Some(t_row_all), Some(e_row_all)) = (traco.get(tick + 1), traco_extra.get(tick)) {
+            if let (Some(t_row_all), Some(e_row_all)) = (traco.get(tick + 1), traco_extra.get(tick))
+            {
                 for b in 0..n {
                     let t_row = t_row_all[b];
                     let e_row = e_row_all[b];
@@ -304,8 +342,12 @@ pub fn run_gate(trace: &Trace, level: GateLevel) -> GateReport {
 
     if level == GateLevel::FullLife {
         for b in 0..n {
-            report.final_t_vida_diff.push((sim.beings.alive_ticks[b] - trace.t_vida[b]).abs());
-            report.final_rec_diff.push((sim.beings.revenue[b] - trace.rec[b]).abs());
+            report
+                .final_t_vida_diff
+                .push((sim.beings.alive_ticks[b] - trace.t_vida[b]).abs());
+            report
+                .final_rec_diff
+                .push((sim.beings.revenue[b] - trace.rec[b]).abs());
         }
     }
 
@@ -320,7 +362,10 @@ mod tests {
     fn a_divergence_below_the_margin_is_reported_as_a_tie_not_a_bug() {
         // Synthetic: 1 being, 1 tick, esc disagrees but margin is a clean tie
         // (SPEC §11.2: < 1e-3 -> not even recorded as a divergence).
-        let mut report = GateReport { first_divergence: vec![None], ..GateReport::default() };
+        let mut report = GateReport {
+            first_divergence: vec![None],
+            ..GateReport::default()
+        };
         let margin = 1e-4_f32;
         report.actions_total += 1;
         let esc_py = 3u32;
@@ -328,24 +373,51 @@ mod tests {
         if esc_rust == esc_py {
             report.actions_equal += 1;
         } else if margin > 1e-2 {
-            report.bugs.push(Divergence { tick: 0, being: 0, esc_py, esc_rust, margin });
+            report.bugs.push(Divergence {
+                tick: 0,
+                being: 0,
+                esc_py,
+                esc_rust,
+                margin,
+            });
         } else if margin > 1e-3 {
-            report.grey.push(Divergence { tick: 0, being: 0, esc_py, esc_rust, margin });
+            report.grey.push(Divergence {
+                tick: 0,
+                being: 0,
+                esc_py,
+                esc_rust,
+                margin,
+            });
         }
-        assert!(report.bugs.is_empty(), "a margin of 1e-4 must not be classified as a bug");
-        assert!(report.grey.is_empty(), "a margin of 1e-4 must not even be grey-zone");
+        assert!(
+            report.bugs.is_empty(),
+            "a margin of 1e-4 must not be classified as a bug"
+        );
+        assert!(
+            report.grey.is_empty(),
+            "a margin of 1e-4 must not even be grey-zone"
+        );
     }
 
     #[test]
     fn a_divergence_above_the_bug_threshold_is_reported_as_a_bug() {
-        let mut report = GateReport { first_divergence: vec![None], ..GateReport::default() };
+        let mut report = GateReport {
+            first_divergence: vec![None],
+            ..GateReport::default()
+        };
         let margin = 0.5_f32;
         let esc_py = 3u32;
         let esc_rust = 1u32;
         report.actions_total += 1;
         if esc_rust != esc_py && margin > 1e-2 {
             report.first_divergence[0] = Some(0);
-            report.bugs.push(Divergence { tick: 0, being: 0, esc_py, esc_rust, margin });
+            report.bugs.push(Divergence {
+                tick: 0,
+                being: 0,
+                esc_py,
+                esc_rust,
+                margin,
+            });
         }
         assert_eq!(report.bugs.len(), 1);
         assert_eq!(report.first_divergence[0], Some(0));
@@ -353,16 +425,31 @@ mod tests {
 
     #[test]
     fn a_grey_zone_divergence_is_reported_but_not_a_bug() {
-        let mut report = GateReport { first_divergence: vec![None], ..GateReport::default() };
+        let mut report = GateReport {
+            first_divergence: vec![None],
+            ..GateReport::default()
+        };
         let margin = 5e-3_f32;
         let esc_py = 3u32;
         let esc_rust = 1u32;
         report.actions_total += 1;
         if esc_rust != esc_py {
             if margin > 1e-2 {
-                report.bugs.push(Divergence { tick: 0, being: 0, esc_py, esc_rust, margin });
+                report.bugs.push(Divergence {
+                    tick: 0,
+                    being: 0,
+                    esc_py,
+                    esc_rust,
+                    margin,
+                });
             } else if margin > 1e-3 {
-                report.grey.push(Divergence { tick: 0, being: 0, esc_py, esc_rust, margin });
+                report.grey.push(Divergence {
+                    tick: 0,
+                    being: 0,
+                    esc_py,
+                    esc_rust,
+                    margin,
+                });
             }
         }
         assert!(report.bugs.is_empty());

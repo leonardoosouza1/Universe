@@ -136,10 +136,7 @@ fn majority_decision<D: PartialEq + Clone>(votes: &[Vote<D>]) -> Option<(D, usiz
 
     for vote in votes {
         // Find existing tally for this decision.
-        let count = votes
-            .iter()
-            .filter(|v| v.decision == vote.decision)
-            .count();
+        let count = votes.iter().filter(|v| v.decision == vote.decision).count();
 
         match &best {
             None => best = Some((vote.decision.clone(), count)),
@@ -517,7 +514,7 @@ mod tests {
             ("Brasília foi inaugurada em 1960.", true),   // clean
             ("Let me think about this question.", false), // poisoned
             ("O Rio Amazonas é o maior do mundo.", true), // clean
-            ("Step by step the answer is 42.", false),   // poisoned
+            ("Step by step the answer is 42.", false),    // poisoned
         ];
         let kept: Vec<_> = f.filter(&items, |(text, _)| text);
         assert_eq!(kept.len(), 2);
@@ -554,10 +551,7 @@ mod tests {
         let geo = geometric_consensus(&scores);
         let trop = tropical_consensus(&scores);
         // tropical blends in 0.15 * max (0.95) on top of geo, so it must be larger
-        assert!(
-            trop > geo,
-            "expected tropical ({trop}) > geometric ({geo})"
-        );
+        assert!(trop > geo, "expected tropical ({trop}) > geometric ({geo})");
     }
 
     #[test]

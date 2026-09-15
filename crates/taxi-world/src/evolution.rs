@@ -180,7 +180,10 @@ pub fn evolve(
 ) -> BTreeMap<u64, Champion> {
     let s = p.seeds.len();
     assert!(s > 0, "evolve: GaParams::seeds must not be empty");
-    assert!(p.pop >= 2, "evolve: GaParams::pop must be at least 2 (elite needs >= 2)");
+    assert!(
+        p.pop >= 2,
+        "evolve: GaParams::pop must be at least 2 (elite needs >= 2)"
+    );
 
     if p.champion_mode == ChampionMode::Reevaluated {
         assert!(
@@ -226,13 +229,24 @@ pub fn evolve(
     for it in 0..p.generations {
         // crn='rotativo' (SPEC §10 table default; `lab.py:1732`) unless `p.crn`
         // asks for 'fixo' (T7): the SAME world seed every generation.
-        let gen_seed = if p.crn { 777_000u64 } else { 777_000u64 + (it as u64) * 13 };
+        let gen_seed = if p.crn {
+            777_000u64
+        } else {
+            777_000u64 + (it as u64) * 13
+        };
 
         let mut batch: Vec<Genome> = Vec::with_capacity(s * p.pop);
         for pop in &populations {
             batch.extend(pop.iter().cloned());
         }
-        let fitness = sim.avaliar(&batch, worlds, cfg, p.ticks as u32, gen_seed, p.replicas as u32);
+        let fitness = sim.avaliar(
+            &batch,
+            worlds,
+            cfg,
+            p.ticks as u32,
+            gen_seed,
+            p.replicas as u32,
+        );
         assert_eq!(
             fitness.len(),
             batch.len(),
@@ -261,10 +275,16 @@ pub fn evolve(
             // paciencia` on, using the mean-across-seeds of the window max vs. the
             // max before it.
             if pac > 0 && it >= pac {
-                let agora: f32 =
-                    hist.iter().map(|h| window_max(&h[h.len() - pac..])).sum::<f32>() / s as f32;
-                let antes: f32 =
-                    hist.iter().map(|h| window_max(&h[..h.len() - pac])).sum::<f32>() / s as f32;
+                let agora: f32 = hist
+                    .iter()
+                    .map(|h| window_max(&h[h.len() - pac..]))
+                    .sum::<f32>()
+                    / s as f32;
+                let antes: f32 = hist
+                    .iter()
+                    .map(|h| window_max(&h[..h.len() - pac]))
+                    .sum::<f32>()
+                    / s as f32;
                 if agora <= antes + 0.01 * antes.abs() + 1e-6 {
                     break;
                 }
@@ -295,7 +315,14 @@ pub fn evolve(
                 batch.extend(elite.iter().map(|(g, _)| g.clone()));
                 bounds.push(batch.len());
             }
-            let reeval = sim.avaliar(&batch, worlds, cfg, p.ticks as u32, REEVAL_SEED, p.replicas as u32);
+            let reeval = sim.avaliar(
+                &batch,
+                worlds,
+                cfg,
+                p.ticks as u32,
+                REEVAL_SEED,
+                p.replicas as u32,
+            );
             assert_eq!(
                 reeval.len(),
                 batch.len(),
@@ -308,11 +335,18 @@ pub fn evolve(
                 let (best_genome, _) = elite
                     .iter()
                     .zip(reeval_slice.iter())
-                    .map(|((genome, orig_fit), &new_fit)| (genome.clone(), (orig_fit + new_fit) / 2.0))
-                    .fold(None, |acc: Option<(Genome, f32)>, (genome, avg)| match acc {
-                        Some((best_genome, best_avg)) if best_avg >= avg => Some((best_genome, best_avg)),
-                        _ => Some((genome, avg)),
+                    .map(|((genome, orig_fit), &new_fit)| {
+                        (genome.clone(), (orig_fit + new_fit) / 2.0)
                     })
+                    .fold(
+                        None,
+                        |acc: Option<(Genome, f32)>, (genome, avg)| match acc {
+                            Some((best_genome, best_avg)) if best_avg >= avg => {
+                                Some((best_genome, best_avg))
+                            }
+                            _ => Some((genome, avg)),
+                        },
+                    )
                     .expect(
                         "evolve: ChampionMode::Reevaluated needs a non-empty elite \
                          (elite_frac must select at least one genome)",
@@ -430,13 +464,21 @@ mod tests {
             ..GaParams::default()
         };
         let mut rng = TaxiRng::new(1);
-        let (next, best, elite_fitness) = select_and_breed(&population, &fitness, &params, &mut rng);
+        let (next, best, elite_fitness) =
+            select_and_breed(&population, &fitness, &params, &mut rng);
 
-        assert_eq!(best, 9.0, "best fitness must be the max, not the first entry");
+        assert_eq!(
+            best, 9.0,
+            "best fitness must be the max, not the first entry"
+        );
         assert_eq!(next[0], population[9], "the top genome must be bit-exact");
         assert_eq!(next[1], population[8], "the runner-up must be bit-exact");
         assert_eq!(next.len(), 10);
-        assert_eq!(elite_fitness, vec![9.0, 8.0], "elite_fitness must be next[0..ne]'s own fitness, descending");
+        assert_eq!(
+            elite_fitness,
+            vec![9.0, 8.0],
+            "elite_fitness must be next[0..ne]'s own fitness, descending"
+        );
     }
 
     #[test]
@@ -607,7 +649,9 @@ mod tests {
                 vec![0.0; genomas.len()]
             }
         }
-        let mut sim = RecordingSimulador { saw_wrong_length: false };
+        let mut sim = RecordingSimulador {
+            saw_wrong_length: false,
+        };
         let params = GaParams {
             pop: 3,
             generations: 1,
@@ -630,7 +674,15 @@ mod tests {
         // that seeding really does skip the whole generation loop.
         struct PanicsIfCalled;
         impl Simulador for PanicsIfCalled {
-            fn avaliar(&mut self, _: &[Genome], _: &[World], _: &Config, _: u32, _: u64, _: u32) -> Vec<f32> {
+            fn avaliar(
+                &mut self,
+                _: &[Genome],
+                _: &[World],
+                _: &Config,
+                _: u32,
+                _: u64,
+                _: u32,
+            ) -> Vec<f32> {
                 panic!("avaliar must not be called when GaParams::generations == 0");
             }
         }
@@ -658,7 +710,10 @@ mod tests {
                 any_gene_moved = true;
             }
         }
-        assert!(any_gene_moved, "seed_from must add SOME noise, not pass the champion through untouched");
+        assert!(
+            any_gene_moved,
+            "seed_from must add SOME noise, not pass the champion through untouched"
+        );
     }
 
     #[test]
@@ -668,11 +723,25 @@ mod tests {
         // accidentally routed through the champion-seeding branch.
         struct PanicsIfCalled;
         impl Simulador for PanicsIfCalled {
-            fn avaliar(&mut self, _: &[Genome], _: &[World], _: &Config, _: u32, _: u64, _: u32) -> Vec<f32> {
+            fn avaliar(
+                &mut self,
+                _: &[Genome],
+                _: &[World],
+                _: &Config,
+                _: u32,
+                _: u64,
+                _: u32,
+            ) -> Vec<f32> {
                 panic!("avaliar must not be called when GaParams::generations == 0");
             }
         }
-        let params = GaParams { pop: 2, generations: 0, patience: None, seeds: vec![9], ..GaParams::default() };
+        let params = GaParams {
+            pop: 2,
+            generations: 0,
+            patience: None,
+            seeds: vec![9],
+            ..GaParams::default()
+        };
         let mut sim = PanicsIfCalled;
         let champions = evolve(&mut sim, &[], &Config::default(), &params);
         let seeded = &champions[&9].genome;
@@ -692,7 +761,15 @@ mod tests {
             seen: Vec<u64>,
         }
         impl Simulador for SeedSpy {
-            fn avaliar(&mut self, genomas: &[Genome], _: &[World], _: &Config, _: u32, seed: u64, _: u32) -> Vec<f32> {
+            fn avaliar(
+                &mut self,
+                genomas: &[Genome],
+                _: &[World],
+                _: &Config,
+                _: u32,
+                seed: u64,
+                _: u32,
+            ) -> Vec<f32> {
                 self.seen.push(seed);
                 vec![0.0; genomas.len()]
             }
@@ -707,7 +784,11 @@ mod tests {
         };
         let mut sim = SeedSpy { seen: Vec::new() };
         let _ = evolve(&mut sim, &[], &Config::default(), &params);
-        assert_eq!(sim.seen, vec![777_000, 777_000, 777_000, 777_000], "crn=true (fixo) must reuse ONE world seed every generation");
+        assert_eq!(
+            sim.seen,
+            vec![777_000, 777_000, 777_000, 777_000],
+            "crn=true (fixo) must reuse ONE world seed every generation"
+        );
     }
 
     #[test]
@@ -716,15 +797,33 @@ mod tests {
             seen: Vec<u64>,
         }
         impl Simulador for SeedSpy {
-            fn avaliar(&mut self, genomas: &[Genome], _: &[World], _: &Config, _: u32, seed: u64, _: u32) -> Vec<f32> {
+            fn avaliar(
+                &mut self,
+                genomas: &[Genome],
+                _: &[World],
+                _: &Config,
+                _: u32,
+                seed: u64,
+                _: u32,
+            ) -> Vec<f32> {
                 self.seen.push(seed);
                 vec![0.0; genomas.len()]
             }
         }
-        let params = GaParams { pop: 2, generations: 3, patience: None, seeds: vec![1], ..GaParams::default() };
+        let params = GaParams {
+            pop: 2,
+            generations: 3,
+            patience: None,
+            seeds: vec![1],
+            ..GaParams::default()
+        };
         let mut sim = SeedSpy { seen: Vec::new() };
         let _ = evolve(&mut sim, &[], &Config::default(), &params);
-        assert_eq!(sim.seen, vec![777_000, 777_013, 777_026], "crn=false (default, rotativo) must be 777_000 + 13*it");
+        assert_eq!(
+            sim.seen,
+            vec![777_000, 777_013, 777_026],
+            "crn=false (default, rotativo) must be 777_000 + 13*it"
+        );
     }
 
     #[test]
@@ -746,13 +845,24 @@ mod tests {
             captured_gen0: Option<Vec<Genome>>,
         }
         impl Simulador for Scripted {
-            fn avaliar(&mut self, genomas: &[Genome], _: &[World], _: &Config, _: u32, seed: u64, _: u32) -> Vec<f32> {
+            fn avaliar(
+                &mut self,
+                genomas: &[Genome],
+                _: &[World],
+                _: &Config,
+                _: u32,
+                seed: u64,
+                _: u32,
+            ) -> Vec<f32> {
                 self.call += 1;
                 if self.call == 1 {
                     self.captured_gen0 = Some(genomas.to_vec());
                     vec![5.0, 1.0]
                 } else {
-                    assert_eq!(seed, REEVAL_SEED, "the reeval call must use REEVAL_SEED, not the training rotation");
+                    assert_eq!(
+                        seed, REEVAL_SEED,
+                        "the reeval call must use REEVAL_SEED, not the training rotation"
+                    );
                     // Order must be [A, B] again: `last_elite` mirrors `next[0..ne]`,
                     // and with ne == pop, `next` after gen 0 is genomas reordered by
                     // gen-0 fitness descending -- i.e. still [A, B] (A already won).
@@ -769,13 +879,19 @@ mod tests {
             champion_mode: ChampionMode::Reevaluated,
             ..GaParams::default()
         };
-        let mut sim = Scripted { call: 0, captured_gen0: None };
+        let mut sim = Scripted {
+            call: 0,
+            captured_gen0: None,
+        };
         let champions = evolve(&mut sim, &[], &Config::default(), &params);
 
         let gen0 = sim.captured_gen0.expect("gen 0 must have called avaliar");
         let genome_a = &gen0[0];
         let genome_b = &gen0[1];
-        assert_ne!(genome_a, genome_b, "the test needs two DISTINGUISHABLE genomes");
+        assert_ne!(
+            genome_a, genome_b,
+            "the test needs two DISTINGUISHABLE genomes"
+        );
         assert_eq!(
             champions[&1].genome, *genome_b,
             "Reevaluated must pick B (avg 5.5), not A (avg 2.5, the naive last-gen argmax)"
@@ -791,9 +907,20 @@ mod tests {
             call: usize,
         }
         impl Simulador for Scripted {
-            fn avaliar(&mut self, _: &[Genome], _: &[World], _: &Config, _: u32, _: u64, _: u32) -> Vec<f32> {
+            fn avaliar(
+                &mut self,
+                _: &[Genome],
+                _: &[World],
+                _: &Config,
+                _: u32,
+                _: u64,
+                _: u32,
+            ) -> Vec<f32> {
                 self.call += 1;
-                assert!(self.call <= 1, "ChampionMode::Last must never call avaliar a second time");
+                assert!(
+                    self.call <= 1,
+                    "ChampionMode::Last must never call avaliar a second time"
+                );
                 vec![5.0, 1.0]
             }
         }

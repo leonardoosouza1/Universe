@@ -125,7 +125,14 @@ fn resolve_move(b: &Beings, world: &World, cfg: &Config, t: i64, i: usize, esc: 
     let new_x = (b.pos_x[i] + mov_f * v * dir[0]).clamp(0.0, world.side);
     let new_y = (b.pos_y[i] + mov_f * v * dir[1]).clamp(0.0, world.side);
 
-    MoveStep { livre, mov, pane, new_pos: [new_x, new_y], cu, peso }
+    MoveStep {
+        livre,
+        mov,
+        pane,
+        new_pos: [new_x, new_y],
+        cu,
+        peso,
+    }
 }
 
 /// Per-being `livre` (item 3) and post-movement position (item 9), for every
@@ -241,7 +248,8 @@ pub fn step_physics(
         let marcha_f = if marcha { 1.0 } else { 0.0 };
 
         // 11
-        b.fuel[i] = (b.fuel[i] - cfg.fuel_per_tick * cu * peso * mov_f
+        b.fuel[i] = (b.fuel[i]
+            - cfg.fuel_per_tick * cu * peso * mov_f
             - cfg.fuel_per_tick * 0.33 * marcha_f)
             .max(0.0);
 
@@ -258,9 +266,10 @@ pub fn step_physics(
         // 14 (v0: 'agua' is not in custo_canais, so no metab factor here — SPEC §3.1#14)
         let vivo_f = if vivo { 1.0 } else { 0.0 };
         let hot_extra = if b.heat[i] > 60.0 { 1.0 } else { 0.0 };
-        b.water[i] =
-            (b.water[i] - cfg.water_per_tick * vivo_f - cfg.water_heat_per_tick * hot_extra * vivo_f)
-                .max(0.0);
+        b.water[i] = (b.water[i]
+            - cfg.water_per_tick * vivo_f
+            - cfg.water_heat_per_tick * hot_extra * vivo_f)
+            .max(0.0);
 
         // 15
         b.hunger[i] = (b.hunger[i] + cfg.hunger_per_tick * b.metabolism[i] * vivo_f).min(100.0);
@@ -320,7 +329,11 @@ pub fn step_physics(
         // is computed here, exactly as `campo.py:424` does inside `passo()` itself
         // (not inside `serv_ab`/`serv_need`, which only produce `sv`/`cs`).
         let pode = livre && esc >= 9;
-        let k = if esc >= 9 { (esc - 9).min(N_SERVICES as u32 - 1) } else { 0 };
+        let k = if esc >= 9 {
+            (esc - 9).min(N_SERVICES as u32 - 1)
+        } else {
+            0
+        };
         let mut usa = [0.0f32; N_SERVICES];
         let mut spend = 0.0f32;
         for a in 0..N_SERVICES {

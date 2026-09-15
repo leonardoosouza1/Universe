@@ -213,7 +213,8 @@ impl ReflexAdaptation {
     /// `alpha` (0 disables the high-pass and makes this the identity beyond `gain`).
     ///
     /// `alpha` is the fraction of the new sample folded into the baseline each tick, so the
-    /// adaptation time constant is `1 / alpha` ticks; `gain` multiplies the residual.
+    /// adaptation time constant is `-1 / ln(1 - alpha)` ticks for `0 < alpha < 1`.
+    /// `1 / alpha` is its small-alpha approximation; `gain` multiplies the residual.
     pub fn step(&mut self, steer: f32, alpha: f32, gain: f32) -> f32 {
         if alpha <= 0.0 {
             return (steer * gain).clamp(-1.0, 1.0);

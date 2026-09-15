@@ -36,7 +36,13 @@ impl TaxiRng {
     /// xorshift64* requires a nonzero state; a zero seed is remapped to a fixed
     /// nonzero constant rather than panicking.
     pub fn new(seed: u64) -> Self {
-        TaxiRng { state: if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed } }
+        TaxiRng {
+            state: if seed == 0 {
+                0x9E37_79B9_7F4A_7C15
+            } else {
+                seed
+            },
+        }
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -147,13 +153,15 @@ pub fn step_passengers(
         }
 
         // `recusa` is always false in v0 (SPEC §1), so it is not a parameter here.
-        let pega = free[i] && st.carrying[i] < 0.0 && best_d <= cfg.service_radius_m && !acting_service[i];
+        let pega =
+            free[i] && st.carrying[i] < 0.0 && best_d <= cfg.service_radius_m && !acting_service[i];
 
         if pega {
             let xy = slot_xy(i, kx);
             st.dest[i] = [st.pxd[xy], st.pxd[xy + 1]];
             st.board_pos[i] = st.pos[i];
-            st.origin_district[i] = w[st.map_idx[i] as usize].district_at(st.pos[i][0], st.pos[i][1]);
+            st.origin_district[i] =
+                w[st.map_idx[i] as usize].district_at(st.pos[i][0], st.pos[i][1]);
             st.carrying[i] = 1.0;
 
             // Resample the used slot only in battery mode — the identity gate
@@ -191,7 +199,8 @@ pub fn step_passengers(
 
     // --- item 31: delivery (SPEC §7.4) ---
     for i in 0..n {
-        let cheg = free[i] && st.carrying[i] >= 0.0 && dist(st.pos[i], st.dest[i]) <= cfg.service_radius_m;
+        let cheg =
+            free[i] && st.carrying[i] >= 0.0 && dist(st.pos[i], st.dest[i]) <= cfg.service_radius_m;
         if cheg {
             let origin = st.origin_district[i];
             let aliq = w[st.map_idx[i] as usize].tax[origin as usize].clamp(0.0, 0.6);
@@ -215,15 +224,26 @@ pub fn step_passengers(
 /// concentrated nearby but long-tailed. Only called in battery mode, on a
 /// pickup — see this module's doc comment on why the identity gate never needs
 /// this (its RNG stream cannot match torch's regardless).
-fn sample_new_slot(rng: &mut TaxiRng, pos: [f32; 2], cfg: &Config, side: f32) -> ([f32; 2], [f32; 2]) {
+fn sample_new_slot(
+    rng: &mut TaxiRng,
+    pos: [f32; 2],
+    cfg: &Config,
+    side: f32,
+) -> ([f32; 2], [f32; 2]) {
     let angle = rng.next_f32() * std::f32::consts::TAU;
     let radius = 8.0 + (cfg.passenger_spawn_radius_m - 8.0) * rng.next_f32();
-    let px = [(pos[0] + radius * angle.cos()).clamp(0.0, side), (pos[1] + radius * angle.sin()).clamp(0.0, side)];
+    let px = [
+        (pos[0] + radius * angle.cos()).clamp(0.0, side),
+        (pos[1] + radius * angle.sin()).clamp(0.0, side),
+    ];
 
     let angle2 = rng.next_f32() * std::f32::consts::TAU;
     let u = rng.next_f32();
     let radius2 = side * (0.05 + 0.45 * u * u);
-    let pxd = [(px[0] + radius2 * angle2.cos()).clamp(0.0, side), (px[1] + radius2 * angle2.sin()).clamp(0.0, side)];
+    let pxd = [
+        (px[0] + radius2 * angle2.cos()).clamp(0.0, side),
+        (px[1] + radius2 * angle2.sin()).clamp(0.0, side),
+    ];
 
     (px, pxd)
 }
@@ -318,12 +338,27 @@ mod tests {
 
         let free = [true];
         let acting_service = [false];
-        step_passengers(&mut being.state(), &[w], &price_mul, &cfg, &free, &acting_service, None);
+        step_passengers(
+            &mut being.state(),
+            &[w],
+            &price_mul,
+            &cfg,
+            &free,
+            &acting_service,
+            None,
+        );
 
-        assert_eq!(being.carrying[0], -1.0, "must be delivered by the end of the tick");
+        assert_eq!(
+            being.carrying[0], -1.0,
+            "must be delivered by the end of the tick"
+        );
         assert_eq!(being.deliveries[0], 1.0);
         // bruta = (3.0 + 0.25*4.0)*1.0 = 4.0; aliq = 0.0 -> tarifa = 4.0.
-        assert!((being.money[0] - 4.0).abs() < 1e-5, "got {}", being.money[0]);
+        assert!(
+            (being.money[0] - 4.0).abs() < 1e-5,
+            "got {}",
+            being.money[0]
+        );
         assert!((being.revenue[0] - 4.0).abs() < 1e-5);
         assert_eq!(being.px_ok[0], 0, "the used slot must be deactivated");
     }
@@ -350,7 +385,15 @@ mod tests {
 
         let free = [true];
         let acting_service = [false];
-        step_passengers(&mut being.state(), &[w], &price_mul, &cfg, &free, &acting_service, None);
+        step_passengers(
+            &mut being.state(),
+            &[w],
+            &price_mul,
+            &cfg,
+            &free,
+            &acting_service,
+            None,
+        );
 
         // trip_distance = |92-10| = 82; bruta = (3 + 0.25*82)*2.0 = 47.0 (district 0's
         // pmul=2.0, NOT district 1's 1.0); tarifa = 47.0*(1-0.3) = 32.9.
@@ -377,14 +420,33 @@ mod tests {
         let free = [true];
         let acting_service = [false];
 
-        step_passengers(&mut being.state(), &[w.clone()], &price_mul, &cfg, &free, &acting_service, None);
+        step_passengers(
+            &mut being.state(),
+            &[w.clone()],
+            &price_mul,
+            &cfg,
+            &free,
+            &acting_service,
+            None,
+        );
         assert_eq!(being.px_ok[0], 0, "boarding must deactivate the slot");
 
         // Run several more ticks with respawn off: the slot must stay inactive.
         for _ in 0..5 {
-            step_passengers(&mut being.state(), &[w.clone()], &price_mul, &cfg, &free, &acting_service, None);
+            step_passengers(
+                &mut being.state(),
+                &[w.clone()],
+                &price_mul,
+                &cfg,
+                &free,
+                &acting_service,
+                None,
+            );
         }
-        assert_eq!(being.px_ok[0], 0, "respawn is off: a used slot never reactivates");
+        assert_eq!(
+            being.px_ok[0], 0,
+            "respawn is off: a used slot never reactivates"
+        );
     }
 
     #[test]
@@ -399,9 +461,20 @@ mod tests {
         let free = [true];
         let acting_service = [false];
         let mut rng = TaxiRng::new(42);
-        step_passengers(&mut being.state(), &[w], &price_mul, &cfg, &free, &acting_service, Some(&mut rng));
+        step_passengers(
+            &mut being.state(),
+            &[w],
+            &price_mul,
+            &cfg,
+            &free,
+            &acting_service,
+            Some(&mut rng),
+        );
 
-        assert!(being.px_ok.iter().any(|&ok| ok == 1), "demand/respawn >= 1 must reactivate at least one slot");
+        assert!(
+            being.px_ok.iter().any(|&ok| ok == 1),
+            "demand/respawn >= 1 must reactivate at least one slot"
+        );
     }
 
     #[test]
@@ -412,11 +485,17 @@ mod tests {
         let seq_b: Vec<f32> = (0..8).map(|_| b.next_f32()).collect();
         assert_eq!(seq_a, seq_b, "same seed must produce the same sequence");
         for v in &seq_a {
-            assert!((0.0..1.0).contains(v), "next_f32 must stay in [0, 1), got {v}");
+            assert!(
+                (0.0..1.0).contains(v),
+                "next_f32 must stay in [0, 1), got {v}"
+            );
         }
 
         let mut c = TaxiRng::new(8);
         let seq_c: Vec<f32> = (0..8).map(|_| c.next_f32()).collect();
-        assert_ne!(seq_a, seq_c, "different seeds must (almost certainly) diverge");
+        assert_ne!(
+            seq_a, seq_c,
+            "different seeds must (almost certainly) diverge"
+        );
     }
 }

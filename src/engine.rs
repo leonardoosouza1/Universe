@@ -102,9 +102,14 @@ impl SlowBrain {
         let mut cfc_input = [0i8; 64];
         cfc_input[..48].copy_from_slice(input);
 
+        // The cortex is sampled once every `tick_interval` body ticks. Integrate the
+        // elapsed physical time, not one body's `dt`; otherwise every slow time
+        // constant is stretched by the sampling factor (8x with the default).
+        let elapsed_dt = dt * self.tick_interval as f32;
+
         // CfC update (temporal filtering)
         let mut cfc_out = [0i8; 64];
-        self.cfc.update(&cfc_input, &mut cfc_out, dt);
+        self.cfc.update(&cfc_input, &mut cfc_out, elapsed_dt);
 
         // Converts CfC output to f32 [-1, 1]
         let mut cfc_f32 = [0.0f32; 64];
@@ -175,6 +180,27 @@ impl SlowBrain {
         self.dense2
             .bias
             .copy_from_slice(&weights[offset..offset + d2_b_size]);
+    }
+}
+
+#[cfg(test)]
+mod slow_brain_tests {
+    use super::SlowBrain;
+
+    #[test]
+    fn subsampled_cortex_integrates_elapsed_physical_time() {
+        let mut brain = SlowBrain::new();
+        brain.cfc.denoise_mag = 0.0;
+        brain.cfc.fatigue_alpha = 0.0;
+        let input = [127_i8; 48];
+
+        for _ in 0..brain.tick_interval {
+            brain.tick(&input, 1.0 / 64.0);
+        }
+
+        let elapsed = brain.tick_interval as f32 / 64.0;
+        let expected = brain.cfc.dc_gain * (1.0 - (-brain.cfc.decay_rates[0] * elapsed).exp());
+        assert!((brain.cfc.state[0] - expected).abs() < 1e-6);
     }
 }
 

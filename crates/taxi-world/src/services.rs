@@ -133,10 +133,26 @@ pub fn service_state(
     out_need: &mut [f32],
 ) {
     let n = q.pos.len();
-    assert_eq!(nearest.dist.len(), n * N_TYPES, "nearest.dist must be n * N_TYPES");
-    assert_eq!(out_avail.len(), n * N_SERVICES, "out_avail must be n * N_SERVICES");
-    assert_eq!(out_cost.len(), n * N_SERVICES, "out_cost must be n * N_SERVICES");
-    assert_eq!(out_need.len(), n * N_SERVICES, "out_need must be n * N_SERVICES");
+    assert_eq!(
+        nearest.dist.len(),
+        n * N_TYPES,
+        "nearest.dist must be n * N_TYPES"
+    );
+    assert_eq!(
+        out_avail.len(),
+        n * N_SERVICES,
+        "out_avail must be n * N_SERVICES"
+    );
+    assert_eq!(
+        out_cost.len(),
+        n * N_SERVICES,
+        "out_cost must be n * N_SERVICES"
+    );
+    assert_eq!(
+        out_need.len(),
+        n * N_SERVICES,
+        "out_need must be n * N_SERVICES"
+    );
 
     for i in 0..n {
         let world = &w[q.map_idx[i] as usize];
@@ -222,7 +238,8 @@ pub fn apply_refuel(fuel: f32, reserve: f32, liters: f32, cfg: &Config) -> (f32,
     let topped_up = fuel + liters;
     let overflow = (topped_up - 100.0).max(0.0);
     let new_fuel = topped_up.min(100.0);
-    let new_reserve = (reserve + overflow * (1.0 - cfg.reserve_storage_loss_frac)).min(cfg.reserve_max);
+    let new_reserve =
+        (reserve + overflow * (1.0 - cfg.reserve_storage_loss_frac)).min(cfg.reserve_max);
     (new_fuel, new_reserve)
 }
 
@@ -232,7 +249,10 @@ pub fn apply_refuel(fuel: f32, reserve: f32, liters: f32, cfg: &Config) -> (f32,
 /// comment). `pub(crate)` — shared with `passengers.rs`'s fare calculation, not
 /// part of the plan's public T4 interface.
 pub(crate) fn price_mul_at(price_mul: &[f32], w: &[World], map_idx: u32, district: u32) -> f32 {
-    let offset: usize = w[..map_idx as usize].iter().map(|world| world.tax.len()).sum();
+    let offset: usize = w[..map_idx as usize]
+        .iter()
+        .map(|world| world.tax.len())
+        .sum();
     price_mul[offset + district as usize]
 }
 
@@ -327,7 +347,10 @@ mod tests {
         }
 
         fn nearest(&self) -> Nearest<'_> {
-            Nearest { points: &self.points, dist: &self.dist }
+            Nearest {
+                points: &self.points,
+                dist: &self.dist,
+            }
         }
     }
 
@@ -338,7 +361,9 @@ mod tests {
         // (near_posto, near_comida) -> water must end up available whenever
         // EITHER is near (SPEC §6.1: water inherits from both the fuel station
         // and the already-widened food availability).
-        for &(near_posto, near_comida) in &[(false, false), (false, true), (true, false), (true, true)] {
+        for &(near_posto, near_comida) in
+            &[(false, false), (false, true), (true, false), (true, true)]
+        {
             let mut near = [false; N_TYPES];
             near[ServiceKind::FuelStation as usize] = near_posto;
             near[ServiceKind::Food as usize] = near_comida;
@@ -347,8 +372,15 @@ mod tests {
             let mut cost = [0.0; N_SERVICES];
             let mut need = [0.0; N_SERVICES];
             service_state(
-                &body.query(), &[w.clone()], &price_mul, body.nearest(), &Config::default(), 0,
-                &mut avail, &mut cost, &mut need,
+                &body.query(),
+                &[w.clone()],
+                &price_mul,
+                body.nearest(),
+                &Config::default(),
+                0,
+                &mut avail,
+                &mut cost,
+                &mut need,
             );
 
             let expected = near_posto || near_comida;
@@ -357,7 +389,11 @@ mod tests {
                 expected,
                 "posto={near_posto} comida={near_comida}: water availability wrong"
             );
-            assert_eq!(avail[7] > 0.0, expected, "posto={near_posto} comida={near_comida}: food availability wrong");
+            assert_eq!(
+                avail[7] > 0.0,
+                expected,
+                "posto={near_posto} comida={near_comida}: food availability wrong"
+            );
         }
     }
 
@@ -374,8 +410,15 @@ mod tests {
         let mut cost = [0.0; N_SERVICES];
         let mut need = [0.0; N_SERVICES];
         service_state(
-            &body.query(), &[w], &price_mul, body.nearest(), &Config::default(), 0,
-            &mut avail, &mut cost, &mut need,
+            &body.query(),
+            &[w],
+            &price_mul,
+            body.nearest(),
+            &Config::default(),
+            0,
+            &mut avail,
+            &mut cost,
+            &mut need,
         );
 
         for a in 0..5 {
@@ -396,8 +439,15 @@ mod tests {
         let mut cost = [0.0; N_SERVICES];
         let mut need = [0.0; N_SERVICES];
         service_state(
-            &body.query(), &[w], &price_mul, body.nearest(), &Config::default(), 0,
-            &mut avail, &mut cost, &mut need,
+            &body.query(),
+            &[w],
+            &price_mul,
+            body.nearest(),
+            &Config::default(),
+            0,
+            &mut avail,
+            &mut cost,
+            &mut need,
         );
 
         assert_eq!(cost[8], 0.0, "resting at home must cost nothing");
@@ -416,8 +466,15 @@ mod tests {
         let mut cost = [0.0; N_SERVICES];
         let mut need = [0.0; N_SERVICES];
         service_state(
-            &body.query(), &[w], &price_mul, body.nearest(), &Config::default(), 0,
-            &mut avail, &mut cost, &mut need,
+            &body.query(),
+            &[w],
+            &price_mul,
+            body.nearest(),
+            &Config::default(),
+            0,
+            &mut avail,
+            &mut cost,
+            &mut need,
         );
 
         // fuel=60 (cabe=40), res=100 (sobra_res=20), RES_MAX=120 (default).
@@ -444,8 +501,15 @@ mod tests {
         let mut cost = [0.0; N_SERVICES];
         let mut need = [0.0; N_SERVICES];
         service_state(
-            &body.query(), &[w], &price_mul, body.nearest(), &Config::default(), 0,
-            &mut avail, &mut cost, &mut need,
+            &body.query(),
+            &[w],
+            &price_mul,
+            body.nearest(),
+            &Config::default(),
+            0,
+            &mut avail,
+            &mut cost,
+            &mut need,
         );
 
         assert!(cost[7] > 0.0, "food must have a nonzero price");

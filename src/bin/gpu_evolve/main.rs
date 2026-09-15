@@ -35,39 +35,50 @@
 //!
 //!   cd ~/projects/LLM/Universe
 //!   env -u DISPLAY nice -n 19 ./target/release/gpu_evolve \
-//!       --beings 60 --ticks 8000 --gens 100
+//!       --beings 60 --ticks 20000 --gens 100
 //!
 //!   # Para retomar de onde parou:
 //!   env -u DISPLAY nice -n 19 ./target/release/gpu_evolve \
-//!       --beings 60 --ticks 8000 --gens 100 --resume
+//!       --beings 60 --ticks 20000 --gens 100 --resume
 
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 mod audit;
+mod brain_backend;
 mod cli_flags;
 #[cfg(test)]
 mod cli_flags_tests;
 mod context;
+mod driving_diagnostics;
 mod escada;
 mod fantasma;
+mod genome_diagnostics;
 mod genome_io;
 mod laps;
 #[cfg(test)]
 mod laps_tests;
+mod native_action;
+mod objective_cost;
 mod painel;
 mod piloto_forja;
 mod piloto_linear;
 mod pilots;
 mod pistas;
+mod reverse_controller;
+mod starting_grid;
 mod statics;
+mod survival;
 #[cfg(test)]
 mod tests;
 mod types;
+mod visual_telemetry;
+mod wall_probes;
 
 use context::GpuCtx;
 use genome_io::{load_genome, population_seed_for, save_genome};
 use pistas::{parse_pistas, pista_da_gen};
+use starting_grid::{canonical_start, formation_slots};
 use statics::*;
 use types::BeingState;
 
@@ -148,8 +159,7 @@ use universe::gpu::physics::{make_physics_state, pos_of};
 /// Conserto: procurar adiante (com wrap) o primeiro waypoint REALMENTE distinto.
 /// Nunca devolve versor nulo em pista válida; se a pista inteira for um ponto só,
 /// devolve [1,0,0] e avisa — melhor um ser andando em linha reta que 48 pinos.
-/// Tanque pela regra de três do Leonardo, no denominador CERTO: o intervalo de
-/// REABASTECIMENTO (um setor), não a volta inteira.
+/// Fuel capacity is sized from the actual refill interval.
 ///
 /// Dois bugs foram pagos aqui em 2026-08-16, e os dois eram invisíveis no log:
 /// 1. a conta usava a VOLTA (`L/18,75 × 0,003 × k`) enquanto o reabastecimento
@@ -162,11 +172,17 @@ use universe::gpu::physics::{make_physics_state, pos_of};
 /// Juntos explicam por que a bateria-escada teve 34 de 35 gerações com mortalidade
 /// 0% mesmo com combustível, ruído, dano e clima ligados.
 ///
-/// k = 1,0 significa "exatamente o necessário para alcançar o próximo setor a
-/// 18,75 m/s a fundo" (consumo 0,006/s). Quem for mais devagar que isso seca.
-fn tanque_por_setor(lap_dist: f64, k: f32) -> f32 {
-    let setor_m = lap_dist as f32 / N_CHECKPOINTS as f32;
-    (setor_m / 18.75) * 0.006 * k
+/// `k = 1` is the fuel needed to cover that interval at 18.75 m/s under full
+/// throttle consumption (0.006 units/s). Sector refill uses L/24; lap-only refill
+/// uses L. The same function therefore cannot silently grant a lap-sized tank to a
+/// sector-refill run or a sector-sized tank to a lap-refill run.
+fn automatic_fuel_tank(lap_dist: f64, k: f32, refill_each_sector: bool) -> f32 {
+    let refill_distance_m = if refill_each_sector {
+        lap_dist as f32 / N_CHECKPOINTS as f32
+    } else {
+        lap_dist as f32
+    };
+    (refill_distance_m / 18.75) * 0.006 * k
 }
 
 /// Base tyre-thermal parameters for a dose, DC-normalised — the population's shared
@@ -216,39 +232,6 @@ fn frente_do_waypoint(wps: &[bevy::math::Vec2], wi: usize) -> [f32; 3] {
     [1.0, 0.0, 0.0]
 }
 
-const FORMATION_COLUMNS: usize = 4;
-const FORMATION_LATERAL_SPACING_M: f32 = 3.0;
-const FORMATION_LONGITUDINAL_SPACING_M: f32 = 3.5;
-
-/// Returns longitudinal and lateral offsets for a non-overlapping starting formation.
-fn formation_offset(being: usize) -> (f32, f32) {
-    let row = being / FORMATION_COLUMNS;
-    let col = being % FORMATION_COLUMNS;
-    let lateral =
-        (col as f32 - (FORMATION_COLUMNS as f32 - 1.0) * 0.5) * FORMATION_LATERAL_SPACING_M;
-    // The anchor waypoint faces the next road segment. Fill forward from it: stepping
-    // backwards at a sharp start-line turn put otherwise valid slots outside the road.
-    (row as f32 * FORMATION_LONGITUDINAL_SPACING_M, lateral)
-}
-
-#[cfg(test)]
-mod formation_tests {
-    use super::*;
-
-    #[test]
-    fn formation_slots_do_not_overlap() {
-        let mut slots: Vec<(f32, f32)> = Vec::new();
-        for being in 0..40 {
-            let (longitudinal, lateral) = formation_offset(being);
-            for &(other_longitudinal, other_lateral) in &slots {
-                let distance = (longitudinal - other_longitudinal).hypot(lateral - other_lateral);
-                assert!(distance >= 3.0, "slots {being} and another being overlap");
-            }
-            slots.push((longitudinal, lateral));
-        }
-    }
-}
-
 /// Retorna a MEDIANA da fitness held-out entre os seres que terminaram VIVOS
 /// (`life_left > 0`) — item 3 da TAREFA ("razão usa mediana dos vivos"). Se
 /// ninguém sobreviver, cai para a mediana de TODOS (avisado via `eprintln!`) em
@@ -260,9 +243,13 @@ fn avaliar_held_out(
     track_width: f32,
     same_start: bool,
     modo_fitness: &str,
+    wall_cost: f32,
+    impact_cost: f32,
     held_out_seed: u64,
     kan_knots: &[[f32; universe::kan::KAN_OUT_KNOTS]; 3],
 ) -> f64 {
+    // Held-out ticks must never enter the training replay observation stream.
+    let saved_diagnostics = ctx.driving_diagnostics.take();
     let world_ho = VoxelWorld::new(held_out_seed, track_width);
     // Troca a geometria na GPU (grade/fluxo/alturas/heightmap) sem recriar device
     // nem pipeline — ver `GpuCtx::reload_world`. Reseta o estado recorrente (CfC)
@@ -327,21 +314,37 @@ fn avaliar_held_out(
 
     let lap_dist = world_ho.lap_distance as f64;
     let n_wp = world_ho.waypoints_world.len();
+    let held_out_start = if same_start {
+        Some(canonical_start(&world_ho).unwrap_or_else(|error| {
+            panic!("invalid held-out canonical start: {error}");
+        }))
+    } else {
+        None
+    };
     let mut states: Vec<BeingState> = (0..n_seres)
         .map(|i| {
-            let wi = if same_start {
-                0
+            let (pos, fwd) = if let Some(slot) = held_out_start {
+                (
+                    [slot.position.x, 0.0, slot.position.y],
+                    [slot.forward.x, 0.0, slot.forward.y],
+                )
             } else {
-                (i * n_wp / n_seres).min(n_wp - 1)
+                let wi = (i * n_wp / n_seres).min(n_wp - 1);
+                let wp = world_ho.waypoints_world[wi];
+                (
+                    [wp.x, 0.0, wp.y],
+                    frente_do_waypoint(&world_ho.waypoints_world, wi),
+                )
             };
-            let wp = world_ho.waypoints_world[wi];
-            let fwd = frente_do_waypoint(&world_ho.waypoints_world, wi);
-            let pos = [wp.x, 0.0, wp.y];
             BeingState {
                 phys: make_physics_state(pos, fwd),
                 prev_steer: 0.0,
                 stagnation_ticks: 0,
                 wall_ticks: 0,
+                collision_energy_j: 0.0,
+                impact_count: 0,
+                hole_hits: 0,
+                hole_cooldown_ticks: 0,
                 center_prog: 0.0,
                 sensor_steer: 0.0,
                 sensor_thr: 0.0,
@@ -402,6 +405,17 @@ fn avaliar_held_out(
                 let dx = (p1[0] - pos_prev[i][0]) as f64;
                 let dz = (p1[2] - pos_prev[i][2]) as f64;
                 dist_acum[i] += (dx * dx + dz * dz).sqrt();
+                let on_hole =
+                    world_ho.get_voxel_at(p1[0], p1[2]) == universe::world::VoxelType::Hole;
+                let state = &mut states[i];
+                if survival::apply_hole_contact(
+                    &mut state.life_left,
+                    &mut state.hole_cooldown_ticks,
+                    on_hole,
+                    n_ticks.max(1) as f64,
+                ) {
+                    state.hole_hits = state.hole_hits.saturating_add(1);
+                }
 
                 let cur = world_ho.get_track_progress(p1[0], p1[2]);
                 let ld = lap_dist as f32;
@@ -452,16 +466,53 @@ fn avaliar_held_out(
         }
     }
 
-    let fitness_ho: Vec<f64> = match modo_fitness {
+    let mut fitness_ho: Vec<f64> = match modo_fitness {
         "dist" => dist_acum,
         "prog" => prog_acum.iter().map(|p| p.max(0.0)).collect(),
         "centro" => (0..n_seres)
-            .map(|i| checkpoint[i] as f64 * lap_dist + states[i].center_prog.max(0.0))
+            .map(|i| {
+                let ordered = objective_cost::ordered_progress_metres(
+                    checkpoint[i],
+                    prog_acum[i],
+                    lap_dist,
+                    N_CHECKPOINTS as usize,
+                );
+                objective_cost::centered_progress_metres(ordered, states[i].center_prog)
+            })
             .collect(),
-        _ => (0..n_seres)
+        "checkpoint" => (0..n_seres)
+            .map(|i| {
+                objective_cost::ordered_progress_metres(
+                    checkpoint[i],
+                    prog_acum[i],
+                    lap_dist,
+                    N_CHECKPOINTS as usize,
+                )
+            })
+            .collect(),
+        "checkpoint-legacy" => (0..n_seres)
             .map(|i| checkpoint[i] as f64 * lap_dist + prog_acum[i].max(0.0))
             .collect(),
+        "centro-legacy" => (0..n_seres)
+            .map(|i| checkpoint[i] as f64 * lap_dist + states[i].center_prog.max(0.0))
+            .collect(),
+        _ => unreachable!("fitness mode validated before GPU setup"),
     };
+
+    ctx.driving_diagnostics = saved_diagnostics;
+    if wall_cost > 0.0 || impact_cost > 0.0 {
+        let sector_metres = lap_dist / N_CHECKPOINTS as f64;
+        for (score, state) in fitness_ho.iter_mut().zip(&states) {
+            *score = objective_cost::safety_adjusted_score(
+                *score,
+                state.wall_ticks,
+                wall_cost,
+                state.collision_energy_j,
+                impact_cost,
+                sector_metres,
+            );
+        }
+    }
 
     // Não deixa nenhuma amostra desta corrida vazar pro relatório de ativação da
     // PRÓXIMA geração de treino — `ctx.tick()` alimenta `l1_samples`/`l2_samples`/
@@ -550,7 +601,7 @@ fn latest_checkpoint(dir: &str) -> Option<(usize, String)> {
 
 #[cfg(test)]
 mod checkpoint_tests {
-    use super::latest_checkpoint;
+    use super::{N_CHECKPOINTS, automatic_fuel_tank, latest_checkpoint};
 
     /// The regression: a checkpoint numbered far above `--gens` must still be found.
     #[test]
@@ -594,6 +645,15 @@ mod checkpoint_tests {
     #[test]
     fn a_missing_directory_gives_none() {
         assert!(latest_checkpoint("/definitely/not/a/directory/1234").is_none());
+    }
+
+    #[test]
+    fn automatic_fuel_matches_the_actual_refill_interval() {
+        let lap = 2_400.0;
+        let sector_tank = automatic_fuel_tank(lap, 1.0, true);
+        let lap_tank = automatic_fuel_tank(lap, 1.0, false);
+        assert!((lap_tank / sector_tank - N_CHECKPOINTS as f32).abs() < 1e-5);
+        assert!((lap_tank - (2_400.0 / 18.75) * 0.006).abs() < 1e-6);
     }
 }
 
@@ -642,6 +702,17 @@ fn log_fly_elite(gen_abs: usize, block: &[f32], layout: universe::fly_map::FlyLa
 }
 
 fn main() {
+    // Production body defaults. The automatic gearbox is limited to third gear until
+    // the curriculum proves that perception/control can safely use a higher ceiling.
+    CAMBIO_MODO.store(1, Ordering::Relaxed);
+    CAMBIO_TETO.store(3, Ordering::Relaxed);
+    // Regional neuromodulation is useful only once slow body state changes the best
+    // policy. Its earlier paired experiment tied without that regime, so keep it an
+    // explicit mechanism instead of adding an inert layer to every controller.
+    NEUROMOD_REGIOES.store(false, Ordering::Relaxed);
+    // Collisions have a physical consequence by default. This is a body property,
+    // not a driving policy: evolution remains free to discover how to avoid damage.
+    DANO_ESCALA.store(1.0, Ordering::Relaxed);
     // Força ICD Vulkan da Radeon (evita SIGSEGV com múltiplos ICDs).
     let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
     if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
@@ -653,17 +724,24 @@ fn main() {
     // ── Parsing de args ────────────────────────────────────────────────────────
     let args: Vec<String> = std::env::args().collect();
     let mut n_seres: usize = 60;
-    let mut n_ticks: usize = 8_000; // 8.000 ticks = 125s @ 64Hz por geração
+    // At the historical champion's measured 9-11 m/s, 8,000 ticks cannot cover the
+    // 1,639 m validation lap. Twenty thousand ticks gives selection time to observe
+    // at least one complete lap without requiring every command to override it.
+    let mut n_ticks: usize = 20_000;
     let mut n_gens: usize = 100;
+    // The native path now uses the same SlowBrain input semantics as the original
+    // Universe body. `--slow-kinematics legacy` remains available for old replays.
+    let mut canonical_slow_kinematics = true;
+    let mut continuous_probes = true;
     let mut retomar: bool = false;
     // `--replay-every N`: write the leader replay only every N generations (and on the last
     // one). Rule 5 of CLAUDE.md: a 60-generation run at 30 000 ticks is ~58 MB per replay.
     let mut replay_every: usize = 1;
     let mut l1_vivos: usize = 0; // 0 = todos os 96 (sem ablacao)
     let mut retomar_mix: f32 = 0.85; // fracao do campeao preservada nos filhos
-    let mut congela_l2_cegas: bool = false;
-    let mut mascara_regioes: bool = false;
-    let mut tau_semeado: bool = false;
+    let mut congela_l2_cegas: bool = true;
+    let mut mascara_regioes: bool = true;
+    let mut tau_semeado: bool = true;
     let mut observar_path: Option<String> = None;
     let mut gravar_onda_path: Option<String> = None;
     let mut trocar_ao_completar: usize = 0; // 0 = rotacao por geracao (comportamento atual)
@@ -681,10 +759,20 @@ fn main() {
     /// travar progresso real de currículo — é ponto de partida, não medição final.
     let mut curriculo_veloc_min: f64 = 5.0;
     let mut out_dir = ".".to_string();
+    let mut driving_diagnostics_on = false;
+    let mut vision_being: usize = 0;
+    let mut vision_every: usize = 16;
+    let mut erase_fast_memory = false;
     // Parâmetros evolutivos ajustáveis via CLI (padrão conservador para fine-tuning).
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
     let mut evo_sigma: f32 = 0.05;
     let mut evo_p_mutate: f32 = 0.02;
+    // The three motor rows contain only 288 of ~23k fast weights. At the global 2%
+    // rate they receive about six changed coefficients per child, which measured too
+    // little exploration to cross the inherited negative brake logit. Motor rows use
+    // their own default while all representation weights keep the conservative rate.
+    let mut evo_motor_sigma: Option<f32> = Some(0.10);
+    let mut evo_motor_p_mutate: Option<f32> = Some(0.10);
     // C1: rate/σ of the `hip` block (see `EvoParams::hip_p`); only used with `--hippocampus-sector`.
     let mut evo_hip_p: f32 = 1.0;
     let mut evo_hip_sigma: f32 = 0.2;
@@ -692,6 +780,7 @@ fn main() {
     // no path, no map, no buffers, no genome block, no draws in `evolve()`.
     let mut fly_map_path: Option<String> = None;
     let mut fly_spiking_on = false;
+    let mut brain_control_direct = false;
     let mut fly_tau_steps: u32 = universe::gpu::fly_map::DEFAULT_TAU_STEPS;
     let mut evo_fly_p_bind: f32 = 0.05;
     let mut evo_fly_p_off: f32 = 0.05;
@@ -725,7 +814,12 @@ fn main() {
     // Isto NÃO ensina a desviar. Não há regra dizendo para onde virar, nem freio automático.
     // Só torna a parede cara, que é o que faz a competência de evitá-la valer a pena. A
     // inteligência tem de aparecer sozinha; o mundo é que precisa ter consequência.
-    let mut wall_cost: f32 = 0.0;
+    let mut wall_cost: f32 = 2.0;
+    // Metres of objective charged per kilojoule dissipated in a physical impact.
+    // Unlike wall proximity, this signal grows quadratically with normal impact speed
+    // through the kernel's energy term. One metre/kJ makes a typical 473 kJ collision
+    // history worth ~10% of a 4.7 km run after the checkpoint unit correction.
+    let mut impact_cost: f32 = 1.0;
     let mut brain_skip: u32 = 1;
     /// Ticks de vida consumidos A MAIS por tick colado na parede. 0 = sem custo.
     let mut wall_life: i64 = 0;
@@ -733,7 +827,7 @@ fn main() {
     let mut stag_life: i64 = 0;
     /// Todos os seres nascem no mesmo ponto. Torna a fitness comparável entre indivíduos
     /// — sem isso ela mede a largada, não o cérebro.
-    let mut same_start = false;
+    let mut same_start = true;
     let mut start_formation = false;
     let mut largada_aleatoria = false;
     let mut ruido_sigma: f32 = 0.0;
@@ -757,20 +851,29 @@ fn main() {
     ///
     /// Ganhar vida avançando é a tese do projeto aplicada ao corpo: sobreviver EXIGE
     /// progredir. Não diz ao ser como dirigir nem para onde virar — diz que parar é morrer.
-    let mut life_earn: f32 = 0.0;
+    let mut life_earn: f32 = 12.0;
     /// Largura da pista em metros. Estava fixa em 18,0 no código. A arqueologia de git
     /// mostrou que a versão que o Leonardo lembra rodava com 28 m; pista mais larga deixa
     /// carregar velocidade na curva, que é exatamente onde os seres perdem tempo hoje.
-    let mut track_width: f32 = 18.0;
+    let mut track_width: f32 = 28.0;
     /// `--fitness dist` volta ao hodômetro antigo. Padrão: progresso na pista.
     /// `checkpoint` (padrão) · `prog` · `dist`. Ver o `match` que monta a fitness.
     let mut modo_fitness = String::from("checkpoint");
     /// Alisamento do volante. 0,5 é o histórico; 1,0 remove a histerese.
     let mut steer_alpha: f32 = 0.5;
-    let mut fuel_on = false;
+    // Signed arbitration preserves both directions of the fast motor signal. The
+    // historical max(0, fast_throttle) erased its ability to oppose the slow drive;
+    // `--throttle-arbitration legacy` remains available for checkpoint reproduction.
+    let mut motor_head_mode: u32 = 0;
+    let mut throttle_arbitration_mode: u32 = 1;
+    let mut reverse_controller_mode = reverse_controller::ReverseMode::V2;
+    // Fuel creates a dense survival requirement: reaching the next ordered sector
+    // replenishes the small tank; staying stuck exhausts it. It never chooses an action.
+    let mut fuel_on = true;
+    let mut fuel_auto_k: Option<f32> = Some(1.5);
     let mut refuel_laps: u32 = 1;
     let mut fuel_tank: f32 = 1.0;
-    let mut setor_paga = true;
+    let mut setor_paga = false;
     /// `--auditar-visao`: mede se os canais sensoriais respondem à pista real.
     let mut auditar_visao = false;
     // `--retina-range <m>`: how far the whole perceptual horizon reaches.
@@ -784,10 +887,12 @@ fn main() {
     // hidden — the being SEES every curve in time, so there is nothing a per-sector
     // memory could know that perception does not already deliver. Shortening the
     // horizon is what puts information beyond it.
+    let mut road_view_range_m: Option<f32> = None;
     let mut retina_range_m: f32 = universe::visao::ALCANCE_PADRAO;
     let mut portal_curva = false;
     let mut slow_steer_auth: f32 = 0.20;
-    /// Teto de vida acumulável em ticks (0 = usar o padrão de 1920).
+    /// Accumulated-life ceiling in ticks. Zero follows the episode length when
+    /// life earning is disabled, or the 3,840-tick ecological reserve otherwise.
     let mut life_cap_arg: i64 = 0;
     let mut evo_n_elite: usize = 3;
     let mut evo_tourney: usize = 3;
@@ -852,9 +957,8 @@ fn main() {
     let mut painel_porta: u16 = 3200;
     /// `--tracks "9001,9002,..."`: conjunto de pistas de TREINO, rotacionadas
     /// deterministicamente por geração (`pista_da_gen`, gen_abs % len). Vazio
-    /// (padrão) = comportamento anterior a esta flag: pista 9001 fixa — o A/B em
-    /// andamento (campeão treinado só nela, `--same-start`) continua reproduzível
-    /// sem tocar em nada.
+    /// (default) = validated starter track 8005. Pass `--tracks 9001` explicitly
+    /// only when reproducing the historical checkpoint trained on that seed.
     let mut pistas: Vec<u64> = Vec::new();
     /// `--track-held-out <seed>`: pista RESERVADA, nunca sorteada por `pista_da_gen`
     /// pro treino — só para MEDIR generalização (ver bloco `[generalizacao]`).
@@ -874,6 +978,30 @@ fn main() {
             let raw = args[i].as_str();
             let arg = cli_flags::resolve(raw).map_or(raw, |f| f.name);
             match arg {
+                "--driving-diagnostics" => {
+                    driving_diagnostics_on = true;
+                }
+                "--erase-fast-memory" => {
+                    erase_fast_memory = true;
+                }
+                "--vision-being" => {
+                    i += 1;
+                    vision_being = args.get(i).and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                        eprintln!("ERROR --vision-being requires a nonnegative integer");
+                        std::process::exit(1)
+                    });
+                }
+                "--vision-every" => {
+                    i += 1;
+                    vision_every = args
+                        .get(i)
+                        .and_then(|v| v.parse().ok())
+                        .filter(|v| *v > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!("ERROR --vision-every requires a positive integer");
+                            std::process::exit(1)
+                        });
+                }
                 "--beings" => {
                     i += 1;
                     if i < args.len() {
@@ -902,6 +1030,18 @@ fn main() {
                     i += 1;
                     if i < args.len() {
                         evo_p_mutate = args[i].parse().unwrap_or(0.02);
+                    }
+                }
+                "--motor-p-mutate" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_motor_p_mutate = args[i].parse().ok();
+                    }
+                }
+                "--motor-sigma" => {
+                    i += 1;
+                    if i < args.len() {
+                        evo_motor_sigma = args[i].parse().ok();
                     }
                 }
                 "--hip-p" => {
@@ -990,6 +1130,14 @@ fn main() {
                 // DESLIGA para rodar o braço de controle do A/B.
                 "--no-spectral-init" => {
                     universe::gpu::evolution::SPECTRAL_INIT_ON.store(false, Ordering::Relaxed);
+                }
+                "--driving-reflex-birth" => {
+                    universe::gpu::evolution::DRIVING_REFLEX_BIRTH_ON
+                        .store(true, Ordering::Relaxed);
+                }
+                "--no-driving-reflex-birth" => {
+                    universe::gpu::evolution::DRIVING_REFLEX_BIRTH_ON
+                        .store(false, Ordering::Relaxed);
                 }
                 // FASE SENSORES (degrau 1): liga a evolução de FOV/alcances/lookaheads de
                 // curvatura (ver doc de `SENSORS_EVOLVE_ON`). Padrão DESLIGADA — sem esta
@@ -1138,6 +1286,12 @@ fn main() {
                         wall_cost = args[i].parse().unwrap_or(0.0);
                     }
                 }
+                "--impact-cost" => {
+                    i += 1;
+                    if i < args.len() {
+                        impact_cost = args[i].parse().unwrap_or(0.0);
+                    }
+                }
                 "--brain-skip" => {
                     i += 1;
                     if i < args.len() {
@@ -1186,6 +1340,9 @@ fn main() {
                 }
                 "--same-start" => {
                     same_start = true;
+                }
+                "--social-sensors" => {
+                    SOCIAL_SENSORS_ON.store(true, Ordering::Relaxed);
                 }
                 "--start-formation" => {
                     start_formation = true;
@@ -1420,11 +1577,61 @@ fn main() {
                         steer_alpha = args[i].parse().unwrap_or(0.5);
                     }
                 }
+                "--motor-head" => {
+                    i += 1;
+                    motor_head_mode = match args.get(i).map(String::as_str) {
+                        Some("spline") => 0,
+                        Some("linear") => 1,
+                        _ => {
+                            eprintln!("ERROR --motor-head requires spline or linear");
+                            std::process::exit(1)
+                        }
+                    };
+                }
+                "--throttle-arbitration" => {
+                    i += 1;
+                    throttle_arbitration_mode = match args.get(i).map(String::as_str) {
+                        Some("legacy") => 0,
+                        Some("signed") => 1,
+                        _ => {
+                            eprintln!("ERROR --throttle-arbitration requires legacy or signed");
+                            std::process::exit(1)
+                        }
+                    };
+                }
+                "--reverse-controller-v2" => {
+                    reverse_controller_mode = reverse_controller::ReverseMode::V2;
+                }
+                "--legacy-reverse-controller" => {
+                    reverse_controller_mode = reverse_controller::ReverseMode::Legacy;
+                }
+                "--slow-kinematics" => {
+                    i += 1;
+                    canonical_slow_kinematics = match args.get(i).map(String::as_str) {
+                        Some("legacy") => false,
+                        Some("canonical") => true,
+                        _ => {
+                            eprintln!("ERROR --slow-kinematics requires legacy or canonical");
+                            std::process::exit(1)
+                        }
+                    };
+                }
+                "--wall-probes" => {
+                    i += 1;
+                    continuous_probes = match args.get(i).map(String::as_str) {
+                        Some("legacy") => false,
+                        Some("continuous") => true,
+                        _ => {
+                            eprintln!("ERROR --wall-probes requires legacy or continuous");
+                            std::process::exit(1)
+                        }
+                    };
+                }
                 // Regra de três do combustível: tanque = f(volta da pista) × k. Ver statics.rs.
                 "--fuel-auto" => {
                     i += 1;
                     if i < args.len() {
-                        FUEL_AUTO_K.store(args[i].parse().unwrap_or(0.0), Ordering::Relaxed);
+                        fuel_auto_k = Some(args[i].parse().unwrap_or(0.0));
                         fuel_on = true;
                     }
                 }
@@ -1435,8 +1642,13 @@ fn main() {
                     i += 1;
                     if i < args.len() {
                         fuel_tank = args[i].parse().unwrap_or(1.0);
+                        fuel_auto_k = None;
                         fuel_on = true;
                     }
+                }
+                "--no-fuel" => {
+                    fuel_on = false;
+                    fuel_auto_k = None;
                 }
                 "--refuel-lap-only" => {
                     setor_paga = false;
@@ -1454,6 +1666,18 @@ fn main() {
                 // Perceptual horizon, metres. A value <= 0 (or unparseable) keeps the
                 // default rather than blinding the run: `visao::pitch_at` would clamp a
                 // zero to 1 m anyway, and a silent 1 m retina is not a control arm.
+                "--retina-road-view" => {
+                    i += 1;
+                    let value = args
+                        .get(i)
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .filter(|v| v.is_finite() && (20.0..=300.0).contains(v))
+                        .unwrap_or_else(|| {
+                            eprintln!("--retina-road-view requires metres in [20, 300]");
+                            std::process::exit(2);
+                        });
+                    road_view_range_m = Some(value);
+                }
                 "--retina-range" => {
                     i += 1;
                     if i < args.len() {
@@ -1514,14 +1738,23 @@ fn main() {
                 "--l2-freeze-blind" => {
                     congela_l2_cegas = true;
                 }
+                "--no-l2-freeze-blind" => {
+                    congela_l2_cegas = false;
+                }
                 // M3: regiões DIRIGIDAS (teto de referência) — ver evolution.rs::mascara_permite.
                 "--region-mask" => {
                     mascara_regioes = true;
+                }
+                "--no-region-mask" => {
+                    mascara_regioes = false;
                 }
                 // E-REG2 (M2): semeia τ por BLOCO (mesmos 4 blocos do M3) — reflexo
                 // curto na parede/estrada, longo no associativo. Função segue tempo?
                 "--tau-seeded" => {
                     tau_semeado = true;
+                }
+                "--no-tau-seeded" => {
+                    tau_semeado = false;
                 }
                 // Visão periférica REAL: ch144-159 deixam de ser cópia bit-a-bit da
                 // fóvea e passam a olhar as bordas da retina (ver perception.wgsl).
@@ -1533,6 +1766,9 @@ fn main() {
                 // M4: maestro de regiões (lento→gates com reserva). Ver statics.rs.
                 "--neuromod-regions" => {
                     NEUROMOD_REGIOES.store(true, Ordering::Relaxed);
+                }
+                "--no-neuromod-regions" => {
+                    NEUROMOD_REGIOES.store(false, Ordering::Relaxed);
                 }
                 // Laboratório de observação: grava a cadeia neural do ser 0 por tick
                 // (394 f32/linha, ver context.rs). Usar com --retomar --gens 1.
@@ -1664,6 +1900,17 @@ fn main() {
                     // can evolve during the run.
                     universe::gpu::evolution::FLY_MUTATE_ON.store(true, Ordering::Relaxed);
                 }
+                "--brain-control" => {
+                    i += 1;
+                    match args.get(i).map(String::as_str) {
+                        Some("direct") => brain_control_direct = true,
+                        Some("legacy") => brain_control_direct = false,
+                        _ => {
+                            eprintln!("[ERROR] --brain-control requires `direct` or `legacy`.");
+                            std::process::exit(2);
+                        }
+                    }
+                }
                 "--fly-tau" => {
                     i += 1;
                     if i < args.len() {
@@ -1732,15 +1979,29 @@ fn main() {
                 // `--fly-eye`/`--fly-brain` needing `--fly-map`.
                 "--fly-reflex-alpha" => {
                     i += 1;
-                    if i < args.len() {
-                        fly_reflex_alpha_v = args[i].parse().unwrap_or(0.0);
-                    }
+                    fly_reflex_alpha_v = brain_backend::finite_parameter(
+                        args.get(i),
+                        "--fly-reflex-alpha",
+                        0.0,
+                        1.0,
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("[ERROR] {error}");
+                        std::process::exit(2)
+                    });
                 }
                 "--fly-reflex-gain" => {
                     i += 1;
-                    if i < args.len() {
-                        fly_reflex_gain_v = args[i].parse().unwrap_or(1.0);
-                    }
+                    fly_reflex_gain_v = brain_backend::finite_parameter(
+                        args.get(i),
+                        "--fly-reflex-gain",
+                        0.0,
+                        f32::MAX,
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("[ERROR] {error}");
+                        std::process::exit(2)
+                    });
                 }
                 "--fly-readout-norm" => {
                     // The measured quantity (191v/193v) is the normalised asymmetry index, not
@@ -1782,9 +2043,16 @@ fn main() {
                 }
                 "--fly-cruise-throttle" => {
                     i += 1;
-                    if i < args.len() {
-                        fly_cruise_throttle_v = args[i].parse().unwrap_or(fly_cruise_throttle_v);
-                    }
+                    fly_cruise_throttle_v = brain_backend::finite_parameter(
+                        args.get(i),
+                        "--fly-cruise-throttle",
+                        0.0,
+                        1.0,
+                    )
+                    .unwrap_or_else(|error| {
+                        eprintln!("[ERROR] {error}");
+                        std::process::exit(2)
+                    });
                 }
                 "--fly-reflex-sign" => {
                     i += 1;
@@ -1820,6 +2088,25 @@ fn main() {
             i += 1;
         }
     }
+
+    if start_formation && largada_aleatoria {
+        eprintln!(
+            "[ERROR] --start-formation uses a fixed grid and cannot be combined with --largada-aleatoria."
+        );
+        std::process::exit(2);
+    }
+
+    if !matches!(
+        modo_fitness.as_str(),
+        "dist" | "prog" | "checkpoint" | "centro" | "checkpoint-legacy" | "centro-legacy"
+    ) {
+        eprintln!(
+            "[ERROR] --fitness '{}' is invalid; expected dist, prog, checkpoint, centro, checkpoint-legacy, or centro-legacy",
+            modo_fitness
+        );
+        std::process::exit(2);
+    }
+    FUEL_AUTO_K.store(fuel_auto_k.unwrap_or(0.0), Ordering::Relaxed);
 
     // `--record-wave` writes the UWAV header once, before the generation loop
     // (`ctx.wave_writer` setup, below) — but the loop itself resets CfC state and runs a
@@ -1882,6 +2169,29 @@ fn main() {
              [ERROR] Pass --fly-map <flymap v2 file>, or drop the fly driver flag."
         );
         std::process::exit(1);
+    }
+    if brain_control_direct && !(fly_brain() || fly_spiking()) {
+        eprintln!("[ERROR] --brain-control requires --fly-brain or --fly-spiking.");
+        std::process::exit(2);
+    }
+    if brain_control_direct
+        && (piloto != 0.0
+            || piloto_thr != 0.0
+            || piloto_sensor != 0.0
+            || piloto_formula_path.is_some()
+            || piloto_forja_path.is_some()
+            || ativacao_on
+            || observar_path.is_some()
+            || brain_skip != 1
+            || steer_fixo != 0.0
+            || steer_escala != 0.0
+            || thr_fixo != 0.0
+            || hippocampus_on())
+    {
+        eprintln!(
+            "[ERROR] direct brain control cannot combine pilots, fixed motor overrides, hippocampus, native observation/activation, or native brain skipping."
+        );
+        std::process::exit(2);
     }
     if fly_brain() && fly_spiking() {
         eprintln!(
@@ -1986,6 +2296,16 @@ fn main() {
             "DESLIGADA (--sem-init-espectral) — L1 nasce cru, σ=0.30 i.i.d. sem correção (braço de controle)"
         }
     );
+    let driving_reflex_birth =
+        universe::gpu::evolution::DRIVING_REFLEX_BIRTH_ON.load(Ordering::Relaxed);
+    println!(
+        "  Motor birth wiring: {}",
+        if driving_reflex_birth {
+            "sparse evolvable reflexes (alignment/curve risk/clearance -> 3 motor pathways)"
+        } else {
+            "fully random motor pathways (control arm)"
+        }
+    );
     let sensors_evolve_on = universe::gpu::evolution::SENSORS_EVOLVE_ON.load(Ordering::Relaxed);
     println!(
         "  Sensores (FASE SENSORES, degrau 1): {}",
@@ -2029,9 +2349,26 @@ fn main() {
             "mutando (padrão) — tanh/ReLU/linear/leaky-ReLU, taxa 0,2%/neurônio/geração"
         }
     );
+    let motor_p_mutate = evo_motor_p_mutate.unwrap_or(evo_p_mutate);
+    let motor_sigma = evo_motor_sigma.unwrap_or(evo_sigma);
+    if !motor_p_mutate.is_finite()
+        || !(0.0..=1.0).contains(&motor_p_mutate)
+        || !motor_sigma.is_finite()
+        || motor_sigma < 0.0
+    {
+        eprintln!("[ERROR] motor mutation requires p in [0,1] and finite sigma >= 0");
+        std::process::exit(1);
+    }
     println!(
-        "  Evolution: sigma={:.3}  p_mutate={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}",
-        evo_sigma, evo_p_mutate, evo_n_elite, evo_tourney, evo_hip_p, evo_hip_sigma
+        "  Evolution: sigma={:.3}  p_mutate={:.3}  motor_sigma={:.3}  motor_p={:.3}  n_elite={}  tourney={}  hip_p={:.2}  hip_sigma={:.2}",
+        evo_sigma,
+        evo_p_mutate,
+        motor_sigma,
+        motor_p_mutate,
+        evo_n_elite,
+        evo_tourney,
+        evo_hip_p,
+        evo_hip_sigma
     );
     println!(
         "  [tau] bank: --tau-bank {} — {}",
@@ -2039,7 +2376,10 @@ fn main() {
         tau_bank_mode().describe()
     );
     println!("  SEM muletas motoras (escape_ticks, curvature_governor)");
-    println!("  Fitness: distância contínua em metros (sem degrau de volta inteira)");
+    println!(
+        "  Fitness: {} · wall_cost={:.3} m/s · impact_cost={:.3} m/kJ",
+        modo_fitness, wall_cost, impact_cost
+    );
     println!();
 
     // ── Rotação de pistas (P1, docs/PLANO_EVOLUCAO.md) ────────────────────────
@@ -2136,6 +2476,12 @@ fn main() {
     // horizon you cannot read off the log is an unlabelled experiment. The four sensor
     // numbers on the line are the BIRTH values (`SENSOR_DEFAULTS`) after scaling; under
     // `--evolving-sensors` each being carries its own, scaled by the same factor.
+    if let Some(range) = road_view_range_m {
+        universe::visao::set_road_view(range).expect("validated road-view range");
+        println!(
+            "   [retina-road-view] physical-v1; log ground sampling 4..{range} m; independent probes unchanged"
+        );
+    }
     universe::visao::definir(universe::visao::Params {
         alcance_m: retina_range_m,
         fov_deg: universe::config::iara::vision::FOV_DEG,
@@ -2143,13 +2489,15 @@ fn main() {
     {
         let s = universe::visao::range_scale();
         let d = universe::gpu::evolution::SENSOR_DEFAULTS;
+        let ground_horizon =
+            universe::visao::ROAD_VIEW_REFERENCE_EYE_HEIGHT_M / -universe::visao::pitch(0).tan();
         use universe::gpu::evolution::sensor_idx as sx;
         println!(
-            "   [retina] range = {:.1} m (x{:.3}) · blind above {:.1} m/s · wall {:.1} m · \
+            "   [retina] nominal ground horizon = {:.1} m (probe scale x{:.3}) · ideal braking bound {:.1} m/s · wall {:.1} m · \
              lateral {:.1} m · curvature {:.0}/{:.0}/{:.0} m",
-            retina_range_m,
+            ground_horizon,
             s,
-            universe::visao::velocidade_cega(retina_range_m, 11.4),
+            universe::visao::velocidade_cega(ground_horizon, 11.4),
             d[sx::WALL_RANGE_M] * s,
             d[sx::LAT_RANGE_M] * s,
             d[sx::CURV_NEAR_M] * s,
@@ -2183,6 +2531,16 @@ fn main() {
         None
     };
 
+    // Diagnostics writes these modes during construction, before the first tick.
+    MOTOR_HEAD_MODE.store(motor_head_mode, Ordering::Relaxed);
+    SLOW_CANONICAL_KINEMATICS.store(canonical_slow_kinematics, Ordering::Relaxed);
+    CONTINUOUS_WALL_PROBES.store(continuous_probes, Ordering::Relaxed);
+    THROTTLE_ARBITRATION_MODE.store(throttle_arbitration_mode, Ordering::Relaxed);
+    REVERSE_CONTROLLER_V2.store(
+        reverse_controller_mode == reverse_controller::ReverseMode::V2,
+        Ordering::Relaxed,
+    );
+
     // ── GPU ───────────────────────────────────────────────────────────────────
     let t1 = Instant::now();
     let mut ctx = match GpuCtx::new(&world, n_seres) {
@@ -2192,7 +2550,27 @@ fn main() {
             std::process::exit(1);
         }
     };
+    ctx.erase_fast_memory = erase_fast_memory;
+    ctx.collect_contact_metrics =
+        impact_cost > 0.0 || DANO_ESCALA.load(Ordering::Relaxed) > 0.0 || driving_diagnostics_on;
+    if driving_diagnostics_on {
+        std::fs::create_dir_all(&out_dir).expect("create diagnostic output directory");
+        ctx.driving_diagnostics = Some(
+            driving_diagnostics::DrivingDiagnostics::new(
+                &ctx.device,
+                std::path::Path::new(&out_dir),
+                n_seres,
+                vision_being,
+                vision_every,
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("ERROR --driving-diagnostics: {error}");
+                std::process::exit(1)
+            }),
+        );
+    }
     ctx.brain_skip = brain_skip;
+    ctx.brain_control_direct = brain_control_direct;
     // FLY MAP: the connectome goes resident on the SAME device as every other kernel —
     // `GpuCtx` owns the device, so the map shares it instead of opening a second one
     // (`src/gpu/CLAUDE.md`, "one device, all buffers resident").
@@ -2269,6 +2647,21 @@ fn main() {
             None => eprintln!("[ERRO] não consegui carregar o piloto v2 de {p}"),
         }
     }
+    let selected_brain =
+        brain_backend::BrainBackend::from_options(ctx.fly.as_ref(), ctx.fly_spiking.as_ref());
+    let schema = universe::brain_interface::OBSERVATION_SCHEMA_V1;
+    println!(
+        "  [brain-interface] model={} mode={} retina={} wave={} motor_channels=3",
+        selected_brain.name(),
+        if brain_control_direct {
+            "direct"
+        } else {
+            "legacy"
+        },
+        schema.retina_samples,
+        schema.wave_channels
+    );
+
     if let Some(ref p) = piloto_formula_path {
         match piloto_linear::PilotoLinear::carregar(p) {
             Some(pl) => {
@@ -2385,11 +2778,11 @@ fn main() {
     REFUEL_LAPS.store(refuel_laps, Ordering::Relaxed);
     FUEL_TANK.store(fuel_tank.max(0.01), Ordering::Relaxed);
     // A pista INICIAL também precisa do tanque calculado — sem isto `--fuel-auto`
-    // só valia a partir da primeira TROCA de pista (ver `tanque_por_setor`).
+    // only applied after the first track change (see `automatic_fuel_tank`).
     {
         let k = FUEL_AUTO_K.load(Ordering::Relaxed);
         if k > 0.0 {
-            let x = tanque_por_setor(world.lap_distance as f64, k);
+            let x = automatic_fuel_tank(world.lap_distance as f64, k, setor_paga);
             FUEL_TANK.store(x, Ordering::Relaxed);
             println!(
                 "  [fuel-auto] pista inicial (volta {:.0} m) → tanque {x:.4} (k={k})",
@@ -2627,6 +3020,11 @@ fn main() {
     SLOW_STEER_AUTH.store(slow_steer_auth, Ordering::Relaxed);
     if life_cap_arg > 0 {
         LIFE_CAP_TICKS.store(life_cap_arg, Ordering::Relaxed);
+    } else if life_earn <= 0.0 {
+        // Fixed-life episodes initialize `life_left` with `n_ticks`. The body sensor
+        // must use the same capacity; the old 1,920 denominator kept ch67 saturated
+        // at 1.0 through most long episodes and hid the organism's real remaining life.
+        LIFE_CAP_TICKS.store(n_ticks.max(1) as i64, Ordering::Relaxed);
     }
     ctx.brain.out_beta = out_beta;
     ctx.brain.out_gain = ganho_saida;
@@ -2803,10 +3201,10 @@ fn main() {
                 }
                 pop
             } else {
-                eprintln!("Falha ao carregar arquivo — usando população aleatória.");
-                (0..n_seres)
-                    .map(|i| Genome::random(population_seed_for(pop_seed, i)))
-                    .collect()
+                eprintln!(
+                    "[ERROR] --resume: invalid checkpoint {path}; refusing to substitute a random population."
+                );
+                std::process::exit(1);
             }
         } else {
             // Hard error, not a fallback. Silently swapping the requested champion for a
@@ -2879,36 +3277,22 @@ fn main() {
     }
 
     // Parâmetros evolutivos: configuráveis via CLI, default conservador.
-    if tau_semeado {
-        // E-REG2: priors de τ por bloco (log-uniforme na faixa; d = 1/τ):
-        //   bloco 0 visão: livre (0,5-4 s, faixa atual) · bloco 1 parede/estrada:
-        //   REFLEXO 0,3-0,8 s · bloco 2 corpo: 1-4 s · bloco 3 associativo: 4-15 s.
-        // Sobrescreve τ herdado em TODA a população (é a intervenção; a mutação
-        // segue refinando a partir daí).
+    if tau_semeado && !elite_carregado_do_checkpoint {
+        // `tau` follows sensory channels, not the four L1 neuron regions. Seed response
+        // bandwidth by signal physics: fast control/proximity, intermediate vision and
+        // slow homeostasis. Evolution keeps refining every value from this birth prior.
         for (gi, g) in genomes.iter_mut().enumerate() {
-            for j in 0..universe::config::iara::brain::L1_NEURONS {
-                let (lo, hi): (f64, f64) = match j / 24 {
-                    0 => (0.5, 4.0),
-                    1 => (0.3, 0.8),
-                    2 => (1.0, 4.0),
-                    _ => (4.0, 15.0),
-                };
-                let u = {
-                    let mut x = (gi as u64 * 96 + j as u64)
-                        .wrapping_mul(0x9E3779B97F4A7C15)
-                        .wrapping_add(pop_seed);
-                    x ^= x >> 33;
-                    x = x.wrapping_mul(0xFF51AFD7ED558CCD);
-                    x ^= x >> 33;
-                    (x % 10_000) as f64 / 10_000.0
-                };
-                let tau = lo * (hi / lo).powf(u);
-                g.tau[j] = (1.0 / tau) as f32;
-            }
+            g.seed_sensory_taus(pop_seed, gi);
         }
         println!(
-            "  [tau-semeado] E-REG2: τ por bloco (visão 0,5-4s · reflexo 0,3-0,8s · corpo 1-4s · associativo 4-15s)"
+            "  [tau-seeded] sensory bandwidth prior: control/proximity 0.05-0.40s · vision 0.05-0.80s · homeostasis 0.50-4.00s"
         );
+    } else if tau_semeado {
+        // A resumed population already inherited a selected time-scale bank. Re-seeding
+        // every slot here used to replace that learned organ with eight unrelated banks
+        // before generation zero, so an apparent controller comparison was actually a
+        // tau randomisation experiment. `--tau-seeded` is a birth prior, not a reset.
+        println!("  [tau-seeded] preserving the selected tau bank of the resumed population");
     }
     if mascara_regioes {
         for g in genomes.iter_mut() {
@@ -2921,6 +3305,8 @@ fn main() {
     let evo_params = EvoParams {
         p_mutate: evo_p_mutate,
         sigma: evo_sigma,
+        motor_p_mutate,
+        motor_sigma,
         hip_p: evo_hip_p,
         hip_sigma: evo_hip_sigma,
         fly_p_bind: evo_fly_p_bind,
@@ -2949,10 +3335,8 @@ fn main() {
     let mut hist_max: Vec<f64> = Vec::with_capacity(n_gens);
     let mut hist_results: Vec<GenResult> = Vec::with_capacity(n_gens);
 
-    // ── KAN knots iniciais: default de saída ──────────────────────────────────
-    // Cada genoma carrega seus kan_knots. Usamos os do melhor indivíduo na hora
-    // de rodar os ticks (simplificação: todos usam os knots da população como um todo).
-    // Futuramente: cada ser usa seus próprios knots.
+    // Runtime output spline shared by all beings. Genome.kan_knots is stored but
+    // inactive on this path; loading a champion does not select its output knots.
     let kan_knots_global = default_kan_knots();
 
     // ── LAÇO PRINCIPAL ────────────────────────────────────────────────────────
@@ -2960,6 +3344,19 @@ fn main() {
     for generation_idx in 0..n_gens {
         // gen_abs = número absoluto da geração (para relatório e arquivo de save).
         let gen_abs = gen_offset + generation_idx;
+        let genome_diversity = genome_diagnostics::measure(&genomes);
+        println!(
+            "  [genome] fast hashes {}/{} · RMS(slot0) {:.6} | brake-row hashes {}/{} · RMS(slot0) {:.6}",
+            genome_diversity.distinct_fast_hashes,
+            n_seres,
+            genome_diversity.fast_rms_from_slot0,
+            genome_diversity.distinct_brake_row_hashes,
+            n_seres,
+            genome_diversity.brake_row_rms_from_slot0,
+        );
+        if let Some(diagnostics) = ctx.driving_diagnostics.as_mut() {
+            diagnostics.reset(gen_abs);
+        }
 
         // ── Rotação de pistas (P1) ──────────────────────────────────────────────
         // `seed_gen` é a pista de TREINO desta geração. Sem `--pistas` (lista
@@ -3016,11 +3413,13 @@ fn main() {
                 // próximo setor na velocidade típica" — um número que MORDE, e a
                 // escada aperta a partir daí. Quem for mais devagar que o típico
                 // fica sem combustível: é essa a pressão que faltava.
-                let x = tanque_por_setor(lap_dist, k);
+                let refill_each_sector = SETOR_PAGA.load(Ordering::Relaxed);
+                let x = automatic_fuel_tank(lap_dist, k, refill_each_sector);
                 FUEL_TANK.store(x, Ordering::Relaxed);
+                let interval_name = if refill_each_sector { "setor" } else { "volta" };
                 println!(
                     "  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.4} \
-                          (k={k}; 1,0 = alcança o próximo setor a 18,75 m/s)"
+                          (k={k}; 1,0 = cobre um(a) {interval_name} a 18,75 m/s)"
                 );
             }
         }
@@ -3073,18 +3472,139 @@ fn main() {
         // risco item do mapa P1. Sem `--pistas`, `seed_gen == 9001` sempre, e este
         // campo do arquivo fica idêntico ao que já era.
         let replay_this_gen = generation_idx % replay_every == 0 || generation_idx + 1 == n_gens;
+        // Normalize against this mode's actual resource capacity, not the life-earn
+        // cap when a fixed-horizon run starts with a different budget.
+        let replay_life_capacity = if LIFE_EARN.load(Ordering::Relaxed) > 0.0 {
+            life_cap().max(1) as f64
+        } else {
+            n_ticks.max(1) as f64
+        };
         let mut replay_writer = if replay_this_gen {
-            universe::replay::ReplayWriter::create(
+            let writer = universe::replay::ReplayWriter::create(
                 &replay_path,
                 universe::replay::SOURCE_CORTEX,
                 n_grav as u8,
                 64.0,
                 seed_gen,
             )
-            .ok()
+            .unwrap_or_else(|error| {
+                eprintln!("ERROR --replay {}: {error}", replay_path.display());
+                std::process::exit(1);
+            });
+            let metadata_path = replay_path.with_extension("meta.json");
+            let mut metadata = serde_json::json!({
+                "schema_version": 1,
+                "source": "gpu_evolve",
+                "tick_rate": 64.0,
+                "sample_every": 4,
+                "world_seed": seed_gen,
+                "generation": gen_abs,
+                "wall_cost_per_second": wall_cost,
+                "wall_cost_objective_version": 2,
+                "retina_road_view_m": universe::visao::road_view_range(),
+                "road_view_calibration_version": 2,
+                "no_holes": universe::world::NO_HOLES.load(Ordering::Relaxed),
+                "terrain": universe::replay::terrain::snapshot(&world),
+                "terrain_provenance": "recorded_world_grid",
+                "track_width": track_width,
+                "frame_phase": "post_physics",
+                "sensor_phase": "pre_physics",
+                "sensor_source": "captured_cpu_queries",
+                "wall_probes_recorded": true,
+                "driving_diagnostics": driving_diagnostics_on,
+                "fast_memory_erased_each_decision": erase_fast_memory,
+                "frame_tick_semantics": "tick4_post_physics_brain64_to_body64",
+                "brain_model": if fly_spiking() { "fly_spiking" } else if fly_brain() { "fly_rate" } else { "native" },
+                "brain_control": if brain_control_direct { "direct" } else { "legacy" },
+                "controller_kind": if piloto != 0.0 || piloto_sensor != 0.0 || ctx.piloto_formula.is_some() || ctx.piloto_forja.is_some() { "diagnostic_pilot" } else { "neural" },
+                "planned_ticks": n_ticks,
+                "population_seed": pop_seed,
+                "checkpoint_loaded": elite_carregado_do_checkpoint,
+                "checkpoint_mix": if elite_carregado_do_checkpoint { Some(retomar_mix) } else { None },
+                // The replay records being zero. On resume that slot is the exact
+                // checkpoint and both tau initialisers deliberately preserve it. The
+                // old metadata reported the CLI default (`tau_semeado`) instead of the
+                // mutation that actually happened, causing exact champion exports to
+                // reject valid checkpoints.
+                "tau_reseeded": !elite_carregado_do_checkpoint && (tau_semeado || tau_hetero),
+                "start_formation": start_formation,
+                "brain_trace_path": fly_spiking_trace_path.as_ref().and_then(|path| std::fs::canonicalize(path).ok()).map(|path| path.to_string_lossy().into_owned()),
+                "fuel_enabled": FUEL_ON.load(Ordering::Relaxed),
+                "fuel_capacity": FUEL_TANK.load(Ordering::Relaxed),
+                "life_capacity": replay_life_capacity,
+                "life_semantics": "remaining_tick_budget",
+                "life_frame_field": "hp_norm",
+                "arc_semantics": "odometer_m",
+                "retina_recorded": false,
+                "neural_summary_recorded": false,
+                "laps_recorded": true,
+                "raw_intents_recorded": replay_this_gen,
+            });
+            metadata["population_tau_reseeded"] =
+                serde_json::json!(if elite_carregado_do_checkpoint {
+                    tau_hetero && n_seres > 1
+                } else {
+                    tau_semeado || tau_hetero
+                });
+            metadata["motor_head"] = serde_json::json!(if motor_head_linear() {
+                "linear"
+            } else {
+                "spline"
+            });
+            metadata["slow_kinematics"] = serde_json::json!(if slow_canonical_kinematics() {
+                "canonical"
+            } else {
+                "legacy"
+            });
+            metadata["wall_probes"] = serde_json::json!(if continuous_wall_probes() {
+                "continuous"
+            } else {
+                "legacy"
+            });
+            metadata["throttle_arbitration"] =
+                serde_json::json!(if throttle_arbitration_signed() {
+                    "signed"
+                } else {
+                    "legacy"
+                });
+            metadata["reverse_controller"] = serde_json::json!(if reverse_controller_v2() {
+                "v2"
+            } else {
+                "legacy"
+            });
+            metadata["motor_trace_source"] = serde_json::json!("native_action_mapper_v1");
+            metadata["driving_reflex_birth"] = serde_json::json!(driving_reflex_birth);
+            metadata["impact_cost_metres_per_kilojoule"] = serde_json::json!(impact_cost);
+            metadata["impact_cost_objective_version"] = serde_json::json!(1);
+            metadata["damage_scale"] = serde_json::json!(DANO_ESCALA.load(Ordering::Relaxed));
+            metadata["impact_energy_to_failure_j"] =
+                serde_json::json!(survival::IMPACT_ENERGY_TO_FAILURE_J);
+            metadata["life_earn_ticks_per_new_progress_metre"] =
+                serde_json::json!(LIFE_EARN.load(Ordering::Relaxed));
+            metadata["fitness_mode"] = serde_json::json!(modo_fitness);
+            metadata["refuel_each_sector"] = serde_json::json!(SETOR_PAGA.load(Ordering::Relaxed));
+            metadata["refuel_laps"] = serde_json::json!(REFUEL_LAPS.load(Ordering::Relaxed));
+            metadata["hole_damage_fraction"] = serde_json::json!(survival::HOLE_DAMAGE_FRACTION);
+            let data = serde_json::to_vec_pretty(&metadata).unwrap_or_else(|error| {
+                eprintln!(
+                    "ERROR --replay metadata {}: {error}",
+                    metadata_path.display()
+                );
+                std::process::exit(1);
+            });
+            std::fs::write(&metadata_path, data).unwrap_or_else(|error| {
+                eprintln!(
+                    "ERROR --replay metadata {}: {error}",
+                    metadata_path.display()
+                );
+                std::process::exit(1);
+            });
+            Some(writer)
         } else {
             None
         };
+        ctx.replay_capture = replay_this_gen;
+        ctx.replay_raw_motor.clear();
         let t_gen = Instant::now();
 
         // ── Aplica genomas nos engines ─────────────────────────────────────────
@@ -3283,7 +3803,12 @@ fn main() {
         }
         if let (Some(fly), Some(l)) = (ctx.fly_spiking.as_ref(), universe::fly_map::layout()) {
             let blocks: Vec<&[f32]> = genomes.iter().map(|g| g.fly.as_slice()).collect();
-            let sel = universe::fly_map::pack_selection(&blocks, l, n_seres);
+            let mut sel = universe::fly_map::pack_selection(&blocks, l, n_seres);
+            if universe::fly_map::readout_reflex_on() {
+                if let Some(reflex_out) = fly_map.as_ref().and_then(|m| m.reflex_out) {
+                    universe::fly_map::apply_reflex_readout(&mut sel, reflex_out);
+                }
+            }
             fly.upload_selection(&sel, n_seres);
             fly.reset_state();
             if fly_log_every > 0 && gen_abs % fly_log_every == 0 && !genomes.is_empty() {
@@ -3299,8 +3824,7 @@ fn main() {
         // Com `SENSORS_EVOLVE_ON` no padrão (desligado), todo genoma tem
         // `SENSOR_DEFAULTS` e este upload sobe os hardcodes de hoje — equivalente a
         // nunca chamar o upload, só documenta a fonte única.
-        ctx.percept
-            .upload_sensors(&ctx.queue, &Genome::pack_sensors(&genomes), n_seres);
+        ctx.upload_sensors(&Genome::pack_sensors(&genomes), n_seres);
         // P1.7 (cérebro assíncrono) — metadados por neurônio (alfa/período/limiar/
         // ativação): mesmo motivo do τ/sensores, uma vez por geração.
         ctx.brain
@@ -3367,6 +3891,31 @@ fn main() {
                 .wrapping_mul(0xFF51AFD7ED558CCD);
             ((h >> 17) as usize) % n_wp
         };
+        let formation = if start_formation {
+            Some(formation_slots(&world, n_seres).unwrap_or_else(|error| {
+                panic!("invalid starting formation: {error}");
+            }))
+        } else {
+            None
+        };
+        let canonical = if same_start && formation.is_none() && !largada_aleatoria {
+            Some(canonical_start(&world).unwrap_or_else(|error| {
+                panic!("invalid canonical start: {error}");
+            }))
+        } else {
+            None
+        };
+        if let Some(slots) = formation.as_ref() {
+            let progress: Vec<String> = slots
+                .iter()
+                .enumerate()
+                .map(|(i, slot)| format!("{i}:{:.2}m", slot.progress_m))
+                .collect();
+            println!(
+                "  [formation] initial progress per being: {}",
+                progress.join(" ")
+            );
+        }
         if largada_aleatoria {
             let wp = world.waypoints_world[wi_gen];
             println!(
@@ -3395,32 +3944,38 @@ fn main() {
                 // D2: com --largada-aleatoria, o waypoint da GERAÇÃO vem de hash(gen,seed)
                 // — todos os seres da gen largam do mesmo lugar (comparável), mas o lugar
                 // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
-                let wi = if largada_aleatoria {
-                    wi_gen
-                } else if same_start || start_formation {
-                    0
+                let (pos, fwd) = if let Some(slots) = formation.as_ref() {
+                    let slot = slots[i];
+                    (
+                        [slot.position.x, 0.0, slot.position.y],
+                        [slot.forward.x, 0.0, slot.forward.y],
+                    )
+                } else if let Some(slot) = canonical {
+                    (
+                        [slot.position.x, 0.0, slot.position.y],
+                        [slot.forward.x, 0.0, slot.forward.y],
+                    )
                 } else {
-                    (i * n_wp / n_seres).min(n_wp - 1)
+                    let wi = if largada_aleatoria {
+                        wi_gen
+                    } else {
+                        (i * n_wp / n_seres).min(n_wp - 1)
+                    };
+                    let wp = world.waypoints_world[wi];
+                    // The final waypoint repeats the first; skip coincident points so
+                    // a valid start never receives a zero-length heading.
+                    let fwd = frente_do_waypoint(&world.waypoints_world, wi);
+                    ([wp.x, 0.0, wp.y], fwd)
                 };
-                let wp = world.waypoints_world[wi];
-                // Ver `frente_do_waypoint`: o último waypoint REPETE o primeiro, e o
-                // versor ingênuo saía nulo ali — geração inteira imóvel e seleção cega.
-                let fwd = frente_do_waypoint(&world.waypoints_world, wi);
-                let (longitudinal, lateral) = if start_formation {
-                    formation_offset(i)
-                } else {
-                    (0.0, 0.0)
-                };
-                let pos = [
-                    wp.x + fwd[0] * longitudinal - fwd[2] * lateral,
-                    0.0,
-                    wp.y + fwd[2] * longitudinal + fwd[0] * lateral,
-                ];
                 BeingState {
                     phys: make_physics_state(pos, fwd),
                     prev_steer: 0.0,
                     stagnation_ticks: 0,
                     wall_ticks: 0,
+                    collision_energy_j: 0.0,
+                    impact_count: 0,
+                    hole_hits: 0,
+                    hole_cooldown_ticks: 0,
                     center_prog: 0.0,
                     sensor_steer: 0.0,
                     sensor_thr: 0.0,
@@ -3428,9 +3983,8 @@ fn main() {
                     wp_near: 0,
                     fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
                     ticks_alive: 0,
-                    // Com vida ganha, o ser nasce com pouco fôlego (10 s) e precisa
-                    // conquistar o resto. Sem isso, ele teria a geração inteira garantida e o
-                    // mecanismo não teria efeito nenhum nos primeiros minutos.
+                    // Earned-life runs start with a finite 30-second exploration budget.
+                    // New ordered progress must buy every additional second.
                     life_left: if LIFE_EARN.load(Ordering::Relaxed) > 0.0 {
                         LIFE_START as f64
                     } else {
@@ -3573,6 +4127,9 @@ fn main() {
         // nenhuma — e o replay mostrou o campeão indo RETO e saindo da pista na primeira
         // curva. Ele não errava a curva; fazer a curva não valia nada.
         let mut prog_acum: Vec<f64> = vec![0.0; n_seres];
+        // Survival uses a separate high-water mark. It pays a newly conquered track
+        // metre once, never odometer motion or repeated forward/backward oscillation.
+        let mut life_progress_max: Vec<f64> = vec![0.0; n_seres];
         // Checkpoint alcançado por cada ser, EM ORDEM. É o que dá motivo para terminar
         // a volta.
         //
@@ -3627,8 +4184,8 @@ fn main() {
             .collect();
         let mut pos_prev: Vec<[f32; 3]> = states.iter().map(|s| pos_of(&s.phys)).collect();
 
-        // Warm-up tick (JIT compilation). Only the RETURN VALUE is discarded (`let _ =`)
-        // — its side effects (CfC state, the P1.7 period counters, `--observe`'s and
+        // Warm-up tick (JIT compilation). Its side effects (CfC state, the
+        // P1.7 period counters, `--observe`'s and
         // `--record-wave`'s row 0) are not, and reach every recording this run produces.
         // Before Task 5 this line was merely misleading; it is now load-bearing: the
         // open-loop screen's bit-exact parity (`screen.rs`) depends on row 0 being
@@ -3636,44 +4193,64 @@ fn main() {
         // counter only advances once per brain dispatch. `--observe`/`--record-wave`
         // record this tick deliberately — do not "fix" it to discard its side effects
         // without re-deriving screen.rs's warm-up replay, or parity breaks silently.
-        let _ = ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, &kan_knots_global);
+        if !ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, &kan_knots_global) {
+            eprintln!("[ERROR] warmup failed; no valid generation result can be reported");
+            std::process::exit(1);
+        }
 
         // ── N ticks de simulação ───────────────────────────────────────────────
         let dt = 1.0_f32 / 64.0;
-        let mut abortado = false;
         for tick_i in 0..n_ticks {
             let ok = ctx.tick(&mut states, n_seres, dt, tick_i + 1, &kan_knots_global);
             if !ok {
                 eprintln!(
-                    "[gen {:4}] ERRO no tick {} — abortando geração.",
+                    "[gen {:4}] ERROR at tick {}; invalidating the run.",
                     gen_abs, tick_i
                 );
-                abortado = true;
-                break;
+                std::process::exit(1);
             }
             // Odômetro: distância euclidiana entre pos[t-1] e pos[t].
             // Com dt=1/64s e v≤60m/s, passo ≤0.94m → erro ≈ arclength < 0.1%.
             // Quadro de replay do líder, a 16 Hz.
-            if tick_i % 4 == 0 {
+            if (tick_i + 1) % 4 == 0 {
                 if let Some(ref mut rw) = replay_writer {
                     for lider in 0..n_grav {
                         let ph = &states[lider].phys;
                         let vel = (ph.vel[0].powi(2) + ph.vel[2].powi(2)).sqrt();
+                        let raw = ctx
+                            .replay_raw_motor
+                            .get(lider)
+                            .copied()
+                            .unwrap_or([f32::NAN; 3]);
+                        if raw.iter().any(|v| !v.is_finite()) {
+                            eprintln!(
+                                "ERROR --replay: missing/nonfinite raw motor command for being {lider} at tick {}",
+                                tick_i + 1
+                            );
+                            std::process::exit(1);
+                        }
+                        let fuel_norm = if FUEL_ON.load(Ordering::Relaxed) {
+                            let tank = FUEL_TANK.load(Ordering::Relaxed).max(0.01);
+                            ((states[lider].fuel as f32 / tank).clamp(0.0, 1.0) * 127.0) as u8
+                        } else {
+                            0
+                        };
                         let rf = universe::replay::ReplayFrame {
                             pos: ph.pos,
                             fwd: [ph.fwd[0], ph.fwd[2]],
                             speed: vel,
                             yaw_rate: ph.av_y,
                             arc_prog: dist_acum[lider] as f32,
-                            laps: 0,
+                            laps: voltas_reais[lider].min(u16::MAX as u32) as u16,
                             gear: ph.current_gear as u8,
                             // Vida restante no lugar do HP: é o recurso que este caminho
                             // realmente consome, e é o que explica o ser parar.
-                            hp_norm: ((states[lider].life_left.max(0.0) as f32 / life_cap() as f32)
+                            hp_norm: ((states[lider].life_left.max(0.0) as f32
+                                / replay_life_capacity as f32)
                                 .min(1.0)
                                 * 127.0) as u8,
-                            fuel_norm: 127,
-                            tick: tick_i as u32,
+                            fuel_norm,
+                            tick: (tick_i + 1) as u32,
                             // COMANDOS: sem eles não dá para separar "o cérebro não manda
                             // virar" de "o carro não consegue virar" — e é exatamente essa a
                             // pergunta agora que sabemos que todos param na primeira curva.
@@ -3688,12 +4265,15 @@ fn main() {
                             dist_wall_l: states[lider].dist_wall_l,
                             dist_wall_r: states[lider].dist_wall_r,
                             dist_wall_f: states[lider].dist_wall_f,
-                            // `intent_*` fica zerado aqui de propósito: a intenção neural
-                            // crua vive dentro de `tick()` e não chega a este laço. O que a
-                            // física RECEBEU já responde a pergunta atual.
+                            intent_thr: raw[0],
+                            intent_str: raw[1],
+                            intent_brk: raw[2],
                             ..Default::default()
                         };
-                        let _ = rw.write_frame(lider as u8, &rf);
+                        if let Err(error) = rw.write_frame(lider as u8, &rf) {
+                            eprintln!("ERROR --replay {}: {error}", replay_path.display());
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
@@ -3780,6 +4360,21 @@ fn main() {
                             states[i].joy_streak = (states[i].joy_streak - dt * 2.0).max(0.0);
                         }
                         states[i].joy_tick = joy_tick;
+                        let life_capacity = if LIFE_EARN.load(Ordering::Relaxed) > 0.0 {
+                            life_cap().max(1) as f64
+                        } else {
+                            n_ticks.max(1) as f64
+                        };
+                        let state = &mut states[i];
+                        if survival::apply_hole_contact(
+                            &mut state.life_left,
+                            &mut state.hole_cooldown_ticks,
+                            vox == 3,
+                            life_capacity,
+                        ) {
+                            state.hole_hits = state.hole_hits.saturating_add(1);
+                            state.joy_streak = 0.0;
+                        }
                         // C1 — hippocampus: one tick of evidence about the sector being
                         // traversed. Written HERE and not at the crossing because this is
                         // where `vox` and `spd` already exist; a second copy of the
@@ -3946,11 +4541,13 @@ fn main() {
                     }
                     let ganho = LIFE_EARN.load(Ordering::Relaxed);
                     if ganho > 0.0 {
-                        // Teto: ninguém acumula fôlego infinito numa reta. Sem o teto, um
-                        // trecho rápido compraria vida para atravessar a pista inteira
-                        // parado depois — o oposto da pressão que se quer criar.
-                        states[i].life_left =
-                            (states[i].life_left + passo * ganho as f64).min(life_cap() as f64);
+                        let earned = survival::life_gain_from_new_progress(
+                            prog_acum[i],
+                            &mut life_progress_max[i],
+                            ganho as f64,
+                        );
+                        // The cap prevents one fast straight from buying unlimited future.
+                        states[i].life_left = (states[i].life_left + earned).min(life_cap() as f64);
                     }
                 }
                 pos_prev[i] = p1;
@@ -3990,6 +4587,18 @@ fn main() {
             }
         }
 
+        if let Some(diagnostics) = ctx.driving_diagnostics.as_mut() {
+            diagnostics
+                .flush_window(n_ticks, &states)
+                .expect("flush driving evidence");
+        }
+        if let Some(mut writer) = replay_writer.take() {
+            if let Err(error) = writer.flush() {
+                eprintln!("ERROR --replay {}: {error}", replay_path.display());
+                std::process::exit(1);
+            }
+        }
+
         // ── Custo de parede ────────────────────────────────────────────────────
         // Subtrai da fitness o tempo colado na parede, convertido em metros. Com
         // `--wall-cost 0` nada muda e a linha vira só telemetria: é a condição de controle
@@ -4002,17 +4611,11 @@ fn main() {
                 .sum();
             total as f64 / (n_seres as f64 * n_ticks as f64)
         };
-        if wall_cost > 0.0 {
-            for i in 0..n_seres {
-                let segundos_colado = states[i].wall_ticks as f64 / 64.0;
-                dist_acum[i] = (dist_acum[i] - segundos_colado * wall_cost as f64).max(0.0);
-            }
-        }
 
         // ── Estatísticas da geração ────────────────────────────────────────────
         // A fitness que a evolução enxerga. Progresso por padrão; `--fitness dist`
         // reproduz o hodômetro antigo, para comparar em vez de assumir.
-        let fitness: Vec<f64> = match modo_fitness.as_str() {
+        let mut fitness: Vec<f64> = match modo_fitness.as_str() {
             // Hodômetro: o comportamento antigo, mantido como controle.
             "dist" => dist_acum.clone(),
             // Progresso puro: avanço no traçado, sem exigir ordem.
@@ -4037,17 +4640,61 @@ fn main() {
             // (avanço zero → center_prog zero).
             "centro" => (0..n_seres)
                 .map(|i| {
-                    let setor = checkpoint[i] as f64 * lap_dist;
-                    setor + states[i].center_prog.max(0.0)
+                    let sector_count = if PORTAL_CURVA.load(Ordering::Relaxed) {
+                        portais.len()
+                    } else {
+                        N_CHECKPOINTS as usize
+                    };
+                    let ordered = objective_cost::ordered_progress_metres(
+                        checkpoint[i],
+                        prog_acum[i],
+                        lap_dist,
+                        sector_count,
+                    );
+                    objective_cost::centered_progress_metres(ordered, states[i].center_prog)
                 })
                 .collect(),
-            _ => (0..n_seres)
+            "checkpoint" => (0..n_seres)
                 .map(|i| {
-                    let setor = checkpoint[i] as f64 * lap_dist;
-                    setor + prog_acum[i].max(0.0)
+                    let sector_count = if PORTAL_CURVA.load(Ordering::Relaxed) {
+                        portais.len()
+                    } else {
+                        N_CHECKPOINTS as usize
+                    };
+                    objective_cost::ordered_progress_metres(
+                        checkpoint[i],
+                        prog_acum[i],
+                        lap_dist,
+                        sector_count,
+                    )
                 })
                 .collect(),
+            "checkpoint-legacy" => (0..n_seres)
+                .map(|i| checkpoint[i] as f64 * lap_dist + prog_acum[i].max(0.0))
+                .collect(),
+            "centro-legacy" => (0..n_seres)
+                .map(|i| checkpoint[i] as f64 * lap_dist + states[i].center_prog.max(0.0))
+                .collect(),
+            _ => unreachable!("fitness mode validated before GPU setup"),
         };
+
+        // Safety discounts useful progress instead of subtracting into a zero floor.
+        // A subtract-and-clamp objective made both failure modes optimal in sequence:
+        // first crashing was free, then standing still beat every negative score.
+        // The relative form keeps motion necessary while letting clean motion win.
+        if wall_cost > 0.0 || impact_cost > 0.0 {
+            let sector_metres = lap_dist / N_CHECKPOINTS as f64;
+            for (score, state) in fitness.iter_mut().zip(&states) {
+                *score = objective_cost::safety_adjusted_score(
+                    *score,
+                    state.wall_ticks,
+                    wall_cost,
+                    state.collision_energy_j,
+                    impact_cost,
+                    sector_metres,
+                );
+            }
+        }
 
         // ── O campeão se REPRODUZ? ─────────────────────────────────────────────
         //
@@ -4126,6 +4773,43 @@ fn main() {
             lap_dist,
         );
         let t_gen_s = t_gen.elapsed().as_secs_f64();
+
+        // Record every being, separating physical death from low track progress.
+        let population: Vec<_> = (0..n_seres)
+            .map(|i| {
+                serde_json::json!({
+                    "being": i, "progress_m": prog_acum[i], "distance_m": dist_acum[i],
+                    "fitness": fitness[i], "alive_ticks": states[i].ticks_alive,
+                    "impact_count": states[i].impact_count,
+                    "collision_energy_j": states[i].collision_energy_j,
+                    "hole_hits": states[i].hole_hits,
+                    "fuel_remaining": states[i].fuel,
+                    "life_remaining_ticks": states[i].life_left,
+                    "low_progress": prog_acum[i].max(0.0) < 10.0,
+                    "life_exhausted": states[i].life_left <= 0.0,
+                    "x": states[i].phys.pos[0], "z": states[i].phys.pos[2],
+                })
+            })
+            .collect();
+        let population_path = format!("{out_dir}/population_gen{gen_abs:04}.json");
+        std::fs::write(
+            &population_path,
+            serde_json::to_vec_pretty(&population).unwrap(),
+        )
+        .expect("write population measurement artifact");
+        println!(
+            "  [population] low_progress={}/{} life_exhausted={}/{} (independent endpoints)",
+            population
+                .iter()
+                .filter(|p| p["low_progress"] == true)
+                .count(),
+            n_seres,
+            population
+                .iter()
+                .filter(|p| p["life_exhausted"] == true)
+                .count(),
+            n_seres
+        );
 
         hist_med.push(r.dist_med);
         // D6: o melhor da geração vira o fantasma da próxima.
@@ -4485,7 +5169,7 @@ fn main() {
         }
 
         println!(
-            "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} morto={:.0}% | {:.1}s",
+            "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} low_progress={:.0}% | {:.1}s",
             gen_abs,
             r.dist_med,
             r.dist_med / lap_dist,
@@ -4597,6 +5281,24 @@ fn main() {
             sem_vida,
             n_seres,
             wall_cost
+        );
+        if impact_cost > 0.0 {
+            let total_energy_j: f64 = states.iter().map(|state| state.collision_energy_j).sum();
+            let total_impacts: u64 = states
+                .iter()
+                .map(|state| u64::from(state.impact_count))
+                .sum();
+            println!(
+                "  [impact] {:.1} kJ/being · {} impact steps · cost={:.3} m/kJ",
+                total_energy_j / 1000.0 / n_seres as f64,
+                total_impacts,
+                impact_cost,
+            );
+        }
+        let hole_hits: u64 = states.iter().map(|state| u64::from(state.hole_hits)).sum();
+        println!(
+            "  [survival] hole contact episodes={} · fuel dry beings={}",
+            hole_hits, ctx.tel_dry_beings
         );
 
         // ── O lento merece existir? ────────────────────────────────────────────
@@ -5061,6 +5763,8 @@ fn main() {
                     track_width,
                     same_start,
                     &modo_fitness,
+                    wall_cost,
+                    impact_cost,
                     ho_seed,
                     &kan_knots_global,
                 );
@@ -5209,7 +5913,7 @@ fn main() {
             "  ≥1 volta: {}/{}  ≥2 voltas: {}/{}",
             last.n_ge1v, n_seres, last.n_ge2v, n_seres
         );
-        println!("  mortalidade: {:.1}%", last.mortality * 100.0);
+        println!("  progress below 10 m: {:.1}%", last.mortality * 100.0);
         println!();
     }
 

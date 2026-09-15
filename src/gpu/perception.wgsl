@@ -24,7 +24,8 @@
 //   ch 56-59  material atual (4×)
 //   ch 60-63  escape direction (run de road mais longo no setor frontal)
 //   ch 76-77  dist lateral esq/dir (amostras a 1-40m, BUG 1 fix 2026-08-04 + expansão 40m)
-//   ch 78-82  curvatura lookahead + urgência frontal
+//   ch 82     urgência frontal. Curve lookaheads 78-80 are written by
+//             perception_temporal.wgsl from host arc-length geometry.
 //   ch 90-93  dark-center tracker (sliding window sobre row RETINA_ROWS/2−1)
 //   ch 94-97  whiskers diagonais (±30°, ±60°)
 //   ch 128-143 Fóvea HD (16 bins, max todas as rows)
@@ -41,7 +42,7 @@
 //   ch 44-51, 60-63 VÁRIOS: o motor.rs sobrescreve esses slots em ordens diferentes —
 //                   veja nota "conflito de slots" abaixo
 //   ch 64-75  telemetria proprioceptiva (RPM, velocidade, temperatura, etc. — estado do corpo)
-//   ch 72     drafting (hash espacial entre seres — inter-ser)
+//   ch 72     lateral acceleration demand (body speed + track curvature)
 //   ch 83-84  fluxo óptico hemisférico — GPU: perception_motion.wgsl (não CPU)
 //   ch 114-117 approach hemisférico + fóvea — GPU: perception_motion.wgsl desde
 //              FASE CANAIS (2026-08-14); antes só motor.rs (Bevy CPU) alimentava
@@ -54,7 +55,7 @@
 //   ch 99-100 edge rows 7+
 //   ch 102-107 approach rate (requer wall_dist_prev — estado temporal)
 //   ch 108-110 racing line offset (estado temporal + racing_line.half_width)
-//   ch 111    curvatura 350m (calculado com forward — requer estado do corpo)
+//   ch 78-80, 101, 111-113 arc-length racing-line curve lookaheads
 //   ch 118-124 width-invariant, whisker_min (requerem racing_line.half_width)
 //   ch 125    estresse competitivo (inter-ser, hash espacial)
 //   ch 126-127 dopamina / joy streak (acumulados)
@@ -119,7 +120,7 @@ struct Pose {
     pos_x: f32,
     pos_y: f32,
     pos_z: f32,
-    phase: f32,       // racer.phase (heading absoluto em radianos, usado nos whiskers)
+    phase: f32,       // Legacy ABI slot; body heading comes from the forward vector.
     fwd_x: f32,
     fwd_z: f32,       // forward_2d (normalizado)
     rgt_x: f32,
@@ -323,6 +324,14 @@ fn legacy_encoding(d: f32, mat: u32) -> i32 {
 // Design: dividimos o trabalho por BLOCO DE CANAIS. Cada thread (id 0..63) processa
 // um bloco bem definido. Não há dependência entre threads dentro do workgroup.
 
+// Rotate a body heading in the horizontal plane, independent of legacy phase.
+fn whisker_direction(forward: vec2<f32>, angle: f32) -> vec2<f32> {
+    let heading = forward * inverseSqrt(max(dot(forward, forward), 1e-12));
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2<f32>(heading.x * c - heading.y * s, heading.y * c + heading.x * s);
+}
+
 @compute @workgroup_size(64)
 fn main(
     @builtin(workgroup_id)       wgid: vec3<u32>,
@@ -339,7 +348,6 @@ fn main(
     let fwd_z = p.fwd_z;
     let rgt_x = p.rgt_x;
     let rgt_z = p.rgt_z;
-    let phase = p.phase;
 
     // ── Sensores herdáveis (FASE SENSORES, degrau 1) ──────────────────────────
     // Lidos uma vez por ser, por workgroup — ordem = `gpu::evolution::sensor_idx`.
@@ -350,9 +358,6 @@ fn main(
     let fov_half_rad = sensors[sb + 0u];
     let wall_range_m = sensors[sb + 1u];
     let lat_range_m  = sensors[sb + 2u];
-    let curv_near_m  = sensors[sb + 3u];
-    let curv_mid_m   = sensors[sb + 4u];
-    let curv_far_m   = sensors[sb + 5u];
 
     // ─────────────────────────────────────────────────────────────────────────
     // BLOCO A: ch 0-7 — FAR pool (rows 0-4, 8 bins, max-pool sobre legado)
@@ -693,39 +698,8 @@ fn main(
         write_channel(being, 77u, i32(clamp((dist_r / lat_range_m) * 127.0, 0.0, 127.0)));
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // BLOCO K: ch 78-80 — curvatura lookahead (genes herdáveis, hoje 40m/70m/120m)
-    //
-    // Motor.rs: curv_at(d) = atan2(cross_y, dot) onde cross_y = fwd.x*f.y - fwd.z*f.x.
-    // Codificado em i8 dividindo por FRAC_PI_2. Equivalente exato quando os genes
-    // estão nos valores históricos (curv_near/mid/far_m = 40/70/120, SENSOR_DEFAULTS).
-    // ATENÇÃO: ch 78 é sobrescrito pela CPU depois (curvatura por lookahead distâncias,
-    // bloco "CURVATURA ANTECIPADA" vem ANTES no motor.rs e escreve 78 com fluxo a 10m).
-    // Então: a CPU sobrescreve ch 78 com curvatura a 10m APÓS este kernel.
-    // O kernel escreve 78=curv_near_m, 79=curv_mid_m, 80=curv_far_m — a CPU sobrescreve
-    // 78 de novo (fluxo forward a 10m no bloco CURVATURA do motor.rs, caminho CPU/Bevy,
-    // que não lê estes genes — ver "paridade CPU/GPU" na doc de SENSORS_EVOLVE_ON).
-    // ─────────────────────────────────────────────────────────────────────────
-    if tid == 59u {
-        let yn = 1.5707963267948966; // FRAC_PI_2
-        let dists = array<f32, 3>(curv_near_m, curv_mid_m, curv_far_m);
-        let slots = array<u32, 3>(78u, 79u, 80u);
-        for (var di = 0u; di < 3u; di++) {
-            let d = dists[di];
-            let probe_x = pos_x + fwd_x * d;
-            let probe_z = pos_z + fwd_z * d;
-            let fl = flow_at(probe_x, probe_z);
-            var c_signed: f32 = 0.0;
-            let fmag2 = fl.x * fl.x + fl.y * fl.y;
-            if fmag2 > 1e-4 {
-                let cross_y = fwd_x * fl.y - fwd_z * fl.x;
-                let dot = clamp(fwd_x * fl.x + fwd_z * fl.y, -1.0, 1.0);
-                c_signed = atan2(cross_y, dot);
-            }
-            let enc = i32(clamp((c_signed / yn) * 127.0, -127.0, 127.0));
-            write_channel(being, slots[di], enc);
-        }
-    }
+    // ch78-80 are owned by perception_temporal.wgsl. Their source follows the
+    // racing-line arc; the former straight projection could select another segment.
 
     // ─────────────────────────────────────────────────────────────────────────
     // BLOCO L: ch 82 — urgência de colisão frontal (grid forward probe)
@@ -807,13 +781,10 @@ fn main(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // BLOCO N: ch 94-97 — whiskers diagonais (±30°, ±60°)
-    //
-    // Usa racer.phase como heading absoluto + ângulo relativo.
-    // Motor.rs: angle = racer.phase + angle_offset.
-    // Dir = Vec3::new(angle.cos(), 0.0, angle.sin()).
-    // Amostras: [1, 3, 5, 7, 10] m.
-    // Equivalente exato — usa a mesma grade e mesmas amostras.
+    // Block N: body-relative diagonal whiskers, channels +30, -30, +60, -60.
+    // The headless caller leaves the legacy phase slot at zero. Using that slot
+    // locked these sensors to world axes while the body turned. Rotate the actual
+    // resident forward vector on the GPU; no host trigonometry/upload is needed.
     // ─────────────────────────────────────────────────────────────────────────
     // Whiskers usam threads 62-63 — livres após BLOCO M (tid 61) e sem conflito de slots.
     if tid == 62u {
@@ -821,9 +792,9 @@ fn main(
         let ang30 = 0.5235987756; // FRAC_PI_6
         // whisker(+30°) → ch 94
         {
-            let angle = phase + ang30;
-            let wx = cos(angle);
-            let wz = sin(angle);
+            let direction = whisker_direction(vec2<f32>(fwd_x, fwd_z), ang30);
+            let wx = direction.x;
+            let wz = direction.y;
             var min_d: f32 = 10.0; // WHISKER_RANGE = 10.0
             for (var si = 0u; si < 5u; si++) {
                 let sd = W_SAMPLES[si];
@@ -837,9 +808,9 @@ fn main(
         }
         // whisker(-30°) → ch 95
         {
-            let angle = phase - ang30;
-            let wx = cos(angle);
-            let wz = sin(angle);
+            let direction = whisker_direction(vec2<f32>(fwd_x, fwd_z), -ang30);
+            let wx = direction.x;
+            let wz = direction.y;
             var min_d: f32 = 10.0;
             for (var si = 0u; si < 5u; si++) {
                 let sd = W_SAMPLES[si];
@@ -857,9 +828,9 @@ fn main(
         let ang60 = 1.0471975512; // FRAC_PI_3
         // whisker(+60°) → ch 96
         {
-            let angle = phase + ang60;
-            let wx = cos(angle);
-            let wz = sin(angle);
+            let direction = whisker_direction(vec2<f32>(fwd_x, fwd_z), ang60);
+            let wx = direction.x;
+            let wz = direction.y;
             var min_d: f32 = 10.0;
             for (var si = 0u; si < 5u; si++) {
                 let sd = W_SAMPLES[si];
@@ -873,9 +844,9 @@ fn main(
         }
         // whisker(-60°) → ch 97
         {
-            let angle = phase - ang60;
-            let wx = cos(angle);
-            let wz = sin(angle);
+            let direction = whisker_direction(vec2<f32>(fwd_x, fwd_z), -ang60);
+            let wx = direction.x;
+            let wz = direction.y;
             var min_d: f32 = 10.0;
             for (var si = 0u; si < 5u; si++) {
                 let sd = W_SAMPLES[si];
@@ -969,39 +940,15 @@ fn main(
         write_channel(being, 160u + i, v);
     }
 
-    // ── NOTA: ch 21-27 e ch 98 (motion per-row) ─────────────────────────────────
-    //
-    // O BLOCO C escreveu wall_dist_fov em ch 16-23 (ch 16-20 corretos, ch 21-23 errados).
-    // Motor.rs sobrescrevia 21-27 com motion_per_row APÓS o BLOCO C.
-    //
-    // Antes: não tínhamos o frame anterior da retina → zerávamos ch 21-23 via atomicAnd
-    // (0 = "sem movimento") → CHAMPION via 0 constante → navegação sem sinal de movimento.
-    //
-    // AGORA: perception_motion.wgsl (3º kernel) compara buf_retina_fisica (tick t) vs
-    // buf_retina_prev (tick t-1) e escreve ch 21-27 + 98 via atomicOr.
-    // O atomicOr do motion kernel sobrescreve o que o BLOCO C escreveu em ch 21-23.
-    // (buf_output foi zerado em clear_buffer ANTES dos dispatches, então o BLOCO C
-    // escreve wall_dist via atomicOr, e o motion kernel sobrescreve com o delta correto
-    // via um segundo atomicOr — mas atomicOr acumula bits, não sobrescreve!)
-    //
-    // SOLUÇÃO: o motion kernel usa atomicAnd primeiro para limpar ch 21-23, depois
-    // escreve via atomicOr. Alternativamente, mantemos o atomicAnd aqui (BLOCO C
-    // nunca deveria ter escrito nesses slots — é uma inconsistência do motor.rs).
-    //
-    // Conclusão: o atomicAnd abaixo É NECESSÁRIO para limpar os bits que o BLOCO C
-    // escreveu em ch 21-23. O motion kernel então faz atomicOr com o valor correto.
-    // Sem o atomicAnd: ch 21 = (wall_dist_do_bloco_C) | (motion_do_kernel) = LIXO.
-    if tid == 0u {
-        // Zera ch 21, 22, 23 para que o motion kernel possa escrever via atomicOr.
-        // ch 20 (byte 0) é preservado (escrito corretamente pelo BLOCO C = wall_dist a 0°).
-        let base_w5 = being * WAVE_U32S + 5u;  // palavra 5 = ch 20,21,22,23
-        atomicAnd(&output[base_w5], 0x000000FFu);  // preserva byte 0 (ch 20), zera 21-23
-    }
+    // Channels 21-27 are legacy overwrite slots. This pass still computes the
+    // original wall-distance/width layout; perception_motion.wgsl replaces those
+    // seven bytes after this pass completes. Clearing them here would race the
+    // spatial threads that write the same packed words.
 
     // Canais temporais (85, 86, 88, 102-110, 118-120, 123) foram movidos para
     // perception_temporal.wgsl. O segundo kernel roda em seguida no mesmo encoder
     // e escreve no mesmo buf_output (canais distintos, sem race condition).
-    // O terceiro kernel (perception_motion.wgsl) escreve ch 21-27 e 98.
+    // O terceiro kernel substitui ch 21-27 e escreve ch 98.
     // Motivo da divisão: o shader combinado (~1050 linhas) estourava o compilador
     // ACO do RADV (SIGSEGV em create_compute_pipeline), igual ao physics.wgsl
     // que também foi dividido em 3 kernels. A solução é a mesma: três dispatches

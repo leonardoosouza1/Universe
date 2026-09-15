@@ -3,25 +3,24 @@
 //! Pure and GPU-free on purpose — `pista_da_gen`/`parse_pistas` touch neither wgpu nor
 //! `VoxelWorld`, so they are testable with `cargo test --bin gpu_evolve` without hardware.
 //!
-//! # Why "empty set = fixed track 9001"
+//! # Why "empty set = validated starter track 8005"
 //!
 //! The current champion (99.25% initial-draw, see PLANO_EVOLUCAO.md) trains ALWAYS on
-//! the same track (seed 9001, `--same-start`) — it is the A/B in progress. `--tracks`
-//! has to be strictly additive: without the flag, `pistas` arrives empty at
-//! `pista_da_gen`, which returns 9001 for ANY generation — bit-for-bit the same
-//! hardcode `main.rs` had before this change (`VoxelWorld::new(9001, track_width)`,
-//! outside the loop).
+//! Seed 9001 now fails the generator's geometric validation and falls through to an
+//! explicitly unvalidated candidate. It is useful only for reproducing historical
+//! checkpoints. A fresh population must start on a world whose road and geometry have
+//! passed validation, so an omitted `--tracks` selects seed 8005.
 
 /// Track for generation `gen_abs`, by deterministic rotation (`pistas[gen_abs % len]`).
 ///
-/// An empty list returns 9001 — the fixed track the binary always used before
-/// `--tracks` existed. Deterministic by construction: the same `gen_abs` + the same
+/// An empty list returns 8005, the validated starter track. Deterministic by
+/// construction: the same `gen_abs` + the same
 /// `pistas` always return the same seed, which is what makes the battery reproducible
 /// (two processes with the same `--tracks` train on exactly the same sequence of
 /// tracks, generation by generation).
 pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
     if pistas.is_empty() {
-        9001
+        8005
     } else {
         pistas[gen_abs % pistas.len()]
     }
@@ -30,7 +29,7 @@ pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
 /// Parses `--tracks "9001,9002,9003"` into a list of seeds.
 ///
 /// Empty (flag absent or empty string) returns `Vec::new()` — the value that makes
-/// `pista_da_gen` fall into the control arm (fixed track 9001). Tokens that do not
+/// `pista_da_gen` select the validated starter track. Tokens that do not
 /// parse as `u64` are simply ignored (they do not abort the whole parse): a mistyped
 /// `--tracks` should fail visibly by having FEWER tracks than expected in the
 /// `[pista] gen ...` log, not lock up the whole binary over one wrong digit.
@@ -46,18 +45,16 @@ pub fn parse_pistas(s: &str) -> Vec<u64> {
 mod tests {
     use super::*;
 
-    /// Without `--tracks` (empty list), every generation uses 9001 — the A/B in
-    /// progress (champion trained only on seed 9001, `--same-start`) must not be
-    /// invalidated by this change.
+    /// Without `--tracks` (empty list), every generation uses the validated starter.
     #[test]
-    fn conjunto_vazio_e_pista_fixa_9001_comportamento_atual() {
+    fn empty_set_uses_validated_starter_track_8005() {
         // `gen` is a reserved word in this Rust edition (generator syntax) —
         // hence `g` instead of `gen` in these tests.
         for g in [0usize, 1, 5, 100, 4000] {
             assert_eq!(
                 pista_da_gen(&[], g),
-                9001,
-                "without --tracks, it must reproduce bit-for-bit the binary from before this change"
+                8005,
+                "fresh training must never default to the unvalidated 9001 fallback"
             );
         }
     }

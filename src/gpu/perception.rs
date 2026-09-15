@@ -39,13 +39,13 @@
 //! | 44-47 → 44-51 | wall_imminent, trapped_score | dependem de speed → canal 65 (estado do corpo) |
 //! | 52-59 | depth_per_row, material_code | motor.rs sobrescreve depois — GPU escreve 48-51 (FAR), CPU sobrescreve 52-55 |
 //! | 64-75 | telemetria proprioceptiva | RPM, velocidade, temperatura (estado do corpo físico) |
-//! | 72 | drafting | hash espacial entre seres |
+//! | 72 | lateral acceleration demand | host racing-line geometry + body speed |
 //! | 83-84, 114-117 | fluxo óptico | `visual_cortex` anterior |
 //! | 85-86 | wall EMA | acumulado por ser entre ticks (`wall_ema_l/r`) |
 //! | 87 | slip angle | estado físico (`body.velocity`) |
 //! | 88 | proximity_sustain | acumulado por ser |
 //! | 89 | estado de ré | acumulado por ser |
-//! | 101 | curvatura 260m | motor.rs escreve depois |
+//! | 78-80, 101, 111-113 | track curve lookahead | host follows racing line by arc length |
 //! | 102-107 | approach rate | `wall_dist_prev_l/r/f` — estado temporal |
 //! | 108-110 | racing line | `racing_line.half_width` + estado temporal `prev_line_offset` |
 //! | 111 | curvatura 350m | motor.rs escreve depois |
@@ -71,6 +71,10 @@
 //! sobrescreve: 21-27 (motion), 29-35 (edge+curvatura), 32 (curvatura 180m), 36-43 (open_l/r),
 //! 44-47 (wall_imminent), 48-51 (trapped_score), 52-55 (depth_per_row), 56-63 (agent_state/escape).
 //! A integração D deve garantir que a CPU escreva SOBRE esses slots depois de copiar o wave da GPU.
+
+#[cfg(test)]
+#[path = "perception_whisker_test.rs"]
+mod whisker_tests;
 
 use std::borrow::Cow;
 
@@ -194,9 +198,9 @@ struct ParamsGpu {
 ///  [23] prop_hp_frac          — HP restante / HP_inicial [0,1] → ch67
 ///  [24] prop_rpm_ratio        — current_rpm / max_rpm [0,1] → ch68
 ///  [25] prop_gear             — current_gear [0,7] → ch69
-///  [26] prop_tire_temp_norm   — media das temps / 120°C [0,1] → ch70
+///  [26] prop_tire_temp_norm   — average normalised tyre temperature [0,1] → ch70
 ///  [27] prop_temp_motor       — engine_temp [20-150°C → 0-1] → ch71 (slot era downforce, sobrescrito)
-///  [28] prop_temp_oleo        — oil_temp [20-150°C → 0-1] → ch72 (slot era draft, sobrescrito)
+///  [28] prop_curve_risk       — clamp(v²|κ30m|/(0.9g),0,1) → ch72
 ///  [29] prop_on_grass         — 1.0 se voxel atual é grama, else 0.0 → ch73
 ///  [30] prop_steer_abs        — |steer| [0,1] → ch74 (efeito limitador)
 ///  [31] prop_stagnation_ticks — ticks sem avançar [0-64 → 0-1] → ch75 (slot era wetness, sobrescrito)
@@ -244,9 +248,33 @@ struct ParamsGpu {
 /// Campos [32] e [33-48] são injetados em `update_extra_temporal()` ANTES do dispatch.
 /// Campos [49-57] são injetados em `update_extra2_temporal()` APÓS readback (dentro do tick).
 /// Slots [58-65] are injected by `update_body_channels()` BEFORE the dispatch.
+/// Slots [66-72] carry arc-length curvature lookaheads computed with the same
+/// racing-line projection already used for slots [10-15].
 /// Elimina loops sobre `grid` no shader temporal, prevenindo o crash do compilador ACO
 /// do RADV que ocorria com loops sobre storage buffers em workgroup_size=1.
-pub const TEMPORAL_STRIDE: usize = 58 + crate::perception::channels::BODY_K;
+pub const CURVE_SLOT_BASE: usize = 58 + crate::perception::channels::BODY_K;
+pub const CURVE_SLOT_COUNT: usize = 7;
+pub const TEMPORAL_STRIDE: usize = CURVE_SLOT_BASE + CURVE_SLOT_COUNT;
+
+fn initial_temporal_state(n: usize) -> Vec<f32> {
+    let mut values = vec![0.0; n * TEMPORAL_STRIDE];
+    for being in 0..n {
+        let base = being * TEMPORAL_STRIDE;
+        values[base] = 40.0;
+        values[base + 1] = 40.0;
+        values[base + 2] = 50.0;
+        values[base + 3] = 40.0;
+        values[base + 4] = 40.0;
+        values[base + 16] = 40.0;
+        values[base + 17] = 40.0;
+        values[base + 18] = 50.0;
+        values[base + 20] = 1.0;
+        values[base + 23] = 1.0;
+        values[base + 25] = 1.0;
+        values[base + 26] = 0.5;
+    }
+    values
+}
 
 /// First `buf_temporal` slot of the BODY BLOCK — the base the shader adds
 /// `BODY_SLOTS`'s slot index to.
@@ -278,10 +306,10 @@ pub const BODY_SLOT_BASE: usize = 58;
 /// 1. `perception.wgsl` — canais espaciais/retina (7 bindings, layout_spatial)
 /// 2. `perception_temporal.wgsl` — canais temporais (8 bindings, layout_temporal)
 /// 3. `perception_motion.wgsl` — ch 21-27 fluxo óptico (4 bindings, layout_motion)
-///    Lê retina atual + retina anterior (buf_retina_prev) e escreve ch 21-27 via atomicOr.
+///    Lê retina atual + retina anterior and replaces the legacy spatial values in ch 21-27.
 ///    A retina anterior é preservada via copy_retina_prev() ANTES do dispatch da retina.
 ///
-/// Os três compartilham `buf_output` e escrevem em canais distintos.
+/// Os três compartilham `buf_output`; the motion pass owns the final value of ch 21-27.
 /// `bind_and_dispatch` despacha todos no mesmo `CommandEncoder` sem readback entre eles.
 pub struct PerceptionGpu {
     // ── Pipeline espacial (perception.wgsl) — 8 bindings (binding 7 = buf_sensors,
@@ -570,51 +598,9 @@ impl PerceptionGpu {
         //   slot 49: slip_signal (ch87)
         //   slots 50-53: joy_tick, joy_streak, is_spinning, comp_stress → ch124-127
         //   slots 54-57: edge_row6, edge_row7, steer_mem, brake_mem → ch99, ch100, ch121, ch122
-        let temporal_init: Vec<f32> = {
-            let mut v = vec![0.0f32; cap * TEMPORAL_STRIDE];
-            // Inicializa prev_dist_l/r/f com 40m/40m/50m para evitar spike na approach rate
-            // no primeiro tick (approach_rate = (0 - 15) / (1/64) = -960 m/s → ch102 = -127).
-            // Campos [16-18] (cpu_dist_l/r/f) inicializados com os mesmos valores conservadores;
-            // serão sobrescritos pela CPU antes do primeiro dispatch via update_dist_temporal().
-            for i in 0..cap {
-                let b = i * TEMPORAL_STRIDE;
-                v[b] = 40.0; // wall_dist_prev_l (expandido de 27→40m, BUG 1 fix)
-                v[b + 1] = 40.0; // wall_dist_prev_r
-                v[b + 2] = 50.0; // wall_dist_prev_f
-                v[b + 3] = 40.0; // wall_ema_l (começa longe = sem alerta)
-                v[b + 4] = 40.0; // wall_ema_r
-                v[b + 16] = 40.0; // cpu_dist_l atual (será sobrescrito pela CPU)
-                v[b + 17] = 40.0; // cpu_dist_r atual
-                v[b + 18] = 50.0; // cpu_dist_f atual
-                // Telemetria proprioceptiva [20-31] — valores neutros no tick 0.
-                // Serão sobrescritos pela CPU via update_proprioception_temporal() antes do dispatch.
-                v[b + 20] = 1.0; // prop_alignment: alinhado na pista (ótimo)
-                v[b + 21] = 0.0; // prop_speed_m_s: parado
-                v[b + 22] = 0.0; // prop_lat_vel: sem deriva
-                v[b + 23] = 1.0; // prop_hp_frac: HP cheio
-                v[b + 24] = 0.0; // prop_rpm_ratio: motor frio
-                v[b + 25] = 1.0; // prop_gear: 1ª marcha
-                v[b + 26] = 0.5; // prop_tire_temp_norm: temp moderada (60/120)
-                v[b + 27] = 0.0; // prop_downforce_norm: reservado
-                v[b + 28] = 0.0; // prop_in_draft: reservado
-                v[b + 29] = 0.0; // prop_on_grass: na pista
-                v[b + 30] = 0.0; // prop_steer_abs: sem esterçamento
-                v[b + 31] = 0.0; // prop_wetness: reservado
-                // Slots v2 [32-48] — zeros já corretos (sem ré no tick 0, cfc_hidden=0).
-                // [32] reverse_timer = 0.0 (não em ré)
-                // [33-48] cfc_hidden = 0.0 (CfC sem histórico → primeira percepção zerada)
-                // Slots v3 [49-57] — zeros: sem slip, sem joy, sem stress no tick 0.
-                // Serão sobrescritos pela CPU via update_extra2_temporal() antes do dispatch.
-                // Slots v5 [58-65] BODY BLOCK — zero is the NEUTRAL value by
-                // construction: bearing 0 = target dead ahead AND "no target";
-                // proximity 0 = at or beyond range; fuel/charge 0 = empty tank/station;
-                // thermal 0 = cold. None of them triggers behaviour on tick 0, and the
-                // CPU overwrites all of them via update_body_channels() before the
-                // dispatch while the flag is on. With the flag OFF they stay zero for
-                // the whole run and are never read.
-            }
-            v
-        };
+        // Distances and proprioception start at the same conservative neutral values on
+        // construction and on every generation reset. All remaining slots are neutral zero.
+        let temporal_init = initial_temporal_state(cap);
         let buf_temporal = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("percep-temporal"),
             contents: bytemuck::cast_slice(&temporal_init),
@@ -662,6 +648,27 @@ impl PerceptionGpu {
             grid_size: world.size as u32,
             cell_size: world.cell_size,
         })
+    }
+
+    /// Clears all perception history that belongs to a previous life.
+    ///
+    /// The temporal buffer is small and receives its documented neutral values once per
+    /// generation. The previous retina is cleared by a GPU command, avoiding a host upload
+    /// of the full image and keeping the reset outside the per-tick path.
+    pub fn reset_temporal(&self, device: &wgpu::Device, queue: &wgpu::Queue, n: usize) {
+        let n = n.min(self.capacity);
+        if n == 0 {
+            return;
+        }
+        let temporal = initial_temporal_state(n);
+        queue.write_buffer(&self.buf_temporal, 0, bytemuck::cast_slice(&temporal));
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("perception-generation-reset"),
+        });
+        let retina_bytes = (n * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
+        encoder.clear_buffer(&self.buf_retina_prev, 0, Some(retina_bytes));
+        queue.submit(Some(encoder.finish()));
     }
 
     /// Troca a grade/fluxo/alturas para uma pista NOVA sem recriar buffers, bind
@@ -1004,6 +1011,18 @@ impl PerceptionGpu {
         }
     }
 
+    /// Write geometrically correct curvature horizons to temporal slots 66-72.
+    /// Values are signed heading deltas normalised by 90 degrees. They are computed
+    /// along track arc length on the host because that projection already exists for
+    /// the racing-line channels; the seven values then remain in VRAM for the shader.
+    pub fn update_curve_temporal(&self, queue: &wgpu::Queue, values: &[[f32; 7]]) {
+        let n = values.len().min(self.capacity);
+        for (being, value) in values.iter().take(n).enumerate() {
+            let byte_offset = (being * TEMPORAL_STRIDE + CURVE_SLOT_BASE) as u64 * 4;
+            queue.write_buffer(&self.buf_temporal, byte_offset, bytemuck::cast_slice(value));
+        }
+    }
+
     /// Injeta as distâncias laterais/frontais calculadas pela CPU nos campos [16-18] de
     /// `buf_temporal`, ANTES do dispatch do kernel temporal.
     ///
@@ -1058,7 +1077,7 @@ impl PerceptionGpu {
     /// [3]  prop_hp_frac     — HP restante / HP_inicial ∈ [0,1]
     /// [4]  prop_rpm_ratio   — current_rpm / max_rpm ∈ [0,1]
     /// [5]  prop_gear        — current_gear ∈ [0,7] (mapeado como f32)
-    /// [6]  prop_tire_temp_n — media dos pneus / 120°C ∈ [0,1]
+    /// [6]  prop_tire_temp_n — average normalised tyre temperature ∈ [0,1]
     /// [7]  prop_downforce_n — downforce / weight ∈ [0,1] (reservado)
     /// [8]  prop_in_draft    — 1.0 se em draft, else 0.0 (reservado)
     /// [9]  prop_on_grass    — 1.0 se voxel atual é grama, else 0.0
@@ -1419,8 +1438,8 @@ impl PerceptionGpu {
             });
             passe.set_pipeline(&self.pipeline_motion);
             passe.set_bind_group(0, &bg_motion, &[]);
-            // workgroup_size=8: 8 threads por ser (rows 0-7).
-            // N seres × 8 threads = 60×8 = 480 threads total = 16 workgroups de 32 (wave32 RDNA2).
+            // workgroup_size=11: one workgroup per being; rows 0-7 plus
+            // hemispheric-left, hemispheric-right and foveal motion.
             passe.dispatch_workgroups(n as u32, 1, 1);
         }
 
@@ -1724,6 +1743,21 @@ pub fn pose_from_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_reset_uses_the_same_neutral_state_for_every_being() {
+        let state = initial_temporal_state(2);
+        assert_eq!(state.len(), 2 * TEMPORAL_STRIDE);
+        for being in 0..2 {
+            let base = being * TEMPORAL_STRIDE;
+            assert_eq!(&state[base..base + 5], &[40.0, 40.0, 50.0, 40.0, 40.0]);
+            assert_eq!(&state[base + 16..base + 19], &[40.0, 40.0, 50.0]);
+            assert_eq!(state[base + 20], 1.0);
+            assert_eq!(state[base + 23], 1.0);
+            assert_eq!(state[base + 25], 1.0);
+            assert_eq!(state[base + 26], 0.5);
+        }
+    }
 
     /// Testa o roundtrip de empacotamento i8 ↔ u32 ↔ i8 sem precisar de GPU.
     /// Garante que o desempacotador em Rust inverte o que o WGSL escreve.

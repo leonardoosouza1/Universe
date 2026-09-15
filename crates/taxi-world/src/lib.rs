@@ -40,22 +40,22 @@
 //! `t=0` state); `sim_cpu`'s `build_batch` covers the GA-battery path (SPEC §1/§7.1
 //! birth sampling, no trace involved).
 
-pub mod constants;
-pub mod genome;
-pub mod trace;
-pub mod world;
 pub mod beings;
+pub mod constants;
+pub mod decision;
+pub mod evolution;
+pub mod gate;
+pub mod genome;
+pub mod judge;
+pub mod passengers;
 pub mod physics;
 pub mod senses;
-pub mod decision;
 pub mod services;
-pub mod passengers;
-pub mod tick;
-pub mod gate;
-pub mod evolution;
-pub mod judge;
 pub mod sim_cpu;
 pub mod taxi_evolve_cli;
+pub mod tick;
+pub mod trace;
+pub mod world;
 
 pub use constants::{Config, DIRS, G, GRID, N_SERVICES, N_TYPES, NF, NP, NPX, S, TEX};
 pub use genome::{Genome, GenomeError};

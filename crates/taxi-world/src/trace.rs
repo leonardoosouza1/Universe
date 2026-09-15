@@ -261,12 +261,19 @@ mod tests {
         assert_eq!(trace.mapa.campo_dist.len(), GRID);
         assert_eq!(trace.mapa.campo_dist[0].len(), GRID);
         assert_eq!(trace.mapa.centros.len(), 2);
-        assert_eq!(trace.mapa.price_phase.len(), 2, "fixture supplies fase_preco");
+        assert_eq!(
+            trace.mapa.price_phase.len(),
+            2,
+            "fixture supplies fase_preco"
+        );
 
         assert_eq!(trace.inicial.pos.len(), trace.b);
         assert_eq!(trace.inicial.px.len(), trace.b);
         assert_eq!(trace.inicial.px[0].len(), crate::constants::NPX);
-        assert_eq!(trace.inicial.fase[0], trace.inicial.fase[1], "fase is per-map");
+        assert_eq!(
+            trace.inicial.fase[0], trace.inicial.fase[1],
+            "fase is per-map"
+        );
 
         assert_eq!(trace.t_vida.len(), trace.b);
         assert_eq!(trace.rec.len(), trace.b);
@@ -283,7 +290,11 @@ mod tests {
         assert_eq!(world.cost_tex.len(), TEX * TEX);
         assert_eq!(world.district_field.len(), GRID * GRID);
         assert_eq!(world.centers.len(), 2);
-        assert_eq!(world.price_phase, vec![0.1, 0.9], "fixture's fase_preco must pass through");
+        assert_eq!(
+            world.price_phase,
+            vec![0.1, 0.9],
+            "fixture's fase_preco must pass through"
+        );
 
         // TIPOS = [posto, comida, agua, descanso, oficina]; fixture has 1 posto
         // point, 2 comida points.

@@ -10,8 +10,8 @@
 //! `TAXI_TRACO_REF=/path/to/traco_ref.json nice -n 10 env CARGO_BUILD_JOBS=4
 //! cargo test -p taxi-world -- --ignored`.
 
-use taxi_world::senses::{observe, NearestCache, SensesInput};
-use taxi_world::{Config, Trace, G, NF, NPX};
+use taxi_world::senses::{NearestCache, SensesInput, observe};
+use taxi_world::{Config, G, NF, NPX, Trace};
 
 /// Mirrors `senses::compute_target` (SPEC §4 `alvo()`, `campo.py:256-259`) —
 /// duplicated here, not imported, because that function is deliberately private
@@ -31,11 +31,7 @@ fn expected_target(px: &[f32], pos_x: f32, pos_y: f32, carrying: f32, dest: [f32
             best = [x, y];
         }
     }
-    if carrying >= 0.0 {
-        dest
-    } else {
-        best
-    }
+    if carrying >= 0.0 { dest } else { best }
 }
 
 #[test]
@@ -92,14 +88,23 @@ fn the_first_tick_f_matches_the_python_reference_trace() {
 
     // alvo() sanity check first — a sharper failure signal than a wall of F
     // mismatches if this is what actually broke.
-    let alvo_ref = trace.alvo_por_tique.as_array().expect("alvo_por_tique array")[0]
+    let alvo_ref = trace
+        .alvo_por_tique
+        .as_array()
+        .expect("alvo_por_tique array")[0]
         .as_array()
         .expect("tick 0 row");
     for b in 0..n {
         let expected = alvo_ref[b].as_array().expect("per-being alvo pair");
         let ex = expected[0].as_f64().unwrap() as f32;
         let ey = expected[1].as_f64().unwrap() as f32;
-        let got = expected_target(&px[b * NPX * 2..(b + 1) * NPX * 2], pos_x[b], pos_y[b], carrying[b], [dest_x[b], dest_y[b]]);
+        let got = expected_target(
+            &px[b * NPX * 2..(b + 1) * NPX * 2],
+            pos_x[b],
+            pos_y[b],
+            carrying[b],
+            [dest_x[b], dest_y[b]],
+        );
         assert!(
             (ex - got[0]).abs() < 1e-4 && (ey - got[1]).abs() < 1e-4,
             "alvo mismatch being {b}: expected [{ex}, {ey}], got {got:?}"
@@ -116,9 +121,21 @@ fn the_first_tick_f_matches_the_python_reference_trace() {
 
     let mut out_f = vec![0.0f32; n * G * NF];
     let mut nearest = NearestCache::default();
-    observe(&input, &worlds, &price_mul, &cfg, 0, None, &mut out_f, &mut nearest);
+    observe(
+        &input,
+        &worlds,
+        &price_mul,
+        &cfg,
+        0,
+        None,
+        &mut out_f,
+        &mut nearest,
+    );
 
-    let f_ref = trace.f_primeiros_50.as_array().expect("F_primeiros_50 array")[0]
+    let f_ref = trace
+        .f_primeiros_50
+        .as_array()
+        .expect("F_primeiros_50 array")[0]
         .as_array()
         .expect("tick 0 row");
 

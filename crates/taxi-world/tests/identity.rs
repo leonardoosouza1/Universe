@@ -47,16 +47,17 @@
 
 use std::path::{Path, PathBuf};
 
-use taxi_world::gate::{classify_divergence, run_gate, DivergenceClass, GateLevel};
 use taxi_world::Trace;
+use taxi_world::gate::{DivergenceClass, GateLevel, classify_divergence, run_gate};
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny_trace.json")
 }
 
 fn real_trace_path() -> String {
-    std::env::var("TAXI_TRACO_REF")
-        .expect("set TAXI_TRACO_REF to the path of a real traco_ref.json (sanitized: no literal Infinity)")
+    std::env::var("TAXI_TRACO_REF").expect(
+        "set TAXI_TRACO_REF to the path of a real traco_ref.json (sanitized: no literal Infinity)",
+    )
 }
 
 #[test]
@@ -68,7 +69,11 @@ fn a_divergence_below_the_margin_is_reported_as_a_tie_not_a_bug() {
     assert_eq!(classify_divergence(1e-4), DivergenceClass::Tie);
     assert_eq!(classify_divergence(9.99e-4), DivergenceClass::Tie);
     assert_eq!(classify_divergence(5e-3), DivergenceClass::Grey);
-    assert_eq!(classify_divergence(1e-2), DivergenceClass::Grey, "the boundary itself is not yet a bug (SPEC: > 1e-2)");
+    assert_eq!(
+        classify_divergence(1e-2),
+        DivergenceClass::Grey,
+        "the boundary itself is not yet a bug (SPEC: > 1e-2)"
+    );
     assert_eq!(classify_divergence(1e-2 + 1e-6), DivergenceClass::Bug);
     assert_eq!(classify_divergence(0.5), DivergenceClass::Bug);
 }
@@ -94,9 +99,16 @@ fn the_tiny_fixture_reproduces_its_own_trace() {
         report.actions_equal, report.actions_total,
         "the tiny fixture's own recorded actions must match decide()'s natural choice at every tick"
     );
-    assert!(report.bugs.is_empty(), "no BUG-classified action divergence: {:?}", report.bugs);
+    assert!(
+        report.bugs.is_empty(),
+        "no BUG-classified action divergence: {:?}",
+        report.bugs
+    );
     for (k, v) in &report.max_abs {
-        assert!(*v < 1e-3, "tiny fixture: max |diff| for {k} was {v}, expected < 1e-3");
+        assert!(
+            *v < 1e-3,
+            "tiny fixture: max |diff| for {k} was {v}, expected < 1e-3"
+        );
     }
     for (b, d) in report.final_t_vida_diff.iter().enumerate() {
         assert!(*d < 1e-3, "being {b}: t_vida diff {d}");
@@ -114,7 +126,10 @@ fn senses_match_the_python_reference_on_the_first_tick() {
     let report = run_gate(&trace, GateLevel::Senses);
     println!("P0 (senses):\n{}", report.summary());
     let max_f = *report.max_abs.get("F").expect("F must have been compared");
-    assert!(max_f <= 1e-4, "P0: max|deltaF| = {max_f:e}, SPEC §11.2 requires <= 1e-4");
+    assert!(
+        max_f <= 1e-4,
+        "P0: max|deltaF| = {max_f:e}, SPEC §11.2 requires <= 1e-4"
+    );
 }
 
 /// P1 (SPEC §11.2): tick 0's full `tudo` row against `nota_por_tique[0]`
@@ -132,7 +147,10 @@ fn scores_and_the_first_choice_match_the_python_reference() {
         "P1: at least one service's availability mask disagreed with Python (sv boolean must be identical)"
     );
     let max_nota = *report.max_abs.get("nota").unwrap_or(&0.0);
-    assert!(max_nota <= 1e-3, "P1: max|delta nota| = {max_nota:e}, SPEC §11.2 requires <= 1e-3");
+    assert!(
+        max_nota <= 1e-3,
+        "P1: max|delta nota| = {max_nota:e}, SPEC §11.2 requires <= 1e-3"
+    );
     assert_eq!(
         report.actions_equal, report.actions_total,
         "P1: esc must be identical for every being on tick 0 (SPEC §11.2: 16/16)"
@@ -155,11 +173,19 @@ fn every_action_of_the_first_simulated_day_matches_python() {
     );
     for name in ["pos_x", "pos_y"] {
         let v = *report.max_abs.get(name).unwrap_or(&0.0);
-        assert!(v <= 1e-4, "P2: max|delta {name}| = {v:e}, SPEC §11.2 requires <= 1e-4 m");
+        assert!(
+            v <= 1e-4,
+            "P2: max|delta {name}| = {v:e}, SPEC §11.2 requires <= 1e-4 m"
+        );
     }
-    for name in ["fuel", "agua", "fome", "calor", "fad", "res", "vida", "dinh"] {
+    for name in [
+        "fuel", "agua", "fome", "calor", "fad", "res", "vida", "dinh",
+    ] {
         let v = *report.max_abs.get(name).unwrap_or(&0.0);
-        assert!(v <= 1e-3, "P2: max|delta {name}| = {v:e}, SPEC §11.2 requires <= 1e-3");
+        assert!(
+            v <= 1e-3,
+            "P2: max|delta {name}| = {v:e}, SPEC §11.2 requires <= 1e-3"
+        );
     }
 }
 
@@ -182,18 +208,28 @@ fn a_full_life_diverges_only_on_numerical_ties() {
     }
 
     let frac_equal = report.actions_equal as f64 / report.actions_total as f64;
-    assert!(frac_equal >= 0.95, "P3: {:.4}% of actions equal, SPEC §11.2 requires >= 95%", frac_equal * 100.0);
+    assert!(
+        frac_equal >= 0.95,
+        "P3: {:.4}% of actions equal, SPEC §11.2 requires >= 95%",
+        frac_equal * 100.0
+    );
 
     let n = report.first_divergence.len();
-    let mut first_or_horizon: Vec<usize> =
-        report.first_divergence.iter().map(|d| d.unwrap_or(trace.t)).collect();
+    let mut first_or_horizon: Vec<usize> = report
+        .first_divergence
+        .iter()
+        .map(|d| d.unwrap_or(trace.t))
+        .collect();
     first_or_horizon.sort_unstable();
     let median = if n % 2 == 1 {
         first_or_horizon[n / 2] as f64
     } else {
         (first_or_horizon[n / 2 - 1] + first_or_horizon[n / 2]) as f64 / 2.0
     };
-    assert!(median >= 600.0, "P3: median first BUG divergence tick = {median}, SPEC §11.2 requires >= 600");
+    assert!(
+        median >= 600.0,
+        "P3: median first BUG divergence tick = {median}, SPEC §11.2 requires >= 600"
+    );
 
     let mut ok_t_vida = 0usize;
     let mut ok_rec = 0usize;
@@ -206,6 +242,12 @@ fn a_full_life_diverges_only_on_numerical_ties() {
             ok_rec += 1;
         }
     }
-    assert!(ok_t_vida >= 14, "P3: only {ok_t_vida}/16 beings had |delta t_vida| <= 2 ticks");
-    assert!(ok_rec >= 14, "P3: only {ok_rec}/16 beings had |delta rec| <= 1%");
+    assert!(
+        ok_t_vida >= 14,
+        "P3: only {ok_t_vida}/16 beings had |delta t_vida| <= 2 ticks"
+    );
+    assert!(
+        ok_rec >= 14,
+        "P3: only {ok_rec}/16 beings had |delta rec| <= 1%"
+    );
 }

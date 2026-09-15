@@ -33,8 +33,8 @@
 //! assert!((similarity(&a, &b) - 1.0).abs() < 1e-6);
 //! ```
 
-use std::{fs, io};
 use std::io::{Read, Write};
+use std::{fs, io};
 
 use iara_byte::normalize_hdc;
 
@@ -220,9 +220,9 @@ pub fn encode(text: &str, byte_hvs: &[Hv; 256], pos_hvs: &[Hv; 256]) -> Sig {
 /// `0.5 * cos(bag) + 0.35 * cos(bigram) + 0.15 * cos(seq)` — range `[0.0, 1.0]`.
 #[inline]
 pub fn similarity(a: &Sig, b: &Sig) -> f32 {
-    0.50 * cosine_hv(&a.bag,    &b.bag)
+    0.50 * cosine_hv(&a.bag, &b.bag)
         + 0.35 * cosine_hv(&a.bigram, &b.bigram)
-        + 0.15 * cosine_hv(&a.seq,    &b.seq)
+        + 0.15 * cosine_hv(&a.seq, &b.seq)
 }
 
 // ── Byte HV file I/O ──────────────────────────────────────────────────────
@@ -256,11 +256,19 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     let bv: Vec<char> = b.chars().collect();
     let m = av.len();
     let n = bv.len();
-    if m == 0 { return n; }
-    if n == 0 { return m; }
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
     let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in 0..=m { dp[i][0] = i; }
-    for j in 0..=n { dp[0][j] = j; }
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for j in 0..=n {
+        dp[0][j] = j;
+    }
     for i in 1..=m {
         for j in 1..=n {
             let cost = if av[i - 1] == bv[j - 1] { 0 } else { 1 };
@@ -330,18 +338,22 @@ impl HdcIndex {
     ///
     /// Returns up to `top_k` `(score, &Entry)` pairs sorted descending.
     pub fn search<'a>(&'a self, query: &str, top_k: usize) -> Vec<(f32, &'a Entry)> {
-        let q_sig  = encode(query, &self.byte_hvs, &self.pos_hvs);
+        let q_sig = encode(query, &self.byte_hvs, &self.pos_hvs);
         let q_norm = String::from_utf8_lossy(&normalize_hdc(query)).into_owned();
 
         // Phase 1: HDC scoring over the full index
-        let mut hdc_scores: Vec<(f32, usize)> = self.entries.iter().enumerate()
+        let mut hdc_scores: Vec<(f32, usize)> = self
+            .entries
+            .iter()
+            .enumerate()
             .map(|(i, e)| (similarity(&q_sig, &e.sig), i))
             .collect();
         hdc_scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         hdc_scores.truncate(top_k);
 
         // Phase 2: Levenshtein re-rank
-        let mut reranked: Vec<(f32, usize)> = hdc_scores.into_iter()
+        let mut reranked: Vec<(f32, usize)> = hdc_scores
+            .into_iter()
             .map(|(hdc_s, idx)| {
                 let lev = lev_sim(&q_norm, &self.entries[idx].key_norm);
                 (0.4 * hdc_s + 0.6 * lev, idx)
@@ -349,7 +361,8 @@ impl HdcIndex {
             .collect();
         reranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        reranked.into_iter()
+        reranked
+            .into_iter()
             .map(|(score, idx)| (score, &self.entries[idx]))
             .collect()
     }
@@ -435,7 +448,10 @@ pub fn load_index(path: &str) -> io::Result<(Vec<Entry>, [Hv; 256])> {
     if magic != INDEX_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("wrong magic: expected 0x{:08X}, got 0x{:08X}", INDEX_MAGIC, magic),
+            format!(
+                "wrong magic: expected 0x{:08X}, got 0x{:08X}",
+                INDEX_MAGIC, magic
+            ),
         ));
     }
 
@@ -461,9 +477,9 @@ pub fn load_index(path: &str) -> io::Result<(Vec<Entry>, [Hv; 256])> {
         f.read_exact(&mut val_bytes)?;
         let value = String::from_utf8_lossy(&val_bytes).into_owned();
 
-        let bag    = read_hv(&mut f)?;
+        let bag = read_hv(&mut f)?;
         let bigram = read_hv(&mut f)?;
-        let seq    = read_hv(&mut f)?;
+        let seq = read_hv(&mut f)?;
 
         let key_norm = String::from_utf8_lossy(&normalize_hdc(&key)).into_owned();
         entries.push(Entry {
@@ -542,21 +558,21 @@ mod tests {
 
     #[test]
     fn bundle_majority_two_ones_one_zero() {
-        let ones:  Hv = [u64::MAX; HV_U64];
+        let ones: Hv = [u64::MAX; HV_U64];
         let zeros: Hv = [0u64; HV_U64];
         assert_eq!(bundle(&[ones, ones, zeros]), ones);
     }
 
     #[test]
     fn bundle_majority_one_one_two_zeros() {
-        let ones:  Hv = [u64::MAX; HV_U64];
+        let ones: Hv = [u64::MAX; HV_U64];
         let zeros: Hv = [0u64; HV_U64];
         assert_eq!(bundle(&[ones, zeros, zeros]), zeros);
     }
 
     #[test]
     fn bundle_tie_gives_zero_bits() {
-        let ones:  Hv = [u64::MAX; HV_U64];
+        let ones: Hv = [u64::MAX; HV_U64];
         let zeros: Hv = [0u64; HV_U64];
         // Exactly half (2 of 2) → tie → 0
         assert_eq!(bundle(&[ones, zeros]), zeros);
@@ -587,7 +603,7 @@ mod tests {
     #[test]
     fn encode_same_text_similarity_is_one() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
+        let pos_hvs = build_pos_hvs();
         let a = encode("hello world", &byte_hvs, &pos_hvs);
         let b = encode("hello world", &byte_hvs, &pos_hvs);
         let sim = similarity(&a, &b);
@@ -597,30 +613,35 @@ mod tests {
     #[test]
     fn encode_different_texts_lower_similarity() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
+        let pos_hvs = build_pos_hvs();
         let a = encode("hello world", &byte_hvs, &pos_hvs);
         let b = encode("xyzzy frobnicator", &byte_hvs, &pos_hvs);
         let sim = similarity(&a, &b);
-        assert!(sim < 0.99, "expected sim < 0.99 for unrelated texts, got {sim}");
+        assert!(
+            sim < 0.99,
+            "expected sim < 0.99 for unrelated texts, got {sim}"
+        );
     }
 
     #[test]
     fn encode_similar_texts_score_higher_than_unrelated() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
-        let base    = encode("hello world", &byte_hvs, &pos_hvs);
-        let close   = encode("hello world again", &byte_hvs, &pos_hvs);
+        let pos_hvs = build_pos_hvs();
+        let base = encode("hello world", &byte_hvs, &pos_hvs);
+        let close = encode("hello world again", &byte_hvs, &pos_hvs);
         let distant = encode("zzz zzz zzz zzz zzz", &byte_hvs, &pos_hvs);
-        let sim_close   = similarity(&base, &close);
+        let sim_close = similarity(&base, &close);
         let sim_distant = similarity(&base, &distant);
-        assert!(sim_close > sim_distant,
-            "close sim={sim_close} should be > distant sim={sim_distant}");
+        assert!(
+            sim_close > sim_distant,
+            "close sim={sim_close} should be > distant sim={sim_distant}"
+        );
     }
 
     #[test]
     fn encode_empty_string_self_similarity_is_one() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
+        let pos_hvs = build_pos_hvs();
         let a = encode("", &byte_hvs, &pos_hvs);
         let b = encode("", &byte_hvs, &pos_hvs);
         assert!((similarity(&a, &b) - 1.0).abs() < 1e-6);
@@ -696,20 +717,20 @@ mod tests {
     #[test]
     fn index_save_load_round_trip() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
+        let pos_hvs = build_pos_hvs();
 
         let entries = vec![
             Entry {
-                key:      "hello".to_string(),
+                key: "hello".to_string(),
                 key_norm: "hello".to_string(),
-                sig:      encode("hello", &byte_hvs, &pos_hvs),
-                value:    "world".to_string(),
+                sig: encode("hello", &byte_hvs, &pos_hvs),
+                value: "world".to_string(),
             },
             Entry {
-                key:      "foo bar".to_string(),
+                key: "foo bar".to_string(),
                 key_norm: "foo bar".to_string(),
-                sig:      encode("foo bar", &byte_hvs, &pos_hvs),
-                value:    "baz".to_string(),
+                sig: encode("foo bar", &byte_hvs, &pos_hvs),
+                value: "baz".to_string(),
             },
         ];
 
@@ -718,16 +739,16 @@ mod tests {
         let (loaded, _) = load_index(path).unwrap();
 
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].key,   "hello");
+        assert_eq!(loaded[0].key, "hello");
         assert_eq!(loaded[0].value, "world");
-        assert_eq!(loaded[1].key,   "foo bar");
+        assert_eq!(loaded[1].key, "foo bar");
         assert_eq!(loaded[1].value, "baz");
 
         // Signatures survive the round-trip exactly
-        assert_eq!(loaded[0].sig.bag,    entries[0].sig.bag);
+        assert_eq!(loaded[0].sig.bag, entries[0].sig.bag);
         assert_eq!(loaded[0].sig.bigram, entries[0].sig.bigram);
-        assert_eq!(loaded[0].sig.seq,    entries[0].sig.seq);
-        assert_eq!(loaded[1].sig.bag,    entries[1].sig.bag);
+        assert_eq!(loaded[0].sig.seq, entries[0].sig.seq);
+        assert_eq!(loaded[1].sig.bag, entries[1].sig.bag);
 
         let _ = std::fs::remove_file(path);
     }
@@ -746,40 +767,59 @@ mod tests {
     #[test]
     fn search_exact_match_is_top_result() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
+        let pos_hvs = build_pos_hvs();
 
         let texts = ["oi tudo bem", "como vai voce", "bom dia", "boa tarde"];
-        let entries: Vec<Entry> = texts.iter().map(|&t| Entry {
-            key:      t.to_string(),
-            key_norm: String::from_utf8_lossy(&normalize_hdc(t)).into_owned(),
-            sig:      encode(t, &byte_hvs, &pos_hvs),
-            value:    format!("resposta: {t}"),
-        }).collect();
+        let entries: Vec<Entry> = texts
+            .iter()
+            .map(|&t| Entry {
+                key: t.to_string(),
+                key_norm: String::from_utf8_lossy(&normalize_hdc(t)).into_owned(),
+                sig: encode(t, &byte_hvs, &pos_hvs),
+                value: format!("resposta: {t}"),
+            })
+            .collect();
 
-        let index = HdcIndex { entries, byte_hvs, pos_hvs };
+        let index = HdcIndex {
+            entries,
+            byte_hvs,
+            pos_hvs,
+        };
         let results = index.search("oi tudo bem", 3);
 
         assert!(!results.is_empty(), "search returned no results");
-        assert_eq!(results[0].1.key, "oi tudo bem",
-            "top result should be the exact match");
-        assert!(results[0].0 > 0.9,
-            "exact match should score > 0.9, got {}", results[0].0);
+        assert_eq!(
+            results[0].1.key, "oi tudo bem",
+            "top result should be the exact match"
+        );
+        assert!(
+            results[0].0 > 0.9,
+            "exact match should score > 0.9, got {}",
+            results[0].0
+        );
     }
 
     #[test]
     fn search_returns_at_most_top_k() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
+        let pos_hvs = build_pos_hvs();
 
         let texts = ["alpha", "beta", "gamma"];
-        let entries: Vec<Entry> = texts.iter().map(|&t| Entry {
-            key:      t.to_string(),
-            key_norm: t.to_string(),
-            sig:      encode(t, &byte_hvs, &pos_hvs),
-            value:    t.to_string(),
-        }).collect();
+        let entries: Vec<Entry> = texts
+            .iter()
+            .map(|&t| Entry {
+                key: t.to_string(),
+                key_norm: t.to_string(),
+                sig: encode(t, &byte_hvs, &pos_hvs),
+                value: t.to_string(),
+            })
+            .collect();
 
-        let index = HdcIndex { entries, byte_hvs, pos_hvs };
+        let index = HdcIndex {
+            entries,
+            byte_hvs,
+            pos_hvs,
+        };
         // Request more than available — should return all (3), not panic
         assert!(index.search("alpha", 10).len() <= 3);
         // Request fewer — should return exactly top_k
@@ -789,23 +829,34 @@ mod tests {
     #[test]
     fn search_scores_are_descending() {
         let byte_hvs = test_byte_hvs();
-        let pos_hvs  = build_pos_hvs();
+        let pos_hvs = build_pos_hvs();
 
         let texts = ["hello world", "helo world", "hi world", "goodbye world"];
-        let entries: Vec<Entry> = texts.iter().map(|&t| Entry {
-            key:      t.to_string(),
-            key_norm: String::from_utf8_lossy(&normalize_hdc(t)).into_owned(),
-            sig:      encode(t, &byte_hvs, &pos_hvs),
-            value:    t.to_string(),
-        }).collect();
+        let entries: Vec<Entry> = texts
+            .iter()
+            .map(|&t| Entry {
+                key: t.to_string(),
+                key_norm: String::from_utf8_lossy(&normalize_hdc(t)).into_owned(),
+                sig: encode(t, &byte_hvs, &pos_hvs),
+                value: t.to_string(),
+            })
+            .collect();
 
-        let index = HdcIndex { entries, byte_hvs, pos_hvs };
+        let index = HdcIndex {
+            entries,
+            byte_hvs,
+            pos_hvs,
+        };
         let results = index.search("hello world", 4);
 
         // Scores must be monotonically non-increasing
         for w in results.windows(2) {
-            assert!(w[0].0 >= w[1].0,
-                "scores not descending: {} < {}", w[0].0, w[1].0);
+            assert!(
+                w[0].0 >= w[1].0,
+                "scores not descending: {} < {}",
+                w[0].0,
+                w[1].0
+            );
         }
     }
 }

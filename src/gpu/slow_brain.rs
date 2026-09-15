@@ -69,7 +69,7 @@ const WEIGHTS_PER_SER: usize = 1024 + 16 + 48 + 3; // 1091
 struct SlowBrainParams {
     n_beings: u32,
     dt: f32,
-    _pad0: u32,
+    canonical_kinematics: u32,
     _pad1: u32,
 }
 
@@ -100,6 +100,10 @@ pub struct SlowBrainGpu {
 
     /// Maximum capacity (number of beings supported with these buffers).
     pub capacity: usize,
+
+    /// Selects the opt-in canonical speed/alignment mapping for the slow gather.
+    /// False preserves the legacy channel map used by existing runs.
+    canonical_kinematics: bool,
 }
 
 impl SlowBrainGpu {
@@ -245,7 +249,17 @@ impl SlowBrainGpu {
             buf_output,
             buf_readback,
             capacity,
+            canonical_kinematics: false,
         }
+    }
+
+    /// Enables or disables the canonical speed/alignment mapping for `dispatch_gather`.
+    ///
+    /// When enabled, slow input 4 reads speed from ch65 and input 7 reads alignment
+    /// from ch64. The default remains false so existing champions retain their input
+    /// distribution until the caller explicitly opts in.
+    pub fn set_canonical_kinematics(&mut self, enabled: bool) {
+        self.canonical_kinematics = enabled;
     }
 
     // ── WEIGHT UPLOAD ──────────────────────────────────────────────────────────
@@ -303,7 +317,7 @@ impl SlowBrainGpu {
         let params = SlowBrainParams {
             n_beings: n as u32,
             dt: 0.0,
-            _pad0: 0,
+            canonical_kinematics: self.canonical_kinematics as u32,
             _pad1: 0,
         };
         let buf_params = self
@@ -349,7 +363,7 @@ impl SlowBrainGpu {
         let params = SlowBrainParams {
             n_beings: n as u32,
             dt,
-            _pad0: 0,
+            canonical_kinematics: self.canonical_kinematics as u32,
             _pad1: 0,
         };
         let buf_params = self
@@ -586,6 +600,82 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
             min_binding_size: None,
         },
         count: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slow_gather_uniform_offsets_match_rust() {
+        let module = naga::front::wgsl::parse_str(include_str!("slow_gather.wgsl"))
+            .expect("slow_gather.wgsl must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("slow gather must pass WGSL type validation");
+        let (_, gather_params) = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("GatherParams"))
+            .expect("GatherParams must be declared");
+        let naga::TypeInner::Struct { members, span } = &gather_params.inner else {
+            panic!("GatherParams must be a struct");
+        };
+
+        let params = SlowBrainParams {
+            n_beings: 11,
+            dt: 0.25,
+            canonical_kinematics: 1,
+            _pad1: 0,
+        };
+        let params_bytes = bytemuck::bytes_of(&params);
+        assert_eq!(*span as usize, params_bytes.len());
+        assert_eq!(params_bytes.len(), std::mem::size_of::<SlowBrainParams>());
+        for (offset, expected) in [
+            (
+                std::mem::offset_of!(SlowBrainParams, n_beings),
+                11_u32.to_ne_bytes(),
+            ),
+            (
+                std::mem::offset_of!(SlowBrainParams, dt),
+                0.25_f32.to_ne_bytes(),
+            ),
+            (
+                std::mem::offset_of!(SlowBrainParams, canonical_kinematics),
+                1_u32.to_ne_bytes(),
+            ),
+            (
+                std::mem::offset_of!(SlowBrainParams, _pad1),
+                0_u32.to_ne_bytes(),
+            ),
+        ] {
+            assert_eq!(&params_bytes[offset..offset + 4], &expected);
+        }
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| (member.name.as_deref(), member.offset))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    Some("n_beings"),
+                    std::mem::offset_of!(SlowBrainParams, n_beings) as u32
+                ),
+                (Some("dt"), std::mem::offset_of!(SlowBrainParams, dt) as u32),
+                (
+                    Some("canonical_kinematics"),
+                    std::mem::offset_of!(SlowBrainParams, canonical_kinematics) as u32,
+                ),
+                (
+                    Some("_pad1"),
+                    std::mem::offset_of!(SlowBrainParams, _pad1) as u32
+                ),
+            ]
+        );
     }
 }
 

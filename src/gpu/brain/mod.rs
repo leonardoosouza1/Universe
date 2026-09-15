@@ -38,6 +38,9 @@ use crate::gpu::evolution::Genome;
 
 mod screen;
 
+#[cfg(test)]
+mod observation_tests;
+
 // ── CONSTANTS DERIVED FROM THE BRAIN DIMENSIONS ──────────────────────────────
 
 /// KAN knots per sensory channel (`kan.rs`: `spline_coeffs: [f32; 16]`).
@@ -73,6 +76,37 @@ pub const OUT_GAIN_DEFAULT: f32 = 2.0;
 
 /// CfC state per being: 96 floats (state) + 1 u32 (counter, bitcast as f32) = 97 f32.
 const CFC_SLOTS_PER_BEING: usize = L1_NEURONS + 1; // 97
+
+const FAST_CFC_STATE_BYTES: u64 = (L1_NEURONS * std::mem::size_of::<f32>()) as u64;
+
+fn fast_state_copy_range(
+    capacity: usize,
+    being: usize,
+    destination_size: u64,
+    destination_offset: u64,
+) -> Result<(u64, u64), String> {
+    if being >= capacity {
+        return Err(format!(
+            "being index {being} exceeds brain capacity {capacity}"
+        ));
+    }
+    if destination_offset % 4 != 0 {
+        return Err("destination offset must be 4-byte aligned".to_string());
+    }
+    let end = destination_offset
+        .checked_add(FAST_CFC_STATE_BYTES)
+        .ok_or_else(|| "destination range overflows".to_string())?;
+    if end > destination_size {
+        return Err(format!(
+            "destination range [{destination_offset}, {end}) exceeds buffer size {destination_size}"
+        ));
+    }
+    let source = (being as u64)
+        .checked_mul(CFC_SLOTS_PER_BEING as u64)
+        .and_then(|slots| slots.checked_mul(std::mem::size_of::<f32>() as u64))
+        .ok_or_else(|| "source range overflows".to_string())?;
+    Ok((source, FAST_CFC_STATE_BYTES))
+}
 
 /// P1.7 (`docs/PLANO_EVOLUCAO.md`) — asynchronous brain. Per-neuron metadata, SoA
 /// layout per being, mirroring `buf_neuron_meta` in `brain.wgsl` byte for byte:
@@ -798,6 +832,47 @@ impl BrainGpu {
 
         let data = slice.get_mapped_range();
         bytemuck::cast_slice::<u8, f32>(&data).to_vec()
+    }
+
+    /// Copies the 96-float CfC L1 state for one being into a caller-owned GPU buffer.
+    ///
+    /// `buf_cfc` is laid out as `[state[0..96], counter]` per being, so the source
+    /// stride is 97 f32 and this method deliberately copies only the first 96 f32.
+    /// The counter is not an observation and is never exposed by this method. The
+    /// destination must have `COPY_DST` usage and enough space at `destination_offset`.
+    /// This records fast CfC state only; it is not a snapshot of P1.7 neuron memory,
+    /// slow-brain state, or retina-perception state.
+    pub fn copy_fast_state_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        destination: &wgpu::Buffer,
+        being: usize,
+        destination_offset: u64,
+    ) -> Result<(), String> {
+        let (source_offset, bytes) =
+            fast_state_copy_range(self.capacity, being, destination.size(), destination_offset)?;
+        encoder.copy_buffer_to_buffer(
+            &self.buf_cfc,
+            source_offset,
+            destination,
+            destination_offset,
+            bytes,
+        );
+        Ok(())
+    }
+
+    /// Clears only the fast CfC L1 state for beings `[0, n)`, preserving each CfC
+    /// counter and every other temporal mechanism (fatigue, P1.7 neuron EMA memory,
+    /// slow brain and perception state). This is an intentionally partial memory
+    /// ablation, suitable for `--erase-fast-memory`; it does not mean "erase all
+    /// temporal learning".
+    pub fn clear_fast_memory(&self, encoder: &mut wgpu::CommandEncoder, n: usize) {
+        let bytes_per_being = (CFC_SLOTS_PER_BEING * std::mem::size_of::<f32>()) as u64;
+        let n = n.min(self.capacity);
+        for being in 0..n {
+            let offset = being as u64 * bytes_per_being;
+            encoder.clear_buffer(&self.buf_cfc, offset, Some(FAST_CFC_STATE_BYTES));
+        }
     }
 
     // ── CFC STATE RESET FOR ONE BEING ──────────────────────────────────────

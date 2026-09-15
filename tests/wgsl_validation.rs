@@ -47,12 +47,68 @@ fn perception_temporal_wgsl_e_valido() {
     validar_wgsl("perception_temporal.wgsl", fonte);
 }
 
+/// The native wave is packed as 48 u32 words, exactly 192 signed bytes per being.
+/// Channel 192 is the first byte of the next being, not spare capacity.
+#[test]
+fn perception_temporal_never_writes_past_the_native_wave() {
+    let source = include_str!("../src/gpu/perception_temporal.wgsl");
+    assert!(
+        !source.contains("write_channel(being, 192u"),
+        "channel 192 aliases channel 0 of the next being"
+    );
+}
+
 /// Edited in the CHANNELS PHASE: ch114-117 (hemispheric approach + fovea), new
 /// `write_channel_signed` function, `workgroup_size` from 10 to 11 threads.
 #[test]
 fn perception_motion_wgsl_e_valido() {
     let fonte = include_str!("../src/gpu/perception_motion.wgsl");
     validar_wgsl("perception_motion.wgsl", fonte);
+}
+
+/// `PerceptionGpu` dispatches one workgroup per being and eleven local threads
+/// inside that workgroup. Every local thread must therefore index the same being;
+/// using `global_invocation_id.x` silently assigns each sensor family to a
+/// different member of the population.
+#[test]
+fn motion_workgroup_maps_every_local_thread_to_the_same_being() {
+    let source = include_str!("../src/gpu/perception_motion.wgsl");
+
+    assert!(
+        source.contains("@builtin(workgroup_id)"),
+        "the motion shader must identify the being from workgroup_id"
+    );
+    assert!(
+        source.contains("let being = workgroup.x;"),
+        "all eleven local sensor threads must use their shared workgroup as the being index"
+    );
+    assert!(
+        !source.contains("let being = gid.x;"),
+        "global_invocation_id spreads one being's sensor threads across different beings"
+    );
+}
+
+/// Channels 21..27 are legacy overwrite slots: the spatial pass writes wall
+/// probes first, then the motion pass replaces those bytes with retinal deltas.
+/// `atomicOr` alone merges the two unrelated measurements bit by bit.
+#[test]
+fn motion_rows_replace_legacy_spatial_slots_instead_of_merging_them() {
+    let source = include_str!("../src/gpu/perception_motion.wgsl");
+
+    assert!(
+        source.contains("fn overwrite_channel"),
+        "motion-over-wall slots need an explicit byte replacement primitive"
+    );
+    assert!(
+        source.contains("overwrite_channel(being, 21u + row, motion);"),
+        "rows 0..6 must replace channels 21..27 after the spatial pass"
+    );
+    assert!(
+        !source
+            .lines()
+            .any(|line| line.trim() == "write_channel(being, 21u + row, motion);"),
+        "plain atomicOr corrupts channels 21..27 by merging wall and motion bits"
+    );
 }
 
 /// CHANNELS PHASE (2026-08-14): initially comments only ("NOT ported" header
@@ -137,7 +193,7 @@ fn fly_spiking_wgsl_is_valid() {
 /// what every other test in this file exists to catch without one.
 #[test]
 fn retina_wgsl_e_valido() {
-    let fonte = include_str!("../src/gpu/retina.wgsl");
+    let fonte = universe::gpu::RETINA_SHADER;
     validar_wgsl("retina.wgsl", fonte);
     assert!(
         fonte.contains("BEING_MATERIAL") && fonte.contains("beings_on"),

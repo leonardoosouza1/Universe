@@ -320,7 +320,7 @@ impl CoreGpu {
         // write-only storage output). This is the layout already in mod.rs.
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("retina"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("retina.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(crate::gpu::RETINA_SHADER)),
         });
         let layout_retina = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("retina-layout"),

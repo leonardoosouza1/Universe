@@ -10,12 +10,15 @@
 //! fly_map_view --map /path/to/map.flymap --html /media/llm-data/scratch/fly.html
 //! fly_map_view --map /path/to/map.flymap --trace /media/llm-data/scratch/fly.fspike \
 //!     --html /media/llm-data/scratch/fly.html
+//! Optional alignment uses `--trace-steps-per-tick 156` (the default for the current
+//! writer) and `--telemetry-episode` (default: the last episode in the CSV).
 //! ```
 
 use serde_json::json;
-use std::fmt::Write as _;
 use std::path::PathBuf;
-use universe::fly_map::spiking::read_trace_sampled;
+mod fly_map_view_support;
+use fly_map_view_support::{TelemetryRow, load_csv};
+use universe::fly_map::spiking::{SpikingTrace, read_trace_sampled};
 use universe::fly_map::{FlyMap, NONE};
 
 const MAX_EDGES: usize = 12_000;
@@ -25,9 +28,18 @@ const MAX_TRACE_FRAMES: usize = 512;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: fly_map_view --map <file.flymap> [--trace <file.fspike>] [--html <file.html>]"
+        "usage: fly_map_view --map <file.flymap> [--trace <file.fspike>] [--telemetry <file.csv>] [--telemetry-episode <n>] [--trace-steps-per-tick <n>] [--html <file.html>] [--json <file.json>]"
     );
     std::process::exit(2)
+}
+
+fn parse_u64_arg(args: &[String], index: usize, flag: &str) -> u64 {
+    args.get(index)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| {
+            eprintln!("{flag} requires an unsigned integer");
+            std::process::exit(2);
+        })
 }
 
 fn main() {
@@ -35,6 +47,10 @@ fn main() {
     let mut map_path: Option<PathBuf> = None;
     let mut trace_path: Option<PathBuf> = None;
     let mut html_path: Option<PathBuf> = None;
+    let mut json_path: Option<PathBuf> = None;
+    let mut telemetry_path: Option<PathBuf> = None;
+    let mut telemetry_episode: Option<u64> = None;
+    let mut trace_steps_per_tick: u64 = 156;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -49,6 +65,26 @@ fn main() {
             "--html" => {
                 i += 1;
                 html_path = args.get(i).map(PathBuf::from);
+            }
+            "--json" => {
+                i += 1;
+                json_path = Some(args.get(i).map(PathBuf::from).unwrap_or_else(|| usage()));
+            }
+            "--telemetry" => {
+                i += 1;
+                telemetry_path = args.get(i).map(PathBuf::from);
+            }
+            "--telemetry-episode" => {
+                i += 1;
+                telemetry_episode = Some(parse_u64_arg(&args, i, "--telemetry-episode"));
+            }
+            "--trace-steps-per-tick" => {
+                i += 1;
+                trace_steps_per_tick = parse_u64_arg(&args, i, "--trace-steps-per-tick");
+                if trace_steps_per_tick == 0 {
+                    eprintln!("--trace-steps-per-tick must be greater than zero");
+                    std::process::exit(2);
+                }
             }
             _ => usage(),
         }
@@ -65,25 +101,28 @@ fn main() {
         p
     });
 
-    let (edge_sample, flow_type_ids, type_flow) = summarize_edges(&map);
-
-    let node_stride = map.n().div_ceil(MAX_NODES).max(1);
-    let node_sample: Vec<[u32; 4]> = (0..map.n())
-        .step_by(node_stride)
-        .take(MAX_NODES)
-        .map(|neuron| {
-            [
-                neuron as u32,
-                map.type_of[neuron],
-                map.pixel_of_neuron
-                    .as_ref()
-                    .and_then(|p| p.get(neuron))
-                    .copied()
-                    .unwrap_or(NONE),
-                output_group(&map, neuron),
-            ]
-        })
-        .collect();
+    let (node_sample, edge_sample, flow_type_ids, type_flow) = summarize_map(&map);
+    let mut telemetry = match telemetry_path.as_deref() {
+        Some(path) => load_csv(path).unwrap_or_else(|message| {
+            eprintln!("failed to read telemetry: {message}");
+            std::process::exit(1);
+        }),
+        None => Vec::new(),
+    };
+    let selected_episode =
+        telemetry_episode.or_else(|| telemetry.iter().map(|row| row.episode).max());
+    if let Some(episode) = selected_episode {
+        telemetry.retain(|row| row.episode == episode);
+        if telemetry.is_empty() {
+            eprintln!("telemetry episode {episode} was not found");
+            std::process::exit(1);
+        }
+    }
+    telemetry.sort_by_key(|row| (row.being, row.tick));
+    if let Err(message) = validate_telemetry(&telemetry) {
+        eprintln!("invalid telemetry: {message}");
+        std::process::exit(1);
+    }
 
     let output_groups: Vec<Vec<u32>> = (0..map.k_out())
         .map(|g| {
@@ -93,22 +132,31 @@ fn main() {
         })
         .collect();
 
-    let trace_json = match trace_path {
-        None => json!(null),
-        Some(path) => {
-            let trace = read_trace_sampled(path.to_str().unwrap_or_default(), MAX_TRACE_FRAMES)
-                .unwrap_or_else(|e| {
-                    eprintln!("failed to read trace {}: {e}", path.display());
-                    std::process::exit(1);
-                });
-            if trace.n != map.n() {
-                eprintln!(
-                    "trace/map neuron mismatch: trace has {}, map has {}",
-                    trace.n,
-                    map.n()
-                );
+    let trace = trace_path.as_ref().map(|path| {
+        read_trace_sampled(path.to_str().unwrap_or_default(), MAX_TRACE_FRAMES).unwrap_or_else(
+            |e| {
+                eprintln!("failed to read trace {}: {e}", path.display());
                 std::process::exit(1);
-            }
+            },
+        )
+    });
+    if let Some(trace) = &trace {
+        if trace.n != map.n() {
+            eprintln!(
+                "trace/map neuron mismatch: trace has {}, map has {}",
+                trace.n,
+                map.n()
+            );
+            std::process::exit(1);
+        }
+        if let Err(message) = validate_trace_alignment(trace, &telemetry, trace_steps_per_tick) {
+            eprintln!("invalid trace alignment: {message}");
+            std::process::exit(1);
+        }
+    }
+    let trace_json = match &trace {
+        None => json!(null),
+        Some(trace) => {
             json!({
                 "being": trace.being,
                 "frames": trace.frames.iter().map(|frame| json!({
@@ -136,7 +184,25 @@ fn main() {
         "edges": edge_sample,
         "groups": output_groups,
         "trace": trace_json,
+        "tracePath": trace_path.as_ref().and_then(|path| std::fs::canonicalize(path).ok()).map(|path| path.to_string_lossy().into_owned()),
+        "telemetry": telemetry.iter().map(|row| json!({
+            "episode": row.episode, "tick": row.tick, "being": row.being, "alive": row.alive,
+            "coverage": row.coverage, "asymmetry": row.asymmetry, "leftPixels": row.left_pixels,
+            "rightPixels": row.right_pixels, "visibleDistance": row.visible_distance,
+            "bodyDistance": row.body_distance, "overlapCount": row.overlap_count,
+            "rawSteer": row.raw_steer, "appliedSteer": row.applied_steer,
+            "throttle": row.throttle, "brake": row.brake, "speed": row.speed,
+            "x": row.x, "z": row.z, "forwardX": row.forward_x, "forwardZ": row.forward_z,
+        })).collect::<Vec<_>>(),
+        "telemetryEpisode": selected_episode,
+        "traceStepsPerTick": trace_steps_per_tick,
     });
+    if let Some(path) = json_path {
+        if let Err(error) = std::fs::write(&path, data.to_string()) {
+            eprintln!("could not write {}: {error}", path.display());
+            std::process::exit(1);
+        }
+    }
     let html = render_html(&data.to_string());
     if let Err(e) = std::fs::write(&html_path, html) {
         eprintln!("could not write {}: {e}", html_path.display());
@@ -148,35 +214,55 @@ fn main() {
         map.n(),
         map.m(),
         edge_sample.len(),
-        if trace_path_was_present(&data) {
-            "loaded"
-        } else {
-            "off"
-        }
+        if trace.is_some() { "loaded" } else { "off" }
     );
 }
 
-fn trace_path_was_present(data: &serde_json::Value) -> bool {
-    !data.get("trace").map_or(true, serde_json::Value::is_null)
-}
-
-/// Summarises the connectome in bounded memory.  The full FlyWire map has 8,866 cell
-/// types, so a dense `n_types × n_types` matrix would be ~315 MiB and the browser would
-/// try to paint 78 million cells.  We retain the most connected types and count only
-/// their pairwise flow; all nodes outside that set are placed in an `other` column.
-fn summarize_edges(map: &FlyMap) -> (Vec<[u32; 3]>, Vec<u32>, Vec<u32>) {
+/// Summarises the connectome in bounded memory while keeping graph edges drawable.
+///
+/// Sampling nodes and edges independently made almost every sampled edge disappear in
+/// the browser because one or both endpoints were absent. The first pass now selects
+/// endpoints from deterministic edge samples; the second retains only edges whose two
+/// real endpoints are in that node set. The type-flow matrix still counts the complete
+/// map for the most connected types.
+fn summarize_map(map: &FlyMap) -> (Vec<[u32; 4]>, Vec<[u32; 3]>, Vec<u32>, Vec<u32>) {
     let edge_stride = map.m().div_ceil(MAX_EDGES).max(1);
-    let mut edge_sample = Vec::with_capacity(MAX_EDGES.min(map.m()));
     let mut incidence = vec![0u64; map.n_types];
-    for_each_edge(map, |edge_idx, src, dst, weight| {
+    let mut selected = vec![false; map.n()];
+    let mut selected_count = 0usize;
+    for_each_edge(map, |edge_idx, src, dst, _weight| {
         let src_type = map.type_of[src as usize] as usize;
         let dst_type = map.type_of[dst as usize] as usize;
         incidence[src_type] = incidence[src_type].saturating_add(1);
         incidence[dst_type] = incidence[dst_type].saturating_add(1);
-        if edge_idx % edge_stride == 0 && edge_sample.len() < MAX_EDGES {
-            edge_sample.push([src, dst, weight.to_bits()]);
+        if edge_idx % edge_stride != 0 {
+            return;
+        }
+        let needed = usize::from(!selected[src as usize]) + usize::from(!selected[dst as usize]);
+        if selected_count + needed <= MAX_NODES {
+            if !selected[src as usize] {
+                selected[src as usize] = true;
+                selected_count += 1;
+            }
+            if !selected[dst as usize] {
+                selected[dst as usize] = true;
+                selected_count += 1;
+            }
         }
     });
+
+    if selected_count < MAX_NODES.min(map.n()) {
+        let node_stride = map.n().div_ceil(MAX_NODES).max(1);
+        for neuron in (0..map.n()).step_by(node_stride) {
+            if !selected[neuron] {
+                selected[neuron] = true;
+                selected_count += 1;
+                if selected_count == MAX_NODES.min(map.n()) {
+                    break;
+                }
+            }
+        }
+    }
 
     let mut type_ids: Vec<usize> = (0..map.n_types).collect();
     type_ids.sort_unstable_by(|&a, &b| incidence[b].cmp(&incidence[a]).then_with(|| a.cmp(&b)));
@@ -188,14 +274,36 @@ fn summarize_edges(map: &FlyMap) -> (Vec<[u32; 3]>, Vec<u32>, Vec<u32>) {
     }
     let width = type_ids.len();
     let mut flow = vec![0u32; width * width];
-    for_each_edge(map, |_, src, dst, _| {
+    let mut edge_sample = Vec::with_capacity(MAX_EDGES.min(map.m()));
+    for_each_edge(map, |_, src, dst, weight| {
         let a = type_slot[map.type_of[src as usize] as usize];
         let b = type_slot[map.type_of[dst as usize] as usize];
         if a != usize::MAX && b != usize::MAX {
             flow[a * width + b] = flow[a * width + b].saturating_add(1);
         }
+        if edge_sample.len() < MAX_EDGES && selected[src as usize] && selected[dst as usize] {
+            edge_sample.push([src, dst, weight.to_bits()]);
+        }
     });
+    let nodes = selected
+        .iter()
+        .enumerate()
+        .filter(|(_, keep)| **keep)
+        .map(|(neuron, _)| {
+            [
+                neuron as u32,
+                map.type_of[neuron],
+                map.pixel_of_neuron
+                    .as_ref()
+                    .and_then(|pixels| pixels.get(neuron))
+                    .copied()
+                    .unwrap_or(NONE),
+                output_group(map, neuron),
+            ]
+        })
+        .collect();
     (
+        nodes,
         edge_sample,
         type_ids.into_iter().map(|id| id as u32).collect(),
         flow,
@@ -233,54 +341,125 @@ fn output_group(map: &FlyMap, neuron: usize) -> u32 {
     NONE
 }
 
+fn trace_step_to_tick(step: u64, steps_per_tick: u64) -> Result<u64, String> {
+    if steps_per_tick == 0 {
+        return Err("steps-per-tick must be greater than zero".to_owned());
+    }
+    if step < steps_per_tick {
+        return Err(format!(
+            "trace step {step} is before the first complete world tick"
+        ));
+    }
+    if step % steps_per_tick != 0 {
+        return Err(format!(
+            "trace step {step} is not divisible by {steps_per_tick} steps per tick"
+        ));
+    }
+    Ok(step / steps_per_tick - 1)
+}
+
+fn validate_telemetry(rows: &[TelemetryRow]) -> Result<(), String> {
+    for pair in rows.windows(2) {
+        if pair[0].being == pair[1].being && pair[0].tick == pair[1].tick {
+            return Err(format!(
+                "duplicate row for being {} at tick {}",
+                pair[0].being, pair[0].tick
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_trace_alignment(
+    trace: &SpikingTrace,
+    telemetry: &[TelemetryRow],
+    steps_per_tick: u64,
+) -> Result<(), String> {
+    let mut previous_tick = None;
+    for frame in &trace.frames {
+        let tick = trace_step_to_tick(frame.step, steps_per_tick)?;
+        if previous_tick.is_some_and(|previous| tick <= previous) {
+            return Err(format!(
+                "trace tick {tick} follows tick {}; the trace reset or repeated a frame",
+                previous_tick.unwrap()
+            ));
+        }
+        if !telemetry.is_empty()
+            && !telemetry
+                .iter()
+                .any(|row| row.being == trace.being && row.tick == tick)
+        {
+            return Err(format!(
+                "no telemetry row for trace being {} at mapped tick {tick}",
+                trace.being
+            ));
+        }
+        previous_tick = Some(tick);
+    }
+    Ok(())
+}
+
 fn render_html(data: &str) -> String {
-    let mut h = String::new();
-    write!(
-        h,
-        r##"<!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><title>Fly map viewer</title>
-<style>
-:root{{color-scheme:dark;--bg:#0d1117;--card:#161b22;--line:#30363d;--fg:#e6edf3;--dim:#8b949e;--blue:#58a6ff}}
-*{{box-sizing:border-box}} body{{margin:0;padding:22px;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}}
-h1{{font-size:21px;margin:0 0 4px}} h2{{font-size:15px;margin:24px 0 8px}}
-.sub,.hint{{color:var(--dim);font-size:12px}} .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}}
-.card{{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:13px;margin-bottom:12px}}
-.kpi{{font-size:22px;font-variant-numeric:tabular-nums}} .kpi small{{display:block;color:var(--dim);font-size:11px;font-weight:400}}
-canvas{{display:block;max-width:100%;height:auto;background:#0a0e13;border-radius:5px}}
-label{{color:var(--dim);font-size:12px}} input[type=range]{{width:min(640px,90%)}}
-#tracebar{{display:flex;gap:12px;align-items:center;flex-wrap:wrap}} #frame-info{{color:var(--blue);font-variant-numeric:tabular-nums}}
-table{{border-collapse:collapse;font-size:12px;width:100%}} td{{border-bottom:1px solid #21262d;padding:3px 6px}} td:last-child{{text-align:right;color:var(--dim)}}
-.legend{{color:var(--dim);font-size:11px;margin-top:7px}} .warn{{color:#f2cc60}}
-</style></head><body>
-<h1>Fly map — connectome + atividade</h1><div class="sub">arquivo estático · arestas e neurônios são amostrados deterministicamente; o fluxo mostra os 48 tipos mais conectados e o trace usa no máximo 512 quadros</div>
-<div class="grid" id="kpis"></div>
-<h2>Fluxo entre tipos celulares</h2><div class="card"><canvas id="flow" width="900" height="420"></canvas><div class="legend">linha = tipo pré-sináptico · coluna = tipo pós-sináptico · intensidade logarítmica do número de arestas</div></div>
-<h2>Topologia amostrada e tensão de membrana</h2><div class="card"><div id="tracebar"><label>amostra <input id="slider" type="range" min="0" value="0"></label><span id="frame-info">sem trace</span></div><canvas id="graph" width="1100" height="650"></canvas><div class="legend">cada coluna é um tipo; verde = tensão próxima/abaixo do limiar, amarelo = tensão alta, azul = sem trace; arestas fortes ficam mais opacas</div></div>
-<div class="grid"><div class="card"><h2 style="margin-top:0">Saída motora</h2><table id="groups"></table></div><div class="card"><h2 style="margin-top:0">Olho</h2><div id="eye"></div><p class="hint">A ligação pixel→neurônio é anatômica e fica na VRAM. O trace só é mapeado quando solicitado.</p></div></div>
-<script>const D=__DATA__;
-const NONE=4294967295, colors=['#58a6ff','#f2cc60','#3fb950','#f85149','#bc8cff','#ffa657','#79c0ff','#d2a8ff'];
-const k=document.getElementById('kpis');
-function addK(v,l){{const e=document.createElement('div');e.className='card';e.innerHTML='<div class="kpi">'+v+'<small>'+l+'</small></div>';k.appendChild(e)}}
-addK(D.n.toLocaleString(),'neurônios'); addK(D.m.toLocaleString(),'arestas'); addK(D.nTypes,'tipos celulares'); addK(D.eyeBound.toLocaleString(),'neurônios ligados à retina');
-const flow=document.getElementById('flow'),fx=flow.getContext('2d'),fw=flow.width,fh=flow.height,flowIds=D.flowTypeIds||[],nTF=Math.max(flowIds.length,1),cell=Math.min(fw,fh-34)/nTF;
-const maxFlow=Math.max(...D.typeFlow,1); fx.font='10px system-ui';
-for(let a=0;a<nTF;a++)for(let b=0;b<nTF;b++){{const c=D.typeFlow[a*nTF+b];const z=c?Math.log1p(c)/Math.log1p(maxFlow):0;fx.fillStyle='rgba(88,166,255,'+(0.08+0.92*z)+')';fx.fillRect(b*cell,a*cell,cell-1,cell-1)}}
-fx.fillStyle='#8b949e'; for(let a=0;a<nTF;a++){{const id=flowIds[a]===undefined?'?':flowIds[a];fx.fillText('T'+id, bnd(a), nTF*cell+18);fx.fillText('T'+id, 2, a*cell+12)}} function bnd(a){{return a*cell+Math.max(0,cell/2-8)}}
-const groups=document.getElementById('groups'); D.groups.forEach((g,i)=>{{const tr=document.createElement('tr');tr.innerHTML='<td>grupo '+i+'</td><td>'+g.length.toLocaleString()+' neurônios</td>';groups.appendChild(tr)}});
-document.getElementById('eye').innerHTML='<b>'+D.eyeBound.toLocaleString()+'</b> / '+D.n.toLocaleString()+' ('+(100*D.eyeBound/Math.max(D.n,1)).toFixed(2)+'%) com pixel binding'+(D.hasPixels?'':' <span class="warn">(bloco ausente)</span>');
-const graph=document.getElementById('graph'),gx=graph.getContext('2d'),slider=document.getElementById('slider'),info=document.getElementById('frame-info');
-const trace=D.trace, frames=trace?trace.frames:[]; slider.max=Math.max(frames.length-1,0); slider.disabled=!trace;
-const hasOther=D.nTypes>flowIds.length, graphTypes=Math.max(flowIds.length+(hasOther?1:0),1);
-function graphType(type){{const i=flowIds.indexOf(type);return i>=0?i:(hasOther?flowIds.length:0)}}
-const pos=new Map(); for(const q of D.nodes){{const type=graphType(q[1]), x=55+(type+0.5)*((graph.width-100)/graphTypes); const y=25+((q[0]*2654435761>>>0)/4294967296)*(graph.height-50); pos.set(q[0],[x,y])}}
-function draw(){{const fi=Number(slider.value), fr=frames[fi];gx.clearRect(0,0,graph.width,graph.height);gx.fillStyle='#0a0e13';gx.fillRect(0,0,graph.width,graph.height);
- for(let t=0;t<graphTypes;t++){{const x=55+(t+0.5)*((graph.width-100)/graphTypes);gx.fillStyle=colors[t%colors.length];gx.fillText(t<flowIds.length?'T'+flowIds[t]:'outros',x-8,15)}}
- for(const e of D.edges){{const a=pos.get(e[0]),b=pos.get(e[1]);if(!a||!b)continue;const w=new Float32Array(new Uint32Array([e[2]]).buffer)[0];gx.strokeStyle=w>=0?'rgba(63,185,80,'+Math.min(.5,.05+Math.abs(w)/20)+')':'rgba(248,81,73,'+Math.min(.5,.05+Math.abs(w)/20)+')';gx.lineWidth=Math.min(2,0.4+Math.abs(w)/100);gx.beginPath();gx.moveTo(a[0],a[1]);gx.lineTo(b[0],b[1]);gx.stroke()}}
- let active=0,maxV=-Infinity; for(const q of D.nodes){{const p=pos.get(q[0]);if(!p)continue;let v=0,sp=0;if(fr){{v=fr.v[q[0]]||0;sp=fr.spikes[q[0]]||0;maxV=Math.max(maxV,v);if(sp>0)active++}}let fill=trace?(v>-45?'#f2cc60':v>-52?'#3fb950':'#264b73'):colors[q[1]%colors.length];gx.fillStyle=fill;gx.globalAlpha=sp>0?1:.65;gx.beginPath();gx.arc(p[0],p[1],sp>0?3.5:2,0,Math.PI*2);gx.fill();gx.globalAlpha=1}}
- if(fr){{info.textContent='frame '+fi+'/'+(frames.length-1)+' · step '+fr.step+' · ativos '+active+' · max V '+maxV.toFixed(2)+' · cmd '+fr.commands.map(x=>x.toFixed(3)).join(' / ')}}else info.textContent=trace?'trace vazio':'sem trace — use --trace';}}
-slider.addEventListener('input',draw); draw();
-</script></body></html>"##,
-    )
-    .expect("static template is valid");
-    h.replace("__DATA__", data)
+    include_str!("fly_map_view_support/viewer.html")
+        .replace("__DATA__", data)
+        .replace("__MODEL__", include_str!("fly_map_view_support/model.js"))
+        .replace("__SCRIPT__", include_str!("fly_map_view_support/viewer.js"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use universe::fly_map::spiking::SpikingTraceFrame;
+
+    fn frame(step: u64) -> SpikingTraceFrame {
+        SpikingTraceFrame {
+            step,
+            commands: [0.0; 3],
+            v: vec![0.0],
+            spike_counts: vec![0],
+        }
+    }
+
+    #[test]
+    fn maps_complete_lif_steps_to_the_world_tick_that_produced_them() {
+        assert_eq!(trace_step_to_tick(156, 156).unwrap(), 0);
+        assert_eq!(trace_step_to_tick(10_140, 156).unwrap(), 64);
+        assert!(trace_step_to_tick(155, 156).is_err());
+        assert!(trace_step_to_tick(157, 156).is_err());
+    }
+
+    #[test]
+    fn rejects_trace_resets_instead_of_rendering_a_false_alignment() {
+        let trace = SpikingTrace {
+            n: 1,
+            being: 0,
+            frames: vec![frame(312), frame(156)],
+        };
+        let error = validate_trace_alignment(&trace, &[], 156).unwrap_err();
+        assert!(error.contains("reset or repeated"));
+    }
+
+    #[test]
+    fn rejects_trace_and_telemetry_from_different_sample_ticks() {
+        let header = "episode,tick,being,alive,coverage,asymmetry,left_pixels,right_pixels,visible_distance,body_distance,overlap_count,raw_steer,applied_steer,throttle,brake,speed";
+        let csv = format!("{header}\n1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0\n");
+        let telemetry = fly_map_view_support::parse_csv(&csv).unwrap();
+        let trace = SpikingTrace {
+            n: 1,
+            being: 0,
+            frames: vec![frame(10_140)],
+        };
+        let error = validate_trace_alignment(&trace, &telemetry, 156).unwrap_err();
+        assert!(error.contains("mapped tick 64"));
+    }
+
+    #[test]
+    fn generated_html_embeds_data_and_the_external_source_assets() {
+        let html = render_html("{\"n\":1}");
+        assert!(html.contains("window.FLY_MAP_DATA = {\"n\":1}"));
+        assert!(html.contains("function createModel"));
+        assert!(html.contains("function traceStepToTick"));
+        assert!(!html.contains("__MODEL__"));
+        assert!(!html.contains("__SCRIPT__"));
+    }
 }

@@ -160,7 +160,7 @@ fn pos_of(p: &PhysicsStateGpu) -> [f32; 3] {
 fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
     // Static normal load = mass × g / 4 wheels (1350 kg as in gpu_loop.rs).
     let normal_load = 1350.0 * 9.81 / 4.0;
-    let wheel = WheelGpu::from_cpu(0.0, 0.0, 0.0, normal_load, 60.0, 0.0, 0.0);
+    let wheel = WheelGpu::from_cpu(0.0, 0.0, 0.0, normal_load, 0.5, 0.0, 0.0);
     let lat = [fwd[2], 0.0, -fwd[0]];
     PhysicsStateGpu {
         vel: [0.0; 3],
@@ -319,7 +319,7 @@ impl GpuLoop {
 
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rep-retina"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../gpu/retina.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(universe::gpu::RETINA_SHADER)),
         });
         let layout_retina = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("rep-retina-layout"),
@@ -547,7 +547,7 @@ impl GpuLoop {
                 };
                 let gear = p.current_gear as f32;
                 let tire_temp_sum: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum();
-                let tire_temp_norm = (tire_temp_sum / 4.0 / 120.0).clamp(0.0, 1.0);
+                let tire_temp_norm = (tire_temp_sum / 4.0).clamp(0.0, 1.0);
                 let voxel = voxel_at_cpu(p.pos[0], p.pos[2]);
                 let on_grass = if voxel == 0u32 { 1.0f32 } else { 0.0 };
                 prop_vals.push([

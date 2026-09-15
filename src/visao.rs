@@ -43,6 +43,9 @@ use crate::config::iara::vision::{FOV_DEG, RETINA_MAX_PITCH, RETINA_ROWS};
 
 /// Eye height above the ground, in meters (`world.rs`: `pos + Vec3::Y * 0.4`).
 pub const ALTURA_OLHO: f32 = 0.4;
+/// The vehicle body centre rests 0.5m above the flat road in physics_c.wgsl.
+/// Range calibration uses the complete optical origin, not just the eye offset.
+pub const ROAD_VIEW_REFERENCE_EYE_HEIGHT_M: f32 = 0.5 + ALTURA_OLHO;
 
 /// Current range of the farthest row, in meters. This is what one wants to vary.
 pub const ALCANCE_PADRAO: f32 = ALTURA_OLHO / 0.012; // = 33.33 m
@@ -65,6 +68,32 @@ impl Default for Params {
 }
 
 static PARAMS: OnceLock<Params> = OnceLock::new();
+static ROAD_VIEW_RANGE: OnceLock<f32> = OnceLock::new();
+
+/// Opt-in road optics: log-spaced ground samples, without scaling other sensors.
+pub fn set_road_view(range_m: f32) -> Result<(), &'static str> {
+    if !range_m.is_finite() || !(20.0..=300.0).contains(&range_m) {
+        return Err("road-view range must be finite and in [20, 300] metres");
+    }
+    ROAD_VIEW_RANGE
+        .set(range_m)
+        .map_err(|_| "road-view optics already configured")
+}
+
+pub fn road_view_enabled() -> bool {
+    ROAD_VIEW_RANGE.get().is_some()
+}
+
+pub fn road_view_range() -> Option<f32> {
+    ROAD_VIEW_RANGE.get().copied()
+}
+
+/// Horizontal ground distance; atan gives exact geometry at the nominal eye height.
+pub fn road_view_pitch(range_m: f32, row: usize) -> f32 {
+    let fraction = row.min(RETINA_ROWS - 1) as f32 / (RETINA_ROWS - 1) as f32;
+    let distance = range_m * (4.0 / range_m).powf(fraction);
+    -(ROAD_VIEW_REFERENCE_EYE_HEIGHT_M / distance).atan()
+}
 
 pub fn definir(p: Params) {
     let _ = PARAMS.set(p);
@@ -91,7 +120,10 @@ pub fn fov_deg() -> f32 {
 /// sees**.
 #[inline]
 pub fn pitch(row: usize) -> f32 {
-    pitch_at(params().alcance_m, row)
+    road_view_range().map_or_else(
+        || pitch_at(params().alcance_m, row),
+        |range| road_view_pitch(range, row),
+    )
 }
 
 /// The pure half of [`pitch`]: the same arithmetic, with the range passed in instead of
@@ -259,5 +291,26 @@ mod testes {
             2.0 * v
         );
         assert!(v2 > v, "more range must allow more speed");
+    }
+}
+
+#[cfg(test)]
+mod road_view_tests {
+    use super::*;
+    #[test]
+    fn road_view_samples_exact_ground_distances_without_blind_near_field() {
+        for range in [20.0, 80.0, 120.0, 300.0] {
+            let distances: Vec<f32> = (0..RETINA_ROWS)
+                .map(|row| ROAD_VIEW_REFERENCE_EYE_HEIGHT_M / -road_view_pitch(range, row).tan())
+                .collect();
+            assert!((distances[0] - range).abs() < 0.001);
+            assert!((distances[RETINA_ROWS - 1] - 4.0).abs() < 0.001);
+            assert!(distances.windows(2).all(|d| d[0] > d[1]));
+        }
+        assert_eq!(
+            range_scale(),
+            1.0,
+            "road profile must not scale independent probes"
+        );
     }
 }

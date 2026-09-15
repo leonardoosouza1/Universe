@@ -141,9 +141,7 @@ impl CfcCell {
         let scale_x = (1.0 / (input_dim as f32).sqrt()) * 0.6;
         let scale_h = (1.0 / (hidden_dim as f32).sqrt()) * 0.6;
 
-        let mut mk = |n: usize, s: f32| -> Vec<f32> {
-            (0..n).map(|_| rng.signed() * s).collect()
-        };
+        let mut mk = |n: usize, s: f32| -> Vec<f32> { (0..n).map(|_| rng.signed() * s).collect() };
 
         CfcCell {
             hidden_dim,
@@ -222,7 +220,15 @@ impl CfcCell {
             ));
         }
 
-        Ok(CfcCell { hidden_dim, input_dim, w_xi, w_hi, w_f, b_i, b_f })
+        Ok(CfcCell {
+            hidden_dim,
+            input_dim,
+            w_xi,
+            w_hi,
+            w_f,
+            b_i,
+            b_f,
+        })
     }
 }
 
@@ -237,7 +243,9 @@ pub struct CfcState {
 
 impl CfcState {
     pub fn new(hidden_dim: usize) -> Self {
-        Self { h: vec![0.0; hidden_dim] }
+        Self {
+            h: vec![0.0; hidden_dim],
+        }
     }
 
     /// Step the cell and update state in place. Returns a reference to `h`.
@@ -288,12 +296,8 @@ impl CfcGrads {
     /// L2 norm across all gradient tensors (for diagnostics).
     pub fn global_norm(&self) -> f32 {
         let sq = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>();
-        (sq(&self.g_w_xi)
-            + sq(&self.g_w_hi)
-            + sq(&self.g_w_f)
-            + sq(&self.g_b_i)
-            + sq(&self.g_b_f))
-        .sqrt()
+        (sq(&self.g_w_xi) + sq(&self.g_w_hi) + sq(&self.g_w_f) + sq(&self.g_b_i) + sq(&self.g_b_f))
+            .sqrt()
     }
 }
 
@@ -314,9 +318,16 @@ pub struct LinearHead {
 impl LinearHead {
     pub fn new(out_dim: usize, hidden_dim: usize, rng: &mut Rng) -> Self {
         let scale = (1.0 / (hidden_dim as f32).sqrt()) * 0.6;
-        let w = (0..out_dim * hidden_dim).map(|_| rng.signed() * scale).collect();
+        let w = (0..out_dim * hidden_dim)
+            .map(|_| rng.signed() * scale)
+            .collect();
         let b = vec![0.0; out_dim];
-        LinearHead { out_dim, hidden_dim, w, b }
+        LinearHead {
+            out_dim,
+            hidden_dim,
+            w,
+            b,
+        }
     }
 
     /// Forward: fills `out` with the projected values.
@@ -342,7 +353,12 @@ impl LinearHead {
                 "LinearHead dimension mismatch on load",
             ));
         }
-        Ok(LinearHead { out_dim, hidden_dim, w, b })
+        Ok(LinearHead {
+            out_dim,
+            hidden_dim,
+            w,
+            b,
+        })
     }
 }
 
@@ -410,7 +426,16 @@ fn forward_cache(cell: &CfcCell, inputs: &[Vec<f32>], h0: &[f32]) -> (ForwardCac
     }
 
     let outputs: Vec<Vec<f32>> = hs[1..].to_vec();
-    (ForwardCache { hs, xs, i_gates, f_gates, decays }, outputs)
+    (
+        ForwardCache {
+            hs,
+            xs,
+            i_gates,
+            f_gates,
+            decays,
+        },
+        outputs,
+    )
 }
 
 /// BPTT result — accumulated gradients for the cell and the gradient flowing
@@ -428,11 +453,7 @@ pub struct BpttResult {
 ///               (or zero vectors) for steps where no loss is attached.
 ///
 /// Returns accumulated gradients — caller is responsible for applying them.
-pub fn bptt(
-    cell: &CfcCell,
-    cache: &ForwardCache,
-    dh_outputs: &[Vec<f32>],
-) -> BpttResult {
+pub fn bptt(cell: &CfcCell, cache: &ForwardCache, dh_outputs: &[Vec<f32>]) -> BpttResult {
     let t = cache.xs.len();
     let d = cell.hidden_dim;
     let e = cell.input_dim;
@@ -500,7 +521,10 @@ pub fn bptt(
         dh_next = dh_prev;
     }
 
-    BpttResult { grads, dh0: dh_next }
+    BpttResult {
+        grads,
+        dh0: dh_next,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -643,7 +667,10 @@ mod tests {
         let h1 = cell.step(&h, &x1);
         let h2 = cell.step(&h, &x2);
 
-        assert_ne!(h1, h2, "different inputs must produce different hidden states");
+        assert_ne!(
+            h1, h2,
+            "different inputs must produce different hidden states"
+        );
     }
 
     #[test]
@@ -737,8 +764,7 @@ mod tests {
             .collect();
         let targets: Vec<usize> = (0..16).map(|i| (i + 1) % out_dim).collect();
 
-        let loss_before =
-            train_step_ce(&mut cell, &mut head, &inputs, &targets, &h0, 0.001, 1.0);
+        let loss_before = train_step_ce(&mut cell, &mut head, &inputs, &targets, &h0, 0.001, 1.0);
 
         // After many steps the loss should trend down.
         let mut loss = loss_before;
@@ -757,11 +783,7 @@ mod tests {
         let d = 4;
         let e = 2;
         let cell = make_cell(d, e);
-        let inputs: Vec<Vec<f32>> = vec![
-            vec![1.0, 0.0],
-            vec![0.0, 1.0],
-            vec![1.0, 1.0],
-        ];
+        let inputs: Vec<Vec<f32>> = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
         let h0 = vec![0.0f32; d];
         let (cache, _) = forward_cache(&cell, &inputs, &h0);
 
@@ -771,7 +793,10 @@ mod tests {
 
         let result = bptt(&cell, &cache, &dh_outputs);
         let norm = result.grads.global_norm();
-        assert!(norm > 0.0, "gradients must be nonzero when loss gradient is injected");
+        assert!(
+            norm > 0.0,
+            "gradients must be nonzero when loss gradient is injected"
+        );
     }
 
     #[test]

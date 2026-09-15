@@ -2,6 +2,7 @@
 pub mod analysis;
 pub mod brain;
 pub mod brain_capacity;
+pub mod brain_interface;
 pub mod cfc;
 pub mod chaos;
 pub mod config;
@@ -51,6 +52,7 @@ pub mod types;
 pub mod ui;
 pub mod ui_menu;
 pub mod visao;
+pub mod vision_geometry;
 pub mod visualization;
 pub mod world;
 

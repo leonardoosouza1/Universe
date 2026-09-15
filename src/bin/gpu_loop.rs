@@ -269,7 +269,7 @@ impl GpuLoop {
         // retina.wgsl: binding 0=params(uniform), 1=grid(storage), 2=poses(storage), 3=saida(storage).
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("loop-retina"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../gpu/retina.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(universe::gpu::RETINA_SHADER)),
         });
         let layout_retina = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("loop-retina-layout"),
@@ -657,10 +657,10 @@ impl GpuLoop {
                 let gear = p.current_gear as f32;
 
                 // [6] tire_temp_norm: wheels has layout [part_a, part_b] alternating per axle.
-                // part_b[0] = tire_temp (degrees C). Computes the average of the 4 wheels.
+                // part_b[0] is already normalised to [0,1].
                 // wheels[j*2+1] = part_b of axle j (j=0..3 = FR, FL, RR, RL).
                 let tire_temp_sum: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum();
-                let tire_temp_norm = (tire_temp_sum / 4.0 / 120.0).clamp(0.0, 1.0);
+                let tire_temp_norm = (tire_temp_sum / 4.0).clamp(0.0, 1.0);
 
                 // [7] downforce: we do not compute it dynamically. Zero for now.
                 let downforce_norm = 0.0_f32;

@@ -682,7 +682,7 @@ impl CortexCtx {
                 } else {
                     0.0
                 };
-                let tt: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum::<f32>() / 4.0 / 120.0;
+                let tt: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum::<f32>() / 4.0;
                 let on_grass = if voxel_at(p.pos[0], p.pos[2]) == 0 {
                     1.0_f32
                 } else {
@@ -1871,6 +1871,7 @@ fn main() {
                         safety_flags: (states[best_lead].reverse_timer > 0.0) as u8 * 8,
                         retina_fov,
                         retina_peri,
+                        _alignment: [0u8; 3],
                         _pad: [0u8; 8],
                     };
                     let _ = rw.write_frame(0, &rf);

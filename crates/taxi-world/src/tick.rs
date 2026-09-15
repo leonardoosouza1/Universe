@@ -17,10 +17,10 @@ use crate::beings::Beings;
 use crate::constants::{Config, G, NF, S};
 use crate::decision::decide;
 use crate::genome::Genome;
-use crate::passengers::{step_passengers, PassengerState, TaxiRng};
-use crate::physics::{preview_movement, step_physics, update_daily_prices, NearestCache};
-use crate::senses::{compute_target, map_price_offsets, observe, SensesInput};
-use crate::services::{service_state, Nearest, ServiceQuery};
+use crate::passengers::{PassengerState, TaxiRng, step_passengers};
+use crate::physics::{NearestCache, preview_movement, step_physics, update_daily_prices};
+use crate::senses::{SensesInput, compute_target, map_price_offsets, observe};
+use crate::services::{Nearest, ServiceQuery, service_state};
 use crate::trace::Trace;
 use crate::world::World;
 
@@ -74,7 +74,14 @@ impl Sim {
         for world in &worlds {
             price_mul.extend_from_slice(&world.price_mul_base);
         }
-        Sim { beings, worlds, cfg, genome, price_mul, t: 0 }
+        Sim {
+            beings,
+            worlds,
+            cfg,
+            genome,
+            price_mul,
+            t: 0,
+        }
     }
 
     /// Builds a `Sim` for the identity gate: the map, the champion genome and
@@ -156,7 +163,16 @@ pub fn step(
     let input = senses_input(&sim.beings);
     let mut f = vec![0.0f32; n * G * NF];
     let mut nearest = NearestCache::default();
-    observe(&input, &sim.worlds, &sim.price_mul, &sim.cfg, t_pre, target, &mut f, &mut nearest);
+    observe(
+        &input,
+        &sim.worlds,
+        &sim.price_mul,
+        &sim.cfg,
+        t_pre,
+        target,
+        &mut f,
+        &mut nearest,
+    );
 
     let alvo = resolve_alvo(&sim.beings, target);
 
@@ -180,7 +196,16 @@ pub fn step(
     let mut margin = vec![0.0f32; n];
     let total = G + S;
     let mut scores = vec![0.0f32; n * total];
-    decide(&f, &need_a, &avail_a, &sim.genome, n, &mut choice, &mut margin, &mut scores);
+    decide(
+        &f,
+        &need_a,
+        &avail_a,
+        &sim.genome,
+        n,
+        &mut choice,
+        &mut margin,
+        &mut scores,
+    );
 
     let natural_choice = choice.clone();
     let effective_choice: Vec<u32> = match forced_choice {
@@ -196,7 +221,12 @@ pub fn step(
     let offsets = map_price_offsets(&sim.worlds);
     for (k, world) in sim.worlds.iter().enumerate() {
         let len = world.tax.len();
-        update_daily_prices(&mut sim.price_mul[offsets[k]..offsets[k] + len], world, &sim.cfg, t_post);
+        update_daily_prices(
+            &mut sim.price_mul[offsets[k]..offsets[k] + len],
+            world,
+            &sim.cfg,
+            t_post,
+        );
     }
 
     // Plan reconciliation item a/the physics.rs header's own note: item 22's
@@ -206,7 +236,13 @@ pub fn step(
     // purchase) can be called. `preview_movement` is `physics.rs`'s own
     // items-3-9 implementation (the SAME one `step_physics` calls internally),
     // run here read-only to resolve that ordering.
-    let preview = preview_movement(&sim.beings, &sim.worlds, &sim.cfg, t_post, &effective_choice);
+    let preview = preview_movement(
+        &sim.beings,
+        &sim.worlds,
+        &sim.cfg,
+        t_post,
+        &effective_choice,
+    );
 
     // item 22: sv, pm = serv_ab() — APPLICATION call, NEW position but the SAME
     // frozen `nearest.dist` from step 1's obs() (SPEC §3.1 item 22, pitfall 6:
@@ -345,11 +381,16 @@ fn call_service_state(
         phase: &b.phase,
         map_idx: &b.map_idx,
     };
-    let nn = Nearest { points: &nearest.points, dist: &nearest.dist };
+    let nn = Nearest {
+        points: &nearest.points,
+        dist: &nearest.dist,
+    };
     let mut avail = vec![0.0f32; n * S];
     let mut cost = vec![0.0f32; n * S];
     let mut need = vec![0.0f32; n * S];
-    service_state(&q, w, price_mul, nn, cfg, t, &mut avail, &mut cost, &mut need);
+    service_state(
+        &q, w, price_mul, nn, cfg, t, &mut avail, &mut cost, &mut need,
+    );
     (avail, cost, need)
 }
 
@@ -469,7 +510,10 @@ mod tests {
 
         assert_eq!(sim.t, 1);
         assert_eq!(record.choice.len(), 1);
-        assert_eq!(record.natural_choice, record.choice, "no forced_choice: must match");
+        assert_eq!(
+            record.natural_choice, record.choice,
+            "no forced_choice: must match"
+        );
         assert_eq!(record.f.len(), G * NF);
         assert_eq!(record.scores.len(), G + S);
         assert_eq!(record.alvo.len(), 2);
@@ -495,7 +539,10 @@ mod tests {
         // index tie-break, SPEC §5) — forcing 8 must not have changed what
         // `decide()` itself reported choosing.
         assert_eq!(record.natural_choice, vec![0]);
-        assert_eq!(sim.beings.pos_x[0], 10.0, "esc=8 is 'stay': position must not move");
+        assert_eq!(
+            sim.beings.pos_x[0], 10.0,
+            "esc=8 is 'stay': position must not move"
+        );
     }
 
     #[test]

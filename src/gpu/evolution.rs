@@ -68,6 +68,54 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// once at process start.
 pub static SPECTRAL_INIT_ON: AtomicBool = AtomicBool::new(true);
 
+/// Experimental birth prior for the three body actuators.
+///
+/// Disabled by default: a paired seed-77 smoke test on the canonical start measured
+/// 50 m best progress after five generations versus 873 m for dense random motor
+/// pathways. Keep it opt-in so the developmental hypothesis remains reproducible
+/// without weakening the production population.
+pub static DRIVING_REFLEX_BIRTH_ON: AtomicBool = AtomicBool::new(false);
+
+const REFLEX_THROTTLE_NEURON: usize = 48;
+const REFLEX_STEER_NEURON: usize = 49;
+const REFLEX_BRAKE_NEURON: usize = 50;
+const CURVATURE_NEAR_CHANNEL: usize = 78;
+const CURVATURE_MID_CHANNEL: usize = 79;
+const CURVATURE_FAR_CHANNEL: usize = 80;
+const LINE_OFFSET_CHANNEL: usize = 81;
+
+/// Replaces only three L1 rows and three L2 motor rows with evolvable birth wiring.
+/// All other neurons remain random, preserving open-ended exploration.
+fn apply_driving_reflex_birth(l1: &mut [f32], l2: &mut [f32]) {
+    for neuron in [
+        REFLEX_THROTTLE_NEURON,
+        REFLEX_STEER_NEURON,
+        REFLEX_BRAKE_NEURON,
+    ] {
+        l1[neuron * SENSORY_WAVE_SIZE..(neuron + 1) * SENSORY_WAVE_SIZE].fill(0.0);
+    }
+    for output in 0..3 {
+        l2[output * L1_NEURONS..(output + 1) * L1_NEURONS].fill(0.0);
+    }
+
+    let throttle = REFLEX_THROTTLE_NEURON * SENSORY_WAVE_SIZE;
+    l1[throttle + crate::perception::channels::Channel::VelAlign.index()] = 5.0;
+    l1[throttle + crate::perception::channels::Channel::RiscoCinetico.index()] = -6.0;
+
+    let steer = REFLEX_STEER_NEURON * SENSORY_WAVE_SIZE;
+    l1[steer + CURVATURE_FAR_CHANNEL] = 8.0;
+    l1[steer + CURVATURE_MID_CHANNEL] = 6.0;
+    l1[steer + CURVATURE_NEAR_CHANNEL] = 4.0;
+    l1[steer + LINE_OFFSET_CHANNEL] = 3.0;
+
+    let brake = REFLEX_BRAKE_NEURON * SENSORY_WAVE_SIZE;
+    l1[brake + crate::perception::channels::Channel::RiscoCinetico.index()] = 10.0;
+
+    l2[REFLEX_THROTTLE_NEURON] = 1.0;
+    l2[L1_NEURONS + REFLEX_STEER_NEURON] = 1.0;
+    l2[2 * L1_NEURONS + REFLEX_BRAKE_NEURON] = 1.0;
+}
+
 /// Scalar factor that takes a `medido` (measured) gain to `alvo` (target) (== `alvo / medido`).
 ///
 /// Pure function, no global state — extracted from `Genome::random` so it can be
@@ -554,7 +602,11 @@ impl Genome {
         };
 
         let mut l1: Vec<f32> = (0..N_L1_WEIGHTS).map(|_| gauss(&mut rng_f32)).collect();
-        let l2: Vec<f32> = (0..N_L2_WEIGHTS).map(|_| gauss(&mut rng_f32)).collect();
+        let mut l2: Vec<f32> = (0..N_L2_WEIGHTS).map(|_| gauss(&mut rng_f32)).collect();
+
+        if DRIVING_REFLEX_BIRTH_ON.load(Ordering::Relaxed) {
+            apply_driving_reflex_birth(&mut l1, &mut l2);
+        }
 
         // P0.5 — spectral initialization: measures the gain the draw above just
         // produced (same computation `analysis::activation` uses for the alarm,
@@ -599,10 +651,16 @@ impl Genome {
 
         let kan_knots = crate::evolution::dna_genesis::default_kan_knots();
 
-        // Slow brain: starts from the default initialization and diverges via mutation. It is born
-        // identical in all beings on purpose — the difference has to be SELECTED,
-        // not drawn, otherwise the first generation already mixes two effects.
-        let slow = crate::engine::SlowBrain::new().all_weights();
+        // The slow cortex must be diverse in the first selectable generation. The old
+        // path gave every newborn the exact same arbitrary fixed draw, so population
+        // selection could not compare different aggression, inhibition or steering
+        // context until mutations accumulated over several generations. Keep the
+        // stable initialization as a prior and add a small deterministic per-genome
+        // perturbation (sigma 0.03, one tenth of the fast matrix scale).
+        let mut slow = crate::engine::SlowBrain::new().all_weights();
+        for weight in &mut slow {
+            *weight = (*weight + gauss(&mut rng_f32) * 0.10).clamp(-2.0, 2.0);
+        }
         // Uniform τ = inherited behavior. Heterogeneous only via `randomize_tau`, so that
         // the experiment's control arm is the old brain, not a third case.
         let tau = vec![crate::cfc::DECAY_DEFAULT; N_CFC_CHANNELS];
@@ -652,6 +710,28 @@ impl Genome {
     /// Draws the τ bank log-uniform in [25 ms, 4 s] — the heterogeneous condition.
     pub fn randomize_tau(&mut self, seed: u64) {
         self.tau = crate::cfc::log_uniform_decays(seed, N_CFC_CHANNELS);
+    }
+
+    /// Seeds sensory time constants according to the physical rate of each signal.
+    ///
+    /// `tau` is indexed by sensory channel, not by L1 neuron. The former initializer
+    /// split it into four 24-value "brain regions", which accidentally gave speed,
+    /// curvature and collision risk 1-4 seconds of lag. This prior only specifies
+    /// response bandwidth; it does not encode an action or a driving rule.
+    pub fn seed_sensory_taus(&mut self, population_seed: u64, genome_index: usize) {
+        debug_assert_eq!(self.tau.len(), N_CFC_CHANNELS);
+        for channel in 0..N_CFC_CHANNELS {
+            let (tau_lo, tau_hi) = sensory_tau_range(channel);
+            let mut x = (genome_index as u64 * N_CFC_CHANNELS as u64 + channel as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_add(population_seed);
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xFF51AFD7ED558CCD);
+            x ^= x >> 33;
+            let u = (x % 10_000) as f32 / 10_000.0;
+            let tau = tau_lo * (tau_hi / tau_lo).powf(u);
+            self.tau[channel] = 1.0 / tau;
+        }
     }
 
     /// The decay-rate bank this genome actually uploads: `tau` seen through the
@@ -853,12 +933,42 @@ impl Genome {
     }
 }
 
+/// Allowed birth-time memory range in seconds for each CfC sensory channel.
+/// Explicit motion channels make long retinal history unnecessary; body reserves and
+/// temperatures change slowly, while steering, speed, curvature and proximity must
+/// remain inside a driver's reaction window.
+pub fn sensory_tau_range(channel: usize) -> (f32, f32) {
+    match channel {
+        // Near retina, primary motion and immediate wall features.
+        0..=31 => (0.05, 0.30),
+        // Wider/far visual structure: stable enough to bridge a few frames.
+        32..=63 => (0.15, 0.80),
+        // Alignment, speed and lateral velocity.
+        64..=66 => (0.05, 0.30),
+        // Life reserve changes over seconds.
+        67 => (0.50, 2.00),
+        // RPM and gear still belong to the fast control loop.
+        68..=69 => (0.08, 0.40),
+        // Tire and engine temperature are homeostatic signals.
+        70..=71 => (1.00, 4.00),
+        // Kinetic risk, surface, steering, curvature, clearance, slip and whiskers.
+        72..=95 => (0.05, 0.35),
+        _ => (0.25, 2.00),
+    }
+}
+
 /// Evolutionary algorithm parameters.
 pub struct EvoParams {
     /// Per-weight mutation rate: probability of each weight being perturbed.
     pub p_mutate: f32,
     /// Standard deviation of the gaussian noise added to each mutated weight.
     pub sigma: f32,
+    /// Per-weight mutation rate for the three L2 rows consumed as motor commands.
+    /// Equal to `p_mutate` by default; a run may raise motor exploration without
+    /// perturbing the remaining cortical outputs.
+    pub motor_p_mutate: f32,
+    /// Gaussian mutation sigma for the three motor rows. Equal to `sigma` by default.
+    pub motor_sigma: f32,
     /// Number of elite genomes that pass through without mutation.
     pub n_elite: usize,
     /// Tournament size for parent selection.
@@ -936,8 +1046,10 @@ pub fn aplicar_mascara_regioes(g: &mut Genome) {
 impl Default for EvoParams {
     fn default() -> Self {
         Self {
-            p_mutate: 0.02,  // 2% of weights per generation
-            sigma: 0.05,     // gaussian perturbation σ=0.05
+            p_mutate: 0.02, // 2% of weights per generation
+            sigma: 0.05,    // gaussian perturbation σ=0.05
+            motor_p_mutate: 0.02,
+            motor_sigma: 0.05,
             n_elite: 3,      // top 3 pass without mutation
             tournament_k: 3, // tournament of 3
             congela_l2_cegas: false,
@@ -1102,9 +1214,20 @@ pub fn evolve(
         } else {
             filho.l2.len()
         };
-        for w in filho.l2[..l2_limite].iter_mut() {
-            if rng.f32() < params.p_mutate {
-                *w += rng.gauss() * params.sigma;
+        for (weight_idx, w) in filho.l2[..l2_limite].iter_mut().enumerate() {
+            let is_motor_row = weight_idx < 3 * L1_NEURONS;
+            let p_mutate = if is_motor_row {
+                params.motor_p_mutate
+            } else {
+                params.p_mutate
+            };
+            let sigma = if is_motor_row {
+                params.motor_sigma
+            } else {
+                params.sigma
+            };
+            if rng.f32() < p_mutate {
+                *w += rng.gauss() * sigma;
                 *w = w.clamp(-2.0, 2.0);
             }
         }
@@ -1407,6 +1530,71 @@ pub fn linear_slope(ys: &[f64]) -> (f64, f64) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn driving_reflex_birth_is_sparse_regional_and_evolvable() {
+        let mut l1 = vec![0.25; N_L1_WEIGHTS];
+        let mut l2 = vec![0.25; N_L2_WEIGHTS];
+        apply_driving_reflex_birth(&mut l1, &mut l2);
+
+        for (neuron, expected_nonzero) in [
+            (REFLEX_THROTTLE_NEURON, 2),
+            (REFLEX_STEER_NEURON, 4),
+            (REFLEX_BRAKE_NEURON, 1),
+        ] {
+            let row = &l1[neuron * SENSORY_WAVE_SIZE..(neuron + 1) * SENSORY_WAVE_SIZE];
+            assert_eq!(
+                row.iter().filter(|weight| **weight != 0.0).count(),
+                expected_nonzero
+            );
+            for (channel, weight) in row.iter().enumerate() {
+                if *weight != 0.0 {
+                    assert!(mascara_permite(neuron, channel));
+                }
+            }
+        }
+        for output in 0..3 {
+            let row = &l2[output * L1_NEURONS..(output + 1) * L1_NEURONS];
+            assert_eq!(row.iter().filter(|weight| **weight != 0.0).count(), 1);
+        }
+        assert_eq!(l1[0], 0.25, "unrelated feature neurons stay random");
+        assert_eq!(l2[3 * L1_NEURONS], 0.25, "unused L2 rows stay random");
+    }
+
+    #[test]
+    fn sensory_tau_prior_keeps_control_fast_and_homeostasis_slow() {
+        for channel in [64, 65, 66, 72, 78, 79, 80, 82, 87, 90, 95] {
+            let (_, hi) = sensory_tau_range(channel);
+            assert!(
+                hi <= 0.40,
+                "control channel {channel} has tau ceiling {hi}s"
+            );
+        }
+        for channel in [67, 70, 71] {
+            let (lo, _) = sensory_tau_range(channel);
+            assert!(
+                lo >= 0.50,
+                "homeostatic channel {channel} has tau floor {lo}s"
+            );
+        }
+    }
+
+    #[test]
+    fn sensory_tau_seed_is_reproducible_and_within_each_range() {
+        let mut a = Genome::random(11);
+        let mut b = Genome::random(22);
+        a.seed_sensory_taus(77, 3);
+        b.seed_sensory_taus(77, 3);
+        assert_eq!(a.tau, b.tau);
+        for (channel, &decay) in a.tau.iter().enumerate() {
+            let tau = 1.0 / decay;
+            let (lo, hi) = sensory_tau_range(channel);
+            assert!(
+                (lo..=hi).contains(&tau),
+                "channel {channel}: tau={tau}, range={lo}..={hi}"
+            );
+        }
+    }
+
     /// `spectral_rescale_factor` is a pure mathematical function — the central test of the
     /// spectral initialization that does not need to touch `SPECTRAL_INIT_ON` nor draw
     /// weights: given the ~7.0 gain measured empirically (project CLAUDE.md, 4 independent
@@ -1456,6 +1644,26 @@ mod tests {
                 "seed {seed}: L1 spectral gain = {ganho}, expected in [0.8, 1.2]"
             );
         }
+    }
+
+    #[test]
+    fn newborn_slow_cortex_is_deterministic_and_diverse_between_genomes() {
+        let a = Genome::random(7);
+        let again = Genome::random(7);
+        let b = Genome::random(8);
+        assert_eq!(
+            a.slow, again.slow,
+            "the same DNA seed must reproduce exactly"
+        );
+        assert_ne!(
+            a.slow, b.slow,
+            "selection needs slow-cortex diversity in the first generation"
+        );
+        assert_eq!(
+            a.slow.len(),
+            crate::engine::SlowBrain::new().all_weights().len()
+        );
+        assert!(a.slow.iter().all(|value| value.is_finite()));
     }
 
     /// CHANNELS PHASE (2026-08-14): a new genome is born with the L1 column of the
@@ -1534,6 +1742,8 @@ mod tests {
         let params = EvoParams {
             p_mutate: 1.0,
             sigma: 0.05,
+            motor_p_mutate: 1.0,
+            motor_sigma: 0.05,
             n_elite: 1,
             tournament_k: 3,
             congela_l2_cegas: false,
@@ -1572,6 +1782,8 @@ mod tests {
         let params = EvoParams {
             p_mutate: 1.0,
             sigma: 0.05,
+            motor_p_mutate: 1.0,
+            motor_sigma: 0.05,
             n_elite: 1,
             tournament_k: 3,
             congela_l2_cegas: true,
@@ -1604,6 +1816,26 @@ mod tests {
     }
 
     #[test]
+    fn motor_specific_mutation_changes_only_the_three_command_rows() {
+        let parent = Genome::random(91);
+        let params = EvoParams {
+            p_mutate: 0.0,
+            sigma: 0.0,
+            motor_p_mutate: 1.0,
+            motor_sigma: 0.2,
+            n_elite: 0,
+            ..EvoParams::default()
+        };
+        let child = evolve(std::slice::from_ref(&parent), &[1.0], &params, 3, 77)
+            .pop()
+            .unwrap();
+        let motor_end = 3 * L1_NEURONS;
+        assert_ne!(child.l2[..motor_end], parent.l2[..motor_end]);
+        assert_eq!(child.l2[motor_end..], parent.l2[motor_end..]);
+        assert_eq!(child.l1, parent.l1);
+    }
+
+    #[test]
     fn evolve_preserva_zero_dos_canais_mortos() {
         use crate::perception::channels::DEAD_L1_INPUTS;
         // Empty list since 2026-08-15 (ch70 refuted by measurement — the channel was
@@ -1620,6 +1852,8 @@ mod tests {
         let params = EvoParams {
             p_mutate: 1.0,
             sigma: 0.05,
+            motor_p_mutate: 1.0,
+            motor_sigma: 0.05,
             n_elite: 1,
             tournament_k: 3,
             congela_l2_cegas: false,
@@ -1940,6 +2174,8 @@ mod tests {
         let params = EvoParams {
             p_mutate: 1.0,
             sigma: 0.05,
+            motor_p_mutate: 1.0,
+            motor_sigma: 0.05,
             n_elite: 1,
             tournament_k: 3,
             congela_l2_cegas: false,
@@ -2203,6 +2439,8 @@ mod tests {
         let params = EvoParams {
             p_mutate: 0.02,
             sigma: 0.05,
+            motor_p_mutate: 0.02,
+            motor_sigma: 0.05,
             n_elite: 1,
             tournament_k: 3,
             congela_l2_cegas: false,
@@ -2305,6 +2543,8 @@ mod tests {
         let params = EvoParams {
             p_mutate: 0.02,
             sigma: 0.05,
+            motor_p_mutate: 0.02,
+            motor_sigma: 0.05,
             n_elite: 1,
             tournament_k: 3,
             congela_l2_cegas: false,

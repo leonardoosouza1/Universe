@@ -160,16 +160,19 @@ pub fn strip_diacritics(bytes: &[u8]) -> Vec<u8> {
                 0xAC..=0xAF => b'i',
                 0xB2..=0xB6 => b'o',
                 0xB9..=0xBC => b'u',
-                0xA7        => b'c',
+                0xA7 => b'c',
                 // Uppercase accented vowels
                 0x80..=0x85 => b'A',
-                0x87        => b'C',
+                0x87 => b'C',
                 0x88..=0x8B => b'E',
                 0x8C..=0x8F => b'I',
                 0x92..=0x96 => b'O',
                 0x99..=0x9C => b'U',
                 // Unknown C3-sequence: skip both bytes
-                _ => { i += 2; continue; }
+                _ => {
+                    i += 2;
+                    continue;
+                }
             };
             out.push(mapped);
             i += 2;

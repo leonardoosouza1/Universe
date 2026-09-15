@@ -5,10 +5,10 @@
 //! file's own header for exactly which SPEC items it implements and which three it
 //! deliberately skips (22, 29-31).
 
-use taxi_world::beings::Beings;
-use taxi_world::constants::{Config, GRID, NPX, N_SERVICES, N_TYPES, TEX};
-use taxi_world::physics::{step_physics, NearestCache};
 use taxi_world::World;
+use taxi_world::beings::Beings;
+use taxi_world::constants::{Config, GRID, N_SERVICES, N_TYPES, NPX, TEX};
+use taxi_world::physics::{NearestCache, step_physics};
 
 /// A flat, uniform `TEX*TEX`/`GRID*GRID` world (terrain cost `1.0` everywhere, one
 /// district) — enough for every physics test below, none of which probes map
@@ -93,7 +93,16 @@ fn staying_put_still_burns_idle_fuel() {
     let (avail, cost) = no_services(1);
     let nearest = no_nearest(1);
 
-    step_physics(&mut beings, &[world], &cfg, 1, &[8], &nearest, &avail, &cost);
+    step_physics(
+        &mut beings,
+        &[world],
+        &cfg,
+        1,
+        &[8],
+        &nearest,
+        &avail,
+        &cost,
+    );
 
     let expected = 50.0 - cfg.fuel_per_tick * 0.33;
     assert!(
@@ -116,9 +125,21 @@ fn a_dry_tank_triggers_a_tow_to_the_nearest_station() {
     let mut nearest = no_nearest(1);
     nearest.points[0] = [42.0, 7.0]; // posto (TIPOS index 0)
 
-    step_physics(&mut beings, &[world], &cfg, 1, &[0], &nearest, &avail, &cost);
+    step_physics(
+        &mut beings,
+        &[world],
+        &cfg,
+        1,
+        &[0],
+        &nearest,
+        &avail,
+        &cost,
+    );
 
-    assert_eq!(beings.pos_x[0], 42.0, "pane must teleport to the nearest station");
+    assert_eq!(
+        beings.pos_x[0], 42.0,
+        "pane must teleport to the nearest station"
+    );
     assert_eq!(beings.pos_y[0], 7.0);
     assert_eq!(beings.fuel[0], 15.0, "FUEL_POS_PANE = 15");
     assert_eq!(beings.stopped_ticks[0], 18.0);
@@ -142,7 +163,16 @@ fn overheating_resets_heat_and_skips_the_driving_penalty_that_tick() {
     let (avail, cost) = no_services(1);
     let nearest = no_nearest(1);
 
-    step_physics(&mut beings, &[world], &cfg, 1, &[0], &nearest, &avail, &cost);
+    step_physics(
+        &mut beings,
+        &[world],
+        &cfg,
+        1,
+        &[0],
+        &nearest,
+        &avail,
+        &cost,
+    );
 
     assert_eq!(beings.heat[0], 60.0, "overheat must reset heat to 60");
     // D_RODAR would apply only if mov && heat > 80 -- heat is 60 post-reset, so
@@ -164,10 +194,22 @@ fn exhaustion_parks_the_taxi_for_twelve_ticks_and_halves_fatigue() {
     let (avail, cost) = no_services(1);
     let nearest = no_nearest(1);
 
-    step_physics(&mut beings, &[world], &cfg, 1, &[0], &nearest, &avail, &cost);
+    step_physics(
+        &mut beings,
+        &[world],
+        &cfg,
+        1,
+        &[0],
+        &nearest,
+        &avail,
+        &cost,
+    );
 
     assert_eq!(beings.stopped_ticks[0], 12.0);
-    assert_eq!(beings.fatigue[0], 40.0, "exhaustion resets fatigue to 40, not half");
+    assert_eq!(
+        beings.fatigue[0], 40.0,
+        "exhaustion resets fatigue to 40, not half"
+    );
     assert_eq!(beings.breakdowns[0], 1.0);
 }
 
@@ -181,7 +223,16 @@ fn hunger_thirst_and_debt_damage_match_the_three_formulas() {
     // Hunger, saturated at fome = 100.
     let mut hungry = one_being();
     hungry.hunger[0] = 100.0;
-    step_physics(&mut hungry, &[world.clone()], &cfg, 1, &[8], &nearest, &avail, &cost);
+    step_physics(
+        &mut hungry,
+        &[world.clone()],
+        &cfg,
+        1,
+        &[8],
+        &nearest,
+        &avail,
+        &cost,
+    );
     let expected = cfg.hunger_death_rate
         * ((100.0 - cfg.hunger_critical) / (100.0 - cfg.hunger_critical)).clamp(0.0, 1.0);
     assert!(
@@ -193,9 +244,18 @@ fn hunger_thirst_and_debt_damage_match_the_three_formulas() {
     // Thirst, at the floor agua = 0.
     let mut thirsty = one_being();
     thirsty.water[0] = 0.0;
-    step_physics(&mut thirsty, &[world.clone()], &cfg, 1, &[8], &nearest, &avail, &cost);
-    let expected = cfg.thirst_death_rate
-        * ((cfg.thirst_critical - 0.0) / cfg.thirst_critical).clamp(0.0, 1.0);
+    step_physics(
+        &mut thirsty,
+        &[world.clone()],
+        &cfg,
+        1,
+        &[8],
+        &nearest,
+        &avail,
+        &cost,
+    );
+    let expected =
+        cfg.thirst_death_rate * ((cfg.thirst_critical - 0.0) / cfg.thirst_critical).clamp(0.0, 1.0);
     assert!(
         (thirsty.life[0] - (100.0 - expected)).abs() < 1e-5,
         "agua=0 must cost exactly thirst_death_rate: got {}, expected loss {expected}",
@@ -205,7 +265,16 @@ fn hunger_thirst_and_debt_damage_match_the_three_formulas() {
     // Debt, exactly at the limit dinh = -60.
     let mut indebted = one_being();
     indebted.money[0] = -cfg.debt_limit;
-    step_physics(&mut indebted, &[world.clone()], &cfg, 1, &[8], &nearest, &avail, &cost);
+    step_physics(
+        &mut indebted,
+        &[world.clone()],
+        &cfg,
+        1,
+        &[8],
+        &nearest,
+        &avail,
+        &cost,
+    );
     let expected = 2.0f32; // 2.0 * clamp(60/60,0,1)^2 = 2.0
     assert!(
         (indebted.life[0] - (100.0 - expected)).abs() < 1e-5,
@@ -232,7 +301,16 @@ fn rent_is_charged_once_per_simulated_day() {
         let before = beings.money[0];
         // esc=8 (stay): never moves, so pane can never trigger, isolating rent as
         // the only channel that can move `money`.
-        step_physics(&mut beings, &[world.clone()], &cfg, t, &[8], &nearest, &avail, &cost);
+        step_physics(
+            &mut beings,
+            &[world.clone()],
+            &cfg,
+            t,
+            &[8],
+            &nearest,
+            &avail,
+            &cost,
+        );
         let delta = beings.money[0] - before;
         if delta != 0.0 {
             charges += 1;
@@ -268,10 +346,22 @@ fn the_stopped_counter_is_decremented_before_being_overwritten() {
     let nearest = no_nearest(1);
 
     // esc=0: would move (and burn moving fuel) if the being were wrongly free.
-    step_physics(&mut beings, &[world], &cfg, 1, &[0], &nearest, &avail, &cost);
+    step_physics(
+        &mut beings,
+        &[world],
+        &cfg,
+        1,
+        &[0],
+        &nearest,
+        &avail,
+        &cost,
+    );
 
     assert_eq!(beings.stopped_ticks[0], 0.0, "1 decrements to 0");
-    assert_eq!(beings.pos_x[0], start_x, "not livre this tick -- must not move");
+    assert_eq!(
+        beings.pos_x[0], start_x,
+        "not livre this tick -- must not move"
+    );
     assert_eq!(
         beings.fuel[0], start_fuel,
         "not livre -- not even marcha (idle) fuel applies, since marcha also requires livre"
@@ -330,7 +420,16 @@ fn reserve_is_only_spent_by_the_beings_that_actually_broke_down() {
     let (avail, cost) = no_services(2);
     let nearest = no_nearest(2);
 
-    step_physics(&mut beings, &[world], &cfg, 1, &[0, 0], &nearest, &avail, &cost);
+    step_physics(
+        &mut beings,
+        &[world],
+        &cfg,
+        1,
+        &[0, 0],
+        &nearest,
+        &avail,
+        &cost,
+    );
 
     let passive_only = 40.0 * (1.0 - cfg.reserve_decay_per_tick);
     assert!(

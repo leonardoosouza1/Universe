@@ -30,7 +30,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::constants::Config;
 use crate::evolution::{Champion, GaParams};
@@ -160,13 +160,15 @@ pub fn judge(
     ticks: usize,
 ) -> Measures {
     let samples = sampler.sample(genome, worlds, cfg, ticks as u32, JUDGE_SEED, JUDGE_COPIES);
-    assert!(!samples.is_empty(), "judge: LifeSampler::sample returned zero beings");
+    assert!(
+        !samples.is_empty(),
+        "judge: LifeSampler::sample returned zero beings"
+    );
     let n = samples.len() as f32;
 
     let mean_f = |get: fn(&LifeSample) -> f32| samples.iter().map(get).sum::<f32>() / n;
-    let mean_bool = |get: fn(&LifeSample) -> bool| {
-        samples.iter().filter(|s| get(s)).count() as f32 / n
-    };
+    let mean_bool =
+        |get: fn(&LifeSample) -> bool| samples.iter().filter(|s| get(s)).count() as f32 / n;
 
     let fit = samples
         .iter()
@@ -213,7 +215,13 @@ fn life_stats(samples: &[LifeSample], t_max: f32) -> LifeStats {
     let p10 = quantile(&days, 0.10);
     let p90 = quantile(&days, 0.90);
     let ceiling_frac = samples.iter().filter(|s| s.alive_ticks >= t_max).count() as f32 / n;
-    LifeStats { mean, median, p10, p90, ceiling_frac }
+    LifeStats {
+        mean,
+        median,
+        p10,
+        p90,
+        ceiling_frac,
+    }
 }
 
 /// Linear-interpolated quantile (matches `torch.quantile`'s default `linear`
@@ -265,9 +273,16 @@ pub fn measures_to_json(
 ) -> Value {
     let seeds = &p.seeds;
     let n = seeds.len() as f32;
-    assert!(n > 0.0, "measures_to_json: GaParams::seeds must not be empty");
+    assert!(
+        n > 0.0,
+        "measures_to_json: GaParams::seeds must not be empty"
+    );
 
-    let get = |sd: u64| measures.get(&sd).expect("measures_to_json: missing seed in `measures`");
+    let get = |sd: u64| {
+        measures
+            .get(&sd)
+            .expect("measures_to_json: missing seed in `measures`")
+    };
 
     let mut obj = serde_json::Map::new();
 
@@ -304,7 +319,11 @@ pub fn measures_to_json(
     // `t_vida_` prefix on the flattened key, matching campo.py exactly).
     let life_field = |sd: u64, get_life: fn(&LifeStats) -> f32| get_life(&get(sd).life);
     let mean_life = |get_life: fn(&LifeStats) -> f32| -> f32 {
-        seeds.iter().map(|&sd| life_field(sd, get_life)).sum::<f32>() / n
+        seeds
+            .iter()
+            .map(|&sd| life_field(sd, get_life))
+            .sum::<f32>()
+            / n
     };
     let life_entries: [(&str, fn(&LifeStats) -> f32); 5] = [
         ("media", |l| l.mean),
@@ -324,7 +343,10 @@ pub fn measures_to_json(
         } else {
             format!("t_vida_{short}")
         };
-        let per_seed: Vec<f32> = seeds.iter().map(|&sd| round3(life_field(sd, get_life))).collect();
+        let per_seed: Vec<f32> = seeds
+            .iter()
+            .map(|&sd| round3(life_field(sd, get_life)))
+            .collect();
         let avg = round3(per_seed.iter().sum::<f32>() / n);
         obj.insert(flat_key.clone(), json!(avg));
         obj.insert(format!("{flat_key}_por_semente"), json!(per_seed));
@@ -408,9 +430,18 @@ mod tests {
         // 10 beings hit the horizon exactly (t_max), 90 die well before it.
         let mut samples: Vec<LifeSample> = (0..10).map(|_| sample(ticks as f32, 0.0)).collect();
         samples.extend((0..90).map(|_| sample(100.0, 0.0)));
-        let mut sampler = FakeSampler { samples, last_seed: None };
+        let mut sampler = FakeSampler {
+            samples,
+            last_seed: None,
+        };
 
-        let measures = judge(&mut sampler, &dummy_genome(), &[], &Config::default(), ticks);
+        let measures = judge(
+            &mut sampler,
+            &dummy_genome(),
+            &[],
+            &Config::default(),
+            ticks,
+        );
 
         assert!(
             measures.life.ceiling_frac > 0.05,
@@ -422,7 +453,10 @@ mod tests {
     #[test]
     fn the_judge_never_shares_the_evolution_seed() {
         let samples = vec![sample(500.0, 10.0); 4];
-        let mut sampler = FakeSampler { samples, last_seed: None };
+        let mut sampler = FakeSampler {
+            samples,
+            last_seed: None,
+        };
 
         let _ = judge(&mut sampler, &dummy_genome(), &[], &Config::default(), 2400);
 
@@ -431,7 +465,10 @@ mod tests {
             Some(JUDGE_SEED),
             "judge must always sample with the fixed world seed 7777, never an evolution seed like 777000+13*it"
         );
-        assert_ne!(JUDGE_SEED, 777_000, "sanity: the two seed spaces must not collide by accident");
+        assert_ne!(
+            JUDGE_SEED, 777_000,
+            "sanity: the two seed spaces must not collide by accident"
+        );
     }
 
     #[test]
@@ -463,26 +500,65 @@ mod tests {
                 dof: DOF_V0,
                 metabolism: METABOLISM_V0,
                 revenue: 100.0,
-                life: LifeStats { mean: 5.0, median: 5.0, p10: 1.0, p90: 9.0, ceiling_frac: 0.0 },
+                life: LifeStats {
+                    mean: 5.0,
+                    median: 5.0,
+                    p10: 1.0,
+                    p90: 9.0,
+                    ceiling_frac: 0.0,
+                },
             };
             measures.insert(sd, m);
             champions.insert(
                 sd,
-                Champion { genome: dummy_genome(), hist: vec![1.0, 2.0, 3.0] },
+                Champion {
+                    genome: dummy_genome(),
+                    hist: vec![1.0, 2.0, 3.0],
+                },
             );
         }
-        let params = GaParams { seeds: vec![0, 1], ..GaParams::default() };
+        let params = GaParams {
+            seeds: vec![0, 1],
+            ..GaParams::default()
+        };
 
         let json = measures_to_json(&measures, &champions, &params);
-        let obj = json.as_object().expect("measures_to_json must return a JSON object");
+        let obj = json
+            .as_object()
+            .expect("measures_to_json must return a JSON object");
 
         for key in [
-            "fit", "fit_por_semente", "mortos", "ent", "panes", "fome_fim", "agua_fim", "dinh",
-            "res", "litros_por_abast", "n_posto", "n_come", "oficina", "dof", "metab", "rec",
-            "t_vida", "t_vida_media", "t_vida_media_por_semente", "frac_teto", "W",
-            "ger_efetiva", "seeds", "sigma_mut", "crn", "campeao",
+            "fit",
+            "fit_por_semente",
+            "mortos",
+            "ent",
+            "panes",
+            "fome_fim",
+            "agua_fim",
+            "dinh",
+            "res",
+            "litros_por_abast",
+            "n_posto",
+            "n_come",
+            "oficina",
+            "dof",
+            "metab",
+            "rec",
+            "t_vida",
+            "t_vida_media",
+            "t_vida_media_por_semente",
+            "frac_teto",
+            "W",
+            "ger_efetiva",
+            "seeds",
+            "sigma_mut",
+            "crn",
+            "campeao",
         ] {
-            assert!(obj.contains_key(key), "missing key `{key}` the Python analysis script reads");
+            assert!(
+                obj.contains_key(key),
+                "missing key `{key}` the Python analysis script reads"
+            );
         }
 
         assert_eq!(obj["fit"], json!(10.5));

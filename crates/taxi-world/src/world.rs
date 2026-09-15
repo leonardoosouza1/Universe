@@ -143,9 +143,17 @@ mod tests {
     /// `round_half_to_even` in isolation, without paying for a full TEX×TEX buffer.
     #[test]
     fn round_half_to_even_matches_torch_round_semantics() {
-        assert_eq!(round_half_to_even(0.5), 0.0, "0.5 rounds down to the even 0");
+        assert_eq!(
+            round_half_to_even(0.5),
+            0.0,
+            "0.5 rounds down to the even 0"
+        );
         assert_eq!(round_half_to_even(1.5), 2.0, "1.5 rounds up to the even 2");
-        assert_eq!(round_half_to_even(2.5), 2.0, "2.5 rounds down to the even 2");
+        assert_eq!(
+            round_half_to_even(2.5),
+            2.0,
+            "2.5 rounds down to the even 2"
+        );
         assert_eq!(round_half_to_even(-0.5), 0.0, "-0.5 rounds to the even 0");
         assert_eq!(round_half_to_even(-1.5), -2.0, "-1.5 rounds to the even -2");
         assert_eq!(round_half_to_even(0.3), 0.0);
@@ -184,7 +192,11 @@ mod tests {
         // Point A: x/L*63 = 100/128*63 = 49.21875 -> fractional part .21875 < 0.5,
         // rounds DOWN to 49.
         w.cost_tex[49] = 5.0;
-        assert_eq!(w.terrain_cost_at(100.0, 0.0), 5.0, "49.21875 must round down to 49");
+        assert_eq!(
+            w.terrain_cost_at(100.0, 0.0),
+            5.0,
+            "49.21875 must round down to 49"
+        );
 
         // Point B: x/L*63 = 64/128*63 = 31.5 EXACTLY -> the midpoint of cells 31
         // and 32 the plan's acceptance test asks for. Ties to the EVEN neighbour,
@@ -211,7 +223,11 @@ mod tests {
         // Point C: x/L*63 = 32/128*63 = 15.75 -> fractional part .75 > 0.5, rounds
         // UP to 16.
         w.cost_tex[16] = 9.0;
-        assert_eq!(w.terrain_cost_at(32.0, 0.0), 9.0, "15.75 must round up to 16");
+        assert_eq!(
+            w.terrain_cost_at(32.0, 0.0),
+            9.0,
+            "15.75 must round up to 16"
+        );
     }
 
     #[test]
@@ -271,7 +287,11 @@ mod tests {
             3,
             "district_field must also be indexed [iy][ix], not [ix][iy]"
         );
-        assert_eq!(w2.district_at(3.5, 5.5), 9, "and the transposed query must differ");
+        assert_eq!(
+            w2.district_at(3.5, 5.5),
+            9,
+            "and the transposed query must differ"
+        );
     }
 
     #[test]
@@ -280,7 +300,11 @@ mod tests {
         // Type 0 (posto): three points, the middle one closest to the query.
         w.services[0] = vec![[0.0, 0.0], [10.0, 0.0], [100.0, 0.0]];
         let (points, dists) = w.nearest_services(9.0, 0.0);
-        assert_eq!(points[0], [10.0, 0.0], "must find the middle point, not the first");
+        assert_eq!(
+            points[0],
+            [10.0, 0.0],
+            "must find the middle point, not the first"
+        );
         assert!((dists[0] - 1.0).abs() < 1e-5);
 
         // A type with no points reports "not found", not a bogus zero distance.

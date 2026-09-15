@@ -16,10 +16,25 @@ use super::*;
 /// under 1 KB, which the same policy allows in the system temp directory.
 fn scratch_dir() -> std::path::PathBuf {
     let dedicated = std::path::PathBuf::from("/media/llm-data/scratch/universe-fly-map-tests");
-    if std::fs::create_dir_all(&dedicated).is_ok() {
+    if directory_is_writable(&dedicated) {
         return dedicated;
     }
     std::env::temp_dir()
+}
+
+fn directory_is_writable(path: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let probe = path.join(format!(".write-probe-{}", std::process::id()));
+    let writable = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&probe)
+        .is_ok();
+    let _ = std::fs::remove_file(probe);
+    writable
 }
 
 /// A selection for `n_beings` from one block per being, against the synthetic layout.

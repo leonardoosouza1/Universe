@@ -6,6 +6,8 @@
 //! governor). O cérebro decide tudo; o piloto fantasma/sensorial (pilots.rs) só entra
 //! por flag de diagnóstico.
 
+use crate::brain_backend::BrainBackend;
+use crate::{brain_backend, driving_diagnostics, visual_telemetry};
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -15,7 +17,6 @@ use wgpu::util::DeviceExt;
 use universe::analysis::regioes::{ContextoAmostra, CurvaturaPista};
 use universe::config::iara::vision::{RETINA_ROWS, RETINA_TOTAL};
 use universe::engine::SovereignEngine;
-use universe::fly_map::spiking::EyeMode;
 use universe::gpu::brain::BrainGpu;
 use universe::gpu::core::{storage_entry, uniform_entry};
 use universe::gpu::fly_map::{FlyMapGpu, FlySpikingGpu};
@@ -32,8 +33,14 @@ use universe::visao::pitch;
 use universe::world::VoxelWorld;
 
 use crate::audit::auditoria_acumular;
+use crate::native_action::{
+    MotorCommandValue, MotorHead, MotorTrace, NativeActionInput, OverrideCause,
+    ThrottleArbitration, map_native_action,
+};
+use crate::reverse_controller::{ReverseInput, ReverseState, step_v2};
 use crate::statics::*;
 use crate::types::BeingState;
+use universe::brain_interface::MotorCommand;
 
 pub struct GpuCtx {
     pub device: Arc<wgpu::Device>,
@@ -96,8 +103,20 @@ pub struct GpuCtx {
     /// degradava DNA reload". Ou seja: já se sabia que existe um ótimo interior, e a
     /// resposta foi travar em 1 em vez de medir onde ele fica. Aqui vira parâmetro.
     pub brain_skip: u32,
+    /// When enabled, a Fly backend is the direct command source and native brain stages
+    /// are not dispatched or read back. Default false preserves LegacyHybrid behavior.
+    pub brain_control_direct: bool,
     pub brain_tick: u32,
+    /// Raw three-channel source command captured before Fly readout adaptation or
+    /// native motor transforms. Empty unless the outer loop is writing a replay.
+    pub replay_raw_motor: Vec<[f32; 3]>,
+    pub replay_capture: bool,
     pub racing_line: RacingLine,
+    /// Host mirror of the three heritable curvature horizons. The spatial GPU
+    /// receives the complete sensor bank; this compact copy lets the existing
+    /// racing-line projection compute geometrically correct arc lookaheads in the
+    /// same CPU pass, without reading sensor genes back from VRAM every tick.
+    sensor_curve_ranges: Vec<[f32; 3]>,
     pub grid_cpu: Vec<u32>,
     pub grid_size_cpu: u32,
     pub cell_size_cpu: f32,
@@ -247,6 +266,12 @@ pub struct GpuCtx {
     /// Per-being steering adaptation for `--fly-readout reflex` (F4v). Empty and untouched
     /// unless `--fly-reflex-alpha`/`--fly-reflex-gain` are asked for.
     fly_reflex_adapt: Vec<universe::fly_map::ReflexAdaptation>,
+    visual_telemetry: Option<visual_telemetry::VisualTelemetry>,
+    pub driving_diagnostics: Option<driving_diagnostics::DrivingDiagnostics>,
+    /// Requests exact contact telemetry from the physics kernel for the evolutionary
+    /// objective even when the heavier selected-being diagnostics are disabled.
+    pub collect_contact_metrics: bool,
+    pub erase_fast_memory: bool,
     /// Event-driven LIF fly map. Mutually exclusive with `fly`: both models would
     /// otherwise consume the same connectome while only one command stream is applied.
     pub fly_spiking: Option<FlySpikingGpu>,
@@ -292,6 +317,46 @@ fn contexto_regiao(
         curvatura,
         velocidade,
         dist_parede,
+    }
+}
+
+/// Population-relative proximity input used only in explicitly social worlds.
+///
+/// Evolution evaluates each genome on an independent copy of the same driving task.
+/// Therefore the default must be zero: an elite's observation cannot depend on what
+/// unrelated candidate genomes happen to do beside it. Racing and traffic experiments
+/// can enable the signal with `--social-sensors`.
+fn competitive_stress(
+    positions: &[[f32; 2]],
+    forwards: &[[f32; 2]],
+    being: usize,
+    enabled: bool,
+) -> f32 {
+    if !enabled || being >= positions.len() || being >= forwards.len() {
+        return 0.0;
+    }
+    let [px, pz] = positions[being];
+    let [fx, fz] = forwards[being];
+    let mut has_near_ahead = false;
+    let mut min_dist_any = f32::MAX;
+    for (other, &[ox, oz]) in positions.iter().enumerate() {
+        if other == being {
+            continue;
+        }
+        let dx = ox - px;
+        let dz = oz - pz;
+        let dist = (dx * dx + dz * dz).sqrt();
+        min_dist_any = min_dist_any.min(dist);
+        if dist < 20.0 && (dx * fx + dz * fz) / dist.max(0.01) > 0.3 {
+            has_near_ahead = true;
+        }
+    }
+    if has_near_ahead {
+        1.0
+    } else if min_dist_any < 40.0 {
+        0.5
+    } else {
+        0.0
     }
 }
 
@@ -376,13 +441,15 @@ impl GpuCtx {
         let buf_retina_out = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("evolve-retina-out"),
             size: (cap * RETINA_TOTAL * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let shader_retina = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("evolve-retina"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../../gpu/retina.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(universe::gpu::RETINA_SHADER)),
         });
         let layout_retina = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("evolve-retina-layout"),
@@ -410,7 +477,8 @@ impl GpuCtx {
         let percept = PerceptionGpu::new(&device, &queue, world, cap)?;
 
         let brain = BrainGpu::new(Arc::clone(&device), Arc::clone(&queue), name.clone(), cap);
-        let slow = SlowBrainGpu::new_shared(Arc::clone(&device), Arc::clone(&queue), cap);
+        let mut slow = SlowBrainGpu::new_shared(Arc::clone(&device), Arc::clone(&queue), cap);
+        slow.set_canonical_kinematics(slow_canonical_kinematics());
 
         let grid_u8: Vec<u8> = world.grid.iter().map(|v| *v as u8).collect();
         let phys_gpu = PhysicsGpu::new_shared(
@@ -435,6 +503,10 @@ impl GpuCtx {
         eprintln!("[gpu_evolve] Adapter: {} · cap={}", name, cap);
 
         Some(Self {
+            visual_telemetry: visual_telemetry::VisualTelemetry::from_env(&device, cap),
+            driving_diagnostics: None,
+            collect_contact_metrics: false,
+            erase_fast_memory: false,
             device,
             queue,
             pipeline_retina,
@@ -460,8 +532,19 @@ impl GpuCtx {
             slow_samples: Vec::new(),
             last_intents: Vec::new(),
             brain_skip: 1,
+            brain_control_direct: false,
             brain_tick: 0,
+            replay_raw_motor: Vec::new(),
+            replay_capture: false,
             racing_line: world.racing_line.clone(),
+            sensor_curve_ranges: vec![
+                [
+                    universe::gpu::evolution::SENSOR_DEFAULTS[3],
+                    universe::gpu::evolution::SENSOR_DEFAULTS[4],
+                    universe::gpu::evolution::SENSOR_DEFAULTS[5],
+                ];
+                cap
+            ],
             grid_cpu: grid_u32,
             grid_size_cpu: world.size as u32,
             cell_size_cpu: world.cell_size,
@@ -572,6 +655,22 @@ impl GpuCtx {
         self.slow.upload_weights(&slow_w, refs.len());
     }
 
+    /// Upload the full sensory genome and retain only its curvature horizons on
+    /// the host. The host copy is generation state, never a CPU/GPU tick transfer.
+    pub fn upload_sensors(&mut self, sensors: &[f32], n: usize) {
+        use universe::gpu::evolution::{N_SENSOR_GENES, sensor_idx};
+        self.percept.upload_sensors(&self.queue, sensors, n);
+        assert_eq!(sensors.len(), n * N_SENSOR_GENES);
+        self.sensor_curve_ranges.resize(n, [0.0; 3]);
+        for (being, genes) in sensors.chunks_exact(N_SENSOR_GENES).enumerate() {
+            self.sensor_curve_ranges[being] = [
+                genes[sensor_idx::CURV_NEAR_M],
+                genes[sensor_idx::CURV_MID_M],
+                genes[sensor_idx::CURV_FAR_M],
+            ];
+        }
+    }
+
     /// C1 — the hippocampus bias for being `i`, ALREADY multiplied by `HIP_AUTHORITY`.
     ///
     /// Returns `[0.0, 0.0, 0.0]` — bit for bit, not approximately — whenever the organ is
@@ -619,6 +718,12 @@ impl GpuCtx {
         if n == 0 || n > self.capacity {
             return false;
         }
+
+        let diagnostic_alive: Vec<bool> = if self.driving_diagnostics.is_some() {
+            states.iter().map(|state| state.life_left > 0.0).collect()
+        } else {
+            Vec::new()
+        };
 
         // `--kernel-profile <N>`: this single check gates EVERY instrumentation side
         // effect in this function -- `begin_frame`, every `mark_begin`/`resolve` call,
@@ -692,11 +797,10 @@ impl GpuCtx {
         // no new flag this block compiles to three predictable-not-taken tests: flag
         // off is bit-for-bit the old tick (CLAUDE.md rule 3).
         let body_on = body_channels_on();
-        let mut body_vals: Vec<[f32; universe::perception::channels::BODY_K]> = if body_on {
-            vec![[0.0; universe::perception::channels::BODY_K]; n]
-        } else {
-            Vec::new()
-        };
+        // The compact body buffer is always refreshed. Its fuel slot feeds the dedicated
+        // native ch20 even when the optional hostile-world channel remap is disabled.
+        // This is 8*f32 per being, not a sensory readback.
+        let mut body_vals = vec![[0.0; universe::perception::channels::BODY_K]; n];
         {
             use bevy::math::Vec2;
             let pos2 = |p: &PhysicsStateGpu| Vec2::new(p.pos[0], p.pos[2]);
@@ -705,11 +809,9 @@ impl GpuCtx {
             //
             // The grip factor is applied through `phys.env_grip`, which is per being
             // and multiplies `mu_base` in the LIVE kernel (`physics_b.wgsl:141`). The
-            // kernel's own legacy temperature factor (`physics_b.wgsl:190`) is left
-            // untouched: `wheels[1].x` starts at 60.0 and is compared against
-            // `optimal_temp = 0.5`, so it is pinned at the constant 0.70 — identical in
-            // both arms of the A/B, therefore it cancels. Writing a real temperature
-            // into `wheels[1].x` would make the kernel apply grip a SECOND time.
+            // kernel's own temperature stays in its canonical normalised unit. The
+            // optional heterogeneous thermal model still uses `env_grip`; copying that
+            // state into `wheels[1].x` would apply its grip factor a second time.
             //
             // `mu` fed back is the one actually used (post-factor): friction heating is
             // proportional to friction power, so a tyre that lost grip also makes less
@@ -812,7 +914,7 @@ impl GpuCtx {
             // The host normalises and the shader only encodes, so every reference
             // distance here is a host-side dose: changing `--predator-perception` never
             // touches WGSL (`perception/channels.rs`, BODY BLOCK header).
-            if body_on {
+            {
                 let cap = self.station_cfg.capacity.max(1e-6);
                 let tank = FUEL_TANK.load(Ordering::Relaxed);
                 let pred_ref = PREDATOR_PERCEPT_M.load(Ordering::Relaxed).max(1e-3);
@@ -822,11 +924,14 @@ impl GpuCtx {
                     let fwd = Vec2::new(p.fwd[0], p.fwd[2]);
                     let lat = Vec2::new(p.lat[0], p.lat[2]);
                     let v = &mut body_vals[i];
-                    if let Some(ns) = universe::resources::nearest_charged(&self.stations, cap, me)
-                    {
-                        v[0] = signed_bearing(self.stations[ns.index].pos - me, fwd, lat);
-                        v[1] = 1.0 - (ns.dist_m / STATION_PROX_REF_M).min(1.0);
-                        v[2] = ns.charge_frac;
+                    if body_on {
+                        if let Some(ns) =
+                            universe::resources::nearest_charged(&self.stations, cap, me)
+                        {
+                            v[0] = signed_bearing(self.stations[ns.index].pos - me, fwd, lat);
+                            v[1] = 1.0 - (ns.dist_m / STATION_PROX_REF_M).min(1.0);
+                            v[2] = ns.charge_frac;
+                        }
                     }
                     // OwnFuel. With `--fuel` off the tank is 0 and there is no fuel
                     // constraint at all, so the honest constant is "full", not "empty":
@@ -837,10 +942,12 @@ impl GpuCtx {
                     } else {
                         1.0
                     };
-                    if let Some(pred) = self.predator {
-                        let rel = pred.pos - me;
-                        v[4] = signed_bearing(rel, fwd, lat);
-                        v[5] = 1.0 - (rel.length() / pred_ref).min(1.0);
+                    if body_on {
+                        if let Some(pred) = self.predator {
+                            let rel = pred.pos - me;
+                            v[4] = signed_bearing(rel, fwd, lat);
+                            v[5] = 1.0 - (rel.length() / pred_ref).min(1.0);
+                        }
                     }
                 }
             }
@@ -906,10 +1013,21 @@ impl GpuCtx {
                 }
             };
             let mut dists: Vec<[f32; 3]> = Vec::with_capacity(n);
+            let continuous = continuous_wall_probes();
             for i in 0..n {
                 let p = &states[i].phys;
                 let (px, pz) = (p.pos[0], p.pos[2]);
                 let (fx, fz) = (p.fwd[0], p.fwd[2]);
+                if continuous {
+                    dists.push(crate::wall_probes::sample(
+                        &self.grid_cpu,
+                        gs,
+                        cs,
+                        [px, pz],
+                        [fx, fz],
+                    ));
+                    continue;
+                }
                 let (perp_x, perp_z) = (-fz, fx);
                 let mut dist_l = 40.0_f32; // default = livre (sem parede em 40m)
                 for &sd in &lat_samp {
@@ -979,9 +1097,11 @@ impl GpuCtx {
             );
         };
         let t_prep_racing_line = prints_this_tick.then(std::time::Instant::now);
+        let mut curve_risk: Vec<f32> = Vec::with_capacity(n);
         {
             let hw = self.racing_line.half_width.max(1.0);
             let mut rv: Vec<[f32; 6]> = Vec::with_capacity(n);
+            let mut curve_vals: Vec<[f32; 7]> = Vec::with_capacity(n);
             for i in 0..n {
                 let p = &states[i].phys;
                 let pos2d = bevy::math::Vec2::new(p.pos[0], p.pos[2]);
@@ -1015,9 +1135,34 @@ impl GpuCtx {
                     cpu_corridor,
                     cpu_whisker_norm,
                 ]);
+
+                let horizons = self
+                    .sensor_curve_ranges
+                    .get(i)
+                    .copied()
+                    .unwrap_or([40.0, 70.0, 120.0]);
+                curve_vals.push([
+                    self.racing_line.lookahead_curve(pos2d, horizons[0]),
+                    self.racing_line.lookahead_curve(pos2d, horizons[1]),
+                    self.racing_line.lookahead_curve(pos2d, horizons[2]),
+                    self.racing_line.lookahead_curve(pos2d, 350.0),
+                    self.racing_line.lookahead_curve(pos2d, 200.0),
+                    self.racing_line.lookahead_curve(pos2d, 275.0),
+                    self.racing_line.lookahead_curve(pos2d, 260.0),
+                ]);
+
+                // Lateral acceleration demand: a_y = v²|kappa|. Dividing by the
+                // approximate dry-grip limit mu*g yields a dimensionless body risk.
+                // This replaces the former difference between two retina rows, which
+                // was an image feature rather than curvature and could be high on walls.
+                let speed_sq = p.vel[0] * p.vel[0] + p.vel[2] * p.vel[2];
+                let kappa = self.racing_line.mean_curvature_ahead(pos2d, 30.0).abs();
+                curve_risk.push((speed_sq * kappa / (0.9 * 9.81)).clamp(0.0, 1.0));
             }
             self.percept
                 .update_racing_line_temporal(&self.queue, &rv[..n]);
+            self.percept
+                .update_curve_temporal(&self.queue, &curve_vals[..n]);
         }
         if let Some(t) = t_prep_racing_line {
             cpu_phases.push(("prep.racing_line", t.elapsed().as_secs_f32() * 1000.0));
@@ -1082,7 +1227,7 @@ impl GpuCtx {
                 } else {
                     0.0
                 };
-                let tt: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum::<f32>() / 4.0 / 120.0;
+                let tt: f32 = (0..4).map(|j| p.wheels[j * 2 + 1][0]).sum::<f32>() / 4.0;
                 let voxel = voxel_at_cpu(p.pos[0], p.pos[2]);
                 let on_grass = if voxel == 0 { 1.0_f32 } else { 0.0 };
                 self.lap_grass[i] = voxel == 0; // C0: same voxel, no second lookup
@@ -1101,26 +1246,18 @@ impl GpuCtx {
                 //   67 ← vida restante   (era HP fixo em 1,0): o ser morre sem saber que vai
                 //   71 ← temperatura do motor: acima de 105 °C a potência cai
                 //        (physics.wgsl:402) — muda o ótimo de acelerar, τ ≈ 500-1000 ticks
-                //   72 ← RISCO CINÉTICO: velocidade × curvatura aparente da retina.
-                //        Antes: temperatura do óleo (constante em pista plana, auditada como
-                //        canal morto). O ser precisa aprender a FREAR antes da curva — para isso
-                //        o sinal de "velocidade alta + curva fechada à frente" tem de chegar
-                //        ao cérebro em um canal dedicado. Conserto 3 (2026-08-12).
-                //        edge_row6 e edge_row7 medem densidade de borda horizontal linha-a-linha:
-                //        a diferença entre elas sobe quando a perspectiva da curva aparece
-                //        (borda superior vs inferior divergem). Multiplicado pela velocidade
-                //        normalizada: alto = velocidade + curvatura próxima = freiar agora.
+                //   72 ← LATERAL ACCELERATION DEMAND: v²|κ|/(mu*g). This combines body speed
+                //        with the mean racing-line curvature over the next 30m. It says how
+                //        much grip the current trajectory would demand; it never chooses brake.
                 //   75 ← estagnação: quantos ticks sem avançar
-                let vida_frac =
+                // Channel 67 is the remaining survival reserve: the smaller of
+                // time/energy life and mechanical integrity. A collision therefore
+                // becomes an observable bodily consequence on the next tick.
+                let time_life =
                     (states[i].life_left as f32 / life_cap().max(1) as f32).clamp(0.0, 1.0);
+                let vida_frac = time_life.min(1.0 - states[i].dano.clamp(0.0, 1.0));
                 let temp_motor = ((p.engine_temp - 20.0) / 130.0).clamp(0.0, 1.0);
-                // Risco cinético = velocidade × curvatura aparente.
-                // curv_aparente: diferença de edge density entre linhas 6 e 7 da retina.
-                // Quanto maior a diferença, mais a perspectiva da parede está "virando" —
-                // sinal de curva à frente. Multiplicado por speed_norm para que seja ZERO
-                // em linha reta rápida e ALTO em curva fechada + velocidade alta.
-                let curv_aparente = (states[i].edge_row6 - states[i].edge_row7).abs();
-                let risco_cinetico = (speed / 30.0).clamp(0.0, 1.0) * curv_aparente;
+                let risco_cinetico = curve_risk[i];
                 let estagnado = (states[i].stagnation_ticks as f32 / 64.0).clamp(0.0, 1.0);
                 prop.push([
                     align,
@@ -1162,10 +1299,8 @@ impl GpuCtx {
             // an error: `buf_temporal` is resident, so the shader would silently re-read
             // the previous tick's values — a working-but-stale signal
             // (`gpu/perception.rs::update_body_channels`, contract).
-            if body_on {
-                self.percept
-                    .update_body_channels(&self.queue, &body_vals[..n]);
-            }
+            self.percept
+                .update_body_channels(&self.queue, &body_vals[..n]);
         }
         if let Some(t) = t_prep_prop {
             cpu_phases.push(("prep.prop", t.elapsed().as_secs_f32() * 1000.0));
@@ -1240,56 +1375,77 @@ impl GpuCtx {
                         crate::pilots::fan_ray_d_min(px, pz, fx, fz, &voxel_at);
                 }
 
-                if states[i].post_reverse_lockout > 0.0 {
-                    states[i].post_reverse_lockout = (states[i].post_reverse_lockout - dt).max(0.0);
-                }
-
-                // Trigger de ré: parede frontal <4m E speed baixa E estagnado E sem lockout.
-                {
-                    let rev = states[i].reverse_timer;
-                    let stag = states[i].stagnation_ticks;
-                    let lockout = states[i].post_reverse_lockout;
-                    if rev <= 0.0
-                        && lockout <= 0.0
-                        && fwd_dist < revcfg::TRIGGER_DIST_M
-                        && speed < revcfg::TRIGGER_SPEED_MAX_MS
-                        && stag > revcfg::STAGNATION_TICKS
-                    {
-                        // Anti-encalhe ESCALONADO (ver doc em types.rs::re_falhas):
-                        // re-encalhe em <5 s = a ré anterior não escapou → dobra a
-                        // duração (até 3×) e o volante alterna de lado durante a ré.
-                        if states[i].re_desde_saida < 5.0 {
-                            states[i].re_falhas = states[i].re_falhas.saturating_add(1);
-                        } else {
-                            states[i].re_falhas = 0;
-                        }
-                        let escala = 1.0 + (states[i].re_falhas.min(4) as f32) * 0.75;
-                        states[i].reverse_timer = revcfg::MIN_DURATION_S * escala;
+                if reverse_controller_v2() {
+                    let step = step_v2(
+                        ReverseState {
+                            remaining_s: states[i].reverse_timer,
+                            post_lockout_s: states[i].post_reverse_lockout,
+                            failures: states[i].re_falhas as u32,
+                            since_exit_s: states[i].re_desde_saida,
+                        },
+                        ReverseInput {
+                            dt_s: dt,
+                            forward_distance_m: fwd_dist,
+                            speed_mps: speed,
+                            stagnation_ticks: states[i].stagnation_ticks,
+                        },
+                    );
+                    states[i].reverse_timer = step.state.remaining_s;
+                    states[i].post_reverse_lockout = step.state.post_lockout_s;
+                    states[i].re_falhas = step.state.failures.min(u8::MAX as u32) as u8;
+                    states[i].re_desde_saida = step.state.since_exit_s;
+                    if step.reset_stagnation {
                         states[i].stagnation_ticks = 0;
                     }
-                    states[i].re_desde_saida += dt;
-                }
-                // Decremento e saída de ré.
-                {
-                    let rev = states[i].reverse_timer;
-                    if rev > 0.0 {
-                        let nr = rev - dt;
-                        if fwd_dist > revcfg::EXIT_CLEAR_M || nr > revcfg::MAX_DURATION_S {
-                            states[i].reverse_timer = 0.0;
-                            states[i].re_desde_saida = 0.0;
-                            states[i].post_reverse_lockout = revcfg::POST_LOCKOUT_S;
-                        } else {
-                            states[i].reverse_timer = nr.max(0.0);
+                } else {
+                    // Historical controller kept byte-for-byte as the default arm.
+                    if states[i].post_reverse_lockout > 0.0 {
+                        states[i].post_reverse_lockout =
+                            (states[i].post_reverse_lockout - dt).max(0.0);
+                    }
+
+                    // Trigger de ré: parede frontal <4m E speed baixa E estagnado E sem lockout.
+                    {
+                        let rev = states[i].reverse_timer;
+                        let stag = states[i].stagnation_ticks;
+                        let lockout = states[i].post_reverse_lockout;
+                        if rev <= 0.0
+                            && lockout <= 0.0
+                            && fwd_dist < revcfg::TRIGGER_DIST_M
+                            && speed < revcfg::TRIGGER_SPEED_MAX_MS
+                            && stag > revcfg::STAGNATION_TICKS
+                        {
+                            if states[i].re_desde_saida < 5.0 {
+                                states[i].re_falhas = states[i].re_falhas.saturating_add(1);
+                            } else {
+                                states[i].re_falhas = 0;
+                            }
+                            let escala = 1.0 + (states[i].re_falhas.min(4) as f32) * 0.75;
+                            states[i].reverse_timer = revcfg::MIN_DURATION_S * escala;
+                            states[i].stagnation_ticks = 0;
+                        }
+                        states[i].re_desde_saida += dt;
+                    }
+                    // Decremento e saída de ré.
+                    {
+                        let rev = states[i].reverse_timer;
+                        if rev > 0.0 {
+                            let nr = rev - dt;
+                            if fwd_dist > revcfg::EXIT_CLEAR_M || nr > revcfg::MAX_DURATION_S {
+                                states[i].reverse_timer = 0.0;
+                                states[i].re_desde_saida = 0.0;
+                                states[i].post_reverse_lockout = revcfg::POST_LOCKOUT_S;
+                            } else {
+                                states[i].reverse_timer = nr.max(0.0);
+                            }
                         }
                     }
                 }
 
-                // val[1..17] (cfc_hidden) fica em ZERO deliberadamente: ch192-207 agora
-                // são escritos diretamente por `retina_digest.wgsl` (que roda no mesmo
-                // encoder, lendo o estado do CfC direto da VRAM — sem passar pela CPU).
-                // Este slot de `update_extra_temporal` continua existindo só porque a
-                // função é COMPARTILHADA com gpu_loop.rs/gpu_report.rs (que ainda rodam
-                // o CfC na CPU); em gpu_evolve, só o slot [0] (reverse_timer) é real.
+                // Only slot 0 (reverse timer) is populated on this path. The digest
+                // maintains its own extra buffer; its recurrent state is NOT part of
+                // the 192-channel native input. These zero slots preserve the shared
+                // update_extra_temporal API used by other executables.
                 let mut val = [0.0f32; 17];
                 val[0] = states[i].reverse_timer;
                 extra.push(val);
@@ -1344,6 +1500,10 @@ impl GpuCtx {
                 let positions: Vec<[f32; 2]> = (0..n)
                     .map(|i| [states[i].phys.pos[0], states[i].phys.pos[2]])
                     .collect();
+                let forwards: Vec<[f32; 2]> = (0..n)
+                    .map(|i| [states[i].phys.fwd[0], states[i].phys.fwd[2]])
+                    .collect();
+                let social_sensors = social_sensors_on();
 
                 let mut extra2: Vec<[f32; 9]> = Vec::with_capacity(n);
                 for i in 0..n {
@@ -1382,36 +1542,9 @@ impl GpuCtx {
                     // população espalhada), mesmo com o dado corretamente "alimentado". Agora
                     // o piso 0.5 depende de proximidade FÍSICA (alguém em até 40m, à frente ou
                     // não) — igual para todos os seres, sem depender de posição no array.
-                    let (px, pz) = (positions[i][0], positions[i][1]);
-                    let (fx, fz) = (p.fwd[0], p.fwd[2]);
-                    let mut has_near_ahead = false;
-                    let mut min_dist_any: f32 = f32::MAX;
-                    for j in 0..n {
-                        if j == i {
-                            continue;
-                        }
-                        let dx = positions[j][0] - px;
-                        let dz = positions[j][1] - pz;
-                        let dist = (dx * dx + dz * dz).sqrt();
-                        if dist < min_dist_any {
-                            min_dist_any = dist;
-                        }
-                        if dist < 20.0 {
-                            let dot = (dx * fx + dz * fz) / dist.max(0.01);
-                            if dot > 0.3 {
-                                has_near_ahead = true;
-                            }
-                        }
-                    }
-                    // 0.0=ninguém em 40m, 0.5=alguém no pelotão (<40m, qualquer direção),
-                    // 1.0=alguém <20m à frente no cone de visão.
-                    let comp_stress = if has_near_ahead {
-                        1.0f32
-                    } else if min_dist_any < 40.0 {
-                        0.5
-                    } else {
-                        0.0
-                    };
+                    // 0.0 by default so every genome is evaluated independently.
+                    // 0.5/1.0 proximity levels are available only in a social world.
+                    let comp_stress = competitive_stress(&positions, &forwards, i, social_sensors);
 
                     extra2.push([
                         slip_signal.clamp(-1.0, 1.0), // [0] → ch87
@@ -1466,7 +1599,7 @@ impl GpuCtx {
             // off by default, so a run that does not ask for it takes exactly the DDA-only
             // path the kernel had before this field existed.
             beings_on: retina_beings_on() as u32,
-            _pad0: 0,
+            _pad0: universe::visao::road_view_enabled() as u32,
             _pad1: 0,
             _pad2: 0,
         };
@@ -1538,6 +1671,22 @@ impl GpuCtx {
             t.mark_end(&mut enc, t_retina);
         }
 
+        let visual_sample = self.visual_telemetry.as_mut().and_then(|t| t.sample_tick());
+        let visual_alive: Vec<bool> = if visual_sample.is_some() {
+            states.iter().map(|s| s.life_left > 0.0).collect()
+        } else {
+            Vec::new()
+        };
+        if visual_sample.is_some() {
+            self.visual_telemetry.as_ref().unwrap().gpu.dispatch(
+                &self.device,
+                &mut enc,
+                &self.buf_retina_out,
+                &self.buf_poses_retina,
+                n,
+            );
+        }
+
         // Percepção.
         let t_percept = if prints_this_tick {
             self.timer
@@ -1594,7 +1743,8 @@ impl GpuCtx {
         // load-bearing, unlike the three orderings listed in `src/gpu/CLAUDE.md`.
         //
         // With `--fly-map` absent this is `None` and nothing at all is recorded.
-        if self.fly.is_some() || self.fly_spiking.is_some() {
+        let fly_backend = BrainBackend::from_options(self.fly.as_ref(), self.fly_spiking.as_ref());
+        if !matches!(fly_backend, BrainBackend::LegacyHybrid) {
             let t_fly = if prints_this_tick {
                 self.timer
                     .as_mut()
@@ -1602,15 +1752,6 @@ impl GpuCtx {
             } else {
                 None
             };
-            if let Some(fly) = self.fly.as_ref() {
-                fly.dispatch(
-                    &mut enc,
-                    n,
-                    self.percept.buf_output(),
-                    universe::fly_map::eye_on(),
-                    &self.buf_retina_out,
-                );
-            }
             if let Some(fly) = self.fly_spiking.as_ref() {
                 // The retina is already resident in `buf_retina_out`; K1/K2/K3 remain
                 // in this encoder so no CPU round trip occurs between perception and
@@ -1619,16 +1760,21 @@ impl GpuCtx {
                 if trace_sample {
                     fly.set_debug_being(self.spiking_trace_being);
                 }
-                fly.dispatch(
-                    &mut enc,
-                    n,
-                    &self.buf_retina_out,
-                    universe::fly_map::eye_on(),
-                    EyeMode::Photoreceptor,
-                    dt,
-                    0,
-                );
-                if trace_sample {
+            }
+            fly_backend.dispatch(
+                &mut enc,
+                n,
+                universe::brain_interface::SensorView {
+                    perception_wave: self.percept.buf_output(),
+                    retina: &self.buf_retina_out,
+                },
+                universe::fly_map::eye_on(),
+                dt,
+                tick_idx as u64,
+            );
+            if trace_sample {
+                if let Some(fly) = self.fly_spiking.as_ref() {
+                    fly.set_debug_being(self.spiking_trace_being);
                     fly.record_debug_snapshot(&mut enc, n);
                 }
             }
@@ -1650,9 +1796,10 @@ impl GpuCtx {
         // com skip=4 → 0 m, 100% de mortalidade, 0,0 s. Sem a guarda, teria sido pior —
         // o número sairia bonitinho e eu concluiria que "skip alto faz o modelo morrer",
         // quando o que morre é a execução.
-        let brain_fires = self.brain_skip <= 1
-            || self.last_intents.len() != n
-            || (self.brain_tick % self.brain_skip) == 0;
+        let brain_fires = !self.brain_control_direct
+            && (self.brain_skip <= 1
+                || self.last_intents.len() != n
+                || (self.brain_tick % self.brain_skip) == 0);
         if brain_fires {
             // No bracket recorded when `brain_fires` is false — an absent label reads
             // as "did not fire this tick" instead of a misleading 0.000 ms.
@@ -1663,6 +1810,9 @@ impl GpuCtx {
             } else {
                 None
             };
+            if self.erase_fast_memory {
+                self.brain.clear_fast_memory(&mut enc, n);
+            }
             self.brain
                 .bind_and_dispatch(&mut enc, n, &[], dt, Some(self.percept.buf_output()));
             if let Some(t) = self.timer.as_mut() {
@@ -1672,26 +1822,30 @@ impl GpuCtx {
 
         // Cérebro lento — colhe 48 canais da onda que já está na GPU e roda.
         // Encadeado no MESMO encoder: nenhum readback intermediário, nenhuma volta à CPU.
-        let t_slow_gather = if prints_this_tick {
+        let t_slow_gather = if !self.brain_control_direct && prints_this_tick {
             self.timer
                 .as_mut()
                 .and_then(|t| t.mark_begin(&mut enc, "slow.gather"))
         } else {
             None
         };
-        self.slow
-            .dispatch_gather(&mut enc, self.percept.buf_output(), n);
+        if !self.brain_control_direct {
+            self.slow
+                .dispatch_gather(&mut enc, self.percept.buf_output(), n);
+        }
         if let Some(t) = self.timer.as_mut() {
             t.mark_end(&mut enc, t_slow_gather);
         }
-        let t_slow = if prints_this_tick {
+        let t_slow = if !self.brain_control_direct && prints_this_tick {
             self.timer
                 .as_mut()
                 .and_then(|t| t.mark_begin(&mut enc, "slow"))
         } else {
             None
         };
-        self.slow.dispatch(&mut enc, n, dt);
+        if !self.brain_control_direct {
+            self.slow.dispatch(&mut enc, n, dt);
+        }
         if let Some(t) = self.timer.as_mut() {
             t.mark_end(&mut enc, t_slow);
         }
@@ -1717,11 +1871,33 @@ impl GpuCtx {
             // could name, and an unnamed 23% of the tick is not a diagnosis.
             cpu_phases.push(("cpu.record", t0.elapsed().as_secs_f32() * 1000.0));
         }
+        let diagnostic_sample = self
+            .driving_diagnostics
+            .as_ref()
+            .is_some_and(|d| d.sampling(tick_idx));
+        if diagnostic_sample {
+            self.driving_diagnostics.as_ref().unwrap().record_sample(
+                &mut enc,
+                &self.buf_retina_out,
+                self.percept.buf_output(),
+                (!self.brain_control_direct).then_some(&self.brain),
+            );
+        }
         self.queue.submit(Some(enc.finish()));
         let t_poll = prints_this_tick.then(std::time::Instant::now);
         self.device.poll(wgpu::Maintain::Wait);
         if let Some(t) = t_poll {
             cpu_phases.push(("cpu.poll", t.elapsed().as_secs_f32() * 1000.0));
+        }
+
+        if diagnostic_sample {
+            let observed_being = self.driving_diagnostics.as_ref().unwrap().selected;
+            self.driving_diagnostics.as_mut().unwrap().read_sample(
+                &self.device,
+                tick_idx,
+                !self.brain_control_direct,
+                &pose_raw[observed_being],
+            );
         }
 
         // `--kernel-profile <N>`: print the GPU-kernel table every N ticks. This covers
@@ -1788,7 +1964,9 @@ impl GpuCtx {
         }
 
         let t_ri = prints_this_tick.then(std::time::Instant::now);
-        let mut intents = if brain_fires {
+        let mut intents = if self.brain_control_direct {
+            vec![[0.0f32; 96]; n]
+        } else if brain_fires {
             let v = self.brain.read_intent_after_submit(n);
             if v.len() == n {
                 self.last_intents = v.clone();
@@ -1800,10 +1978,19 @@ impl GpuCtx {
             self.last_intents.clone()
         };
         if let Some(t) = t_ri {
-            cpu_phases.push(("cpu.read_intent", t.elapsed().as_secs_f32() * 1000.0));
+            let label = if self.brain_control_direct {
+                "cpu.command_buffer"
+            } else {
+                "cpu.read_intent"
+            };
+            cpu_phases.push((label, t.elapsed().as_secs_f32() * 1000.0));
         }
-        let t_rs = prints_this_tick.then(std::time::Instant::now);
-        let slow_out = self.slow.read_outputs(n);
+        let t_rs = (prints_this_tick && !self.brain_control_direct).then(std::time::Instant::now);
+        let slow_out = if self.brain_control_direct {
+            Vec::new()
+        } else {
+            self.slow.read_outputs(n)
+        };
         if let Some(t) = t_rs {
             cpu_phases.push(("cpu.read_slow", t.elapsed().as_secs_f32() * 1000.0));
         }
@@ -1811,33 +1998,48 @@ impl GpuCtx {
         // discipline as the intent above. Empty vector when the map is off, and an empty
         // vector is what the override below tests before touching anything.
         let t_rf = prints_this_tick.then(std::time::Instant::now);
-        let fly_cmd = if let Some(fly) = self.fly_spiking.as_ref() {
-            let commands = fly.read_commands_after_submit(n);
+        let fly_cmd = if !matches!(fly_backend, BrainBackend::LegacyHybrid) {
+            let commands = fly_backend.read_commands_after_submit(n);
+            if let Err(error) = brain_backend::validate_commands(&commands, n) {
+                eprintln!("[brain-control] {error}; invalidating the run before physics");
+                return false;
+            }
             if trace_sample {
-                if let Some(mut frame) = fly.read_debug_snapshot_after_submit() {
-                    frame.commands = commands
-                        .get(self.spiking_trace_being)
-                        .copied()
-                        .unwrap_or([0.0; universe::fly_map::COMMANDS]);
-                    if let Some(writer) = self.spiking_trace_writer.as_mut() {
-                        if let Err(e) =
-                            universe::fly_map::spiking::write_trace_frame(writer, &frame)
-                        {
-                            eprintln!("[fly-spiking] trace write failed: {e}");
-                            self.spiking_trace_writer = None;
+                if let Some(fly) = self.fly_spiking.as_ref() {
+                    if let Some(mut frame) = fly.read_debug_snapshot_after_submit() {
+                        frame.commands = commands
+                            .get(self.spiking_trace_being)
+                            .copied()
+                            .map(MotorCommand::as_array)
+                            .unwrap_or([0.0; universe::fly_map::COMMANDS]);
+                        if let Some(writer) = self.spiking_trace_writer.as_mut() {
+                            if let Err(e) =
+                                universe::fly_map::spiking::write_trace_frame(writer, &frame)
+                            {
+                                eprintln!("[fly-spiking] trace write failed: {e}");
+                                self.spiking_trace_writer = None;
+                            }
                         }
+                    } else {
+                        eprintln!("[fly-spiking] trace snapshot readback failed; disabling trace");
+                        self.spiking_trace_writer = None;
                     }
-                } else {
-                    eprintln!("[fly-spiking] trace snapshot readback failed; disabling trace");
-                    self.spiking_trace_writer = None;
                 }
             }
-            commands
-        } else if let Some(fly) = self.fly.as_ref() {
-            fly.read_commands_after_submit(n)
+            commands.into_iter().map(MotorCommand::as_array).collect()
         } else {
             Vec::new()
         };
+        if self.replay_capture {
+            self.replay_raw_motor = if (fly_brain() || fly_spiking()) && fly_cmd.len() == n {
+                fly_cmd.clone()
+            } else {
+                intents
+                    .iter()
+                    .map(|intent| [intent[0], intent[1], intent[2]])
+                    .collect()
+            };
+        }
         if let Some(t) = t_rf {
             cpu_phases.push(("cpu.read_fly", t.elapsed().as_secs_f32() * 1000.0));
         }
@@ -2110,16 +2312,13 @@ impl GpuCtx {
             }
         }
 
-        // ── KAN eval inline (idêntico ao gpu_loop.rs) ─────────────────────────
-        // Deduplicado (E3): usa universe::kan::eval_knots — mesma fórmula que era
-        // reimplementada aqui e em gpu_loop.rs como closure local.
-        let kan_eval =
-            |out_idx: usize, x: f32| -> f32 { universe::kan::eval_knots(kan_knots, out_idx, x) };
-
         if let Some(t) = t_dl_outer {
             cpu_phases.push(("cpu.digest_loop", t.elapsed().as_secs_f32() * 1000.0));
         }
         let t_asm = prints_this_tick.then(std::time::Instant::now);
+        let diagnostic_being =
+            diagnostic_sample.then(|| self.driving_diagnostics.as_ref().unwrap().selected);
+        let mut selected_motor_trace: Option<MotorTrace> = None;
         // MARCA-ORDEM-FISICA (lida pelo teste piloto_entra_antes_da_fisica)
         let mut phys_states: Vec<PhysicsStateGpu> = (0..n)
             .map(|i| {
@@ -2142,13 +2341,24 @@ impl GpuCtx {
                     return s;
                 }
 
+                if self.brain_control_direct {
+                    let command = brain_backend::direct_motor_command([
+                        intents[i][0],
+                        intents[i][1],
+                        intents[i][2],
+                    ]);
+                    s.throttle = command.throttle;
+                    s.steer = command.steer;
+                    s.brake_cmd = command.brake;
+                    s.dt = dt;
+                    return s;
+                }
+
                 let slow = if slow_ablated() {
                     [0.0; 3]
                 } else {
                     slow_out.get(i).copied().unwrap_or([0.0; 3])
                 };
-                let aggression = slow[0] * 0.5;
-                let throttle_cap = 1.0 - slow[1].max(0.0) * 0.8;
                 // Autoridade do lento sobre o volante, parametrizável.
                 //
                 // Era ±0,20 fixo — fraco demais para o problema medido: o volante ELEITO pela
@@ -2156,7 +2366,6 @@ impl GpuCtx {
                 // com memória temporal (o estado que sabe "já estou na curva"). Se, com
                 // autoridade real, ele soltar o volante, o teto era a arquitetura sufocando a
                 // memória; se não soltar mesmo com autoridade, o teto é o cérebro pequeno.
-                let steer_bias = slow[2] * SLOW_STEER_AUTH.load(Ordering::Relaxed);
 
                 // ── C1: SECTOR HIPPOCAMPUS (docs/PRD-CEREBRO-NEUROMOD.md §C1) ────
                 //
@@ -2173,11 +2382,6 @@ impl GpuCtx {
                 // `[0, 0, 0]` when the organ is off, so these three lines are a no-op on
                 // the default path — see `hippocampus_bias`.
                 let hip_bias = self.hippocampus_bias(i);
-                let thr_kan = (kan_eval(0, intent[0]).max(0.0) + aggression + hip_bias[0])
-                    .clamp(0.0, throttle_cap);
-                let steer_kan =
-                    (kan_eval(1, intent[1]) + steer_bias + hip_bias[1]).clamp(-1.0, 1.0);
-                let brk_kan = (kan_eval(2, intent[2]) + hip_bias[2]).max(0.0);
                 // Alisamento do volante: `prev*(1-α) + novo*α`.
                 //
                 // Com α=0,50 o comando leva ~4 ticks para chegar a 90% de um alvo novo, o que
@@ -2185,14 +2389,32 @@ impl GpuCtx {
                 // já esteja pedindo para soltar. Medido: o ser vira à direita em 74% dos
                 // quadros (média +0,40) e roda em círculo dentro da pista, travando o progresso
                 // em 265 m. Como parâmetro dá para separar culpa do cérebro de culpa do filtro.
-                let alfa = STEER_ALPHA.load(Ordering::Relaxed);
-                let steer_smooth =
-                    (states[i].prev_steer * (1.0 - alfa) + steer_kan * alfa).clamp(-1.0, 1.0);
                 let is_reversing = states[i].reverse_timer > 0.0;
                 let in_lockout = states[i].post_reverse_lockout > 0.0;
                 let speed_now = (s.vel[0].powi(2) + s.vel[2].powi(2)).sqrt();
-                // Brake anulado abaixo de 2 m/s (idêntico ao motor.rs).
-                let brk_final = if speed_now < 2.0 { 0.0 } else { brk_kan };
+                let head = if motor_head_linear() {
+                    MotorHead::Linear
+                } else {
+                    MotorHead::Spline(kan_knots)
+                };
+                let mapped = map_native_action(NativeActionInput {
+                    raw_intent: [intent[0], intent[1], intent[2]],
+                    slow_output: slow,
+                    hip_bias,
+                    previous_steer: states[i].prev_steer,
+                    speed_mps: speed_now,
+                    steering_alpha: STEER_ALPHA.load(Ordering::Relaxed),
+                    slow_steering_authority: SLOW_STEER_AUTH.load(Ordering::Relaxed),
+                    head,
+                    throttle_arbitration: if throttle_arbitration_signed() {
+                        ThrottleArbitration::Signed
+                    } else {
+                        ThrottleArbitration::Legacy
+                    },
+                });
+                let mut motor_trace =
+                    (diagnostic_being == Some(i)).then(|| MotorTrace::from_mapping(mapped));
+                let mut override_cause = OverrideCause::None;
 
                 if is_reversing {
                     // Ré ativa: override completo, pedal fixo 0.75, gear=0.
@@ -2208,19 +2430,21 @@ impl GpuCtx {
                     };
                     s.brake_cmd = 0.0;
                     s.current_gear = 0;
+                    override_cause = OverrideCause::Reverse;
                 } else if in_lockout {
                     // Pós-ré: throttle capeado em 0.8.
-                    s.throttle = thr_kan.min(0.8);
-                    s.steer = steer_smooth;
-                    s.brake_cmd = brk_final;
+                    s.throttle = mapped.command.throttle.min(0.8);
+                    s.steer = mapped.command.steer;
+                    s.brake_cmd = mapped.command.brake;
+                    override_cause = OverrideCause::PostReverseLockout;
                     if s.current_gear <= 1 {
                         s.current_gear = 2;
                     }
                 } else {
                     // Modo normal: intent neural completo. SEM muletas.
-                    s.throttle = thr_kan;
-                    s.steer = steer_smooth;
-                    s.brake_cmd = brk_final;
+                    s.throttle = mapped.command.throttle;
+                    s.steer = mapped.command.steer;
+                    s.brake_cmd = mapped.command.brake;
                     // PILOTO FANTASMA (pilots.rs): sobrepõe tudo. Não é muleta de produção —
                     // é instrumento de diagnóstico, ligado só por flag, para responder "o
                     // corpo consegue?".
@@ -2250,6 +2474,7 @@ impl GpuCtx {
                         s.steer = steer;
                         s.throttle = thr;
                         s.brake_cmd = brk;
+                        override_cause = OverrideCause::PhantomPilot;
                     }
                     if s.current_gear <= 1 {
                         s.current_gear = 2;
@@ -2284,6 +2509,9 @@ impl GpuCtx {
                     let d = states[i].dano;
                     s.throttle = s.throttle * (1.0 - 0.5 * d);
                     s.steer = s.steer * (1.0 - 0.3 * d);
+                    if d > 0.0 && override_cause == OverrideCause::None {
+                        override_cause = OverrideCause::Damage;
+                    }
                 }
                 // ── CÂMBIO (paridade com motor.rs:2451-2494) ──────────────────────
                 // A física deste pipeline SEMPRE teve caixa de 6 marchas (gear_ratio em
@@ -2357,19 +2585,33 @@ impl GpuCtx {
                     if s.current_gear <= 1 {
                         s.current_gear = 2;
                     }
+                    override_cause = OverrideCause::SensorPilot;
                 }
                 let ke = STEER_ESCALA.load(Ordering::Relaxed);
                 if ke > 0.0 {
                     s.steer = (s.steer * ke).clamp(-1.0, 1.0);
+                    override_cause = OverrideCause::SteerScale;
                 }
                 let sf = STEER_FIXO.load(Ordering::Relaxed);
                 if sf != 0.0 {
                     s.steer = sf.clamp(-1.0, 1.0);
+                    override_cause = OverrideCause::FixedSteer;
                 }
                 let tf = THR_FIXO.load(Ordering::Relaxed);
                 if tf != 0.0 {
                     s.throttle = tf.clamp(0.0, 1.0);
                     s.brake_cmd = 0.0;
+                    override_cause = OverrideCause::FixedThrottle;
+                }
+                if let Some(trace) = motor_trace.take() {
+                    let mut trace = trace;
+                    if is_reversing {
+                        trace.mark_reverse_override();
+                    }
+                    selected_motor_trace = Some(trace.with_final_command(
+                        MotorCommandValue::new(s.throttle, s.steer, s.brake_cmd),
+                        override_cause,
+                    ));
                 }
                 s.dt = dt;
                 s
@@ -2577,6 +2819,21 @@ impl GpuCtx {
         if let Some(t) = t_asm {
             cpu_phases.push(("cpu.assemble_phys", t.elapsed().as_secs_f32() * 1000.0));
         }
+        if let Some(tick) = visual_sample {
+            self.visual_telemetry.as_mut().unwrap().record(
+                &self.device,
+                tick,
+                &visual_alive,
+                states,
+                &phys_states,
+                &intents,
+            );
+        }
+        if self.driving_diagnostics.is_some() || self.collect_contact_metrics {
+            for state in &mut phys_states {
+                state.config_flags |= universe::gpu::physics::CONTACT_DIAGNOSTICS_FLAG;
+            }
+        }
         let ok = self.phys_gpu.step(&mut phys_states);
         if let Some(t0) = physics_t0 {
             physics_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -2589,6 +2846,26 @@ impl GpuCtx {
             return false;
         }
         for i in 0..n {
+            if self.collect_contact_metrics {
+                let contact = phys_states[i].contact_diagnostics();
+                states[i].collision_energy_j += f64::from(contact.energy_loss_j.max(0.0));
+                states[i].impact_count = states[i]
+                    .impact_count
+                    .saturating_add(u32::from(contact.impulse_ns > 0.0));
+
+                let damage_inc = crate::survival::impact_damage(
+                    contact.energy_loss_j,
+                    DANO_ESCALA.load(Ordering::Relaxed),
+                );
+                if damage_inc > 0.0 {
+                    let before = states[i].dano;
+                    states[i].dano = (before + damage_inc).min(1.0);
+                    self.lap_damage[i] += states[i].dano - before;
+                    if states[i].dano >= 1.0 {
+                        states[i].life_left = 0.0;
+                    }
+                }
+            }
             states[i].phys = phys_states[i];
             // ── Rotação de yaw: aplica av_y * dt à orientação do ser ─────────
             // O kernel de física escreve `out.fwd = fwd` (sem rotacionar — esse
@@ -2615,6 +2892,20 @@ impl GpuCtx {
             states[i].phys.fwd[2] /= fn_;
             states[i].phys.lat[0] /= ln_;
             states[i].phys.lat[2] /= ln_;
+        }
+
+        if let Some(diagnostics) = self.driving_diagnostics.as_mut() {
+            if let Err(error) = diagnostics.after_physics(
+                tick_idx,
+                states,
+                &diagnostic_alive,
+                &intents,
+                &slow_out,
+                selected_motor_trace.as_ref(),
+            ) {
+                eprintln!("ERROR driving diagnostics: {error}");
+                return false;
+            }
         }
 
         // memory0 → temporal.
@@ -2677,10 +2968,47 @@ impl GpuCtx {
         true
     }
 
-    /// Reseta CfC de percepção (estado recorrente) para todos os seres.
-    /// Chamado entre gerações para que os filhos comecem sem memória.
+    /// Resets every recurrent state owned by this context for the active beings.
+    /// Called between generations so offspring start without inherited memory.
     pub fn reset_cfc(&mut self, n: usize) {
         self.retina_digest.reset(&self.queue, n);
+        self.percept.reset_temporal(&self.device, &self.queue, n);
+
+        // `PerceptionGpu::reset_temporal` clears its private `buf_retina_prev`, but the
+        // next tick starts by copying THIS physical-retina output into that buffer before
+        // rendering the newborn's first frame. If the output still contains the final
+        // frame of the previous generation, the clear is immediately undone and motion
+        // channels describe another being's last view. A recurrent controller can amplify
+        // that one-frame pulse for the whole episode, which made an unchanged elite score
+        // 2,101 m in one generation and 401 m in the next. Clear both sides of the visual
+        // history at the life boundary.
+        let retina_bytes = (n.min(self.capacity)
+            * universe::config::iara::vision::RETINA_TOTAL
+            * std::mem::size_of::<u32>()) as u64;
+        if retina_bytes > 0 {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("physical-retina-generation-reset"),
+                });
+            encoder.clear_buffer(&self.buf_retina_out, 0, Some(retina_bytes));
+            self.queue.submit(Some(encoder.finish()));
+        }
+        for being_idx in 0..n {
+            self.slow.reset_being(being_idx);
+        }
+        self.fly_reflex_adapt.clear();
+        if self.brain_control_direct {
+            if let Some(fly) = self.fly.as_ref() {
+                fly.reset_state();
+            }
+            if let Some(fly) = self.fly_spiking.as_ref() {
+                fly.reset_state();
+            }
+        }
+        if let Some(telemetry) = self.visual_telemetry.as_mut() {
+            telemetry.reset();
+        }
     }
 
     /// Troca a pista sem recriar device/pipelines/bind-groups — só reescreve os
@@ -2770,6 +3098,38 @@ mod testes_ordem {
             fonte.matches(&m_piloto).count(),
             1,
             "marca do piloto duplicada no código"
+        );
+    }
+}
+
+#[cfg(test)]
+mod social_sensor_tests {
+    use super::competitive_stress;
+
+    #[test]
+    fn independent_evaluation_ignores_the_other_genomes_positions() {
+        let forwards = [[1.0, 0.0], [1.0, 0.0]];
+        let close_ahead = [[0.0, 0.0], [5.0, 0.0]];
+        let far_away = [[0.0, 0.0], [500.0, 0.0]];
+
+        assert_eq!(competitive_stress(&close_ahead, &forwards, 0, false), 0.0);
+        assert_eq!(competitive_stress(&far_away, &forwards, 0, false), 0.0);
+    }
+
+    #[test]
+    fn social_world_distinguishes_ahead_nearby_and_empty_space() {
+        let forwards = [[1.0, 0.0], [1.0, 0.0]];
+        assert_eq!(
+            competitive_stress(&[[0.0, 0.0], [5.0, 0.0]], &forwards, 0, true),
+            1.0
+        );
+        assert_eq!(
+            competitive_stress(&[[0.0, 0.0], [-5.0, 0.0]], &forwards, 0, true),
+            0.5
+        );
+        assert_eq!(
+            competitive_stress(&[[0.0, 0.0], [500.0, 0.0]], &forwards, 0, true),
+            0.0
         );
     }
 }

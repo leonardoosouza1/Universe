@@ -38,6 +38,7 @@ pub struct RetinaParamsGpu {
     pub pitches: [[f32; 4]; 4],
     /// `--retina-beings` gate: 0 = off, 1 = on. See the struct doc above.
     pub beings_on: u32,
+    /// Optics gate in the reserved word: 0 = legacy, 1 = physical road-view geometry.
     pub _pad0: u32,
     pub _pad1: u32,
     pub _pad2: u32,

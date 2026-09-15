@@ -1123,6 +1123,22 @@ impl VoxelWorld {
                     hit_voxel = self.retina_ground_voxel_at(hit_px, hit_pz);
                 }
 
+                if crate::visao::road_view_enabled() {
+                    let surface = crate::vision_geometry::trace(
+                        self,
+                        eye_pos,
+                        Vec3::new(dir_x, dir_y, dir_z),
+                    );
+                    hit_dist = surface.dist_m;
+                    hit_voxel = match surface.material {
+                        0 => VoxelType::Grass,
+                        1 => VoxelType::Road,
+                        2 => VoxelType::Wall,
+                        3 => VoxelType::Hole,
+                        _ => unreachable!("surface tracer returned a non-world material"),
+                    };
+                }
+
                 // ── Being occlusion (`--retina-beings`, docs/RETINA-BEINGS.md §2) ──────
                 // `other_beings.is_empty()` short-circuits the whole block, which is what
                 // makes an empty slice reproduce this function's pre-existing behaviour

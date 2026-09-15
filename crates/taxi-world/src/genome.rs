@@ -33,9 +33,7 @@ pub enum GenomeError {
     SenseCountMismatch { expected: u32, found: u32 },
     #[error("genome file has {found} service weights (`s`), this build expects {expected}")]
     ServiceCountMismatch { expected: u32, found: u32 },
-    #[error(
-        "genome file declares {declared} genome(s) but only had enough bytes for {available}"
-    )]
+    #[error("genome file declares {declared} genome(s) but only had enough bytes for {available}")]
     Truncated { declared: u32, available: usize },
 }
 
@@ -144,7 +142,9 @@ mod tests {
     fn genome_survives_disk_round_trip() {
         let original = sample_genome();
         let mut buf = Vec::new();
-        original.save(&mut buf).expect("save must not fail on a well-formed genome");
+        original
+            .save(&mut buf)
+            .expect("save must not fail on a well-formed genome");
 
         let loaded = Genome::load(Cursor::new(&buf)).expect("load must succeed on what save wrote");
         assert_eq!(loaded.len(), 1, "save always writes exactly one genome");
@@ -200,7 +200,10 @@ mod tests {
         buf.extend_from_slice(&vec![0u8; NP * 4]); // only bytes for 1
 
         let err = Genome::load(Cursor::new(&buf)).expect_err("declared count must be checked");
-        assert!(matches!(err, GenomeError::Truncated { declared: 2, .. }), "got {err:?}");
+        assert!(
+            matches!(err, GenomeError::Truncated { declared: 2, .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

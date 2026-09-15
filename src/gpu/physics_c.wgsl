@@ -176,6 +176,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var vel_col  = c.vel;
     var pos_col  = c.pos;
     var av_y_col = c.av_y;
+    let contact_diag = flag(c.config_flags, 6u);
+    let speed_before_collision = length(vel_col);
+    var contact_mask: u32 = 0u;
+    var impact_speed: f32 = 0.0;
+    var contact_impulse: f32 = 0.0;
 
     // 4 probe points — identical to the original physics.wgsl (lines 653-658)
     let p0 = c.pos + fwd * hwb;
@@ -185,9 +190,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Probe 0
     if (voxel_at(p0.x, p0.z) == 2u) {
+        if (contact_diag) { contact_mask |= 1u; }
         let pd = nor0(p0 - c.pos);
         let vi = dot(vel_col, pd);
         if (vi > 0.0) {
+            if (contact_diag) { impact_speed = max(impact_speed, vi); contact_impulse += c.mass * 1.05 * vi; }
             vel_col += pd * (-(1.0+0.05)*vi);
             let tang = vel_col - pd*dot(vel_col,pd);
             vel_col -= tang*0.5;
@@ -197,9 +204,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     // Probe 1
     if (voxel_at(p1.x, p1.z) == 2u) {
+        if (contact_diag) { contact_mask |= 2u; }
         let pd = nor0(p1 - c.pos);
         let vi = dot(vel_col, pd);
         if (vi > 0.0) {
+            if (contact_diag) { impact_speed = max(impact_speed, vi); contact_impulse += c.mass * 1.05 * vi; }
             vel_col += pd * (-(1.0+0.05)*vi);
             let tang = vel_col - pd*dot(vel_col,pd);
             vel_col -= tang*0.5;
@@ -209,9 +218,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     // Probe 2
     if (voxel_at(p2.x, p2.z) == 2u) {
+        if (contact_diag) { contact_mask |= 4u; }
         let pd = nor0(p2 - c.pos);
         let vi = dot(vel_col, pd);
         if (vi > 0.0) {
+            if (contact_diag) { impact_speed = max(impact_speed, vi); contact_impulse += c.mass * 1.05 * vi; }
             vel_col += pd * (-(1.0+0.05)*vi);
             let tang = vel_col - pd*dot(vel_col,pd);
             vel_col -= tang*0.5;
@@ -221,9 +232,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     // Probe 3
     if (voxel_at(p3.x, p3.z) == 2u) {
+        if (contact_diag) { contact_mask |= 8u; }
         let pd = nor0(p3 - c.pos);
         let vi = dot(vel_col, pd);
         if (vi > 0.0) {
+            if (contact_diag) { impact_speed = max(impact_speed, vi); contact_impulse += c.mass * 1.05 * vi; }
             vel_col += pd * (-(1.0+0.05)*vi);
             let tang = vel_col - pd*dot(vel_col,pd);
             vel_col -= tang*0.5;
@@ -231,6 +244,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pos_col  -= pd * 0.5;
         }
     }
+
+    // Measure only wall resolution, before the independent vertical ground clamp.
+    let energy_loss = select(0.0, max(0.0, 0.5 * c.mass *
+        (speed_before_collision * speed_before_collision - dot(vel_col, vel_col))),
+        contact_diag && contact_impulse > 0.0);
 
     // Pre-integration ground clamp
     let gnd_c = height_at(c.pos.x, c.pos.z) + 0.5;
@@ -271,11 +289,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out.vel          = final_vel;
     out.av_y         = final_av_y;
     out.pos          = final_pos;
-    out._pad_pos     = 0.0;
+    out._pad_pos     = select(0.0, f32(contact_mask), contact_diag);
     out.fwd          = fwd;
-    out._pad_fwd     = 0.0;
+    out._pad_fwd     = select(0.0, impact_speed, contact_diag);
     out.lat          = c.lat;
-    out._pad_lat     = 0.0;
+    out._pad_lat     = select(0.0, contact_impulse, contact_diag);
     out.current_rpm  = m.current_rpm;
     out.drive_torque_out = m.drive_torque_out;
     out.shift_timer  = m.shift_timer;
@@ -283,7 +301,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out.starter_timer= m.starter_timer;
     out.engine_temp  = m.engine_temp;
     out.oil_temp     = m.oil_temp;
-    out._pad_eng     = 0.0;
+    out._pad_eng     = energy_loss;
 
     // Wheels: omegas and slip from Kernel B, susp_comps from Kernel A, tire_temps from the input
     let sc = m.susp_comps;

@@ -47,7 +47,11 @@ impl SensoryField {
         let cols = (bytes.len() + n_zones - 1) / n_zones;
         let mut data = bytes.to_vec();
         data.resize(n_zones * cols, 0);
-        SensoryField { data, rows: n_zones, cols }
+        SensoryField {
+            data,
+            rows: n_zones,
+            cols,
+        }
     }
 }
 
@@ -157,11 +161,7 @@ impl ZoneConfig {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Encodes pooled zone features into HDC vectors for fast similarity search.
-pub fn encode_zone_hdc(
-    zone_features: &[f32],
-    byte_hvs: &[Hv; 256],
-    pos_hvs: &[Hv; 256],
-) -> Hv {
+pub fn encode_zone_hdc(zone_features: &[f32], byte_hvs: &[Hv; 256], pos_hvs: &[Hv; 256]) -> Hv {
     // Quantize float features to bytes and encode via HDC
     let bytes: Vec<u8> = zone_features
         .iter()
@@ -487,7 +487,10 @@ pub struct TextSensor {
 
 impl TextSensor {
     pub fn new(n_zones: usize, chunk_size: usize) -> Self {
-        TextSensor { n_zones, chunk_size }
+        TextSensor {
+            n_zones,
+            chunk_size,
+        }
     }
 }
 
@@ -652,10 +655,7 @@ mod tests {
     #[test]
     fn ensemble_voting() {
         let mut rng = Rng::new(42);
-        let configs = vec![
-            presets::vision_far_near(4),
-            presets::text_positional(4),
-        ];
+        let configs = vec![presets::vision_far_near(4), presets::text_positional(4)];
 
         let pipelines: Vec<PerceptionPipeline> = configs
             .into_iter()
@@ -757,6 +757,9 @@ mod tests {
         let sim_ab = zone_similarity(&hv_a, &hv_b);
         let sim_ac = zone_similarity(&hv_a, &hv_c);
 
-        assert!(sim_ab > sim_ac, "similar inputs should be more similar in HDC space");
+        assert!(
+            sim_ab > sim_ac,
+            "similar inputs should be more similar in HDC space"
+        );
     }
 }

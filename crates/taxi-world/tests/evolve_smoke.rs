@@ -51,16 +51,25 @@ fn taxi_evolve_runs_end_to_end_on_the_fixture_and_writes_the_e43_schema() {
         "bracos": ["linear"],
         "protocolo": { "P": 8, "G": 2, "R": 1, "seeds": [0], "sigma_mut": 0.1 }
     });
-    fs::write(&cenario_path, serde_json::to_string_pretty(&cenario).unwrap()).unwrap();
+    fs::write(
+        &cenario_path,
+        serde_json::to_string_pretty(&cenario).unwrap(),
+    )
+    .unwrap();
 
     let campeao_path = scratch.join("campeao.json");
     let campeao = serde_json::json!({
         "nomes_f": trace.nomes_f,
         "bracos": { "linear": { "W": { "0": trace.genoma } } },
     });
-    fs::write(&campeao_path, serde_json::to_string_pretty(&campeao).unwrap()).unwrap();
+    fs::write(
+        &campeao_path,
+        serde_json::to_string_pretty(&campeao).unwrap(),
+    )
+    .unwrap();
 
-    let saida_path = PathBuf::from("/media/llm-data/universe-runs/neuromod-lab-taxi/e82/e43_evolve_smoke.json");
+    let saida_path =
+        PathBuf::from("/media/llm-data/universe-runs/neuromod-lab-taxi/e82/e43_evolve_smoke.json");
 
     let args: Vec<String> = vec![
         "--cenario".into(),
@@ -73,8 +82,12 @@ fn taxi_evolve_runs_end_to_end_on_the_fixture_and_writes_the_e43_schema() {
         saida_path.display().to_string(),
     ];
 
-    let out_path = taxi_world::taxi_evolve_cli::run(&args).expect("taxi_evolve must succeed on the fixture");
-    assert_eq!(out_path, saida_path, "run() must return the --saida path it wrote");
+    let out_path =
+        taxi_world::taxi_evolve_cli::run(&args).expect("taxi_evolve must succeed on the fixture");
+    assert_eq!(
+        out_path, saida_path,
+        "run() must return the --saida path it wrote"
+    );
 
     let text = fs::read_to_string(&out_path).expect("output file must exist on disk");
     let json: serde_json::Value = serde_json::from_str(&text).expect("output must be valid JSON");
@@ -83,7 +96,9 @@ fn taxi_evolve_runs_end_to_end_on_the_fixture_and_writes_the_e43_schema() {
     assert_eq!(json["nomes_f"].as_array().unwrap().len(), NP);
     assert!(json.get("cenario").is_some(), "top-level cenario missing");
 
-    let linear = json.pointer("/bracos/linear").expect("bracos.linear must exist");
+    let linear = json
+        .pointer("/bracos/linear")
+        .expect("bracos.linear must exist");
     for key in [
         "fit",
         "fit_por_semente",
@@ -110,13 +125,25 @@ fn taxi_evolve_runs_end_to_end_on_the_fixture_and_writes_the_e43_schema() {
         "campeao",
         "motor",
     ] {
-        assert!(linear.get(key).is_some(), "missing key '{key}' in bracos.linear: {linear}");
+        assert!(
+            linear.get(key).is_some(),
+            "missing key '{key}' in bracos.linear: {linear}"
+        );
     }
     assert_eq!(linear["motor"], "rust-cpu");
     assert_eq!(linear["seeds"], serde_json::json!([0]));
-    assert_eq!(linear["crn"], "rotativo", "protocolo did not set crn -- default must be rotativo");
-    assert_eq!(linear["campeao"], "ultimo", "protocolo did not set campeao -- default must be ultimo");
-    assert!(linear["W"].get("0").is_some(), "W must carry seed 0's champion");
+    assert_eq!(
+        linear["crn"], "rotativo",
+        "protocolo did not set crn -- default must be rotativo"
+    );
+    assert_eq!(
+        linear["campeao"], "ultimo",
+        "protocolo did not set campeao -- default must be ultimo"
+    );
+    assert!(
+        linear["W"].get("0").is_some(),
+        "W must carry seed 0's champion"
+    );
     assert_eq!(linear["W"]["0"].as_array().unwrap().len(), NP);
 
     fs::remove_dir_all(&scratch).ok();
@@ -132,11 +159,19 @@ fn taxi_evolve_refuses_a_campeao_with_the_wrong_np() {
         "mundo": { "L": trace.l, "horizonte": "aberto", "T_max": 50 },
         "protocolo": { "P": 4, "G": 1, "R": 1, "seeds": [0] }
     });
-    fs::write(&cenario_path, serde_json::to_string_pretty(&cenario).unwrap()).unwrap();
+    fs::write(
+        &cenario_path,
+        serde_json::to_string_pretty(&cenario).unwrap(),
+    )
+    .unwrap();
 
     let campeao_path = scratch.join("campeao_bad.json");
     let campeao = serde_json::json!({ "bracos": { "linear": { "W": { "0": vec![0.0f32; 39] } } } });
-    fs::write(&campeao_path, serde_json::to_string_pretty(&campeao).unwrap()).unwrap();
+    fs::write(
+        &campeao_path,
+        serde_json::to_string_pretty(&campeao).unwrap(),
+    )
+    .unwrap();
 
     let args: Vec<String> = vec![
         "--cenario".into(),
@@ -146,11 +181,18 @@ fn taxi_evolve_refuses_a_campeao_with_the_wrong_np() {
         "--campeao".into(),
         campeao_path.display().to_string(),
         "--saida".into(),
-        scratch.join("should_not_be_written.json").display().to_string(),
+        scratch
+            .join("should_not_be_written.json")
+            .display()
+            .to_string(),
     ];
 
-    let err = taxi_world::taxi_evolve_cli::run(&args).expect_err("a 39-weight champion must be refused, not silently truncated");
-    assert!(err.contains("NP=40"), "error must name the NP mismatch, got: {err}");
+    let err = taxi_world::taxi_evolve_cli::run(&args)
+        .expect_err("a 39-weight champion must be refused, not silently truncated");
+    assert!(
+        err.contains("NP=40"),
+        "error must name the NP mismatch, got: {err}"
+    );
     assert!(
         !scratch.join("should_not_be_written.json").exists(),
         "a refused run must not write a partial output file"
@@ -173,7 +215,13 @@ fn timing_one_generation_p128_r4() {
     // 128 genomes, varied (not all-identical -- a flat population would let a
     // dead-simple branch predictor skew the number).
     let genomes: Vec<Genome> = (0..128)
-        .map(|p| Genome((0..NP).map(|i| ((p * 7 + i * 3) % 17) as f32 * 0.05 - 0.4).collect()))
+        .map(|p| {
+            Genome(
+                (0..NP)
+                    .map(|i| ((p * 7 + i * 3) % 17) as f32 * 0.05 - 0.4)
+                    .collect(),
+            )
+        })
         .collect();
 
     let mut sim = SimCpu::new();

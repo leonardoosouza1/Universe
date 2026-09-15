@@ -30,28 +30,19 @@ const WAVE_U32S:  u32 = 48u;   // ceil(192/4). Was 56u (223-channel wave) — th
 
 struct GatherParams {
     n_beings: u32,
-    _pad0:    u32,
+    dt:       f32,
+    canonical_kinematics: u32,
     _pad1:    u32,
-    _pad2:    u32,
 }
 
 @group(0) @binding(0) var<uniform>             gparams:    GatherParams;
 @group(0) @binding(1) var<storage, read>       buf_wave:   array<u32>;
 @group(0) @binding(2) var<storage, read_write> buf_input:  array<i32>;
 
-// Wave-channel → slow brain input map.
-//
-// The sources follow the blocks documented in `perception.wgsl`. Indices 0..13 and
-// 22..26 have no source because they correspond to body state and episodic memory
-// that `gpu_evolve` does not model.
-const CHANNEL_MAP: array<i32, 48> = array<i32, 48>(
-    // 0..3   joy_tick, joy_streak, hp, fuel — no source on this path
-    -1, -1, -1, -1,
-    // 4      speed
-    33,
-    // 5..13  tyre temperature, power, alignment, 2 reserved, time on
-    //        wall/grass, stagnation, night — no source
-    -1, -1, 32, -1, -1, -1, -1, -1, -1,
+// Historical map retained only for replaying old checkpoints under
+// `--slow-kinematics legacy`. It predates the GPU body/proprioception channels.
+const LEGACY_CHANNEL_MAP: array<i32, 48> = array<i32, 48>(
+    -1, -1, -1, -1, 33, -1, -1, 32, -1, -1, -1, -1, -1, -1,
     // 14..17 near wall per region (4 retina rows, 40/25/15/8 m)
     36, 37, 38, 39,
     // 18..21 far wall per region
@@ -71,13 +62,35 @@ const CHANNEL_MAP: array<i32, 48> = array<i32, 48>(
     136, 137, 138, 139, 140, 141, 142, 143,
 );
 
+// Native GPU map matching the 48-value SlowBrain contract in motor.rs.
+// Missing signals remain -1; a related-looking value is never substituted silently.
+const CANONICAL_CHANNEL_MAP: array<i32, 48> = array<i32, 48>(
+    // 0..7: reward, flow, life, fuel, speed, tyre, engine effort, alignment.
+    126, 127, 67, 20, 65, 70, 68, 64,
+    // 8..13: two reserved, wall exposure, grass flag, stagnation, night.
+    -1, -1, 88, 73, 75, -1,
+    // 14..21: pooled near/far vision.
+    36, 37, 38, 39, 40, 41, 42, 43,
+    // 22..26: throttle unavailable, previous steer/brake, shift unavailable,
+    // previous slow output already lives in the recurrent state.
+    -1, 121, 122, -1, -1,
+    // 27..31: signed curve lookahead, grace unavailable, frontal clearance.
+    78, 79, -1, 80, 118,
+    // 32..47: high-definition fovea.
+    128, 129, 130, 131, 132, 133, 134, 135,
+    136, 137, 138, 139, 140, 141, 142, 143,
+);
+
 @compute @workgroup_size(48)
 fn gather(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
     let being: u32 = wg.x;
     let k:     u32 = lid.x;
     if being >= gparams.n_beings || k >= INPUT_SIZE { return; }
 
-    let src: i32 = CHANNEL_MAP[k];
+    var src: i32 = LEGACY_CHANNEL_MAP[k];
+    if gparams.canonical_kinematics != 0u {
+        src = CANONICAL_CHANNEL_MAP[k];
+    }
     var v: i32 = 0;
     if src >= 0 {
         let ch: u32 = u32(src);

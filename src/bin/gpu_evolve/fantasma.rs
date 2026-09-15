@@ -53,7 +53,7 @@
 pub const N_SETORES: u32 = 24;
 
 /// Physics ticks per second (64 Hz, project constant — see `context.rs`,
-/// `statics.rs`: "640 ticks = 10 s @ 64 Hz").
+/// `statics.rs`: 1,920 ticks = 30 s at 64 Hz).
 const TICKS_POR_SEGUNDO: f32 = 64.0;
 
 /// Advantage assigned when the requested sector is beyond where the ghost got
@@ -67,7 +67,7 @@ const VANTAGEM_CAP_S: f32 = 2.0;
 /// Cap of extra life granted per tick when the advantage is ≥ `VANTAGEM_CAP_S`.
 /// Same unit as `life_earn`/`wall_life` in `main.rs`: life ticks per simulation
 /// tick (here it is always double the default of earned-life per advance; it is
-/// intentionally small next to the initial breath of 640 ticks/10s).
+/// intentionally small next to the initial breath of 1,920 ticks/30s).
 pub const BONUS_VIDA_CAP: f32 = 2.0;
 
 /// Time (in ticks) the previous generation's CHAMPION took to reach each of the
