@@ -118,6 +118,7 @@ pub const FLAGS: &[Flag] = &[
     flag("--seed",                        &[],                             VALUE,  "population seed"),
     flag("--wall-cost",                   &[],                             VALUE,  "fitness metres charged per second near a wall (default 2)"),
     flag("--impact-cost",                 &[],                             VALUE,  "fitness metres charged per kilojoule dissipated in impacts (default 1)"),
+    flag("--cost-gate-progress",          &[],                             VALUE,  "hold wall/impact cost at zero until the population median fitness reaches this many metres"),
     flag("--brain-skip",                  &[],                             VALUE,  "run the brain once every N ticks"),
     flag("--kernel-profile",              &["--perfil-kernel"],            VALUE,  "kernel profiling level"),
     flag("--wall-life",                   &[],                             VALUE,  "life lost per wall contact"),

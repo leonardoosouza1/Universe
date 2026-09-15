@@ -820,6 +820,18 @@ fn main() {
     // through the kernel's energy term. One metre/kJ makes a typical 473 kJ collision
     // history worth ~10% of a 4.7 km run after the checkpoint unit correction.
     let mut impact_cost: f32 = 1.0;
+    /// Cost curriculum (`--cost-gate-progress <metres>`), OFF by default.
+    ///
+    /// `--wall-cost` and `--impact-cost` are a finishing pressure: they rank a being that
+    /// already drives above one that drives into walls. Applied from generation zero they
+    /// rank against the only lineages that move at all, because at the start everybody
+    /// crashes -- measured in B1, where seed 113 never crosses 1 000 m of median progress
+    /// with the cost on and does cross it with the cost off (`docs/PREDICOES-CEREBRO.md`
+    /// B1h/B2). With this flag the costs stay at zero until the population's MEDIAN
+    /// uncosted fitness reaches the threshold, and apply from the next generation on.
+    /// `None` keeps the historical behaviour bit for bit.
+    let mut cost_gate_progress: Option<f64> = None;
+    let mut cost_gate_open = false;
     let mut brain_skip: u32 = 1;
     /// Ticks de vida consumidos A MAIS por tick colado na parede. 0 = sem custo.
     let mut wall_life: i64 = 0;
@@ -1290,6 +1302,12 @@ fn main() {
                     i += 1;
                     if i < args.len() {
                         impact_cost = args[i].parse().unwrap_or(0.0);
+                    }
+                }
+                "--cost-gate-progress" => {
+                    i += 1;
+                    if i < args.len() {
+                        cost_gate_progress = args[i].parse::<f64>().ok().filter(|m| *m > 0.0);
                     }
                 }
                 "--brain-skip" => {
@@ -4682,7 +4700,23 @@ fn main() {
         // A subtract-and-clamp objective made both failure modes optimal in sequence:
         // first crashing was free, then standing still beat every negative score.
         // The relative form keeps motion necessary while letting clean motion win.
-        if wall_cost > 0.0 || impact_cost > 0.0 {
+        // The curriculum gate, when armed, holds the costs at zero until the population's
+        // MEDIAN uncosted fitness reaches the threshold. While the gate is shut `fitness`
+        // is untouched, so the median read below is the uncosted one by construction.
+        if let Some(threshold) = cost_gate_progress {
+            if !cost_gate_open {
+                let median = objective_cost::population_median(&fitness[..n_seres]);
+                if median >= threshold {
+                    cost_gate_open = true;
+                    println!(
+                        "[cost-gate] gen {generation_idx} median {median:.1} m >= {threshold:.1} m: \
+                         wall/impact cost applies from the next generation"
+                    );
+                }
+            }
+        }
+        let costs_apply = cost_gate_progress.is_none() || cost_gate_open;
+        if costs_apply && (wall_cost > 0.0 || impact_cost > 0.0) {
             let sector_metres = lap_dist / N_CHECKPOINTS as f64;
             for (score, state) in fitness.iter_mut().zip(&states) {
                 *score = objective_cost::safety_adjusted_score(

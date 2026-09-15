@@ -75,9 +75,52 @@ pub fn centered_progress_metres(ordered_progress_m: f64, centered_progress_m: f6
     ordered * (0.75 + 0.25 * quality)
 }
 
+/// Median of a population's uncosted scores, for the cost curriculum gate.
+///
+/// The median rather than the mean because the gate asks whether the POPULATION has
+/// learned to drive, and in this simulator a single being that finds the racing line
+/// drags a mean across any threshold while forty-seven others are still stuck against
+/// a wall. An empty population has no median and returns zero, which keeps a closed
+/// gate closed.
+pub fn population_median(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted: Vec<f64> = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[mid]
+    } else {
+        0.5 * (sorted[mid - 1] + sorted[mid])
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{centered_progress_metres, ordered_progress_metres, safety_adjusted_score};
+    use super::{
+        centered_progress_metres, ordered_progress_metres, population_median,
+        safety_adjusted_score,
+    };
+
+    #[test]
+    fn population_median_ignores_one_lucky_being() {
+        // The gate asks whether the population drives, not whether anybody does. Forty-seven
+        // beings stuck at 10 m and one at 5 000 m must not open a 1 000 m gate.
+        let mut population = vec![10.0_f64; 47];
+        population.push(5_000.0);
+        assert!(population_median(&population) < 1_000.0);
+        let mean = population.iter().sum::<f64>() / population.len() as f64;
+        assert!(mean > 100.0, "the mean is what would have been fooled: {mean}");
+    }
+
+    #[test]
+    fn population_median_handles_even_length_and_emptiness() {
+        assert_eq!(population_median(&[]), 0.0);
+        assert_eq!(population_median(&[3.0]), 3.0);
+        assert_eq!(population_median(&[1.0, 3.0]), 2.0);
+        assert_eq!(population_median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
+    }
     #[test]
     fn pain_discounts_progress_without_making_stasis_optimal() {
         let clean = safety_adjusted_score(500.0, 0, 2.0, 0.0, 1.0, 50.0);
