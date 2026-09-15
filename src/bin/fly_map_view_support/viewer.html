@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fly map viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --background: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --warning: #f2cc60;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: var(--background);
+      color: var(--text);
+      font: 14px/1.45 system-ui, sans-serif;
+    }
+    main { max-width: 1440px; margin: 0 auto; }
+    h1 { margin: 0 0 4px; font-size: 24px; }
+    h2 { margin: 28px 0 8px; font-size: 18px; }
+    p { margin: 5px 0; }
+    .sub, .legend, .status { color: var(--muted); font-size: 12px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 10px;
+    }
+    .card {
+      margin: 10px 0;
+      padding: 14px;
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+    }
+    .kpi { font-size: 22px; font-variant-numeric: tabular-nums; }
+    .kpi small { display: block; color: var(--muted); font-size: 11px; }
+    .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .controls label { color: var(--muted); font-size: 12px; }
+    input[type="range"] { width: min(580px, 70vw); vertical-align: middle; }
+    button, select {
+      min-height: 40px;
+      padding: 7px 12px;
+      color: var(--text);
+      background: #21262d;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    button:disabled, select:disabled { opacity: 0.55; }
+    canvas {
+      display: block;
+      width: 100%;
+      min-width: 720px;
+      height: auto;
+      margin: 10px 0;
+      background: #090d12;
+      border-radius: 6px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    td { padding: 4px 6px; border-bottom: 1px solid #21262d; }
+    td:last-child { color: var(--muted); text-align: right; }
+    .warn { color: var(--warning); font-size: 12px; }
+    #frame-info { color: var(--accent); font-variant-numeric: tabular-nums; }
+    @media (prefers-reduced-motion: reduce) {
+      * { scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Fly connectome, brain activity, and measured body</h1>
+    <p class="sub">
+      A standalone diagnostic view. Network nodes and edges are deterministic samples;
+      voltage, spikes, sensors, actions, position, and heading are measured values.
+    </p>
+
+    <div id="kpis" class="grid" aria-label="Map summary"></div>
+
+    <section aria-labelledby="timeline-heading">
+      <h2 id="timeline-heading">Shared episode timeline</h2>
+      <div class="card controls">
+        <label for="being">Being</label>
+        <select id="being"></select>
+        <label for="slider">Sample</label>
+        <input id="slider" type="range" min="0" max="0" value="0">
+        <button id="play" type="button">Play</button>
+        <span id="trace-warning" class="warn" role="status"></span>
+      </div>
+      <p id="telemetry-info" class="status" aria-live="polite"></p>
+    </section>
+
+    <section aria-labelledby="brain-heading">
+      <h2 id="brain-heading">Brain: connectome flow and sampled activation</h2>
+      <div class="card">
+        <canvas id="flow" width="900" height="500" aria-label="Cell-type connection flow"></canvas>
+        <p class="legend">
+          Rows are presynaptic cell types; columns are postsynaptic cell types. Brightness is
+          the logarithmic count of real map edges among the 48 most connected types.
+        </p>
+      </div>
+      <div class="card">
+        <p id="frame-info" aria-live="polite"></p>
+        <canvas id="graph" width="1200" height="620" aria-label="Sampled connectome activation"></canvas>
+        <p class="legend">
+          Horizontal placement groups sampled neurons by cell type; it is not anatomy.
+          Green edges are excitatory, red edges inhibitory. With a matching trace, node color
+          shows measured membrane voltage and larger bright nodes show measured spikes.
+        </p>
+      </div>
+    </section>
+
+    <section aria-labelledby="body-heading">
+      <h2 id="body-heading">Body: measured position, sensors, and actions</h2>
+      <div class="card">
+        <canvas id="body" width="1200" height="460" aria-label="Measured body positions and headings"></canvas>
+        <p class="legend">
+          Blue marks every being at the selected sample. Yellow marks the selected being,
+          its forward vector, and only its measured trail up to the current sample. The x/z
+          axes use one equal scale and exclude any synthetic origin.
+        </p>
+      </div>
+      <div class="card">
+        <canvas id="telemetry-chart" width="1200" height="640" aria-label="Measured sensors and motor actions"></canvas>
+        <p class="legend">
+          Coverage and asymmetry are ratios; steer, throttle, and brake are commands; speed
+          is metres per second. Signed channels keep a visible zero line.
+        </p>
+      </div>
+    </section>
+
+    <section class="grid" aria-label="Map bindings">
+      <div class="card">
+        <h2>Motor output groups</h2>
+        <table id="groups"></table>
+      </div>
+      <div class="card">
+        <h2>Retina binding</h2>
+        <p id="eye"></p>
+      </div>
+    </section>
+  </main>
+  <script>window.FLY_MAP_DATA = __DATA__;</script>
+  <script>__MODEL__</script>
+  <script>__SCRIPT__</script>
+</body>
+</html>
