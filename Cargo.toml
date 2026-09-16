@@ -41,6 +41,11 @@ bevy = { version = "0.16.0", default-features = false, features = [
 bitflags = "2.6"
 # GPU compute without the graphics side (see src/gpu/): wgpu already comes via the Bevy tree.
 wgpu = "24.0"
+# lab-ui S2: genome_export/brain_step need sha256 of genome bytes. Already resolved as a
+# transitive dependency (bevy tree) at this exact version -- promoted to direct so these
+# CPU-only tools do not hand-roll a second SHA-256 implementation (one already exists,
+# unrelated, in src/replay/player_native.rs for a different purpose).
+sha2 = "0.10.9"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 rand = "0.9.0" # Ultra-fast 2026 version

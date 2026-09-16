@@ -224,9 +224,20 @@ impl CfCCell {
             // fat += alpha * (|s| - fat) * dt
             self.fatigue[i] += alpha * (s.abs() - self.fatigue[i]) * dt;
             self.state[i] = s;
-            let filtered = s.tanh();
-            output[i] = (filtered * 127.0).clamp(-127.0, 127.0) as i8;
+            output[i] = Self::quantize_state_i8(s);
         }
+    }
+
+    /// Quantizes a hidden-state value to the i8 the downstream layer (L1) consumes:
+    /// `(tanh(state) * 127).clamp(-127, 127)`. Extracted out of `update()`'s last line
+    /// (lab-ui PRD S2) so a CPU-only reference that already HAS a resident state -- e.g.
+    /// `brain_step`, replaying a recorded `neural.trace` 'cfc' sample -- reproduces
+    /// exactly the L1 input `update()` would have produced for that state, without
+    /// re-deriving the state from a wave (which would require the tau bank and the
+    /// fatigue history this function does not have) and without a second copy of the
+    /// formula.
+    pub fn quantize_state_i8(state: f32) -> i8 {
+        (state.tanh() * 127.0).clamp(-127.0, 127.0) as i8
     }
 
     /// Legacy API (kept so experimental imports do not break).
