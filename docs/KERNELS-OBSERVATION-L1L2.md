@@ -12,7 +12,7 @@ From `src/bin/gpu_evolve/driving_diagnostics.rs` (`before_brain` / `after_physic
 
 | block | size | stage |
 |---|---|---|
-| `retina` | 14 × 126 i8 | eye, pre-physics |
+| `retina` | 14 × 126 **u32** (material in the low byte, distance in mm in the high 24 bits — `driving.meta.json:retina_encoding`) | eye, pre-physics |
 | `wave` | 192 i8 | sensory wave entering the brain |
 | `fast_state` | 96 f32 | `fast_state_stage: "sensory_cfc_pre_l1"` |
 | `body.raw_motor` | 3 f32 | head output before command assembly |
@@ -39,6 +39,25 @@ kernel names them:
 And one line in `driving.meta.json`: `"brain_flow": [...]` listing every recorded stage in
 the order the kernel runs them, taken from the code, so the front never has to guess the
 architecture from a document.
+
+## Contract, so the consumer can refuse bad data instead of drawing it
+
+Every block the recorder writes must be declared in `driving.meta.json` with `dtype`,
+`shape`, `unit`, `scale` (for quantised stages), `stage` (the kernel's own name) and
+`encoding` (as `retina_encoding` already is). The trace producer validates each sample
+against that declaration and refuses the run on mismatch; `lab-ui up` runs the same check
+and refuses to start. The retina dtype error in the first draft of this document is the
+case in point: had the producer trusted the document, it would have drawn garbage
+confidently. Please treat the meta as the contract and the document as commentary.
+
+## Recording profiles and cost (from your review, adopted)
+
+Profiles are a launcher field: `summary` (replay + events, no neural blocks), `champion`
+(one being, every 2–4 ticks), `event` (one being, full cadence only in windows around
+impact/brake/death/lap), `full` (every tick, asked for explicitly). Collection must not
+add a `device.poll(Wait)` or a GPU→CPU map per tick: a GPU ring buffer with asynchronous
+batched copies, drained every N ticks, is the shape you proposed and the one the front
+assumes. State the measured per-tick cost of each profile at 48 beings.
 
 ## What must hold
 
