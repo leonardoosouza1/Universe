@@ -248,3 +248,156 @@ genome-verified runs: 0.77-0.996 max abs error on raw_intent, i8-quantisation is
 extraction are unaffected -- none of them claimed raw_intent parity; only `brain_step`'s
 forward does, and only that claim is now marked unverified/known-incomplete pending the
 cross-tick state work above.
+
+## PRIMARY acceptance set: dense, genome-verified run (2026-09-16, later)
+
+`champ_nocost_s77_dense_t8005`: champion of `b1_nocost_s77` (8-lap, zero-collision),
+`--resume --resume-mix 1`, `--vision-every 4` on 12 000 ticks -> **3000 samples** (vs. 10
+for the sparse `b3_*` runs above). Genome ownership verified the same way:
+
+```
+sha256sum /media/llm-data/snapshots/b1-champions/b1_nocost_s77.bin \
+          /media/llm-data/universe-runs/neuromod-lab-taxi/champ_nocost_s77_dense_t8005/evolve_best_gen0000.bin
+# dae80222f23a6f6cf65717ac471ec019b8e2fd6fb8097994869666636b21023f  (both)
+```
+
+Trace produced with this task's own producer (`--no-db`, `champion` profile) and
+verified with `check.py` -- `manifest.counterfactual_valid == True`,
+`manifest.count == 3000`. This trace is a healthy driving fixture, not a stuck one:
+mean speed 27.4 m/s, alive the entire 12 000 ticks, 3 laps, retina wall-material
+fraction 46% (vs. the S0 fixture's ~90%, a being parked against a wall) -- it is the
+integration fixture for the micro view going forward, per the coordinator.
+
+```
+./target/release/brain_step --batch \
+  champ_nocost_s77_dense_t8005/evolve_best_gen0000.bin \
+  <3000-sample json from the trace's own wave/cfc/raw_intent blocks> \
+  report_champ_dense.json
+```
+
+| channel | max abs err | mean | median |
+|---|---|---|---|
+| throttle | 0.999 | 0.396 | 0.334 |
+| steer | 1.020 | 0.285 | 0.239 |
+| brake | 0.992 | 0.314 | 0.272 |
+| **overall** | **1.020** | -- | -- |
+
+n=3000 compared, exit code `0`. This CONFIRMS the 4-run sparse finding at 300x the
+sample count: **error stays at the same order of magnitude with a directly verified
+genome and a healthy (non-degenerate) driving trace.** Case (3) stands: `brain_step`'s
+reference forward is incomplete (missing the P1.7 per-neuron mechanisms' cross-tick
+state), not fed the wrong genome. No further tuning attempted, per instruction.
+
+## Counterfactual: CPU twin vs GPU replay (2026-09-16, coordinator design question)
+
+**Question:** given that an exact counterfactual needs P1.7 per-neuron state across
+ticks that a single-sample CPU forward cannot have, is an EXACT counterfactual cheaper
+as a GPU re-run of a tick window (through the nmd queue, from a checkpoint + the
+recorded start state) with a neuron/connection mask, than as a CPU twin?
+
+**Answer: yes, and by a wide margin — but not by restoring state at tick t (that state
+is not observable today); by re-running from tick 0 with the mask gated to apply only
+from tick t onward.**
+
+### What state a tick-t restore would need, and whether it is observable today
+
+Three resident GPU buffers hold per-tick state that is neither in the genome nor in
+`neural.trace`, confirmed by reading `src/gpu/brain/mod.rs`:
+
+| buffer | size | what it is | downloaded to CPU today? |
+|---|---|---|---|
+| `buf_cfc` | 97 f32/being (96 state + counter) | the CfC resident state that feeds L1 | only for the ONE diagnostic being, at the recorder's sample cadence (this is `neural.trace`'s `cfc` block) — module doc at `brain/mod.rs:22` says explicitly "NEVER downloaded to the CPU per tick" outside that path |
+| `buf_fatigue` | 192 f32/being (`FATIGUE_PER_BEING` = `L1_NEURONS*2`) | adaptive output fatigue (`brain_step`'s `out_fatigue=0` approximation) | never |
+| `buf_neuron_mem` | 144 f32/being (`NEURON_MEM_PER_BEING` = `L1_NEURONS+L2_NEURONS`) | P1.7 resident EMA memory | never |
+
+Physics state (`PhysicsStateGpu`, `src/gpu/physics.rs:205+`) is larger still: velocity,
+angular velocity, 8 wheels x 4 floats each (32 numbers -- slip/temp/contact per wheel),
+position, forward/lateral vectors, engine RPM/temp/stall state, suspension
+compression, and per-car constants. `neural.trace`'s `body`/`pose` blocks carry only a
+derived SUMMARY of this (speed, x/z, forward, gear, rpm, rpm_fraction, damage,
+slip_ratio_peak, slip_angle_peak_rad, contact_mask, impact_mps) -- nowhere near enough
+to reconstruct the full physics state at an arbitrary tick.
+
+**Conclusion: none of the state needed to restore-and-resume at tick t is observable
+from a produced trace today.** Making it observable would mean recording ~430 extra
+floats/being/sample (97+192+144 brain + ~50 physics) at the SAME cadence as everything
+else, a real (if bounded) recorder change, and even then a restore-from-snapshot GPU
+mode does not exist yet -- `BrainGpu`'s buffers are written only by `spawn`/`reset`
+(zeroed) and by the per-tick kernels themselves; there is no "load buf_cfc/buf_fatigue/
+buf_neuron_mem from a file" path.
+
+### The cheaper path: replay from tick 0, mask from tick t
+
+The simulator does not need that snapshot machinery at all, because it is already
+**fully deterministic** given (world seed, track, genome, tick count): `CfCCell`'s
+per-tick "denoise" is a counter-based hash, not real randomness (`src/cfc.rs`, "no RNG
+needed"); population seeding under `--resume --resume-mix 1` is a pure function of the
+loaded checkpoint (no per-run randomness at all, confirmed by the 5 byte-identical
+`evolve_best_gen0000.bin` hashes in this document); and the project's whole A/B
+methodology (`--same-start`, seed-paired comparisons throughout `docs/PREDICOES-CEREBRO.md`)
+already depends on two runs with the same seed/config reproducing the same trajectory.
+**Caveat, not yet independently re-verified in this task:** a prior session's memory
+note records "`--seed` não replica sob `--retomar`" (seed does not add independent
+REPLICATION under resume) -- read in context that note is about experimental design
+(under `--resume-mix 1` every being is a clone of the SAME checkpoint regardless of
+`--seed`, so `--seed` alone does not buy you a second independent starting brain the way
+it does from-scratch), not about a single run's own tick-by-tick reproducibility. Still,
+before any counterfactual pipeline is built on "replay reproduces the baseline exactly,"
+that specific claim should be checked directly and cheaply: run the identical command
+twice and diff `observation.jsonl`/the `.replay` byte for byte. This is a one-line
+prerequisite check, not a blocker to the design.
+
+If replay is exact, the counterfactual pipeline needs no state restore at all:
+
+1. **Baseline**: the trace already produced (or a fresh `--resume --resume-mix 1` run,
+   identical config) IS the unmasked baseline.
+2. **Counterfactual**: re-run the SAME command with a new mask parameter that is a
+   no-op before tick t and active from tick t onward, through the nmd queue like any
+   other run.
+3. **Diff** the two `observation.jsonl`/`.replay` files from tick t forward.
+
+**Cost, measured, not estimated:** the dense fixture run above
+(`champ_nocost_s77_dense_t8005`, 12 000 ticks, `--driving-diagnostics --vision-every 4`,
+8 beings) finished in **84 s wall time** (coordinator's report) -- about 7 ms/tick
+including dense diagnostic readback. A single counterfactual query costs one queue slot
+and under 2 minutes, dominated by simulation, not by any new engineering.
+
+### Smallest kernel/API change
+
+Two masking granularities, both cheap relative to the re-run cost itself:
+
+- **Per-neuron** (what the Counterfactual panel's "remove neuron" needs): a new small
+  per-being mask buffer, `L1_NEURONS + L2_NEURONS = 144` f32 (or a packed bitset) per
+  masked being, read by `brain.wgsl` and applied the same way every OTHER ablation in
+  this codebase already works -- zero the neuron's OUTPUT after computing it, not its
+  weights (`native_action.rs`'s "PATHWAY ABLATION... zeroes the intent AFTER the gate,
+  not the weights" convention; `neuro.rs`'s sense ablation, same pattern). Add one
+  `mask_active_from_tick: u32` field to `BrainParams` (already a per-dispatch uniform,
+  `src/gpu/brain/mod.rs`) so the identical binary run produces the exact baseline before
+  tick t and the masked trajectory from tick t on, in one process.
+- **Per-connection** (removing one weight, not a whole neuron): heavier -- would need a
+  small indexed override list (e.g. up to K `(neuron, input_index)` pairs per being,
+  checked inside `brain.wgsl`'s inner accumulation loop) rather than a single per-neuron
+  scalar. Still far cheaper than reconstructing the CPU forward, since it reuses the
+  exact GPU matmul instead of a second implementation of it.
+
+A new CLI mode (e.g. `gpu_evolve --counterfactual-mask <being> <stage> <index>
+--mask-from-tick <t> --resume --resume-mix 1`, otherwise identical flags to the
+baseline run) is the natural place for this, dispatched through the nmd queue exactly
+like `enqueue_b3_b2.py`'s recipe -- no new daemon capability, just a new flag
+`gpu_evolve` already has the machinery (`mech_off_mask`, resident buffers, deterministic
+replay) to support cheaply.
+
+### Net recommendation
+
+Do NOT invest further in making `brain_step` a stateful multi-tick CPU twin (it would
+have to reimplement `buf_cfc`/`buf_fatigue`/`buf_neuron_mem`'s per-tick recurrences AND
+the physics/perception pipeline that produces each tick's wave in the first place --
+converging on "reimplement the simulator", which the task's own "do not reimplement the
+brain" rule forbids in spirit even if not in the letter). The GPU-replay path reuses the
+real kernels, costs about the same as any other queued run (~1-2 min for a 12k-tick
+generation), and only needs one new, small, per-neuron mask parameter plus a
+"from tick t" gate -- a much smaller change than a CPU twin that would still not be
+exact. `brain_step` remains useful as-is for what it already validated (a pure,
+stateless forward over static weights, unit-tested) — just not as the counterfactual
+engine.
