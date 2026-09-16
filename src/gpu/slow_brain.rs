@@ -453,35 +453,35 @@ impl SlowBrainGpu {
 
     // ── OUTPUT READ ────────────────────────────────────────────────────────────
 
-    /// Reads the outputs from buf_readback after device.poll(Wait).
-    ///
-    /// MUST be called after the encoder that contained `dispatch()` was submitted
-    /// and `device.poll(Wait)` returned. Follows the mandatory order:
-    ///   map_async → poll(Wait) → recv → get_mapped_range
-    ///
-    /// (poll BEFORE map_async is the silent deadlock documented in brain.rs:710)
-    pub fn read_outputs(&self, n_beings: usize) -> Vec<[f32; OUTPUT_DIM]> {
+    /// Starts mapping the slow-brain staging buffer.
+    pub fn request_output_read(
+        &self,
+        n_beings: usize,
+    ) -> Option<crate::gpu::readback::ReadbackTicket> {
         let n = n_beings.min(self.capacity);
-        if n == 0 {
+        (n > 0).then(|| {
+            crate::gpu::readback::ReadbackTicket::request(
+                &self.buf_readback,
+                (n * OUTPUT_DIM * 4) as u64,
+            )
+        })
+    }
+
+    /// Decodes a mapping requested by [`Self::request_output_read`].
+    pub fn collect_output_read(
+        &self,
+        n_beings: usize,
+        ticket: crate::gpu::readback::ReadbackTicket,
+    ) -> Vec<[f32; OUTPUT_DIM]> {
+        let n = n_beings.min(self.capacity);
+        if n == 0 || !ticket.is_ready() {
             return Vec::new();
         }
 
         let bytes = (n * OUTPUT_DIM * 4) as u64;
         let slice = self.buf_readback.slice(0..bytes);
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        // map_async registers the callback — poll(Wait) below will serve it.
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-
-        // poll AFTER map_async: without this the callback is never served.
-        self.device.poll(wgpu::Maintain::Wait);
-        let _ = rx.recv();
-
         let data = slice.get_mapped_range();
         let vals: &[f32] = bytemuck::cast_slice(&data);
-
         let mut result: Vec<[f32; OUTPUT_DIM]> = Vec::with_capacity(n);
         for s in 0..n {
             let base = s * OUTPUT_DIM;
@@ -489,10 +489,24 @@ impl SlowBrainGpu {
             out.copy_from_slice(&vals[base..base + OUTPUT_DIM]);
             result.push(out);
         }
-
         drop(data);
         self.buf_readback.unmap();
         result
+    }
+
+    /// Reads the outputs from buf_readback after submission.
+    ///
+    /// MUST be called after the encoder that contained `dispatch()` was submitted
+    /// and `device.poll(Wait)` returned. Follows the mandatory order:
+    ///   map_async → poll(Wait) → recv → get_mapped_range
+    ///
+    /// (poll BEFORE map_async is the silent deadlock documented in brain.rs:710)
+    pub fn read_outputs(&self, n_beings: usize) -> Vec<[f32; OUTPUT_DIM]> {
+        let Some(ticket) = self.request_output_read(n_beings) else {
+            return Vec::new();
+        };
+        self.device.poll(wgpu::Maintain::Wait);
+        self.collect_output_read(n_beings, ticket)
     }
 
     // ── CONVENIENCE: dispatch + submit + poll + read (all-in-one) ─────────────

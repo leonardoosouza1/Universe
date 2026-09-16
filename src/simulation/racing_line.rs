@@ -48,6 +48,19 @@ pub struct RacingLine {
     pub half_width: f32,
 }
 
+/// Closest point on a [`RacingLine`] for one world-space position.
+///
+/// A tick asks several questions about the same position (offset, multiple curve
+/// horizons and curvature). Carrying this value between those questions prevents
+/// each query from repeating the full segment scan.
+#[derive(Clone, Copy, Debug)]
+pub struct Projection {
+    pub segment: usize,
+    pub t: f32,
+    pub point: Vec2,
+    pub tangent: Vec2,
+}
+
 impl RacingLine {
     /// Build racing line from a closed centerline polyline (last == first) and
     /// the track width in meters. Safe on malformed input (returns empty).
@@ -139,8 +152,8 @@ impl RacingLine {
         self.points.len() < 2
     }
 
-    /// Project `pos` onto the ideal line, return (segment_index, t_in_seg[0..1], projected_point, segment_tangent).
-    fn project(&self, pos: Vec2) -> Option<(usize, f32, Vec2, Vec2)> {
+    /// Project `pos` onto the ideal line once for reuse by related queries.
+    pub fn project_at(&self, pos: Vec2) -> Option<Projection> {
         if self.points.len() < 2 {
             return None;
         }
@@ -160,7 +173,12 @@ impl RacingLine {
                 best = (i, t, p, tan);
             }
         }
-        Some(best)
+        Some(Projection {
+            segment: best.0,
+            t: best.1,
+            point: best.2,
+            tangent: best.3,
+        })
     }
 
     /// Signed lateral deviation of `pos` from the ideal line.
@@ -174,12 +192,17 @@ impl RacingLine {
     /// kept in the signature per API contract — could be used to disambiguate
     /// projections on self-intersecting lines in future work.
     pub fn lateral_offset_from_line(&self, pos: Vec2, _tangent: Vec2) -> f32 {
-        let Some((_, _, proj, tan)) = self.project(pos) else {
+        let Some(projection) = self.project_at(pos) else {
             return 0.0;
         };
-        let delta = pos - proj;
+        self.lateral_offset_from(&projection, pos)
+    }
+
+    /// Signed lateral deviation using an already computed projection.
+    pub fn lateral_offset_from(&self, projection: &Projection, pos: Vec2) -> f32 {
+        let delta = pos - projection.point;
         // Left-hand normal of the line tangent.
-        let normal_left = Vec2::new(-tan.y, tan.x);
+        let normal_left = Vec2::new(-projection.tangent.y, projection.tangent.x);
         let signed = delta.dot(normal_left);
         signed.clamp(-self.half_width, self.half_width)
     }
@@ -192,15 +215,21 @@ impl RacingLine {
     /// Practical use: anticipates corner turn-in while the car is still on
     /// straight, when instantaneous offset is zero.
     pub fn lookahead_offset(&self, pos: Vec2, s: f32) -> f32 {
-        let Some((i, t, _proj, _tan)) = self.project(pos) else {
+        let Some(projection) = self.project_at(pos) else {
             return 0.0;
         };
+        self.lookahead_offset_from(&projection, pos, s)
+    }
+
+    /// Look-ahead offset using an already computed projection.
+    pub fn lookahead_offset_from(&self, projection: &Projection, pos: Vec2, s: f32) -> f32 {
         if self.arc.is_empty() {
             return 0.0;
         }
         // Current arc s0 = arc[i] + t * (arc[i+1]-arc[i]).
+        let i = projection.segment;
         let seg_len = (self.arc[i + 1] - self.arc[i]).max(1e-4);
-        let s0 = self.arc[i] + t * seg_len;
+        let s0 = self.arc[i] + projection.t * seg_len;
         let target = (s0 + s).rem_euclid(self.total_len.max(1e-4));
         // Binary search / linear scan for target (small array, linear is fine).
         let mut j = 0usize;
@@ -223,14 +252,20 @@ impl RacingLine {
     /// Return the world-space position on the racing line `s` meters ahead of `pos`.
     /// Returns `pos` if the projection fails or the line is empty.
     pub fn lookahead_point(&self, pos: Vec2, s: f32) -> Vec2 {
-        let Some((i, t, _proj, _tan)) = self.project(pos) else {
+        let Some(projection) = self.project_at(pos) else {
             return pos;
         };
+        self.lookahead_point_from(&projection, pos, s)
+    }
+
+    /// World-space look-ahead point using an already computed projection.
+    pub fn lookahead_point_from(&self, projection: &Projection, pos: Vec2, s: f32) -> Vec2 {
         if self.arc.is_empty() {
             return pos;
         }
+        let i = projection.segment;
         let seg_len = (self.arc[i + 1] - self.arc[i]).max(1e-4);
-        let s0 = self.arc[i] + t * seg_len;
+        let s0 = self.arc[i] + projection.t * seg_len;
         let target = (s0 + s).rem_euclid(self.total_len.max(1e-4));
         let mut j = 0usize;
         for k in 0..self.arc.len() - 1 {
@@ -252,15 +287,26 @@ impl RacingLine {
     /// another segment, or outside the world at a tight bend. The returned value is
     /// normalised so a 90 degree left/right bend is +1/-1.
     pub fn lookahead_heading(&self, pos: Vec2, forward: Vec2, distance: f32) -> f32 {
-        let Some((i, t, _proj, _tan)) = self.project(pos) else {
+        let Some(projection) = self.project_at(pos) else {
             return 0.0;
         };
+        self.lookahead_heading_from(&projection, forward, distance)
+    }
+
+    /// Heading change using an already computed projection.
+    pub fn lookahead_heading_from(
+        &self,
+        projection: &Projection,
+        forward: Vec2,
+        distance: f32,
+    ) -> f32 {
         if self.arc.len() < 2 || self.total_len <= 1e-4 {
             return 0.0;
         }
 
+        let i = projection.segment;
         let seg_len = (self.arc[i + 1] - self.arc[i]).max(1e-4);
-        let current_arc = self.arc[i] + t * seg_len;
+        let current_arc = self.arc[i] + projection.t * seg_len;
         let target_arc = (current_arc + distance.max(0.0)).rem_euclid(self.total_len);
         let segment = self
             .arc
@@ -282,11 +328,17 @@ impl RacingLine {
     /// The angle is measured between track tangents, so lateral displacement and
     /// the car's current heading error do not contaminate the physical quantity.
     pub fn mean_curvature_ahead(&self, pos: Vec2, distance: f32) -> f32 {
-        let Some((_, _, _, current_tangent)) = self.project(pos) else {
+        let Some(projection) = self.project_at(pos) else {
             return 0.0;
         };
+        self.mean_curvature_ahead_from(&projection, distance)
+    }
+
+    /// Mean curvature using an already computed projection.
+    pub fn mean_curvature_ahead_from(&self, projection: &Projection, distance: f32) -> f32 {
         let distance = distance.max(1.0);
-        let normalised_heading = self.lookahead_heading(pos, current_tangent, distance);
+        let normalised_heading =
+            self.lookahead_heading_from(projection, projection.tangent, distance);
         normalised_heading * std::f32::consts::FRAC_PI_2 / distance
     }
 
@@ -295,10 +347,15 @@ impl RacingLine {
     /// error has its own proprioceptive channel and must not make a straight road
     /// look curved.
     pub fn lookahead_curve(&self, pos: Vec2, distance: f32) -> f32 {
-        let Some((_, _, _, current_tangent)) = self.project(pos) else {
+        let Some(projection) = self.project_at(pos) else {
             return 0.0;
         };
-        self.lookahead_heading(pos, current_tangent, distance)
+        self.lookahead_curve_from(&projection, distance)
+    }
+
+    /// Signed track turn using an already computed projection.
+    pub fn lookahead_curve_from(&self, projection: &Projection, distance: f32) -> f32 {
+        self.lookahead_heading_from(projection, projection.tangent, distance)
     }
 }
 
@@ -383,6 +440,42 @@ mod tests {
             "probe to the LEFT should be positive, got {}",
             off
         );
+    }
+
+    #[test]
+    fn shared_projection_is_bit_identical_to_independent_queries() {
+        let line = RacingLine::from_centerline(&square_track(), 18.0);
+        let probes = [
+            Vec2::new(10.0, 3.0),
+            Vec2::new(97.0, 48.0),
+            Vec2::new(52.0, 104.0),
+            Vec2::new(-2.0, 14.0),
+        ];
+        let horizons = [5.0, 30.0, 40.0, 70.0, 120.0, 200.0, 350.0];
+
+        for pos in probes {
+            let projection = line.project_at(pos).expect("projection");
+            assert_eq!(
+                line.lateral_offset_from_line(pos, Vec2::X).to_bits(),
+                line.lateral_offset_from(&projection, pos).to_bits()
+            );
+            for distance in horizons {
+                assert_eq!(
+                    line.lookahead_offset(pos, distance).to_bits(),
+                    line.lookahead_offset_from(&projection, pos, distance)
+                        .to_bits()
+                );
+                assert_eq!(
+                    line.lookahead_curve(pos, distance).to_bits(),
+                    line.lookahead_curve_from(&projection, distance).to_bits()
+                );
+                assert_eq!(
+                    line.mean_curvature_ahead(pos, distance).to_bits(),
+                    line.mean_curvature_ahead_from(&projection, distance)
+                        .to_bits()
+                );
+            }
+        }
     }
 
     #[test]

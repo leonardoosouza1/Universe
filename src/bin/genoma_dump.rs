@@ -6,8 +6,8 @@
 //! through here — Python receives text, never decodes the binary.
 //!
 //! Usage: genoma_dump --arquivo <genoma.bin> --saida <folder>
-//! Writes into the folder: l2.txt (L2_OUT rows × L1_OUT columns), neuron_activation.txt,
-//! neuron_alpha.txt, neuron_threshold_l1.txt, tau.txt, meta.txt.
+//! Writes into the folder: l1.txt, l2.txt, neuron_activation.txt, neuron_alpha.txt,
+//! neuron_threshold_l1.txt, tau.txt, meta.txt.
 
 use std::io::Write;
 
@@ -72,6 +72,7 @@ fn main() {
     // L2 output, 96 input columns. Written in the same order so Python does
     // not have to guess.
     let l1_out = 96usize;
+    escreve("l1.txt", &g.l1, 192);
     escreve("l2.txt", &g.l2, l1_out);
     escreve("neuron_activation.txt", &g.neuron_activation, 0);
     escreve("neuron_alpha.txt", &g.neuron_alpha, 0);

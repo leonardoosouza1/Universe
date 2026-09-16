@@ -243,7 +243,7 @@ struct Params {
     // even with the mask at 0 the output of generation 0 is identical to the old formula
     // — tested in `gpu::evolution::tests::genoma_novo_tem_mecanismos_p17_neutros`.
     mech_off_mask:     u32,
-    _pad1:             u32,
+    world_tick:        u32,
     // D3 (docs/ESCADA_DIFICULDADE.md) — sensor noise: standard deviation of the
     // approximate Gaussian noise added to EVERY sensory-wave channel, EVERY tick, in i8
     // channel units (-127..127). For example sigma=6 ≈ 5% of the one-sided range (127).
@@ -258,8 +258,9 @@ struct Params {
     // Padding: keeps the uniform a multiple of 16 bytes (12 fields × 4 = 48, the same
     // convention as the original struct, which was 8 × 4 = 32). Mirrors `BrainParams` on
     // the host.
-    _pad2:             u32,
-    _pad3:             u32,
+    ablation_from_tick:u32,
+    // bit 0 = ablation enabled; bits 1..31 = observed being + 1 (zero = disabled)
+    control_flags:     u32,
 }
 
 // ── BINDINGS ──────────────────────────────────────────────────────────────────
@@ -365,8 +366,30 @@ const NEURON_MEM_PER_BEING: u32 = 144u;
 // M4 (REGIOES_CEREBRAIS.md): a multiplicative gate per REGION — 4 f32 per being (blocks
 // of 24 L1 neurons: vision / wall / body / associative), written by the CPU from the slow
 // brain plus its reserve. 1.0 is neutral (flag off, or the reserve exhausted). Applied to
-// the L1 ACTIVATION, before the quantisation for L2 and before the bypass.
+// the L1 activation before quantisation for L2. The historical bypass reads `w_l1r`
+// directly and therefore does not consume this gate.
 @group(0) @binding(13) var<storage, read>      buf_gates:  array<f32>;
+
+// Counterfactual output masks. Eight u32 words per being:
+// CfC [0..3), L1 [3..6), L2 [6..8). A set bit removes only the emitted value;
+// recurrent state and fatigue continue to update under the counterfactual trajectory.
+const ABLATION_WORDS_PER_BEING: u32 = 8u;
+const ABLATION_CFC_WORD: u32 = 0u;
+const ABLATION_L1_WORD:  u32 = 3u;
+const ABLATION_L2_WORD:  u32 = 6u;
+@group(0) @binding(14) var<storage, read> buf_ablation_mask: array<u32>;
+
+// One selected-being snapshot, stored as raw u32 words so f32 and signed i32 stages can
+// share one stable binary layout. Offsets mirror `brain/observation.rs`.
+const OBS_L1_MATMUL: u32 = 0u;
+const OBS_L1_EFFECTIVE: u32 = 96u;
+const OBS_L1_TO_L2: u32 = 192u;
+const OBS_L2_MATMUL: u32 = 288u;
+const OBS_L2_EFFECTIVE: u32 = 336u;
+const OBS_L2_ADAPTED: u32 = 384u;
+const OBS_BYPASS_ADAPTED: u32 = 432u;
+const OBS_L2_STD: u32 = 480u;
+@group(0) @binding(15) var<storage, read_write> buf_observation: array<u32>;
 
 // ── WORKGROUP MEMORY ──────────────────────────────────────────────────────────
 
@@ -550,6 +573,19 @@ fn apply_sensor_noise(raw_i32: i32, being: u32, ch: u32, counter: u32) -> i32 {
     return v;
 }
 
+fn output_is_ablated(being: u32, stage_word: u32, neuron: u32) -> bool {
+    if (params.control_flags & 1u) == 0u || params.world_tick < params.ablation_from_tick {
+        return false;
+    }
+    let base = being * ABLATION_WORDS_PER_BEING + stage_word;
+    let word = buf_ablation_mask[base + neuron / 32u];
+    return (word & (1u << (neuron % 32u))) != 0u;
+}
+
+fn observes(being: u32) -> bool {
+    return (params.control_flags >> 1u) == being + 1u;
+}
+
 // ── MAIN KERNEL ───────────────────────────────────────────────────────────────
 
 @compute @workgroup_size(128)
@@ -726,7 +762,8 @@ fn main(
         buf_cfc[cfc_base + i] = s;
 
         // filtered = tanh(state) → i8 (cfc.rs:84-85)
-        w_cfc[i] = i32(clamp(tanh(s) * 127.0, -127.0, 127.0));
+        let cfc_emission = i32(clamp(tanh(s) * 127.0, -127.0, 127.0));
+        w_cfc[i] = select(cfc_emission, 0, output_is_ablated(being, ABLATION_CFC_WORD, i));
 
         // Only tid==0 updates the counter (this avoids a write race)
         if i == 0u {
@@ -779,6 +816,9 @@ fn main(
 
         // Normalise by 127 exactly once — identical to the CPU (layers.rs:49).
         w_l1r[j] = acc * (1.0 / 127.0);
+        if observes(being) {
+            buf_observation[OBS_L1_MATMUL + j] = bitcast<u32>(w_l1r[j]);
+        }
 
         // DEBUG (being 0 only): exports l1_raw plus the CfC/KAN inputs for diagnostics.
         // buf_debug layout: [l1_raw[0..96], cfc_in[0..96], kan_in[96..223]]
@@ -859,6 +899,9 @@ fn main(
 
         // The bypass (STAGE 2, tid 48..95) and the quantisation below read the final value.
         w_l1r[j] = v_eff;
+        if observes(being) {
+            buf_observation[OBS_L1_EFFECTIVE + j] = bitcast<u32>(v_eff);
+        }
 
         // ── Mechanism 3 (heterogeneous activation) ──────────────────────────────
         let act_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_ACTIVATION_OFF + j];
@@ -866,10 +909,14 @@ fn main(
         let act_id: u32 = select(u32(act_raw + 0.5), 0u, activation_off);
         let activated: f32 = apply_activation(act_id, v_eff);
         // M4: the multiplicative gate of this neuron's REGION (block = tid/24).
-        // 1.0 is neutral (flag off). Applied BEFORE the quantisation → it affects both L2
-        // and the bypass.
+        // 1.0 is neutral (flag off). It gates the quantised L2 input. The historical
+        // bypass below reads `w_l1r`, so it is intentionally described separately.
         let gate: f32 = buf_gates[being * 4u + tid / 24u];
-        w_l1a[tid] = i32(clamp(activated * gate * 127.0, -127.0, 127.0));
+        let l1_emission = i32(clamp(activated * gate * 127.0, -127.0, 127.0));
+        w_l1a[tid] = select(l1_emission, 0, output_is_ablated(being, ABLATION_L1_WORD, tid));
+        if observes(being) {
+            buf_observation[OBS_L1_TO_L2 + tid] = bitcast<u32>(w_l1a[tid]);
+        }
     }
 
     workgroupBarrier();
@@ -916,6 +963,9 @@ fn main(
         }
 
         let raw_l2: f32 = acc * (1.0 / 127.0);
+        if observes(being) {
+            buf_observation[OBS_L2_MATMUL + j] = bitcast<u32>(raw_l2);
+        }
 
         // ── P1.7, mechanism 1 (memory) for L2 — with no period and no threshold: the task
         // asks for period/threshold on L1 only ("real asynchrony" targets the SENSORY
@@ -932,6 +982,9 @@ fn main(
         buf_neuron_mem[l2_mem_base + j] = h_l2;
 
         w_l2r[j] = h_l2 * neuron_mem_gain(alpha_l2);
+        if observes(being) {
+            buf_observation[OBS_L2_EFFECTIVE + j] = bitcast<u32>(w_l2r[j]);
+        }
     }
 
     // A barrier under UNIFORM CONTROL — ALL 128 threads reach it, including those that did
@@ -978,6 +1031,9 @@ fn main(
         const NORM_EPS: f32 = 1e-3;
         l2_std = max(sqrt(variance), NORM_EPS);
     }
+    if tid == 0u && observes(being) {
+        buf_observation[OBS_L2_STD] = bitcast<u32>(l2_std);
+    }
 
     if tid < L2_OUT {
         // Thread tid ∈ [0,47]: L2 neuron j
@@ -1007,6 +1063,9 @@ fn main(
         // positive raw it attenuated to 0.15·raw. The fatigue biased the whole population
         // downwards. It now shrinks the magnitude and preserves the sign, on both sides.
         let adapted: f32 = sign(l2_raw) * max(0.0, abs(l2_raw) - params.out_beta * out_fat);
+        if observes(being) {
+            buf_observation[OBS_L2_ADAPTED + j] = bitcast<u32>(adapted);
+        }
 
         // P1.7, mechanism 3 — L2's heterogeneous activation (the FINAL non-linearity of
         // L2, previously hardcoded as tanh). The L1 bypass (below) keeps a fixed tanh — it
@@ -1022,7 +1081,12 @@ fn main(
         // inflated every metric that assumes intent ∈ [-1,1] (saturation, dims_sat,
         // intent_mag). The motor channels (0..3) were never affected: kan_eval/context
         // clamp them.
-        buf_intent[intent_base + j] = clamp(apply_activation(act_id_l2, adapted), -1.0, 1.0);
+        let l2_emission = clamp(apply_activation(act_id_l2, adapted), -1.0, 1.0);
+        buf_intent[intent_base + j] = select(
+            l2_emission,
+            0.0,
+            output_is_ablated(being, ABLATION_L2_WORD, j),
+        );
     }
 
     // Threads 48..95: the L1 bypass → final_intent[48..95]
@@ -1039,7 +1103,15 @@ fn main(
         buf_fatigue[out_fat_base_bp + tid] = out_fat_bp;
 
         let adapted_bp: f32 = sign(raw_bp) * max(0.0, abs(raw_bp) - params.out_beta * out_fat_bp);
-        buf_intent[intent_base + tid] = tanh(adapted_bp);
+        if observes(being) {
+            buf_observation[OBS_BYPASS_ADAPTED + tid - L2_OUT] = bitcast<u32>(adapted_bp);
+        }
+        let bypass_emission = tanh(adapted_bp);
+        buf_intent[intent_base + tid] = select(
+            bypass_emission,
+            0.0,
+            output_is_ablated(being, ABLATION_L1_WORD, tid),
+        );
     }
 
     // Note: no barrier is needed at the end — every thread writes to a disjoint position

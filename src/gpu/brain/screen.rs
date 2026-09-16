@@ -70,10 +70,10 @@ impl BrainGpu {
                 .to_string()
         })?;
 
-        // 13 storage bindings (1..=13) + 1 uniform, the same layout `bind_and_dispatch`
+        // 14 storage bindings (1..=14) + 1 uniform, the same layout `bind_and_dispatch`
         // uses in production. 16 mirrors `gpu_evolve/context.rs:269` (the limit the
         // brain kernel already runs under there) rather than `gpu_validate.rs`'s 12,
-        // which predates `buf_gates`/`buf_neuron_mem` and is one short of what `new`
+        // which predates `buf_gates`/`buf_neuron_mem` and is below what `new`
         // actually binds today.
         let mut limits = wgpu::Limits::downlevel_defaults();
         limits.max_storage_buffers_per_shader_stage = 16;

@@ -380,7 +380,7 @@ impl GpuCtx {
         }))?;
         let name = adapter.get_info().name.clone();
         let mut limits = wgpu::Limits::downlevel_defaults();
-        // Cérebro usa 10 storage buffers: bindings 1-9 mais o `buf_tau` (banco de τ).
+        // The brain uses 15 storage buffers (bindings 1..=15).
         //
         // O teto é de configuração, não de silício — `downlevel_defaults()` pede 4 para
         // caber em GL antigo, e a RX 6750 XT anuncia bem mais. Pedir 12 dá folga para os
@@ -1105,10 +1105,19 @@ impl GpuCtx {
             for i in 0..n {
                 let p = &states[i].phys;
                 let pos2d = bevy::math::Vec2::new(p.pos[0], p.pos[2]);
-                let fwd2d = bevy::math::Vec2::new(p.fwd[0], p.fwd[2]);
-                let off_norm =
-                    (self.racing_line.lateral_offset_from_line(pos2d, fwd2d) / hw).clamp(-1.0, 1.0);
-                let la_norm = (self.racing_line.lookahead_offset(pos2d, 5.0) / hw).clamp(-1.0, 1.0);
+                let Some(projection) = self.racing_line.project_at(pos2d) else {
+                    rv.push([0.0; 6]);
+                    curve_vals.push([0.0; 7]);
+                    curve_risk.push(0.0);
+                    continue;
+                };
+                let off_norm = (self.racing_line.lateral_offset_from(&projection, pos2d) / hw)
+                    .clamp(-1.0, 1.0);
+                let la_norm = (self
+                    .racing_line
+                    .lookahead_offset_from(&projection, pos2d, 5.0)
+                    / hw)
+                    .clamp(-1.0, 1.0);
 
                 // Normalização idêntica à descrita em perception.rs:700-702:
                 //   fwd_norm  = dist_f / (hw * 3.0)  — quanto espaço à frente em relação à pista
@@ -1142,13 +1151,16 @@ impl GpuCtx {
                     .copied()
                     .unwrap_or([40.0, 70.0, 120.0]);
                 curve_vals.push([
-                    self.racing_line.lookahead_curve(pos2d, horizons[0]),
-                    self.racing_line.lookahead_curve(pos2d, horizons[1]),
-                    self.racing_line.lookahead_curve(pos2d, horizons[2]),
-                    self.racing_line.lookahead_curve(pos2d, 350.0),
-                    self.racing_line.lookahead_curve(pos2d, 200.0),
-                    self.racing_line.lookahead_curve(pos2d, 275.0),
-                    self.racing_line.lookahead_curve(pos2d, 260.0),
+                    self.racing_line
+                        .lookahead_curve_from(&projection, horizons[0]),
+                    self.racing_line
+                        .lookahead_curve_from(&projection, horizons[1]),
+                    self.racing_line
+                        .lookahead_curve_from(&projection, horizons[2]),
+                    self.racing_line.lookahead_curve_from(&projection, 350.0),
+                    self.racing_line.lookahead_curve_from(&projection, 200.0),
+                    self.racing_line.lookahead_curve_from(&projection, 275.0),
+                    self.racing_line.lookahead_curve_from(&projection, 260.0),
                 ]);
 
                 // Lateral acceleration demand: a_y = v²|kappa|. Dividing by the
@@ -1156,7 +1168,10 @@ impl GpuCtx {
                 // This replaces the former difference between two retina rows, which
                 // was an image feature rather than curvature and could be high on walls.
                 let speed_sq = p.vel[0] * p.vel[0] + p.vel[2] * p.vel[2];
-                let kappa = self.racing_line.mean_curvature_ahead(pos2d, 30.0).abs();
+                let kappa = self
+                    .racing_line
+                    .mean_curvature_ahead_from(&projection, 30.0)
+                    .abs();
                 curve_risk.push((speed_sq * kappa / (0.9 * 9.81)).clamp(0.0, 1.0));
             }
             self.percept
@@ -1800,6 +1815,14 @@ impl GpuCtx {
             && (self.brain_skip <= 1
                 || self.last_intents.len() != n
                 || (self.brain_tick % self.brain_skip) == 0);
+        let diagnostic_sample = self
+            .driving_diagnostics
+            .as_ref()
+            .is_some_and(|diagnostics| diagnostics.sampling(tick_idx));
+        let fresh_neural_sample = diagnostic_sample && brain_fires;
+        let observed_being =
+            fresh_neural_sample.then(|| self.driving_diagnostics.as_ref().unwrap().selected);
+        self.brain.set_observed_being(observed_being);
         if brain_fires {
             // No bracket recorded when `brain_fires` is false — an absent label reads
             // as "did not fire this tick" instead of a misleading 0.000 ms.
@@ -1813,6 +1836,7 @@ impl GpuCtx {
             if self.erase_fast_memory {
                 self.brain.clear_fast_memory(&mut enc, n);
             }
+            self.brain.set_world_tick(tick_idx as u32);
             self.brain
                 .bind_and_dispatch(&mut enc, n, &[], dt, Some(self.percept.buf_output()));
             if let Some(t) = self.timer.as_mut() {
@@ -1871,19 +1895,34 @@ impl GpuCtx {
             // could name, and an unnamed 23% of the tick is not a diagnosis.
             cpu_phases.push(("cpu.record", t0.elapsed().as_secs_f32() * 1000.0));
         }
-        let diagnostic_sample = self
-            .driving_diagnostics
-            .as_ref()
-            .is_some_and(|d| d.sampling(tick_idx));
         if diagnostic_sample {
             self.driving_diagnostics.as_ref().unwrap().record_sample(
                 &mut enc,
                 &self.buf_retina_out,
                 self.percept.buf_output(),
                 (!self.brain_control_direct).then_some(&self.brain),
+                fresh_neural_sample,
             );
         }
         self.queue.submit(Some(enc.finish()));
+
+        // Request the three mandatory hot-path staging buffers before polling. A map
+        // callback can only be serviced by a poll issued after `map_async`; requesting
+        // them together turns three serial GPU/CPU waits into one shared wait while
+        // preserving the exact command and decode order below.
+        let intent_read = (!self.brain_control_direct && brain_fires)
+            .then(|| self.brain.request_intent_read(n))
+            .flatten();
+        let slow_read = (!self.brain_control_direct)
+            .then(|| self.slow.request_output_read(n))
+            .flatten();
+        let digest_read = self.retina_digest.request_read(n, extra_bytes);
+        let diagnostic_read = diagnostic_sample.then(|| {
+            self.driving_diagnostics
+                .as_ref()
+                .unwrap()
+                .request_sample_read()
+        });
         let t_poll = prints_this_tick.then(std::time::Instant::now);
         self.device.poll(wgpu::Maintain::Wait);
         if let Some(t) = t_poll {
@@ -1892,10 +1931,11 @@ impl GpuCtx {
 
         if diagnostic_sample {
             let observed_being = self.driving_diagnostics.as_ref().unwrap().selected;
-            self.driving_diagnostics.as_mut().unwrap().read_sample(
-                &self.device,
+            self.driving_diagnostics.as_mut().unwrap().collect_sample(
+                diagnostic_read.expect("diagnostic sample ticket"),
                 tick_idx,
                 !self.brain_control_direct,
+                fresh_neural_sample,
                 &pose_raw[observed_being],
             );
         }
@@ -1967,7 +2007,9 @@ impl GpuCtx {
         let mut intents = if self.brain_control_direct {
             vec![[0.0f32; 96]; n]
         } else if brain_fires {
-            let v = self.brain.read_intent_after_submit(n);
+            let v = intent_read
+                .map(|ticket| self.brain.collect_intent_read(n, ticket))
+                .unwrap_or_default();
             if v.len() == n {
                 self.last_intents = v.clone();
             }
@@ -1977,6 +2019,13 @@ impl GpuCtx {
             // skip > 1), cai em zero — que é "não faz nada", não um comando inventado.
             self.last_intents.clone()
         };
+        if intents.len() != n {
+            eprintln!(
+                "[brain] intent readback returned {} of {n} beings; invalidating the run",
+                intents.len()
+            );
+            return false;
+        }
         if let Some(t) = t_ri {
             let label = if self.brain_control_direct {
                 "cpu.command_buffer"
@@ -1989,7 +2038,9 @@ impl GpuCtx {
         let slow_out = if self.brain_control_direct {
             Vec::new()
         } else {
-            self.slow.read_outputs(n)
+            slow_read
+                .map(|ticket| self.slow.collect_output_read(n, ticket))
+                .unwrap_or_default()
         };
         if let Some(t) = t_rs {
             cpu_phases.push(("cpu.read_slow", t.elapsed().as_secs_f32() * 1000.0));
@@ -2106,9 +2157,16 @@ impl GpuCtx {
         let mut t_dl_outer = None;
         {
             let t_rd = prints_this_tick.then(std::time::Instant::now);
-            let extra = self
-                .retina_digest
-                .read_after_submit(&self.device, n, extra_bytes);
+            let extra = digest_read
+                .map(|ticket| self.retina_digest.collect_read(n, extra_bytes, ticket))
+                .unwrap_or_default();
+            if extra.len() != n {
+                eprintln!(
+                    "[retina-digest] readback returned {} of {n} beings; invalidating the run",
+                    extra.len()
+                );
+                return false;
+            }
             if let Some(t) = t_rd {
                 cpu_phases.push(("cpu.read_digest", t.elapsed().as_secs_f32() * 1000.0));
             }

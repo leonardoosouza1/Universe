@@ -34,7 +34,17 @@ use wgpu::util::DeviceExt;
 
 use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
 use crate::engine::SovereignEngine;
-use crate::gpu::evolution::Genome;
+
+mod ablation;
+pub use ablation::{
+    ABLATION_WORDS_PER_BEING, AblationError, AblationPlan, AblationStage, AblationTarget,
+};
+
+mod observation;
+pub use observation::{
+    BrainObservation, OBSERVATION_BYTES, OBSERVATION_WORDS, ObservationDecodeError,
+    decode_observation,
+};
 
 mod screen;
 
@@ -179,7 +189,9 @@ pub struct BrainParams {
     /// neutral), whatever mutation wrote there. See `brain.wgsl::Params` for the full
     /// per-bit semantics.
     pub mech_off_mask: u32,
-    _pad1: u32,
+    /// Generation-relative world tick. Unlike the CfC counter, this advances even when
+    /// `brain_skip` suppresses a neural dispatch.
+    pub world_tick: u32,
     /// D3 (`docs/ESCADA_DIFICULDADE.md`) — sensor noise: standard deviation of the
     /// approximate Gaussian noise added to EVERY channel of the sensory wave, EVERY
     /// tick, in i8 channel units (-127..127). For example `sigma=6` ≈ 5% of the range
@@ -196,8 +208,11 @@ pub struct BrainParams {
     /// Padding: keeps the uniform buffer a multiple of 16 bytes (12 fields × 4 bytes =
     /// 48, the same convention as the original struct, which was 8 × 4 = 32).
     /// Deterministically zero through `bytemuck::Zeroable`, never read by the shader.
-    _pad2: u32,
-    _pad3: u32,
+    /// First world tick whose neural dispatch applies the counterfactual mask.
+    pub ablation_from_tick: u32,
+    /// Bit 0 enables ablation. Bits 1..31 store `observed_being + 1`; zero disables
+    /// selected-being trace writes. Packing both controls preserves the 48-byte uniform.
+    pub control_flags: u32,
 }
 
 // ── PER-BEING INPUT ──────────────────────────────────────────────────────────
@@ -255,6 +270,13 @@ pub struct BrainGpu {
     /// M4: per-region gate, 4 f32 per being; 1.0 is neutral.
     buf_gates: wgpu::Buffer, // f32 × (cap × 4)
 
+    /// Packed output masks for CfC(96), L1(96), and L2(48), uploaded once per replay.
+    buf_ablation_mask: wgpu::Buffer, // u32 × (cap × ABLATION_WORDS_PER_BEING)
+
+    /// Exact intermediate stages for one selected being. The shader writes this only
+    /// when `observed_being` is enabled for the current dispatch.
+    buf_observation: wgpu::Buffer, // u32 × OBSERVATION_WORDS
+
     /// Temporary debug buffer: exports `l1_raw` plus the CfC/KAN inputs of being 0.
     /// Layout: `[l1_raw[0..96], cfc_in[0..96], kan_in[96..223]]` = 319 f32. The last
     /// block is still sized for the 223-channel wave; with `SENSORY_WAVE_SIZE = 192`
@@ -307,6 +329,11 @@ pub struct BrainGpu {
     pub threshold_off: bool,
     pub activation_off: bool,
 
+    world_tick: u32,
+    ablation_from_tick: u32,
+    ablation_enabled: bool,
+    observed_being: Option<usize>,
+
     /// Maximum number of beings these buffers support.
     pub capacity: usize,
 
@@ -322,6 +349,19 @@ pub struct BrainGpu {
     /// generation, which happens nowhere in the code today (confirmed by grep:
     /// `apply_to_engine` only copies l1/l2/slow).
     kan_uploaded: std::sync::atomic::AtomicBool,
+}
+
+fn brain_control_word(ablation_enabled: bool, observed_being: Option<usize>) -> u32 {
+    let observed = observed_being
+        .map(|being| {
+            u32::try_from(being)
+                .expect("observed being index exceeds u32")
+                .checked_add(1)
+                .and_then(|value| value.checked_shl(1))
+                .expect("observed being index exceeds packed control range")
+        })
+        .unwrap_or(0);
+    observed | ablation_enabled as u32
 }
 
 impl BrainGpu {
@@ -362,6 +402,8 @@ impl BrainGpu {
                 storage_entry(11, true), // buf_neuron_meta (read, P1.7 — alpha/period/threshold/activation)
                 storage_entry(12, false), // buf_neuron_mem  (read_write, P1.7 — resident EMA memory)
                 storage_entry(13, true),  // buf_gates (read, M4 — per-region gate, 4 f32/being)
+                storage_entry(14, true),  // buf_ablation_mask (read, counterfactual output mask)
+                storage_entry(15, false), // buf_observation (read_write, selected-being trace)
             ],
         });
 
@@ -494,6 +536,19 @@ impl BrainGpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        let buf_ablation_mask = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brain-ablation-mask"),
+            contents: bytemuck::cast_slice(&vec![0u32; capacity * ABLATION_WORDS_PER_BEING]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let buf_observation = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("brain-selected-observation"),
+            size: OBSERVATION_BYTES as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
         // Readback: a separate MAP_READ buffer (wgpu forbids combining it with STORAGE).
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-readback"),
@@ -537,6 +592,8 @@ impl BrainGpu {
             buf_neuron_meta,
             buf_neuron_mem,
             buf_gates,
+            buf_ablation_mask,
+            buf_observation,
             out_beta: OUT_BETA_DEFAULT,
             out_gain: OUT_GAIN_DEFAULT,
             norm_l2_by_std: false,
@@ -546,6 +603,10 @@ impl BrainGpu {
             period_off: false,
             threshold_off: false,
             activation_off: false,
+            world_tick: 0,
+            ablation_from_tick: 0,
+            ablation_enabled: false,
+            observed_being: None,
             buf_debug,
             buf_readback,
             buf_percept_dummy,
@@ -710,6 +771,54 @@ impl BrainGpu {
     pub fn set_noise(&mut self, sigma: f32, dropout: f32) {
         self.noise_sigma = sigma;
         self.dropout_prob = dropout;
+    }
+
+    /// Uploads a counterfactual output mask for one population slot.
+    pub fn set_ablation(&mut self, plan: &AblationPlan, population: usize) {
+        assert!(
+            population <= self.capacity,
+            "population exceeds brain capacity"
+        );
+        let words = plan.mask_words(population);
+        self.queue
+            .write_buffer(&self.buf_ablation_mask, 0, bytemuck::cast_slice(&words));
+        self.ablation_from_tick = plan.from_tick();
+        self.ablation_enabled = true;
+    }
+
+    /// Sets the generation-relative simulation tick for the next neural dispatch.
+    pub fn set_world_tick(&mut self, tick: u32) {
+        self.world_tick = tick;
+    }
+
+    /// Selects the only being allowed to write the exact intermediate trace during the
+    /// next dispatch. `None` removes the observation branch from the workgroup.
+    pub fn set_observed_being(&mut self, being: Option<usize>) {
+        assert!(being.is_none_or(|index| index < self.capacity));
+        self.observed_being = being;
+    }
+
+    /// Copies the selected-being intermediate trace into a caller-owned staging buffer.
+    pub fn copy_observation_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        destination: &wgpu::Buffer,
+        destination_offset: u64,
+    ) -> Result<(), String> {
+        let end = destination_offset
+            .checked_add(OBSERVATION_BYTES as u64)
+            .ok_or_else(|| "brain observation destination offset overflow".to_string())?;
+        if destination_offset % 4 != 0 || end > destination.size() {
+            return Err("brain observation destination is misaligned or too small".into());
+        }
+        encoder.copy_buffer_to_buffer(
+            &self.buf_observation,
+            0,
+            destination,
+            destination_offset,
+            OBSERVATION_BYTES as u64,
+        );
+        Ok(())
     }
 
     // ── CFC STATE DOWNLOAD (diagnostics) ───────────────────────────────────
@@ -964,13 +1073,13 @@ impl BrainGpu {
             // exposing the new parameters. `bind_and_dispatch` (production) is the one
             // that reads `self.mech_off_mask`.
             mech_off_mask: 0b1111,
-            _pad1: 0,
+            world_tick: 0,
             // D3: forward() never exposes sensor noise — same contract as above, always
             // 0.0 (the historical behaviour, no noise and no dropout).
             noise_sigma: 0.0,
             dropout_prob: 0.0,
-            _pad2: 0,
-            _pad3: 0,
+            ablation_from_tick: 0,
+            control_flags: 0,
         };
         let buf_params = self
             .device
@@ -1042,6 +1151,14 @@ impl BrainGpu {
                 wgpu::BindGroupEntry {
                     binding: 13,
                     resource: self.buf_gates.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: self.buf_ablation_mask.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: self.buf_observation.as_entire_binding(),
                 },
             ],
         });
@@ -1160,14 +1277,14 @@ impl BrainGpu {
             out_gain: self.out_gain,
             norm_l2_by_std: if self.norm_l2_by_std { 1 } else { 0 },
             mech_off_mask: self.mech_off_mask(),
-            _pad1: 0,
+            world_tick: self.world_tick,
             // D3 (ESCADA_DIFICULDADE.md): sensor noise + channel dropout. Read from
             // `self.*` on every call — `set_noise` only updates those fields; the upload
             // happens here, on the next dispatch.
             noise_sigma: self.noise_sigma,
             dropout_prob: self.dropout_prob,
-            _pad2: 0,
-            _pad3: 0,
+            ablation_from_tick: self.ablation_from_tick,
+            control_flags: brain_control_word(self.ablation_enabled, self.observed_being),
         };
         let buf_params = self
             .device
@@ -1237,6 +1354,14 @@ impl BrainGpu {
                     binding: 13,
                     resource: self.buf_gates.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: self.buf_ablation_mask.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: self.buf_observation.as_entire_binding(),
+                },
             ],
         });
 
@@ -1259,32 +1384,33 @@ impl BrainGpu {
         bytes_intent
     }
 
-    /// Reads the brain's `buf_readback` after the external encoder's `device.poll(Wait)`.
+    /// Starts mapping the brain intent staging buffer.
     ///
-    /// Call this ONLY once the `CommandEncoder` holding `bind_and_dispatch` has been
-    /// submitted and `device.poll(Wait)` has returned. Otherwise the buffer is not
-    /// mapped.
-    pub fn read_intent_after_submit(&self, n: usize) -> Vec<[f32; INTENT_DIM]> {
+    /// Issue every subsystem's request first, call `device.poll(Wait)` once, then
+    /// pass this ticket to [`Self::collect_intent_read`].
+    pub fn request_intent_read(&self, n: usize) -> Option<crate::gpu::readback::ReadbackTicket> {
         let n = n.min(self.capacity);
-        if n == 0 {
+        (n > 0).then(|| {
+            crate::gpu::readback::ReadbackTicket::request(
+                &self.buf_readback,
+                (n * INTENT_DIM * 4) as u64,
+            )
+        })
+    }
+
+    /// Decodes a mapping requested by [`Self::request_intent_read`].
+    pub fn collect_intent_read(
+        &self,
+        n: usize,
+        ticket: crate::gpu::readback::ReadbackTicket,
+    ) -> Vec<[f32; INTENT_DIM]> {
+        let n = n.min(self.capacity);
+        if n == 0 || !ticket.is_ready() {
             return Vec::new();
         }
 
         let bytes_intent = (n * INTENT_DIM * 4) as u64;
         let slice = self.buf_readback.slice(0..bytes_intent);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        // FIXED HANG: `map_async` registers a callback that is only SERVED by a LATER
-        // `poll`. The previous comment claimed "the caller already polled, so recv()
-        // returns immediately" — and it was wrong: the caller's poll happens BEFORE the
-        // map_async, so the callback was never served and `recv()` blocked forever. That
-        // is what pinned `gpu_loop` on the warm-up tick, with no error and no output. The
-        // poll has to come AFTER the map request.
-        self.device.poll(wgpu::Maintain::Wait);
-        let _ = rx.recv();
-
         let data = slice.get_mapped_range();
         let vals: &[f32] = bytemuck::cast_slice(&data);
         let mut result: Vec<[f32; INTENT_DIM]> = Vec::with_capacity(n);
@@ -1297,6 +1423,19 @@ impl BrainGpu {
         drop(data);
         self.buf_readback.unmap();
         result
+    }
+
+    /// Reads the brain's `buf_readback` after submission.
+    ///
+    /// Call this ONLY once the `CommandEncoder` holding `bind_and_dispatch` has been
+    /// submitted and `device.poll(Wait)` has returned. Otherwise the buffer is not
+    /// mapped.
+    pub fn read_intent_after_submit(&self, n: usize) -> Vec<[f32; INTENT_DIM]> {
+        let Some(ticket) = self.request_intent_read(n) else {
+            return Vec::new();
+        };
+        self.device.poll(wgpu::Maintain::Wait);
+        self.collect_intent_read(n, ticket)
     }
 
     /// Reference to `buf_intent` (in VRAM), so other kernels can consume the output

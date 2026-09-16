@@ -762,6 +762,9 @@ fn main() {
     let mut driving_diagnostics_on = false;
     let mut vision_being: usize = 0;
     let mut vision_every: usize = 16;
+    let mut ablate_spec: Option<String> = None;
+    let mut ablate_being: usize = 0;
+    let mut ablate_from_tick: Option<u32> = None;
     let mut erase_fast_memory = false;
     // Parâmetros evolutivos ajustáveis via CLI (padrão conservador para fine-tuning).
     // Para exploração inicial/escape de platô: use --sigma 0.15 --p-mutate 0.05
@@ -1013,6 +1016,28 @@ fn main() {
                             eprintln!("ERROR --vision-every requires a positive integer");
                             std::process::exit(1)
                         });
+                }
+                "--ablate" => {
+                    i += 1;
+                    ablate_spec = Some(args.get(i).cloned().unwrap_or_else(|| {
+                        eprintln!("ERROR --ablate requires cfc:N,l1:N,l2:N targets");
+                        std::process::exit(2)
+                    }));
+                }
+                "--ablate-being" => {
+                    i += 1;
+                    ablate_being = args.get(i).and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                        eprintln!("ERROR --ablate-being requires a nonnegative integer");
+                        std::process::exit(2)
+                    });
+                }
+                "--ablate-from-tick" => {
+                    i += 1;
+                    ablate_from_tick =
+                        Some(args.get(i).and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                            eprintln!("ERROR --ablate-from-tick requires a u32 tick");
+                            std::process::exit(2)
+                        }));
                 }
                 "--beings" => {
                     i += 1;
@@ -2114,6 +2139,31 @@ fn main() {
         std::process::exit(2);
     }
 
+    let ablation_plan = match (ablate_spec.as_deref(), ablate_from_tick) {
+        (None, None) => None,
+        (Some(_), None) => {
+            eprintln!("ERROR --ablate requires --ablate-from-tick");
+            std::process::exit(2)
+        }
+        (None, Some(_)) => {
+            eprintln!("ERROR --ablate-from-tick requires --ablate");
+            std::process::exit(2)
+        }
+        (Some(spec), Some(from_tick)) => Some(
+            universe::gpu::brain::AblationPlan::parse(spec, ablate_being, from_tick, n_seres)
+                .unwrap_or_else(|error| {
+                    eprintln!("ERROR --ablate: {error}");
+                    std::process::exit(2)
+                }),
+        ),
+    };
+    if brain_control_direct && ablation_plan.is_some() {
+        eprintln!(
+            "[ERROR] --ablate targets the native fast brain and cannot be combined with direct fly brain control."
+        );
+        std::process::exit(2);
+    }
+
     if !matches!(
         modo_fitness.as_str(),
         "dist" | "prog" | "checkpoint" | "centro" | "checkpoint-legacy" | "centro-legacy"
@@ -2568,25 +2618,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Some(plan) = ablation_plan.as_ref() {
+        ctx.brain.set_ablation(plan, n_seres);
+    }
     ctx.erase_fast_memory = erase_fast_memory;
     ctx.collect_contact_metrics =
         impact_cost > 0.0 || DANO_ESCALA.load(Ordering::Relaxed) > 0.0 || driving_diagnostics_on;
-    if driving_diagnostics_on {
-        std::fs::create_dir_all(&out_dir).expect("create diagnostic output directory");
-        ctx.driving_diagnostics = Some(
-            driving_diagnostics::DrivingDiagnostics::new(
-                &ctx.device,
-                std::path::Path::new(&out_dir),
-                n_seres,
-                vision_being,
-                vision_every,
-            )
-            .unwrap_or_else(|error| {
-                eprintln!("ERROR --driving-diagnostics: {error}");
-                std::process::exit(1)
-            }),
-        );
-    }
     ctx.brain_skip = brain_skip;
     ctx.brain_control_direct = brain_control_direct;
     // FLY MAP: the connectome goes resident on the SAME device as every other kernel —
@@ -3057,6 +3094,24 @@ fn main() {
     ctx.brain.period_off = sem_periodo_neuronal;
     ctx.brain.threshold_off = sem_limiar_neuronal;
     ctx.brain.activation_off = sem_ativacao_heterogenea;
+    if driving_diagnostics_on {
+        std::fs::create_dir_all(&out_dir).expect("create diagnostic output directory");
+        ctx.driving_diagnostics = Some(
+            driving_diagnostics::DrivingDiagnostics::new(
+                &ctx.device,
+                &ctx.brain,
+                std::path::Path::new(&out_dir),
+                n_seres,
+                vision_being,
+                vision_every,
+                ablation_plan.as_ref(),
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("ERROR --driving-diagnostics: {error}");
+                std::process::exit(1)
+            }),
+        );
+    }
     // `--record-wave`'s config header (Task 5 review round): written here, once, after
     // every flag above that changes the brain's forward pass has its final value, and
     // before the tick loop starts. `set_noise` runs earlier (ruido_sigma/ruido_drop are
@@ -3373,7 +3428,12 @@ fn main() {
             genome_diversity.brake_row_rms_from_slot0,
         );
         if let Some(diagnostics) = ctx.driving_diagnostics.as_mut() {
-            diagnostics.reset(gen_abs);
+            diagnostics
+                .reset(gen_abs, &genomes[diagnostics.selected])
+                .unwrap_or_else(|error| {
+                    eprintln!("ERROR --driving-diagnostics genome snapshot: {error}");
+                    std::process::exit(1)
+                });
         }
 
         // ── Rotação de pistas (P1) ──────────────────────────────────────────────
@@ -3558,6 +3618,17 @@ fn main() {
                 "laps_recorded": true,
                 "raw_intents_recorded": replay_this_gen,
             });
+            metadata["counterfactual_ablation"] = ablation_plan
+                .as_ref()
+                .map(|plan| {
+                    serde_json::json!({
+                        "being": plan.being(),
+                        "targets": plan.canonical_spec(),
+                        "requested_world_tick": plan.from_tick(),
+                        "effective_tick_semantics": "first neural dispatch at or after requested_world_tick"
+                    })
+                })
+                .unwrap_or(serde_json::Value::Null);
             metadata["population_tau_reseeded"] =
                 serde_json::json!(if elite_carregado_do_checkpoint {
                     tau_hetero && n_seres > 1

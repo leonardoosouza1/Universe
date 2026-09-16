@@ -542,7 +542,7 @@ fn validate_brain() {
             return;
         }
     };
-    // The current brain layout has 13 storage bindings. Request the same 16-slot
+    // The current brain layout has 15 storage bindings. Request the same 16-slot
     // limit as the evolution context; the old 12-slot request panicked before any
     // numerical comparison could run. Unsupported adapters fail request_device below.
     let mut limits = wgpu::Limits::downlevel_defaults();

@@ -6,22 +6,27 @@
 
 use crate::native_action::MotorTrace;
 use crate::statics::{
-    continuous_wall_probes, motor_head_linear, reverse_controller_v2, slow_canonical_kinematics,
-    throttle_arbitration_signed,
+    NEUROMOD_REGIOES, continuous_wall_probes, motor_head_linear, reverse_controller_v2,
+    slow_canonical_kinematics, throttle_arbitration_signed,
 };
 use crate::types::BeingState;
 use serde_json::json;
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use universe::config::iara::brain::{L1_NEURONS, SENSORY_WAVE_SIZE};
 use universe::config::iara::vision::{RETINA_COLS, RETINA_ROWS, RETINA_TOTAL};
-use universe::gpu::brain::BrainGpu;
+use universe::gpu::brain::{BrainGpu, OBSERVATION_BYTES, decode_observation};
+use universe::gpu::evolution::Genome;
+use universe::gpu::genome_io::save_genome;
 use universe::gpu::physics::PhysicsStateGpu;
 
 const WAVE_BYTES: usize = SENSORY_WAVE_SIZE;
 const FAST_FLOATS: usize = L1_NEURONS;
 const RETINA_BYTES: usize = RETINA_TOTAL * 4;
-const SAMPLE_BYTES: usize = RETINA_BYTES + WAVE_BYTES + FAST_FLOATS * 4;
+const FAST_OFFSET: usize = RETINA_BYTES + WAVE_BYTES;
+const TRACE_OFFSET: usize = FAST_OFFSET + FAST_FLOATS * 4;
+const SAMPLE_BYTES: usize = TRACE_OFFSET + OBSERVATION_BYTES;
 
 #[derive(Default, Clone)]
 struct Window {
@@ -48,6 +53,7 @@ struct Window {
 
 /// A persistent, bounded observer. Writers fail loudly instead of dropping evidence.
 pub struct DrivingDiagnostics {
+    out: PathBuf,
     staging: wgpu::Buffer,
     csv: BufWriter<std::fs::File>,
     samples: BufWriter<std::fs::File>,
@@ -57,6 +63,7 @@ pub struct DrivingDiagnostics {
     pub selected: usize,
     pub every: usize,
     generation: usize,
+    observed_genome_file: String,
     first_tick: usize,
     pending: Option<serde_json::Value>,
 }
@@ -65,10 +72,12 @@ impl DrivingDiagnostics {
     /// Create new files; never append a second experiment to an existing recording.
     pub fn new(
         device: &wgpu::Device,
+        brain: &BrainGpu,
         out: &Path,
         beings: usize,
         selected: usize,
         every: usize,
+        ablation: Option<&universe::gpu::brain::AblationPlan>,
     ) -> io::Result<Self> {
         if selected >= beings || every == 0 {
             return Err(io::Error::new(
@@ -87,7 +96,15 @@ impl DrivingDiagnostics {
             csv,
             "generation,first_tick,last_tick,being,ticks,alive_ticks,contact_ticks,impact_ticks,contact_events,brake_ticks,overlap_ticks,stationary_ticks,reverse_ticks,near_wall_ticks,speed_sum,distance_m,collision_energy_j,impulse_ns,impact_peak_mps,slip_peak,slip_angle_peak_rad,throttle_sum,brake_sum,x,z,speed,throttle,steer,brake,wall_left,wall_front,wall_right,life,fuel"
         )?;
-        let metadata = json!({"schema_version":1,"contact_energy_version":2,"tick_rate":64,"window_ticks":64,
+        let counterfactual = ablation.map(|plan| {
+            json!({
+                "being": plan.being(),
+                "targets": plan.canonical_spec(),
+                "requested_world_tick": plan.from_tick(),
+                "effective_tick_semantics": "first neural dispatch at or after requested_world_tick"
+            })
+        });
+        let mut metadata = json!({"schema_version":2,"observation_schema":2,"contact_energy_version":2,"tick_rate":64,"window_ticks":64,
             "eye_offset_m":universe::visao::ALTURA_OLHO,"eye_height_m":universe::visao::ALTURA_OLHO,
             "road_view_calibration_version":2,"reference_eye_height_m":universe::visao::ROAD_VIEW_REFERENCE_EYE_HEIGHT_M,"retina_road_view_m":universe::visao::road_view_range(),
             "retina_geometry":if universe::visao::road_view_enabled(){"physical-v1"}else{"legacy"},
@@ -98,6 +115,12 @@ impl DrivingDiagnostics {
             "sample_phase":"retina/perception pre-physics; fast state post-brain; body post-physics",
             "motor_trace_source":"native_action_mapper_v1",
             "fast_state_stage":"sensory_cfc_pre_l1",
+            "brain_runtime":{"output_gain":brain.out_gain,"output_fatigue_beta":brain.out_beta,
+                "l2_normalisation_by_std":brain.norm_l2_by_std,
+                "mechanisms_off":{"memory":brain.mem_off,"period":brain.period_off,
+                    "threshold":brain.threshold_off,"heterogeneous_activation":brain.activation_off},
+                "regional_gating":NEUROMOD_REGIOES.load(Ordering::Relaxed),
+                "sensor_noise_sigma":brain.noise_sigma,"sensor_dropout_probability":brain.dropout_prob},
             "slow_kinematics":if slow_canonical_kinematics(){"canonical"}else{"legacy"},
             "wall_probes":if continuous_wall_probes(){"continuous"}else{"legacy"},
             "motor_trace_phase":"pre_physics_command_assembly",
@@ -106,9 +129,35 @@ impl DrivingDiagnostics {
             "reverse_controller":if reverse_controller_v2(){"v2"}else{"legacy"},
             "contact_semantics":"four physical probes in wall voxels; impact requires positive inward velocity",
             "near_wall_semantics":"CPU wall distance <=3 m; proximity is not a collision",
-            "extra_sample_readback_bytes":SAMPLE_BYTES});
+            "extra_sample_readback_bytes":SAMPLE_BYTES,
+            "trace_gpu_bytes_per_sample":OBSERVATION_BYTES,
+            "counterfactual_ablation":counterfactual});
+        metadata["brain_graph"] = json!({"version":1,
+        "nodes":[
+            {"name":"wave","shape":[192],"dtype":"i8","unit":"sensor_code","scale":1,"zero_point":0,"phase":"pre_brain","source":"perception.buf_output","optional":false},
+            {"name":"cfc_state","shape":[96],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"buf_cfc","optional":true},
+            {"name":"l1_matmul","shape":[96],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"w_l1r_pre_mechanisms","optional":true},
+            {"name":"l1_effective","shape":[96],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"w_l1r_post_mechanisms","optional":true},
+            {"name":"l1_to_l2","shape":[96],"dtype":"i8","unit":"sensor_code","scale":1,"zero_point":0,"phase":"post_brain","source":"w_l1a","optional":true},
+            {"name":"l2_matmul","shape":[48],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"raw_l2","optional":true},
+                    {"name":"l2_effective","shape":[48],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"w_l2r","optional":true},
+                    {"name":"l2_std","shape":[],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"l2_std","optional":true},
+                    {"name":"l2_adapted","shape":[48],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"adapted","optional":true},
+            {"name":"bypass_adapted","shape":[48],"dtype":"f32","unit":"dimensionless","phase":"post_brain","source":"adapted_bp","optional":true},
+            {"name":"final_intent","shape":[96],"dtype":"f32","unit":"dimensionless","phase":"pre_physics","source":"existing_intent_readback","optional":true}
+        ],
+        "edges":[
+            {"from":"wave[0:96]","to":"cfc_state"},{"from":"cfc_state","to":"l1_matmul"},
+            {"from":"wave[96:192]","to":"l1_matmul"},{"from":"l1_matmul","to":"l1_effective"},
+            {"from":"l1_effective","to":"l1_to_l2"},{"from":"l1_to_l2","to":"l2_matmul"},
+            {"from":"l2_matmul","to":"l2_effective"},{"from":"l2_effective","to":"l2_adapted"},
+            {"from":"l2_adapted","to":"final_intent[0:48]"},
+            {"from":"l1_effective[48:96]","to":"bypass_adapted"},
+            {"from":"bypass_adapted","to":"final_intent[48:96]"}
+        ]});
         serde_json::to_writer_pretty(create("driving.meta.json")?, &metadata)?;
         Ok(Self {
+            out: out.to_path_buf(),
             staging: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("selected-brain-observation"),
                 size: SAMPLE_BYTES as u64,
@@ -123,17 +172,27 @@ impl DrivingDiagnostics {
             selected,
             every,
             generation: 0,
+            observed_genome_file: String::new(),
             first_tick: 1,
             pending: None,
         })
     }
 
-    pub fn reset(&mut self, generation: usize) {
+    /// Start a generation and preserve the exact selected genome used by its samples.
+    pub fn reset(&mut self, generation: usize, genome: &Genome) -> io::Result<()> {
+        let file = format!("observed_genome_gen{generation:04}.bin");
+        let path = self.out.join(&file);
+        let path = path.to_str().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "diagnostic path is not UTF-8")
+        })?;
+        save_genome(genome, path)?;
         self.generation = generation;
+        self.observed_genome_file = file;
         self.first_tick = 1;
         self.windows.fill(Window::default());
         self.previous_contact.fill(false);
         self.pending = None;
+        Ok(())
     }
 
     pub fn sampling(&self, tick: usize) -> bool {
@@ -146,6 +205,7 @@ impl DrivingDiagnostics {
         retina: &wgpu::Buffer,
         wave: &wgpu::Buffer,
         brain: Option<&BrainGpu>,
+        fresh_brain_trace: bool,
     ) {
         encoder.copy_buffer_to_buffer(
             retina,
@@ -163,32 +223,30 @@ impl DrivingDiagnostics {
         );
         if let Some(brain) = brain {
             brain
-                .copy_fast_state_into(
-                    encoder,
-                    &self.staging,
-                    self.selected,
-                    (RETINA_BYTES + WAVE_BYTES) as u64,
-                )
+                .copy_fast_state_into(encoder, &self.staging, self.selected, FAST_OFFSET as u64)
                 .expect("selected fast-state sample must fit its staging buffer");
+            if fresh_brain_trace {
+                brain
+                    .copy_observation_into(encoder, &self.staging, TRACE_OFFSET as u64)
+                    .expect("selected brain trace must fit its staging buffer");
+            }
         }
     }
 
-    pub fn read_sample(
+    pub fn request_sample_read(&self) -> universe::gpu::readback::ReadbackTicket {
+        universe::gpu::readback::ReadbackTicket::request(&self.staging, SAMPLE_BYTES as u64)
+    }
+
+    pub fn collect_sample(
         &mut self,
-        device: &wgpu::Device,
+        ticket: universe::gpu::readback::ReadbackTicket,
         tick: usize,
         native: bool,
+        fresh_brain_trace: bool,
         pose: &universe::gpu::retina_types::PoseRaw,
     ) {
+        assert!(ticket.is_ready(), "observation mapping failed");
         let slice = self.staging.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        device.poll(wgpu::Maintain::Wait);
-        rx.recv()
-            .expect("observation callback")
-            .expect("observation mapping");
         let bytes = slice.get_mapped_range();
         let retina: Vec<u32> = bytemuck::cast_slice(&bytes[..RETINA_BYTES]).to_vec();
         let wave: Vec<i8> = bytes[RETINA_BYTES..RETINA_BYTES + WAVE_BYTES]
@@ -196,13 +254,24 @@ impl DrivingDiagnostics {
             .map(|v| *v as i8)
             .collect();
         let fast: Option<Vec<f32>> =
-            native.then(|| bytemuck::cast_slice(&bytes[RETINA_BYTES + WAVE_BYTES..]).to_vec());
+            native.then(|| bytemuck::cast_slice(&bytes[FAST_OFFSET..TRACE_OFFSET]).to_vec());
         if let Some(values) = &fast {
             assert!(values.iter().all(|v| v.is_finite()), "nonfinite fast state");
         }
+        let stages = (native && fresh_brain_trace).then(|| {
+            let trace = decode_observation(&bytes[TRACE_OFFSET..SAMPLE_BYTES])
+                .expect("GPU brain trace must match its declared layout");
+            json!({"cfc_state":fast,"l1_matmul":trace.l1_matmul,
+                "l1_effective":trace.l1_effective,"l1_to_l2":trace.l1_to_l2,
+                "l2_matmul":trace.l2_matmul,"l2_effective":trace.l2_effective,
+                "l2_adapted":trace.l2_adapted,"bypass_adapted":trace.bypass_adapted,
+                "l2_std":trace.l2_std})
+        });
         self.pending = Some(
             json!({"generation":self.generation,"tick":tick,"being":self.selected,
+            "genome_file":self.observed_genome_file,
             "retina":retina,"wave":wave,"fast_state":fast,
+            "neural_dispatch":fresh_brain_trace,"stages":stages,
             "sensor_pose":{"position":&pose.pos_gaze[..3],"forward":&pose.dirs[..2],"right":&pose.dirs[2..],"gaze_yaw":pose.pos_gaze[3]}}),
         );
         drop(bytes);
@@ -290,6 +359,9 @@ impl DrivingDiagnostics {
                 "slip_ratio_peak":slip_ratio_peak,"slip_angle_peak_rad":slip_angle_peak,
                 "joy":states[i].joy_tick,"joy_streak_s":states[i].joy_streak,
                 "stagnation_ticks":states[i].stagnation_ticks,"hole_hits":states[i].hole_hits});
+            if sample["neural_dispatch"].as_bool() == Some(true) {
+                sample["stages"]["final_intent"] = json!(&raw[i][..]);
+            }
             serde_json::to_writer(&mut self.samples, &sample)?;
             writeln!(self.samples)?;
         }

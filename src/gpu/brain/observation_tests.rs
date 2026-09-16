@@ -1,4 +1,15 @@
-use super::{CFC_SLOTS_PER_BEING, FAST_CFC_STATE_BYTES, L1_NEURONS, fast_state_copy_range};
+use super::{
+    CFC_SLOTS_PER_BEING, FAST_CFC_STATE_BYTES, L1_NEURONS, brain_control_word,
+    fast_state_copy_range,
+};
+
+#[test]
+fn packed_control_keeps_ablation_and_observation_independent() {
+    assert_eq!(brain_control_word(false, None), 0);
+    assert_eq!(brain_control_word(true, None), 1);
+    assert_eq!(brain_control_word(false, Some(0)), 2);
+    assert_eq!(brain_control_word(true, Some(7)), 17);
+}
 
 #[test]
 fn fast_state_layout_excludes_counter_and_uses_97_slot_stride() {

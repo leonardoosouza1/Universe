@@ -59,6 +59,7 @@ pub mod genome_io;
 pub mod hippocampus;
 pub mod perception;
 pub mod physics;
+pub mod readback;
 pub mod retina_digest;
 pub mod retina_metrics;
 pub mod retina_types;

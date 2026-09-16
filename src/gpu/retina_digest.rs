@@ -266,7 +266,43 @@ impl RetinaDigestGpu {
         bytes_extra
     }
 
-    /// Reads `extra_out` back — call AFTER the `queue.submit` + `device.poll(Wait)`
+    /// Starts mapping the compact retina digest staging buffer.
+    pub fn request_read(
+        &self,
+        n: usize,
+        bytes: u64,
+    ) -> Option<crate::gpu::readback::ReadbackTicket> {
+        let n = n.min(self.capacity);
+        (n > 0 && bytes > 0)
+            .then(|| crate::gpu::readback::ReadbackTicket::request(&self.buf_extra_readback, bytes))
+    }
+
+    /// Decodes a mapping requested by [`Self::request_read`].
+    pub fn collect_read(
+        &self,
+        n: usize,
+        bytes: u64,
+        ticket: crate::gpu::readback::ReadbackTicket,
+    ) -> Vec<[f32; EXTRA_OUT_STRIDE]> {
+        let n = n.min(self.capacity);
+        if n == 0 || bytes == 0 || !ticket.is_ready() {
+            return Vec::new();
+        }
+
+        let slice = self.buf_extra_readback.slice(0..bytes);
+        let data = slice.get_mapped_range();
+        let floats: &[f32] = bytemuck::cast_slice(&data);
+        let mut out = vec![[0.0f32; EXTRA_OUT_STRIDE]; n];
+        for i in 0..n {
+            let base = i * EXTRA_OUT_STRIDE;
+            out[i].copy_from_slice(&floats[base..base + EXTRA_OUT_STRIDE]);
+        }
+        drop(data);
+        self.buf_extra_readback.unmap();
+        out
+    }
+
+    /// Reads `extra_out` back after submission.
     /// of the encoder that contained `bind_and_dispatch`. Same pattern as
     /// `PerceptionGpu::read_after_submit` (map_async → poll(Wait) → recv — NEVER in
     /// the reverse order, that is the deadlock documented twice in this codebase).
@@ -278,37 +314,11 @@ impl RetinaDigestGpu {
         n: usize,
         bytes: u64,
     ) -> Vec<[f32; EXTRA_OUT_STRIDE]> {
-        let n = n.min(self.capacity);
-        if n == 0 || bytes == 0 {
+        let Some(ticket) = self.request_read(n, bytes) else {
             return Vec::new();
-        }
-
-        let slice = self.buf_extra_readback.slice(0..bytes);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
+        };
         device.poll(wgpu::Maintain::Wait);
-        let _ = rx.recv();
-
-        let data = slice.get_mapped_range();
-        let floats: &[f32] = bytemuck::cast_slice(&data);
-        let mut out = vec![[0.0f32; EXTRA_OUT_STRIDE]; n];
-        // P1.8: copies the WHOLE row (`EXTRA_OUT_STRIDE`=19 floats), not just the first
-        // 3 — bug introduced and caught on the spot by
-        // `retina_digest_bate_com_cpu_ao_longo_de_varios_ticks` (--ignored): with the
-        // old loop hardcoded to [0],[1],[2], slots [3..19) (ch192-207) always stayed
-        // at the `Vec`'s initialization `0.0`, never at the real value written
-        // by the GPU. Recorded here because it is exactly the class of error (a
-        // hardcoded index that does not follow the stride) this project has paid dearly for before.
-        for i in 0..n {
-            let base = i * EXTRA_OUT_STRIDE;
-            out[i].copy_from_slice(&floats[base..base + EXTRA_OUT_STRIDE]);
-        }
-
-        drop(data);
-        self.buf_extra_readback.unmap();
-        out
+        self.collect_read(n, bytes, ticket)
     }
 
     /// Zeroes the recurrent CfC state for the first `n` beings.
