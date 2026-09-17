@@ -69,6 +69,36 @@ test('focused edges omit zero weights and preserve matrix orientation and signs'
   assert.equal(brain.connectionSummary(cfc).fixed,1);
 });
 
+test('schema-2 stages light up L1/L2; schema-1 samples keep L1 grey',()=>{
+  const brain=topology();
+  const l1=Array.from({length:96},(_,i)=>i-48), l2=Array.from({length:48},(_,i)=>i-24);
+  const schema2={being:0,wave:[64],fast_state:[.1],stages:{l1_effective:l1,l2_adapted:l2,l1_to_l2:l1},
+    body:{motor_trace:{raw_intent:[.1,.2,.3]}}};
+  const lit=brain.computeActivity(schema2,0);
+  assert.ok(lit[offsets.L1]>-1.5,'L1 must be non-grey for a schema-2 sample');
+  assert.ok(lit[offsets.L2]>-1.5,'L2 must be non-grey for a schema-2 sample');
+  assert.ok(lit[offsets.L1+95]>-1.5&&lit[offsets.L1+95]<=1,'L1 activity stays within the colour range');
+
+  const schema1={being:0,wave:[64],fast_state:[.1],body:{motor_trace:{raw_intent:[.1,.2,.3]}}};
+  const grey=brain.computeActivity(schema1,0);
+  assert.equal(grey[offsets.L1],-2,'L1 must stay grey (unavailable) without a recorded stages block');
+  assert.ok(grey[offsets.L2]>-1.5,'the three L2 motor rows still populate from the legacy motor trace in schema 1');
+  assert.equal(grey[offsets.L2+10],-2,'non-motor L2 rows stay grey in schema 1, exactly as before');
+});
+
+test('L1<->L2 edge contribution is the recorded activation times the checkpoint weight',()=>{
+  const brain=topology();brain.selectedBeing=0;
+  brain.data.fast.l2Weights[2*96+5]=3; // L2 node 2 <- L1 node 5
+  brain.sample={being:0,stages:{l1_to_l2:Array(96).fill(0).map((_,i)=>i===5?10:0)}};
+  const fromL1=brain.incident(offsets.L1+5).find(e=>e.b===offsets.L2+2);
+  assert.equal(fromL1.contribution,30);
+  const fromL2=brain.incident(offsets.L2+2).find(e=>e.a===offsets.L1+5);
+  assert.equal(fromL2.contribution,30);
+  brain.sample=null;
+  const noSample=brain.incident(offsets.L1+5).find(e=>e.b===offsets.L2+2);
+  assert.equal(noSample.contribution,undefined,'without a valid sample, edges keep the old {a,b,weight} shape');
+});
+
 test('reset fitting keeps every node inside desktop and narrow canvases',()=>{
   const brain=topology();
   for(const [width,height] of [[900,500],[320,640],[484,180],[320,160]]){

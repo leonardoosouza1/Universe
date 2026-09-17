@@ -77,7 +77,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("--native-genome requires --native-being; checkpoint ownership cannot be inferred from a replay".into());
         }
         (None, Some(_)) => return Err("--native-being requires --native-genome".into()),
-        (None, None) => {}
+        (None, None) => {
+            if options.attach_observed_genome(&replay)? {
+                println!(
+                    "replay_view: attached the genome recorded by the diagnostics writer for this generation/being (no --native-genome given)"
+                );
+            }
+        }
     }
     let width = options.metadata["track_width"]
         .as_f64()
