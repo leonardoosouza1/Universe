@@ -57,5 +57,32 @@ in 4000 attempts, the search logs the miss to stderr and returns its closest can
 
 ## Census results (`world_census`, `src/bin/world_census.rs`)
 
-See the report for the exact commands and numbers from `--seeds 8100..8299
-radius=9,width=20`.
+```
+world_census --seeds 8100..8299 radius=9,width=20 \
+  --out /media/llm-data/scratch/world-gen-smoke/census_8100_8299.tsv
+```
+
+200 seeds, 46 valid (23.0%), 154 invalid, 0 parse errors, run in 5.4 s CPU-side (no
+GPU). Among the valid ones, measured `r_min` ranges 6.0-11.0 m (mean 8.7 m) — the
+`radius=9` request (see the "approximate" caveat above) mostly lands close to target,
+sometimes tighter than the physical floor's neighbourhood. Most rejections are
+`pista_check`-style defects (axis off track / bottleneck) at `width=20`, tighter than
+today's 28 m default, on curves generated for a *different* width target — width still
+does not steer the geometry search (see the table above), so a narrow request can
+collide with a track shape searched for a looser one.
+
+## Known limitation found while smoke-testing (`holes` density on a narrow/tight track)
+
+`--world seed=8005,radius=8,width=18,holes=0.5` — the literal hard-world combination —
+is REJECTED by `pista_check` at every radius from 8 to 60 m tested. Isolating each
+field: `radius=8,width=18,holes=0` is ACCEPTED (0 defects); any `holes>=0.05` at
+`width=18` fails; `holes=0.5` fails at every width from 18 to 60 m tested. The blocker
+is `holes`, not `radius` or `width` — a real limit of `track_holes_with_density`'s
+fixed 30%-of-track-width lateral offset (`world.rs`, `hole_position`): at `holes=0.5`
+roughly half of a dozen-plus curves get a hazard, and on this seed's geometry that is
+enough hazards near enough to apexes to create an unavoidable bottleneck somewhere on
+the lap. `holes<=0.02` (rounds to ~0 real curves hazarded) passes; nothing between
+0.02 and 0.5 was swept finely enough to find where it starts failing on every seed —
+only confirmed for 8005. Not a search bug (a real, prior counting bug in
+`track_holes_with_density` was found and fixed in the same session — see its own doc
+comment — this is what remains after that fix).
