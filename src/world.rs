@@ -1463,13 +1463,27 @@ pub fn track_waypoints_for_spec(spec: &crate::world_spec::WorldSpec) -> Vec<Vec2
     if spec.is_seed_only() {
         track_waypoints_for_seed(spec.seed)
     } else {
+        // "key omitted = today's hardcoded value" (WorldSpec's own contract,
+        // `src/world_spec.rs`) — so an omitted `curves`/`length` must NOT fall back to
+        // a generic constant, it must fall back to what THIS seed's default generator
+        // (`track_waypoints_for_seed`) actually produces. Measured, not guessed: a
+        // fixed default of "10 curves" made `--world seed=8005,radius=9` (only the
+        // radius given) return a 17-curve, 622 m track when seed 8005's own default is
+        // 6 curves at ~1639 m — only the radius floor was supposed to change.
+        let default_wps = track_waypoints_for_seed(spec.seed);
+        let default_d = crate::pista_gen::medir(&default_wps, spec.width.unwrap_or(28.0), 40.0);
         // `pista_gen_spec::waypoints_for_spec` returns METRES (same output contract as
         // the existing profile generator, see its own doc comment above) — the
         // existing metres->cells + grid-centre recentring helper right below this
         // function is the same one the 8000-8299 profile bands already apply.
         // Skipping this step is exactly the unit bug documented on that helper's
         // doc comment (finding, 2026-08-15).
-        perfil_para_cells(&crate::pista_gen_spec::waypoints_for_spec(spec)) // check-language: allow
+        perfil_para_cells(&crate::pista_gen_spec::waypoints_for_spec( // check-language: allow
+            spec,
+            default_d.n_curvas.max(1),
+            default_d.comprimento,
+            &default_wps,
+        ))
     }
 }
 
@@ -1869,7 +1883,7 @@ pub fn procedural_holes(seed: u64, waypoints: &[Vec2], largura_cells: f32) -> Ve
 /// `world_spec::parse`) is the fraction of the sharpest turns that get a hazard, so
 /// `holes=1.0` hazards every curve and `holes=0.0` hazards none — a real, continuous
 /// difficulty knob rather than the old binary "1 or 2" choice.
-fn track_holes_with_density(waypoints: &[Vec2], largura_cells: f32, density: f32) -> Vec<Vec2> {
+pub fn track_holes_with_density(waypoints: &[Vec2], largura_cells: f32, density: f32) -> Vec<Vec2> {
     if waypoints.len() < 4 {
         return vec![];
     }
@@ -2079,6 +2093,48 @@ mod tests {
             d.r_min <= 20.0,
             "radius=9 request produced a much wider track: r_min={}",
             d.r_min
+        );
+    }
+
+    /// "key omitted = today's hardcoded value" (`WorldSpec`'s own contract): a spec
+    /// giving only `radius` must keep seed 8005's own default curve count (6) and
+    /// length (~1639 m) — only the radius floor changes. Found broken 2026-09-17: a
+    /// generic default of "10 curves, no length target" produced a 17-curve, 622 m
+    /// track for `--world seed=8005,radius=9` instead.
+    #[test]
+    fn world_spec_radius_only_keeps_seed_default_curves_and_length() {
+        let default_wps = track_waypoints_for_seed(8005);
+        let default_d = crate::pista_gen::medir(&default_wps, 28.0, 40.0);
+
+        let spec = crate::world_spec::parse("seed=8005,radius=9").unwrap();
+        assert!(!spec.is_seed_only());
+        let wps = track_waypoints_for_spec(&spec);
+        let d = crate::pista_gen::medir(&wps, 28.0, 40.0);
+
+        assert!(
+            (d.n_curvas as i64 - default_d.n_curvas as i64).abs() <= 1,
+            "radius-only spec should keep seed 8005's default curve count {} (±1), got {}",
+            default_d.n_curvas,
+            d.n_curvas
+        );
+        assert!(
+            (d.comprimento - default_d.comprimento).abs() <= default_d.comprimento * 0.35,
+            "radius-only spec should keep seed 8005's default length {:.0} m (±35%), got {:.0} m",
+            default_d.comprimento,
+            d.comprimento
+        );
+        // The search either reaches the 9 m target, or — as measured here, seed
+        // 8005's own default family (6 vertices, ~1639 m) tops out around r_min≈14 m
+        // even with 20 000 attempts (see `pista_gen_spec::waypoints_for_spec`'s doc
+        // comment) — falls back to the seed's OWN default geometry rather than to
+        // some other random candidate. Either way it must never end up WORSE (wider)
+        // than that default; a small epsilon absorbs the metres/cells round trip.
+        assert!(
+            d.r_min <= default_d.r_min + 0.5,
+            "radius-only spec must not widen the track past seed 8005's own default: \
+             r_min={:.1} vs default r_min={:.1}",
+            d.r_min,
+            default_d.r_min
         );
     }
 }

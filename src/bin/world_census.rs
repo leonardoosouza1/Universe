@@ -112,16 +112,31 @@ fn census_one(seed: u64, shared: &str) -> String {
         }
     };
     let width = spec.as_ref().and_then(|s| s.width).unwrap_or(28.0);
-    let holes_report = spec
-        .as_ref()
-        .and_then(|s| s.holes)
-        .map_or("default".to_string(), |v| format!("{v:.2}"));
 
     let wps_cells = spec
         .as_ref()
         .map(universe::world::track_waypoints_for_spec)
         .unwrap_or_else(|| universe::world::track_waypoints_for_seed(seed));
     let d = universe::pista_gen::medir(&wps_cells, width, 40.0);
+
+    // Numeric density, not the word "default": when `holes` is unset we still apply
+    // an effective density, we just get there via the seed-derived 1-2 coin flip
+    // (`track_holes_for_seed`) instead of `WorldSpec.holes` — report what actually
+    // got placed relative to the curve count `medir` just measured, so every row is
+    // comparable on the same axis.
+    let cell_size = 3.0;
+    let holes_placed = match spec.as_ref().and_then(|s| s.holes) {
+        Some(density) => {
+            universe::world::track_holes_with_density(&wps_cells, width / cell_size, density)
+                .len()
+        }
+        None => universe::world::track_holes_for_seed(seed, &wps_cells, width / cell_size).len(),
+    };
+    let holes_report = if d.n_curvas > 0 {
+        format!("{:.3}", holes_placed as f32 / d.n_curvas as f32)
+    } else {
+        "0.000".to_string()
+    };
 
     let defects = axis_defect_count(&world, width, world.lap_distance.min(3000.0));
     let valid = defects == 0;
