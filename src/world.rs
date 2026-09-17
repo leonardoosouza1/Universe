@@ -1455,7 +1455,7 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
 /// whose only set field is `seed` defers to `track_waypoints_for_seed`, so
 /// `--world seed=8005` is byte-identical to `--tracks 8005` — see the
 /// `world_spec_seed_only_matches_new` test near `VoxelWorld::new_from_spec`. Any other
-/// field present routes to `pista_gen::waypoints_for_spec`'s rejection search; this
+/// field present routes to `pista_gen_spec::waypoints_for_spec`'s rejection search; this
 /// function is the only place allowed to make that seed-only decision, because
 /// `pista_gen` must stay a dependency of `world`, never the other way (see the module
 /// doc comment at the top of `pista_gen.rs`).
@@ -1463,13 +1463,13 @@ pub fn track_waypoints_for_spec(spec: &crate::world_spec::WorldSpec) -> Vec<Vec2
     if spec.is_seed_only() {
         track_waypoints_for_seed(spec.seed)
     } else {
-        // `pista_gen::waypoints_for_spec` returns METRES (same output contract as
+        // `pista_gen_spec::waypoints_for_spec` returns METRES (same output contract as
         // the existing profile generator, see its own doc comment above) — the
         // existing metres->cells + grid-centre recentring helper right below this
         // function is the same one the 8000-8299 profile bands already apply.
         // Skipping this step is exactly the unit bug documented on that helper's
         // doc comment (finding, 2026-08-15).
-        perfil_para_cells(&crate::pista_gen::waypoints_for_spec(spec)) // check-language: allow
+        perfil_para_cells(&crate::pista_gen_spec::waypoints_for_spec(spec)) // check-language: allow
     }
 }
 
