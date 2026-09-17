@@ -1873,10 +1873,24 @@ fn track_holes_with_density(waypoints: &[Vec2], largura_cells: f32, density: f32
     if waypoints.len() < 4 {
         return vec![];
     }
-    let scored = scored_turns(waypoints);
-    let n_holes = ((density.clamp(0.0, 1.0) * scored.len() as f32).round() as usize)
-        .min(scored.len());
-    scored
+    // `waypoints` is DENSIFIED (`pista_gen::densificar`, ~one point every 23 m), so
+    // `scored_turns` returns one entry per densified point, not per real curve — most
+    // of them near-straight (turn ~0). Counting density against the RAW length here
+    // was a real bug found while measuring the hard-world smoke run
+    // (docs/WORLD-GENERATOR.md): `holes=0.02` on a ~100-point densified lap placed 2
+    // holes instead of the intended near-zero, because 2% of 100 rounds up, not 2% of
+    // the dozen actual curves. `MIN_TURN_DEG` (matches `pista_gen::medir`'s own
+    // straight-segment cutoff) restricts the pool to genuine curves before applying
+    // the density, so `holes=0.5` means "half the real curves", not "half the path
+    // samples".
+    const MIN_TURN_DEG: f32 = 1.0;
+    let curves: Vec<(usize, f32)> = scored_turns(waypoints)
+        .into_iter()
+        .filter(|(_, turn)| turn.to_degrees() >= MIN_TURN_DEG)
+        .collect();
+    let n_holes =
+        ((density.clamp(0.0, 1.0) * curves.len() as f32).round() as usize).min(curves.len());
+    curves
         .iter()
         .take(n_holes)
         .map(|(i, _)| hole_position(waypoints, *i, largura_cells))
