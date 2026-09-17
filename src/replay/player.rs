@@ -118,6 +118,71 @@ impl PlayerOptions {
         )?);
         Ok(())
     }
+
+    /// Auto-select the genome the diagnostics writer saved beside the observation,
+    /// when the caller passed no explicit `--native-genome`. Returns `true` when a
+    /// genome was attached, `false` when there was nothing to auto-detect (no
+    /// `--diagnostics`, no recorded `selected_being`, or a replay that never claimed
+    /// to be an unmodified native checkpoint-clone population) -- all silent no-ops,
+    /// same as passing neither flag today. Once the replay does claim that, a
+    /// `selected_being` that names a `genome_file` which turns out missing, or whose
+    /// generation does not match the replay, is a clear error rather than a silent
+    /// fallback: at that point the caller's implicit request should have worked.
+    pub fn attach_observed_genome(&mut self, replay_path: &Path) -> io::Result<bool> {
+        let Some(diagnostics) = &self.diagnostics else {
+            return Ok(false);
+        };
+        let Some(selected_being) = diagnostics["meta"]["selected_being"].as_u64() else {
+            return Ok(false);
+        };
+        if native::validate_association(&self.metadata).is_err() {
+            // Not a native checkpoint-clone replay (e.g. a motor-controller replay
+            // exported with an unrelated diagnostics report attached only for its
+            // retina/behaviour charts). Auto-attaching a native brain never applies
+            // here, so this is the same no-op as omitting both flags.
+            return Ok(false);
+        }
+        let observations = diagnostics["observations"].as_array().cloned().unwrap_or_default();
+        let replay_generation = self.metadata["generation"].as_u64();
+        let same_being: Vec<&Value> = observations
+            .iter()
+            .filter(|row| row["being"].as_u64() == Some(selected_being))
+            .collect();
+        if same_being.is_empty() {
+            // The selected being was recorded, but nothing in this diagnostics
+            // report is about it -- most likely a diagnostics report from an
+            // unrelated run. Nothing to auto-detect from; not an error.
+            return Ok(false);
+        }
+        let row = same_being
+            .iter()
+            .find(|row| {
+                row["genome_file"].as_str().is_some_and(|name| !name.is_empty())
+                    && replay_generation
+                        .is_none_or(|generation| row["generation"].as_u64() == Some(generation))
+            })
+            .ok_or_else(|| {
+                invalid(format!(
+                    "no observation for being {selected_being} names a genome_file matching replay generation {replay_generation:?}; pass --native-genome explicitly"
+                ))
+            })?;
+        let genome_file = row["genome_file"].as_str().unwrap();
+        let replay_dir = replay_path.parent().unwrap_or_else(|| Path::new("."));
+        let genome_path = replay_dir.join(genome_file);
+        if !genome_path.is_file() {
+            return Err(invalid(format!(
+                "observed genome {genome_file} declared by the observation is missing at {}",
+                genome_path.display()
+            )));
+        }
+        let slow_kinematics = self.metadata["slow_kinematics"].as_str().unwrap_or("legacy");
+        self.native_brain = Some(native::from_observed_genome(
+            &genome_path,
+            selected_being as usize,
+            slow_kinematics,
+        )?);
+        Ok(true)
+    }
 }
 
 fn invalid(message: impl std::fmt::Display) -> io::Error {
@@ -363,5 +428,83 @@ mod tests {
         let encoded = script_json(&json!("</script><img onerror='bad'>"));
         assert!(!encoded.contains('<'));
         assert!(!encoded.contains('>'));
+    }
+
+    #[test]
+    fn attach_observed_genome_is_a_silent_noop_without_diagnostics_or_selected_being() {
+        let mut options = PlayerOptions::default();
+        assert!(!options.attach_observed_genome(Path::new("/nonexistent/whatever.replay")).unwrap());
+        options.diagnostics = Some(json!({"meta": {}, "observations": []}));
+        assert!(!options.attach_observed_genome(Path::new("/nonexistent/whatever.replay")).unwrap());
+    }
+
+    #[test]
+    fn attach_observed_genome_is_a_silent_noop_for_a_replay_that_never_claimed_native() {
+        // Default metadata has no checkpoint_mix/generation/tau_reseeded, so
+        // validate_association fails -- this must not become a hard error for a
+        // replay that never asked to be treated as a native checkpoint clone.
+        let mut options = PlayerOptions::default();
+        options.diagnostics = Some(json!({"meta":{"selected_being":0},
+            "observations":[{"being":0,"generation":0,"genome_file":"g.bin"}]}));
+        assert!(!options.attach_observed_genome(Path::new("/nonexistent/whatever.replay")).unwrap());
+    }
+
+    #[test]
+    fn attach_observed_genome_errors_when_the_named_file_is_missing() {
+        let mut options = PlayerOptions::default();
+        options.metadata = json!({"brain_model":"native","checkpoint_mix":1.0,"generation":0,"tau_reseeded":false});
+        options.diagnostics = Some(json!({"meta":{"selected_being":0},
+            "observations":[{"being":0,"generation":0,"genome_file":"missing.bin"}]}));
+        let error = options
+            .attach_observed_genome(Path::new("/nonexistent/dir/gen0000.replay"))
+            .unwrap_err();
+        assert!(error.to_string().contains("missing"), "{error}");
+    }
+
+    #[test]
+    fn attach_observed_genome_errors_when_no_observation_names_a_genome_for_this_generation() {
+        let mut options = PlayerOptions::default();
+        options.metadata = json!({"brain_model":"native","checkpoint_mix":1.0,"generation":0,"tau_reseeded":false});
+        options.diagnostics = Some(json!({"meta":{"selected_being":0},
+            "observations":[{"being":0,"generation":1,"genome_file":"g.bin"}]}));
+        let error = options
+            .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
+            .unwrap_err();
+        assert!(error.to_string().contains("genome_file matching replay generation"), "{error}");
+    }
+
+    #[test]
+    fn attach_observed_genome_attaches_the_exact_file_the_matching_observation_names() {
+        use crate::gpu::evolution::Genome;
+        use crate::gpu::genome_io::save_genome;
+        let mut original = Genome::random(4242);
+        original.randomize_tau(11);
+        let dir = std::env::temp_dir().join("universe_attach_observed_genome_ok");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let genome_path = dir.join("observed_genome_gen0000.bin");
+        save_genome(&original, genome_path.to_str().unwrap()).expect("wrote genome");
+        let replay_path = dir.join("gen0000.replay");
+        let mut options = PlayerOptions::default();
+        options.metadata = json!({"brain_model":"native","checkpoint_mix":1.0,"generation":0,
+            "tau_reseeded":false,"slow_kinematics":"canonical"});
+        // The diagnostics report may carry rows for other beings/generations too;
+        // only the one matching selected_being and the replay's generation counts.
+        options.diagnostics = Some(json!({"meta":{"selected_being":3},"observations":[
+            {"being":2,"generation":0,"genome_file":"observed_genome_gen0000.bin"},
+            {"being":3,"generation":1,"genome_file":"wrong_generation.bin"},
+            {"being":3,"generation":0,"genome_file":"observed_genome_gen0000.bin"}
+        ]}));
+        let attached = options.attach_observed_genome(&replay_path).expect("attach");
+        assert!(attached);
+        let native = options.native_brain.as_ref().expect("native_brain set");
+        assert_eq!(native["traceBeing"], 3);
+        assert_eq!(native["checkpoint"], "observed_genome_gen0000.bin");
+        assert!(
+            native["association"]
+                .as_str()
+                .unwrap()
+                .contains("no external checkpoint_sha256 to cross-check")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

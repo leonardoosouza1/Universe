@@ -175,6 +175,44 @@ pub(super) fn from_checkpoint(
             "native genome hash {actual_hash} does not match replay checkpoint_sha256 {expected_hash}"
         )));
     }
+    build_payload(
+        path,
+        &actual_hash,
+        trace_being,
+        slow_kinematics,
+        "checkpoint bytes verified against replay metadata.checkpoint_sha256; traceBeing explicitly selected by the exporter",
+    )
+}
+
+/// Attach the exact genome the diagnostics writer saved beside the observation for
+/// this generation/being (`observed_genome_genNNNN.bin`). There is no externally
+/// supplied hash to cross-check here: the file's identity comes from the observation
+/// row that named it, not from an out-of-band `checkpoint_sha256`. The caller is
+/// responsible for matching being and generation against the replay before calling
+/// this function.
+pub(super) fn from_observed_genome(
+    path: &Path,
+    trace_being: usize,
+    slow_kinematics: &str,
+) -> io::Result<Value> {
+    let bytes = std::fs::read(path)?;
+    let actual_hash = sha256(&bytes);
+    build_payload(
+        path,
+        &actual_hash,
+        trace_being,
+        slow_kinematics,
+        "genome file named by the observation's genome_file for the matching being and generation; no external checkpoint_sha256 to cross-check",
+    )
+}
+
+fn build_payload(
+    path: &Path,
+    actual_hash: &str,
+    trace_being: usize,
+    slow_kinematics: &str,
+    association: &str,
+) -> io::Result<Value> {
     let path_text = path
         .to_str()
         .ok_or_else(|| invalid("native genome path is not valid UTF-8"))?;
@@ -227,7 +265,7 @@ pub(super) fn from_checkpoint(
         "checkpoint": checkpoint_name,
         "checkpointSha256": actual_hash,
         "traceBeing": trace_being,
-        "association": "checkpoint bytes verified against replay metadata.checkpoint_sha256; traceBeing explicitly selected by the exporter",
+        "association": association,
         "coordinateSemantics": "schematic functional layout; positions are not anatomical measurements",
         "weightSemantics": "exact loaded checkpoint parameters; a stored edge is not proof of effective signal flow",
         "activitySemantics": "sampled measurements only; no propagation or interpolation",
