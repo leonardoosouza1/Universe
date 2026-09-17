@@ -1464,11 +1464,12 @@ pub fn track_waypoints_for_spec(spec: &crate::world_spec::WorldSpec) -> Vec<Vec2
         track_waypoints_for_seed(spec.seed)
     } else {
         // `pista_gen::waypoints_for_spec` returns METRES (same output contract as
-        // `gerar_perfil`, see its own doc comment) — `perfil_para_cells` is the same
-        // metres->cells conversion + grid-centre recentring the 8000-8299 profile
-        // bands already apply below. Skipping this step is exactly the unit bug
-        // documented at `perfil_para_cells`'s doc comment (achado 2026-08-15).
-        perfil_para_cells(&crate::pista_gen::waypoints_for_spec(spec))
+        // the existing profile generator, see its own doc comment above) — the
+        // existing metres->cells + grid-centre recentring helper right below this
+        // function is the same one the 8000-8299 profile bands already apply.
+        // Skipping this step is exactly the unit bug documented on that helper's
+        // doc comment (finding, 2026-08-15).
+        perfil_para_cells(&crate::pista_gen::waypoints_for_spec(spec)) // check-language: allow
     }
 }
 
