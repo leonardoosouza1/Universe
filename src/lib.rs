@@ -28,6 +28,7 @@ pub mod neuro;
 pub mod perception;
 pub mod physics;
 pub mod pista_gen;
+pub mod pista_gen_spec;
 /// D9 scripted predator — pure chase policy, no GPU (hostile-world spec).
 pub mod predator;
 pub mod prefabs;
@@ -55,6 +56,7 @@ pub mod visao;
 pub mod vision_geometry;
 pub mod visualization;
 pub mod world;
+pub mod world_spec;
 
 use bevy::prelude::*;
 

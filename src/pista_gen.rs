@@ -155,22 +155,22 @@ pub fn medir(wps_celulas: &[Vec2], largura: f32, v_teto: f32) -> Dificuldade {
 /// Gerador simples e determinístico. Não uso `rand` para a pista ser reprodutível a partir
 /// da semente — o `spawn.rs` já sofre de `rand::rng()` não semeado e isso custou repetições
 /// caras; não vale repetir o erro no mundo.
-struct Rng(u64);
+pub(crate) struct Rng(u64);
 
 impl Rng {
-    fn novo(s: u64) -> Self {
+    pub(crate) fn novo(s: u64) -> Self {
         Rng(s
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407)
             | 1)
     }
-    fn proximo(&mut self) -> f32 {
+    pub(crate) fn proximo(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
         (self.0 >> 40) as f32 / (1u64 << 24) as f32
     }
-    fn faixa(&mut self, a: f32, b: f32) -> f32 {
+    pub(crate) fn faixa(&mut self, a: f32, b: f32) -> f32 {
         a + (b - a) * self.proximo()
     }
 }
@@ -180,7 +180,7 @@ impl Rng {
 /// Os vértices ficam em torno de um centro, com raios e ângulos sorteados; ligar em ordem
 /// angular fecha o circuito de graça. As "retas" saem de deixar um vão angular grande entre
 /// dois vértices consecutivos; as "curvas", de agrupar vértices.
-fn tracado(semente: u64, n_vertices: usize, n_retas: usize, raio_base: f32) -> Vec<Vec2> {
+pub(crate) fn tracado(semente: u64, n_vertices: usize, n_retas: usize, raio_base: f32) -> Vec<Vec2> {
     let mut r = Rng::novo(semente);
     let centro = Vec2::new(120.0, 120.0); // grade 240×240 (world.rs)
 
@@ -274,7 +274,7 @@ pub fn densificar(wps: &[Vec2], passo: f32) -> Vec<Vec2> {
 /// `gerar_perfil` saiba (achado 2026-08-15: sem este guard, uma pista aceita aqui
 /// como "2800 m" podia sair do encolhimento com bem menos, e o rótulo mentia).
 /// Rejeitando aqui, o `d.comprimento` medido é sempre o que chega ao jogo.
-const SPAN_MAX_CELLS: f32 = 280.0;
+pub(crate) const SPAN_MAX_CELLS: f32 = 280.0;
 
 /// Faixa de volta REAL (metros, medida por `medir()`) que cada perfil promete.
 /// Mesmo espírito de `DEGRAUS`: devolver `None` em vez de uma pista fora da

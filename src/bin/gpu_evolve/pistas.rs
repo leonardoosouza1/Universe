@@ -26,6 +26,15 @@ pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
     }
 }
 
+/// `WorldSpec` analogue of `pista_da_gen`, for `--world`/`--world-file`
+/// (`universe::world_spec`). Same rotation rule: `specs[gen_abs % specs.len()]`.
+/// Caller must check `!specs.is_empty()` first — `--world` composes with the track
+/// rotation / `--switch-on-complete` machinery exactly like `--tracks`, but wins over
+/// it when both are present (see `resolve_world`, `main.rs`).
+pub fn spec_da_gen(specs: &[universe::world_spec::WorldSpec], gen_abs: usize) -> universe::world_spec::WorldSpec {
+    specs[gen_abs % specs.len()]
+}
+
 /// Parses `--tracks "9001,9002,9003"` into a list of seeds.
 ///
 /// Empty (flag absent or empty string) returns `Vec::new()` — the value that makes
@@ -121,5 +130,16 @@ mod tests {
     #[test]
     fn parse_pistas_trailing_comma_nao_gera_zero_espurio() {
         assert_eq!(parse_pistas("9001,123,"), vec![9001, 123]);
+    }
+
+    #[test]
+    fn spec_da_gen_rotates_like_pista_da_gen() {
+        let specs = vec![
+            universe::world_spec::parse("seed=8005").unwrap(),
+            universe::world_spec::parse("seed=8100,radius=9").unwrap(),
+        ];
+        assert_eq!(spec_da_gen(&specs, 0).seed, 8005);
+        assert_eq!(spec_da_gen(&specs, 1).seed, 8100);
+        assert_eq!(spec_da_gen(&specs, 2).seed, 8005, "gen 2 must wrap back to index 0");
     }
 }

@@ -77,7 +77,7 @@ mod wall_probes;
 
 use context::GpuCtx;
 use genome_io::{load_genome, population_seed_for, save_genome};
-use pistas::{parse_pistas, pista_da_gen};
+use pistas::{parse_pistas, pista_da_gen, spec_da_gen};
 use starting_grid::{canonical_start, formation_slots};
 use statics::*;
 use types::BeingState;
@@ -701,6 +701,45 @@ fn log_fly_elite(gen_abs: usize, block: &[f32], layout: universe::fly_map::FlyLa
     );
 }
 
+/// Cheap lookup (no `VoxelWorld` build) of what index `idx` (either `gen_abs` or
+/// `idx_curriculo`, same convention `pista_da_gen` uses) would train on: returns
+/// `(display_seed, change_key)`. `mundos` (`--world`/`--world-file`) wins over
+/// `pistas` (`--tracks`) when both are given — composes with `--switch-on-complete`
+/// exactly like `--tracks` did, via the same rotation index.
+///
+/// `change_key` is what the caller compares against its previous value to decide
+/// whether to reload (`world_seed_atual`/`world_key_atual`): plain `seed` for the
+/// `--tracks` path, or `WorldSpec::fingerprint()` for `--world` — a raw seed
+/// comparison would miss a change between two specs that share a `seed` but differ in,
+/// say, `width`. Kept separate from `build_world` (below) so a generation whose track
+/// did not change never pays for rebuilding the 320x320 voxel grid.
+fn peek_world(pistas: &[u64], mundos: &[universe::world_spec::WorldSpec], idx: usize) -> (u64, u64) {
+    if !mundos.is_empty() {
+        let spec = spec_da_gen(mundos, idx);
+        (spec.seed, spec.fingerprint())
+    } else {
+        let seed = pista_da_gen(pistas, idx);
+        (seed, seed)
+    }
+}
+
+/// Builds the `VoxelWorld` for training index `idx` — see `peek_world` for the
+/// (cheap) rotation rule this follows. Returns `(world, display_seed, change_key)`.
+fn resolve_world(
+    pistas: &[u64],
+    mundos: &[universe::world_spec::WorldSpec],
+    idx: usize,
+    track_width: f32,
+) -> (VoxelWorld, u64, u64) {
+    if !mundos.is_empty() {
+        let spec = spec_da_gen(mundos, idx);
+        (VoxelWorld::new_from_spec(&spec), spec.seed, spec.fingerprint())
+    } else {
+        let seed = pista_da_gen(pistas, idx);
+        (VoxelWorld::new(seed, track_width), seed, seed)
+    }
+}
+
 fn main() {
     // Production body defaults. The automatic gearbox is limited to third gear until
     // the curriculum proves that perception/control can safely use a higher ceiling.
@@ -975,6 +1014,12 @@ fn main() {
     /// (default) = validated starter track 8005. Pass `--tracks 9001` explicitly
     /// only when reproducing the historical checkpoint trained on that seed.
     let mut pistas: Vec<u64> = Vec::new();
+    /// `--world <spec>` / `--world-file <path.json>` (`universe::world_spec`):
+    /// parametric track requests (seed + radius/curves/width/holes/length),
+    /// rotated by the SAME index `pistas` uses (`spec_da_gen`, `pistas.rs`). When
+    /// non-empty this list wins over `pistas` — see `resolve_world` below. Order:
+    /// `--world-file` entries first, then each `--world` in the order given.
+    let mut mundos: Vec<universe::world_spec::WorldSpec> = Vec::new();
     /// `--track-held-out <seed>`: pista RESERVADA, nunca sorteada por `pista_da_gen`
     /// pro treino — só para MEDIR generalização (ver bloco `[generalizacao]`).
     /// `None` (padrão) desliga a medição inteira: nenhum tick extra roda.
@@ -1898,6 +1943,36 @@ fn main() {
                         pistas = parse_pistas(&args[i]);
                     }
                 }
+                // `--world <spec>` (repeatable): a parametric WorldSpec, see
+                // `universe::world_spec::parse`. A bad spec exits loudly (2) instead of
+                // silently falling back — unlike `--tracks`, this is a deliberate
+                // difficulty experiment, so a typo should not quietly train on 8005.
+                "--world" => {
+                    i += 1;
+                    if i < args.len() {
+                        match universe::world_spec::parse(&args[i]) {
+                            Ok(spec) => mundos.push(spec),
+                            Err(e) => {
+                                eprintln!("{e}");
+                                std::process::exit(2);
+                            }
+                        }
+                    }
+                }
+                "--world-file" => {
+                    i += 1;
+                    if i < args.len() {
+                        match universe::world_spec::parse_world_file(std::path::Path::new(
+                            &args[i],
+                        )) {
+                            Ok(mut specs) => mundos.append(&mut specs),
+                            Err(e) => {
+                                eprintln!("{e}");
+                                std::process::exit(2);
+                            }
+                        }
+                    }
+                }
                 "--track-held-out" => {
                     i += 1;
                     if i < args.len() {
@@ -2521,10 +2596,10 @@ fn main() {
     // devolve 9001 para qualquer geração — mesmo hardcode literal de antes desta
     // mudança, então o A/B em andamento não é afetado.
     let t0 = Instant::now();
-    let mut world_seed_atual = pista_da_gen(&pistas, gen_offset);
     // Índice do currículo: anda por MÉRITO (volta completada), não por geração.
     let mut idx_curriculo: usize = gen_offset;
-    let mut world = VoxelWorld::new(world_seed_atual, track_width);
+    let (mut world, mut world_seed_atual, mut world_key_atual) =
+        resolve_world(&pistas, &mundos, gen_offset, track_width);
     let mut lap_dist = world.lap_distance as f64;
     println!(
         "mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
@@ -3458,18 +3533,19 @@ fn main() {
         //
         // O índice é separado de `gen_abs` justamente porque um deles anda sozinho e o
         // outro só anda por mérito.
-        let seed_gen = pista_da_gen(
-            &pistas,
-            if trocar_ao_completar > 0 {
-                idx_curriculo
-            } else {
-                gen_abs
-            },
-        );
-        if seed_gen != world_seed_atual {
-            world = VoxelWorld::new(seed_gen, track_width);
+        let rotation_idx = if trocar_ao_completar > 0 {
+            idx_curriculo
+        } else {
+            gen_abs
+        };
+        let (seed_gen, key_gen) = peek_world(&pistas, &mundos, rotation_idx);
+        if key_gen != world_key_atual {
+            let (world_novo, seed_novo, key_novo) =
+                resolve_world(&pistas, &mundos, rotation_idx, track_width);
+            world = world_novo;
             ctx.reload_world(&world);
-            world_seed_atual = seed_gen;
+            world_seed_atual = seed_novo;
+            world_key_atual = key_novo;
             lap_dist = world.lap_distance as f64;
             let k = FUEL_AUTO_K.load(Ordering::Relaxed);
             if k > 0.0 {

@@ -206,6 +206,8 @@ pub const FLAGS: &[Flag] = &[
     flag("--panel",                       &["--painel"],                   SWITCH, "serve the real-time HTTP panel"),
     flag("--panel-port",                  &["--painel-porta"],             VALUE,  "port of the HTTP panel (default 3200); enables the panel"),
     flag("--tracks",                      &["--pistas"],                   VALUE,  "comma-separated training track seeds, rotated per generation"),
+    flag("--world",                       &[],                             VALUE,  "parametric WorldSpec (seed=N,radius=..,curves=..,width=..,holes=..,length=..), repeatable, rotated like --tracks"),
+    flag("--world-file",                  &[],                             VALUE,  "JSON array of WorldSpec objects, a world pool"),
     flag("--track-held-out",              &["--pista-held-out"],           VALUE,  "track seed reserved for measuring generalisation"),
     flag("--held-out-every",              &["--held-out-cada"],            VALUE,  "measure the held-out track every K generations (default 5)"),  // check-language: allow
     flag("--replay-every",                &["--replay-cada"],              VALUE,  "write a replay every N generations"),  // check-language: allow

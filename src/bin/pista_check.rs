@@ -19,15 +19,18 @@
 //! # Usage
 //!
 //!   pista_check [--width 28] [--ate 600] [--seed 9001]
+//!   pista_check --world seed=8005,radius=9,width=18,holes=0.4,length=3500 [--ate 600]
 
 use bevy::math::Vec2;
 use universe::world::{VoxelType, VoxelWorld};
+use universe::world_spec::WorldSpec;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut width = 28.0f32;
     let mut ate = 600.0f32;
     let mut seed = 9001u64;
+    let mut spec: Option<WorldSpec> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -49,6 +52,21 @@ fn main() {
                     seed = args[i].parse().unwrap_or(9001);
                 }
             }
+            // Same `WorldSpec` syntax as `gpu_evolve --world` (universe::world_spec).
+            // A seed-only spec is byte-identical to `--seed <seed>` above — see
+            // docs/WORLD-GENERATOR.md.
+            "--world" => {
+                i += 1;
+                if i < args.len() {
+                    match universe::world_spec::parse(&args[i]) {
+                        Ok(s) => spec = Some(s),
+                        Err(e) => {
+                            eprintln!("{e}");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -56,15 +74,40 @@ fn main() {
 
     let world = {
         let _q = universe::world::silence_map_diag();
-        VoxelWorld::new(seed, width)
+        match &spec {
+            Some(s) => VoxelWorld::new_from_spec(s),
+            None => VoxelWorld::new(seed, width),
+        }
     };
+    // For `--world`, report the spec's own width/holes/seed instead of the `--width`
+    // default and the coin-flip hole count — those are what the requested track
+    // actually got built with (see `VoxelWorld::new_from_spec`, `world.rs`).
+    let (report_seed, report_width) = match &spec {
+        Some(s) => (s.seed, s.width.unwrap_or(28.0)),
+        None => (seed, width),
+    };
+    // Shadow `width` with the value the grid was actually built at, so the defect
+    // checks below (`esq + dir < width * 0.5`) use the spec's real width too.
+    let width = report_width;
     let wps = &world.waypoints_world;
     let n = wps.len();
 
     println!(
-        "TRACK seed {seed} · declared width {width:.0} m · lap {:.0} m · {n} waypoints\n",
+        "TRACK seed {report_seed} · declared width {report_width:.0} m · lap {:.0} m · \
+         {n} waypoints",
         world.lap_distance
     );
+    if let Some(s) = &spec {
+        println!(
+            "  world spec: radius={} curves={} holes={} length={}\n",
+            s.radius.map_or("default".to_string(), |v| format!("{v:.1}m")),
+            s.curves.map_or("default".to_string(), |v| v.to_string()),
+            s.holes.map_or("default (1-2)".to_string(), |v| format!("{v:.2}")),
+            s.length.map_or("default".to_string(), |v| format!("{v:.0}m")),
+        );
+    } else {
+        println!();
+    }
 
     // Walks along the AXIS, interpolating between waypoints, and measures at each meter:
     //   · the material under the axis (it must be Road; anything else is a hole in the layout)
