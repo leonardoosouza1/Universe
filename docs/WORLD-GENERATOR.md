@@ -40,35 +40,59 @@ the same object for a world pool; `--world` may repeat and composes with
 by `world_spec_seed_only_matches_track_waypoints_for_seed` (`world.rs`, compares the
 full `VoxelWorld.grid`) and by an `md5sum driving.csv` smoke run — see the report.
 
-### Honestly, what each field moves (`pista_gen::waypoints_for_spec`, `pista_gen.rs:397`)
+### Honestly, what each field moves (`pista_gen_spec::waypoints_for_spec`, `pista_gen_spec.rs`)
+
+> **Correction (2026-09-17, second pass).** The first version of this table was
+> measured against a generic default ("10 curves, no length target") instead of the
+> seed's own default — that violated `WorldSpec`'s own contract ("key omitted =
+> today's hardcoded value") and was silently changing `curves`/`length` on a
+> radius-only request: `--world seed=8005,radius=9` used to come back 17 curves / 622 m
+> instead of seed 8005's own 6 curves / 1639 m. Fixed by measuring the seed's default
+> track (`track_waypoints_for_seed`) up front and threading it through as the search's
+> target AND its floor (the search can only replace it with something that measures a
+> smaller `r_min`, never something worse). The table below reflects the fix; the census
+> numbers further down are the rerun with it in place.
 
 | Field | Honoured? | How |
 |---|---|---|
 | `seed` | Yes, always | Only entropy source into the RNG |
-| `curves` | Yes | Sets `tracado`'s vertex count directly |
-| `length` | Yes, approximate | Rejection-sampled against `medir().comprimento`, tolerance ±35% |
-| `radius` | Yes, approximate | `raio_base` scaled from the target; search keeps the closest `r_min`. `tracado`'s `raio_base` sets overall track scale, not one curve — a correlation exploited by rejection, not a guarantee. Physical floor `r_min >= 6 m` always wins |
+| `curves` | Yes | Defaults to the seed's OWN measured curve count when omitted, else sets `tracado`'s vertex count directly |
+| `length` | Yes, approximate | Defaults to the seed's OWN measured length when omitted; rejection-sampled against `medir().comprimento`, tolerance ±35% |
+| `radius` | Yes, approximate, sometimes unreachable | `raio_base` scaled from the target; search keeps the closest `r_min` that still respects `curves`/`length`. Seeded with the DEFAULT geometry as its floor, so a failed search returns the seed's own default, never something wider. For seed 8005's own family (6 vertices, ~1639 m) a 20 000-attempt sweep never beat r_min≈14 m — its default (12.6 m) is already near that family's limit, so `radius=9` alone cannot be met there without also moving `curves`/`length`. Physical floor `r_min >= 6 m` always wins when reachable |
 | `width` | Yes, but downstream only | NOT used by the geometry search (`medir` only needs it for `d_freio`, which this search ignores); applied to the voxel grid by `VoxelWorld::new_from_spec` (`world.rs:99`) |
 | `holes` | Yes, downstream only | `world::track_holes_with_density` (`world.rs:1866`) replaces the old 1-2 coin flip with `round(density * n_sharpest_turns)` |
 
-If no candidate clears the physical floor (`r_min>=6m`, length>=400m, span<=280 cells)
-in 4000 attempts, the search logs the miss to stderr and returns its closest candidate
-— never a silent success (same discipline as `pista_gen::gerar`'s own rejection loop).
+If no candidate reaches the requested radius in 4000 attempts, the search logs the miss
+to stderr and returns the tightest candidate found — the seed's own default geometry if
+nothing in the search beat it — never a silent success and never a regression past the
+default (same discipline as `pista_gen::gerar`'s own rejection loop).
 
 ## Census results (`world_census`, `src/bin/world_census.rs`)
 
 ```
 world_census --seeds 8100..8299 radius=9,width=20 \
-  --out /media/llm-data/scratch/world-gen-smoke/census_8100_8299.tsv
+  --out /media/llm-data/scratch/world-gen-smoke/census_8100_8299_v2.tsv
 ```
 
-200 seeds, 46 valid (23.0%), 154 invalid, 0 parse errors, run in 5.4 s CPU-side (no
-GPU). Among the valid ones, measured `r_min` ranges 6.0-11.0 m (mean 8.7 m) — the
-`radius=9` request (see the "approximate" caveat above) mostly lands close to target,
-sometimes tighter than the physical floor's neighbourhood. Most rejections are
-`pista_check`-style defects (axis off track / bottleneck) at `width=20`, tighter than
-today's 28 m default, on curves generated for a *different* width target — width still
-does not steer the geometry search (see the table above), so a narrow request can
+> **Correction (2026-09-17, second pass).** Rerun after the default-derivation fix
+> above. The first run (46/200 valid, 23.0%) used a generic 10-curve/no-length-target
+> default that does not reflect what `--world radius=9,width=20` alone now produces —
+> kept below for provenance, superseded by this one.
+
+200 seeds, **114 valid (57.0%)**, 86 invalid, 0 parse errors, run in 11.9 s CPU-side (no
+GPU) — `world_census --seeds 8100..8299 radius=9,width=20`. Among the valid ones,
+measured `r_min` ranges 7.5-28.0 m (mean 14.4 m): most of the 8100-8199 range is the
+"curvas" profile (12-16 vertices, `FAIXA_PERFIL` 1800-2600 m), whose own default `r_min`
+is already fairly tight, so keeping curves/length pinned to that default (instead of a
+generic 10/no-target) lets more seeds land inside `pista_check`'s tolerance at
+`width=20` than the first (buggy-default) run did. Higher validity here is a
+consequence of the fix, not a re-tuned target.
+
+Superseded first run, kept for provenance: 200 seeds, 46 valid (23.0%), 154 invalid,
+0 parse errors, 5.4 s CPU-side; `r_min` 6.0-11.0 m (mean 8.7 m) among the valid ones.
+Most rejections were `pista_check`-style defects (axis off track / bottleneck) at
+`width=20` on curves generated for a *different*, generic-default width target — width
+still does not steer the geometry search (see the table above), so a narrow request can
 collide with a track shape searched for a looser one.
 
 ## Known limitation found while smoke-testing (`holes` density on a narrow/tight track)
