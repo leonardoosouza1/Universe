@@ -87,6 +87,29 @@ pub struct VoxelWorld {
 
 impl VoxelWorld {
     pub fn new(_seed: u64, track_width: f32) -> Self {
+        Self::new_internal(_seed, track_width, track_waypoints_for_seed(_seed), None)
+    }
+
+    /// Builds a world from a `WorldSpec` (`src/world_spec.rs`, the `--world` /
+    /// `--world-file` flags). A seed-only spec produces byte-identical waypoints to
+    /// `new(seed, 28.0)` — see `track_waypoints_for_spec` and the
+    /// `world_spec_seed_only_matches_new` test below. `spec.width` overrides the
+    /// caller's global track width; `spec.holes` overrides the seed-derived hole
+    /// count with a density (see `track_holes_with_density`).
+    pub fn new_from_spec(spec: &crate::world_spec::WorldSpec) -> Self {
+        let width = spec.width.unwrap_or(28.0);
+        let waypoints = track_waypoints_for_spec(spec);
+        Self::new_internal(spec.seed, width, waypoints, spec.holes)
+    }
+
+    /// Shared body of `new` and `new_from_spec`: `waypoints` are already resolved
+    /// (cell-space); `holes_density` is `Some` only from the `WorldSpec` path.
+    fn new_internal(
+        _seed: u64,
+        track_width: f32,
+        waypoints: Vec<Vec2>,
+        holes_density: Option<f32>,
+    ) -> Self {
         let size = GRID_CELLS as usize; // 320×320 cells × 3m = 960×960m world (mapa maior)
         let cell_size = 3.0;
         let mut grid = vec![VoxelType::Grass; size * size];
@@ -95,10 +118,6 @@ impl VoxelWorld {
         let mut banking = vec![0.0f32; size * size];
         let mut min_dist_to_road = vec![0.0f32; size * size];
 
-        // FIX: waypoints únicos por seed — cada pista é literalmente diferente,
-        // progressão easy→very hard com rampas e desafios geométricos.
-        // Seeds batem com TrackProfile em config.rs.
-        let waypoints = track_waypoints_for_seed(_seed);
         let (height_amp, height_freq) = track_elevation_for_seed(_seed);
 
         let track_width = track_width;
@@ -179,6 +198,8 @@ impl VoxelWorld {
         // lateral zero, sem guard de largura mínima).
         let holes_iter = if NO_HOLES.load(Ordering::Relaxed) {
             Vec::new()
+        } else if let Some(density) = holes_density {
+            track_holes_with_density(&waypoints, track_width / cell_size, density)
         } else {
             track_holes_for_seed(_seed, &waypoints, track_width / cell_size)
         };
@@ -1430,6 +1451,27 @@ pub fn track_waypoints_for_seed(seed: u64) -> Vec<Vec2> {
     }
 }
 
+/// Waypoints for a `WorldSpec` (`src/world_spec.rs`, `--world`/`--world-file`). A spec
+/// whose only set field is `seed` defers to `track_waypoints_for_seed`, so
+/// `--world seed=8005` is byte-identical to `--tracks 8005` — see the
+/// `world_spec_seed_only_matches_new` test near `VoxelWorld::new_from_spec`. Any other
+/// field present routes to `pista_gen::waypoints_for_spec`'s rejection search; this
+/// function is the only place allowed to make that seed-only decision, because
+/// `pista_gen` must stay a dependency of `world`, never the other way (see the module
+/// doc comment at the top of `pista_gen.rs`).
+pub fn track_waypoints_for_spec(spec: &crate::world_spec::WorldSpec) -> Vec<Vec2> {
+    if spec.is_seed_only() {
+        track_waypoints_for_seed(spec.seed)
+    } else {
+        // `pista_gen::waypoints_for_spec` returns METRES (same output contract as
+        // `gerar_perfil`, see its own doc comment) — `perfil_para_cells` is the same
+        // metres->cells conversion + grid-centre recentring the 8000-8299 profile
+        // bands already apply below. Skipping this step is exactly the unit bug
+        // documented at `perfil_para_cells`'s doc comment (achado 2026-08-15).
+        perfil_para_cells(&crate::pista_gen::waypoints_for_spec(spec))
+    }
+}
+
 /// Procedural rich track: scattered anchors + Catmull-Rom + VALIDATION layer.
 /// Generates múltiplas tentativas (até 32 sub-seeds via splitmix), valida cada
 /// uma por critério "pista boa" (lap 2500-3500m, max turn 75°, mistura de
@@ -1773,45 +1815,70 @@ pub fn track_holes_for_seed(seed: u64, waypoints: &[Vec2], largura_cells: f32) -
 /// rodar os dois em paralelo produzia buracos sem relação com a pista que o carro
 /// de fato percorre). `largura_cells`: usada para o offset lateral (achado "buracos
 /// nascem em cima do eixo, deslocamento lateral zero").
-pub fn procedural_holes(seed: u64, waypoints: &[Vec2], largura_cells: f32) -> Vec<Vec2> {
-    if waypoints.len() < 4 {
-        return vec![];
-    }
-    // Score each waypoint by turn angle; place hole near sharpest few apexes.
+/// Scores each interior waypoint by turn angle (0 = straight, π = u-turn), sorted
+/// sharpest first. Shared by `procedural_holes` (seed-derived count) and
+/// `track_holes_with_density` (`WorldSpec.holes` count).
+fn scored_turns(waypoints: &[Vec2]) -> Vec<(usize, f32)> {
     let mut scored: Vec<(usize, f32)> = Vec::new();
     for i in 1..waypoints.len() - 1 {
         let v_in = (waypoints[i] - waypoints[i - 1]).normalize_or_zero();
         let v_out = (waypoints[i + 1] - waypoints[i]).normalize_or_zero();
         let dot = v_in.dot(v_out).clamp(-1.0, 1.0);
-        let turn = dot.acos(); // 0=straight, π=u-turn
-        scored.push((i, turn));
+        scored.push((i, dot.acos()));
     }
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored
+}
 
+/// Hole position at waypoint `i`: 70% from prev -> current (apex zone), offset
+/// laterally toward the curve's inner side by 30% of the real track width — a hole
+/// centred on the axis could block a tight/narrow track entirely.
+fn hole_position(waypoints: &[Vec2], i: usize, largura_cells: f32) -> Vec2 {
+    let prev = waypoints[i.saturating_sub(1)];
+    let cur = waypoints[i];
+    let next = waypoints[(i + 1).min(waypoints.len() - 1)];
+    let dir_in = (cur - prev).normalize_or_zero();
+    let dir_out = (next - cur).normalize_or_zero();
+    let normal = Vec2::new(-dir_in.y, dir_in.x);
+    // Inner side of the curve: sign of the 2D cross product between entry and exit.
+    let lado = if dir_in.perp_dot(dir_out) > 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    prev + (cur - prev) * 0.7 + normal * lado * (largura_cells * 0.3)
+}
+
+pub fn procedural_holes(seed: u64, waypoints: &[Vec2], largura_cells: f32) -> Vec<Vec2> {
+    if waypoints.len() < 4 {
+        return vec![];
+    }
+    let scored = scored_turns(waypoints);
     // Seed-deterministic count: 1 or 2 holes (conservative — must not break learning curve).
     let n_holes = 1 + ((seed.wrapping_mul(0xA1B2C3D4) >> 32) as usize & 1);
     scored
         .iter()
         .take(n_holes)
-        .map(|(i, _)| {
-            // Position at 70% from prev → current (apex zone), deslocado lateralmente
-            // para o lado interno da curva por 30% da largura real — antes o buraco
-            // nascia exatamente EM CIMA do eixo (deslocamento lateral zero), podendo
-            // bloquear a pista inteira em curvas fechadas/estreitas.
-            let prev = waypoints[i.saturating_sub(1)];
-            let cur = waypoints[*i];
-            let next = waypoints[(*i + 1).min(waypoints.len() - 1)];
-            let dir_in = (cur - prev).normalize_or_zero();
-            let dir_out = (next - cur).normalize_or_zero();
-            let normal = Vec2::new(-dir_in.y, dir_in.x);
-            // Lado interno da curva: sinal do produto cruzado 2D entre entrada e saída.
-            let lado = if dir_in.perp_dot(dir_out) > 0.0 {
-                1.0
-            } else {
-                -1.0
-            };
-            prev + (cur - prev) * 0.7 + normal * lado * (largura_cells * 0.3)
-        })
+        .map(|(i, _)| hole_position(waypoints, *i, largura_cells))
+        .collect()
+}
+
+/// Hole placement driven by `WorldSpec.holes` (`--world ...,holes=0.4`) instead of the
+/// seed-derived 1-2 count: `density` (already validated in `[0, 1]` by
+/// `world_spec::parse`) is the fraction of the sharpest turns that get a hazard, so
+/// `holes=1.0` hazards every curve and `holes=0.0` hazards none — a real, continuous
+/// difficulty knob rather than the old binary "1 or 2" choice.
+fn track_holes_with_density(waypoints: &[Vec2], largura_cells: f32, density: f32) -> Vec<Vec2> {
+    if waypoints.len() < 4 {
+        return vec![];
+    }
+    let scored = scored_turns(waypoints);
+    let n_holes = ((density.clamp(0.0, 1.0) * scored.len() as f32).round() as usize)
+        .min(scored.len());
+    scored
+        .iter()
+        .take(n_holes)
+        .map(|(i, _)| hole_position(waypoints, *i, largura_cells))
         .collect()
 }
 
@@ -1945,6 +2012,58 @@ mod tests {
         assert!(
             off.iter().all(|&v| v != -29),
             "the beings-off retina must never encode a Being pixel (-29)"
+        );
+    }
+
+    /// `--world seed=8005` (a `WorldSpec` with only `seed` set) has to build the exact
+    /// same world as `--tracks 8005` did before this module existed — see
+    /// `WorldSpec::is_seed_only` and `track_waypoints_for_spec`. Compared by hashing
+    /// the centreline (waypoints), the width-independent part of the world, and cross-
+    /// checked with the actual `--world seed=8005` vs `--tracks 8005` smoke run
+    /// (`md5sum` of `driving.csv`, docs/WORLD-GENERATOR.md).
+    #[test]
+    fn world_spec_seed_only_matches_track_waypoints_for_seed() {
+        use std::hash::{Hash, Hasher};
+        let spec = crate::world_spec::parse("seed=8005").unwrap();
+        let via_spec = track_waypoints_for_spec(&spec);
+        let via_seed = track_waypoints_for_seed(8005);
+        assert_eq!(via_spec.len(), via_seed.len());
+        for (a, b) in via_spec.iter().zip(via_seed.iter()) {
+            assert!((a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6);
+        }
+
+        let hash_of = |pts: &[Vec2]| -> u64 {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for p in pts {
+                p.x.to_bits().hash(&mut h);
+                p.y.to_bits().hash(&mut h);
+            }
+            h.finish()
+        };
+        assert_eq!(hash_of(&via_spec), hash_of(&via_seed));
+
+        // Also proves the full VoxelWorld build (grid, holes, racing line) is
+        // identical, not just the raw waypoints.
+        let world_spec = VoxelWorld::new_from_spec(&spec);
+        let world_seed = VoxelWorld::new(8005, 28.0);
+        assert_eq!(world_spec.grid, world_seed.grid);
+        assert_eq!(world_spec.waypoints_world, world_seed.waypoints_world);
+        assert_eq!(world_spec.lap_distance, world_seed.lap_distance);
+    }
+
+    /// A `WorldSpec` with a real difficulty knob (`radius=9`) must NOT take the
+    /// seed-only shortcut, and the search has to land close to what was asked.
+    #[test]
+    fn world_spec_with_radius_generates_tighter_geometry() {
+        let spec = crate::world_spec::parse("seed=9500,radius=9,curves=10").unwrap();
+        assert!(!spec.is_seed_only());
+        let wps = track_waypoints_for_spec(&spec);
+        let d = crate::pista_gen::medir(&wps, 28.0, 40.0);
+        assert!(d.r_min >= 6.0, "below the physical floor: r_min={}", d.r_min);
+        assert!(
+            d.r_min <= 20.0,
+            "radius=9 request produced a much wider track: r_min={}",
+            d.r_min
         );
     }
 }

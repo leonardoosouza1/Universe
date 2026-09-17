@@ -55,6 +55,7 @@ pub mod visao;
 pub mod vision_geometry;
 pub mod visualization;
 pub mod world;
+pub mod world_spec;
 
 use bevy::prelude::*;
 
