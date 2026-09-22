@@ -25,7 +25,7 @@ death stay exactly as in the taxi world.
 
 ## 2. Lesson record (declared once per run, exported in `organism_genNNNN.json → school`)
 
-`task_id`, `version`, `mode` (`bench` only in Stage 2; `life` is reserved), `env_seed`,
+`task_id`, `version`, `mode` (`bench`; `life` delivered in Stage 3, `docs/SCHOOL-INCENTIVES-20260922.md`), `env_seed`,
 `observable_objective` (what the being sees: body-frame direction cos/sin + d/(d+100) of the
 current sub-goal on channels 178/179/183, `has_task` on 180), `initial_condition`
 (start pose per being), `start_tick` (0), `horizon_ticks`, `success`, `failure`,
@@ -188,7 +188,7 @@ observatory lists it and opens generation 2 — screenshot
 - Debug binary; host side is slower than release. Simulation results do not depend on it.
 - Bench isolation is partial: taxi–taxi contacts and passengers are off, but the retina
   still sees the other cars and traffic lights are neither judged nor removed.
-- Life mode (`--school-mode life`) is reserved; the flag exits with code 2.
+- Life mode (`--school-mode life`) was reserved here and delivered in Stage 3: judge only, passengers and contacts on, taxi fitness (`docs/SCHOOL-INCENTIVES-20260922.md` §2.4).
 - Competence per lineage is limited to the elite (`genomes[0]`); other lineages are not
   identifiable across generations without a lineage id in the population file.
 - `school_result_genNNNN.json` is written and packaged but not yet surfaced by lab_api or

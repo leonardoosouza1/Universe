@@ -409,6 +409,9 @@ const LIFE_RUNTIME: u32 = 375u;
 const LIFE_PLASTICITY: u32 = 1u;
 const LIFE_DEVELOPMENT: u32 = 2u;
 const LIFE_TOPOLOGY: u32 = 4u;
+// Bit 3: apply the learned residual P without updating, decaying or tracing it --
+// frozen evaluation of an adapted brain (docs/SCHOOL-LESSONS-20260922.md, Stage 3).
+const LIFE_PLASTICITY_FROZEN: u32 = 8u;
 @group(0) @binding(16) var<storage, read_write> buf_lifetime: array<f32>;
 
 // ── WORKGROUP MEMORY ──────────────────────────────────────────────────────────
@@ -1266,7 +1269,8 @@ fn main(
     if (params.lifetime_flags & LIFE_PLASTICITY) != 0u {
         let life = life_base(being);
         let elapsed = life_step_elapsed(being);
-        if tid < L2_OUT {
+        let frozen = (params.lifetime_flags & LIFE_PLASTICITY_FROZEN) != 0u;
+        if tid < L2_OUT && !frozen {
             let j = tid;
             let previous_latent = buf_lifetime[life + LIFE_PREV_LATENT + j];
             for (var k: u32 = 0u; k < 3u; k = k + 1u) {
@@ -1297,8 +1301,11 @@ fn main(
                 let p_index = life + LIFE_P + k * L2_OUT + j;
                 let e_index = life + LIFE_E + k * L2_OUT + j;
                 let retention = exp(-clamp(life_gene(being, 13u), 0.0, 4.0) * elapsed);
-                let updated = clamp(buf_lifetime[p_index] * retention + learning * buf_lifetime[e_index], -p_clamp, p_clamp);
-                buf_lifetime[p_index] = updated;
+                var updated = buf_lifetime[p_index];
+                if !frozen {
+                    updated = clamp(updated * retention + learning * buf_lifetime[e_index], -p_clamp, p_clamp);
+                    buf_lifetime[p_index] = updated;
+                }
                 residual = residual + updated * clamp(w_l2r[j], -1.0, 1.0);
             }
             residual = clamp(residual / f32(L2_OUT), -p_clamp, p_clamp) * gain;
@@ -1311,7 +1318,7 @@ fn main(
             buf_lifetime[life + LIFE_PREV_MOTOR + k] = motor;
             buf_lifetime[life + LIFE_RUNTIME + 9u + k] = residual;
         }
-        if tid < L2_OUT {
+        if tid < L2_OUT && !frozen {
             buf_lifetime[life + LIFE_PREV_LATENT + tid] = clamp(w_l2r[tid], -1.0, 1.0);
         }
         workgroupBarrier();

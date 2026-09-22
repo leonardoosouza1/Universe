@@ -20,7 +20,8 @@ Host code submits commands and samples state; it does not integrate numerical bo
 ## Interfaces and ownership
 
 - Physics input: 92 floats including typed bit patterns; output: 56 floats. Contact mask in output39 is u32 bits; input39 is the historical numeric mask. Collision energy is output55 in joules.
-- Body: 128 floats. Slots98–102 are lifetime metrics; 104–122 are rolling 64-tick metrics; 123 contact-edge memory; 124–126 independent left/right/front probes; 127 bounded active-task score.
+- Lifetime state: 512 floats per being (`src/gpu/lifetime.rs`). Genes 0..16, feedback 32..36 (reward, energy fraction, alive), P 36..180, E 180..324, previous latent 324..372, previous motor 372..375, runtime 375..387 (residual on the 3 motor intents at 384..386), online-feedback baselines 400 money / 401 task progress / 402 task key (`organism_feedback.wgsl`, modes legacy/symmetric/progress via `--feedback-mode`). Flag bit 3 (`--plasticity-freeze-after`) applies the residual without updating P.
+- Body: 128 floats. Slots 31/61/62 are the task-progress memory (key, best remaining, initial remaining; `taxi.wgsl`). Slots98–102 are lifetime metrics; 104–122 are rolling 64-tick metrics; 123 contact-edge memory; 124–126 independent left/right/front probes; 127 bounded active-task score.
 - Action: stride96, active channels0–8: throttle, steering, brake, shift up/down, service, pickup, dropoff, near-stop reverse request. These are policy outputs; no curve-braking autopilot was added.
 - Action trace: GPU-produced after-head, modulation, steering filter, speed and brake-gate state. Low-speed braking remains available in this scenario.
 - Native recurrent state, lifetime adaptation, body, taxi stocks, resident physics, perception history and gear/filter state participate in snapshots. Child reset touches only the newborn's acquired state; hereditary matrices and horizons are refreshed from DNA.

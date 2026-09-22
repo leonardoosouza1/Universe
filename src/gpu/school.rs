@@ -61,6 +61,9 @@ pub enum Lesson {
 }
 
 impl Lesson {
+    /// Curriculum order: the motor lessons first, then the two turns.
+    pub const ALL: [Lesson; 4] = [Lesson::Move, Lesson::Stop, Lesson::TurnNear, Lesson::TurnFar];
+
     pub fn parse(flag: &str) -> Option<Self> {
         match flag {
             "move" => Some(Self::Move),

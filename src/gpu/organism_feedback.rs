@@ -28,10 +28,13 @@ impl OrganismFeedback {
         body: &wgpu::Buffer,
         life: &wgpu::Buffer,
         n: usize,
+        mode: u32,
     ) {
+        // mode 0 legacy asymmetric energy term; mode 1 symmetric energy + paid-money cost;
+        // mode 2 = mode 1 + same-key task progress (organism_feedback.wgsl header).
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("organism-feedback-count"),
-            contents: bytemuck::cast_slice(&[n as u32, 0, 0, 0]),
+            contents: bytemuck::cast_slice(&[n as u32, mode, 0, 0]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {

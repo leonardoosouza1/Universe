@@ -17,6 +17,12 @@ pub const LIFE_STATE_E_OFFSET: usize = 180;
 pub const LIFE_PREV_LATENT_OFFSET: usize = 324;
 pub const LIFE_PREV_MOTOR_OFFSET: usize = 372;
 pub const LIFE_RUNTIME_OFFSET: usize = 375;
+/// Money baseline of the online feedback adapter (organism_feedback.wgsl); slots
+/// 387..512 are otherwise unused by the brain kernel.
+pub const LIFE_AUX_MONEY_OFFSET: usize = 400;
+/// Task-progress (body 127) and task-key (body 31) baselines of the same adapter.
+pub const LIFE_AUX_PROGRESS_OFFSET: usize = 401;
+pub const LIFE_AUX_TASK_KEY_OFFSET: usize = 402;
 // Runtime summary slots relative to LIFE_RUNTIME_OFFSET:
 // age, world_tick, reward_ema, energy_ema, alive_seconds, update_count,
 // l1_capacity_last, l2_capacity_last, elapsed_dt, residual_motor[3].

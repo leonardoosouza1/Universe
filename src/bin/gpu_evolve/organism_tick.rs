@@ -180,6 +180,7 @@ impl GpuCtx {
                 &body.buf_state,
                 self.brain.lifetime_buffer(),
                 n,
+                self.feedback_mode,
             );
             self.brain.set_world_tick(tick as u32);
             self.brain

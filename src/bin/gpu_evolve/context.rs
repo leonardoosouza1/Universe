@@ -55,6 +55,10 @@ pub struct GpuCtx {
     pub force_organism_sample: bool,
     pub organism: Option<universe::gpu::organism::OrganismGpu>,
     pub organism_feedback: Option<universe::gpu::organism_feedback::OrganismFeedback>,
+    /// Online reward composition for `organism_feedback.wgsl`: 0 legacy asymmetric
+    /// energy term, 1 symmetric energy plus paid-money cost, 2 = 1 plus same-key task
+    /// progress (`--feedback-mode`).
+    pub feedback_mode: u32,
     pub organism_orientation: Option<universe::gpu::organism_orientation::OrganismOrientationGpu>,
     pub taxi: Option<universe::gpu::taxi::TaxiGpu>,
     pub taxi_witness: Option<universe::gpu::taxi_witness::TaxiWitnessGpu>,
@@ -684,6 +688,7 @@ impl GpuCtx {
             organism_resident_ready: false,
             force_organism_sample: false,
             organism_feedback: None,
+            feedback_mode: 0,
             organism_orientation: None,
             organism_samples: Vec::new(),
             traffic: None,
@@ -2055,6 +2060,7 @@ impl GpuCtx {
                     &body.buf_state,
                     self.brain.lifetime_buffer(),
                     n,
+                    self.feedback_mode,
                 );
             } else if self.brain.lifetime_enabled() {
                 let feedback: Vec<[f32; 4]> = states[..n]

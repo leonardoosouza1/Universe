@@ -118,6 +118,23 @@ fn main() {
     let p_nonzero = max_abs_range(&learned.1, LIFE_STATE_P_OFFSET, LIFE_STATE_E_OFFSET) > 1e-8;
     let e_nonzero = max_abs_range(&learned.1, LIFE_STATE_E_OFFSET, 324) > 1e-8;
 
+    // Frozen mode (bit 3): the learned residual keeps being applied while P and the
+    // eligibility traces stop changing, with the same feedback still arriving.
+    brain.set_lifetime_flags(1 | 8);
+    let mut frozen_last = None;
+    for tick in 64..128 {
+        frozen_last = Some(dispatch(&mut brain, &device, &queue, &waves(tick), tick as u32));
+    }
+    let frozen_last = frozen_last.expect("frozen loop has one sample");
+    let frozen_p_constant = (0..N)
+        .map(|slot| max_abs_delta_slot(&learned.1, &frozen_last.1, slot, LIFE_STATE_P_OFFSET, 324))
+        .fold(0.0, f32::max)
+        <= 1e-8;
+    let residual_expected = life.iter().any(|genes| genes.0[3] > 0.01);
+    let frozen_residual_applied = !residual_expected
+        || (0..N).any(|slot| (0..3).any(|k| frozen_last.1[slot * LIFETIME_STRIDE + 375 + 9 + k].abs() > 1e-8));
+    brain.set_lifetime_flags(1);
+
     brain.upload_lifetime(&life, 1);
     brain.reset_cfc(0);
     brain.reset_cfc(1);
@@ -232,18 +249,22 @@ fn main() {
         && finite_bounded
         && p_nonzero
         && e_nonzero
+        && frozen_p_constant
+        && frozen_residual_applied
         && zero_p
         && reset_one
         && other_preserved
         && motor_ablation_zero;
     println!(
-        r#"{{"status":"{}","adapter":{},"checks":{{"control_identity":{},"finite_bounded":{},"plasticity_p_nonzero":{},"plasticity_e_nonzero":{},"zero_reward_p_zero":{},"reset_one":{},"reset_other_preserved":{},"motor_ablation_zero":{}}}}}"#,
+        r#"{{"status":"{}","adapter":{},"checks":{{"control_identity":{},"finite_bounded":{},"plasticity_p_nonzero":{},"plasticity_e_nonzero":{},"frozen_p_constant":{},"frozen_residual_applied":{},"zero_reward_p_zero":{},"reset_one":{},"reset_other_preserved":{},"motor_ablation_zero":{}}}}}"#,
         if all_ok { "pass" } else { "fail" },
         serde_json::to_string(&info.name).unwrap(),
         control_identity,
         finite_bounded,
         p_nonzero,
         e_nonzero,
+        frozen_p_constant,
+        frozen_residual_applied,
         zero_p,
         reset_one,
         other_preserved,

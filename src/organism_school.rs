@@ -70,6 +70,47 @@ fn straight_is_road(world: &VoxelWorld, from: [f32; 2], dir: [f32; 2], length_m:
     true
 }
 
+/// Which third of the deterministic candidate list a run may start from
+/// (`--school-start-fold`). Candidate `i` belongs to fold `i % 3`, so every fold
+/// spreads over the whole city instead of clustering near the depot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LessonFold {
+    All,
+    Train,
+    Validation,
+    Test,
+}
+
+impl LessonFold {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "all" => Some(Self::All),
+            "train" => Some(Self::Train),
+            "validation" => Some(Self::Validation),
+            "test" => Some(Self::Test),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Train => "train",
+            Self::Validation => "validation",
+            Self::Test => "test",
+        }
+    }
+
+    fn keeps(self, index: usize) -> bool {
+        match self {
+            Self::All => true,
+            Self::Train => index % 3 == 0,
+            Self::Validation => index % 3 == 1,
+            Self::Test => index % 3 == 2,
+        }
+    }
+}
+
 /// Deterministic lesson starts: one junction approach per being, ordered by the
 /// junction's distance to the depot, then x, then z. Returns an error when the city
 /// cannot host `n` distinct approaches for this lesson.
@@ -80,9 +121,48 @@ pub fn lesson_starts(
     contract: &LessonContract,
     n: usize,
 ) -> Result<Vec<LessonGeometry>, String> {
+    lesson_starts_fold(world, stations, lesson, contract, n, LessonFold::All)
+}
+
+/// `lesson_starts` restricted to one fold of the candidate list.
+pub fn lesson_starts_fold(
+    world: &VoxelWorld,
+    stations: &[[f32; 8]],
+    lesson: Lesson,
+    contract: &LessonContract,
+    n: usize,
+    fold: LessonFold,
+) -> Result<Vec<LessonGeometry>, String> {
     if n == 0 {
         return Ok(Vec::new());
     }
+    let mut candidates: Vec<LessonGeometry> = lesson_start_candidates(world, stations, lesson, contract)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| fold.keeps(*i))
+        .map(|(_, g)| g)
+        .collect();
+    if candidates.len() < n {
+        return Err(format!(
+            "city has only {} lesson approaches for {} in fold {}; requested {n}",
+            candidates.len(),
+            lesson.name(),
+            fold.name()
+        ));
+    }
+    candidates.truncate(n);
+    Ok(candidates)
+}
+
+/// Every valid approach for the lesson in the city, in the deterministic order
+/// (`lesson_starts`). The full list is the population of starts a genome can be
+/// evaluated on; folds are taken from it by index.
+pub fn lesson_start_candidates(
+    world: &VoxelWorld,
+    stations: &[[f32; 8]],
+    lesson: Lesson,
+    contract: &LessonContract,
+) -> Vec<LessonGeometry> {
     let lane = lane_offset_m(world);
     let centres = street_centres_m(world);
     let depot = world.start_pos;
@@ -161,15 +241,7 @@ pub fn lesson_starts(
             .then(a.start[0].total_cmp(&b.start[0]))
             .then(a.start[1].total_cmp(&b.start[1]))
     });
-    if candidates.len() < n {
-        return Err(format!(
-            "city has only {} lesson approaches for {}; requested {n}",
-            candidates.len(),
-            lesson.name()
-        ));
-    }
-    candidates.truncate(n);
-    Ok(candidates)
+    candidates
 }
 
 #[cfg(test)]
@@ -219,6 +291,27 @@ mod tests {
             let far_along = (b.exit[0] - b.target[0]) * b.forward[0] + (b.exit[1] - b.target[1]) * b.forward[1];
             assert!(near_along < 0.0 && far_along > 0.0, "near {near_along} far {far_along}");
         }
+    }
+
+    #[test]
+    fn folds_partition_the_candidates_without_overlap() {
+        let (world, stations) = city();
+        let contract = LessonContract::default();
+        let all = lesson_start_candidates(&world, &stations, Lesson::Move, &contract);
+        let take = |fold: LessonFold| {
+            let n = all.iter().enumerate().filter(|(i, _)| fold.keeps(*i)).count();
+            lesson_starts_fold(&world, &stations, Lesson::Move, &contract, n, fold).unwrap()
+        };
+        let (train, validation, test) = (take(LessonFold::Train), take(LessonFold::Validation), take(LessonFold::Test));
+        assert_eq!(train.len() + validation.len() + test.len(), all.len());
+        assert!(train.len() >= 12 && validation.len() >= 12 && test.len() >= 12, "{} {} {}", train.len(), validation.len(), test.len());
+        for a in &train {
+            assert!(!validation.iter().any(|b| b.start == a.start) && !test.iter().any(|b| b.start == a.start));
+        }
+        for a in &validation {
+            assert!(!test.iter().any(|b| b.start == a.start));
+        }
+        assert_eq!(lesson_starts(&world, &stations, Lesson::Move, &contract, 12).unwrap(), all[..12].to_vec());
     }
 
     #[test]

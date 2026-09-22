@@ -120,3 +120,7 @@ pub mod school;
 
 #[cfg(test)]
 mod school_tests;
+#[cfg(test)]
+mod organism_feedback_tests;
+#[cfg(test)]
+mod taxi_progress_tests;

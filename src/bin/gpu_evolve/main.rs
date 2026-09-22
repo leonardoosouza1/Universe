@@ -959,6 +959,15 @@ fn main() {
     let mut school_bench = true;
     // Judged ticks per lesson attempt; defaults to the generation tick budget.
     let mut school_horizon: Option<u32> = None;
+    // Stage 3 (docs/SCHOOL-INCENTIVES-20260922.md): curriculum over lessons, start folds,
+    // online-reward composition and mid-life plasticity freeze.
+    let mut school_curriculum: Option<&'static str> = None;
+    let mut school_lessons: Vec<universe::gpu::school::Lesson> = Vec::new();
+    let mut school_advance_p: f64 = 0.5;
+    let mut school_advance_gens: usize = 2;
+    let mut school_start_fold = universe::organism_school::LessonFold::All;
+    let mut feedback_mode: u32 = 0;
+    let mut plasticity_freeze_after: Option<usize> = None;
     let mut ruido_sigma: f32 = 0.0;
     let mut ruido_drop: f32 = 0.0;
     let mut clima_mu: f32 = 1.0;
@@ -1315,7 +1324,9 @@ fn main() {
                     i += 1;
                     resume_state = Some(args.get(i).expect("--resume-state requires path").clone());
                 }
-                "--taxi-reference-witness" => taxi_reference_witness = true,
+                "--taxi-reference-witness" => {
+                    taxi_reference_witness = true;
+                }
                 "--scenario" => {
                     i += 1;
                     organism_taxi = match args.get(i).map(String::as_str) {
@@ -1327,7 +1338,9 @@ fn main() {
                         }
                     };
                 }
-                "--ecology" => ecology_on = true,
+                "--ecology" => {
+                    ecology_on = true;
+                }
                 "--ecology-founders" => {
                     i += 1;
                     ecology_founders = Some(args.get(i).and_then(|v| v.parse().ok()).unwrap_or(0));
@@ -1340,14 +1353,22 @@ fn main() {
                     i += 1;
                     ecology_progress = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(f64::NAN);
                 }
-                "--plasticity" => lifetime_flags |= 1,
-                "--development" => lifetime_flags |= 2,
-                "--evolving-topology" => lifetime_flags |= 4,
+                "--plasticity" => {
+                    lifetime_flags |= 1;
+                }
+                "--development" => {
+                    lifetime_flags |= 2;
+                }
+                "--evolving-topology" => {
+                    lifetime_flags |= 4;
+                }
                 "--evolve-learning" => {
                     evolve_learning = true;
                     lifetime_flags |= 1;
                 }
-                "--adaptive-curriculum" => adaptive_curriculum_on = true,
+                "--adaptive-curriculum" => {
+                    adaptive_curriculum_on = true;
+                }
                 "--evolving-body" => {
                     evolving_body = true;
                 }
@@ -1555,7 +1576,9 @@ fn main() {
                 "--same-start" => {
                     same_start = true;
                 }
-                "--fixed-spawn-slots" => fixed_spawn_slots = true,
+                "--fixed-spawn-slots" => {
+                    fixed_spawn_slots = true;
+                }
                 "--school" => {
                     i += 1;
                     school_lesson = Some(
@@ -1571,15 +1594,84 @@ fn main() {
                     i += 1;
                     school_bench = match args.get(i).map(String::as_str) {
                         Some("bench") => true,
-                        Some("life") => {
-                            eprintln!("--school-mode life is reserved for Stage 3; only bench is implemented");
-                            std::process::exit(2);
-                        }
+                        // life: the judge observes the lesson while passengers and taxi-taxi
+                        // contacts stay on; fitness remains the taxi fitness.
+                        Some("life") => false,
                         _ => {
                             eprintln!("--school-mode requires bench or life");
                             std::process::exit(2);
                         }
                     };
+                }
+                "--school-curriculum" => {
+                    i += 1;
+                    school_curriculum = match args.get(i).map(String::as_str) {
+                        Some("adaptive") => Some("adaptive"),
+                        Some("uniform") => Some("uniform"),
+                        _ => {
+                            eprintln!("--school-curriculum requires adaptive or uniform");
+                            std::process::exit(2);
+                        }
+                    };
+                }
+                "--school-lessons" => {
+                    i += 1;
+                    school_lessons = args
+                        .get(i)
+                        .map(|list| list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|name| {
+                            universe::gpu::school::Lesson::parse(name).unwrap_or_else(|| {
+                                eprintln!("--school-lessons: unknown lesson {name}");
+                                std::process::exit(2);
+                            })
+                        })
+                        .collect();
+                    if school_lessons.is_empty() {
+                        eprintln!("--school-lessons requires a comma-separated list of lessons");
+                        std::process::exit(2);
+                    }
+                }
+                "--school-advance-p" => {
+                    i += 1;
+                    school_advance_p = args.get(i).and_then(|a| a.parse().ok()).filter(|p: &f64| (0.0..=1.0).contains(p)).unwrap_or_else(|| {
+                        eprintln!("--school-advance-p requires a probability in 0..=1");
+                        std::process::exit(2);
+                    });
+                }
+                "--school-advance-gens" => {
+                    i += 1;
+                    school_advance_gens = args.get(i).and_then(|a| a.parse().ok()).filter(|g| *g > 0).unwrap_or_else(|| {
+                        eprintln!("--school-advance-gens requires a positive generation count");
+                        std::process::exit(2);
+                    });
+                }
+                "--school-start-fold" => {
+                    i += 1;
+                    school_start_fold = args.get(i).and_then(|a| universe::organism_school::LessonFold::parse(a)).unwrap_or_else(|| {
+                        eprintln!("--school-start-fold requires all, train, validation or test");
+                        std::process::exit(2);
+                    });
+                }
+                "--feedback-mode" => {
+                    i += 1;
+                    feedback_mode = match args.get(i).map(String::as_str) {
+                        Some("legacy") => 0,
+                        Some("symmetric") => 1,
+                        Some("progress") => 2,
+                        _ => {
+                            eprintln!("--feedback-mode requires legacy, symmetric or progress");
+                            std::process::exit(2);
+                        }
+                    };
+                }
+                "--plasticity-freeze-after" => {
+                    i += 1;
+                    plasticity_freeze_after = Some(args.get(i).and_then(|a| a.parse().ok()).unwrap_or_else(|| {
+                        eprintln!("--plasticity-freeze-after requires a tick index");
+                        std::process::exit(2);
+                    }));
                 }
                 "--school-horizon" => {
                     i += 1;
@@ -2641,6 +2733,38 @@ fn main() {
         eprintln!("--school requires --scenario organism-taxi-v1 and no ecology/resume");
         std::process::exit(2);
     }
+    if school_curriculum.is_some() {
+        if school_lessons.is_empty() {
+            school_lessons = match school_lesson {
+                Some(lesson) => vec![lesson],
+                None => universe::gpu::school::Lesson::ALL.to_vec(),
+            };
+        }
+        if school_lesson.is_none() {
+            school_lesson = Some(school_lessons[0]);
+        }
+    } else if !school_lessons.is_empty() {
+        eprintln!("--school-lessons requires --school-curriculum adaptive|uniform");
+        std::process::exit(2);
+    }
+    if school_curriculum.is_some() && (!organism_taxi || ecology_on || resume_state.is_some()) {
+        eprintln!("--school-curriculum requires --scenario organism-taxi-v1 and no ecology/resume");
+        std::process::exit(2);
+    }
+    if school_start_fold != universe::organism_school::LessonFold::All && school_lesson.is_none() {
+        eprintln!("--school-start-fold requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if let Some(freeze_at) = plasticity_freeze_after {
+        if lifetime_flags & 1 == 0 {
+            eprintln!("--plasticity-freeze-after requires --plasticity");
+            std::process::exit(2);
+        }
+        if freeze_at >= n_ticks {
+            eprintln!("--plasticity-freeze-after {freeze_at} must be below --ticks {n_ticks}");
+            std::process::exit(2);
+        }
+    }
     let school_contract = universe::gpu::school::LessonContract::default();
     let school_horizon_ticks = school_horizon.unwrap_or(n_ticks as u32);
     if school_lesson.is_some() && school_horizon_ticks as usize > n_ticks {
@@ -2924,6 +3048,7 @@ fn main() {
         ctx.brain.set_ablation(plan, n_seres);
     }
     ctx.erase_fast_memory = erase_fast_memory;
+    ctx.feedback_mode = feedback_mode;
     ctx.collect_contact_metrics =
         impact_cost > 0.0 || DANO_ESCALA.load(Ordering::Relaxed) > 0.0 || driving_diagnostics_on;
     ctx.brain_skip = brain_skip;
@@ -3800,9 +3925,36 @@ fn main() {
     } else {
         None
     };
+    // School curriculum state (Stage 3): the adaptive arm advances to the next lesson
+    // after `school_advance_gens` consecutive generations with p_hat >= school_advance_p;
+    // the uniform arm cycles the lesson list. Both see the same generation budget.
+    let mut school_lesson_index = 0usize;
+    let mut school_streak = 0usize;
+    let mut school_last_p_hat: Option<f64> = None;
     for generation_idx in 0..n_gens {
         // gen_abs = número absoluto da geração (para relatório e arquivo de save).
         let gen_abs = gen_offset + generation_idx;
+        if let Some(mode) = school_curriculum {
+            let mut advanced = false;
+            if mode == "adaptive" {
+                if let Some(p_hat) = school_last_p_hat.take() {
+                    if p_hat >= school_advance_p { school_streak += 1 } else { school_streak = 0 }
+                    if school_streak >= school_advance_gens && school_lesson_index + 1 < school_lessons.len() {
+                        school_lesson_index += 1;
+                        school_streak = 0;
+                        advanced = true;
+                    }
+                }
+            } else {
+                school_lesson_index = generation_idx % school_lessons.len();
+            }
+            school_lesson = Some(school_lessons[school_lesson_index]);
+            println!(
+                "  [curriculum] gen={gen_abs} mode={mode} lesson={} index={school_lesson_index}/{} streak={school_streak} advance={advanced} threshold_p={school_advance_p} threshold_gens={school_advance_gens}",
+                school_lessons[school_lesson_index].name(),
+                school_lessons.len()
+            );
+        }
         let genome_diversity = genome_diagnostics::measure(&genomes);
         println!(
             "  [genome] fast hashes {}/{} · RMS(slot0) {:.6} | brake-row hashes {}/{} · RMS(slot0) {:.6}",
@@ -4451,7 +4603,7 @@ fn main() {
         // School: each being starts on its own junction approach; the lesson geometry
         // is rotated with the same rule as the taxi spawn slots.
         let school_starts = school_lesson.map(|lesson| {
-            universe::organism_school::lesson_starts(&world, &organism_stations, lesson, &school_contract, n_seres)
+            universe::organism_school::lesson_starts_fold(&world, &organism_stations, lesson, &school_contract, n_seres, school_start_fold)
                 .expect("city lesson approach capacity")
         });
         let city_spawns = organism_taxi.then(|| {
@@ -4811,7 +4963,8 @@ fn main() {
             }
             ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
             if let Some(starts) = school_starts.as_ref() {
-                ctx.taxi.as_mut().unwrap().set_school_mode(true);
+                // Bench: passengers off (the judge owns the task slots). Life: passengers on.
+                ctx.taxi.as_mut().unwrap().set_school_mode(school_bench);
                 if ctx.school.is_none() {
                     ctx.school = Some(universe::gpu::school::SchoolGpu::new(
                         &ctx.device,
@@ -4865,6 +5018,15 @@ fn main() {
                 "motor_controller": if taxi_reference_witness {"reference GPU controller"} else {"evolved policy"}, "resource_units": "joules,kilograms",
                 "sensory_remap": if navigation_observation == 3 {"160..175 interoception;176..191 taxi v3: body-frame direction cos/sin + d/(d+100) for task and service"} else {"160..175 interoception;176..191 taxi;explicit GPS destination"}});
             let mut manifest = manifest;
+            manifest["feedback_mode"] = serde_json::json!(match feedback_mode { 1 => "symmetric", 2 => "progress", _ => "legacy" });
+            manifest["online_reward"] = serde_json::json!(match feedback_mode {
+                1 => "clamp(delivered - 2*damage + 0.01*energy_change + 0.01*min(0, money_change/25), -1, 1)",
+                2 => "clamp(delivered - 2*damage + 0.01*energy_change + 0.01*min(0, money_change/25) + 0.01*max(0, same-key task progress gain), -1, 1)",
+                _ => "clamp(delivered - 2*damage + 0.2*max(0,energy_change) + 0.01*min(0,energy_change), -1, 1)",
+            });
+            manifest["plasticity_flags"] = serde_json::json!(lifetime_flags);
+            manifest["plasticity_freeze_after"] = serde_json::json!(plasticity_freeze_after);
+            manifest["task_progress"] = serde_json::json!("phase-aware: approach 0..100 on best road distance closed toward the nearest waiting passenger (key=id*2), carrying 100 + 0..100 toward the destination (key=id*2+1); memory in body 31/61/62");
             if let (Some(lesson), Some(starts)) = (school_lesson, school_starts.as_ref()) {
                 let rotated: Vec<_> = (0..n_seres).map(|i| starts[(i + spawn_rotation) % starts.len()].to_json()).collect();
                 manifest["school"] = serde_json::json!({
@@ -4880,9 +5042,16 @@ fn main() {
                     "failure_codes": {"1": "contact", "2": "death", "3": "corridor", "4": "born_inside_target", "5": "overshoot", "6": "drove_through_junction", "7": "wrong_exit", "8": "no_approach_speed"},
                     "truncation": "status 3 at horizon, progress kept",
                     "score": "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive)",
-                    "fitness": "score", "lessons": rotated,
+                    "fitness": if school_bench { "score" } else { "taxi fitness (life mode)" }, "lessons": rotated,
+                    "curriculum": school_curriculum.unwrap_or("fixed"),
+                    "curriculum_lessons": school_lessons.iter().map(|l| l.name()).collect::<Vec<_>>(),
+                    "curriculum_index": school_lesson_index, "advance_p": school_advance_p, "advance_gens": school_advance_gens,
+                    "start_fold": school_start_fold.name(),
+                    "start_candidates": universe::organism_school::lesson_start_candidates(&world, &organism_stations, lesson, &school_contract).len(),
                 });
-                manifest["fitness"] = serde_json::Value::String("school score (see school)".to_string());
+                if school_bench {
+                    manifest["fitness"] = serde_json::Value::String("school score (see school)".to_string());
+                }
             }
             std::fs::write(
                 format!("{out_dir}/organism_gen{gen_abs:04}.json"),
@@ -4929,6 +5098,12 @@ fn main() {
         let mut episode_end_reason = "horizon";
         for tick_i in first_tick..n_ticks {
             ctx.force_organism_sample = tick_i + 1 == n_ticks || (snapshot_every > 0 && (tick_i + 1) % snapshot_every == 0);
+            if plasticity_freeze_after == Some(tick_i) {
+                // From this dispatch on the residual P is applied but never updated;
+                // `upload_lifetime` at the next generation restores the learning flags.
+                ctx.brain.set_lifetime_flags(lifetime_flags | 8);
+                println!("  [plasticity] gen {gen_abs} frozen at tick {tick_i}: flags {}", ctx.brain.lifetime_flags());
+            }
             let ok = ctx.tick(&mut states, n_seres, dt, tick_i + 1, &kan_knots_global);
             if !ok {
                 eprintln!(
@@ -5539,7 +5714,11 @@ fn main() {
                     "engine_wear":v[6],"tire_wear":v[7],"integrity":v[8],"maturity":v[4],
                     "fatigue":v[5],"distance_m":v[98],"collision_energy_j":v[100],"impact_ticks":v[101],
                     "brake_ticks":v[102],"task_progress_score":v[127],
-                    "money":v[64],"deliveries":v[68],"paid_repair_j":v[11],"paid_growth_j":v[12]})
+                    "money":v[64],"deliveries":v[68],"paid_repair_j":v[11],"paid_growth_j":v[12],
+                    "task_key":v[31],"task_best_remaining_m":v[61],"task_initial_remaining_m":v[62],
+                    "fitness_components":{"events":1000.0*v[68],"task_progress":v[127],"money":v[64],
+                        "age":0.001*v[3],"alive_bonus":10.0*v[29],"integrity_penalty":-100.0*(1.0-v[8]),
+                        "death_penalty":-100.0*(1.0-v[29]),"total":universe::organism_scenario::fitness(body)}})
                 })
                 .collect();
             std::fs::write(
@@ -5602,14 +5781,20 @@ fn main() {
                     "contact_ticks_total": records.iter().map(|r| r[R_CONTACT_TICKS]).sum::<f32>(),
                     "elite_same_genome": generation_idx > 0,
                     "elite_status": status_name(records[0][R_STATUS] as u32), "elite_progress": records[0][R_PROGRESS],
+                    "mode": if school_bench { "bench" } else { "life" },
+                    "curriculum": school_curriculum.unwrap_or("fixed"), "curriculum_index": school_lesson_index,
+                    "start_fold": school_start_fold.name(),
                     "beings": rows,
                 });
+                school_last_p_hat = Some((successes as f64 + 1.0) / (attempts as f64 + 2.0));
                 std::fs::write(
                     format!("{out_dir}/school_result_gen{gen_abs:04}.json"),
                     serde_json::to_vec_pretty(&summary).unwrap(),
                 )
                 .expect("school results write");
-                fitness = records.iter().map(|r| r[R_SCORE] as f64).collect();
+                if school_bench {
+                    fitness = records.iter().map(|r| r[R_SCORE] as f64).collect();
+                }
                 println!(
                     "  [school] generation={gen_abs} lesson={} success={successes}/{attempts} failed={} truncated={} deaths={deaths} p_hat={:.3} progress_median={:.3} score_median={:.1} score_max={:.1} codes={}",
                     lesson.name(), count(STATUS_FAILED), count(STATUS_TRUNCATED),

@@ -148,17 +148,25 @@ fn post() {
     }
     let task_position=select(vec2<f32>(body[s+70u],body[s+71u]),vec2<f32>(body[s+66u],body[s+67u]),body[s+65u]>0.5);
     body[s+80u]=task_position.x-pos.x;body[s+81u]=task_position.y-pos.y;
-    if(body[s+65u]>0.5){
-      let origin=vec2<f32>(body[s+70u],body[s+71u]);
-      let destination=vec2<f32>(body[s+66u],body[s+67u]);
-      let route_length=route_distance(origin,destination);
-      let remaining=route_distance(pos,destination);
-      // Carrying a passenger retains its baseline, but unreachable positions
-      // cannot gain an approach bonus through walls or outside the city.
-      body[s+127u]=100.0;
-      if(route_length>=0.0 && remaining>=0.0){
-        body[s+127u]+=100.0*clamp(1.0-remaining/max(8.0,route_length),0.0,1.0);
-      }
+    // Task progress (127) is phase-aware with best-distance memory in body slots 31
+    // (key), 61 (best remaining, m) and 62 (initial remaining, m). Phase A: approaching
+    // the nearest waiting passenger pays 0..100 for road distance closed since that
+    // passenger became the target. Phase B: carrying pays 100 plus 0..100 toward the
+    // destination. key = passenger_id*2 + phase; any change resets the memory at the
+    // current distance, so a swapped target, a return trip or oscillation earns nothing
+    // new, a target already within 8 m earns no approach credit, and an unreachable
+    // start (route -1) earns none for that key. Dead beings skip this block above.
+    var key=0.0; var goal=vec2<f32>(0.0,0.0);
+    if(body[s+65u]>0.5){key=body[s+72u]*2.0+1.0;goal=vec2<f32>(body[s+66u],body[s+67u]);}
+    else if(has_waiting){let q=station(waiting);key=world[q+11u]*2.0;goal=vec2<f32>(world[q],world[q+1u]);}
+    if(key==0.0){body[s+31u]=0.0;body[s+61u]=0.0;body[s+62u]=0.0;body[s+127u]=0.0;}
+    else{
+      let remaining=route_distance(pos,goal);
+      if(body[s+31u]!=key){body[s+31u]=key;body[s+61u]=remaining;body[s+62u]=remaining;}
+      if(remaining>=0.0 && (body[s+61u]<0.0 || remaining<body[s+61u])){body[s+61u]=remaining;}
+      var approach=0.0;
+      if(body[s+62u]>=8.0 && body[s+61u]>=0.0){approach=100.0*clamp(1.0-body[s+61u]/body[s+62u],0.0,1.0);}
+      body[s+127u]=select(0.0,100.0,body[s+65u]>0.5)+approach;
     }
   }
 }

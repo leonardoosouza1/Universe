@@ -785,13 +785,14 @@ impl BrainGpu {
 
     /// Uploads lifetime genes and resets the resident life state for beings at birth.
     /// The `flags` value is global to the dispatch: bit 0 enables plasticity, bit 1
-    /// enables age/energy capacity masks, and bit 2 enables deterministic edge masks.
+    /// enables age/energy capacity masks, bit 2 enables deterministic edge masks and
+    /// bit 3 freezes plasticity (residual P applied, never updated; needs bit 0).
     /// Zero is the historical control arm.  Config is 32 f32 per being; the first 16
     /// slots are the v4 genes and the second 16 are their sanitised mirror.
     pub fn upload_lifetime(&mut self, genes: &[LifeGenes], flags: u32) {
         let n = genes.len();
         assert!(n <= self.capacity, "lifetime genes exceed brain capacity");
-        self.lifetime_flags = flags & 0b111;
+        self.lifetime_flags = flags & 0b1111;
         let mut data = vec![0.0f32; n * LIFETIME_STRIDE];
         for (being, gene) in genes.iter().enumerate() {
             data[being * LIFETIME_STRIDE..being * LIFETIME_STRIDE + LIFE_CONFIG_SLOTS]
@@ -844,6 +845,16 @@ impl BrainGpu {
     /// Whether any lifetime mechanism is enabled for subsequent dispatches.
     pub fn lifetime_enabled(&self) -> bool {
         self.lifetime_flags != 0
+    }
+
+    /// Changes the lifetime mechanism bits for the NEXT dispatches without touching
+    /// the resident state. Used to freeze plasticity mid-life (bit 3 keeps applying P).
+    pub fn set_lifetime_flags(&mut self, flags: u32) {
+        self.lifetime_flags = flags & 0b1111;
+    }
+
+    pub fn lifetime_flags(&self) -> u32 {
+        self.lifetime_flags
     }
 
     /// Resident lifetime state for optional sampled diagnostics or downstream GPU
