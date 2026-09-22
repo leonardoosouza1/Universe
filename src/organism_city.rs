@@ -46,6 +46,14 @@ const SPAWN_JUNCTION_MARGIN_M: f32 = 18.0;
 /// Spacing between consecutive slots in one lane.
 const SPAWN_LANE_SPACING_M: f32 = 12.0;
 
+/// Street centre lines in metres, the same filter `build_city` applies.
+pub fn street_centres_m(world: &VoxelWorld) -> Vec<f32> {
+    street_centers(world.size as i32)
+        .into_iter()
+        .map(|c| c as f32 * world.cell_size)
+        .collect()
+}
+
 fn street_centers(size: i32) -> Vec<i32> {
     STREET_CENTERS
         .iter()

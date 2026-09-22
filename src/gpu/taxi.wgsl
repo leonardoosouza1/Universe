@@ -6,7 +6,8 @@
 // waiting_passenger_id,destination_station,cooldown_s,reserved,reserved.
 // Monetary prices:0.00001/J,1/kgwater,5/kgmaterial; rates100000J/s,1kg/s,.2kg/s.
 // Monetary genesis25; deliveryfare10+.02*direct_distance_m; no energy creation by fares.
-struct Params { n:u32, stations:u32, tick:u32, wave_words:u32, dt:f32, observation:u32, _b:u32, _c:u32 }
+// school=1: no passenger issuance; the school judge owns the task slots (docs/SCHOOL-LESSONS-20260922.md).
+struct Params { n:u32, stations:u32, tick:u32, wave_words:u32, dt:f32, observation:u32, school:u32, _c:u32 }
 @group(0) @binding(0) var<uniform> p:Params;
 @group(0) @binding(1) var<storage,read_write> body:array<f32>;
 @group(0) @binding(2) var<storage,read_write> world:array<f32>;
@@ -74,7 +75,7 @@ fn post() {
     let w=station(j);
     for(var r=0u;r<3u;r++){world[w+8u+r]=min(world[w+2u+r],world[w+8u+r]+p.dt*world[w+5u+r]);}
     world[w+13u]=max(0.0,world[w+13u]-p.dt);
-    if(world[w+11u]==0.0 && world[w+13u]==0.0 && world[0]<16777216.0){
+    if(p.school==0u && world[w+11u]==0.0 && world[w+13u]==0.0 && world[0]<16777216.0){
       let id=u32(world[0]); world[w+11u]=f32(id); world[0]+=1.0; world[1]+=1.0;
       world[w+12u]=f32((j+1u+(id%(p.stations-1u)))%p.stations);
     }

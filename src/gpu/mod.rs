@@ -115,3 +115,8 @@ pub mod organism_sensors;
 pub mod traffic;
 
 pub mod taxi_routes;
+
+pub mod school;
+
+#[cfg(test)]
+mod school_tests;

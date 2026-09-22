@@ -252,3 +252,17 @@ fn every_legacy_encoding_copy_handles_the_being_material() {
         "the Rust reference must encode Being as -29"
     );
 }
+
+/// Stage 2 school judge (docs/SCHOOL-LESSONS-20260922.md): parse + type-check only.
+#[test]
+fn school_wgsl_is_valid() {
+    let source = include_str!("../src/gpu/school.wgsl");
+    validar_wgsl("school.wgsl", source);
+}
+
+/// The taxi kernel gained the school flag; it must still parse.
+#[test]
+fn taxi_wgsl_is_valid() {
+    let source = include_str!("../src/gpu/taxi.wgsl");
+    validar_wgsl("taxi.wgsl", source);
+}

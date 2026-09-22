@@ -292,14 +292,19 @@ impl GpuCtx {
         body.encode_pre(&self.device, &mut enc, self.phys_gpu.input_buffer(), n, dt)?;
         self.phys_gpu
             .encode_step(&mut enc, self.phys_gpu.input_buffer(), n)?;
-        self.traffic.as_ref().unwrap().encode_contacts(
-            &self.device,
-            &mut enc,
-            self.phys_gpu.input_buffer(),
-            self.phys_gpu.output_buffer(),
-            &body.buf_state,
-            n,
-        )?;
+        // School bench isolation: no physical coupling between beings. Perception
+        // of other cars is unchanged; only the contact impulse is skipped.
+        let bench_isolated = self.school.as_ref().is_some_and(|school| school.bench);
+        if !bench_isolated {
+            self.traffic.as_ref().unwrap().encode_contacts(
+                &self.device,
+                &mut enc,
+                self.phys_gpu.input_buffer(),
+                self.phys_gpu.output_buffer(),
+                &body.buf_state,
+                n,
+            )?;
+        }
         orientation.encode_rotation_gpu(
             &self.device,
             &mut enc,
@@ -340,6 +345,19 @@ impl GpuCtx {
             dt,
             tick as u32,
         );
+        // The school judge reads this tick's post-physics pose and the applied
+        // command, after the taxi pass so it owns the task slots it overwrites.
+        if let Some(school) = self.school.as_ref() {
+            school.encode(
+                &self.device,
+                &mut enc,
+                self.phys_gpu.input_buffer(),
+                self.phys_gpu.output_buffer(),
+                &body.buf_state,
+                n,
+                tick as u32,
+            )?;
+        }
         orientation.encode_feedback_to_input(
             &self.device,
             &mut enc,

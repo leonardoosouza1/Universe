@@ -40,7 +40,8 @@ struct Params {
     wave_words: u32,
     dt: f32,
     observation: u32,
-    padding: [u32; 2],
+    school: u32,
+    padding: u32,
 }
 
 /// Taxi channel schema selected by `--navigation-observation`.
@@ -54,6 +55,7 @@ pub struct TaxiGpu {
     pub station_count: usize,
     initial_world: Vec<f32>,
     observation_version: u32,
+    school_mode: bool,
     post_layout: wgpu::BindGroupLayout,
     birth_layout: wgpu::BindGroupLayout,
     senses_layout: wgpu::BindGroupLayout,
@@ -183,6 +185,7 @@ impl TaxiGpu {
             station_count: stations.len(),
             initial_world,
             observation_version: NAVIGATION_OBSERVATION_V2,
+            school_mode: false,
             post_layout,
             birth_layout,
             senses_layout,
@@ -201,6 +204,13 @@ impl TaxiGpu {
     }
     pub fn observation_version(&self) -> u32 {
         self.observation_version
+    }
+    /// School bench: stations issue no passengers; the judge owns the task slots.
+    pub fn set_school_mode(&mut self, on: bool) {
+        self.school_mode = on;
+    }
+    pub fn school_mode(&self) -> bool {
+        self.school_mode
     }
     /// Install the scenario's immutable road field once, never per tick.
     pub fn configure_routes(&mut self, device: &wgpu::Device, world: &crate::world::VoxelWorld, stations: &[[f32; 8]]) -> Result<(), &'static str> {
@@ -234,7 +244,8 @@ impl TaxiGpu {
             wave_words: super::perception::WAVE_U32S as u32,
             dt,
             observation: self.observation_version,
-            padding: [0; 2],
+            school: self.school_mode as u32,
+            padding: 0,
         };
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("taxi-params"),

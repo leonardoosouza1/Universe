@@ -953,6 +953,12 @@ fn main() {
     let mut fixed_spawn_slots = false;
     /// organism-taxi-v1 navigation observation schema: 2 = dx/dz per 100 m, 3 = body-frame direction + compressed distance.
     let mut navigation_observation: u32 = 2;
+    // organism school (docs/SCHOOL-LESSONS-20260922.md): one motor lesson judged per tick on the GPU.
+    let mut school_lesson: Option<universe::gpu::school::Lesson> = None;
+    // School mode; Stage 2 implements only `bench` (contacts and passengers off).
+    let mut school_bench = true;
+    // Judged ticks per lesson attempt; defaults to the generation tick budget.
+    let mut school_horizon: Option<u32> = None;
     let mut ruido_sigma: f32 = 0.0;
     let mut ruido_drop: f32 = 0.0;
     let mut clima_mu: f32 = 1.0;
@@ -1550,6 +1556,38 @@ fn main() {
                     same_start = true;
                 }
                 "--fixed-spawn-slots" => fixed_spawn_slots = true,
+                "--school" => {
+                    i += 1;
+                    school_lesson = Some(
+                        args.get(i)
+                            .and_then(|a| universe::gpu::school::Lesson::parse(a))
+                            .unwrap_or_else(|| {
+                                eprintln!("--school requires move, stop, turn_near or turn_far");
+                                std::process::exit(2);
+                            }),
+                    );
+                }
+                "--school-mode" => {
+                    i += 1;
+                    school_bench = match args.get(i).map(String::as_str) {
+                        Some("bench") => true,
+                        Some("life") => {
+                            eprintln!("--school-mode life is reserved for Stage 3; only bench is implemented");
+                            std::process::exit(2);
+                        }
+                        _ => {
+                            eprintln!("--school-mode requires bench or life");
+                            std::process::exit(2);
+                        }
+                    };
+                }
+                "--school-horizon" => {
+                    i += 1;
+                    school_horizon = Some(args.get(i).and_then(|a| a.parse().ok()).filter(|h| *h > 0).unwrap_or_else(|| {
+                        eprintln!("--school-horizon requires a positive tick count");
+                        std::process::exit(2);
+                    }));
+                }
                 "--navigation-observation" => {
                     i += 1;
                     navigation_observation = match args.get(i).map(String::as_str) {
@@ -2597,6 +2635,16 @@ fn main() {
     );
     if taxi_reference_witness && (!organism_taxi || n_gens != 1 || n_seres != 1 || ecology_on || resume_state.is_some() || snapshot_every > 0 || !driving_diagnostics_on) {
         eprintln!("--taxi-reference-witness requires organism-taxi-v1, one being, one generation, --driving-diagnostics, no ecology/resume/snapshots; never an evolution arm");
+        std::process::exit(2);
+    }
+    if school_lesson.is_some() && (!organism_taxi || ecology_on || resume_state.is_some()) {
+        eprintln!("--school requires --scenario organism-taxi-v1 and no ecology/resume");
+        std::process::exit(2);
+    }
+    let school_contract = universe::gpu::school::LessonContract::default();
+    let school_horizon_ticks = school_horizon.unwrap_or(n_ticks as u32);
+    if school_lesson.is_some() && school_horizon_ticks as usize > n_ticks {
+        eprintln!("--school-horizon {} exceeds --ticks {n_ticks}", school_horizon_ticks);
         std::process::exit(2);
     }
     if organism_taxi && !args.iter().any(|a| a == "--ecology-min-progress") { ecology_progress = 1.0; }
@@ -4400,8 +4448,25 @@ fn main() {
                 wp.y
             );
         }
+        // School: each being starts on its own junction approach; the lesson geometry
+        // is rotated with the same rule as the taxi spawn slots.
+        let school_starts = school_lesson.map(|lesson| {
+            universe::organism_school::lesson_starts(&world, &organism_stations, lesson, &school_contract, n_seres)
+                .expect("city lesson approach capacity")
+        });
         let city_spawns = organism_taxi.then(|| {
-            universe::organism_city::spawn_slots(&world, &organism_stations, n_seres).expect("city spawn capacity")
+            if let Some(starts) = school_starts.as_ref() {
+                starts
+                    .iter()
+                    .map(|g| universe::organism_city::CitySpawn {
+                        position: [g.start[0], 0.5, g.start[1]],
+                        forward: [g.forward[0], 0.0, g.forward[1]],
+                        depot_distance_m: g.depot_distance_m,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                universe::organism_city::spawn_slots(&world, &organism_stations, n_seres).expect("city spawn capacity")
+            }
         });
         // Rotate the being -> slot map each generation unless explicitly fixed, so no
         // lineage inherits the slot nearest the waiting passenger.
@@ -4745,6 +4810,20 @@ fn main() {
                 ctx.taxi_witness = Some(universe::gpu::taxi_witness::TaxiWitnessGpu::new(&ctx.device, ctx.capacity));
             }
             ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
+            if let Some(starts) = school_starts.as_ref() {
+                ctx.taxi.as_mut().unwrap().set_school_mode(true);
+                if ctx.school.is_none() {
+                    ctx.school = Some(universe::gpu::school::SchoolGpu::new(
+                        &ctx.device,
+                        ctx.capacity,
+                        school_contract,
+                        school_horizon_ticks,
+                        school_bench,
+                    ));
+                }
+                let rotated: Vec<_> = (0..n_seres).map(|i| starts[(i + spawn_rotation) % starts.len()]).collect();
+                ctx.school.as_ref().unwrap().reset(&ctx.queue, &rotated).expect("school lesson reset");
+            }
             ctx.sample_organism(&mut states).expect("invalid organism genesis");
             let spawn_slots_json = city_spawns.as_ref().map(|slots| {
                 slots
@@ -4785,6 +4864,26 @@ fn main() {
                 "fitness": "1000*deliveries + bounded_task_progress + money + 0.001*age_seconds + 10*alive - 100*(1-integrity) - 100*(1-alive)",
                 "motor_controller": if taxi_reference_witness {"reference GPU controller"} else {"evolved policy"}, "resource_units": "joules,kilograms",
                 "sensory_remap": if navigation_observation == 3 {"160..175 interoception;176..191 taxi v3: body-frame direction cos/sin + d/(d+100) for task and service"} else {"160..175 interoception;176..191 taxi;explicit GPS destination"}});
+            let mut manifest = manifest;
+            if let (Some(lesson), Some(starts)) = (school_lesson, school_starts.as_ref()) {
+                let rotated: Vec<_> = (0..n_seres).map(|i| starts[(i + spawn_rotation) % starts.len()].to_json()).collect();
+                manifest["school"] = serde_json::json!({
+                    "id": universe::gpu::school::SCHOOL_ID, "task_id": lesson.name(), "lesson_id": lesson.id(), "version": 1,
+                    "mode": if school_bench { "bench" } else { "life" }, "env_seed": pop_seed, "start_tick": 0,
+                    "horizon_ticks": school_horizon_ticks, "tick_rate": 64,
+                    "observable_objective": "sub-goal direction cos/sin (178/179), d/(d+100) (183), has_task (180); v2: dx/dz per 100 m (178/179)",
+                    "initial_condition": "lane centre before a junction, heading along the flow, one approach per being",
+                    "assistance": "none", "body_version": universe::organism_scenario::SCENARIO_ID,
+                    "isolation": if school_bench { "taxi-taxi contacts off; passengers off; retina unchanged" } else { "none" },
+                    "tolerances": school_contract.to_json(),
+                    "success": {"move": "dist(pos,target)<=goal_radius and propelled_ticks>=propelled_min", "stop": "speed>=v_min before the area, then speed<=v_stop inside for hold_ticks while alive", "turn": "entered the junction box, then dist(pos,exit)<=gate_radius with dot(heading,exit_dir)>=align_min"},
+                    "failure_codes": {"1": "contact", "2": "death", "3": "corridor", "4": "born_inside_target", "5": "overshoot", "6": "drove_through_junction", "7": "wrong_exit", "8": "no_approach_speed"},
+                    "truncation": "status 3 at horizon, progress kept",
+                    "score": "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive)",
+                    "fitness": "score", "lessons": rotated,
+                });
+                manifest["fitness"] = serde_json::Value::String("school score (see school)".to_string());
+            }
             std::fs::write(
                 format!("{out_dir}/organism_gen{gen_abs:04}.json"),
                 serde_json::to_vec_pretty(&manifest).unwrap(),
@@ -5453,6 +5552,72 @@ fn main() {
                 .iter()
                 .map(universe::organism_scenario::fitness)
                 .collect();
+            if let (Some(lesson), Some(school)) = (school_lesson, ctx.school.as_ref()) {
+                use universe::gpu::school::*;
+                let records = school.download(&ctx.device, &ctx.queue, n_seres).expect("school records");
+                let rows: Vec<_> = records
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, r)| {
+                        let v = &ctx.organism_samples[slot].values;
+                        let mut row = record_json(r, v[0], v[98]);
+                        row["slot"] = serde_json::json!(slot);
+                        row["alive"] = serde_json::json!(v[29] > 0.5);
+                        row["integrity"] = serde_json::json!(v[8]);
+                        row["impacts_lifetime"] = serde_json::json!(v[101]);
+                        row["collision_energy_lifetime_j"] = serde_json::json!(v[100]);
+                        row["refusal_code"] = serde_json::json!(v[69]);
+                        row["contact_ticks_lifetime"] = serde_json::json!(v[99]);
+                        row["elite_same_genome"] = serde_json::json!(slot == 0 && generation_idx > 0);
+                        if let Some(starts) = school_starts.as_ref() {
+                            let g = &starts[(slot + spawn_rotation) % starts.len()];
+                            row["start"] = serde_json::json!([g.start[0], g.start[1]]);
+                            row["forward"] = serde_json::json!([g.forward[0], g.forward[1]]);
+                        }
+                        row
+                    })
+                    .collect();
+                let count = |status: u32| records.iter().filter(|r| r[R_STATUS] as u32 == status).count();
+                let attempts = n_seres;
+                let successes = count(STATUS_SUCCESS);
+                let mut by_code = serde_json::Map::new();
+                for code in 1..=8u32 {
+                    let k = records.iter().filter(|r| r[R_STATUS] as u32 == STATUS_FAILED && r[R_FAIL_CODE] as u32 == code).count();
+                    if k > 0 { by_code.insert(fail_code_name(code).to_string(), serde_json::json!(k)); }
+                }
+                let mut progress: Vec<f32> = records.iter().map(|r| r[R_PROGRESS]).collect();
+                progress.sort_by(|a, b| a.total_cmp(b));
+                let mut scores: Vec<f32> = records.iter().map(|r| r[R_SCORE]).collect();
+                scores.sort_by(|a, b| a.total_cmp(b));
+                let deaths = ctx.organism_samples.iter().filter(|b| b.values[29] <= 0.5).count();
+                let summary = serde_json::json!({
+                    "generation": gen_abs, "lesson": lesson.name(), "horizon_ticks": school_horizon_ticks,
+                    "attempts": attempts, "successes": successes, "failures": count(STATUS_FAILED),
+                    "truncated": count(STATUS_TRUNCATED), "running": count(STATUS_RUNNING),
+                    "failures_by_code": by_code, "deaths": deaths,
+                    "competence_p_hat": (successes as f64 + 1.0) / (attempts as f64 + 2.0),
+                    "progress_median": progress[progress.len() / 2], "progress_mean": progress.iter().sum::<f32>() / progress.len() as f32,
+                    "score_median": scores[scores.len() / 2], "score_max": scores[scores.len() - 1],
+                    "energy_spent_mean_j": rows.iter().map(|r| r["energy_spent_j"].as_f64().unwrap_or(0.0)).sum::<f64>() / attempts as f64,
+                    "contact_ticks_total": records.iter().map(|r| r[R_CONTACT_TICKS]).sum::<f32>(),
+                    "elite_same_genome": generation_idx > 0,
+                    "elite_status": status_name(records[0][R_STATUS] as u32), "elite_progress": records[0][R_PROGRESS],
+                    "beings": rows,
+                });
+                std::fs::write(
+                    format!("{out_dir}/school_result_gen{gen_abs:04}.json"),
+                    serde_json::to_vec_pretty(&summary).unwrap(),
+                )
+                .expect("school results write");
+                fitness = records.iter().map(|r| r[R_SCORE] as f64).collect();
+                println!(
+                    "  [school] generation={gen_abs} lesson={} success={successes}/{attempts} failed={} truncated={} deaths={deaths} p_hat={:.3} progress_median={:.3} score_median={:.1} score_max={:.1} codes={}",
+                    lesson.name(), count(STATUS_FAILED), count(STATUS_TRUNCATED),
+                    (successes as f64 + 1.0) / (attempts as f64 + 2.0),
+                    progress[progress.len() / 2], scores[scores.len() / 2], scores[scores.len() - 1],
+                    serde_json::Value::Object(by_code.clone())
+                );
+            }
             println!("  [organism] generation={gen_abs} alive={}/{} deliveries={} fitness_best={:.3} (dimensionless)",
                 ctx.organism_samples.iter().filter(|b| b.values[29] > 0.5).count(), n_seres,
                 ctx.organism_samples.iter().map(|b| b.values[68] as u64).sum::<u64>(),

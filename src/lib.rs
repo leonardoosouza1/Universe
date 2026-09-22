@@ -83,3 +83,4 @@ pub mod organism_city;
 pub mod organism_scenario;
 
 pub mod organism_channels;
+pub mod organism_school;
