@@ -361,8 +361,8 @@ pub mod iara {
 
         // Weight sizes (computed from the architecture)
         pub const DNA_FAST_SIZE: usize = SENSORY_WAVE_SIZE * L1_NEURONS; // 192 × 96 = 18.432
-        // DNA v8: SlowBrain full (dense1 + dense2 + biases + scales)
-        // dense1.weights(1024) + dense1.bias(16) + dense1.scale(4) + dense2.weights(48) + dense2.bias(3) + dense2.scale(4) = 1099
+                                                                         // DNA v8: SlowBrain full (dense1 + dense2 + biases + scales)
+                                                                         // dense1.weights(1024) + dense1.bias(16) + dense1.scale(4) + dense2.weights(48) + dense2.bias(3) + dense2.scale(4) = 1099
         pub const DNA_SLOW_SIZE: usize = (SLOW_BRAIN_D1_IN * SLOW_BRAIN_D1_OUT)
             + SLOW_BRAIN_D1_OUT
             + 4

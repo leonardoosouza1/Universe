@@ -1,5 +1,5 @@
 //! Reject sensory recordings that do not belong to the replay's body and clock.
-use super::{ReplayFrame, invalid};
+use super::{invalid, ReplayFrame};
 use serde_json::Value;
 use std::io;
 

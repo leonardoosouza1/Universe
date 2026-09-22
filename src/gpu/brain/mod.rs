@@ -37,16 +37,22 @@ use crate::engine::SovereignEngine;
 
 mod ablation;
 pub use ablation::{
-    ABLATION_WORDS_PER_BEING, AblationError, AblationPlan, AblationStage, AblationTarget,
+    AblationError, AblationPlan, AblationStage, AblationTarget, ABLATION_WORDS_PER_BEING,
 };
 
 mod observation;
 pub use observation::{
-    BrainObservation, OBSERVATION_BYTES, OBSERVATION_WORDS, ObservationDecodeError,
-    decode_observation,
+    decode_observation, BrainObservation, ObservationDecodeError, OBSERVATION_BYTES,
+    OBSERVATION_WORDS,
 };
 
 mod screen;
+
+pub use crate::gpu::lifetime::{
+    LifeGenes, LIFETIME_STRIDE, LIFE_CONFIG_SLOTS, LIFE_FEEDBACK_OFFSET, LIFE_PREV_LATENT_OFFSET,
+    LIFE_PREV_MOTOR_OFFSET, LIFE_RUNTIME_OFFSET, LIFE_STATE_E_OFFSET, LIFE_STATE_P_OFFSET,
+    N_LIFE_GENES,
+};
 
 #[cfg(test)]
 mod observation_tests;
@@ -144,7 +150,7 @@ const INTENT_DIM: usize = L1_NEURONS; // 96
 ///
 /// `#[repr(C)]` guarantees a predictable layout. `bytemuck::Pod` requires every field
 /// to be a primitive with no implicit padding — this struct sits right on that edge:
-/// 12 fields of 4 bytes = 48 bytes, a multiple of the 16-byte WGSL uniform alignment.
+/// 16 fields of 4 bytes = 64 bytes, a multiple of the 16-byte WGSL uniform alignment.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BrainParams {
@@ -205,14 +211,20 @@ pub struct BrainParams {
     /// `brain.wgsl::apply_sensor_noise`). `0.0` (the default) means no channel fails
     /// and behaviour identical to the historical path.
     pub dropout_prob: f32,
-    /// Padding: keeps the uniform buffer a multiple of 16 bytes (12 fields × 4 bytes =
-    /// 48, the same convention as the original struct, which was 8 × 4 = 32).
+
+    /// Optional lifetime mechanisms: bit 0 = plasticity, bit 1 = development masks,
+    /// bit 2 = deterministic topology masks. Zero preserves the historical path.
+    pub lifetime_flags: u32,
+    /// Padding: keeps the uniform buffer a multiple of 16 bytes.
     /// Deterministically zero through `bytemuck::Zeroable`, never read by the shader.
     /// First world tick whose neural dispatch applies the counterfactual mask.
     pub ablation_from_tick: u32,
     /// Bit 0 enables ablation. Bits 1..31 store `observed_being + 1`; zero disables
     /// selected-being trace writes. Packing both controls preserves the 48-byte uniform.
     pub control_flags: u32,
+    pub lifetime_reserved0: u32,
+    pub lifetime_reserved1: u32,
+    pub lifetime_reserved2: u32,
 }
 
 // ── PER-BEING INPUT ──────────────────────────────────────────────────────────
@@ -273,6 +285,11 @@ pub struct BrainGpu {
     /// Packed output masks for CfC(96), L1(96), and L2(48), uploaded once per replay.
     buf_ablation_mask: wgpu::Buffer, // u32 × (cap × ABLATION_WORDS_PER_BEING)
 
+    /// Optional resident lifetime state. Binding 16, fixed 512-f32 stride per being:
+    /// config[32], feedback[4], P[144], eligibility[144], previous latent[48],
+    /// previous motor[3], runtime age/tick/stat slots.
+    buf_lifetime: wgpu::Buffer,
+
     /// Exact intermediate stages for one selected being. The shader writes this only
     /// when `observed_being` is enabled for the current dispatch.
     buf_observation: wgpu::Buffer, // u32 × OBSERVATION_WORDS
@@ -318,6 +335,10 @@ pub struct BrainGpu {
     /// `BrainParams::dropout_prob`. Defaults to `0.0`, identical to the historical
     /// behaviour (no channel fails). Same contract as `noise_sigma` above.
     pub dropout_prob: f32,
+
+    /// Optional lifetime mechanisms. Bit 0 = plasticity, bit 1 = development
+    /// masks, bit 2 = deterministic topology masks. Zero is the control arm.
+    pub lifetime_flags: u32,
 
     /// P1.7 — per-mechanism control arm, set from the `gpu_evolve` opt-out flags
     /// (`src/bin/gpu_evolve/main.rs:977-980`). All four default to
@@ -404,6 +425,7 @@ impl BrainGpu {
                 storage_entry(13, true),  // buf_gates (read, M4 — per-region gate, 4 f32/being)
                 storage_entry(14, true),  // buf_ablation_mask (read, counterfactual output mask)
                 storage_entry(15, false), // buf_observation (read_write, selected-being trace)
+                storage_entry(16, false), // buf_lifetime (read_write, optional resident life)
             ],
         });
 
@@ -466,7 +488,9 @@ impl BrainGpu {
         let buf_intent = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-intent"),
             size: bytes_intent,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -542,6 +566,18 @@ impl BrainGpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        // Optional lifetime state.  The fixed stride is deliberately larger than the
+        // currently used slots so adding sampled runtime summaries does not change the
+        // binding contract or shift any being after slot zero.
+        let lifetime_zeros: Vec<u8> = vec![0u8; capacity * LIFETIME_STRIDE * 4];
+        let buf_lifetime = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brain-lifetime"),
+            contents: &lifetime_zeros,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        });
+
         let buf_observation = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brain-selected-observation"),
             size: OBSERVATION_BYTES as u64,
@@ -593,12 +629,14 @@ impl BrainGpu {
             buf_neuron_mem,
             buf_gates,
             buf_ablation_mask,
+            buf_lifetime,
             buf_observation,
             out_beta: OUT_BETA_DEFAULT,
             out_gain: OUT_GAIN_DEFAULT,
             norm_l2_by_std: false,
             noise_sigma: 0.0,
             dropout_prob: 0.0,
+            lifetime_flags: 0,
             mem_off: false,
             period_off: false,
             threshold_off: false,
@@ -745,6 +783,107 @@ impl BrainGpu {
             .write_buffer(&self.buf_neuron_meta, 0, bytemuck::cast_slice(meta));
     }
 
+    /// Uploads lifetime genes and resets the resident life state for beings at birth.
+    /// The `flags` value is global to the dispatch: bit 0 enables plasticity, bit 1
+    /// enables age/energy capacity masks, and bit 2 enables deterministic edge masks.
+    /// Zero is the historical control arm.  Config is 32 f32 per being; the first 16
+    /// slots are the v4 genes and the second 16 are their sanitised mirror.
+    pub fn upload_lifetime(&mut self, genes: &[LifeGenes], flags: u32) {
+        let n = genes.len();
+        assert!(n <= self.capacity, "lifetime genes exceed brain capacity");
+        self.lifetime_flags = flags & 0b111;
+        let mut data = vec![0.0f32; n * LIFETIME_STRIDE];
+        for (being, gene) in genes.iter().enumerate() {
+            data[being * LIFETIME_STRIDE..being * LIFETIME_STRIDE + LIFE_CONFIG_SLOTS]
+                .copy_from_slice(&gene.config_slots());
+        }
+        if !data.is_empty() {
+            self.queue
+                .write_buffer(&self.buf_lifetime, 0, bytemuck::cast_slice(&data));
+        }
+    }
+
+    /// Feeds the reward/energy/alive feedback for the transition immediately before
+    /// the next brain dispatch.  The shader consumes this before updating eligibility
+    /// and motor residuals, then leaves the four values unchanged for diagnostics.
+    pub fn set_lifetime_feedback(&self, feedback: &[[f32; 4]]) {
+        assert!(
+            feedback.len() <= self.capacity,
+            "lifetime feedback exceeds capacity"
+        );
+        for (being, values) in feedback.iter().enumerate() {
+            let offset = ((being * LIFETIME_STRIDE + LIFE_FEEDBACK_OFFSET) * 4) as u64;
+            self.queue
+                .write_buffer(&self.buf_lifetime, offset, bytemuck::cast_slice(values));
+        }
+    }
+
+    /// Install a newborn's DNA without erasing surviving slots.
+    pub fn upload_lifetime_slot(&self, being: usize, genes: LifeGenes) {
+        assert!(being < self.capacity && genes.is_valid());
+        self.reset_lifetime(being);
+        self.queue.write_buffer(
+            &self.buf_lifetime,
+            (being * LIFETIME_STRIDE * 4) as u64,
+            bytemuck::cast_slice(&genes.config_slots()),
+        );
+    }
+
+    /// Clears one being's feedback, plasticity, eligibility, previous activations and
+    /// runtime counters while preserving its uploaded config genes.
+    pub fn reset_lifetime(&self, being_idx: usize) {
+        if being_idx >= self.capacity {
+            return;
+        }
+        let offset = ((being_idx * LIFETIME_STRIDE + LIFE_FEEDBACK_OFFSET) * 4) as u64;
+        let bytes = ((LIFETIME_STRIDE - LIFE_FEEDBACK_OFFSET) * 4) as u64;
+        self.queue
+            .write_buffer(&self.buf_lifetime, offset, &vec![0u8; bytes as usize]);
+    }
+
+    /// Whether any lifetime mechanism is enabled for subsequent dispatches.
+    pub fn lifetime_enabled(&self) -> bool {
+        self.lifetime_flags != 0
+    }
+
+    /// Resident lifetime state for optional sampled diagnostics or downstream GPU
+    /// consumers.  The returned buffer uses `LIFETIME_STRIDE` f32 per being.
+    pub fn lifetime_buffer(&self) -> &wgpu::Buffer {
+        &self.buf_lifetime
+    }
+
+    /// Copies one complete lifetime slot to a caller-owned GPU staging buffer without
+    /// submitting or polling; callers can append this copy to an existing readback.
+    pub fn copy_lifetime_state_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        destination: &wgpu::Buffer,
+        being: usize,
+        destination_offset: u64,
+    ) -> Result<(), String> {
+        if being >= self.capacity {
+            return Err("lifetime being index exceeds brain capacity".into());
+        }
+        if destination_offset % 4 != 0 {
+            return Err("lifetime destination offset must be 4-byte aligned".into());
+        }
+        let bytes = (LIFETIME_STRIDE * 4) as u64;
+        let end = destination_offset
+            .checked_add(bytes)
+            .ok_or_else(|| "lifetime destination range overflows".to_string())?;
+        if end > destination.size() {
+            return Err("lifetime destination is too small".into());
+        }
+        encoder.copy_buffer_to_buffer(
+            &self.buf_lifetime,
+            (being * LIFETIME_STRIDE * 4) as u64,
+            destination,
+            destination_offset,
+            bytes,
+        );
+        Ok(())
+    }
+
     /// P1.7 — folds the four control flags into a single bitmask for the uniform.
     /// See the doc on `BrainParams::mech_off_mask` for what each bit means.
     fn mech_off_mask(&self) -> u32 {
@@ -784,6 +923,11 @@ impl BrainGpu {
             .write_buffer(&self.buf_ablation_mask, 0, bytemuck::cast_slice(&words));
         self.ablation_from_tick = plan.from_tick();
         self.ablation_enabled = true;
+    }
+
+    /// Remove a counterfactual mask without changing inherited weights or state.
+    pub fn clear_ablation(&mut self) {
+        self.ablation_enabled = false;
     }
 
     /// Sets the generation-relative simulation tick for the next neural dispatch.
@@ -1017,6 +1161,7 @@ impl BrainGpu {
         let mem_zeros: Vec<u8> = vec![0u8; NEURON_MEM_PER_BEING * 4];
         self.queue
             .write_buffer(&self.buf_neuron_mem, mem_offset, &mem_zeros);
+        self.reset_lifetime(being_idx);
     }
 
     // ── FORWARD PASS (per tick) ────────────────────────────────────────────
@@ -1080,6 +1225,10 @@ impl BrainGpu {
             dropout_prob: 0.0,
             ablation_from_tick: 0,
             control_flags: 0,
+            lifetime_flags: 0,
+            lifetime_reserved0: 0,
+            lifetime_reserved1: 0,
+            lifetime_reserved2: 0,
         };
         let buf_params = self
             .device
@@ -1159,6 +1308,10 @@ impl BrainGpu {
                 wgpu::BindGroupEntry {
                     binding: 15,
                     resource: self.buf_observation.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: self.buf_lifetime.as_entire_binding(),
                 },
             ],
         });
@@ -1285,6 +1438,10 @@ impl BrainGpu {
             dropout_prob: self.dropout_prob,
             ablation_from_tick: self.ablation_from_tick,
             control_flags: brain_control_word(self.ablation_enabled, self.observed_being),
+            lifetime_flags: self.lifetime_flags,
+            lifetime_reserved0: 0,
+            lifetime_reserved1: 0,
+            lifetime_reserved2: 0,
         };
         let buf_params = self
             .device
@@ -1361,6 +1518,10 @@ impl BrainGpu {
                 wgpu::BindGroupEntry {
                     binding: 15,
                     resource: self.buf_observation.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: self.buf_lifetime.as_entire_binding(),
                 },
             ],
         });
@@ -1442,6 +1603,20 @@ impl BrainGpu {
     /// directly.
     pub fn buf_intent(&self) -> &wgpu::Buffer {
         &self.buf_intent
+    }
+}
+
+impl BrainGpu {
+    /// Stable resident-state bundle for runtime checkpoints. Weights and static
+    /// metadata are intentionally excluded; this is acquired execution state.
+    pub fn snapshot_buffers(&self) -> Vec<crate::gpu::state_snapshot::NamedBuffer<'_>> {
+        vec![
+            ("brain.cfc", &self.buf_cfc),
+            ("brain.fatigue", &self.buf_fatigue),
+            ("brain.neuron_mem", &self.buf_neuron_mem),
+            ("brain.lifetime", &self.buf_lifetime),
+            ("brain.intent", &self.buf_intent),
+        ]
     }
 }
 

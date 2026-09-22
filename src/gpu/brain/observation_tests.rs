@@ -1,6 +1,6 @@
 use super::{
-    CFC_SLOTS_PER_BEING, FAST_CFC_STATE_BYTES, L1_NEURONS, brain_control_word,
-    fast_state_copy_range,
+    brain_control_word, fast_state_copy_range, CFC_SLOTS_PER_BEING, FAST_CFC_STATE_BYTES,
+    L1_NEURONS,
 };
 
 #[test]

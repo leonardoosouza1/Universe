@@ -1,9 +1,9 @@
 //! Standalone scene replay export with explicit measurement availability.
 
 use super::{ReplayFrame, ReplayHeader, SOURCE_MOTOR};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path};
 
 #[path = "player_brain.rs"]
 mod brain;
@@ -110,24 +110,18 @@ impl PlayerOptions {
         let slow_kinematics = self.metadata["slow_kinematics"]
             .as_str()
             .unwrap_or("legacy");
-        self.native_brain = Some(native::from_checkpoint(
-            path,
-            trace_being,
-            expected_hash,
-            slow_kinematics,
-        )?);
+        let mut payload =
+            native::from_checkpoint(path, trace_being, expected_hash, slow_kinematics)?;
+        apply_motor_head_provenance(&mut payload, path, &self.metadata)?;
+        self.native_brain = Some(payload);
         Ok(())
     }
 
-    /// Auto-select the genome the diagnostics writer saved beside the observation,
-    /// when the caller passed no explicit `--native-genome`. Returns `true` when a
-    /// genome was attached, `false` when there was nothing to auto-detect (no
-    /// `--diagnostics`, no recorded `selected_being`, or a replay that never claimed
-    /// to be an unmodified native checkpoint-clone population) -- all silent no-ops,
-    /// same as passing neither flag today. Once the replay does claim that, a
-    /// `selected_being` that names a `genome_file` which turns out missing, or whose
-    /// generation does not match the replay, is a clear error rather than a silent
-    /// fallback: at that point the caller's implicit request should have worked.
+    /// Auto-select the generation-specific genome the diagnostics writer saved beside
+    /// the selected observation, when the caller passed no explicit `--native-genome`.
+    /// Returns `true` when attached and `false` when no native diagnostics are present.
+    /// Once native provenance is claimed, a selected row with a missing/mismatched
+    /// genome is an error rather than a silent fallback.
     pub fn attach_observed_genome(&mut self, replay_path: &Path) -> io::Result<bool> {
         let Some(diagnostics) = &self.diagnostics else {
             return Ok(false);
@@ -135,15 +129,26 @@ impl PlayerOptions {
         let Some(selected_being) = diagnostics["meta"]["selected_being"].as_u64() else {
             return Ok(false);
         };
-        if native::validate_association(&self.metadata).is_err() {
-            // Not a native checkpoint-clone replay (e.g. a motor-controller replay
-            // exported with an unrelated diagnostics report attached only for its
-            // retina/behaviour charts). Auto-attaching a native brain never applies
-            // here, so this is the same no-op as omitting both flags.
+        if self.metadata["brain_model"].as_str() != Some("native") {
+            // An observation may accompany a non-native replay for its charts, but
+            // cannot establish native-controller provenance for that replay.
             return Ok(false);
         }
-        let observations = diagnostics["observations"].as_array().cloned().unwrap_or_default();
-        let replay_generation = self.metadata["generation"].as_u64();
+        let Some(replay_generation) = self.metadata["generation"].as_u64() else {
+            return Err(invalid(
+                "observed native genome requires replay metadata.generation",
+            ));
+        };
+        let observation_schema = diagnostics["meta"]["observation_schema"].as_u64();
+        if observation_schema != Some(2) {
+            return Err(invalid(format!(
+                "observed native genome requires diagnostics observation_schema=2, got {observation_schema:?}"
+            )));
+        }
+        let observations = diagnostics["observations"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         let same_being: Vec<&Value> = observations
             .iter()
             .filter(|row| row["being"].as_u64() == Some(selected_being))
@@ -158,31 +163,82 @@ impl PlayerOptions {
             .iter()
             .find(|row| {
                 row["genome_file"].as_str().is_some_and(|name| !name.is_empty())
-                    && replay_generation
-                        .is_none_or(|generation| row["generation"].as_u64() == Some(generation))
+                    && row["generation"].as_u64() == Some(replay_generation)
             })
             .ok_or_else(|| {
                 invalid(format!(
-                    "no observation for being {selected_being} names a genome_file matching replay generation {replay_generation:?}; pass --native-genome explicitly"
+                    "no observation for being {selected_being} names a genome_file matching replay generation {replay_generation}; pass --native-genome explicitly"
                 ))
-            })?;
+        })?;
         let genome_file = row["genome_file"].as_str().unwrap();
         let replay_dir = replay_path.parent().unwrap_or_else(|| Path::new("."));
-        let genome_path = replay_dir.join(genome_file);
-        if !genome_path.is_file() {
-            return Err(invalid(format!(
-                "observed genome {genome_file} declared by the observation is missing at {}",
-                genome_path.display()
-            )));
+        let replay_root = std::fs::canonicalize(replay_dir)?;
+        let slow_kinematics = self.metadata["slow_kinematics"]
+            .as_str()
+            .unwrap_or("legacy");
+        let mut payloads = serde_json::Map::new();
+        for candidate in same_being
+            .iter()
+            .filter(|r| r["generation"].as_u64() == Some(replay_generation))
+        {
+            let name = candidate["genome_file"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| invalid("observation is missing its genome_file"))?;
+            if payloads.contains_key(name) {
+                continue;
+            }
+            let relative = Path::new(name);
+            if relative.components().count() != 1
+                || !relative
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_)))
+            {
+                return Err(invalid(format!(
+                    "observed genome path must be a single relative file name: {name:?}"
+                )));
+            }
+            let resolved = std::fs::canonicalize(replay_dir.join(relative))?;
+            if resolved.parent() != Some(replay_root.as_path()) {
+                return Err(invalid(
+                    "observed genome resolves outside the replay directory",
+                ));
+            }
+            let mut payload =
+                native::from_observed_genome(&resolved, selected_being as usize, slow_kinematics)?;
+            apply_motor_head_provenance(&mut payload, &resolved, &self.metadata)?;
+            payloads.insert(name.to_owned(), payload);
         }
-        let slow_kinematics = self.metadata["slow_kinematics"].as_str().unwrap_or("legacy");
-        self.native_brain = Some(native::from_observed_genome(
-            &genome_path,
-            selected_being as usize,
-            slow_kinematics,
-        )?);
+        let mut initial = payloads
+            .get(genome_file)
+            .expect("selected observed genome was loaded")
+            .clone();
+        initial["observedGenomes"] = Value::Object(payloads);
+        self.native_brain = Some(initial);
         Ok(true)
     }
+}
+
+/// The genotype alone cannot identify whether the historical shared head was used.
+fn apply_motor_head_provenance(
+    payload: &mut Value,
+    path: &Path,
+    metadata: &Value,
+) -> io::Result<()> {
+    let inherited = flag(metadata, "body_evolution_enabled")
+        || flag(metadata, "ecology")
+        || metadata["lifetime_flags"].as_u64().unwrap_or(0) != 0;
+    if inherited {
+        let genome = crate::gpu::genome_io::load_genome(
+            path.to_str()
+                .ok_or_else(|| invalid("non-UTF8 genome path"))?,
+        )
+        .ok_or_else(|| invalid("cannot load inherited motor head"))?;
+        payload["fast"]["outputKnots"] = json!(genome.kan_knots);
+        payload["fast"]["outputKnotsSource"] =
+            json!("inherited per-being spline; inactive when recorded motor_head is linear");
+    }
+    Ok(())
 }
 
 fn invalid(message: impl std::fmt::Display) -> io::Error {
@@ -433,9 +489,13 @@ mod tests {
     #[test]
     fn attach_observed_genome_is_a_silent_noop_without_diagnostics_or_selected_being() {
         let mut options = PlayerOptions::default();
-        assert!(!options.attach_observed_genome(Path::new("/nonexistent/whatever.replay")).unwrap());
+        assert!(!options
+            .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
+            .unwrap());
         options.diagnostics = Some(json!({"meta": {}, "observations": []}));
-        assert!(!options.attach_observed_genome(Path::new("/nonexistent/whatever.replay")).unwrap());
+        assert!(!options
+            .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
+            .unwrap());
     }
 
     #[test]
@@ -446,14 +506,16 @@ mod tests {
         let mut options = PlayerOptions::default();
         options.diagnostics = Some(json!({"meta":{"selected_being":0},
             "observations":[{"being":0,"generation":0,"genome_file":"g.bin"}]}));
-        assert!(!options.attach_observed_genome(Path::new("/nonexistent/whatever.replay")).unwrap());
+        assert!(!options
+            .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
+            .unwrap());
     }
 
     #[test]
     fn attach_observed_genome_errors_when_the_named_file_is_missing() {
         let mut options = PlayerOptions::default();
         options.metadata = json!({"brain_model":"native","checkpoint_mix":1.0,"generation":0,"tau_reseeded":false});
-        options.diagnostics = Some(json!({"meta":{"selected_being":0},
+        options.diagnostics = Some(json!({"meta":{"selected_being":0,"observation_schema":2},
             "observations":[{"being":0,"generation":0,"genome_file":"missing.bin"}]}));
         let error = options
             .attach_observed_genome(Path::new("/nonexistent/dir/gen0000.replay"))
@@ -465,12 +527,17 @@ mod tests {
     fn attach_observed_genome_errors_when_no_observation_names_a_genome_for_this_generation() {
         let mut options = PlayerOptions::default();
         options.metadata = json!({"brain_model":"native","checkpoint_mix":1.0,"generation":0,"tau_reseeded":false});
-        options.diagnostics = Some(json!({"meta":{"selected_being":0},
+        options.diagnostics = Some(json!({"meta":{"selected_being":0,"observation_schema":2},
             "observations":[{"being":0,"generation":1,"genome_file":"g.bin"}]}));
         let error = options
             .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
             .unwrap_err();
-        assert!(error.to_string().contains("genome_file matching replay generation"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("genome_file matching replay generation"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -489,22 +556,46 @@ mod tests {
             "tau_reseeded":false,"slow_kinematics":"canonical"});
         // The diagnostics report may carry rows for other beings/generations too;
         // only the one matching selected_being and the replay's generation counts.
-        options.diagnostics = Some(json!({"meta":{"selected_being":3},"observations":[
-            {"being":2,"generation":0,"genome_file":"observed_genome_gen0000.bin"},
-            {"being":3,"generation":1,"genome_file":"wrong_generation.bin"},
-            {"being":3,"generation":0,"genome_file":"observed_genome_gen0000.bin"}
-        ]}));
-        let attached = options.attach_observed_genome(&replay_path).expect("attach");
+        options.diagnostics = Some(
+            json!({"meta":{"selected_being":3,"observation_schema":2},"observations":[
+                {"being":2,"generation":0,"genome_file":"observed_genome_gen0000.bin"},
+                {"being":3,"generation":1,"genome_file":"wrong_generation.bin"},
+                {"being":3,"generation":0,"genome_file":"observed_genome_gen0000.bin"}
+            ]}),
+        );
+        let attached = options
+            .attach_observed_genome(&replay_path)
+            .expect("attach");
         assert!(attached);
         let native = options.native_brain.as_ref().expect("native_brain set");
         assert_eq!(native["traceBeing"], 3);
         assert_eq!(native["checkpoint"], "observed_genome_gen0000.bin");
-        assert!(
-            native["association"]
-                .as_str()
-                .unwrap()
-                .contains("no external checkpoint_sha256 to cross-check")
-        );
+        assert!(native["association"]
+            .as_str()
+            .unwrap()
+            .contains("no external checkpoint_sha256 to cross-check"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attach_observed_genome_rejects_wrong_observation_schema_and_path_traversal() {
+        let mut options = PlayerOptions::default();
+        options.metadata = json!({"brain_model":"native","generation":1});
+        options.diagnostics = Some(json!({"meta":{"selected_being":4,"observation_schema":1},
+            "observations":[{"being":4,"generation":1,"genome_file":"../outside.bin"}]}));
+        let error = options
+            .attach_observed_genome(Path::new("/tmp/gen0001.replay"))
+            .unwrap_err();
+        assert!(error.to_string().contains("observation_schema"), "{error}");
+
+        options.diagnostics = Some(json!({"meta":{"selected_being":4,"observation_schema":2},
+            "observations":[{"being":4,"generation":1,"genome_file":"../outside.bin"}]}));
+        let error = options
+            .attach_observed_genome(Path::new("/tmp/gen0001.replay"))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("single relative file name"),
+            "{error}"
+        );
     }
 }

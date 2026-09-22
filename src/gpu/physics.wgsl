@@ -156,6 +156,7 @@ const GRAVITY:      f32 = 9.81;
 const RHO_AR:       f32 = 1.225;   // kg/m³ air density at sea level
 const FRONTAL_AREA: f32 = 2.2;     // m² GT3 frontal area (not measured, assumed in physics.rs)
 const PI2:          f32 = 6.283185307179586;
+const BASE_ENGINE_TORQUE_NM: f32 = 620.0;
 
 // ============================================================
 // === WORLD HELPERS                                        ===
@@ -391,8 +392,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // --- D) Engine thermals ---
     if (is_stalled == 0u && flag(c.config_flags,1u)) {
         let rpm_ratio = current_rpm / c.max_rpm;
-        let heat_gen  = rpm_ratio * c.throttle * 15.0 * dt_safe;
-        let cooling   = (speed * 0.3 + 2.0) * dt_safe;
+        // Bit 7 opts into the coevolved organ.  Legacy states have this bit
+        // clear and retain the exact historical equations.
+        let organ_thermal = flag(c.config_flags,7u);
+        let engine_heat_scale = select(1.0, c.max_torque / BASE_ENGINE_TORQUE_NM, organ_thermal);
+        let cooling_scale = select(1.0, 1.0 + c._pad_before_wind, organ_thermal);
+        let heat_gen  = rpm_ratio * c.throttle * 15.0 * engine_heat_scale * dt_safe;
+        let cooling   = (speed * 0.3 + 2.0) * cooling_scale * dt_safe;
         engine_temp = clamp(engine_temp + heat_gen - cooling, 20.0, 150.0);
         oil_temp    = oil_temp + (engine_temp - oil_temp) * 0.01 * dt_safe;
     } else {

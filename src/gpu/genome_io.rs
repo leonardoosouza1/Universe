@@ -4,6 +4,22 @@
 //! champion whose real spread was 3.2×). The canonical parser lives HERE; binaries import
 //! it. On-disk genome persistence: `save_genome` / `load_genome`.
 //!
+//! # Format v5 (organism-taxi-v1 hereditary controls)
+//! `UGEN | version=5:u32 | payload_bytes:u32 | body[2] | organs[2] | life[16] | organism[16] | v2_payload`.
+//! Organism controls are finite in [-1,1]; acquired state belongs in a snapshot.
+//! A neutral organism block preserves v2/v3/v4 encoding.
+//!
+//! # Format v4 (body, organs and lifetime DNA)
+//! `UGEN | version=4:u32 | payload_bytes:u32 | body[2] | organs[2] | life[16] | v2_payload`.
+//! Neutral new extensions retain v2/v3 encoding exactly. Acquired plastic weights and
+//! eligibility traces are never serialized into hereditary DNA.
+//!
+//! # Format v3 (experimental body genes)
+//! `UGEN | version=3:u32 | payload_bytes:u32 | body:[f32;2] | v2_payload`.
+//! All numbers are little-endian. Body values are finite and in [-1,1]. The payload
+//! retains the exact v2 field order including its variable-length Fly tail. Neutral
+//! bodies are still saved as v2. Unknown versions fail closed in release builds too.
+//!
 //! # Format v2 (with a header) — E3 (REFACTOR_PLAN.md §2.3, item 3)
 //!
 //! ```text
@@ -54,16 +70,19 @@
 //! `load_genome` together — the tests in `tests.rs` catch the omission.
 
 use crate::evolution::dna_genesis::default_kan_knots;
+use crate::gpu::body::BodyGenes;
 use crate::gpu::evolution::Genome;
+use crate::gpu::lifetime::{LifeGenes, N_LIFE_GENES};
+use crate::gpu::organs::OrganGenes;
 use crate::kan::KAN_OUT_KNOTS;
 
 /// Magic of the v2 header — 4 ASCII bytes, "Universe GENome".
 const MAGIC: &[u8; 4] = b"UGEN";
 /// Current format version. Bump it here WHENEVER the block layout changes (new field, new
 /// order) — `load_genome` decides what to read from it.
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 5;
 
-/// Saves the best genome: v2 header + L1 | L2 | KAN | slow | τ bank, all f32 little-endian.
+/// Saves hereditary DNA using the earliest compatible v2/v3/v4/v5 envelope.
 ///
 /// The slow brain was historically missing. Saving only L1/L2/KAN meant the champion lost
 /// the slow brain's 1091 weights when reloaded through `--carregar`: it came back with the
@@ -73,9 +92,69 @@ const FORMAT_VERSION: u32 = 2;
 /// `src/bin/gpu_evolve/main.rs:741`.)
 pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     use std::io::Write;
+    if !genome.body.is_valid()
+        || !genome.organs.is_valid()
+        || !genome.lifetime.is_valid()
+        || !super::body::organism_genes_valid(&genome.organism)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid body, organ, lifetime or organism genes",
+        ));
+    }
+    // Neutral genomes keep their exact historical v2 bytes. A v3 envelope adds
+    // payload length and body genes BEFORE the unchanged positional payload,
+    // so the variable-length Fly tail is never mistaken for body genes.
+    let version = if genome.organism != [0.0; 16] {
+        FORMAT_VERSION
+    } else if genome.organs != OrganGenes::default() || genome.lifetime != LifeGenes::default() {
+        4
+    } else if genome.body != BodyGenes::default() {
+        3
+    } else {
+        2
+    };
+    if version == 5 && !valid_v5_payload(genome) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "v5 requires a complete finite neural payload",
+        ));
+    }
+    let payload_floats = genome.l1.len()
+        + genome.l2.len()
+        + 3 * KAN_OUT_KNOTS
+        + genome.slow.len()
+        + genome.tau.len()
+        + genome.sensors.len()
+        + genome.neuron_alpha.len()
+        + genome.neuron_period_l1.len()
+        + genome.neuron_threshold_l1.len()
+        + genome.neuron_activation.len()
+        + genome.gates_w.len()
+        + genome.hip.len()
+        + genome.fly.len();
+    let payload_bytes = u32::try_from(payload_floats * 4).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "genome payload too large")
+    })?;
     let mut f = std::fs::File::create(path)?;
     f.write_all(MAGIC)?;
-    f.write_all(&FORMAT_VERSION.to_le_bytes())?;
+    f.write_all(&version.to_le_bytes())?;
+    if version >= 3 {
+        f.write_all(&payload_bytes.to_le_bytes())?;
+        for gene in genome.body.0 {
+            f.write_all(&gene.to_le_bytes())?;
+        }
+    }
+    if version >= 4 {
+        for gene in genome.organs.0.iter().chain(genome.lifetime.0.iter()) {
+            f.write_all(&gene.to_le_bytes())?;
+        }
+    }
+    if version >= 5 {
+        for gene in genome.organism {
+            f.write_all(&gene.to_le_bytes())?;
+        }
+    }
     for w in &genome.l1 {
         f.write_all(&w.to_le_bytes())?;
     }
@@ -134,23 +213,115 @@ pub fn save_genome(genome: &Genome, path: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Tries to load a genome from a file written by `save_genome` — v2 (with the `UGEN`
+// A v5 envelope cannot silently shift fields through malformed vector lengths.
+fn valid_v5_payload(genome: &Genome) -> bool {
+    use super::evolution::*;
+    let fields: &[(&[f32], usize)] = &[
+        (&genome.l1, N_L1_WEIGHTS),
+        (&genome.l2, N_L2_WEIGHTS),
+        (
+            &genome.slow,
+            crate::engine::SlowBrain::new().all_weights().len(),
+        ),
+        (&genome.tau, N_CFC_CHANNELS),
+        (&genome.sensors, N_SENSOR_GENES),
+        (&genome.neuron_alpha, N_L1_NEURONS + N_L2_NEURONS),
+        (&genome.neuron_period_l1, N_L1_NEURONS),
+        (&genome.neuron_threshold_l1, N_L1_NEURONS),
+        (&genome.neuron_activation, N_L1_NEURONS + N_L2_NEURONS),
+        (&genome.gates_w, 16),
+        (&genome.hip, super::hippocampus::N_HIP_GENES),
+    ];
+    fields
+        .iter()
+        .all(|(values, expected)| values.len() == *expected && values.iter().all(|v| v.is_finite()))
+        && genome
+            .kan_knots
+            .iter()
+            .flatten()
+            .chain(genome.fly.iter())
+            .all(|v| v.is_finite())
+}
+
+/// Tries to load a genome from a file written by `save_genome` — v2/v3 (with the `UGEN`
 /// header) OR legacy (no header, the L1 bytes straight at the start of the file).
 pub fn load_genome(path: &str) -> Option<Genome> {
     let bytes = std::fs::read(path).ok()?;
 
     // Sniff the first 4 bytes: separates v2 from legacy with no practical ambiguity.
-    let base_off = if bytes.len() >= 8 && &bytes[0..4] == MAGIC {
+    let (base_off, body, organs, lifetime, organism) = if bytes.starts_with(MAGIC) {
+        if bytes.len() < 8 {
+            return None;
+        }
         let version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
-        // Only v2 exists so far; an unknown (higher) version still attempts to read with
-        // the current layout — a file of a LOWER version should not carry the magic.
-        debug_assert!(
-            version <= FORMAT_VERSION,
-            "genome saved by a future version ({version})"
-        );
-        8usize
+        match version {
+            2 => (
+                8usize,
+                BodyGenes::default(),
+                OrganGenes::default(),
+                LifeGenes::default(),
+                [0.0; 16],
+            ),
+            3 | 4 | 5 => {
+                let header_bytes =
+                    20 + if version >= 4 {
+                        (2 + N_LIFE_GENES) * 4
+                    } else {
+                        0
+                    } + if version >= 5 { 16 * 4 } else { 0 };
+                if bytes.len() < header_bytes {
+                    return None;
+                }
+                let length = u32::from_le_bytes(bytes[8..12].try_into().ok()?) as usize;
+                if length % 4 != 0 || length.checked_add(header_bytes)? != bytes.len() {
+                    return None;
+                }
+                let body = BodyGenes([
+                    f32::from_le_bytes(bytes[12..16].try_into().ok()?),
+                    f32::from_le_bytes(bytes[16..20].try_into().ok()?),
+                ]);
+                if !body.is_valid() {
+                    return None;
+                }
+                let mut organs = OrganGenes::default();
+                let mut lifetime = LifeGenes::default();
+                if version >= 4 {
+                    for (i, gene) in organs.0.iter_mut().chain(lifetime.0.iter_mut()).enumerate() {
+                        let offset = 20 + i * 4;
+                        *gene = f32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?);
+                    }
+                    if !organs.is_valid() || !lifetime.is_valid() {
+                        return None;
+                    }
+                }
+                let mut organism = [0.0; 16];
+                if version >= 5 {
+                    for (i, gene) in organism.iter_mut().enumerate() {
+                        let offset = 20 + (2 + N_LIFE_GENES + i) * 4;
+                        *gene = f32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?);
+                    }
+                    if !super::body::organism_genes_valid(&organism) {
+                        return None;
+                    }
+                    if bytes[header_bytes..]
+                        .chunks_exact(4)
+                        .any(|chunk| !f32::from_le_bytes(chunk.try_into().unwrap()).is_finite())
+                    {
+                        return None;
+                    }
+                }
+                (header_bytes, body, organs, lifetime, organism)
+            }
+            _ => return None,
+        }
     } else {
-        0usize
+        (
+            0usize,
+            BodyGenes::default(),
+            OrganGenes::default(),
+            LifeGenes::default(),
+            [0.0; 16],
+        )
     };
 
     let n_l1 = crate::gpu::evolution::N_L1_WEIGHTS;
@@ -190,6 +361,23 @@ pub fn load_genome(path: &str) -> Option<Genome> {
     // that genome really did not carry the data.
     let n_slow = crate::engine::SlowBrain::new().all_weights().len();
     let n_tau = crate::gpu::evolution::N_CFC_CHANNELS;
+    if base_off >= 20 {
+        // Unlike historical optional-block files, v3 must contain the entire v2
+        // fixed payload. A damaged checkpoint must not silently invent organs.
+        let fixed_floats = crate::gpu::evolution::N_L1_WEIGHTS
+            + crate::gpu::evolution::N_L2_WEIGHTS
+            + n_kan
+            + n_slow
+            + n_tau
+            + crate::gpu::evolution::N_SENSOR_GENES
+            + 4 * crate::gpu::evolution::N_L1_NEURONS
+            + 2 * crate::gpu::evolution::N_L2_NEURONS
+            + 16
+            + crate::gpu::hippocampus::N_HIP_GENES;
+        if bytes.len() < base_off + fixed_floats * 4 {
+            return None;
+        }
+    }
 
     let slow = if bytes.len() >= off + n_slow * 4 {
         let v = read_at(&bytes, off, n_slow);
@@ -298,6 +486,10 @@ pub fn load_genome(path: &str) -> Option<Genome> {
         gates_w,
         hip,
         fly,
+        body,
+        organs,
+        lifetime,
+        organism,
     })
 }
 
@@ -315,3 +507,6 @@ pub fn population_seed_for(pop_seed: u64, index: usize) -> u64 {
     // `pop_seed` values share no initial genome.
     pop_seed.wrapping_mul(1_000_003).wrapping_add(index as u64)
 }
+
+#[cfg(test)]
+mod organism_format_tests;

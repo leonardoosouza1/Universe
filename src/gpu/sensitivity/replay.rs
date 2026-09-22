@@ -110,7 +110,7 @@ pub fn synthetic_wave(ticks: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SENSORY_WAVE_SIZE, replay_open_loop, synthetic_wave};
+    use super::{replay_open_loop, synthetic_wave, SENSORY_WAVE_SIZE};
     use crate::gpu::evolution::Genome;
 
     #[test]

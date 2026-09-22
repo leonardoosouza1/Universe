@@ -128,7 +128,11 @@ fn apply_driving_reflex_birth(l1: &mut [f32], l2: &mut [f32]) {
 /// `1.0` — nothing to scale, and `0.0 × 1.0 = 0.0` stays null, not a division by
 /// near-zero blowing up the weight.
 fn spectral_rescale_factor(medido: f32, alvo: f32) -> f32 {
-    if medido > 1e-6 { alvo / medido } else { 1.0 }
+    if medido > 1e-6 {
+        alvo / medido
+    } else {
+        1.0
+    }
 }
 
 // ── Derived dimensions ────────────────────────────────────────────────────────
@@ -249,9 +253,17 @@ pub struct Genome {
     /// `--fly-brain` asks for it (`FLY_MUTATE_ON`) — the same gate as `hip`, and for the
     /// same reason, now that this block is the one at the end of the rng stream.
     ///
-    /// **LAST field of the struct and LAST block on disk** — ARCHITECTURE.md §4 rule 1.
-    /// Never reorder.
+    /// **LAST block in the positional payload** — ARCHITECTURE.md §4 rule 1.
+    /// The body extension lives in the v3 header; never append genes to this tail.
     pub fly: Vec<f32>,
+    /// Experimental vehicle capacities, stored in the v3 header extension.
+    /// The variable-length Fly payload remains last on disk.
+    pub body: super::body::BodyGenes,
+    pub organs: super::organs::OrganGenes,
+    pub lifetime: super::lifetime::LifeGenes,
+    /// Hereditary organism-taxi-v1 controls; acquired body state is never DNA.
+    /// Neutral zeros preserve legacy formats and do not activate the scenario.
+    pub organism: [f32; 16],
 }
 
 /// L1 and L2 neurons heritable by the P1.7 mechanisms — same numbers as
@@ -704,6 +716,10 @@ impl Genome {
             // bindings of being i are not a continuation of the sequence that drew its
             // weights — the same precaution as `random_sensors_within_ranges`.
             fly: crate::fly_map::birth_block(seed),
+            body: super::body::BodyGenes::default(),
+            organs: Default::default(),
+            lifetime: Default::default(),
+            organism: [0.0; 16],
         }
     }
 
@@ -873,6 +889,10 @@ impl Genome {
             // defaults — and an empty block packs as an inert selection, never as garbage
             // (`fly_map::pack_selection`).
             fly: Vec::new(),
+            body: super::body::BodyGenes::default(),
+            organs: Default::default(),
+            lifetime: Default::default(),
+            organism: [0.0; 16],
         }
     }
 
@@ -958,6 +978,7 @@ pub fn sensory_tau_range(channel: usize) -> (f32, f32) {
 }
 
 /// Evolutionary algorithm parameters.
+#[derive(Clone, Debug)]
 pub struct EvoParams {
     /// Per-weight mutation rate: probability of each weight being perturbed.
     pub p_mutate: f32,

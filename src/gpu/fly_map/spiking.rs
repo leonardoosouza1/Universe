@@ -14,7 +14,7 @@ use wgpu::util::DeviceExt;
 
 use crate::config::iara::vision::RETINA_TOTAL;
 use crate::fly_map::spiking::{EyeMode, SpikingParams, SpikingTraceFrame};
-use crate::fly_map::{COMMANDS, FlyMap, FlySelection, NONE, OUT_SLOTS};
+use crate::fly_map::{FlyMap, FlySelection, COMMANDS, NONE, OUT_SLOTS};
 use crate::gpu::core::{storage_entry, uniform_entry};
 
 const MAX_SUBSTEPS: usize = 1024;
@@ -1057,7 +1057,7 @@ fn init_f32(
 
 #[cfg(test)]
 mod dispatch_tests {
-    use super::{MAX_DISPATCH_X, SpikingUniform, integrate_dispatch_grid};
+    use super::{integrate_dispatch_grid, SpikingUniform, MAX_DISPATCH_X};
 
     #[test]
     fn integrate_grid_covers_large_population_without_exceeding_x_limit() {

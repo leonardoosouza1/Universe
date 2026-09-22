@@ -16,6 +16,7 @@ license = "MIT"
 default-run = "universe"
 
 [dependencies]
+sha2 = "0.10.9"
 iara_genesis = { path = "docs/arquivo/dirs/iara_genesis" }
 iara-perception = { path = "vendor/iara-perception" }
 # Was already a TRANSITIVE dependency via iara-perception (RetinaPerception uses CfcCell

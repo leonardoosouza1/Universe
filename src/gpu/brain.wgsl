@@ -255,12 +255,18 @@ struct Params {
     // through a deterministic hash (the same pattern as the CfC denoise below).
     // 0.0 (the default) = no channel fails, behaviour identical to the historical path.
     dropout_prob:      f32,
+    // Lifetime mechanisms: bit 0 plasticity, bit 1 age/energy development,
+    // bit 2 deterministic topology density masks. Zero is exactly the old path.
+    lifetime_flags:    u32,
     // Padding: keeps the uniform a multiple of 16 bytes (12 fields × 4 = 48, the same
     // convention as the original struct, which was 8 × 4 = 32). Mirrors `BrainParams` on
     // the host.
     ablation_from_tick:u32,
     // bit 0 = ablation enabled; bits 1..31 = observed being + 1 (zero = disabled)
     control_flags:     u32,
+    lifetime_reserved0:u32,
+    lifetime_reserved1:u32,
+    lifetime_reserved2:u32,
 }
 
 // ── BINDINGS ──────────────────────────────────────────────────────────────────
@@ -390,6 +396,20 @@ const OBS_L2_ADAPTED: u32 = 384u;
 const OBS_BYPASS_ADAPTED: u32 = 432u;
 const OBS_L2_STD: u32 = 480u;
 @group(0) @binding(15) var<storage, read_write> buf_observation: array<u32>;
+
+// Optional resident lifetime state. Fixed per-being stride: config[32], feedback[4],
+// P[144], eligibility[144], previous latent[48], previous motor[3], runtime summaries.
+const LIFE_STRIDE: u32 = 512u;
+const LIFE_FEEDBACK: u32 = 32u;
+const LIFE_P: u32 = 36u;
+const LIFE_E: u32 = 180u;
+const LIFE_PREV_LATENT: u32 = 324u;
+const LIFE_PREV_MOTOR: u32 = 372u;
+const LIFE_RUNTIME: u32 = 375u;
+const LIFE_PLASTICITY: u32 = 1u;
+const LIFE_DEVELOPMENT: u32 = 2u;
+const LIFE_TOPOLOGY: u32 = 4u;
+@group(0) @binding(16) var<storage, read_write> buf_lifetime: array<f32>;
 
 // ── WORKGROUP MEMORY ──────────────────────────────────────────────────────────
 
@@ -586,6 +606,77 @@ fn observes(being: u32) -> bool {
     return (params.control_flags >> 1u) == being + 1u;
 }
 
+fn life_base(being: u32) -> u32 {
+    return being * LIFE_STRIDE;
+}
+
+fn life_gene(being: u32, slot: u32) -> f32 {
+    return buf_lifetime[life_base(being) + slot];
+}
+
+fn life_feedback(being: u32, slot: u32) -> f32 {
+    return buf_lifetime[life_base(being) + LIFE_FEEDBACK + slot];
+}
+
+// Age and energy are capacity masks.  They gate the values entering the existing
+// layers; all 96/48 lanes still execute on the GPU, so this is a topology mask and
+// not a claim of compute savings.
+fn life_neuron_active(being: u32, layer: u32, neuron: u32) -> bool {
+    if (params.lifetime_flags & (LIFE_DEVELOPMENT | LIFE_TOPOLOGY)) == 0u { return true; }
+    var capacity = 1.0;
+    if (params.lifetime_flags & LIFE_DEVELOPMENT) != 0u {
+        let age = clamp(buf_lifetime[life_base(being) + LIFE_RUNTIME], 0.0, 1.0);
+        let energy = clamp(life_feedback(being, 1u), 0.0, 1.0);
+        let start = select(life_gene(being, 8u), life_gene(being, 4u), layer == 1u);
+        let end = select(life_gene(being, 9u), life_gene(being, 5u), layer == 1u);
+        let energy_min = select(life_gene(being, 10u), life_gene(being, 6u), layer == 1u);
+        let progress = clamp((age - start) / max(end - start, 1e-3), 0.0, 1.0);
+        let energy_progress = clamp((energy - energy_min) / max(1.0 - energy_min, 1e-3), 0.0, 1.0);
+        capacity = (0.25 + 0.75 * progress)
+            * (0.25 + 0.75 * pow(energy_progress, clamp(life_gene(being, 15u), 0.25, 4.0)));
+    }
+    if (params.lifetime_flags & LIFE_TOPOLOGY) != 0u {
+        let density = select(life_gene(being, 11u), life_gene(being, 7u), layer == 1u);
+        capacity = capacity * (0.25 + 0.75 * density);
+    }
+    if layer == 2u && neuron < 3u { return true; }
+    // Preserve a scaffold in EVERY L1 sensory region, rather than keeping only
+    // the first (visual) region and depriving a juvenile of body/wall signals.
+    let rank = select(neuron, neuron % 24u, layer == 1u);
+    let width = select(L2_OUT, 24u, layer == 1u);
+    return rank < u32(ceil(f32(width) * capacity));
+}
+
+// Stable integer hash of an edge identity.  A density of 1.0 is an exact fast path
+// and preserves every historical accumulation bit-for-bit when the feature is off.
+fn life_edge_enabled(being: u32, layer: u32, output: u32, input: u32) -> bool {
+    if (params.lifetime_flags & LIFE_TOPOLOGY) == 0u {
+        return true;
+    }
+    let density = select(life_gene(being, 11u), life_gene(being, 7u), layer == 1u);
+    if density >= 1.0 { return true; }
+    if density <= 0.0 { return false; }
+    // Being is intentionally absent: identical lifetime genes have identical
+    // topology regardless of population slot.
+    var h = layer * 0x85ebca6bu + output * 0xc2b2ae35u + input;
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h & 0xffffu) / 65535.0 < density;
+}
+
+fn life_elapsed(being: u32) -> f32 {
+    let base = life_base(being);
+    let initialized = buf_lifetime[base + LIFE_RUNTIME + 5u] > 0.0;
+    let previous = u32(max(buf_lifetime[base + LIFE_RUNTIME + 1u], 0.0));
+    let delta = select(1u, max(params.world_tick - previous, 1u), initialized);
+    return max(params.dt * f32(delta), 0.0);
+}
+
+fn life_step_elapsed(being: u32) -> f32 {
+    return max(buf_lifetime[life_base(being) + LIFE_RUNTIME + 8u], 0.0);
+}
+
 // ── MAIN KERNEL ───────────────────────────────────────────────────────────────
 
 @compute @workgroup_size(128)
@@ -599,6 +690,36 @@ fn main(
 
     // More workgroups than living beings: the standard guard (the dispatch is not rounded).
     if being >= params.n_beings { return; }
+
+    // `world_tick` advances even when the host skips a brain dispatch.  Consume the
+    // elapsed tick span here so age and eligibility use physical time rather than the
+    // number of neural dispatches.  The runtime slots are touched only when a lifetime
+    // flag is active, preserving the baseline buffer's untouched state.
+    if params.lifetime_flags != 0u && tid == 0u {
+        let base = life_base(being);
+        let elapsed = life_elapsed(being);
+        buf_lifetime[base + LIFE_RUNTIME + 8u] = elapsed;
+        let previous_age = clamp(buf_lifetime[base + LIFE_RUNTIME], 0.0, 1.0);
+        if (params.lifetime_flags & LIFE_DEVELOPMENT) != 0u {
+            let rate = clamp(life_gene(being, 14u), 0.0, 4.0);
+            buf_lifetime[base + LIFE_RUNTIME] = clamp(previous_age + elapsed * rate * clamp(life_feedback(being, 2u), 0.0, 1.0), 0.0, 1.0);
+        }
+        let reward = life_feedback(being, 0u);
+        let energy = clamp(life_feedback(being, 1u), 0.0, 1.0);
+        let alive = clamp(life_feedback(being, 2u), 0.0, 1.0);
+        let stat_mix = clamp(1.0 - exp(-elapsed), 0.0, 1.0);
+        buf_lifetime[base + LIFE_RUNTIME + 2u] =
+            buf_lifetime[base + LIFE_RUNTIME + 2u] + (reward - buf_lifetime[base + LIFE_RUNTIME + 2u]) * stat_mix;
+        buf_lifetime[base + LIFE_RUNTIME + 3u] =
+            buf_lifetime[base + LIFE_RUNTIME + 3u] + (energy - buf_lifetime[base + LIFE_RUNTIME + 3u]) * stat_mix;
+        buf_lifetime[base + LIFE_RUNTIME + 4u] =
+            buf_lifetime[base + LIFE_RUNTIME + 4u] + elapsed * alive;
+        buf_lifetime[base + LIFE_RUNTIME + 5u] =
+            buf_lifetime[base + LIFE_RUNTIME + 5u] + 1.0;
+        buf_lifetime[base + LIFE_RUNTIME + 1u] = f32(params.world_tick);
+    }
+    storageBarrier();
+    workgroupBarrier();
 
     let wave_base: u32 = being * WAVE;
     let kan_base:  u32 = being * WAVE * KAN_KNOTS;
@@ -791,6 +912,7 @@ fn main(
     if tid < L1_OUT {
         let j: u32 = tid;
         let l1_base: u32 = being * (L1_OUT * WAVE) + j * WAVE;
+        let l1_active = life_neuron_active(being, 1u, j);
         // FIX: accumulate WITHOUT normalising at each step — multiply by norm ONCE at the
         // end, identical to the CPU (layers.rs:47-49):
         //   acc += w[i] * input[i]  (no norm)
@@ -804,18 +926,26 @@ fn main(
         // an FMA (a GPU may fuse a*b+c into an FMA and get a different result from the CPU,
         // which does it separately: product = a*b; acc += product. Forcing the same order
         // guarantees bit-for-bit agreement.)
-        for (var i: u32 = 0u; i < L1_OUT; i = i + 1u) {
-            let prod: f32 = buf_l1w[l1_base + i] * f32(w_cfc[i]);
-            acc = acc + prod;
+        if l1_active {
+            for (var i: u32 = 0u; i < L1_OUT; i = i + 1u) {
+                if life_edge_enabled(being, 1u, j, i) {
+                    let prod: f32 = buf_l1w[l1_base + i] * f32(w_cfc[i]);
+                    acc = acc + prod;
+                }
+            }
         }
         // KAN-only part: channels 96..WAVE (they went through the KAN but not the CfC).
-        for (var i: u32 = L1_OUT; i < WAVE; i = i + 1u) {
-            let prod: f32 = buf_l1w[l1_base + i] * f32(w_kan[i]);
-            acc = acc + prod;
+        if l1_active {
+            for (var i: u32 = L1_OUT; i < WAVE; i = i + 1u) {
+                if life_edge_enabled(being, 1u, j, i) {
+                    let prod: f32 = buf_l1w[l1_base + i] * f32(w_kan[i]);
+                    acc = acc + prod;
+                }
+            }
         }
 
         // Normalise by 127 exactly once — identical to the CPU (layers.rs:49).
-        w_l1r[j] = acc * (1.0 / 127.0);
+        w_l1r[j] = select(acc * (1.0 / 127.0), 0.0, !l1_active);
         if observes(being) {
             buf_observation[OBS_L1_MATMUL + j] = bitcast<u32>(w_l1r[j]);
         }
@@ -891,6 +1021,13 @@ fn main(
         // time it fired — "keep the previous value", without touching the buffer.
         var v_eff: f32 = h * neuron_mem_gain(alpha);
 
+        // A capacity-masked neuron does not retain a stale contribution while it is
+        // dormant. It can re-enter cleanly as age/energy capacity grows.
+        if !life_neuron_active(being, 1u, j) {
+            v_eff = 0.0;
+            buf_neuron_mem[mem_base + j] = 0.0;
+        }
+
         // ── Mechanism 2 (threshold) — below it, the contribution is zero ────────
         let thr_raw: f32 = buf_neuron_meta[meta_base + NEURON_META_L1_THRESHOLD_OFF + j];
         let threshold_off: bool = (off & 4u) != 0u;
@@ -952,14 +1089,19 @@ fn main(
     if tid < L2_OUT {
         let j: u32 = tid;
         let l2_base: u32 = being * (L2_OUT * L1_OUT) + j * L1_OUT;
+        let l2_active = life_neuron_active(being, 2u, j);
         // FIX: accumulate without a per-step norm — apply 1/127 once at the end
         // (float_layers.rs:29-34: acc += w[i] * input[i]; output = acc * norm_factor)
         var acc: f32     = 0.0;
 
         // ANTI-FMA: same pattern as L1 — store the product in a var before adding.
-        for (var i: u32 = 0u; i < L1_OUT; i = i + 1u) {
-            let prod: f32 = buf_l2w[l2_base + i] * f32(w_l1a[i]);
-            acc = acc + prod;
+        if l2_active {
+            for (var i: u32 = 0u; i < L1_OUT; i = i + 1u) {
+                if life_edge_enabled(being, 2u, j, i) {
+                    let prod: f32 = buf_l2w[l2_base + i] * f32(w_l1a[i]);
+                    acc = acc + prod;
+                }
+            }
         }
 
         let raw_l2: f32 = acc * (1.0 / 127.0);
@@ -981,7 +1123,10 @@ fn main(
         h_l2 = h_l2 * alpha_l2 + raw_l2 * (1.0 - alpha_l2);
         buf_neuron_mem[l2_mem_base + j] = h_l2;
 
-        w_l2r[j] = h_l2 * neuron_mem_gain(alpha_l2);
+        w_l2r[j] = select(h_l2 * neuron_mem_gain(alpha_l2), 0.0, !l2_active);
+        if !l2_active {
+            buf_neuron_mem[l2_mem_base + j] = 0.0;
+        }
         if observes(being) {
             buf_observation[OBS_L2_EFFECTIVE + j] = bitcast<u32>(w_l2r[j]);
         }
@@ -1112,6 +1257,64 @@ fn main(
             0.0,
             output_is_ablated(being, ABLATION_L1_WORD, tid),
         );
+    }
+
+    // ── OPTIONAL LIFETIME PLASTICITY ────────────────────────────────────────
+    // Eligibility is causal: it uses the latent and motor from the previous
+    // transition, then the current feedback modulates the bounded P update.  The
+    // update uses elapsed world time, including ticks skipped by brain_skip.
+    if (params.lifetime_flags & LIFE_PLASTICITY) != 0u {
+        let life = life_base(being);
+        let elapsed = life_step_elapsed(being);
+        if tid < L2_OUT {
+            let j = tid;
+            let previous_latent = buf_lifetime[life + LIFE_PREV_LATENT + j];
+            for (var k: u32 = 0u; k < 3u; k = k + 1u) {
+                let e_index = life + LIFE_E + k * L2_OUT + j;
+                let decay = exp(-clamp(life_gene(being, 1u), 0.0, 16.0) * elapsed);
+                let old_e = buf_lifetime[e_index];
+                let old_motor = buf_lifetime[life + LIFE_PREV_MOTOR + k];
+                let outer = previous_latent * old_motor;
+                buf_lifetime[e_index] = old_e * decay + outer * (1.0 - decay);
+            }
+        }
+        storageBarrier();
+        workgroupBarrier();
+
+        if tid < 3u {
+            let k = tid;
+            let energy = clamp(life_feedback(being, 1u), 0.0, 1.0);
+            let alive = clamp(life_feedback(being, 2u), 0.0, 1.0);
+            let energy_exponent = clamp(life_gene(being, 15u), 0.25, 4.0);
+            let energy_term = pow(energy, energy_exponent);
+            let modulation = life_feedback(being, 0u) * clamp(life_gene(being, 12u), 0.0, 4.0)
+                * alive * energy_term;
+            let learning = clamp(life_gene(being, 0u), 0.0, 1.0) * elapsed * modulation;
+            let p_clamp = clamp(life_gene(being, 2u), 0.001, 1.0);
+            let gain = clamp(life_gene(being, 3u), 0.0, 1.0);
+            var residual = 0.0;
+            for (var j: u32 = 0u; j < L2_OUT; j = j + 1u) {
+                let p_index = life + LIFE_P + k * L2_OUT + j;
+                let e_index = life + LIFE_E + k * L2_OUT + j;
+                let retention = exp(-clamp(life_gene(being, 13u), 0.0, 4.0) * elapsed);
+                let updated = clamp(buf_lifetime[p_index] * retention + learning * buf_lifetime[e_index], -p_clamp, p_clamp);
+                buf_lifetime[p_index] = updated;
+                residual = residual + updated * clamp(w_l2r[j], -1.0, 1.0);
+            }
+            residual = clamp(residual / f32(L2_OUT), -p_clamp, p_clamp) * gain;
+            var motor = clamp(buf_intent[intent_base + k] + residual, -1.0, 1.0);
+            // Ablation is the final authority, including over a plastic residual.
+            if output_is_ablated(being, ABLATION_L2_WORD, k) {
+                motor = 0.0;
+            }
+            buf_intent[intent_base + k] = motor;
+            buf_lifetime[life + LIFE_PREV_MOTOR + k] = motor;
+            buf_lifetime[life + LIFE_RUNTIME + 9u + k] = residual;
+        }
+        if tid < L2_OUT {
+            buf_lifetime[life + LIFE_PREV_LATENT + tid] = clamp(w_l2r[tid], -1.0, 1.0);
+        }
+        workgroupBarrier();
     }
 
     // Note: no barrier is needed at the end — every thread writes to a disjoint position

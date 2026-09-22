@@ -34,7 +34,7 @@
 use super::RetinaDigestGpu;
 use crate::config::iara::vision::{RETINA_COLS, RETINA_TOTAL};
 use crate::gpu::perception::WAVE_U32S;
-use crate::gpu::{Pixel, legacy_encoding};
+use crate::gpu::{legacy_encoding, Pixel};
 use crate::perception::RetinaPerception;
 
 const N_BEINGS: usize = 2;

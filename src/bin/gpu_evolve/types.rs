@@ -10,6 +10,7 @@ use universe::gpu::physics::PhysicsStateGpu;
 
 /// Estado por ser mantido na CPU entre ticks. Espelha (mas não compartilha) o
 /// `BeingState` de `gpu_loop.rs`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BeingState {
     pub phys: PhysicsStateGpu,
     pub prev_steer: f32,
@@ -30,6 +31,8 @@ pub struct BeingState {
     /// Dopamina: avanço ponderado por superfície neste tick (motor.rs:1673).
     /// joy_tick = progress_speed * surface_factor; range [-1, 1].
     pub joy_tick: f32,
+    /// Signed track progress from the previous physical transition, for lifetime learning.
+    pub learning_reward: f32,
     /// Dopamina: segundos de flow contínuo (motor.rs:1675-1677). Acumula quando
     /// joy_tick > 0.5, decai 2× mais rápido quando não há progresso. Teto 5 s.
     pub joy_streak: f32,
@@ -87,6 +90,8 @@ pub struct BeingState {
     /// deixou de ser objetivo abstrato e virou sobrevivência. No caminho GPU atual a
     /// palavra `fuel` aparecia uma única vez — como constante 127 no quadro de replay.
     pub fuel: f64,
+    /// Expressed tank capacity, shared by refills, stations and body sensors.
+    pub fuel_capacity: f64,
     pub reverse_timer: f32,
     pub post_reverse_lockout: f32,
     /// Trava de troca de marcha (segundos). ANÁLOGA ao `shift_timer` do Bevy

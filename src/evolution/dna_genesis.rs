@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 
 use iara_genesis::model::tree::Sap;
-use iara_genesis::tlv::{Chunk, GenesisPayload, compress_organism, decompress_organism};
+use iara_genesis::tlv::{compress_organism, decompress_organism, Chunk, GenesisPayload};
 
 // ============================================================================
 // TIER 6.6 — WEIGHT SCARS (trauma immutability)

@@ -293,6 +293,15 @@ produces a plausible-looking, silently wrong report — which is worse than a cr
 
 ### Rules when you touch `Genome`
 
+Body coevolution adds a versioned envelope, not a new positional tail: neutral
+bodies still write exact v2 bytes; v3 stores payload length and two body genes
+before the unchanged v2 payload. The Fly block stays last. Rebuild genome consumers
+before reading v3/v4; historical release loaders did not reject future versions.
+UGEN v4 extends the header to 92 bytes: body[2], organs[2], lifetime[16], then
+the unchanged v2 payload. See [COEVOLUTION-RUNTIME.md](docs/COEVOLUTION-RUNTIME.md)
+for the executed lifetime kernel, ecological births and exact trace ownership.
+See [BODY-COEVOLUTION.md](docs/BODY-COEVOLUTION.md) for ownership, costs and controls.
+
 1. **Never reorder the fields of `Genome` or the write order in `save_genome`** — the
    file has no field names, only positions. Reordering corrupts existing `.bin` files
    in silence (`genome_io.rs:37-41`).
@@ -427,10 +436,11 @@ The output location is a flag, not a constant:
 
 What lands in `--out`:
 
-* `evolve_best_gen<NNNN>.bin` — the best genome of each generation, `UGEN v2`
+* `evolve_best_gen<NNNN>.bin` — the best genome of each generation, `UGEN v2/v3/v4`
   (`main.rs:1038`, `main.rs:1898`).
 * `gen<NNNN>.replay` — replay frames (`main.rs:1249`); the directory is created if
   missing (`main.rs:1251`).
+* `body_gen<NNNN>.json` — body genes and expressed capacities for every being.
 
 Replays are the expensive artefact: recording every generation × 16 races produced
 31 GB once. For long runs record only the first, middle and last generation.

@@ -38,7 +38,7 @@ use std::borrow::Cow;
 
 use wgpu::util::DeviceExt;
 
-use crate::math::cfc_perception::{CFC_HIDDEN, CFC_WEIGHTS_LEN, flat_weights};
+use crate::math::cfc_perception::{flat_weights, CFC_HIDDEN, CFC_WEIGHTS_LEN};
 use crate::perception::RetinaPerception;
 
 use super::core::{storage_entry, uniform_entry};
@@ -88,6 +88,11 @@ pub struct RetinaDigestGpu {
 pub const EXTRA_OUT_STRIDE: usize = 19;
 
 impl RetinaDigestGpu {
+    /// Previous dispatch's 19-float extras, for resident sensor adapters.
+    pub fn extra_buffer(&self) -> &wgpu::Buffer {
+        &self.buf_extra_out
+    }
+
     /// Creates the context and uploads the CfC weights a single time.
     ///
     /// `device`/`queue` are borrowed from the device owner (same pattern as
@@ -143,7 +148,9 @@ impl RetinaDigestGpu {
         let buf_cfc_state = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("retina-digest-cfc-state"),
             contents: bytemuck::cast_slice(&state_zeros),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
         });
 
         let extra_bytes = (cap * EXTRA_OUT_STRIDE * std::mem::size_of::<f32>()) as u64;
@@ -335,6 +342,32 @@ impl RetinaDigestGpu {
         }
         let zeros: Vec<u8> = vec![0u8; n * CFC_HIDDEN * std::mem::size_of::<f32>()];
         queue.write_buffer(&self.buf_cfc_state, 0, &zeros);
+    }
+
+    /// Clears only one being's perception digest CfC state.
+    ///
+    /// The ecology runtime calls this when a dead slot receives a newborn; the other
+    /// beings' recurrent perception remains resident and untouched.
+    pub fn reset_slot(&self, queue: &wgpu::Queue, being: usize) {
+        if being >= self.capacity {
+            return;
+        }
+        let bytes_per_being = CFC_HIDDEN * std::mem::size_of::<f32>();
+        let zeros = vec![0u8; bytes_per_being];
+        queue.write_buffer(
+            &self.buf_cfc_state,
+            (being * bytes_per_being) as u64,
+            &zeros,
+        );
+    }
+}
+
+impl RetinaDigestGpu {
+    pub fn snapshot_buffers(&self) -> Vec<crate::gpu::state_snapshot::NamedBuffer<'_>> {
+        vec![
+            ("retina_digest.cfc_state", &self.buf_cfc_state),
+            ("retina_digest.extra_out", &self.buf_extra_out),
+        ]
     }
 }
 

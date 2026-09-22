@@ -86,12 +86,10 @@ fn road_optics_preserve_distance_material_and_visibility_on_gpu() {
     let far = pixels[0][RETINA_COLS / 2];
     assert_eq!(far.material, VoxelType::Wall as u8);
     assert!(far.dist_m > 58.0 && far.dist_m < 59.0, "{far:?}");
-    assert!(
-        pixels[2..4]
-            .iter()
-            .flatten()
-            .all(|p| p.dist_m == 0.0 && p.material == 2)
-    );
+    assert!(pixels[2..4]
+        .iter()
+        .flatten()
+        .all(|p| p.dist_m == 0.0 && p.material == 2));
     let ground = pixels[4][RETINA_COLS / 2];
     assert_eq!(ground.material, 1);
     assert!(

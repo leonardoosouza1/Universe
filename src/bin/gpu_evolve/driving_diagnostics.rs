@@ -6,8 +6,8 @@
 
 use crate::native_action::MotorTrace;
 use crate::statics::{
-    NEUROMOD_REGIOES, continuous_wall_probes, motor_head_linear, reverse_controller_v2,
-    slow_canonical_kinematics, throttle_arbitration_signed,
+    continuous_wall_probes, motor_head_linear, reverse_controller_v2, slow_canonical_kinematics,
+    throttle_arbitration_signed, NEUROMOD_REGIOES,
 };
 use crate::types::BeingState;
 use serde_json::json;
@@ -16,17 +16,26 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use universe::config::iara::brain::{L1_NEURONS, SENSORY_WAVE_SIZE};
 use universe::config::iara::vision::{RETINA_COLS, RETINA_ROWS, RETINA_TOTAL};
-use universe::gpu::brain::{BrainGpu, OBSERVATION_BYTES, decode_observation};
+use universe::gpu::brain::{decode_observation, BrainGpu, OBSERVATION_BYTES};
 use universe::gpu::evolution::Genome;
 use universe::gpu::genome_io::save_genome;
 use universe::gpu::physics::PhysicsStateGpu;
+use universe::gpu::slow_brain::SlowBrainGpu;
 
 const WAVE_BYTES: usize = SENSORY_WAVE_SIZE;
 const FAST_FLOATS: usize = L1_NEURONS;
 const RETINA_BYTES: usize = RETINA_TOTAL * 4;
 const FAST_OFFSET: usize = RETINA_BYTES + WAVE_BYTES;
 const TRACE_OFFSET: usize = FAST_OFFSET + FAST_FLOATS * 4;
-const SAMPLE_BYTES: usize = TRACE_OFFSET + OBSERVATION_BYTES;
+const LIFE_OFFSET: usize = TRACE_OFFSET + OBSERVATION_BYTES;
+const BASE_SAMPLE_BYTES: usize = LIFE_OFFSET + universe::gpu::lifetime::LIFETIME_STRIDE * 4;
+const SLOW_INPUT_OFFSET: usize = BASE_SAMPLE_BYTES;
+const SLOW_INPUT_FLOATS: usize = 48;
+const SLOW_STATE_OFFSET: usize = SLOW_INPUT_OFFSET + SLOW_INPUT_FLOATS * 4;
+const SLOW_STATE_FLOATS: usize = 133;
+const SLOW_OUTPUT_OFFSET: usize = SLOW_STATE_OFFSET + SLOW_STATE_FLOATS * 4;
+const SLOW_OUTPUT_FLOATS: usize = 3;
+const SAMPLE_BYTES: usize = SLOW_OUTPUT_OFFSET + SLOW_OUTPUT_FLOATS * 4;
 
 #[derive(Default, Clone)]
 struct Window {
@@ -64,8 +73,10 @@ pub struct DrivingDiagnostics {
     pub every: usize,
     generation: usize,
     observed_genome_file: String,
+    lineage_id: u64,
     first_tick: usize,
     pending: Option<serde_json::Value>,
+    slow_captured: std::cell::Cell<bool>,
 }
 
 impl DrivingDiagnostics {
@@ -77,6 +88,7 @@ impl DrivingDiagnostics {
         beings: usize,
         selected: usize,
         every: usize,
+        organism_scenario: bool,
         ablation: Option<&universe::gpu::brain::AblationPlan>,
     ) -> io::Result<Self> {
         if selected >= beings || every == 0 {
@@ -113,7 +125,8 @@ impl DrivingDiagnostics {
             "retina_cols":RETINA_COLS,"retina_encoding":"u32: material low byte, distance_mm upper 24 bits",
             "wave_channels":WAVE_BYTES,"fast_state_values":FAST_FLOATS,"fast_state_units":"dimensionless",
             "sample_phase":"retina/perception pre-physics; fast state post-brain; body post-physics",
-            "motor_trace_source":"native_action_mapper_v1",
+            "motor_trace_source":if organism_scenario {"resident_native_action_v1"} else {"native_action_mapper_v1"},
+            "scenario":if organism_scenario {"organism-taxi-v1"} else {"race-v1"},
             "fast_state_stage":"sensory_cfc_pre_l1",
             "brain_runtime":{"output_gain":brain.out_gain,"output_fatigue_beta":brain.out_beta,
                 "l2_normalisation_by_std":brain.norm_l2_by_std,
@@ -132,6 +145,10 @@ impl DrivingDiagnostics {
             "extra_sample_readback_bytes":SAMPLE_BYTES,
             "trace_gpu_bytes_per_sample":OBSERVATION_BYTES,
             "counterfactual_ablation":counterfactual});
+        metadata["lifetime_layout"] = json!({"version":1,"stride":512,"genes":[0,16],
+            "feedback":[32,4],"plastic_weights":[36,144],"eligibility":[180,144],
+            "previous_latent":[324,48],"previous_motor":[372,3],"runtime_offset":375,
+            "inheritance":"genes only; acquired state reset at birth"});
         metadata["brain_graph"] = json!({"version":1,
         "nodes":[
             {"name":"wave","shape":[192],"dtype":"i8","unit":"sensor_code","scale":1,"zero_point":0,"phase":"pre_brain","source":"perception.buf_output","optional":false},
@@ -173,8 +190,10 @@ impl DrivingDiagnostics {
             every,
             generation: 0,
             observed_genome_file: String::new(),
+            lineage_id: selected as u64 + 1,
             first_tick: 1,
             pending: None,
+            slow_captured: std::cell::Cell::new(false),
         })
     }
 
@@ -187,11 +206,148 @@ impl DrivingDiagnostics {
         })?;
         save_genome(genome, path)?;
         self.generation = generation;
+        self.lineage_id = self.selected as u64 + 1;
         self.observed_genome_file = file;
         self.first_tick = 1;
         self.windows.fill(Window::default());
         self.previous_contact.fill(false);
         self.pending = None;
+        Ok(())
+    }
+
+    fn emit_pending(
+        &mut self,
+        _tick: usize,
+        states: &[BeingState],
+        raw: &[[f32; 96]],
+        slow: &[[f32; 3]],
+        motor_trace: Option<&MotorTrace>,
+        organism: Option<&[universe::gpu::organism::OrganismState]>,
+        resident: bool,
+    ) -> io::Result<()> {
+        if let Some(mut sample) = self.pending.take() {
+            let i = self.selected;
+            let p = &states[i].phys;
+            let contact = p.contact_diagnostics();
+            let tyre_temperature_native =
+                (0..4).map(|wheel| p.wheels[wheel * 2 + 1][0]).sum::<f32>() / 4.0;
+            let slip_ratio_peak = (0..4)
+                .map(|wheel| p.wheels[wheel * 2][1].abs())
+                .fold(0.0_f32, f32::max);
+            let slip_angle_peak = (0..4)
+                .map(|wheel| p.wheels[wheel * 2][2].abs())
+                .fold(0.0_f32, f32::max);
+            sample["body"] = json!({"x":p.pos[0],"z":p.pos[2],"forward":[p.fwd[0],p.fwd[2]],
+                "speed":p.vel[0].hypot(p.vel[2]),"alive":states[i].life_left > 0.0,"life":states[i].life_left,"fuel":states[i].fuel,"fuel_capacity":states[i].fuel_capacity,
+                "raw_motor":motor_trace.map(|t| t.raw_intent).unwrap_or_else(|| raw[i][..3].try_into().unwrap()),"applied_motor":[p.throttle,p.steer,p.brake_cmd],
+                "slow":motor_trace.map(|t| t.slow_output).or_else(|| slow.get(i).copied()),"motor_trace":motor_trace,
+                "contact_mask":contact.contact_mask,"impact_mps":contact.impact_speed_mps,
+                "damage":states[i].dano,"engine_temperature_c":p.engine_temp,
+                "oil_temperature_c":p.oil_temp,"rpm":p.current_rpm,"rpm_limit":p.max_rpm,
+                "rpm_fraction":p.current_rpm / p.max_rpm.max(1.0),"gear":p.current_gear,
+                "drive_torque_nm":p.drive_torque_out,"mass_kg":p.mass,"engine_max_torque_nm":p.max_torque,
+                "brake_max_torque_nm":p.brake_torque_max,
+                "fuel_load_scale":universe::gpu::body::fuel_load_scale(p),
+                "tyre_temperature_native":tyre_temperature_native,"tyre_temperature_model":states[i].tire_temp,
+                "terrain_grip":p.terrain_grip,"environment_grip":p.env_grip,
+                "slip_ratio_peak":slip_ratio_peak,"slip_angle_peak_rad":slip_angle_peak,
+                "joy":states[i].joy_tick,"joy_streak_s":states[i].joy_streak,
+                "stagnation_ticks":states[i].stagnation_ticks,"hole_hits":states[i].hole_hits});
+            if resident {
+                sample["body"]["joy"] = serde_json::Value::Null;
+                sample["body"]["joy_streak_s"] = serde_json::Value::Null;
+                sample["body"]["stagnation_ticks"] = serde_json::Value::Null;
+                sample["body"]["hole_hits"] = serde_json::Value::Null;
+                sample["body"]["fuel_load_scale"] = serde_json::Value::Null;
+                sample["body"]["tyre_temperature_model"] = serde_json::Value::Null;
+            }
+            if let Some(body) = organism.and_then(|rows| rows.get(i)) {
+                let v = &body.values;
+                sample["organism"] = json!({"schema_version":1,
+                    "age_seconds":v[3],"maturity":v[4],"energy_j":v[0],"water_kg":v[1],"material_kg":v[2],
+                    "engine_temp_c":v[9]-273.15,"oil_temp_c":p.oil_temp,"fatigue":v[5],"engine_wear":v[6],
+                    "tire_wear":v[7],"integrity":v[8],"repair_engine":v[42],"repair_tire":v[43],
+                    "repair_energy_j":v[44],"repair_material_kg":v[45],"alive":v[29],
+                    "money":v[64],"passenger":v[65],"deliveries":v[68]});
+                sample["taxi"] = json!({"schema_version":1,"money":v[64],"onboard":v[65],
+                    "passenger_id":v[72],"deliveries":v[68],"destination_x_m":v[66],"destination_z_m":v[67],
+                    "target_dx_m":v[80],"target_dz_m":v[81],"service_dx_m":v[85],"service_dz_m":v[86],
+                    "refusal_code":v[69],"energy_received_j":v[76],"water_received_kg":v[77],
+                    "material_received_kg":v[78],"service_cost":v[79],"task_age_s":v[74]});
+            }
+            if sample["neural_dispatch"].as_bool() == Some(true) {
+                sample["stages"]["final_intent"] = json!(&raw[i][..]);
+            }
+            serde_json::to_writer(&mut self.samples, &sample)?;
+            writeln!(self.samples)?;
+        }
+        Ok(())
+    }
+
+    pub fn on_birth(
+        &mut self,
+        being: usize,
+        lineage: u64,
+        genome: &Genome,
+        position: [f32; 3],
+    ) -> io::Result<()> {
+        self.previous_contact[being] = false;
+        self.previous_position[being] = position;
+        if being == self.selected {
+            self.lineage_id = lineage;
+            self.observed_genome_file = format!(
+                "observed_genome_gen{:04}_lineage{lineage}.bin",
+                self.generation
+            );
+            let path = self.out.join(&self.observed_genome_file);
+            save_genome(
+                genome,
+                path.to_str()
+                    .ok_or_else(|| io::Error::other("non-UTF8 genome path"))?,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Resume observation identity without emitting a birth or reusing a pre-resume window.
+    /// Acquired diagnostic aggregation is a new segment starting after `tick`.
+    pub fn resume_identity(
+        &mut self,
+        tick: usize,
+        lineage_ids: &[u64],
+        genomes: &[Genome],
+        positions: &[[f32; 3]],
+    ) -> io::Result<()> {
+        let n = self.previous_position.len();
+        if lineage_ids.len() != n
+            || genomes.len() != n
+            || positions.len() != n
+            || self.selected >= n
+            || lineage_ids.iter().any(|id| *id == 0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "diagnostic resume identity shape",
+            ));
+        }
+        let lineage = lineage_ids[self.selected];
+        let file = format!(
+            "observed_genome_gen{:04}_lineage{lineage}_resume{tick:012}.bin",
+            self.generation
+        );
+        let path = self.out.join(&file);
+        save_genome(
+            &genomes[self.selected],
+            path.to_str()
+                .ok_or_else(|| io::Error::other("non-UTF8 genome path"))?,
+        )?;
+        self.observed_genome_file = file;
+        self.lineage_id = lineage;
+        self.previous_position.copy_from_slice(positions);
+        self.previous_contact.fill(false);
+        self.windows.fill(Window::default());
+        self.pending = None;
+        self.first_tick = tick.saturating_add(1);
         Ok(())
     }
 
@@ -205,6 +361,18 @@ impl DrivingDiagnostics {
         retina: &wgpu::Buffer,
         wave: &wgpu::Buffer,
         brain: Option<&BrainGpu>,
+        fresh_brain_trace: bool,
+    ) {
+        self.record_sample_with_slow(encoder, retina, wave, brain, None, fresh_brain_trace);
+    }
+
+    pub fn record_sample_with_slow(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        retina: &wgpu::Buffer,
+        wave: &wgpu::Buffer,
+        brain: Option<&BrainGpu>,
+        slow: Option<&SlowBrainGpu>,
         fresh_brain_trace: bool,
     ) {
         encoder.copy_buffer_to_buffer(
@@ -223,6 +391,9 @@ impl DrivingDiagnostics {
         );
         if let Some(brain) = brain {
             brain
+                .copy_lifetime_state_into(encoder, &self.staging, self.selected, LIFE_OFFSET as u64)
+                .expect("selected lifetime sample must fit staging");
+            brain
                 .copy_fast_state_into(encoder, &self.staging, self.selected, FAST_OFFSET as u64)
                 .expect("selected fast-state sample must fit its staging buffer");
             if fresh_brain_trace {
@@ -231,6 +402,22 @@ impl DrivingDiagnostics {
                     .expect("selected brain trace must fit its staging buffer");
             }
         }
+        self.slow_captured.set(slow.is_some());
+        if let Some(slow) = slow {
+            slow.copy_diagnostic_into(
+                encoder,
+                self.selected,
+                &self.staging,
+                SLOW_INPUT_OFFSET as u64,
+                SLOW_STATE_OFFSET as u64,
+                SLOW_OUTPUT_OFFSET as u64,
+            )
+            .expect("selected slow-brain sample must fit staging");
+        }
+    }
+
+    pub fn attach_traffic(&mut self, values: &[f32; 16]) {
+        if let Some(sample) = self.pending.as_mut() { sample["traffic_state"] = json!(values); }
     }
 
     pub fn request_sample_read(&self) -> universe::gpu::readback::ReadbackTicket {
@@ -259,7 +446,7 @@ impl DrivingDiagnostics {
             assert!(values.iter().all(|v| v.is_finite()), "nonfinite fast state");
         }
         let stages = (native && fresh_brain_trace).then(|| {
-            let trace = decode_observation(&bytes[TRACE_OFFSET..SAMPLE_BYTES])
+            let trace = decode_observation(&bytes[TRACE_OFFSET..LIFE_OFFSET])
                 .expect("GPU brain trace must match its declared layout");
             json!({"cfc_state":fast,"l1_matmul":trace.l1_matmul,
                 "l1_effective":trace.l1_effective,"l1_to_l2":trace.l1_to_l2,
@@ -267,11 +454,47 @@ impl DrivingDiagnostics {
                 "l2_adapted":trace.l2_adapted,"bypass_adapted":trace.bypass_adapted,
                 "l2_std":trace.l2_std})
         });
+        let lifetime: Option<Vec<f32>> = (native && fresh_brain_trace).then(|| {
+            let values: Vec<f32> =
+                bytemuck::cast_slice(&bytes[LIFE_OFFSET..BASE_SAMPLE_BYTES]).to_vec();
+            assert!(
+                values.iter().all(|v| v.is_finite()),
+                "nonfinite resident lifetime state"
+            );
+            values
+        });
+        let slow_brain = (native && self.slow_captured.get()).then(|| {
+            let slow_input: Vec<f32> = bytes[SLOW_INPUT_OFFSET..SLOW_STATE_OFFSET]
+                .chunks_exact(4)
+                .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()) as f32)
+                .collect();
+            let slow_state: Vec<f32> =
+                bytemuck::cast_slice(&bytes[SLOW_STATE_OFFSET..SLOW_OUTPUT_OFFSET]).to_vec();
+            let slow_output: Vec<f32> =
+                bytemuck::cast_slice(&bytes[SLOW_OUTPUT_OFFSET..SAMPLE_BYTES]).to_vec();
+            assert!(slow_state.iter().all(|value| value.is_finite()));
+            assert!(slow_output.iter().all(|value| value.is_finite()));
+            json!({
+            "input": slow_input,
+            "state": {
+                "cfc": &slow_state[..64],
+                "fatigue": &slow_state[64..128],
+                "counter_bits": slow_state[128].to_bits(),
+                "tick_counter_bits": slow_state[129].to_bits(),
+            },
+            "output": slow_output,
+            "intermediate_mlp": null,
+            "layout": {"input": [48], "cfc": [64], "fatigue": [64], "output": [3]},
+            "phases": ["gather", "run_cfc", "run_dense"],
+            })
+        });
         self.pending = Some(
             json!({"generation":self.generation,"tick":tick,"being":self.selected,
-            "genome_file":self.observed_genome_file,
+            "genome_file":self.observed_genome_file,"lineage_id":self.lineage_id,
             "retina":retina,"wave":wave,"fast_state":fast,
             "neural_dispatch":fresh_brain_trace,"stages":stages,
+            "lifetime_state":lifetime,
+            "slow_brain":slow_brain,
             "sensor_pose":{"position":&pose.pos_gaze[..3],"forward":&pose.dirs[..2],"right":&pose.dirs[2..],"gaze_yaw":pose.pos_gaze[3]}}),
         );
         drop(bytes);
@@ -286,6 +509,7 @@ impl DrivingDiagnostics {
         raw: &[[f32; 96]],
         slow: &[[f32; 3]],
         motor_trace: Option<&MotorTrace>,
+        organism: Option<&[universe::gpu::organism::OrganismState]>,
     ) -> io::Result<()> {
         if tick == 0 {
             for (previous, state) in self.previous_position.iter_mut().zip(states) {
@@ -332,39 +556,67 @@ impl DrivingDiagnostics {
             }
             self.previous_position[i] = p.pos;
         }
-        if let Some(mut sample) = self.pending.take() {
-            let i = self.selected;
-            let p = &states[i].phys;
-            let contact = p.contact_diagnostics();
-            let tyre_temperature_native =
-                (0..4).map(|wheel| p.wheels[wheel * 2 + 1][0]).sum::<f32>() / 4.0;
-            let slip_ratio_peak = (0..4)
-                .map(|wheel| p.wheels[wheel * 2 + 1][1].abs())
-                .fold(0.0_f32, f32::max);
-            let slip_angle_peak = (0..4)
-                .map(|wheel| p.wheels[wheel * 2 + 1][2].abs())
-                .fold(0.0_f32, f32::max);
-            sample["body"] = json!({"x":p.pos[0],"z":p.pos[2],"forward":[p.fwd[0],p.fwd[2]],
-                "speed":p.vel[0].hypot(p.vel[2]),"alive":alive[i],"life":states[i].life_left,"fuel":states[i].fuel,
-                "raw_motor":&raw[i][..3],"applied_motor":[p.throttle,p.steer,p.brake_cmd],
-                "slow":slow.get(i),"motor_trace":motor_trace,
-                "contact_mask":contact.contact_mask,"impact_mps":contact.impact_speed_mps,
-                "damage":states[i].dano,"engine_temperature_c":p.engine_temp,
-                "oil_temperature_c":p.oil_temp,"rpm":p.current_rpm,"rpm_limit":p.max_rpm,
-                "rpm_fraction":p.current_rpm / p.max_rpm.max(1.0),"gear":p.current_gear,
-                "drive_torque_nm":p.drive_torque_out,
-                "tyre_temperature_native":tyre_temperature_native,
-                "tyre_temperature_model":states[i].tire_temp,
-                "terrain_grip":p.terrain_grip,"environment_grip":p.env_grip,
-                "slip_ratio_peak":slip_ratio_peak,"slip_angle_peak_rad":slip_angle_peak,
-                "joy":states[i].joy_tick,"joy_streak_s":states[i].joy_streak,
-                "stagnation_ticks":states[i].stagnation_ticks,"hole_hits":states[i].hole_hits});
-            if sample["neural_dispatch"].as_bool() == Some(true) {
-                sample["stages"]["final_intent"] = json!(&raw[i][..]);
-            }
-            serde_json::to_writer(&mut self.samples, &sample)?;
-            writeln!(self.samples)?;
+        self.emit_pending(tick, states, raw, slow, motor_trace, organism, false)?;
+        if tick % 64 == 0 {
+            self.flush_window(tick, states)?;
         }
+        Ok(())
+    }
+
+    /// Consume the resident telemetry window produced by the GPU adapter.
+    ///
+    /// The adapter owns the per-tick accumulation, including contact edges and
+    /// distances. This method therefore copies slots 104..122 directly into
+    /// the report window and never re-counts host samples. Call it once at the
+    /// same 64-tick boundary used by `flush_window`.
+    pub fn after_physics_resident(
+        &mut self,
+        tick: usize,
+        states: &[BeingState],
+        alive: &[bool],
+        raw: &[[f32; 96]],
+        slow: &[[f32; 3]],
+        motor_trace: Option<&MotorTrace>,
+        organism: &[universe::gpu::organism::OrganismState],
+    ) -> io::Result<()> {
+        if states.len() != self.windows.len()
+            || alive.len() != states.len()
+            || organism.len() != states.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "resident telemetry shape",
+            ));
+        }
+        for (window, body) in self.windows.iter_mut().zip(organism) {
+            let v = &body.values;
+            if v.len() < 123 || v[104..123].iter().any(|value| !value.is_finite()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "resident telemetry values",
+                ));
+            }
+            window.ticks = v[104].max(0.0) as u64;
+            window.alive = v[105].max(0.0) as u64;
+            window.contact = v[106].max(0.0) as u64;
+            window.impacts = v[107].max(0.0) as u64;
+            window.events = v[108].max(0.0) as u64;
+            window.brake = v[109].max(0.0) as u64;
+            window.overlap = v[110].max(0.0) as u64;
+            window.stationary = v[111].max(0.0) as u64;
+            window.reverse = v[112].max(0.0) as u64;
+            window.near_wall = v[113].max(0.0) as u64;
+            window.speed_sum = v[114] as f64;
+            window.distance = v[115] as f64;
+            window.energy = v[116] as f64;
+            window.impulse = v[117] as f64;
+            window.impact_peak = v[118];
+            window.slip_peak = v[119];
+            window.slip_angle_peak = v[120];
+            window.throttle_sum = v[121] as f64;
+            window.brake_sum = v[122] as f64;
+        }
+        self.emit_pending(tick, states, raw, slow, motor_trace, Some(organism), true)?;
         if tick % 64 == 0 {
             self.flush_window(tick, states)?;
         }
@@ -381,7 +633,7 @@ impl DrivingDiagnostics {
                 self.csv,
                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 self.generation,
-                self.first_tick,
+                tick.saturating_add(1).saturating_sub(w.ticks as usize),
                 tick,
                 i,
                 w.ticks,

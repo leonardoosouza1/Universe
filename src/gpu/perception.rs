@@ -549,7 +549,9 @@ impl PerceptionGpu {
         let buf_poses = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("percep-poses"),
             size: bytes_poses,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
@@ -623,7 +625,9 @@ impl PerceptionGpu {
         let buf_retina_prev = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("percep-retina-prev"),
             size: retina_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -668,6 +672,31 @@ impl PerceptionGpu {
         });
         let retina_bytes = (n * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
         encoder.clear_buffer(&self.buf_retina_prev, 0, Some(retina_bytes));
+        queue.submit(Some(encoder.finish()));
+    }
+
+    /// Clears only one being's temporal perception state and previous retina.
+    ///
+    /// Ecology reuses dead slots during an episode. Resetting the prefix with
+    /// [`reset_temporal`] would erase the visual history of living beings, so births use
+    /// this slot-scoped variant instead.
+    pub fn reset_temporal_slot(&self, device: &wgpu::Device, queue: &wgpu::Queue, being: usize) {
+        if being >= self.capacity {
+            return;
+        }
+        let neutral = initial_temporal_state(1);
+        let temporal_offset = (being * TEMPORAL_STRIDE * std::mem::size_of::<f32>()) as u64;
+        queue.write_buffer(
+            &self.buf_temporal,
+            temporal_offset,
+            bytemuck::cast_slice(&neutral),
+        );
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("perception-slot-reset"),
+        });
+        let retina_offset = (being * RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
+        let retina_bytes = (RETINA_TOTAL * std::mem::size_of::<u32>()) as u64;
+        encoder.clear_buffer(&self.buf_retina_prev, retina_offset, Some(retina_bytes));
         queue.submit(Some(encoder.finish()));
     }
 
@@ -1269,6 +1298,46 @@ impl PerceptionGpu {
         // Atualiza poses via write_buffer (CPU→GPU, não bloqueia até submit).
         queue.write_buffer(&self.buf_poses, 0, bytemuck::cast_slice(&poses[..n]));
 
+        self.encode_prepared(
+            enc,
+            device,
+            n,
+            buf_retina_fisica,
+            BODY_CHANNELS_ON.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    pub fn poses_buffer(&self) -> &wgpu::Buffer {
+        &self.buf_poses
+    }
+    pub fn temporal_buffer(&self) -> &wgpu::Buffer {
+        &self.buf_temporal
+    }
+
+    /// Reuse spatial/temporal/motion kernels with poses/extras already resident.
+    /// Scenario mode disables the legacy BODY block; taxi owns its explicit remap.
+    pub fn encode_resident(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        n: usize,
+        buf_retina_fisica: &wgpu::Buffer,
+    ) -> u64 {
+        self.encode_prepared(enc, device, n, buf_retina_fisica, false)
+    }
+
+    fn encode_prepared(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        n: usize,
+        buf_retina_fisica: &wgpu::Buffer,
+        legacy_body_on: bool,
+    ) -> u64 {
+        assert!(n <= self.capacity, "resident perception capacity");
+        if n == 0 {
+            return 0;
+        }
         // Uniform criado por tick — 16 bytes, custo negligível.
         let params = ParamsGpu {
             grid_size: self.grid_size,
@@ -1281,11 +1350,7 @@ impl PerceptionGpu {
             },
             // BODY BLOCK: read ONCE here, so the temporal and motion kernels of this
             // tick see the same value (see `BODY_CHANNELS_ON`).
-            body_on: if BODY_CHANNELS_ON.load(std::sync::atomic::Ordering::Relaxed) {
-                1.0
-            } else {
-                0.0
-            },
+            body_on: if legacy_body_on { 1.0 } else { 0.0 },
             _pad0: 0.0,
             _pad1: 0.0,
             _pad2: 0.0,
@@ -1667,6 +1732,16 @@ fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
 /// Estimativa conservadora: 40-60% dos canais portados → redução de 30-40% no tempo
 /// de percepção (1.9% → ~1.1-1.3% do total). Medir, não estimar.
 
+impl PerceptionGpu {
+    /// Temporal resident state and previous-retina history for runtime checkpoints.
+    pub fn snapshot_buffers(&self) -> Vec<crate::gpu::state_snapshot::NamedBuffer<'_>> {
+        vec![
+            ("perception.temporal", &self.buf_temporal),
+            ("perception.retina_prev", &self.buf_retina_prev),
+        ]
+    }
+}
+
 // ─── Struct de exposição pública para integração ────────────────────────────────
 
 /// Recurso Bevy análogo a `RetinaGpuRes` — mantém o contexto de percepção GPU entre ticks.
@@ -1843,3 +1918,7 @@ mod tests {
         assert_eq!(std::mem::align_of::<PosePerception>(), 4);
     }
 }
+
+#[cfg(test)]
+#[path="perception_fuel_test.rs"]
+mod perception_fuel_test;

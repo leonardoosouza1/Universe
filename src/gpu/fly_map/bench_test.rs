@@ -27,9 +27,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use super::FlyMapGpu;
 use super::parity_test::open_device;
-use crate::fly_map::{FlyMap, pack_selection, random_block};
+use super::FlyMapGpu;
+use crate::fly_map::{pack_selection, random_block, FlyMap};
 use crate::gpu::perception::WAVE_U32S;
 
 /// The full 783 export: n = 138 639 neurons, m = 15.1 M edges.

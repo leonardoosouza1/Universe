@@ -79,8 +79,14 @@ fn parse_range(s: &str) -> Result<(u64, u64), String> {
     let (a, b) = s
         .split_once("..")
         .ok_or_else(|| "expected A..B".to_string())?;
-    let lo: u64 = a.trim().parse().map_err(|e| format!("bad lower bound: {e}"))?;
-    let hi: u64 = b.trim().parse().map_err(|e| format!("bad upper bound: {e}"))?;
+    let lo: u64 = a
+        .trim()
+        .parse()
+        .map_err(|e| format!("bad lower bound: {e}"))?;
+    let hi: u64 = b
+        .trim()
+        .parse()
+        .map_err(|e| format!("bad upper bound: {e}"))?;
     if hi < lo {
         return Err(format!("upper bound {hi} < lower bound {lo}"));
     }
@@ -127,8 +133,7 @@ fn census_one(seed: u64, shared: &str) -> String {
     let cell_size = 3.0;
     let holes_placed = match spec.as_ref().and_then(|s| s.holes) {
         Some(density) => {
-            universe::world::track_holes_with_density(&wps_cells, width / cell_size, density)
-                .len()
+            universe::world::track_holes_with_density(&wps_cells, width / cell_size, density).len()
         }
         None => universe::world::track_holes_for_seed(seed, &wps_cells, width / cell_size).len(),
     };

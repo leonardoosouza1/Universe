@@ -37,6 +37,10 @@ impl RepoMiner {
 
     /// Myelination force: Returns a boost factor if knowledge is fresh
     pub fn get_learning_boost(&self) -> f32 {
-        if self.hunger_level < 0.1 { 1.5 } else { 1.0 }
+        if self.hunger_level < 0.1 {
+            1.5
+        } else {
+            1.0
+        }
     }
 }

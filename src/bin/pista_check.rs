@@ -100,10 +100,13 @@ fn main() {
     if let Some(s) = &spec {
         println!(
             "  world spec: radius={} curves={} holes={} length={}\n",
-            s.radius.map_or("default".to_string(), |v| format!("{v:.1}m")),
+            s.radius
+                .map_or("default".to_string(), |v| format!("{v:.1}m")),
             s.curves.map_or("default".to_string(), |v| v.to_string()),
-            s.holes.map_or("default (1-2)".to_string(), |v| format!("{v:.2}")),
-            s.length.map_or("default".to_string(), |v| format!("{v:.0}m")),
+            s.holes
+                .map_or("default (1-2)".to_string(), |v| format!("{v:.2}")),
+            s.length
+                .map_or("default".to_string(), |v| format!("{v:.0}m")),
         );
     } else {
         println!();

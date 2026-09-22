@@ -222,7 +222,7 @@ impl GpuLoop {
         // Asking for 12 gives the same headroom as gpu_evolve.rs for the next buffers
         // without coming back here for every new binding; if the adapter does not
         // support it, `request_device` fails at open instead of corrupting data.
-        limits.max_storage_buffers_per_shader_stage = 12;
+        limits.max_storage_buffers_per_shader_stage = 16;
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("iara-loop"),

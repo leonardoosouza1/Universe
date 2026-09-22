@@ -99,7 +99,7 @@ pub const SPEED_NORM_MPS: f32 = 40.0;
 /// survives a generation boundary would make the champion's re-evaluation
 /// non-deterministic, which is the same reason `main.rs` rebuilds the hostile world every
 /// generation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SectorMemory {
     /// `mem[s]` = what happened in sector `s` the last time the being went through it.
     mem: [[f32; MEM_PER_SECTOR]; N_SECTORS],
@@ -150,6 +150,11 @@ impl SectorMemory {
             acc_ticks: 0,
             prev_ticks: [0; N_SECTORS],
         }
+    }
+
+    /// Restores this slot to newborn state without touching any other being's memory.
+    pub fn reset(&mut self) {
+        *self = Self::new();
     }
 
     /// Raw slot access, for tests and for the `hip_gen<N>.f32` observation rows.

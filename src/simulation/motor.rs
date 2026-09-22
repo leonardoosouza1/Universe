@@ -115,9 +115,9 @@ fn axiom_policy(
     // Tested 0.20 → regressed (305m swing, 15.4 bleeds). 0.10 is sweet spot.
     let curv_mag = ((inputs[79] as f32).abs() + (inputs[80] as f32).abs()) / 254.0;
     bias[0] -= curv_mag * 0.10; // Stable at 0.10; aggressive cut causes volatility
-    // A10: lane offset (81) — positive value = more space to the right ⇒ I'm on the LEFT ⇒
-    // I need to turn RIGHT = positive steer. Coef boosted 0.08→0.22 (v2) to become
-    // the primary centering signal on narrow tracks.
+                                // A10: lane offset (81) — positive value = more space to the right ⇒ I'm on the LEFT ⇒
+                                // I need to turn RIGHT = positive steer. Coef boosted 0.08→0.22 (v2) to become
+                                // the primary centering signal on narrow tracks.
     bias[1] += (inputs[81] as f32 / 127.0) * 0.22;
     // A11: collision urgency (82) → brake + cut engine
     bias[2] += (inputs[82] as f32 / 127.0) * 0.20;
@@ -954,7 +954,7 @@ pub(super) fn update_racers(
         };
         let current_voxel = world.get_voxel_at(pos.x, pos.z);
         sensory_wave[56] = material_encode(current_voxel); // current position
-        // lookaheads: sample ahead along the forward vector
+                                                           // lookaheads: sample ahead along the forward vector
         let probe_3m = pos + forward * 3.0;
         let probe_8m = pos + forward * 8.0;
         let probe_20m = pos + forward * 20.0;
@@ -2239,16 +2239,16 @@ pub(super) fn update_racers(
         }
         slow_input[0] = sensory_wave[126]; // joy_tick
         slow_input[1] = sensory_wave[127]; // joy_streak
-        // FIXED: normalizes by HP_INICIAL instead of a fixed 100.0.
-        // With HP_INICIAL=1000 and a fixed 100.0 divisor, the channel would sit at 127 forever.
+                                           // FIXED: normalizes by HP_INICIAL instead of a fixed 100.0.
+                                           // With HP_INICIAL=1000 and a fixed 100.0 divisor, the channel would sit at 127 forever.
         slow_input[2] =
             ((racer.hp / crate::simulation::racer::HP_INICIAL) * 127.0).clamp(0.0, 127.0) as i8; // hp
-        // FUEL GAUGE = FRACTION OF THE TANK, not absolute units.
-        // It used to be `fuel * 127` with a clamp: with the birth tank at 1000 the channel
-        // stayed pinned at 127 forever — the brain had a sensor that was a constant.
-        // Even with the tank at 3.0 it would only leave saturation after 2/3 was spent.
-        // Normalized by the initial tank, it informs across the whole range, which is what
-        // a fuel needle does.
+                                                                                                 // FUEL GAUGE = FRACTION OF THE TANK, not absolute units.
+                                                                                                 // It used to be `fuel * 127` with a clamp: with the birth tank at 1000 the channel
+                                                                                                 // stayed pinned at 127 forever — the brain had a sensor that was a constant.
+                                                                                                 // Even with the tank at 3.0 it would only leave saturation after 2/3 was spent.
+                                                                                                 // Normalized by the initial tank, it informs across the whole range, which is what
+                                                                                                 // a fuel needle does.
         slow_input[3] =
             ((racer.fuel / crate::simulation::racer::FUEL_INICIAL) * 127.0).clamp(0.0, 127.0) as i8;
         slow_input[4] = ((speed / 80.0) * 127.0).clamp(0.0, 127.0) as i8; // speed / 80m/s
@@ -2381,10 +2381,10 @@ pub(super) fn update_racers(
         };
         let aggression: f32 = slow[0] * 0.5; // Bias [-0.5, 0.5]
         let throttle_cap: f32 = 1.0 - slow[1].max(0.0) * 0.8; // Range [0.2, 1.0], Neutral at 0.0
-        // v3: slow[2] repurposed: risk_damp→steer_bias.
-        // OLD risk_damp was DAMPENING steer in curves (counterproductive for tight turns).
-        // NEW steer_bias: System-2 anticipatory steering from curvature lookahead (30/60/90m).
-        // Signed: positive = steer right, negative = steer left. Range [-0.20, 0.20].
+                                                              // v3: slow[2] repurposed: risk_damp→steer_bias.
+                                                              // OLD risk_damp was DAMPENING steer in curves (counterproductive for tight turns).
+                                                              // NEW steer_bias: System-2 anticipatory steering from curvature lookahead (30/60/90m).
+                                                              // Signed: positive = steer right, negative = steer left. Range [-0.20, 0.20].
         let steer_bias: f32 = slow[2] * 0.20;
         let risk_damp: f32 = 0.0; // Disabled: was weakening steer exactly when curves need it most
         let cortisol = racer.engine.metabolism.risk_aversion();
@@ -2904,7 +2904,7 @@ pub(super) fn update_racers(
         if racer.trace_timer <= 0.0 && racer.brain_trace.len() < 1800 {
             // ~30s @ 60Hz
             racer.trace_timer = 0.066; // 15Hz tracing for frame-by-frame vision debug
-            // Top-5 most active channels (|value|)
+                                       // Top-5 most active channels (|value|)
             let sw = &sensory_wave;
             let mut pairs: Vec<(u8, i8)> = (0..128u8).map(|i| (i, sw[i as usize])).collect();
             pairs.sort_by(|a, b| (b.1 as i16).abs().cmp(&(a.1 as i16).abs()));
@@ -3047,9 +3047,9 @@ pub(super) fn update_racers(
                 if racer.wall_cooldown == 0.0 {
                     racer.hp -= 100.0;
                     racer.wall_cooldown = 1.0; // 1 second of cooldown between hole damage events
-                    // Pre-set the death label as Hole so that if hp hits zero here,
-                    // the central logic (L~2373) finds death_reason already filled and does
-                    // not overwrite it with HpZero — preserving the real cause in the autopsy.
+                                               // Pre-set the death label as Hole so that if hp hits zero here,
+                                               // the central logic (L~2373) finds death_reason already filled and does
+                                               // not overwrite it with HpZero — preserving the real cause in the autopsy.
                     if racer.hp <= 0.0 && racer.death_reason.is_none() {
                         racer.death_reason = Some(crate::simulation::racer::DeathReason::Hole);
                     }
@@ -3182,7 +3182,7 @@ pub(super) fn update_racers(
             if *retina_tick_counter % 4 == 0 {
                 let my_rank = rank_by_entity.get(&entity).copied().unwrap_or(999);
                 if my_rank < 5 {
-                    use crate::evolution::telemetry::{ReplayFrame, name_to_id};
+                    use crate::evolution::telemetry::{name_to_id, ReplayFrame};
                     let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
                     let frame = ReplayFrame {
                         frame_tick: racer.grace_ticks,
@@ -3463,8 +3463,8 @@ pub(super) fn update_racers(
 
         if hit_wall && !racer.is_dead {
             racer.wall_time += dt; // capped dt; wall_time in REAL seconds (slow, stable).
-            // PINADO: 1.6s REAL scraping the wall = death (was 0.8s). More tolerance.
-            // LIFE MODE: scraping the wall does not kill, it hurts. Crashing becomes a cost, not the end.
+                                   // PINADO: 1.6s REAL scraping the wall = death (was 0.8s). More tolerance.
+                                   // LIFE MODE: scraping the wall does not kill, it hurts. Crashing becomes a cost, not the end.
             let pinned =
                 out_of_grace && !in_post_lap_hp_grace && racer.wall_time > 1.6 && !lab.modo_vida;
             // LIFE MODE: scraping costs 0.3 HP/s (was 2.0 HP/s → killed in ~150 s continuous with HP=300).

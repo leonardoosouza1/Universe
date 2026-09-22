@@ -43,7 +43,11 @@ pub fn relu(x: f32) -> f32 {
 /// alpha = 0.01 is the default to keep a minimal gradient in negative regions.
 #[inline]
 pub fn leaky_relu(x: f32, alpha: f32) -> f32 {
-    if x >= 0.0 { x } else { alpha * x }
+    if x >= 0.0 {
+        x
+    } else {
+        alpha * x
+    }
 }
 
 /// Symmetric clamp in [-limit, +limit].

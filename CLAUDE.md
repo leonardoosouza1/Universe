@@ -1,5 +1,25 @@
 # Universe — working notes for agents
 
+## Current execution limit — owner's instruction
+
+Leonardo reported a desktop freeze and requires **GPU-only numerical validation**
+for the current coevolution work. Do not execute CPU test suites, standalone CPU
+oracles, or mixed CPU/GPU validators despite the historical commands below. Use
+small real-GPU batches and reject software GPU adapters. Host file inspection and
+necessary compilation are allowed; build only the required target, at low priority
+with one job and no concurrent builds/tests. Do not restart heavy batteries.
+
+## Experimental coevolution handoff (2026-09-20)
+
+Read [runtime contract](docs/COEVOLUTION-RUNTIME.md) and
+[measured results](docs/COEVOLUTION-VALIDATION.md) before enabling the new flags.
+The combined mechanism has not earned promotion to default. Unknown flags now fail;
+use `--seed`, not `--pop-seed`. Active thermal physics is `physics_a.wgsl`.
+A 3D inherited graph is not a trace of acquired plastic weights. Multi-lineage
+HTML export is supported. Lab-ui now packages separate per-life trace-v1 directories;
+see [INTEGRATION-20260921.md](docs/INTEGRATION-20260921.md) for canonical exporters
+and the real-run panel path.
+
 ## Scientific engineering handbook
 
 For code, metrics, and experiments, read the canonical sibling handbook:
@@ -9,8 +29,8 @@ silently skipping it.
 
 Neuroevolution simulator in Rust + WGSL. Beings with a brain
 (perception → KAN → CfC → BitLinear L1 → FloatLinear L2 → motor) drive procedural
-tracks; a genetic algorithm selects them. The whole tick runs on the GPU through
-`wgpu`, headless — Bevy is an optional window over it, never a dependency of the core.
+tracks; a genetic algorithm selects them. Perception, native neural computation and physics run on the GPU through
+`wgpu`, headless; command mapping, resource bookkeeping and evolution retain host work — Bevy is an optional window over it, never a dependency of the core.
 
 **Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before changing anything.** It has the tick
 diagram, the module map, the genome format and the invariants that break silently.

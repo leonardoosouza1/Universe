@@ -268,6 +268,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let accel     = m2.forces / c.mass;
     var final_vel = vel_col + accel * dt_safe;
 
+    // Optional bounded static-friction rest constraint for the resident taxi.
+    // It is deliberately gated and only acts when all four wheels are on the
+    // ground, locked, unpowered, and already moving slowly. The required
+    // stopping impulse must fit under both brake torque/radius and Coulomb
+    // friction (mu * normal load) for this single dt; otherwise the ordinary
+    // dynamics remain authoritative. Thus it cannot freeze airborne, moving,
+    // free-rolling, low-friction, or inadequately-braked bodies.
+    let rest_speed = length(vec2<f32>(final_vel.x, final_vel.z));
+    // The resident car's wheel suspension can be exactly at its neutral
+    // compression while the chassis is still on the declared ground plane;
+    // accept that explicit chassis-ground contact as well. Airborne bodies are
+    // separated by the ground-plane tolerance and remain untouched.
+    let rest_ground = any(m.susp_comps > vec4<f32>(0.0)) || abs(c.pos.y - gnd_c) <= 0.05;
+    let rest_locked = all(abs(m2.omegas) <= vec4<f32>(0.5));
+    let rest_normal = m.normal_loads.x + m.normal_loads.y + m.normal_loads.z + m.normal_loads.w;
+    let rest_mu = max(0.0, c.mu_peak * c.terrain_grip * c.env_grip);
+    let rest_brake_force = c.brake_cmd * c.brake_torque_max / max(c.wheel_radius, 0.01);
+    let rest_capacity = min(rest_brake_force, rest_mu * rest_normal) * dt_safe;
+    let rest_required = c.mass * rest_speed;
+    let rest_lock = flag(c.config_flags, 9u)
+        && c.throttle <= 0.01 && c.brake_cmd > 0.01
+        && rest_speed <= 1.0 && rest_ground && rest_locked
+        && rest_required <= rest_capacity + 0.001;
+    if (rest_lock) {
+        final_vel.x = 0.0;
+        final_vel.z = 0.0;
+    }
+
     // Lateral scrub friction (CPU lines 727-735)
     let fwd_spd = dot(final_vel, fwd);
     let lat_v   = final_vel - fwd*fwd_spd;
@@ -282,7 +310,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Yaw damping (speed-scalable — CPU v10)
     let drag_y    = -av_y_col * (400.0 + speed_int*60.0);
     let yi        = select(c.mass*2.0, m.yaw_inertia, m.yaw_inertia>0.0);
-    let final_av_y= av_y_col + (m2.torques_y + drag_y)/yi * dt_safe;
+    let final_av_y=select(av_y_col + (m2.torques_y + drag_y)/yi * dt_safe,0.0,
+        rest_lock && length(vec2<f32>(final_vel.x,final_vel.z)) < 0.01);
 
     // === Writes the final output ===
     var out: CarOutput;

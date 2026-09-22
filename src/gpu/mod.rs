@@ -40,7 +40,10 @@
 // ── GPU simulation core, written in parallel by agents ────────────────────────
 // Each module brings a WGSL kernel + its wgpu host. The rule is the same in all of them:
 // equivalence with the CPU demonstrated before any claim of speed-up.
+pub mod body;
 pub mod brain;
+pub mod lifetime;
+pub mod organs;
 // C3 of docs/PRD-CEREBRO-NEUROMOD.md — the three method rulers the Universe did not
 // have: how many genes of a block are on (`dof`), how much a block moves the command
 // (`contribution`), and whether a block can move it at all (`sensitivity`). All three
@@ -66,6 +69,7 @@ pub mod retina_types;
 pub mod screen_brain;
 pub mod sensitivity;
 pub mod slow_brain;
+pub mod state_snapshot;
 pub mod timing;
 pub mod wave_record;
 
@@ -73,8 +77,8 @@ pub mod retina;
 pub mod retina_encoding;
 pub mod retina_resource;
 pub use retina::RetinaGpu;
-pub use retina_encoding::{BEING_MATERIAL, Pixel, Pose, legacy_encoding};
-pub use retina_resource::{RetinaGpuRes, world_signature};
+pub use retina_encoding::{legacy_encoding, Pixel, Pose, BEING_MATERIAL};
+pub use retina_resource::{world_signature, RetinaGpuRes};
 
 /// Column count in one binocular retinal row.
 pub const COLS: usize = crate::config::iara::vision::RETINA_COLS;
@@ -90,3 +94,24 @@ pub const RETINA_SHADER: &str = concat!(
     "\n",
     include_str!("retina.wgsl")
 );
+
+pub mod organism;
+pub mod organism_action;
+pub mod organism_telemetry;
+pub mod taxi;
+pub mod taxi_witness;
+
+pub mod organism_feedback;
+
+#[cfg(test)]
+mod organism_tests;
+
+pub mod organism_reproduction;
+
+pub mod organism_orientation;
+
+pub mod organism_sensors;
+
+pub mod traffic;
+
+pub mod taxi_routes;

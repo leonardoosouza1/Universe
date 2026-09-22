@@ -391,7 +391,7 @@ fn powertrain_and_tire_system(
             let rpm_ratio = engine.current_rpm / engine.max_rpm;
             // Heating: proportional to RPM and throttle
             let heat_gen = rpm_ratio * engine.throttle * 15.0 * dt; // °C/s
-            // Cooling: proportional to speed (airflow) + base radiator
+                                                                    // Cooling: proportional to speed (airflow) + base radiator
             let airflow_cooling = (speed * 0.3 + 2.0) * dt; // °C/s
             engine.engine_temp =
                 (engine.engine_temp + heat_gen - airflow_cooling).clamp(20.0, 150.0);

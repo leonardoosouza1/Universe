@@ -118,6 +118,7 @@ pub enum OverrideCause {
     FixedSteer,
     FixedThrottle,
     Damage,
+    DeadBody,
 }
 
 /// Pure mapping result before state-machine and diagnostic overrides.

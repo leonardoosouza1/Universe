@@ -1,0 +1,2 @@
+1587 canais/estados neurais · retina: pixels empacotados · 14387/14387 conexões disponíveis (pesos não nulos + 1:1); conjunto fixo entre ticks
+PASS: real trace; map recenter/pan/zoom/follow/playback and 3D keyboard/zoom; no page errors.

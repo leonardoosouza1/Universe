@@ -1,7 +1,7 @@
 //! Standalone retinal compute renderer and explicit readback API.
 //! The integrated evolution loop records its resident retina on the shared device.
 use super::core::{storage_entry, uniform_entry};
-use super::retina_encoding::{Pixel, Pose, legacy_encoding};
+use super::retina_encoding::{legacy_encoding, Pixel, Pose};
 use crate::config::iara::vision::{RETINA_COLS, RETINA_ROWS, RETINA_TOTAL};
 use crate::world::VoxelWorld;
 use std::borrow::Cow;
@@ -50,7 +50,7 @@ impl RetinaGpu {
         let name = adapter_obj.get_info().name.clone();
         // perception.wgsl uses 6 storage buffers — above the downlevel default limit (4).
         let mut limits = wgpu::Limits::downlevel_defaults();
-        limits.max_storage_buffers_per_shader_stage = 8;
+        limits.max_storage_buffers_per_shader_stage = 16;
         let (device, queue) = pollster::block_on(adapter_obj.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("iara-compute"),

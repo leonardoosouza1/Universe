@@ -1,4 +1,4 @@
-use super::{CONTACT_DIAGNOSTICS_FLAG, ContactDiagnostics, PhysicsGpu, PhysicsStateGpu};
+use super::{ContactDiagnostics, PhysicsGpu, PhysicsStateGpu, CONTACT_DIAGNOSTICS_FLAG};
 use bytemuck::Zeroable;
 
 #[test]
@@ -60,6 +60,14 @@ fn straight_line_brake_and_contact_diagnostics() {
         }
         car
     };
+    eprintln!("physics contract GPU adapter: {}", gpu_road.adapter);
+    // Rejected input must leave every record untouched and the context reusable.
+    let mut invalid_batch = [make_car(), make_car()];
+    invalid_batch[1].brake_cmd = 1.1;
+    let before = bytemuck::cast_slice::<_, u8>(&invalid_batch).to_vec();
+    assert!(!gpu_road.step(&mut invalid_batch));
+    assert_eq!(bytemuck::cast_slice::<_, u8>(&invalid_batch), before);
+    assert!(gpu_road.step_raw(&invalid_batch).is_empty());
     let mut coast = make_car();
     coast.throttle = 0.0;
     coast.brake_cmd = 0.0;

@@ -79,6 +79,9 @@ fn main() {
     escreve("neuron_threshold_l1.txt", &g.neuron_threshold_l1, 0);
     escreve("neuron_period_l1.txt", &g.neuron_period_l1, 0);
     escreve("tau.txt", &g.tau, 0);
+    escreve("body.txt", &g.body.0, 0);
+    escreve("organs.txt", &g.organs.0, 0);
+    escreve("lifetime.txt", &g.lifetime.0, 0);
 
     let mut m = std::fs::File::create(format!("{saida}/meta.txt")).unwrap();
     writeln!(m, "arquivo {arquivo}").unwrap();

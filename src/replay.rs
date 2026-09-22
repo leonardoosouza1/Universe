@@ -587,7 +587,7 @@ fn glam_like_dist(a: [f32; 3], b: [f32; 3]) -> f32 {
 // Scene export is separate from the binary recording and analysis contracts.
 #[path = "replay/player.rs"]
 mod player;
-pub use player::{PlayerOptions, generate_html_player, generate_html_player_with_options};
+pub use player::{generate_html_player, generate_html_player_with_options, PlayerOptions};
 
 #[path = "replay/terrain.rs"]
 pub mod terrain;

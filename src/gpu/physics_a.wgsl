@@ -237,11 +237,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         is_stalled=1u; starter_timer=0.0;
     }
 
+    if (!flag(c.config_flags,8u)) {
     if (is_stalled==0u && flag(c.config_flags,1u)) {
         let rr=current_rpm/c.max_rpm;
-        engine_temp=clamp(engine_temp+rr*c.throttle*15.0*dt_safe-(speed*0.3+2.0)*dt_safe,20.0,150.0);
+        var heat = rr * c.throttle * 15.0 * dt_safe;
+        var cooling = (speed * 0.3 + 2.0) * dt_safe;
+        if flag(c.config_flags,7u) {
+            heat = heat * (c.max_torque / 620.0);
+            cooling = cooling * (1.0 + c._pad_before_wind);
+        }
+        engine_temp=clamp(engine_temp+heat-cooling,20.0,150.0);
         oil_temp=oil_temp+(engine_temp-oil_temp)*0.01*dt_safe;
     } else { engine_temp=max(engine_temp-1.0*dt_safe,20.0); }
+
+    } // organism-taxi-v1 owns thermal integration when bit 8 is set.
 
     var tp=1.0;
     if (flag(c.config_flags,1u) && engine_temp>105.0) {

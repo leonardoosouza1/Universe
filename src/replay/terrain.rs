@@ -1,7 +1,7 @@
 //! Lossless terrain facts needed by scene replay viewers.
 
 use crate::world::{VoxelType, VoxelWorld};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Snapshot the material cells that are hazards in the recorded world.
 /// Coordinates are integer grid indices, in the same row-major order as `VoxelWorld::grid`.
@@ -30,7 +30,7 @@ pub fn snapshot(world: &VoxelWorld) -> Value {
 #[cfg(test)]
 mod tests {
     use super::snapshot;
-    use crate::world::{VoxelType, VoxelWorld, silence_map_diag};
+    use crate::world::{silence_map_diag, VoxelType, VoxelWorld};
 
     #[test]
     fn snapshot_reports_actual_holes_and_schema() {
@@ -57,11 +57,9 @@ mod tests {
         let _quiet = silence_map_diag();
         let mut world = VoxelWorld::new(123, 28.0);
         world.grid.fill(VoxelType::Road);
-        assert!(
-            snapshot(&world)["hole_cells"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(snapshot(&world)["hole_cells"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 }

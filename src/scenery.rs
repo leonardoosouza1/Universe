@@ -160,7 +160,7 @@ pub fn spawn_scenery(
         let bw = 12.0 + bld_rng() * 18.0; // 12..30m wide
         let bd = 12.0 + bld_rng() * 18.0; // 12..30m deep
         let bh = 25.0 + bld_rng() * 110.0; // 25..135m tall (highrises mix)
-        // Color: gray/beige/bluish concrete tones for urban variety.
+                                           // Color: gray/beige/bluish concrete tones for urban variety.
         let cv = bld_rng();
         let color = if cv < 0.33 {
             Color::srgb(0.55, 0.55, 0.58) // concrete
@@ -297,7 +297,7 @@ pub fn spawn_track_decorations(
         if d < 25.0 {
             continue;
         } // too close to the track — does not block
-        // Building dims
+          // Building dims
         let bw = 8.0 + bld_rng() * 12.0;
         let bd = 8.0 + bld_rng() * 12.0;
         let bh = 15.0 + bld_rng() * 60.0;

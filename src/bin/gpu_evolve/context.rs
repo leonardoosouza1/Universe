@@ -9,8 +9,8 @@
 use crate::brain_backend::BrainBackend;
 use crate::{brain_backend, driving_diagnostics, visual_telemetry};
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
@@ -34,15 +34,31 @@ use universe::world::VoxelWorld;
 
 use crate::audit::auditoria_acumular;
 use crate::native_action::{
-    MotorCommandValue, MotorHead, MotorTrace, NativeActionInput, OverrideCause,
-    ThrottleArbitration, map_native_action,
+    map_native_action, MotorCommandValue, MotorHead, MotorTrace, NativeActionInput, OverrideCause,
+    ThrottleArbitration,
 };
-use crate::reverse_controller::{ReverseInput, ReverseState, step_v2};
+use crate::reverse_controller::{step_v2, ReverseInput, ReverseState};
 use crate::statics::*;
 use crate::types::BeingState;
 use universe::brain_interface::MotorCommand;
 
+#[path = "organism_tick.rs"]
+mod organism_tick;
+
 pub struct GpuCtx {
+    pub traffic: Option<universe::gpu::traffic::TrafficGpu>,
+    pub traffic_samples: Vec<[f32; 16]>,
+    pub organism_action: Option<universe::gpu::organism_action::OrganismActionGpu>,
+    pub organism_sensors: Option<universe::gpu::organism_sensors::OrganismSensorsGpu>,
+    pub organism_telemetry: Option<universe::gpu::organism_telemetry::OrganismTelemetryGpu>,
+    pub organism_resident_ready: bool,
+    pub force_organism_sample: bool,
+    pub organism: Option<universe::gpu::organism::OrganismGpu>,
+    pub organism_feedback: Option<universe::gpu::organism_feedback::OrganismFeedback>,
+    pub organism_orientation: Option<universe::gpu::organism_orientation::OrganismOrientationGpu>,
+    pub taxi: Option<universe::gpu::taxi::TaxiGpu>,
+    pub taxi_witness: Option<universe::gpu::taxi_witness::TaxiWitnessGpu>,
+    pub organism_samples: Vec<universe::gpu::organism::OrganismState>,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub pipeline_retina: wgpu::ComputePipeline,
@@ -116,7 +132,7 @@ pub struct GpuCtx {
     /// receives the complete sensor bank; this compact copy lets the existing
     /// racing-line projection compute geometrically correct arc lookaheads in the
     /// same CPU pass, without reading sensor genes back from VRAM every tick.
-    sensor_curve_ranges: Vec<[f32; 3]>,
+    pub(crate) sensor_curve_ranges: Vec<[f32; 3]>,
     pub grid_cpu: Vec<u32>,
     pub grid_size_cpu: u32,
     pub cell_size_cpu: f32,
@@ -268,6 +284,9 @@ pub struct GpuCtx {
     fly_reflex_adapt: Vec<universe::fly_map::ReflexAdaptation>,
     visual_telemetry: Option<visual_telemetry::VisualTelemetry>,
     pub driving_diagnostics: Option<driving_diagnostics::DrivingDiagnostics>,
+    pub lifetime_reward_sum: Vec<f32>,
+    pub per_being_heads: Vec<[[f32; KAN_OUT_KNOTS]; 3]>,
+    pub lifetime_reward_ticks: u32,
     /// Requests exact contact telemetry from the physics kernel for the evolutionary
     /// objective even when the heavier selected-being diagnostics are disabled.
     pub collect_contact_metrics: bool,
@@ -361,6 +380,145 @@ fn competitive_stress(
 }
 
 impl GpuCtx {
+    /// Instantiate the new scenario at a generation boundary, never over a live body.
+    pub fn start_organism(
+        &mut self,
+        genomes: &[universe::gpu::evolution::Genome],
+        stations: &[[f32; 8]],
+        traffic_lights: &[universe::gpu::traffic::TrafficLight],
+        founders: usize,
+    ) -> Result<(), &'static str> {
+        if self.fly.is_some() || self.fly_spiking.is_some() || self.brain_control_direct {
+            return Err("organism-taxi-v1 requires the native 96-intent action interface");
+        }
+        if hippocampus_active()
+            || self.obs_writer.is_some()
+            || self.wave_writer.is_some()
+            || self.visual_telemetry.is_some()
+        {
+            return Err("organism resident scenario requires native recurrent memory and driving-diagnostics; legacy hippocampus/raw capture are unsupported");
+        }
+        if PILOTO_GANHO.load(Ordering::Relaxed) != 0.0
+            || PILOTO_SENSOR.load(Ordering::Relaxed) != 0.0
+        {
+            return Err("organism resident scenario does not permit host pilot overrides");
+        }
+        if self.piloto_formula.is_some() || self.piloto_forja.is_some() {
+            return Err("organism-taxi-v1 does not permit pilot overrides");
+        }
+        let mut body =
+            universe::gpu::organism::OrganismGpu::new(&self.device, &self.queue, self.capacity);
+        body.set_config_flags(
+            universe::gpu::organism::CONFIG_DISABLE_OLD_THERMAL
+                | universe::gpu::organism::CONFIG_STATIC_REST,
+        )?;
+        body.reset(
+            &self.queue,
+            &genomes.iter().map(|g| g.organism).collect::<Vec<_>>(),
+        )?;
+        self.taxi = Some(universe::gpu::taxi::TaxiGpu::new(
+            &self.device,
+            &self.queue,
+            self.capacity,
+            stations,
+        ));
+        if founders > genomes.len() {
+            return Err("founder count exceeds population");
+        }
+        // Dead capacity slots must not receive genesis resources or money.
+        for slot in founders..genomes.len() {
+            self.queue.write_buffer(
+                &body.buf_state,
+                ((slot * 128 + 29) * 4) as u64,
+                bytemuck::bytes_of(&0.0f32),
+            );
+        }
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.taxi.as_ref().unwrap().encode_birth(
+            &self.device,
+            &mut encoder,
+            &body.buf_state,
+            genomes.len(),
+        );
+        self.queue.submit(Some(encoder.finish()));
+        self.organism_feedback = Some(universe::gpu::organism_feedback::OrganismFeedback::new(
+            &self.device,
+        ));
+        self.organism_orientation =
+            Some(universe::gpu::organism_orientation::OrganismOrientationGpu::new(&self.device));
+        let action =
+            universe::gpu::organism_action::OrganismActionGpu::new(&self.device, self.capacity);
+        action.upload_heads(&self.queue, &self.per_being_heads)?;
+        self.organism_action = Some(action);
+        self.organism_sensors = Some(universe::gpu::organism_sensors::OrganismSensorsGpu::new(
+            &self.device,
+            &self.grid_cpu,
+            self.grid_size_cpu as usize,
+            self.cell_size_cpu,
+            &self.racing_line,
+            &self.sensor_curve_ranges[..genomes.len()],
+            social_sensors_on(),
+            continuous_wall_probes(),
+        )?);
+        self.organism_telemetry = Some(
+            universe::gpu::organism_telemetry::OrganismTelemetryGpu::new(
+                &self.device,
+                self.capacity,
+            ),
+        );
+        self.traffic = Some(universe::gpu::traffic::TrafficGpu::new(
+            &self.device,
+            self.capacity,
+            traffic_lights,
+        )?);
+        self.traffic_samples.clear();
+        self.organism_resident_ready = false;
+        self.organism = Some(body);
+        self.organism_samples.clear();
+        self.lap_grass = vec![false; genomes.len()];
+        self.lap_damage = vec![0.0; genomes.len()];
+        self.lap_dry = vec![false; genomes.len()];
+        self.lifetime_reward_sum = vec![0.0; genomes.len()];
+        self.lifetime_reward_ticks = 0;
+        Ok(())
+    }
+
+    /// Read state only at declared telemetry/generation boundaries.
+    pub fn sample_organism(&mut self, states: &mut [BeingState]) -> Result<(), &'static str> {
+        let body = self
+            .organism
+            .as_ref()
+            .ok_or("organism scenario is disabled")?;
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        body.encode_snapshot(&mut encoder, states.len())?;
+        self.queue.submit(Some(encoder.finish()));
+        let sample = body.read_snapshot(&self.device, states.len())?;
+        for (host, resident) in states.iter_mut().zip(&sample) {
+            let v = &resident.values;
+            if v.iter().any(|value| !value.is_finite()) {
+                return Err("nonfinite organism state");
+            }
+            host.fuel = f64::from(v[0]);
+            host.fuel_capacity = f64::from(v[18]);
+            host.life_left = if v[29] > 0.5 { 1.0 } else { 0.0 };
+            host.dano = 1.0 - v[8];
+            host.collision_energy_j = v[100] as f64;
+            host.impact_count = v[101] as u32;
+            if v[60] > 0.5 {
+                host.phys.throttle = v[57];
+                host.phys.steer = v[58];
+                host.phys.brake_cmd = v[59];
+            }
+            if v[47] > 0.0 {
+                host.phys.max_torque = v[53];
+                host.phys.brake_torque_max = v[54];
+                host.phys.mass = v[55];
+            }
+        }
+        self.organism_samples = sample;
+        Ok(())
+    }
+
     pub fn new(world: &VoxelWorld, capacity: usize) -> Option<Self> {
         let icd_radeon = "/usr/share/vulkan/icd.d/radeon_icd.json";
         if std::path::Path::new(icd_radeon).exists() && std::env::var("VK_ICD_FILENAMES").is_err() {
@@ -378,9 +536,17 @@ impl GpuCtx {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))?;
-        let name = adapter.get_info().name.clone();
+        let info = adapter.get_info();
+        let name = info.name.clone();
+        if info.device_type == wgpu::DeviceType::Cpu
+            || name.to_lowercase().contains("llvmpipe")
+            || name.to_lowercase().contains("lavapipe")
+        {
+            eprintln!("A real GPU is required; software adapter rejected: {name}");
+            return None;
+        }
         let mut limits = wgpu::Limits::downlevel_defaults();
-        // The brain uses 15 storage buffers (bindings 1..=15).
+        // The brain uses 16 storage buffers (bindings 1..=16), including lifetime state.
         //
         // O teto é de configuração, não de silício — `downlevel_defaults()` pede 4 para
         // caber em GL antigo, e a RX 6750 XT anuncia bem mais. Pedir 12 dá folga para os
@@ -435,7 +601,9 @@ impl GpuCtx {
         let buf_poses_retina = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("evolve-poses-retina"),
             size: (cap * std::mem::size_of::<PoseRaw>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let buf_retina_out = device.create_buffer(&wgpu::BufferDescriptor {
@@ -503,8 +671,24 @@ impl GpuCtx {
         eprintln!("[gpu_evolve] Adapter: {} · cap={}", name, cap);
 
         Some(Self {
+            organism: None,
+            taxi: None,
+            taxi_witness: None,
+            organism_action: None,
+            organism_sensors: None,
+            organism_telemetry: None,
+            organism_resident_ready: false,
+            force_organism_sample: false,
+            organism_feedback: None,
+            organism_orientation: None,
+            organism_samples: Vec::new(),
+            traffic: None,
+            traffic_samples: Vec::new(),
             visual_telemetry: visual_telemetry::VisualTelemetry::from_env(&device, cap),
             driving_diagnostics: None,
+            lifetime_reward_sum: vec![0.0; capacity],
+            per_being_heads: Vec::new(),
+            lifetime_reward_ticks: 0,
             collect_contact_metrics: false,
             erase_fast_memory: false,
             device,
@@ -658,7 +842,7 @@ impl GpuCtx {
     /// Upload the full sensory genome and retain only its curvature horizons on
     /// the host. The host copy is generation state, never a CPU/GPU tick transfer.
     pub fn upload_sensors(&mut self, sensors: &[f32], n: usize) {
-        use universe::gpu::evolution::{N_SENSOR_GENES, sensor_idx};
+        use universe::gpu::evolution::{sensor_idx, N_SENSOR_GENES};
         self.percept.upload_sensors(&self.queue, sensors, n);
         assert_eq!(sensors.len(), n * N_SENSOR_GENES);
         self.sensor_curve_ranges.resize(n, [0.0; 3]);
@@ -717,6 +901,12 @@ impl GpuCtx {
     ) -> bool {
         if n == 0 || n > self.capacity {
             return false;
+        }
+        if self.organism.is_some() {
+            return self
+                .tick_organism(states, n, dt, tick_idx)
+                .map_err(|error| eprintln!("resident tick {tick_idx}: {error}"))
+                .is_ok();
         }
 
         let diagnostic_alive: Vec<bool> = if self.driving_diagnostics.is_some() {
@@ -817,7 +1007,7 @@ impl GpuCtx {
             // proportional to friction power, so a tyre that lost grip also makes less
             // heat. That negative feedback plus the floor is what bounds the overheat
             // spiral (`tire_thermal::overheat_feedback_is_bounded_by_the_floor`).
-            if !self.thermal.is_empty() {
+            if self.organism.is_none() && !self.thermal.is_empty() {
                 for i in 0..n {
                     let p = &states[i].phys;
                     let speed = (p.vel[0].powi(2) + p.vel[2].powi(2)).sqrt();
@@ -852,13 +1042,12 @@ impl GpuCtx {
             // One `step` call per tick, never `try_drain` + `recharge_all` separately
             // (the module contract): `step` drains in index order and recharges once,
             // and doing it by hand would double-recharge or reorder the scarcity.
-            if !self.stations.is_empty() {
-                let tank = FUEL_TANK.load(Ordering::Relaxed);
+            if self.organism.is_none() && !self.stations.is_empty() {
                 let beings: Vec<universe::resources::BeingFuel> = (0..n)
                     .map(|i| universe::resources::BeingFuel {
                         pos: pos2(&states[i].phys),
                         fuel: states[i].fuel as f32,
-                        tank,
+                        tank: states[i].fuel_capacity as f32,
                         alive: states[i].life_left > 0.0,
                     })
                     .collect();
@@ -866,7 +1055,8 @@ impl GpuCtx {
                     universe::resources::step(&mut self.stations, &beings, &self.station_cfg);
                 for i in 0..n {
                     if takes[i] > 0.0 {
-                        states[i].fuel = (states[i].fuel + takes[i] as f64).min(tank as f64);
+                        states[i].fuel =
+                            (states[i].fuel + takes[i] as f64).min(states[i].fuel_capacity);
                         self.tel_station_fuel += takes[i] as f64;
                     }
                 }
@@ -938,7 +1128,7 @@ impl GpuCtx {
                     // 0.0 would tell the brain it is about to die every tick of every
                     // run that does not use fuel.
                     v[3] = if tank > 0.0 {
-                        (states[i].fuel as f32 / tank).clamp(0.0, 1.0)
+                        (states[i].fuel / states[i].fuel_capacity.max(1e-9)).clamp(0.0, 1.0) as f32
                     } else {
                         1.0
                     };
@@ -1246,28 +1436,28 @@ impl GpuCtx {
                 let voxel = voxel_at_cpu(p.pos[0], p.pos[2]);
                 let on_grass = if voxel == 0 { 1.0_f32 } else { 0.0 };
                 self.lap_grass[i] = voxel == 0; // C0: same voxel, no second lookup
-                // ── PROPRIOCEPÇÃO: quatro slots eram CONSTANTES ────────────────
-                //
-                // `prop[3]=1.0` (HP sempre cheio), `prop[7]=0`, `prop[8]=0`, `prop[11]=0`
-                // viravam os canais 67, 71, 72 e 75 cravados — 4 dos 12 proprioceptivos
-                // que a auditoria de visão pegou saturados em 127. Canal constante é peso
-                // morto em L1 e, pior, é um estado corporal que o cérebro NÃO sente.
-                //
-                // Isso importa além da limpeza: medimos que neuromodulação só tem teto de
-                // ganho quando existe corpo ACOPLADO — estado interno lento que faz o ótimo
-                // de comportamento variar. Sem acoplamento o ganho é zero. Os estados abaixo
-                // já eram calculados e simplesmente não chegavam a lugar nenhum.
-                //
-                //   67 ← vida restante   (era HP fixo em 1,0): o ser morre sem saber que vai
-                //   71 ← temperatura do motor: acima de 105 °C a potência cai
-                //        (physics.wgsl:402) — muda o ótimo de acelerar, τ ≈ 500-1000 ticks
-                //   72 ← LATERAL ACCELERATION DEMAND: v²|κ|/(mu*g). This combines body speed
-                //        with the mean racing-line curvature over the next 30m. It says how
-                //        much grip the current trajectory would demand; it never chooses brake.
-                //   75 ← estagnação: quantos ticks sem avançar
-                // Channel 67 is the remaining survival reserve: the smaller of
-                // time/energy life and mechanical integrity. A collision therefore
-                // becomes an observable bodily consequence on the next tick.
+                                                // ── PROPRIOCEPÇÃO: quatro slots eram CONSTANTES ────────────────
+                                                //
+                                                // `prop[3]=1.0` (HP sempre cheio), `prop[7]=0`, `prop[8]=0`, `prop[11]=0`
+                                                // viravam os canais 67, 71, 72 e 75 cravados — 4 dos 12 proprioceptivos
+                                                // que a auditoria de visão pegou saturados em 127. Canal constante é peso
+                                                // morto em L1 e, pior, é um estado corporal que o cérebro NÃO sente.
+                                                //
+                                                // Isso importa além da limpeza: medimos que neuromodulação só tem teto de
+                                                // ganho quando existe corpo ACOPLADO — estado interno lento que faz o ótimo
+                                                // de comportamento variar. Sem acoplamento o ganho é zero. Os estados abaixo
+                                                // já eram calculados e simplesmente não chegavam a lugar nenhum.
+                                                //
+                                                //   67 ← vida restante   (era HP fixo em 1,0): o ser morre sem saber que vai
+                                                //   71 ← temperatura do motor: acima de 105 °C a potência cai
+                                                //        (physics.wgsl:402) — muda o ótimo de acelerar, τ ≈ 500-1000 ticks
+                                                //   72 ← LATERAL ACCELERATION DEMAND: v²|κ|/(mu*g). This combines body speed
+                                                //        with the mean racing-line curvature over the next 30m. It says how
+                                                //        much grip the current trajectory would demand; it never chooses brake.
+                                                //   75 ← estagnação: quantos ticks sem avançar
+                                                // Channel 67 is the remaining survival reserve: the smaller of
+                                                // time/energy life and mechanical integrity. A collision therefore
+                                                // becomes an observable bodily consequence on the next tick.
                 let time_life =
                     (states[i].life_left as f32 / life_cap().max(1) as f32).clamp(0.0, 1.0);
                 let vida_frac = time_life.min(1.0 - states[i].dano.clamp(0.0, 1.0));
@@ -1748,6 +1938,16 @@ impl GpuCtx {
             t.mark_end(&mut enc, t_digest);
         }
 
+        if let (Some(organism), Some(taxi)) = (&self.organism, &self.taxi) {
+            taxi.encode_senses(
+                &self.device,
+                &mut enc,
+                &organism.buf_state,
+                self.percept.buf_output(),
+                n,
+            );
+        }
+
         // ── FLY MAP (docs/FLY-MAP-BRAIN.md §4) ─────────────────────────────────
         //
         // Runs HERE for the same reason the slow brain's gather does: the sensory wave it
@@ -1823,6 +2023,13 @@ impl GpuCtx {
         let observed_being =
             fresh_neural_sample.then(|| self.driving_diagnostics.as_ref().unwrap().selected);
         self.brain.set_observed_being(observed_being);
+        if self.organism.is_none() && self.brain.lifetime_enabled() {
+            self.lifetime_reward_ticks += 1;
+            for (i, state) in states[..n].iter().enumerate() {
+                let pain = state.phys.contact_diagnostics().energy_loss_j / 10_000.0;
+                self.lifetime_reward_sum[i] += (state.learning_reward - pain).clamp(-1.0, 1.0);
+            }
+        }
         if brain_fires {
             // No bracket recorded when `brain_fires` is false — an absent label reads
             // as "did not fire this tick" instead of a misleading 0.000 ms.
@@ -1835,6 +2042,33 @@ impl GpuCtx {
             };
             if self.erase_fast_memory {
                 self.brain.clear_fast_memory(&mut enc, n);
+            }
+            if let (Some(body), Some(feedback)) = (&self.organism, &self.organism_feedback) {
+                feedback.encode(
+                    &self.device,
+                    &mut enc,
+                    &body.buf_state,
+                    self.brain.lifetime_buffer(),
+                    n,
+                );
+            } else if self.brain.lifetime_enabled() {
+                let feedback: Vec<[f32; 4]> = states[..n]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, state)| {
+                        let reward =
+                            self.lifetime_reward_sum[i] / self.lifetime_reward_ticks.max(1) as f32;
+                        [
+                            reward,
+                            (state.fuel / state.fuel_capacity.max(1e-9)).clamp(0.0, 1.0) as f32,
+                            if state.life_left > 0.0 { 1.0 } else { 0.0 },
+                            0.0,
+                        ]
+                    })
+                    .collect();
+                self.brain.set_lifetime_feedback(&feedback);
+                self.lifetime_reward_sum.fill(0.0);
+                self.lifetime_reward_ticks = 0;
             }
             self.brain.set_world_tick(tick_idx as u32);
             self.brain
@@ -2180,73 +2414,78 @@ impl GpuCtx {
                 // até o fim da geração — a métrica mediria o próprio mecanismo de morte
                 // em vez do comportamento. Foi o que inverteu o sinal na primeira medição
                 // (dreno maior aparecia com MAIS tempo colado).
-                if min_wall_ahead < WALL_NEAR_M && states[i].life_left > 0.0 {
-                    states[i].wall_ticks += 1;
-                    // Custo em TEMPO: cada tick colado consome vida extra. Evitar a
-                    // parede compra oportunidade de andar, em vez de disputar com ela.
-                    states[i].life_left -= WALL_LIFE_DRAIN.load(Ordering::Relaxed) as f64;
-                }
-                // FÍSICA 1 — custo de RPM alto (ver doc de CUSTO_RPM em statics.rs):
-                // acima de 90% do giro, cada tick queima vida proporcional ao excesso.
-                // Dá à marcha um MOTIVO além da velocidade: girar menos = viver mais.
-                let custo_rpm = CUSTO_RPM.load(Ordering::Relaxed);
-                if custo_rpm > 0.0 && states[i].life_left > 0.0 {
-                    let rpm_frac = states[i].phys.current_rpm / states[i].phys.max_rpm.max(1.0);
-                    if rpm_frac > 0.9 {
-                        let excesso = ((rpm_frac - 0.9) / 0.1).min(1.5);
-                        states[i].life_left -= (custo_rpm * excesso) as f64;
+                if self.organism.is_none() {
+                    if min_wall_ahead < WALL_NEAR_M && states[i].life_left > 0.0 {
+                        states[i].wall_ticks += 1;
+                        // Custo em TEMPO: cada tick colado consome vida extra. Evitar a
+                        // parede compra oportunidade de andar, em vez de disputar com ela.
+                        states[i].life_left -= WALL_LIFE_DRAIN.load(Ordering::Relaxed) as f64;
                     }
-                }
-                // E-REG1 — custo de fiação (ver CUSTO_FIACAO em statics.rs): dreno
-                // constante por tick proporcional ao fio "longo" do genoma do ser.
-                if !self.fiacao_custo.is_empty() && states[i].life_left > 0.0 {
-                    states[i].life_left -=
-                        self.fiacao_custo[i.min(self.fiacao_custo.len() - 1)] as f64;
-                }
-                // D8 — sensory subscription (`--sensor-cost`, see statics.rs).
-                //
-                // Same shape and same site as the wiring cost above, and deliberately
-                // so: both are per-being constants for the whole generation because the
-                // weights are, both are paid in LIFE (crossed currency — perception
-                // protects the fitness, so it must not be charged in fitness), and both
-                // are recomputed by `main()` where the genomes live. What differs is the
-                // statistic: this one is a per-FAMILY sum, so pruning one family removes
-                // a whole term instead of nudging a mean over 18 432 weights whose
-                // inter-individual variance the CLT drives to zero (E-REG1's negative).
-                if !self.sensor_cost.is_empty() && states[i].life_left > 0.0 {
-                    states[i].life_left -=
-                        self.sensor_cost[i.min(self.sensor_cost.len() - 1)] as f64;
-                }
-                // Custo de estagnação: parar sem avançar QUEIMA VIDA (Conserto 1, 2026-08-12).
-                // Sintoma medido: ser para em 272 m com life=3010 ticks e fica ESTÁTICO até
-                // hp=0 (tick 4020), sem tentar sair. Com life-earn, parar é de graça porque a
-                // vida acumulada ao andar é gasta só 1/tick — o ser tem 47 s de "folga". Esse
-                // dreno torna a paralisia fatal e força o cérebro a continuar tentando.
-                // Threshold 128 ticks = 2 s: evita penalizar quem apenas reduz speed na curva
-                // (esses têm stagnation=0 pois speed≥1.5 m/s). Análogo ao wall_drain.
-                if states[i].stagnation_ticks > 128 && states[i].life_left > 0.0 {
-                    states[i].life_left -= STAG_LIFE_DRAIN.load(Ordering::Relaxed) as f64;
-                }
-                // Combustível: consumo proporcional ao acelerador ao quadrado, como nas
-                // branches que davam voltas. Só morde quando ligado (`--fuel`).
-                if FUEL_ON.load(Ordering::Relaxed) && states[i].fuel > 0.0 {
-                    let thr = states[i].phys.throttle.abs() as f64;
-                    states[i].fuel -= (0.002 + thr * thr * 0.004) / 64.0;
-                    if states[i].fuel <= 0.0 {
-                        states[i].life_left = 0.0;
-                        // `[recurso]` telemetry: tank-empty CROSSINGS, not ticks spent
-                        // empty (the `fuel > 0.0` guard above is what makes it a
-                        // crossing). In practice that is once per being per generation,
-                        // because running dry sets `life_left = 0` and a dead being
-                        // neither reaches a checkpoint (sector refill) nor drains a
-                        // station (`alive: false` in the `BeingFuel` built above). If a
-                        // future refill path breaks that, the label has to change too.
-                        self.tel_dry_beings += 1;
-                        self.lap_dry[i] = true; // C0: same crossing, per lap
+                    // FÍSICA 1 — custo de RPM alto (ver doc de CUSTO_RPM em statics.rs):
+                    // acima de 90% do giro, cada tick queima vida proporcional ao excesso.
+                    // Dá à marcha um MOTIVO além da velocidade: girar menos = viver mais.
+                    let custo_rpm = CUSTO_RPM.load(Ordering::Relaxed);
+                    if custo_rpm > 0.0 && states[i].life_left > 0.0 {
+                        let rpm_frac = states[i].phys.current_rpm / states[i].phys.max_rpm.max(1.0);
+                        if rpm_frac > 0.9 {
+                            let excesso = ((rpm_frac - 0.9) / 0.1).min(1.5);
+                            states[i].life_left -= (custo_rpm * excesso) as f64;
+                        }
                     }
-                }
-                if states[i].life_left > 0.0 {
-                    states[i].life_left -= 1.0;
+                    // E-REG1 — custo de fiação (ver CUSTO_FIACAO em statics.rs): dreno
+                    // constante por tick proporcional ao fio "longo" do genoma do ser.
+                    if !self.fiacao_custo.is_empty() && states[i].life_left > 0.0 {
+                        states[i].life_left -=
+                            self.fiacao_custo[i.min(self.fiacao_custo.len() - 1)] as f64;
+                    }
+                    // D8 — sensory subscription (`--sensor-cost`, see statics.rs).
+                    //
+                    // Same shape and same site as the wiring cost above, and deliberately
+                    // so: both are per-being constants for the whole generation because the
+                    // weights are, both are paid in LIFE (crossed currency — perception
+                    // protects the fitness, so it must not be charged in fitness), and both
+                    // are recomputed by `main()` where the genomes live. What differs is the
+                    // statistic: this one is a per-FAMILY sum, so pruning one family removes
+                    // a whole term instead of nudging a mean over 18 432 weights whose
+                    // inter-individual variance the CLT drives to zero (E-REG1's negative).
+                    if !self.sensor_cost.is_empty() && states[i].life_left > 0.0 {
+                        states[i].life_left -=
+                            self.sensor_cost[i.min(self.sensor_cost.len() - 1)] as f64;
+                    }
+                    // Custo de estagnação: parar sem avançar QUEIMA VIDA (Conserto 1, 2026-08-12).
+                    // Sintoma medido: ser para em 272 m com life=3010 ticks e fica ESTÁTICO até
+                    // hp=0 (tick 4020), sem tentar sair. Com life-earn, parar é de graça porque a
+                    // vida acumulada ao andar é gasta só 1/tick — o ser tem 47 s de "folga". Esse
+                    // dreno torna a paralisia fatal e força o cérebro a continuar tentando.
+                    // Threshold 128 ticks = 2 s: evita penalizar quem apenas reduz speed na curva
+                    // (esses têm stagnation=0 pois speed≥1.5 m/s). Análogo ao wall_drain.
+                    if states[i].stagnation_ticks > 128 && states[i].life_left > 0.0 {
+                        states[i].life_left -= STAG_LIFE_DRAIN.load(Ordering::Relaxed) as f64;
+                    }
+                    // Combustível: consumo proporcional ao acelerador ao quadrado, como nas
+                    // branches que davam voltas. Só morde quando ligado (`--fuel`).
+                    if FUEL_ON.load(Ordering::Relaxed) && states[i].fuel > 0.0 {
+                        let thr = states[i].phys.throttle.abs() as f64;
+                        let engine_cost = universe::gpu::body::fuel_load_scale(&states[i].phys);
+                        states[i].fuel -= (0.002 + thr * thr * 0.004 * engine_cost) / 64.0;
+                        if states[i].fuel <= 0.0 {
+                            states[i].life_left = 0.0;
+                            // `[recurso]` telemetry: tank-empty CROSSINGS, not ticks spent
+                            // empty (the `fuel > 0.0` guard above is what makes it a
+                            // crossing). In practice that is once per being per generation,
+                            // because running dry sets `life_left = 0` and a dead being
+                            // neither reaches a checkpoint (sector refill) nor drains a
+                            // station (`alive: false` in the `BeingFuel` built above). If a
+                            // future refill path breaks that, the label has to change too.
+                            self.tel_dry_beings += 1;
+                            self.lap_dry[i] = true; // C0: same crossing, per lap
+                        }
+                    }
+                    if states[i].life_left > 0.0 {
+                        states[i].life_left -= 1.0;
+                        states[i].ticks_alive += 1;
+                    }
+                } else if states[i].life_left > 0.0 {
                     states[i].ticks_alive += 1;
                 }
                 // Edge density das linhas 6 e 7 da retina → ch99, ch100.
@@ -2453,7 +2692,7 @@ impl GpuCtx {
                 let head = if motor_head_linear() {
                     MotorHead::Linear
                 } else {
-                    MotorHead::Spline(kan_knots)
+                    MotorHead::Spline(self.per_being_heads.get(i).unwrap_or(kan_knots))
                 };
                 let mapped = map_native_action(NativeActionInput {
                     raw_intent: [intent[0], intent[1], intent[2]],
@@ -2546,7 +2785,7 @@ impl GpuCtx {
                 // DEPOIS dos ramos de comando (afeta o que chega à física, inclusive na
                 // ré) e ANTES do câmbio (rpm de leitura não muda no mesmo tick).
                 let dano_escala = DANO_ESCALA.load(Ordering::Relaxed);
-                if dano_escala > 0.0 && states[i].life_left > 0.0 {
+                if self.organism.is_none() && dano_escala > 0.0 && states[i].life_left > 0.0 {
                     let rpm_frac = states[i].phys.current_rpm / states[i].phys.max_rpm.max(1.0);
                     let mut inc = 0.0f32;
                     if rpm_frac > 0.9 {
@@ -2887,12 +3126,48 @@ impl GpuCtx {
                 &intents,
             );
         }
-        if self.driving_diagnostics.is_some() || self.collect_contact_metrics {
+        if self.driving_diagnostics.is_some()
+            || self.collect_contact_metrics
+            || self.brain.lifetime_enabled()
+        {
             for state in &mut phys_states {
                 state.config_flags |= universe::gpu::physics::CONTACT_DIAGNOSTICS_FLAG;
             }
         }
-        let ok = self.phys_gpu.step(&mut phys_states);
+        let ok = if let Some(organism) = self.organism.as_ref() {
+            self.phys_gpu.step_with_passes(
+                &mut phys_states,
+                |device, encoder, input| {
+                    organism
+                        .encode_pre(device, encoder, input, n, dt)
+                        .expect("validated organism pre parameters")
+                },
+                |device, encoder, output| {
+                    self.organism_orientation
+                        .as_ref()
+                        .unwrap()
+                        .encode_rotation_gpu(device, encoder, output, n, dt)
+                        .expect("organism orientation parameters");
+                    organism
+                        .encode_post(device, encoder, output, n, dt)
+                        .expect("validated organism post parameters");
+                    if let Some(taxi) = self.taxi.as_ref() {
+                        taxi.encode_post(
+                            device,
+                            encoder,
+                            output,
+                            &organism.buf_state,
+                            self.brain.buf_intent(),
+                            n,
+                            dt,
+                            tick_idx as u32,
+                        );
+                    }
+                },
+            )
+        } else {
+            self.phys_gpu.step(&mut phys_states)
+        };
         if let Some(t0) = physics_t0 {
             physics_ms = t0.elapsed().as_secs_f32() * 1000.0;
             println!(
@@ -2904,7 +3179,7 @@ impl GpuCtx {
             return false;
         }
         for i in 0..n {
-            if self.collect_contact_metrics {
+            if self.collect_contact_metrics && self.organism.is_none() {
                 let contact = phys_states[i].contact_diagnostics();
                 states[i].collision_energy_j += f64::from(contact.energy_loss_j.max(0.0));
                 states[i].impact_count = states[i]
@@ -2931,27 +3206,35 @@ impl GpuCtx {
             //   rotate_y(θ): x' = x·cos(θ) - z·sin(θ),  z' = x·sin(θ) + z·cos(θ)
             // Convenção: av_y > 0 = rotação anti-horária vista de cima (+Y) —
             // igual à CPU (physics.rs:760: transform.rotate_y(body.angular_velocity.y * dt)).
-            let theta = states[i].phys.av_y * dt;
-            let (sin_t, cos_t) = theta.sin_cos();
-            let fwd = states[i].phys.fwd;
-            let lat = states[i].phys.lat;
-            states[i].phys.fwd[0] = fwd[0] * cos_t - fwd[2] * sin_t;
-            states[i].phys.fwd[2] = fwd[0] * sin_t + fwd[2] * cos_t;
-            states[i].phys.lat[0] = lat[0] * cos_t - lat[2] * sin_t;
-            states[i].phys.lat[2] = lat[0] * sin_t + lat[2] * cos_t;
-            // Normaliza para evitar deriva numérica acumulada.
-            let fn_ = (states[i].phys.fwd[0].powi(2) + states[i].phys.fwd[2].powi(2))
-                .sqrt()
-                .max(1e-6);
-            let ln_ = (states[i].phys.lat[0].powi(2) + states[i].phys.lat[2].powi(2))
-                .sqrt()
-                .max(1e-6);
-            states[i].phys.fwd[0] /= fn_;
-            states[i].phys.fwd[2] /= fn_;
-            states[i].phys.lat[0] /= ln_;
-            states[i].phys.lat[2] /= ln_;
+            if self.organism.is_none() {
+                let theta = states[i].phys.av_y * dt;
+                let (sin_t, cos_t) = theta.sin_cos();
+                let fwd = states[i].phys.fwd;
+                let lat = states[i].phys.lat;
+                states[i].phys.fwd[0] = fwd[0] * cos_t - fwd[2] * sin_t;
+                states[i].phys.fwd[2] = fwd[0] * sin_t + fwd[2] * cos_t;
+                states[i].phys.lat[0] = lat[0] * cos_t - lat[2] * sin_t;
+                states[i].phys.lat[2] = lat[0] * sin_t + lat[2] * cos_t;
+                // Normaliza para evitar deriva numérica acumulada.
+                let fn_ = (states[i].phys.fwd[0].powi(2) + states[i].phys.fwd[2].powi(2))
+                    .sqrt()
+                    .max(1e-6);
+                let ln_ = (states[i].phys.lat[0].powi(2) + states[i].phys.lat[2].powi(2))
+                    .sqrt()
+                    .max(1e-6);
+                states[i].phys.fwd[0] /= fn_;
+                states[i].phys.fwd[2] /= fn_;
+                states[i].phys.lat[0] /= ln_;
+                states[i].phys.lat[2] /= ln_;
+            }
         }
 
+        if self.organism.is_some() && (diagnostic_sample || tick_idx % 64 == 0) {
+            if let Err(error) = self.sample_organism(states) {
+                eprintln!("organism telemetry failed: {error}");
+                return false;
+            }
+        }
         if let Some(diagnostics) = self.driving_diagnostics.as_mut() {
             if let Err(error) = diagnostics.after_physics(
                 tick_idx,
@@ -2960,6 +3243,9 @@ impl GpuCtx {
                 &intents,
                 &slow_out,
                 selected_motor_trace.as_ref(),
+                self.organism
+                    .as_ref()
+                    .map(|_| self.organism_samples.as_slice()),
             ) {
                 eprintln!("ERROR driving diagnostics: {error}");
                 return false;
@@ -3026,9 +3312,20 @@ impl GpuCtx {
         true
     }
 
+    /// Clear the physical image which is copied into temporal vision next tick.
+    pub fn clear_physical_retina_slot(&self, being: usize) {
+        assert!(being < self.capacity);
+        let bytes = (universe::config::iara::vision::RETINA_TOTAL * 4) as u64;
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.clear_buffer(&self.buf_retina_out, being as u64 * bytes, Some(bytes));
+        self.queue.submit(Some(encoder.finish()));
+    }
+
     /// Resets every recurrent state owned by this context for the active beings.
     /// Called between generations so offspring start without inherited memory.
     pub fn reset_cfc(&mut self, n: usize) {
+        self.lifetime_reward_sum.fill(0.0);
+        self.lifetime_reward_ticks = 0;
         self.retina_digest.reset(&self.queue, n);
         self.percept.reset_temporal(&self.device, &self.queue, n);
 

@@ -358,7 +358,10 @@ fn main(@builtin(workgroup_id) wgid: vec3<u32>) {
     let body_tire     = temporal[bb + 6u];  // slot 6 → ch70  TireTempReal     [0,1]
     let body_engine   = temporal[bb + 7u];  // slot 7 → ch71  EngineTempReal   [0,1]
 
-    // ch20 was unowned on the native GPU path. It now carries fuel without enabling
+    // ch20 replaces the spatial ray at index4; temporal owns the final byte.
+    // One invocation per being; byte masking preserves adjacent motion channels.
+    atomicAnd(&output[being * WAVE_U32S + 5u], 0xffffff00u);
+    // ch20 is reserved for organism energy on the resident native GPU path. It now carries fuel without enabling
     // the optional station/predator remap, so the body can expose its resource state
     // while preserving all visual-motion channels.
     write_channel(being, 20u, i32(clamp(body_fuel * 127.0, 0.0, 127.0)));

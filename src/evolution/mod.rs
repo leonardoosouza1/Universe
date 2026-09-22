@@ -9,8 +9,8 @@ pub mod spawn;
 pub mod telemetry;
 
 pub use dna_genesis::{
-    DNA_FAST_SIZE, DNA_HEADER_SIZE, DNA_MAGIC, DNA_SLOW_SIZE, DNA_V3_TOTAL, DNA_VERSION,
-    DnaPayload, EliteDna, load_champion_dna, save_champion_dna,
+    load_champion_dna, save_champion_dna, DnaPayload, EliteDna, DNA_FAST_SIZE, DNA_HEADER_SIZE,
+    DNA_MAGIC, DNA_SLOW_SIZE, DNA_V3_TOTAL, DNA_VERSION,
 };
 pub use logs::open_report_log;
 pub use settings::{DevSettings, RaceSettings};

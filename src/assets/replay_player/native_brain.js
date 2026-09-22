@@ -208,7 +208,7 @@
           ? `${role}activation unavailable in this recording (schema 1, or no fresh brain dispatch on this sample) · ${checkpoint}`
           : `${role}recorded stage l2_adapted = ${value.toPrecision(5)} (post std/gain/fatigue, pre-activation) · edges from L1: local contribution a·w, not causality · ${checkpoint}`;
       }
-      else if(n.layer==='motor head'){const mode=this.sample?.body?.motor_trace?.motor_head;detail=mode==='linear'?`${OUTPUTS[i]} linear clamp; spline knots inactive`:mode==='spline'?`${OUTPUTS[i]} runtime-default spline · knots ${f.outputKnots[i].map(v=>Number(v).toFixed(2)).join(', ')}`:`${OUTPUTS[i]} head mode was not recorded; exported spline defaults are not assumed active`;}
+      else if(n.layer==='motor head'){const mode=this.sample?.body?.motor_trace?.motor_head;detail=mode==='linear'?`${OUTPUTS[i]} linear clamp; spline knots inactive`:mode==='spline'?`${OUTPUTS[i]} ${f.outputKnotsSource || 'runtime spline'} · knots ${f.outputKnots[i].map(v=>Number(v).toFixed(2)).join(', ')}`:`${OUTPUTS[i]} head mode was not recorded; exported spline defaults are not assumed active`;}
       else if(n.layer==='slow input')detail=s.gatherMap[i]<0?'zero-filled: this source is absent in gpu_evolve':`declared source: wave channel ${s.gatherMap[i]}`;
       else if(n.layer==='slow CfC')detail='recurrent state was not recorded';
       else if(n.layer==='slow dense')detail=`ReLU hidden unit · bias ${Number(s.d1Bias[i]).toPrecision(4)}`;

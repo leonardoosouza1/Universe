@@ -510,11 +510,9 @@ mod tests {
         let samples = vec![linha(&[0.0, 0.0, 0.0])];
         let (stats, alarms) = collect_activation_stats("teste", &samples, Some(&w), 3, None);
         assert!(stats.spectral_radius.unwrap() > thresholds::SPECTRAL_MAX);
-        assert!(
-            alarms
-                .iter()
-                .any(|a| a.kind == AlarmKind::SpectralRadiusHigh)
-        );
+        assert!(alarms
+            .iter()
+            .any(|a| a.kind == AlarmKind::SpectralRadiusHigh));
     }
 
     #[test]
@@ -578,10 +576,8 @@ mod tests {
         // No matrix delivered: absence of measurement, not zero (see the field doc).
         assert_eq!(stats.spectral_radius, None);
         assert_eq!(stats.effective_rank, None);
-        assert!(
-            !alarms
-                .iter()
-                .any(|a| a.kind == AlarmKind::SpectralRadiusHigh)
-        );
+        assert!(!alarms
+            .iter()
+            .any(|a| a.kind == AlarmKind::SpectralRadiusHigh));
     }
 }

@@ -198,6 +198,11 @@
       if(!this.brain) return;
       const id=this.selectedId(), tick=this.tick();
       if(this.nativePayload) {
+        const observed=this.nativePayload.observedGenomes?.[this.sample?.genome_file];
+        if(observed && this.brain.data!==observed) {
+          this.brain.data=observed;
+          text('brain3d-name',`Native controller · ${this.sample.genome_file}`);
+        }
         this.brain.setObservation(this.sample,id);
         const info=this.brain.nodeInfo();$('native-layer').value=info.layer;$('neuron-index').value=info.index;
         $('neuron-index').max=this.brain.nodes.filter(node=>node.layer===info.layer).length-1;
@@ -272,7 +277,26 @@
       }
       const note=document.createElement('p');note.className='section-note';note.textContent=rows.length?`Alive ticks through last complete window: ${alive}. Blue: speed (0–${maxSpeed.toFixed(1)} m/s); gold: throttle; red: brake (0–1). Red bands: impact windows. Contacts are physical; proximity is separate.`:'No physical contact diagnostics attached.';host.append(note);
     }
+    updateLifetimeTrace() {
+      const host=$('lifetime-trace');if(!host)return;host.replaceChildren();
+      const values=this.sample?.lifetime_state,flags=this.data.meta.lifetime_flags||0;
+      if(!flags || !Array.isArray(values) || values.length!==512)return;
+      const title=document.createElement('p');title.className='motor-trace-caption';
+      title.textContent=`Lifetime adaptation · sample tick ${this.sample.tick} · ${flags&1?'plasticity ':''}${flags&2?'development ':''}${flags&4?'topology ':''}`;host.append(title);
+      const table=document.createElement('table'),body=document.createElement('tbody');
+      const maxAbs=(from,to)=>Math.max(0,...values.slice(from,to).map(Math.abs));
+      for(const [label,value] of [
+        ['Developmental age',values[375]],['Previous transition feedback',values[32]],
+        ['Fuel fraction',values[33]],['Largest acquired weight',maxAbs(36,180)],
+        ['Largest eligibility trace',maxAbs(180,324)],['Lifetime dispatches',values[380]],
+        ['Plastic throttle residual',values[384]],['Plastic steering residual',values[385]],['Plastic brake residual',values[386]],
+        ['Tank capacity',this.sample.body?.fuel_capacity],['Engine temperature °C',this.sample.body?.engine_temperature_c]
+      ]) {const row=document.createElement('tr'),name=document.createElement('th'),cell=document.createElement('td');name.textContent=label;cell.textContent=Number.isFinite(value)?value.toFixed(5):'Unavailable';row.append(name,cell);body.append(row);}
+      table.append(body);host.append(table);
+      const note=document.createElement('p');note.className='section-note';note.textContent='Inherited topology and acquired motor weights are separate. The 3D graph shows inherited connections; this table reports measured resident lifetime state. Acquired weights reset at birth.';host.append(note);
+    }
     updateMotorTrace() {
+      this.updateLifetimeTrace();
       const host=$('motor-stage-trace'),motor=this.sample?.body?.motor_trace;host.replaceChildren();
       if(!motor){const note=document.createElement('p');note.className='section-note';note.textContent='Per-stage motor trace was not recorded for this being/sample.';host.append(note);return;}
       const caption=document.createElement('p'),speed=Number.isFinite(motor.pre_physics_speed_mps)?`${motor.pre_physics_speed_mps.toFixed(3)} m/s`:'speed unavailable';caption.className='motor-trace-caption';caption.textContent=`${motor.phase} · ${speed} · ${motor.motor_head} head · brake ${motor.brake_suppression}`;host.append(caption);

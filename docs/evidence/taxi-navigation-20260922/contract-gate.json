@@ -1,0 +1,486 @@
+{
+  "checks": [
+    {
+      "command": "python byte comparison",
+      "detail": "schema copies are byte-identical",
+      "name": "schema_equality",
+      "status": "PASS"
+    },
+    {
+      "command": "/home/leonardo/projects/LLM/neuromod-lab/../.venv-rocm/bin/python -m pytest -q tests/test_trace_contract.py::test_fixture_manifest_validates_against_schema tests/test_trace_contract.py::test_every_block_decodes_with_declared_shape_and_dtype tests/test_trace_contract.py::test_js_decoder_agrees_byte_for_byte_with_python tests/test_trace_contract.py::test_clean_fixture_hashes_are_internally_consistent tests/test_quantity_contract.py tests/test_contract_gate.py",
+      "detail": "....................................................                     [100%]\n52 passed in 0.26s",
+      "name": "python_trace_contract",
+      "status": "PASS"
+    },
+    {
+      "command": "/home/leonardo/.nvm/versions/node/v22.16.0/bin/node tests/decode_fixture.mjs /home/leonardo/projects/LLM/lab-ui/fixtures/trace-v1/universe-b2-gen0 /home/leonardo/projects/LLM/lab-ui/contract",
+      "detail": "{\"manifest_run\":\"b2_cost_s113\",\"manifest_count\":300,\"blocks\":{\"retina\":{\"dtype\":\"u32\",\"length\":529200,\"first8\":[3630082,3677698,4535554,4614146,4699138,4788994,4882690,4978946],\"last8\":[1294594,1352706,1416450,1487106,1565442,1653250,1730562,1722626]},\"wave\":{\"dtype\":\"i8\",\"length\":57600,\"first8\":[77,70,60,47,-121,50,66,74],\"last8\":[96,96,95,95,94,95,96,97]},\"cfc\":{\"dtype\":\"f32\",\"length\":28800,\"first8\":[0.9242323637008667,0.9115074872970581,0.43559587001800537,0.6199319958686829,-1.5622024536132812,0.7557574510574341,0.8677195310592651,0.9640647768974304],\"last8\":[-0.006459178868681192,-0.026138676330447197,-0.08377937227487564,-0.0355345755815506,-0.04503108188509941,0.06274782121181488,0.40014103055000305,0.5410365462303162]},\"raw_intent\":{\"dtype\":\"f32\",\"length\":900,\"first8\":[0.8214378356933594,-0.7827040553092957,-0.2436951845884323,0.7207379341125488,-0.2166682928800583,-0.07748056203126907,0.5232129693031311,-0.39451634883880615],\"last8\":[-0.2891228199005127,0.5842159390449524,0.017760097980499268,-0.004629115108400583,0.6743355989456177,0,-0.11654902994632721,0.5999099612236023]},\"after_head\":{\"dtype\":\"f32\",\"length\":900,\"first8\":[0.6212558746337891,-0.597913384437561,-0.21200545132160187,0.560570240020752,-0.1902473270893097,-0.06911657750606537,0.43703198432922363,-0.3334244191646576],\"last8\":[-0.24857711791992188,0.47829669713974,0.015842899680137634,-0.004129379987716675,0.532606303691864,4.470348358154297e-8,-0.10396777093410492,0.4877546429634094]},\"after_modulation\":{\"dtype\":\"f32\",\"length\":900,\"first8\":[0.6051856875419617,-0.6021826863288879,0,0.5394206047058105,-0.194180428981781,0,0.41133788228034973,-0.3374571204185486],\"last8\":[-0.27807602286338806,0.47829669713974,0,-0.03438996523618698,0.532606303691864,0,-0.1351960152387619,0.4877546429634094]},\"final_command\":{\"dtype\":\"f32\",\"length\":900,\"first8\":[0.6051856875419617,-0.6107114553451538,0,0.5394206047058105,-0.22315435111522675,0,0.41133788228034973,-0.3263092637062073],\"last8\":[-0.18509648740291595,0,0,-0.028549034148454666,0,0,-0.0944967046380043,0]},\"pose\":{\"dtype\":\"f32\",\"length\":1200,\"first8\":[612.650390625,712.9893188476562,-0.9341644644737244,-0.35684290528297424,612.415771484375,712.8508911132812,-0.9228947162628174,-0.38505256175994873],\"last8\":[172.86573791503906,560.48583984375,-0.9644127488136292,0.26440128684043884,172.8455810546875,560.4907836914062,-0.9645230770111084,0.2639985978603363]},\"body\":{\"dtype\":\"f32\",\"length\":3600,\"first8\":[0.8506311774253845,1,1904.1663818359375,0.7857984304428101,2,0,2108.821044921875,0.24809660017490387],\"last8\":[2,0.5903887152671814,800,0.0941176488995552,0,0.3117731213569641,0,0]}},\"replay_header\":{\"magic\":\"IARARPLY\",\"version\":1,\"source\":1,\"nBeings\":8,\"tickRate\":64,\"worldSeed\":8005},\"replay_n_frames\":1205,\"replay_first_frame\":{\"tick\":4,\"pos\":[612.7410888671875,0.5,713.04150390625],\"finalBrk\":0,\"gear\":2},\"replay_last_frame\":{\"tick\":4820,\"pos\":[172.82765197753906,0.5,560.4950561523438],\"finalBrk\":0,\"gear\":2}}",
+      "name": "node_contract_decoder",
+      "status": "PASS"
+    },
+    {
+      "command": "/home/leonardo/.nvm/versions/node/v22.16.0/bin/node node_modules/vitest/vitest.mjs run --configLoader runner tests/decoder-validation.test.ts tests/quantities.test.ts tests/contract-loader.spec.ts --maxWorkers 1",
+      "detail": "RUN  v5.0.1 /home/leonardo/projects/LLM/lab-ui\n\n\n Test Files  3 passed (3)\n      Tests  21 passed (21)\n   Start at  13:49:31\n   Duration  1.61s (environment 81%, transform 6%, import 6%, tests 4%, worker 1%, setup 1%)\n\n    Isolate  3 workers spawned \u00b7 ~444ms startup each (spawn + environment, per file)\n             at least ~888ms faster with isolate: false \u2014 reuses workers across files instead of one per file",
+      "name": "ui_negative_contract_tests",
+      "status": "PASS"
+    },
+    {
+      "command": "sha256 snapshot",
+      "detail": "before/after snapshots match",
+      "name": "input_fingerprint",
+      "status": "PASS"
+    },
+    {
+      "command": "not requested",
+      "detail": "GPU was not requested",
+      "name": "gpu",
+      "status": "NOT_APPLICABLE"
+    }
+  ],
+  "fingerprint": {
+    "after": {
+      "files": {
+        "lab-ui/contract/DEVIATIONS.md": {
+          "exists": true,
+          "sha256": "9ce113f34e280c4bc029f29209113f8c04421c5d42fe02e91b958509f5bda50d",
+          "size": 8185
+        },
+        "lab-ui/contract/EVENTS.md": {
+          "exists": true,
+          "sha256": "ec531ede974bcb21f10a34695ee28fa859e0ff730c432d3d2fb8848ac1d5fe2e",
+          "size": 3712
+        },
+        "lab-ui/contract/REPLAY-FORMAT.md": {
+          "exists": true,
+          "sha256": "b4f2aafd279ad50f5726a751b2e8feb8661f6692a0632dfeabebcb63d6169d57",
+          "size": 7134
+        },
+        "lab-ui/contract/block-semantics-v1.json": {
+          "exists": true,
+          "sha256": "3a819fce56ecf2c9a20e05227048a9bfb94a9103c90da6a27c60125380d7d4a8",
+          "size": 4639
+        },
+        "lab-ui/contract/decoder.js": {
+          "exists": true,
+          "sha256": "73f03c89bee401ee52209bac80e5a0588b17e2baf8bffe1a495de53dd6a86c5c",
+          "size": 13238
+        },
+        "lab-ui/contract/package.json": {
+          "exists": true,
+          "sha256": "ed3b9cc7c549fa42009a3fb49337770ed4a4095af8f47209c468d8bdd2438221",
+          "size": 321
+        },
+        "lab-ui/contract/quantities-v1.json": {
+          "exists": true,
+          "sha256": "091ea554d19fc76f7d67df85c5c2c79325273481a2e55fb448e937b87ebca918",
+          "size": 784
+        },
+        "lab-ui/contract/quantities.js": {
+          "exists": true,
+          "sha256": "11551562f898076508eb5d20d10b745ac4bf729488d17bfdf49d21f1e5e7c3de",
+          "size": 4329
+        },
+        "lab-ui/contract/replay.js": {
+          "exists": true,
+          "sha256": "7e157c80d024d325fa268b7d3615b57712bcda9a73fea05710921bb675aaa5a0",
+          "size": 5414
+        },
+        "lab-ui/contract/trace-v1.schema.json": {
+          "exists": true,
+          "sha256": "6d743ca20cec393524735d3db77e5551fd556211de7a478cfa3bede631ba6681",
+          "size": 19366
+        },
+        "lab-ui/fixtures/trace-v1/universe-b2-gen0/manifest.json": {
+          "exists": true,
+          "sha256": "a63976d599ca19e6f1f4c6c4abe31ab521ae5d03bf9b8a7b31aee3bb7b268c6e",
+          "size": 7640
+        },
+        "lab-ui/fixtures/trace-v1/universe-b2-gen0/neural.trace": {
+          "exists": true,
+          "sha256": "1863d1a621669d2dcfe349c4861f97c75be2dcd663e3080491487061b9bfafd3",
+          "size": 2323200
+        },
+        "lab-ui/fixtures/trace-v1/universe-b2-gen0/physical.replay": {
+          "exists": true,
+          "sha256": "69663367ac8fdb3e55f76b691b89d9416de83f05d0b5075fbdb44886f678a37b",
+          "size": 1253264
+        },
+        "lab-ui/package-lock.json": {
+          "exists": true,
+          "sha256": "f12a11d2d347634598ad05c220fc5d6d546cf0a2108f0f556389864e839b8a5c",
+          "size": 100000
+        },
+        "lab-ui/package.json": {
+          "exists": true,
+          "sha256": "a6667b52b098b25f4a9c213004f998ef4448c1e44076f83cd12adc14bc89066f",
+          "size": 1190
+        },
+        "lab-ui/tests/contract-loader.spec.ts": {
+          "exists": true,
+          "sha256": "05cf594fa9e40d651cda10c8a1278be718a8f7e0ce718642365fe57b3bcb992c",
+          "size": 4045
+        },
+        "lab-ui/tests/decoder-validation.test.ts": {
+          "exists": true,
+          "sha256": "f261242ff2a8bfc3a69d82fb1e4e817335707973636b9d40842a5d43db6181a8",
+          "size": 2792
+        },
+        "lab-ui/tests/quantities.test.ts": {
+          "exists": true,
+          "sha256": "2941ebc13f8c26696e243a1ccf661a208cbfbe69b9424f3b02828b4d4151743c",
+          "size": 1068
+        },
+        "lab-ui/tsconfig.app.json": {
+          "exists": true,
+          "sha256": "36a27ac404f5352d8e20d6f978fde203a8a50adbff24b928c946a4d06770fa69",
+          "size": 1890
+        },
+        "lab-ui/tsconfig.json": {
+          "exists": true,
+          "sha256": "aa61e8447a7e1a06329e7fa71d9884e7101b97bd72317ddebefd213ffc29aa01",
+          "size": 161
+        },
+        "lab-ui/tsconfig.node.json": {
+          "exists": true,
+          "sha256": "487fde14b51f742d3a60496e986177d7934da0a7f6563ffd05d82f067094377a",
+          "size": 328
+        },
+        "lab-ui/tsconfig.vitest.json": {
+          "exists": true,
+          "sha256": "05249e7f7f0071fe9f742d88c284c55b4518b0f0a3d2be651962f4930ada76d1",
+          "size": 205
+        },
+        "lab-ui/vite.config.ts": {
+          "exists": true,
+          "sha256": "94db07781c43d7c5bbba7b698bb55534379ffaf83323cac5fa4bd93158ce2a51",
+          "size": 1586
+        },
+        "lab-ui/vitest.config.ts": {
+          "exists": true,
+          "sha256": "bd0b4043c951a19a80d40fb5a887951b80821282f5b12a454160975c3b7a68e3",
+          "size": 1051
+        },
+        "neuromod-lab/pyproject.toml": {
+          "exists": false,
+          "sha256": null,
+          "size": null
+        },
+        "neuromod-lab/requirements.txt": {
+          "exists": true,
+          "sha256": "7d133c99ca50ed7752f7b71ea36a26a4994d3f9a5d8a57fba65716bc6150115d",
+          "size": 23
+        },
+        "neuromod-lab/scripts/contract_gate.py": {
+          "exists": true,
+          "sha256": "cbf100d78829a6f5bf9e01212cbbc4947c5aa9fd579efd02ae351c2b7217b31a",
+          "size": 12427
+        },
+        "neuromod-lab/src/lab_api/trace/SCHEMA-CHANGE-counterfactual_valid.md": {
+          "exists": true,
+          "sha256": "ff6f8d968c00e705e3c267f6bf2b3115bb282a8c6cf93d7c216f0585b1611995",
+          "size": 4091
+        },
+        "neuromod-lab/src/lab_api/trace/SCHEMA-CHANGE-observation_stage2_blocks.md": {
+          "exists": true,
+          "sha256": "9e6e298d4092399e2aa2965dd9e2855ee71ead2ba0a65737c820ebbeedba93a7",
+          "size": 6074
+        },
+        "neuromod-lab/src/lab_api/trace/SCHEMA-CHANGE-recorder_config.md": {
+          "exists": true,
+          "sha256": "431dba78a983b01267524f082ac1013d55535b6e34a949c4742a6d4abc752535",
+          "size": 6305
+        },
+        "neuromod-lab/src/lab_api/trace/__init__.py": {
+          "exists": true,
+          "sha256": "eacba90e496ed8ad1e0b46e71fb24a6c6e02973647307ec85ba048c7155fd525",
+          "size": 402
+        },
+        "neuromod-lab/src/lab_api/trace/check.py": {
+          "exists": true,
+          "sha256": "f19ec7d2304b97bbf36eec271f14d7147a4754b2ea9d5aa39ec42c278290273f",
+          "size": 14128
+        },
+        "neuromod-lab/src/lab_api/trace/package_run.py": {
+          "exists": true,
+          "sha256": "51d2eea38690a624d9ee1d3025eb437ca9950de86cccd701b1bbff93cb2b9ef1",
+          "size": 3263
+        },
+        "neuromod-lab/src/lab_api/trace/produce.py": {
+          "exists": true,
+          "sha256": "633b9072079d3c44af9afe29b52daa289b34fc8d2d63c1b7b06a8f1bf39fb199",
+          "size": 7136
+        },
+        "neuromod-lab/src/lab_api/trace/producer.py": {
+          "exists": true,
+          "sha256": "d080e5c27992ea0ddebb10a026deb039fde61f52f5668cb49bc3131bbeff3398",
+          "size": 48600
+        },
+        "neuromod-lab/src/lab_api/trace/quantities.py": {
+          "exists": true,
+          "sha256": "1d7e75297be9efa83df0972d6cc754ef4cfc95dbe179438fcf671e94183bf9a5",
+          "size": 11117
+        },
+        "neuromod-lab/src/lab_api/trace/reference_decoder.py": {
+          "exists": true,
+          "sha256": "1d86822732f91c0ce74cf3e55aebf2cd8ad9345278d56d3ff7ba3a8c3518fcea",
+          "size": 19448
+        },
+        "neuromod-lab/src/lab_api/trace/trace-v1.schema.json": {
+          "exists": true,
+          "sha256": "6d743ca20cec393524735d3db77e5551fd556211de7a478cfa3bede631ba6681",
+          "size": 19366
+        },
+        "neuromod-lab/tests/conftest.py": {
+          "exists": true,
+          "sha256": "aad93abfa60d513fcb7824a075f4b79cee84416505f3fec6ab667b6f6e5a0c2c",
+          "size": 992
+        },
+        "neuromod-lab/tests/decode_fixture.mjs": {
+          "exists": true,
+          "sha256": "f9b8e1e986b035733a8b097a5ef42987f4e8a56c2e8eca28d7897495a62df83b",
+          "size": 2510
+        },
+        "neuromod-lab/tests/test_contract_gate.py": {
+          "exists": true,
+          "sha256": "914ca71ee08a11fc4a5d00a523daa2902caecefca6e07219ad27798db6e31e67",
+          "size": 3716
+        },
+        "neuromod-lab/tests/test_quantity_contract.py": {
+          "exists": true,
+          "sha256": "274d6109de17520e058169edf2b0ff562aa4518db6e80109b9394704356e3a1d",
+          "size": 9516
+        },
+        "neuromod-lab/tests/test_trace_contract.py": {
+          "exists": true,
+          "sha256": "136d61f6f89ecea0f4c18012e0c71f8c18d4a947d5beef803cf451ed9098278f",
+          "size": 14159
+        }
+      }
+    },
+    "before": {
+      "files": {
+        "lab-ui/contract/DEVIATIONS.md": {
+          "exists": true,
+          "sha256": "9ce113f34e280c4bc029f29209113f8c04421c5d42fe02e91b958509f5bda50d",
+          "size": 8185
+        },
+        "lab-ui/contract/EVENTS.md": {
+          "exists": true,
+          "sha256": "ec531ede974bcb21f10a34695ee28fa859e0ff730c432d3d2fb8848ac1d5fe2e",
+          "size": 3712
+        },
+        "lab-ui/contract/REPLAY-FORMAT.md": {
+          "exists": true,
+          "sha256": "b4f2aafd279ad50f5726a751b2e8feb8661f6692a0632dfeabebcb63d6169d57",
+          "size": 7134
+        },
+        "lab-ui/contract/block-semantics-v1.json": {
+          "exists": true,
+          "sha256": "3a819fce56ecf2c9a20e05227048a9bfb94a9103c90da6a27c60125380d7d4a8",
+          "size": 4639
+        },
+        "lab-ui/contract/decoder.js": {
+          "exists": true,
+          "sha256": "73f03c89bee401ee52209bac80e5a0588b17e2baf8bffe1a495de53dd6a86c5c",
+          "size": 13238
+        },
+        "lab-ui/contract/package.json": {
+          "exists": true,
+          "sha256": "ed3b9cc7c549fa42009a3fb49337770ed4a4095af8f47209c468d8bdd2438221",
+          "size": 321
+        },
+        "lab-ui/contract/quantities-v1.json": {
+          "exists": true,
+          "sha256": "091ea554d19fc76f7d67df85c5c2c79325273481a2e55fb448e937b87ebca918",
+          "size": 784
+        },
+        "lab-ui/contract/quantities.js": {
+          "exists": true,
+          "sha256": "11551562f898076508eb5d20d10b745ac4bf729488d17bfdf49d21f1e5e7c3de",
+          "size": 4329
+        },
+        "lab-ui/contract/replay.js": {
+          "exists": true,
+          "sha256": "7e157c80d024d325fa268b7d3615b57712bcda9a73fea05710921bb675aaa5a0",
+          "size": 5414
+        },
+        "lab-ui/contract/trace-v1.schema.json": {
+          "exists": true,
+          "sha256": "6d743ca20cec393524735d3db77e5551fd556211de7a478cfa3bede631ba6681",
+          "size": 19366
+        },
+        "lab-ui/fixtures/trace-v1/universe-b2-gen0/manifest.json": {
+          "exists": true,
+          "sha256": "a63976d599ca19e6f1f4c6c4abe31ab521ae5d03bf9b8a7b31aee3bb7b268c6e",
+          "size": 7640
+        },
+        "lab-ui/fixtures/trace-v1/universe-b2-gen0/neural.trace": {
+          "exists": true,
+          "sha256": "1863d1a621669d2dcfe349c4861f97c75be2dcd663e3080491487061b9bfafd3",
+          "size": 2323200
+        },
+        "lab-ui/fixtures/trace-v1/universe-b2-gen0/physical.replay": {
+          "exists": true,
+          "sha256": "69663367ac8fdb3e55f76b691b89d9416de83f05d0b5075fbdb44886f678a37b",
+          "size": 1253264
+        },
+        "lab-ui/package-lock.json": {
+          "exists": true,
+          "sha256": "f12a11d2d347634598ad05c220fc5d6d546cf0a2108f0f556389864e839b8a5c",
+          "size": 100000
+        },
+        "lab-ui/package.json": {
+          "exists": true,
+          "sha256": "a6667b52b098b25f4a9c213004f998ef4448c1e44076f83cd12adc14bc89066f",
+          "size": 1190
+        },
+        "lab-ui/tests/contract-loader.spec.ts": {
+          "exists": true,
+          "sha256": "05cf594fa9e40d651cda10c8a1278be718a8f7e0ce718642365fe57b3bcb992c",
+          "size": 4045
+        },
+        "lab-ui/tests/decoder-validation.test.ts": {
+          "exists": true,
+          "sha256": "f261242ff2a8bfc3a69d82fb1e4e817335707973636b9d40842a5d43db6181a8",
+          "size": 2792
+        },
+        "lab-ui/tests/quantities.test.ts": {
+          "exists": true,
+          "sha256": "2941ebc13f8c26696e243a1ccf661a208cbfbe69b9424f3b02828b4d4151743c",
+          "size": 1068
+        },
+        "lab-ui/tsconfig.app.json": {
+          "exists": true,
+          "sha256": "36a27ac404f5352d8e20d6f978fde203a8a50adbff24b928c946a4d06770fa69",
+          "size": 1890
+        },
+        "lab-ui/tsconfig.json": {
+          "exists": true,
+          "sha256": "aa61e8447a7e1a06329e7fa71d9884e7101b97bd72317ddebefd213ffc29aa01",
+          "size": 161
+        },
+        "lab-ui/tsconfig.node.json": {
+          "exists": true,
+          "sha256": "487fde14b51f742d3a60496e986177d7934da0a7f6563ffd05d82f067094377a",
+          "size": 328
+        },
+        "lab-ui/tsconfig.vitest.json": {
+          "exists": true,
+          "sha256": "05249e7f7f0071fe9f742d88c284c55b4518b0f0a3d2be651962f4930ada76d1",
+          "size": 205
+        },
+        "lab-ui/vite.config.ts": {
+          "exists": true,
+          "sha256": "94db07781c43d7c5bbba7b698bb55534379ffaf83323cac5fa4bd93158ce2a51",
+          "size": 1586
+        },
+        "lab-ui/vitest.config.ts": {
+          "exists": true,
+          "sha256": "bd0b4043c951a19a80d40fb5a887951b80821282f5b12a454160975c3b7a68e3",
+          "size": 1051
+        },
+        "neuromod-lab/pyproject.toml": {
+          "exists": false,
+          "sha256": null,
+          "size": null
+        },
+        "neuromod-lab/requirements.txt": {
+          "exists": true,
+          "sha256": "7d133c99ca50ed7752f7b71ea36a26a4994d3f9a5d8a57fba65716bc6150115d",
+          "size": 23
+        },
+        "neuromod-lab/scripts/contract_gate.py": {
+          "exists": true,
+          "sha256": "cbf100d78829a6f5bf9e01212cbbc4947c5aa9fd579efd02ae351c2b7217b31a",
+          "size": 12427
+        },
+        "neuromod-lab/src/lab_api/trace/SCHEMA-CHANGE-counterfactual_valid.md": {
+          "exists": true,
+          "sha256": "ff6f8d968c00e705e3c267f6bf2b3115bb282a8c6cf93d7c216f0585b1611995",
+          "size": 4091
+        },
+        "neuromod-lab/src/lab_api/trace/SCHEMA-CHANGE-observation_stage2_blocks.md": {
+          "exists": true,
+          "sha256": "9e6e298d4092399e2aa2965dd9e2855ee71ead2ba0a65737c820ebbeedba93a7",
+          "size": 6074
+        },
+        "neuromod-lab/src/lab_api/trace/SCHEMA-CHANGE-recorder_config.md": {
+          "exists": true,
+          "sha256": "431dba78a983b01267524f082ac1013d55535b6e34a949c4742a6d4abc752535",
+          "size": 6305
+        },
+        "neuromod-lab/src/lab_api/trace/__init__.py": {
+          "exists": true,
+          "sha256": "eacba90e496ed8ad1e0b46e71fb24a6c6e02973647307ec85ba048c7155fd525",
+          "size": 402
+        },
+        "neuromod-lab/src/lab_api/trace/check.py": {
+          "exists": true,
+          "sha256": "f19ec7d2304b97bbf36eec271f14d7147a4754b2ea9d5aa39ec42c278290273f",
+          "size": 14128
+        },
+        "neuromod-lab/src/lab_api/trace/package_run.py": {
+          "exists": true,
+          "sha256": "51d2eea38690a624d9ee1d3025eb437ca9950de86cccd701b1bbff93cb2b9ef1",
+          "size": 3263
+        },
+        "neuromod-lab/src/lab_api/trace/produce.py": {
+          "exists": true,
+          "sha256": "633b9072079d3c44af9afe29b52daa289b34fc8d2d63c1b7b06a8f1bf39fb199",
+          "size": 7136
+        },
+        "neuromod-lab/src/lab_api/trace/producer.py": {
+          "exists": true,
+          "sha256": "d080e5c27992ea0ddebb10a026deb039fde61f52f5668cb49bc3131bbeff3398",
+          "size": 48600
+        },
+        "neuromod-lab/src/lab_api/trace/quantities.py": {
+          "exists": true,
+          "sha256": "1d7e75297be9efa83df0972d6cc754ef4cfc95dbe179438fcf671e94183bf9a5",
+          "size": 11117
+        },
+        "neuromod-lab/src/lab_api/trace/reference_decoder.py": {
+          "exists": true,
+          "sha256": "1d86822732f91c0ce74cf3e55aebf2cd8ad9345278d56d3ff7ba3a8c3518fcea",
+          "size": 19448
+        },
+        "neuromod-lab/src/lab_api/trace/trace-v1.schema.json": {
+          "exists": true,
+          "sha256": "6d743ca20cec393524735d3db77e5551fd556211de7a478cfa3bede631ba6681",
+          "size": 19366
+        },
+        "neuromod-lab/tests/conftest.py": {
+          "exists": true,
+          "sha256": "aad93abfa60d513fcb7824a075f4b79cee84416505f3fec6ab667b6f6e5a0c2c",
+          "size": 992
+        },
+        "neuromod-lab/tests/decode_fixture.mjs": {
+          "exists": true,
+          "sha256": "f9b8e1e986b035733a8b097a5ef42987f4e8a56c2e8eca28d7897495a62df83b",
+          "size": 2510
+        },
+        "neuromod-lab/tests/test_contract_gate.py": {
+          "exists": true,
+          "sha256": "914ca71ee08a11fc4a5d00a523daa2902caecefca6e07219ad27798db6e31e67",
+          "size": 3716
+        },
+        "neuromod-lab/tests/test_quantity_contract.py": {
+          "exists": true,
+          "sha256": "274d6109de17520e058169edf2b0ff562aa4518db6e80109b9394704356e3a1d",
+          "size": 9516
+        },
+        "neuromod-lab/tests/test_trace_contract.py": {
+          "exists": true,
+          "sha256": "136d61f6f89ecea0f4c18012e0c71f8c18d4a947d5beef803cf451ed9098278f",
+          "size": 14159
+        }
+      }
+    },
+    "changed": false
+  },
+  "gate": "trace-v1-contract",
+  "mode": "verify",
+  "scope": "schemas, focused transport tests, and bounded fingerprints; no build/simulation/training",
+  "status": "PASS",
+  "version": 1
+}

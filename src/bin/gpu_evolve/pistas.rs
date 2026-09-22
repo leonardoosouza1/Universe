@@ -31,7 +31,10 @@ pub fn pista_da_gen(pistas: &[u64], gen_abs: usize) -> u64 {
 /// Caller must check `!specs.is_empty()` first — `--world` composes with the track
 /// rotation / `--switch-on-complete` machinery exactly like `--tracks`, but wins over
 /// it when both are present (see `resolve_world`, `main.rs`).
-pub fn spec_da_gen(specs: &[universe::world_spec::WorldSpec], gen_abs: usize) -> universe::world_spec::WorldSpec {
+pub fn spec_da_gen(
+    specs: &[universe::world_spec::WorldSpec],
+    gen_abs: usize,
+) -> universe::world_spec::WorldSpec {
     specs[gen_abs % specs.len()]
 }
 
@@ -140,6 +143,10 @@ mod tests {
         ];
         assert_eq!(spec_da_gen(&specs, 0).seed, 8005);
         assert_eq!(spec_da_gen(&specs, 1).seed, 8100);
-        assert_eq!(spec_da_gen(&specs, 2).seed, 8005, "gen 2 must wrap back to index 0");
+        assert_eq!(
+            spec_da_gen(&specs, 2).seed,
+            8005,
+            "gen 2 must wrap back to index 0"
+        );
     }
 }

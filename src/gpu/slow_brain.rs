@@ -213,7 +213,9 @@ impl SlowBrainGpu {
         let buf_input = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("slow-input"),
             size: bytes_input,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -223,7 +225,9 @@ impl SlowBrainGpu {
         let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("slow-output"),
             size: bytes_output,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -690,6 +694,67 @@ mod tests {
                 ),
             ]
         );
+    }
+}
+
+impl SlowBrainGpu {
+    /// Copy the selected being's real slow-brain buffers into one caller-owned
+    /// diagnostic staging buffer. This is recording-only and belongs in the
+    /// same encoder as the pre-physics work; it does not add a readback tick.
+    pub fn copy_diagnostic_into(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        being: usize,
+        destination: &wgpu::Buffer,
+        input_offset: u64,
+        state_offset: u64,
+        output_offset: u64,
+    ) -> Result<(), &'static str> {
+        if being >= self.capacity {
+            return Err("slow diagnostic being exceeds capacity");
+        }
+        let input_bytes = (INPUT_SIZE * 4) as u64;
+        let state_bytes = (STATE_PER_SER * 4) as u64;
+        let output_bytes = (OUTPUT_DIM * 4) as u64;
+        for (offset, bytes) in [
+            (input_offset, input_bytes),
+            (state_offset, state_bytes),
+            (output_offset, output_bytes),
+        ] {
+            if offset.checked_add(bytes).is_none() || offset + bytes > destination.size() {
+                return Err("slow diagnostic staging range exceeds destination");
+            }
+        }
+        encoder.copy_buffer_to_buffer(
+            &self.buf_input,
+            (being * INPUT_SIZE * 4) as u64,
+            destination,
+            input_offset,
+            input_bytes,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.buf_state,
+            (being * STATE_PER_SER * 4) as u64,
+            destination,
+            state_offset,
+            state_bytes,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.buf_output,
+            (being * OUTPUT_DIM * 4) as u64,
+            destination,
+            output_offset,
+            output_bytes,
+        );
+        Ok(())
+    }
+
+    /// Stable acquired state/output bundle; weights and input staging are excluded.
+    pub fn snapshot_buffers(&self) -> Vec<crate::gpu::state_snapshot::NamedBuffer<'_>> {
+        vec![
+            ("slow.state", &self.buf_state),
+            ("slow.output", &self.buf_output),
+        ]
     }
 }
 

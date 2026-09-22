@@ -1478,7 +1478,8 @@ pub fn track_waypoints_for_spec(spec: &crate::world_spec::WorldSpec) -> Vec<Vec2
         // function is the same one the 8000-8299 profile bands already apply.
         // Skipping this step is exactly the unit bug documented on that helper's
         // doc comment (finding, 2026-08-15).
-        perfil_para_cells(&crate::pista_gen_spec::waypoints_for_spec( // check-language: allow
+        perfil_para_cells(&crate::pista_gen_spec::waypoints_for_spec(
+            // check-language: allow
             spec,
             default_d.n_curvas.max(1),
             default_d.comprimento,
@@ -2088,7 +2089,11 @@ mod tests {
         assert!(!spec.is_seed_only());
         let wps = track_waypoints_for_spec(&spec);
         let d = crate::pista_gen::medir(&wps, 28.0, 40.0);
-        assert!(d.r_min >= 6.0, "below the physical floor: r_min={}", d.r_min);
+        assert!(
+            d.r_min >= 6.0,
+            "below the physical floor: r_min={}",
+            d.r_min
+        );
         assert!(
             d.r_min <= 20.0,
             "radius=9 request produced a much wider track: r_min={}",

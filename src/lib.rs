@@ -1,3 +1,4 @@
+pub mod adaptive_curriculum;
 /// Activation metrics + runtime guards, built on top of `math::*` (E4).
 pub mod analysis;
 pub mod brain;
@@ -6,7 +7,9 @@ pub mod brain_interface;
 pub mod cfc;
 pub mod chaos;
 pub mod config;
+pub mod contracts;
 pub mod dense_layer;
+pub mod ecology;
 pub mod engine;
 pub mod environment;
 pub mod evolution;
@@ -75,3 +78,8 @@ pub struct HeadlessMode {
     pub enabled: bool,
     pub gens_target: u32,
 }
+
+pub mod organism_city;
+pub mod organism_scenario;
+
+pub mod organism_channels;

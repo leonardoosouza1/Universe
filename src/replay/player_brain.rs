@@ -1,6 +1,6 @@
 //! Validate a measured neural trace before attaching it to a body's replay.
 
-use super::{ReplayFrame, invalid};
+use super::{invalid, ReplayFrame};
 use serde_json::Value;
 use std::io;
 

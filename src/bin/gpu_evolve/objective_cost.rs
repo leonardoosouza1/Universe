@@ -99,8 +99,7 @@ pub fn population_median(values: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        centered_progress_metres, ordered_progress_metres, population_median,
-        safety_adjusted_score,
+        centered_progress_metres, ordered_progress_metres, population_median, safety_adjusted_score,
     };
 
     #[test]
@@ -111,7 +110,10 @@ mod tests {
         population.push(5_000.0);
         assert!(population_median(&population) < 1_000.0);
         let mean = population.iter().sum::<f64>() / population.len() as f64;
-        assert!(mean > 100.0, "the mean is what would have been fooled: {mean}");
+        assert!(
+            mean > 100.0,
+            "the mean is what would have been fooled: {mean}"
+        );
     }
 
     #[test]

@@ -180,7 +180,12 @@ impl Rng {
 /// Os vértices ficam em torno de um centro, com raios e ângulos sorteados; ligar em ordem
 /// angular fecha o circuito de graça. As "retas" saem de deixar um vão angular grande entre
 /// dois vértices consecutivos; as "curvas", de agrupar vértices.
-pub(crate) fn tracado(semente: u64, n_vertices: usize, n_retas: usize, raio_base: f32) -> Vec<Vec2> {
+pub(crate) fn tracado(
+    semente: u64,
+    n_vertices: usize,
+    n_retas: usize,
+    raio_base: f32,
+) -> Vec<Vec2> {
     let mut r = Rng::novo(semente);
     let centro = Vec2::new(120.0, 120.0); // grade 240×240 (world.rs)
 
@@ -239,7 +244,7 @@ pub fn gerar(
         }
     }
     let _ = melhor; // a mais próxima NÃO é devolvida: entregar quase-difícil como difícil
-    // é exatamente o tipo de mentira silenciosa que este projeto evita
+                    // é exatamente o tipo de mentira silenciosa que este projeto evita
     None
 }
 

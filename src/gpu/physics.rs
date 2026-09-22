@@ -90,6 +90,8 @@ pub fn pack_config_flags(
 
 /// Optional per-step wall-contact telemetry; bits 0..5 are existing physics flags.
 pub const CONTACT_DIAGNOSTICS_FLAG: u32 = 1 << 6;
+/// Scenario-only static-friction rest constraint. Off by default for legacy runs.
+pub const STATIC_REST_FLAG: u32 = 1 << 9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContactDiagnostics {
@@ -141,7 +143,7 @@ pub fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
         _pad_fwd: 0.0,
         lat,
         _pad_lat: 0.0,
-        max_torque: 620.0,
+        max_torque: BASE_ENGINE_TORQUE_NM,
         current_rpm: 2000.0,
         max_rpm: 8500.0,
         throttle: 0.0,
@@ -184,9 +186,12 @@ pub fn make_physics_state(start: [f32; 3], fwd: [f32; 3]) -> PhysicsStateGpu {
     }
 }
 
+/// Historical engine capacity, also the reference for fuel load scaling.
+pub const BASE_ENGINE_TORQUE_NM: f32 = 620.0;
+
 /// Stride of the `input: array<CarInput>` array in WGSL.
 /// SizeOf(PhysicsStateGpu)=360, AlignOf=16 → stride=368.
-pub(crate) const INPUT_WGSL_STRIDE: usize = 368;
+pub const INPUT_WGSL_STRIDE: usize = 368;
 
 fn serialize_input(state: &[PhysicsStateGpu]) -> Vec<u8> {
     let n = state.len();
@@ -201,7 +206,7 @@ fn serialize_input(state: &[PhysicsStateGpu]) -> Vec<u8> {
 
 /// Full state of one car for a GPU step.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, Pod, Zeroable)]
 pub struct PhysicsStateGpu {
     pub vel: [f32; 3],
     pub av_y: f32,
@@ -255,6 +260,74 @@ pub struct PhysicsStateGpu {
 }
 
 impl PhysicsStateGpu {
+    /// Validate the actual command and body before any GPU upload.
+    pub fn validate_contract(&self) -> Result<(), crate::contracts::ContractError> {
+        use crate::contracts::{finite, positive, TemperatureC, VehicleCommand};
+        VehicleCommand::new(self.throttle, self.steer, self.brake_cmd)?;
+        if self.is_stalled > 1 {
+            return Err(crate::contracts::ContractError {
+                field: "physics.input.is_stalled",
+                expected: "0 or 1",
+            });
+        }
+        TemperatureC::new(self.engine_temp)?;
+        TemperatureC::new(self.oil_temp)?;
+        for (field, value) in [
+            ("mass_kg", self.mass),
+            ("dt_seconds", self.dt),
+            ("max_rpm", self.max_rpm),
+            ("wheel_radius_m", self.wheel_radius),
+            ("wheel_inertia", self.wheel_inertia),
+            ("flywheel_inertia", self.flywheel_inertia),
+            ("wheel_base_m", self.wheel_base),
+            ("track_width_m", self.track_width),
+        ] {
+            positive(value, field)?;
+        }
+        for (field, value) in [
+            ("yaw_rate_rad_s", self.av_y),
+            ("max_torque_nm", self.max_torque),
+            ("brake_torque_nm", self.brake_torque_max),
+            ("current_rpm", self.current_rpm),
+            ("drive_torque_out", self.drive_torque_out),
+            ("shift_timer", self.shift_timer),
+            ("starter_timer", self.starter_timer),
+            ("drag_coeff", self.drag_coeff),
+            ("cg_height", self.cg_height),
+            ("lsd_lock_ratio", self.lsd_lock_ratio),
+            ("mu_peak", self.mu_peak),
+            ("cornering_stiffness", self.cornering_stiffness),
+            ("optimal_temp", self.optimal_temp),
+            ("susp_stiffness", self.susp_stiffness),
+            ("susp_damping", self.susp_damping),
+            ("susp_rest", self.susp_rest),
+            ("susp_max_travel", self.susp_max_travel),
+            ("cooling_scale", self._pad_before_wind),
+            ("terrain_grip", self.terrain_grip),
+            ("env_grip", self.env_grip),
+            ("aquaplaning", self.aquaplaning),
+        ] {
+            finite(value, field)?;
+        }
+        for (field, values) in [
+            ("velocity_mps", &self.vel),
+            ("position_m", &self.pos),
+            ("forward", &self.fwd),
+            ("lateral", &self.lat),
+            ("wind_mps", &self.wind),
+        ] {
+            for &value in values {
+                finite(value, field)?;
+            }
+        }
+        for wheel in &self.wheels {
+            for &value in wheel {
+                finite(value, "wheel")?;
+            }
+        }
+        Ok(())
+    }
+
     /// Decode the four diagnostic values returned in output padding by Kernel C.
     pub fn contact_diagnostics(&self) -> ContactDiagnostics {
         ContactDiagnostics {
@@ -287,6 +360,45 @@ pub struct PhysicsOutputGpu {
     pub engine_temp: f32,
     pub oil_temp: f32,
     pub _pad_eng: f32,
+}
+
+impl PhysicsOutputGpu {
+    /// Validate the complete readback before committing any car state.
+    pub fn validate_contract(&self) -> Result<(), crate::contracts::ContractError> {
+        use crate::contracts::{finite, ContractError, TemperatureC};
+        for vector in [&self.vel, &self.pos, &self.fwd, &self.lat] {
+            for &value in vector {
+                finite(value, "physics.output.vector")?;
+            }
+        }
+        for wheel in &self.wheels {
+            for &value in wheel {
+                finite(value, "physics.output.wheel")?;
+            }
+        }
+        for value in [
+            self.av_y,
+            self.current_rpm,
+            self.drive_torque_out,
+            self.shift_timer,
+            self.starter_timer,
+            self._pad_pos,
+            self._pad_fwd,
+            self._pad_lat,
+            self._pad_eng,
+        ] {
+            finite(value, "physics.output.scalar")?;
+        }
+        TemperatureC::new(self.engine_temp)?;
+        TemperatureC::new(self.oil_temp)?;
+        if self.is_stalled > 1 {
+            return Err(ContractError {
+                field: "physics.output.is_stalled",
+                expected: "0 or 1",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Intermediate buffer between Kernel A and Kernel B. 128 bytes/car, stride=128.
@@ -618,7 +730,9 @@ impl PhysicsGpu {
         let buf_input = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("physics-input"),
             size: bytes_input,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         // buf_mid: written by A, read by B and C
@@ -638,7 +752,9 @@ impl PhysicsGpu {
         let buf_output = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("physics-output"),
             size: bytes_output,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let buf_readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -723,19 +839,119 @@ impl PhysicsGpu {
             .write_buffer(&self.buf_hmap, 0, bytemuck::cast_slice(hmap));
     }
 
-    /// Runs one physics step for all cars in parallel on the GPU.
-    ///
-    /// Dispatches Kernel A, B and C in the same CommandEncoder (no round-trip).
-    /// Returns `false` if the number of cars exceeds the capacity.
-    pub fn step(&self, state: &mut [PhysicsStateGpu]) -> bool {
-        let n = state.len();
-        if n == 0 {
-            return true;
-        }
-        if n > self.capacity {
-            return false;
-        }
+    /// Resident 368-byte-stride input storage. Initialize once with `upload_resident_state`,
+    /// then let GPU adapters update this buffer between dispatches.
+    pub fn input_buffer(&self) -> &wgpu::Buffer {
+        &self.buf_input
+    }
 
+    /// Resident 224-byte-stride kernel-C output; safe for subsequent compute passes.
+    pub fn output_buffer(&self) -> &wgpu::Buffer {
+        &self.buf_output
+    }
+
+    /// Initialization/reset only. Rejects invalid records before uploading any bytes.
+    pub fn upload_resident_state(&self, state: &[PhysicsStateGpu]) -> Result<(), &'static str> {
+        if state.len() > self.capacity {
+            return Err("resident physics population exceeds capacity");
+        }
+        if state.iter().any(|body| body.validate_contract().is_err()) {
+            return Err("invalid resident physics state");
+        }
+        if !state.is_empty() {
+            self.queue
+                .write_buffer(&self.buf_input, 0, &serialize_input(state));
+        }
+        Ok(())
+    }
+
+    /// Explicit observation/checkpoint boundary only; no physics dispatch occurs.
+    /// Returns the complete resident input record, including commands/capacities.
+    pub fn read_resident_state(&self, n: usize) -> Result<Vec<PhysicsStateGpu>, &'static str> {
+        if n > self.capacity {
+            return Err("resident physics sample capacity");
+        }
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let bytes = (n * INPUT_WGSL_STRIDE) as u64;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resident physics sample"),
+            size: bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&self.buf_input, 0, &staging, 0, bytes);
+        self.queue.submit(Some(encoder.finish()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()
+            .map_err(|_| "resident physics map callback")?
+            .map_err(|_| "resident physics map failed")?;
+        let map = staging.slice(..).get_mapped_range();
+        let result = map
+            .chunks_exact(INPUT_WGSL_STRIDE)
+            .map(|record| {
+                let body: PhysicsStateGpu =
+                    bytemuck::pod_read_unaligned(&record[..std::mem::size_of::<PhysicsStateGpu>()]);
+                body.validate_contract()
+                    .map_err(|_| "invalid resident physics sample")?;
+                Ok(body)
+            })
+            .collect();
+        drop(map);
+        staging.unmap();
+        result
+    }
+
+    pub fn resident_snapshot_buffers(&self) -> Vec<crate::gpu::state_snapshot::NamedBuffer<'_>> {
+        vec![
+            ("physics.input", &self.buf_input),
+            ("physics.output", &self.buf_output),
+        ]
+    }
+
+    /// Birth/reset of one slot without rewriting surviving resident records.
+    pub fn upload_resident_slot(
+        &self,
+        slot: usize,
+        state: &PhysicsStateGpu,
+    ) -> Result<(), &'static str> {
+        if slot >= self.capacity || state.validate_contract().is_err() {
+            return Err("invalid resident physics birth slot");
+        }
+        self.queue.write_buffer(
+            &self.buf_input,
+            (slot * INPUT_WGSL_STRIDE) as u64,
+            &serialize_input(std::slice::from_ref(state)),
+        );
+        Ok(())
+    }
+
+    /// Encode the existing A/B/C kernels into the caller's encoder, without upload,
+    /// submission, mapping or polling. `input` must use the padded WGSL stride and
+    /// the same device; resident writers own value validation. Intermediate/output
+    /// buffers belong to this instance, so dispatches sharing it must be ordered.
+    pub fn encode_step(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &wgpu::Buffer,
+        n: usize,
+    ) -> Result<(), &'static str> {
+        if n > self.capacity
+            || n > u32::MAX as usize
+            || input.size() < (n as u64) * (INPUT_WGSL_STRIDE as u64)
+            || !input.usage().contains(wgpu::BufferUsages::STORAGE)
+        {
+            return Err("invalid resident physics input shape/usage");
+        }
+        if n == 0 {
+            return Ok(());
+        }
         let params = WorldParams {
             grid_size: self.grid_size,
             n_beings: n as u32,
@@ -753,10 +969,6 @@ impl PhysicsGpu {
                 contents: bytemuck::bytes_of(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-
-        // Uploads car state with the correct WGSL stride (368 bytes/car)
-        let input_bytes = serialize_input(state);
-        self.queue.write_buffer(&self.buf_input, 0, &input_bytes);
 
         // Kernel A bind group: params, grid, hmap, input, mid
         let group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -777,7 +989,7 @@ impl PhysicsGpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.buf_input.as_entire_binding(),
+                    resource: input.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -805,7 +1017,7 @@ impl PhysicsGpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.buf_input.as_entire_binding(),
+                    resource: input.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -837,7 +1049,7 @@ impl PhysicsGpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.buf_input.as_entire_binding(),
+                    resource: input.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -854,13 +1066,10 @@ impl PhysicsGpu {
             ],
         });
 
-        let bytes_output = (n * std::mem::size_of::<PhysicsOutputGpu>()) as u64;
         let wg = (n as u32).div_ceil(64);
-
-        let mut enc = self.device.create_command_encoder(&Default::default());
         {
             // Kernel A: suspension + engine + aero → writes buf_mid
-            let mut p = enc.begin_compute_pass(&Default::default());
+            let mut p = encoder.begin_compute_pass(&Default::default());
             p.set_pipeline(&self.pipeline_a);
             p.set_bind_group(0, &group_a, &[]);
             p.dispatch_workgroups(wg, 1, 1);
@@ -868,7 +1077,7 @@ impl PhysicsGpu {
         {
             // Kernel B: Pacejka loop → reads buf_mid, writes buf_mid2
             // Ending pass_a starts a global memory barrier: buf_mid visible to B.
-            let mut p = enc.begin_compute_pass(&Default::default());
+            let mut p = encoder.begin_compute_pass(&Default::default());
             p.set_pipeline(&self.pipeline_b);
             p.set_bind_group(0, &group_b, &[]);
             p.dispatch_workgroups(wg, 1, 1);
@@ -876,11 +1085,54 @@ impl PhysicsGpu {
         {
             // Kernel C: collision + integration → reads buf_mid + buf_mid2, writes buf_output
             // Ending pass_b starts a barrier: buf_mid2 visible to C.
-            let mut p = enc.begin_compute_pass(&Default::default());
+            let mut p = encoder.begin_compute_pass(&Default::default());
             p.set_pipeline(&self.pipeline_c);
             p.set_bind_group(0, &group_c, &[]);
             p.dispatch_workgroups(wg, 1, 1);
         }
+        Ok(())
+    }
+
+    /// Runs one physics step for all cars in parallel on the GPU.
+    ///
+    /// Dispatches Kernel A, B and C in the same CommandEncoder (no round-trip).
+    /// Returns `false` if the number of cars exceeds the capacity.
+    pub fn step(&self, state: &mut [PhysicsStateGpu]) -> bool {
+        self.step_with_passes(state, |_, _, _| {}, |_, _, _| {})
+    }
+
+    /// Extend the production physics encoder without intermediate GPU readback.
+    /// The pre pass runs after input upload; the post pass runs after kernel C.
+    pub fn step_with_passes(
+        &self,
+        state: &mut [PhysicsStateGpu],
+        pre: impl FnOnce(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::Buffer),
+        post: impl FnOnce(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::Buffer),
+    ) -> bool {
+        let n = state.len();
+        if n == 0 {
+            return true;
+        }
+        if n > self.capacity {
+            return false;
+        }
+
+        for (slot, body) in state.iter().enumerate() {
+            if let Err(error) = body.validate_contract() {
+                eprintln!("[physics] rejected input slot {slot}: {error}");
+                return false;
+            }
+        }
+
+        let input_bytes = serialize_input(state);
+        self.queue.write_buffer(&self.buf_input, 0, &input_bytes);
+        let bytes_output = (n * std::mem::size_of::<PhysicsOutputGpu>()) as u64;
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        pre(&self.device, &mut enc, &self.buf_input);
+        if self.encode_step(&mut enc, &self.buf_input, n).is_err() {
+            return false;
+        }
+        post(&self.device, &mut enc, &self.buf_output);
         enc.copy_buffer_to_buffer(&self.buf_output, 0, &self.buf_readback, 0, bytes_output);
         self.queue.submit(Some(enc.finish()));
 
@@ -891,11 +1143,24 @@ impl PhysicsGpu {
             let _ = tx.send(r);
         });
         self.device.poll(wgpu::Maintain::Wait);
-        let _ = rx.recv();
+        if !matches!(rx.recv(), Ok(Ok(()))) {
+            eprintln!("[physics] GPU readback mapping failed");
+            return false;
+        }
 
         {
             let data = slice.get_mapped_range();
             let outputs: &[PhysicsOutputGpu] = bytemuck::cast_slice(&data);
+            if let Some((slot, error)) = outputs[..n]
+                .iter()
+                .enumerate()
+                .find_map(|(slot, output)| output.validate_contract().err().map(|e| (slot, e)))
+            {
+                eprintln!("[physics] rejected output slot {slot}: {error}");
+                drop(data);
+                self.buf_readback.unmap();
+                return false;
+            }
             for (i, s) in outputs[..n].iter().enumerate() {
                 apply_output(&mut state[i], s);
             }
@@ -909,6 +1174,12 @@ impl PhysicsGpu {
         let n = state.len();
         if n == 0 || n > self.capacity {
             return vec![];
+        }
+        for (slot, body) in state.iter().enumerate() {
+            if let Err(error) = body.validate_contract() {
+                eprintln!("[physics] rejected raw input slot {slot}: {error}");
+                return vec![];
+            }
         }
         let params = WorldParams {
             grid_size: self.grid_size,
@@ -1048,11 +1319,22 @@ impl PhysicsGpu {
             let _ = tx.send(r);
         });
         self.device.poll(wgpu::Maintain::Wait);
-        let _ = rx.recv();
+        if !matches!(rx.recv(), Ok(Ok(()))) {
+            eprintln!("[physics] GPU readback mapping failed");
+            return vec![];
+        }
         let result = {
             let data = slice.get_mapped_range();
             let outputs: &[PhysicsOutputGpu] = bytemuck::cast_slice(&data);
-            outputs[..n].to_vec()
+            if outputs[..n]
+                .iter()
+                .any(|output| output.validate_contract().is_err())
+            {
+                eprintln!("[physics] rejected invalid raw output");
+                vec![]
+            } else {
+                outputs[..n].to_vec()
+            }
         };
         self.buf_readback.unmap();
         result
@@ -1155,6 +1437,32 @@ mod state_tests {
     use super::*;
 
     #[test]
+    fn body_contract_rejects_invalid_transport_fields() {
+        let valid = make_physics_state([0.0, 0.5, 0.0], [1.0, 0.0, 0.0]);
+        assert!(valid.validate_contract().is_ok());
+        let mut invalid = valid;
+        invalid.brake_cmd = 1.1;
+        assert!(invalid.validate_contract().is_err());
+        invalid = valid;
+        invalid.mass = 0.0;
+        assert!(invalid.validate_contract().is_err());
+        invalid = valid;
+        invalid.wheels[7][3] = f32::NAN;
+        assert!(invalid.validate_contract().is_err());
+    }
+
+    #[test]
+    fn output_contract_rejects_corrupt_readback() {
+        let mut output = PhysicsOutputGpu::zeroed();
+        assert!(output.validate_contract().is_ok());
+        output.vel[2] = f32::INFINITY;
+        assert!(output.validate_contract().is_err());
+        output.vel[2] = 0.0;
+        output.is_stalled = 2;
+        assert!(output.validate_contract().is_err());
+    }
+
+    #[test]
     fn tyre_temperature_starts_at_normalised_optimum() {
         let state = make_physics_state([0.0, 0.5, 0.0], [1.0, 0.0, 0.0]);
 
@@ -1168,4 +1476,96 @@ mod state_tests {
             );
         }
     }
+
+    #[test]
+    fn static_rest_shader_contract_parses_without_simulation() {
+        let source = include_str!("physics_c.wgsl");
+        let module = naga::front::wgsl::parse_str(source)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
+    }
+
+    #[test]
+    #[ignore = "exclusive real GPU fixture; never use a CPU adapter"]
+    fn gpu_static_rest_matrix_real_adapter() {
+        fn horizontal_speed(state: &PhysicsStateGpu) -> f32 {
+            state.vel[0].hypot(state.vel[2])
+        }
+        fn run(
+            gpu: &PhysicsGpu,
+            mut state: PhysicsStateGpu,
+            ticks: usize,
+        ) -> PhysicsStateGpu {
+            for _ in 0..ticks {
+                assert!(gpu.step(std::slice::from_mut(&mut state)));
+            }
+            state
+        }
+
+        let size = 16usize;
+        let grid = vec![0u8; size * size];
+        let hmap = vec![0.0f32; size * size];
+        let gpu = PhysicsGpu::new(&grid, &hmap, size, 1.0, 1)
+            .expect("real GPU adapter required");
+        let adapter = gpu.adapter.to_ascii_lowercase();
+        assert!(
+            !adapter.contains("llvmpipe")
+                && !adapter.contains("swiftshader")
+                && !adapter.contains("software"),
+            "CPU/software adapter forbidden: {}",
+            gpu.adapter
+        );
+        eprintln!("[gpu-static-rest] adapter={}", gpu.adapter);
+
+        let base = || {
+            let mut state = make_physics_state([4.0, 0.5, 4.0], [1.0, 0.0, 0.0]);
+            state.vel = [0.0376, 0.0, 0.0];
+            state.brake_cmd = 1.0;
+            state.throttle = 0.0;
+            state.config_flags = pack_config_flags(true, true, true, true, true, true)
+                | STATIC_REST_FLAG;
+            state
+        };
+
+        let rest_on = run(&gpu, base(), 8);
+        assert!(horizontal_speed(&rest_on) < 0.005, "rest constraint did not hold: {:?}", rest_on.vel);
+
+        let mut rest_off_input = base();
+        rest_off_input.config_flags &= !STATIC_REST_FLAG;
+        let rest_off = run(&gpu, rest_off_input, 8);
+        assert!(horizontal_speed(&rest_off) > 0.005, "flag-off path unexpectedly locked: {:?}", rest_off.vel);
+
+        let mut no_brake = base();
+        no_brake.brake_cmd = 0.0;
+        let no_brake_out = run(&gpu, no_brake, 8);
+        assert!(horizontal_speed(&no_brake_out) > 0.005, "brake-off path was frozen");
+
+        let mut weak_brake = base();
+        weak_brake.brake_torque_max = 0.001;
+        let weak_out = run(&gpu, weak_brake, 8);
+        assert!(horizontal_speed(&weak_out) > 0.005, "inadequate brake was frozen");
+
+        let mut no_grip = base();
+        no_grip.mu_peak = 0.0;
+        let no_grip_out = run(&gpu, no_grip, 8);
+        assert!(horizontal_speed(&no_grip_out) > 0.005, "zero-friction path was frozen");
+
+        let mut fast = base();
+        fast.vel = [5.0, 0.0, 0.0];
+        let fast_out = run(&gpu, fast, 1);
+        assert!(horizontal_speed(&fast_out) > 1.0, "fast body was frozen");
+
+        let mut airborne = base();
+        airborne.pos[1] = 5.0;
+        let airborne_out = run(&gpu, airborne, 1);
+        assert!(horizontal_speed(&airborne_out) > 0.005, "airborne body was frozen");
+    }
 }
+
+#[cfg(test)]
+mod contracts_layout_tests;

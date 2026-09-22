@@ -283,7 +283,7 @@ impl GpuLoop {
         let name = adapter.get_info().name.clone();
         let mut limits = wgpu::Limits::downlevel_defaults();
         // Brain uses 9 storage buffers (bindings 1-9); perception uses 7 (max of the two = 9).
-        limits.max_storage_buffers_per_shader_stage = 9;
+        limits.max_storage_buffers_per_shader_stage = 16;
         let (raw_device, raw_queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("iara-report"),

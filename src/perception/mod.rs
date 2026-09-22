@@ -16,4 +16,6 @@ pub mod retina;
 pub use retina::*;
 
 // Reexports the main channels symbols for convenience.
-pub use channels::{Channel, ChannelSource, N_CHANNELS, name_for, source_for};
+pub use channels::{name_for, source_for, Channel, ChannelSource, N_CHANNELS};
+
+pub mod retina_map;

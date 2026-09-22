@@ -45,12 +45,14 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 mod audit;
+mod body_evolution;
 mod brain_backend;
 mod cli_flags;
 #[cfg(test)]
 mod cli_flags_tests;
 mod context;
 mod driving_diagnostics;
+mod ecology_runtime;
 mod escada;
 mod fantasma;
 mod genome_diagnostics;
@@ -60,6 +62,7 @@ mod laps;
 mod laps_tests;
 mod native_action;
 mod objective_cost;
+mod organism_checkpoint;
 mod painel;
 mod piloto_forja;
 mod piloto_linear;
@@ -98,7 +101,7 @@ use universe::world::VoxelWorld;
 // SlowBrainGpu, PerceptionGpu, PhysicsGpu/PhysicsStateGpu/WheelGpu, RacingLine, pitch,
 // RetinaPerception, Channel/channel_source_for/channel_name_for, KAN_OUT_KNOTS) só
 // eram usados dentro de `GpuCtx` — ficaram em context.rs/audit.rs, não aqui.
-use universe::gpu::physics::{make_physics_state, pos_of};
+use universe::gpu::physics::pos_of;
 
 // ── Persistência de genomas ───────────────────────────────────────────────────
 //
@@ -238,6 +241,8 @@ fn frente_do_waypoint(wps: &[bevy::math::Vec2], wi: usize) -> [f32; 3] {
 /// vez de indexar um vetor vazio.
 fn avaliar_held_out(
     ctx: &mut GpuCtx,
+    genomes: &[Genome],
+    evolving_body: bool,
     n_seres: usize,
     n_ticks: usize,
     track_width: f32,
@@ -250,7 +255,15 @@ fn avaliar_held_out(
 ) -> f64 {
     // Held-out ticks must never enter the training replay observation stream.
     let saved_diagnostics = ctx.driving_diagnostics.take();
-    let world_ho = VoxelWorld::new(held_out_seed, track_width);
+    let organism_taxi = ctx.organism.is_some();
+    let organism_saved = (ctx.organism.take(), ctx.taxi.take(), ctx.organism_feedback.take(), std::mem::take(&mut ctx.organism_samples), ctx.traffic.take(), std::mem::take(&mut ctx.traffic_samples));
+    let mut world_ho = VoxelWorld::new(held_out_seed, track_width);
+    let held_city = organism_taxi.then(|| universe::organism_city::build_city(&mut world_ho));
+    let held_stations = if organism_taxi {
+        let stations = held_city.as_ref().unwrap().stations.clone();
+        universe::organism_scenario::validate_city(&world_ho, &stations).expect("held-out taxi topology");
+        stations
+    } else { Vec::new() };
     // Troca a geometria na GPU (grade/fluxo/alturas/heightmap) sem recriar device
     // nem pipeline — ver `GpuCtx::reload_world`. Reseta o estado recorrente (CfC)
     // para que os seres cheguem na pista reservada sem memória da pista de treino
@@ -260,6 +273,7 @@ fn avaliar_held_out(
     ctx.reset_cfc(n_seres);
     for i in 0..n_seres {
         ctx.brain.reset_cfc(i);
+        if organism_taxi { ctx.brain.reset_lifetime(i); }
     }
     // ── HOSTILE WORLD: suspended for the held-out run (BODY PHASE) ────────────
     //
@@ -314,16 +328,19 @@ fn avaliar_held_out(
 
     let lap_dist = world_ho.lap_distance as f64;
     let n_wp = world_ho.waypoints_world.len();
-    let held_out_start = if same_start {
+    let held_out_start = if same_start && !organism_taxi {
         Some(canonical_start(&world_ho).unwrap_or_else(|error| {
             panic!("invalid held-out canonical start: {error}");
         }))
     } else {
         None
     };
+    let city_spawns = organism_taxi.then(|| universe::organism_city::spawn_positions(&world_ho, n_seres).expect("held-out city spawn capacity"));
     let mut states: Vec<BeingState> = (0..n_seres)
         .map(|i| {
-            let (pos, fwd) = if let Some(slot) = held_out_start {
+            let (pos, fwd) = if let Some(spawns) = &city_spawns {
+                (spawns[i], [1.0, 0.0, 0.0])
+            } else if let Some(slot) = held_out_start {
                 (
                     [slot.position.x, 0.0, slot.position.y],
                     [slot.forward.x, 0.0, slot.forward.y],
@@ -337,7 +354,7 @@ fn avaliar_held_out(
                 )
             };
             BeingState {
-                phys: make_physics_state(pos, fwd),
+                phys: body_evolution::at_birth(&genomes[i], evolving_body, pos, fwd),
                 prev_steer: 0.0,
                 stagnation_ticks: 0,
                 wall_ticks: 0,
@@ -350,7 +367,16 @@ fn avaliar_held_out(
                 sensor_thr: 0.0,
                 sensor_brk: 0.0,
                 wp_near: 0,
-                fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
+                fuel: body_evolution::tank_capacity(
+                    &genomes[i],
+                    evolving_body,
+                    FUEL_TANK.load(Ordering::Relaxed),
+                ),
+                fuel_capacity: body_evolution::tank_capacity(
+                    &genomes[i],
+                    evolving_body,
+                    FUEL_TANK.load(Ordering::Relaxed),
+                ),
                 ticks_alive: 0,
                 // Vida CHEIA (ver doc da função: held-out mede rota, não orçamento de fôlego).
                 life_left: n_ticks as f64,
@@ -365,6 +391,7 @@ fn avaliar_held_out(
                 re_desde_saida: 999.0,
                 dano: 0.0,
                 joy_tick: 0.0,
+                learning_reward: 0.0,
                 joy_streak: 0.0,
                 edge_row6: 0.0,
                 edge_row7: 0.0,
@@ -386,16 +413,21 @@ fn avaliar_held_out(
 
     // Tick de aquecimento — mesmo contrato do laço de treino (JIT/compilação
     // descartada, não entra na fitness).
-    let _ = ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, kan_knots);
+    if organism_taxi {
+        ctx.start_organism(genomes, &held_stations, &held_city.as_ref().unwrap().traffic_lights(), n_seres).expect("held-out organism birth");
+        ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world_ho, &held_stations).expect("held-out road routes");
+        ctx.sample_organism(&mut states).expect("held-out initial state");
+    } else {
+        assert!(ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, kan_knots), "held-out warmup failed");
+    }
 
     let dt = 1.0_f32 / 64.0;
     for tick_i in 0..n_ticks {
+        ctx.force_organism_sample = tick_i + 1 == n_ticks;
         if !ctx.tick(&mut states, n_seres, dt, tick_i + 1, kan_knots) {
-            eprintln!(
-                "[held-out] ERRO no tick {tick_i} — avaliação abortada, usando dados parciais."
-            );
-            break;
+            panic!("held-out failed at tick {tick_i}; partial results are invalid");
         }
+        if organism_taxi { continue; }
         // `ctx.tick()` já decrementa `life_left`/incrementa `ticks_alive` por conta
         // própria (mesmo caminho usado no treino) — este laço só ACUMULA fitness,
         // não mexe em vida.
@@ -427,6 +459,7 @@ fn avaliar_held_out(
                 }
                 let avanco = d.clamp(-ld * 0.1, ld * 0.1) as f64;
                 prog_acum[i] += avanco;
+                states[i].learning_reward = (avanco * 64.0 / 30.0).clamp(-1.0, 1.0) as f32;
                 prog_prev[i] = cur;
 
                 // Centralização — só usada por `--fitness centro`; custo (9
@@ -499,8 +532,18 @@ fn avaliar_held_out(
         _ => unreachable!("fitness mode validated before GPU setup"),
     };
 
+    if organism_taxi {
+        ctx.sample_organism(&mut states).expect("held-out final state");
+        fitness_ho = ctx.organism_samples.iter().map(universe::organism_scenario::fitness).collect();
+    }
+    ctx.organism = organism_saved.0;
+    ctx.taxi = organism_saved.1;
+    ctx.organism_feedback = organism_saved.2;
+    ctx.organism_samples = organism_saved.3;
+    ctx.traffic = organism_saved.4;
+    ctx.traffic_samples = organism_saved.5;
     ctx.driving_diagnostics = saved_diagnostics;
-    if wall_cost > 0.0 || impact_cost > 0.0 {
+    if !organism_taxi && (wall_cost > 0.0 || impact_cost > 0.0) {
         let sector_metres = lap_dist / N_CHECKPOINTS as f64;
         for (score, state) in fitness_ho.iter_mut().zip(&states) {
             *score = objective_cost::safety_adjusted_score(
@@ -713,7 +756,11 @@ fn log_fly_elite(gen_abs: usize, block: &[f32], layout: universe::fly_map::FlyLa
 /// comparison would miss a change between two specs that share a `seed` but differ in,
 /// say, `width`. Kept separate from `build_world` (below) so a generation whose track
 /// did not change never pays for rebuilding the 320x320 voxel grid.
-fn peek_world(pistas: &[u64], mundos: &[universe::world_spec::WorldSpec], idx: usize) -> (u64, u64) {
+fn peek_world(
+    pistas: &[u64],
+    mundos: &[universe::world_spec::WorldSpec],
+    idx: usize,
+) -> (u64, u64) {
     if !mundos.is_empty() {
         let spec = spec_da_gen(mundos, idx);
         (spec.seed, spec.fingerprint())
@@ -733,7 +780,11 @@ fn resolve_world(
 ) -> (VoxelWorld, u64, u64) {
     if !mundos.is_empty() {
         let spec = spec_da_gen(mundos, idx);
-        (VoxelWorld::new_from_spec(&spec), spec.seed, spec.fingerprint())
+        (
+            VoxelWorld::new_from_spec(&spec),
+            spec.seed,
+            spec.fingerprint(),
+        )
     } else {
         let seed = pista_da_gen(pistas, idx);
         (VoxelWorld::new(seed, track_width), seed, seed)
@@ -799,6 +850,18 @@ fn main() {
     let mut curriculo_veloc_min: f64 = 5.0;
     let mut out_dir = ".".to_string();
     let mut driving_diagnostics_on = false;
+    let mut evolving_body = false;
+    let mut organism_taxi = false;
+    let mut taxi_reference_witness = false;
+    let mut snapshot_every = 0usize;
+    let mut resume_state: Option<String> = None;
+    let mut lifetime_flags = 0u32;
+    let mut evolve_learning = false;
+    let mut adaptive_curriculum_on = false;
+    let mut ecology_on = false;
+    let mut ecology_founders: Option<usize> = None;
+    let mut ecology_maturity: u64 = 640;
+    let mut ecology_progress: f64 = 20.0;
     let mut vision_being: usize = 0;
     let mut vision_every: usize = 16;
     let mut ablate_spec: Option<String> = None;
@@ -1033,8 +1096,8 @@ fn main() {
             // Every arm below matches the CANONICAL English name, once, from
             // `cli_flags::FLAGS`. `resolve` maps a deprecated spelling onto it and warns
             // once per alias, so a battery request already in the queue keeps working
-            // without this loop carrying two literals per flag. An unknown argument
-            // keeps its own text and falls through to `_ => {}`, exactly as before.
+            // without this loop carrying two literals per flag. Reject unknown
+            // arguments so experimental configurations cannot silently change.
             let raw = args[i].as_str();
             let arg = cli_flags::resolve(raw).map_or(raw, |f| f.name);
             match arg {
@@ -1227,6 +1290,57 @@ fn main() {
                 // hoje), protegendo qualquer bateria em curso que não passe a flag nova.
                 "--evolving-sensors" => {
                     universe::gpu::evolution::SENSORS_EVOLVE_ON.store(true, Ordering::Relaxed);
+                }
+                "--snapshot-every" => {
+                    i += 1;
+                    snapshot_every =
+                        args.get(i).and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                            eprintln!("invalid --snapshot-every");
+                            std::process::exit(2)
+                        });
+                }
+                "--resume-state" => {
+                    i += 1;
+                    resume_state = Some(args.get(i).expect("--resume-state requires path").clone());
+                }
+                "--taxi-reference-witness" => taxi_reference_witness = true,
+                "--scenario" => {
+                    i += 1;
+                    organism_taxi = match args.get(i).map(String::as_str) {
+                        Some("organism-taxi-v1") => true,
+                        Some("race-v1") => false,
+                        _ => {
+                            eprintln!("--scenario requires race-v1 or organism-taxi-v1");
+                            std::process::exit(2);
+                        }
+                    };
+                }
+                "--ecology" => ecology_on = true,
+                "--ecology-founders" => {
+                    i += 1;
+                    ecology_founders = Some(args.get(i).and_then(|v| v.parse().ok()).unwrap_or(0));
+                }
+                "--ecology-maturity-ticks" => {
+                    i += 1;
+                    ecology_maturity = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(0);
+                }
+                "--ecology-min-progress" => {
+                    i += 1;
+                    ecology_progress = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(f64::NAN);
+                }
+                "--plasticity" => lifetime_flags |= 1,
+                "--development" => lifetime_flags |= 2,
+                "--evolving-topology" => lifetime_flags |= 4,
+                "--evolve-learning" => {
+                    evolve_learning = true;
+                    lifetime_flags |= 1;
+                }
+                "--adaptive-curriculum" => adaptive_curriculum_on = true,
+                "--evolving-body" => {
+                    evolving_body = true;
+                }
+                "--fixed-body" => {
+                    evolving_body = false;
                 }
                 // Força de volta ao braço de controle (já é o padrão) — nome literal pedido
                 // pela tarefa. Vence se vier DEPOIS de `--evolving-sensors` na linha de
@@ -1962,9 +2076,8 @@ fn main() {
                 "--world-file" => {
                     i += 1;
                     if i < args.len() {
-                        match universe::world_spec::parse_world_file(std::path::Path::new(
-                            &args[i],
-                        )) {
+                        match universe::world_spec::parse_world_file(std::path::Path::new(&args[i]))
+                        {
                             Ok(mut specs) => mundos.append(&mut specs),
                             Err(e) => {
                                 eprintln!("{e}");
@@ -2201,7 +2314,21 @@ fn main() {
                         out_dir = args[i].clone();
                     }
                 }
-                _ => {}
+                "--help" => {
+                    for flag in cli_flags::FLAGS {
+                        println!(
+                            "{}{}  {}",
+                            flag.name,
+                            if flag.takes_value { " VALUE" } else { "" },
+                            flag.help
+                        );
+                    }
+                    return;
+                }
+                _ => {
+                    eprintln!("ERROR unknown argument {raw}; use --help for supported flags");
+                    std::process::exit(2);
+                }
             }
             i += 1;
         }
@@ -2449,6 +2576,31 @@ fn main() {
             "fully random motor pathways (control arm)"
         }
     );
+    if taxi_reference_witness && (!organism_taxi || n_gens != 1 || n_seres != 1 || ecology_on || resume_state.is_some() || snapshot_every > 0 || !driving_diagnostics_on) {
+        eprintln!("--taxi-reference-witness requires organism-taxi-v1, one being, one generation, --driving-diagnostics, no ecology/resume/snapshots; never an evolution arm");
+        std::process::exit(2);
+    }
+    if organism_taxi && !args.iter().any(|a| a == "--ecology-min-progress") { ecology_progress = 1.0; }
+    if organism_taxi && ecology_on && n_gens != 1 {
+        eprintln!("ERROR continuous organism ecology requires --gens 1; use --ticks for the lifetime horizon");
+        std::process::exit(2);
+    }
+    if (snapshot_every > 0 || resume_state.is_some()) && !organism_taxi {
+        eprintln!("runtime checkpoints require --scenario organism-taxi-v1");
+        std::process::exit(2);
+    }
+    if evolving_body && !fuel_on && !organism_taxi {
+        eprintln!("ERROR --evolving-body requires --fuel to express engine resource costs");
+        std::process::exit(2);
+    }
+    println!(
+        "  Body evolution: {} (capacity_mass_tradeoff_v1)",
+        if evolving_body {
+            "enabled; inherited engine/brake capacity"
+        } else {
+            "fixed historical body"
+        }
+    );
     let sensors_evolve_on = universe::gpu::evolution::SENSORS_EVOLVE_ON.load(Ordering::Relaxed);
     println!(
         "  Sensores (FASE SENSORES, degrau 1): {}",
@@ -2600,6 +2752,14 @@ fn main() {
     let mut idx_curriculo: usize = gen_offset;
     let (mut world, mut world_seed_atual, mut world_key_atual) =
         resolve_world(&pistas, &mundos, gen_offset, track_width);
+    let mut organism_city = organism_taxi.then(|| universe::organism_city::build_city(&mut world));
+    let mut organism_stations = if organism_taxi {
+        let stations = organism_city.as_ref().unwrap().stations.clone();
+        universe::organism_scenario::validate_city(&world, &stations).expect("invalid taxi city");
+        stations
+    } else {
+        Vec::new()
+    };
     let mut lap_dist = world.lap_distance as f64;
     println!(
         "mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
@@ -3179,6 +3339,7 @@ fn main() {
                 n_seres,
                 vision_being,
                 vision_every,
+                organism_taxi,
                 ablation_plan.as_ref(),
             )
             .unwrap_or_else(|error| {
@@ -3375,6 +3536,12 @@ fn main() {
             .collect()
     };
 
+    if !evolving_body && genomes.iter().any(|g| g.body != Default::default()) {
+        println!(
+            "  [body] inherited body genes are preserved but inactive; use --evolving-body to express them"
+        );
+    }
+
     // ── FLY MAP: give every being a usable selection ──────────────────────────
     //
     // A genome that came off disk carries no `fly` block at all (a checkpoint written
@@ -3450,6 +3617,32 @@ fn main() {
             "  [mascara] regiões DIRIGIDAS ativas (4 blocos de 24: visão/parede/corpo/associativo)"
         );
     }
+    // Freeze behaviour-affecting arguments. Only storage/resume controls may differ.
+    let mut checkpoint_args = Vec::new();
+    let mut arg_index = 1;
+    while arg_index < args.len() {
+        if ["--out", "--resume-state", "--snapshot-every"].contains(&args[arg_index].as_str()) {
+            arg_index += 2;
+        } else { checkpoint_args.push(args[arg_index].clone()); arg_index += 1; }
+    }
+    use sha2::{Digest, Sha256};
+    let mut model_hash = Sha256::new();
+    for source in [include_bytes!("main.rs").as_slice(), include_bytes!("context.rs").as_slice(),
+        include_bytes!("../../gpu/organism.wgsl").as_slice(), include_bytes!("../../gpu/organism.rs").as_slice(),
+        include_bytes!("../../gpu/taxi.wgsl").as_slice(), include_bytes!("../../gpu/brain.wgsl").as_slice(),
+        include_bytes!("../../gpu/physics_a.wgsl").as_slice(), include_bytes!("../../gpu/physics_b.wgsl").as_slice(),
+        include_bytes!("../../gpu/physics_c.wgsl").as_slice(), include_bytes!("../../gpu/organism_reproduction.wgsl").as_slice()] { model_hash.update(source); }
+    let checkpoint_config = serde_json::json!({"scenario":"organism-taxi-v1", "arguments":checkpoint_args,
+        "beings":n_seres, "tick_rate":64,"implementation_sha256":format!("{:x}",model_hash.finalize())});
+    if let Some(path) = resume_state.as_ref() {
+        if retomar { panic!("--resume-state and DNA --resume are distinct and mutually exclusive"); }
+        let (_, generation, saved_config) = organism_checkpoint::load_metadata(std::path::Path::new(path))
+            .expect("checkpoint manifest invalid");
+        assert_eq!(saved_config, checkpoint_config, "checkpoint configuration mismatch");
+        genomes = organism_checkpoint::load_genomes(std::path::Path::new(path)).expect("checkpoint DNA invalid");
+        assert_eq!(genomes.len(), n_seres, "checkpoint population mismatch");
+        gen_offset = generation;
+    }
     let evo_params = EvoParams {
         p_mutate: evo_p_mutate,
         sigma: evo_sigma,
@@ -3467,7 +3660,9 @@ fn main() {
         mascara_regioes,
         // 5 linhas lidas só quando o câmbio neural dá leitor ao intent[3]/[4];
         // travado/auto: 3 (throttle/steer/brake).
-        l2_linhas_lidas: if CAMBIO_MODO.load(Ordering::Relaxed) == 2 {
+        l2_linhas_lidas: if organism_taxi {
+            9
+        } else if CAMBIO_MODO.load(Ordering::Relaxed) == 2 {
             5
         } else {
             3
@@ -3483,12 +3678,61 @@ fn main() {
     let mut hist_max: Vec<f64> = Vec::with_capacity(n_gens);
     let mut hist_results: Vec<GenResult> = Vec::with_capacity(n_gens);
 
-    // Runtime output spline shared by all beings. Genome.kan_knots is stored but
-    // inactive on this path; loading a champion does not select its output knots.
+    // Historical runs retain the shared spline. Experimental body/lifetime/ecology
+    // runs install per-being inherited heads below, including after reproduction.
     let kan_knots_global = default_kan_knots();
 
     // ── LAÇO PRINCIPAL ────────────────────────────────────────────────────────
     let t_total = Instant::now();
+    if lifetime_flags != 0
+        && (ctx.brain_control_direct || ctx.fly.is_some() || ctx.fly_spiking.is_some())
+    {
+        eprintln!("ERROR lifetime development/plasticity currently requires the native brain");
+        std::process::exit(2);
+    }
+    if ecology_on
+        && ((!fuel_on && !organism_taxi)
+            || ctx.brain_control_direct
+            || ctx.fly_spiking.is_some()
+            || ctx.fly.is_some()
+            || piloto != 0.0
+            || PILOTO_SENSOR.load(Ordering::Relaxed) != 0.0
+            || ctx.piloto_formula.is_some()
+            || ctx.piloto_forja.is_some()
+            || thr_fixo != 0.0
+            || steer_fixo != 0.0
+            || CUSTO_FIACAO.load(Ordering::Relaxed) > 0.0
+            || SENSOR_COST.load(Ordering::Relaxed) > 0.0
+            || !ecology_progress.is_finite()
+            || ecology_progress < 0.0
+            || ecology_founders.is_some_and(|n| n == 0 || n > n_seres))
+    {
+        eprintln!(
+            "ERROR ecology requires fuel, native brain without pilot overrides, disabled wiring/sensor subscription costs, finite nonnegative progress, and 1..population founders"
+        );
+        std::process::exit(2);
+    }
+    let mut adaptive = if adaptive_curriculum_on {
+        if !mundos.is_empty() || pistas.is_empty() || trocar_ao_completar != 0 {
+            eprintln!(
+                "ERROR --adaptive-curriculum needs explicit --tracks and cannot combine with --worlds or the legacy curriculum"
+            );
+            std::process::exit(2);
+        }
+        Some(
+            universe::adaptive_curriculum::AdaptiveCurriculum::new(
+                pistas.clone(),
+                pista_held_out.into_iter(),
+                universe::adaptive_curriculum::CurriculumConfig::default(),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("ERROR adaptive curriculum: {e:?}");
+                std::process::exit(2)
+            }),
+        )
+    } else {
+        None
+    };
     for generation_idx in 0..n_gens {
         // gen_abs = número absoluto da geração (para relatório e arquivo de save).
         let gen_abs = gen_offset + generation_idx;
@@ -3533,7 +3777,15 @@ fn main() {
         //
         // O índice é separado de `gen_abs` justamente porque um deles anda sozinho e o
         // outro só anda por mérito.
-        let rotation_idx = if trocar_ao_completar > 0 {
+        let rotation_idx = if let Some(curriculum) = adaptive.as_mut() {
+            let seed = curriculum
+                .seed_for_episode()
+                .expect("finite curriculum keeps probing its archive");
+            pistas
+                .iter()
+                .position(|s| *s == seed)
+                .expect("training-only curriculum")
+        } else if trocar_ao_completar > 0 {
             idx_curriculo
         } else {
             gen_abs
@@ -3543,6 +3795,11 @@ fn main() {
             let (world_novo, seed_novo, key_novo) =
                 resolve_world(&pistas, &mundos, rotation_idx, track_width);
             world = world_novo;
+            if organism_taxi {
+                organism_city = Some(universe::organism_city::build_city(&mut world));
+                organism_stations = organism_city.as_ref().unwrap().stations.clone();
+                universe::organism_scenario::validate_city(&world, &organism_stations).expect("disconnected taxi city");
+            }
             ctx.reload_world(&world);
             world_seed_atual = seed_novo;
             world_key_atual = key_novo;
@@ -3598,6 +3855,8 @@ fn main() {
         let replay_path = std::path::PathBuf::from(&out_dir)
             .join(format!("gen{gen_num:04}.replay", gen_num = gen_abs));
         let _ = std::fs::create_dir_all(&out_dir);
+        body_evolution::record(&out_dir, gen_abs, &genomes, evolving_body)
+            .expect("write body population provenance");
         // C1 — `hip_gen<N>.f32`: being 0's memory and bias, one row per tick. Opened here
         // so it lands in `--out` with the replay, never next to the source (rule 5 of this
         // project's CLAUDE.md). Small: 13 f32 × ticks ≈ 1 MB at 20 000 ticks.
@@ -3670,7 +3929,7 @@ fn main() {
                 "frame_tick_semantics": "tick4_post_physics_brain64_to_body64",
                 "brain_model": if fly_spiking() { "fly_spiking" } else if fly_brain() { "fly_rate" } else { "native" },
                 "brain_control": if brain_control_direct { "direct" } else { "legacy" },
-                "controller_kind": if piloto != 0.0 || piloto_sensor != 0.0 || ctx.piloto_formula.is_some() || ctx.piloto_forja.is_some() { "diagnostic_pilot" } else { "neural" },
+                "controller_kind": if taxi_reference_witness { "diagnostic_pilot" } else if piloto != 0.0 || piloto_sensor != 0.0 || ctx.piloto_formula.is_some() || ctx.piloto_forja.is_some() { "diagnostic_pilot" } else { "neural" },
                 "planned_ticks": n_ticks,
                 "population_seed": pop_seed,
                 "checkpoint_loaded": elite_carregado_do_checkpoint,
@@ -3694,6 +3953,17 @@ fn main() {
                 "laps_recorded": true,
                 "raw_intents_recorded": replay_this_gen,
             });
+            metadata["body_evolution_enabled"] = serde_json::json!(evolving_body);
+            metadata["lifetime_flags"] = serde_json::json!(lifetime_flags);
+            metadata["evolve_learning"] = serde_json::json!(evolve_learning);
+            metadata["adaptive_curriculum"] = serde_json::json!(adaptive_curriculum_on);
+            metadata["ecology"] = serde_json::json!(ecology_on);
+            metadata["ecology_lineage_scope"] = serde_json::json!(
+                "generation; resumed genomes become fresh founders, acquired state is not resumed"
+            );
+            metadata["body_model"] = serde_json::json!("capacity_mass_tradeoff_v1");
+            metadata["body_population_file"] =
+                serde_json::json!(format!("body_gen{gen_abs:04}.json"));
             metadata["counterfactual_ablation"] = ablation_plan
                 .as_ref()
                 .map(|plan| {
@@ -3984,6 +4254,13 @@ fn main() {
         // Banco de τ: vai separado porque τ vive no genoma, não no `SovereignEngine`.
         // Uma vez por geração, como os pesos — τ é herdado e fixo na vida do ser.
         ctx.brain.upload_tau(&Genome::pack_taus(&genomes), n_seres);
+        ctx.brain.upload_lifetime(
+            &genomes.iter().map(|g| g.lifetime).collect::<Vec<_>>(),
+            lifetime_flags,
+        );
+        if organism_taxi || ecology_on || evolving_body || lifetime_flags != 0 {
+            ctx.per_being_heads = genomes.iter().map(|g| g.kan_knots).collect();
+        }
         // Banco de sensores (FASE SENSORES, degrau 1): mesmo motivo do τ — vive no
         // genoma, sobe uma vez por geração para o pipeline ESPACIAL de percepção.
         // Com `SENSORS_EVOLVE_ON` no padrão (desligado), todo genoma tem
@@ -4004,7 +4281,7 @@ fn main() {
         // tick 0 rodar. Janela de 840 ticks = MMC(1..8), cobre um ciclo completo dos
         // períodos possíveis (1..8, clamp de `evolve()`) independente de onde a
         // amostragem começaria dentro da corrida de verdade.
-        if !sem_periodo_neuronal {
+        if !sem_periodo_neuronal && !organism_taxi {
             let periods_flat: Vec<f32> = genomes
                 .iter()
                 .flat_map(|g| g.neuron_period_l1.iter().copied())
@@ -4056,14 +4333,14 @@ fn main() {
                 .wrapping_mul(0xFF51AFD7ED558CCD);
             ((h >> 17) as usize) % n_wp
         };
-        let formation = if start_formation {
+        let formation = if start_formation && !organism_taxi {
             Some(formation_slots(&world, n_seres).unwrap_or_else(|error| {
                 panic!("invalid starting formation: {error}");
             }))
         } else {
             None
         };
-        let canonical = if same_start && formation.is_none() && !largada_aleatoria {
+        let canonical = if !organism_taxi && same_start && formation.is_none() && !largada_aleatoria {
             Some(canonical_start(&world).unwrap_or_else(|error| {
                 panic!("invalid canonical start: {error}");
             }))
@@ -4091,6 +4368,7 @@ fn main() {
                 wp.y
             );
         }
+        let city_spawns = organism_taxi.then(|| universe::organism_city::spawn_positions(&world, n_seres).expect("city spawn capacity"));
         let mut states: Vec<BeingState> = (0..n_seres)
             .map(|i| {
                 // Onde cada ser nasce.
@@ -4109,7 +4387,9 @@ fn main() {
                 // D2: com --largada-aleatoria, o waypoint da GERAÇÃO vem de hash(gen,seed)
                 // — todos os seres da gen largam do mesmo lugar (comparável), mas o lugar
                 // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
-                let (pos, fwd) = if let Some(slots) = formation.as_ref() {
+                let (pos, fwd) = if let Some(spawns) = &city_spawns {
+                    (spawns[i], [1.0, 0.0, 0.0])
+                } else if let Some(slots) = formation.as_ref() {
                     let slot = slots[i];
                     (
                         [slot.position.x, 0.0, slot.position.y],
@@ -4133,7 +4413,7 @@ fn main() {
                     ([wp.x, 0.0, wp.y], fwd)
                 };
                 BeingState {
-                    phys: make_physics_state(pos, fwd),
+                    phys: body_evolution::at_birth(&genomes[i], evolving_body, pos, fwd),
                     prev_steer: 0.0,
                     stagnation_ticks: 0,
                     wall_ticks: 0,
@@ -4146,7 +4426,16 @@ fn main() {
                     sensor_thr: 0.0,
                     sensor_brk: 0.0,
                     wp_near: 0,
-                    fuel: FUEL_TANK.load(Ordering::Relaxed) as f64,
+                    fuel: body_evolution::tank_capacity(
+                        &genomes[i],
+                        evolving_body,
+                        FUEL_TANK.load(Ordering::Relaxed),
+                    ),
+                    fuel_capacity: body_evolution::tank_capacity(
+                        &genomes[i],
+                        evolving_body,
+                        FUEL_TANK.load(Ordering::Relaxed),
+                    ),
                     ticks_alive: 0,
                     // Earned-life runs start with a finite 30-second exploration budget.
                     // New ordered progress must buy every additional second.
@@ -4170,6 +4459,7 @@ fn main() {
                     // not there. Unused while `--tire-thermal` is off.
                     tire_temp: universe::tire_thermal::DEFAULT_AMBIENT,
                     joy_tick: 0.0,
+                    learning_reward: 0.0,
                     joy_streak: 0.0,
                     edge_row6: 0.0,
                     edge_row7: 0.0,
@@ -4283,6 +4573,42 @@ fn main() {
             };
         }
 
+        let birth_positions: Vec<_> = states
+            .iter()
+            .map(|s| (s.phys.pos, s.phys.fwd, s.wp_near))
+            .collect();
+        let mut ecology = if ecology_on {
+            let base_tank = if organism_taxi { 5_000_000.0 } else { FUEL_TANK.load(Ordering::Relaxed) as f64 };
+            for state in states.iter_mut().skip(ecology_founders.unwrap_or(n_seres)) {
+                state.life_left = 0.0;
+                state.fuel = 0.0;
+            }
+            let runtime = ecology_runtime::EcologyRuntime::new(
+                universe::ecology::EcologyConfig {
+                    capacity: n_seres,
+                    maturity_ticks: ecology_maturity,
+                    reproduction_cooldown_ticks: ecology_maturity.max(64),
+                    reproduction_cost: 0.05 * base_tank,
+                    child_energy: 0.2 * base_tank,
+                    parent_energy_reserve: 0.1 * base_tank,
+                    minimum_progress: ecology_progress,
+                    seed: pop_seed ^ gen_abs as u64,
+                    max_events: n_seres * 4,
+                },
+                n_seres,
+            )
+            .expect("valid ecology configuration");
+            let observer_factory = if resume_state.is_some() { ecology_runtime::GenotypeBirthObserver::resume } else { ecology_runtime::GenotypeBirthObserver::create };
+            let observer = observer_factory(
+                format!("{out_dir}/lineage_gen{gen_abs:04}.jsonl"),
+                format!("{out_dir}/births_gen{gen_abs:04}"),
+            )
+            .expect("create lineage observer");
+            Some(runtime.with_observer(Box::new(observer)))
+        } else {
+            None
+        };
+
         // ── Odômetro ───────────────────────────────────────────────────────────
         let mut dist_acum: Vec<f64> = vec![0.0; n_seres];
         // Progresso AO LONGO DA PISTA, monotônico e com tratamento de cruzamento de linha.
@@ -4358,14 +4684,79 @@ fn main() {
         // counter only advances once per brain dispatch. `--observe`/`--record-wave`
         // record this tick deliberately — do not "fix" it to discard its side effects
         // without re-deriving screen.rs's warm-up replay, or parity breaks silently.
-        if !ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, &kan_knots_global) {
+        if organism_taxi {
+            ctx.start_organism(&genomes, &organism_stations, &organism_city.as_ref().unwrap().traffic_lights(), if ecology_on { ecology_founders.unwrap_or(n_seres) } else { n_seres })
+                .expect("organism initialization failed");
+            if taxi_reference_witness {
+                ctx.taxi_witness = Some(universe::gpu::taxi_witness::TaxiWitnessGpu::new(&ctx.device, ctx.capacity));
+            }
+            ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
+            ctx.sample_organism(&mut states).expect("invalid organism genesis");
+            let manifest = serde_json::json!({
+                "scenario": universe::organism_scenario::SCENARIO_ID,
+                "observation": universe::organism_scenario::OBSERVATION_ID,
+                "action": universe::organism_scenario::ACTION_ID,
+                "task_potential": universe::gpu::taxi_routes::ROAD_POTENTIAL_VERSION,
+                "controller": if taxi_reference_witness {universe::gpu::taxi_witness::TAXI_WITNESS_ID} else {"evolved-native"},
+                "learning_evidence": !taxi_reference_witness,
+                "generation": gen_abs, "tick_rate": 64, "stations": organism_stations,
+                "geometry": universe::organism_scenario::export_world_geometry(&world),
+                "city": organism_city.as_ref().unwrap().metadata(),
+                "sensory_channels": universe::organism_channels::channel_manifest(),
+                "traffic_observation": {"schema":universe::gpu::traffic::TRAFFIC_OBSERVATION_ID,"wave_channels":{"present":172,"distance_fraction_100m":173,"phase":182,"time_remaining_fraction":191}},
+                "body_state_owner": "GPU", "body_sample_stride": 64,
+                "sensor_extras": "organism-resident-extras-v1",
+                "action_channels": ["throttle", "steer", "brake", "gear_up", "gear_down", "service", "pickup", "dropoff", "reverse"],
+                "action_stride": 96, "active_action_channels": 9,
+                "simulation_transfer": "resident GPU; host observation on sampling boundaries",
+                "fitness": "1000*deliveries + bounded_task_progress + money + 0.001*age_seconds + 10*alive - 100*(1-integrity) - 100*(1-alive)",
+                "motor_controller": if taxi_reference_witness {"reference GPU controller"} else {"evolved policy"}, "resource_units": "joules,kilograms",
+                "sensory_remap": "160..175 interoception;176..191 taxi;explicit GPS destination"});
+            std::fs::write(
+                format!("{out_dir}/organism_gen{gen_abs:04}.json"),
+                serde_json::to_vec_pretty(&manifest).unwrap(),
+            )
+            .expect("organism manifest write");
+        }
+        if !organism_taxi && !ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, &kan_knots_global) {
             eprintln!("[ERROR] warmup failed; no valid generation result can be reported");
             std::process::exit(1);
         }
 
+        let mut first_tick = 0;
+        if generation_idx == 0 {
+            if let Some(path) = resume_state.as_ref() {
+                let (tick, generation, aux) = organism_checkpoint::load(&mut ctx, &mut states,
+                    std::path::Path::new(path), &checkpoint_config).expect("checkpoint restore failed");
+                assert_eq!(generation, gen_abs);
+                assert!(tick <= n_ticks, "checkpoint beyond requested horizon");
+                first_tick = tick;
+                macro_rules! restore_vector { ($name:ident) => {
+                    $name = serde_json::from_value(aux[stringify!($name)].clone()).expect("checkpoint episode vector");
+                    assert_eq!($name.len(), n_seres, "checkpoint episode length");
+                }; }
+                restore_vector!(dist_acum); restore_vector!(prog_acum); restore_vector!(prog_prev);
+                restore_vector!(pos_prev); restore_vector!(checkpoint); restore_vector!(voltas_reais);
+                restore_vector!(life_progress_max);
+                restore_vector!(cruzamentos);
+                lap_tracker = serde_json::from_value(aux["lap_tracker"].clone()).expect("checkpoint lap tracker");
+                if let Some(runtime) = ecology.as_mut() {
+                    runtime.restore_checkpoint(serde_json::from_value(aux["ecology"].clone()).expect("checkpoint ecology")).expect("invalid ecology state");
+                }
+                ctx.sample_organism(&mut states).expect("restored organism invalid");
+                if let Some(diagnostics) = ctx.driving_diagnostics.as_mut() {
+                    let ids: Vec<u64> = ecology.as_ref().map(|e| e.lineage_ids().to_vec()).unwrap_or_else(|| (1..=n_seres as u64).collect());
+                    let positions: Vec<_> = states.iter().map(|s| s.phys.pos).collect();
+                    diagnostics.resume_identity(tick, &ids, &genomes, &positions).expect("resume trace identity");
+                }
+            }
+        }
         // ── N ticks de simulação ───────────────────────────────────────────────
         let dt = 1.0_f32 / 64.0;
-        for tick_i in 0..n_ticks {
+        let mut executed_ticks = first_tick;
+        let mut episode_end_reason = "horizon";
+        for tick_i in first_tick..n_ticks {
+            ctx.force_organism_sample = tick_i + 1 == n_ticks || (snapshot_every > 0 && (tick_i + 1) % snapshot_every == 0);
             let ok = ctx.tick(&mut states, n_seres, dt, tick_i + 1, &kan_knots_global);
             if !ok {
                 eprintln!(
@@ -4395,7 +4786,7 @@ fn main() {
                             std::process::exit(1);
                         }
                         let fuel_norm = if FUEL_ON.load(Ordering::Relaxed) {
-                            let tank = FUEL_TANK.load(Ordering::Relaxed).max(0.01);
+                            let tank = (states[lider].fuel_capacity as f32).max(0.01);
                             ((states[lider].fuel as f32 / tank).clamp(0.0, 1.0) * 127.0) as u8
                         } else {
                             0
@@ -4444,6 +4835,15 @@ fn main() {
             }
 
             for i in 0..n_seres {
+                // Organism state and odometry are advanced exclusively by resident
+                // kernels. Legacy lap rewards/host body feedback do not apply to a city.
+                if organism_taxi {
+                    if let Some(body) = ctx.organism_samples.get(i) {
+                        dist_acum[i] = body.values[98] as f64;
+                    }
+                    pos_prev[i] = states[i].phys.pos;
+                    continue;
+                }
                 let p1 = pos_of(&states[i].phys);
                 let dx = (p1[0] - pos_prev[i][0]) as f64;
                 let dz = (p1[2] - pos_prev[i][2]) as f64;
@@ -4479,6 +4879,7 @@ fn main() {
                     }
                     let avanco = d.clamp(-ld * 0.1, ld * 0.1) as f64;
                     prog_acum[i] += avanco;
+                    states[i].learning_reward = (avanco * 64.0 / 30.0).clamp(-1.0, 1.0) as f32;
                     prog_prev[i] = cur;
 
                     // DOPAMINA — canais 126 (joy_tick) e 127 (joy_streak).
@@ -4531,12 +4932,14 @@ fn main() {
                             n_ticks.max(1) as f64
                         };
                         let state = &mut states[i];
-                        if survival::apply_hole_contact(
-                            &mut state.life_left,
-                            &mut state.hole_cooldown_ticks,
-                            vox == 3,
-                            life_capacity,
-                        ) {
+                        if !organism_taxi
+                            && survival::apply_hole_contact(
+                                &mut state.life_left,
+                                &mut state.hole_cooldown_ticks,
+                                vox == 3,
+                                life_capacity,
+                            )
+                        {
                             state.hole_hits = state.hole_hits.saturating_add(1);
                             state.joy_streak = 0.0;
                         }
@@ -4665,7 +5068,7 @@ fn main() {
                                 m.cross(setor, alpha);
                             }
                         }
-                        if fantasma_on {
+                        if !organism_taxi && fantasma_on {
                             let v = fantasma_atual
                                 .vantagem(checkpoint[i] % N_CHECKPOINTS.max(1), tick_i as u32);
                             states[i].life_left = (states[i].life_left
@@ -4687,8 +5090,11 @@ fn main() {
                         // Um setor a cada ~122 m está sempre ao alcance de quem avança:
                         // a pista passa a PAGAR o avanço, que é o que dá gradiente onde
                         // antes havia só um degrau inalcançável.
-                        if FUEL_ON.load(Ordering::Relaxed) && SETOR_PAGA.load(Ordering::Relaxed) {
-                            states[i].fuel = FUEL_TANK.load(Ordering::Relaxed) as f64;
+                        if !organism_taxi
+                            && FUEL_ON.load(Ordering::Relaxed)
+                            && SETOR_PAGA.load(Ordering::Relaxed)
+                        {
+                            states[i].fuel = states[i].fuel_capacity;
                         }
                         if checkpoint[i] % total.max(1) == 0 {
                             voltas_reais[i] += 1;
@@ -4699,13 +5105,15 @@ fn main() {
                             // Na f1-world era a cada 3 voltas; aqui a cada volta, porque
                             // partindo de ZERO voltas exigir três seria um degrau que a
                             // evolução nunca sobe. O intervalo é `--refuel-laps`.
-                            if voltas_reais[i] % REFUEL_LAPS.load(Ordering::Relaxed) == 0 {
-                                states[i].fuel = FUEL_TANK.load(Ordering::Relaxed) as f64;
+                            if !organism_taxi
+                                && voltas_reais[i] % REFUEL_LAPS.load(Ordering::Relaxed) == 0
+                            {
+                                states[i].fuel = states[i].fuel_capacity;
                             }
                         }
                     }
                     let ganho = LIFE_EARN.load(Ordering::Relaxed);
-                    if ganho > 0.0 {
+                    if !organism_taxi && ganho > 0.0 {
                         let earned = survival::life_gain_from_new_progress(
                             prog_acum[i],
                             &mut life_progress_max[i],
@@ -4716,6 +5124,89 @@ fn main() {
                     }
                 }
                 pos_prev[i] = p1;
+            }
+
+            if let Some(ecology) = ecology.as_mut() {
+                let birth_life = if LIFE_EARN.load(Ordering::Relaxed) > 0.0 {
+                    LIFE_START as f64
+                } else {
+                    n_ticks.max(1) as f64
+                };
+                let mutation_flags = (if evolve_learning { 1 } else { 0 }) | (lifetime_flags & 6);
+                let births = if organism_taxi {
+                    if (tick_i + 1) % 64 == 0 {
+                        let poses: Vec<_> = states.iter().map(|s| (s.phys.pos, s.phys.fwd, s.wp_near)).collect();
+                        let task_progress: Vec<_> = ctx.organism_samples.iter().map(|s| s.values[68] as f64).collect();
+                        ecology.step_organism(&mut ctx, &mut states, &mut genomes, &mut engines,
+                            &task_progress, &evo_params, evolving_body, mutation_flags, (tick_i + 1) as u64,
+                            |_slot, parent, genome| {
+                                let (pos, fwd, wp_near) = poses[parent];
+                                ecology_runtime::SpawnState {
+                                    physics: body_evolution::at_birth(genome, evolving_body, pos, fwd),
+                                    fuel_capacity: 5_000_000.0,
+                                    life_ticks: 1.0, wp_near,
+                                }
+                            }).unwrap_or_else(|e| panic!("organism ecological birth: {e:?}"))
+                    } else { Vec::new() }
+                } else { ecology
+                    .step(
+                        &mut ctx,
+                        &mut states,
+                        &mut genomes,
+                        &mut engines,
+                        &prog_acum,
+                        &evo_params,
+                        evolving_body,
+                        mutation_flags,
+                        |slot, genome| {
+                            let (pos, fwd, wp_near) = birth_positions[slot];
+                            ecology_runtime::SpawnState {
+                                physics: body_evolution::at_birth(genome, evolving_body, pos, fwd),
+                                fuel_capacity: body_evolution::tank_capacity(
+                                    genome,
+                                    evolving_body,
+                                    FUEL_TANK.load(Ordering::Relaxed),
+                                ),
+                                life_ticks: birth_life,
+                                wp_near,
+                            }
+                        },
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("ERROR ecological birth: {e:?}");
+                        std::process::exit(1)
+                    }) };
+                for birth in births {
+                    let slot = birth.slot;
+                    dist_acum[slot] = 0.0;
+                    prog_acum[slot] = 0.0;
+                    life_progress_max[slot] = 0.0;
+                    checkpoint[slot] = 0;
+                    cruzamentos[slot].clear();
+                    voltas_reais[slot] = 0;
+                    prog_prev[slot] = world
+                        .get_track_progress(states[slot].phys.pos[0], states[slot].phys.pos[2]);
+                    pos_prev[slot] = states[slot].phys.pos;
+                    lap_tracker.reset_slot(slot, tick_i as u32 + 1);
+                    if let Some(diagnostics) = ctx.driving_diagnostics.as_mut() {
+                        diagnostics
+                            .on_birth(
+                                slot,
+                                birth.child_lineage_id,
+                                &genomes[slot],
+                                states[slot].phys.pos,
+                            )
+                            .expect("record newborn observation provenance");
+                    }
+                    println!(
+                        "  [birth] tick={} slot={} parent={} lineage={} fuel={:.6}",
+                        tick_i + 1,
+                        slot,
+                        birth.parent_slot,
+                        birth.child_lineage_id,
+                        states[slot].fuel
+                    );
+                }
             }
 
             // ── Painel: snapshot de tick (E5, a cada 64 ticks) ────────────────────
@@ -4750,6 +5241,25 @@ fn main() {
                     p.update_tick(tick_i as u64, snaps, fuel_mediana);
                 }
             }
+            if organism_taxi && snapshot_every > 0 && (tick_i + 1) % snapshot_every == 0 {
+                let path = std::path::PathBuf::from(format!("{out_dir}/state-gen{gen_abs:04}-tick{:08}",tick_i+1));
+                let aux = serde_json::json!({"dist_acum":dist_acum,"prog_acum":prog_acum,"prog_prev":prog_prev,
+                    "pos_prev":pos_prev,"checkpoint":checkpoint,"voltas_reais":voltas_reais,"life_progress_max":life_progress_max,
+                    "cruzamentos":cruzamentos,"lap_tracker":lap_tracker,"ecology":ecology.as_ref().map(|e| e.checkpoint())});
+                organism_checkpoint::save(&ctx, &states, &genomes, &path, tick_i+1, gen_abs,
+                    checkpoint_config.clone(), aux).expect("runtime checkpoint save failed");
+            }
+            executed_ticks = tick_i + 1;
+            if organism_taxi && executed_ticks % 64 == 0 && ctx.organism_samples.iter().all(|s| s.values[29] == 0.0) {
+                episode_end_reason = "extinction";
+                break;
+            }
+        }
+        let n_ticks = executed_ticks;
+        if organism_taxi {
+            std::fs::write(format!("{out_dir}/organism_episode_gen{gen_abs:04}.json"),
+                serde_json::json!({"schema_version":1,"end_reason":episode_end_reason,"ticks_executed":executed_ticks,
+                    "tick_rate":64,"scope":"mechanical execution; learning requires multi-seed evaluation"}).to_string()).expect("episode outcome write");
         }
 
         if let Some(diagnostics) = ctx.driving_diagnostics.as_mut() {
@@ -4843,6 +5353,39 @@ fn main() {
             _ => unreachable!("fitness mode validated before GPU setup"),
         };
 
+        if organism_taxi {
+            ctx.sample_organism(&mut states)
+                .expect("organism final state invalid");
+            let rows: Vec<_> = ctx
+                .organism_samples
+                .iter()
+                .enumerate()
+                .map(|(slot, body)| {
+                    let v = &body.values;
+                    serde_json::json!({"slot":slot,"tick":executed_ticks,"traffic":ctx.traffic_samples.get(slot),"age_seconds":v[3],"alive":v[29],
+                    "energy_j":v[0],"water_kg":v[1],"material_kg":v[2],"engine_temp_c":v[9]-273.15,
+                    "engine_wear":v[6],"tire_wear":v[7],"integrity":v[8],"maturity":v[4],
+                    "fatigue":v[5],"distance_m":v[98],"collision_energy_j":v[100],"impact_ticks":v[101],
+                    "brake_ticks":v[102],"task_progress_score":v[127],
+                    "money":v[64],"deliveries":v[68],"paid_repair_j":v[11],"paid_growth_j":v[12]})
+                })
+                .collect();
+            std::fs::write(
+                format!("{out_dir}/organism_result_gen{gen_abs:04}.json"),
+                serde_json::to_vec_pretty(&rows).unwrap(),
+            )
+            .expect("organism results write");
+            fitness = ctx
+                .organism_samples
+                .iter()
+                .map(universe::organism_scenario::fitness)
+                .collect();
+            println!("  [organism] generation={gen_abs} alive={}/{} deliveries={} fitness_best={:.3} (dimensionless)",
+                ctx.organism_samples.iter().filter(|b| b.values[29] > 0.5).count(), n_seres,
+                ctx.organism_samples.iter().map(|b| b.values[68] as u64).sum::<u64>(),
+                fitness.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+        }
+
         // Safety discounts useful progress instead of subtracting into a zero floor.
         // A subtract-and-clamp objective made both failure modes optimal in sequence:
         // first crashing was free, then standing still beat every negative score.
@@ -4860,7 +5403,7 @@ fn main() {
         let uncosted_median = cost_gate_progress
             .filter(|_| !cost_gate_open)
             .map(|_| objective_cost::population_median(&fitness[..n_seres]));
-        if costs_apply && (wall_cost > 0.0 || impact_cost > 0.0) {
+        if !organism_taxi && costs_apply && (wall_cost > 0.0 || impact_cost > 0.0) {
             let sector_metres = lap_dist / N_CHECKPOINTS as f64;
             for (score, state) in fitness.iter_mut().zip(&states) {
                 *score = objective_cost::safety_adjusted_score(
@@ -4956,7 +5499,7 @@ fn main() {
         // As VOLTAS mostradas têm de vir do progresso real na pista, não da fitness.
         let mut r = gen_stats(
             gen_abs,
-            &prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>(),
+            &if organism_taxi {dist_acum.clone()} else {prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>()},
             lap_dist,
         );
         let t_gen_s = t_gen.elapsed().as_secs_f64();
@@ -4965,14 +5508,16 @@ fn main() {
         let population: Vec<_> = (0..n_seres)
             .map(|i| {
                 serde_json::json!({
-                    "being": i, "progress_m": prog_acum[i], "distance_m": dist_acum[i],
+                    "being": i, "progress_m": if organism_taxi {None} else {Some(prog_acum[i])}, "distance_m": dist_acum[i],
+                    "scenario": if organism_taxi {"organism-taxi-v1"} else {"race-v1"},
+                    "deliveries": if organism_taxi {Some(ctx.organism_samples[i].values[68])} else {None},
                     "fitness": fitness[i], "alive_ticks": states[i].ticks_alive,
-                    "impact_count": states[i].impact_count,
-                    "collision_energy_j": states[i].collision_energy_j,
-                    "hole_hits": states[i].hole_hits,
+                    "impact_count": if organism_taxi {ctx.organism_samples[i].values[101] as u32} else {states[i].impact_count},
+                    "collision_energy_j": if organism_taxi {ctx.organism_samples[i].values[100] as f64} else {states[i].collision_energy_j},
+                    "hole_hits": if organism_taxi {None} else {Some(states[i].hole_hits)},
                     "fuel_remaining": states[i].fuel,
-                    "life_remaining_ticks": states[i].life_left,
-                    "low_progress": prog_acum[i].max(0.0) < 10.0,
+                    "life_remaining_ticks": if organism_taxi {None} else {Some(states[i].life_left)},
+                    "low_progress": if organism_taxi {dist_acum[i] < 10.0} else {prog_acum[i].max(0.0) < 10.0},
                     "life_exhausted": states[i].life_left <= 0.0,
                     "x": states[i].phys.pos[0], "z": states[i].phys.pos[2],
                 })
@@ -5192,6 +5737,23 @@ fn main() {
         // de prog_acum (metros contínuos são a métrica certa pra distância).
         r.n_ge1v = v1;
         r.n_ge2v = v2;
+        if let Some(curriculum) = adaptive.as_mut() {
+            let score = if organism_taxi {
+                ctx.organism_samples.iter().filter(|s| s.values[68] >= 1.0 && s.values[29] > 0.5).count() as f64 / n_seres.max(1) as f64
+            } else { v1 as f64 / n_seres.max(1) as f64 };
+            let event = curriculum
+                .observe(score)
+                .expect("valid training success fraction");
+            let record = serde_json::json!({"schema_version":1,"generation":gen_abs,
+                "training_seed":seed_gen,"success_fraction":score,
+                "frontier_index":curriculum.frontier_index(),"mastered":curriculum.mastered(),
+                "event":event.map(|e| format!("{:?}",e.kind)),"source":if organism_taxi { "taxi_delivery_and_survival_training_only" } else { "ordered_lap_crossings_training_only" }});
+            std::fs::write(
+                format!("{out_dir}/curriculum_gen{gen_abs:04}.json"),
+                record.to_string(),
+            )
+            .expect("write curriculum provenance");
+        }
         let cp_med = {
             let mut c: Vec<u32> = checkpoint.clone();
             c.sort_unstable();
@@ -5355,6 +5917,9 @@ fn main() {
             );
         }
 
+        if organism_taxi {
+            println!("gen {gen_abs:4} | odometer median={:.1}m max={:.1}m | {:.1}s",r.dist_med,r.dist_max,t_gen_s);
+        } else {
         println!(
             "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} low_progress={:.0}% | {:.1}s",
             gen_abs,
@@ -5367,6 +5932,8 @@ fn main() {
             r.mortality * 100.0,
             t_gen_s,
         );
+
+        }
 
         let sem_vida = states
             .iter()
@@ -5396,7 +5963,7 @@ fn main() {
         // Velocidade média da população. É a grandeza que a vida-ganha ataca: a distância
         // pode subir só por ter mais tempo, mas a velocidade não mente.
         // (`vmed` já foi calculada acima, antes do gate do currículo — reusa aqui.)
-        {
+        if !organism_taxi {
             let vida_med = states
                 .iter()
                 .take(n_seres)
@@ -5461,6 +6028,11 @@ fn main() {
             VEL_PICO.store(0.0, Ordering::Relaxed);
             MARCHA_PICO.store(0, Ordering::Relaxed);
         }
+        if organism_taxi {
+            println!("  [organism-contact] energy_j={:.3} impact_ticks={} dead={}/{}",
+                ctx.organism_samples.iter().map(|s| s.values[100] as f64).sum::<f64>(),
+                ctx.organism_samples.iter().map(|s| s.values[101] as u64).sum::<u64>(), sem_vida,n_seres);
+        } else {
         println!(
             "  [parede] {:.1}% dos ticks colado (<{:.0} m) | sem vida: {}/{} | custo={:.0} m/s",
             100.0 * wall_frac,
@@ -5487,6 +6059,8 @@ fn main() {
             "  [survival] hole contact episodes={} · fuel dry beings={}",
             hole_hits, ctx.tel_dry_beings
         );
+
+        }
 
         // ── O lento merece existir? ────────────────────────────────────────────
         // Razão de participação das três saídas: perto de 3 = três decisões distintas;
@@ -5945,6 +6519,8 @@ fn main() {
                 AUDITAR.store(false, Ordering::Relaxed);
                 let held_med = avaliar_held_out(
                     &mut ctx,
+                    &genomes,
+                    evolving_body,
                     n_seres,
                     n_ticks,
                     track_width,
@@ -5966,7 +6542,7 @@ fn main() {
                 // próxima geração detecta isso (`seed_gen != world_seed_atual`,
                 // topo do laço) e recarrega a pista de treino sozinha, sem
                 // precisar de nenhum código de "restaurar" aqui.
-                world_seed_atual = ho_seed;
+                ctx.reload_world(&world);
 
                 // MEDIANA dos vivos (item 3 da TAREFA) — mesmo critério "vivo"
                 // (`life_left > 0.0`) usado no resto do relatório desta geração
@@ -5992,9 +6568,9 @@ fn main() {
                     f64::NAN
                 };
                 println!(
-                    "  [generalizacao] gen={:4} treino={:.0}m held={:.0}m razao={:.3}  \
+                    "  [generalizacao] gen={:4} treino={:.3}{} held={:.3}{} razao={:.3}  \
                      (pista treino=seed {} · held-out=seed {})",
-                    gen_abs, treino_med, held_med, razao, seed_gen, ho_seed,
+                    gen_abs, treino_med, if organism_taxi {" score"} else {"m"}, held_med, if organism_taxi {" score"} else {"m"}, razao, seed_gen, ho_seed,
                 );
             }
         }
@@ -6014,10 +6590,42 @@ fn main() {
             // e `--fitness prog` saíam idênticas ao dígito — e eu quase registrei isso
             // como "a fitness não importa". Ela nunca tinha mudado.
             genomes = evolve(&genomes, &fitness, &evo_params, gen_abs, pop_seed);
+            if organism_taxi {
+                universe::gpu::body::mutate_organism_population(
+                    &mut genomes,
+                    evo_params.n_elite,
+                    gen_abs,
+                    pop_seed,
+                );
+            }
+            if evolving_body {
+                universe::gpu::body::mutate_population(
+                    &mut genomes,
+                    evo_params.n_elite,
+                    gen_abs,
+                    pop_seed,
+                );
+            }
+            let mutation_flags = (if evolve_learning { 1 } else { 0 }) | (lifetime_flags & 6);
+            if mutation_flags != 0 {
+                for (i, genome) in genomes.iter_mut().enumerate().skip(evo_params.n_elite) {
+                    let seed = pop_seed
+                        ^ (gen_abs as u64).wrapping_mul(0x9e3779b97f4a7c15)
+                        ^ (i as u64).wrapping_mul(0xbf58476d1ce4e5b9);
+                    genome.lifetime = genome.lifetime.mutated(seed, mutation_flags);
+                }
+            }
         }
     }
 
     let total_s = t_total.elapsed().as_secs_f64();
+    if organism_taxi {
+        println!("=== ORGANISM GPU RUN COMPLETE: {n_gens} generations, {n_seres} beings, {total_s:.1}s ===");
+        println!("Task outcomes and resource budgets: {out_dir}/organism_result_gen*.json");
+        println!("Execution success is not evidence of learned delivery or generalization.");
+        return;
+    }
+
     println!();
     if !elite_reprod.is_empty() {
         let validos: Vec<f64> = elite_reprod

@@ -45,6 +45,12 @@ pub struct MotorCommand {
 }
 
 impl MotorCommand {
+    /// Validate the applied action without hiding malformed values by clamping.
+    pub fn validate(
+        self,
+    ) -> Result<crate::contracts::VehicleCommand, crate::contracts::ContractError> {
+        crate::contracts::VehicleCommand::new(self.throttle, self.steer, self.brake)
+    }
     /// Converts the command to the legacy `[throttle, steer, brake]` layout.
     pub fn as_array(self) -> [f32; 3] {
         [self.throttle, self.steer, self.brake]
@@ -78,13 +84,11 @@ mod tests {
         };
         assert_eq!(command.as_array(), [0.25, -0.5, 1.0]);
         assert!(command.is_finite());
-        assert!(
-            !MotorCommand {
-                steer: f32::NAN,
-                ..command
-            }
-            .is_finite()
-        );
+        assert!(!MotorCommand {
+            steer: f32::NAN,
+            ..command
+        }
+        .is_finite());
     }
 
     #[test]

@@ -42,7 +42,7 @@ pub const N_SECTORS: usize = N_CHECKPOINTS as usize;
 /// English pass of the same day; `tools/laps.py` reads BOTH keys and treats a record
 /// with neither as closed, so every ledger ever written still reports the same numbers.
 // check-language: allow -- the sentence above quotes the retired wire name.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LapRecord {
     pub lap: u32,
     pub tick_start: u32,
@@ -60,7 +60,7 @@ pub struct LapRecord {
 /// `last_tick`/`last_dist` — where a partial's fragment ends, which nothing else could
 /// reconstruct: a corpse stops being ticked, so the tick count of the generation is NOT
 /// where this being stopped.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct OpenLap {
     lap: u32,
     tick_start: u32,
@@ -89,6 +89,7 @@ impl OpenLap {
 }
 
 /// Per-being lap ledger for ONE generation: create, feed through the tick loop, `finish`.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct LapTracker {
     done: Vec<Vec<LapRecord>>,
     open: Vec<OpenLap>,
@@ -101,6 +102,13 @@ impl LapTracker {
             done: vec![Vec::new(); n_beings],
             open: vec![OpenLap::new(1, 0, 0.0, 0); n_beings],
         }
+    }
+
+    /// Start a new lineage in a reused slot; earlier lineage records live in the
+    /// ecological event stream and must not be credited to this newborn.
+    pub fn reset_slot(&mut self, being: usize, tick: u32) {
+        self.done[being].clear();
+        self.open[being] = OpenLap::new(1, tick, 0.0, 0);
     }
 
     /// The being entered `sector`: ticks from here on are charged there. The crossing tick

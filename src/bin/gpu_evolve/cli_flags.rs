@@ -36,10 +36,8 @@ pub struct Flag {
     pub takes_value: bool,
     /// One line: what the flag does. Present tense, no leading capital.
     ///
-    /// `allow(dead_code)` for the same reason as `takes_value`: `gpu_evolve` has no
-    /// `--help` today (an unknown argument is ignored), so adding one is a separate,
-    /// behaviour-changing commit. The text is written now, beside the name it
-    /// documents, so that commit is a printer and not 112 guesses.
+    /// Printed by `gpu_evolve --help`. Unknown arguments fail before GPU startup
+    /// so misspelled experiment settings cannot silently select a different arm.
     #[allow(dead_code)]
     pub help: &'static str,
 }
@@ -99,6 +97,20 @@ pub const FLAGS: &[Flag] = &[
     flag("--driving-reflex-birth",        &[],                             SWITCH, "experimentally seed sparse evolvable body reflexes at birth"),
     flag("--no-driving-reflex-birth",     &[],                             SWITCH, "use the default fully random motor pathways at birth"),
     flag("--evolving-sensors",            &["--sensores-evolutivos"],      SWITCH, "let FOV, ranges and lookaheads mutate"),
+    flag("--snapshot-every", &[], VALUE, "save full organism runtime every N ticks; zero disables"),
+    flag("--resume-state", &[], VALUE, "resume an organism runtime checkpoint directory"),
+    flag("--scenario", &[], VALUE, "race-v1 or organism-taxi-v1; explicit body/world interface version"),
+    flag("--ecology",                     &[], SWITCH, "bounded in-episode births paid from parent fuel; native brain"),
+    flag("--ecology-founders",            &[], VALUE, "initial living beings; other slots are vacant"),
+    flag("--ecology-maturity-ticks",      &[], VALUE, "minimum parent age and cooldown (default 640 ticks)"),
+    flag("--ecology-min-progress",        &[], VALUE, "minimum signed track progress for reproduction (default 20 metres)"),
+    flag("--plasticity",                  &[], SWITCH, "resident bounded motor plasticity; cleared at birth"),
+    flag("--evolve-learning",             &[], SWITCH, "mutate inherited learning-rule parameters; enables plasticity"),
+    flag("--development",                 &[], SWITCH, "age/energy-dependent neural development"),
+    flag("--evolving-topology",            &[], SWITCH, "evolve bounded neuron/connection capacity masks"),
+    flag("--adaptive-curriculum",          &[], SWITCH, "training-only mastery frontier with archive regression probes"),
+    flag("--evolving-body",               &[],                             SWITCH, "evolve inherited engine/brake capacities with physical costs; requires --fuel"),
+    flag("--fixed-body",                  &[],                             SWITCH, "express the historical car even when DNA carries body genes (default)"),
     flag("--fixed-sensors",               &["--sensores-fixos"],           SWITCH, "hold every sensor at SENSOR_DEFAULTS (default, control arm)"),
     flag("--no-neuron-memory",            &["--sem-memoria-neuronal"],     SWITCH, "freeze per-neuron memory at alpha = 0 (control arm)"),  // check-language: allow
     flag("--no-neuron-period",            &["--sem-periodo-neuronal"],     SWITCH, "freeze the per-neuron period of L1 (control arm)"),  // check-language: allow

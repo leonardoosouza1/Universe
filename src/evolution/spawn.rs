@@ -1,13 +1,13 @@
-use crate::config::UniverseConfig;
 use crate::config::iara::brain::{L1_NEURONS, SENSORY_WAVE_SIZE};
 use crate::config::iara::vision::RETINA_TOTAL;
+use crate::config::UniverseConfig;
 use crate::simulation::Racer;
 use crate::world::VoxelWorld;
 use bevy::prelude::*;
 use rand::prelude::*;
 use std::io::Write;
 
-use super::dna_genesis::{EliteDna, HypernetSeed, MorphoGenes, load_champion_dna};
+use super::dna_genesis::{load_champion_dna, EliteDna, HypernetSeed, MorphoGenes};
 use super::logs::open_report_log;
 use super::settings::{DevSettings, RaceSettings};
 

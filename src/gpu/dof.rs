@@ -83,7 +83,7 @@ pub fn dof_by_block(genome: &Genome, threshold: f32) -> Vec<(&'static str, usize
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_GENE_THRESHOLD, dof, dof_by_block};
+    use super::{dof, dof_by_block, DEFAULT_GENE_THRESHOLD};
     use crate::gpu::evolution::{Genome, N_CFC_CHANNELS};
 
     /// A genome with every block empty except the ones a test fills in. Built by hand
@@ -104,6 +104,10 @@ mod tests {
             gates_w: Vec::new(),
             hip: Vec::new(),
             fly: Vec::new(),
+            body: super::super::body::BodyGenes::default(),
+            organs: Default::default(),
+            lifetime: Default::default(),
+            organism: [0.0; 16],
         }
     }
 

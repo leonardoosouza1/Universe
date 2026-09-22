@@ -29,7 +29,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::config::iara::vision::RETINA_TOTAL;
-use crate::fly_map::{COMMANDS, FlyMap, FlySelection, NONE, OUT_SLOTS};
+use crate::fly_map::{FlyMap, FlySelection, COMMANDS, NONE, OUT_SLOTS};
 use crate::gpu::core::{storage_entry, uniform_entry};
 use crate::gpu::perception::WAVE_U32S;
 
@@ -370,6 +370,31 @@ impl FlyMapGpu {
         enc.clear_buffer(&self.buf_cmd, 0, None);
         self.queue.submit(Some(enc.finish()));
         self.phase.set(0);
+    }
+
+    /// Clears the recurrent state for one being while leaving every other being intact.
+    ///
+    /// The state is neuron-major (`neuron * capacity + being`), so a newborn slot is
+    /// scattered across each neuron row. Ecology births are rare; recording one clear
+    /// range per neuron keeps the operation exact and avoids the forbidden reset-all path.
+    pub fn reset_being(&self, being: usize) {
+        if being >= self.capacity {
+            return;
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fly-slot-reset"),
+            });
+        for neuron in 0..self.n {
+            let offset = ((neuron * self.capacity + being) * std::mem::size_of::<f32>()) as u64;
+            encoder.clear_buffer(&self.buf_x, offset, Some(4));
+            encoder.clear_buffer(&self.buf_r[0], offset, Some(4));
+            encoder.clear_buffer(&self.buf_r[1], offset, Some(4));
+        }
+        let command_offset = (being * COMMANDS * std::mem::size_of::<f32>()) as u64;
+        encoder.clear_buffer(&self.buf_cmd, command_offset, Some((COMMANDS * 4) as u64));
+        self.queue.submit(Some(encoder.finish()));
     }
 
     /// Records `fly_step` + `fly_read` into an existing encoder and queues the command

@@ -31,8 +31,8 @@
 //! ```
 
 use super::{
-    BODY_SLOT_BASE, CURVE_SLOT_BASE, CURVE_SLOT_COUNT, PerceptionGpu, PosePerception,
-    TEMPORAL_STRIDE, body_slot_byte_offset, encode_body_signed, encode_body_unsigned,
+    body_slot_byte_offset, encode_body_signed, encode_body_unsigned, PerceptionGpu, PosePerception,
+    BODY_SLOT_BASE, CURVE_SLOT_BASE, CURVE_SLOT_COUNT, TEMPORAL_STRIDE,
 };
 use crate::config::iara::brain::SENSORY_WAVE_SIZE;
 use crate::config::iara::vision::{RETINA_COLS, RETINA_TOTAL};

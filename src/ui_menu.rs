@@ -1,5 +1,5 @@
-use crate::AppState;
 use crate::config::{TrackProfile, UniverseConfig};
+use crate::AppState;
 use bevy::prelude::*;
 use rand::Rng;
 
