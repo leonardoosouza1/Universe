@@ -132,6 +132,12 @@ adapter `AMD Radeon RX 6750 XT (RADV NAVI22)` asserted by every fixture.
 Zero deaths, refusals and damage above 0.3 integrity in all 13 runs; wall time 5.6–8.5 s
 per single-being run and 18.4 s per 12×3×1280 life run (debug binary).
 
+Panel: `v3/life-progress` packaged into `/media/llm-data/lab.db` (name `life-progress`,
+`UNIVERSE_S2_BIN_DIR=Universe/target/debug`); the observatory opens generation 2 with
+12/12 alive, 0 deliveries and the organism metrics table — screenshot
+`v3/panel-life-progress-3440x1240.png`. Neither the school competence nor the fitness
+decomposition is rendered yet (Stage 5).
+
 ### 4.3 Finding: the online plasticity path is wired but three orders of magnitude too weak
 
 The P update is `ΔP = rate·elapsed·reward·gain12·alive·energy^k·E` with defaults
