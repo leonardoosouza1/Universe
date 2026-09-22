@@ -6,7 +6,7 @@
 // waiting_passenger_id,destination_station,cooldown_s,reserved,reserved.
 // Monetary prices:0.00001/J,1/kgwater,5/kgmaterial; rates100000J/s,1kg/s,.2kg/s.
 // Monetary genesis25; deliveryfare10+.02*direct_distance_m; no energy creation by fares.
-struct Params { n:u32, stations:u32, tick:u32, wave_words:u32, dt:f32, _a:u32, _b:u32, _c:u32 }
+struct Params { n:u32, stations:u32, tick:u32, wave_words:u32, dt:f32, observation:u32, _b:u32, _c:u32 }
 @group(0) @binding(0) var<uniform> p:Params;
 @group(0) @binding(1) var<storage,read_write> body:array<f32>;
 @group(0) @binding(2) var<storage,read_write> world:array<f32>;
@@ -17,12 +17,14 @@ struct Params { n:u32, stations:u32, tick:u32, wave_words:u32, dt:f32, _a:u32, _
 fn station(i:u32)->u32 { return 4u+16u*i; }
 fn distance_to(pos:vec2<f32>, j:u32)->f32 { let w=station(j); return distance(pos,vec2<f32>(world[w],world[w+1u])); }
 fn requested(b:u32, action:u32)->bool { return intent[b*96u+action]>0.5; }
+// Cell convention shared with world.rs/organism_sensors.wgsl: centre i*cell, half away from zero.
+fn cell_index(v:vec2<f32>)->vec2<i32> { return vec2<i32>(sign(v)*floor(abs(v)+vec2<f32>(0.5))); }
 
 // Immutable map metric: no runtime host search or hidden steering assistance.
 fn route_distance(pos:vec2<f32>, destination:vec2<f32>)->f32 {
   if(routes[0]==0.0){return distance(pos,destination);}
   let size=u32(routes[0]);let cell=routes[1];
-  let grid=vec2<i32>(floor(pos/cell));
+  let grid=cell_index(pos/cell);
   if(any(grid<vec2<i32>(0)) || any(grid>=vec2<i32>(i32(size)))){return -1.0;}
   var target_station=p.stations;
   for(var j=0u;j<p.stations;j++){
@@ -173,10 +175,23 @@ fn pack4(a:f32,b:f32,c:f32,d:f32)->u32 {
 // Fractions/codes are explicit feature normalizations, then signed i8 quantization
 // saturates only the observation. Canonical raw state is never overwritten here.
 // Explicit scenario-only observation schema: taxi channels176..191 replacelegacy horizon.
-// 176 money/100,177 onboard,178 targetdx/100m,179 targetdz/100m,
+// v2 (p.observation==2): 176 money/100,177 onboard,178 targetdx/100m,179 targetdz/100m,
 // 180 requestavailable,181 taskage/300s,182 deliveries/100,183 refusal/6,
 // 184 servicedx/100m,185 servicedz/100m,186 E stockfraction,187 Wstockfraction,
 // 188 Mstockfraction,189 serviceavailable,190 fare/100,191 alive.
+// v3 (p.observation==3): 178/179 = cos/sin of the task direction in the body frame
+// (forward, lateral axes of the physics pose), 183 = d/(d+100) (1 when no task);
+// 184/185/186 the same for the nearest service; 187 min station stock fraction;
+// 188 refusal/6; 190 fare/100. 182 and 191 belong to traffic.wgsl in both versions.
+// Senses read the physics INPUT record (stride 92: pos36/38, fwd40/42, lat44/46),
+// which holds the initial pose at tick 0 and the fed-back pose afterwards.
+fn body_frame(delta:vec2<f32>, fwd:vec2<f32>, lat:vec2<f32>)->vec3<f32> {
+  let d=length(delta);
+  if(d<0.001){return vec3<f32>(0.0,0.0,0.0);}
+  let dir=delta/d;
+  let f=fwd/max(length(fwd),0.0001);let l=lat/max(length(lat),0.0001);
+  return vec3<f32>(dot(dir,f),dot(dir,l),d/(d+100.0));
+}
 @compute @workgroup_size(64)
 fn senses(@builtin(global_invocation_id) gid:vec3<u32>){
  let b=gid.x;if(b>=p.n){return;}let s=b*128u;let words=b*p.wave_words;
@@ -185,6 +200,21 @@ fn senses(@builtin(global_invocation_id) gid:vec3<u32>){
  wave[words+42u]=pack4(body[s+4u],body[s+3u]/7200.0,body[s+32u]/max(body[s+16u],0.000001),body[s+33u]/max(body[s+17u],0.000001));
  wave[words+43u]=pack4(body[s+42u],body[s+43u],body[s+46u],body[s+29u]);
  let base=words+44u;
+ if(p.observation==3u){
+  let i=b*92u;
+  let fwd=vec2<f32>(physics[i+40u],physics[i+42u]);
+  let lat=vec2<f32>(physics[i+44u],physics[i+46u]);
+  let has_task=body[s+65u]>0.5 || body[s+90u]>0.5;
+  var task=vec3<f32>(0.0,0.0,1.0);
+  if(has_task){task=body_frame(vec2<f32>(body[s+80u],body[s+81u]),fwd,lat);}
+  let service=body_frame(vec2<f32>(body[s+85u],body[s+86u]),fwd,lat);
+  let stock=min(body[s+87u],min(body[s+88u],body[s+89u]));
+  wave[base]=pack4(body[s+64u]/100.0,body[s+65u],task.x,task.y);
+  wave[base+1u]=pack4(body[s+90u],body[s+74u]/300.0,0.0,task.z);
+  wave[base+2u]=pack4(service.x,service.y,service.z,stock);
+  wave[base+3u]=pack4(body[s+69u]/6.0,body[s+83u],body[s+73u]/100.0,0.0);
+  return;
+ }
  wave[base]=pack4(body[s+64u]/100.0,body[s+65u],body[s+80u]/100.0,body[s+81u]/100.0);
  wave[base+1u]=pack4(body[s+90u],body[s+74u]/300.0,body[s+68u]/100.0,body[s+69u]/6.0);
  wave[base+2u]=pack4(body[s+85u]/100.0,body[s+86u]/100.0,body[s+87u],body[s+88u]);

@@ -7,10 +7,11 @@ const SPATIAL: &str = include_str!("gpu/perception.wgsl");
 const TEMPORAL: &str = include_str!("gpu/perception_temporal.wgsl");
 const MOTION: &str = include_str!("gpu/perception_motion.wgsl");
 
-/// Complete ordered 192-channel description for organism-city-observation-v2.
+/// Complete ordered 192-channel description for organism-city-observation-v2/v3.
 /// `normalization` describes the stored signed byte, except body/task/traffic rows
 /// which provide the explicitly stated pre-quantization feature and quantization.
-pub fn channel_manifest() -> Value {
+/// `navigation_observation` selects the taxi rows 176..191 (2 = dx/dz, 3 = body frame).
+pub fn channel_manifest(navigation_observation: u32) -> Value {
     let mut channels = Vec::with_capacity(192);
     for ch in 0..160 {
         let motion = matches!(ch,21..=27|83|84|98|114..=117);
@@ -106,7 +107,7 @@ pub fn channel_manifest() -> Value {
             "active":if line==0 {serde_json::Value::Null}else{json!(true)},"status":if line==0 {"unresolved_static_mapping"}else if ch==125{"conditional_social_flag"}else{"written"},
             "upstream":if temporal{"organism_sensors.wgsl resident bridge + persistent temporal state"}else{"resident retina/current world geometry"}}));
     }
-    let body_task = [
+    let mut body_task = vec![
         ("EnergyFraction", "energy_J/max(capacity_J,1e-6)", "J/J"),
         ("WaterFraction", "water_kg/max(capacity_kg,1e-6)", "kg/kg"),
         (
@@ -192,6 +193,18 @@ pub fn channel_manifest() -> Value {
             "fraction",
         ),
     ];
+    let v3 = navigation_observation == crate::gpu::taxi::NAVIGATION_OBSERVATION_V3;
+    if v3 {
+        body_task[18] = ("TaskDirectionForward", "dot(unit(target-position), forward); 0 without task", "cos");
+        body_task[19] = ("TaskDirectionLateral", "dot(unit(target-position), lateral); 0 without task", "sin");
+        body_task[23] = ("TaskDistance", "d/(d+100) with d=|target-position| m; 1 without task", "fraction");
+        body_task[24] = ("ServiceDirectionForward", "dot(unit(nearest_service-position), forward)", "cos");
+        body_task[25] = ("ServiceDirectionLateral", "dot(unit(nearest_service-position), lateral)", "sin");
+        body_task[26] = ("ServiceDistance", "d/(d+100) with d=|nearest_service-position| m", "fraction");
+        body_task[27] = ("StationStockMinFraction", "min(energy,water,material stock/capacity) of nearest station", "fraction");
+        body_task[28] = ("TaskRefusal", "refusal_code/6; code7unfundedbirth saturates", "enum");
+        body_task[30] = ("PassengerFare", "fare/100", "currency");
+    }
     for (offset, (name, normalization, unit)) in body_task.iter().enumerate() {
         let ch = 160 + offset;
         let traffic = matches!(ch, 172 | 173 | 182 | 191);
@@ -200,7 +213,7 @@ pub fn channel_manifest() -> Value {
             "producer":if traffic{"src/gpu/traffic.wgsl::senses"}else{"src/gpu/taxi.wgsl::senses"},
             "active":true,"status":"written","upstream":if traffic{"resident physics input + immutable stop lines + absolute tick"}else{"previous completed organism/taxi post state"}}));
     }
-    json!({"schema":crate::gpu::traffic::TRAFFIC_OBSERVATION_ID,"channel_count":192,
+    json!({"schema":crate::organism_scenario::observation_id(navigation_observation),"navigation_observation":navigation_observation,"channel_count":192,
         "encoding":"48 u32 words per being; four two's-complement i8 bytes per word, least-significant byte first",
         "execution_order":["resident sensors -> temporal extras","retina","perception clear -> spatial -> temporal -> motion","retina_digest -> separate extra buffer only","taxi senses overwrites160..191","traffic senses overwrites172,173,182,191","brain"],
         "scope":"organism resident city only; legacy BODY remap disabled; static producer map; unresolved rows explicitly marked; no channels192..207",
@@ -212,7 +225,7 @@ pub fn channel_manifest() -> Value {
 mod tests {
     #[test]
     fn resident_channel_manifest_covers_executed_wave() {
-        let manifest = super::channel_manifest();
+        let manifest = super::channel_manifest(2);
         let channels = manifest["channels"].as_array().unwrap();
         assert_eq!(channels.len(), 192);
         for (index, channel) in channels.iter().enumerate() {
@@ -230,5 +243,29 @@ mod tests {
         assert_eq!(channels[20]["name"], "EnergyFractionDuplicate");
         assert_eq!(channels[28]["name"], "WallWidthRay[4]");
         assert_eq!(channels[32]["name"], "FlowCrossRay[0]");
+        assert_eq!(manifest["schema"], "organism-city-observation-v2");
+        assert_eq!(channels[178]["name"], "TaskDeltaX");
+        assert_eq!(channels[183]["name"], "TaskRefusal");
+    }
+
+    #[test]
+    fn navigation_v3_manifest_rewrites_only_taxi_navigation_rows() {
+        let v2 = super::channel_manifest(2);
+        let v3 = super::channel_manifest(3);
+        assert_eq!(v3["schema"], "organism-city-observation-v3");
+        let a = v2["channels"].as_array().unwrap();
+        let b = v3["channels"].as_array().unwrap();
+        assert_eq!(b.len(), 192);
+        for index in 0..192 {
+            let changed = matches!(index, 178 | 179 | 183 | 184 | 185 | 186 | 187 | 188);
+            assert_eq!(a[index] != b[index], changed, "channel {index}");
+        }
+        assert_eq!(b[178]["name"], "TaskDirectionForward");
+        assert_eq!(b[183]["name"], "TaskDistance");
+        assert_eq!(b[188]["name"], "TaskRefusal");
+        assert_eq!(b[190]["name"], "PassengerFare");
+        for index in [172, 173, 182, 191] {
+            assert_eq!(b[index]["producer"], "src/gpu/traffic.wgsl::senses");
+        }
     }
 }

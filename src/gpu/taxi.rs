@@ -39,8 +39,13 @@ struct Params {
     tick: u32,
     wave_words: u32,
     dt: f32,
-    padding: [u32; 3],
+    observation: u32,
+    padding: [u32; 2],
 }
+
+/// Taxi channel schema selected by `--navigation-observation`.
+pub const NAVIGATION_OBSERVATION_V2: u32 = 2;
+pub const NAVIGATION_OBSERVATION_V3: u32 = 3;
 
 pub struct TaxiGpu {
     pub buf_world: wgpu::Buffer,
@@ -48,6 +53,7 @@ pub struct TaxiGpu {
     pub capacity: usize,
     pub station_count: usize,
     initial_world: Vec<f32>,
+    observation_version: u32,
     post_layout: wgpu::BindGroupLayout,
     birth_layout: wgpu::BindGroupLayout,
     senses_layout: wgpu::BindGroupLayout,
@@ -146,7 +152,7 @@ impl TaxiGpu {
         });
         let senses_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("taxi-senses-layout"),
-            entries: &[uniform(), storage(1, false), storage(5, false)],
+            entries: &[uniform(), storage(1, false), storage(3, true), storage(5, false)],
         });
         let pipeline = |layout: &wgpu::BindGroupLayout, name: &str| {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -176,6 +182,7 @@ impl TaxiGpu {
             capacity,
             station_count: stations.len(),
             initial_world,
+            observation_version: NAVIGATION_OBSERVATION_V2,
             post_layout,
             birth_layout,
             senses_layout,
@@ -183,6 +190,17 @@ impl TaxiGpu {
             birth_pipeline,
             senses_pipeline,
         }
+    }
+    /// Select the taxi channel schema before the first tick; never mid-run.
+    pub fn set_observation_version(&mut self, version: u32) {
+        assert!(
+            matches!(version, NAVIGATION_OBSERVATION_V2 | NAVIGATION_OBSERVATION_V3),
+            "unknown navigation observation version {version}"
+        );
+        self.observation_version = version;
+    }
+    pub fn observation_version(&self) -> u32 {
+        self.observation_version
     }
     /// Install the scenario's immutable road field once, never per tick.
     pub fn configure_routes(&mut self, device: &wgpu::Device, world: &crate::world::VoxelWorld, stations: &[[f32; 8]]) -> Result<(), &'static str> {
@@ -215,7 +233,8 @@ impl TaxiGpu {
             tick,
             wave_words: super::perception::WAVE_U32S as u32,
             dt,
-            padding: [0; 3],
+            observation: self.observation_version,
+            padding: [0; 2],
         };
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("taxi-params"),
@@ -329,6 +348,7 @@ impl TaxiGpu {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         bodybuf: &wgpu::Buffer,
+        physics_input: &wgpu::Buffer,
         packed_wave: &wgpu::Buffer,
         n: usize,
     ) {
@@ -336,6 +356,7 @@ impl TaxiGpu {
             return;
         }
         assert!(bodybuf.size() >= (n * 128 * 4) as u64, "taxi body shape");
+        assert!(physics_input.size() >= (n * 92 * 4) as u64, "taxi physics input shape");
         assert!(
             packed_wave.size() >= (n * super::perception::WAVE_U32S * 4) as u64,
             "taxi packed sensory shape"
@@ -352,6 +373,10 @@ impl TaxiGpu {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: bodybuf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: physics_input.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
@@ -626,5 +651,139 @@ mod tests {
         assert!((evaluated[128+127]-(100.0+100.0/12.0)).abs()<1e-4, "legal detour must improve score");
         assert_eq!(evaluated[256+127],100.0,"wall must not receive progress bonus");
 
+        // Cell convention on the left leg (x = 10): z = 15.3 m / 10 m = 1.53 cells ->
+        // row 2 by round (110 m remaining), row 1 by floor (120 m). Exact tie
+        // 15.0 -> row 2 (half away from zero, world.rs convention).
+        let mut tie_poses = vec![0.0f32; 3*56];
+        for (b, z) in [15.3f32, 14.7, 15.0].iter().enumerate() { tie_poses[b*56+36]=10.0; tie_poses[b*56+38]=*z; }
+        let tie_buffer=buffer(&tie_poses);
+        let tie_states=buffer(&states);
+        let mut encoder=device.create_command_encoder(&Default::default());
+        routed.encode_post(&device, &mut encoder, &tie_buffer, &tie_states, &no_requests, 3, 0., 0);
+        queue.submit(Some(encoder.finish()));
+        let tie=read(&tie_states, 3*128);
+        // route_length origin(10,10)->(50,10) along the U = 120 m; score = 100 + 100*(1-remaining/120).
+        let score = |remaining: f32| 100.0 + 100.0 * (1.0 - remaining / 120.0);
+        assert!((tie[127]-score(110.0)).abs()<1e-4, "z=15.3 rounds to row 2: {}", tie[127]);
+        assert!((tie[128+127]-score(120.0)).abs()<1e-4, "z=14.7 stays in row 1: {}", tie[128+127]);
+        assert!((tie[256+127]-tie[127]).abs()<1e-4, "exact tie 15.0 rounds away from zero like 15.3");
+    }
+
+    #[test]
+    #[ignore = "exclusive real GPU; navigation observation v2 saturation vs v3 body frame"]
+    fn taxi_gpu_navigation_v3_keeps_direction_and_distance_beyond_100m() {
+        use super::*;
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("Vulkan adapter");
+        assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu);
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("taxi navigation fixture"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+            },
+            None,
+        ))
+        .expect("GPU device");
+        let stations = [
+            [0.0, 0.0, 10000.0, 10.0, 10.0, 0.0, 0.0, 0.0],
+            [1000.0, 1000.0, 10000.0, 10.0, 10.0, 0.0, 0.0, 0.0],
+        ];
+        let buffer = |data: &[f32]| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("navigation-fixture"),
+                contents: bytemuck::cast_slice(data),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            })
+        };
+        let read = |source: &wgpu::Buffer, words: usize| -> Vec<u32> {
+            let staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None, size: (words * 4) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_buffer_to_buffer(source, 0, &staging, 0, (words * 4) as u64);
+            queue.submit(Some(encoder.finish()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            staging.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+            device.poll(wgpu::Maintain::Wait);
+            rx.recv().unwrap().unwrap();
+            let out = bytemuck::cast_slice::<u8, u32>(&staging.slice(..).get_mapped_range()).to_vec();
+            staging.unmap();
+            out
+        };
+        let byte = |word: u32, lane: usize| -> i32 {
+            let raw = ((word >> (lane * 8)) & 255) as i32;
+            if raw > 127 { raw - 256 } else { raw }
+        };
+        // Four beings, all at the origin heading +x with lateral +z; three targets
+        // that v2 cannot tell apart and one 12 m task the pickup radius cares about.
+        let targets = [[1000.0f32, 100.0], [100.0, 1000.0], [1000.0, -100.0], [12.0, 0.0]];
+        let n = targets.len();
+        let mut bodies = vec![0.0f32; n * 128];
+        let mut physics = vec![0.0f32; n * 92];
+        for (b, target) in targets.iter().enumerate() {
+            let s = b * 128;
+            bodies[s + 29] = 1.0; bodies[s + 65] = 1.0; bodies[s + 84] = 1.0;
+            bodies[s + 80] = target[0]; bodies[s + 81] = target[1];
+            bodies[s + 85] = 30.0; bodies[s + 86] = -40.0; // nearest service 50 m away, forward-right
+            bodies[s + 87] = 0.9; bodies[s + 88] = 0.4; bodies[s + 89] = 0.7;
+            bodies[s + 69] = 3.0; bodies[s + 73] = 20.0;
+            physics[b * 92 + 40] = 1.0; physics[b * 92 + 46] = 1.0;
+        }
+        let body = buffer(&bodies);
+        let input = buffer(&physics);
+        let wave = buffer(&vec![0.0f32; n * 48]);
+        let mut taxi = TaxiGpu::new(&device, &queue, n, &stations);
+        let run = |taxi: &TaxiGpu| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            taxi.encode_senses(&device, &mut encoder, &body, &input, &wave, n);
+            queue.submit(Some(encoder.finish()));
+            read(&wave, n * 48)
+        };
+        let v2 = run(&taxi);
+        for b in 0..3 {
+            let w = v2[b * 48 + 44];
+            assert_eq!((byte(w, 2), byte(w, 3).abs()), (127, 127), "v2 saturates being {b}");
+        }
+        assert_eq!(byte(v2[44], 2), byte(v2[48 + 44], 2), "v2: (1000,100) and (100,1000) collide");
+        taxi.set_observation_version(NAVIGATION_OBSERVATION_V3);
+        let v3 = run(&taxi);
+        let channel = |b: usize, ch: usize| byte(v3[b * 48 + ch / 4], ch % 4);
+        let expect = |value: f32| (value.clamp(-1.0, 1.0) * 127.0).round() as i32;
+        for (b, target) in targets.iter().enumerate() {
+            let d = target[0].hypot(target[1]);
+            let near = |ch: usize, value: f32, what: &str| {
+                let got = channel(b, ch);
+                assert!((got - expect(value)).abs() <= 1, "being {b} {what}: byte {got} vs {}", expect(value));
+            };
+            near(178, target[0] / d, "forward cosine");
+            near(179, target[1] / d, "lateral sine");
+            near(183, d / (d + 100.0), "compressed distance");
+            near(184, 0.6, "service forward");
+            near(185, -0.8, "service lateral");
+            near(186, 50.0 / 150.0, "service distance");
+            near(187, 0.4, "min stock fraction");
+            near(188, 0.5, "refusal 3/6");
+            near(190, 0.2, "fare 20/100");
+            assert_eq!(channel(b, 177), 127, "onboard unchanged");
+        }
+        let v3_dir: Vec<(i32, i32, i32)> = (0..3).map(|b| (channel(b, 178), channel(b, 179), channel(b, 183))).collect();
+        assert!(v3_dir[0] != v3_dir[1] && v3_dir[0] != v3_dir[2] && v3_dir[1] != v3_dir[2], "v3 separates the three far targets: {v3_dir:?}");
+        assert!((channel(3, 183) - expect(12.0 / 112.0)).abs() <= 1, "12 m task keeps ~14 quantisation steps: {}", channel(3, 183));
+        // No task: direction 0, distance 1 (far), validity through 177/180.
+        bodies[65] = 0.0; bodies[90] = 0.0;
+        queue.write_buffer(&body, 0, bytemuck::cast_slice(&bodies));
+        let idle = run(&taxi);
+        assert_eq!((byte(idle[44], 2), byte(idle[44], 3), byte(idle[45], 3)), (0, 0, 127));
     }
 }

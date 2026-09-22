@@ -17,6 +17,7 @@
 //! |---|---|---|
 //! | `SLOW_ABLATED` | `main()` (flag `--no-slow`) | `slow_ablated()` em `context.rs::tick()` |
 //! | `FUEL_ON`, `FUEL_TANK`, `REFUEL_LAPS`, `SETOR_PAGA` | `main()` (flags `--fuel*`) | `main()` (laço de geração, mecânica de combustível) |
+//! | `NAVIGATION_OBSERVATION` | `main()` (flag `--navigation-observation`) | `context.rs::start_organism` (taxi senses schema) |
 //! | `AUDITAR` | `main()` (flag `--auditar-visao`) | `context.rs::tick()` (decide se acumula auditoria) + `main()` (relatório final) |
 //! | `SLOW_STEER_AUTH` | `main()` (flag `--slow-steer`) | `context.rs::tick()` (viés do volante do cérebro lento) |
 //! | `PORTAL_CURVA` | `main()` (flag `--portal-curva`) | `main()` (laço de geração, escolha de setor) |
@@ -116,6 +117,9 @@ pub const WALL_NEAR_M: f32 = 3.0;
 pub static FUEL_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// A cada quantas voltas reabastece. Na f1-world era 3.
 pub static REFUEL_LAPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+/// organism-taxi-v1 navigation observation schema (2 or 3); written once by `main()`
+/// from `--navigation-observation`, read by `context.rs::start_organism`.
+pub static NAVIGATION_OBSERVATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
 /// Tamanho do tanque. 1,0 é o original da `f1-world`.
 ///
 /// Com consumo `(0,002 + acel²·0,004)/s`, um tanque de 1,0 dura de 166 s (pé no fundo) a

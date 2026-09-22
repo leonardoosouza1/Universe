@@ -142,6 +142,8 @@ pub const FLAGS: &[Flag] = &[
     flag("--rpm-cost",                    &["--custo-rpm"],                VALUE,  "fitness cost per unit of RPM"),
     flag("--stag-life-drain",             &[],                             VALUE,  "life drained while stagnant"),
     flag("--same-start",                  &[],                             SWITCH, "every being starts at the same waypoint"),
+    flag("--fixed-spawn-slots",           &[],                             SWITCH, "organism city: keep the being->spawn slot map fixed across generations (default rotates by hash(generation, seed))"),
+    flag("--navigation-observation",      &[],                             VALUE,  "organism city taxi channels: v2 (dx/dz per 100 m, default) or v3 (body-frame direction + compressed distance)"),
     flag("--social-sensors",              &[],                             SWITCH, "enable population-relative proximity inputs for multi-being worlds"),
     flag("--random-start",                &["--largada-aleatoria"],        SWITCH, "one random start waypoint, shared by the whole population"),
     flag("--damage",                      &["--dano"],                     VALUE,  "damage scale; 0 disables it"),

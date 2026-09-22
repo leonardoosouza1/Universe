@@ -29,51 +29,137 @@ impl CityPlan {
     }
 }
 
-/// Deterministic separated spawn positions around the depot intersection.
-pub fn spawn_positions(world: &VoxelWorld, n: usize) -> Result<Vec<[f32; 3]>, String> {
+/// One birth slot: lane centre, heading along the lane flow, never on a station.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CitySpawn {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub depot_distance_m: f32,
+}
+
+/// Minimum distance between two birth slots; the car body is about 4.5 m long.
+pub const SPAWN_MIN_SEPARATION_M: f32 = 8.0;
+/// Minimum distance from any station centre; pickup/service act within 4 m.
+pub const SPAWN_STATION_CLEARANCE_M: f32 = 18.0;
+/// Distance from an intersection centre to the first slot along a street.
+const SPAWN_JUNCTION_MARGIN_M: f32 = 18.0;
+/// Spacing between consecutive slots in one lane.
+const SPAWN_LANE_SPACING_M: f32 = 12.0;
+
+fn street_centers(size: i32) -> Vec<i32> {
+    STREET_CENTERS
+        .iter()
+        .copied()
+        .filter(|v| *v >= 3 && *v < size - 3)
+        .collect()
+}
+
+/// Deterministic birth slots on lane centres.
+///
+/// Candidates lie one cell either side of every street centre line (4.5 m from
+/// the nearest wall face), 18 m plus multiples of 12 m from each intersection
+/// centre, the opposite lane staggered by 6 m so cross-lane pairs stay 8.5 m
+/// apart. The slot cell and its eight neighbours must be road, the heading is the
+/// lane flow, nothing is born within 18 m of a station, and slots are ordered by
+/// distance to the depot so a small population stays near it. The old lattice
+/// scan put slot 0 on the depot (instant pickup) and everyone else 1.5 m from
+/// the perimeter wall.
+pub fn spawn_slots(
+    world: &VoxelWorld,
+    stations: &[[f32; 8]],
+    n: usize,
+) -> Result<Vec<CitySpawn>, String> {
     if n == 0 {
         return Ok(Vec::new());
     }
-    let mut positions = Vec::with_capacity(n);
-    let start_col = (world.start_pos.x / world.cell_size).round() as usize;
-    let start_row = (world.start_pos.z / world.cell_size).round() as usize;
-    if start_row < world.size
-        && start_col < world.size
-        && world.grid[start_row * world.size + start_col] == VoxelType::Road
-    {
-        positions.push([world.start_pos.x, 0.5, world.start_pos.z]);
-    }
-    // Candidate cells are deterministic and six metres apart in the scan
-    // lattice. The distance check also handles the depot candidate cleanly.
-    for row in (0..world.size).step_by(2) {
-        for col in (0..world.size).step_by(2) {
-            if positions.len() == n {
-                return Ok(positions);
+    let cell = world.cell_size;
+    let size = world.size as i32;
+    let centers = street_centers(size);
+    let depot = world.start_pos;
+    let mut candidates: Vec<CitySpawn> = Vec::new();
+    let mut consider = |x_m: f32, z_m: f32| {
+        let col = (x_m / cell).round() as i32;
+        let row = (z_m / cell).round() as i32;
+        if col < 1 || row < 1 || col >= size - 1 || row >= size - 1 {
+            return;
+        }
+        for dr in -1..=1 {
+            for dc in -1..=1 {
+                if world.grid[((row + dr) * size + col + dc) as usize] != VoxelType::Road {
+                    return;
+                }
             }
-            if world.grid[row * world.size + col] != VoxelType::Road {
-                continue;
-            }
-            let candidate = [
-                col as f32 * world.cell_size,
-                0.5,
-                row as f32 * world.cell_size,
-            ];
-            if positions
-                .iter()
-                .all(|p| (p[0] - candidate[0]).hypot(p[2] - candidate[2]) >= 6.0)
-            {
-                positions.push(candidate);
+        }
+        let flow = world.flow[(row * size + col) as usize];
+        if flow.length_squared() < 0.5 {
+            return;
+        }
+        if stations
+            .iter()
+            .any(|s| (s[0] - x_m).hypot(s[1] - z_m) < SPAWN_STATION_CLEARANCE_M)
+        {
+            return;
+        }
+        candidates.push(CitySpawn {
+            position: [x_m, 0.5, z_m],
+            forward: [flow.x, 0.0, flow.y],
+            depot_distance_m: (x_m - depot.x).hypot(z_m - depot.z),
+        });
+    };
+    for pair in centers.windows(2) {
+        let (a, b) = (pair[0] as f32 * cell, pair[1] as f32 * cell);
+        for lane in [-1.0f32, 1.0] {
+            let stagger = if lane < 0.0 { 0.0 } else { SPAWN_LANE_SPACING_M * 0.5 };
+            let mut along = a + SPAWN_JUNCTION_MARGIN_M + stagger;
+            while along <= b - SPAWN_JUNCTION_MARGIN_M {
+                for center in &centers {
+                    let c = *center as f32 * cell;
+                    consider(along, c + lane * cell);
+                    consider(c + lane * cell, along);
+                }
+                along += SPAWN_LANE_SPACING_M;
             }
         }
     }
-    if positions.len() == n {
-        Ok(positions)
+    candidates.sort_by(|p, q| {
+        p.depot_distance_m
+            .total_cmp(&q.depot_distance_m)
+            .then(p.position[0].total_cmp(&q.position[0]))
+            .then(p.position[2].total_cmp(&q.position[2]))
+    });
+    let mut slots: Vec<CitySpawn> = Vec::with_capacity(n);
+    for candidate in candidates {
+        if slots.len() == n {
+            break;
+        }
+        if slots.iter().all(|p| {
+            (p.position[0] - candidate.position[0]).hypot(p.position[2] - candidate.position[2])
+                >= SPAWN_MIN_SEPARATION_M
+        }) {
+            slots.push(candidate);
+        }
+    }
+    if slots.len() == n {
+        Ok(slots)
     } else {
         Err(format!(
-            "city has only {} separated road spawn slots; requested {n}",
-            positions.len()
+            "city has only {} separated lane spawn slots; requested {n}",
+            slots.len()
         ))
     }
+}
+
+/// Per-generation rotation of the being -> slot map, so no lineage keeps the
+/// slot nearest the passenger. Being `i` uses slot `(i + rotation) % n`.
+pub fn slot_rotation(generation: u64, seed: u64, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let h = generation
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(seed ^ 0x5851_F42D_4C95_7F2D)
+        .wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    ((h >> 23) % n as u64) as usize
 }
 
 /// Replace the legacy cross overlay with a connected orthogonal city grid.
@@ -318,10 +404,64 @@ mod tests {
             assert_eq!(junction[2].phase_offset_ticks, junction[3].phase_offset_ticks);
             assert_eq!((junction[2].phase_offset_ticks + 2048 - junction[0].phase_offset_ticks) % 2048, 1024);
         }
-        let spawns = spawn_positions(&world, 8).unwrap();
-        assert_eq!(spawns.len(), 8);
-        assert!(spawns
-            .windows(2)
-            .all(|pair| { (pair[0][0] - pair[1][0]).hypot(pair[0][2] - pair[1][2]) >= 6.0 }));
+    }
+
+    #[test]
+    fn spawn_slots_sit_on_lanes_away_from_walls_and_stations() {
+        let _quiet = crate::world::silence_map_diag();
+        let mut world = VoxelWorld::new(7, 28.0);
+        let plan = build_city(&mut world);
+        let n = 12;
+        let slots = spawn_slots(&world, &plan.stations, n).unwrap();
+        assert_eq!(slots.len(), n);
+        let size = world.size as i32;
+        let cell = world.cell_size;
+        for (k, slot) in slots.iter().enumerate() {
+            let col = (slot.position[0] / cell).round() as i32;
+            let row = (slot.position[2] / cell).round() as i32;
+            assert_eq!(world.grid[(row * size + col) as usize], VoxelType::Road, "slot {k} off road");
+            // Nearest wall cell centre at least two cells away: 4.5 m to its face.
+            let mut nearest_wall = f32::MAX;
+            for r in (row - 4).max(0)..(row + 5).min(size) {
+                for c in (col - 4).max(0)..(col + 5).min(size) {
+                    if world.grid[(r * size + c) as usize] == VoxelType::Wall {
+                        let d = ((c as f32 * cell) - slot.position[0])
+                            .hypot((r as f32 * cell) - slot.position[2]);
+                        nearest_wall = nearest_wall.min(d);
+                    }
+                }
+            }
+            assert!(nearest_wall >= 2.0 * cell, "slot {k} hugs a wall: {nearest_wall} m");
+            let axis_aligned = (slot.forward[0].abs() - 1.0).abs() < 1e-6 && slot.forward[2] == 0.0
+                || (slot.forward[2].abs() - 1.0).abs() < 1e-6 && slot.forward[0] == 0.0;
+            assert!(axis_aligned, "slot {k} heading {:?}", slot.forward);
+            for station in &plan.stations {
+                let d = (station[0] - slot.position[0]).hypot(station[1] - slot.position[2]);
+                assert!(d >= SPAWN_STATION_CLEARANCE_M, "slot {k} within {d} m of a station");
+            }
+            assert!(slot.depot_distance_m >= SPAWN_STATION_CLEARANCE_M);
+        }
+        for (i, p) in slots.iter().enumerate() {
+            for q in &slots[i + 1..] {
+                let d = (p.position[0] - q.position[0]).hypot(p.position[2] - q.position[2]);
+                assert!(d >= SPAWN_MIN_SEPARATION_M, "slots overlap: {d} m");
+            }
+        }
+        assert!(slots.windows(2).all(|w| w[0].depot_distance_m <= w[1].depot_distance_m));
+        assert_eq!(spawn_slots(&world, &plan.stations, n).unwrap(), slots, "deterministic");
+        assert!(spawn_slots(&world, &plan.stations, 100_000).is_err());
+    }
+
+    #[test]
+    fn slot_rotation_is_deterministic_and_covers_every_slot() {
+        let n = 12;
+        assert_eq!(slot_rotation(3, 77, n), slot_rotation(3, 77, n));
+        let mut seen = std::collections::HashSet::new();
+        for generation in 0..200u64 {
+            seen.insert(slot_rotation(generation, 77, n));
+        }
+        assert_eq!(seen.len(), n, "every slot is used within 200 generations");
+        assert_ne!(slot_rotation(1, 77, n), slot_rotation(1, 78, n) , "seed changes the map");
+        assert_eq!(slot_rotation(5, 1, 0), 0);
     }
 }

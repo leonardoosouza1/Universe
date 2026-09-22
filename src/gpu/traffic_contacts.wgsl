@@ -36,7 +36,8 @@ fn contacts(@builtin(global_invocation_id) gid:vec3<u32>){
  let next_v=v-normal*impulse*inv;
  output[o]=next_v.x;output[o+2u]=next_v.y;output[o+36u]=corrected.x;output[o+38u]=corrected.y;
  if(closing>0.0){
-  output[o+39u]=bitcast<f32>(bitcast<u32>(snapshot[o+39u])|16u);
+  // Slot 39 is a numeric bit mask (physics_c writes f32(mask)); bit 16 = taxi contact.
+  output[o+39u]=f32(u32(max(snapshot[o+39u],0.0))|16u);
   output[o+43u]=max(snapshot[o+43u],closing);output[o+47u]=snapshot[o+47u]+impulse;
   output[o+55u]=snapshot[o+55u]+0.25*reduced*(1.0-0.05*0.05)*closing*closing;
  }

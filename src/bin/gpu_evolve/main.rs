@@ -335,11 +335,13 @@ fn avaliar_held_out(
     } else {
         None
     };
-    let city_spawns = organism_taxi.then(|| universe::organism_city::spawn_positions(&world_ho, n_seres).expect("held-out city spawn capacity"));
+    // Held-out evaluation keeps the slot map fixed (rotation 0): it compares genomes
+    // on one identical layout, and the layout itself is recorded by the manifest.
+    let city_spawns = organism_taxi.then(|| universe::organism_city::spawn_slots(&world_ho, &held_stations, n_seres).expect("held-out city spawn capacity"));
     let mut states: Vec<BeingState> = (0..n_seres)
         .map(|i| {
             let (pos, fwd) = if let Some(spawns) = &city_spawns {
-                (spawns[i], [1.0, 0.0, 0.0])
+                (spawns[i].position, spawns[i].forward)
             } else if let Some(slot) = held_out_start {
                 (
                     [slot.position.x, 0.0, slot.position.y],
@@ -947,6 +949,10 @@ fn main() {
     let mut same_start = true;
     let mut start_formation = false;
     let mut largada_aleatoria = false;
+    /// organism-taxi-v1: keep the being -> spawn slot map fixed across generations.
+    let mut fixed_spawn_slots = false;
+    /// organism-taxi-v1 navigation observation schema: 2 = dx/dz per 100 m, 3 = body-frame direction + compressed distance.
+    let mut navigation_observation: u32 = 2;
     let mut ruido_sigma: f32 = 0.0;
     let mut ruido_drop: f32 = 0.0;
     let mut clima_mu: f32 = 1.0;
@@ -1542,6 +1548,19 @@ fn main() {
                 }
                 "--same-start" => {
                     same_start = true;
+                }
+                "--fixed-spawn-slots" => fixed_spawn_slots = true,
+                "--navigation-observation" => {
+                    i += 1;
+                    navigation_observation = match args.get(i).map(String::as_str) {
+                        Some("v2") => 2,
+                        Some("v3") => 3,
+                        _ => {
+                            eprintln!("--navigation-observation requires v2 or v3");
+                            std::process::exit(2);
+                        }
+                    };
+                    NAVIGATION_OBSERVATION.store(navigation_observation, Ordering::Relaxed);
                 }
                 "--social-sensors" => {
                     SOCIAL_SENSORS_ON.store(true, Ordering::Relaxed);
@@ -3905,6 +3924,14 @@ fn main() {
                 std::process::exit(1);
             });
             let metadata_path = replay_path.with_extension("meta.json");
+            // organism-taxi-v1: context.rs::sample_organism maps body[29] alive to 1/0;
+            // the legacy tick budget never exists there, so the replay says so.
+            let (replay_life_capacity_meta, life_semantics_meta, life_model_meta) = if organism_taxi {
+                (1.0, "alive_flag", "organism-alive-flag: body[29]>0.5 -> 1 else 0")
+            } else {
+                (replay_life_capacity, "remaining_tick_budget", "legacy-remaining-tick-budget")
+            };
+            let navigation_observation_meta = organism_taxi.then_some(navigation_observation);
             let mut metadata = serde_json::json!({
                 "schema_version": 1,
                 "source": "gpu_evolve",
@@ -3944,8 +3971,8 @@ fn main() {
                 "brain_trace_path": fly_spiking_trace_path.as_ref().and_then(|path| std::fs::canonicalize(path).ok()).map(|path| path.to_string_lossy().into_owned()),
                 "fuel_enabled": FUEL_ON.load(Ordering::Relaxed),
                 "fuel_capacity": FUEL_TANK.load(Ordering::Relaxed),
-                "life_capacity": replay_life_capacity,
-                "life_semantics": "remaining_tick_budget",
+                "life_capacity": replay_life_capacity_meta,
+                "life_semantics": life_semantics_meta,
                 "life_frame_field": "hp_norm",
                 "arc_semantics": "odometer_m",
                 "retina_recorded": false,
@@ -3954,6 +3981,8 @@ fn main() {
                 "raw_intents_recorded": replay_this_gen,
             });
             metadata["body_evolution_enabled"] = serde_json::json!(evolving_body);
+            metadata["life_model"] = serde_json::json!(life_model_meta);
+            metadata["navigation_observation"] = serde_json::json!(navigation_observation_meta);
             metadata["lifetime_flags"] = serde_json::json!(lifetime_flags);
             metadata["evolve_learning"] = serde_json::json!(evolve_learning);
             metadata["adaptive_curriculum"] = serde_json::json!(adaptive_curriculum_on);
@@ -4014,8 +4043,11 @@ fn main() {
             metadata["damage_scale"] = serde_json::json!(DANO_ESCALA.load(Ordering::Relaxed));
             metadata["impact_energy_to_failure_j"] =
                 serde_json::json!(survival::IMPACT_ENERGY_TO_FAILURE_J);
-            metadata["life_earn_ticks_per_new_progress_metre"] =
-                serde_json::json!(LIFE_EARN.load(Ordering::Relaxed));
+            metadata["life_earn_ticks_per_new_progress_metre"] = if organism_taxi {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(LIFE_EARN.load(Ordering::Relaxed))
+            };
             metadata["fitness_mode"] = serde_json::json!(modo_fitness);
             metadata["refuel_each_sector"] = serde_json::json!(SETOR_PAGA.load(Ordering::Relaxed));
             metadata["refuel_laps"] = serde_json::json!(REFUEL_LAPS.load(Ordering::Relaxed));
@@ -4368,7 +4400,28 @@ fn main() {
                 wp.y
             );
         }
-        let city_spawns = organism_taxi.then(|| universe::organism_city::spawn_positions(&world, n_seres).expect("city spawn capacity"));
+        let city_spawns = organism_taxi.then(|| {
+            universe::organism_city::spawn_slots(&world, &organism_stations, n_seres).expect("city spawn capacity")
+        });
+        // Rotate the being -> slot map each generation unless explicitly fixed, so no
+        // lineage inherits the slot nearest the waiting passenger.
+        let spawn_rotation = if organism_taxi && !fixed_spawn_slots {
+            universe::organism_city::slot_rotation(gen_abs as u64, pop_seed, n_seres)
+        } else {
+            0
+        };
+        if let Some(spawns) = city_spawns.as_ref() {
+            println!(
+                "  [spawn] gen {gen_abs:4} rotation {spawn_rotation}: {}",
+                (0..n_seres.min(4))
+                    .map(|i| {
+                        let slot = &spawns[(i + spawn_rotation) % spawns.len()];
+                        format!("{i}->({:.0},{:.0}) {:.0}m", slot.position[0], slot.position[2], slot.depot_distance_m)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
         let mut states: Vec<BeingState> = (0..n_seres)
             .map(|i| {
                 // Onde cada ser nasce.
@@ -4388,7 +4441,8 @@ fn main() {
                 // — todos os seres da gen largam do mesmo lugar (comparável), mas o lugar
                 // muda a cada geração: decorar o traçado a partir da largada deixa de pagar.
                 let (pos, fwd) = if let Some(spawns) = &city_spawns {
-                    (spawns[i], [1.0, 0.0, 0.0])
+                    let slot = &spawns[(i + spawn_rotation) % spawns.len()];
+                    (slot.position, slot.forward)
                 } else if let Some(slots) = formation.as_ref() {
                     let slot = slots[i];
                     (
@@ -4692,9 +4746,28 @@ fn main() {
             }
             ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
             ctx.sample_organism(&mut states).expect("invalid organism genesis");
+            let spawn_slots_json = city_spawns.as_ref().map(|slots| {
+                slots
+                    .iter()
+                    .enumerate()
+                    .map(|(k, slot)| {
+                        serde_json::json!({"slot": k, "x_m": slot.position[0], "z_m": slot.position[2],
+                            "forward": [slot.forward[0], slot.forward[2]], "depot_distance_m": slot.depot_distance_m})
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let spawn_assignment_json = serde_json::json!({
+                "mode": if fixed_spawn_slots { "fixed" } else { "rotated_by_hash_generation_seed" },
+                "rotation": spawn_rotation,
+                "being_to_slot": "(being + rotation) % n",
+                "contract": "lane centre, flow heading, >=18 m from stations, >=8 m apart, 4.5 m from walls",
+            });
             let manifest = serde_json::json!({
                 "scenario": universe::organism_scenario::SCENARIO_ID,
-                "observation": universe::organism_scenario::OBSERVATION_ID,
+                "observation": universe::organism_scenario::observation_id(navigation_observation),
+                "navigation_observation": navigation_observation,
+                "spawn_slots": spawn_slots_json,
+                "spawn_assignment": spawn_assignment_json,
                 "action": universe::organism_scenario::ACTION_ID,
                 "task_potential": universe::gpu::taxi_routes::ROAD_POTENTIAL_VERSION,
                 "controller": if taxi_reference_witness {universe::gpu::taxi_witness::TAXI_WITNESS_ID} else {"evolved-native"},
@@ -4702,7 +4775,7 @@ fn main() {
                 "generation": gen_abs, "tick_rate": 64, "stations": organism_stations,
                 "geometry": universe::organism_scenario::export_world_geometry(&world),
                 "city": organism_city.as_ref().unwrap().metadata(),
-                "sensory_channels": universe::organism_channels::channel_manifest(),
+                "sensory_channels": universe::organism_channels::channel_manifest(navigation_observation),
                 "traffic_observation": {"schema":universe::gpu::traffic::TRAFFIC_OBSERVATION_ID,"wave_channels":{"present":172,"distance_fraction_100m":173,"phase":182,"time_remaining_fraction":191}},
                 "body_state_owner": "GPU", "body_sample_stride": 64,
                 "sensor_extras": "organism-resident-extras-v1",
@@ -4711,7 +4784,7 @@ fn main() {
                 "simulation_transfer": "resident GPU; host observation on sampling boundaries",
                 "fitness": "1000*deliveries + bounded_task_progress + money + 0.001*age_seconds + 10*alive - 100*(1-integrity) - 100*(1-alive)",
                 "motor_controller": if taxi_reference_witness {"reference GPU controller"} else {"evolved policy"}, "resource_units": "joules,kilograms",
-                "sensory_remap": "160..175 interoception;176..191 taxi;explicit GPS destination"});
+                "sensory_remap": if navigation_observation == 3 {"160..175 interoception;176..191 taxi v3: body-frame direction cos/sin + d/(d+100) for task and service"} else {"160..175 interoception;176..191 taxi;explicit GPS destination"}});
             std::fs::write(
                 format!("{out_dir}/organism_gen{gen_abs:04}.json"),
                 serde_json::to_vec_pretty(&manifest).unwrap(),

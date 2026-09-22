@@ -282,7 +282,7 @@ fn frame_json(f: &ReplayFrame, meta: &Value) -> io::Result<Value> {
         "t": f.tick, "x": f.pos[0], "y": f.pos[2], "height": f.pos[1],
         "fx": f.fwd[0], "fy": f.fwd[1], "spd": f.speed, "yawRate": f.yaw_rate,
         "gear": f.gear, "life": meta["life_semantics"].as_str()
-            .filter(|kind| matches!(*kind, "health" | "remaining_tick_budget"))
+            .filter(|kind| matches!(*kind, "health" | "remaining_tick_budget" | "alive_flag"))
             .map(|_| f.hp_norm as f32 / 127.0),
         "fuel": flag(meta,"fuel_enabled").then_some(f.fuel_norm as f32 / 127.0),
         "thr": f.final_thr, "str": f.final_str, "brk": f.final_brk,

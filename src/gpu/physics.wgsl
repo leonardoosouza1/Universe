@@ -164,9 +164,11 @@ const BASE_ENGINE_TORQUE_NM: f32 = 620.0;
 
 // Identical to get_voxel_at in world.rs: round() + index [z*size+x].
 // Returns Wall (2) out of bounds — same as CPU.
+fn cell_round(v: f32) -> f32 { return sign(v) * floor(abs(v) + 0.5); }
 fn voxel_at(wx: f32, wz: f32) -> u32 {
-    let x = i32(round(wx / params.cell_size));
-    let z = i32(round(wz / params.cell_size));
+    // Half away from zero like Rust f32::round; WGSL round() is half to even.
+    let x = i32(cell_round(wx / params.cell_size));
+    let z = i32(cell_round(wz / params.cell_size));
     let n = i32(params.grid_size);
     if (x >= 0 && x < n && z >= 0 && z < n) {
         return grid[u32(z * n + x)];

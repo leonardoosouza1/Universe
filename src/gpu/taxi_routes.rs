@@ -13,8 +13,9 @@ pub fn pack_distance_fields(world: &VoxelWorld, stations: &[[f32; 8]]) -> Result
     let cells = size * size;
     let mut result = vec![size as f32, world.cell_size, stations.len() as f32, 1.0];
     for station in stations {
-        let x = (station[0] / world.cell_size).floor();
-        let z = (station[1] / world.cell_size).floor();
+        // Cell i is centred on i*cell_size (world.rs::get_voxel_at); round, never floor.
+        let x = (station[0] / world.cell_size).round();
+        let z = (station[1] / world.cell_size).round();
         if !x.is_finite() || !z.is_finite() || x < 0.0 || z < 0.0 || x >= size as f32 || z >= size as f32 {
             return Err("station outside route grid");
         }
@@ -40,4 +41,32 @@ pub fn pack_distance_fields(world: &VoxelWorld, stations: &[[f32; 8]]) -> Result
         result.extend(distances);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::VoxelType;
+
+    /// Station 1.0 m left of a cell centre: `floor` picked the neighbouring cell,
+    /// `round` (world.rs convention) keeps the centre cell. Static geometry only.
+    #[test]
+    fn station_cell_uses_round_half_away_from_zero() {
+        let _quiet = crate::world::silence_map_diag();
+        let mut road = VoxelWorld::new(0, 15.0);
+        road.size = 5;
+        road.cell_size = 3.0;
+        road.grid = vec![VoxelType::Road; 25];
+        let stations = [[5.0, 6.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0], [12.0, 12.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]];
+        let packed = pack_distance_fields(&road, &stations).unwrap();
+        assert_eq!(&packed[..4], &[5.0, 3.0, 2.0, 1.0]);
+        let field = &packed[4..4 + 25];
+        // 5.0/3 = 1.67 -> cell 2 (round), not 1 (floor); 6.0/3 = 2.
+        assert_eq!(field[2 * 5 + 2], 0.0, "target is the rounded cell");
+        assert_eq!(field[2 * 5 + 1], 3.0, "floor's cell is one step away");
+        // Exact tie 4.5/3 = 1.5 -> 2 (half away from zero), matching f32::round.
+        let tie = [[4.5, 4.5, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0], [12.0, 12.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]];
+        let packed = pack_distance_fields(&road, &tie).unwrap();
+        assert_eq!(packed[4 + 2 * 5 + 2], 0.0);
+    }
 }

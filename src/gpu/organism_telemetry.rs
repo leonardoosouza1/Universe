@@ -216,7 +216,7 @@ mod tests {
         let mut output = [0.0f32; PHYSICS_OUTPUT_STRIDE];
         output[0] = 1.0;
         output[36] = 3.0;
-        output[39] = f32::from_bits(1);
+        output[39] = 17.0;
         output[43] = 5.0;
         output[47] = 4.0;
         output[55] = 12.5;
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(values[100], 12.5);
         assert_eq!(values[101], 1.0);
         assert_eq!(values[102], 1.0);
-        assert_eq!(values[123].to_bits(), 1);
+        assert_eq!(values[123], 17.0, "numeric contact mask incl. taxi bit 16");
         drop(mapped);
         staging.unmap();
     }

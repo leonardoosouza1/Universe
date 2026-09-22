@@ -416,12 +416,14 @@ impl GpuCtx {
             &self.queue,
             &genomes.iter().map(|g| g.organism).collect::<Vec<_>>(),
         )?;
-        self.taxi = Some(universe::gpu::taxi::TaxiGpu::new(
+        let mut taxi = universe::gpu::taxi::TaxiGpu::new(
             &self.device,
             &self.queue,
             self.capacity,
             stations,
-        ));
+        );
+        taxi.set_observation_version(NAVIGATION_OBSERVATION.load(Ordering::Relaxed));
+        self.taxi = Some(taxi);
         if founders > genomes.len() {
             return Err("founder count exceeds population");
         }
@@ -1943,6 +1945,7 @@ impl GpuCtx {
                 &self.device,
                 &mut enc,
                 &organism.buf_state,
+                self.phys_gpu.input_buffer(),
                 self.percept.buf_output(),
                 n,
             );

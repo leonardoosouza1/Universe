@@ -23,6 +23,8 @@ fn channel(b:u32, ch:u32)->f32 {
   return signed_byte(wave[w],ch%4u);
 }
 fn station_row(i:u32)->u32 { return 4u+i*16u; }
+// Same cell convention as taxi.wgsl/world.rs: centre i*cell, half away from zero.
+fn cell_index(v:vec2<f32>)->vec2<i32> { return vec2<i32>(sign(v)*floor(abs(v)+vec2<f32>(0.5))); }
 fn station_for_target(goal:vec2<f32>, count:u32)->u32 {
   var selected=count;
   var best=0.05;
@@ -34,12 +36,12 @@ fn station_for_target(goal:vec2<f32>, count:u32)->u32 {
   return selected;
 }
 fn route_value(pos:vec2<f32>, target_station:u32, size:u32, cell:f32)->f32 {
-  let g=vec2<i32>(floor(pos/cell));
+  let g=cell_index(pos/cell);
   if(any(g<vec2<i32>(0)) || any(g>=vec2<i32>(i32(size)))) { return -1.0; }
   return routes[4u+target_station*size*size+u32(g.y)*size+u32(g.x)];
 }
 fn route_waypoint(pos:vec2<f32>, target_station:u32, size:u32, cell:f32)->vec2<f32> {
-  let g=vec2<i32>(floor(pos/cell));
+  let g=cell_index(pos/cell);
   var best=route_value(pos,target_station,size,cell);
   var waypoint=pos;
   for(var k=0u;k<4u;k++) {
@@ -48,7 +50,7 @@ fn route_waypoint(pos:vec2<f32>, target_station:u32, size:u32, cell:f32)->vec2<f
     let q=g+delta;
     if(any(q<vec2<i32>(0)) || any(q>=vec2<i32>(i32(size)))){continue;}
     let d=routes[4u+target_station*size*size+u32(q.y)*size+u32(q.x)];
-    if(d>=0.0 && (best<0.0 || d<best)){best=d;waypoint=(vec2<f32>(q)+vec2<f32>(0.5))*cell;}
+    if(d>=0.0 && (best<0.0 || d<best)){best=d;waypoint=vec2<f32>(q)*cell;}
   }
   return waypoint;
 }

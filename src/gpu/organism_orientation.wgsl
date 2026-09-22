@@ -26,7 +26,8 @@ fn rotate(@builtin(global_invocation_id) id:vec3<u32>) {
 fn feedback(@builtin(global_invocation_id) id:vec3<u32>) {
  if(id.x>=p.n){return;}let o=id.x*56u;let i=id.x*92u;
  for(var k=0u;k<48u;k++){input[i+k]=output[o+k];}
- input[i+39u]=f32(bitcast<u32>(output[o+39u]));
+ // Contact mask is numeric on both sides; a bitcast here produced 1065353216 for 1.0.
+ input[i+39u]=output[o+39u];
  input[i+49u]=output[o+48u];input[i+54u]=output[o+49u];
  input[i+56u]=output[o+50u];input[i+57u]=output[o+51u];
  input[i+58u]=output[o+52u];input[i+60u]=output[o+53u];

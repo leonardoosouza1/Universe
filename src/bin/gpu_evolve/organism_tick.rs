@@ -155,6 +155,7 @@ impl GpuCtx {
             &self.device,
             &mut enc,
             &body.buf_state,
+            self.phys_gpu.input_buffer(),
             self.percept.buf_output(),
             n,
         );

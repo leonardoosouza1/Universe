@@ -6,6 +6,15 @@ use serde_json::{json, Value};
 pub const SCENARIO_ID: &str = "organism-taxi-v1";
 /// The final 32 sensory channels are explicitly reassigned by this scenario.
 pub const OBSERVATION_ID: &str = crate::gpu::traffic::TRAFFIC_OBSERVATION_ID;
+/// Navigation channels 178/179/183..188/190 change meaning in v3 (see taxi.wgsl).
+pub const OBSERVATION_ID_V3: &str = "organism-city-observation-v3";
+pub fn observation_id(navigation_observation: u32) -> &'static str {
+    if navigation_observation == crate::gpu::taxi::NAVIGATION_OBSERVATION_V3 {
+        OBSERVATION_ID_V3
+    } else {
+        OBSERVATION_ID
+    }
+}
 /// Motor 0..2, shift 3..4, service 5, pickup 6, dropoff 7, near-stop reverse request 8.
 pub const ACTION_ID: &str = "vehicle-taxi-intent96-active9-v1";
 

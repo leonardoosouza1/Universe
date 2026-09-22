@@ -129,9 +129,11 @@ struct WorldParams {
 const RHO_AR:       f32 = 1.225;
 const FRONTAL_AREA: f32 = 2.2;
 
+fn cell_round(v: f32) -> f32 { return sign(v) * floor(abs(v) + 0.5); }
 fn voxel_at(wx: f32, wz: f32) -> u32 {
-    let x = i32(round(wx / params.cell_size));
-    let z = i32(round(wz / params.cell_size));
+    // Half away from zero like Rust f32::round; WGSL round() is half to even.
+    let x = i32(cell_round(wx / params.cell_size));
+    let z = i32(cell_round(wz / params.cell_size));
     let n = i32(params.grid_size);
     if (x>=0 && x<n && z>=0 && z<n) { return grid[u32(z*n+x)]; }
     return 2u;

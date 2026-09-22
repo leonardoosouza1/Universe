@@ -28,12 +28,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (!alive) { return; }
   body[s + W + 1u] += 1.0;
 
-  let mask = bitcast<u32>(physics_out[o + 39u]);
+  // Numeric mask contract: physics_c/traffic write f32(bits), never a bit pattern.
+  let mask = u32(max(physics_out[o + 39u], 0.0));
   let touching = mask != 0u;
   if (touching) { body[s + W + 2u] += 1.0; }
-  let previous_mask = bitcast<u32>(body[s + 123u]);
+  let previous_mask = u32(max(body[s + 123u], 0.0));
   if (touching && previous_mask == 0u) { body[s + W + 4u] += 1.0; }
-  body[s + 123u] = bitcast<f32>(mask);
+  body[s + 123u] = f32(mask);
 
   let speed = length(vec2<f32>(physics_out[o], physics_out[o + 2u]));
   let brake = clamp(physics_in[i + 52u], 0.0, 1.0);

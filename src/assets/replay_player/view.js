@@ -211,7 +211,7 @@
     setText("scene-lap", laps === null ? "Circuits not verified" : `${laps} completed ${laps === 1 ? "lap" : "laps"}`);
     setText("stat-arc", value(frame?.arc, 0, " m")); setText("scene-progress", value(frame?.arc, 0, " m")); setText("stat-gear", M.finite(frame?.gear) ? (frame.gear === 0 ? "N/R" : String(frame.gear)) : "--"); setText("stat-yaw", value(frame?.yawRate, 2, " rad/s"));
     meter("life-meter", "life-value", frame?.life); meter("fuel-meter", "fuel-value", frame?.fuel);
-    const lifeLabels = { health: "physical health", remaining_tick_budget: "remaining life budget", unavailable: "not recorded" };
+    const lifeLabels = { health: "physical health", remaining_tick_budget: "remaining life budget", alive_flag: "alive flag (1 alive, 0 dead)", unavailable: "not recorded" };
     setText("body-status", lifeLabels[data.meta.life_semantics] || "Recorded state"); updateActions(frame);
     const probesAvailable = wallProbesAvailable();
     setText("sensor-phase", probesAvailable ? `${data.meta.sensor_phase.replaceAll("_", "-")} sample` : "unavailable");

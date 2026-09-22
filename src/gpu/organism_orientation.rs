@@ -207,7 +207,7 @@ mod tests {
             row[46] = 3.0;
             row[41] = 0.25;
             row[45] = -0.5;
-            row[39] = f32::from_bits(5);
+            row[39] = 5.0; // numeric contact mask: probes 0 and 2
             row[55] = 17.0;
         }
         let output = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -292,11 +292,9 @@ mod tests {
                         _ => None,
                     }
                 };
-                let expected = if slot == 39 {
-                    rows[being][39].to_bits() as f32
-                } else {
-                    from.map(|o| rows[being][o]).unwrap_or(777.0)
-                };
+                // Slot 39 is the numeric contact mask on both sides (physics_c writes
+                // f32(mask)); the old bit-pattern copy turned 1.0 into 1065353216.
+                let expected = from.map(|o| rows[being][o]).unwrap_or(777.0);
                 assert_eq!(
                     inputs[being][slot].to_bits(),
                     expected.to_bits(),
