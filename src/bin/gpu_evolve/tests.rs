@@ -718,3 +718,36 @@ fn service_transition_detector_emits_the_authoritative_order_once() {
         .is_empty()
     );
 }
+
+#[test]
+fn service_transition_detector_preserves_an_immediate_passenger_handoff() {
+    use crate::driving_diagnostics::{ServiceSnapshot, detect_service_events};
+    let onboard_one = ServiceSnapshot {
+        onboard: true,
+        passenger_id: 1.0,
+        destination: [480.0, 96.0],
+        ..Default::default()
+    };
+    let onboard_three = ServiceSnapshot {
+        onboard: true,
+        passenger_id: 3.0,
+        deliveries: 1,
+        pickup: [480.0, 96.0],
+        destination: [288.0, 672.0],
+        ..Default::default()
+    };
+    let events = detect_service_events(Some(&onboard_one), &onboard_three, 7000, 0);
+    assert_eq!(
+        events.iter().map(|event| event.event.as_str()).collect::<Vec<_>>(),
+        [
+            "dropoff_accepted",
+            "delivery_incremented",
+            "passenger_issued",
+            "pickup_accepted",
+        ]
+    );
+    assert_eq!(events[0].passenger_id, 1);
+    assert_eq!(events[1].passenger_id, 1);
+    assert_eq!(events[2].passenger_id, 3);
+    assert_eq!(events[3].passenger_id, 3);
+}

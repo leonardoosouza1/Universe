@@ -134,14 +134,13 @@ pub(crate) fn detect_service_events(
         && previous.is_none_or(|old| {
             !old.task_available || (old.task_key - current.task_key).abs() > 0.25
         });
-    if previous.is_some_and(|old| !old.onboard) && current.onboard {
-        events.push(event("pickup_accepted", current));
-    }
+    let delivery = previous.is_some_and(|old| current.deliveries > old.deliveries);
     if let Some(old) = previous
-        && old.onboard
-        && !current.onboard
-        && current.deliveries > old.deliveries
+        && delivery
     {
+        // The taxi kernel may close one passenger and accept the next at the same
+        // station in one tick. `onboard` then stays true, so the monotonic delivery
+        // counter is the authoritative transition and the old snapshot owns the ID.
         events.push(event("dropoff_accepted", old));
         events.push(event("delivery_incremented", old));
     }
@@ -149,6 +148,19 @@ pub(crate) fn detect_service_events(
     // previous delivery. Preserve causal order for replay consumers.
     if issued {
         events.push(event("passenger_issued", current));
+    }
+    let accepted_new_passenger = current.onboard
+        && previous.is_none_or(|old| {
+            !old.onboard || (passenger_id(old) != passenger_id(current))
+        });
+    if accepted_new_passenger {
+        // In an immediate handoff there is no externally visible waiting state.
+        // Still expose issuance before pickup so each passenger has a complete,
+        // causally ordered replay chain.
+        if delivery && !issued {
+            events.push(event("passenger_issued", current));
+        }
+        events.push(event("pickup_accepted", current));
     }
     events
 }

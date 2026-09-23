@@ -4712,7 +4712,14 @@ fn main() {
                 }
                 starts
             }
-            None => universe::organism_school::lesson_starts_fold(&world, &organism_stations, lesson, &school_contract, n_seres, school_start_fold)
+            None => universe::organism_school::lesson_starts_fold(
+                &world,
+                &organism_stations,
+                lesson,
+                &school_contract,
+                school_batch::required_start_count(n_seres, school_eval_starts),
+                school_start_fold,
+            )
                 .expect("city lesson approach capacity"),
         });
         let city_spawns = organism_taxi.then(|| {
@@ -5095,7 +5102,11 @@ fn main() {
             ctx.start_organism(&genomes, &organism_stations, &organism_city.as_ref().unwrap().traffic_lights(), if ecology_on { ecology_founders.unwrap_or(n_seres) } else { n_seres }, taxi_mode)
                 .expect("organism initialization failed");
             if taxi_reference_witness {
-                ctx.taxi_witness = Some(universe::gpu::taxi_witness::TaxiWitnessGpu::new(&ctx.device, ctx.capacity));
+                ctx.taxi_witness = Some(universe::gpu::taxi_witness::TaxiWitnessGpu::new(
+                    &ctx.device,
+                    ctx.capacity,
+                    school_lesson.map_or(0, |lesson| lesson.id()),
+                ));
             }
             ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
             if let Some(starts) = school_starts.as_ref() {

@@ -106,6 +106,19 @@ pub fn representatives<T: Clone>(replicas: &[T], starts_per_genome: usize) -> Ve
         .collect()
 }
 
+/// Number of distinct lesson geometries the city must provide. Batched replicas
+/// deliberately share the same K starts across genomes; asking for every physical
+/// slot would turn `genomes * K` into a false city-capacity requirement.
+pub fn required_start_count(physical_slots: usize, starts_per_genome: usize) -> usize {
+    assert!(physical_slots > 0, "physical slot count must be positive");
+    assert!(starts_per_genome > 0, "starts per genome must be positive");
+    if starts_per_genome == 1 {
+        physical_slots
+    } else {
+        starts_per_genome
+    }
+}
+
 /// Every genome sees the same ordered start batch. A generation rotation changes
 /// that batch deterministically without assigning an easier start to one lineage.
 pub fn start_index(
@@ -174,6 +187,8 @@ mod tests {
         assert_eq!(representatives(&expanded, 3), vec![11, 29]);
         let starts: Vec<_> = (0..6).map(|slot| start_index(slot, 3, 8, 2)).collect();
         assert_eq!(starts, vec![2, 3, 4, 2, 3, 4]);
+        assert_eq!(required_start_count(6, 3), 3);
+        assert_eq!(required_start_count(6, 1), 6);
     }
 
     #[test]

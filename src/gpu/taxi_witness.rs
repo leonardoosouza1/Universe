@@ -13,7 +13,7 @@
 use std::borrow::Cow;
 
 /// Stable identifier for manifests and explicit pilot opt-in.
-pub const TAXI_WITNESS_ID: &str = "organism-taxi-reference-witness-v1";
+pub const TAXI_WITNESS_ID: &str = "organism-taxi-reference-witness-v2";
 const INTENT_STRIDE: usize = 96;
 const PHYSICS_STRIDE: usize = 92;
 const BODY_STRIDE: usize = 128;
@@ -24,24 +24,35 @@ const WAVE_WORDS: usize = 48;
 struct Params {
     n: u32,
     wave_words: u32,
-    _pad: [u32; 2],
+    lesson: u32,
+    _pad: u32,
 }
 
 /// GPU-only bounded controller. No method on this type submits a command buffer.
 pub struct TaxiWitnessGpu {
     params: wgpu::Buffer,
+    hold_ticks: wgpu::Buffer,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     pub capacity: usize,
+    lesson: u32,
 }
 
 impl TaxiWitnessGpu {
-    pub fn new(device: &wgpu::Device, capacity: usize) -> Self {
+    /// `lesson == 0` is production. Values 1..=8 mirror `school::Lesson`.
+    pub fn new(device: &wgpu::Device, capacity: usize, lesson: u32) -> Self {
+        assert!(lesson <= 8, "taxi witness lesson must be 0..=8");
         let capacity = capacity.max(1);
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("taxi-reference-witness-params"),
             size: std::mem::size_of::<Params>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let hold_ticks = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("taxi-reference-witness-hold-ticks"),
+            size: (capacity * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -77,6 +88,7 @@ impl TaxiWitnessGpu {
                 storage(4, true), // immutable route distance fields
                 storage(5, true), // immutable taxi station map
                 storage(6, false), // production intent ABI
+                storage(7, false), // consecutive stopped-at-goal ticks
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -92,7 +104,7 @@ impl TaxiWitnessGpu {
             compilation_options: Default::default(),
             cache: None,
         });
-        Self { params, layout, pipeline, capacity }
+        Self { params, hold_ticks, layout, pipeline, capacity, lesson }
     }
 
     /// Encode one bounded controller pass. The caller must invoke this before
@@ -125,7 +137,12 @@ impl TaxiWitnessGpu {
         queue.write_buffer(
             &self.params,
             0,
-            bytemuck::bytes_of(&Params { n: n as u32, wave_words: WAVE_WORDS as u32, _pad: [0; 2] }),
+            bytemuck::bytes_of(&Params {
+                n: n as u32,
+                wave_words: WAVE_WORDS as u32,
+                lesson: self.lesson,
+                _pad: 0,
+            }),
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("taxi-reference-witness-bind-group"),
@@ -138,6 +155,7 @@ impl TaxiWitnessGpu {
                 wgpu::BindGroupEntry { binding: 4, resource: routes.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: taxi_world.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: intent.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: self.hold_ticks.as_entire_binding() },
             ],
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
