@@ -135,4 +135,29 @@ in seed 7, and then stalled on stop). Under this rule "adaptive" is effectively
 2. Crossed seeds: a separate population seed (`--pop-seed` was removed; reintroduce as
    `--population-seed`) so city × draw can be separated with 3 × 3 runs.
 3. Longer budget on seed 11 (48 gens) with the same held-out evaluation, to see whether
-   the 13/16 champion keeps improving or the population saturates.
+   the 13/16 champion keeps improving or the population saturates. → run, see §4.6.
+
+### 4.6 Follow-up: seed 11 at 48 generations (both arms)
+
+`battery-long-s11.sh` / `battery-long-s11.log`, same binary, 21:07–21:17. Pre-registered
+in the script header: R1 replication (gens 0–15 reproduce the 16-gen run), R2 the gen-47
+champion beats the gen-15 champion on move validation by > 1 in both arms, R3 turn_near
+transfer holds.
+
+| | adaptive | uniform |
+|---|---|---|
+| R1: first 16 `[school]` lines identical to the 16-gen run | yes (md5 equal) | yes |
+| train trajectory gens 16–47 | move 9 7 8 8 → advanced to `stop` at gen 20 (two gens at 8/16 = p̂ 0.50), then 28 generations on `stop` at 0/16 | move 7/8/5/7/8/7/6/7 (gens 16–44 step 4), stop 0, turn_near 0–2, turn_far 0–1 |
+| move validation / test, gen 47 (gen 15) | 13 / 12 (13 / 12) | 9 / 6 (11 / 9) |
+| turn_near validation / test, gen 47 (gen 15) | 1 / 3 (6 / 5) | 3 / 1 (4 / 2) |
+| stop, turn_far | 0 everywhere | 0 everywhere |
+| wall | 227.7 s | 235.7 s |
+
+R2 refuted in both arms (adaptive unchanged, uniform −2 / −3); R3 refuted in both
+(turn_near transfer fell). Reading: the seed-11 population saturated at gen ≈ 11–20 on
+`move`; the adaptive arm then spent 28 generations under the `stop` score, which
+selects creepers (see `SCHOOL-STOP-SHAPING-20260922.md` §1) and eroded the turn
+transfer without moving `stop`. The battery's own R1 line printed "DIFFERS" for both
+arms because its check counted `[curriculum]` lines before filtering; the corrected
+comparison (`grep '\[school\]' | head -n 16`, md5 `8250e0de…` for adaptive) is
+identical. The script was fixed after the run for the record.

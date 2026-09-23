@@ -957,6 +957,8 @@ fn main() {
     let mut school_lesson: Option<universe::gpu::school::Lesson> = None;
     // School mode; Stage 2 implements only `bench` (contacts and passengers off).
     let mut school_bench = true;
+    // Stop-score shaping (docs/SCHOOL-STOP-SHAPING-20260922.md); off by default.
+    let mut school_stop_shaping = false;
     // Judged ticks per lesson attempt; defaults to the generation tick budget.
     let mut school_horizon: Option<u32> = None;
     // Stage 3 (docs/SCHOOL-INCENTIVES-20260922.md): curriculum over lessons, start folds,
@@ -1124,6 +1126,9 @@ fn main() {
             match arg {
                 "--driving-diagnostics" => {
                     driving_diagnostics_on = true;
+                }
+                "--school-stop-shaping" => {
+                    school_stop_shaping = true;
                 }
                 "--erase-fast-memory" => {
                     erase_fast_memory = true;
@@ -2753,6 +2758,10 @@ fn main() {
     }
     if school_start_fold != universe::organism_school::LessonFold::All && school_lesson.is_none() {
         eprintln!("--school-start-fold requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if school_stop_shaping && school_lesson.is_none() {
+        eprintln!("--school-stop-shaping requires --school or --school-curriculum");
         std::process::exit(2);
     }
     if let Some(freeze_at) = plasticity_freeze_after {
@@ -4972,6 +4981,7 @@ fn main() {
                         school_contract,
                         school_horizon_ticks,
                         school_bench,
+                        school_stop_shaping,
                     ));
                 }
                 let rotated: Vec<_> = (0..n_seres).map(|i| starts[(i + spawn_rotation) % starts.len()]).collect();
@@ -5041,7 +5051,8 @@ fn main() {
                     "success": {"move": "dist(pos,target)<=goal_radius and propelled_ticks>=propelled_min", "stop": "speed>=v_min before the area, then speed<=v_stop inside for hold_ticks while alive", "turn": "entered the junction box, then dist(pos,exit)<=gate_radius with dot(heading,exit_dir)>=align_min"},
                     "failure_codes": {"1": "contact", "2": "death", "3": "corridor", "4": "born_inside_target", "5": "overshoot", "6": "drove_through_junction", "7": "wrong_exit", "8": "no_approach_speed"},
                     "truncation": "status 3 at horizon, progress kept",
-                    "score": "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive)",
+                    "score": if school_stop_shaping { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive) + stop: 300*clamp(1 - min_speed_inside/v_min) + 200*clamp(max_dwell/hold_ticks)" } else { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive)" },
+                    "stop_shaping": school_stop_shaping,
                     "fitness": if school_bench { "score" } else { "taxi fitness (life mode)" }, "lessons": rotated,
                     "curriculum": school_curriculum.unwrap_or("fixed"),
                     "curriculum_lessons": school_lessons.iter().map(|l| l.name()).collect::<Vec<_>>(),

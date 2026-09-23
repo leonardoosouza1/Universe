@@ -77,6 +77,11 @@ score = 1000·success + 500·progress − 200·failed − 100·(1 − integrity)
 scored** in Stage 2, so that Stage 3 can test incentives against this baseline.
 Fitness for selection in school mode = `score`.
 
+Stage 4 follow-up (`docs/SCHOOL-STOP-SHAPING-20260922.md`): with `--school-stop-shaping`
+(off by default) the `stop` score adds `300·clamp(1 − min_speed_inside/v_min) +
+200·clamp(max_dwell/hold_ticks)`; the two quantities are recorded and exported for every
+run (`min_speed_inside_mps`, `max_dwell_ticks`) whether or not the flag is set.
+
 Competence: per being and generation, one attempt (`success ∈ {0,1}`); per population
 and generation, `p̂ = (S + 1)/(T + 2)`; per lineage, the elite (`genomes[0]`, carried
 unmutated) is the only identifiable individual across generations and is reported as

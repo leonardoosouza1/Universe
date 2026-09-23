@@ -99,6 +99,10 @@ impl Step {
 
 impl Fixture {
     fn new(geometry: LessonGeometry, horizon: u32) -> Self {
+        Self::new_with(geometry, horizon, false)
+    }
+
+    fn new_with(geometry: LessonGeometry, horizon: u32, stop_shaping: bool) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..Default::default()
@@ -131,7 +135,7 @@ impl Fixture {
         let input = make(PHYSICS_INPUT_STRIDE);
         let output = make(PHYSICS_OUTPUT_STRIDE);
         let body = make(BODY_STRIDE);
-        let school = SchoolGpu::new(&device, 1, CONTRACT, horizon, true);
+        let school = SchoolGpu::new(&device, 1, CONTRACT, horizon, true, stop_shaping);
         school.reset(&queue, &[geometry]).unwrap();
         Self { device, queue, school, input, output, body, tick: 0 }
     }
@@ -430,4 +434,62 @@ fn turn_subgoal_switches_from_junction_to_exit_when_the_box_is_entered() {
     let body = f.body();
     assert!((body[70] - 108.0).abs() < 1e-4 && (body[71] - 285.0).abs() < 1e-4, "{:?}", &body[70..72]);
     assert!((body[80] - 15.0).abs() < 1e-4 && (body[81] - 4.0).abs() < 1e-4);
+}
+
+/// Enter at 6 m/s, creep 50 ticks at 1 m/s inside, hold 40 ticks at 0.2 m/s, leave, then time out.
+fn stop_slow_then_leave(f: &mut Fixture) {
+    let approach = stop_approach(6.0);
+    let z = approach.last().unwrap().pos[1];
+    f.run(approach);
+    assert_eq!(f.record()[R_PHASE], 2.0);
+    f.run((0..50).map(|_| Step::at([93.0, z + 1.0], [0.0, 1.0]).throttle(0.0)));
+    // 0.2 m/s is under v_stop (0.3): the dwell counts and the slowest speed stays 0.2.
+    f.run((0..40).map(|_| Step::at([93.0, z + 2.0], [0.0, 0.2]).throttle(0.0)));
+    // z + 10 is 6.5 m past the area centre, outside the 4 m area: dwell must not resume.
+    f.run([Step::at([93.0, z + 10.0], [0.0, 1.0]).throttle(0.0)]);
+    while f.record()[R_STATUS] == STATUS_RUNNING as f32 {
+        f.run([Step::at([93.0, z + 10.0], [0.0, 0.0]).throttle(0.0)]);
+    }
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_shaping_records_always_and_scores_only_with_the_flag() {
+    // docs/SCHOOL-STOP-SHAPING-20260922.md §4 step 2: same stream, flag off then on.
+    let mut plain = Fixture::new_with(straight(Lesson::Stop), 600, false);
+    stop_slow_then_leave(&mut plain);
+    let r = plain.record();
+    assert_eq!(status(&r), (STATUS_TRUNCATED, 0), "{r:?}");
+    assert!((r[R_MIN_SPEED_INSIDE] - 0.2).abs() < 0.02 && r[R_MAX_DWELL] == 40.0, "{r:?}");
+    assert!((r[R_SCORE] - 500.0 * r[R_PROGRESS]).abs() < 1.0, "plain score must stay the Stage 2 formula: {r:?}");
+
+    let mut shaped = Fixture::new_with(straight(Lesson::Stop), 600, true);
+    stop_slow_then_leave(&mut shaped);
+    let r = shaped.record();
+    assert_eq!(status(&r), (STATUS_TRUNCATED, 0), "{r:?}");
+    let expected = 500.0 * r[R_PROGRESS] + 300.0 * (1.0 - r[R_MIN_SPEED_INSIDE] / 3.0) + 200.0 * (40.0 / 128.0);
+    assert!((r[R_SCORE] - expected).abs() < 1.0, "shaped score {} vs expected {expected}: {r:?}", r[R_SCORE]);
+    assert!(r[R_SCORE] > 500.0 * r[R_PROGRESS] + 250.0, "{r:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_shaping_pays_the_full_bonus_on_success_and_nothing_before_the_area() {
+    let mut f = Fixture::new_with(straight(Lesson::Stop), 1280, true);
+    let approach = stop_approach(6.0);
+    let z = approach.last().unwrap().pos[1];
+    f.run(approach);
+    f.run((0..128).map(|_| Step::at([93.0, z + 2.0], [0.0, 0.0]).throttle(0.0)));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0), "{r:?}");
+    let expected = 1000.0 + 500.0 * r[R_PROGRESS] + 300.0 + 200.0;
+    assert!((r[R_SCORE] - expected).abs() < 1.0, "{} vs {expected}: {r:?}", r[R_SCORE]);
+
+    // Overshooting at speed never enters the slow regime: the shaping term is zero.
+    let mut f = Fixture::new_with(straight(Lesson::Stop), 1280, true);
+    f.run(straight_run([93.0, 114.0], [0.0, 1.0], 8.0, 400));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_FAILED, 5), "{r:?}");
+    assert!(r[R_MIN_SPEED_INSIDE] > 7.5 && r[R_MAX_DWELL] == 0.0, "{r:?}");
+    assert!((r[R_SCORE] - (500.0 * r[R_PROGRESS] - 200.0)).abs() < 1.0, "{r:?}");
 }

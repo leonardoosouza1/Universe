@@ -7,6 +7,8 @@
 // 2 failed, 3 truncated. Failure codes: 1 contact, 2 death, 3 corridor, 4 born
 // inside goal, 5 overshoot, 6 drove through the junction, 7 wrong exit,
 // 8 entered the stop area without ever reaching v_min.
+// Params.flags: bit 0 bench (host-only), bit 1 stop-score shaping
+// (docs/SCHOOL-STOP-SHAPING-20260922.md).
 struct Params {
   n:u32, tick:u32, horizon:u32, flags:u32,
   goal_radius:f32, area_radius:f32, v_min:f32, v_stop:f32,
@@ -31,6 +33,9 @@ const MAX_ALONG:u32=24u; const ENERGY_START:u32=25u; const DISTANCE_START:u32=26
 const PROGRESS:u32=28u; const ENTRY_SPEED:u32=29u; const WRONG_EX:u32=30u; const WRONG_EZ:u32=31u;
 // Frozen with the outcome so consumption is reported for the judged span, not the whole episode.
 const ENERGY_OUTCOME:u32=32u; const DISTANCE_OUTCOME:u32=33u;
+// Stop shaping: slowest speed seen inside the area (1e9 until entered) and the
+// longest held stop. Recorded always, scored only when flags bit 1 is set.
+const MIN_SPEED_INSIDE:u32=34u; const MAX_DWELL:u32=35u;
 
 fn close(k:u32, s:u32, status:f32, code:f32) {
   school[k+STATUS]=status; school[k+FAIL_CODE]=code; school[k+OUTCOME_TICK]=f32(p.tick);
@@ -39,7 +44,12 @@ fn close(k:u32, s:u32, status:f32, code:f32) {
   let failed=select(0.0,1.0,status==2.0);
   let integrity=clamp(body[s+8u],0.0,1.0);
   let alive=select(0.0,1.0,body[s+29u]>0.5);
-  school[k+SCORE]=1000.0*success+500.0*school[k+PROGRESS]-200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive);
+  var shaping=0.0;
+  if((p.flags&2u)!=0u && school[k+LESSON]>1.5 && school[k+LESSON]<2.5){
+    shaping=300.0*clamp(1.0-school[k+MIN_SPEED_INSIDE]/max(p.v_min,0.001),0.0,1.0)
+           +200.0*clamp(school[k+MAX_DWELL]/max(p.hold_ticks,1.0),0.0,1.0);
+  }
+  school[k+SCORE]=1000.0*success+500.0*school[k+PROGRESS]-200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive)+shaping;
 }
 
 @compute @workgroup_size(64)
@@ -78,6 +88,7 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
   if(school[k+ELAPSED]<0.5){
     school[k+ENERGY_START]=body[s]; school[k+DISTANCE_START]=body[s+98u];
     school[k+INITIAL_REMAINING]=max(remaining,1.0); school[k+BEST_REMAINING]=remaining;
+    school[k+MIN_SPEED_INSIDE]=1.0e9;
     let born_inside=select(distance(pos,goal)<=p.goal_radius,in_box,turning);
     if(born_inside){close(k,s,2.0,4.0);return;}
   }
@@ -109,6 +120,8 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
     if(school[k+PHASE]>=0.5 && school[k+PHASE]<1.5 && inside){school[k+PHASE]=2.0; school[k+ENTRY_SPEED]=speed;}
     if(school[k+PHASE]>=1.5){
       if(inside && speed<=p.v_stop){school[k+DWELL]+=1.0;} else {school[k+DWELL]=0.0;}
+      if(inside){school[k+MIN_SPEED_INSIDE]=min(school[k+MIN_SPEED_INSIDE],speed);}
+      school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
       if(school[k+DWELL]>=p.hold_ticks){close(k,s,1.0,0.0);return;}
     }
   } else {

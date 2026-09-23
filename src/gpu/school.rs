@@ -46,6 +46,11 @@ pub const R_WRONG_EXIT: usize = 30;
 /// Energy (J) and odometer (m) captured by `close`, so the judged span is separable from the episode.
 pub const R_ENERGY_OUTCOME: usize = 32;
 pub const R_DISTANCE_OUTCOME: usize = 33;
+/// Stop shaping (docs/SCHOOL-STOP-SHAPING-20260922.md): slowest speed inside the stop area
+/// (1e9 until it is entered) and the longest held stop; recorded always, scored only with
+/// `stop_shaping`.
+pub const R_MIN_SPEED_INSIDE: usize = 34;
+pub const R_MAX_DWELL: usize = 35;
 
 pub const STATUS_RUNNING: u32 = 0;
 pub const STATUS_SUCCESS: u32 = 1;
@@ -249,6 +254,8 @@ pub struct SchoolGpu {
     pub horizon_ticks: u32,
     /// Bench mode: taxi–taxi contacts off, passengers off.
     pub bench: bool,
+    /// Stop lesson: the score also pays for slowing inside the area and holding (flags bit 1).
+    pub stop_shaping: bool,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
 }
@@ -273,6 +280,7 @@ impl SchoolGpu {
         contract: LessonContract,
         horizon_ticks: u32,
         bench: bool,
+        stop_shaping: bool,
     ) -> Self {
         assert!(capacity > 0, "school capacity");
         assert!(horizon_ticks > 0, "school horizon");
@@ -335,6 +343,7 @@ impl SchoolGpu {
             contract,
             horizon_ticks,
             bench,
+            stop_shaping,
             layout,
             pipeline,
         }
@@ -389,7 +398,7 @@ impl SchoolGpu {
                 n: n as u32,
                 tick,
                 horizon: self.horizon_ticks,
-                flags: self.bench as u32,
+                flags: self.bench as u32 | (self.stop_shaping as u32) << 1,
                 goal_radius: c.goal_radius_m,
                 area_radius: c.area_radius_m,
                 v_min: c.v_min_mps,
@@ -492,5 +501,7 @@ pub fn record_json(r: &[f32; SCHOOL_STRIDE_F32], energy_now_j: f32, distance_now
         "energy_episode_j": r[R_ENERGY_START] - energy_now_j,
         "distance_episode_m": distance_now_m - r[R_DISTANCE_START],
         "score": r[R_SCORE],
+        "min_speed_inside_mps": if r[R_MIN_SPEED_INSIDE] < 1.0e8 { serde_json::json!(r[R_MIN_SPEED_INSIDE]) } else { serde_json::Value::Null },
+        "max_dwell_ticks": r[R_MAX_DWELL],
     })
 }
