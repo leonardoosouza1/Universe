@@ -88,6 +88,7 @@ use types::BeingState;
 use universe::engine::SovereignEngine;
 use universe::evolution::dna_genesis::default_kan_knots;
 use universe::gpu::evolution::{EvoParams, GenResult, Genome, evolve, gen_stats, linear_slope};
+use universe::gpu::taxi::TaxiMode;
 use universe::world::VoxelWorld;
 
 // ── Tipos locais (espelhando gpu_loop.rs) ────────────────────────────────────
@@ -416,7 +417,7 @@ fn avaliar_held_out(
     // Tick de aquecimento — mesmo contrato do laço de treino (JIT/compilação
     // descartada, não entra na fitness).
     if organism_taxi {
-        ctx.start_organism(genomes, &held_stations, &held_city.as_ref().unwrap().traffic_lights(), n_seres).expect("held-out organism birth");
+        ctx.start_organism(genomes, &held_stations, &held_city.as_ref().unwrap().traffic_lights(), n_seres, TaxiMode::Production).expect("held-out organism birth");
         ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world_ho, &held_stations).expect("held-out road routes");
         ctx.sample_organism(&mut states).expect("held-out initial state");
     } else {
@@ -5005,7 +5006,15 @@ fn main() {
         // record this tick deliberately — do not "fix" it to discard its side effects
         // without re-deriving screen.rs's warm-up replay, or parity breaks silently.
         if organism_taxi {
-            ctx.start_organism(&genomes, &organism_stations, &organism_city.as_ref().unwrap().traffic_lights(), if ecology_on { ecology_founders.unwrap_or(n_seres) } else { n_seres })
+            // `school_bench` is the default mode *when a school lesson exists*.
+            // Passing it unconditionally makes the ordinary taxi world look like
+            // a bench and disables passenger issuance in `taxi.wgsl`.
+            let taxi_mode = if school_lesson.is_some() && school_bench {
+                TaxiMode::MotorBench
+            } else {
+                TaxiMode::Production
+            };
+            ctx.start_organism(&genomes, &organism_stations, &organism_city.as_ref().unwrap().traffic_lights(), if ecology_on { ecology_founders.unwrap_or(n_seres) } else { n_seres }, taxi_mode)
                 .expect("organism initialization failed");
             if taxi_reference_witness {
                 ctx.taxi_witness = Some(universe::gpu::taxi_witness::TaxiWitnessGpu::new(&ctx.device, ctx.capacity));
@@ -5013,7 +5022,11 @@ fn main() {
             ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
             if let Some(starts) = school_starts.as_ref() {
                 // Bench: passengers off (the judge owns the task slots). Life: passengers on.
-                ctx.taxi.as_mut().unwrap().set_school_mode(school_bench);
+                ctx.taxi.as_mut().unwrap().set_mode(if school_bench {
+                    TaxiMode::MotorBench
+                } else {
+                    TaxiMode::Production
+                });
                 if ctx.school.is_none() {
                     ctx.school = Some(universe::gpu::school::SchoolGpu::new(
                         &ctx.device,
@@ -5063,6 +5076,8 @@ fn main() {
                 "sensor_extras": "organism-resident-extras-v1",
                 "action_channels": ["throttle", "steer", "brake", "gear_up", "gear_down", "service", "pickup", "dropoff", "reverse"],
                 "action_stride": 96, "active_action_channels": 9,
+                "pedal_arbitration": "exclusive_signed_net_v1",
+                "static_rest": "bounded_contact_v1",
                 "simulation_transfer": "resident GPU; host observation on sampling boundaries",
                 "fitness": "1000*deliveries + bounded_task_progress + money + 0.001*age_seconds + 10*alive - 100*(1-integrity) - 100*(1-alive)",
                 "motor_controller": if taxi_reference_witness {"reference GPU controller"} else {"evolved policy"}, "resource_units": "joules,kilograms",
@@ -5091,7 +5106,7 @@ fn main() {
                     "success": {"move": "dist(pos,target)<=goal_radius and propelled_ticks>=propelled_min", "stop": "speed>=v_min before the area, then speed<=v_stop inside for hold_ticks while alive", "turn": "entered the junction box, then dist(pos,exit)<=gate_radius with dot(heading,exit_dir)>=align_min"},
                     "failure_codes": {"1": "contact", "2": "death", "3": "corridor", "4": "born_inside_target", "5": "overshoot", "6": "drove_through_junction", "7": "wrong_exit", "8": "no_approach_speed"},
                     "truncation": "status 3 at horizon, progress kept",
-                    "score": if school_stop_shaping { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive) + stop: 300*clamp(1 - min_speed_inside/v_min) + 200*clamp(max_dwell/hold_ticks)" } else { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive)" },
+                    "score": if school_stop_shaping { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive) + stop: 300*clamp(1 - min_speed_inside/v_min) + 200*clamp(max_near_stop_dwell/hold_ticks), near-stop=2*v_stop; success remains v_stop" } else { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive)" },
                     "stop_shaping": school_stop_shaping,
                     "fitness": if school_bench { "score" } else { "taxi fitness (life mode)" }, "lessons": rotated,
                     "curriculum": school_curriculum.unwrap_or("fixed"),

@@ -2,7 +2,7 @@
 //! (docs/SCHOOL-INCENTIVES-20260922.md). The city, the stations and the road
 //! distance fields are the production ones; poses are written by hand and only the
 //! taxi post kernel runs. No CPU oracle of the kernel.
-use crate::gpu::taxi::{TaxiGpu, TAXI_STATION_STRIDE_FLOATS, TAXI_WORLD_HEADER_FLOATS};
+use crate::gpu::taxi::{TaxiGpu, TaxiMode, TAXI_STATION_STRIDE_FLOATS, TAXI_WORLD_HEADER_FLOATS};
 use crate::organism_city::build_city;
 use crate::world::{VoxelType, VoxelWorld};
 
@@ -24,6 +24,21 @@ struct Fixture {
     poses: Vec<f32>,
     intents: Vec<f32>,
     tick: u32,
+}
+
+#[test]
+#[ignore = "needs the real GPU"]
+fn taxi_mode_controls_passenger_issuance() {
+    let waiting_id = |mode| {
+        let mut fixture = Fixture::new();
+        fixture.taxi.set_mode(mode);
+        let (_, world) = fixture.step();
+        world[TAXI_WORLD_HEADER_FLOATS + 11]
+    };
+
+    assert!(waiting_id(TaxiMode::Production) > 0.0);
+    assert_eq!(waiting_id(TaxiMode::MotorBench), 0.0);
+    assert_eq!(waiting_id(TaxiMode::ServiceBench), 0.0);
 }
 
 impl Fixture {

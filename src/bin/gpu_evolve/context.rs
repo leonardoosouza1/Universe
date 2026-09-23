@@ -392,6 +392,7 @@ impl GpuCtx {
         stations: &[[f32; 8]],
         traffic_lights: &[universe::gpu::traffic::TrafficLight],
         founders: usize,
+        taxi_mode: universe::gpu::taxi::TaxiMode,
     ) -> Result<(), &'static str> {
         if self.fly.is_some() || self.fly_spiking.is_some() || self.brain_control_direct {
             return Err("organism-taxi-v1 requires the native 96-intent action interface");
@@ -428,6 +429,9 @@ impl GpuCtx {
             stations,
         );
         taxi.set_observation_version(NAVIGATION_OBSERVATION.load(Ordering::Relaxed));
+        // Must be selected before `encode_birth`: the school bench supplies isolated
+        // reserves, while the production taxi world transfers them from station stock.
+        taxi.set_mode(taxi_mode);
         self.taxi = Some(taxi);
         if founders > genomes.len() {
             return Err("founder count exceeds population");

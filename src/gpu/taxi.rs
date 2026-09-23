@@ -40,8 +40,22 @@ struct Params {
     wave_words: u32,
     dt: f32,
     observation: u32,
-    school: u32,
+    mode: u32,
     padding: u32,
+}
+
+/// Execution contract for the taxi adapter.
+///
+/// The discriminants are part of the Rust/WGSL ABI; keep them in sync with
+/// `taxi.wgsl`. A bench owns its task state and therefore never receives
+/// production passengers or consumes shared genesis stocks.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TaxiMode {
+    #[default]
+    Production = 0,
+    MotorBench = 1,
+    ServiceBench = 2,
 }
 
 /// Taxi channel schema selected by `--navigation-observation`.
@@ -55,7 +69,7 @@ pub struct TaxiGpu {
     pub station_count: usize,
     initial_world: Vec<f32>,
     observation_version: u32,
-    school_mode: bool,
+    mode: TaxiMode,
     post_layout: wgpu::BindGroupLayout,
     birth_layout: wgpu::BindGroupLayout,
     senses_layout: wgpu::BindGroupLayout,
@@ -185,7 +199,7 @@ impl TaxiGpu {
             station_count: stations.len(),
             initial_world,
             observation_version: NAVIGATION_OBSERVATION_V2,
-            school_mode: false,
+            mode: TaxiMode::Production,
             post_layout,
             birth_layout,
             senses_layout,
@@ -205,12 +219,12 @@ impl TaxiGpu {
     pub fn observation_version(&self) -> u32 {
         self.observation_version
     }
-    /// School bench: stations issue no passengers; the judge owns the task slots.
-    pub fn set_school_mode(&mut self, on: bool) {
-        self.school_mode = on;
+    /// Select the world/task contract before birth; never change it mid-episode.
+    pub fn set_mode(&mut self, mode: TaxiMode) {
+        self.mode = mode;
     }
-    pub fn school_mode(&self) -> bool {
-        self.school_mode
+    pub fn mode(&self) -> TaxiMode {
+        self.mode
     }
     /// Install the scenario's immutable road field once, never per tick.
     pub fn configure_routes(&mut self, device: &wgpu::Device, world: &crate::world::VoxelWorld, stations: &[[f32; 8]]) -> Result<(), &'static str> {
@@ -244,7 +258,7 @@ impl TaxiGpu {
             wave_words: super::perception::WAVE_U32S as u32,
             dt,
             observation: self.observation_version,
-            school: self.school_mode as u32,
+            mode: self.mode as u32,
             padding: 0,
         };
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -559,7 +573,10 @@ mod tests {
         queue.write_buffer(&physics, 0, bytemuck::cast_slice(&pose));
         step(3);
         let moving_away = read(&body, 128);
-        assert!(moving_away[127] < approach[127]);
+        assert_eq!(
+            moving_away[127], approach[127],
+            "phase progress keeps the best remaining distance; retreat cannot erase or farm it"
+        );
 
         // A post-physics fixture is now at the destination. Dropoff clears the
         // transient potential while the completed delivery supplies 1000 points.
@@ -634,6 +651,37 @@ mod tests {
         fund(); // A repeated birth call must not charge stocks or create reserves.
         assert_eq!(read(&founders_buf, 3 * 128), funded);
         assert_eq!(read(&genesis.buf_world, 36), stocks);
+
+        // The school bench is a controlled motor-learning experiment: classmates with
+        // mutated bodies must not change the elite's station-stock observation. Genesis
+        // therefore preserves the world and funds every declared reserve independently.
+        let mut school = TaxiGpu::new(
+            &device,
+            &queue,
+            3,
+            &[
+                [0.0, 0.0, 10000.0, 10.0, 20.0, 0.0, 0.0, 0.0],
+                [100.0, 0.0, 10000.0, 10.0, 20.0, 0.0, 0.0, 0.0],
+            ],
+        );
+        school.set_mode(TaxiMode::MotorBench);
+        let school_before = read(&school.buf_world, 36);
+        let mut pupils = founders.clone();
+        pupils[128] = 9000.0;
+        pupils[128 + 1] = 9.0;
+        pupils[128 + 2] = 19.0;
+        let pupils_buf = buffer(&pupils);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        school.encode_birth(&device, &mut encoder, &pupils_buf, 3);
+        queue.submit(Some(encoder.finish()));
+        let school_after = read(&school.buf_world, 36);
+        let pupils_after = read(&pupils_buf, 3 * 128);
+        assert_eq!(school_after, school_before, "school birth changed shared stocks");
+        for (expected, pupil) in pupils.chunks_exact(128).zip(pupils_after.chunks_exact(128)) {
+            assert_eq!(&pupil[..3], &expected[..3]);
+            assert_eq!(pupil[29], 1.0);
+            assert_eq!(pupil[93], 1.0);
+        }
         // U-shaped road: the legal detour initially increases Euclidean distance.
         // GPU metric fixture; this is NOT the physical feasibility witness.
         let mut road = crate::world::VoxelWorld::new(0, 15.0);
@@ -650,6 +698,11 @@ mod tests {
             let s=b*128; let o=b*56;
             states[s+29]=1.; states[s+65]=1.; states[s+66]=50.; states[s+67]=10.;
             states[s+70]=10.; states[s+71]=10.; states[s+84]=1.;
+            // Same already-issued passenger and baseline route distance for all
+            // three fixtures. Without this memory each body correctly starts its
+            // progress baseline at its own current pose, so the comparison proves
+            // nothing about movement along the U-shaped route.
+            states[s+31]=1.; states[s+61]=120.; states[s+62]=120.;
             poses[o+36]=position[0]; poses[o+38]=position[1];
         }
         let states_buffer=buffer(&states); let poses_buffer=buffer(&poses);
@@ -660,7 +713,7 @@ mod tests {
         let evaluated=read(&states_buffer, 3*128);
         assert!((evaluated[127]-100.0).abs()<1e-4);
         assert!((evaluated[128+127]-(100.0+100.0/12.0)).abs()<1e-4, "legal detour must improve score");
-        assert_eq!(evaluated[256+127],100.0,"wall must not receive progress bonus");
+        assert!((evaluated[256+127]-100.0).abs()<1e-4,"wall must not receive progress bonus: {}", evaluated[256+127]);
 
         // Cell convention on the left leg (x = 10): z = 15.3 m / 10 m = 1.53 cells ->
         // row 2 by round (110 m remaining), row 1 by floor (120 m). Exact tie

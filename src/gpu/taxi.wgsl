@@ -6,8 +6,10 @@
 // waiting_passenger_id,destination_station,cooldown_s,reserved,reserved.
 // Monetary prices:0.00001/J,1/kgwater,5/kgmaterial; rates100000J/s,1kg/s,.2kg/s.
 // Monetary genesis25; deliveryfare10+.02*direct_distance_m; no energy creation by fares.
-// school=1: no passenger issuance; the school judge owns the task slots (docs/SCHOOL-LESSONS-20260922.md).
-struct Params { n:u32, stations:u32, tick:u32, wave_words:u32, dt:f32, observation:u32, school:u32, _c:u32 }
+// mode=0 production, 1 isolated motor bench, 2 isolated service bench. Benches do
+// not consume shared genesis stocks or receive production passengers; their judges
+// own the task slots. The production taxi world keeps conservation.
+struct Params { n:u32, stations:u32, tick:u32, wave_words:u32, dt:f32, observation:u32, mode:u32, _c:u32 }
 @group(0) @binding(0) var<uniform> p:Params;
 @group(0) @binding(1) var<storage,read_write> body:array<f32>;
 @group(0) @binding(2) var<storage,read_write> world:array<f32>;
@@ -51,6 +53,11 @@ fn birth() {
     body[s]=0.0;body[s+1u]=0.0;body[s+2u]=0.0;
     body[s+91u]=0.0;body[s+92u]=0.0;body[s+93u]=1.0;
     body[s+64u]=0.0;body[s+84u]=1.0;
+    if(p.mode!=0u){
+      body[s]=desired.x;body[s+1u]=desired.y;body[s+2u]=desired.z;
+      body[s+92u]=desired.x;body[s+64u]=25.0;
+      continue;
+    }
     let w=station(b%p.stations);
     let construction=0.01*1350.0*body[s+24u];
     if(body[s+29u]<0.5 || world[w+10u]<construction || world[w+8u]<=0.0 || world[w+9u]<=0.0){
@@ -75,7 +82,7 @@ fn post() {
     let w=station(j);
     for(var r=0u;r<3u;r++){world[w+8u+r]=min(world[w+2u+r],world[w+8u+r]+p.dt*world[w+5u+r]);}
     world[w+13u]=max(0.0,world[w+13u]-p.dt);
-    if(p.school==0u && world[w+11u]==0.0 && world[w+13u]==0.0 && world[0]<16777216.0){
+    if(p.mode==0u && world[w+11u]==0.0 && world[w+13u]==0.0 && world[0]<16777216.0){
       let id=u32(world[0]); world[w+11u]=f32(id); world[0]+=1.0; world[1]+=1.0;
       world[w+12u]=f32((j+1u+(id%(p.stations-1u)))%p.stations);
     }
@@ -104,6 +111,10 @@ fn post() {
     body[s+87u]=world[w+8u]/max(1.0,world[w+2u]);
     body[s+88u]=world[w+9u]/max(1.0,world[w+3u]);
     body[s+89u]=world[w+10u]/max(1.0,world[w+4u]);
+    // A school lesson measures one controller in a fixed environment. Letting
+    // mutated classmates consume these shared stocks changes the elite's sensor
+    // channel 187 and breaks exact re-evaluation even with an unchanged genome.
+    if(p.mode!=0u){continue;}
     if(body[s+65u]<0.5 && has_waiting){let q=station(waiting);body[s+70u]=world[q];body[s+71u]=world[q+1u];}
     body[s+90u]=select(0.0,1.0,has_waiting);
     if(body[s+29u]<0.5){body[s+69u]=6.0;continue;}
