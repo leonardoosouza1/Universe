@@ -36,27 +36,30 @@ observation slots are untouched.
 ```
 MIN_SPEED_INSIDE (slot 34) = 1e9 at the first judged tick; min(·, speed) on every tick
                              inside the area once phase ≥ 2 (entered after reaching v_min)
-MAX_DWELL        (slot 35) = max over ticks of the consecutive-stopped counter DWELL
+MAX_DWELL        (slot 35) = max over ticks of the strict consecutive-stop counter DWELL
+NEAR_DWELL       (slot 36) = consecutive ticks inside with speed <= 2*v_stop
+MAX_NEAR_DWELL   (slot 37) = max over ticks of NEAR_DWELL
 
 score = 1000·success + 500·progress − 200·failed − 100·(1 − integrity) − 100·(1 − alive)
       + [flags bit 1 and lesson = stop] · ( 300·clamp(1 − MIN_SPEED_INSIDE / v_min, 0, 1)
-                                          + 200·clamp(MAX_DWELL / hold_ticks, 0, 1) )
+                                          + 200·clamp(MAX_NEAR_DWELL / hold_ticks, 0, 1) )
 ```
 
 Ordering the term creates (v_min 3 m/s, hold 128 ticks): overshoot at 8 m/s ≈ 285;
 creeper at 3.2 m/s inside ≈ 500; slows to 1 m/s inside ≈ 700; holds 0.2 m/s for 64
-ticks ≈ 880; success ≈ 2000. Both slots are recorded regardless of the flag and
-exported as `min_speed_inside_mps` (null until entered) and `max_dwell_ticks`.
+ticks ≈ 880; success ≈ 2000. The four slots are recorded regardless of the flag and
+exported as `min_speed_inside_mps`, `max_dwell_ticks`, `near_stop_dwell_ticks` and
+`max_near_stop_dwell_ticks`. Success remains the strict `v_stop`/`DWELL` condition.
 
 ## 3. Flow map (producer → buffer → consumer)
 
 | order | producer (`file:symbol`) | device | input (shape, unit) | output / buffer | consumer | frequency | state |
 |---|---|---|---|---|---|---|---|
 | 1 | `physics_c.wgsl` (pose, velocity, heading, contact mask) | GPU | physics INPUT f32[92]/being, OUTPUT f32[56]/being (m, m/s) | `physics_out` | school judge | every tick | runtime |
-| 2 | `school.wgsl::judge` | GPU | `physics_out[o+0,2]` speed, `[o+36,38]` pos; `body[s+8]` integrity, `[s+29]` alive; Params (v_min 3.0, v_stop 0.3, hold 128, area 4 m, flags) | school record f32[40]/being (`SchoolGpu.buf_state`): slots 15 DWELL, 34 MIN_SPEED_INSIDE, 35 MAX_DWELL, 21 SCORE (written once, in `close`) | host `download` | every tick, `close` once per attempt | runtime, reset per generation (`SchoolGpu::reset`) |
+| 2 | `school.wgsl::judge` | GPU | `physics_out[o+0,2]` speed, `[o+36,38]` pos; `body[s+8]` integrity, `[s+29]` alive; Params (v_min 3.0, v_stop 0.3, hold 128, area 4 m, flags) | school record f32[40]/being (`SchoolGpu.buf_state`): slot 15 strict DWELL, 34 MIN_SPEED_INSIDE, 35 MAX_DWELL, 36 NEAR_DWELL, 37 MAX_NEAR_DWELL, 21 SCORE (written once, in `close`) | host `download` | every tick, `close` once per attempt | runtime, reset per generation (`SchoolGpu::reset`) |
 | 3 | `school.rs::SchoolGpu::encode` | CPU→GPU | `Params { flags = bench \| stop_shaping << 1 }` | uniform buffer | kernel | every dispatch | configuration |
 | 4 | `main.rs` ≈5769 `records[R_SCORE]` | CPU (readback `download`: copy → map_async → poll → recv) | 40 f32 per being | `fitness: Vec<f64>` when bench | `evolution.rs` selection | once per generation | derived |
-| 5 | `school.rs::record_json` | CPU | record | `school_result_genNNNN.json` `beings[]` (+ `min_speed_inside_mps`, `max_dwell_ticks`) | `analyze`, lab_api `school_observatory.py`, panel | once per generation | persisted |
+| 5 | `school.rs::record_json` | CPU | record | `school_result_genNNNN.json` `beings[]` (+ minimum speed and strict/near dwell fields) | `analyze`, lab_api `school_observatory.py`, panel | once per generation | persisted |
 
 Nothing in the change touches DNA, the brain, the taxi kernel or the observation
 channels (65/70/71/80/81/90 keep the same producer and values). The skipped-step
@@ -71,7 +74,8 @@ ignore unknown keys are unaffected.
    the same pose stream (enter at 6 m/s, 50 ticks at 1 m/s inside, 40 ticks stopped,
    leave, truncate) scores `500·progress` with the flag off and
    `500·progress + 300·(1 − 1/3) + 200·(40/128)` with it on; the success stream scores
-   > 1900 with the flag; the recorded slots equal 1.0 m/s and 40 ticks in both.
+   > 1900 with the flag; a separate fixture proves 64 ticks at 0.5 m/s count only as
+   near-stop shaping and do not satisfy the strict 0.3 m/s success condition.
 3. Behavioural, two conditions that must diverge: the scripted reference witness on
    `stop` with and without the flag (same seed, one being) — success in both, score
    ≈ 1500 vs ≈ 2000.
@@ -211,4 +215,3 @@ validation fold is one being in one episode, not a trend.
    removes the noise, it does not add the brake.
 3. Only after 2: partial credit for the hold term below `v_min` (e.g. ticks under 1 m/s),
    so that the 0.3 m/s cliff of §6.5.2 also has a slope.
-

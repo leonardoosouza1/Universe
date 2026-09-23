@@ -30,6 +30,7 @@ const DOMAIN: f32 = 2.0;
 const SLOW_BRAKE_AUTHORITY: f32 = 0.8;
 const PHYSICS_STRIDE: u32 = 92u;
 const FLAG_ALLOW_LOW_SPEED_BRAKE: u32 = 4u;
+const FLAG_EXCLUSIVE_PEDALS: u32 = 8u;
 
 fn spline(b: u32, output: u32, x: f32) -> f32 {
   let xc = clamp(x, -DOMAIN, DOMAIN);
@@ -55,7 +56,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let slow_inhibition = max(slow[sb + 1u], 0.0);
   let throttle_cap = 1.0 - slow_inhibition * SLOW_BRAKE_AUTHORITY;
   let throttle_base = select(max(after0, 0.0), after0, (p.flags & 2u) != 0u);
-  let throttle = clamp(throttle_base + slow[sb] * 0.5 + hip_bias[hb], 0.0, throttle_cap);
+  let throttle_before_arbitration = clamp(throttle_base + slow[sb] * 0.5 + hip_bias[hb], 0.0, throttle_cap);
   let steer = clamp(after1 + slow[sb + 2u] * p.slow_steering_authority + hip_bias[hb + 1u], -1.0, 1.0);
   let fast_brake = max(after2 + hip_bias[hb + 2u], 0.0);
   let brake_before_gate = min(fast_brake + slow_inhibition * SLOW_BRAKE_AUTHORITY, 1.0);
@@ -67,7 +68,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     false,
     (p.flags & FLAG_ALLOW_LOW_SPEED_BRAKE) != 0u,
   );
-  let brake = select(brake_before_gate, 0.0, brake_before_gate <= 0.0 || suppress_low_speed);
+  // Throttle and brake are antagonistic commands for the same longitudinal
+  // degree of freedom.  Taxi mode resolves them as a signed net drive, which
+  // preserves both neural outputs without allowing the body to press both pedals.
+  // Legacy callers retain the historical independent-pedal behaviour.
+  let exclusive = (p.flags & FLAG_EXCLUSIVE_PEDALS) != 0u;
+  let longitudinal = throttle_before_arbitration - brake_before_gate;
+  let throttle = select(throttle_before_arbitration, max(longitudinal, 0.0), exclusive);
+  let brake_arbitrated = select(brake_before_gate, max(-longitudinal, 0.0), exclusive);
+  let brake = select(brake_arbitrated, 0.0, brake_arbitrated <= 0.0 || suppress_low_speed);
   let filtered = clamp(previous_steer[b] * (1.0 - p.steering_alpha) + steer * p.steering_alpha, -1.0, 1.0);
   physics[pb + 51u] = throttle;
   physics[pb + 53u] = filtered;

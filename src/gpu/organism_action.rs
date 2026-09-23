@@ -6,6 +6,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
+#[cfg(test)]
 use wgpu::util::DeviceExt;
 
 pub const INTENT_STRIDE: usize = 96;
@@ -16,6 +17,10 @@ pub const KNOTS: usize = 12;
 pub const FLAG_LINEAR_HEAD: u32 = 1;
 pub const FLAG_SIGNED_THROTTLE: u32 = 2;
 pub const FLAG_ALLOW_LOW_SPEED_BRAKE: u32 = 4;
+/// Resolve the two antagonistic longitudinal outputs into one command.  Without
+/// this, a controller can press throttle and brake together; in particular the
+/// static-rest constraint can never engage while throttle remains positive.
+pub const FLAG_EXCLUSIVE_PEDALS: u32 = 8;
 pub const GEARBOX_OFF: u32 = 0;
 pub const GEARBOX_AUTO: u32 = 1;
 pub const GEARBOX_NEURAL: u32 = 2;
@@ -304,7 +309,11 @@ impl OrganismActionGpu {
         {
             return Err("organism-action: invalid action parameters");
         }
-        if params.flags & !(FLAG_LINEAR_HEAD | FLAG_SIGNED_THROTTLE | FLAG_ALLOW_LOW_SPEED_BRAKE)
+        if params.flags
+            & !(FLAG_LINEAR_HEAD
+                | FLAG_SIGNED_THROTTLE
+                | FLAG_ALLOW_LOW_SPEED_BRAKE
+                | FLAG_EXCLUSIVE_PEDALS)
             != 0
         {
             return Err("organism-action: unknown flags");
@@ -515,6 +524,52 @@ mod tests {
         // Decimal -0.175 is rounded separately from the GPU fused arithmetic.
         assert!((output[53] + 0.175).abs() <= 2.0 * f32::EPSILON);
         assert_eq!(output[52].to_bits(), 1.0f32.to_bits());
+        drop(mapped);
+        staging.unmap();
+
+        // The resident taxi exposes separate neural throttle/brake logits, but the
+        // body has one longitudinal degree of freedom.  The scenario arbitration
+        // subtracts the antagonists, so they can never fight in the applied command.
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("organism-action-exclusive-pedals-fixture"),
+        });
+        action
+            .encode(
+                &device,
+                &queue,
+                &mut encoder,
+                &physics,
+                1,
+                ActionParams {
+                    n: 1,
+                    flags: FLAG_LINEAR_HEAD
+                        | FLAG_SIGNED_THROTTLE
+                        | FLAG_ALLOW_LOW_SPEED_BRAKE
+                        | FLAG_EXCLUSIVE_PEDALS,
+                    steering_alpha: 0.5,
+                    slow_steering_authority: 0.2,
+                    gearbox_mode: GEARBOX_OFF,
+                    gear_cap: 6,
+                    dt: 1.0 / 64.0,
+                    _pad: 0.0,
+                },
+            )
+            .unwrap();
+        encoder.copy_buffer_to_buffer(&physics, 0, &staging, 0, staging.size());
+        queue.submit(Some(encoder.finish()));
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+        let mapped = slice.get_mapped_range();
+        let output: &[f32] = bytemuck::cast_slice(&mapped);
+        assert_eq!(output[51].to_bits(), 0.0f32.to_bits());
+        assert!(
+            (output[52] - 0.4).abs() <= 2.0 * f32::EPSILON,
+            "{}",
+            output[52]
+        );
         drop(mapped);
         staging.unmap();
 

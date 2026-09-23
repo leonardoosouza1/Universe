@@ -136,3 +136,29 @@ warning. These are observability and mechanical gates, not a claim that the
 current evolved policy delivers passengers. Its near-stationary behavior remains
 a measured policy/learning problem; this work does not replace it with the
 reference controller.
+
+## Native learned stop after body/action correction — 2026-09-23
+
+The school stop lesson found a separate evolved-policy defect: the resident action
+mapper allowed positive throttle and brake simultaneously, while static rest was only
+enabled for the privileged witness. The body now resolves antagonistic pedals into one
+signed longitudinal command and enables the bounded contact-rest law for every resident
+taxi. This changes neither the neural outputs nor the success judge; it makes the body
+execute a physically coherent command.
+
+A fresh GPU-only seed-7 run produced one strict stop at generation 15 (128 ticks at
+`<=0.3 m/s`, minimum 0.0126 m/s). The saved champion produced 0/16 on validation and
+1/16 on test. A 32-generation rotating-start run produced 0/512. The capability is now
+real, but generalization is not solved; city/taxi competence must not be inferred from
+the single fixed-start success. Evidence lives under `artifacts/school-exclusive-*`.
+
+Two full-city smoke measurements make that boundary explicit. A fresh random population
+(8 beings, 2 generations, 640 ticks) completed on the Radeon with zero impacts and zero
+pedal overlap, but all fitness values rounded to 35.010 and maximum odometer was 9 m:
+selection was blind. Eight clones of the stop champion over 4096 ticks moved 26 m median,
+made zero deliveries, spent 80% of alive ticks stationary and accumulated 161 impact
+ticks. Applied-pedal overlap remained exactly zero in both runs, so the body correction
+works; a stop-only genome does not transfer into a navigation policy. The city must be
+fed graduates of a multi-skill, multi-start curriculum and evaluated over multiple starts
+per genotype before it can be called functional. Evidence:
+`artifacts/final-taxi-smoke-v3` and `artifacts/final-taxi-stop-transfer-v3`.

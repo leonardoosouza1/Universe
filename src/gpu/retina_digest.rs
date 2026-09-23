@@ -38,7 +38,7 @@ use std::borrow::Cow;
 
 use wgpu::util::DeviceExt;
 
-use crate::math::cfc_perception::{flat_weights, CFC_HIDDEN, CFC_WEIGHTS_LEN};
+use crate::math::cfc_perception::{CFC_HIDDEN, CFC_WEIGHTS_LEN, flat_weights};
 use crate::perception::RetinaPerception;
 
 use super::core::{storage_entry, uniform_entry};
@@ -328,13 +328,15 @@ impl RetinaDigestGpu {
         self.collect_read(n, bytes, ticket)
     }
 
-    /// Zeroes the recurrent CfC state for the first `n` beings.
+    /// Zeroes the recurrent CfC state and its published digest for the first `n` beings.
     ///
     /// Called between generations (same spot where `context.rs::reset_cfc` used to recreate
     /// `RetinaPerception::new()` per being). Uses `write_buffer` — no encoder, same
-    /// pattern as `BrainGpu::reset_cfc`. CRITICAL: forgetting this reintroduces the bug
-    /// documented on 2026-08-11 (child inheriting the parent's CfC state, non-deterministic
-    /// elite re-evaluation).
+    /// pattern as `BrainGpu::reset_cfc`. `OrganismSensorsGpu` reads `buf_extra_out`
+    /// before the current tick's digest dispatch, so clearing only `buf_cfc_state` leaves
+    /// `edge_row6/7` and the published hidden state from the previous generation visible
+    /// during the first decision. That one-tick leak is enough to make an unchanged elite
+    /// follow a different trajectory.
     pub fn reset(&self, queue: &wgpu::Queue, n: usize) {
         let n = n.min(self.capacity);
         if n == 0 {
@@ -342,9 +344,11 @@ impl RetinaDigestGpu {
         }
         let zeros: Vec<u8> = vec![0u8; n * CFC_HIDDEN * std::mem::size_of::<f32>()];
         queue.write_buffer(&self.buf_cfc_state, 0, &zeros);
+        let extra_zeros: Vec<u8> = vec![0u8; n * EXTRA_OUT_STRIDE * std::mem::size_of::<f32>()];
+        queue.write_buffer(&self.buf_extra_out, 0, &extra_zeros);
     }
 
-    /// Clears only one being's perception digest CfC state.
+    /// Clears one being's perception digest state and its published output.
     ///
     /// The ecology runtime calls this when a dead slot receives a newborn; the other
     /// beings' recurrent perception remains resident and untouched.
@@ -358,6 +362,13 @@ impl RetinaDigestGpu {
             &self.buf_cfc_state,
             (being * bytes_per_being) as u64,
             &zeros,
+        );
+        let extra_bytes_per_being = EXTRA_OUT_STRIDE * std::mem::size_of::<f32>();
+        let extra_zeros = vec![0u8; extra_bytes_per_being];
+        queue.write_buffer(
+            &self.buf_extra_out,
+            (being * extra_bytes_per_being) as u64,
+            &extra_zeros,
         );
     }
 }

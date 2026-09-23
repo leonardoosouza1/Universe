@@ -37,20 +37,20 @@ use crate::engine::SovereignEngine;
 
 mod ablation;
 pub use ablation::{
-    AblationError, AblationPlan, AblationStage, AblationTarget, ABLATION_WORDS_PER_BEING,
+    ABLATION_WORDS_PER_BEING, AblationError, AblationPlan, AblationStage, AblationTarget,
 };
 
 mod observation;
 pub use observation::{
-    decode_observation, BrainObservation, ObservationDecodeError, OBSERVATION_BYTES,
-    OBSERVATION_WORDS,
+    BrainObservation, OBSERVATION_BYTES, OBSERVATION_WORDS, ObservationDecodeError,
+    decode_observation,
 };
 
 mod screen;
 
 pub use crate::gpu::lifetime::{
-    LifeGenes, LIFETIME_STRIDE, LIFE_CONFIG_SLOTS, LIFE_FEEDBACK_OFFSET, LIFE_PREV_LATENT_OFFSET,
-    LIFE_PREV_MOTOR_OFFSET, LIFE_RUNTIME_OFFSET, LIFE_STATE_E_OFFSET, LIFE_STATE_P_OFFSET,
+    LIFE_CONFIG_SLOTS, LIFE_FEEDBACK_OFFSET, LIFE_PREV_LATENT_OFFSET, LIFE_PREV_MOTOR_OFFSET,
+    LIFE_RUNTIME_OFFSET, LIFE_STATE_E_OFFSET, LIFE_STATE_P_OFFSET, LIFETIME_STRIDE, LifeGenes,
     N_LIFE_GENES,
 };
 
@@ -1141,17 +1141,17 @@ impl BrainGpu {
 
     // ── CFC STATE RESET FOR ONE BEING ──────────────────────────────────────
 
-    /// Resets one being's CfC state, adaptive fatigue and per-neuron EMA memory (P1.7)
-    /// to zeros.
+    /// Resets one being's CfC state, adaptive fatigue, per-neuron EMA memory (P1.7)
+    /// and published intent to zeros.
     ///
     /// Equivalent to `CfCCell::reset()`. It writes zeros over the being's 97 CfC f32,
-    /// its 192 fatigue f32 (96 input + 96 output) and its 144 per-neuron memory f32
-    /// (mechanism 1, P1.7 — FOLLOWING THE PATTERN of this same method), leaving every
-    /// other being untouched. Called on spawn/death: it guarantees a newborn starts with
-    /// no fatigue AND no memory inherited from the slot's previous occupant. Without it
-    /// the child would be born "remembering" what the parent last felt — the same
-    /// state-leaking-across-generations bug that motivated resetting `buf_cfc` and
-    /// `buf_fatigue` here.
+    /// its 192 fatigue f32 (96 input + 96 output), its 144 per-neuron memory f32
+    /// (mechanism 1, P1.7 — FOLLOWING THE PATTERN of this same method), and its 96
+    /// published intent f32, leaving every other being untouched. The intent is temporal
+    /// state too: the organism sensor bridge reads its slot as `memory0` before the first
+    /// forward pass of a new life. Leaving it populated made a newborn's first sensory
+    /// frame depend on the previous occupant and broke identical-genome replication across
+    /// generations. Called on spawn/death so a newborn inherits DNA, never runtime state.
     pub fn reset_cfc(&self, being_idx: usize) {
         if being_idx >= self.capacity {
             return;
@@ -1172,6 +1172,14 @@ impl BrainGpu {
         let mem_zeros: Vec<u8> = vec![0u8; NEURON_MEM_PER_BEING * 4];
         self.queue
             .write_buffer(&self.buf_neuron_mem, mem_offset, &mem_zeros);
+        // The resident organism sensor bridge consumes the previous published intent
+        // before the brain dispatch on tick 1. Clear it at the same life boundary as
+        // every other recurrent buffer; this is a one-time VRAM write, not a hot-path
+        // transfer.
+        let intent_offset = (being_idx * INTENT_DIM * 4) as u64;
+        let intent_zeros: Vec<u8> = vec![0u8; INTENT_DIM * 4];
+        self.queue
+            .write_buffer(&self.buf_intent, intent_offset, &intent_zeros);
         self.reset_lifetime(being_idx);
     }
 

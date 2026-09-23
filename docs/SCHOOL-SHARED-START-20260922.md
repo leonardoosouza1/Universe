@@ -1,7 +1,8 @@
 # School: one lesson start per generation (`--school-shared-start`) — 2026-09-22
 
 Follow-up of [SCHOOL-STOP-SHAPING-20260922.md](SCHOOL-STOP-SHAPING-20260922.md) §6.5–6.7.
-Branch `organism/school-20260922`. Status: **pre-registered, battery running**.
+Branch `organism/school-20260922`. Status: **implemented; the original battery is
+superseded by the corrected-state results in section 6**.
 
 ## 1. Why (verified on the real GPU before this change)
 
@@ -82,4 +83,33 @@ under 0.3 m/s (partial credit for ticks under 1 m/s), not another evaluation cha
 
 ## 6. Results
 
-(filled after the battery)
+The first battery could not be used as final evidence: a generation boundary leaked
+published neural intent/retina state, and school births shared station reserves. Both
+violated the intended independent episode contract. After resetting those GPU buffers
+and isolating school reserves, a fixed-start three-generation witness reproduced the
+elite bit for bit (`artifacts/codex-generation-diff-v4`).
+
+The corrected action path also exposed a body contract defect. The brain produced
+independent throttle and brake values, so both pedals could remain positive and prevent
+the physical static-rest gate from engaging. Resident taxis now resolve them as one
+signed longitudinal command (`throttle=max(t-b,0)`, `brake=max(b-t,0)`) and enable the
+same bounded static-rest physics already proven by the reference witness. Legacy
+scenarios retain their old action mapping.
+
+Measured on the real Vulkan adapter, seed 7, 16 beings:
+
+| run | generations/episodes | strict stop successes | result |
+|---|---:|---:|---|
+| fixed shared start, corrected action | 16 / 256 | 1 at generation 15 | 128 strict dwell ticks; minimum 0.0126 m/s; score 1968.44 |
+| held-out validation fold | 1 / 16 | 0 | contact 2, corridor 3, overshoot 9 |
+| held-out test fold | 1 / 16 | 1 | 128 strict dwell ticks; minimum 0.0200 m/s; score 1949.76 |
+| rotating shared start | 32 / 512 | 0 | geometry variation erased the learned fixed-start policy |
+
+This proves that the native brain/body path can learn and physically execute a full
+stop. It does **not** prove geometry-general stopping: transfer is one success in 32
+held-out episodes, and the rotating curriculum failed completely. Rotating the whole
+population to a new geometry each generation is therefore not a substitute for
+generalization. The next scientifically valid evaluator must score each genotype on a
+small deterministic batch of starts in the same generation and aggregate that score
+(mean plus worst-case or lower quantile); changing the single start between generations
+confounds policy quality with geometry.
