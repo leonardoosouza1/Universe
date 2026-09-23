@@ -69,6 +69,7 @@ mod piloto_linear;
 mod pilots;
 mod pistas;
 mod reverse_controller;
+mod school_batch;
 mod starting_grid;
 mod statics;
 mod survival;
@@ -965,6 +966,9 @@ fn main() {
     let mut school_shared_pick: Option<(usize, usize)> = None;
     // Judged ticks per lesson attempt; defaults to the generation tick budget.
     let mut school_horizon: Option<u32> = None;
+    // Number of simultaneous physical replicas used to estimate one genome's
+    // school fitness. One is the historical compatibility arm.
+    let mut school_eval_starts: usize = 1;
     // Stage 3 (docs/SCHOOL-INCENTIVES-20260922.md): curriculum over lessons, start folds,
     // online-reward composition and mid-life plasticity freeze.
     let mut school_curriculum: Option<&'static str> = None;
@@ -1696,6 +1700,17 @@ fn main() {
                         eprintln!("--school-horizon requires a positive tick count");
                         std::process::exit(2);
                     }));
+                }
+                "--school-eval-starts" => {
+                    i += 1;
+                    school_eval_starts = args
+                        .get(i)
+                        .and_then(|a| a.parse().ok())
+                        .filter(|starts| *starts > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!("--school-eval-starts requires a positive count");
+                            std::process::exit(2);
+                        });
                 }
                 "--navigation-observation" => {
                     i += 1;
@@ -2780,6 +2795,18 @@ fn main() {
         eprintln!("--school-shared-start requires --school or --school-curriculum");
         std::process::exit(2);
     }
+    if school_eval_starts > 1 && school_lesson.is_none() {
+        eprintln!("--school-eval-starts greater than 1 requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if school_eval_starts > 1 && school_shared_start.is_some() {
+        eprintln!("--school-eval-starts greater than 1 conflicts with --school-shared-start; a batch must contain distinct starts");
+        std::process::exit(2);
+    }
+    if school_eval_starts > 1 && !school_bench {
+        eprintln!("--school-eval-starts greater than 1 requires --school-mode bench so the aggregate has one declared objective");
+        std::process::exit(2);
+    }
     if let Some(freeze_at) = plasticity_freeze_after {
         if lifetime_flags & 1 == 0 {
             eprintln!("--plasticity-freeze-after requires --plasticity");
@@ -2795,6 +2822,16 @@ fn main() {
     if school_lesson.is_some() && school_horizon_ticks as usize > n_ticks {
         eprintln!("--school-horizon {} exceeds --ticks {n_ticks}", school_horizon_ticks);
         std::process::exit(2);
+    }
+    let genome_count = n_seres;
+    if school_eval_starts > 1 {
+        n_seres = genome_count.checked_mul(school_eval_starts).unwrap_or_else(|| {
+            eprintln!("school replica population overflows usize");
+            std::process::exit(2);
+        });
+        println!(
+            "  [school-batch] {genome_count} genomes × {school_eval_starts} starts = {n_seres} GPU slots"
+        );
     }
     if organism_taxi && !args.iter().any(|a| a == "--ecology-min-progress") { ecology_progress = 1.0; }
     if organism_taxi && ecology_on && n_gens != 1 {
@@ -3753,6 +3790,11 @@ fn main() {
             .collect()
     };
 
+    if school_eval_starts > 1 {
+        let founders = genomes[..genome_count].to_vec();
+        genomes = school_batch::expand_replicas(&founders, school_eval_starts);
+    }
+
     if !evolving_body && genomes.iter().any(|g| g.body != Default::default()) {
         println!(
             "  [body] inherited body genes are preserved but inactive; use --evolving-body to express them"
@@ -4658,12 +4700,24 @@ fn main() {
         });
         let city_spawns = organism_taxi.then(|| {
             if let Some(starts) = school_starts.as_ref() {
-                starts
-                    .iter()
-                    .map(|g| universe::organism_city::CitySpawn {
+                (0..n_seres)
+                    .map(|slot| {
+                        let start_index = if school_eval_starts > 1 {
+                            school_batch::start_index(
+                                slot,
+                                school_eval_starts,
+                                starts.len(),
+                                generation_idx * school_eval_starts,
+                            )
+                        } else {
+                            slot % starts.len()
+                        };
+                        let g = &starts[start_index];
+                        universe::organism_city::CitySpawn {
                         position: [g.start[0], 0.5, g.start[1]],
                         forward: [g.forward[0], 0.0, g.forward[1]],
                         depot_distance_m: g.depot_distance_m,
+                        }
                     })
                     .collect::<Vec<_>>()
             } else {
@@ -4672,7 +4726,11 @@ fn main() {
         });
         // Rotate the being -> slot map each generation unless explicitly fixed, so no
         // lineage inherits the slot nearest the waiting passenger.
-        let spawn_rotation = if organism_taxi && !fixed_spawn_slots {
+        let spawn_rotation = if school_eval_starts > 1 {
+            // Batch start rotation is already encoded by start_index above. A second
+            // slot rotation would break the contiguous genome×start assignment.
+            0
+        } else if organism_taxi && !fixed_spawn_slots {
             universe::organism_city::slot_rotation(gen_abs as u64, pop_seed, n_seres)
         } else {
             0
@@ -5005,6 +5063,7 @@ fn main() {
         // counter only advances once per brain dispatch. `--observe`/`--record-wave`
         // record this tick deliberately — do not "fix" it to discard its side effects
         // without re-deriving screen.rs's warm-up replay, or parity breaks silently.
+        let mut school_aggregates: Option<Vec<school_batch::SchoolAggregate>> = None;
         if organism_taxi {
             // `school_bench` is the default mode *when a school lesson exists*.
             // Passing it unconditionally makes the ordinary taxi world look like
@@ -5043,7 +5102,21 @@ fn main() {
                         school_stop_shaping,
                     ));
                 }
-                let rotated: Vec<_> = (0..n_seres).map(|i| starts[(i + spawn_rotation) % starts.len()]).collect();
+                let rotated: Vec<_> = (0..n_seres)
+                    .map(|slot| {
+                        let index = if school_eval_starts > 1 {
+                            school_batch::start_index(
+                                slot,
+                                school_eval_starts,
+                                starts.len(),
+                                generation_idx * school_eval_starts,
+                            )
+                        } else {
+                            (slot + spawn_rotation) % starts.len()
+                        };
+                        starts[index]
+                    })
+                    .collect();
                 ctx.school.as_ref().unwrap().reset(&ctx.queue, &rotated).expect("school lesson reset");
             }
             ctx.sample_organism(&mut states).expect("invalid organism genesis");
@@ -5099,7 +5172,21 @@ fn main() {
             manifest["plasticity_freeze_after"] = serde_json::json!(plasticity_freeze_after);
             manifest["task_progress"] = serde_json::json!("phase-aware: approach 0..100 on best road distance closed toward the nearest waiting passenger (key=id*2), carrying 100 + 0..100 toward the destination (key=id*2+1); memory in body 31/61/62");
             if let (Some(lesson), Some(starts)) = (school_lesson, school_starts.as_ref()) {
-                let rotated: Vec<_> = (0..n_seres).map(|i| starts[(i + spawn_rotation) % starts.len()].to_json()).collect();
+                let rotated: Vec<_> = (0..n_seres)
+                    .map(|slot| {
+                        let index = if school_eval_starts > 1 {
+                            school_batch::start_index(
+                                slot,
+                                school_eval_starts,
+                                starts.len(),
+                                generation_idx * school_eval_starts,
+                            )
+                        } else {
+                            (slot + spawn_rotation) % starts.len()
+                        };
+                        starts[index].to_json()
+                    })
+                    .collect();
                 manifest["school"] = serde_json::json!({
                     "id": universe::gpu::school::SCHOOL_ID, "task_id": lesson.name(), "lesson_id": lesson.id(), "version": universe::gpu::school::SCHOOL_SCHEMA_VERSION,
                     "mode": if school_bench { "bench" } else { "life" }, "env_seed": pop_seed, "start_tick": 0,
@@ -5119,8 +5206,11 @@ fn main() {
                     "curriculum_lessons": school_lessons.iter().map(|l| l.name()).collect::<Vec<_>>(),
                     "curriculum_index": school_lesson_index, "advance_p": school_advance_p, "advance_gens": school_advance_gens,
                     "start_fold": school_start_fold.name(),
-                    "start_assignment": school_shared_start.map_or("per_slot_rotated_by_hash", |m| m.name()),
+                    "start_assignment": if school_eval_starts > 1 { "same_deterministic_batch_per_genome" } else { school_shared_start.map_or("per_slot_rotated_by_hash", |m| m.name()) },
                     "shared_start": school_shared_pick.map(|(index, count)| serde_json::json!({"index": index, "count": count})),
+                    "eval_starts_per_genome": school_eval_starts,
+                    "genome_count": genome_count,
+                    "physical_slots": n_seres,
                     "start_candidates": universe::organism_school::lesson_start_candidates(&world, &organism_stations, lesson, &school_contract).len(),
                 });
                 if school_bench {
@@ -5815,6 +5905,8 @@ fn main() {
                         let v = &ctx.organism_samples[slot].values;
                         let mut row = record_json(r, v[0], v[98]);
                         row["slot"] = serde_json::json!(slot);
+                        row["genome"] = serde_json::json!(slot / school_eval_starts);
+                        row["replica_start"] = serde_json::json!(slot % school_eval_starts);
                         row["alive"] = serde_json::json!(v[29] > 0.5);
                         row["integrity"] = serde_json::json!(v[8]);
                         row["impacts_lifetime"] = serde_json::json!(v[101]);
@@ -5823,12 +5915,43 @@ fn main() {
                         row["contact_ticks_lifetime"] = serde_json::json!(v[99]);
                         row["elite_same_genome"] = serde_json::json!(slot == 0 && generation_idx > 0);
                         if let Some(starts) = school_starts.as_ref() {
-                            let g = &starts[(slot + spawn_rotation) % starts.len()];
+                            let start_index = if school_eval_starts > 1 {
+                                school_batch::start_index(
+                                    slot,
+                                    school_eval_starts,
+                                    starts.len(),
+                                    generation_idx * school_eval_starts,
+                                )
+                            } else {
+                                (slot + spawn_rotation) % starts.len()
+                            };
+                            let g = &starts[start_index];
+                            row["start_index"] = serde_json::json!(start_index);
                             row["start"] = serde_json::json!([g.start[0], g.start[1]]);
                             row["forward"] = serde_json::json!([g.forward[0], g.forward[1]]);
                         }
                         row
                     })
+                    .collect();
+                let record_vectors: Vec<Vec<f32>> = records.iter().map(|record| record.to_vec()).collect();
+                let aggregates = school_batch::aggregate_school_batch(
+                    &record_vectors,
+                    genome_count,
+                    school_eval_starts,
+                );
+                let aggregate_rows: Vec<_> = aggregates
+                    .iter()
+                    .map(|aggregate| serde_json::json!({
+                        "genome": aggregate.genome,
+                        "selection_score": aggregate.score,
+                        "mean_score": aggregate.mean_score,
+                        "worst_score": aggregate.worst_score,
+                        "worst_failure_penalty": aggregate.worst_failure_penalty,
+                        "successes": aggregate.successes,
+                        "failures": aggregate.failures,
+                        "deaths": aggregate.deaths,
+                        "starts": aggregate.starts,
+                    }))
                     .collect();
                 let count = |status: u32| records.iter().filter(|r| r[R_STATUS] as u32 == status).count();
                 let attempts = n_seres;
@@ -5860,6 +5983,8 @@ fn main() {
                     "start_fold": school_start_fold.name(),
                     "start_assignment": school_shared_start.map_or("per_slot_rotated_by_hash", |m| m.name()),
                     "shared_start": school_shared_pick.map(|(index, count)| serde_json::json!({"index": index, "count": count})),
+                    "genome_count": genome_count, "eval_starts_per_genome": school_eval_starts,
+                    "aggregates": aggregate_rows,
                     "beings": rows,
                 });
                 school_last_p_hat = Some((successes as f64 + 1.0) / (attempts as f64 + 2.0));
@@ -5871,6 +5996,7 @@ fn main() {
                 if school_bench {
                     fitness = records.iter().map(|r| r[R_SCORE] as f64).collect();
                 }
+                school_aggregates = Some(aggregates);
                 println!(
                     "  [school] generation={gen_abs} lesson={} success={successes}/{attempts} failed={} truncated={} deaths={deaths} p_hat={:.3} progress_median={:.3} score_median={:.1} score_max={:.1} codes={}",
                     lesson.name(), count(STATUS_FAILED), count(STATUS_TRUNCATED),
@@ -5924,6 +6050,10 @@ fn main() {
                 );
             }
         }
+        let selection_fitness: Vec<f64> = school_aggregates
+            .as_ref()
+            .map(|aggregates| aggregates.iter().map(|aggregate| aggregate.score).collect())
+            .unwrap_or_else(|| fitness.clone());
 
         // ── O campeão se REPRODUZ? ─────────────────────────────────────────────
         //
@@ -5939,7 +6069,7 @@ fn main() {
         // O slot 0 de `fitness` corresponde a `genomes[0]` = elite da geração anterior.
         if let Some(anterior) = elite_fitness_anterior {
             if elite_fitness_anterior_pista == Some(seed_gen) {
-                let agora = fitness[0];
+                let agora = selection_fitness[0];
                 let razao = if anterior > 1.0 {
                     agora / anterior
                 } else {
@@ -5970,7 +6100,7 @@ fn main() {
         // arbitrário, e a evolução vira passeio aleatório por mais gerações que se rode.
         // Nenhum incentivo, percepção ou física conserta isso — não há o que ordenar.
         {
-            let mut f = fitness.clone();
+            let mut f = selection_fitness.clone();
             f.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let (lo, hi) = (f[0], f[f.len() - 1]);
             let m = f.iter().sum::<f64>() / f.len() as f64;
@@ -6211,14 +6341,15 @@ fn main() {
         // Usa gen_abs no nome do arquivo — continua sequência do checkpoint.
         // Melhor pela MESMA grandeza que a seleção usa — senão o genoma salvo e o
         // relatório de reprodutibilidade falam de um campeão que a evolução não escolheu.
-        let best_idx = fitness
+        let best_idx = selection_fitness
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .map(|(i, _)| i)
             .unwrap_or(0);
         let save_path = format!("{}/evolve_best_gen{:04}.bin", out_dir, gen_abs);
-        if let Err(e) = save_genome(&genomes[best_idx], &save_path) {
+        let best_physical_slot = best_idx * school_eval_starts;
+        if let Err(e) = save_genome(&genomes[best_physical_slot], &save_path) {
             eprintln!("[gen {:4}] AVISO: falha ao salvar genoma: {}", gen_abs, e);
         }
 
@@ -6639,7 +6770,8 @@ fn main() {
                 // superou o melhor da anterior; `disp` = desvio da fitness na populacao,
                 // que e a escala do ruido contra a qual o ganho e comparado.
                 let ganho_fitness_geracao: Option<f32> =
-                    elite_fitness_anterior.map(|ant| (fitness[0] - ant).max(0.0) as f32);
+                    elite_fitness_anterior
+                        .map(|ant| (selection_fitness[0] - ant).max(0.0) as f32);
                 let disp_fitness: f32 = {
                     let vals: Vec<f32> = fitness.iter().map(|f| *f as f32).collect();
                     universe::math::stats::std_dev(&vals)
@@ -7075,7 +7207,12 @@ fn main() {
         }
 
         // O genoma que vai para o slot 0 da próxima geração é o melhor DESTA.
-        elite_fitness_anterior = Some(fitness.iter().cloned().fold(f64::MIN, f64::max));
+        elite_fitness_anterior = Some(
+            selection_fitness
+                .iter()
+                .cloned()
+                .fold(f64::MIN, f64::max),
+        );
         elite_fitness_anterior_pista = Some(seed_gen);
 
         hist_results.push(r);
@@ -7088,7 +7225,14 @@ fn main() {
             // e deixado a seleção premiando hodômetro. As duas condições `--fitness dist`
             // e `--fitness prog` saíam idênticas ao dígito — e eu quase registrei isso
             // como "a fitness não importa". Ela nunca tinha mudado.
-            genomes = evolve(&genomes, &fitness, &evo_params, gen_abs, pop_seed);
+            let selection_genomes = school_batch::representatives(&genomes, school_eval_starts);
+            genomes = evolve(
+                &selection_genomes,
+                &selection_fitness,
+                &evo_params,
+                gen_abs,
+                pop_seed,
+            );
             if organism_taxi {
                 universe::gpu::body::mutate_organism_population(
                     &mut genomes,
@@ -7113,6 +7257,9 @@ fn main() {
                         ^ (i as u64).wrapping_mul(0xbf58476d1ce4e5b9);
                     genome.lifetime = genome.lifetime.mutated(seed, mutation_flags);
                 }
+            }
+            if school_eval_starts > 1 {
+                genomes = school_batch::expand_replicas(&genomes, school_eval_starts);
             }
         }
     }

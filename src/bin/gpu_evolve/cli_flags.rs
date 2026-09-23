@@ -148,6 +148,7 @@ pub const FLAGS: &[Flag] = &[
     flag("--school",                      &[],                             VALUE,  "GPU-judged organism lesson: move, stop, turn_near, turn_far, approach_passenger, pickup, navigate_with_passenger or delivery"),
     flag("--school-mode",                 &[],                             VALUE,  "bench (passengers and taxi-taxi contacts off, fitness = lesson score) or life (judge only, taxi fitness)"),
     flag("--school-horizon",              &[],                             VALUE,  "judged ticks per lesson attempt (default: the generation tick budget)"),
+    flag("--school-eval-starts",          &[],                             VALUE,  "deterministic starts evaluated per genome before school selection (default 1)"),
     flag("--school-curriculum",           &[],                             VALUE,  "lesson schedule over generations: adaptive (advance on competence) or uniform (cycle the list)"),
     flag("--school-lessons",              &[],                             VALUE,  "comma-separated curriculum lessons (default: all eight motor and taxi-service lessons)"),
     flag("--school-advance-p",            &[],                             VALUE,  "adaptive curriculum: competence p_hat needed to count a generation toward advancing (default 0.5)"),
