@@ -154,6 +154,69 @@ pub fn lesson_starts_fold(
     Ok(candidates)
 }
 
+/// How the lesson starts of one generation are assigned (`--school-shared-start`).
+/// Default (`None` at the call site): one candidate per slot, slots rotated by hash, so
+/// one genome is judged on a different approach every generation and its score swings
+/// with the geometry (docs/SCHOOL-STOP-SHAPING-20260922.md §6.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharedStart {
+    /// Candidate `generation mod count` of the fold: the population sees every start
+    /// over the generations while all beings of one generation share it.
+    Rotate,
+    /// Candidate 0 of the fold in every generation.
+    Fixed,
+}
+
+impl SharedStart {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "rotate" => Some(Self::Rotate),
+            "fixed" => Some(Self::Fixed),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rotate => "shared_rotate",
+            Self::Fixed => "shared_fixed",
+        }
+    }
+
+    pub fn pick(self, generation: usize) -> usize {
+        match self {
+            Self::Rotate => generation,
+            Self::Fixed => 0,
+        }
+    }
+}
+
+/// One lesson start for the whole generation: every being gets candidate `pick mod count`
+/// of the fold. Returns the starts, the candidate index used and the fold's count. The
+/// elite re-judged on the same candidate must score identically (fixed-slot witness,
+/// docs/SCHOOL-STOP-SHAPING-20260922.md §6.7).
+pub fn lesson_shared_start_fold(
+    world: &VoxelWorld,
+    stations: &[[f32; 8]],
+    lesson: Lesson,
+    contract: &LessonContract,
+    n: usize,
+    fold: LessonFold,
+    pick: usize,
+) -> Result<(Vec<LessonGeometry>, usize, usize), String> {
+    let candidates: Vec<LessonGeometry> = lesson_start_candidates(world, stations, lesson, contract)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| fold.keeps(*i))
+        .map(|(_, g)| g)
+        .collect();
+    if candidates.is_empty() {
+        return Err(format!("city has no lesson approach for {} in fold {}", lesson.name(), fold.name()));
+    }
+    let index = pick % candidates.len();
+    Ok((vec![candidates[index]; n], index, candidates.len()))
+}
+
 /// Every valid approach for the lesson in the city, in the deterministic order
 /// (`lesson_starts`). The full list is the population of starts a genome can be
 /// evaluated on; folds are taken from it by index.
@@ -312,6 +375,26 @@ mod tests {
             assert!(!test.iter().any(|b| b.start == a.start));
         }
         assert_eq!(lesson_starts(&world, &stations, Lesson::Move, &contract, 12).unwrap(), all[..12].to_vec());
+    }
+
+    #[test]
+    fn shared_start_gives_every_being_the_same_candidate_and_wraps() {
+        let (world, stations) = city();
+        let contract = LessonContract::default();
+        let train = lesson_starts_fold(&world, &stations, Lesson::Move, &contract, 12, LessonFold::Train).unwrap();
+        let (starts, index, count) =
+            lesson_shared_start_fold(&world, &stations, Lesson::Move, &contract, 12, LessonFold::Train, 5).unwrap();
+        assert_eq!(starts.len(), 12);
+        assert_eq!(index, 5);
+        assert!(count >= 12);
+        assert!(starts.iter().all(|g| *g == train[5]));
+        let (wrapped, wrapped_index, _) =
+            lesson_shared_start_fold(&world, &stations, Lesson::Move, &contract, 12, LessonFold::Train, count + 2).unwrap();
+        assert_eq!(wrapped_index, 2);
+        assert_eq!(wrapped[0], train[2]);
+        assert!(lesson_shared_start_fold(&world, &stations, Lesson::Move, &contract, 0, LessonFold::Train, 0).unwrap().0.is_empty());
+        assert_eq!(SharedStart::Fixed.pick(7), 0);
+        assert_eq!(SharedStart::Rotate.pick(7), 7);
     }
 
     #[test]

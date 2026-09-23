@@ -197,6 +197,10 @@ validation fold is one being in one episode, not a trend.
    seed 7): the elite at slot 0 keeps the same start, so its progress must be identical at
    gens 1–3. Identical → the swing in §6.5.3 is geometry; different → the simulation is not
    reproducible and every school number so far carries that noise.
+   **Done (`witness-fixed-slots-s7/`, same binary): identical** — progress 0.916544, score
+   458.272, energy 249 731.0 J at gens 1, 2 and 3 for the elite on start (99, 156); the same
+   genome had scored 95.4 on its gen-0 start. The swing is geometry. Continued in
+   [SCHOOL-SHARED-START-20260922.md](SCHOOL-SHARED-START-20260922.md).
 2. **Shared start within a generation**: in bench mode taxi–taxi contacts are already off
    (`--school-mode bench`, `cli_flags.rs:149`), so all 16 beings can be judged on the same
    candidate (rotating the candidate across generations, `gen % candidates`). Pre-registered

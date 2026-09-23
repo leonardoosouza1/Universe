@@ -153,6 +153,7 @@ pub const FLAGS: &[Flag] = &[
     flag("--school-advance-p",            &[],                             VALUE,  "adaptive curriculum: competence p_hat needed to count a generation toward advancing (default 0.5)"),
     flag("--school-advance-gens",         &[],                             VALUE,  "adaptive curriculum: consecutive competent generations before the next lesson (default 2)"),
     flag("--school-start-fold",           &[],                             VALUE,  "lesson starts taken from all, train, validation or test (candidate index mod 3)"),
+    flag("--school-shared-start",         &[],                             VALUE,  "all beings of a generation judged on one lesson start of the fold: rotate (candidate = generation mod count) or fixed (candidate 0); default one start per slot, rotated by hash (docs/SCHOOL-SHARED-START-20260922.md)"),
     flag("--school-stop-shaping",         &[],                             SWITCH, "stop lesson: score also pays 300*(1 - slowest speed inside the area / v_min) + 200*(longest held stop / hold_ticks) (docs/SCHOOL-STOP-SHAPING-20260922.md)"),
     flag("--feedback-mode",               &[],                             VALUE,  "online reward composition: legacy (asymmetric energy term, default), symmetric (energy both ways, paid money as cost) or progress (symmetric plus same-key task progress)"),
     flag("--plasticity-freeze-after",     &[],                             VALUE,  "tick from which the plastic residual is applied but no longer updated; needs --plasticity"),

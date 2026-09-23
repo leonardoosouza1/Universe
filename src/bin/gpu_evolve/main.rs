@@ -959,6 +959,9 @@ fn main() {
     let mut school_bench = true;
     // Stop-score shaping (docs/SCHOOL-STOP-SHAPING-20260922.md); off by default.
     let mut school_stop_shaping = false;
+    let mut school_shared_start: Option<universe::organism_school::SharedStart> = None;
+    // (candidate index, fold count) of the shared start of the current generation.
+    let mut school_shared_pick: Option<(usize, usize)> = None;
     // Judged ticks per lesson attempt; defaults to the generation tick budget.
     let mut school_horizon: Option<u32> = None;
     // Stage 3 (docs/SCHOOL-INCENTIVES-20260922.md): curriculum over lessons, start folds,
@@ -1129,6 +1132,14 @@ fn main() {
                 }
                 "--school-stop-shaping" => {
                     school_stop_shaping = true;
+                }
+                "--school-shared-start" => {
+                    i += 1;
+                    school_shared_start = args.get(i).and_then(|a| universe::organism_school::SharedStart::parse(a));
+                    if school_shared_start.is_none() {
+                        eprintln!("--school-shared-start requires rotate or fixed");
+                        std::process::exit(2);
+                    }
                 }
                 "--erase-fast-memory" => {
                     erase_fast_memory = true;
@@ -2762,6 +2773,10 @@ fn main() {
     }
     if school_stop_shaping && school_lesson.is_none() {
         eprintln!("--school-stop-shaping requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if school_shared_start.is_some() && school_lesson.is_none() {
+        eprintln!("--school-shared-start requires --school or --school-curriculum");
         std::process::exit(2);
     }
     if let Some(freeze_at) = plasticity_freeze_after {
@@ -4611,9 +4626,34 @@ fn main() {
         }
         // School: each being starts on its own junction approach; the lesson geometry
         // is rotated with the same rule as the taxi spawn slots.
-        let school_starts = school_lesson.map(|lesson| {
-            universe::organism_school::lesson_starts_fold(&world, &organism_stations, lesson, &school_contract, n_seres, school_start_fold)
-                .expect("city lesson approach capacity")
+        school_shared_pick = None;
+        let school_starts = school_lesson.map(|lesson| match school_shared_start {
+            Some(mode) => {
+                let (starts, index, count) = universe::organism_school::lesson_shared_start_fold(
+                    &world,
+                    &organism_stations,
+                    lesson,
+                    &school_contract,
+                    n_seres,
+                    school_start_fold,
+                    mode.pick(gen_abs),
+                )
+                .expect("city lesson approach for the shared start");
+                school_shared_pick = Some((index, count));
+                if let Some(g) = starts.first() {
+                    println!(
+                        "  [school-start] gen {gen_abs:4} shared start {index}/{count} ({}) at ({:.0},{:.0}) target ({:.0},{:.0})",
+                        mode.name(),
+                        g.start[0],
+                        g.start[1],
+                        g.target[0],
+                        g.target[1]
+                    );
+                }
+                starts
+            }
+            None => universe::organism_school::lesson_starts_fold(&world, &organism_stations, lesson, &school_contract, n_seres, school_start_fold)
+                .expect("city lesson approach capacity"),
         });
         let city_spawns = organism_taxi.then(|| {
             if let Some(starts) = school_starts.as_ref() {
@@ -5058,6 +5098,8 @@ fn main() {
                     "curriculum_lessons": school_lessons.iter().map(|l| l.name()).collect::<Vec<_>>(),
                     "curriculum_index": school_lesson_index, "advance_p": school_advance_p, "advance_gens": school_advance_gens,
                     "start_fold": school_start_fold.name(),
+                    "start_assignment": school_shared_start.map_or("per_slot_rotated_by_hash", |m| m.name()),
+                    "shared_start": school_shared_pick.map(|(index, count)| serde_json::json!({"index": index, "count": count})),
                     "start_candidates": universe::organism_school::lesson_start_candidates(&world, &organism_stations, lesson, &school_contract).len(),
                 });
                 if school_bench {
@@ -5795,6 +5837,8 @@ fn main() {
                     "mode": if school_bench { "bench" } else { "life" },
                     "curriculum": school_curriculum.unwrap_or("fixed"), "curriculum_index": school_lesson_index,
                     "start_fold": school_start_fold.name(),
+                    "start_assignment": school_shared_start.map_or("per_slot_rotated_by_hash", |m| m.name()),
+                    "shared_start": school_shared_pick.map(|(index, count)| serde_json::json!({"index": index, "count": count})),
                     "beings": rows,
                 });
                 school_last_p_hat = Some((successes as f64 + 1.0) / (attempts as f64 + 2.0));
