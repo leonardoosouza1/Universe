@@ -6,17 +6,18 @@
 
 use crate::native_action::MotorTrace;
 use crate::statics::{
-    continuous_wall_probes, motor_head_linear, reverse_controller_v2, slow_canonical_kinematics,
-    throttle_arbitration_signed, NEUROMOD_REGIOES,
+    NEUROMOD_REGIOES, continuous_wall_probes, motor_head_linear, reverse_controller_v2,
+    slow_canonical_kinematics, throttle_arbitration_signed,
 };
 use crate::types::BeingState;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use universe::config::iara::brain::{L1_NEURONS, SENSORY_WAVE_SIZE};
 use universe::config::iara::vision::{RETINA_COLS, RETINA_ROWS, RETINA_TOTAL};
-use universe::gpu::brain::{decode_observation, BrainGpu, OBSERVATION_BYTES};
+use universe::gpu::brain::{BrainGpu, OBSERVATION_BYTES, decode_observation};
 use universe::gpu::evolution::Genome;
 use universe::gpu::genome_io::save_genome;
 use universe::gpu::physics::PhysicsStateGpu;
@@ -60,6 +61,119 @@ struct Window {
     brake_sum: f64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ServiceSnapshot {
+    pub task_available: bool,
+    pub onboard: bool,
+    pub task_key: f32,
+    pub passenger_id: f32,
+    pub deliveries: u32,
+    pub pickup: [f32; 2],
+    pub destination: [f32; 2],
+    pub refusal_code: u32,
+}
+
+impl ServiceSnapshot {
+    fn from_body(body: &universe::gpu::organism::OrganismState) -> Self {
+        let v = &body.values;
+        Self {
+            task_available: v[90] > 0.5,
+            onboard: v[65] > 0.5,
+            task_key: v[31],
+            passenger_id: v[72],
+            deliveries: v[68].max(0.0) as u32,
+            pickup: [v[70], v[71]],
+            destination: [v[66], v[67]],
+            refusal_code: v[69].max(0.0) as u32,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ObservationServiceEvents {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_events: Vec<ServiceEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ServiceEvent {
+    pub event: String,
+    pub tick: usize,
+    pub being: usize,
+    pub passenger_id: u32,
+    pub pickup_station_m: [f32; 2],
+    pub destination_station_m: [f32; 2],
+    pub refusal_code: u32,
+}
+
+pub(crate) fn detect_service_events(
+    previous: Option<&ServiceSnapshot>,
+    current: &ServiceSnapshot,
+    tick: usize,
+    being: usize,
+) -> Vec<ServiceEvent> {
+    let passenger_id = |snapshot: &ServiceSnapshot| {
+        if snapshot.passenger_id > 0.5 {
+            snapshot.passenger_id as u32
+        } else {
+            (snapshot.task_key.max(0.0) * 0.5).floor() as u32
+        }
+    };
+    let event = |name: &str, snapshot: &ServiceSnapshot| ServiceEvent {
+        event: name.to_string(),
+        tick,
+        being,
+        passenger_id: passenger_id(snapshot),
+        pickup_station_m: snapshot.pickup,
+        destination_station_m: snapshot.destination,
+        refusal_code: snapshot.refusal_code,
+    };
+    let mut events = Vec::new();
+    let issued = !current.onboard
+        && current.task_available
+        && previous.is_none_or(|old| {
+            !old.task_available || (old.task_key - current.task_key).abs() > 0.25
+        });
+    if previous.is_some_and(|old| !old.onboard) && current.onboard {
+        events.push(event("pickup_accepted", current));
+    }
+    if let Some(old) = previous
+        && old.onboard
+        && !current.onboard
+        && current.deliveries > old.deliveries
+    {
+        events.push(event("dropoff_accepted", old));
+        events.push(event("delivery_incremented", old));
+    }
+    // Production can issue the next passenger in the same GPU tick that closes the
+    // previous delivery. Preserve causal order for replay consumers.
+    if issued {
+        events.push(event("passenger_issued", current));
+    }
+    events
+}
+
+pub(crate) fn taxi_generation_summary(
+    generation: usize,
+    alive: usize,
+    beings: usize,
+    waiting: usize,
+    onboard: usize,
+    deliveries: u64,
+    refusals: usize,
+    impacts: u64,
+    route_progress_mean: f64,
+    energy_mean_j: f64,
+    water_mean_kg: f64,
+) -> String {
+    format!(
+        "  [taxi] generation={generation} alive={alive}/{beings} phase_waiting={waiting} \
+         phase_onboard={onboard} accepted_deliveries={deliveries} refusals={refusals} \
+         impacts={impacts} route_progress_mean={route_progress_mean:.2} \
+         energy_mean_j={energy_mean_j:.1} water_mean_kg={water_mean_kg:.3}"
+    )
+}
+
 /// A persistent, bounded observer. Writers fail loudly instead of dropping evidence.
 pub struct DrivingDiagnostics {
     out: PathBuf,
@@ -76,6 +190,8 @@ pub struct DrivingDiagnostics {
     lineage_id: u64,
     first_tick: usize,
     pending: Option<serde_json::Value>,
+    previous_service: Vec<Option<ServiceSnapshot>>,
+    service_events: Vec<ServiceEvent>,
     slow_captured: std::cell::Cell<bool>,
 }
 
@@ -172,6 +288,28 @@ impl DrivingDiagnostics {
             {"from":"l1_effective[48:96]","to":"bypass_adapted"},
             {"from":"bypass_adapted","to":"final_intent[48:96]"}
         ]});
+        if organism_scenario {
+            metadata["service_events"] = json!({
+                "version": 1,
+                "optional": true,
+                "field": "service_events",
+                "events": [
+                    "passenger_issued",
+                    "pickup_accepted",
+                    "dropoff_accepted",
+                    "delivery_incremented"
+                ],
+                "fields": {
+                    "tick": "simulation_tick",
+                    "being": "slot_index",
+                    "passenger_id": "dimensionless_integer",
+                    "pickup_station_m": "world_xz_metres",
+                    "destination_station_m": "world_xz_metres",
+                    "refusal_code": "dimensionless_integer"
+                },
+                "timestamp_semantics": "first observation boundary containing the authoritative body transition"
+            });
+        }
         serde_json::to_writer_pretty(create("driving.meta.json")?, &metadata)?;
         Ok(Self {
             out: out.to_path_buf(),
@@ -193,6 +331,8 @@ impl DrivingDiagnostics {
             lineage_id: selected as u64 + 1,
             first_tick: 1,
             pending: None,
+            previous_service: vec![None; beings],
+            service_events: Vec::new(),
             slow_captured: std::cell::Cell::new(false),
         })
     }
@@ -212,6 +352,8 @@ impl DrivingDiagnostics {
         self.windows.fill(Window::default());
         self.previous_contact.fill(false);
         self.pending = None;
+        self.previous_service.fill(None);
+        self.service_events.clear();
         Ok(())
     }
 
@@ -274,6 +416,7 @@ impl DrivingDiagnostics {
                     "target_dx_m":v[80],"target_dz_m":v[81],"service_dx_m":v[85],"service_dz_m":v[86],
                     "refusal_code":v[69],"energy_received_j":v[76],"water_received_kg":v[77],
                     "material_received_kg":v[78],"service_cost":v[79],"task_age_s":v[74]});
+                sample["service_events"] = json!(std::mem::take(&mut self.service_events));
             }
             if sample["neural_dispatch"].as_bool() == Some(true) {
                 sample["stages"]["final_intent"] = json!(&raw[i][..]);
@@ -347,6 +490,8 @@ impl DrivingDiagnostics {
         self.previous_contact.fill(false);
         self.windows.fill(Window::default());
         self.pending = None;
+        self.previous_service.fill(None);
+        self.service_events.clear();
         self.first_tick = tick.saturating_add(1);
         Ok(())
     }
@@ -417,7 +562,9 @@ impl DrivingDiagnostics {
     }
 
     pub fn attach_traffic(&mut self, values: &[f32; 16]) {
-        if let Some(sample) = self.pending.as_mut() { sample["traffic_state"] = json!(values); }
+        if let Some(sample) = self.pending.as_mut() {
+            sample["traffic_state"] = json!(values);
+        }
     }
 
     pub fn request_sample_read(&self) -> universe::gpu::readback::ReadbackTicket {
@@ -556,7 +703,29 @@ impl DrivingDiagnostics {
             }
             self.previous_position[i] = p.pos;
         }
-        self.emit_pending(tick, states, raw, slow, motor_trace, organism, false)?;
+        if let Some(rows) = organism {
+            for (being, body) in rows.iter().enumerate() {
+                let current = ServiceSnapshot::from_body(body);
+                if being == self.selected {
+                    self.service_events.extend(detect_service_events(
+                        self.previous_service[being].as_ref(),
+                        &current,
+                        tick,
+                        being,
+                    ));
+                }
+                self.previous_service[being] = Some(current);
+            }
+        }
+        self.emit_pending(
+            tick,
+            states,
+            raw,
+            slow,
+            motor_trace,
+            organism,
+            organism.is_some(),
+        )?;
         if tick % 64 == 0 {
             self.flush_window(tick, states)?;
         }
@@ -615,6 +784,18 @@ impl DrivingDiagnostics {
             window.slip_angle_peak = v[120];
             window.throttle_sum = v[121] as f64;
             window.brake_sum = v[122] as f64;
+        }
+        for (being, body) in organism.iter().enumerate() {
+            let current = ServiceSnapshot::from_body(body);
+            if being == self.selected {
+                self.service_events.extend(detect_service_events(
+                    self.previous_service[being].as_ref(),
+                    &current,
+                    tick,
+                    being,
+                ));
+            }
+            self.previous_service[being] = Some(current);
         }
         self.emit_pending(tick, states, raw, slow, motor_trace, Some(organism), true)?;
         if tick % 64 == 0 {

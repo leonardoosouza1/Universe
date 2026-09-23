@@ -618,3 +618,103 @@ fn log_fixed_uploads_one_bank_when_only_ignored_genes_differ() {
         "log-fixo uploaded two different banks for the same tau[0]"
     );
 }
+
+#[test]
+fn taxi_summary_uses_service_vocabulary_only() {
+    let line = crate::driving_diagnostics::taxi_generation_summary(
+        7, 4, 6, 2, 2, 3, 1, 5, 87.5, 42_000.0, 1.25,
+    );
+    for forbidden in ["laps", "voltas", "setores", "[pista]"] {
+        assert!(
+            !line.contains(forbidden),
+            "taxi line leaked race term {forbidden}: {line}"
+        );
+    }
+    for required in [
+        "phase_waiting",
+        "phase_onboard",
+        "accepted_deliveries",
+        "refusals",
+        "impacts",
+        "route_progress_mean",
+        "energy_mean_j",
+        "water_mean_kg",
+    ] {
+        assert!(
+            line.contains(required),
+            "taxi line omitted {required}: {line}"
+        );
+    }
+}
+
+#[test]
+fn old_observation_rows_parse_without_service_events() {
+    let old: crate::driving_diagnostics::ObservationServiceEvents =
+        serde_json::from_str(r#"{"tick":64,"body":{}}"#).unwrap();
+    assert!(old.service_events.is_empty());
+}
+
+#[test]
+fn service_transition_detector_emits_the_authoritative_order_once() {
+    use crate::driving_diagnostics::{ServiceSnapshot, detect_service_events};
+    let waiting = ServiceSnapshot {
+        task_available: true,
+        task_key: 42.0,
+        pickup: [96.0, 96.0],
+        destination: [288.0, 672.0],
+        ..Default::default()
+    };
+    let issued = detect_service_events(None, &waiting, 64, 3);
+    assert_eq!(
+        issued.iter().map(|e| e.event.as_str()).collect::<Vec<_>>(),
+        ["passenger_issued"]
+    );
+    assert_eq!(issued[0].passenger_id, 21);
+
+    let onboard = ServiceSnapshot {
+        task_available: false,
+        onboard: true,
+        passenger_id: 21.0,
+        ..waiting
+    };
+    let picked_up = detect_service_events(Some(&waiting), &onboard, 128, 3);
+    assert_eq!(
+        picked_up
+            .iter()
+            .map(|e| e.event.as_str())
+            .collect::<Vec<_>>(),
+        ["pickup_accepted"]
+    );
+
+    let delivered_and_reissued = ServiceSnapshot {
+        task_available: true,
+        onboard: false,
+        task_key: 46.0,
+        passenger_id: 23.0,
+        deliveries: 1,
+        pickup: [480.0, 96.0],
+        destination: [672.0, 288.0],
+        ..onboard
+    };
+    let events = detect_service_events(Some(&onboard), &delivered_and_reissued, 256, 3);
+    assert_eq!(
+        events.iter().map(|e| e.event.as_str()).collect::<Vec<_>>(),
+        [
+            "dropoff_accepted",
+            "delivery_incremented",
+            "passenger_issued"
+        ]
+    );
+    assert_eq!(events[0].passenger_id, 21);
+    assert_eq!(events[1].passenger_id, 21);
+    assert_eq!(events[2].passenger_id, 23);
+    assert!(
+        detect_service_events(
+            Some(&delivered_and_reissued),
+            &delivered_and_reissued,
+            320,
+            3
+        )
+        .is_empty()
+    );
+}

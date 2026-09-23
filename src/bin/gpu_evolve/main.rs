@@ -3003,8 +3003,12 @@ fn main() {
     let t0 = Instant::now();
     // Índice do currículo: anda por MÉRITO (volta completada), não por geração.
     let mut idx_curriculo: usize = gen_offset;
-    let (mut world, mut world_seed_atual, mut world_key_atual) =
-        resolve_world(&pistas, &mundos, gen_offset, track_width);
+    let (mut world, mut world_seed_atual, mut world_key_atual) = if organism_taxi {
+        let _quiet = universe::world::silence_map_diag();
+        resolve_world(&pistas, &mundos, gen_offset, track_width)
+    } else {
+        resolve_world(&pistas, &mundos, gen_offset, track_width)
+    };
     let mut organism_city = organism_taxi.then(|| universe::organism_city::build_city(&mut world));
     let mut organism_stations = if organism_taxi {
         let stations = organism_city.as_ref().unwrap().stations.clone();
@@ -3014,15 +3018,19 @@ fn main() {
         Vec::new()
     };
     let mut lap_dist = world.lap_distance as f64;
-    println!(
-        "mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
-        world.size,
-        world.size,
-        world.waypoints_world.len(),
-        lap_dist,
-        t0.elapsed().as_secs_f64() * 1000.0,
-        world_seed_atual
-    );
+    if organism_taxi {
+        println!(
+            "city: {}×{} cells · {} road-axis waypoints · {} stations [{:.0}ms] · seed={}",
+            world.size, world.size, world.waypoints_world.len(), organism_stations.len(),
+            t0.elapsed().as_secs_f64() * 1000.0, world_seed_atual
+        );
+    } else {
+        println!(
+            "mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
+            world.size, world.size, world.waypoints_world.len(), lap_dist,
+            t0.elapsed().as_secs_f64() * 1000.0, world_seed_atual
+        );
+    }
     // ── Perceptual horizon (`--retina-range`) ─────────────────────────────────
     // Set BEFORE `GpuCtx::new`, which bakes `visao::pitch` into the retina uniform.
     // `visao::definir` is a `OnceLock::set`, so this is the one and only call in the
@@ -3328,10 +3336,12 @@ fn main() {
         if k > 0.0 {
             let x = automatic_fuel_tank(world.lap_distance as f64, k, setor_paga);
             FUEL_TANK.store(x, Ordering::Relaxed);
-            println!(
-                "  [fuel-auto] pista inicial (volta {:.0} m) → tanque {x:.4} (k={k})",
-                world.lap_distance
-            );
+            if !organism_taxi {
+                println!(
+                    "  [fuel-auto] pista inicial (volta {:.0} m) → tanque {x:.4} (k={k})",
+                    world.lap_distance
+                );
+            }
         }
     }
     SETOR_PAGA.store(setor_paga, Ordering::Relaxed);
@@ -4078,8 +4088,12 @@ fn main() {
         };
         let (seed_gen, key_gen) = peek_world(&pistas, &mundos, rotation_idx);
         if key_gen != world_key_atual {
-            let (world_novo, seed_novo, key_novo) =
-                resolve_world(&pistas, &mundos, rotation_idx, track_width);
+            let (world_novo, seed_novo, key_novo) = if organism_taxi {
+                let _quiet = universe::world::silence_map_diag();
+                resolve_world(&pistas, &mundos, rotation_idx, track_width)
+            } else {
+                resolve_world(&pistas, &mundos, rotation_idx, track_width)
+            };
             world = world_novo;
             if organism_taxi {
                 organism_city = Some(universe::organism_city::build_city(&mut world));
@@ -4114,14 +4128,17 @@ fn main() {
                 let x = automatic_fuel_tank(lap_dist, k, refill_each_sector);
                 FUEL_TANK.store(x, Ordering::Relaxed);
                 let interval_name = if refill_each_sector { "setor" } else { "volta" };
-                println!(
-                    "  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.4} \
-                          (k={k}; 1,0 = cobre um(a) {interval_name} a 18,75 m/s)"
-                );
+                if !organism_taxi {
+                    println!(
+                        "  [fuel-auto] pista {seed_gen} (volta {lap_dist:.0} m) → tanque {x:.4} \
+                              (k={k}; 1,0 = cobre um(a) {interval_name} a 18,75 m/s)"
+                    );
+                }
             }
         }
         println!(
-            "  [pista] gen {:4} usa seed={} ({} wp, volta={:.0}m)",
+            "  [{}] gen {:4} usa seed={} ({} waypoints, extensão={:.0}m)",
+            if organism_taxi { "city" } else { "pista" },
             gen_abs,
             seed_gen,
             world.waypoints_world.len(),
@@ -5038,7 +5055,7 @@ fn main() {
             }
             v
         };
-        if generation_idx == 0 {
+        if generation_idx == 0 && !organism_taxi {
             println!(
                 "  [portais] {} portais em curvas > 8° (uniforme seriam {})",
                 portais.len(),
@@ -5957,7 +5974,7 @@ fn main() {
                 let attempts = n_seres;
                 let successes = count(STATUS_SUCCESS);
                 let mut by_code = serde_json::Map::new();
-                for code in 1..=8u32 {
+                for code in 1..=15u32 {
                     let k = records.iter().filter(|r| r[R_STATUS] as u32 == STATUS_FAILED && r[R_FAIL_CODE] as u32 == code).count();
                     if k > 0 { by_code.insert(fail_code_name(code).to_string(), serde_json::json!(k)); }
                 }
@@ -5997,18 +6014,31 @@ fn main() {
                     fitness = records.iter().map(|r| r[R_SCORE] as f64).collect();
                 }
                 school_aggregates = Some(aggregates);
+                let pickup_requests = records.iter().map(|r| r[R_PICKUP_REQUESTS] as u64).sum::<u64>();
+                let dropoff_requests = records.iter().map(|r| r[R_DROPOFF_REQUESTS] as u64).sum::<u64>();
+                let refusals = records.iter().filter(|r| r[R_REFUSAL_CODE] > 0.5).count();
                 println!(
-                    "  [school] generation={gen_abs} lesson={} success={successes}/{attempts} failed={} truncated={} deaths={deaths} p_hat={:.3} progress_median={:.3} score_median={:.1} score_max={:.1} codes={}",
+                    "  [school] generation={gen_abs} lesson={} success={successes}/{attempts} failed={} truncated={} deaths={deaths} pickup_requests={pickup_requests} dropoff_requests={dropoff_requests} refusals={refusals} p_hat={:.3} progress_median={:.3} score_median={:.1} score_max={:.1} codes={}",
                     lesson.name(), count(STATUS_FAILED), count(STATUS_TRUNCATED),
                     (successes as f64 + 1.0) / (attempts as f64 + 2.0),
                     progress[progress.len() / 2], scores[scores.len() / 2], scores[scores.len() - 1],
                     serde_json::Value::Object(by_code.clone())
                 );
             }
-            println!("  [organism] generation={gen_abs} alive={}/{} deliveries={} fitness_best={:.3} (dimensionless)",
-                ctx.organism_samples.iter().filter(|b| b.values[29] > 0.5).count(), n_seres,
+            let sample_count = ctx.organism_samples.len().max(1) as f64;
+            println!("{}", driving_diagnostics::taxi_generation_summary(
+                gen_abs,
+                ctx.organism_samples.iter().filter(|b| b.values[29] > 0.5).count(),
+                n_seres,
+                ctx.organism_samples.iter().filter(|b| b.values[90] > 0.5).count(),
+                ctx.organism_samples.iter().filter(|b| b.values[65] > 0.5).count(),
                 ctx.organism_samples.iter().map(|b| b.values[68] as u64).sum::<u64>(),
-                fitness.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                ctx.organism_samples.iter().filter(|b| b.values[69] > 0.5).count(),
+                ctx.organism_samples.iter().map(|b| b.values[101].max(0.0) as u64).sum(),
+                ctx.organism_samples.iter().map(|b| b.values[127] as f64).sum::<f64>() / sample_count,
+                ctx.organism_samples.iter().map(|b| b.values[0] as f64).sum::<f64>() / sample_count,
+                ctx.organism_samples.iter().map(|b| b.values[1] as f64).sum::<f64>() / sample_count,
+            ));
         }
 
         // Safety discounts useful progress instead of subtracting into a zero floor.
@@ -6400,38 +6430,25 @@ fn main() {
         } else {
             N_CHECKPOINTS
         };
-        println!(
-            "  [setores] mediana {}/{} ({:.1}% da volta) · melhor {}/{} ({:.1}%) · voltas reais: {} seres ≥1, {} ≥2",
-            cp_med,
-            n_portais,
-            100.0 * cp_med as f32 / n_portais.max(1) as f32,
-            cp_max,
-            n_portais,
-            100.0 * cp_max as f32 / n_portais.max(1) as f32,
-            v1,
-            v2
-        );
-
-        // ── C0: per-lap ledger and its one-line summary (PRD §C0) ──────────────
-        // `[setores]` above counts how many laps closed; the hippocampus experiment is
-        // decided by what lap 2 cost against lap 1, which only this ledger holds. The
-        // file name is padded like `evolve_best_gen<NNNN>.bin` next to it, so the whole
-        // output directory sorts by generation.
-        // `finish` also writes each being's lap in progress, flagged `partial` — the file
-        // gains those records, this LINE does not: `laps::summary` counts closed laps
-        // only, so `med` / `lap2/lap1` / `>=2V` stay comparable with every earlier run.
-        let lap_records = lap_tracker.finish();
-        let lap_summary = laps::summary(&lap_records);
-        println!("  {}", lap_summary.log_line(n_seres));
-        let lap_seeds: Vec<u64> = (0..n_seres)
-            .map(|i| population_seed_for(pop_seed, i))
-            .collect();
-        let lap_path = format!("{}/laps_gen{:04}.jsonl", out_dir, gen_abs);
-        if let Err(e) = laps::write_jsonl(&lap_path, &lap_records, &lap_seeds) {
-            eprintln!(
-                "[gen {:4}] WARNING: could not write {}: {}",
-                gen_abs, lap_path, e
+        if !organism_taxi {
+            println!(
+                "  [setores] mediana {}/{} ({:.1}% da volta) · melhor {}/{} ({:.1}%) · voltas reais: {} seres ≥1, {} ≥2",
+                cp_med, n_portais, 100.0 * cp_med as f32 / n_portais.max(1) as f32,
+                cp_max, n_portais, 100.0 * cp_max as f32 / n_portais.max(1) as f32, v1, v2
             );
+            let lap_records = lap_tracker.finish();
+            let lap_summary = laps::summary(&lap_records);
+            println!("  {}", lap_summary.log_line(n_seres));
+            let lap_seeds: Vec<u64> = (0..n_seres)
+                .map(|i| population_seed_for(pop_seed, i))
+                .collect();
+            let lap_path = format!("{}/laps_gen{:04}.jsonl", out_dir, gen_abs);
+            if let Err(e) = laps::write_jsonl(&lap_path, &lap_records, &lap_seeds) {
+                eprintln!(
+                    "[gen {:4}] WARNING: could not write {}: {}",
+                    gen_abs, lap_path, e
+                );
+            }
         }
 
         // ── Painel: fim de geração (E5) ─────────────────────────────────────────
@@ -6495,7 +6512,7 @@ fn main() {
         let limiar_efetivo = trocar_ao_completar.max(piso_populacional);
         let cond_populacao = v1 >= limiar_efetivo;
         let cond_veloc = v1 >= trocar_ao_completar && vmed >= curriculo_veloc_min;
-        if trocar_ao_completar > 0 && (cond_populacao || cond_veloc) {
+        if !organism_taxi && trocar_ao_completar > 0 && (cond_populacao || cond_veloc) {
             // Currículo de TETO DE MARCHA: a promoção sobe o corpo ANTES de rodar a
             // pista — um degrau por vez. Só quando o teto está no máximo a promoção
             // volta a rodar a pista.
@@ -6531,7 +6548,7 @@ fn main() {
                     v1, via, world_seed_atual, proxima
                 );
             }
-        } else if trocar_ao_completar > 0 && v1 > 0 {
+        } else if !organism_taxi && trocar_ao_completar > 0 && v1 > 0 {
             // Visível mesmo quando NÃO promove: sem isto, "por que não trocou" exige
             // reler o código toda vez que alguém completa a volta e a pista não muda.
             println!(
@@ -6548,7 +6565,7 @@ fn main() {
         }
 
         if organism_taxi {
-            println!("gen {gen_abs:4} | odometer median={:.1}m max={:.1}m | {:.1}s",r.dist_med,r.dist_max,t_gen_s);
+            println!("  [taxi-runtime] generation={gen_abs} elapsed_seconds={t_gen_s:.1}");
         } else {
         println!(
             "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} low_progress={:.0}% | {:.1}s",
@@ -6570,7 +6587,7 @@ fn main() {
             .take(n_seres)
             .filter(|s| s.life_left <= 0.0)
             .count();
-        if FUEL_ON.load(Ordering::Relaxed) {
+        if !organism_taxi && FUEL_ON.load(Ordering::Relaxed) {
             let secos = states
                 .iter()
                 .take(n_seres)
