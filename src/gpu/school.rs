@@ -137,11 +137,7 @@ impl Lesson {
     }
     /// Distance from the start to the junction centre along the lane flow.
     pub fn start_before_junction_m(self) -> f32 {
-        if self.is_turn() {
-            37.5
-        } else {
-            60.0
-        }
+        if self.is_turn() { 37.5 } else { 60.0 }
     }
 }
 
@@ -166,6 +162,13 @@ pub fn fail_code_name(code: u32) -> &'static str {
         6 => "drove_through_junction",
         7 => "wrong_exit",
         8 => "no_approach_speed",
+        9 => "no_propelled_movement",
+        10 => "premature_or_moving_pickup",
+        11 => "passenger_lost_before_delivery",
+        12 => "dropoff_outside_destination",
+        13 => "wrong_passenger_id",
+        14 => "service_goal_not_stopped",
+        15 => "pickup_outside_passenger_radius",
         _ => "unknown",
     }
 }
@@ -397,7 +400,11 @@ impl SchoolGpu {
 
     /// Declare every being's lesson geometry and clear all counters. Called once
     /// per generation before the first judged tick, never mid-episode.
-    pub fn reset(&self, queue: &wgpu::Queue, lessons: &[LessonGeometry]) -> Result<(), &'static str> {
+    pub fn reset(
+        &self,
+        queue: &wgpu::Queue,
+        lessons: &[LessonGeometry],
+    ) -> Result<(), &'static str> {
         if lessons.is_empty() || lessons.len() > self.capacity {
             return Err("school: lesson count exceeds capacity");
         }
@@ -466,12 +473,30 @@ impl SchoolGpu {
             label: Some("organism-school-judge"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: physics_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: physics_output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: body.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.buf_state.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: intent.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: physics_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: physics_output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: body.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.buf_state.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: intent.as_entire_binding(),
+                },
             ],
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -526,13 +551,25 @@ impl SchoolGpu {
 }
 
 /// Host-side view of one record for exports.
-pub fn record_json(r: &[f32; SCHOOL_STRIDE_F32], energy_now_j: f32, distance_now_m: f32) -> serde_json::Value {
+pub fn record_json(
+    r: &[f32; SCHOOL_STRIDE_F32],
+    energy_now_j: f32,
+    distance_now_m: f32,
+) -> serde_json::Value {
     let status = r[R_STATUS] as u32;
     let code = r[R_FAIL_CODE] as u32;
     // A record still running has no outcome snapshot; fall back to the live body.
     let closed = status != STATUS_RUNNING;
-    let energy_at_outcome = if closed { r[R_ENERGY_OUTCOME] } else { energy_now_j };
-    let distance_at_outcome = if closed { r[R_DISTANCE_OUTCOME] } else { distance_now_m };
+    let energy_at_outcome = if closed {
+        r[R_ENERGY_OUTCOME]
+    } else {
+        energy_now_j
+    };
+    let distance_at_outcome = if closed {
+        r[R_DISTANCE_OUTCOME]
+    } else {
+        distance_now_m
+    };
     serde_json::json!({
         "lesson": r[R_LESSON] as u32, "phase": r[R_PHASE] as u32,
         "status": status_name(status), "status_code": status,

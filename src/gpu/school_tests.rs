@@ -50,7 +50,11 @@ fn straight(lesson: Lesson) -> LessonGeometry {
 fn turn(lesson: Lesson) -> LessonGeometry {
     let near = ([108.0, 285.0], [1.0, 0.0]);
     let far = ([84.0, 291.0], [-1.0, 0.0]);
-    let (exit, exit_dir, wrong) = if lesson == Lesson::TurnNear { (near.0, near.1, far.0) } else { (far.0, far.1, near.0) };
+    let (exit, exit_dir, wrong) = if lesson == Lesson::TurnNear {
+        (near.0, near.1, far.0)
+    } else {
+        (far.0, far.1, near.0)
+    };
     LessonGeometry {
         lesson,
         start: [93.0, 250.5],
@@ -66,7 +70,7 @@ fn turn(lesson: Lesson) -> LessonGeometry {
 fn service(lesson: Lesson) -> LessonGeometry {
     LessonGeometry {
         lesson,
-        start: [93.0, 114.0],
+        start: [93.0, 60.0],
         forward: [0.0, 1.0],
         target: [96.0, 96.0],
         exit: [288.0, 672.0],
@@ -92,8 +96,22 @@ struct Step {
 impl Step {
     fn at(pos: [f32; 2], vel: [f32; 2]) -> Self {
         let speed = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();
-        let heading = if speed > 1e-6 { [vel[0] / speed, vel[1] / speed] } else { [0.0, 1.0] };
-        Self { pos, vel, heading, mask: 0.0, throttle: 0.5, alive: 1.0, integrity: 1.0, pickup: false, dropoff: false }
+        let heading = if speed > 1e-6 {
+            [vel[0] / speed, vel[1] / speed]
+        } else {
+            [0.0, 1.0]
+        };
+        Self {
+            pos,
+            vel,
+            heading,
+            mask: 0.0,
+            throttle: 0.5,
+            alive: 1.0,
+            integrity: 1.0,
+            pickup: false,
+            dropoff: false,
+        }
     }
     fn heading(mut self, h: [f32; 2]) -> Self {
         self.heading = h;
@@ -137,7 +155,11 @@ impl Fixture {
             force_fallback_adapter: false,
         }))
         .expect("real Vulkan GPU required");
-        assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu, "CPU fallback forbidden");
+        assert_ne!(
+            adapter.get_info().device_type,
+            wgpu::DeviceType::Cpu,
+            "CPU fallback forbidden"
+        );
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("organism-school-fixtures"),
@@ -152,7 +174,9 @@ impl Fixture {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("school-fixture"),
                 size: (floats * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
         };
@@ -162,7 +186,16 @@ impl Fixture {
         let intent = make(96);
         let school = SchoolGpu::new(&device, 1, CONTRACT, horizon, true, stop_shaping);
         school.reset(&queue, &[geometry]).unwrap();
-        Self { device, queue, school, input, output, body, intent, tick: 0 }
+        Self {
+            device,
+            queue,
+            school,
+            input,
+            output,
+            body,
+            intent,
+            tick: 0,
+        }
     }
 
     fn step(&mut self, s: Step) {
@@ -190,14 +223,27 @@ impl Fixture {
         let mut intent = [0.0f32; 96];
         intent[6] = s.pickup as u8 as f32;
         intent[7] = s.dropoff as u8 as f32;
-        self.queue.write_buffer(&self.input, 0, bytemuck::cast_slice(&input));
-        self.queue.write_buffer(&self.output, 0, bytemuck::cast_slice(&output));
+        self.queue
+            .write_buffer(&self.input, 0, bytemuck::cast_slice(&input));
+        self.queue
+            .write_buffer(&self.output, 0, bytemuck::cast_slice(&output));
         // Body slots the judge owns are rewritten by the kernel; everything else is fixed.
-        self.queue.write_buffer(&self.body, 0, bytemuck::cast_slice(&body));
-        self.queue.write_buffer(&self.intent, 0, bytemuck::cast_slice(&intent));
+        self.queue
+            .write_buffer(&self.body, 0, bytemuck::cast_slice(&body));
+        self.queue
+            .write_buffer(&self.intent, 0, bytemuck::cast_slice(&intent));
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.school
-            .encode(&self.device, &mut encoder, &self.input, &self.output, &self.body, &self.intent, 1, self.tick)
+            .encode(
+                &self.device,
+                &mut encoder,
+                &self.input,
+                &self.output,
+                &self.body,
+                &self.intent,
+                1,
+                self.tick,
+            )
             .unwrap();
         self.queue.submit(Some(encoder.finish()));
         self.tick += 1;
@@ -254,7 +300,13 @@ fn service_lessons_initialize_task_state_and_record_transitions() {
         assert!(body[72] > 0.0 && body[73] > 10.0);
         assert_eq!(record[R_PASSENGER_ID], body[72]);
         assert_eq!(record[R_DELIVERY_START], 0.0);
-        assert_eq!((record[R_ACCEPTED_PICKUP_TICK], record[R_ACCEPTED_DROPOFF_TICK]), (-1.0, -1.0));
+        assert_eq!(
+            (
+                record[R_ACCEPTED_PICKUP_TICK],
+                record[R_ACCEPTED_DROPOFF_TICK]
+            ),
+            (-1.0, -1.0)
+        );
     }
 
     let geometry = service(Lesson::NavigateWithPassenger);
@@ -262,7 +314,13 @@ fn service_lessons_initialize_task_state_and_record_transitions() {
     fixture.step(Step::at(geometry.start, [0.0, 0.0]).throttle(0.0));
     let body = fixture.body();
     assert_eq!((body[65], body[90]), (1.0, 0.0));
-    assert_eq!(&body[80..82], &[geometry.exit[0] - geometry.start[0], geometry.exit[1] - geometry.start[1]]);
+    assert_eq!(
+        &body[80..82],
+        &[
+            geometry.exit[0] - geometry.start[0],
+            geometry.exit[1] - geometry.start[1]
+        ]
+    );
 
     // The school observer records the native requests and the authoritative taxi
     // state transitions; it never synthesizes pickup or delivery itself.
@@ -283,13 +341,21 @@ fn service_lessons_initialize_task_state_and_record_transitions() {
         },
     );
     let body = fixture.body();
-    assert_eq!(&body[80..82], &[geometry.exit[0] - geometry.target[0], geometry.exit[1] - geometry.target[1]]);
+    assert_eq!(
+        &body[80..82],
+        &[
+            geometry.exit[0] - geometry.target[0],
+            geometry.exit[1] - geometry.target[1]
+        ]
+    );
     let record = fixture.record();
     assert_eq!(record[R_PICKUP_REQUESTS], 1.0);
     assert_eq!(record[R_ACCEPTED_PICKUP_TICK], 1.0);
 
     fixture.step_with_body(
-        Step::at(geometry.target, [0.0, 0.0]).dropoff().throttle(0.0),
+        Step::at(geometry.target, [0.0, 0.0])
+            .dropoff()
+            .throttle(0.0),
         |body| {
             body[65] = 1.0;
             body[72] = passenger_id;
@@ -310,6 +376,224 @@ fn service_lessons_initialize_task_state_and_record_transitions() {
     assert_eq!(record[R_DELIVERY_DELTA], 1.0);
 }
 
+fn init_service(fixture: &mut Fixture, geometry: LessonGeometry) -> f32 {
+    fixture.step(Step::at(geometry.start, [0.0, 0.0]).throttle(0.0));
+    fixture.record()[R_PASSENGER_ID]
+}
+
+fn service_drive(
+    fixture: &mut Fixture,
+    geometry: LessonGeometry,
+    onboard: bool,
+    passenger_id: f32,
+    progress: f32,
+) {
+    for tick in 1..=16 {
+        let a = tick as f32 / 16.0;
+        let pos = [
+            geometry.start[0] + (geometry.target[0] - geometry.start[0]) * a,
+            geometry.start[1] + (geometry.target[1] - geometry.start[1]) * a,
+        ];
+        fixture.step_with_body(Step::at(pos, [0.0, 4.0]), |body| {
+            body[65] = onboard as u8 as f32;
+            body[72] = passenger_id;
+            body[127] = progress * a;
+        });
+    }
+}
+
+fn service_hold(
+    fixture: &mut Fixture,
+    position: [f32; 2],
+    onboard: bool,
+    passenger_id: f32,
+    progress: f32,
+) {
+    for _ in 0..64 {
+        fixture.step_with_body(Step::at(position, [0.0, 0.0]).throttle(0.0), |body| {
+            body[65] = onboard as u8 as f32;
+            body[72] = passenger_id;
+            body[127] = progress;
+        });
+    }
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn all_service_lessons_require_their_declared_positive_phase_sequence() {
+    let g = service(Lesson::ApproachPassenger);
+    let mut f = Fixture::new(g, 512);
+    let id = init_service(&mut f, g);
+    service_drive(&mut f, g, false, id, 95.0);
+    service_hold(&mut f, g.target, false, id, 100.0);
+    assert_eq!(status(&f.record()), (STATUS_SUCCESS, 0));
+
+    let g = service(Lesson::Pickup);
+    let mut f = Fixture::new(g, 512);
+    let id = init_service(&mut f, g);
+    service_drive(&mut f, g, false, id, 95.0);
+    service_hold(&mut f, g.target, false, id, 100.0);
+    f.step_with_body(
+        Step::at(g.target, [0.0, 0.0]).pickup().throttle(0.0),
+        |body| {
+            body[65] = 1.0;
+            body[72] = id;
+            body[127] = 100.0;
+        },
+    );
+    assert_eq!(status(&f.record()), (STATUS_SUCCESS, 0));
+
+    let g = service(Lesson::NavigateWithPassenger);
+    let mut f = Fixture::new(g, 512);
+    let id = init_service(&mut f, g);
+    service_drive(
+        &mut f,
+        LessonGeometry {
+            target: g.exit,
+            ..g
+        },
+        true,
+        id,
+        195.0,
+    );
+    service_hold(&mut f, g.exit, true, id, 200.0);
+    assert_eq!(status(&f.record()), (STATUS_SUCCESS, 0));
+
+    let g = service(Lesson::Delivery);
+    let mut f = Fixture::new(g, 1024);
+    let id = init_service(&mut f, g);
+    service_drive(&mut f, g, false, id, 95.0);
+    service_hold(&mut f, g.target, false, id, 100.0);
+    f.step_with_body(
+        Step::at(g.target, [0.0, 0.0]).pickup().throttle(0.0),
+        |body| {
+            body[65] = 1.0;
+            body[72] = id;
+            body[127] = 100.0;
+        },
+    );
+    service_drive(
+        &mut f,
+        LessonGeometry {
+            start: g.target,
+            target: g.exit,
+            ..g
+        },
+        true,
+        id,
+        200.0,
+    );
+    service_hold(&mut f, g.exit, true, id, 200.0);
+    f.step_with_body(
+        Step::at(g.exit, [0.0, 0.0]).dropoff().throttle(0.0),
+        |body| {
+            body[68] = 1.0;
+            body[75] = id;
+            body[127] = 200.0;
+        },
+    );
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0));
+    assert_eq!(r[R_DELIVERY_DELTA], 1.0);
+    assert!(r[R_SCORE] >= 1200.0, "{r:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_failures_are_explicit_and_horizon_is_not_success() {
+    let g = service(Lesson::ApproachPassenger);
+    let mut f = Fixture::new(g, 32);
+    init_service(&mut f, g);
+    f.step(Step::at(g.start, [0.0, 0.0]).mask(1.0));
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 1));
+
+    let mut f = Fixture::new(g, 32);
+    init_service(&mut f, g);
+    f.step(Step::at(g.start, [0.0, 0.0]).dead());
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 2));
+
+    let mut f = Fixture::new(g, 32);
+    init_service(&mut f, g);
+    f.step(Step::at([g.start[0] + 10.0, g.start[1]], [0.0, 2.0]));
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 3));
+
+    let mut f = Fixture::new(g, 2);
+    init_service(&mut f, g);
+    f.step(Step::at(g.start, [0.0, 0.0]).throttle(0.0));
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 9));
+
+    let pickup = service(Lesson::Pickup);
+    let mut f = Fixture::new(pickup, 64);
+    init_service(&mut f, pickup);
+    f.step_with_body(Step::at(pickup.start, [0.0, 0.0]).pickup(), |body| {
+        body[69] = 2.0
+    });
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 15));
+
+    let mut f = Fixture::new(pickup, 64);
+    init_service(&mut f, pickup);
+    f.step_with_body(Step::at(pickup.target, [1.0, 0.0]).pickup(), |body| {
+        body[69] = 1.0
+    });
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 10));
+
+    let mut f = Fixture::new(g, 3);
+    let id = init_service(&mut f, g);
+    f.step_with_body(Step::at(g.target, [0.0, 1.0]), |body| {
+        body[72] = id;
+        body[127] = 100.0;
+    });
+    f.step_with_body(Step::at(g.target, [0.0, 1.0]), |body| {
+        body[72] = id;
+        body[127] = 100.0;
+    });
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 14));
+
+    let navigate = service(Lesson::NavigateWithPassenger);
+    let mut f = Fixture::new(navigate, 64);
+    init_service(&mut f, navigate);
+    f.step(Step::at(navigate.exit, [0.0, 0.0]).throttle(0.0));
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 11));
+
+    let mut f = Fixture::new(navigate, 64);
+    let id = init_service(&mut f, navigate);
+    f.step_with_body(Step::at(navigate.start, [0.0, 1.0]), |body| {
+        body[65] = 1.0;
+        body[72] = id + 1.0;
+    });
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 13));
+
+    let delivery = service(Lesson::Delivery);
+    let mut f = Fixture::new(delivery, 512);
+    let id = init_service(&mut f, delivery);
+    service_drive(&mut f, delivery, false, id, 95.0);
+    service_hold(&mut f, delivery.target, false, id, 100.0);
+    f.step_with_body(Step::at(delivery.target, [0.0, 0.0]).pickup(), |body| {
+        body[65] = 1.0;
+        body[72] = id;
+        body[127] = 100.0;
+    });
+    f.step_with_body(Step::at(delivery.target, [0.0, 0.0]).dropoff(), |body| {
+        body[65] = 1.0;
+        body[72] = id;
+        body[69] = 2.0;
+        body[127] = 100.0;
+    });
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 12));
+
+    let mut f = Fixture::new(g, 3);
+    init_service(&mut f, g);
+    f.step_with_body(
+        Step::at([g.start[0], g.start[1] + 2.0], [0.0, 2.0]),
+        |body| body[127] = 10.0,
+    );
+    f.step_with_body(
+        Step::at([g.start[0], g.start[1] + 4.0], [0.0, 2.0]),
+        |body| body[127] = 20.0,
+    );
+    assert_eq!(status(&f.record()), (STATUS_TRUNCATED, 0));
+}
+
 fn status(r: &[f32; SCHOOL_STRIDE_F32]) -> (u32, u32) {
     (r[R_STATUS] as u32, r[R_FAIL_CODE] as u32)
 }
@@ -319,7 +603,10 @@ fn straight_run(start: [f32; 2], dir: [f32; 2], speed: f32, ticks: usize) -> Vec
     (0..ticks)
         .map(|t| {
             let d = speed * (t as f32 + 1.0) / 64.0;
-            Step::at([start[0] + dir[0] * d, start[1] + dir[1] * d], [dir[0] * speed, dir[1] * speed])
+            Step::at(
+                [start[0] + dir[0] * d, start[1] + dir[1] * d],
+                [dir[0] * speed, dir[1] * speed],
+            )
         })
         .collect()
 }
@@ -354,7 +641,11 @@ fn move_success_requires_reaching_the_target_under_own_throttle() {
 #[ignore = "real GPU"]
 fn move_without_throttle_is_not_a_success() {
     let mut f = Fixture::new(straight(Lesson::Move), 1280);
-    f.run(straight_run([93.0, 114.0], [0.0, 1.0], 5.0, 400).into_iter().map(|s| s.throttle(0.0)));
+    f.run(
+        straight_run([93.0, 114.0], [0.0, 1.0], 5.0, 400)
+            .into_iter()
+            .map(|s| s.throttle(0.0)),
+    );
     let r = f.record();
     assert_eq!(status(&r), (STATUS_RUNNING, 0), "{r:?}");
     assert_eq!(r[R_PROPELLED], 0.0);
@@ -386,11 +677,17 @@ fn move_death_corridor_overshoot_and_birth_inside_target_have_their_codes() {
     assert_eq!(status(&f.record()), (STATUS_FAILED, 2));
 
     let mut f = Fixture::new(straight(Lesson::Move), 1280);
-    f.run([Step::at([93.0, 120.0], [0.0, 5.0]), Step::at([100.0, 121.0], [5.0, 0.0])]);
+    f.run([
+        Step::at([93.0, 120.0], [0.0, 5.0]),
+        Step::at([100.0, 121.0], [5.0, 0.0]),
+    ]);
     assert_eq!(status(&f.record()), (STATUS_FAILED, 3));
 
     let mut f = Fixture::new(straight(Lesson::Move), 1280);
-    f.run([Step::at([93.0, 120.0], [0.0, 5.0]), Step::at([93.0, 155.0], [0.0, 5.0]).throttle(0.0)]);
+    f.run([
+        Step::at([93.0, 120.0], [0.0, 5.0]),
+        Step::at([93.0, 155.0], [0.0, 5.0]).throttle(0.0),
+    ]);
     assert_eq!(status(&f.record()), (STATUS_FAILED, 5));
 
     let mut f = Fixture::new(straight(Lesson::Move), 1280);
@@ -407,7 +704,10 @@ fn truncation_at_horizon_keeps_progress() {
     assert_eq!(status(&r), (STATUS_TRUNCATED, 0), "{r:?}");
     assert_eq!(r[R_OUTCOME_TICK], 99.0);
     assert_eq!(r[R_ELAPSED], 100.0);
-    assert!((r[R_PROGRESS] - (100.0 * 2.0 / 64.0) / 30.0).abs() < 0.02, "{r:?}");
+    assert!(
+        (r[R_PROGRESS] - (100.0 * 2.0 / 64.0) / 30.0).abs() < 0.02,
+        "{r:?}"
+    );
 }
 
 fn stop_approach(entry_speed: f32) -> Vec<Step> {
@@ -475,13 +775,22 @@ fn turn_path(exit: [f32; 2], exit_dir: [f32; 2]) -> Vec<Step> {
     let n = (d / (4.0 / 64.0)).ceil() as usize;
     for t in 1..=n {
         let a = t as f32 / n as f32;
-        let pos = [last[0] + (corner[0] - last[0]) * a, last[1] + (corner[1] - last[1]) * a];
-        let v = [(corner[0] - last[0]) / d * 4.0, (corner[1] - last[1]) / d * 4.0];
+        let pos = [
+            last[0] + (corner[0] - last[0]) * a,
+            last[1] + (corner[1] - last[1]) * a,
+        ];
+        let v = [
+            (corner[0] - last[0]) / d * 4.0,
+            (corner[1] - last[1]) / d * 4.0,
+        ];
         steps.push(Step::at(pos, v));
     }
     for t in 1..=200 {
         let d = 4.0 * t as f32 / 64.0;
-        steps.push(Step::at([corner[0] + exit_dir[0] * d, corner[1] + exit_dir[1] * d], [exit_dir[0] * 4.0, exit_dir[1] * 4.0]));
+        steps.push(Step::at(
+            [corner[0] + exit_dir[0] * d, corner[1] + exit_dir[1] * d],
+            [exit_dir[0] * 4.0, exit_dir[1] * 4.0],
+        ));
     }
     steps
 }
@@ -498,7 +807,11 @@ fn turn_near_and_far_succeed_on_their_own_gate_and_fail_on_the_other() {
         assert_eq!(r[R_PHASE], 1.0);
         assert!(r[R_PROGRESS] > 0.9, "{lesson:?} {r:?}");
 
-        let other = turn(if lesson == Lesson::TurnNear { Lesson::TurnFar } else { Lesson::TurnNear });
+        let other = turn(if lesson == Lesson::TurnNear {
+            Lesson::TurnFar
+        } else {
+            Lesson::TurnNear
+        });
         let mut f = Fixture::new(g, 2000);
         f.run(turn_path(other.exit, other.exit_dir));
         assert_eq!(status(&f.record()), (STATUS_FAILED, 7), "{lesson:?}");
@@ -534,10 +847,18 @@ fn turn_subgoal_switches_from_junction_to_exit_when_the_box_is_entered() {
     let mut f = Fixture::new(g, 2000);
     f.run([Step::at([93.0, 260.0], [0.0, 5.0])]);
     let body = f.body();
-    assert!((body[70] - 96.0).abs() < 1e-4 && (body[71] - 288.0).abs() < 1e-4, "{:?}", &body[70..72]);
+    assert!(
+        (body[70] - 96.0).abs() < 1e-4 && (body[71] - 288.0).abs() < 1e-4,
+        "{:?}",
+        &body[70..72]
+    );
     f.run([Step::at([93.0, 281.0], [0.0, 5.0])]);
     let body = f.body();
-    assert!((body[70] - 108.0).abs() < 1e-4 && (body[71] - 285.0).abs() < 1e-4, "{:?}", &body[70..72]);
+    assert!(
+        (body[70] - 108.0).abs() < 1e-4 && (body[71] - 285.0).abs() < 1e-4,
+        "{:?}",
+        &body[70..72]
+    );
     assert!((body[80] - 15.0).abs() < 1e-4 && (body[81] - 4.0).abs() < 1e-4);
 }
 
@@ -565,15 +886,29 @@ fn stop_shaping_records_always_and_scores_only_with_the_flag() {
     stop_slow_then_leave(&mut plain);
     let r = plain.record();
     assert_eq!(status(&r), (STATUS_TRUNCATED, 0), "{r:?}");
-    assert!((r[R_MIN_SPEED_INSIDE] - 0.2).abs() < 0.02 && r[R_MAX_DWELL] == 40.0 && r[R_MAX_NEAR_DWELL] == 40.0, "{r:?}");
-    assert!((r[R_SCORE] - 500.0 * r[R_PROGRESS]).abs() < 1.0, "plain score must stay the Stage 2 formula: {r:?}");
+    assert!(
+        (r[R_MIN_SPEED_INSIDE] - 0.2).abs() < 0.02
+            && r[R_MAX_DWELL] == 40.0
+            && r[R_MAX_NEAR_DWELL] == 40.0,
+        "{r:?}"
+    );
+    assert!(
+        (r[R_SCORE] - 500.0 * r[R_PROGRESS]).abs() < 1.0,
+        "plain score must stay the Stage 2 formula: {r:?}"
+    );
 
     let mut shaped = Fixture::new_with(straight(Lesson::Stop), 600, true);
     stop_slow_then_leave(&mut shaped);
     let r = shaped.record();
     assert_eq!(status(&r), (STATUS_TRUNCATED, 0), "{r:?}");
-    let expected = 500.0 * r[R_PROGRESS] + 300.0 * (1.0 - r[R_MIN_SPEED_INSIDE] / 3.0) + 200.0 * (r[R_MAX_NEAR_DWELL] / 128.0);
-    assert!((r[R_SCORE] - expected).abs() < 1.0, "shaped score {} vs expected {expected}: {r:?}", r[R_SCORE]);
+    let expected = 500.0 * r[R_PROGRESS]
+        + 300.0 * (1.0 - r[R_MIN_SPEED_INSIDE] / 3.0)
+        + 200.0 * (r[R_MAX_NEAR_DWELL] / 128.0);
+    assert!(
+        (r[R_SCORE] - expected).abs() < 1.0,
+        "shaped score {} vs expected {expected}: {r:?}",
+        r[R_SCORE]
+    );
     assert!(r[R_SCORE] > 500.0 * r[R_PROGRESS] + 250.0, "{r:?}");
 }
 
@@ -588,7 +923,10 @@ fn stop_shaping_tracks_near_stop_duration_without_relaxing_success() {
     f.run((0..64).map(|_| Step::at([93.0, z + 1.0], [0.0, 0.5]).throttle(0.0)));
     let r = f.record();
     assert_eq!(status(&r), (STATUS_RUNNING, 0), "{r:?}");
-    assert_eq!(r[R_DWELL], 0.0, "near-stop must not count as a successful stop");
+    assert_eq!(
+        r[R_DWELL], 0.0,
+        "near-stop must not count as a successful stop"
+    );
     assert_eq!(r[R_MAX_DWELL], 0.0);
     assert_eq!(r[R_NEAR_DWELL], 64.0);
     assert_eq!(r[R_MAX_NEAR_DWELL], 64.0);
@@ -605,13 +943,23 @@ fn stop_shaping_pays_the_full_bonus_on_success_and_nothing_before_the_area() {
     let r = f.record();
     assert_eq!(status(&r), (STATUS_SUCCESS, 0), "{r:?}");
     let expected = 1000.0 + 500.0 * r[R_PROGRESS] + 300.0 + 200.0;
-    assert!((r[R_SCORE] - expected).abs() < 1.0, "{} vs {expected}: {r:?}", r[R_SCORE]);
+    assert!(
+        (r[R_SCORE] - expected).abs() < 1.0,
+        "{} vs {expected}: {r:?}",
+        r[R_SCORE]
+    );
 
     // Overshooting at speed never enters the slow regime: the shaping term is zero.
     let mut f = Fixture::new_with(straight(Lesson::Stop), 1280, true);
     f.run(straight_run([93.0, 114.0], [0.0, 1.0], 8.0, 400));
     let r = f.record();
     assert_eq!(status(&r), (STATUS_FAILED, 5), "{r:?}");
-    assert!(r[R_MIN_SPEED_INSIDE] > 7.5 && r[R_MAX_DWELL] == 0.0, "{r:?}");
-    assert!((r[R_SCORE] - (500.0 * r[R_PROGRESS] - 200.0)).abs() < 1.0, "{r:?}");
+    assert!(
+        r[R_MIN_SPEED_INSIDE] > 7.5 && r[R_MAX_DWELL] == 0.0,
+        "{r:?}"
+    );
+    assert!(
+        (r[R_SCORE] - (500.0 * r[R_PROGRESS] - 200.0)).abs() < 1.0,
+        "{r:?}"
+    );
 }

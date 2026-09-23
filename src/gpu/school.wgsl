@@ -7,7 +7,11 @@
 // 6 pickup, 7 navigate with passenger, 8 delivery. Status 0 running, 1 success,
 // 2 failed, 3 truncated. Failure codes: 1 contact, 2 death, 3 corridor, 4 born
 // inside goal, 5 overshoot, 6 drove through the junction, 7 wrong exit,
-// 8 entered the stop area without ever reaching v_min.
+// 8 entered the stop area without ever reaching v_min, 9 no propelled movement,
+// 10 premature/moving pickup, 11 lost passenger before delivery,
+// 12 dropoff outside the destination, 13 wrong passenger id,
+// 14 reached a service goal but never completed the stop hold,
+// 15 pickup outside the passenger radius.
 // Params.flags: bit 0 bench (host-only), bit 1 stop-score shaping
 // (docs/SCHOOL-STOP-SHAPING-20260922.md).
 struct Params {
@@ -59,7 +63,15 @@ fn close(k:u32, s:u32, status:f32, code:f32) {
     shaping=300.0*clamp(1.0-school[k+MIN_SPEED_INSIDE]/max(p.v_min,0.001),0.0,1.0)
            +200.0*clamp(school[k+MAX_NEAR_DWELL]/max(p.hold_ticks,1.0),0.0,1.0);
   }
-  school[k+SCORE]=1000.0*success+500.0*school[k+PROGRESS]-200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive)+shaping;
+  if(school[k+LESSON]>=4.5){
+    // Service shaping is expressed in road-progress points: approach 0..100,
+    // onboard navigation 100..200, and only the authoritative delivery counter
+    // earns the 1,000 point terminal bonus. STATUS remains an independent gate.
+    school[k+SCORE]=school[k+PROGRESS]+1000.0*school[k+DELIVERY_DELTA]
+                     -200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive);
+  } else {
+    school[k+SCORE]=1000.0*success+500.0*school[k+PROGRESS]-200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive)+shaping;
+  }
 }
 
 @compute @workgroup_size(64)
@@ -110,6 +122,103 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
     if(body[s+65u]>0.5){subgoal=exit;body[s+90u]=0.0;}
     if(school[k+DELIVERY_DELTA]>0.0){body[s+90u]=0.0;}
     body[s+80u]=subgoal.x-pos.x;body[s+81u]=subgoal.y-pos.y;
+
+    if(school[k+STATUS]>0.5){return;}
+    let speed=length(vec2<f32>(physics_out[o],physics_out[o+2u]));
+    let rel=pos-p0; let along=dot(rel,f0); let lat=dot(rel,l0);
+    let inside_passenger=distance(pos,goal)<=p.goal_radius;
+    let inside_destination=distance(pos,exit)<=p.goal_radius;
+    let onboard=body[s+65u]>0.5;
+    let passenger_id=school[k+PASSENGER_ID];
+    let pickup_request=intent[request_base+6u]>0.5;
+    let dropoff_request=intent[request_base+7u]>0.5;
+    let service_hold=max(1.0,floor(p.hold_ticks*0.5));
+
+    if(school[k+ELAPSED]<0.5){
+      school[k+ENERGY_START]=body[s]; school[k+DISTANCE_START]=body[s+98u];
+      school[k+INITIAL_REMAINING]=max(distance(pos,subgoal),1.0);
+      school[k+BEST_REMAINING]=distance(pos,subgoal);
+      school[k+MIN_SPEED_INSIDE]=1.0e9;
+    }
+    school[k+ELAPSED]+=1.0;
+    school[k+MAX_SPEED]=max(school[k+MAX_SPEED],speed);
+    school[k+MAX_LAT]=max(school[k+MAX_LAT],abs(lat));
+    school[k+MAX_ALONG]=max(school[k+MAX_ALONG],along);
+    if(physics_in[i+51u]>=0.1 && speed>=0.5){school[k+PROPELLED]+=1.0;}
+    // taxi.wgsl owns the phase-aware road score in body[127]. The judge only
+    // keeps its monotonic best; it never fabricates progress from Euclidean range.
+    school[k+PROGRESS]=max(school[k+PROGRESS],clamp(body[s+127u],0.0,200.0));
+    school[k+BEST_REMAINING]=min(school[k+BEST_REMAINING],distance(pos,subgoal));
+
+    if(body[s+29u]<0.5){close(k,s,2.0,2.0);return;}
+    let mask=u32(max(physics_out[o+39u],0.0));
+    if(mask!=0u){
+      school[k+CONTACT_TICKS]+=1.0; school[k+COLLISION_J]+=max(0.0,physics_out[o+55u]);
+      close(k,s,2.0,1.0);return;
+    }
+    // The approach corridor applies only while seeking the passenger. Once the
+    // passenger is onboard, the production road graph (body[127]) is authoritative.
+    let seeking_passenger=lesson<6.5 || (lesson>=7.5 && school[k+PHASE]<1.5);
+    if(seeking_passenger && !onboard && school[k+DELIVERY_DELTA]<0.5 &&
+       (abs(lat)>p.corridor_half || along<-5.0)){
+      close(k,s,2.0,3.0);return;
+    }
+    if(pickup_request && body[s+69u]>1.5){close(k,s,2.0,15.0);return;}
+    if(pickup_request && body[s+69u]>0.5 && body[s+69u]<1.5){close(k,s,2.0,10.0);return;}
+    if(dropoff_request && body[s+69u]>1.5){close(k,s,2.0,12.0);return;}
+    if(onboard && abs(body[s+72u]-passenger_id)>0.25){close(k,s,2.0,13.0);return;}
+    if(school[k+DELIVERY_DELTA]>0.0 && abs(body[s+75u]-passenger_id)>0.25){close(k,s,2.0,13.0);return;}
+
+    // Lesson 5: approach and hold at the passenger. No service request required.
+    if(lesson<5.5){
+      if(inside_passenger){school[k+PHASE]=1.0;}
+      if(inside_passenger && speed<=p.v_stop){school[k+DWELL]+=1.0;}else{school[k+DWELL]=0.0;}
+      school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
+      if(school[k+DWELL]>=service_hold && school[k+PROPELLED]>=p.propelled_min){close(k,s,1.0,0.0);return;}
+    // Lesson 6: the same stop contract, followed by an accepted native pickup.
+    } else if(lesson<6.5){
+      if(inside_passenger && speed<=p.v_stop){school[k+DWELL]+=1.0;}else{school[k+DWELL]=0.0;}
+      school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
+      if(school[k+DWELL]>=service_hold){school[k+PHASE]=1.0;}
+      if(onboard){
+        if(school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
+        if(abs(body[s+72u]-passenger_id)>0.25){close(k,s,2.0,13.0);return;}
+        close(k,s,1.0,0.0);return;
+      }
+    // Lesson 7: begin onboard, navigate, stop and retain the assigned passenger.
+    } else if(lesson<7.5){
+      if(!onboard){close(k,s,2.0,11.0);return;}
+      if(inside_destination){school[k+PHASE]=1.0;}
+      if(inside_destination && speed<=p.v_stop){school[k+DWELL]+=1.0;}else{school[k+DWELL]=0.0;}
+      school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
+      if(school[k+DWELL]>=service_hold && school[k+PROPELLED]>=p.propelled_min){close(k,s,1.0,0.0);return;}
+    // Lesson 8: approach -> strict stop -> pickup -> navigate -> strict stop -> delivery.
+    } else {
+      if(school[k+PHASE]<1.5){
+        if(inside_passenger && speed<=p.v_stop){school[k+DWELL]+=1.0;}else{school[k+DWELL]=0.0;}
+        school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
+        if(school[k+DWELL]>=service_hold){school[k+PHASE]=1.0;}
+        if(onboard){
+          if(school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
+          school[k+PHASE]=2.0; school[k+DWELL]=0.0;
+        }
+      } else {
+        if(school[k+DELIVERY_DELTA]>0.0){
+          if(school[k+PHASE]<2.5 || school[k+DWELL]<service_hold){close(k,s,2.0,14.0);return;}
+          close(k,s,1.0,0.0);return;
+        }
+        if(!onboard){close(k,s,2.0,11.0);return;}
+        if(inside_destination){school[k+PHASE]=3.0;}
+        if(inside_destination && speed<=p.v_stop){school[k+DWELL]+=1.0;}else{school[k+DWELL]=0.0;}
+        school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
+      }
+    }
+    if(school[k+ELAPSED]>=f32(p.horizon)){
+      if(school[k+PROPELLED]<0.5){close(k,s,2.0,9.0);}
+      else if(school[k+MAX_DWELL]<service_hold &&
+              (inside_passenger || inside_destination)){close(k,s,2.0,14.0);}
+      else{close(k,s,3.0,0.0);}
+    }
     return;
   }
   let turning=lesson>=2.5;
