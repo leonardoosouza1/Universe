@@ -47,27 +47,43 @@ pub const R_WRONG_EXIT: usize = 30;
 pub const R_ENERGY_OUTCOME: usize = 32;
 pub const R_DISTANCE_OUTCOME: usize = 33;
 /// Stop shaping (docs/SCHOOL-STOP-SHAPING-20260922.md): slowest speed inside the stop area
-/// (1e9 until it is entered) and the longest held stop; recorded always, scored only with
-/// `stop_shaping`.
+/// (1e9 until it is entered), strict stop dwell and near-stop dwell; recorded always,
+/// scored only with `stop_shaping`.
 pub const R_MIN_SPEED_INSIDE: usize = 34;
 pub const R_MAX_DWELL: usize = 35;
+pub const R_NEAR_DWELL: usize = 36;
+pub const R_MAX_NEAR_DWELL: usize = 37;
 
 pub const STATUS_RUNNING: u32 = 0;
 pub const STATUS_SUCCESS: u32 = 1;
 pub const STATUS_FAILED: u32 = 2;
 pub const STATUS_TRUNCATED: u32 = 3;
 
+#[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lesson {
     Move = 1,
     Stop = 2,
     TurnNear = 3,
     TurnFar = 4,
+    ApproachPassenger = 5,
+    Pickup = 6,
+    NavigateWithPassenger = 7,
+    Delivery = 8,
 }
 
 impl Lesson {
-    /// Curriculum order: the motor lessons first, then the two turns.
-    pub const ALL: [Lesson; 4] = [Lesson::Move, Lesson::Stop, Lesson::TurnNear, Lesson::TurnFar];
+    /// Curriculum order: motor control first, then canonical taxi service phases.
+    pub const ALL: [Lesson; 8] = [
+        Lesson::Move,
+        Lesson::Stop,
+        Lesson::TurnNear,
+        Lesson::TurnFar,
+        Lesson::ApproachPassenger,
+        Lesson::Pickup,
+        Lesson::NavigateWithPassenger,
+        Lesson::Delivery,
+    ];
 
     pub fn parse(flag: &str) -> Option<Self> {
         match flag {
@@ -75,6 +91,10 @@ impl Lesson {
             "stop" => Some(Self::Stop),
             "turn_near" => Some(Self::TurnNear),
             "turn_far" => Some(Self::TurnFar),
+            "approach_passenger" => Some(Self::ApproachPassenger),
+            "pickup" => Some(Self::Pickup),
+            "navigate_with_passenger" => Some(Self::NavigateWithPassenger),
+            "delivery" => Some(Self::Delivery),
             _ => None,
         }
     }
@@ -84,6 +104,10 @@ impl Lesson {
             Self::Stop => "stop",
             Self::TurnNear => "turn_near",
             Self::TurnFar => "turn_far",
+            Self::ApproachPassenger => "approach_passenger",
+            Self::Pickup => "pickup",
+            Self::NavigateWithPassenger => "navigate_with_passenger",
+            Self::Delivery => "delivery",
         }
     }
     pub fn id(self) -> u32 {
@@ -91,6 +115,15 @@ impl Lesson {
     }
     pub fn is_turn(self) -> bool {
         matches!(self, Self::TurnNear | Self::TurnFar)
+    }
+    pub fn is_service(self) -> bool {
+        matches!(
+            self,
+            Self::ApproachPassenger | Self::Pickup | Self::NavigateWithPassenger | Self::Delivery
+        )
+    }
+    pub fn starts_onboard(self) -> bool {
+        self == Self::NavigateWithPassenger
     }
     /// Distance from the start to the junction centre along the lane flow.
     pub fn start_before_junction_m(self) -> f32 {
@@ -503,5 +536,7 @@ pub fn record_json(r: &[f32; SCHOOL_STRIDE_F32], energy_now_j: f32, distance_now
         "score": r[R_SCORE],
         "min_speed_inside_mps": if r[R_MIN_SPEED_INSIDE] < 1.0e8 { serde_json::json!(r[R_MIN_SPEED_INSIDE]) } else { serde_json::Value::Null },
         "max_dwell_ticks": r[R_MAX_DWELL],
+        "near_stop_dwell_ticks": r[R_NEAR_DWELL],
+        "max_near_stop_dwell_ticks": r[R_MAX_NEAR_DWELL],
     })
 }

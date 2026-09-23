@@ -70,9 +70,130 @@ fn straight_is_road(world: &VoxelWorld, from: [f32; 2], dir: [f32; 2], length_m:
     true
 }
 
-/// Which third of the deterministic candidate list a run may start from
-/// (`--school-start-fold`). Candidate `i` belongs to fold `i % 3`, so every fold
-/// spreads over the whole city instead of clustering near the depot.
+/// Stable identity of an unordered station pair. Reversing a passenger trip must
+/// never move it between train, validation and test folds.
+pub fn service_pair_fold_key(a: usize, b: usize) -> usize {
+    let (low, high) = if a < b { (a, b) } else { (b, a) };
+    high
+        .checked_mul(high.saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .and_then(|value| value.checked_add(low))
+        .expect("station-pair key overflow")
+}
+
+fn station_approach(
+    world: &VoxelWorld,
+    station: [f32; 2],
+    before_m: f32,
+    selector: usize,
+) -> Option<([f32; 2], [f32; 2])> {
+    const DIRECTIONS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
+    let lane = lane_offset_m(world);
+    for offset_index in 0..DIRECTIONS.len() {
+        let dir = DIRECTIONS[(selector + offset_index) % DIRECTIONS.len()];
+        let offset = lane_offset_for(dir, lane);
+        let start = [
+            station[0] + offset[0] - dir[0] * before_m,
+            station[1] + offset[1] - dir[1] * before_m,
+        ];
+        if !is_road_block(world, start[0], start[1]) {
+            continue;
+        }
+        if flow_at(world, start[0], start[1]) != Some(dir) {
+            continue;
+        }
+        if straight_is_road(world, start, dir, before_m) {
+            return Some((start, dir));
+        }
+    }
+    None
+}
+
+/// Deterministic production-station tasks for lessons 5–8. One canonical
+/// orientation is emitted per unordered pair, so reversed trips cannot leak into
+/// another fold. Runtime route lookup remains in the GPU taxi kernel; this host
+/// pass only validates immutable map geometry at generation setup.
+pub fn service_lesson_candidates(
+    world: &VoxelWorld,
+    stations: &[[f32; 8]],
+    lesson: Lesson,
+    _contract: &LessonContract,
+) -> Vec<LessonGeometry> {
+    if !lesson.is_service() || stations.len() < 2 {
+        return Vec::new();
+    }
+    let packed = match crate::gpu::taxi_routes::pack_distance_fields(world, stations) {
+        Ok(packed) => packed,
+        Err(_) => return Vec::new(),
+    };
+    let cells = world.size * world.size;
+    let cell_index = |station: &[f32; 8]| {
+        let col = (station[0] / world.cell_size).round() as usize;
+        let row = (station[1] / world.cell_size).round() as usize;
+        row * world.size + col
+    };
+    let route_distance = |from: usize, to: usize| {
+        packed[4 + to * cells + cell_index(&stations[from])]
+    };
+    let requires_turn = matches!(lesson, Lesson::NavigateWithPassenger | Lesson::Delivery);
+    let before_m = lesson.start_before_junction_m();
+    let depot = [world.start_pos.x, world.start_pos.z];
+    let mut candidates = Vec::new();
+
+    for low in 0..stations.len() {
+        for high in low + 1..stations.len() {
+            let key = service_pair_fold_key(low, high);
+            // The orientation is stable but not biased toward one station index.
+            let (origin, destination) = if key & 1 == 0 { (low, high) } else { (high, low) };
+            let target = [stations[origin][0], stations[origin][1]];
+            let exit = [stations[destination][0], stations[destination][1]];
+            let forward_distance = route_distance(origin, destination);
+            let reverse_distance = route_distance(destination, origin);
+            if forward_distance < 60.0 || reverse_distance < 60.0 {
+                continue;
+            }
+            if requires_turn
+                && ((target[0] - exit[0]).abs() <= world.cell_size
+                    || (target[1] - exit[1]).abs() <= world.cell_size)
+            {
+                continue;
+            }
+            let Some((start, forward)) = station_approach(world, target, before_m, key) else {
+                continue;
+            };
+            if stations.iter().enumerate().any(|(index, station)| {
+                index != origin
+                    && (station[0] - start[0]).hypot(station[1] - start[1])
+                        < SPAWN_STATION_CLEARANCE_M
+            }) {
+                continue;
+            }
+            let exit_dir = station_approach(world, exit, before_m, key.rotate_left(1))
+                .map(|(_, direction)| direction)
+                .unwrap_or(forward);
+            candidates.push((
+                key,
+                LessonGeometry {
+                    lesson,
+                    start,
+                    forward,
+                    target,
+                    exit,
+                    exit_dir,
+                    wrong_exit: [0.0, 0.0],
+                    depot_distance_m: (target[0] - depot[0]).hypot(target[1] - depot[1]),
+                },
+            ));
+        }
+    }
+    candidates.sort_by_key(|(key, _)| *key);
+    candidates.into_iter().map(|(_, geometry)| geometry).collect()
+}
+
+/// Which third of the deterministic candidate space a run may start from
+/// (`--school-start-fold`). Motor candidate `i` belongs to `i % 3`; service
+/// candidates use their stable unordered station-pair key, so filtering a lesson
+/// or reversing a trip cannot leak the pair into another fold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LessonFold {
     All,
@@ -111,6 +232,27 @@ impl LessonFold {
     }
 }
 
+fn candidate_fold_index(
+    stations: &[[f32; 8]],
+    lesson: Lesson,
+    list_index: usize,
+    geometry: &LessonGeometry,
+) -> usize {
+    if !lesson.is_service() {
+        return list_index;
+    }
+    let station_index = |point: [f32; 2]| {
+        stations
+            .iter()
+            .position(|station| station[0] == point[0] && station[1] == point[1])
+    };
+    let origin = station_index(geometry.target)
+        .expect("service lesson target must be a production station");
+    let destination = station_index(geometry.exit)
+        .expect("service lesson exit must be a production station");
+    service_pair_fold_key(origin, destination)
+}
+
 /// Deterministic lesson starts: one junction approach per being, ordered by the
 /// junction's distance to the depot, then x, then z. Returns an error when the city
 /// cannot host `n` distinct approaches for this lesson.
@@ -139,7 +281,7 @@ pub fn lesson_starts_fold(
     let mut candidates: Vec<LessonGeometry> = lesson_start_candidates(world, stations, lesson, contract)
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| fold.keeps(*i))
+        .filter(|(i, geometry)| fold.keeps(candidate_fold_index(stations, lesson, *i, geometry)))
         .map(|(_, g)| g)
         .collect();
     if candidates.len() < n {
@@ -207,7 +349,7 @@ pub fn lesson_shared_start_fold(
     let candidates: Vec<LessonGeometry> = lesson_start_candidates(world, stations, lesson, contract)
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| fold.keeps(*i))
+        .filter(|(i, geometry)| fold.keeps(candidate_fold_index(stations, lesson, *i, geometry)))
         .map(|(_, g)| g)
         .collect();
     if candidates.is_empty() {
@@ -226,6 +368,9 @@ pub fn lesson_start_candidates(
     lesson: Lesson,
     contract: &LessonContract,
 ) -> Vec<LessonGeometry> {
+    if lesson.is_service() {
+        return service_lesson_candidates(world, stations, lesson, contract);
+    }
     let lane = lane_offset_m(world);
     let centres = street_centres_m(world);
     let depot = world.start_pos;
@@ -318,6 +463,123 @@ mod tests {
         let mut world = VoxelWorld::new(7, 12.0);
         let plan = build_city(&mut world);
         (world, plan.stations)
+    }
+
+    #[test]
+    fn lesson_ids_names_and_service_contract_remain_stable() {
+        let cases = [
+            (Lesson::Move, 1, "move", false, false),
+            (Lesson::Stop, 2, "stop", false, false),
+            (Lesson::TurnNear, 3, "turn_near", false, false),
+            (Lesson::TurnFar, 4, "turn_far", false, false),
+            (Lesson::ApproachPassenger, 5, "approach_passenger", true, false),
+            (Lesson::Pickup, 6, "pickup", true, false),
+            (Lesson::NavigateWithPassenger, 7, "navigate_with_passenger", true, true),
+            (Lesson::Delivery, 8, "delivery", true, false),
+        ];
+        assert_eq!(Lesson::ALL.len(), cases.len());
+        for (index, (lesson, id, name, service, onboard)) in cases.into_iter().enumerate() {
+            assert_eq!(Lesson::ALL[index], lesson);
+            assert_eq!(lesson.id(), id);
+            assert_eq!(lesson.name(), name);
+            assert_eq!(Lesson::parse(name), Some(lesson));
+            assert_eq!(lesson.is_service(), service);
+            assert_eq!(lesson.starts_onboard(), onboard);
+        }
+    }
+
+    #[test]
+    fn service_pairs_are_reachable_long_and_fold_safe() {
+        let (world, stations) = city();
+        let contract = LessonContract::default();
+        let packed = crate::gpu::taxi_routes::pack_distance_fields(&world, &stations).unwrap();
+        let cells = world.size * world.size;
+        let station_index = |point: [f32; 2]| {
+            stations
+                .iter()
+                .position(|station| station[0] == point[0] && station[1] == point[1])
+                .expect("lesson endpoint must be a production station")
+        };
+        let distance_to = |from: usize, to: usize| {
+            let col = (stations[from][0] / world.cell_size).round() as usize;
+            let row = (stations[from][1] / world.cell_size).round() as usize;
+            packed[4 + to * cells + row * world.size + col]
+        };
+
+        let mut pair_folds = std::collections::BTreeMap::new();
+        for lesson in [
+            Lesson::ApproachPassenger,
+            Lesson::Pickup,
+            Lesson::NavigateWithPassenger,
+            Lesson::Delivery,
+        ] {
+            let candidates = service_lesson_candidates(&world, &stations, lesson, &contract);
+            assert!(!candidates.is_empty(), "{} has no candidates", lesson.name());
+            let mut lesson_pairs = std::collections::BTreeSet::new();
+            for (candidate_index, geometry) in candidates.iter().enumerate() {
+                let origin = station_index(geometry.target);
+                let destination = station_index(geometry.exit);
+                assert_ne!(origin, destination);
+                let forward = distance_to(origin, destination);
+                let reverse = distance_to(destination, origin);
+                assert!(forward >= 60.0 && reverse >= 60.0, "{origin}->{destination}: {forward}/{reverse}");
+                assert!(is_road_block(&world, geometry.start[0], geometry.start[1]));
+                assert_eq!(flow_at(&world, geometry.start[0], geometry.start[1]), Some(geometry.forward));
+                let key = service_pair_fold_key(origin, destination);
+                assert_eq!(key, service_pair_fold_key(destination, origin));
+                let fold = key % 3;
+                assert!(lesson_pairs.insert(key), "station pair duplicated within {}", lesson.name());
+                if let Some(previous) = pair_folds.insert(key, fold) {
+                    assert_eq!(previous, fold, "station pair changed fold between lessons");
+                }
+                let selected = match fold {
+                    0 => LessonFold::Train,
+                    1 => LessonFold::Validation,
+                    _ => LessonFold::Test,
+                };
+                assert!(selected.keeps(candidate_fold_index(
+                    &stations,
+                    lesson,
+                    candidate_index,
+                    geometry
+                )));
+                if matches!(lesson, Lesson::NavigateWithPassenger | Lesson::Delivery) {
+                    assert!(
+                        (geometry.target[0] - geometry.exit[0]).abs() > world.cell_size
+                            && (geometry.target[1] - geometry.exit[1]).abs() > world.cell_size,
+                        "navigation pair must require at least one turn"
+                    );
+                }
+            }
+            let mut counts = [0usize; 3];
+            for geometry in &candidates {
+                let key = service_pair_fold_key(
+                    station_index(geometry.target),
+                    station_index(geometry.exit),
+                );
+                counts[key % 3] += 1;
+            }
+            for (fold, expected) in [
+                LessonFold::Train,
+                LessonFold::Validation,
+                LessonFold::Test,
+            ]
+            .into_iter()
+            .zip(counts)
+            {
+                assert!(expected > 0, "{} has an empty {} fold", lesson.name(), fold.name());
+                let selected = lesson_starts_fold(
+                    &world,
+                    &stations,
+                    lesson,
+                    &contract,
+                    expected,
+                    fold,
+                )
+                .unwrap();
+                assert_eq!(selected.len(), expected);
+            }
+        }
     }
 
     #[test]

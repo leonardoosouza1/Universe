@@ -1602,7 +1602,7 @@ fn main() {
                         args.get(i)
                             .and_then(|a| universe::gpu::school::Lesson::parse(a))
                             .unwrap_or_else(|| {
-                                eprintln!("--school requires move, stop, turn_near or turn_far");
+                                eprintln!("--school requires move, stop, turn_near, turn_far, approach_passenger, pickup, navigate_with_passenger or delivery");
                                 std::process::exit(2);
                             }),
                     );
@@ -5009,7 +5009,9 @@ fn main() {
             // `school_bench` is the default mode *when a school lesson exists*.
             // Passing it unconditionally makes the ordinary taxi world look like
             // a bench and disables passenger issuance in `taxi.wgsl`.
-            let taxi_mode = if school_lesson.is_some() && school_bench {
+            let taxi_mode = if school_bench && school_lesson.is_some_and(|lesson| lesson.is_service()) {
+                TaxiMode::ServiceBench
+            } else if school_lesson.is_some() && school_bench {
                 TaxiMode::MotorBench
             } else {
                 TaxiMode::Production
@@ -5022,7 +5024,11 @@ fn main() {
             ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
             if let Some(starts) = school_starts.as_ref() {
                 // Bench: passengers off (the judge owns the task slots). Life: passengers on.
-                ctx.taxi.as_mut().unwrap().set_mode(if school_bench {
+                ctx.taxi.as_mut().unwrap().set_mode(if school_bench
+                    && school_lesson.is_some_and(|lesson| lesson.is_service())
+                {
+                    TaxiMode::ServiceBench
+                } else if school_bench {
                     TaxiMode::MotorBench
                 } else {
                     TaxiMode::Production
