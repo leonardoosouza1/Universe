@@ -2,8 +2,9 @@
 // One invocation per being, scheduled after taxi.post and before the orientation
 // feedback. It never writes a command; it reads the physics OUTPUT pose of this tick,
 // the applied throttle from the physics INPUT and the body life state, then writes
-// its own 32-float record and the task observation slots (65,70,71,80,81,90).
-// Lesson 1 move, 2 stop, 3 turn_near, 4 turn_far. Status 0 running, 1 success,
+// its own record and the task observation slots (65,66,67,70,71,72,80,81,90).
+// Lesson 1 move, 2 stop, 3 turn_near, 4 turn_far, 5 approach passenger,
+// 6 pickup, 7 navigate with passenger, 8 delivery. Status 0 running, 1 success,
 // 2 failed, 3 truncated. Failure codes: 1 contact, 2 death, 3 corridor, 4 born
 // inside goal, 5 overshoot, 6 drove through the junction, 7 wrong exit,
 // 8 entered the stop area without ever reaching v_min.
@@ -20,8 +21,9 @@ struct Params {
 @group(0) @binding(2) var<storage,read> physics_out:array<f32>;
 @group(0) @binding(3) var<storage,read_write> body:array<f32>;
 @group(0) @binding(4) var<storage,read_write> school:array<f32>;
+@group(0) @binding(5) var<storage,read> intent:array<f32>;
 
-const PI:u32=92u; const PO:u32=56u; const BS:u32=128u; const SS:u32=40u;
+const PI:u32=92u; const PO:u32=56u; const BS:u32=128u; const IS:u32=96u; const SS:u32=48u;
 // School record slots (see src/gpu/school.rs for the host mirror).
 const LESSON:u32=0u; const PHASE:u32=1u; const STATUS:u32=2u; const FAIL_CODE:u32=3u;
 const P0X:u32=4u; const P0Z:u32=5u; const F0X:u32=6u; const F0Z:u32=7u;
@@ -34,8 +36,16 @@ const PROGRESS:u32=28u; const ENTRY_SPEED:u32=29u; const WRONG_EX:u32=30u; const
 // Frozen with the outcome so consumption is reported for the judged span, not the whole episode.
 const ENERGY_OUTCOME:u32=32u; const DISTANCE_OUTCOME:u32=33u;
 // Stop shaping: slowest speed seen inside the area (1e9 until entered) and the
-// longest held stop. Recorded always, scored only when flags bit 1 is set.
+// longest strict/near-stop holds. Recorded always, scored only when flags bit 1 is set.
 const MIN_SPEED_INSIDE:u32=34u; const MAX_DWELL:u32=35u;
+// Near-stop bridge: longest consecutive run below 2*v_stop. It gives evolution a
+// temporal gradient toward an earlier stop; success still uses DWELL at v_stop.
+const NEAR_DWELL:u32=36u; const MAX_NEAR_DWELL:u32=37u;
+// Schema v2 service evidence; v1 offsets 0..39 remain unchanged.
+const ACCEPTED_PICKUP_TICK:u32=40u; const ACCEPTED_DROPOFF_TICK:u32=41u;
+const PICKUP_REQUESTS:u32=42u; const DROPOFF_REQUESTS:u32=43u;
+const REFUSAL_CODE:u32=44u; const PASSENGER_ID:u32=45u;
+const DELIVERY_START:u32=46u; const DELIVERY_DELTA:u32=47u;
 
 fn close(k:u32, s:u32, status:f32, code:f32) {
   school[k+STATUS]=status; school[k+FAIL_CODE]=code; school[k+OUTCOME_TICK]=f32(p.tick);
@@ -47,7 +57,7 @@ fn close(k:u32, s:u32, status:f32, code:f32) {
   var shaping=0.0;
   if((p.flags&2u)!=0u && school[k+LESSON]>1.5 && school[k+LESSON]<2.5){
     shaping=300.0*clamp(1.0-school[k+MIN_SPEED_INSIDE]/max(p.v_min,0.001),0.0,1.0)
-           +200.0*clamp(school[k+MAX_DWELL]/max(p.hold_ticks,1.0),0.0,1.0);
+           +200.0*clamp(school[k+MAX_NEAR_DWELL]/max(p.hold_ticks,1.0),0.0,1.0);
   }
   school[k+SCORE]=1000.0*success+500.0*school[k+PROGRESS]-200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive)+shaping;
 }
@@ -64,6 +74,44 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
   let l0=vec2<f32>(-f0.y,f0.x);
   let goal=vec2<f32>(school[k+TX],school[k+TZ]);
   let exit=vec2<f32>(school[k+EX],school[k+EZ]);
+  let service=lesson>=4.5;
+  if(service){
+    let first=school[k+PASSENGER_ID]<0.5;
+    if(first){
+      let passenger_id=f32(b+1u);
+      school[k+PASSENGER_ID]=passenger_id;
+      school[k+DELIVERY_START]=body[s+68u];
+      school[k+ACCEPTED_PICKUP_TICK]=-1.0;
+      school[k+ACCEPTED_DROPOFF_TICK]=-1.0;
+      body[s+66u]=exit.x;body[s+67u]=exit.y;
+      body[s+70u]=goal.x;body[s+71u]=goal.y;
+      body[s+72u]=passenger_id;
+      body[s+73u]=10.0+0.02*distance(goal,exit);
+      let starts_onboard=lesson>=6.5 && lesson<7.5;
+      body[s+65u]=select(0.0,1.0,starts_onboard);
+      body[s+90u]=select(1.0,0.0,starts_onboard);
+    }
+    body[s+66u]=exit.x;body[s+67u]=exit.y;
+    body[s+70u]=goal.x;body[s+71u]=goal.y;
+    let request_base=b*IS;
+    if(intent[request_base+6u]>0.5){school[k+PICKUP_REQUESTS]+=1.0;}
+    if(intent[request_base+7u]>0.5){school[k+DROPOFF_REQUESTS]+=1.0;}
+    school[k+REFUSAL_CODE]=body[s+69u];
+    if(lesson<6.5 || lesson>=7.5){
+      if(school[k+ACCEPTED_PICKUP_TICK]<0.0 && body[s+65u]>0.5){
+        school[k+ACCEPTED_PICKUP_TICK]=f32(p.tick);
+      }
+    }
+    school[k+DELIVERY_DELTA]=max(0.0,body[s+68u]-school[k+DELIVERY_START]);
+    if(school[k+ACCEPTED_DROPOFF_TICK]<0.0 && school[k+DELIVERY_DELTA]>0.0){
+      school[k+ACCEPTED_DROPOFF_TICK]=f32(p.tick);
+    }
+    var subgoal=goal;
+    if(body[s+65u]>0.5){subgoal=exit;body[s+90u]=0.0;}
+    if(school[k+DELIVERY_DELTA]>0.0){body[s+90u]=0.0;}
+    body[s+80u]=subgoal.x-pos.x;body[s+81u]=subgoal.y-pos.y;
+    return;
+  }
   let turning=lesson>=2.5;
   let in_box=abs(pos.x-goal.x)<=p.box_half && abs(pos.y-goal.y)<=p.box_half;
   // A turn's phase advances on the tick the box is entered, before the sub-goal is
@@ -120,8 +168,10 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
     if(school[k+PHASE]>=0.5 && school[k+PHASE]<1.5 && inside){school[k+PHASE]=2.0; school[k+ENTRY_SPEED]=speed;}
     if(school[k+PHASE]>=1.5){
       if(inside && speed<=p.v_stop){school[k+DWELL]+=1.0;} else {school[k+DWELL]=0.0;}
+      if(inside && speed<=2.0*p.v_stop){school[k+NEAR_DWELL]+=1.0;} else {school[k+NEAR_DWELL]=0.0;}
       if(inside){school[k+MIN_SPEED_INSIDE]=min(school[k+MIN_SPEED_INSIDE],speed);}
       school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
+      school[k+MAX_NEAR_DWELL]=max(school[k+MAX_NEAR_DWELL],school[k+NEAR_DWELL]);
       if(school[k+DWELL]>=p.hold_ticks){close(k,s,1.0,0.0);return;}
     }
   } else {

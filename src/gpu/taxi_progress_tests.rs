@@ -109,6 +109,23 @@ impl Fixture {
         self.intents[b * INTENT + channel] = if on { 1.0 } else { 0.0 };
     }
 
+    fn speed(&mut self, b: usize, speed_mps: f32) {
+        self.poses[b * PHYSICS] = speed_mps;
+    }
+
+    fn prime_service_task(&mut self, b: usize, origin: [f32; 2], destination: [f32; 2], id: f32) {
+        let s = b * BODY;
+        self.bodies[s + 64] = 25.0;
+        self.bodies[s + 66] = destination[0];
+        self.bodies[s + 67] = destination[1];
+        self.bodies[s + 70] = origin[0];
+        self.bodies[s + 71] = origin[1];
+        self.bodies[s + 72] = id;
+        self.bodies[s + 73] = 10.0 + 0.02 * (origin[0] - destination[0]).hypot(origin[1] - destination[1]);
+        self.bodies[s + 84] = 1.0;
+        self.bodies[s + 90] = 1.0;
+    }
+
     /// One post-kernel step; returns the body records and the world buffer.
     fn step(&mut self) -> (Vec<f32>, Vec<f32>) {
         self.queue.write_buffer(&self.body, 0, bytemuck::cast_slice(&self.bodies));
@@ -168,6 +185,56 @@ impl Fixture {
         }
         panic!("no straight road of {length_m} m leaves the station");
     }
+}
+
+#[test]
+#[ignore = "needs the real GPU"]
+fn service_bench_uses_canonical_pickup_and_dropoff_predicates_once() {
+    let mut f = Fixture::new();
+    f.taxi.set_mode(TaxiMode::ServiceBench);
+    let origin = [f.stations[0][0], f.stations[0][1]];
+    let destination = [f.stations[1][0], f.stations[1][1]];
+    for b in 0..N {
+        f.prime_service_task(b, origin, destination, 101.0 + b as f32);
+        f.place(b, origin);
+        f.request(b, 6, true);
+    }
+    f.speed(1, 1.0);
+    f.place(2, [origin[0] + 12.0, origin[1]]);
+    f.bodies[3 * BODY + 90] = 0.0;
+
+    let (body, _) = f.step();
+    assert_eq!(body[65], 1.0, "valid pickup accepted");
+    assert_eq!(body[72], 101.0);
+    assert_eq!(&body[80..82], &[destination[0] - origin[0], destination[1] - origin[1]]);
+    assert_eq!(body[BODY + 65], 0.0);
+    assert_eq!(body[BODY + 69], 1.0, "moving request refusal");
+    assert_eq!(body[2 * BODY + 65], 0.0);
+    assert_eq!(body[2 * BODY + 69], 2.0, "outside-radius refusal");
+    assert_eq!(body[3 * BODY + 69], 5.0, "missing-passenger refusal");
+
+    // Holding pickup cannot issue a second passenger or alter money/delivery state.
+    let money_before = body[64];
+    let (body, _) = f.step();
+    assert_eq!((body[65], body[72], body[64], body[68]), (1.0, 101.0, money_before, 0.0));
+
+    f.request(0, 6, false);
+    f.request(0, 7, true);
+    f.place(0, origin);
+    let (body, _) = f.step();
+    assert_eq!(body[69], 2.0, "dropoff outside destination refused");
+    assert_eq!((body[65], body[68]), (1.0, 0.0));
+
+    f.place(0, destination);
+    let (body, _) = f.step();
+    let fare = body[73];
+    assert_eq!((body[65], body[68], body[75]), (0.0, 1.0, 101.0));
+    assert!((body[64] - (money_before + fare)).abs() < 1e-4);
+    let paid_once = (body[64], body[68]);
+
+    // A held dropoff intent after onboard clears cannot duplicate fare or delivery.
+    let (body, _) = f.step();
+    assert_eq!((body[64], body[68]), paid_once);
 }
 
 fn fitness_of(body: &[f32]) -> f64 {

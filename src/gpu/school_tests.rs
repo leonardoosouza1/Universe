@@ -10,6 +10,7 @@ struct Fixture {
     input: wgpu::Buffer,
     output: wgpu::Buffer,
     body: wgpu::Buffer,
+    intent: wgpu::Buffer,
     tick: u32,
 }
 
@@ -62,6 +63,19 @@ fn turn(lesson: Lesson) -> LessonGeometry {
     }
 }
 
+fn service(lesson: Lesson) -> LessonGeometry {
+    LessonGeometry {
+        lesson,
+        start: [93.0, 114.0],
+        forward: [0.0, 1.0],
+        target: [96.0, 96.0],
+        exit: [288.0, 672.0],
+        exit_dir: [0.0, 1.0],
+        wrong_exit: [0.0, 0.0],
+        depot_distance_m: 0.0,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Step {
     pos: [f32; 2],
@@ -71,13 +85,15 @@ struct Step {
     throttle: f32,
     alive: f32,
     integrity: f32,
+    pickup: bool,
+    dropoff: bool,
 }
 
 impl Step {
     fn at(pos: [f32; 2], vel: [f32; 2]) -> Self {
         let speed = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();
         let heading = if speed > 1e-6 { [vel[0] / speed, vel[1] / speed] } else { [0.0, 1.0] };
-        Self { pos, vel, heading, mask: 0.0, throttle: 0.5, alive: 1.0, integrity: 1.0 }
+        Self { pos, vel, heading, mask: 0.0, throttle: 0.5, alive: 1.0, integrity: 1.0, pickup: false, dropoff: false }
     }
     fn heading(mut self, h: [f32; 2]) -> Self {
         self.heading = h;
@@ -93,6 +109,14 @@ impl Step {
     }
     fn dead(mut self) -> Self {
         self.alive = 0.0;
+        self
+    }
+    fn pickup(mut self) -> Self {
+        self.pickup = true;
+        self
+    }
+    fn dropoff(mut self) -> Self {
+        self.dropoff = true;
         self
     }
 }
@@ -135,12 +159,17 @@ impl Fixture {
         let input = make(PHYSICS_INPUT_STRIDE);
         let output = make(PHYSICS_OUTPUT_STRIDE);
         let body = make(BODY_STRIDE);
+        let intent = make(96);
         let school = SchoolGpu::new(&device, 1, CONTRACT, horizon, true, stop_shaping);
         school.reset(&queue, &[geometry]).unwrap();
-        Self { device, queue, school, input, output, body, tick: 0 }
+        Self { device, queue, school, input, output, body, intent, tick: 0 }
     }
 
     fn step(&mut self, s: Step) {
+        self.step_with_body(s, |_| {});
+    }
+
+    fn step_with_body(&mut self, s: Step, mutate: impl FnOnce(&mut [f32; BODY_STRIDE])) {
         let mut input = [0.0f32; PHYSICS_INPUT_STRIDE];
         input[51] = s.throttle;
         let mut output = [0.0f32; PHYSICS_OUTPUT_STRIDE];
@@ -157,13 +186,18 @@ impl Fixture {
         body[8] = s.integrity;
         body[29] = s.alive;
         body[98] = self.tick as f32 * 0.1;
+        mutate(&mut body);
+        let mut intent = [0.0f32; 96];
+        intent[6] = s.pickup as u8 as f32;
+        intent[7] = s.dropoff as u8 as f32;
         self.queue.write_buffer(&self.input, 0, bytemuck::cast_slice(&input));
         self.queue.write_buffer(&self.output, 0, bytemuck::cast_slice(&output));
         // Body slots the judge owns are rewritten by the kernel; everything else is fixed.
         self.queue.write_buffer(&self.body, 0, bytemuck::cast_slice(&body));
+        self.queue.write_buffer(&self.intent, 0, bytemuck::cast_slice(&intent));
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.school
-            .encode(&self.device, &mut encoder, &self.input, &self.output, &self.body, 1, self.tick)
+            .encode(&self.device, &mut encoder, &self.input, &self.output, &self.body, &self.intent, 1, self.tick)
             .unwrap();
         self.queue.submit(Some(encoder.finish()));
         self.tick += 1;
@@ -203,6 +237,77 @@ impl Fixture {
         staging.unmap();
         out
     }
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_lessons_initialize_task_state_and_record_transitions() {
+    for lesson in [Lesson::ApproachPassenger, Lesson::Pickup, Lesson::Delivery] {
+        let geometry = service(lesson);
+        let mut fixture = Fixture::new(geometry, 256);
+        fixture.step(Step::at(geometry.start, [0.0, 0.0]).throttle(0.0));
+        let body = fixture.body();
+        let record = fixture.record();
+        assert_eq!(&body[70..72], &geometry.target);
+        assert_eq!(&body[66..68], &geometry.exit);
+        assert_eq!((body[65], body[90]), (0.0, 1.0));
+        assert!(body[72] > 0.0 && body[73] > 10.0);
+        assert_eq!(record[R_PASSENGER_ID], body[72]);
+        assert_eq!(record[R_DELIVERY_START], 0.0);
+        assert_eq!((record[R_ACCEPTED_PICKUP_TICK], record[R_ACCEPTED_DROPOFF_TICK]), (-1.0, -1.0));
+    }
+
+    let geometry = service(Lesson::NavigateWithPassenger);
+    let mut fixture = Fixture::new(geometry, 256);
+    fixture.step(Step::at(geometry.start, [0.0, 0.0]).throttle(0.0));
+    let body = fixture.body();
+    assert_eq!((body[65], body[90]), (1.0, 0.0));
+    assert_eq!(&body[80..82], &[geometry.exit[0] - geometry.start[0], geometry.exit[1] - geometry.start[1]]);
+
+    // The school observer records the native requests and the authoritative taxi
+    // state transitions; it never synthesizes pickup or delivery itself.
+    let geometry = service(Lesson::Delivery);
+    let mut fixture = Fixture::new(geometry, 256);
+    fixture.step(Step::at(geometry.start, [0.0, 0.0]).throttle(0.0));
+    let passenger_id = fixture.record()[R_PASSENGER_ID];
+    fixture.step_with_body(
+        Step::at(geometry.target, [0.0, 0.0]).pickup().throttle(0.0),
+        |body| {
+            body[65] = 1.0;
+            body[66] = geometry.exit[0];
+            body[67] = geometry.exit[1];
+            body[70] = geometry.target[0];
+            body[71] = geometry.target[1];
+            body[72] = passenger_id;
+            body[90] = 0.0;
+        },
+    );
+    let body = fixture.body();
+    assert_eq!(&body[80..82], &[geometry.exit[0] - geometry.target[0], geometry.exit[1] - geometry.target[1]]);
+    let record = fixture.record();
+    assert_eq!(record[R_PICKUP_REQUESTS], 1.0);
+    assert_eq!(record[R_ACCEPTED_PICKUP_TICK], 1.0);
+
+    fixture.step_with_body(
+        Step::at(geometry.target, [0.0, 0.0]).dropoff().throttle(0.0),
+        |body| {
+            body[65] = 1.0;
+            body[72] = passenger_id;
+            body[69] = 2.0;
+        },
+    );
+    assert_eq!(fixture.record()[R_REFUSAL_CODE], 2.0);
+    fixture.step_with_body(
+        Step::at(geometry.exit, [0.0, 0.0]).dropoff().throttle(0.0),
+        |body| {
+            body[68] = 1.0;
+            body[75] = passenger_id;
+        },
+    );
+    let record = fixture.record();
+    assert_eq!(record[R_DROPOFF_REQUESTS], 2.0);
+    assert_eq!(record[R_ACCEPTED_DROPOFF_TICK], 3.0);
+    assert_eq!(record[R_DELIVERY_DELTA], 1.0);
 }
 
 fn status(r: &[f32; SCHOOL_STRIDE_F32]) -> (u32, u32) {
@@ -460,16 +565,33 @@ fn stop_shaping_records_always_and_scores_only_with_the_flag() {
     stop_slow_then_leave(&mut plain);
     let r = plain.record();
     assert_eq!(status(&r), (STATUS_TRUNCATED, 0), "{r:?}");
-    assert!((r[R_MIN_SPEED_INSIDE] - 0.2).abs() < 0.02 && r[R_MAX_DWELL] == 40.0, "{r:?}");
+    assert!((r[R_MIN_SPEED_INSIDE] - 0.2).abs() < 0.02 && r[R_MAX_DWELL] == 40.0 && r[R_MAX_NEAR_DWELL] == 40.0, "{r:?}");
     assert!((r[R_SCORE] - 500.0 * r[R_PROGRESS]).abs() < 1.0, "plain score must stay the Stage 2 formula: {r:?}");
 
     let mut shaped = Fixture::new_with(straight(Lesson::Stop), 600, true);
     stop_slow_then_leave(&mut shaped);
     let r = shaped.record();
     assert_eq!(status(&r), (STATUS_TRUNCATED, 0), "{r:?}");
-    let expected = 500.0 * r[R_PROGRESS] + 300.0 * (1.0 - r[R_MIN_SPEED_INSIDE] / 3.0) + 200.0 * (40.0 / 128.0);
+    let expected = 500.0 * r[R_PROGRESS] + 300.0 * (1.0 - r[R_MIN_SPEED_INSIDE] / 3.0) + 200.0 * (r[R_MAX_NEAR_DWELL] / 128.0);
     assert!((r[R_SCORE] - expected).abs() < 1.0, "shaped score {} vs expected {expected}: {r:?}", r[R_SCORE]);
     assert!(r[R_SCORE] > 500.0 * r[R_PROGRESS] + 250.0, "{r:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_shaping_tracks_near_stop_duration_without_relaxing_success() {
+    let mut f = Fixture::new_with(straight(Lesson::Stop), 1280, true);
+    let approach = stop_approach(6.0);
+    let z = approach.last().unwrap().pos[1];
+    f.run(approach);
+    // 0.5 m/s is below 2*v_stop (0.6), but above the strict 0.3 m/s stop.
+    f.run((0..64).map(|_| Step::at([93.0, z + 1.0], [0.0, 0.5]).throttle(0.0)));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_RUNNING, 0), "{r:?}");
+    assert_eq!(r[R_DWELL], 0.0, "near-stop must not count as a successful stop");
+    assert_eq!(r[R_MAX_DWELL], 0.0);
+    assert_eq!(r[R_NEAR_DWELL], 64.0);
+    assert_eq!(r[R_MAX_NEAR_DWELL], 64.0);
 }
 
 #[test]

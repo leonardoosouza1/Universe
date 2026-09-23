@@ -17,9 +17,14 @@ impl GpuCtx {
                 state.phys.dt = dt;
                 state.phys.engine_temp = 20.0;
                 state.phys.oil_temp = 20.0;
-                if self.taxi_witness.is_some() {
-                    state.phys.config_flags |= universe::gpu::physics::STATIC_REST_FLAG;
-                }
+                // Static friction is a property of the resident taxi body, not a
+                // privilege of the scripted feasibility witness.  Keeping this flag on
+                // only for the witness meant an evolved controller could command zero
+                // throttle and positive brake below 1 m/s yet continue creeping forever.
+                // The physics kernel still owns the strict gate (ground contact, locked
+                // wheels, sufficient brake/friction impulse and speed <= 1 m/s), so this
+                // does not choose an action or freeze a moving/airborne body.
+                state.phys.config_flags |= universe::gpu::physics::STATIC_REST_FLAG;
             }
             self.phys_gpu
                 .upload_resident_state(&states.iter().map(|s| s.phys).collect::<Vec<_>>())?;
@@ -230,6 +235,7 @@ impl GpuCtx {
             )?;
         }
         let flags = FLAG_ALLOW_LOW_SPEED_BRAKE
+            | FLAG_EXCLUSIVE_PEDALS
             | if motor_head_linear() || self.taxi_witness.is_some() {
                 FLAG_LINEAR_HEAD
             } else {
@@ -355,6 +361,7 @@ impl GpuCtx {
                 self.phys_gpu.input_buffer(),
                 self.phys_gpu.output_buffer(),
                 &body.buf_state,
+                taxi_intent,
                 n,
                 tick as u32,
             )?;

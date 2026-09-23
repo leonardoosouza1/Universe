@@ -11,7 +11,8 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
 pub const SCHOOL_ID: &str = "organism-school-v1";
-pub const SCHOOL_STRIDE_F32: usize = 40;
+pub const SCHOOL_SCHEMA_VERSION: u32 = 2;
+pub const SCHOOL_STRIDE_F32: usize = 48;
 pub const PHYSICS_INPUT_STRIDE: usize = 92;
 pub const PHYSICS_OUTPUT_STRIDE: usize = 56;
 pub const BODY_STRIDE: usize = 128;
@@ -53,6 +54,15 @@ pub const R_MIN_SPEED_INSIDE: usize = 34;
 pub const R_MAX_DWELL: usize = 35;
 pub const R_NEAR_DWELL: usize = 36;
 pub const R_MAX_NEAR_DWELL: usize = 37;
+/// Service-event evidence appended after the frozen v1 range 0..39.
+pub const R_ACCEPTED_PICKUP_TICK: usize = 40;
+pub const R_ACCEPTED_DROPOFF_TICK: usize = 41;
+pub const R_PICKUP_REQUESTS: usize = 42;
+pub const R_DROPOFF_REQUESTS: usize = 43;
+pub const R_REFUSAL_CODE: usize = 44;
+pub const R_PASSENGER_ID: usize = 45;
+pub const R_DELIVERY_START: usize = 46;
+pub const R_DELIVERY_DELTA: usize = 47;
 
 pub const STATUS_RUNNING: u32 = 0;
 pub const STATUS_SUCCESS: u32 = 1;
@@ -247,6 +257,8 @@ impl LessonGeometry {
         r[R_EXIT_DIR + 1] = self.exit_dir[1];
         r[R_WRONG_EXIT] = self.wrong_exit[0];
         r[R_WRONG_EXIT + 1] = self.wrong_exit[1];
+        r[R_ACCEPTED_PICKUP_TICK] = -1.0;
+        r[R_ACCEPTED_DROPOFF_TICK] = -1.0;
         r
     }
     pub fn to_json(&self) -> serde_json::Value {
@@ -349,6 +361,7 @@ impl SchoolGpu {
                 storage(2, true),
                 storage(3, false),
                 storage(4, false),
+                storage(5, true),
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -407,6 +420,7 @@ impl SchoolGpu {
         physics_input: &wgpu::Buffer,
         physics_output: &wgpu::Buffer,
         body: &wgpu::Buffer,
+        intent: &wgpu::Buffer,
         n: usize,
         tick: u32,
     ) -> Result<(), &'static str> {
@@ -417,6 +431,7 @@ impl SchoolGpu {
             (physics_input, PHYSICS_INPUT_STRIDE),
             (physics_output, PHYSICS_OUTPUT_STRIDE),
             (body, BODY_STRIDE),
+            (intent, 96),
         ] {
             if !buffer.usage().contains(wgpu::BufferUsages::STORAGE)
                 || buffer.size() < n as u64 * stride as u64 * 4
@@ -456,6 +471,7 @@ impl SchoolGpu {
                 wgpu::BindGroupEntry { binding: 2, resource: physics_output.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: body.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: self.buf_state.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: intent.as_entire_binding() },
             ],
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -538,5 +554,10 @@ pub fn record_json(r: &[f32; SCHOOL_STRIDE_F32], energy_now_j: f32, distance_now
         "max_dwell_ticks": r[R_MAX_DWELL],
         "near_stop_dwell_ticks": r[R_NEAR_DWELL],
         "max_near_stop_dwell_ticks": r[R_MAX_NEAR_DWELL],
+        "accepted_pickup_tick": if r[R_ACCEPTED_PICKUP_TICK] >= 0.0 { serde_json::json!(r[R_ACCEPTED_PICKUP_TICK]) } else { serde_json::Value::Null },
+        "accepted_dropoff_tick": if r[R_ACCEPTED_DROPOFF_TICK] >= 0.0 { serde_json::json!(r[R_ACCEPTED_DROPOFF_TICK]) } else { serde_json::Value::Null },
+        "pickup_requests": r[R_PICKUP_REQUESTS], "dropoff_requests": r[R_DROPOFF_REQUESTS],
+        "service_refusal_code": r[R_REFUSAL_CODE], "passenger_id": r[R_PASSENGER_ID],
+        "delivery_start": r[R_DELIVERY_START], "delivery_delta": r[R_DELIVERY_DELTA],
     })
 }

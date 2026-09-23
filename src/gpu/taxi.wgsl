@@ -105,6 +105,10 @@ fn post() {
       if(d<near_dist){near=j;near_dist=d;}
       if(world[station(j)+11u]>0.0 && d<waiting_dist){waiting=j;waiting_dist=d;has_waiting=true;}
     }
+    if(p.mode==2u){
+      has_waiting=body[s+90u]>0.5;
+      waiting_dist=distance(pos,vec2<f32>(body[s+70u],body[s+71u]));
+    }
     let w=station(near); body[s+82u]=f32(near);
     body[s+83u]=select(0.0,1.0,near_dist<=4.0 && (world[w+8u]>0.0 || world[w+9u]>0.0 || world[w+10u]>0.0));
     body[s+85u]=world[w]-pos.x; body[s+86u]=world[w+1u]-pos.y;
@@ -114,13 +118,15 @@ fn post() {
     // A school lesson measures one controller in a fixed environment. Letting
     // mutated classmates consume these shared stocks changes the elite's sensor
     // channel 187 and breaks exact re-evaluation even with an unchanged genome.
-    if(p.mode!=0u){continue;}
-    if(body[s+65u]<0.5 && has_waiting){let q=station(waiting);body[s+70u]=world[q];body[s+71u]=world[q+1u];}
-    body[s+90u]=select(0.0,1.0,has_waiting);
+    if(p.mode==1u){continue;}
+    if(p.mode==0u){
+      if(body[s+65u]<0.5 && has_waiting){let q=station(waiting);body[s+70u]=world[q];body[s+71u]=world[q+1u];}
+      body[s+90u]=select(0.0,1.0,has_waiting);
+    }
     if(body[s+29u]<0.5){body[s+69u]=6.0;continue;}
     let any_request=requested(b,5u)||requested(b,6u)||requested(b,7u);
     if(any_request && speed>=0.5){body[s+69u]=1.0;}
-    if(requested(b,5u) && speed<0.5){
+    if(p.mode==0u && requested(b,5u) && speed<0.5){
       if(near_dist>4.0){body[s+69u]=2.0;}else{
         var received=0.0;
         for(var r=0u;r<3u;r++){
@@ -137,13 +143,18 @@ fn post() {
       }
     }
     if(requested(b,6u) && speed<0.5 && body[s+65u]<0.5){
-      if(!has_waiting || waiting_dist>4.0){body[s+69u]=5.0;}else{
-        let q=station(waiting);let dst=station(u32(world[q+12u]));
-        body[s+65u]=1.0;body[s+72u]=world[q+11u];body[s+74u]=0.0;
-        body[s+66u]=world[dst];body[s+67u]=world[dst+1u];
-        body[s+70u]=world[q];body[s+71u]=world[q+1u];
-        body[s+73u]=10.0+0.02*distance(vec2<f32>(world[q],world[q+1u]),vec2<f32>(world[dst],world[dst+1u]));
-        world[q+11u]=0.0;world[q+13u]=30.0;
+      if(!has_waiting){body[s+69u]=5.0;}
+      else if(waiting_dist>4.0){body[s+69u]=2.0;}
+      else{
+        body[s+65u]=1.0;body[s+74u]=0.0;body[s+90u]=0.0;
+        if(p.mode==0u){
+          let q=station(waiting);let dst=station(u32(world[q+12u]));
+          body[s+72u]=world[q+11u];
+          body[s+66u]=world[dst];body[s+67u]=world[dst+1u];
+          body[s+70u]=world[q];body[s+71u]=world[q+1u];
+          body[s+73u]=10.0+0.02*distance(vec2<f32>(world[q],world[q+1u]),vec2<f32>(world[dst],world[dst+1u]));
+          world[q+11u]=0.0;world[q+13u]=30.0;
+        }
       }
     }
     if(body[s+65u]>0.5){
@@ -151,7 +162,8 @@ fn post() {
       if(requested(b,7u) && speed<0.5){
         if(distance(pos,vec2<f32>(body[s+66u],body[s+67u]))>4.0){body[s+69u]=2.0;}else{
           if(body[s+72u]!=body[s+75u]){
-            body[s+64u]+=body[s+73u];body[s+68u]+=1.0;world[2]+=body[s+73u];body[s+75u]=body[s+72u];
+            body[s+64u]+=body[s+73u];body[s+68u]+=1.0;body[s+75u]=body[s+72u];
+            if(p.mode==0u){world[2]+=body[s+73u];}
           }
           body[s+65u]=0.0;body[s+72u]=0.0;
         }
@@ -169,7 +181,10 @@ fn post() {
     // start (route -1) earns none for that key. Dead beings skip this block above.
     var key=0.0; var goal=vec2<f32>(0.0,0.0);
     if(body[s+65u]>0.5){key=body[s+72u]*2.0+1.0;goal=vec2<f32>(body[s+66u],body[s+67u]);}
-    else if(has_waiting){let q=station(waiting);key=world[q+11u]*2.0;goal=vec2<f32>(world[q],world[q+1u]);}
+    else if(has_waiting){
+      if(p.mode==2u){key=body[s+72u]*2.0;goal=vec2<f32>(body[s+70u],body[s+71u]);}
+      else{let q=station(waiting);key=world[q+11u]*2.0;goal=vec2<f32>(world[q],world[q+1u]);}
+    }
     if(key==0.0){body[s+31u]=0.0;body[s+61u]=0.0;body[s+62u]=0.0;body[s+127u]=0.0;}
     else{
       let remaining=route_distance(pos,goal);

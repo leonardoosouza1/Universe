@@ -5101,7 +5101,7 @@ fn main() {
             if let (Some(lesson), Some(starts)) = (school_lesson, school_starts.as_ref()) {
                 let rotated: Vec<_> = (0..n_seres).map(|i| starts[(i + spawn_rotation) % starts.len()].to_json()).collect();
                 manifest["school"] = serde_json::json!({
-                    "id": universe::gpu::school::SCHOOL_ID, "task_id": lesson.name(), "lesson_id": lesson.id(), "version": 1,
+                    "id": universe::gpu::school::SCHOOL_ID, "task_id": lesson.name(), "lesson_id": lesson.id(), "version": universe::gpu::school::SCHOOL_SCHEMA_VERSION,
                     "mode": if school_bench { "bench" } else { "life" }, "env_seed": pop_seed, "start_tick": 0,
                     "horizon_ticks": school_horizon_ticks, "tick_rate": 64,
                     "observable_objective": "sub-goal direction cos/sin (178/179), d/(d+100) (183), has_task (180); v2: dx/dz per 100 m (178/179)",
