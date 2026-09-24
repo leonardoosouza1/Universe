@@ -25,6 +25,7 @@
 //! | `MOTOR_HEAD_MODE` | `main()` (flag `--motor-head`) | `context.rs::tick()` (native output transfer) |
 //! | `THROTTLE_ARBITRATION_MODE` | `main()` (flag `--throttle-arbitration`) | `context.rs::tick()` (native throttle merge) |
 //! | `REVERSE_CONTROLLER_V2` | `main()` (flag `--reverse-controller-v2`) | `context.rs::tick()` (reverse state machine) |
+//! | `ORGANISM_LEGACY_PEDALS` | `main()` (flag `--organism-legacy-pedals`) | `organism_tick.rs` (body flags of the resident taxi: exclusive pedals, low-speed brake, static rest) |
 //! | `WALL_LIFE_DRAIN`, `STAG_LIFE_DRAIN` | `main()` (flags `--wall-life`/`--stag-life-drain`) | `context.rs::tick()` (custo de vida) |
 //! | `LIFE_CAP_TICKS` | `main()` (flag `--life-cap`) | `context.rs::tick()` + `main()`, via `life_cap()` |
 //! | `LIFE_EARN` | `main()` (flag `--life-earn`) | `main()` (laço de geração, ganho de vida por avanço) |
@@ -180,6 +181,15 @@ pub static THROTTLE_ARBITRATION_MODE: std::sync::atomic::AtomicU32 =
 #[inline]
 pub fn throttle_arbitration_signed() -> bool {
     THROTTLE_ARBITRATION_MODE.load(Ordering::Relaxed) == 1
+}
+/// `--organism-legacy-pedals`: drop the resident-taxi body flags that commit 43f0b44
+/// made unconditional (exclusive pedals, low-speed brake, static rest) so a paired A/B
+/// is possible. Off (the default) keeps every 2026-09-22+ school run as it was.
+pub static ORGANISM_LEGACY_PEDALS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn organism_legacy_pedals() -> bool {
+    ORGANISM_LEGACY_PEDALS.load(Ordering::Relaxed)
 }
 /// Enables the corrected reverse state machine. Off preserves the historical inline path.
 pub static REVERSE_CONTROLLER_V2: std::sync::atomic::AtomicBool =

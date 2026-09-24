@@ -24,7 +24,9 @@ impl GpuCtx {
                 // The physics kernel still owns the strict gate (ground contact, locked
                 // wheels, sufficient brake/friction impulse and speed <= 1 m/s), so this
                 // does not choose an action or freeze a moving/airborne body.
-                state.phys.config_flags |= universe::gpu::physics::STATIC_REST_FLAG;
+                if !crate::statics::organism_legacy_pedals() {
+                    state.phys.config_flags |= universe::gpu::physics::STATIC_REST_FLAG;
+                }
             }
             self.phys_gpu
                 .upload_resident_state(&states.iter().map(|s| s.phys).collect::<Vec<_>>())?;
@@ -234,8 +236,12 @@ impl GpuCtx {
                 n,
             )?;
         }
-        let flags = FLAG_ALLOW_LOW_SPEED_BRAKE
-            | FLAG_EXCLUSIVE_PEDALS
+        let pedal_flags = if crate::statics::organism_legacy_pedals() {
+            0
+        } else {
+            FLAG_ALLOW_LOW_SPEED_BRAKE | FLAG_EXCLUSIVE_PEDALS
+        };
+        let flags = pedal_flags
             | if motor_head_linear() || self.taxi_witness.is_some() {
                 FLAG_LINEAR_HEAD
             } else {

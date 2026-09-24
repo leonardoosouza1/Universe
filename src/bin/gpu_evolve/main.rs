@@ -962,6 +962,13 @@ fn main() {
     // Stop-score shaping (docs/SCHOOL-STOP-SHAPING-20260922.md); off by default.
     let mut school_stop_shaping = false;
     let mut school_stop_envelope = false;
+    // `Some` only when the flag was given; the default clamp lives in the library.
+    let mut school_stop_envelope_clamp_m: Option<f32> = None;
+    // docs/GAP-SWEEP-20260924.md P0: deadline fraction of the horizon (open = failure 16),
+    // selection rule over the K starts, and the candidate pool the batch rotates through.
+    let mut school_deadline_frac: Option<f32> = None;
+    let mut school_select = school_batch::SchoolSelection::Mean;
+    let mut school_start_pool: usize = 0;
     let mut school_shared_start: Option<universe::organism_school::SharedStart> = None;
     // (candidate index, fold count) of the shared start of the current generation.
     let mut school_shared_pick: Option<(usize, usize)> = None;
@@ -1141,6 +1148,37 @@ fn main() {
                 }
                 "--school-stop-envelope" => {
                     school_stop_envelope = true;
+                }
+                "--school-stop-envelope-clamp-m" => {
+                    i += 1;
+                    school_stop_envelope_clamp_m = Some(args.get(i).and_then(|a| a.parse::<f32>().ok()).filter(|c| *c > 0.0).unwrap_or_else(|| {
+                        eprintln!("--school-stop-envelope-clamp-m requires a positive distance in metres");
+                        std::process::exit(2);
+                    }));
+                }
+                "--school-deadline-frac" => {
+                    i += 1;
+                    school_deadline_frac = Some(args.get(i).and_then(|a| a.parse::<f32>().ok()).filter(|f| *f > 0.0 && *f <= 1.0).unwrap_or_else(|| {
+                        eprintln!("--school-deadline-frac requires a fraction of the horizon in (0, 1]");
+                        std::process::exit(2);
+                    }));
+                }
+                "--school-select" => {
+                    i += 1;
+                    school_select = args.get(i).and_then(|a| school_batch::SchoolSelection::parse(a)).unwrap_or_else(|| {
+                        eprintln!("--school-select requires mean or worst");
+                        std::process::exit(2);
+                    });
+                }
+                "--school-start-pool" => {
+                    i += 1;
+                    school_start_pool = args.get(i).and_then(|a| a.parse().ok()).filter(|n| *n > 0).unwrap_or_else(|| {
+                        eprintln!("--school-start-pool requires a positive candidate count");
+                        std::process::exit(2);
+                    });
+                }
+                "--organism-legacy-pedals" => {
+                    statics::ORGANISM_LEGACY_PEDALS.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 "--school-shared-start" => {
                     i += 1;
@@ -2766,7 +2804,7 @@ fn main() {
         std::process::exit(2);
     }
     if school_lesson.is_some() && (!organism_taxi || ecology_on || resume_state.is_some()) {
-        eprintln!("--school requires --scenario organism-taxi-v1 and no ecology/resume");
+        eprintln!("--school requires --scenario organism-taxi-v1 and no ecology or --resume-state (population --resume is allowed)");
         std::process::exit(2);
     }
     if school_curriculum.is_some() {
@@ -2784,7 +2822,7 @@ fn main() {
         std::process::exit(2);
     }
     if school_curriculum.is_some() && (!organism_taxi || ecology_on || resume_state.is_some()) {
-        eprintln!("--school-curriculum requires --scenario organism-taxi-v1 and no ecology/resume");
+        eprintln!("--school-curriculum requires --scenario organism-taxi-v1 and no ecology or --resume-state (population --resume is allowed)");
         std::process::exit(2);
     }
     if school_start_fold != universe::organism_school::LessonFold::All && school_lesson.is_none() {
@@ -2795,6 +2833,40 @@ fn main() {
         eprintln!("--school-stop-shaping requires --school or --school-curriculum");
         std::process::exit(2);
     }
+    if school_stop_envelope_clamp_m.is_some() && !school_stop_envelope {
+        eprintln!("--school-stop-envelope-clamp-m requires --school-stop-envelope");
+        std::process::exit(2);
+    }
+    let school_stop_envelope_clamp_m =
+        school_stop_envelope_clamp_m.unwrap_or(universe::gpu::school::STOP_ENVELOPE_EXCESS_CLAMP_M);
+    if school_deadline_frac.is_some() && school_lesson.is_none() {
+        eprintln!("--school-deadline-frac requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if school_select != school_batch::SchoolSelection::Mean && school_eval_starts < 2 {
+        eprintln!("--school-select worst requires --school-eval-starts >= 2");
+        std::process::exit(2);
+    }
+    if school_start_pool > 0 && school_eval_starts < 2 {
+        eprintln!("--school-start-pool requires --school-eval-starts >= 2");
+        std::process::exit(2);
+    }
+    if school_start_pool > 0 && school_start_pool < school_eval_starts {
+        eprintln!("--school-start-pool must be >= --school-eval-starts");
+        std::process::exit(2);
+    }
+    if statics::organism_legacy_pedals() && !organism_taxi {
+        eprintln!("--organism-legacy-pedals requires the organism-taxi-v1 scenario");
+        std::process::exit(2);
+    }
+    // Written into every per-generation manifest (docs/GAP-SWEEP-20260924.md P1-10).
+    let provenance = serde_json::json!({
+        "git_commit": option_env!("UNIVERSE_GIT_COMMIT").unwrap_or("unknown"),
+        "git_dirty": option_env!("UNIVERSE_GIT_DIRTY").unwrap_or("unknown"),
+        "argv": std::env::args().collect::<Vec<_>>(),
+        "seed": pop_seed,
+        "legacy_pedals": statics::organism_legacy_pedals(),
+    });
     if school_stop_envelope && school_lesson.is_none() {
         eprintln!("--school-stop-envelope requires --school or --school-curriculum");
         std::process::exit(2);
@@ -4725,7 +4797,7 @@ fn main() {
                 &organism_stations,
                 lesson,
                 &school_contract,
-                school_batch::required_start_count(n_seres, school_eval_starts),
+                school_batch::required_start_pool(n_seres, school_eval_starts, school_start_pool),
                 school_start_fold,
             )
                 .expect("city lesson approach capacity"),
@@ -5138,6 +5210,11 @@ fn main() {
                         school_stop_shaping,
                         school_stop_envelope,
                     ));
+                    if let Some(school) = ctx.school.as_mut() {
+                        school.stop_envelope_excess_clamp_m = school_stop_envelope_clamp_m;
+                        school.deadline_ticks = school_deadline_frac
+                            .map_or(0, |f| (f * school.horizon_ticks as f32).round().max(1.0) as u32);
+                    }
                 }
                 let rotated: Vec<_> = (0..n_seres)
                     .map(|slot| {
@@ -5192,8 +5269,8 @@ fn main() {
                 "sensor_extras": "organism-resident-extras-v1",
                 "action_channels": ["throttle", "steer", "brake", "gear_up", "gear_down", "service", "pickup", "dropoff", "reverse"],
                 "action_stride": 96, "active_action_channels": 9,
-                "pedal_arbitration": "exclusive_signed_net_v1",
-                "static_rest": "bounded_contact_v1",
+                "pedal_arbitration": if statics::organism_legacy_pedals() { "legacy_signed_net_no_exclusive_no_low_speed_brake" } else { "exclusive_signed_net_v1" },
+                "static_rest": if statics::organism_legacy_pedals() { "off" } else { "bounded_contact_v1" },
                 "simulation_transfer": "resident GPU; host observation on sampling boundaries",
                 "fitness": "1000*deliveries + bounded_task_progress + money + 0.001*age_seconds + 10*alive - 100*(1-integrity) - 100*(1-alive)",
                 "motor_controller": if taxi_reference_witness {"reference GPU controller"} else {"evolved policy"}, "resource_units": "joules,kilograms",
@@ -5235,19 +5312,23 @@ fn main() {
                     "tolerances": school_contract.to_json(),
                     "success": {"move": "dist(pos,target)<=goal_radius and propelled_ticks>=propelled_min", "stop": "speed>=v_min before the area, then speed<=v_stop inside for hold_ticks while alive", "turn": "entered the junction box, then dist(pos,exit)<=gate_radius with dot(heading,exit_dir)>=align_min"},
                     "failure_codes": {"1": "contact", "2": "death", "3": "corridor", "4": "born_inside_target", "5": "overshoot", "6": "drove_through_junction", "7": "wrong_exit", "8": "no_approach_speed"},
-                    "truncation": "status 3 at horizon, progress kept",
+                    "truncation": if school_deadline_frac.is_some() { "status 2 code 16 at the deadline, progress kept" } else { "status 3 at horizon, progress kept" },
+                    "deadline_ticks": school_deadline_frac.map(|f| (f * school_horizon_ticks as f32).round().max(1.0) as u32),
+                    "selection": school_select.name(),
+                    "start_pool": school_start_pool.max(school_eval_starts),
                     "score": format!("1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive){}{}",
                         if school_stop_shaping { " + stop: 300*clamp(1 - min_speed_inside/v_min) + 200*clamp(max_near_stop_dwell/hold_ticks), near-stop=2*v_stop; success remains v_stop" } else { "" },
-                        if school_stop_envelope { " + stop: 200*clamp(envelope_conform_ticks/envelope_zone_ticks) - 100*clamp(envelope_excess_integral_m/6), v_allow(d)=sqrt(v_stop^2+2*a_ref*(d-r_goal)); success remains v_stop" } else { "" }),
+                        if school_stop_envelope { " + stop: 200*clamp(envelope_conform_ticks/envelope_zone_ticks) - 100*clamp(envelope_excess_integral_m/stop_envelope_excess_clamp_m), v_allow(d)=sqrt(v_stop^2+2*a_ref*(d-r_goal)); success remains v_stop" } else { "" }),
                     "stop_shaping": school_stop_shaping,
                     "stop_envelope": school_stop_envelope,
                     "stop_envelope_a_ref_mps2": universe::gpu::school::STOP_ENVELOPE_A_REF_MPS2,
+                    "stop_envelope_excess_clamp_m": school_stop_envelope_clamp_m,
                     "fitness": if school_bench { "score" } else { "taxi fitness (life mode)" }, "lessons": rotated,
                     "curriculum": school_curriculum.unwrap_or("fixed"),
                     "curriculum_lessons": school_lessons.iter().map(|l| l.name()).collect::<Vec<_>>(),
                     "curriculum_index": school_lesson_index, "advance_p": school_advance_p, "advance_gens": school_advance_gens,
                     "start_fold": school_start_fold.name(),
-                    "start_assignment": if school_eval_starts > 1 { "same_deterministic_batch_per_genome" } else { school_shared_start.map_or("per_slot_rotated_by_hash", |m| m.name()) },
+                    "start_assignment": if school_eval_starts > 1 { if school_start_pool > school_eval_starts { "rotating_batch_per_genome" } else { "same_deterministic_batch_per_genome" } } else { school_shared_start.map_or("per_slot_rotated_by_hash", |m| m.name()) },
                     "shared_start": school_shared_pick.map(|(index, count)| serde_json::json!({"index": index, "count": count})),
                     "eval_starts_per_genome": school_eval_starts,
                     "genome_count": genome_count,
@@ -5257,6 +5338,7 @@ fn main() {
                 if school_bench {
                     manifest["fitness"] = serde_json::Value::String("school score (see school)".to_string());
                 }
+                manifest["provenance"] = provenance.clone();
             }
             std::fs::write(
                 format!("{out_dir}/organism_gen{gen_abs:04}.json"),
@@ -5979,6 +6061,7 @@ fn main() {
                     &record_vectors,
                     genome_count,
                     school_eval_starts,
+                    school_select,
                 );
                 let aggregate_rows: Vec<_> = aggregates
                     .iter()
