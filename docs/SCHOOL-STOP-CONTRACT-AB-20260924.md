@@ -492,3 +492,48 @@ peak speed of accepted stops below 4.5 m/s, against above 5 m/s for the deadline
 arm. Held-out evaluation of all four pool champions plus `full-mean-s11` and
 `mean-clipped-s11` is chained (`chain_eval_after_pool.sh`, validation/test folds with 3
 starts, train fold with the full 24-start pool).
+
+### Results of the start-pool battery, first arm (filled 2026-09-24 12:46; run 12:38–12:43, `pool24-mean-s11`, deadline 0.7)
+
+| arm | seed | gens | strict genome-starts | first strict | starts seen | score max (typical) | slowest inside, gen 239 |
+|---|---|---|---|---|---|---|---|
+| pool 24, mean, deadline 0.7 | 11 | 240 | **0** | — | 24 of 24 | 260–262 (one spike 421 at gen 220) | 2.70 m/s |
+
+**Predictions (1) and (2) refuted for seed 11.** Rotating the batch of 3 through 24 starts from
+the move champion never leaves the 261 basin (`500·progress − 200`) in 240 generations,
+while the same contract on 3 fixed starts found its first strict stop at generation 64 and a
+2-of-3 genome at 96. Mechanism: on fixed starts the population descended gradually (slowest
+speed inside fell 8.6 → 0.7 → 0.0 m/s over 60 generations, the same three geometries each
+time); under rotation each generation judges a different geometry, so a child slightly slower
+on this batch is not slightly slower on the next, and the elite is re-decided every
+generation on incomparable scores. The gradient that carried the fixed-start lineage does
+not accumulate. Rotation from a population that cannot stop yet is a curriculum error, not a
+generalization test. Seed 7 arms are still queued and are expected at 0 as well.
+
+### Next battery (pre-registered 12:46): from the stopper, `run_battery_from_stopper.sh`
+
+Every arm resumes from the `mean-clipped-s11` generation-119 champion (peak 5.6 m/s, braking
+zone entered at 3.2 m/s, strict on 2 of 3 fixed starts) with its contract (mean, deadline 0.7,
+shaping, envelope clamp 30, clipped mapper). Seeds 11 and 7 are mutation-RNG replicates of the
+one lineage. Chained after the held-out evaluations (`chain_eval_after_pool.sh`).
+
+1. **Body coevolution, fixed 3 starts, 120 generations**: `body-fixed-s{11,7}` (control) vs
+   `body-evolving-s{11,7}` (`--evolving-body`, elites keep their body, children mutate each
+   body gene by ±0.1 uniform). Question: once the brain presses the brake, does selection move
+   brake capacity? Predictions: (B1) the population median brake torque of the evolving arm
+   moves in the same direction on both seeds and by ≥ 5% over 120 generations (a random walk
+   of ±0.1 per child per generation on the median has no preferred sign, so agreement of sign
+   across two seeds and a ≥ 5% drift is the selection signature; the 11:55 scale × body battery,
+   whose brains never braked, showed drift with no such structure); (B2) strict genome-starts
+   per generation over the last 10 generations: evolving ≥ fixed on both seeds. Refuted if the
+   drift signs disagree between seeds or stay under 5%: then brake capacity is not the binding
+   constraint of this stopper, and the body question moves to engine/mass.
+2. **Rotation from the stopper, 24-start pool, 240 generations**: `rot-stopper-s{11,7}`.
+   Predictions: (R1) strict > 0 within 240 generations on both seeds; (R2) seed 11 records
+   ≥ 1 strict on at least 6 distinct starts; (R3) the last 30 generations average > 0 strict
+   per generation. Refuted if R1 fails on both seeds: the stop is then tied to one start's
+   visual cue and rotation must be introduced one start at a time.
+
+Ceilings: 96 genome-starts per generation; a genome is judged on 3 starts per generation, so
+"strict on 6 distinct starts" needs at least 2 generations of the elite. Wall ≈ 4 × 3 min +
+2 × 6 min. Time stamps were read from `date` before writing.
