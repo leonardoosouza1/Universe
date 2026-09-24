@@ -898,3 +898,31 @@ and 13, 300 gens each, queued behind the stage-2 best-slot trace. Pre-registered
   a noisy p̂, not a fixed timescale).
 - pickup stays 0/96 in every seed that reaches it, and the hidden deadline bucket
   (failed − Σcodes) collapses toward 0 again — the drift is structural, not seed 11's luck.
+
+#### 19:55 stage 3 (seed 12, gen ~250): p̂ is a per-triple measure; the pool has a duplicate start
+
+Seed 12 shows 0/96 on every gen with gen mod 10 ∈ {1, 4, 7} (34 zero gens in a row on
+that lattice, none elsewhere); seed 11 had no such lattice. Cause, from
+`school_batch::start_index` and `school_result_gen*.json`:
+- Each gen evaluates 3 of the 10 candidate starts: start_index = (slot mod 3 + 3·gen) mod 10.
+  Gen mod 10 = 1 → {3,4,5}, 4 → {2,3,4}, 7 → {1,2,3}. Seed 12's population solves only
+  starts 0, 6, 7, 9 (success 25–34 % / 25 % / 12 % / 23 % in gens 200–249) and 0 % on
+  starts 1–5 and 8. Every triple without 0/6/7/9 is a guaranteed 0/96. Seed 11 was the
+  opposite: by gens 200–249 it solved 2, 4, 5, 8 (26 / 27 / 25 / 12 %) and 0–7 % elsewhere,
+  which is why it passed on the {1,2,3}+{4,5,6} pair at gens 237–238.
+- Consequence: `p̂ ≥ 0.25 for 2 consecutive gens` is not "competence ≥ 25 %". It is
+  "solves both of two specific triples" — implicitly ≥ 6 distinct starts — and a
+  `streak=1` break is usually the rotation landing on an unsolved triple, not regression.
+  The A/B noise I read as "p̂ oscillates" was the rotation.
+- Selection is triple-dependent: `selection_score = mean − worst_failure_penalty (200)`.
+  In gens whose triple no one solves, every genome scores ≈ −105 and selection is blind;
+  in the others the specialist wins. Nothing pushes seed 12 toward starts 1–5.
+- Candidates 0 and 6 are the SAME start: (156, 99) heading −x. Two station pairs share
+  the origin station and its approach, and only `exit` differs, which approach/pickup
+  never use. The "pool of 10" is 9 distinct approaches with one counted twice.
+
+Additional fixes for the build window:
+5. Dedupe service candidates by (start, forward) for lessons that ignore `exit`.
+6. Advance gate: pool p̂ over a full rotation window (⌈pool / eval_starts⌉ gens) or require
+   per-start p̂ ≥ threshold — not 2 consecutive gens.
+7. Log per-start successes on the `[school]` line (they exist in `school_result_gen*.json`).
