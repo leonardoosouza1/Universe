@@ -77,6 +77,54 @@ battery: `cargo test --bin gpu_evolve`, `--lib school::tests`, `--test wgsl_vali
 `--lib school_tests -- --ignored` (22 GPU fixtures, including
 `deadline_turns_an_open_attempt_into_failure_16`).
 
-## Results
+## Results (filled 2026-09-24 10:15, battery 09:40–10:10)
 
-_(empty until the battery finishes — fill with numbers, seeds and the command)_
+Run directory `/media/llm-data/universe-runs/school-stop-contract-ab-20260924/` (`run_battery.sh`,
+`commit.txt`: 0151933, binary sha256 45e1182e…, 8 runs × 48 generations × 16 genomes × 3 starts).
+Statistics are over all 48 replicas of a generation (every replica alive; no death in any arm).
+
+**Primary metric: 0 in every arm and seed.** No genome was strict on ≥ 2 of 3 starts in any of
+the 8 × 48 generations. **Prediction refuted.** The treated arms did not beat the control; on
+strict successes the control seed 11 (101, all on start 2, closing at tick ≈ 1140 — the creep
+of 09-23 reproduced to the number) beats the treated arms (0).
+
+| arm | seed | strict successes (48 gens) | median vmax per start, gen 0 → 24 → 47 (m/s) | fail codes gen 47 | selection score gen 47 min / med / max |
+|---|---|---|---|---|---|
+| control | 7 | 0 | 11.4/14.3/13.8 → 6.1/11.9/10.7 → **1.4/2.1/1.3** | 38 truncated, 9 overshoot, 1 code 8 | 65 / 207 / 320 |
+| deadline | 7 | 0 | same → 11.1/13.6/12.9 → 10.9/13.9/13.2 | 43 overshoot, 3 deadline, 2 contact | 52 / 94 / 99 |
+| worst | 7 | 0 | same → 9.9/13.4/13.0 → 11.3/13.1/13.0 | 45 overshoot | 233 / 290 / 298 |
+| both | 7 | 0 | same → 9.9/13.4/13.0 → 11.3/13.2/13.0 | 42 overshoot, 2 deadline, 4 contact | 80 / 290 / 298 |
+| control | 11 | 101 (start 2: 100, start 1: 1) | 10.3/13.2/13.2 → 2.2/2.9/3.5 → **1.5/1.7/3.2** | 32 truncated, 7 overshoot, 6 contact | −172 / 191 / 892 |
+| deadline | 11 | 0 | same → 12.5/14.1/14.0 → 10.8/13.9/13.8 | 39 overshoot, 3 deadline, 6 contact | −22 / 86 / 99 |
+| worst | 11 | 0 | same → 12.4/13.4/13.9 → 12.7/12.9/13.3 | 46 overshoot, 2 contact | 205 / 290 / 298 |
+| both | 11 | 0 | same → 10.2/13.3/13.9 → 10.5/12.9/13.6 | 35 overshoot, 4 deadline, 9 contact | 37 / 282 / 298 |
+
+Secondary metric (crawler detector): **confirmed in the direction predicted.** Both controls
+crawl by generation 47 (median vmax 1.3–2.1 m/s on starts 0–1, 32–38 of 48 replicas truncated);
+every treated arm keeps the move champion's speed (median vmax 12.9–13.9 m/s at generation 47)
+for the whole run. The contract change removes the crawling attractor.
+
+**Mechanism of the null (the alternative named above, the −200 wall).** Under the new contract
+every replica overshoots at 9–10 m/s entry speed (median `envelope_entry_speed_mps` 9.0–10.4 at
+generation 47, unchanged from 8.9–10.1 at generation 0). An overshoot scores `500·progress −
+200 + shaping ≈ 290–298` whether it enters at 13 m/s or at 5 m/s, and a slower approach that
+is still open at tick 640 scores less (progress < 1, same −200). The score is flat across the
+whole population (worst arm: 290 / 290 / 298 at generation 47, 48 replicas), so selection has
+nothing to climb. The shaping term alone (`--school-stop-shaping`, near-stop dwell) pays only
+inside the goal area and only when slow, which no replica is. Nothing pays *decelerating*.
+
+Note on the historical `mean` rule: the failed replica's `R_SCORE` already carries −200
+(overshoot 295.8 = 500·0.99 − 200 + shaping) and `aggregate_school_batch` subtracts the
+worst-failure penalty again (92.9 = 295.8 − 200 − …). Under `mean` an overshoot therefore
+cost 400 against a truncated crawler's 0, which is the size of the crawling incentive that
+09-22/23 evolved against. Recorded, not changed: `worst` and K = 1 do not double-count.
+
+**Consequence.** The contract fix is necessary (it stops selecting crawlers) but not
+sufficient: a gradient toward slowing down has to exist before the first strict success.
+Follow-up launched 10:12 (`run_battery_envelope.sh`, same seeds, same binary): `both` +
+`--school-stop-envelope` with the historical 6 m clamp and with a 30 m clamp, which pays a
+decelerating approach through `v_allow(d)` on every replica, successful or not.
+
+Reproduce: `bash /media/llm-data/universe-runs/school-stop-contract-ab-20260924/run_battery.sh`
+with the binary in that directory; the table comes from `school_result_gen*.json` of each arm
+(`aggregates[].selection_score`, `beings[].max_speed_mps/envelope_entry_speed_mps/fail_code`).
