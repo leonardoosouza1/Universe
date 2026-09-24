@@ -145,6 +145,15 @@ impl Fixture {
     }
 
     fn new_with(geometry: LessonGeometry, horizon: u32, stop_shaping: bool) -> Self {
+        Self::new_with_flags(geometry, horizon, stop_shaping, false)
+    }
+
+    fn new_with_flags(
+        geometry: LessonGeometry,
+        horizon: u32,
+        stop_shaping: bool,
+        stop_envelope: bool,
+    ) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..Default::default()
@@ -184,7 +193,8 @@ impl Fixture {
         let output = make(PHYSICS_OUTPUT_STRIDE);
         let body = make(BODY_STRIDE);
         let intent = make(96);
-        let school = SchoolGpu::new(&device, 1, CONTRACT, horizon, true, stop_shaping);
+        let school =
+            SchoolGpu::new(&device, 1, CONTRACT, horizon, true, stop_shaping, stop_envelope);
         school.reset(&queue, &[geometry]).unwrap();
         Self {
             device,
@@ -962,4 +972,174 @@ fn stop_shaping_pays_the_full_bonus_on_success_and_nothing_before_the_area() {
         (r[R_SCORE] - (500.0 * r[R_PROGRESS] - 200.0)).abs() < 1.0,
         "{r:?}"
     );
+}
+
+// ── Braking envelope (docs/SCHOOL-STOP-ENVELOPE-20260923.md §4) ──────────────────────
+
+const A_REF: f32 = STOP_ENVELOPE_A_REF_MPS2;
+const STOP_TARGET_Z: f32 = 144.0;
+
+fn v_allow(d: f32) -> f32 {
+    (0.3f32 * 0.3 + 2.0 * A_REF * (d - CONTRACT.area_radius_m).max(0.0)).sqrt()
+}
+
+/// Ramp to `cruise`, then track `v_allow(d) - 0.05` inside the braking zone (the curve
+/// drops by a_ref/64 ≈ 0.03 m/s per tick near v_allow) down to a creep, and hold still
+/// 2 m before the centre for `hold` ticks.
+fn envelope_approach(cruise: f32, hold: usize) -> Vec<Step> {
+    let mut steps = Vec::new();
+    let mut z = 114.0f32;
+    let mut speed = 0.0f32;
+    let r_zone = CONTRACT.area_radius_m + cruise * cruise / (2.0 * A_REF);
+    while z < STOP_TARGET_Z - 2.0 {
+        let d = STOP_TARGET_Z - z;
+        speed = if d <= r_zone {
+            speed.min(v_allow(d) - 0.05).max(0.25)
+        } else {
+            (speed + 0.2).min(cruise)
+        };
+        z += speed / 64.0;
+        steps.push(Step::at([93.0, z], [0.0, speed]).throttle(0.0));
+    }
+    let z_hold = z;
+    steps.extend((0..hold).map(|_| Step::at([93.0, z_hold], [0.0, 0.0]).throttle(0.0)));
+    steps
+}
+
+/// Ramp to 3 m/s and park at `stop_z` with the engine idle until the horizon.
+fn park_before_goal(stop_z: f32) -> Vec<Step> {
+    let mut steps = Vec::new();
+    let mut z = 114.0f32;
+    let mut speed = 0.0f32;
+    while z < stop_z {
+        speed = (speed + 0.2).min(3.0);
+        z += speed / 64.0;
+        steps.push(Step::at([93.0, z], [0.0, speed]).throttle(0.0));
+    }
+    steps.extend((0..300).map(|_| Step::at([93.0, stop_z], [0.0, 0.0]).throttle(0.0)));
+    steps
+}
+
+fn old_shaping(r: &[f32; SCHOOL_STRIDE_F32]) -> f32 {
+    300.0 * (1.0 - r[R_MIN_SPEED_INSIDE] / 3.0).clamp(0.0, 1.0)
+        + 200.0 * (r[R_MAX_NEAR_DWELL] / 128.0).clamp(0.0, 1.0)
+}
+
+fn envelope_term(r: &[f32; SCHOOL_STRIDE_F32]) -> f32 {
+    let conform = if r[R_ENV_ZONE_TICKS] > 0.0 {
+        r[R_ENV_CONFORM_TICKS] / r[R_ENV_ZONE_TICKS]
+    } else {
+        0.0
+    };
+    200.0 * conform.clamp(0.0, 1.0)
+        - 100.0 * (r[R_ENV_EXCESS_INTEGRAL] / STOP_ENVELOPE_EXCESS_CLAMP_M).clamp(0.0, 1.0)
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_envelope_pays_a_decelerating_approach_that_stops() {
+    // §4 fixture 1: follows the curve, strict success, conformance near 1.
+    let mut f = Fixture::new_with_flags(straight(Lesson::Stop), 2048, true, true);
+    f.run(envelope_approach(3.0, 128));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0), "{r:?}");
+    assert!(r[R_ENV_ZONE_TICKS] > 100.0, "{r:?}");
+    let conform = r[R_ENV_CONFORM_TICKS] / r[R_ENV_ZONE_TICKS];
+    assert!(conform >= 0.95, "conform {conform}: {r:?}");
+    assert!(r[R_ENV_EXCESS_INTEGRAL] < 0.05, "{r:?}");
+    assert!((r[R_ENV_ENTRY_SPEED] - 3.0).abs() < 0.2, "{r:?}");
+    assert!(r[R_ENV_MIN_SPEED_APPROACH] <= 0.3 && r[R_ENV_DIST_AT_MIN_SPEED] <= 4.0, "{r:?}");
+    let expected = 1000.0 + 500.0 * r[R_PROGRESS] + old_shaping(&r) + envelope_term(&r);
+    assert!((r[R_SCORE] - expected).abs() < 1.0, "{} vs {expected}: {r:?}", r[R_SCORE]);
+    assert!(envelope_term(&r) > 190.0, "{r:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_envelope_never_pays_parking_outside_the_zone_more_than_entering() {
+    // §4 fixture 2: braking far and parking earns nothing from the envelope; parking in
+    // the zone but outside the area earns conformance yet stays below a creeping entry.
+    let mut far = Fixture::new_with_flags(straight(Lesson::Stop), 1280, true, true);
+    far.run(park_before_goal(STOP_TARGET_Z - 8.0));
+    while far.record()[R_STATUS] == STATUS_RUNNING as f32 {
+        far.run([Step::at([93.0, STOP_TARGET_Z - 8.0], [0.0, 0.0]).throttle(0.0)]);
+    }
+    let r_far = far.record();
+    assert_eq!(status(&r_far), (STATUS_TRUNCATED, 0), "{r_far:?}");
+    assert_eq!(r_far[R_ENV_ZONE_TICKS], 0.0, "{r_far:?}");
+    assert!((r_far[R_SCORE] - 500.0 * r_far[R_PROGRESS]).abs() < 1.0, "{r_far:?}");
+
+    let mut near = Fixture::new_with_flags(straight(Lesson::Stop), 1280, true, true);
+    near.run(park_before_goal(STOP_TARGET_Z - 5.0));
+    while near.record()[R_STATUS] == STATUS_RUNNING as f32 {
+        near.run([Step::at([93.0, STOP_TARGET_Z - 5.0], [0.0, 0.0]).throttle(0.0)]);
+    }
+    let r_near = near.record();
+    assert_eq!(status(&r_near), (STATUS_TRUNCATED, 0), "{r_near:?}");
+    assert!(r_near[R_ENV_ZONE_TICKS] > 250.0 && r_near[R_DWELL] == 0.0, "{r_near:?}");
+    assert!(envelope_term(&r_near) > 150.0, "{r_near:?}");
+
+    let mut creep = Fixture::new_with_flags(straight(Lesson::Stop), 1280, true, true);
+    let approach = stop_approach(6.0);
+    let z = approach.last().unwrap().pos[1];
+    creep.run(approach);
+    creep.run((0..64).map(|_| Step::at([93.0, z + 1.0], [0.0, 0.5]).throttle(0.0)));
+    while creep.record()[R_STATUS] == STATUS_RUNNING as f32 {
+        creep.run([Step::at([93.0, z + 1.0], [0.0, 0.5]).throttle(0.0)]);
+    }
+    let r_creep = creep.record();
+    assert!(r_creep[R_SCORE] > r_near[R_SCORE] + 200.0, "{r_creep:?} vs {r_near:?}");
+    assert!(r_near[R_SCORE] > r_far[R_SCORE], "{r_near:?} vs {r_far:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_envelope_charges_a_fast_overshoot_and_keeps_progress() {
+    // §4 fixture 3.
+    let mut f = Fixture::new_with_flags(straight(Lesson::Stop), 1280, true, true);
+    f.run(straight_run([93.0, 114.0], [0.0, 1.0], 8.0, 400));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_FAILED, 5), "{r:?}");
+    assert_eq!(r[R_ENV_CONFORM_TICKS], 0.0, "{r:?}");
+    assert_eq!(r[R_ENV_EXCESS_INTEGRAL], STOP_ENVELOPE_EXCESS_CLAMP_M, "{r:?}");
+    assert!((r[R_SCORE] - (500.0 * r[R_PROGRESS] - 200.0 - 100.0)).abs() < 1.0, "{r:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_envelope_is_blind_to_the_pedal_command() {
+    // §4 fixture 4: the same pose stream with the throttle held gives the same record,
+    // except the propelled-tick counter which reads the applied throttle by design.
+    let mut idle = Fixture::new_with_flags(straight(Lesson::Stop), 2048, true, true);
+    idle.run(envelope_approach(3.0, 128));
+    let mut pressed = Fixture::new_with_flags(straight(Lesson::Stop), 2048, true, true);
+    pressed.run(envelope_approach(3.0, 128).into_iter().map(|s| s.throttle(1.0)));
+    let (a, b) = (idle.record(), pressed.record());
+    for slot in 0..SCHOOL_STRIDE_F32 {
+        if slot == R_PROPELLED {
+            continue;
+        }
+        assert_eq!(a[slot].to_bits(), b[slot].to_bits(), "slot {slot}: {a:?} vs {b:?}");
+    }
+    assert_eq!(status(&a), (STATUS_SUCCESS, 0));
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_envelope_off_keeps_the_historical_score_and_still_records() {
+    // §4 fixture 5: flag off reproduces the v2 formulas; slots 48..53 are still populated.
+    let stream = envelope_approach(3.0, 128);
+    let mut shaped = Fixture::new_with_flags(straight(Lesson::Stop), 2048, true, false);
+    shaped.run(stream.clone());
+    let r = shaped.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0), "{r:?}");
+    let expected = 1000.0 + 500.0 * r[R_PROGRESS] + old_shaping(&r);
+    assert!((r[R_SCORE] - expected).abs() < 1.0, "{} vs {expected}: {r:?}", r[R_SCORE]);
+    assert!(r[R_ENV_ZONE_TICKS] > 100.0 && r[R_ENV_CONFORM_TICKS] > 100.0, "{r:?}");
+
+    let mut plain = Fixture::new_with_flags(straight(Lesson::Stop), 2048, false, false);
+    plain.run(stream);
+    let r = plain.record();
+    let expected = 1000.0 + 500.0 * r[R_PROGRESS];
+    assert!((r[R_SCORE] - expected).abs() < 1.0, "{} vs {expected}: {r:?}", r[R_SCORE]);
 }

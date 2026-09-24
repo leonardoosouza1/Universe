@@ -11,8 +11,8 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
 pub const SCHOOL_ID: &str = "organism-school-v1";
-pub const SCHOOL_SCHEMA_VERSION: u32 = 2;
-pub const SCHOOL_STRIDE_F32: usize = 48;
+pub const SCHOOL_SCHEMA_VERSION: u32 = 3;
+pub const SCHOOL_STRIDE_F32: usize = 56;
 pub const PHYSICS_INPUT_STRIDE: usize = 92;
 pub const PHYSICS_OUTPUT_STRIDE: usize = 56;
 pub const BODY_STRIDE: usize = 128;
@@ -63,6 +63,21 @@ pub const R_REFUSAL_CODE: usize = 44;
 pub const R_PASSENGER_ID: usize = 45;
 pub const R_DELIVERY_START: usize = 46;
 pub const R_DELIVERY_DELTA: usize = 47;
+/// Schema v3 braking envelope evidence (docs/SCHOOL-STOP-ENVELOPE-20260923.md §3); slots
+/// 0..47 are frozen. Recorded always for the stop lesson, scored only with `stop_envelope`.
+pub const R_ENV_ZONE_TICKS: usize = 48;
+pub const R_ENV_CONFORM_TICKS: usize = 49;
+pub const R_ENV_EXCESS_INTEGRAL: usize = 50;
+pub const R_ENV_ENTRY_SPEED: usize = 51;
+pub const R_ENV_MIN_SPEED_APPROACH: usize = 52;
+pub const R_ENV_DIST_AT_MIN_SPEED: usize = 53;
+/// Reference deceleration of the envelope `v_allow(d) = sqrt(v_stop^2 + 2 a_ref (d - r_goal))`.
+/// Measured on the real GPU from per-tick replays (2026-09-23): the body brakes at
+/// 2.2 m/s^2 median with the pedal pressed (reference witness), evolved controllers coast at
+/// 0.5-1 m/s^2. 2.0 m/s^2 is satisfiable with the pedal and violated by coasting.
+pub const STOP_ENVELOPE_A_REF_MPS2: f32 = 2.0;
+/// Clamp of the excess integral (m): `v_min * 2 s` in the canonical contract.
+pub const STOP_ENVELOPE_EXCESS_CLAMP_M: f32 = 6.0;
 
 pub const STATUS_RUNNING: u32 = 0;
 pub const STATUS_SUCCESS: u32 = 1;
@@ -292,6 +307,8 @@ struct Params {
     exit_overshoot: f32,
     align_min: f32,
     gate_radius: f32,
+    a_ref: f32,
+    _pad: [f32; 3],
 }
 
 pub struct SchoolGpu {
@@ -304,6 +321,8 @@ pub struct SchoolGpu {
     pub bench: bool,
     /// Stop lesson: the score also pays for slowing inside the area and holding (flags bit 1).
     pub stop_shaping: bool,
+    /// Stop lesson: the score also pays for conforming to the braking envelope (flags bit 2).
+    pub stop_envelope: bool,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
 }
@@ -329,6 +348,7 @@ impl SchoolGpu {
         horizon_ticks: u32,
         bench: bool,
         stop_shaping: bool,
+        stop_envelope: bool,
     ) -> Self {
         assert!(capacity > 0, "school capacity");
         assert!(horizon_ticks > 0, "school horizon");
@@ -393,6 +413,7 @@ impl SchoolGpu {
             horizon_ticks,
             bench,
             stop_shaping,
+            stop_envelope,
             layout,
             pipeline,
         }
@@ -453,7 +474,7 @@ impl SchoolGpu {
                 n: n as u32,
                 tick,
                 horizon: self.horizon_ticks,
-                flags: self.bench as u32 | (self.stop_shaping as u32) << 1,
+                flags: self.bench as u32 | (self.stop_shaping as u32) << 1 | (self.stop_envelope as u32) << 2,
                 goal_radius: c.goal_radius_m,
                 area_radius: c.area_radius_m,
                 v_min: c.v_min_mps,
@@ -466,6 +487,8 @@ impl SchoolGpu {
                 exit_overshoot: c.exit_overshoot_m,
                 align_min: c.align_min_cos,
                 gate_radius: c.gate_radius_m,
+                a_ref: STOP_ENVELOPE_A_REF_MPS2,
+                _pad: [0.0; 3],
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -570,7 +593,7 @@ pub fn record_json(
     } else {
         distance_now_m
     };
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "lesson": r[R_LESSON] as u32, "phase": r[R_PHASE] as u32,
         "status": status_name(status), "status_code": status,
         "fail": fail_code_name(code), "fail_code": code,
@@ -596,5 +619,21 @@ pub fn record_json(
         "pickup_requests": r[R_PICKUP_REQUESTS], "dropoff_requests": r[R_DROPOFF_REQUESTS],
         "service_refusal_code": r[R_REFUSAL_CODE], "passenger_id": r[R_PASSENGER_ID],
         "delivery_start": r[R_DELIVERY_START], "delivery_delta": r[R_DELIVERY_DELTA],
-    })
+    });
+    // Schema v3 envelope fields (kept out of the macro above: json! hits its recursion limit).
+    let approached = r[R_ENV_MIN_SPEED_APPROACH] < 1.0e8;
+    let envelope = serde_json::json!({
+        "envelope_zone_ticks": r[R_ENV_ZONE_TICKS],
+        "envelope_conform_ratio": if r[R_ENV_ZONE_TICKS] > 0.0 { serde_json::json!(r[R_ENV_CONFORM_TICKS] / r[R_ENV_ZONE_TICKS]) } else { serde_json::Value::Null },
+        "envelope_excess_integral_m": r[R_ENV_EXCESS_INTEGRAL],
+        "envelope_entry_speed_mps": if r[R_ENV_ENTRY_SPEED] < 1.0e8 { serde_json::json!(r[R_ENV_ENTRY_SPEED]) } else { serde_json::Value::Null },
+        "approach_min_speed_mps": if approached { serde_json::json!(r[R_ENV_MIN_SPEED_APPROACH]) } else { serde_json::Value::Null },
+        "approach_min_speed_distance_m": if approached { serde_json::json!(r[R_ENV_DIST_AT_MIN_SPEED]) } else { serde_json::Value::Null },
+    });
+    if let (Some(base), Some(extra)) = (value.as_object_mut(), envelope.as_object()) {
+        for (key, field) in extra {
+            base.insert(key.clone(), field.clone());
+        }
+    }
+    value
 }

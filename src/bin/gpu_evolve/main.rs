@@ -961,6 +961,7 @@ fn main() {
     let mut school_bench = true;
     // Stop-score shaping (docs/SCHOOL-STOP-SHAPING-20260922.md); off by default.
     let mut school_stop_shaping = false;
+    let mut school_stop_envelope = false;
     let mut school_shared_start: Option<universe::organism_school::SharedStart> = None;
     // (candidate index, fold count) of the shared start of the current generation.
     let mut school_shared_pick: Option<(usize, usize)> = None;
@@ -1137,6 +1138,9 @@ fn main() {
                 }
                 "--school-stop-shaping" => {
                     school_stop_shaping = true;
+                }
+                "--school-stop-envelope" => {
+                    school_stop_envelope = true;
                 }
                 "--school-shared-start" => {
                     i += 1;
@@ -2789,6 +2793,10 @@ fn main() {
     }
     if school_stop_shaping && school_lesson.is_none() {
         eprintln!("--school-stop-shaping requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if school_stop_envelope && school_lesson.is_none() {
+        eprintln!("--school-stop-envelope requires --school or --school-curriculum");
         std::process::exit(2);
     }
     if school_shared_start.is_some() && school_lesson.is_none() {
@@ -5128,6 +5136,7 @@ fn main() {
                         school_horizon_ticks,
                         school_bench,
                         school_stop_shaping,
+                        school_stop_envelope,
                     ));
                 }
                 let rotated: Vec<_> = (0..n_seres)
@@ -5227,8 +5236,12 @@ fn main() {
                     "success": {"move": "dist(pos,target)<=goal_radius and propelled_ticks>=propelled_min", "stop": "speed>=v_min before the area, then speed<=v_stop inside for hold_ticks while alive", "turn": "entered the junction box, then dist(pos,exit)<=gate_radius with dot(heading,exit_dir)>=align_min"},
                     "failure_codes": {"1": "contact", "2": "death", "3": "corridor", "4": "born_inside_target", "5": "overshoot", "6": "drove_through_junction", "7": "wrong_exit", "8": "no_approach_speed"},
                     "truncation": "status 3 at horizon, progress kept",
-                    "score": if school_stop_shaping { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive) + stop: 300*clamp(1 - min_speed_inside/v_min) + 200*clamp(max_near_stop_dwell/hold_ticks), near-stop=2*v_stop; success remains v_stop" } else { "1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive)" },
+                    "score": format!("1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive){}{}",
+                        if school_stop_shaping { " + stop: 300*clamp(1 - min_speed_inside/v_min) + 200*clamp(max_near_stop_dwell/hold_ticks), near-stop=2*v_stop; success remains v_stop" } else { "" },
+                        if school_stop_envelope { " + stop: 200*clamp(envelope_conform_ticks/envelope_zone_ticks) - 100*clamp(envelope_excess_integral_m/6), v_allow(d)=sqrt(v_stop^2+2*a_ref*(d-r_goal)); success remains v_stop" } else { "" }),
                     "stop_shaping": school_stop_shaping,
+                    "stop_envelope": school_stop_envelope,
+                    "stop_envelope_a_ref_mps2": universe::gpu::school::STOP_ENVELOPE_A_REF_MPS2,
                     "fitness": if school_bench { "score" } else { "taxi fitness (life mode)" }, "lessons": rotated,
                     "curriculum": school_curriculum.unwrap_or("fixed"),
                     "curriculum_lessons": school_lessons.iter().map(|l| l.name()).collect::<Vec<_>>(),
