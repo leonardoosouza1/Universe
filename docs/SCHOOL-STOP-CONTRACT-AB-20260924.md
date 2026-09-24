@@ -927,7 +927,7 @@ Additional fixes for the build window:
    per-start p̂ ≥ threshold — not 2 consecutive gens.
 7. Log per-start successes on the `[school]` line (they exist in `school_result_gen*.json`).
 
-#### 21:05 Leonardo's observation: "they enter on green, the light closes, they never leave the junction"
+#### 20:58 Leonardo's observation: "they enter on green, the light closes, they never leave the junction"
 
 Flow checked (`traffic.wgsl` → wave channels 172/173/182/191 → brain; `post` fines only):
 - A traffic light never touches physics or controls. It writes 4 sensor channels and, on a
