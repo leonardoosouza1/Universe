@@ -2,8 +2,8 @@
 
 Pre-registration. Follows [HANDOFF-CLAUDE-TAXI-SCHOOL-20260923.md](HANDOFF-CLAUDE-TAXI-SCHOOL-20260923.md)
 "Próxima correção" and [SCHOOL-STOP-SHAPING-20260922.md](SCHOOL-STOP-SHAPING-20260922.md) §6.
-Branch `organism/school-20260922`, base commit `6e6094f`. Status: **designed, not implemented;
-baseline battery running** (§1).
+Branch `organism/school-20260922`, base commit `6e6094f`. Status: **implemented behind the flag
+(`b6c0ca4`, 21 GPU fixtures pass); baseline finished 0/96 (§1.1); paired A/B running (§5)**.
 
 ## 1. Question the baseline answers first
 
@@ -24,6 +24,17 @@ Decision rule, fixed before results:
 | ≥ 1 genome with strict success on ≥ 2 of its 3 starts | signal slow, not absent | envelope still implemented, but promoted only if the paired A/B (§5) beats this baseline on time-to-first-success |
 | strict successes only on 1 of 3 starts | fixed-geometry memorisation again | envelope implemented; A/B must show successes on ≥ 2 starts |
 | 0 successes in both seeds | signal absent during braking | envelope is the next mandatory step |
+
+### 1.1 Baseline result (2026-09-23 21:03–21:13, Radeon/Vulkan)
+
+| seed | generations | strict successes | slowest speed inside the area (last gen) | longest near-stop hold (last gen) | median progress (last gen) |
+|---|---:|---:|---:|---:|---:|
+| 7 | 48 | 0 / 2304 replica-episodes | 0.381 m/s | 23 ticks | 0.444 |
+| 11 | 48 | 0 / 2304 replica-episodes | 0.791 m/s | 0 ticks | 0.722 |
+
+Third row of the decision table: signal absent during braking. Seed 7 gets within 0.08 m/s of
+the strict threshold and never holds; seed 11 never gets under 0.6 m/s. Tripling the generation
+count over Astra's 16-generation runs changed nothing. The envelope (§3) is the next step.
 
 ## 2. Measured deceleration (real GPU, replays decoded per tick)
 
