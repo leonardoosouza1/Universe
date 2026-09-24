@@ -740,3 +740,25 @@ Micro traces exist for three re-evaluated champions recorded with `--driving-dia
 24/96 strict), `diag-pool24-full-mean-gen239-s11` (32/96, corridor 52),
 `diag-mean-clipped-gen119-s11` (fixed starts, 8/12, overshoot 4). Path verified in the
 browser: battery → run → being 0 → micro (retina, wave, brain 3D, stages, track).
+
+### Lab panel rebuilt around the school (14:00–14:40, owner's order; `lab-ui` 145ac4c, `neuromod-lab` cf347a6 + 17013b1, no Universe change)
+
+The macro is now only the school pipeline: Baterias → Corridas → Evolução / Grade de população /
+Campeões / Comparar gerações / Traços / Anotações, every panel fed by `GET /api/school/*` for the
+selected run (no mocks, no default battery/run, race-era panels deleted). Campeões lists the
+genome selection actually picked in each generation with its per-start outcome (status, failure,
+score, entry and peak speed, outcome tick); expanding a generation gives one button per start:
+"gravar traço" queues a diagnostic re-evaluation (`POST /api/school/trace-jobs`, file spool under
+`/media/llm-data/universe-runs/_school-trace-jobs/`, served by `scripts/school_trace_runner.py`,
+which waits while any `gpu_evolve` is alive, runs `--resume --resume-mix 1.0 --beings 4 --gens 1
+--driving-diagnostics --vision-being <start>` from the copied checkpoint, packages the trace and
+registers it in `lab.db`), "abrir micro" opens it. Traces are indexed by the START the champion
+drove, not by population slot, so the micro shows the recorded start's verdict strip (lesson,
+start, outcome, score, entry/peak speed, outcome tick) and the sibling starts of the same genome.
+Seventeen traces recorded this way (pool24-full-mean-s11 gens 0/30/60/90/106×2/120/150/180/210/239,
+mean-clipped-s11 0/60/119, body-evolving-s11 0/120/239). Verified in the browser at 14:38:
+select `pool24-full-mean-s11`, expand generation 106 (3/3, starts 6/7/8), open start 6 → micro
+plays the recorded stop (entry 0.9 m/s, peak 6.9 m/s, stopped at tick 867). The earlier defect was
+that the restored panel showed only a frozen end-of-run champion and slot 0 (the exact checkpoint
+on its own start, which crawls), the compare panel crashed because the generation endpoint lacked
+the elite summary, and annotations never loaded per run.
