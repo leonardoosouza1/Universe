@@ -3,6 +3,18 @@
 Follows `GAP-SWEEP-20260924.md` proposed order **A**. Written before the battery ran;
 the results block at the end is empty until it is filled with numbers and commands.
 
+> **Correction 2026-09-24 11:05 — the 50 % deadline fails the scripted reference witness.**
+> `--taxi-reference-witness` on the stop lesson (seed 11 and seed 7, identical because the
+> witness is scripted and the city start is the same): without a deadline it succeeds at tick
+> 784 (max 5.18 m/s, entry 1.72 m/s, hold 128 ticks, score 2085); with `--school-deadline-frac
+> 0.5` (640 ticks) it fails with code 16. The ceiling computed below (mean ≥ 3.75 m/s) was
+> arithmetic, not a witness run, and `TAXI-FEASIBILITY-AND-SELECTION.md:42` says a failed
+> witness blocks a feasibility claim. The `deadline` and `both` arms therefore evolved against
+> a contract no known controller satisfies. With `--school-deadline-frac 0.7` (896 ticks) the
+> witness succeeds (tick 784). Every later battery uses 0.7. The results below stand as
+> measured; the crawler-detector conclusion does not depend on the deadline value, the null
+> on strict successes partly does.
+
 ## Hypothesis
 
 The stop plateau of 09-22/23 is a selection artefact, not a control limit: with the
@@ -159,6 +171,30 @@ selection barely grows one. Seed 11's lineage brakes from generation 0, at speed
 being — and still enters the goal area at 9–10 m/s and overshoots on every start. Braking exists
 but is not aimed at the goal. The next question is therefore perception, not reward: what the
 brain is told about the stop target (distance, bearing) — see the sensor check that follows.
+
+### What the brain sees (2026-09-24 10:50, `--driving-diagnostics` on the env30 seed-11 champion)
+
+`observation.jsonl`, being 0, `wave[176..192]` (i8, `navigation_observation: 2` = dx/dz per
+100 m): channel 179 runs −38 → +6 as the target distance runs 30 → 0 m (≈ 1.3 units per
+metre, 30 % of full scale); channels 185 and 191 also move monotonically (−76 → −32,
+63 → 35). The signal is present and monotonic. The champion applies throttle 0.2–0.6 the whole
+approach, brake intent stays negative (applied 0.0), speed 0.4 → 10.1 m/s at the goal, overshoot
+at tick 494. Not a blind being: a being that never learned to trade throttle for brake on that
+channel. Reference witness on the same lesson: throttle 0.62 → 0.16 → 0 by 22 m, coasts to
+rest at 2.7 m, no brake at all — a stop is reachable by throttle alone.
+
+### Next battery (pre-registered 11:10): search scale × body, `run_battery_scale_body.sh`
+
+Contract: deadline 0.7, worst-start selection, envelope clamp 30. Population 32 (96 replicas),
+120 generations, seeds 7 and 11, move-seeded. Arms: `fixed` body vs `--evolving-body`
+(engine/brake/mass genes mutate ±0.1 per generation, expressed at birth; both arms mutate the
+organism metabolism block). Ceiling: witness closes at tick 784 of 896; strict score ≈ 2085.
+Prediction: with 4× the search of the 48-gen batteries at least one seed reaches a first
+strict success on ≥ 2 of 3 starts; the evolving-body arm reaches it no later than the fixed
+arm on the same seed (a bigger brake or a smaller engine makes the throttle-only stop easier).
+Refuted if both arms stay at 0 on both seeds (then the search is not the bottleneck and the
+next lever is the pedal mapper: negative brake intent clipped, `organism_action.wgsl:61`).
+Wall estimate ≈ 18 min per run, 4 runs; disk ≈ 4 × 3 replays × 90 MB.
 
 Reproduce: `bash /media/llm-data/universe-runs/school-stop-contract-ab-20260924/run_battery.sh`
 with the binary in that directory; the table comes from `school_result_gen*.json` of each arm
