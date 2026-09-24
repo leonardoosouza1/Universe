@@ -286,3 +286,72 @@ Then the dead zone was not the bottleneck and the next lever is the contract's h
 (a v_stop/hold curriculum stage, e.g. 1.0 m/s / 32 ticks, strict success unchanged) or the
 selection rule (worst-of-3 froze the seed-11 elite for 19 generations at 472).
 Wall ≈ 4 × 9.5 min; disk ≈ 4 × 3 replays × 90 MB (45 GB free on `/media/llm-data`).
+
+### Results of the signed-brake battery (filled 2026-09-24 12:20; runs 12:04–12:15, `run_battery_signed_brake.sh`, binary `gpu_evolve-signed-brake` sha256 9b1e3430…, commit 12f012c built from its tree pre-commit)
+
+**All three predictions refuted.** No near-stop dwell on any seed or arm (240 generations of
+seed 7, 240 of seed 11: 0 replicas under 0.6 m/s inside the area), no strict success, and the
+evolving arms' brake capacity moved both ways (seed 11 up to 4548 Nm, seed 7 down to 3604 Nm)
+on a flat score: a random walk, not selection.
+
+| arm | seed | strict | median entry speed gen 0 → 119 (m/s) | slowest inside, gen 119 | near-stop dwell | elite selection score (unchanged since gen) | median judged ticks | s per generation |
+|---|---|---|---|---|---|---|---|---|
+| signed fixed | 11 | 0 | 11.7 → 12.4 | 4.66 (0.68 once, gen 100) | 0 | 259.9 (gen 104; 259.6 since gen 32) | 350 | 1.3 |
+| signed evolving | 11 | 0 | 11.7 → 12.6 | 8.32 | 0 | 261 basin | 350 | 1.3 |
+| signed fixed | 7 | 0 | 13.4 → 13.1 | 10.28 | 0 | 261 basin | ≈ 350 | 1.3 |
+| signed evolving | 7 | 0 | 13.4 → 13.5 | 11.03 | 0 | 261 basin | ≈ 350 | 1.3 |
+
+Controls (`scale-fixed-s11`): entry 9.7 → 6.3 m/s, slowest inside 0.25 m/s, near-stop dwell 62.
+
+**Mechanism.** The move champions carry a brake logit of −0.4 … −0.7; with the sign released
+that becomes +0.4 … +0.7 of drive on every tick, so the whole population enters the area at
+12–13 m/s and overshoots at tick ≈ 350 (generations take 1.3 s instead of 4.7 s). Above 3 m/s
+inside the area the shaping term pays nothing (`300·(1 − min_speed_inside/v_min)` is clamped at
+0 for min_speed ≥ v_min = 3), the envelope pays nothing (nobody under `v_allow`, conform 0), and
+every overshoot scores 500·progress − 200 + ε ≈ 260. The landscape is flat, so the brake row —
+now visible to selection — has nothing to climb: the elite's three starts all score 259.6–259.9
+and it is unchanged from generation 32. Removing the dead zone was necessary for the brake to
+be selectable at all, but it is not sufficient: nothing pays the first metre per second of
+slowing down while the being is still fast.
+
+Two consequences, both pre-registered below as separate levers:
+1. the shaping term needs a reference speed above `v_min` so that slowing from 12 to 8 m/s
+   inside the area already pays (`--school-stop-shaping-ref-mps`, next code change);
+2. the selection rule: worst-of-3 froze the control elite at 472 while its best start scored
+   720; under the deadline the crawler exploit of the mean rule is closed, so `mean` can be
+   tested (`run_battery_select_mean.sh`, launched 12:15 with the same binary, arms clipped
+   vs signed, seeds 11 and 7, fixed body). Prediction: `mean-clipped-s11` records the first
+   strict success of the 24/09 contract (its elite already touches 0.25 m/s); the signed arms
+   stay in the 261 basin. Refuted if no run records a strict success.
+
+### The best stopper, tick by tick (2026-09-24 12:25; `scale-fixed-s11`, generation 119, genome 0, start 1, score 720)
+
+Decoded from `gen0119.replay` (frames every 8 ticks). Fast brake logit −0.5 … −0.8 on every tick
+(clipped, as in every crawler); the applied brake of 0.05–0.10 comes from the slow brain's
+inhibition path (`slow_inhibition · 0.8`). Throttle is 0 from tick 512. Speed 3.8 m/s at
+tick 512 → 1.75 (616) → 0.77 (704) → 0.44 (896, **deadline: closed as failure 16**) → 0.24
+(936) → 0.05 (1024) → 0.14 creep (1104–1240), position frozen at 27.9 m along (goal 30 m,
+inside the 4 m area). From tick 936 the speed never exceeds 0.24 m/s, so the 128-tick hold
+would have closed as **strict success at tick ≈ 1064**, inside the 1280-tick horizon, had the
+deadline been the horizon itself. The same genome's other two starts reach 0.77 and 0.81 m/s
+by the deadline (scores 498 and 472).
+
+So for the seed-11 lineage the binding constraint at generation 119 is the 0.7 deadline, not
+the brake: the being brakes (weakly, through the slow path) and stops, later than the scripted
+witness (784) but before the horizon. The deadline was set to make "never arriving" a failure;
+that purpose is served by any deadline ≤ the horizon, including 1.0.
+
+### Next battery (pre-registered 12:27): full-horizon deadline, `run_battery_deadline_full.sh`
+
+`--school-deadline-frac 1.0` (an attempt still open at tick 1280 closes as failure 16, so the
+crawler exploit stays closed), arms `--school-select worst` vs `mean`, seeds 11 and 7, clipped
+brake (default mapper), fixed body, otherwise the scale contract (shaping, envelope clamp 30,
+32 × 3, 120 generations). Same binary (`gpu_evolve-signed-brake`, flag off = bit-identical).
+Chained after the selection-rule battery (`chain_after_mean.sh`).
+
+Predictions: (1) seed 11 records strict successes in at least one arm, the first before
+generation 120; (2) `mean` reaches it no later than `worst` on seed 11; (3) seed 7 stays at 0
+strict in both arms (its lineage never gets under 3 m/s inside the area: no slow-path brake
+either). Refuted if seed 11 stays at 0 in both arms; then the remaining lever is the shaping
+reference speed (pays slowing while still fast), which is also what seed 7 needs.
+Wall ≈ 4 × 10 min (open attempts run to the horizon).
