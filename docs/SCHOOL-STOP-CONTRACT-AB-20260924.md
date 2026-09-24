@@ -417,3 +417,22 @@ fixed-start champion: 0 of 3); (2) evaluated on the 24-start train pool it is st
 (3) seed 7 stays at 0 strict. Refuted if (1) fails on both seeds: then rotation does not buy
 generalization and the next question is the input (which channels the stop is read from),
 not the curriculum. Wall ≈ 2 × 5–20 min (open attempts run to the 896 deadline).
+
+### Results of the selection-rule battery, remaining arms (filled 2026-09-24 12:30; runs 12:18–12:26)
+
+| arm | seed | strict genome-starts (120 gens) | first strict gen | first genome 2 of 3 | slowest inside gen 119 | score max |
+|---|---|---|---|---|---|---|
+| mean, clipped | 11 | 184 | 64 | gen 96 | 0.00 | 2099 |
+| mean, signed | 11 | **311** | **37** | never (max 1 of 3) | 0.00 | 2132 |
+| mean, clipped | 7 | 0 | — | — | 0.74 | 573 |
+| mean, signed | 7 | 0 | — | — | 10.69 | 262 |
+
+**Prediction partly refuted.** The clipped seed-11 arm behaved as predicted, but the signed
+arm on seed 11 did *not* stay in the 261 basin: under `mean` it finds strict stops earlier
+(gen 37) and more often (311 genome-starts) than the clipped arm, though never on two starts
+of the same genome. So the flat landscape of the signed-brake battery was a property of
+worst-of-3 selection on that population, not of the signed mapper itself: with `mean`, a child
+that stops on one start is promoted even while its other two starts overshoot at 12 m/s.
+Seed 7 confirms the lineage effect: with the clipped mapper it descends (0.74 m/s inside at
+gen 119, from 8.98) but has no strict stop in 120 generations; with the signed mapper it
+stays fast (10.7 m/s inside). The two seeds are different populations, not different noise.
