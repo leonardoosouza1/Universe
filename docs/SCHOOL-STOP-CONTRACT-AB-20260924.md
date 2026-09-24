@@ -3,7 +3,7 @@
 Follows `GAP-SWEEP-20260924.md` proposed order **A**. Written before the battery ran;
 the results block at the end is empty until it is filled with numbers and commands.
 
-> **Correction 2026-09-24 11:05 — the 50 % deadline fails the scripted reference witness.**
+> **Correction 2026-09-24 10:25 — the 50 % deadline fails the scripted reference witness.**
 > `--taxi-reference-witness` on the stop lesson (seed 11 and seed 7, identical because the
 > witness is scripted and the city start is the same): without a deadline it succeeds at tick
 > 784 (max 5.18 m/s, entry 1.72 m/s, hold 128 ticks, score 2085); with `--school-deadline-frac
@@ -183,7 +183,7 @@ at tick 494. Not a blind being: a being that never learned to trade throttle for
 channel. Reference witness on the same lesson: throttle 0.62 → 0.16 → 0 by 22 m, coasts to
 rest at 2.7 m, no brake at all — a stop is reachable by throttle alone.
 
-### Next battery (pre-registered 11:10): search scale × body, `run_battery_scale_body.sh`
+### Next battery (pre-registered 10:32): search scale × body, `run_battery_scale_body.sh`
 
 Contract: deadline 0.7, worst-start selection, envelope clamp 30. Population 32 (96 replicas),
 120 generations, seeds 7 and 11, move-seeded. Arms: `fixed` body vs `--evolving-body`
@@ -194,7 +194,7 @@ strict success on ≥ 2 of 3 starts; the evolving-body arm reaches it no later t
 arm on the same seed (a bigger brake or a smaller engine makes the throttle-only stop easier).
 Refuted if both arms stay at 0 on both seeds (then the search is not the bottleneck and the
 next lever is the pedal mapper: negative brake intent clipped, `organism_action.wgsl:61`).
-Wall estimate ≈ 18 min per run, 4 runs; disk ≈ 4 × 3 replays × 90 MB.
+Wall estimate ≈ 10 min per run (measured 4.1 s per generation at 96 replicas), 4 runs; disk ≈ 4 × 3 replays × 90 MB.
 
 Reproduce: `bash /media/llm-data/universe-runs/school-stop-contract-ab-20260924/run_battery.sh`
 with the binary in that directory; the table comes from `school_result_gen*.json` of each arm
