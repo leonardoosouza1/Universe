@@ -130,6 +130,25 @@ curriculum) only if the treatment reaches the primary in both seeds and the cont
 one seed → "not replicated", keep behind the flag and report. Frozen champions then go through
 validation/test folds without mutation (handoff step 4).
 
+### 5.1 Result of the random-seeded A/B (2026-09-23, binary b6c0ca4, 48 generations, K=3)
+
+| seed | arm | strict successes | first success | best score, mean of last 8 gens | replicas with phase ≥ 1 (last 8) | phase 2 (last 8) | slowest speed inside area | longest near-stop dwell (ticks) | in-zone replicas (last 8): conform median / excess median |
+|---|---|---|---|---|---|---|---|---|---|
+| 7 | control | 0 / 2304 | — | 776.2 | 20.5 / 48 | 10.2 / 48 | 0.18 m/s | 90 | not recorded (6e6094f) |
+| 7 | envelope | 0 / 2304 | — | 752.6 | 15.9 / 48 | 9.8 / 48 | 0.15 m/s | 91 | 106: 0.01 / 5.41 m |
+| 11 | control | 0 / 2304 | — | 655.6 | 18.4 / 48 | 13.2 / 48 | 0.78 m/s | 0 | not recorded |
+| 11 | envelope | 0 / 2304 | — | 708.1 | 19.5 / 48 | 11.5 / 48 | 0.74 m/s | 0 | 133: 0.00 / 5.98 m |
+
+Generations with a bit-identical phase vector between arms: 22/48 (seed 7), 10/48 (seed 11).
+The arms do diverge, so the flag is live, but the primary metric is 0 in all four runs and the
+secondary metrics move within seed noise (best score −24 on seed 7, +52 on seed 11; phase-2
+count −0.4 and −1.7). **Decision by the §1 rule: not promoted.** The term never rewarded
+anyone: the in-zone medians are conformance 0.00–0.01 and excess at or near the 6 m clamp, i.e.
+every replica that reaches the zone enters at 2.4–3.8 m/s and never gets under the curve. The
+population that does reach the area (phase 2, ~10/48) parks at 0.15–0.8 m/s, above `v_stop` =
+0.3 m/s for 128 ticks — seed 7 got to 91 near-stop ticks of the 128 required, seed 11 never
+registered a near-stop tick. Wall time: 5 min per run.
+
 ### 5a. Interim observation on the random-seeded A/B (generation 16, seed 7)
 
 Both arms are still the same population at generation 16 (identical phase counts 43/3/2 and
