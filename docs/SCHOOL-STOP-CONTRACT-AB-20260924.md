@@ -287,7 +287,7 @@ Then the dead zone was not the bottleneck and the next lever is the contract's h
 selection rule (worst-of-3 froze the seed-11 elite for 19 generations at 472).
 Wall ≈ 4 × 9.5 min; disk ≈ 4 × 3 replays × 90 MB (45 GB free on `/media/llm-data`).
 
-### Results of the signed-brake battery (filled 2026-09-24 12:20; runs 12:04–12:15, `run_battery_signed_brake.sh`, binary `gpu_evolve-signed-brake` sha256 9b1e3430…, commit 12f012c built from its tree pre-commit)
+### Results of the signed-brake battery (filled 2026-09-24 12:16; runs 12:04–12:15, `run_battery_signed_brake.sh`, binary `gpu_evolve-signed-brake` sha256 9b1e3430…, commit 12f012c built from its tree pre-commit)
 
 **All three predictions refuted.** No near-stop dwell on any seed or arm (240 generations of
 seed 7, 240 of seed 11: 0 replicas under 0.6 m/s inside the area), no strict success, and the
@@ -324,7 +324,7 @@ Two consequences, both pre-registered below as separate levers:
    strict success of the 24/09 contract (its elite already touches 0.25 m/s); the signed arms
    stay in the 261 basin. Refuted if no run records a strict success.
 
-### The best stopper, tick by tick (2026-09-24 12:25; `scale-fixed-s11`, generation 119, genome 0, start 1, score 720)
+### The best stopper, tick by tick (2026-09-24 12:17; `scale-fixed-s11`, generation 119, genome 0, start 1, score 720)
 
 Decoded from `gen0119.replay` (frames every 8 ticks). Fast brake logit −0.5 … −0.8 on every tick
 (clipped, as in every crawler); the applied brake of 0.05–0.10 comes from the slow brain's
@@ -341,7 +341,7 @@ the brake: the being brakes (weakly, through the slow path) and stops, later tha
 witness (784) but before the horizon. The deadline was set to make "never arriving" a failure;
 that purpose is served by any deadline ≤ the horizon, including 1.0.
 
-### Next battery (pre-registered 12:27): full-horizon deadline, `run_battery_deadline_full.sh`
+### Next battery (pre-registered 12:17): full-horizon deadline, `run_battery_deadline_full.sh`
 
 `--school-deadline-frac 1.0` (an attempt still open at tick 1280 closes as failure 16, so the
 crawler exploit stays closed), arms `--school-select worst` vs `mean`, seeds 11 and 7, clipped
@@ -355,3 +355,65 @@ strict in both arms (its lineage never gets under 3 m/s inside the area: no slow
 either). Refuted if seed 11 stays at 0 in both arms; then the remaining lever is the shaping
 reference speed (pays slowing while still fast), which is also what seed 7 needs.
 Wall ≈ 4 × 10 min (open attempts run to the horizon).
+
+### Results of the selection-rule battery, seed 11 clipped arm (filled 2026-09-24 12:21; run 12:15–12:18, `mean-clipped-s11`, other arms still running)
+
+**First genuine strict stops under the 24/09 contract, and the pre-registered primary metric
+(one genome strict on ≥ 2 of 3 starts) is met.** Contract: deadline 0.7, `--school-select
+mean`, shaping, envelope clamp 30, default (clipped) pedal mapper, fixed body, move-seeded
+seed 11, 32 genomes × 3 starts, 120 generations (2.6 min: successes and overshoots both close
+early).
+
+| generation | strict successes (of 96) | first genome with 2 of 3 | elite mean / worst start score | score max |
+|---|---|---|---|---|
+| 0 | 0 | — | 253 / 238 | 262 |
+| 64 | first strict | — | — | 1997 (gen 70) |
+| 96 | — | genome 5 | — | — |
+| 110 | — | elite (genome 0) 2 of 3 | 1429 / 236 | 2056 |
+| 119 | 4 | elite 2 of 3 | 1229 / 236 | 2045 |
+| total | 184 genome-starts | | | ceiling ≈ 2085 |
+
+Elite at generation 119, re-evaluated in a fresh process (`/media/llm-data/scratch/eval-mean-clipped-s11-train`, bit-identical scores):
+
+| start | outcome | score | v_max (m/s) | entry speed | slowest inside | hold | closes at tick |
+|---|---|---|---|---|---|---|---|
+| (99, 156) | **strict success** | 2007 | 5.61 | 1.09 | 0.003 | 128 | 871 |
+| (99, 348) | overshoot at 12 m/s | 236 | 15.0 | 12.1 | 12.0 | 0 | 388 |
+| (291, 156) | **strict success** | 2045 | 5.44 | 0.94 | 0.008 | 128 | 888 |
+
+Pedal trace of the (99, 156) success (`gen0119.replay`): accelerates to 5.2 m/s by tick 256
+(v_min satisfied), throttle 0 from tick 384, brake 0.11 → 0.37 at ticks 384–480 with the
+**fast brake row positive** (intent 0.32–0.33 at ticks 464–480: this lineage left the dead
+zone on its own), then 0.07–0.19 brake to a full stop at 29.0 m along (goal 30 m, area 4 m)
+at tick 752, holding under 0.16 m/s until the judge closes at 871. Both successes close 8–25
+ticks before the 896 deadline.
+
+Why `mean` and not `worst`: the control (`scale-fixed-s11`, worst-of-3) reached 0.25 m/s on
+its best start but its elite was frozen at its worst start (472) for 19 generations, while
+under `mean` a child that improves one start is promoted; the crawler exploit that made `mean`
+dangerous on 09-22/23 is closed by the deadline (an open attempt is −200 like an overshoot).
+The same brain floors it from (99, 348) (12 m/s entry, overshoot): the stop is not driven by
+the target channel alone but by the sensory context of each start.
+
+**Held-out folds: 0 of 3 on validation and 0 of 3 on test** (`--school-start-fold validation`
+/ `test`, same champion, same contract): validation (156, 99) and (156, 291) open at the
+deadline, (348, 99) overshoots; test (93, 228) overshoots, (228, 93) and (228, 285) open at
+the deadline. The policy is start-specific. That is what the fixed three training starts
+select for (`start_assignment: per_slot_rotated_by_hash` with pool = K is a fixed assignment,
+docs/GAP-SWEEP-20260924.md), and the pre-registered next lever for it is the start pool
+(`--school-start-pool N`, real rotation), below.
+
+### Next battery (pre-registered 12:22): start pool, `run_battery_start_pool.sh`
+
+The winning contract (deadline 0.7, `mean`, shaping, envelope clamp 30, clipped mapper, fixed
+body) with `--school-start-pool 24`: the train fold has 80 stop approaches; each generation
+judges a rotating batch of 3 of the first 24, so every start is seen 30 times in 240
+generations. Seeds 11 and 7; controls `mean-clipped-s11` / `-s7` (pool 3 = fixed starts).
+Chained after the full-horizon battery (`chain_after_full.sh`). Held-out evaluation of each
+final champion on the validation and test folds afterwards, exactly as above.
+
+Predictions: (1) the seed-11 pool champion is strict on ≥ 1 of 3 validation starts (the
+fixed-start champion: 0 of 3); (2) evaluated on the 24-start train pool it is strict on ≥ 8;
+(3) seed 7 stays at 0 strict. Refuted if (1) fails on both seeds: then rotation does not buy
+generalization and the next question is the input (which channels the stop is read from),
+not the curriculum. Wall ≈ 2 × 5–20 min (open attempts run to the 896 deadline).
