@@ -537,3 +537,15 @@ one lineage. Chained after the held-out evaluations (`chain_eval_after_pool.sh`)
 Ceilings: 96 genome-starts per generation; a genome is judged on 3 starts per generation, so
 "strict on 6 distinct starts" needs at least 2 generations of the elite. Wall ≈ 4 × 3 min +
 2 × 6 min. Time stamps were read from `date` before writing.
+
+**Correction to prediction B1 (12:47, before the from-stopper battery started; it is still
+queued behind the held-out evaluations).** I re-read the 11:55 scale × body runs with
+`analyze_body.py` instead of from memory: their evolving arms did *not* random-walk. Both
+seeds shed capacity — population median brake torque 4000 → 3863 N·m (−3.4%, seed 11) and
+→ 3628 (−9.3%, seed 7), engine 620 → 562 / 593 (−9.3% / −4.4%), mass −1.2% / −1.0% — with
+brains that never braked. That is the cost term of `capacity_mass_tradeoff_v1` selecting
+against unused capacity, so "same sign on both seeds and ≥ 5%" would be met by shedding alone.
+B1 restated: in the evolving arms resumed from the stopper, the median brake torque drift over
+120 generations is **≥ 0% on both seeds** (the shedding stops once the brake is used), and the
+selection-for-brake claim needs **≥ +5% on both seeds**. Refuted if either seed sheds brake by
+more than 3%: then the stopper's brake use is too light to pay for capacity.
