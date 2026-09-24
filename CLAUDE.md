@@ -42,10 +42,13 @@ Style rules are in [`docs/STYLE.md`](docs/STYLE.md); the contribution flow is in
 ## Commands
 
 ```bash
-cargo build --release                        # the whole workspace
-cargo test  --release                        # everything; GPU tests are #[ignore]d
-cargo test  --release --bin gpu_evolve       # genome round-trip, track rotation, pilot ordering
-cargo test  --release --test wgsl_validation # parses and type-checks the WGSL, no GPU needed
+# Build ONLY the binary you need. A bare `cargo build` links 37 debug binaries of ~0.7 GB
+# each (26 GB, filled the system disk on 2026-09-23). School work runs the DEBUG binary.
+nice -n 10 env CARGO_BUILD_JOBS=1 cargo build --bin gpu_evolve
+cargo test --bin gpu_evolve                  # genome round-trip, CLI registry, K-start aggregation
+cargo test --lib school::tests               # school host tests (schema, record JSON)
+cargo test --lib school_tests -- --ignored   # 22 school judge fixtures on the real GPU
+cargo test --test wgsl_validation            # parses and type-checks the WGSL, no GPU needed
 bash scripts/check_language.sh               # language gate: only what this branch changed
 bash scripts/check_language.sh --all         # progress meter for the whole repo, never fails
 ```
@@ -56,9 +59,12 @@ why `wgsl_validation` exists. Run it after touching any `.wgsl`.
 A short smoke run, before any long battery:
 
 ```bash
-env -u DISPLAY ./target/release/gpu_evolve --gens 2 --seres 12 --ticks 600 \
+env -u DISPLAY ./target/debug/gpu_evolve --gens 2 --beings 12 --ticks 600 \
     --seed 7 --same-start --out /your/own/scratch/smoke
 ```
+
+Every per-generation manifest carries `provenance` (git commit, dirty flag, argv, seed)
+since 2026-09-24; a battery directory still needs its `run_battery.sh` and `commit.txt`.
 
 `--out` defaults to `.` (`src/bin/gpu_evolve/main.rs:395`), so always pass your own
 directory — see rule 5.
