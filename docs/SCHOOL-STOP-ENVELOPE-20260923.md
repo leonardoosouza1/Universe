@@ -130,6 +130,27 @@ curriculum) only if the treatment reaches the primary in both seeds and the cont
 one seed → "not replicated", keep behind the flag and report. Frozen champions then go through
 validation/test folds without mutation (handoff step 4).
 
+### 5a. Interim observation on the random-seeded A/B (generation 16, seed 7)
+
+Both arms are still the same population at generation 16 (identical phase counts 43/3/2 and
+fail codes). The population's mode is a creeper: `phase 0`, top speed 1.6–2.4 m/s, parks about
+7 m before the area (progress 0.77 → 383 points) because entering under `v_min` is failure
+code 8 (−200) and worth less than parking. Only 4 of 48 replicas reach the braking zone; their
+envelope readings are conformance 0–0.15 and excess 1–6 m, so the term only *penalises* them.
+The envelope cannot flip a selection until a fast approacher exists to reward. Pre-registered
+addition, before the results of §5 are in:
+
+### 5b. Paired A/B seeded from the move champions
+
+Same arms and flags as §5, but the population starts as copies of Astra's move champions
+(`taxi-school-delivery-task7-evolve-move-seed{7,11}-k3(-v2)/evolve_best_gen0015.bin`,
+`--resume --resume-mix 1.0`), which already reach `v_min` and overshoot (Astra's
+`stop-from-move` run: progress 0.97, 0/48). That is the population the envelope was designed
+for. Run dir `school-stop-envelope-from-move-20260923`, binary `b6c0ca4`, 4 runs
+(control/envelope × seeds 7/11), 48 generations each. Same primary/secondary metrics and the
+same promotion rule as §5. If §5b also fails, the next hypothesis is the `v_min` gate itself
+(fail code 8 makes a slow entry worse than parking), not the braking term.
+
 ## 6. Out of scope (declared)
 
 - No change to DNA, brain, action mapper, taxi kernel or observation channels.
