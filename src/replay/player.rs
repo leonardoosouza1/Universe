@@ -172,7 +172,12 @@ impl PlayerOptions {
         })?;
         let genome_file = row["genome_file"].as_str().unwrap();
         let replay_dir = replay_path.parent().unwrap_or_else(|| Path::new("."));
-        let replay_root = std::fs::canonicalize(replay_dir)?;
+        let replay_root = std::fs::canonicalize(replay_dir).map_err(|e| {
+            invalid(format!(
+                "observed genome {genome_file} declared by the observation is missing: replay directory {} cannot be resolved ({e})",
+                replay_dir.display()
+            ))
+        })?;
         let slow_kinematics = self.metadata["slow_kinematics"]
             .as_str()
             .unwrap_or("legacy");
@@ -198,7 +203,12 @@ impl PlayerOptions {
                     "observed genome path must be a single relative file name: {name:?}"
                 )));
             }
-            let resolved = std::fs::canonicalize(replay_dir.join(relative))?;
+            let resolved = std::fs::canonicalize(replay_dir.join(relative)).map_err(|e| {
+                invalid(format!(
+                    "observed genome {name} declared by the observation is missing at {} ({e})",
+                    replay_dir.join(relative).display()
+                ))
+            })?;
             if resolved.parent() != Some(replay_root.as_path()) {
                 return Err(invalid(
                     "observed genome resolves outside the replay directory",
