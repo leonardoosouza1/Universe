@@ -549,3 +549,41 @@ B1 restated: in the evolving arms resumed from the stopper, the median brake tor
 120 generations is **≥ 0% on both seeds** (the shedding stops once the brake is used), and the
 selection-for-brake claim needs **≥ +5% on both seeds**. Refuted if either seed sheds brake by
 more than 3%: then the stopper's brake use is too light to pay for capacity.
+
+### Results of the start-pool battery, deadline-1.0 arm, seed 11 (filled 2026-09-24 12:51; run 12:43–12:48, `pool24-full-mean-s11`, 240 generations, 5.5 min)
+
+| metric | pool 24, mean, deadline 1.0, seed 11 | pool 24, deadline 0.7 (above) | fixed 3 starts, deadline 1.0 (`full-mean-s11`, 120 gens) |
+|---|---|---|---|
+| strict genome-starts | **1000** | 0 | 1572 |
+| first strict / first 2-of-3 / first **3-of-3** | gen 28 / 34 / **106** (genome 9) | — | 15 / 35 / never |
+| strict per generation, last 30 | 6.8 (max 24) | 0 | 20.8 (last 10) |
+| distinct starts with ≥ 1 strict | **23 of 24** | 0 | 3 of 3 |
+| peak speed of accepted stops, median | **6.12 m/s** | — | 3.63 m/s |
+| speed entering the braking zone, median | **2.65 m/s** (q3 3.44) | — | 1.73 m/s |
+
+**Prediction (4) refuted, and the mechanism claimed at 12:46 was incomplete.** Rotation does
+not kill the gradient by itself: with deadline 1.0 the same rotating pool finds strict stops
+from generation 28 and the first genome strict on all three starts of its batch at 106
+(starts (228,477), (348,483), (483,348): peak 6.9 / 6.5 / 4.0 m/s, one of them entering the
+area at 4.27 m/s and stopping 1.6 m from the centre). The rotating deadline-1.0 lineage drives
+*faster* than the fixed-start deadline-1.0 lineage (6.1 vs 3.6 m/s peak) and enters the zone
+faster (2.65 vs 1.73 m/s). What failed at deadline 0.7 was the combination: a generalist's
+first slow approaches on unfamiliar geometry run past tick 896 and close as failure 16 (−200,
+the same as an overshoot), so slowing down is not rewarded relative to flooring it; at deadline
+1.0 the slow approach that reaches the area collects progress + shaping and the descent starts.
+Once the population must stop from 24 geometries it cannot memorize a start's timing, which is
+the plausible reason its stops are faster than the fixed-start creep-ins; this last step is a
+hypothesis, not measured.
+
+**Replay evidence** (`gen0239.replay`, genome 4, slot 13, start (420,861), strict, score
+window 904 ticks): throttle 1.0 to tick ~190 (5.3 m/s), then throttle 0 with the brake pedal
+applied 0.2–0.4 from tick 336 on, brake intent +0.5…+0.8 throughout (out of the dead zone),
+speed 4.8 → 2.5 → 0.8 → 0.05 by tick 816, brake held 0.3–0.4 while stopped. Slot 14 (start
+(804,477)) is the same shape from a 3.2 m/s peak. This lineage brakes; it is not a coaster.
+Instability remains: the elite of generation 239 is strict on 2 of its 3 starts, generation 120
+(the batch that happens to be the three original fixed starts) has 0 strict in the whole
+population (best remaining 0.5–0.8 m with codes 5/16), and strict per generation over the last
+30 is 6.8 of 96. Held-out evaluation of the gen-239 champion is in `chain_eval_after_pool.sh`
+and of the gen-106 champion in `chain_eval2.sh` (after the from-stopper battery). Revised
+prediction for both: strict on ≥ 1 of 3 validation starts (the fixed-start champion had 0).
+Seed 7 arms still queued; prediction (3) unchanged (0 strict).
