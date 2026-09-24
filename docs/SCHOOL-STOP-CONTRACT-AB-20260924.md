@@ -762,3 +762,59 @@ plays the recorded stop (entry 0.9 m/s, peak 6.9 m/s, stopped at tick 867). The 
 that the restored panel showed only a frozen end-of-run champion and slot 0 (the exact checkpoint
 on its own start, which crawls), the compare panel crashed because the generation endpoint lacked
 the elite summary, and annotations never loaded per run.
+
+### Life battery: the same 30 000-tick production life for every stage of the lineage (16:00–, `school-life-20260924`; `lab-ui` 02bbcf6, `neuromod-lab` 0e26052, no Universe change)
+
+Owner's order at 15:5x: the champion replay "shows the being standing still" because a
+lesson is a 30 m episode of 1 280 ticks on a 960 m map; he wants to see a being crossing
+the whole map, from the newborn that still has to learn to move up to the adult that
+delivers, over many more ticks. Design: one production life (`organism-taxi-v1`,
+passengers on, 30 000 ticks = 7.8 min at 64 Hz, 32 beings, `--driving-diagnostics
+--vision-being 0 --vision-every 8`) for each stage of one lineage story, all from the
+same seed family, plus a service curriculum from the stop generalist and the lives of its
+graduates. Stages: `newborn` = random genomes (seed 11); `mover` = move-lesson champion
+(`taxi-school-delivery-task7-evolve-move-seed7-k3-v2/evolve_best_gen0015.bin`, seed 7);
+`stopper` = stop generalist (`pool24-full-mean-s11/evolve_best_gen0106.bin`, seed 11);
+`reference` = scripted witness (`--taxi-reference-witness`, seed 7101, not evolved);
+`curriculum` = gen106 through turn_near → turn_far → approach_passenger → pickup →
+navigate_with_passenger → delivery (`--school-curriculum adaptive|uniform`, advance at
+p̂ ≥ 0.25 for 2 gens, 300 gens, 4 096 ticks, pool 24 × 3 starts); `graduate` = the best
+checkpoint of each curriculum living the same 30 000-tick life. Slot 0 of every checkpoint
+run is the unmutated clone (`--resume --resume-mix 1.0`); the other 31 are mutants.
+
+Pre-registered (written before the lives ran): no evolved stage delivers a passenger today
+(the school only ever produced move and stop; pickup needs a full stop inside the
+passenger zone that no lesson has taught); newborn median distance under 100 m; mover
+furthest but most deaths (it never learned to stop, so it hits walls); stopper alive but
+short; witness 2 deliveries as in the reference run; adaptive curriculum stalls on
+turn_near (smoke p̂ 0.038 against a 0.25 gate), uniform cycles without mastering, so
+both graduates ≈ stopper.
+
+Measured (organism_result per slot, 32 beings, 30 000 ticks):
+
+| stage | run | max distance | median | deliveries | alive | note |
+|---|---|---|---|---|---|---|
+| newborn | random-life-s11 | 455 m (slot 11) | 33 m | 0 | 30/32 | random genomes mostly idle |
+| mover | move-life-s7 | 3 824 m (slot 7, alive) | 802 m | 0 | 8/32 | slot 0 (clone) 903 m, dead at 196 kJ collision |
+| stopper | stopper-life-s11 | 364 m (slot 16) | 142 m | 0 | 32/32 | stops well, barely moves |
+| reference | witness-life | 1 211 m | — | 2 | 1/1 | pickup tick 1 536, delivery 19 712 (L-route, shown in the micro) |
+| curriculum adaptive | curriculum-adaptive-s11 | — | — | — | — | gens 14–20: turn_near p̂ 0.01–0.11, gate 0.25, no advance (prediction holding) |
+
+UI (verified in Chrome on the LAN address at 16:12–16:16): macro tab "Vida no mundo"
+lists the stages with distance / deliveries / survivors and a "▶ ver" per row; the micro
+opens `/run/<run>/0/<slot>?view=champion&play=1` with a life strip (stage, distance,
+deliveries, money, alive, collision energy), the full observed path on Track2D (faint
+dashed, traversed part coloured by speed, "largada" ring, caption "percorrido X m de Y m ·
+v · tique"), auto-framed on load. The witness trail is the 1 211 m L-route ending at the
+station at tick ~21 000; the mover clone climbs the west edge for 890 m then dies.
+Packaging the witness needed the checker to accept `body.motor_trace.source =
+resident_reference_action_v1` (`neuromod-lab/src/lab_api/trace/check.py`, uncommitted with
+the rest of the 21–23/09 trace-pipeline diff).
+
+Follow-up queued (`run_life_best.sh`, waits for the "school-life battery done" marker): each
+stage re-evaluated with the recorder on its BEST slot (most deliveries, then distance) as
+`<run>-best`, with a determinism check (same slot, same distance/deliveries as the original
+life) logged to battery.log, so the micro can show slot 7 of the mover crossing 3.8 km
+instead of the clone. Pending: uniform curriculum, both graduates, their best-slot traces.
+Honest status: as of 16:20 no evolved being has delivered a passenger; the only delivery on
+the map is the scripted witness.
