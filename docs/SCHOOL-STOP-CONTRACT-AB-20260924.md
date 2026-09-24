@@ -436,3 +436,59 @@ that stops on one start is promoted even while its other two starts overshoot at
 Seed 7 confirms the lineage effect: with the clipped mapper it descends (0.74 m/s inside at
 gen 119, from 8.98) but has no strict stop in 120 generations; with the signed mapper it
 stays fast (10.7 m/s inside). The two seeds are different populations, not different noise.
+
+### Results of the full-horizon deadline battery (filled 2026-09-24 12:41; runs 12:26–12:37, `run_battery_deadline_full.sh`, binary `gpu_evolve-signed-brake`, flag off)
+
+Statistics are over the accepted (strict) genome-starts of each run, all 120 generations;
+"last 10" is the mean over generations 110–119.
+
+| arm | seed | strict genome-starts | first strict gen | first genome 2 of 3 | strict / gen (last 10) | genomes ≥ 2 of 3 (last 10) | peak speed of accepted stops, median | speed entering the braking zone, median | outcome tick, median |
+|---|---|---|---|---|---|---|---|---|---|
+| worst, deadline 1.0 | 11 | 165 | 16 | gen 91 | 4.0 | 1.7 | 4.27 m/s | 1.83 m/s | 1158 |
+| mean, deadline 1.0 | 11 | **1572** | 15 | **gen 35** | 20.8 | 6.0 | 3.63 m/s | 1.73 m/s | 1146 |
+| worst, deadline 1.0 | 7 | 0 | — | — | 0 | 0 | — | — | — |
+| mean, deadline 1.0 | 7 | 0 | — | — | 0 | 0 | — | — | — |
+| mean, deadline 0.7 (control, `mean-clipped-s11`) | 11 | 184 | 64 | gen 96 | 5.0 | 1.0 | 5.61 m/s | 3.22 m/s | 880 |
+
+All three predictions held: (1) seed 11 records strict stops in both arms, the first at
+generation 15–16; (2) `mean` reaches a 2-of-3 genome at generation 35, `worst` at 91; (3) seed
+7 stays at 0 in both arms (its slowest inside speed reaches 0.16 m/s under `mean` by
+generation 100, and the slow-brake row still never closes a hold). No genome reached 3 of 3
+in any arm. Wall was 2.6 min per run, not the predicted 10: no attempt stays open to the
+horizon, every one closes by overshoot, contact or success before tick 1280, so deadline 1.0
+costs nothing in wall time.
+
+**The count went up and the driving got worse.** Deadline 1.0 relaxes the time pressure and
+the population drifts to slower driving: accepted stops peak at 3.6 m/s (mean arm) and enter
+the braking zone (`r_zone = area + v_min²/(2 a_ref)` = 6.25 m with `a_ref` 2.0) at 1.7 m/s,
+against 5.6 and 3.2 m/s under deadline 0.7. Their stops also close ~270 ticks later. So the
+full horizon buys count, not the skill; the deadline-0.7 lineage is the better stopper.
+
+**What the contract actually accepts.** In every arm the accepted stops enter the 4 m area
+at ≈ 1 m/s (median 0.7–1.1 across arms) and hold at the area's edge (best remaining 3.2–3.4 m
+of a 3 m goal radius). The `v_min` gate (phase 1 at `school.wgsl:305`) is satisfied on the
+drive-up, far from the goal, so the behaviour the judge rewards is "drive, coast down early,
+creep in, hold", not "arrive at speed and brake". The mean-clipped-s11 champion does press
+the brake (its slot-0 speed trace, § The best stopper), but the contract does not require it.
+Measured on the recorded fields: of the mean-clipped-s11 accepted stops, 105 of 184 (57%)
+entered the braking zone at ≥ `v_min`; of full-mean-s11's, 99 of 1572 (6%).
+
+**Next contract lever (to be pre-registered when built): a zone-entry gate.** Flag
+`--school-stop-zone-entry-gate` (default off, judge flag bit 3): the speed at first entry
+into the braking zone must be ≥ `v_min`, otherwise the attempt closes as a new failure 17.
+It converts the `v_min` requirement from "once, anywhere" into "still at approach speed
+6.25 m out", which is the braking skill itself. Its ceiling on the existing data is the 57%
+above; on the full-horizon lineage 6%. Needs a build (queued behind the GPU battery) with the
+shaping-reference change already in the tree, then the GPU fixtures.
+
+**Amendment to the start-pool pre-registration (12:40, before any pool result was read).**
+The chained launcher started `pool24-mean-s11` at 12:37:18 while I relaunched it believing
+it dead (its pid file named the parent, not the live shell); both writing the same directory,
+both were killed by pid at 12:38, the directory wiped and the battery relaunched once (log
+line "killed both colliding pool24-mean-s11 launches"). The relaunch adds a deadline-1.0 arm
+per seed (`pool24-full-mean-s{11,7}`, order s11 0.7, s11 1.0, s7 1.0, s7 0.7). Added
+prediction (4): the deadline-1.0 pool champions accept more stops but drive slower — median
+peak speed of accepted stops below 4.5 m/s, against above 5 m/s for the deadline-0.7 pool
+arm. Held-out evaluation of all four pool champions plus `full-mean-s11` and
+`mean-clipped-s11` is chained (`chain_eval_after_pool.sh`, validation/test folds with 3
+starts, train fold with the full 24-start pool).
