@@ -29,6 +29,10 @@ pub fn record(out: &str, generation: usize, genomes: &[Genome], enabled: bool) -
             let p = at_birth(genome, enabled, [0.0; 3], [1.0, 0.0, 0.0]);
             serde_json::json!({"being":being,"genes":genome.body.0,
             "organ_genes":genome.organs.0,"lifetime_genes":genome.lifetime.0,
+            // The organism-taxi metabolism block (efficiency, durability, repair;
+            // src/gpu/organism.wgsl) mutates and is uploaded every generation even with a
+            // fixed body, and was invisible in this record until 2026-09-24.
+            "organism_genes":genome.organism,
             "tank_scale":if enabled {genome.organs.tank_scale()} else {1.0},
             "cooling_scale":1.0+p._pad_before_wind,
             "mass_kg":p.mass,"engine_max_torque_nm":p.max_torque,
@@ -64,6 +68,25 @@ mod tests {
         assert!(evolved.max_torque > fixed.max_torque);
         assert!(evolved.brake_torque_max < fixed.brake_torque_max);
         assert_eq!(genome.body.0, [1.0, -1.0]);
+    }
+
+    /// The organism metabolism block evolves even under `--fixed-body`; the record must
+    /// show it so a school run can tell whether that block drifted.
+    #[test]
+    fn record_carries_the_organism_block_with_a_fixed_body() {
+        let mut genome = Genome::random(4);
+        genome.organism[12] = 0.5;
+        let dir = std::env::temp_dir().join(format!("body-record-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        record(dir.to_str().unwrap(), 3, std::slice::from_ref(&genome), false).unwrap();
+        let text = std::fs::read_to_string(dir.join("body_gen0003.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let being = &json["population"][0];
+        assert_eq!(being["organism_genes"][12], 0.5);
+        assert_eq!(being["organism_genes"].as_array().unwrap().len(), 16);
+        assert_eq!(json["body_enabled"], false);
+        assert_eq!(being["mass_kg"], 1350.0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 
