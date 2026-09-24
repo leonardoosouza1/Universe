@@ -899,7 +899,7 @@ and 13, 300 gens each, queued behind the stage-2 best-slot trace. Pre-registered
 - pickup stays 0/96 in every seed that reaches it, and the hidden deadline bucket
   (failed − Σcodes) collapses toward 0 again — the drift is structural, not seed 11's luck.
 
-#### 19:55 stage 3 (seed 12, gen ~250): p̂ is a per-triple measure; the pool has a duplicate start
+#### 19:44 stage 3 (seed 12, gen 251): p̂ is a per-triple measure; the pool has a duplicate start
 
 Seed 12 shows 0/96 on every gen with gen mod 10 ∈ {1, 4, 7} (34 zero gens in a row on
 that lattice, none elsewhere); seed 11 had no such lattice. Cause, from
