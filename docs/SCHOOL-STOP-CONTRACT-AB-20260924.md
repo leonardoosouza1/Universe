@@ -854,3 +854,37 @@ the map is the scripted witness.
   from corridor to `premature_or_moving_pickup` / `service_goal_not_stopped`; pickup does
   NOT pass within the ~60 remaining gens (p̂ stays < 0.25), because the population has only
   just fixed "arrive" and not "stop inside the radius".
+
+#### 18:40 update: pickup never passed (0/96 × 61 gens); mechanism found; stage-2 graduate life
+
+- pickup: 0/96 on every gen 239–299. The prediction "failures migrate to the stop-contract
+  codes" was WRONG: the log kept showing contact/corridor, and the counts grew (contact
+  15 → 45, corridor 23 → 50) — the population drifted back toward crashing.
+- Hidden bucket: `codes=` only maps codes 1..=15 (`main.rs` by_code loop), so code 16
+  `open_at_deadline` never appears. Recomputing failed − Σcodes per gen: 58, 84, 90 beings
+  at gens 239–241 reached the passenger, stopped and waited to the deadline; by gen 279 that
+  bucket was 0 and by gen 299 it was 1. The population UNLEARNED arriving.
+- Why (score, `school.wgsl` service branch): score = progress(0..100) + 1000·delivery_delta
+  − 200·failed − integrity − alive. A being that arrives, stops and waits (code 16) scores
+  ≈ 95 − 200 = −105; a being that crashes at 95 % scores the same −105. Nothing rewards
+  PHASE = 1 (stop contract met) in lesson 6, so selection is blind between "stopped at the
+  passenger" and "hit a wall next to it" → drift. `score_max = −100.0` on every pickup gen.
+- Second cause: the pickup request channel (`intent[6] > 0.5`) is nearly extinct. In
+  approach_passenger every request is an instant fail (code 10 moving, code 15 outside
+  4 m), so gens 1–30 had 5–20 requests/gen and gens 200+ had 0–3. The lesson that
+  precedes pickup selects AGAINST the channel pickup needs. Success needs a rare fire
+  (channel ~0.001 %/tick) coinciding with a rare state (stopped ≥ 64 ticks inside 3 m).
+- Stage-2 graduate life (gen 299, 30 000 ticks, seed 11): 0 deliveries, 777 m max,
+  548 m median (4× the stopper's 142 m), 31/32 dead at ~300 s with energy_j = 0
+  (starvation, not collision: integrity ≥ 0.1 for all), 31 service refusals (it does
+  request service in production, moving or off-radius). More driving, more dying,
+  no service.
+- No evolved being delivers. The witness (scripted) remains the only deliverer (2).
+
+Fixes for the next build window (Universe, `--bin gpu_evolve` only):
+1. Lesson 6 partial credit: +100 when PHASE = 1 (stop contract met), before the request.
+   Then "stopped at the passenger" (≈ −5) beats "crashed" (≈ −105).
+2. Approach lesson: a pickup request while moving/off-radius should be ignored (no-op) or
+   cost a bounded penalty, not close the attempt — do not extinguish the channel.
+3. Log map 1..=17 so `open_at_deadline` and `zone_entry_slow` are visible.
+4. Clamp `--school-start-pool` to the candidate count (10 for service lessons).
