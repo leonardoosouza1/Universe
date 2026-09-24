@@ -90,7 +90,8 @@ pub fn pack_config_flags(
 
 /// Optional per-step wall-contact telemetry; bits 0..5 are existing physics flags.
 pub const CONTACT_DIAGNOSTICS_FLAG: u32 = 1 << 6;
-/// Scenario-only static-friction rest constraint. Off by default for legacy runs.
+/// Static-friction rest constraint. Off for legacy race runs; organism-taxi-v1 sets it
+/// unconditionally (src/bin/gpu_evolve/organism_tick.rs:27), with no CLI switch.
 pub const STATIC_REST_FLAG: u32 = 1 << 9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

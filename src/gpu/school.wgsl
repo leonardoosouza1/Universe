@@ -11,7 +11,10 @@
 // 10 premature/moving pickup, 11 lost passenger before delivery,
 // 12 dropoff outside the destination, 13 wrong passenger id,
 // 14 reached a service goal but never completed the stop hold,
-// 15 pickup outside the passenger radius.
+// 15 pickup outside the passenger radius,
+// 16 still open at the deadline tick (--school-deadline-frac: a timeout is a failure).
+// deadline (ticks, 0 = off) ends the judging window before the horizon; an open
+// record there closes as failure 16 instead of truncation 3 (docs/GAP-SWEEP-20260924.md).
 // Params.flags: bit 0 bench (host-only), bit 1 stop-score shaping
 // (docs/SCHOOL-STOP-SHAPING-20260922.md), bit 2 stop braking envelope
 // (docs/SCHOOL-STOP-ENVELOPE-20260923.md). a_ref is the envelope's reference
@@ -21,7 +24,7 @@ struct Params {
   goal_radius:f32, area_radius:f32, v_min:f32, v_stop:f32,
   hold_ticks:f32, corridor_half:f32, overshoot_along:f32, propelled_min:f32,
   box_half:f32, exit_overshoot:f32, align_min:f32, gate_radius:f32,
-  a_ref:f32, _p0:f32, _p1:f32, _p2:f32,
+  a_ref:f32, excess_clamp:f32, deadline:f32, _p2:f32,
 }
 @group(0) @binding(0) var<uniform> p:Params;
 @group(0) @binding(1) var<storage,read> physics_in:array<f32>;
@@ -32,7 +35,6 @@ struct Params {
 
 const PI:u32=92u; const PO:u32=56u; const BS:u32=128u; const IS:u32=96u; const SS:u32=56u;
 const DT:f32=1.0/64.0;
-const ENV_EXCESS_CLAMP:f32=6.0;
 // School record slots (see src/gpu/school.rs for the host mirror).
 const LESSON:u32=0u; const PHASE:u32=1u; const STATUS:u32=2u; const FAIL_CODE:u32=3u;
 const P0X:u32=4u; const P0Z:u32=5u; const F0X:u32=6u; const F0Z:u32=7u;
@@ -84,7 +86,7 @@ fn close(k:u32, s:u32, status:f32, code:f32) {
     // 1000-point success bonus. conform_ratio is 0 when the zone was never entered.
     var conform=0.0;
     if(school[k+ENV_ZONE_TICKS]>0.5){conform=school[k+ENV_CONFORM_TICKS]/school[k+ENV_ZONE_TICKS];}
-    shaping+=200.0*clamp(conform,0.0,1.0)-100.0*clamp(school[k+ENV_EXCESS_INTEGRAL]/ENV_EXCESS_CLAMP,0.0,1.0);
+    shaping+=200.0*clamp(conform,0.0,1.0)-100.0*clamp(school[k+ENV_EXCESS_INTEGRAL]/p.excess_clamp,0.0,1.0);
   }
   if(school[k+LESSON]>=4.5){
     // Service shaping is expressed in road-progress points: approach 0..100,
@@ -202,7 +204,7 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
     } else if(lesson<6.5){
       if(inside_passenger && speed<=p.v_stop){school[k+DWELL]+=1.0;}else{school[k+DWELL]=0.0;}
       school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
-      if(school[k+DWELL]>=service_hold){school[k+PHASE]=1.0;}
+      if(school[k+DWELL]>=service_hold && school[k+PROPELLED]>=p.propelled_min){school[k+PHASE]=1.0;}
       if(onboard){
         if(school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
         if(abs(body[s+72u]-passenger_id)>0.25){close(k,s,2.0,13.0);return;}
@@ -220,7 +222,7 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
       if(school[k+PHASE]<1.5){
         if(inside_passenger && speed<=p.v_stop){school[k+DWELL]+=1.0;}else{school[k+DWELL]=0.0;}
         school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
-        if(school[k+DWELL]>=service_hold){school[k+PHASE]=1.0;}
+        if(school[k+DWELL]>=service_hold && school[k+PROPELLED]>=p.propelled_min){school[k+PHASE]=1.0;}
         if(onboard){
           if(school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
           school[k+PHASE]=2.0; school[k+DWELL]=0.0;
@@ -236,10 +238,12 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
         school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
       }
     }
-    if(school[k+ELAPSED]>=f32(p.horizon)){
+    let deadline_hit=p.deadline>0.5 && school[k+ELAPSED]>=p.deadline;
+    if(school[k+ELAPSED]>=f32(p.horizon) || deadline_hit){
       if(school[k+PROPELLED]<0.5){close(k,s,2.0,9.0);}
       else if(school[k+MAX_DWELL]<service_hold &&
               (inside_passenger || inside_destination)){close(k,s,2.0,14.0);}
+      else if(deadline_hit){close(k,s,2.0,16.0);}
       else{close(k,s,3.0,0.0);}
     }
     return;
@@ -318,7 +322,7 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
         school[k+ENV_ZONE_TICKS]+=1.0;
         let excess=max(speed-v_allow(d),0.0);
         if(excess<=0.0){school[k+ENV_CONFORM_TICKS]+=1.0;}
-        school[k+ENV_EXCESS_INTEGRAL]=min(school[k+ENV_EXCESS_INTEGRAL]+excess*DT,ENV_EXCESS_CLAMP);
+        school[k+ENV_EXCESS_INTEGRAL]=min(school[k+ENV_EXCESS_INTEGRAL]+excess*DT,p.excess_clamp);
         if(remaining<prev_best && speed<school[k+ENV_MIN_SPEED_APPROACH]){
           school[k+ENV_MIN_SPEED_APPROACH]=speed; school[k+ENV_DIST_AT_MIN_SPEED]=d;
         }
@@ -333,5 +337,7 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
     let e=vec2<f32>(school[k+EDX],school[k+EDZ]);
     if(school[k+PHASE]>=0.5 && distance(pos,exit)<=p.gate_radius && dot(heading,e)>=p.align_min){close(k,s,1.0,0.0);return;}
   }
+  let deadline_hit=p.deadline>0.5 && school[k+ELAPSED]>=p.deadline;
+  if(deadline_hit){close(k,s,2.0,16.0);return;}
   if(school[k+ELAPSED]>=f32(p.horizon)){close(k,s,3.0,0.0);}
 }

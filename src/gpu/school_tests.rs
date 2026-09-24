@@ -720,6 +720,37 @@ fn truncation_at_horizon_keeps_progress() {
     );
 }
 
+/// `--school-deadline-frac`: the same run as above, judged with a deadline of 60 ticks
+/// inside a 100-tick horizon, closes as failure 16 at tick 59 with its progress kept;
+/// a deadline equal to the horizon turns the plain truncation into failure 16 too.
+#[test]
+#[ignore = "real GPU"]
+fn deadline_turns_an_open_attempt_into_failure_16() {
+    let mut f = Fixture::new(straight(Lesson::Move), 100);
+    f.school.deadline_ticks = 60;
+    f.run(straight_run([93.0, 114.0], [0.0, 1.0], 2.0, 120));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_FAILED, 16), "{r:?}");
+    assert_eq!(r[R_OUTCOME_TICK], 59.0);
+    assert!((r[R_PROGRESS] - (60.0 * 2.0 / 64.0) / 30.0).abs() < 0.02, "{r:?}");
+    assert!(r[R_SCORE] < 0.0, "a failed open attempt pays -200: {r:?}");
+
+    let mut f = Fixture::new(straight(Lesson::Move), 100);
+    f.school.deadline_ticks = 100;
+    f.run(straight_run([93.0, 114.0], [0.0, 1.0], 2.0, 120));
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 16));
+
+    // A success on the deadline tick still wins: the deadline is checked last.
+    let mut f = Fixture::new(straight(Lesson::Stop), 1280);
+    let approach = stop_approach(6.0);
+    let z = approach.last().unwrap().pos[1];
+    let ticks_so_far = approach.len() as u32;
+    f.school.deadline_ticks = ticks_so_far + 128;
+    f.run(approach);
+    f.run((0..128).map(|_| Step::at([93.0, z + 2.0], [0.0, 0.0]).throttle(0.0)));
+    assert_eq!(status(&f.record()), (STATUS_SUCCESS, 0), "{:?}", f.record());
+}
+
 fn stop_approach(entry_speed: f32) -> Vec<Step> {
     // Accelerate to entry_speed over the first 20 m, then brake inside the area.
     let mut steps = Vec::new();

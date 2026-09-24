@@ -184,6 +184,7 @@ pub fn fail_code_name(code: u32) -> &'static str {
         13 => "wrong_passenger_id",
         14 => "service_goal_not_stopped",
         15 => "pickup_outside_passenger_radius",
+        16 => "open_at_deadline",
         _ => "unknown",
     }
 }
@@ -308,7 +309,10 @@ struct Params {
     align_min: f32,
     gate_radius: f32,
     a_ref: f32,
-    _pad: [f32; 3],
+    excess_clamp_m: f32,
+    /// Judging deadline in ticks (0 = off): an open record there is failure 16.
+    deadline_ticks: f32,
+    _pad: f32,
 }
 
 pub struct SchoolGpu {
@@ -323,6 +327,14 @@ pub struct SchoolGpu {
     pub stop_shaping: bool,
     /// Stop lesson: the score also pays for conforming to the braking envelope (flags bit 2).
     pub stop_envelope: bool,
+    /// Clamp of the envelope excess integral, metres (`--school-stop-envelope-clamp-m`).
+    /// The penalty is `-100 * clamp(excess / clamp, 0, 1)`; at 6 m half the in-zone
+    /// replicas of the 2026-09-23 batteries sat at the clamp (no gradient).
+    pub stop_envelope_excess_clamp_m: f32,
+    /// Deadline in ticks (`--school-deadline-frac`), 0 = off. An attempt still open at
+    /// the deadline closes as failure 16 instead of truncation 3, so "never arriving"
+    /// stops being cheaper than "arriving and failing" (docs/GAP-SWEEP-20260924.md P0-1).
+    pub deadline_ticks: u32,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
 }
@@ -414,6 +426,8 @@ impl SchoolGpu {
             bench,
             stop_shaping,
             stop_envelope,
+            stop_envelope_excess_clamp_m: STOP_ENVELOPE_EXCESS_CLAMP_M,
+            deadline_ticks: 0,
             layout,
             pipeline,
         }
@@ -488,7 +502,9 @@ impl SchoolGpu {
                 align_min: c.align_min_cos,
                 gate_radius: c.gate_radius_m,
                 a_ref: STOP_ENVELOPE_A_REF_MPS2,
-                _pad: [0.0; 3],
+                excess_clamp_m: self.stop_envelope_excess_clamp_m.max(0.001),
+                deadline_ticks: self.deadline_ticks as f32,
+                _pad: 0.0,
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -636,4 +652,57 @@ pub fn record_json(
         }
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_v3_stride_and_slots_are_frozen() {
+        assert_eq!(SCHOOL_SCHEMA_VERSION, 3);
+        assert_eq!(SCHOOL_STRIDE_F32, 56);
+        assert_eq!(
+            [R_ENV_ZONE_TICKS, R_ENV_CONFORM_TICKS, R_ENV_EXCESS_INTEGRAL, R_ENV_ENTRY_SPEED,
+             R_ENV_MIN_SPEED_APPROACH, R_ENV_DIST_AT_MIN_SPEED],
+            [48, 49, 50, 51, 52, 53]
+        );
+        assert_eq!(std::mem::size_of::<Params>(), 20 * 4, "Params must stay 80 bytes (host/shader mirror)");
+        assert_eq!(fail_code_name(16), "open_at_deadline");
+        assert_eq!(fail_code_name(17), "unknown");
+    }
+
+    #[test]
+    fn record_json_round_trips_the_six_envelope_fields() {
+        let mut r = [0.0f32; SCHOOL_STRIDE_F32];
+        r[R_STATUS] = STATUS_RUNNING as f32;
+        r[R_LESSON] = 2.0;
+        r[R_ENV_ZONE_TICKS] = 40.0;
+        r[R_ENV_CONFORM_TICKS] = 30.0;
+        r[R_ENV_EXCESS_INTEGRAL] = 1.25;
+        r[R_ENV_ENTRY_SPEED] = 3.5;
+        r[R_ENV_MIN_SPEED_APPROACH] = 0.75;
+        r[R_ENV_DIST_AT_MIN_SPEED] = 2.5;
+        let v = record_json(&r, 0.0, 0.0);
+        assert_eq!(v["envelope_zone_ticks"], 40.0);
+        assert!((v["envelope_conform_ratio"].as_f64().unwrap() - 0.75).abs() < 1e-6);
+        assert_eq!(v["envelope_excess_integral_m"], 1.25);
+        assert_eq!(v["envelope_entry_speed_mps"], 3.5);
+        assert_eq!(v["approach_min_speed_mps"], 0.75);
+        assert_eq!(v["approach_min_speed_distance_m"], 2.5);
+    }
+
+    #[test]
+    fn record_json_reports_absent_envelope_readings_as_null() {
+        let mut r = [0.0f32; SCHOOL_STRIDE_F32];
+        r[R_STATUS] = STATUS_RUNNING as f32;
+        r[R_LESSON] = 2.0;
+        r[R_ENV_ENTRY_SPEED] = 1e9;
+        r[R_ENV_MIN_SPEED_APPROACH] = 1e9;
+        let v = record_json(&r, 0.0, 0.0);
+        assert!(v["envelope_conform_ratio"].is_null(), "no zone ticks -> no ratio");
+        assert!(v["envelope_entry_speed_mps"].is_null());
+        assert!(v["approach_min_speed_mps"].is_null());
+        assert_eq!(v["envelope_zone_ticks"], 0.0);
+    }
 }
