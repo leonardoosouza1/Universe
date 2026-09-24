@@ -644,3 +644,32 @@ measured at 12:21. The generalist's dominant failure on the pool is now the corr
 24: it leaves the lane or backs past the start), not overshoot; the stop is learned, the lane
 keeping under braking is the next skill. Seed 7's rotating champion, whose run recorded 19
 strict, holds nothing at its final generation (its stops were not in the elite).
+
+### Results of the from-generalist battery, body arms (filled 2026-09-24 13:23; runs 13:00–13:22, `run_battery_from_generalist.sh`, 240 generations each, all from the gen-106 generalist, pool 24, deadline 1.0, mean)
+
+Population medians at generation 239 (96 bodies); strict counts are genome-starts per
+generation averaged over generations 210–239; the body model is
+`engine = 1 + 0.25·g0`, `brakes = 1 + 0.25·g1`, mass +15% per engine unit (`src/gpu/body.rs:24-35`),
+so engine and brake torque can move at most ±25%.
+
+| arm | seed | brake torque drift | engine torque drift | mass | elite genes (g0, g1) | strict / gen (last 30) | 3-of-3 genomes / gen (last 30) | peak speed of accepted stops, median |
+|---|---|---|---|---|---|---|---|---|
+| fixed body | 11 | 0 | 0 | 0 | (0, 0) | 6.2 | 0 | 6.4 m/s |
+| `--evolving-body` | 11 | **−7.3%** | **+21.4%** | +2.3% | (0.99, −0.32) | **14.7** | 0.07 | 7.06 m/s |
+| fixed body | 7 | 0 | 0 | 0 | (0, 0) | 10.4 | 0 | 7.1 m/s |
+| `--evolving-body` | 7 | **+6.8%** | −1.6% | 0.0% | (−0.12, +0.24) | 10.2 | 0 | 6.37 m/s |
+
+**B1 refuted, B2 refuted.** Brake capacity is not what selection buys once the brain brakes:
+seed 11 sheds brake (−7.3%) and drives the engine gene to its ceiling (g0 = 0.99 of a
+maximum 1.0 — a metric at its limit, so +21% is the cap, not the preference), seed 7 raises
+the brake (+6.8%) and leaves the engine alone. The body evolves and is selected on — the
+seed-11 population is at (0.75…0.97, −0.39…−0.23) by generation 239, not a random walk around
+0 — but the *direction* is seed-specific at n = 2, and the stop rate does not separate from
+mutation-seed variance: the two fixed-body controls differ from each other by 1.7×
+(6.2 vs 10.4), more than seed 7's evolving-vs-fixed gap and less than seed 11's. What can be
+claimed: body coevolution is functional under the stop contract (genes express, are inherited
+by elites, and move to the bound on one seed); what cannot be claimed yet: that it helps the
+stop, or that it selects brake capacity. A third paired seed is chained (`run_body_s3.sh`,
+after `chain_eval2.sh`), per the ≥ 3 paired seeds rule; prediction: strict per generation
+evolving vs fixed on seed 3 falls between the two observed ratios (0.98 and 2.4), and the
+engine gene ends above +0.5 if and only if the strict ratio exceeds 1.5.
