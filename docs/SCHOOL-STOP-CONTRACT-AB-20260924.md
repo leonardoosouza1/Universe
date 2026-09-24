@@ -622,3 +622,25 @@ after 0 strict in all six fixed-start arms of the day (scale, signed, mean, full
 Late (gen 105/145), rare (0.3–0.4 per generation over the last 30) and never a 2-of-3 under
 deadline 0.7, so the lineage effect stands, but "seed 7 cannot stop" was a statement about
 three starts, not about the lineage. As on seed 11, the deadline-0.7 stops are the faster ones.
+
+### Held-out evaluation of the champions (filled 2026-09-24 13:01; `chain_eval_after_pool.sh`, 13:00:13–13:00:38, 4 copies of each champion, 1 generation, same contract as its run; evals in `/media/llm-data/scratch/eval-pool-20260924/`)
+
+Strict stops of copy 0 (the other three copies are identical: 4 × the same counts everywhere).
+
+| champion (final generation) | validation (3 starts) | test (3 starts) | train pool (24 starts) | failure codes on the train pool |
+|---|---|---|---|---|
+| `pool24-full-mean-s11` gen 239 (rotation, deadline 1.0) | **1 / 3** | **1 / 3** | **8 / 24** | 13 corridor, 3 open at deadline |
+| `pool24-full-mean-s7` gen 239 | 0 / 3 | 0 / 3 | 0 / 24 | 19 overshoot, 4 contact |
+| `pool24-mean-s11` gen 239 (rotation, deadline 0.7) | 0 / 3 | 0 / 3 | 0 / 24 | 24 overshoot |
+| `pool24-mean-s7` gen 239 | 0 / 3 | 0 / 3 | 0 / 24 | 10 corridor, 10 overshoot, 3 open |
+| `full-mean-s11` gen 119 (fixed starts, deadline 1.0) | 0 / 3 | 0 / 3 | 2 / 24 | 15 open at deadline, 7 overshoot |
+| `mean-clipped-s11` gen 119 (fixed starts, deadline 0.7) | 0 / 3 | 0 / 3 | 2 / 24 | 10 open, 10 overshoot, 1 corridor, 1 contact |
+
+**First held-out generalization.** The revised prediction for the rotating deadline-1.0
+champion (≥ 1 of 3 validation starts) holds on both held-out folds, and the original
+start-pool prediction (2) (≥ 8 of 24 on the train pool) holds exactly. Both fixed-start
+champions stop only on 2 of the 24 train starts — their own — and on nothing held out, as
+measured at 12:21. The generalist's dominant failure on the pool is now the corridor (13 of
+24: it leaves the lane or backs past the start), not overshoot; the stop is learned, the lane
+keeping under braking is the next skill. Seed 7's rotating champion, whose run recorded 19
+strict, holds nothing at its final generation (its stops were not in the elite).
