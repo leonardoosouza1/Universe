@@ -888,3 +888,13 @@ Fixes for the next build window (Universe, `--bin gpu_evolve` only):
    cost a bounded penalty, not close the attempt — do not extinguish the channel.
 3. Log map 1..=17 so `open_at_deadline` and `zone_entry_slow` are visible.
 4. Clamp `--school-start-pool` to the candidate count (10 for service lessons).
+
+#### 18:45 stage 3 queued: replicate stage 2 with seeds 12 and 13 (`run_life_stage3.sh`)
+
+Same curriculum and resume point as stage 2 (stage-1 turn_far graduate, gen 198), seeds 12
+and 13, 300 gens each, queued behind the stage-2 best-slot trace. Pre-registered:
+- approach_passenger passes (p̂ ≥ 0.25 for 2 gens) in at least 1 of the 2 seeds within
+  300 gens; if both pass, the pass gen differs by > 50 (the gen-238 pass was one draw of
+  a noisy p̂, not a fixed timescale).
+- pickup stays 0/96 in every seed that reaches it, and the hidden deadline bucket
+  (failed − Σcodes) collapses toward 0 again — the drift is structural, not seed 11's luck.
