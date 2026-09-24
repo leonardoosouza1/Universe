@@ -926,3 +926,36 @@ Additional fixes for the build window:
 6. Advance gate: pool p̂ over a full rotation window (⌈pool / eval_starts⌉ gens) or require
    per-start p̂ ≥ threshold — not 2 consecutive gens.
 7. Log per-start successes on the `[school]` line (they exist in `school_result_gen*.json`).
+
+#### 21:05 Leonardo's observation: "they enter on green, the light closes, they never leave the junction"
+
+Flow checked (`traffic.wgsl` → wave channels 172/173/182/191 → brain; `post` fines only):
+- A traffic light never touches physics or controls. It writes 4 sensor channels and, on a
+  red crossing, debits ≤ 3 cash. Nothing holds a vehicle inside a box.
+- Lights sit on the stop line 10.5 m before the centre and are only sensed when ahead
+  (`d ≥ 0`), lateral ≤ 7.5 m and heading·approach > 0.5. From inside the box a being sees
+  no light of that junction; the next one is > 100 m away. Verified on the vision
+  being's `traffic_state` in three lives: every in-box stationary sample has
+  nearest = 0, distance = 100, phase = 0 (graduate 328/328, stopper 715/715, mover
+  2534/2534 samples).
+- Panel light colour uses the same formula as the kernel (`cycle`, `phase_offset_ticks`,
+  green/yellow). The red drawn while a being sits in the box is real, and unrelated.
+- What actually keeps them still inside boxes (32 beings, `driving.csv`, samples with
+  ≥ 60/64 stationary ticks, t > 10 s): mover 2 765 box samples = contact 2 310 + wall 436;
+  stopper 3 220 = brake 1 213 + idle 809 + contact 796; graduate 773 = contact 337 +
+  brake 275 + idle 88. Junction boxes are where 32 beings converge (stations sit at
+  the centres of 5 junctions: (96,96), (480,96), (288,672), …), so piles form there.
+  Static piles set no contact bit (`closing > 0` only), which is the "throttle 0.4–0.7,
+  gear 2, 180–450 N·m, speed < 0.3, no contact flag" signature (84 graduate samples).
+- Stopping at red exists but resuming does not: stopper 463 stationary-at-red samples,
+  0 resumes > 1 m/s on green; graduate 182 / 2; mover 0 / 0. The stopper stops for
+  anything and never restarts; the mover ignores lights.
+- The witness stopped for 159 s at (290.8, 672) with brake = 1 after its 2nd delivery.
+  Not a light: `taxi_witness.wgsl` brakes and returns when `body[68] ≥ 2` in production
+  ("prevents … an unbounded route/reward loop"). The witness is CAPPED at 2 deliveries by
+  design; "witness = 2" is a cap, not a capability measure.
+
+Conclusion: the junction lock-up is piles and the stop habit, not the signal. Fixes
+belong to the world and the fitness, not to the lights: (8) stations off the junction
+centres or one being per world instance in lives; (9) a "resume on green" term or a
+stationary cost at green.
