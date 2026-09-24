@@ -185,6 +185,7 @@ pub fn fail_code_name(code: u32) -> &'static str {
         14 => "service_goal_not_stopped",
         15 => "pickup_outside_passenger_radius",
         16 => "open_at_deadline",
+        17 => "zone_entry_slow",
         _ => "unknown",
     }
 }
@@ -312,7 +313,14 @@ struct Params {
     excess_clamp_m: f32,
     /// Judging deadline in ticks (0 = off): an open record there is failure 16.
     deadline_ticks: f32,
-    _pad: f32,
+    /// Speed at which the slowing term of the stop shaping starts to pay (v_min by default).
+    shaping_ref_mps: f32,
+    /// Minimum speed at the first braking-zone entry (0 = off): below it, failure 17.
+    zone_entry_min_mps: f32,
+    /// Padding: WGSL rounds the uniform struct up to 16 bytes; the host must match.
+    pad_a: f32,
+    pad_b: f32,
+    pad_c: f32,
 }
 
 pub struct SchoolGpu {
@@ -335,6 +343,17 @@ pub struct SchoolGpu {
     /// the deadline closes as failure 16 instead of truncation 3, so "never arriving"
     /// stops being cheaper than "arriving and failing" (docs/GAP-SWEEP-20260924.md P0-1).
     pub deadline_ticks: u32,
+    /// Reference speed of the slowing term, `300 * clamp(1 - min_speed_inside / ref)`
+    /// (`--school-stop-shaping-ref-mps`). Default = the contract's v_min, which pays
+    /// nothing until the being is already under 3 m/s; the 24/09 signed-brake battery
+    /// showed a flat landscape above that speed (docs/SCHOOL-STOP-CONTRACT-AB-20260924.md).
+    pub stop_shaping_ref_mps: f32,
+    /// Zone-entry gate (`--school-stop-zone-entry-min-mps`, 0 = off): the speed at the
+    /// first entry into the braking zone `area_radius + v_min²/(2 a_ref)` (6.25 m with the
+    /// taxi contract) must be at least this, or the attempt closes as failure 17. Without
+    /// it `v_min` is met on the drive-up and the accepted stops creep into the area at
+    /// ~1 m/s (docs/SCHOOL-STOP-CONTRACT-AB-20260924.md, full-horizon results).
+    pub stop_zone_entry_min_mps: f32,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
 }
@@ -428,6 +447,8 @@ impl SchoolGpu {
             stop_envelope,
             stop_envelope_excess_clamp_m: STOP_ENVELOPE_EXCESS_CLAMP_M,
             deadline_ticks: 0,
+            stop_shaping_ref_mps: contract.v_min_mps,
+            stop_zone_entry_min_mps: 0.0,
             layout,
             pipeline,
         }
@@ -504,7 +525,11 @@ impl SchoolGpu {
                 a_ref: STOP_ENVELOPE_A_REF_MPS2,
                 excess_clamp_m: self.stop_envelope_excess_clamp_m.max(0.001),
                 deadline_ticks: self.deadline_ticks as f32,
-                _pad: 0.0,
+                shaping_ref_mps: self.stop_shaping_ref_mps.max(0.001),
+                zone_entry_min_mps: self.stop_zone_entry_min_mps.max(0.0),
+                pad_a: 0.0,
+                pad_b: 0.0,
+                pad_c: 0.0,
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -667,9 +692,10 @@ mod tests {
              R_ENV_MIN_SPEED_APPROACH, R_ENV_DIST_AT_MIN_SPEED],
             [48, 49, 50, 51, 52, 53]
         );
-        assert_eq!(std::mem::size_of::<Params>(), 20 * 4, "Params must stay 80 bytes (host/shader mirror)");
+        assert_eq!(std::mem::size_of::<Params>(), 24 * 4, "Params must stay 96 bytes (host/shader mirror, 16-aligned)");
         assert_eq!(fail_code_name(16), "open_at_deadline");
-        assert_eq!(fail_code_name(17), "unknown");
+        assert_eq!(fail_code_name(17), "zone_entry_slow");
+        assert_eq!(fail_code_name(18), "unknown");
     }
 
     #[test]

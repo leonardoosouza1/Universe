@@ -964,6 +964,9 @@ fn main() {
     let mut school_stop_envelope = false;
     // `Some` only when the flag was given; the default clamp lives in the library.
     let mut school_stop_envelope_clamp_m: Option<f32> = None;
+    let mut school_stop_shaping_ref_mps: Option<f32> = None;
+    // Zone-entry gate (failure 17 below this speed at the first braking-zone entry); off = None.
+    let mut school_stop_zone_entry_min_mps: Option<f32> = None;
     // docs/GAP-SWEEP-20260924.md P0: deadline fraction of the horizon (open = failure 16),
     // selection rule over the K starts, and the candidate pool the batch rotates through.
     let mut school_deadline_frac: Option<f32> = None;
@@ -1148,6 +1151,20 @@ fn main() {
                 }
                 "--school-stop-envelope" => {
                     school_stop_envelope = true;
+                }
+                "--school-stop-shaping-ref-mps" => {
+                    i += 1;
+                    school_stop_shaping_ref_mps = Some(args.get(i).and_then(|a| a.parse::<f32>().ok()).filter(|v| *v > 0.0).unwrap_or_else(|| {
+                        eprintln!("--school-stop-shaping-ref-mps requires a positive speed in m/s");
+                        std::process::exit(2);
+                    }));
+                }
+                "--school-stop-zone-entry-min-mps" => {
+                    i += 1;
+                    school_stop_zone_entry_min_mps = Some(args.get(i).and_then(|a| a.parse::<f32>().ok()).filter(|v| *v > 0.0).unwrap_or_else(|| {
+                        eprintln!("--school-stop-zone-entry-min-mps requires a positive speed in m/s");
+                        std::process::exit(2);
+                    }));
                 }
                 "--school-stop-envelope-clamp-m" => {
                     i += 1;
@@ -2840,6 +2857,10 @@ fn main() {
         eprintln!("--school-stop-envelope-clamp-m requires --school-stop-envelope");
         std::process::exit(2);
     }
+    if school_stop_shaping_ref_mps.is_some() && !school_stop_shaping {
+        eprintln!("--school-stop-shaping-ref-mps requires --school-stop-shaping");
+        std::process::exit(2);
+    }
     let school_stop_envelope_clamp_m =
         school_stop_envelope_clamp_m.unwrap_or(universe::gpu::school::STOP_ENVELOPE_EXCESS_CLAMP_M);
     if school_deadline_frac.is_some() && school_lesson.is_none() {
@@ -2881,6 +2902,10 @@ fn main() {
     });
     if school_stop_envelope && school_lesson.is_none() {
         eprintln!("--school-stop-envelope requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if school_stop_zone_entry_min_mps.is_some() && school_lesson.is_none() {
+        eprintln!("--school-stop-zone-entry-min-mps requires --school or --school-curriculum");
         std::process::exit(2);
     }
     if school_shared_start.is_some() && school_lesson.is_none() {
@@ -5224,6 +5249,16 @@ fn main() {
                     ));
                     if let Some(school) = ctx.school.as_mut() {
                         school.stop_envelope_excess_clamp_m = school_stop_envelope_clamp_m;
+                        if let Some(reference) = school_stop_shaping_ref_mps {
+                            if reference < school.contract.v_min_mps {
+                                eprintln!("--school-stop-shaping-ref-mps must not be below the contract's v_min ({})", school.contract.v_min_mps);
+                                std::process::exit(2);
+                            }
+                            school.stop_shaping_ref_mps = reference;
+                        }
+                        if let Some(gate) = school_stop_zone_entry_min_mps {
+                            school.stop_zone_entry_min_mps = gate;
+                        }
                         school.deadline_ticks = school_deadline_frac
                             .map_or(0, |f| (f * school.horizon_ticks as f32).round().max(1.0) as u32);
                     }
@@ -5329,12 +5364,15 @@ fn main() {
                     "selection": school_select.name(),
                     "start_pool": school_start_pool.max(school_eval_starts),
                     "score": format!("1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive){}{}",
-                        if school_stop_shaping { " + stop: 300*clamp(1 - min_speed_inside/v_min) + 200*clamp(max_near_stop_dwell/hold_ticks), near-stop=2*v_stop; success remains v_stop" } else { "" },
+                        if school_stop_shaping { " + stop: 300*clamp(1 - min_speed_inside/stop_shaping_ref_mps) + 200*clamp(max_near_stop_dwell/hold_ticks), near-stop=2*v_stop; success remains v_stop" } else { "" },
                         if school_stop_envelope { " + stop: 200*clamp(envelope_conform_ticks/envelope_zone_ticks) - 100*clamp(envelope_excess_integral_m/stop_envelope_excess_clamp_m), v_allow(d)=sqrt(v_stop^2+2*a_ref*(d-r_goal)); success remains v_stop" } else { "" }),
                     "stop_shaping": school_stop_shaping,
+                    "stop_shaping_ref_mps": school_stop_shaping_ref_mps.unwrap_or(school_contract.v_min_mps),
                     "stop_envelope": school_stop_envelope,
                     "stop_envelope_a_ref_mps2": universe::gpu::school::STOP_ENVELOPE_A_REF_MPS2,
                     "stop_envelope_excess_clamp_m": school_stop_envelope_clamp_m,
+                    "stop_zone_entry_min_mps": school_stop_zone_entry_min_mps.unwrap_or(0.0),
+                    "stop_zone_entry_gate": school_stop_zone_entry_min_mps.map(|v| format!("failure 17 when the speed at the first braking-zone entry is below {v} m/s")),
                     "fitness": if school_bench { "score" } else { "taxi fitness (life mode)" }, "lessons": rotated,
                     "curriculum": school_curriculum.unwrap_or("fixed"),
                     "curriculum_lessons": school_lessons.iter().map(|l| l.name()).collect::<Vec<_>>(),

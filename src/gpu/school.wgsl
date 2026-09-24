@@ -12,19 +12,27 @@
 // 12 dropoff outside the destination, 13 wrong passenger id,
 // 14 reached a service goal but never completed the stop hold,
 // 15 pickup outside the passenger radius,
-// 16 still open at the deadline tick (--school-deadline-frac: a timeout is a failure).
+// 16 still open at the deadline tick (--school-deadline-frac: a timeout is a failure),
+// 17 entered the braking zone below zone_entry_min (--school-stop-zone-entry-min-mps).
 // deadline (ticks, 0 = off) ends the judging window before the horizon; an open
 // record there closes as failure 16 instead of truncation 3 (docs/GAP-SWEEP-20260924.md).
 // Params.flags: bit 0 bench (host-only), bit 1 stop-score shaping
 // (docs/SCHOOL-STOP-SHAPING-20260922.md), bit 2 stop braking envelope
 // (docs/SCHOOL-STOP-ENVELOPE-20260923.md). a_ref is the envelope's reference
-// deceleration (m/s^2), measured on the GPU and passed by the host.
+// deceleration (m/s^2), measured on the GPU and passed by the host. shaping_ref is
+// the speed at which the slowing term of the shaping starts to pay (host default
+// v_min; `--school-stop-shaping-ref-mps` raises it so slowing while still fast pays).
+// zone_entry_min (0 = off) is the speed the body must still carry at its first entry
+// into the braking zone r_zone = area_radius + v_min^2/(2 a_ref); below it the attempt
+// closes as failure 17, so v_min has to be met where braking starts, not anywhere on
+// the drive-up (docs/SCHOOL-STOP-CONTRACT-AB-20260924.md). pad_* keep the uniform 16-aligned.
 struct Params {
   n:u32, tick:u32, horizon:u32, flags:u32,
   goal_radius:f32, area_radius:f32, v_min:f32, v_stop:f32,
   hold_ticks:f32, corridor_half:f32, overshoot_along:f32, propelled_min:f32,
   box_half:f32, exit_overshoot:f32, align_min:f32, gate_radius:f32,
-  a_ref:f32, excess_clamp:f32, deadline:f32, _p2:f32,
+  a_ref:f32, excess_clamp:f32, deadline:f32, shaping_ref:f32,
+  zone_entry_min:f32, pad_a:f32, pad_b:f32, pad_c:f32,
 }
 @group(0) @binding(0) var<uniform> p:Params;
 @group(0) @binding(1) var<storage,read> physics_in:array<f32>;
@@ -78,7 +86,7 @@ fn close(k:u32, s:u32, status:f32, code:f32) {
   let alive=select(0.0,1.0,body[s+29u]>0.5);
   var shaping=0.0;
   if((p.flags&2u)!=0u && school[k+LESSON]>1.5 && school[k+LESSON]<2.5){
-    shaping=300.0*clamp(1.0-school[k+MIN_SPEED_INSIDE]/max(p.v_min,0.001),0.0,1.0)
+    shaping=300.0*clamp(1.0-school[k+MIN_SPEED_INSIDE]/max(p.shaping_ref,0.001),0.0,1.0)
            +200.0*clamp(school[k+MAX_NEAR_DWELL]/max(p.hold_ticks,1.0),0.0,1.0);
   }
   if((p.flags&4u)!=0u && school[k+LESSON]>1.5 && school[k+LESSON]<2.5){
@@ -318,7 +326,10 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
       let d=distance(pos,goal);
       let r_zone=p.area_radius+p.v_min*p.v_min/(2.0*max(p.a_ref,0.001));
       if(d<=r_zone){
-        if(school[k+ENV_ZONE_TICKS]<0.5){school[k+ENV_ENTRY_SPEED]=speed;}
+        if(school[k+ENV_ZONE_TICKS]<0.5){
+          school[k+ENV_ENTRY_SPEED]=speed;
+          if(p.zone_entry_min>0.0 && speed<p.zone_entry_min){close(k,s,2.0,17.0);return;}
+        }
         school[k+ENV_ZONE_TICKS]+=1.0;
         let excess=max(speed-v_allow(d),0.0);
         if(excess<=0.0){school[k+ENV_CONFORM_TICKS]+=1.0;}

@@ -818,3 +818,28 @@ life) logged to battery.log, so the micro can show slot 7 of the mover crossing 
 instead of the clone. Pending: uniform curriculum, both graduates, their best-slot traces.
 Honest status: as of 16:20 no evolved being has delivered a passenger; the only delivery on
 the map is the scripted witness.
+
+#### 16:30–17:20 update: curriculum advanced, then panicked; best-slot traces deterministic; stage 2 queued
+
+- Prediction "adaptive stalls on turn_near" was WRONG: turn_near passed at gen 94 and
+  turn_far at gen 198 (p̂ ≥ 0.25 for 2 gens, pool 24 × 3 starts). Entering
+  approach_passenger at gen 199 `gpu_evolve` panicked (`main.rs:4803`,
+  `organism_school::lesson_starts_fold`): passenger lessons have only 10 candidate
+  approaches (5 stations × 2) and the pool of 24 is an error instead of a clamp. The
+  uniform arm hit the same panic at gen 2. **Universe bug to fix in the next build
+  window: clamp the pool to the candidate count (or say so at argument parsing).**
+- Graduates' 30 000-tick lives (from the last checkpoint before the panic): adaptive
+  gen198 = 318 m max, 141 m median, 32/32 alive, 0 deliveries; uniform gen1 = 531 m max,
+  0 deliveries. Both stopper-like, as predicted for a curriculum that never reached pickup.
+- Best-slot re-traces (`run_life_best.sh`): all five deterministic (same slot, same distance
+  to 0.1 m: newborn 11 = 454.7 m, mover 7 = 3 823.5 m, stopper 16 = 363.9 m, graduate
+  adaptive 23 = 318.4 m, graduate uniform 7 = 530.8 m). The micro of the mover's slot 7
+  (3.8 km alive) is `/run/move-life-s7-best/0/7?view=champion&play=1`.
+- Stage 2 (`run_life_stage2.sh`, 17:19): resumes the turn_far graduate (gen 198) on
+  approach_passenger → pickup → navigate_with_passenger → delivery with pool 10 × 3 starts,
+  300 gens; then its 30 000-tick life and best-slot trace. First gens: 0/96 on
+  approach_passenger, failures contact/corridor, first pickup requests at gen 1.
+- UI: Brain3D drew the 14 × 126 retina as a 42 × 42 square (scrambled, "static");
+  now rows × cols from block.shape (`e02d465`). Micro did replay-sized work per animation
+  frame (32 beings × 3 750 frames scanned ~35× per draw, 3 750 trail strokes, WebGL frame
+  every rAF): static offscreen layer + bucketed trail + render-on-demand (`1680671`).

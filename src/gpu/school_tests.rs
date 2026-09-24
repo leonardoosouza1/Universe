@@ -1005,6 +1005,29 @@ fn stop_shaping_pays_the_full_bonus_on_success_and_nothing_before_the_area() {
     );
 }
 
+#[test]
+#[ignore = "real GPU"]
+fn stop_shaping_reference_speed_pays_slowing_while_still_fast() {
+    // Same overshoot at 8 m/s as above. With the default reference (v_min = 3) the slowing
+    // term is 0; with a 12 m/s reference it pays 300 * (1 - min_speed_inside / 12) even
+    // though the attempt fails, so a fast population has a slope to climb. Strict success
+    // and every other term are untouched.
+    let mut f = Fixture::new_with(straight(Lesson::Stop), 1280, true);
+    f.school.stop_shaping_ref_mps = 12.0;
+    f.run(straight_run([93.0, 114.0], [0.0, 1.0], 8.0, 400));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_FAILED, 5), "{r:?}");
+    assert!(r[R_MIN_SPEED_INSIDE] > 7.5 && r[R_MIN_SPEED_INSIDE] < 12.0, "{r:?}");
+    let slowing = 300.0 * (1.0 - r[R_MIN_SPEED_INSIDE] / 12.0);
+    assert!(slowing > 0.0 && slowing < 120.0, "{slowing} {r:?}");
+    let expected = 500.0 * r[R_PROGRESS] - 200.0 + slowing;
+    assert!(
+        (r[R_SCORE] - expected).abs() < 1.0,
+        "{} vs {expected}: {r:?}",
+        r[R_SCORE]
+    );
+}
+
 // ── Braking envelope (docs/SCHOOL-STOP-ENVELOPE-20260923.md §4) ──────────────────────
 
 const A_REF: f32 = STOP_ENVELOPE_A_REF_MPS2;
@@ -1173,4 +1196,66 @@ fn stop_envelope_off_keeps_the_historical_score_and_still_records() {
     let r = plain.record();
     let expected = 1000.0 + 500.0 * r[R_PROGRESS];
     assert!((r[R_SCORE] - expected).abs() < 1.0, "{} vs {expected}: {r:?}", r[R_SCORE]);
+}
+
+// ── Zone-entry gate (docs/SCHOOL-STOP-CONTRACT-AB-20260924.md, full-horizon results) ──
+
+/// Ramp to `cruise` on the drive-up, then decay to `zone_speed` before the judge's braking
+/// zone (6.25 m with the contract: area 4 m + 3²/(2·2)), enter it at that speed, decay to a
+/// 1 m/s creep and hold still 2 m before the centre. The drive-up satisfies v_min either way; only the
+/// speed at the zone boundary differs.
+fn coast_in_approach(cruise: f32, zone_speed: f32) -> Vec<Step> {
+    let mut steps = Vec::new();
+    let mut z = 114.0f32;
+    let mut speed = 0.0f32;
+    let r_zone = CONTRACT.area_radius_m + CONTRACT.v_min_mps * CONTRACT.v_min_mps / (2.0 * A_REF);
+    while z < STOP_TARGET_Z - 2.0 {
+        let d = STOP_TARGET_Z - z;
+        speed = if d <= r_zone - 0.3 {
+            (speed - 0.05).max(zone_speed.min(1.0))
+        } else if d <= r_zone + 8.0 {
+            (speed - 0.15).max(zone_speed)
+        } else {
+            (speed + 0.2).min(cruise)
+        };
+        z += speed / 64.0;
+        steps.push(Step::at([93.0, z], [0.0, speed]).throttle(0.0));
+    }
+    let z_hold = z;
+    steps.extend((0..200).map(|_| Step::at([93.0, z_hold], [0.0, 0.0]).throttle(0.0)));
+    steps
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn stop_zone_entry_gate_fails_a_coast_in_and_keeps_a_braked_entry() {
+    // Gate off (default): reaching v_min on the drive-up and creeping into the zone at
+    // 1 m/s is still a strict success — the behaviour the 24/09 batteries selected.
+    let mut off = Fixture::new_with_flags(straight(Lesson::Stop), 1280, true, true);
+    off.run(coast_in_approach(6.0, 1.0));
+    let r = off.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0), "{r:?}");
+    assert!(r[R_ENV_ENTRY_SPEED] < 1.3, "{r:?}");
+    assert!(r[R_MAX_SPEED] > 5.5, "{r:?}");
+
+    // Gate 3 m/s: the same trajectory closes as failure 17 at the zone boundary, with the
+    // entry speed recorded and no zone tick counted; the area was never reached.
+    let mut gated = Fixture::new_with_flags(straight(Lesson::Stop), 1280, true, true);
+    gated.school.stop_zone_entry_min_mps = 3.0;
+    gated.run(coast_in_approach(6.0, 1.0));
+    let r = gated.record();
+    assert_eq!(status(&r), (STATUS_FAILED, 17), "{r:?}");
+    assert!(r[R_ENV_ENTRY_SPEED] < 1.3 && r[R_ENV_ZONE_TICKS] == 0.0, "{r:?}");
+    assert_eq!(r[R_PHASE], 1.0, "{r:?}");
+    assert!(r[R_SCORE] < 500.0, "{r:?}");
+
+    // Gate 3 m/s: entering the zone at 4 m/s and braking to a held stop passes the gate
+    // and remains a strict success with the same score terms as before.
+    let mut braked = Fixture::new_with_flags(straight(Lesson::Stop), 1280, true, true);
+    braked.school.stop_zone_entry_min_mps = 3.0;
+    braked.run(coast_in_approach(6.0, 4.0));
+    let r = braked.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0), "{r:?}");
+    assert!(r[R_ENV_ENTRY_SPEED] > 3.5, "{r:?}");
+    assert!(r[R_SCORE] > 1000.0, "{r:?}");
 }
