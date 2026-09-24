@@ -673,3 +673,70 @@ stop, or that it selects brake capacity. A third paired seed is chained (`run_bo
 after `chain_eval2.sh`), per the ≥ 3 paired seeds rule; prediction: strict per generation
 evolving vs fixed on seed 3 falls between the two observed ratios (0.98 and 2.4), and the
 engine gene ends above +0.5 if and only if the strict ratio exceeds 1.5.
+
+### Results of the from-generalist battery, worst-of-3 arms, and the gen-106 held-out evaluation (filled 2026-09-24 13:49; runs 13:22–13:33 `gen-worst-s{11,7}`, evals 13:33 `chain_eval2.sh`)
+
+| arm | seed | strict total (240 gens) | strict / gen (last 30) | 3-of-3 genomes / gen (last 30) | gen 239 fail codes (96 slots) | zone-entry speed, median |
+|---|---|---|---|---|---|---|
+| `body-fixed` (mean, control) | 11 | 1558 | 6.2 | 0 | — | — |
+| `gen-worst` (`--school-select worst`) | 11 | **392** | **0.2** | 0 | overshoot 83, no_approach_speed 3, contact 2 | 9.3 m/s |
+| `body-fixed` (mean, control) | 7 | 2168 | 10.4 | 0 | — | — |
+| `gen-worst` (`--school-select worst`) | 7 | **98** | **0.0** | 0 | overshoot 90, contact 1, corridor 1 | 10.5 m/s |
+
+**S1 refuted on both seeds, S2 refuted on both seeds.** Worst-of-3 does not stabilise the
+generalist; it destroys it. Mechanism, from the fail codes and the score ceiling: under
+rotation the worst of a genome's three starts is a failure for almost every genome, so the
+worst-of-3 score reduces to the failed-run score (`500·progress + shaping`, maximum 530 and
+474 at generation 239 — the strict score of 2000+ never enters the ranking once no genome is
+3-of-3). Selection then rewards fast approach and overshoot (entry speed 9–10 m/s at
+generation 239 versus 3–4 m/s in the mean arms), and the stop the parent already had is bred
+out within the first 100 generations. Worst-of-3 is retired for rotated starts; it was already
+the wrong rule for fixed starts (12:26 section).
+
+Gen-106 generalist held out (4 copies of the genome, 1 generation, same contract; folds of 3
+starts, train pool of 24; `/media/llm-data/scratch/eval-pool-20260924/pool24-full-mean-s11-gen106-*`):
+
+| fold | strict stops | fail codes |
+|---|---|---|
+| validation (3 starts) | 0 / 12 | open_at_deadline 12 |
+| test (3 starts) | **8 / 12** (2 of 3 starts) | no_approach_speed 4 |
+| train (24 starts) | 24 / 96 (6 of 24 starts) | open_at_deadline 60, no_approach_speed 8, overshoot 4 |
+
+Compared with the gen-239 champion of the same run (13:01 section: 1/3 validation, 1/3 test,
+8/24 train), the gen-106 genome is worse on the train pool and on validation and better on
+test: two snapshots of one lineage disagree by fold, which is what n = 3 starts per fold
+looks like. No claim about generalisation beyond the pool is made from either.
+
+### Results of the body coevolution arms, third seed (filled 2026-09-24 13:49; runs 13:33–13:44, `run_body_s3.sh`, seed 3, same contract and parent)
+
+| arm | seed | brake torque drift | engine torque drift | mass | elite genes (g0, g1) | strict total | strict / gen (last 30) |
+|---|---|---|---|---|---|---|---|
+| fixed body | 3 | 0 | 0 | 0 | (0, 0) | 1563 | 6.1 |
+| `--evolving-body` | 3 | +0.1% | **−6.1%** | −1.2% | (−0.24, 0.00) | 1404 | **11.2** |
+
+Prediction of 13:23 checked: the evolving-vs-fixed strict ratio on seed 3 is 1.84, inside the
+predicted band (0.98…2.4) — held; the engine gene ended at −0.24 with a ratio above 1.5 —
+the "engine above +0.5 iff ratio > 1.5" half is refuted. Over three paired seeds the evolving
+arm has the higher last-30 strict rate on two of three (14.7 vs 6.2, 10.2 vs 10.4, 11.2 vs
+6.1; mean 12.0 vs 7.6) and the lower 240-generation total on two of three (2893 vs 1558,
+1731 vs 2168, 1404 vs 1563). Body direction by seed: engine +21% / brake −7% (s11),
+brake +7% (s7), engine −6% (s3). Three seeds, three directions: the body is under selection
+but no body trait is consistently selected for by the stop contract at this search scale.
+B1 (brake ≥ 0% on all seeds) holds only marginally (+0.1% on s3) and never reaches the +5%
+selection-for-brake bar; B2 (evolving ≥ fixed, last 10) holds on 2 of 3. Verdict stands:
+coevolution functional, benefit not separable from seed variance. A fourth seed
+(`run_body_s13.sh`, seed 13) is running on the idle GPU for the effect-size trend, not as
+a decisive test.
+
+### Lab panel restored (13:40–13:47, on the owner's order; code in `lab-ui` and `neuromod-lab`, no Universe change)
+
+The macro/micro observation panel is the home again (`http://192.168.1.54:8130/`, API bound
+on the LAN without a login; the observatory prototype moved to `/observatory`). Today's 41
+runs of this battery are in `lab.db` as battery `school-stop-20260924` (reconstructed
+manifests, `lab_db.py ingest --battery`), with a run picker under the selected battery, the
+population grid coloured by judge score, and a "pontuação mediana (escola)" curve metric.
+Micro traces exist for three re-evaluated champions recorded with `--driving-diagnostics`
+(being 0, 1 generation, `chain_diag.sh`): `diag-pool24-full-mean-gen106-s11` (train pool,
+24/96 strict), `diag-pool24-full-mean-gen239-s11` (32/96, corridor 52),
+`diag-mean-clipped-gen119-s11` (fixed starts, 8/12, overshoot 4). Path verified in the
+browser: battery → run → being 0 → micro (retina, wave, brain 3D, stages, track).
