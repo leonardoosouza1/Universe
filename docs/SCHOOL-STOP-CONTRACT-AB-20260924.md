@@ -608,3 +608,17 @@ generations, seeds 11 and 7 as mutation-RNG replicates.
 
 Ceiling: 32 genomes per generation, so S1 saturates at 32. Wall ≈ 6 × 5.5 min. The marker at
 the end stays "from-stopper battery done" so `chain_eval2.sh` (gen-106 held-out) fires after it.
+
+### Results of the start-pool battery, seed 7 arms (filled 2026-09-24 13:00; runs 12:48–12:59)
+
+| arm | seed | strict genome-starts (240 gens) | first strict | first 2-of-3 | last-30 strict/gen | distinct starts with ≥ 1 strict |
+|---|---|---|---|---|---|---|
+| pool 24, mean, deadline 1.0 | 7 | 19 | gen 145 | gen 193 | 0.37 | 8 (peak 4.5 m/s, zone entry 1.8 m/s, medians) |
+| pool 24, mean, deadline 0.7 | 7 | 16 | gen 105 | never | 0.20 | 7 (peak 6.3 m/s, zone entry 3.3 m/s, medians) |
+
+**Prediction (3) refuted: seed 7 records its first strict stops ever**, in both deadline arms,
+after 0 strict in all six fixed-start arms of the day (scale, signed, mean, full). The
+24-start pool contains geometries this lineage can stop on; the three fixed starts did not.
+Late (gen 105/145), rare (0.3–0.4 per generation over the last 30) and never a 2-of-3 under
+deadline 0.7, so the lineage effect stands, but "seed 7 cannot stop" was a statement about
+three starts, not about the lineage. As on seed 11, the deadline-0.7 stops are the faster ones.
