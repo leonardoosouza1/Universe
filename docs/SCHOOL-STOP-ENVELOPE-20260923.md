@@ -172,6 +172,30 @@ for. Run dir `school-stop-envelope-from-move-20260923`, binary `b6c0ca4`, 4 runs
 same promotion rule as §5. If §5b also fails, the next hypothesis is the `v_min` gate itself
 (fail code 8 makes a slow entry worse than parking), not the braking term.
 
+#### 5b.1 Result (2026-09-23 21:23–21:43, binary b6c0ca4, 4 runs × 48 generations, 5 min each)
+
+| seed | arm | strict successes (genome-gens of 2304) | first success gen | genomes strict on ≥ 2 of 3 starts (primary) | successes by start index | best score, mean last 8 | min speed inside | strict dwell max | near-stop dwell max | overshoots last 8 gens | in-zone at clamp |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 7 | control | 0 | — | 0 | — | 496.9 | 2.39 m/s | 0 | 0 | 202/384 | 216/248 |
+| 7 | envelope | 0 | — | 0 | — | 834.2 | 0.41 m/s | 0 | 28 | 59/384 | 72/128 |
+| 11 | control | 101 | 15 | 0 | start 2: 100, start 1: 1 | 1944.3 | 0.00 m/s | 128 | 262 | 62/384 | 65/116 |
+| 11 | envelope | 110 | 5 | 0 | start 2: 109, start 1: 1 | 2112.5 | 0.00 m/s | 128 | 276 | 57/384 | 54/100 |
+
+Trajectory of successes per generation, seed 11: control 0 until gen 14, then 1, 1, 4, 4, 3, 3,
+5, 3, 4, 3 (every 4th gen); envelope 1 at gen 5, 1, 1, 2, 2, 2, 4, 3, 3, 3, 3, 3. That is 3–5 of
+the 16 genomes stopping strictly on one start by the end, in both arms.
+
+**Reading.** These are the first strict stops under K = 3 starts in this project, and they
+come from the seed-11 move champion in both arms, not from the envelope: the seed-11 lineage
+still brakes (its random ancestors braked 42/48 at generation 0, §5c), the seed-7 lineage does
+not. The envelope brings the first stop forward (generation 5 vs 15) and raises the plateau
+score, but the plateau in successes is the same, and every success but one is on start 2.
+**Decision by the §1 rule: not promoted** (primary metric 0 in both seeds). The envelope is
+kept behind its flag as an accelerator to be re-tested with the clamp fixed (§5c). The
+seed-11 lineage is the population to carry forward: the next stop batteries seed from
+`stop-from-move-{control,envelope}-s11/evolve_best_gen0047.bin`, and the geometry question
+(why only start 2) is the next diagnostic, before any contract change.
+
 ### 5c. Why the term cannot pay yet: the brake channel is selected out, and the clamp hides it
 
 Per-tick pedal commands decoded from the replays (`intent_brk`, `final_brk` fields; the school
