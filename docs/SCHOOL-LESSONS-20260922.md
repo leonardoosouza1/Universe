@@ -79,8 +79,8 @@ Fitness for selection in school mode = `score`.
 
 Stage 4 follow-up (`docs/SCHOOL-STOP-SHAPING-20260922.md`): with `--school-stop-shaping`
 (off by default) the `stop` score adds `300·clamp(1 − min_speed_inside/v_min) +
-200·clamp(max_dwell/hold_ticks)`; the two quantities are recorded and exported for every
-run (`min_speed_inside_mps`, `max_dwell_ticks`) whether or not the flag is set.
+200·clamp(max_near_stop_dwell/hold_ticks)` (near-stop = speed ≤ 2·v_stop); the quantities are recorded and exported for every
+run (`min_speed_inside_mps`, `max_near_stop_dwell_ticks`, `max_dwell_ticks`) whether or not the flag is set.
 
 Competence: per being and generation, one attempt (`success ∈ {0,1}`); per population
 and generation, `p̂ = (S + 1)/(T + 2)`; per lineage, the elite (`genomes[0]`, carried

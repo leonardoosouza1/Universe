@@ -111,9 +111,11 @@ Pose streams as in the existing `stop_shaping_*` tests (`Step::at(pos, vel)`), `
 5. **Flag off = historical score**: fixtures 1–3 with `flags = 2` (old shaping only) reproduce the
    v2 formula bit for bit; slots 48–55 are still populated.
 
-Host-side (no GPU): `record_json` round-trip of the six new fields; schema version 3 in the
-manifest; `SCHOOL_STRIDE_F32 == 56`; snapshot decode of a v2 record refuses v3 stride (no silent
-reinterpretation).
+Host-side (no GPU), `cargo test --lib school::tests` (added 2026-09-23 evening, after the
+audit found this paragraph promised tests that did not exist): `record_json` round-trip of the
+six new fields, null readings when no zone tick was recorded, `SCHOOL_SCHEMA_VERSION == 3`,
+`SCHOOL_STRIDE_F32 == 56`, slot numbers 48–53, `Params` stays 80 bytes. There is no v2 record
+decoder in the tree, so "refuses v3 stride" has nothing to guard and was dropped.
 
 ## 5. Evolution A/B (after §4 passes, after the §1 battery ends)
 
@@ -169,6 +171,46 @@ for. Run dir `school-stop-envelope-from-move-20260923`, binary `b6c0ca4`, 4 runs
 (control/envelope × seeds 7/11), 48 generations each. Same primary/secondary metrics and the
 same promotion rule as §5. If §5b also fails, the next hypothesis is the `v_min` gate itself
 (fail code 8 makes a slow entry worse than parking), not the braking term.
+
+### 5c. Why the term cannot pay yet: the brake channel is selected out, and the clamp hides it
+
+Per-tick pedal commands decoded from the replays (`intent_brk`, `final_brk` fields; the school
+judge itself stays command-blind) of the move-seeded envelope arm, seed 7, generation 47, best
+three replicas (scores 850 / 773 / 751):
+
+| quantity | value |
+|---|---|
+| `final_brk` frames > 0.01 in the whole episode | 0 of 320 (all three) |
+| `intent_brk` median, slow tail | −0.35 / −0.12 / −0.12 (the mapper clips negative intent to zero brake) |
+| speed inside the area | 0.4–0.9 m/s for ~700 ticks with throttle 0 and brake 0 (coasting) |
+| coasting deceleration 1.66 → 0.36 m/s | 560 ticks ≈ 0.15 m/s² |
+| replicas that ever brake > 0.01, gen 0 → gen 47 | 0/48 → 6/48 (envelope arm), 15/48 (control) |
+
+The random-init baseline's best stopper (seed 7, gen 40, slot 17, near-stop dwell 90/128,
+minimum 0.18 m/s) also never pressed the brake: 0 of 107 slow frames with `final_brk` > 0.01,
+`intent_brk` median −0.40. At generation 0 the random population is not biased: seed 11 has
+42/48 replicas braking at some point (median intent +0.16), seed 7 27/48 (median −0.14); by
+generation 40 seed 7 is at 9/48 and median −0.28. Selection removes the brake because the
+progress term (500·progress) pays first and any brake use costs progress, and nothing pays
+the brake back later: the strict success needs ≤ 0.3 m/s, coasting from 3 m/s to 0.3 m/s at
+0.15 m/s² needs ~18 s = the whole horizon, and the shaping/near-stop terms saturate at the
+coasting floor.
+
+The envelope term was designed to pay braking, but its excess integral is clamped at 6 m and
+in the last 16 generations 46 % (seed 7), 50 % (seed 11) and 59 % (move-seeded seed 7) of the
+in-zone replicas sit exactly at the clamp: a coasting entry at 3.9 m/s accumulates ~20 m of
+excess against a 2 m/s² curve, so every non-braking replica looks identical (−100) and a
+replica that brakes a little is indistinguishable from one that does not. A hard ceiling hit
+by half the population is the metric saturating (CLAUDE.md rule 4), not the population failing.
+
+**Pre-registered next A/B (§5c):** same move-seeded protocol as §5b, envelope on in both arms,
+seeds 7 and 11, 48 generations: control = clamp 6 m (`--school-stop-envelope-clamp-m 6`,
+the default, identical to §5b treatment), treatment = clamp 30 m. The flag is new (parameter
+in `Params`, default unchanged, fixture 3 still asserts the 6 m clamp). Primary metric as §5.
+Secondary: replicas with `final_brk` > 0.01 in the last 8 generations (decoded from replays),
+minimum speed inside, strict dwell. Promotion of the wider clamp needs both seeds to raise the
+braking fraction and the strict dwell; a wider clamp that only lowers scores is not promoted.
+Not run yet: the build for the new flag is deferred until CPU use is allowed again.
 
 ## 6. Out of scope (declared)
 
