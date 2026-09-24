@@ -587,3 +587,24 @@ population (best remaining 0.5–0.8 m with codes 5/16), and strict per generati
 and of the gen-106 champion in `chain_eval2.sh` (after the from-stopper battery). Revised
 prediction for both: strict on ≥ 1 of 3 validation starts (the fixed-start champion had 0).
 Seed 7 arms still queued; prediction (3) unchanged (0 strict).
+
+### Amendment to the from-stopper pre-registration (12:51, before any arm of it ran): from the generalist, `run_battery_from_generalist.sh`
+
+The queued `run_battery_from_stopper.sh` (still waiting on the evaluations) was killed and
+replaced: the natural parent is now the generalist, not the fixed-start creep-in champion.
+Every arm resumes from `pool24-full-mean-s11/evolve_best_gen0106.bin` under the contract that
+produced it (pool 24, deadline 1.0, shaping, envelope clamp 30, clipped mapper), 240
+generations, seeds 11 and 7 as mutation-RNG replicates.
+
+1. `body-fixed-s{11,7}` (mean, fixed body; also the continuation control) vs
+   `body-evolving-s{11,7}` (`--evolving-body`). Predictions B1 (brake torque median drift
+   ≥ 0% on both seeds; ≥ +5% for the selection-for-brake claim; refuted below −3%) and B2
+   (last-10 strict per generation evolving ≥ fixed on both seeds) as corrected at 12:47.
+2. `gen-worst-s{11,7}` (`--school-select worst`): can worst-of-3 make the generalist stable
+   now that a 3-of-3 genome exists? Predictions: (S1) over the last 30 generations, genomes
+   strict on all 3 starts of their batch per generation: worst ≥ 3 × mean (`body-fixed`) on
+   both seeds; (S2) last-30 strict per generation: worst ≥ mean on both seeds. Refuted if S1
+   fails on both seeds: worst-of-3 then freezes the elite here as it did on fixed starts.
+
+Ceiling: 32 genomes per generation, so S1 saturates at 32. Wall ≈ 6 × 5.5 min. The marker at
+the end stays "from-stopper battery done" so `chain_eval2.sh` (gen-106 held-out) fires after it.
