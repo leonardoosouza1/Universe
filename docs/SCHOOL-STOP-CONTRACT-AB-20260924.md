@@ -125,6 +125,41 @@ Follow-up launched 10:12 (`run_battery_envelope.sh`, same seeds, same binary): `
 `--school-stop-envelope` with the historical 6 m clamp and with a 30 m clamp, which pays a
 decelerating approach through `v_allow(d)` on every replica, successful or not.
 
+### Envelope follow-up (10:12–10:27, `run_battery_envelope.sh`, same binary and seeds)
+
+Arms `both + --school-stop-envelope` with clamp 6 m (historical) and 30 m. **Primary metric 0,
+strict successes 0 in all four runs.** Entry speed and speed per start unchanged over 48
+generations; the envelope conform ratio is 0.00 in every replica of every generation (nobody
+ever drives under `v_allow(d)`), so the +200 conform term never pays and only the −100 excess
+term acts:
+
+| arm | seed | median entry speed gen 0 → 47 (m/s) | median excess integral (m) gen 47 | selection score gen 47 min / med / max | fail codes gen 47 |
+|---|---|---|---|---|---|
+| both-env6 | 7 | 10.1 → 9.2 | 6.0 (clamped) | 131 / 190 / 199 | 42 overshoot, 3 deadline, 3 contact |
+| both-env30 | 7 | 10.1 → 8.8 | 11.2 | 161 / 246 / 260 | 39 overshoot, 6 deadline, 3 contact |
+| both-env6 | 11 | 8.9 → 10.0 | 6.0 (clamped) | −30 / 159 / 196 | 35 overshoot, 7 deadline, 6 contact |
+| both-env30 | 11 | 8.9 → 10.0 | 11.4 | −2 / 250 / 259 | 42 overshoot, 3 deadline, 3 contact |
+
+With clamp 30 the excess term is no longer saturated (11.2–11.4 of 30 m), so a gradient exists
+on paper (≈ −38 of a 260 score); it did not move the population in 48 generations of 16.
+
+**Brake use, decoded from `gen0000.replay` / `gen0047.replay` (48 beings, frames every 4 ticks,
+`final_brk > 0.05`):**
+
+| arm | gen 0: beings that ever brake / at > 5 m/s | gen 47 | median brake-tick fraction gen 0 → 47 |
+|---|---|---|---|
+| both-s7, both-env30-s7 | 0 / 0 | 5 / 3, 3 / 0 | 0.00 → 0.00 |
+| control-s7 | 0 / 0 | 14 / 5 | 0.00 → 0.00 |
+| both-env30-s11 | 48 / 32 | 45 / 29 | 0.28 → 0.07 |
+| both-env6-s11 | 48 / 32 | 35 / 22 | 0.28 → 0.02 |
+| control-s11 | 48 / 32 | 32 / 4 | 0.28 → 0.09 |
+
+Seed 7's lineage has no brake pathway (brake intent never positive at generation 0) and
+selection barely grows one. Seed 11's lineage brakes from generation 0, at speed, on every
+being — and still enters the goal area at 9–10 m/s and overshoots on every start. Braking exists
+but is not aimed at the goal. The next question is therefore perception, not reward: what the
+brain is told about the stop target (distance, bearing) — see the sensor check that follows.
+
 Reproduce: `bash /media/llm-data/universe-runs/school-stop-contract-ab-20260924/run_battery.sh`
 with the binary in that directory; the table comes from `school_result_gen*.json` of each arm
 (`aggregates[].selection_score`, `beings[].max_speed_mps/envelope_entry_speed_mps/fail_code`).
