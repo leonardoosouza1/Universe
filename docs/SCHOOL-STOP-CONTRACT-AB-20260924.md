@@ -843,3 +843,14 @@ the map is the scripted witness.
   now rows × cols from block.shape (`e02d465`). Micro did replay-sized work per animation
   frame (32 beings × 3 750 frames scanned ~35× per draw, 3 750 trail strokes, WebGL frame
   every rAF): static offscreen layer + bucketed trail + render-on-demand (`1680671`).
+
+#### 18:20 update: stage 2 advanced to pickup
+
+- approach_passenger passed at gen 238 (27/96 and 28/96 on gens 237–238, p̂ 0.28/0.29,
+  two consecutive gens ≥ 0.25). It took 238 gens; the population hovered at 5–20/96 for
+  ~100 gens with three single-gen peaks (25, 31, 27) that broke the streak. Dominant
+  failures right before passing: corridor (leaving ±6 m near the target) and contact.
+- Pre-registered prediction for pickup (before any pickup gen was read): failures migrate
+  from corridor to `premature_or_moving_pickup` / `service_goal_not_stopped`; pickup does
+  NOT pass within the ~60 remaining gens (p̂ stays < 0.25), because the population has only
+  just fixed "arrive" and not "stop inside the radius".
