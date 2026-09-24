@@ -21,6 +21,11 @@ pub const FLAG_ALLOW_LOW_SPEED_BRAKE: u32 = 4;
 /// this, a controller can press throttle and brake together; in particular the
 /// static-rest constraint can never engage while throttle remains positive.
 pub const FLAG_EXCLUSIVE_PEDALS: u32 = 8;
+/// Push the negative half of the fast brake logit into the exclusive net as extra
+/// drive instead of clipping it, so the brake row has no dead zone under mutation
+/// (docs/SCHOOL-STOP-CONTRACT-AB-20260924.md, signed-brake battery). Requires
+/// `FLAG_EXCLUSIVE_PEDALS`; the slow inhibition path stays rectified.
+pub const FLAG_SIGNED_BRAKE: u32 = 16;
 pub const GEARBOX_OFF: u32 = 0;
 pub const GEARBOX_AUTO: u32 = 1;
 pub const GEARBOX_NEURAL: u32 = 2;
@@ -313,10 +318,14 @@ impl OrganismActionGpu {
             & !(FLAG_LINEAR_HEAD
                 | FLAG_SIGNED_THROTTLE
                 | FLAG_ALLOW_LOW_SPEED_BRAKE
-                | FLAG_EXCLUSIVE_PEDALS)
+                | FLAG_EXCLUSIVE_PEDALS
+                | FLAG_SIGNED_BRAKE)
             != 0
         {
             return Err("organism-action: unknown flags");
+        }
+        if params.flags & FLAG_SIGNED_BRAKE != 0 && params.flags & FLAG_EXCLUSIVE_PEDALS == 0 {
+            return Err("organism-action: signed brake requires exclusive pedals");
         }
         queue.write_buffer(
             &self.params,
@@ -572,6 +581,104 @@ mod tests {
         );
         drop(mapped);
         staging.unmap();
+
+        // Signed brake: a negative fast brake logit (-0.7) is pushed into the net as
+        // drive. throttle_before = clamp(0.5 + 0.2*0.5, 0, 1) = 0.6, brake 0, so the
+        // net is 1.3 and the applied throttle saturates at the cap (1.0). Without the
+        // flag the same inputs give 0.6: the negative half was a dead zone.
+        queue.write_buffer(
+            &action.buf_intent,
+            0,
+            bytemuck::cast_slice(&[0.5f32, -0.4, -0.7]),
+        );
+        queue.write_buffer(
+            &action.buf_slow,
+            0,
+            bytemuck::cast_slice(&[0.2f32, 0.0, -0.25]),
+        );
+        for (flags, expected_throttle) in [
+            (
+                FLAG_LINEAR_HEAD
+                    | FLAG_SIGNED_THROTTLE
+                    | FLAG_ALLOW_LOW_SPEED_BRAKE
+                    | FLAG_EXCLUSIVE_PEDALS
+                    | FLAG_SIGNED_BRAKE,
+                1.0f32,
+            ),
+            (
+                FLAG_LINEAR_HEAD
+                    | FLAG_SIGNED_THROTTLE
+                    | FLAG_ALLOW_LOW_SPEED_BRAKE
+                    | FLAG_EXCLUSIVE_PEDALS,
+                0.6f32,
+            ),
+        ] {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("organism-action-signed-brake-fixture"),
+            });
+            action
+                .encode(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    &physics,
+                    1,
+                    ActionParams {
+                        n: 1,
+                        flags,
+                        steering_alpha: 0.5,
+                        slow_steering_authority: 0.2,
+                        gearbox_mode: GEARBOX_OFF,
+                        gear_cap: 6,
+                        dt: 1.0 / 64.0,
+                        _pad: 0.0,
+                    },
+                )
+                .unwrap();
+            encoder.copy_buffer_to_buffer(&physics, 0, &staging, 0, staging.size());
+            queue.submit(Some(encoder.finish()));
+            let slice = staging.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+            device.poll(wgpu::Maintain::Wait);
+            rx.recv().unwrap().unwrap();
+            let mapped = slice.get_mapped_range();
+            let output: &[f32] = bytemuck::cast_slice(&mapped);
+            assert!(
+                (output[51] - expected_throttle).abs() <= 4.0 * f32::EPSILON,
+                "flags {flags:#b}: throttle {} expected {expected_throttle}",
+                output[51]
+            );
+            assert_eq!(output[52].to_bits(), 0.0f32.to_bits(), "flags {flags:#b}");
+            drop(mapped);
+            staging.unmap();
+        }
+        // The signed brake only exists inside the exclusive net.
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("organism-action-signed-brake-rejected"),
+        });
+        assert_eq!(
+            action
+                .encode(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    &physics,
+                    1,
+                    ActionParams {
+                        n: 1,
+                        flags: FLAG_LINEAR_HEAD | FLAG_SIGNED_BRAKE,
+                        steering_alpha: 0.5,
+                        slow_steering_authority: 0.2,
+                        gearbox_mode: GEARBOX_OFF,
+                        gear_cap: 6,
+                        dt: 1.0 / 64.0,
+                        _pad: 0.0,
+                    },
+                )
+                .err(),
+            Some("organism-action: signed brake requires exclusive pedals")
+        );
 
         // Explicit reverse is refused while moving, even when gearbox mode is active.
         input[0] = 1.0;

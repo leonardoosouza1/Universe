@@ -238,6 +238,8 @@ impl GpuCtx {
         }
         let pedal_flags = if crate::statics::organism_legacy_pedals() {
             0
+        } else if crate::statics::organism_signed_brake() {
+            FLAG_ALLOW_LOW_SPEED_BRAKE | FLAG_EXCLUSIVE_PEDALS | FLAG_SIGNED_BRAKE
         } else {
             FLAG_ALLOW_LOW_SPEED_BRAKE | FLAG_EXCLUSIVE_PEDALS
         };

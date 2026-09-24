@@ -2,7 +2,7 @@
 // KAN head -> slow/hip modulation -> arbitration/clamps -> steer smoothing.
 struct Params {
   n: u32,
-  flags: u32, // bit 0: linear head, bit 1: signed throttle arbitration
+  flags: u32, // bit 0: linear head, bit 1: signed throttle arbitration, bit 2: low-speed brake, bit 3: exclusive pedals, bit 4: signed brake
   steering_alpha: f32,
   slow_steering_authority: f32,
   gearbox_mode: u32,
@@ -31,6 +31,11 @@ const SLOW_BRAKE_AUTHORITY: f32 = 0.8;
 const PHYSICS_STRIDE: u32 = 92u;
 const FLAG_ALLOW_LOW_SPEED_BRAKE: u32 = 4u;
 const FLAG_EXCLUSIVE_PEDALS: u32 = 8u;
+// Signed brake head: the negative half of the fast brake logit is no longer
+// clipped away but pushed into the exclusive net as extra drive, so every
+// mutation of the brake row moves the applied command (no dead zone). The
+// slow-brain inhibition path stays rectified and is never vetoed by it.
+const FLAG_SIGNED_BRAKE: u32 = 16u;
 
 fn spline(b: u32, output: u32, x: f32) -> f32 {
   let xc = clamp(x, -DOMAIN, DOMAIN);
@@ -58,7 +63,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let throttle_base = select(max(after0, 0.0), after0, (p.flags & 2u) != 0u);
   let throttle_before_arbitration = clamp(throttle_base + slow[sb] * 0.5 + hip_bias[hb], 0.0, throttle_cap);
   let steer = clamp(after1 + slow[sb + 2u] * p.slow_steering_authority + hip_bias[hb + 1u], -1.0, 1.0);
-  let fast_brake = max(after2 + hip_bias[hb + 2u], 0.0);
+  let fast_brake_raw = after2 + hip_bias[hb + 2u];
+  let fast_brake = max(fast_brake_raw, 0.0);
+  let signed_brake = (p.flags & FLAG_SIGNED_BRAKE) != 0u;
+  let drive_from_brake_head = select(0.0, max(-fast_brake_raw, 0.0), signed_brake);
   let brake_before_gate = min(fast_brake + slow_inhibition * SLOW_BRAKE_AUTHORITY, 1.0);
   let speed = length(vec2<f32>(physics[pb], physics[pb + 2u]));
   // Legacy mode suppresses the brake below 2 m/s. The scenario-only flag
@@ -73,8 +81,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // preserves both neural outputs without allowing the body to press both pedals.
   // Legacy callers retain the historical independent-pedal behaviour.
   let exclusive = (p.flags & FLAG_EXCLUSIVE_PEDALS) != 0u;
-  let longitudinal = throttle_before_arbitration - brake_before_gate;
-  let throttle = select(throttle_before_arbitration, max(longitudinal, 0.0), exclusive);
+  let longitudinal = throttle_before_arbitration + drive_from_brake_head - brake_before_gate;
+  let throttle = select(throttle_before_arbitration, clamp(longitudinal, 0.0, throttle_cap), exclusive);
   let brake_arbitrated = select(brake_before_gate, max(-longitudinal, 0.0), exclusive);
   let brake = select(brake_arbitrated, 0.0, brake_arbitrated <= 0.0 || suppress_low_speed);
   let filtered = clamp(previous_steer[b] * (1.0 - p.steering_alpha) + steer * p.steering_alpha, -1.0, 1.0);

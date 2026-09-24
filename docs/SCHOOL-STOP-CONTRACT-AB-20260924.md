@@ -199,3 +199,90 @@ Wall estimate ≈ 10 min per run (measured 4.1 s per generation at 96 replicas),
 Reproduce: `bash /media/llm-data/universe-runs/school-stop-contract-ab-20260924/run_battery.sh`
 with the binary in that directory; the table comes from `school_result_gen*.json` of each arm
 (`aggregates[].selection_score`, `beings[].max_speed_mps/envelope_entry_speed_mps/fail_code`).
+
+### Results of the scale × body battery (filled 2026-09-24 11:55; runs 10:32–11:48, seed 11 relaunched 11:28 after a reboot killed it at generation 83)
+
+Run directories `scale-{fixed,evolving}-s{7,11}` (120 generations each, 32 genomes × 3 starts,
+binary sha256 45e1182e…, commit 0151933). The killed partial run is kept as
+`scale-fixed-s11.partial-killed-gen83`; its first 83 generations are bit-identical to the
+relaunched run (same seed, same binary), so its generation-60 replay is used below.
+
+**Primary metric: 0 strict successes in all four runs, no genome strict on any start.
+Prediction refuted on both clauses** (no seed reaches a first strict success; the evolving
+body is not earlier than the fixed one — neither ever gets there).
+
+| arm | seed | strict | median entry speed gen 0 → 119 (m/s) | slowest speed inside the area, gen 119 | longest near-stop dwell (< 0.6 m/s) / hold dwell (< 0.3 m/s), ticks | deadline closures (code 16) gen 119 / 96 | elite selection score final, unchanged since gen | body: median brake / engine torque, mass gen 0 → 119 |
+|---|---|---|---|---|---|---|---|---|
+| fixed | 7 | 0 | 10.7 → 7.7 | 4.01 | 0 / 0 | 22 | 262, gen 81 | fixed 4000 / 620 Nm, 1350 kg |
+| evolving | 7 | 0 | 10.7 → 8.4 | 3.12 | 0 / 0 | 14 | 262, gen 82 | 4000 → 3628 / 620 → 593 Nm, 1350 → 1337 kg |
+| fixed | 11 | 0 | 9.7 → 6.3 | **0.25** | **62 / 1** | 47 | 472, gen 101 | fixed |
+| evolving | 11 | 0 | 9.7 → 7.5 | 2.94 (1.54 at gens 60–104) | 0 / 0 | 44 | 270, gen 72 | 4000 → 3863 / 620 → 562 Nm, 1350 → 1333 kg |
+
+Seed 11 fixed is the closest any school run has come: from generation 101 one genome touches
+0.25 m/s inside the area for one tick and stays under 0.6 m/s for 62 ticks on its best start
+(score 720), but its worst start scores 472 and no child improved on it in the remaining
+19 generations. Seed 7 never gets under 3 m/s inside the area in either arm.
+
+**Mechanism, read from the pedals (generation-60 replay of seed 11, `intent_brk`/`final_brk`
+per tick along the road; `analyze_scale.py` and the decode calls are in the session log).**
+Three ways of failing, all with the same root:
+
+1. *Coasting crawler* (genome 0, start 1; genome 1, start 1): the fast brake logit sits at
+   −0.4 … −0.7 on every tick of the run; the mapper clips it to 0
+   (`organism_action.wgsl`, `fast_brake = max(after2 + hip, 0)`), so the being only ever
+   coasts. From 1 m/s at tick 704 it reaches 0.3 m/s at tick ≈ 1200: past the deadline
+   (896) and with no room for the 128-tick hold in the 1280-tick horizon. The scripted
+   witness needed 24 ticks of full brake to close (driving.csv: brake 1.0 at tick 640).
+2. *Pumper* (genome 21, start 0): throttle 0.3 and brake 0.3 alternate every ≈ 16 ticks;
+   speed oscillates 0.7–1.0 m/s inside the area, never under 0.6, then the being drives
+   off after tick 1000.
+3. *Late braker* (slot 2, an overshoot): full stop, brake held at 0.2–0.3 for 700 ticks —
+   but 36 m along, 6 m past the goal, after the judge had already closed the attempt.
+
+Census over all 96 replicas of the final replays: seed 7 fixed, mean brake logit per replica
+−0.48 / −0.38 / −0.14 (min / median / max), positive on 0.5 % of ticks, 7 replicas never
+positive; seed 7 evolving, positive on 2.8 % of ticks; seed 11 gen 60, positive on 45 % of
+ticks (the pumpers). The seed-7 lineage lives entirely in the clipped half of the brake head:
+every mutation of the brake row is phenotypically silent there, so selection cannot see it.
+That is the dead zone the pre-registration named as the next lever.
+
+**Body coevolution reading.** `--evolving-body` is functional (genes mutate every generation
+for every non-elite child, are expressed at birth, and drift is measurable: brake capacity
+4000 → 3628 / 3863 Nm, engine 620 → 593 / 562 Nm over 120 generations) but it is a random walk,
+not selection: the brake capacity drifts *down* in both seeds because no brain presses the
+brake, so a stronger brake has no fitness effect. Body evolution cannot be validated as
+adaptive until the brain has a usable brake. It is therefore run again as an arm of the next
+battery, where that condition is met.
+
+### Next battery (pre-registered 11:58): signed brake head, `run_battery_signed_brake.sh`
+
+Lever: `--organism-signed-brake` (new, default off, organism-taxi-v1 only, incompatible with
+`--organism-legacy-pedals`). The negative half of the fast brake logit is pushed into the
+exclusive net as drive instead of being clipped: `net = throttle_before + max(−brake_raw, 0)
+− brake_before_gate`, throttle `clamp(net, 0, throttle_cap)`, brake `max(−net, 0)`. The
+slow-brain inhibition path stays rectified (it is never vetoed by a negative fast logit, the
+reason the clip was introduced), and with the flag off the shader output is bit-identical to
+before (the new `clamp` on the throttle side is a no-op without the flag because
+`net ≤ throttle_before ≤ throttle_cap`). GPU fixture:
+`organism_action::gpu_fixed_signed_command_matches_mapper_contract` (intent brake −0.7:
+throttle 1.0 with the flag, 0.6 without; flag without the exclusive net is refused).
+
+Same contract, seeds, population, generations and champion seeds as the scale battery
+(deadline 0.7, worst, envelope clamp 30, shaping, 32 × 3, 120 generations). Arms `fixed` and
+`evolving`, seeds 11 then 7; the four `scale-*` runs above are the controls.
+
+Predictions, in order of confidence:
+1. Seed 7 (brake head negative on 99.5 % of ticks): at least one replica reaches a near-stop
+   dwell > 0 inside the area within 120 generations in at least one arm (the scale runs: 0
+   in 240 generations).
+2. At least one of the four runs records a strict success (any start); seed 11 fixed, which
+   already touches 0.25 m/s, is the likeliest.
+3. Coevolution: in an evolving arm that records strict successes, the median brake capacity
+   at generation 119 is not below 4000 Nm (drift stops being downward once the brake is
+   pressed). Reported as observed either way.
+
+Refuted if no run records a near-stop dwell on seed 7 and no run records a strict success.
+Then the dead zone was not the bottleneck and the next lever is the contract's hold
+(a v_stop/hold curriculum stage, e.g. 1.0 m/s / 32 ticks, strict success unchanged) or the
+selection rule (worst-of-3 froze the seed-11 elite for 19 generations at 472).
+Wall ≈ 4 × 9.5 min; disk ≈ 4 × 3 replays × 90 MB (45 GB free on `/media/llm-data`).

@@ -1180,6 +1180,9 @@ fn main() {
                 "--organism-legacy-pedals" => {
                     statics::ORGANISM_LEGACY_PEDALS.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                "--organism-signed-brake" => {
+                    statics::ORGANISM_SIGNED_BRAKE.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 "--school-shared-start" => {
                     i += 1;
                     school_shared_start = args.get(i).and_then(|a| universe::organism_school::SharedStart::parse(a));
@@ -2859,6 +2862,14 @@ fn main() {
         eprintln!("--organism-legacy-pedals requires the organism-taxi-v1 scenario");
         std::process::exit(2);
     }
+    if statics::organism_signed_brake() && !organism_taxi {
+        eprintln!("--organism-signed-brake requires the organism-taxi-v1 scenario");
+        std::process::exit(2);
+    }
+    if statics::organism_signed_brake() && statics::organism_legacy_pedals() {
+        eprintln!("--organism-signed-brake needs the exclusive net; drop --organism-legacy-pedals");
+        std::process::exit(2);
+    }
     // Written into every per-generation manifest (docs/GAP-SWEEP-20260924.md P1-10).
     let provenance = serde_json::json!({
         "git_commit": option_env!("UNIVERSE_GIT_COMMIT").unwrap_or("unknown"),
@@ -2866,6 +2877,7 @@ fn main() {
         "argv": std::env::args().collect::<Vec<_>>(),
         "seed": pop_seed,
         "legacy_pedals": statics::organism_legacy_pedals(),
+        "signed_brake": statics::organism_signed_brake(),
     });
     if school_stop_envelope && school_lesson.is_none() {
         eprintln!("--school-stop-envelope requires --school or --school-curriculum");
@@ -5269,7 +5281,7 @@ fn main() {
                 "sensor_extras": "organism-resident-extras-v1",
                 "action_channels": ["throttle", "steer", "brake", "gear_up", "gear_down", "service", "pickup", "dropoff", "reverse"],
                 "action_stride": 96, "active_action_channels": 9,
-                "pedal_arbitration": if statics::organism_legacy_pedals() { "legacy_signed_net_no_exclusive_no_low_speed_brake" } else { "exclusive_signed_net_v1" },
+                "pedal_arbitration": if statics::organism_legacy_pedals() { "legacy_signed_net_no_exclusive_no_low_speed_brake" } else if statics::organism_signed_brake() { "exclusive_signed_net_v1_signed_brake" } else { "exclusive_signed_net_v1" },
                 "static_rest": if statics::organism_legacy_pedals() { "off" } else { "bounded_contact_v1" },
                 "simulation_transfer": "resident GPU; host observation on sampling boundaries",
                 "fitness": "1000*deliveries + bounded_task_progress + money + 0.001*age_seconds + 10*alive - 100*(1-integrity) - 100*(1-alive)",

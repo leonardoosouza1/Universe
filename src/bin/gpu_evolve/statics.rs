@@ -26,6 +26,7 @@
 //! | `THROTTLE_ARBITRATION_MODE` | `main()` (flag `--throttle-arbitration`) | `context.rs::tick()` (native throttle merge) |
 //! | `REVERSE_CONTROLLER_V2` | `main()` (flag `--reverse-controller-v2`) | `context.rs::tick()` (reverse state machine) |
 //! | `ORGANISM_LEGACY_PEDALS` | `main()` (flag `--organism-legacy-pedals`) | `organism_tick.rs` (body flags of the resident taxi: exclusive pedals, low-speed brake, static rest) |
+//! | `ORGANISM_SIGNED_BRAKE` | `main()` (flag `--organism-signed-brake`) | `organism_tick.rs` (resident taxi: negative brake logit becomes drive in the exclusive net) |
 //! | `WALL_LIFE_DRAIN`, `STAG_LIFE_DRAIN` | `main()` (flags `--wall-life`/`--stag-life-drain`) | `context.rs::tick()` (custo de vida) |
 //! | `LIFE_CAP_TICKS` | `main()` (flag `--life-cap`) | `context.rs::tick()` + `main()`, via `life_cap()` |
 //! | `LIFE_EARN` | `main()` (flag `--life-earn`) | `main()` (laço de geração, ganho de vida por avanço) |
@@ -190,6 +191,16 @@ pub static ORGANISM_LEGACY_PEDALS: std::sync::atomic::AtomicBool =
 #[inline]
 pub fn organism_legacy_pedals() -> bool {
     ORGANISM_LEGACY_PEDALS.load(Ordering::Relaxed)
+}
+/// `--organism-signed-brake`: the negative half of the fast brake logit is pushed into
+/// the exclusive net as drive instead of being clipped (the clip left the brake row on a
+/// dead zone with no selection gradient; docs/SCHOOL-STOP-CONTRACT-AB-20260924.md).
+/// Off (the default) keeps the 2026-09-22+ command mapping bit for bit.
+pub static ORGANISM_SIGNED_BRAKE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[inline]
+pub fn organism_signed_brake() -> bool {
+    ORGANISM_SIGNED_BRAKE.load(Ordering::Relaxed)
 }
 /// Enables the corrected reverse state machine. Off preserves the historical inline path.
 pub static REVERSE_CONTROLLER_V2: std::sync::atomic::AtomicBool =
