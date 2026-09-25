@@ -975,3 +975,21 @@ stationary cost at green.
   starts 1–5 exceeds 5 % in at least one seed (selection now sees them every gen);
   (c) the gate (p̂ ≥ 0.25 on all 10 starts, 2 gens) is NOT passed by gen 150 in either
   seed, but p̂ reaches ≥ 0.15 in at least one.
+
+#### 21:50 Leonardo's screenshot: "pinned at the wall forever" (graduate-adaptive-life-s11)
+
+The screenshot (103 m of 126 m, 0.1 m/s, tick 11 749, retina = road | wall | grass,
+green light 10.2 m ahead) matches beings 2/13/16 of the stage-1 graduate's life
+(122–129 m paths). End-of-life classes over the 32 beings of that life (`driving.csv`,
+last 5 alive samples): **20/32 pinned at a wall, idle (no throttle)**, 12/32 stationary in
+the open, 0 moving. Longest wall-pinned streak: median 86 s, max 453 s of a 469 s life;
+17/32 beings pinned > 60 s. Mechanism: drive ~130 m to the first junction, turn into the
+corner, touch the wall, brake to zero (the school taught "contact = fail", not "back off"),
+never request reverse (`intent[8]` is unused by every lineage), and nothing in the life
+world ends or costs a blocked state. Other lives: stopper 1/32 pinned (it stops before
+walls), mover 13/32 pinned (8 of them die there), stage-2 graduate 0/32 pinned but 29/32
+die while still moving (starvation on the road, not at a wall).
+
+This is fix 1 of the adoption list (blocked timeout + time cost) plus a reverse/unpin
+reflex or a wall-pinned cost in the fitness. CARLA ends the route after 180 s blocked;
+MetaDrive terminates on out-of-road; nothing here terminates.
