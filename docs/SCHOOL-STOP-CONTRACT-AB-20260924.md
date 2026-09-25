@@ -959,3 +959,19 @@ Conclusion: the junction lock-up is piles and the stop habit, not the signal. Fi
 belong to the world and the fitness, not to the lights: (8) stations off the junction
 centres or one being per world instance in lives; (9) a "resume on green" term or a
 stationary cost at green.
+
+#### 21:15 stage 3 result: neither replication seed passed; stage 4 (all starts per gen) queued
+
+- Seed 12: max 25/96, never passed. Seed 13: max 27/96, never passed. The pre-registered
+  "≥ 1 of 2 passes within 300 gens" FAILED. Seed 11's pass at gen 238 was one draw.
+- Seed 13 has the same specialist profile as seed 12: starts 0/6/7/9 at 25 / 23 / 15 / 14 %
+  in gens 250–299, starts 1–5 and 8 at ≤ 3 %. Two of three seeds converge on the same
+  four starts (0 and 6 being one start). Seed 11 was the odd one (2/4/5/8).
+- Stage 4 (`run_life_stage4.sh`, no build needed): `--school-eval-starts 10` over the
+  10-candidate pool, so every gen evaluates every start (320 GPU slots; VRAM budget:
+  1.7 GB at 96 slots → ≈ 5.7 GB at 320, under the 80 % line of 12 GB). 150 gens,
+  seeds 11 and 12, from the stage-1 gen-198 graduate.
+  Pre-registered: (a) no gen ≡ 1/4/7 (mod 10) zero lattice; (b) by gen 150 at least one of
+  starts 1–5 exceeds 5 % in at least one seed (selection now sees them every gen);
+  (c) the gate (p̂ ≥ 0.25 on all 10 starts, 2 gens) is NOT passed by gen 150 in either
+  seed, but p̂ reaches ≥ 0.15 in at least one.
