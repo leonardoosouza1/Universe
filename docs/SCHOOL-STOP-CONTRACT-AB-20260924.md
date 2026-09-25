@@ -993,3 +993,54 @@ die while still moving (starvation on the road, not at a wall).
 This is fix 1 of the adoption list (blocked timeout + time cost) plus a reverse/unpin
 reflex or a wall-pinned cost in the fitness. CARLA ends the route after 180 s blocked;
 MetaDrive terminates on out-of-road; nothing here terminates.
+
+#### 21:58 Stage 4 result (seed 11, every start every gen): the lineage only stops at corner stations
+
+`curriculum-allstarts-s11` finished 21:51 (150 gens × 320 slots, 0 advances).
+Pre-registered predictions: (a) no zero lattice — **held** (33 zero gens scattered,
+p̂ 0.000 → 0.045 smooth); (b) some interior start > 5% by gen 150 — **failed**;
+(c) p̂ ≥ 0.15 in ≥1 seed — **failed** (max 0.062). Seed 12 running.
+
+Per-start map (4800 slots per start, all 32 genomes see every start each gen):
+
+| start | coords, heading | station | overall p̂ | last-20 p̂ |
+|---|---|---|---|---|
+| 0, 6 (duplicate) | (156,99) −x | (96,96) corner | 0.094 / 0.102 | 0.163 / 0.172 |
+| 7 | (804,861) +x | (864,864) corner | 0.079 | 0.159 |
+| 9 | (861,804) +y | (864,864) corner | 0.000 | 0.000 |
+| 1, 2, 3, 4, 5, 8 | interior approaches | (480,96), (288,672), (672,480) | 0.000 | 0.000 |
+
+Stage-2 seeds 12/13 (rotation, 2880 slots per start) show the same pattern:
+only (156,99), (804,861) and (861,804) ever score (0.06–0.19); the six interior
+starts sit at 0.000–0.019. Across three lineages that is ~50 000 interior slots
+with ≤ 0.02 success. All three lineages descend from the pool-24 stop generalist.
+
+**Failure geometry (last 20 gens, code 3 = corridor, the dominant code on every
+interior start):** the being reaches along 60–85 m (goal at 60.1 m; best
+remaining 2.6–4.8 m, i.e. it passes through the 3 m goal disc) at 10–16 m/s,
+never dwells (max dwell 0), then drifts laterally past 6 m inside the junction
+and the corridor judge closes it at tick ~500–1000. On the corner starts the
+lineage arrives at 7 m/s, and 441/461 successes end after tick 2048 (median
+2869). Rivals checked: traffic-light phase does not separate the cases (start 1
+shares start 0's offset and fails; start 9 crosses a red at 15.6 m/s); the
+passenger cue exists in the observation (taxi.wgsl v3: channels 178/179 =
+cos/sin of the target direction in the body frame, 183 = d/(d+100)), so the
+brain is not blind to the passenger. Best-supported reading: the brake the
+lineage learned in stop/turn lessons is keyed to road geometry (street ending
+past a corner station), not to the passenger channel, so "approach_passenger"
+passed on a corner by coincidence of geometry. Not yet isolated: why start 9
+(a corner approach along +y) behaves like an interior start in this lineage
+while it scored in seeds 12/13.
+
+Consequences: (i) the stage-2 "approach passed" gate (3-of-10 rotation) was a
+corner-only artefact, consistent with the rotation finding at 19:44; (ii)
+lesson 5 cannot be graduated by this lineage on 7/10 starts, so lessons 6–8 are
+unreachable without either a different ancestor or a judge that rewards
+decelerating toward the passenger (the CARLA-style dense progress + partial
+credit in the adoption list); (iii) the corridor judge kills at the moment the
+being is closest to the goal, so the score sees no gradient toward "slow down".
+
+**Stage 5 queued (`run_life_stage5.sh`, after stage 4):** same all-starts
+approach curriculum from random genomes, seeds 11 and 12, 150 gens. Pre-registered:
+scratch lineage also at 0 on interior starts → map/judge property; scratch
+lineage scoring on interior starts → ancestor property (road-end brake).
