@@ -976,7 +976,7 @@ stationary cost at green.
   (c) the gate (p̂ ≥ 0.25 on all 10 starts, 2 gens) is NOT passed by gen 150 in either
   seed, but p̂ reaches ≥ 0.15 in at least one.
 
-#### 21:50 Leonardo's screenshot: "pinned at the wall forever" (graduate-adaptive-life-s11)
+#### 21:45 Leonardo's screenshot: "pinned at the wall forever" (graduate-adaptive-life-s11)
 
 The screenshot (103 m of 126 m, 0.1 m/s, tick 11 749, retina = road | wall | grass,
 green light 10.2 m ahead) matches beings 2/13/16 of the stage-1 graduate's life
