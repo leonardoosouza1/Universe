@@ -994,7 +994,7 @@ This is fix 1 of the adoption list (blocked timeout + time cost) plus a reverse/
 reflex or a wall-pinned cost in the fitness. CARLA ends the route after 180 s blocked;
 MetaDrive terminates on out-of-road; nothing here terminates.
 
-#### 21:58 Stage 4 result (seed 11, every start every gen): the lineage only stops at corner stations
+#### 21:57 Stage 4 result (seed 11, every start every gen): the lineage only stops at corner stations
 
 `curriculum-allstarts-s11` finished 21:51 (150 gens × 320 slots, 0 advances).
 Pre-registered predictions: (a) no zero lattice — **held** (33 zero gens scattered,
