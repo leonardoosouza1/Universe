@@ -1045,7 +1045,7 @@ approach curriculum from random genomes, seeds 11 and 12, 150 gens. Pre-register
 scratch lineage also at 0 on interior starts → map/judge property; scratch
 lineage scoring on interior starts → ancestor property (road-end brake).
 
-#### 2026-09-25 19:55 Stage 4 seed 12 and stage 5 (scratch genomes): the corner-only map is an ancestor property
+#### 2026-09-25 19:42 Stage 4 seed 12 and stage 5 (scratch genomes): the corner-only map is an ancestor property
 
 Stage 4 seed 12 (`curriculum-allstarts-s12`, 150 gens, 0 advances) reproduced
 seed 11 exactly: corner starts 0/6/7 at 0.22/0.17/0.14 in the last 20 gens,
