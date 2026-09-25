@@ -1044,3 +1044,23 @@ being is closest to the goal, so the score sees no gradient toward "slow down".
 approach curriculum from random genomes, seeds 11 and 12, 150 gens. Pre-registered:
 scratch lineage also at 0 on interior starts → map/judge property; scratch
 lineage scoring on interior starts → ancestor property (road-end brake).
+
+#### 2026-09-25 19:55 Stage 4 seed 12 and stage 5 (scratch genomes): the corner-only map is an ancestor property
+
+Stage 4 seed 12 (`curriculum-allstarts-s12`, 150 gens, 0 advances) reproduced
+seed 11 exactly: corner starts 0/6/7 at 0.22/0.17/0.14 in the last 20 gens,
+all seven interior starts at 0.000–0.002.
+
+Stage 5 (`curriculum-scratch-allstarts-s11/-s12`, random genomes, same
+all-starts approach curriculum, 150 gens each, 0 advances) resolves the
+pre-registered rival: the scratch lineages score on interior starts and not on
+the corners. Seed 12 last-20 p̂ per start: 2 → 0.155, 4 → 0.167, 8 → 0.211,
+5 → 0.056; corners 0/6/7 and start 9 → 0.000. Seed 11: 0/6 → 0.14/0.15,
+4 → 0.048, 8 → 0.050, the rest ≤ 0.02. Verdict: the corner-only success of the
+GEN106 descendants is an **ancestor property** (brake keyed to the road ending
+past a corner station), not a map or judge property. What is a map/judge
+property: every lineage, scratch or descended, specialises on 2–3 of the 10
+starts within 150 gens and never crosses the 0.25 gate (max whole-pool p̂ 0.087).
+Start specialisation with a single fixed city is the reproducible outcome across
+five lineages; this is the "Togelius single-track overfitting" row of the
+benchmark doc and the motivation for a city family.
