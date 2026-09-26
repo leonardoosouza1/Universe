@@ -49,10 +49,19 @@ fn flow_at(world: &VoxelWorld, x_m: f32, z_m: f32) -> Option<[f32; 2]> {
 
 /// Lane offset (perpendicular to the travel direction) for the lane whose flow is
 /// `dir`, by the city rule: rows/cols at or before the centre carry +X/+Z.
+/// Lane centre for a travel direction, following the city's lane rule
+/// (`organism_city::lane_rule`): the legacy grid mirrors horizontal streets, the
+/// consistent rule puts every street on the ring side. Candidates are checked
+/// against the built flow field afterwards, so a mismatch drops starts silently
+/// (the 2026-09-25 lane bench lost every horizontal start that way).
 fn lane_offset_for(dir: [f32; 2], lane: f32) -> [f32; 2] {
+    let horizontal_sign = match crate::organism_city::lane_rule() {
+        crate::organism_city::LaneRule::Legacy => -1.0,
+        crate::organism_city::LaneRule::Consistent => 1.0,
+    };
     match (dir[0] > 0.5, dir[0] < -0.5, dir[1] > 0.5) {
-        (true, _, _) => [0.0, -lane],
-        (_, true, _) => [0.0, lane],
+        (true, _, _) => [0.0, horizontal_sign * lane],
+        (_, true, _) => [0.0, -horizontal_sign * lane],
         (_, _, true) => [-lane, 0.0],
         _ => [lane, 0.0],
     }

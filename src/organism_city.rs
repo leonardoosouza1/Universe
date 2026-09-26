@@ -557,9 +557,11 @@ fn build_city_with_centers(
                             .copied()
                             .unwrap_or(row);
                         // Consistent: t = +X, l = (0, 1); offset along l = row - centre.
+                        // The centre line keeps the legacy convention (+t) on both rules
+                        // so vertical streets stay byte-identical between them.
                         let east = match rule {
                             LaneRule::Legacy => row <= center,
-                            LaneRule::Consistent => row > center,
+                            LaneRule::Consistent => row >= center,
                         };
                         if east {
                             Vec2::X
@@ -575,8 +577,7 @@ fn build_city_with_centers(
                             .unwrap_or(col);
                         // Consistent: t = +Z, l = (-1, 0); offset along l = centre - col.
                         let south = match rule {
-                            LaneRule::Legacy => col <= center,
-                            LaneRule::Consistent => col < center,
+                            LaneRule::Legacy | LaneRule::Consistent => col <= center,
                         };
                         if south {
                             Vec2::Y
@@ -806,7 +807,8 @@ mod tests {
                 } else {
                     -((col - centre) as f32) * flow.y
                 };
-                assert!(offset > 0.0 || (offset == 0.0 && (flow.x < 0.0 || flow.y < 0.0)),
+                // Off-centre lanes follow the ring side; the centre line keeps +t.
+                assert!(offset > 0.0 || (line == centre && (flow.x > 0.0 || flow.y > 0.0)),
                     "cell ({row},{col}) flow {flow:?} sits on the wrong side of its centre {centre}");
                 checked += 1;
             }
@@ -821,6 +823,17 @@ mod tests {
         let probe_v = (STREET_CENTERS[1] + 20) * size + STREET_CENTERS[1] - 1; // vertical lane, col < centre
         assert_eq!(legacy.flow[probe_v as usize].y, 1.0);
         assert_eq!(world.flow[probe_v as usize].y, 1.0);
+        // Vertical streets are byte-identical between the rules; only horizontal
+        // lane cells differ, and every one of them flips.
+        let mut flipped = 0;
+        for (i, (a, b)) in legacy.flow.iter().zip(world.flow.iter()).enumerate() {
+            if a == b {
+                continue;
+            }
+            assert!(a.x.abs() > 0.5 && (a.x + b.x).abs() < 1e-6 && a.y == b.y, "cell {i}: {a:?} vs {b:?}");
+            flipped += 1;
+        }
+        assert!(flipped > 1_000, "flipped only {flipped} horizontal lane cells");
     }
 
     #[test]

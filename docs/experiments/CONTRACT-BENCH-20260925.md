@@ -389,3 +389,132 @@ seed 11, same flags as arms A–E.
 If eval-eliteD-consistent is still 3/4 with the −X start overshooting, the
 mirror hypothesis is refuted and the horizontal-street failure lives elsewhere
 (start cell geometry or the traffic light at 10.5 m).
+
+#### Lane bench v1 results (21:28–21:31) — pairing invalid, one control passed
+
+| arm | starts (x,z → heading) | result |
+|---|---|---|
+| eval-eliteD-legacy | (99,156)−Z (156,99)−X (93,228)+Z (99,348)−Z | 3/4; −X overshoot code 5, v_max 8.6, min inside 6.8 — replicates D gen 11 exactly |
+| eval-eliteD-consistent | (99,156)−Z (93,228)+Z (99,348)−Z **(291,156)−Z** | 1/4: codes 0, 16, 16, 8 |
+| eval-champ-legacy | as legacy above | 0/4, v_max 1.7 / 5.9 / 2.2 / 2.2 |
+| eval-champ-consistent | as consistent above | 0/4, v_max 1.6 / 2.2 / 2.3 / 4.7 |
+| evo-F consistent, mean+shaping, 12 gens | all four starts vertical | elite 3/4 from gen 4; fourth start (291,156) code 16 with min inside 0.0 |
+| evo-G legacy, mean+shaping, new binary | as arm D | **identical to arm D in every generation** (35/128, elite 3/4, v_max 8.6, codes {0×3, 5}) |
+
+Why the pairing broke. `organism_school::lesson_start_candidates` places each
+candidate with its own lane offset (`lane_offset_for`, the legacy convention)
+and then drops any candidate whose built flow disagrees with the approach
+direction. Under the consistent rule every horizontal candidate disagrees, so
+the pool lost the −X start and pulled (291,156) in as the fourth. The v1
+"consistent" arm also flipped the vertical centre line (`col < centre` instead
+of `<=`), which is why the three shared vertical starts did not reproduce the
+legacy numbers (start 3: code 0 → 16). Neither difference is the mirror effect
+the bench was meant to isolate.
+
+What v1 still says. (1) Arm G is a clean replication: the rebuilt binary,
+which carries Codex's uncommitted edits, reproduces arm D to the digit on the
+legacy path, so those edits are neutral for the stop lesson under these flags.
+(2) Evo-F reached the same 3/4 plateau with four vertical starts, so "one start
+of four never passes" is not specific to the horizontal street; the elite
+memorises three geometries and misses whichever is fourth. The fold evals
+below test that directly.
+
+Fixes (uncommitted until v2 runs): the consistent rule now touches only
+horizontal lane cells (vertical streets byte-identical; the unit test counts the
+flipped cells and requires each to be an exact sign flip), and the school lane
+offset follows `lane_rule()` so horizontal candidates survive.
+
+#### Pre-registered, chain `arms_lane2.sh` (21:32)
+
+| arm | prediction |
+|---|---|
+| eval-eliteD-legacy-validation (fold 1, 4 new starts) | ≤ 2/4 — memorised starts |
+| eval-eliteD-legacy-test (fold 2) | ≤ 2/4 |
+| eval-eliteD-legacy-pool8 (8 starts, all folds) | ≤ 4/8; the three trained vertical starts pass, the rest mostly not |
+| v2-eval-eliteD-legacy | 3/4, identical numbers to v1 legacy (control) |
+| v2-eval-eliteD-consistent | vertical starts identical to legacy (3 successes, same v_max); −X start now at (156,93): if the mirror hypothesis holds it stops (4/4), if not it overshoots as before |
+| v2-eval-champ-consistent | vertical starts identical to legacy; −X start speed drops toward the vertical 1.7–2.2 m/s if the mirror made the horizontal street "fast" |
+| v2-evo-H consistent, mean+shaping | elite 4/4 by gen 8 if the mirror hypothesis holds; 3/4 plateau otherwise |
+
+#### Fold evals of the arm-D elite (legacy rule, old lane binary, 21:32)
+
+| fold | start (x,z) → heading | result | v_max | min inside |
+|---|---|---|---|---|
+| validation | (156,99) −X | code 5 overshoot | 8.6 | 6.8 |
+| validation | (156,291) −X | code 5 | 9.2 | 7.4 |
+| validation | (348,99) −X | code 3 | 10.2 | 8.6 |
+| validation | (291,348) −Z | code 5 | 8.6 | 6.3 |
+| test | (93,228) +Z (trained) | success | 5.8 | 0.0 |
+| test | (228,93) +X | code 5 | 9.7 | 8.1 |
+| test | (228,285) +X | code 5 | 11.1 | 9.5 |
+| test | (348,291) −X | code 5 | 7.9 | 6.2 |
+| pool 8 | the 4 trained + (156,291) −X, (228,93) +X, (291,156) −Z, (348,99) −X | 3/8: only the three trained vertical starts | | |
+
+Prediction "≤ 2/4 on held-out folds": PASS (0/4 and 1/4; the single success is a
+trained start, since fold membership is list index mod 3 and the training
+pool of 4 spans all three folds — folds are not disjoint from `--school-start-pool 4`).
+
+Two effects, now separated:
+
+1. **Heading, not location.** All six horizontal starts (±X, four different
+   junctions) overshoot at 7.9–11.1 m/s with the minimum speed inside the area
+   above 6 m/s; the being never brakes on a horizontal street anywhere. Under
+   the legacy rule the being drives on the opposite side of the road on those
+   streets, so the surviving one-sided wall fan (ch16–19) sees the near wall on
+   the other side — the cheapest mechanism for "fast and blind" on one axis.
+   v2 of the lane bench tests exactly this.
+2. **Memorisation on the vertical axis.** The two untrained vertical starts
+   fail as well, in different ways: (291,348) −Z overshoots at 8.6 m/s,
+   (291,156) −Z crawls at 3.0 m/s and times out. Three trained geometries
+   pass, nothing else does. A 4-start pool with `--school-eval-starts 4` is
+   a memorisation bench; the judge-v3 gate must rotate through a pool of ≥12
+   starts per generation (`--school-start-pool 12` or larger) before any
+   success count means "can stop".
+
+#### Lane bench v2 — paired frozen evals (binary `gpu_evolve_lane2`, 21:33)
+
+| genome | start | legacy | consistent |
+|---|---|---|---|
+| elite D | (99,156) −Z | success, v_max 5.81, score 1494.8 | **identical** |
+| elite D | (93,228) +Z | success, 5.83, 1488.8 | **identical** |
+| elite D | (99,348) −Z | success, 4.79, 1488.4 | **identical** |
+| elite D | −X start: (156,99) legacy / (156,93) consistent | code 5 overshoot, v_max 8.58, min inside 6.76 | code 8 no approach speed, v_max **2.46**, dist 26.1 |
+| champion | (99,156) −Z | code 16, 1.68 | identical |
+| champion | (93,228) +Z, (99,348) −Z | code 8, 2.18 / 2.16 | identical |
+| champion | −X start | code 16, v_max 5.92, min inside 3.59 | code 16, v_max **1.10**, dist 10.8 |
+
+Control: PASS — the three vertical starts reproduce to the last digit under both
+rules and both binaries (v1 legacy, v2 legacy, v2 consistent), as the byte-identical
+vertical flow field requires.
+
+Mirror hypothesis, split verdict. **Speed: CONFIRMED.** Put the horizontal
+start on the same side of the road as the vertical ones and the "fast street"
+disappears: elite D 8.58 → 2.46 m/s, champion 5.92 → 1.10 m/s, both now inside
+the range they show on vertical streets (1.7–5.8). The heading asymmetry
+measured at 21:22 was entirely the lane mirror. **Stop: REFUTED as the
+explanation for the missing fourth start.** With the mirror removed the elite
+does not stop on the horizontal start either; it now fails like the untrained
+vertical starts of the fold evals (crawl, code 8). The fourth start is missing
+because the elite has memorised three geometries, not because of the mirror.
+
+Consequences for the attack order:
+
+- The lane-rule fix is real and cheap, and it removes a systematic perceptual
+  asymmetry (one axis "fast and blind"); every future stop/turn/junction rung
+  should run with `--city-lane-rule consistent`, and old champions must be
+  re-evaluated under it (their horizontal-street speed was an artefact).
+- Judge v3 must break the memorisation, and the bench shows how: a rotating
+  start pool (≥12 starts, 4 per genome per generation) with held-out folds as
+  the gate. Arm I (queued) measures the cost of that change on the same
+  champion.
+
+#### Pre-registered arm I (`arms_lane3.sh`, 21:36)
+
+Same champion, consistent rule, mean + shaping, `--school-start-pool 12
+--school-eval-starts 4` (each genome sees a rotating batch of 4 of 12 starts
+per generation), 24 generations; then the elite of I and the elite of H are
+each frozen on a 20-start pool (starts 13–20 never seen by I; 5–20 never seen
+by H). Predictions: I's elite ≥ 8/20; H's elite ≤ 4/20 (its 4 trained starts
+plus luck). If I ≤ 4/20 too, rotation alone does not buy generalisation and
+the judge needs a different signal (e.g. speed-envelope conformity over the
+whole approach, not the area).
