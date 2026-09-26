@@ -671,3 +671,24 @@ under the 4-start arms' 12-gen budget per useful result.
 **Judge v3 = 16 shared starts, mean, shaping, consistent rule.** Next: the
 same elite through the whole contract bench (move, stop, turns, approach) to
 see what the stop skill costs elsewhere, and the turn rung with 16 starts.
+
+#### Arms N/O — turn lessons, fixed 8 (interrupted 21:54)
+
+The owner stopped GPU work at 21:54 to review the project. Arm N (turn_near,
+fixed 8 shared starts, 2560 ticks, mean, shaping off) ran 14 of 24 generations;
+arm O (turn_far) did not start. Partial N trajectory
+(`lane-evo-N-turnnear-fixed8/selection_gen*.json`):
+
+| gen | pop succ/256 | elite succ/8 | elite codes | elite v_max |
+|---|---|---|---|---|
+| 0 | 0 | 0 | {16: 8} | 9.7 |
+| 5 | 17 | 1 | {16:2, 6:4, 0:1, 1:1} | 14.2 |
+| 9 | 31 | 2 | {1:1, 16:1, 6:4, 0:2} | 15.8 |
+| 13 | 50 | 3 | {0:3, 16:3, 1:1, 6:1} | 13.3 |
+
+Prediction "N elite ≥ 3/8 by gen 23": reached at gen 13, but the run was cut
+before the pool-20 held-out evaluation, so the generalisation part of the
+prediction is NOT MEASURED. Code 6 (wrong arm) dominates the early elite, code
+16 (deadline) the late one: the being learns not to take the wrong arm before
+it learns to arrive. No result for O. Resume with the same script
+(`arms_lane7.sh`, DONE12 already present) when the GPU is released.
