@@ -64,6 +64,9 @@ def command(binary, genome, lesson, out):
 
 
 def run(args):
+    for spec in args.genome:
+        name, path = spec.split("=", 1)
+        GENOMES[name] = path
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
     binary = root / "gpu_evolve"
@@ -178,7 +181,8 @@ def output_contracts(res, driving, lesson):
 def report(args):
     root = Path(args.root)
     table = {}
-    for genome in GENOMES:
+    extra = [d.name for d in sorted(root.iterdir()) if d.is_dir() and d.name not in GENOMES and (d / "move").exists()]
+    for genome in list(GENOMES) + extra:
         for lesson in LESSONS:
             out = root / genome / lesson
             rp = out / "school_result_gen0000.json"
@@ -218,6 +222,7 @@ if __name__ == "__main__":
     r.add_argument("--binary", default="/media/llm-data/universe-runs/navigation-preview-paired-20260925/gpu_evolve",
                    help="same partition as --root so the run dir can hard-link it")
     r.add_argument("--only", default="")
+    r.add_argument("--genome", action="append", default=[], help="extra name=path genome (repeatable)")
     p = sub.add_parser("report"); p.add_argument("--root", required=True)
     a = ap.parse_args()
     (run if a.cmd == "run" else report)(a)

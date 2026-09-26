@@ -194,3 +194,178 @@ nice -n 10 .venv-rocm/bin/python Universe/scripts/contract_bench.py run --root <
 .venv-rocm/bin/python Universe/scripts/contract_bench.py report --root <dir>
 ```
 
+
+## Follow-up 1 (21:15) — speed depends on world heading
+
+Peak speed of the same genome by start heading, motor lessons + approach (n per
+heading 7/7/4/2):
+
+| heading | witness | founder | champion48 | candidate |
+|---|---|---|---|---|
+| −X | 5.1 | 4.4 | 6.8 | 1.8 |
+| −Z | 5.2 | 1.9 | 3.2 | 1.2 |
+| +Z | 5.3 | 4.6 | 3.7 | 4.5 |
+| +X | 5.3 | 10.3 | 10.0 | 7.4 |
+
+The scripted witness is heading-invariant, so body and physics are symmetric. Every
+learned genome, including the gen-0 founder, drives 3–5× faster heading +X than −Z.
+The asymmetry is inherited and must enter through an input that carries the world
+heading. Probe queued: champion48/move with `--vision-being 1..3` so that all four
+start headings have a tick-16 wave record; diff the 192 channels by heading.
+Prediction: a small set of channels (candidates: ch32-39 wall_curvature "flow ×
+forward", ch64 alignment, retina content by lane side under the F1 lane rule) differs
+systematically by heading while the lesson channels 178/179/183 are identical.
+
+## Follow-up 2 (21:15) — attack-order step 1 proxy: hard speed gate in the judge
+
+`evolve-stop-champion48/`: school `stop` (success requires ≥ 3 m/s before the area,
+then a 128-tick hold), 32 beings × 12 generations × 4 starts × 1280 ticks, seeded from
+champion48 with the learning-run mutation rates (`--p-mutate 0.003 --sigma 0.04
+--motor-p-mutate 0.15 --motor-sigma 0.08`), seed 11, observation v3.
+Prediction: elite stop success 0/4 → ≥ 2/4 within 12 generations, i.e. a judge that
+requires speed produces speed on the starts where the body already reaches 4–6 m/s
+(−X, +X); the −Z starts may stay below 3 m/s because of the heading asymmetry above.
+Rival: stays 0/4 → speed is bounded by the inherited input asymmetry, not by the judge.
+The evolved elite is then run through the contract bench (`stop_evolved`).
+
+### Follow-up 2 result (21:17) — arm A, `--school-select worst`, no shaping
+
+| gen | successes/128 | elite success | elite peak speed by start (m/s) | population mean peak | failure codes |
+|---|---|---|---|---|---|
+| 0 | 0 | 0/4 | 1.7 / 5.9 / 2.2 / 2.2 | 3.0 | no_approach_speed 64, deadline 64 |
+| 2 | 14 | 1/4 | 4.5 / 10.3 / 8.0 / 6.7 | 5.3 | overshoot 35, deadline 62 |
+| 4 | 12 | 0/4 | 6.1 / 12.5 / 10.1 / 9.3 | 8.1 | overshoot 69 |
+| 8 | 3 | 0/4 | 9.8 / 13.1 / 11.8 / 11.9 | 10.2 | overshoot 101 |
+| 11 | 1 | 0/4 | 9.5 / 13.6 / 12.0 / 12.3 | 12.1 | overshoot 106, contact 11 |
+
+Prediction half right. A hard speed requirement in the judge produces speed at
+once — the 3 m/s gate is cleared by the whole population by generation 6 and the
+−Z starts reach 9.5 m/s, so the heading asymmetry is not a speed ceiling. But the
+elite never stops: successes peak at 14/128 in generation 2 and decay to 1/128
+while `overshoot` climbs to 106/128. Score arithmetic explains it: passing through
+the area yields progress ≈ 1 → +500 − 200 (overshoot) = +300, while a slow being
+that never reaches the area keeps +500·progress ≈ +250; with worst-of-4 selection
+the fast overshooter wins every generation. The current judge fails in both
+directions — no speed term trains parking, a speed gate with a −200 overshoot
+penalty trains flying through. Judge v3 must make "stop inside" dominate "pass
+through" incrementally. Two arms queued on the same seed/population: **B**
+`--school-stop-shaping` (+300·(1 − min_speed_inside/v_min) + 200·dwell/hold, Codex
+stage 4) and **C** `--school-select mean`. Predictions: B ≥ 2/4 elite successes by
+generation 12 and successes/128 rising, not decaying; C alone stays ≤ 1/4 (the
+selection rule is not the cause, the score is).
+
+### Follow-up 1 result (21:18) — the heading asymmetry is the F1 lane-rule mirror
+
+`heading-probe/champion48-vb{1,2,3}` + `champion48/move` (vb0): tick-16 wave of
+the same genome at the four move starts. Lesson channels 178/179/183 are identical
+(127/0/29). What differs is the *side* of the scene: heading −X (horizontal street,
+start (156, 99)) sees the mirror image of what the three vertical-street starts see —
+
+| channel | −Z (vb0) | **−X (vb1)** | +Z (vb2) | −Z (vb3) |
+|---|---|---|---|---|
+| retina FAR pool ch0-3 / ch4-7 | 97 94 88 75 / 39 62 73 81 | **81 76 67 51 / 63 84 92 97** | 97 94 88 75 / … | 96 93 87 74 / … |
+| wall rays ch16-19 | 110 110 95 31 | **95 0 52 0** | 110 110 95 31 | 110 110 95 31 |
+| lateral distance ch76 / ch77 | 19 / 38 | **38 / 19** | 19 / 38 | 19 / 38 |
+| ch81 | −50 | **+50** | −50 | −50 |
+| wall EMA ch85 / ch86 | 50 / 60 | **60 / 50** | 50 / 60 | 50 / 60 |
+| whiskers ch96 / ch97 | 38 / 0 | **0 / 38** | 38 / 0 | 38 / 0 |
+| fovea/periphery HD ch128-159 | mirrored | **mirrored** | as vb0 | as vb0 |
+
+Geometry: with `l0 = (−f.z, f.x)`, the −Z start at x = 99 and the +Z start at
+x = 93 both sit at +3 m along l0, but the −X start at z = 99 sits at −3 m: the
+grid city's lane rule (`organism_city::build_city`, row ≤ centre → +X, col ≤ centre
+→ +Z) puts horizontal-street traffic on the opposite side from vertical-street
+traffic — finding F1 of `META/CLAUDE-UNIVERSE-AMBIENTE-20260925.md`, now visible
+in the sensors. The learned policy is tuned to one mirror image: 1.2–4.6 m/s on
+vertical streets, 4.4–10.3 m/s on horizontal ones (witness: 5.3 everywhere). This
+also explains the "every lineage overfits 2–3 of 10 starts" result of the school
+stage 5 without invoking memorisation. **Fix belongs to the city (Claude): one
+consistent right-hand rule for the grid family, behind a flag so old champions can
+be re-measured under both.** Build queued for the idle window.
+
+### Arm A elite through the contract bench (`stop_evolved`, gen 11, 21:17)
+
+| lesson | champion48 (parent) | stop_evolved (12 gens, speed gate) |
+|---|---|---|
+| move | 2/4, 1.7–4.5 m/s | **4/4, 9.5–12.9 m/s, no contact, 2–5 % stationary** — first learned genome to pass move on all four headings |
+| stop | 0/4 no_approach_speed | 0/4 overshoot (+1 contact), 9.5–13.6 m/s |
+| turn_near / turn_far | 0/4 deadline | 0/4 drove_through_junction, 7–15 m/s, contacts |
+| approach_passenger / pickup | 0/4 blocked | 0/4 blocked, 15–17.6 m/s, 1–3 contacts per start |
+| delivery48 | **4/4** | **0/4** blocked_without_progress |
+
+Twelve generations under a speed gate buy motion on every heading (the lane-rule
+mirror is not a ceiling once selection demands speed) and destroy every stopping
+skill, including the parent's own course. The two failure modes are the two ends
+of one dial; judge v3 has to hold both (fast between, stopped inside) at once,
+which is what arm B (stop shaping) tests.
+
+### Arms B and C (21:22) — same seed, population and mutation as arm A
+
+| arm | change | successes/128 (gen 2 → 11) | elite success | population peak speed gen 11 |
+|---|---|---|---|---|
+| A | worst-of-4 selection, no shaping | 14 → 1 | 1/4 (gen 2–3) then 0/4 | 12.1 m/s |
+| B | + `--school-stop-shaping` | 14 → 19 → 9 → 2 | 1/4 (gen 2–8) then 0/4 | 11.4 m/s |
+| C | `--school-select mean` | 17 → 27 → 22 | **2/4 stable from gen 2 to 11** | 6.7 m/s |
+
+Prediction for B (≥ 2/4) wrong; prediction for C (≤ 1/4) wrong. Under worst-of-4
+selection a being with one success and one −200 overshoot scores below a being
+that fails all four by deadline, so partial competence is bred out and the shaping
+term cannot change the winner (B's generation-10 elite is bit-identical to A's).
+Mean selection keeps the partially competent beings alive and holds 2/4 — but no
+arm reaches 3/4 in 12 generations. Queued: D = mean + shaping, E = mean × 24
+generations. Prediction: D ≥ 3/4 by generation 12 (shaping now has a carrier);
+E plateaus at 2/4 without a score change (stopping inside is not yet rewarded
+more than passing through).
+
+### Stop successes by start heading, generation 11 (population of 32 × 4 starts)
+
+| arm | −X (horizontal street, mirror image) | −Z (vertical) | +Z (vertical) |
+|---|---|---|---|
+| A worst | 0/32 | 1/64 | 0/32 |
+| B worst + shaping | 0/32 | 1/64 | 1/32 |
+| C mean | **0/32** | 16/64 | 6/32 |
+
+Arm C's 2/4 plateau is the F1 mirror: its elite stops on both vertical starts
+(min speed inside 0.0) and overshoots the horizontal one at 9.1 m/s. No being in
+any arm ever stops on a horizontal street. The lane-rule fix (`--city-lane-rule
+consistent`, written, uncompiled) is therefore a prerequisite for judge work, not
+a later city item: under the legacy rule half of the starts are a different task.
+
+### Arms D and E — results (21:25)
+
+Same genome, seed and flags as arm C; D adds `--school-stop-shaping`, E runs 24
+generations. Column `succ/128` is the whole population (32 genomes × 4 starts);
+`elite` is genome 0 of that generation (the elite carried over).
+
+| arm | gen | succ/128 | elite succ/4 | elite v_max | elite min_inside per start | elite codes |
+|---|---|---|---|---|---|---|
+| C mean | 2 | 17 | 2 | 7.3 | – / 5.3 / 0.0 / 0.0 | 16×2, 0×2 |
+| C mean | 11 | 22 | 2 | 9.1 | 0.0 / 7.4 / 0.0 / 0.8 | 0×2, 5, 16 |
+| D mean+shaping | 2 | 18 | 2 | 7.3 | – / 5.3 / 0.0 / 0.0 | 16×2, 0×2 |
+| D mean+shaping | 7 | 19 | **3** | 8.6 | 0.0 / 6.8 / 0.0 / 0.0 | 0×3, 5 |
+| D mean+shaping | 11 | **35** | 3 | 8.6 | 0.0 / 6.8 / 0.0 / 0.0 | 0×3, 5 |
+| E mean 24 gens | 13 | 19 | 2 | 9.1 | 0.0 / 7.4 / 0.0 / 0.8 | 0×2, 5, 16 |
+| E mean 24 gens | 14 | 17 | **3** | 8.6 | 0.0 / 7.1 / 0.0 / 0.0 | 0×3, 5 |
+| E mean 24 gens | 23 | 29 | 3 | 8.6 | 0.0 / 7.1 / 0.0 / 0.0 | 0×3, 5 |
+
+Prediction check. "D ≥ 3/4 by generation 12": PASS (3/4 from generation 7). "E
+plateaus at 2/4 without a score change": FAIL — E reached 3/4 at generation 14
+with the plain score; shaping bought the same step 7 generations earlier, not a
+different ceiling. Both elites end with the identical shape: three starts stopped
+(min speed inside 0.0), the fourth overshot (code 5) at 6.8–7.1 m/s.
+
+Population success by start heading, last generation:
+
+| arm | −X (horizontal) | −Z | +Z |
+|---|---|---|---|
+| D gen 11 | 0/32 | 23/64 | 12/32 |
+| E gen 23 | 1/32 | 17/64 | 11/32 |
+
+The fourth start is the horizontal street in every arm (E gen 23: 1 success in
+32 across the whole population; D: 0). The ceiling of the stop lesson under the
+legacy lane rule is 3/4 for any selection or shaping variant tried, and the
+missing start is the mirror image, not a speed problem: the elite drives that
+street at 8.6 m/s and never brakes. Judge changes cannot buy the fourth start;
+the lane-rule fix can (prediction for the paired legacy/consistent bench, below).
+
+Cost: D 12 gens 1:32 min, E 24 gens 2:18 min (bench.log 21:20:04 → 21:24:54).
