@@ -207,3 +207,10 @@ jobs:
       - name: cargo test --bin gpu_evolve (genome disk round-trip)
         working-directory: Universe
         run: cargo test --release --locked --bin gpu_evolve
+
+      # crates/taxi-world is a workspace member but not a default member: a bare
+      # `cargo test` never touches it (101 tests, 94 pass + 7 GPU/data-ignored on
+      # 2026-09-25). Named explicitly so the crate cannot rot unnoticed.
+      - name: cargo test -p taxi-world
+        working-directory: Universe
+        run: cargo test --release --locked -p taxi-world
