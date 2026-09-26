@@ -89,7 +89,7 @@ silent deadlock (`brain/mod.rs:1075-1078`, `slow_brain.rs:43`).
 ## Commands
 
 ```bash
-cargo test --release --test wgsl_validation        # WGSL parse + type check, no GPU
+cargo test --release --lib wgsl_static             # WGSL parse + type check, no GPU
 cargo test --release --lib -- --ignored            # GPU parity tests
 ./target/release/gpu_validate                      # CPU vs GPU equivalence, before and after
 ```

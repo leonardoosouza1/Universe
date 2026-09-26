@@ -176,9 +176,10 @@ cargo test --release --lib -- --ignored retina_digest_parity
 ```
 
 WGSL shaders are the exception worth knowing about: they are embedded with `include_str!`, so
-`cargo build` only checks that they are valid *strings*. `tests/wgsl_validation.rs` parses and
-type-checks them on the CPU with `naga`, no device required. **If you edit a `.wgsl` file, that
-test is your only compile-time safety net — run it.**
+`cargo build` only checks that they are valid *strings*. `src/gpu/wgsl_static_tests.rs` parses and
+type-checks every runtime shader on the CPU with `naga`, no device required, and fails if a
+`.wgsl` file is neither validated nor declared a fragment. **If you edit a `.wgsl` file, that
+test is your only compile-time safety net — run `cargo test --lib wgsl_static`.**
 
 ### Formatting and lints
 
@@ -332,7 +333,7 @@ Copy this into your PR (the template in
 - [ ] `bash scripts/check_language.sh` is green.
 - [ ] Everything I wrote is in English, and the Portuguese comments inside the hunks I
       touched are translated with their numbers intact.
-- [ ] `tests/wgsl_validation.rs` passes if I edited a `.wgsl` file.
+- [ ] `cargo test --lib wgsl_static` passes if I edited a `.wgsl` file.
 - [ ] Any behaviour change is behind a flag that defaults to off, the flag is documented
       where it is parsed, and the PR carries a paired A/B (≥3 seeds).
 - [ ] Every number in the description is followed by the command that produced it; anything

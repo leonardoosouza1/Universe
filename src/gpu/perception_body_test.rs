@@ -13,7 +13,7 @@
 //!    `perception_motion.wgsl` going silent on the five channels that change owner.
 //!
 //! `cargo build` only proves the `.wgsl` is a valid Rust `&str`, and
-//! `wgsl_validation` only proves it parses and type-checks. Neither can see that
+//! `wgsl_static` only proves it parses and type-checks. Neither can see that
 //! the shader reads slot 5 for a channel the registry assigns to slot 4 — that
 //! disagreement produces a plausible number, no error and no panic. So the
 //! agreement is enforced here: by text assertions for the parts a CPU test can

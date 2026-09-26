@@ -60,13 +60,14 @@ nice -n 10 env CARGO_BUILD_JOBS=1 cargo build --bin gpu_evolve
 cargo test --bin gpu_evolve                  # genome round-trip, CLI registry, K-start aggregation
 cargo test --lib school::tests               # school host tests (schema, record JSON)
 cargo test --lib school_tests -- --ignored   # 22 school judge fixtures on the real GPU
-cargo test --test wgsl_validation            # parses and type-checks the WGSL, no GPU needed
+cargo test --lib wgsl_static                 # parses and type-checks every runtime WGSL, no GPU needed
 bash scripts/check_language.sh               # language gate: only what this branch changed
 bash scripts/check_language.sh --all         # progress meter for the whole repo, never fails
 ```
 
 `cargo build` only checks that the WGSL is a valid *string* (`include_str!`), which is
-why `wgsl_validation` exists. Run it after touching any `.wgsl`.
+why `src/gpu/wgsl_static_tests.rs` exists. Run it after touching any `.wgsl`. It is a
+library test on purpose: `cargo test --test <name>` links all 41 binaries.
 
 A short smoke run, before any long battery:
 

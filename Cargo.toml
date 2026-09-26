@@ -77,7 +77,7 @@ survival_pressure = []
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 # Static WGSL validation without a GPU (parse + type-check via naga) — see
-# tests/wgsl_validation.rs. Same version wgpu 24.0 already brings transitively
+# src/gpu/wgsl_static_tests.rs. Same version wgpu 24.0 already brings transitively
 # (Cargo.lock), only made direct and with the "wgsl-in" feature explicit: without it,
 # `naga::front::wgsl` does not compile (feature-gated), and the workspace's feature
 # unification is not something to depend on silently.

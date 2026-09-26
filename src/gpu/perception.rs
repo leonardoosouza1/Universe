@@ -140,7 +140,7 @@ pub static BODY_CHANNELS_ON: std::sync::atomic::AtomicBool =
 /// struct that WGSL sizes as 32 would be a binding smaller than the shader demands.
 /// The explicit `_pad0.._pad2` make both sides read the same 32 bytes with no
 /// implicit padding to reason about. Same precedent as `brain.wgsl`'s `Params`
-/// (`tests/wgsl_validation.rs`: "gained `out_gain` + `norm_l2_by_std` (+ padding to
+/// (`src/gpu/wgsl_static_tests.rs`, formerly `tests/wgsl_validation.rs`: "gained `out_gain` + `norm_l2_by_std` (+ padding to
 /// keep the uniform a multiple of 16 bytes)").
 ///
 /// Growing this struct is the SAFE direction and only that one — `min_binding_size:

@@ -471,7 +471,7 @@ impl BrainGpu {
             label: Some("brain"),
             // `brain.wgsl` stays at `src/gpu/brain.wgsl`, one level up from this file
             // (`src/gpu/brain/mod.rs`) — moving it alongside would also require
-            // updating `tests/wgsl_validation.rs`'s hardcoded path and every doc
+            // updating `src/gpu/wgsl_static_tests.rs`'s hardcoded path and every doc
             // comment's bare `brain.wgsl` reference for no benefit; `include_str!`
             // crossing one directory level is the smaller, well-trodden change.
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../brain.wgsl"))),

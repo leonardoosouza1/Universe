@@ -61,6 +61,6 @@ may need a window to run.
 ```bash
 cargo test --release --lib                # library tests; GPU ones are #[ignore]d
 cargo test --release --lib -- --ignored   # the GPU parity tests, if you have a GPU
-cargo test --release --test wgsl_validation
+cargo test --release --lib wgsl_static   # every runtime WGSL parses + type-checks (naga)
 bash scripts/check_language.sh
 ```

@@ -34,7 +34,7 @@
 - [ ] `bash scripts/check_language.sh` is green
 - [ ] Everything I wrote is in **English**, and the Portuguese comments inside the hunks
       I touched are translated **with their numbers and file:line references intact**
-- [ ] `tests/wgsl_validation.rs` passes, if I edited a `.wgsl` file
+- [ ] `cargo test --lib wgsl_static` passes, if I edited a `.wgsl` file
 - [ ] Any physics / perception / fitness change is **behind a flag that defaults to off**,
       the flag is documented where it is parsed, and a paired A/B is above
 - [ ] No file grew past the line limit in `docs/STYLE.md`

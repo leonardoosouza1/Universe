@@ -152,10 +152,10 @@ Useful extras:
 
 ```bash
 cargo test --release --bin gpu_evolve       # genome round-trip, track rotation, pilot ordering
-cargo test --release --test wgsl_validation # parses and type-checks the WGSL, no GPU required
+cargo test --release --lib wgsl_static      # parses and type-checks the WGSL, no GPU required
 ```
 
-`wgsl_validation` is the one worth running on every change to `src/gpu/*.wgsl`: shaders are
+`wgsl_static` (`src/gpu/wgsl_static_tests.rs`) is the one worth running on every change to `src/gpu/*.wgsl`: shaders are
 embedded with `include_str!`, so `cargo build` never sees a WGSL syntax error — without
 this test the first sign of trouble is a runtime failure on a real GPU.
 

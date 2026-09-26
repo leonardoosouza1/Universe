@@ -124,3 +124,5 @@ mod organism_feedback_tests;
 mod school_tests;
 #[cfg(test)]
 mod taxi_progress_tests;
+#[cfg(test)]
+mod wgsl_static_tests;

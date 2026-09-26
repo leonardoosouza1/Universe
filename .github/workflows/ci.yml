@@ -193,8 +193,8 @@ jobs:
       # GPU. DO NOT add `--include-ignored` or `-- --ignored` here: hosted runners have
       # no usable adapter (that test would fall through its `let Some(..) else` and
       # report a pass it never performed, which is worse than skipping).
-      # WGSL shaders are still covered — tests/wgsl_validation.rs type-checks them on
-      # the CPU with naga, no device involved.
+      # WGSL shaders are still covered — src/gpu/wgsl_static_tests.rs (a --lib test)
+      # type-checks every runtime shader on the CPU with naga, no device involved.
       - name: cargo test --release
         working-directory: Universe
         run: cargo test --release --locked
