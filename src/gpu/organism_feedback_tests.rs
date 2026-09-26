@@ -1,8 +1,11 @@
 //! Real-GPU fixture for the online feedback adapter (docs/SCHOOL-INCENTIVES-20260922.md).
 //! Only the feedback kernel runs, on hand-written body states; the check is the sign
 //! of a loss/recovery energy cycle in each reward mode and the paid-money cost.
+use crate::gpu::lifetime::{
+    LIFE_AUX_MONEY_OFFSET, LIFE_AUX_PROGRESS_OFFSET, LIFE_AUX_TASK_KEY_OFFSET,
+    LIFE_FEEDBACK_OFFSET, LIFETIME_STRIDE,
+};
 use crate::gpu::organism_feedback::OrganismFeedback;
-use crate::gpu::lifetime::{LIFE_AUX_MONEY_OFFSET, LIFE_AUX_PROGRESS_OFFSET, LIFE_AUX_TASK_KEY_OFFSET, LIFE_FEEDBACK_OFFSET, LIFETIME_STRIDE};
 
 const N: usize = 2;
 const BODY: usize = 128;
@@ -18,14 +21,21 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN, ..Default::default() });
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
         .expect("real Vulkan GPU required");
-        assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu, "CPU fallback forbidden");
+        assert_ne!(
+            adapter.get_info().device_type,
+            wgpu::DeviceType::Cpu,
+            "CPU fallback forbidden"
+        );
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("organism-feedback-fixture"),
@@ -40,13 +50,19 @@ impl Fixture {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("feedback-fixture"),
                 size: (floats * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
         };
         let body = make(N * BODY);
         let life = make(N * LIFETIME_STRIDE);
-        queue.write_buffer(&life, 0, bytemuck::cast_slice(&vec![0.0f32; N * LIFETIME_STRIDE]));
+        queue.write_buffer(
+            &life,
+            0,
+            bytemuck::cast_slice(&vec![0.0f32; N * LIFETIME_STRIDE]),
+        );
         let mut values = vec![0.0f32; N * BODY];
         for b in 0..N {
             let s = b * BODY;
@@ -57,13 +73,22 @@ impl Fixture {
             values[s + 64] = 25.0; // money
         }
         let feedback = OrganismFeedback::new(&device);
-        Self { device, queue, feedback, body, life, values }
+        Self {
+            device,
+            queue,
+            feedback,
+            body,
+            life,
+            values,
+        }
     }
 
     fn encode(&mut self, mode: u32) -> Vec<f32> {
-        self.queue.write_buffer(&self.body, 0, bytemuck::cast_slice(&self.values));
+        self.queue
+            .write_buffer(&self.body, 0, bytemuck::cast_slice(&self.values));
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.feedback.encode(&self.device, &mut encoder, &self.body, &self.life, N, mode);
+        self.feedback
+            .encode(&self.device, &mut encoder, &self.body, &self.life, N, mode);
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("feedback-staging"),
             size: ((N * LIFETIME_STRIDE + N * BODY) * 4) as u64,
@@ -71,7 +96,13 @@ impl Fixture {
             mapped_at_creation: false,
         });
         encoder.copy_buffer_to_buffer(&self.life, 0, &staging, 0, (N * LIFETIME_STRIDE * 4) as u64);
-        encoder.copy_buffer_to_buffer(&self.body, 0, &staging, (N * LIFETIME_STRIDE * 4) as u64, (N * BODY * 4) as u64);
+        encoder.copy_buffer_to_buffer(
+            &self.body,
+            0,
+            &staging,
+            (N * LIFETIME_STRIDE * 4) as u64,
+            (N * BODY * 4) as u64,
+        );
         self.queue.submit(Some(encoder.finish()));
         let slice = staging.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -130,13 +161,25 @@ fn symmetric_energy_cycle_nets_zero() {
 fn symmetric_charges_paid_money_and_ignores_income() {
     let mut f = Fixture::new();
     let armed = f.encode(1);
-    assert_eq!(armed[LIFE_AUX_MONEY_OFFSET], 25.0, "money baseline recorded at arming");
+    assert_eq!(
+        armed[LIFE_AUX_MONEY_OFFSET], 25.0,
+        "money baseline recorded at arming"
+    );
     // Being 0 pays 5 for a service; being 1 earns a 10 fare.
     f.values[64] = 20.0;
     f.values[BODY + 64] = 35.0;
     let life = f.encode(1);
-    assert!((reward(&life, 0) - -0.002).abs() < 1e-6, "paid cost {}", reward(&life, 0));
-    assert_eq!(reward(&life, 1), 0.0, "income is not an online reward: {}", reward(&life, 1));
+    assert!(
+        (reward(&life, 0) - -0.002).abs() < 1e-6,
+        "paid cost {}",
+        reward(&life, 0)
+    );
+    assert_eq!(
+        reward(&life, 1),
+        0.0,
+        "income is not an online reward: {}",
+        reward(&life, 1)
+    );
     assert_eq!(life[LIFE_AUX_MONEY_OFFSET], 20.0);
     assert_eq!(life[LIFETIME_STRIDE + LIFE_AUX_MONEY_OFFSET], 35.0);
     // Legacy ignores money entirely.
@@ -157,29 +200,61 @@ fn progress_mode_pays_same_key_gains_only() {
     assert_eq!(armed[LIFE_AUX_TASK_KEY_OFFSET], 2.0);
     f.values[127] = 50.0; // closed half the road distance
     let life = f.encode(2);
-    assert!((reward(&life, 0) - 0.5).abs() < 1e-6, "approach gain {}", reward(&life, 0));
-    assert_eq!(reward(&life, 1), 0.0, "no task, no progress: {}", reward(&life, 1));
+    assert!(
+        (reward(&life, 0) - 0.5).abs() < 1e-6,
+        "approach gain {}",
+        reward(&life, 0)
+    );
+    assert_eq!(
+        reward(&life, 1),
+        0.0,
+        "no task, no progress: {}",
+        reward(&life, 1)
+    );
     f.values[127] = 50.0; // parked: no rise
     let life = f.encode(2);
-    assert_eq!(reward(&life, 0), 0.0, "parking pays nothing: {}", reward(&life, 0));
+    assert_eq!(
+        reward(&life, 0),
+        0.0,
+        "parking pays nothing: {}",
+        reward(&life, 0)
+    );
     f.values[31] = 3.0; // pickup: key changes, 127 jumps to the carrying bonus
     f.values[127] = 100.0;
     let life = f.encode(2);
-    assert_eq!(reward(&life, 0), 0.0, "a key change pays nothing: {}", reward(&life, 0));
+    assert_eq!(
+        reward(&life, 0),
+        0.0,
+        "a key change pays nothing: {}",
+        reward(&life, 0)
+    );
     f.values[127] = 130.0; // toward the destination on the same key
     let life = f.encode(2);
-    assert!((reward(&life, 0) - 0.3).abs() < 1e-6, "carrying gain {}", reward(&life, 0));
+    assert!(
+        (reward(&life, 0) - 0.3).abs() < 1e-6,
+        "carrying gain {}",
+        reward(&life, 0)
+    );
     f.values[31] = 0.0; // drop-off: no task; the fall of 127 is not a loss
     f.values[127] = 0.0;
     f.values[68] = 1.0;
     let life = f.encode(2);
-    assert!((reward(&life, 0) - 1.0).abs() < 1e-6, "delivery {}", reward(&life, 0));
+    assert!(
+        (reward(&life, 0) - 1.0).abs() < 1e-6,
+        "delivery {}",
+        reward(&life, 0)
+    );
     // Symmetric mode ignores progress entirely.
     f.values[31] = 4.0;
     f.encode(1);
     f.values[127] = 80.0;
     let life = f.encode(1);
-    assert_eq!(reward(&life, 0), 0.0, "symmetric ignores progress: {}", reward(&life, 0));
+    assert_eq!(
+        reward(&life, 0),
+        0.0,
+        "symmetric ignores progress: {}",
+        reward(&life, 0)
+    );
 }
 
 #[test]
@@ -191,7 +266,15 @@ fn delivery_and_damage_terms_are_shared_by_both_modes() {
         f.values[68] = 1.0; // one delivery
         f.values[BODY + 8] = 0.75; // 25% integrity lost
         let life = f.encode(mode);
-        assert!((reward(&life, 0) - 1.0).abs() < 1e-6, "mode {mode} delivery {}", reward(&life, 0));
-        assert!((reward(&life, 1) - -0.5).abs() < 1e-6, "mode {mode} damage {}", reward(&life, 1));
+        assert!(
+            (reward(&life, 0) - 1.0).abs() < 1e-6,
+            "mode {mode} delivery {}",
+            reward(&life, 0)
+        );
+        assert!(
+            (reward(&life, 1) - -0.5).abs() < 1e-6,
+            "mode {mode} damage {}",
+            reward(&life, 1)
+        );
     }
 }

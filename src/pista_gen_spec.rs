@@ -4,7 +4,7 @@
 
 use bevy::math::Vec2;
 
-use crate::pista_gen::{densificar, medir, tracado, Rng, CELULA, SPAN_MAX_CELLS};
+use crate::pista_gen::{CELULA, Rng, SPAN_MAX_CELLS, densificar, medir, tracado};
 
 /// Generates waypoints for a `WorldSpec` (`src/world_spec.rs`, `--world` flag) whose
 /// non-seed fields are NOT all `None` — the seed-only case is handled by the caller

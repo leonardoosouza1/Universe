@@ -1,6 +1,6 @@
 //! Static host/WGSL ABI checks for the production A → B → C physics pipeline.
 //! These tests parse layouts only; they create no device and execute no physics.
-use super::{PhysicsOutputGpu, PhysicsStateGpu, INPUT_WGSL_STRIDE};
+use super::{INPUT_WGSL_STRIDE, PhysicsOutputGpu, PhysicsStateGpu};
 use std::mem::{offset_of, size_of};
 
 macro_rules! offsets {
@@ -196,8 +196,10 @@ fn input_serializer_preserves_each_record_and_zeroes_padding() {
             &chunk[..size_of::<PhysicsStateGpu>()],
             bytemuck::bytes_of(record)
         );
-        assert!(chunk[size_of::<PhysicsStateGpu>()..]
-            .iter()
-            .all(|&value| value == 0));
+        assert!(
+            chunk[size_of::<PhysicsStateGpu>()..]
+                .iter()
+                .all(|&value| value == 0)
+        );
     }
 }

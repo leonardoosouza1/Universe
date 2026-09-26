@@ -1,8 +1,9 @@
 //! Road-cell topology recovered from a rasterised world: junction boxes, edge
 //! distances, generic spawn slots and station route statistics. Host only.
 
-
-use super::{Junction, ARM_DIRECTIONS, JUNCTION_RUN_CELLS, ROAD_HALF_WIDTH_M, SPAWN_JUNCTION_CLEARANCE_M};
+use super::{
+    ARM_DIRECTIONS, JUNCTION_RUN_CELLS, Junction, ROAD_HALF_WIDTH_M, SPAWN_JUNCTION_CLEARANCE_M,
+};
 use crate::organism_city::{CitySpawn, SPAWN_MIN_SEPARATION_M, SPAWN_STATION_CLEARANCE_M};
 use crate::world::{VoxelType, VoxelWorld};
 
@@ -99,8 +100,8 @@ pub fn detect_junctions(world: &VoxelWorld) -> Vec<Junction> {
             for (k, dir) in ARM_DIRECTIONS.iter().enumerate() {
                 let pc = ((centre[0] + dir[0] * probe_m) / cell).round() as i32;
                 let pr = ((centre[1] + dir[1] * probe_m) / cell).round() as i32;
-                arms[k] = road_at(world, pc, pr)
-                    && world.flow[index(pc, pr)].length_squared() > 0.5;
+                arms[k] =
+                    road_at(world, pc, pr) && world.flow[index(pc, pr)].length_squared() > 0.5;
             }
             junctions.push(Junction { centre, arms });
         }

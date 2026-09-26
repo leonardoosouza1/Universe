@@ -22,11 +22,11 @@
 
 use std::sync::Arc;
 
-use super::{step_groups, FlyMapGpu, STEP_ROWS};
+use super::{FlyMapGpu, STEP_ROWS, step_groups};
 use crate::config::iara::vision::RETINA_TOTAL;
 use crate::fly_map::{
-    apply_reflex_readout, cpu_read, cpu_step, pack_selection, EyeFrame, FlyMap, COMMANDS,
-    IN_CHANNELS, OFF_GAIN, OFF_OUT_PAIR, OFF_SCALE, OFF_TYPE_MASK, OUT_SLOTS,
+    COMMANDS, EyeFrame, FlyMap, IN_CHANNELS, OFF_GAIN, OFF_OUT_PAIR, OFF_SCALE, OFF_TYPE_MASK,
+    OUT_SLOTS, apply_reflex_readout, cpu_read, cpu_step, pack_selection,
 };
 use crate::gpu::perception::WAVE_U32S;
 

@@ -1,4 +1,4 @@
-use super::{ContactDiagnostics, PhysicsGpu, PhysicsStateGpu, CONTACT_DIAGNOSTICS_FLAG};
+use super::{CONTACT_DIAGNOSTICS_FLAG, ContactDiagnostics, PhysicsGpu, PhysicsStateGpu};
 use bytemuck::Zeroable;
 
 #[test]

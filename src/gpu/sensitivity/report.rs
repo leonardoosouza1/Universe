@@ -4,7 +4,7 @@
 //! about WHICH genes to perturb and how; this file is about how the answer is classified
 //! and rendered. `run_gate` fills these types in; `src/bin/sensitivity.rs` prints them.
 
-use super::{Reach, MOVE_THRESHOLD};
+use super::{MOVE_THRESHOLD, Reach};
 use crate::gpu::contribution::OUTPUT_NAMES;
 
 /// The verdict for one group. `Blind` and `OffPathMoved` are the two that fail the gate.

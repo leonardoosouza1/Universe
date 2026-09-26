@@ -263,11 +263,7 @@ impl EnvironmentalState {
 
     /// Vision range adjusted by the day/night cycle
     pub fn vision_range(&self) -> f32 {
-        if self.is_night() {
-            12.0
-        } else {
-            25.0
-        }
+        if self.is_night() { 12.0 } else { 25.0 }
     }
 
     /// Tier 5.4 — Deterministic spawn of NPC obstacles on the waypoints.

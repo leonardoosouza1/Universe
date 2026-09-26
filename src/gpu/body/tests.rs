@@ -1,6 +1,6 @@
 use super::*;
 use crate::gpu::{
-    evolution::{evolve, EvoParams},
+    evolution::{EvoParams, evolve},
     physics::make_physics_state,
 };
 
@@ -50,9 +50,11 @@ fn body_follows_selection_and_mutation_preserves_elites_and_brain() {
     };
     let selected = evolve(&parents, &[0.0, 2.0, 1.0, 10.0], &params, 3, 7);
     assert_eq!(selected[0].body, parents[3].body);
-    assert!(selected
-        .iter()
-        .all(|g| parents.iter().any(|p| p.body == g.body)));
+    assert!(
+        selected
+            .iter()
+            .all(|g| parents.iter().any(|p| p.body == g.body))
+    );
     let mut a = selected.clone();
     let mut b = selected.clone();
     mutate_population(&mut a, 1, 3, 7);
@@ -76,7 +78,7 @@ fn body_follows_selection_and_mutation_preserves_elites_and_brain() {
 #[test]
 #[ignore = "requires a Vulkan GPU; run explicitly with the driver override"]
 fn body_capacities_reach_gpu_physics() {
-    use crate::gpu::physics::{pack_config_flags, PhysicsGpu};
+    use crate::gpu::physics::{PhysicsGpu, pack_config_flags};
     let gpu = PhysicsGpu::new(&vec![1; 64 * 64], &vec![0.0; 64 * 64], 64, 3.0, 4)
         .expect("a real GPU is required");
     let base = make_physics_state([80.0, 0.5, 80.0], [1.0, 0.0, 0.0]);

@@ -29,7 +29,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use crate::config::iara::vision::RETINA_TOTAL;
-use crate::fly_map::{FlyMap, FlySelection, COMMANDS, NONE, OUT_SLOTS};
+use crate::fly_map::{COMMANDS, FlyMap, FlySelection, NONE, OUT_SLOTS};
 use crate::gpu::core::{storage_entry, uniform_entry};
 use crate::gpu::perception::WAVE_U32S;
 

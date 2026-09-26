@@ -79,8 +79,8 @@ pub struct HeadlessMode {
     pub gens_target: u32,
 }
 
-pub mod organism_city;
 pub mod city_family;
+pub mod organism_city;
 pub mod organism_scenario;
 
 pub mod organism_channels;

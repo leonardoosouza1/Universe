@@ -82,11 +82,11 @@ impl TaxiWitnessGpu {
                     },
                     count: None,
                 },
-                storage(1, true), // packed observation wave
-                storage(2, true), // resident physics input
-                storage(3, true), // resident body/taxi state
-                storage(4, true), // immutable route distance fields
-                storage(5, true), // immutable taxi station map
+                storage(1, true),  // packed observation wave
+                storage(2, true),  // resident physics input
+                storage(3, true),  // resident body/taxi state
+                storage(4, true),  // immutable route distance fields
+                storage(5, true),  // immutable taxi station map
                 storage(6, false), // production intent ABI
                 storage(7, false), // consecutive stopped-at-goal ticks
             ],
@@ -104,7 +104,14 @@ impl TaxiWitnessGpu {
             compilation_options: Default::default(),
             cache: None,
         });
-        Self { params, hold_ticks, layout, pipeline, capacity, lesson }
+        Self {
+            params,
+            hold_ticks,
+            layout,
+            pipeline,
+            capacity,
+            lesson,
+        }
     }
 
     /// Encode one bounded controller pass. The caller must invoke this before
@@ -148,14 +155,38 @@ impl TaxiWitnessGpu {
             label: Some("taxi-reference-witness-bind-group"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: packed_wave.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: physics_input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: body_state.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: routes.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: taxi_world.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: intent.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: self.hold_ticks.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: packed_wave.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: physics_input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: body_state.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: routes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: taxi_world.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: intent.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.hold_ticks.as_entire_binding(),
+                },
             ],
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

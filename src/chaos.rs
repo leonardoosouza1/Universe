@@ -1,7 +1,7 @@
 //! Chaos signal: blends physical instability with Kuramoto neural decoherence.
 //! Output [0, 1]: 0 = calm, 1 = total chaos. Drives Gate input.
 
-use crate::resonance::{coherence, ResonantNode};
+use crate::resonance::{ResonantNode, coherence};
 
 /// Saturation knee for yaw rate (rad/s). ~115°/s — aggressive cornering.
 const YAW_RATE_KNEE: f32 = 2.0;

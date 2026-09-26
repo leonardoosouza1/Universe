@@ -107,9 +107,14 @@ pub const STABLE_WHEEL_FLAGS: u32 = IMPLICIT_WHEEL_FLAG | BOUNDED_TCS_FLAG;
 /// World/runtime properties inherited at ecological birth, not body genes or
 /// acquired motion/controller state. Keep morphology bit 7 with the newborn.
 pub fn inherit_resident_profile(parent: &PhysicsStateGpu, newborn: &mut PhysicsStateGpu) {
-    const PROFILE_MASK: u32 = CONTACT_DIAGNOSTICS_FLAG | (1 << 8) | STATIC_REST_FLAG
-        | POWER_CONSISTENT_STEERING_FLAG | STABLE_WHEEL_FLAGS | POWERTRAIN_V2_FLAG;
-    newborn.config_flags = (newborn.config_flags & !PROFILE_MASK) | (parent.config_flags & PROFILE_MASK);
+    const PROFILE_MASK: u32 = CONTACT_DIAGNOSTICS_FLAG
+        | (1 << 8)
+        | STATIC_REST_FLAG
+        | POWER_CONSISTENT_STEERING_FLAG
+        | STABLE_WHEEL_FLAGS
+        | POWERTRAIN_V2_FLAG;
+    newborn.config_flags =
+        (newborn.config_flags & !PROFILE_MASK) | (parent.config_flags & PROFILE_MASK);
     if parent.config_flags & POWERTRAIN_V2_FLAG != 0 {
         newborn.current_gear = 2;
         newborn.current_rpm = 800.0;
@@ -292,7 +297,7 @@ pub struct PhysicsStateGpu {
 impl PhysicsStateGpu {
     /// Validate the actual command and body before any GPU upload.
     pub fn validate_contract(&self) -> Result<(), crate::contracts::ContractError> {
-        use crate::contracts::{finite, positive, TemperatureC, VehicleCommand};
+        use crate::contracts::{TemperatureC, VehicleCommand, finite, positive};
         VehicleCommand::new(self.throttle, self.steer, self.brake_cmd)?;
         if self.is_stalled > 1 {
             return Err(crate::contracts::ContractError {
@@ -301,10 +306,18 @@ impl PhysicsStateGpu {
             });
         }
         if self.current_gear > 6 {
-            return Err(crate::contracts::ContractError {field: "physics.input.gear", expected: "raw gear code 0..6"});
+            return Err(crate::contracts::ContractError {
+                field: "physics.input.gear",
+                expected: "raw gear code 0..6",
+            });
         }
-        if self.config_flags & POWERTRAIN_V2_FLAG != 0 && (self._pad_wind != 0.0 && self._pad_wind != 1.0) {
-            return Err(crate::contracts::ContractError {field: "physics.input.starter_authorized", expected: "exact 0 or 1"});
+        if self.config_flags & POWERTRAIN_V2_FLAG != 0
+            && (self._pad_wind != 0.0 && self._pad_wind != 1.0)
+        {
+            return Err(crate::contracts::ContractError {
+                field: "physics.input.starter_authorized",
+                expected: "exact 0 or 1",
+            });
         }
         TemperatureC::new(self.engine_temp)?;
         TemperatureC::new(self.oil_temp)?;
@@ -401,7 +414,7 @@ pub struct PhysicsOutputGpu {
 impl PhysicsOutputGpu {
     /// Validate the complete readback before committing any car state.
     pub fn validate_contract(&self) -> Result<(), crate::contracts::ContractError> {
-        use crate::contracts::{finite, ContractError, TemperatureC};
+        use crate::contracts::{ContractError, TemperatureC, finite};
         for vector in [&self.vel, &self.pos, &self.fwd, &self.lat] {
             for &value in vector {
                 finite(value, "physics.output.vector")?;
@@ -776,7 +789,9 @@ impl PhysicsGpu {
         let buf_mid = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("physics-mid"),
             size: bytes_mid,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         // buf_mid2: written by B, read by C
@@ -898,7 +913,11 @@ impl PhysicsGpu {
         if !state.is_empty() {
             self.queue
                 .write_buffer(&self.buf_input, 0, &serialize_input(state));
-            self.queue.write_buffer(&self.buf_mid, 0, &vec![0u8; state.len() * std::mem::size_of::<MidState>()]);
+            self.queue.write_buffer(
+                &self.buf_mid,
+                0,
+                &vec![0u8; state.len() * std::mem::size_of::<MidState>()],
+            );
         }
         Ok(())
     }
@@ -968,8 +987,11 @@ impl PhysicsGpu {
             (slot * INPUT_WGSL_STRIDE) as u64,
             &serialize_input(std::slice::from_ref(state)),
         );
-        self.queue.write_buffer(&self.buf_mid, (slot * std::mem::size_of::<MidState>()) as u64,
-            bytemuck::bytes_of(&MidState::zeroed()));
+        self.queue.write_buffer(
+            &self.buf_mid,
+            (slot * std::mem::size_of::<MidState>()) as u64,
+            bytemuck::bytes_of(&MidState::zeroed()),
+        );
         Ok(())
     }
 
@@ -1528,7 +1550,7 @@ mod state_tests {
             naga::valid::Capabilities::all(),
         )
         .validate(&module)
-            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
+        .unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
     }
 
     #[test]
@@ -1537,11 +1559,7 @@ mod state_tests {
         fn horizontal_speed(state: &PhysicsStateGpu) -> f32 {
             state.vel[0].hypot(state.vel[2])
         }
-        fn run(
-            gpu: &PhysicsGpu,
-            mut state: PhysicsStateGpu,
-            ticks: usize,
-        ) -> PhysicsStateGpu {
+        fn run(gpu: &PhysicsGpu, mut state: PhysicsStateGpu, ticks: usize) -> PhysicsStateGpu {
             for _ in 0..ticks {
                 assert!(gpu.step(std::slice::from_mut(&mut state)));
             }
@@ -1551,8 +1569,7 @@ mod state_tests {
         let size = 16usize;
         let grid = vec![0u8; size * size];
         let hmap = vec![0.0f32; size * size];
-        let gpu = PhysicsGpu::new(&grid, &hmap, size, 1.0, 1)
-            .expect("real GPU adapter required");
+        let gpu = PhysicsGpu::new(&grid, &hmap, size, 1.0, 1).expect("real GPU adapter required");
         let adapter = gpu.adapter.to_ascii_lowercase();
         assert!(
             !adapter.contains("llvmpipe")
@@ -1568,33 +1585,50 @@ mod state_tests {
             state.vel = [0.0376, 0.0, 0.0];
             state.brake_cmd = 1.0;
             state.throttle = 0.0;
-            state.config_flags = pack_config_flags(true, true, true, true, true, true)
-                | STATIC_REST_FLAG;
+            state.config_flags =
+                pack_config_flags(true, true, true, true, true, true) | STATIC_REST_FLAG;
             state
         };
 
         let rest_on = run(&gpu, base(), 8);
-        assert!(horizontal_speed(&rest_on) < 0.005, "rest constraint did not hold: {:?}", rest_on.vel);
+        assert!(
+            horizontal_speed(&rest_on) < 0.005,
+            "rest constraint did not hold: {:?}",
+            rest_on.vel
+        );
 
         let mut rest_off_input = base();
         rest_off_input.config_flags &= !STATIC_REST_FLAG;
         let rest_off = run(&gpu, rest_off_input, 8);
-        assert!(horizontal_speed(&rest_off) > 0.005, "flag-off path unexpectedly locked: {:?}", rest_off.vel);
+        assert!(
+            horizontal_speed(&rest_off) > 0.005,
+            "flag-off path unexpectedly locked: {:?}",
+            rest_off.vel
+        );
 
         let mut no_brake = base();
         no_brake.brake_cmd = 0.0;
         let no_brake_out = run(&gpu, no_brake, 8);
-        assert!(horizontal_speed(&no_brake_out) > 0.005, "brake-off path was frozen");
+        assert!(
+            horizontal_speed(&no_brake_out) > 0.005,
+            "brake-off path was frozen"
+        );
 
         let mut weak_brake = base();
         weak_brake.brake_torque_max = 0.001;
         let weak_out = run(&gpu, weak_brake, 8);
-        assert!(horizontal_speed(&weak_out) > 0.005, "inadequate brake was frozen");
+        assert!(
+            horizontal_speed(&weak_out) > 0.005,
+            "inadequate brake was frozen"
+        );
 
         let mut no_grip = base();
         no_grip.mu_peak = 0.0;
         let no_grip_out = run(&gpu, no_grip, 8);
-        assert!(horizontal_speed(&no_grip_out) > 0.005, "zero-friction path was frozen");
+        assert!(
+            horizontal_speed(&no_grip_out) > 0.005,
+            "zero-friction path was frozen"
+        );
 
         let mut fast = base();
         fast.vel = [5.0, 0.0, 0.0];
@@ -1604,7 +1638,10 @@ mod state_tests {
         let mut airborne = base();
         airborne.pos[1] = 5.0;
         let airborne_out = run(&gpu, airborne, 1);
-        assert!(horizontal_speed(&airborne_out) > 0.005, "airborne body was frozen");
+        assert!(
+            horizontal_speed(&airborne_out) > 0.005,
+            "airborne body was frozen"
+        );
     }
 }
 

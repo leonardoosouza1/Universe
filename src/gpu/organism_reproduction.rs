@@ -273,8 +273,8 @@ mod tests {
             "newborn material can pay a full unit of growth"
         );
         assert_eq!(r[3] - r[6], r[9] + r[10]);
-        assert!(!gpu
-            .transact(
+        assert!(
+            !gpu.transact(
                 &device,
                 &queue,
                 &body,
@@ -287,7 +287,8 @@ mod tests {
                 1_000_000.0
             )
             .unwrap()
-            .accepted());
+            .accepted()
+        );
         // Refused duplicate leaves all slots bit-identical; survivor was never touched.
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,

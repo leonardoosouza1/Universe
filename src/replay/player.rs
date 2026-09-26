@@ -1,7 +1,7 @@
 //! Standalone scene replay export with explicit measurement availability.
 
 use super::{ReplayFrame, ReplayHeader, SOURCE_MOTOR};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io;
 use std::path::{Component, Path};
 
@@ -499,13 +499,17 @@ mod tests {
     #[test]
     fn attach_observed_genome_is_a_silent_noop_without_diagnostics_or_selected_being() {
         let mut options = PlayerOptions::default();
-        assert!(!options
-            .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
-            .unwrap());
+        assert!(
+            !options
+                .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
+                .unwrap()
+        );
         options.diagnostics = Some(json!({"meta": {}, "observations": []}));
-        assert!(!options
-            .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
-            .unwrap());
+        assert!(
+            !options
+                .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
+                .unwrap()
+        );
     }
 
     #[test]
@@ -516,9 +520,11 @@ mod tests {
         let mut options = PlayerOptions::default();
         options.diagnostics = Some(json!({"meta":{"selected_being":0},
             "observations":[{"being":0,"generation":0,"genome_file":"g.bin"}]}));
-        assert!(!options
-            .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
-            .unwrap());
+        assert!(
+            !options
+                .attach_observed_genome(Path::new("/nonexistent/whatever.replay"))
+                .unwrap()
+        );
     }
 
     #[test]
@@ -580,10 +586,12 @@ mod tests {
         let native = options.native_brain.as_ref().expect("native_brain set");
         assert_eq!(native["traceBeing"], 3);
         assert_eq!(native["checkpoint"], "observed_genome_gen0000.bin");
-        assert!(native["association"]
-            .as_str()
-            .unwrap()
-            .contains("no external checkpoint_sha256 to cross-check"));
+        assert!(
+            native["association"]
+                .as_str()
+                .unwrap()
+                .contains("no external checkpoint_sha256 to cross-check")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

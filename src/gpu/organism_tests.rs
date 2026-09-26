@@ -413,20 +413,37 @@ fn gpu_body_resident_water_heat_and_fuel_stress() {
         fixture.write(&initial);
         // A controlled mechanical load isolates physiology. This is not a
         // driving policy or a CPU motor model. The shader owns all transitions.
-        fixture.queue.write_buffer(&fixture.output, 48 * 4,
-            bytemuck::cast_slice(&[1000.0f32, 1406.0]));
+        fixture.queue.write_buffer(
+            &fixture.output,
+            48 * 4,
+            bytemuck::cast_slice(&[1000.0f32, 1406.0]),
+        );
         let mut encoder = fixture.device.create_command_encoder(&Default::default());
         for _ in 0..512 {
-            fixture.body.encode_pre(&fixture.device, &mut encoder, &fixture.input, 1, 1.0 / 64.0).unwrap();
-            fixture.body.encode_post(&fixture.device, &mut encoder, &fixture.output, 1, 1.0 / 64.0).unwrap();
+            fixture
+                .body
+                .encode_pre(&fixture.device, &mut encoder, &fixture.input, 1, 1.0 / 64.0)
+                .unwrap();
+            fixture
+                .body
+                .encode_post(
+                    &fixture.device,
+                    &mut encoder,
+                    &fixture.output,
+                    1,
+                    1.0 / 64.0,
+                )
+                .unwrap();
         }
         fixture.body.encode_snapshot(&mut encoder, 1).unwrap();
         fixture.queue.submit(Some(encoder.finish()));
         let after = fixture.body.read_snapshot(&fixture.device, 1).unwrap()[0];
         assert_eq!(after.values[S_AGE_S], 8.0);
         assert_eq!(after.values[29], 1.0);
-        assert!(after.values[S_ENERGY_J] < initial.values[S_ENERGY_J] - 100_000.0,
-            "mechanical work must debit chemical energy at production dt");
+        assert!(
+            after.values[S_ENERGY_J] < initial.values[S_ENERGY_J] - 100_000.0,
+            "mechanical work must debit chemical energy at production dt"
+        );
         assert!(after.values[S_ENGINE_WEAR] > initial.values[S_ENGINE_WEAR]);
         assert!(after.values[S_FATIGUE] > 0.05);
         assert!(after.values.iter().all(|v| v.is_finite()));
@@ -435,13 +452,23 @@ fn gpu_body_resident_water_heat_and_fuel_stress() {
     // The current model is a closed coolant circuit: healthy cold bodies do
     // not drink continuously. Boiling/damage consume water; ordinary motion
     // consumes chemical energy. Do not invent water loss just to animate a bar.
-    assert_eq!(outcomes[0].values[S_WATER_KG], outcomes[0].values[S_BIRTH_WATER_CAP]);
-    assert!(outcomes[1].values[S_WATER_KG] < outcomes[0].values[S_WATER_KG] - 0.01,
-        "hot body must consume coolant under sustained load");
+    assert_eq!(
+        outcomes[0].values[S_WATER_KG],
+        outcomes[0].values[S_BIRTH_WATER_CAP]
+    );
+    assert!(
+        outcomes[1].values[S_WATER_KG] < outcomes[0].values[S_WATER_KG] - 0.01,
+        "hot body must consume coolant under sustained load"
+    );
     assert!(outcomes[1].values[S_TEMPERATURE_K] < 393.15);
-    eprintln!("RESOURCE STRESS PASS: 8s resident dt=1/64, cold/hot water={}/{}, energy={}/{}, hot temperature={}K",
-        outcomes[0].values[S_WATER_KG], outcomes[1].values[S_WATER_KG],
-        outcomes[0].values[S_ENERGY_J], outcomes[1].values[S_ENERGY_J], outcomes[1].values[S_TEMPERATURE_K]);
+    eprintln!(
+        "RESOURCE STRESS PASS: 8s resident dt=1/64, cold/hot water={}/{}, energy={}/{}, hot temperature={}K",
+        outcomes[0].values[S_WATER_KG],
+        outcomes[1].values[S_WATER_KG],
+        outcomes[0].values[S_ENERGY_J],
+        outcomes[1].values[S_ENERGY_J],
+        outcomes[1].values[S_TEMPERATURE_K]
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@
 //! still owns pickup, route progress, and dropoff acceptance.
 
 use serde_json::json;
-use sha2::{Digest,Sha256};
+use sha2::{Digest, Sha256};
 use universe::gpu::school::{Lesson, LessonContract, LessonGeometry};
 use universe::organism_school::{lesson_start_candidates, service_lesson_candidates};
 use universe::world::VoxelWorld;
@@ -52,11 +52,17 @@ pub fn build(
             continue;
         }
         let Some((start, forward)) = pickup_starts.iter().find_map(|pickup| {
-            let start_cell=station_cell(world,pickup.start).ok()?;
-            let start_route=routes[4+origin*cells+start_cell];
-            let forward_cell=forward_cell(world,pickup.start,pickup.forward).ok()?;
-            let forward_route=routes[4+origin*cells+forward_cell];
-            if !start_route.is_finite() || !forward_route.is_finite() || forward_route<0.0 || forward_route>=start_route-0.001 {return None;}
+            let start_cell = station_cell(world, pickup.start).ok()?;
+            let start_route = routes[4 + origin * cells + start_cell];
+            let forward_cell = forward_cell(world, pickup.start, pickup.forward).ok()?;
+            let forward_route = routes[4 + origin * cells + forward_cell];
+            if !start_route.is_finite()
+                || !forward_route.is_finite()
+                || forward_route < 0.0
+                || forward_route >= start_route - 0.001
+            {
+                return None;
+            }
             let start_dx = (geometry.target[0] - pickup.start[0]).abs();
             let start_dz = (geometry.target[1] - pickup.start[1]).abs();
             (start_route >= MIN_ROAD_DISTANCE_M
@@ -124,14 +130,19 @@ pub fn build(
             })
         })
         .collect::<Vec<_>>();
-    let mut hash=Sha256::new();
+    let mut hash = Sha256::new();
     hash.update(b"explicit-school-cross-city-v2:strict-forward-distance-decrease");
     hash.update((world.size as u32).to_le_bytes());
     hash.update(world.cell_size.to_bits().to_le_bytes());
-    for cell in &world.grid {hash.update([*cell as u8]);}
-    for flow in &world.flow {hash.update(flow.x.to_bits().to_le_bytes());hash.update(flow.y.to_bits().to_le_bytes());}
-    hash.update(serde_json::to_vec(&pairs).map_err(|error|error.to_string())?);
-    let geometry_sha256=format!("{:x}",hash.finalize());
+    for cell in &world.grid {
+        hash.update([*cell as u8]);
+    }
+    for flow in &world.flow {
+        hash.update(flow.x.to_bits().to_le_bytes());
+        hash.update(flow.y.to_bits().to_le_bytes());
+    }
+    hash.update(serde_json::to_vec(&pairs).map_err(|error| error.to_string())?);
+    let geometry_sha256 = format!("{:x}", hash.finalize());
     let metadata = json!({
         "schema_version": 1,
         "course_id": "explicit-school-cross-city-v2",
@@ -180,10 +191,21 @@ fn station_cell(world: &VoxelWorld, point: [f32; 2]) -> Result<usize, String> {
     Ok(row as usize * world.size + col as usize)
 }
 
-fn forward_cell(world:&VoxelWorld,start:[f32;2],forward:[f32;2])->Result<usize,String> {
-    let cardinal=(forward[0].abs()==1.0 && forward[1]==0.0) || (forward[1].abs()==1.0 && forward[0]==0.0);
-    if !cardinal {return Err("cross-city spawn heading must be cardinal".into());}
-    let cell=station_cell(world,[start[0]+forward[0]*world.cell_size,start[1]+forward[1]*world.cell_size])?;
-    if world.grid[cell]!=universe::world::VoxelType::Road {return Err("cross-city forward cell is not road".into());}
+fn forward_cell(world: &VoxelWorld, start: [f32; 2], forward: [f32; 2]) -> Result<usize, String> {
+    let cardinal = (forward[0].abs() == 1.0 && forward[1] == 0.0)
+        || (forward[1].abs() == 1.0 && forward[0] == 0.0);
+    if !cardinal {
+        return Err("cross-city spawn heading must be cardinal".into());
+    }
+    let cell = station_cell(
+        world,
+        [
+            start[0] + forward[0] * world.cell_size,
+            start[1] + forward[1] * world.cell_size,
+        ],
+    )?;
+    if world.grid[cell] != universe::world::VoxelType::Road {
+        return Err("cross-city forward cell is not road".into());
+    }
     Ok(cell)
 }

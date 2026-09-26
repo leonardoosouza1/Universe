@@ -78,7 +78,13 @@ pub fn set_centered_legacy_grid() {
 }
 
 pub fn retina_geometry_mode() -> u32 {
-    if road_view_enabled() { 1 } else if CENTERED_LEGACY_GRID.get().is_some() { 2 } else { 0 }
+    if road_view_enabled() {
+        1
+    } else if CENTERED_LEGACY_GRID.get().is_some() {
+        2
+    } else {
+        0
+    }
 }
 
 pub fn retina_geometry_name() -> &'static str {

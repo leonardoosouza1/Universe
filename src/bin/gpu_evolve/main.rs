@@ -1262,7 +1262,10 @@ fn main() {
                 }
                 "--city-lane-rule" => {
                     i += 1;
-                    match args.get(i).and_then(|v| universe::organism_city::LaneRule::parse(v)) {
+                    match args
+                        .get(i)
+                        .and_then(|v| universe::organism_city::LaneRule::parse(v))
+                    {
                         Some(rule) => universe::organism_city::set_lane_rule(rule),
                         None => {
                             eprintln!("--city-lane-rule requires legacy or consistent");
@@ -1295,7 +1298,10 @@ fn main() {
                 }
                 "--silence-channels" => {
                     i += 1;
-                    silence_channels = match args.get(i).map(|t| universe::gpu::brain::parse_silence_channels(t)) {
+                    silence_channels = match args
+                        .get(i)
+                        .map(|t| universe::gpu::brain::parse_silence_channels(t))
+                    {
                         Some(Ok(ranges)) => ranges,
                         Some(Err(err)) => {
                             eprintln!("--silence-channels: {err}");
@@ -3197,9 +3203,14 @@ fn main() {
         std::process::exit(2);
     }
     if statics::organism_brake_priority()
-        && (!organism_taxi || statics::organism_legacy_pedals() || statics::organism_signed_brake() || taxi_reference_witness)
+        && (!organism_taxi
+            || statics::organism_legacy_pedals()
+            || statics::organism_signed_brake()
+            || taxi_reference_witness)
     {
-        eprintln!("--organism-brake-priority requires native taxi exclusive unsigned pedals; no witness");
+        eprintln!(
+            "--organism-brake-priority requires native taxi exclusive unsigned pedals; no witness"
+        );
         std::process::exit(2);
     }
     if statics::organism_signed_brake() && statics::organism_legacy_pedals() {
@@ -5059,11 +5070,13 @@ fn main() {
                 } else {
                     "explicit-v1-instant-tcs"
                 });
-            metadata["silence_channels"] = serde_json::json!(silence_channels
-                .iter()
-                .filter(|(lo, hi)| hi > lo)
-                .map(|(lo, hi)| format!("{lo}-{hi}"))
-                .collect::<Vec<_>>());
+            metadata["silence_channels"] = serde_json::json!(
+                silence_channels
+                    .iter()
+                    .filter(|(lo, hi)| hi > lo)
+                    .map(|(lo, hi)| format!("{lo}-{hi}"))
+                    .collect::<Vec<_>>()
+            );
             metadata["research"] = research_contract::configuration(
                 research_start_distance,
                 research_linear,
@@ -5565,14 +5578,14 @@ fn main() {
         }
         let research_context = if research_retention > 0 {
             let shape = serde_json::json!({"service":if school_service_legacy {1}else{2},
-                "horizon":school_horizon_ticks,"controller":research_linear,"start_distance":research_start_distance.map(|d|d.get()),
-                "city":organism_city.as_ref().map(|c|c.metadata()),"fold":school_start_fold.name(),
-                "batch":if school_eval_starts>1 {(generation_idx*school_eval_starts)%school_starts.as_ref().unwrap().len()} else {gen_abs},
-                "lesson":school_lesson.unwrap().name(), "service_course":if school_cross_city {
-                    serde_json::json!(service_course.as_ref().map(|course| &course.metadata))
-                } else {
-                    serde_json::json!(research_service_course)
-                }});
+            "horizon":school_horizon_ticks,"controller":research_linear,"start_distance":research_start_distance.map(|d|d.get()),
+            "city":organism_city.as_ref().map(|c|c.metadata()),"fold":school_start_fold.name(),
+            "batch":if school_eval_starts>1 {(generation_idx*school_eval_starts)%school_starts.as_ref().unwrap().len()} else {gen_abs},
+            "lesson":school_lesson.unwrap().name(), "service_course":if school_cross_city {
+                serde_json::json!(service_course.as_ref().map(|course| &course.metadata))
+            } else {
+                serde_json::json!(research_service_course)
+            }});
             // Stable FNV identity within this run; source/config SHA is recorded separately.
             let hash = shape
                 .to_string()
@@ -6115,7 +6128,15 @@ fn main() {
             let mut manifest = manifest;
             manifest["retina_geometry"] =
                 serde_json::json!(universe::visao::retina_geometry_name());
-            manifest["powertrain_score"] = serde_json::json!(if statics::organism_powertrain_v2() {Some("service-v2 subtracts 5 per engine running->off event and starter_paid_j/1500; ecology fitness unchanged")} else {None});
+            manifest["powertrain_score"] = serde_json::json!(
+                if statics::organism_powertrain_v2() {
+                    Some(
+                        "service-v2 subtracts 5 per engine running->off event and starter_paid_j/1500; ecology fitness unchanged",
+                    )
+                } else {
+                    None
+                }
+            );
             manifest["powertrain"] = serde_json::json!(if statics::organism_powertrain_v2() {
                 "paid-start-load-stall-v2"
             } else {
@@ -6255,16 +6276,28 @@ fn main() {
                     serde_json::json!(if school_service_legacy {
                         "legacy-with-frozen-evidence-v1"
                     } else {
-                        if school_cross_city {"service-v2-cross-city-v1"} else if statics::organism_powertrain_v2() {"service-v2-powertrain-v2"} else {"service-v2-banked-pickup-frozen-evidence-v1"}
+                        if school_cross_city {
+                            "service-v2-cross-city-v1"
+                        } else if statics::organism_powertrain_v2() {
+                            "service-v2-powertrain-v2"
+                        } else {
+                            "service-v2-banked-pickup-frozen-evidence-v1"
+                        }
                     });
                 manifest["school"]["service_score_v2"] = serde_json::json!(
                     "progress + 1000*success*clamp(delivery_delta,0,1) + 200*(best_readiness + accepted_pickup_in_full_delivery) + 500*success - 200*failed - 100*damage - 100*dead - charged_seconds - min(collision_j/1000,200)"
                 );
                 manifest["school"]["cross_city"] = serde_json::json!(school_cross_city);
-                manifest["school"]["powertrain_penalty_active"] = serde_json::json!(statics::organism_powertrain_v2() && !school_service_legacy);
+                manifest["school"]["powertrain_penalty_active"] =
+                    serde_json::json!(statics::organism_powertrain_v2() && !school_service_legacy);
                 if statics::organism_powertrain_v2() {
-                    let formula=manifest["school"]["service_score_v2"].as_str().unwrap().to_owned();
-                    manifest["school"]["service_score_v2"]=serde_json::json!(format!("{formula} - 5*engine_off_events - starter_paid_j/1500"));
+                    let formula = manifest["school"]["service_score_v2"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
+                    manifest["school"]["service_score_v2"] = serde_json::json!(format!(
+                        "{formula} - 5*engine_off_events - starter_paid_j/1500"
+                    ));
                 }
                 manifest["school"]["start_pool_requested"] =
                     serde_json::json!(school_start_pool.max(school_eval_starts));
@@ -7208,12 +7241,19 @@ fn main() {
                     motor_head_linear(),
                 );
                 summary["cross_city"] = serde_json::json!(school_cross_city);
-                summary["powertrain_penalty_active"] = serde_json::json!(statics::organism_powertrain_v2() && !school_service_legacy);
+                summary["powertrain_penalty_active"] =
+                    serde_json::json!(statics::organism_powertrain_v2() && !school_service_legacy);
                 summary["event_span"] = serde_json::json!("judged_attempt_frozen_at_outcome_v1");
                 summary["judge_revision"] = serde_json::json!(if school_service_legacy {
                     "legacy-with-frozen-evidence-v1"
                 } else {
-                    if school_cross_city {"service-v2-cross-city-v1"} else if statics::organism_powertrain_v2() {"service-v2-powertrain-v2"} else {"service-v2-banked-pickup-frozen-evidence-v1"}
+                    if school_cross_city {
+                        "service-v2-cross-city-v1"
+                    } else if statics::organism_powertrain_v2() {
+                        "service-v2-powertrain-v2"
+                    } else {
+                        "service-v2-banked-pickup-frozen-evidence-v1"
+                    }
                 });
                 summary["research"]["service_course"] =
                     serde_json::json!(service_course.as_ref().map(|c| &c.metadata));

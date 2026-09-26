@@ -204,7 +204,8 @@ impl TaxiGpu {
         let senses_pipeline = pipeline(&senses_layout, "senses");
         let route_senses_pipeline = pipeline(&senses_layout, "route_senses");
         let buf_routes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("taxi-no-road-field"), contents: bytemuck::cast_slice(&[0.0f32; 4]),
+            label: Some("taxi-no-road-field"),
+            contents: bytemuck::cast_slice(&[0.0f32; 4]),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
         Self {
@@ -229,7 +230,10 @@ impl TaxiGpu {
         assert!(
             matches!(
                 version,
-                NAVIGATION_OBSERVATION_V2 | NAVIGATION_OBSERVATION_V3 | NAVIGATION_OBSERVATION_V4 | NAVIGATION_OBSERVATION_V5
+                NAVIGATION_OBSERVATION_V2
+                    | NAVIGATION_OBSERVATION_V3
+                    | NAVIGATION_OBSERVATION_V4
+                    | NAVIGATION_OBSERVATION_V5
             ),
             "unknown navigation observation version {version}"
         );
@@ -246,11 +250,19 @@ impl TaxiGpu {
         self.mode
     }
     /// Install the scenario's immutable road field once, never per tick.
-    pub fn configure_routes(&mut self, device: &wgpu::Device, world: &crate::world::VoxelWorld, stations: &[[f32; 8]]) -> Result<(), &'static str> {
-        if stations.len() != self.station_count { return Err("route station count mismatch"); }
+    pub fn configure_routes(
+        &mut self,
+        device: &wgpu::Device,
+        world: &crate::world::VoxelWorld,
+        stations: &[[f32; 8]],
+    ) -> Result<(), &'static str> {
+        if stations.len() != self.station_count {
+            return Err("route station count mismatch");
+        }
         let packed = super::taxi_routes::pack_distance_fields(world, stations)?;
         self.buf_routes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("taxi-road-distance-fields"), contents: bytemuck::cast_slice(&packed),
+            label: Some("taxi-road-distance-fields"),
+            contents: bytemuck::cast_slice(&packed),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
         Ok(())
@@ -376,7 +388,10 @@ impl TaxiGpu {
                     binding: 4,
                     resource: intentbuf.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry { binding: 6, resource: self.buf_routes.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_routes.as_entire_binding(),
+                },
             ],
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -400,7 +415,10 @@ impl TaxiGpu {
             return;
         }
         assert!(bodybuf.size() >= (n * 128 * 4) as u64, "taxi body shape");
-        assert!(physics_input.size() >= (n * 92 * 4) as u64, "taxi physics input shape");
+        assert!(
+            physics_input.size() >= (n * 92 * 4) as u64,
+            "taxi physics input shape"
+        );
         assert!(
             packed_wave.size() >= (n * super::perception::WAVE_U32S * 4) as u64,
             "taxi packed sensory shape"
@@ -444,9 +462,13 @@ impl TaxiGpu {
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups((n as u32).div_ceil(64), 1, 1);
         drop(pass);
-        if matches!(self.observation_version, NAVIGATION_OBSERVATION_V4 | NAVIGATION_OBSERVATION_V5) {
+        if matches!(
+            self.observation_version,
+            NAVIGATION_OBSERVATION_V4 | NAVIGATION_OBSERVATION_V5
+        ) {
             let mut route = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("taxi-route-observation"), timestamp_writes: None,
+                label: Some("taxi-route-observation"),
+                timestamp_writes: None,
             });
             route.set_pipeline(&self.route_senses_pipeline);
             route.set_bind_group(0, &group, &[]);
@@ -712,7 +734,10 @@ mod tests {
         queue.submit(Some(encoder.finish()));
         let school_after = read(&school.buf_world, 36);
         let pupils_after = read(&pupils_buf, 3 * 128);
-        assert_eq!(school_after, school_before, "school birth changed shared stocks");
+        assert_eq!(
+            school_after, school_before,
+            "school birth changed shared stocks"
+        );
         for (expected, pupil) in pupils.chunks_exact(128).zip(pupils_after.chunks_exact(128)) {
             assert_eq!(&pupil[..3], &expected[..3]);
             assert_eq!(pupil[29], 1.0);
@@ -721,52 +746,110 @@ mod tests {
         // U-shaped road: the legal detour initially increases Euclidean distance.
         // GPU metric fixture; this is NOT the physical feasibility witness.
         let mut road = crate::world::VoxelWorld::new(0, 15.0);
-        road.size = 7; road.cell_size = 10.0;
+        road.size = 7;
+        road.cell_size = 10.0;
         road.grid = vec![crate::world::VoxelType::Wall; 49];
-        for z in 1..=5 { road.grid[z*7+1] = crate::world::VoxelType::Road; road.grid[z*7+5] = crate::world::VoxelType::Road; }
-        for x in 1..=5 { road.grid[5*7+x] = crate::world::VoxelType::Road; }
-        let stations = [[10.,10.,10000.,10.,20.,0.,0.,0.], [50.,10.,10000.,10.,20.,0.,0.,0.]];
+        for z in 1..=5 {
+            road.grid[z * 7 + 1] = crate::world::VoxelType::Road;
+            road.grid[z * 7 + 5] = crate::world::VoxelType::Road;
+        }
+        for x in 1..=5 {
+            road.grid[5 * 7 + x] = crate::world::VoxelType::Road;
+        }
+        let stations = [
+            [10., 10., 10000., 10., 20., 0., 0., 0.],
+            [50., 10., 10000., 10., 20., 0., 0., 0.],
+        ];
         let mut routed = TaxiGpu::new(&device, &queue, 3, &stations);
         routed.configure_routes(&device, &road, &stations).unwrap();
-        let mut states = vec![0.0f32; 3*128];
-        let mut poses = vec![0.0f32; 3*56];
-        for (b, position) in [[10.,10.], [10.,20.], [20.,10.]].iter().enumerate() {
-            let s=b*128; let o=b*56;
-            states[s+29]=1.; states[s+65]=1.; states[s+66]=50.; states[s+67]=10.;
-            states[s+70]=10.; states[s+71]=10.; states[s+84]=1.;
+        let mut states = vec![0.0f32; 3 * 128];
+        let mut poses = vec![0.0f32; 3 * 56];
+        for (b, position) in [[10., 10.], [10., 20.], [20., 10.]].iter().enumerate() {
+            let s = b * 128;
+            let o = b * 56;
+            states[s + 29] = 1.;
+            states[s + 65] = 1.;
+            states[s + 66] = 50.;
+            states[s + 67] = 10.;
+            states[s + 70] = 10.;
+            states[s + 71] = 10.;
+            states[s + 84] = 1.;
             // Same already-issued passenger and baseline route distance for all
             // three fixtures. Without this memory each body correctly starts its
             // progress baseline at its own current pose, so the comparison proves
             // nothing about movement along the U-shaped route.
-            states[s+31]=1.; states[s+61]=120.; states[s+62]=120.;
-            poses[o+36]=position[0]; poses[o+38]=position[1];
+            states[s + 31] = 1.;
+            states[s + 61] = 120.;
+            states[s + 62] = 120.;
+            poses[o + 36] = position[0];
+            poses[o + 38] = position[1];
         }
-        let states_buffer=buffer(&states); let poses_buffer=buffer(&poses);
-        let no_requests=buffer(&vec![0.0f32; 3*96]);
-        let mut encoder=device.create_command_encoder(&Default::default());
-        routed.encode_post(&device, &mut encoder, &poses_buffer, &states_buffer, &no_requests, 3, 0., 0);
+        let states_buffer = buffer(&states);
+        let poses_buffer = buffer(&poses);
+        let no_requests = buffer(&vec![0.0f32; 3 * 96]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        routed.encode_post(
+            &device,
+            &mut encoder,
+            &poses_buffer,
+            &states_buffer,
+            &no_requests,
+            3,
+            0.,
+            0,
+        );
         queue.submit(Some(encoder.finish()));
-        let evaluated=read(&states_buffer, 3*128);
-        assert!((evaluated[127]-100.0).abs()<1e-4);
-        assert!((evaluated[128+127]-(100.0+100.0/12.0)).abs()<1e-4, "legal detour must improve score");
-        assert!((evaluated[256+127]-100.0).abs()<1e-4,"wall must not receive progress bonus: {}", evaluated[256+127]);
+        let evaluated = read(&states_buffer, 3 * 128);
+        assert!((evaluated[127] - 100.0).abs() < 1e-4);
+        assert!(
+            (evaluated[128 + 127] - (100.0 + 100.0 / 12.0)).abs() < 1e-4,
+            "legal detour must improve score"
+        );
+        assert!(
+            (evaluated[256 + 127] - 100.0).abs() < 1e-4,
+            "wall must not receive progress bonus: {}",
+            evaluated[256 + 127]
+        );
 
         // Cell convention on the left leg (x = 10): z = 15.3 m / 10 m = 1.53 cells ->
         // row 2 by round (110 m remaining), row 1 by floor (120 m). Exact tie
         // 15.0 -> row 2 (half away from zero, world.rs convention).
-        let mut tie_poses = vec![0.0f32; 3*56];
-        for (b, z) in [15.3f32, 14.7, 15.0].iter().enumerate() { tie_poses[b*56+36]=10.0; tie_poses[b*56+38]=*z; }
-        let tie_buffer=buffer(&tie_poses);
-        let tie_states=buffer(&states);
-        let mut encoder=device.create_command_encoder(&Default::default());
-        routed.encode_post(&device, &mut encoder, &tie_buffer, &tie_states, &no_requests, 3, 0., 0);
+        let mut tie_poses = vec![0.0f32; 3 * 56];
+        for (b, z) in [15.3f32, 14.7, 15.0].iter().enumerate() {
+            tie_poses[b * 56 + 36] = 10.0;
+            tie_poses[b * 56 + 38] = *z;
+        }
+        let tie_buffer = buffer(&tie_poses);
+        let tie_states = buffer(&states);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        routed.encode_post(
+            &device,
+            &mut encoder,
+            &tie_buffer,
+            &tie_states,
+            &no_requests,
+            3,
+            0.,
+            0,
+        );
         queue.submit(Some(encoder.finish()));
-        let tie=read(&tie_states, 3*128);
+        let tie = read(&tie_states, 3 * 128);
         // route_length origin(10,10)->(50,10) along the U = 120 m; score = 100 + 100*(1-remaining/120).
         let score = |remaining: f32| 100.0 + 100.0 * (1.0 - remaining / 120.0);
-        assert!((tie[127]-score(110.0)).abs()<1e-4, "z=15.3 rounds to row 2: {}", tie[127]);
-        assert!((tie[128+127]-score(120.0)).abs()<1e-4, "z=14.7 stays in row 1: {}", tie[128+127]);
-        assert!((tie[256+127]-tie[127]).abs()<1e-4, "exact tie 15.0 rounds away from zero like 15.3");
+        assert!(
+            (tie[127] - score(110.0)).abs() < 1e-4,
+            "z=15.3 rounds to row 2: {}",
+            tie[127]
+        );
+        assert!(
+            (tie[128 + 127] - score(120.0)).abs() < 1e-4,
+            "z=14.7 stays in row 1: {}",
+            tie[128 + 127]
+        );
+        assert!(
+            (tie[256 + 127] - tie[127]).abs() < 1e-4,
+            "exact tie 15.0 rounds away from zero like 15.3"
+        );
     }
 
     #[test]
@@ -802,22 +885,29 @@ mod tests {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("navigation-fixture"),
                 contents: bytemuck::cast_slice(data),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
             })
         };
         let read = |source: &wgpu::Buffer, words: usize| -> Vec<u32> {
             let staging = device.create_buffer(&wgpu::BufferDescriptor {
-                label: None, size: (words * 4) as u64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+                label: None,
+                size: (words * 4) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
             });
             let mut encoder = device.create_command_encoder(&Default::default());
             encoder.copy_buffer_to_buffer(source, 0, &staging, 0, (words * 4) as u64);
             queue.submit(Some(encoder.finish()));
             let (tx, rx) = std::sync::mpsc::channel();
-            staging.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+            staging
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
             device.poll(wgpu::Maintain::Wait);
             rx.recv().unwrap().unwrap();
-            let out = bytemuck::cast_slice::<u8, u32>(&staging.slice(..).get_mapped_range()).to_vec();
+            let out =
+                bytemuck::cast_slice::<u8, u32>(&staging.slice(..).get_mapped_range()).to_vec();
             staging.unmap();
             out
         };
@@ -827,18 +917,31 @@ mod tests {
         };
         // Four beings, all at the origin heading +x with lateral +z; three targets
         // that v2 cannot tell apart and one 12 m task the pickup radius cares about.
-        let targets = [[1000.0f32, 100.0], [100.0, 1000.0], [1000.0, -100.0], [12.0, 0.0]];
+        let targets = [
+            [1000.0f32, 100.0],
+            [100.0, 1000.0],
+            [1000.0, -100.0],
+            [12.0, 0.0],
+        ];
         let n = targets.len();
         let mut bodies = vec![0.0f32; n * 128];
         let mut physics = vec![0.0f32; n * 92];
         for (b, target) in targets.iter().enumerate() {
             let s = b * 128;
-            bodies[s + 29] = 1.0; bodies[s + 65] = 1.0; bodies[s + 84] = 1.0;
-            bodies[s + 80] = target[0]; bodies[s + 81] = target[1];
-            bodies[s + 85] = 30.0; bodies[s + 86] = -40.0; // nearest service 50 m away, forward-right
-            bodies[s + 87] = 0.9; bodies[s + 88] = 0.4; bodies[s + 89] = 0.7;
-            bodies[s + 69] = 3.0; bodies[s + 73] = 20.0;
-            physics[b * 92 + 40] = 1.0; physics[b * 92 + 46] = 1.0;
+            bodies[s + 29] = 1.0;
+            bodies[s + 65] = 1.0;
+            bodies[s + 84] = 1.0;
+            bodies[s + 80] = target[0];
+            bodies[s + 81] = target[1];
+            bodies[s + 85] = 30.0;
+            bodies[s + 86] = -40.0; // nearest service 50 m away, forward-right
+            bodies[s + 87] = 0.9;
+            bodies[s + 88] = 0.4;
+            bodies[s + 89] = 0.7;
+            bodies[s + 69] = 3.0;
+            bodies[s + 73] = 20.0;
+            physics[b * 92 + 40] = 1.0;
+            physics[b * 92 + 46] = 1.0;
         }
         let body = buffer(&bodies);
         let input = buffer(&physics);
@@ -853,9 +956,17 @@ mod tests {
         let v2 = run(&taxi);
         for b in 0..3 {
             let w = v2[b * 48 + 44];
-            assert_eq!((byte(w, 2), byte(w, 3).abs()), (127, 127), "v2 saturates being {b}");
+            assert_eq!(
+                (byte(w, 2), byte(w, 3).abs()),
+                (127, 127),
+                "v2 saturates being {b}"
+            );
         }
-        assert_eq!(byte(v2[44], 2), byte(v2[48 + 44], 2), "v2: (1000,100) and (100,1000) collide");
+        assert_eq!(
+            byte(v2[44], 2),
+            byte(v2[48 + 44], 2),
+            "v2: (1000,100) and (100,1000) collide"
+        );
         taxi.set_observation_version(NAVIGATION_OBSERVATION_V3);
         let v3 = run(&taxi);
         let channel = |b: usize, ch: usize| byte(v3[b * 48 + ch / 4], ch % 4);
@@ -864,7 +975,11 @@ mod tests {
             let d = target[0].hypot(target[1]);
             let near = |ch: usize, value: f32, what: &str| {
                 let got = channel(b, ch);
-                assert!((got - expect(value)).abs() <= 1, "being {b} {what}: byte {got} vs {}", expect(value));
+                assert!(
+                    (got - expect(value)).abs() <= 1,
+                    "being {b} {what}: byte {got} vs {}",
+                    expect(value)
+                );
             };
             near(178, target[0] / d, "forward cosine");
             near(179, target[1] / d, "lateral sine");
@@ -877,14 +992,27 @@ mod tests {
             near(190, 0.2, "fare 20/100");
             assert_eq!(channel(b, 177), 127, "onboard unchanged");
         }
-        let v3_dir: Vec<(i32, i32, i32)> = (0..3).map(|b| (channel(b, 178), channel(b, 179), channel(b, 183))).collect();
-        assert!(v3_dir[0] != v3_dir[1] && v3_dir[0] != v3_dir[2] && v3_dir[1] != v3_dir[2], "v3 separates the three far targets: {v3_dir:?}");
-        assert!((channel(3, 183) - expect(12.0 / 112.0)).abs() <= 1, "12 m task keeps ~14 quantisation steps: {}", channel(3, 183));
+        let v3_dir: Vec<(i32, i32, i32)> = (0..3)
+            .map(|b| (channel(b, 178), channel(b, 179), channel(b, 183)))
+            .collect();
+        assert!(
+            v3_dir[0] != v3_dir[1] && v3_dir[0] != v3_dir[2] && v3_dir[1] != v3_dir[2],
+            "v3 separates the three far targets: {v3_dir:?}"
+        );
+        assert!(
+            (channel(3, 183) - expect(12.0 / 112.0)).abs() <= 1,
+            "12 m task keeps ~14 quantisation steps: {}",
+            channel(3, 183)
+        );
         // No task: direction 0, distance 1 (far), validity through 177/180.
-        bodies[65] = 0.0; bodies[90] = 0.0;
+        bodies[65] = 0.0;
+        bodies[90] = 0.0;
         queue.write_buffer(&body, 0, bytemuck::cast_slice(&bodies));
         let idle = run(&taxi);
-        assert_eq!((byte(idle[44], 2), byte(idle[44], 3), byte(idle[45], 3)), (0, 0, 127));
+        assert_eq!(
+            (byte(idle[44], 2), byte(idle[44], 3), byte(idle[45], 3)),
+            (0, 0, 127)
+        );
     }
 
     #[test]
@@ -894,10 +1022,16 @@ mod tests {
         let v4 = crate::organism_channels::channel_manifest(4);
         assert_eq!(v4["schema"], "organism-city-observation-v4");
         for channel in 0..192 {
-            assert_eq!(v3["channels"][channel] != v4["channels"][channel], matches!(channel,178|179|183));
+            assert_eq!(
+                v3["channels"][channel] != v4["channels"][channel],
+                matches!(channel, 178 | 179 | 183)
+            );
         }
-        for channel in [172usize,173,182,191] {
-            assert_eq!(v4["channels"][channel]["producer"], "src/gpu/traffic.wgsl::senses");
+        for channel in [172usize, 173, 182, 191] {
+            assert_eq!(
+                v4["channels"][channel]["producer"],
+                "src/gpu/traffic.wgsl::senses"
+            );
         }
         use super::*;
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -1018,9 +1152,11 @@ mod tests {
             encoder.copy_buffer_to_buffer(source, 0, &staging, 0, (words * 4) as u64);
             queue.submit(Some(encoder.finish()));
             let (tx, rx) = std::sync::mpsc::channel();
-            staging.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-                tx.send(result).unwrap();
-            });
+            staging
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    tx.send(result).unwrap();
+                });
             device.poll(wgpu::Maintain::Wait);
             rx.recv().unwrap().unwrap();
             let out =
@@ -1039,30 +1175,48 @@ mod tests {
             let raw = ((word >> (lane * 8)) & 255) as i32;
             if raw > 127 { raw - 256 } else { raw }
         };
-        let channel = |being: usize, channel: usize| {
-            byte(output[being * 48 + channel / 4], channel % 4)
-        };
+        let channel =
+            |being: usize, channel: usize| byte(output[being * 48 + channel / 4], channel % 4);
         assert_eq!((channel(0, 178), channel(0, 179)), (127, 0));
-        assert_eq!((channel(1, 178), channel(1, 179)), (127, 0), "forward tie wins");
-        assert_eq!((channel(2, 178), channel(2, 179)), (0, 127), "near station point");
-        assert_eq!((channel(3, 178), channel(3, 179), channel(3, 183)), (0, 0, 0));
+        assert_eq!(
+            (channel(1, 178), channel(1, 179)),
+            (127, 0),
+            "forward tie wins"
+        );
+        assert_eq!(
+            (channel(2, 178), channel(2, 179)),
+            (0, 127),
+            "near station point"
+        );
+        assert_eq!(
+            (channel(3, 178), channel(3, 179), channel(3, 183)),
+            (0, 0, 0)
+        );
         assert_eq!(channel(0, 183), 48);
         assert_eq!(channel(1, 183), 29);
         assert_eq!(channel(2, 183), 4);
         physics[36] = 5000.0;
         queue.write_buffer(&input, 0, bytemuck::cast_slice(&physics));
         let offroad = run();
-        let offroad_channel = |channel: usize| {
-            byte(offroad[channel / 4], channel % 4)
-        };
-        assert_eq!((offroad_channel(178), offroad_channel(179), offroad_channel(183)), (0, 0, 127));
+        let offroad_channel = |channel: usize| byte(offroad[channel / 4], channel % 4);
+        assert_eq!(
+            (
+                offroad_channel(178),
+                offroad_channel(179),
+                offroad_channel(183)
+            ),
+            (0, 0, 127)
+        );
         bodies[65] = 0.0;
         physics[36] = 0.0;
         queue.write_buffer(&body, 0, bytemuck::cast_slice(&bodies));
         queue.write_buffer(&input, 0, bytemuck::cast_slice(&physics));
         let idle = run();
         let idle_channel = |channel: usize| byte(idle[channel / 4], channel % 4);
-        assert_eq!((idle_channel(178), idle_channel(179), idle_channel(183)), (0, 0, 127));
+        assert_eq!(
+            (idle_channel(178), idle_channel(179), idle_channel(183)),
+            (0, 0, 127)
+        );
         assert_eq!(
             read(&body, bodies.len()),
             bytemuck::cast_slice::<f32, u32>(&bodies).to_vec(),
@@ -1076,46 +1230,98 @@ mod tests {
 
         // Same road field and physical poses, with preview as the only change.
         for b in 0..4 {
-            bodies[b*128+65]=1.0;
-            physics[b*92+36]=18.0;physics[b*92+38]=0.0;
-            physics[b*92+40]=1.0;physics[b*92+42]=0.0;
-            physics[b*92+44]=0.0;physics[b*92+46]=1.0;
+            bodies[b * 128 + 65] = 1.0;
+            physics[b * 92 + 36] = 18.0;
+            physics[b * 92 + 38] = 0.0;
+            physics[b * 92 + 40] = 1.0;
+            physics[b * 92 + 42] = 0.0;
+            physics[b * 92 + 44] = 0.0;
+            physics[b * 92 + 46] = 1.0;
         }
-        physics[92+40]=0.0;physics[92+42]=1.0;
-        physics[92+44]=-1.0;physics[92+46]=0.0;
-        physics[2*92+36]=30.0;physics[2*92+38]=27.0;
-        physics[3*92+36]=5000.0;
-        queue.write_buffer(&body,0,bytemuck::cast_slice(&bodies));
-        queue.write_buffer(&input,0,bytemuck::cast_slice(&physics));
+        physics[92 + 40] = 0.0;
+        physics[92 + 42] = 1.0;
+        physics[92 + 44] = -1.0;
+        physics[92 + 46] = 0.0;
+        physics[2 * 92 + 36] = 30.0;
+        physics[2 * 92 + 38] = 27.0;
+        physics[3 * 92 + 36] = 5000.0;
+        queue.write_buffer(&body, 0, bytemuck::cast_slice(&bodies));
+        queue.write_buffer(&input, 0, bytemuck::cast_slice(&physics));
         let evaluate = |taxi: &TaxiGpu| {
-            let mut encoder=device.create_command_encoder(&Default::default());
-            taxi.encode_senses(&device,&mut encoder,&body,&input,&wave,4);
-            queue.submit(Some(encoder.finish()));read(&wave,4*48)
+            let mut encoder = device.create_command_encoder(&Default::default());
+            taxi.encode_senses(&device, &mut encoder, &body, &input, &wave, 4);
+            queue.submit(Some(encoder.finish()));
+            read(&wave, 4 * 48)
         };
-        let local=evaluate(&taxi);
-        let preview_version=if std::env::var("UNIVERSE_CONTRACT_FAULT").as_deref()==Ok("no-navigation-preview") {
-            NAVIGATION_OBSERVATION_V4
-        } else {NAVIGATION_OBSERVATION_V5};
+        let local = evaluate(&taxi);
+        let preview_version =
+            if std::env::var("UNIVERSE_CONTRACT_FAULT").as_deref() == Ok("no-navigation-preview") {
+                NAVIGATION_OBSERVATION_V4
+            } else {
+                NAVIGATION_OBSERVATION_V5
+            };
         taxi.set_observation_version(preview_version);
-        let preview=evaluate(&taxi);
-        let get=|row:&[u32],b:usize,ch:usize|byte(row[b*48+ch/4],ch%4);
-        assert_eq!((get(&local,0,178),get(&local,0,179)),(127,0));
-        assert_eq!((get(&preview,0,178),get(&preview,0,179)),(114,57),
-            "preview must expose the turn before reaching the junction");
-        assert_eq!((get(&preview,1,178),get(&preview,1,179)),(57,-114),"preview bearing uses body frame");
-        assert_eq!((get(&preview,2,178),get(&preview,2,179)),(0,127),"near-station precision retained");
-        assert_eq!((get(&preview,3,178),get(&preview,3,179),get(&preview,3,183)),(0,0,127));
-        for b in 0..4 {for ch in 0..192 {if ch!=178 && ch!=179 {
-            assert_eq!(get(&local,b,ch),get(&preview,b,ch),"preview modified unrelated channel {ch}");
-        }}}
-        physics[0]=20.0;
-        queue.write_buffer(&input,0,bytemuck::cast_slice(&physics));
-        let fast=evaluate(&taxi);
-        assert_eq!((get(&fast,0,178),get(&fast,0,179)),(57,114),"faster approach needs longer preview");
-        assert_eq!(read(&body,bodies.len()),bytemuck::cast_slice::<f32,u32>(&bodies).to_vec());
-        assert_eq!(read(&input,physics.len()),bytemuck::cast_slice::<f32,u32>(&physics).to_vec(),"preview cannot write controls or pose");
-        let v5=crate::organism_channels::channel_manifest(5);
-        assert_eq!(v5["schema"],"organism-city-observation-v5");
-        for ch in 0..192 {assert_eq!(v4["channels"][ch]!=v5["channels"][ch],matches!(ch,178|179));}
+        let preview = evaluate(&taxi);
+        let get = |row: &[u32], b: usize, ch: usize| byte(row[b * 48 + ch / 4], ch % 4);
+        assert_eq!((get(&local, 0, 178), get(&local, 0, 179)), (127, 0));
+        assert_eq!(
+            (get(&preview, 0, 178), get(&preview, 0, 179)),
+            (114, 57),
+            "preview must expose the turn before reaching the junction"
+        );
+        assert_eq!(
+            (get(&preview, 1, 178), get(&preview, 1, 179)),
+            (57, -114),
+            "preview bearing uses body frame"
+        );
+        assert_eq!(
+            (get(&preview, 2, 178), get(&preview, 2, 179)),
+            (0, 127),
+            "near-station precision retained"
+        );
+        assert_eq!(
+            (
+                get(&preview, 3, 178),
+                get(&preview, 3, 179),
+                get(&preview, 3, 183)
+            ),
+            (0, 0, 127)
+        );
+        for b in 0..4 {
+            for ch in 0..192 {
+                if ch != 178 && ch != 179 {
+                    assert_eq!(
+                        get(&local, b, ch),
+                        get(&preview, b, ch),
+                        "preview modified unrelated channel {ch}"
+                    );
+                }
+            }
+        }
+        physics[0] = 20.0;
+        queue.write_buffer(&input, 0, bytemuck::cast_slice(&physics));
+        let fast = evaluate(&taxi);
+        assert_eq!(
+            (get(&fast, 0, 178), get(&fast, 0, 179)),
+            (57, 114),
+            "faster approach needs longer preview"
+        );
+        assert_eq!(
+            read(&body, bodies.len()),
+            bytemuck::cast_slice::<f32, u32>(&bodies).to_vec()
+        );
+        assert_eq!(
+            read(&input, physics.len()),
+            bytemuck::cast_slice::<f32, u32>(&physics).to_vec(),
+            "preview cannot write controls or pose"
+        );
+        let v5 = crate::organism_channels::channel_manifest(5);
+        assert_eq!(v5["schema"], "organism-city-observation-v5");
+        for ch in 0..192 {
+            assert_eq!(
+                v4["channels"][ch] != v5["channels"][ch],
+                matches!(ch, 178 | 179)
+            );
+        }
     }
 }

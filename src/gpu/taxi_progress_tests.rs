@@ -2,7 +2,7 @@
 //! (docs/SCHOOL-INCENTIVES-20260922.md). The city, the stations and the road
 //! distance fields are the production ones; poses are written by hand and only the
 //! taxi post kernel runs. No CPU oracle of the kernel.
-use crate::gpu::taxi::{TaxiGpu, TaxiMode, TAXI_STATION_STRIDE_FLOATS, TAXI_WORLD_HEADER_FLOATS};
+use crate::gpu::taxi::{TAXI_STATION_STRIDE_FLOATS, TAXI_WORLD_HEADER_FLOATS, TaxiGpu, TaxiMode};
 use crate::organism_city::build_city;
 use crate::world::{VoxelType, VoxelWorld};
 
@@ -44,14 +44,21 @@ fn taxi_mode_controls_passenger_issuance() {
 impl Fixture {
     fn new() -> Self {
         let _quiet = crate::world::silence_map_diag();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN, ..Default::default() });
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
         .expect("real Vulkan GPU required");
-        assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu, "CPU fallback forbidden");
+        assert_ne!(
+            adapter.get_info().device_type,
+            wgpu::DeviceType::Cpu,
+            "CPU fallback forbidden"
+        );
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("taxi-progress-fixture"),
@@ -66,13 +73,16 @@ impl Fixture {
         let stations = build_city(&mut world).stations;
         crate::organism_scenario::validate_city(&world, &stations).expect("valid city");
         let mut taxi = TaxiGpu::new(&device, &queue, N, &stations);
-        taxi.configure_routes(&device, &world, &stations).expect("road routes");
+        taxi.configure_routes(&device, &world, &stations)
+            .expect("road routes");
         taxi.reset_world(&queue);
         let make = |floats: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("taxi-progress-fixture"),
                 size: (floats * 4) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
         };
@@ -121,19 +131,33 @@ impl Fixture {
         self.bodies[s + 70] = origin[0];
         self.bodies[s + 71] = origin[1];
         self.bodies[s + 72] = id;
-        self.bodies[s + 73] = 10.0 + 0.02 * (origin[0] - destination[0]).hypot(origin[1] - destination[1]);
+        self.bodies[s + 73] =
+            10.0 + 0.02 * (origin[0] - destination[0]).hypot(origin[1] - destination[1]);
         self.bodies[s + 84] = 1.0;
         self.bodies[s + 90] = 1.0;
     }
 
     /// One post-kernel step; returns the body records and the world buffer.
     fn step(&mut self) -> (Vec<f32>, Vec<f32>) {
-        self.queue.write_buffer(&self.body, 0, bytemuck::cast_slice(&self.bodies));
-        self.queue.write_buffer(&self.physics, 0, bytemuck::cast_slice(&self.poses));
-        self.queue.write_buffer(&self.intent, 0, bytemuck::cast_slice(&self.intents));
+        self.queue
+            .write_buffer(&self.body, 0, bytemuck::cast_slice(&self.bodies));
+        self.queue
+            .write_buffer(&self.physics, 0, bytemuck::cast_slice(&self.poses));
+        self.queue
+            .write_buffer(&self.intent, 0, bytemuck::cast_slice(&self.intents));
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.taxi.encode_post(&self.device, &mut encoder, &self.physics, &self.body, &self.intent, N, 1.0 / 64.0, self.tick);
-        let world_floats = TAXI_WORLD_HEADER_FLOATS + self.stations.len() * TAXI_STATION_STRIDE_FLOATS;
+        self.taxi.encode_post(
+            &self.device,
+            &mut encoder,
+            &self.physics,
+            &self.body,
+            &self.intent,
+            N,
+            1.0 / 64.0,
+            self.tick,
+        );
+        let world_floats =
+            TAXI_WORLD_HEADER_FLOATS + self.stations.len() * TAXI_STATION_STRIDE_FLOATS;
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("taxi-progress-staging"),
             size: ((N * BODY + world_floats) * 4) as u64,
@@ -141,7 +165,13 @@ impl Fixture {
             mapped_at_creation: false,
         });
         encoder.copy_buffer_to_buffer(&self.body, 0, &staging, 0, (N * BODY * 4) as u64);
-        encoder.copy_buffer_to_buffer(&self.taxi.buf_world, 0, &staging, (N * BODY * 4) as u64, (world_floats * 4) as u64);
+        encoder.copy_buffer_to_buffer(
+            &self.taxi.buf_world,
+            0,
+            &staging,
+            (N * BODY * 4) as u64,
+            (world_floats * 4) as u64,
+        );
         self.queue.submit(Some(encoder.finish()));
         let slice = staging.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -164,7 +194,11 @@ impl Fixture {
         let size = self.world.size as i32;
         let col = (x / cell).round() as i32;
         let row = (z / cell).round() as i32;
-        col >= 0 && row >= 0 && col < size && row < size && self.world.grid[(row * size + col) as usize] == VoxelType::Road
+        col >= 0
+            && row >= 0
+            && col < size
+            && row < size
+            && self.world.grid[(row * size + col) as usize] == VoxelType::Road
     }
 
     /// A straight road segment of `length_m` leaving the station along one axis.
@@ -206,7 +240,10 @@ fn service_bench_uses_canonical_pickup_and_dropoff_predicates_once() {
     let (body, _) = f.step();
     assert_eq!(body[65], 1.0, "valid pickup accepted");
     assert_eq!(body[72], 101.0);
-    assert_eq!(&body[80..82], &[destination[0] - origin[0], destination[1] - origin[1]]);
+    assert_eq!(
+        &body[80..82],
+        &[destination[0] - origin[0], destination[1] - origin[1]]
+    );
     assert_eq!(body[BODY + 65], 0.0);
     assert_eq!(body[BODY + 69], 1.0, "moving request refusal");
     assert_eq!(body[2 * BODY + 65], 0.0);
@@ -216,7 +253,10 @@ fn service_bench_uses_canonical_pickup_and_dropoff_predicates_once() {
     // Holding pickup cannot issue a second passenger or alter money/delivery state.
     let money_before = body[64];
     let (body, _) = f.step();
-    assert_eq!((body[65], body[72], body[64], body[68]), (1.0, 101.0, money_before, 0.0));
+    assert_eq!(
+        (body[65], body[72], body[64], body[68]),
+        (1.0, 101.0, money_before, 0.0)
+    );
 
     f.request(0, 6, false);
     f.request(0, 7, true);
@@ -238,7 +278,9 @@ fn service_bench_uses_canonical_pickup_and_dropoff_predicates_once() {
 }
 
 fn fitness_of(body: &[f32]) -> f64 {
-    let mut state = crate::gpu::organism::OrganismState { values: [0.0; crate::gpu::organism::STATE_STRIDE_F32] };
+    let mut state = crate::gpu::organism::OrganismState {
+        values: [0.0; crate::gpu::organism::STATE_STRIDE_F32],
+    };
     state.values.copy_from_slice(body);
     crate::organism_scenario::fitness(&state)
 }
@@ -255,7 +297,12 @@ fn approach_pays_for_closed_road_distance_only_once() {
     // An off-road cell beside the street (streets are 15 m wide, 192 m apart).
     let grass = [30.0f32, -30.0, 45.0, -45.0]
         .iter()
-        .flat_map(|side| [[far[0] + dir[1] * side, far[1] + dir[0] * side], [mid[0] + dir[1] * side, mid[1] + dir[0] * side]])
+        .flat_map(|side| {
+            [
+                [far[0] + dir[1] * side, far[1] + dir[0] * side],
+                [mid[0] + dir[1] * side, mid[1] + dir[0] * side],
+            ]
+        })
         .find(|p| !f.is_road(p[0], p[1]))
         .expect("an off-road cell beside the street");
     f.place(0, far);
@@ -267,18 +314,36 @@ fn approach_pays_for_closed_road_distance_only_once() {
     assert!(id > 0.0, "station 0 issues a passenger at tick 0");
     for b in [0usize, 1, 2] {
         assert_eq!(body[b * BODY + 31], id * 2.0, "waiting key for being {b}");
-        assert_eq!(body[b * BODY + 127], 0.0, "no credit at the first sight, being {b}");
+        assert_eq!(
+            body[b * BODY + 127],
+            0.0,
+            "no credit at the first sight, being {b}"
+        );
     }
     // Road distances are BFS sums of 3 m cells, so the pose-to-cell rounding is ±1 cell.
-    assert!((body[62] - 36.0).abs() <= 3.0 + 1e-3, "initial route distance {}", body[62]);
-    assert!(body[2 * BODY + 62] >= 0.0 && body[2 * BODY + 62] < 8.0, "near start {}", body[2 * BODY + 62]);
+    assert!(
+        (body[62] - 36.0).abs() <= 3.0 + 1e-3,
+        "initial route distance {}",
+        body[62]
+    );
+    assert!(
+        body[2 * BODY + 62] >= 0.0 && body[2 * BODY + 62] < 8.0,
+        "near start {}",
+        body[2 * BODY + 62]
+    );
     assert_eq!(body[3 * BODY + 62], -1.0, "unreachable start records -1");
     let initial = body[62];
 
     f.place(0, mid);
     let (body, _) = f.step();
     let expected = 100.0 * (1.0 - body[61] / initial);
-    assert!((body[127] - expected).abs() < 1e-3 && (40.0..=60.0).contains(&body[127]), "halfway pays ~50: {} (best {} of {})", body[127], body[61], initial);
+    assert!(
+        (body[127] - expected).abs() < 1e-3 && (40.0..=60.0).contains(&body[127]),
+        "halfway pays ~50: {} (best {} of {})",
+        body[127],
+        body[61],
+        initial
+    );
     assert_eq!(body[BODY + 127], 0.0, "idle being earns nothing");
     assert_eq!(body[2 * BODY + 127], 0.0, "born within 8 m earns nothing");
     let halfway = body[127];
@@ -287,13 +352,21 @@ fn approach_pays_for_closed_road_distance_only_once() {
     // Driving back does not lose the credit, and does not add any either.
     f.place(0, far);
     let (body, _) = f.step();
-    assert_eq!(body[127], halfway, "oscillation keeps the credit: {}", body[127]);
+    assert_eq!(
+        body[127], halfway,
+        "oscillation keeps the credit: {}",
+        body[127]
+    );
     assert_eq!(body[61], best, "best remaining is kept: {}", body[61]);
 
     // The unreachable start never pays for this key even once back on the road.
     f.place(3, mid);
     let (body, _) = f.step();
-    assert_eq!(body[3 * BODY + 127], 0.0, "unreachable start earns nothing for this key");
+    assert_eq!(
+        body[3 * BODY + 127],
+        0.0,
+        "unreachable start earns nothing for this key"
+    );
     assert_eq!(body[3 * BODY + 62], -1.0);
 }
 
@@ -310,14 +383,21 @@ fn delivery_outranks_approach_outranks_idle() {
     }
     let (_, world) = f.step();
     let destination_index = world[TAXI_WORLD_HEADER_FLOATS + 12] as usize;
-    let destination = [f.stations[destination_index][0], f.stations[destination_index][1]];
+    let destination = [
+        f.stations[destination_index][0],
+        f.stations[destination_index][1],
+    ];
     assert_ne!(destination_index, 0);
 
     f.place(0, mid);
     let (body, _) = f.step();
     let approach_fitness = fitness_of(&body[..BODY]);
     let idle_fitness = fitness_of(&body[BODY..2 * BODY]);
-    assert!((40.0..=60.0).contains(&body[127]), "halfway pays ~50: {}", body[127]);
+    assert!(
+        (40.0..=60.0).contains(&body[127]),
+        "halfway pays ~50: {}",
+        body[127]
+    );
     let approach_credit = body[127];
 
     // Pickup: at the station, stationary, pickup requested.
@@ -327,23 +407,44 @@ fn delivery_outranks_approach_outranks_idle() {
     f.request(0, 6, false);
     assert_eq!(body[65], 1.0, "onboard after pickup");
     assert_eq!(body[31], body[72] * 2.0 + 1.0, "carrying key");
-    assert!((body[127] - 100.0).abs() < 1e-3, "carrying pays the phase bonus only: {}", body[127]);
+    assert!(
+        (body[127] - 100.0).abs() < 1e-3,
+        "carrying pays the phase bonus only: {}",
+        body[127]
+    );
     assert!(body[62] > 8.0, "route to the destination {}", body[62]);
     let carrying_fitness = fitness_of(&body[..BODY]);
 
     // Arrive: remaining 0 pays the full approach; then drop off.
     f.place(0, destination);
     let (body, _) = f.step();
-    assert!((body[127] - 200.0).abs() < 1e-3, "at the destination: {}", body[127]);
+    assert!(
+        (body[127] - 200.0).abs() < 1e-3,
+        "at the destination: {}",
+        body[127]
+    );
     f.request(0, 7, true);
     let (body, _) = f.step();
     assert_eq!(body[68], 1.0, "delivered");
     assert_eq!(body[65], 0.0);
     let delivered_fitness = fitness_of(&body[..BODY]);
-    assert!(body[127] < 100.0, "no carrying bonus after the drop-off: {}", body[127]);
+    assert!(
+        body[127] < 100.0,
+        "no carrying bonus after the drop-off: {}",
+        body[127]
+    );
 
-    assert!(delivered_fitness > carrying_fitness, "{delivered_fitness} vs {carrying_fitness}");
-    assert!(carrying_fitness > approach_fitness, "{carrying_fitness} vs {approach_fitness}");
-    assert!(approach_fitness > idle_fitness, "{approach_fitness} vs {idle_fitness}");
+    assert!(
+        delivered_fitness > carrying_fitness,
+        "{delivered_fitness} vs {carrying_fitness}"
+    );
+    assert!(
+        carrying_fitness > approach_fitness,
+        "{carrying_fitness} vs {approach_fitness}"
+    );
+    assert!(
+        approach_fitness > idle_fitness,
+        "{approach_fitness} vs {idle_fitness}"
+    );
     assert!((approach_fitness - idle_fitness - approach_credit as f64).abs() < 1e-3);
 }

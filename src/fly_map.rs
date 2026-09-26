@@ -38,8 +38,8 @@ use crate::config::iara::vision::RETINA_TOTAL;
 #[path = "fly_map_selection.rs"]
 mod selection;
 pub use selection::{
-    apply_reflex_readout, birth_block, bound_channels, layout, mask_density, mutate_block,
-    pack_selection, random_block, set_layout, FlyLayout, FlySelection,
+    FlyLayout, FlySelection, apply_reflex_readout, birth_block, bound_channels, layout,
+    mask_density, mutate_block, pack_selection, random_block, set_layout,
 };
 
 // The v2 trailing blocks (presynaptic CSR, pixel binding, no-refractory bitmap) and the
@@ -48,9 +48,9 @@ pub use selection::{
 #[path = "fly_map_eye.rs"]
 mod eye;
 pub use eye::{
-    apply_reflex_host_override, eye_drive, readout_reflex_requires_the_block,
-    reflex_throttle_is_none, EyeFrame, PresynapticCsr, ReflexAdaptation, FLAG_NO_REFRACTORY,
-    FLAG_PIXEL_BINDING, FLAG_PRESYNAPTIC_CSR, FLAG_REFLEX_READOUT,
+    EyeFrame, FLAG_NO_REFRACTORY, FLAG_PIXEL_BINDING, FLAG_PRESYNAPTIC_CSR, FLAG_REFLEX_READOUT,
+    PresynapticCsr, ReflexAdaptation, apply_reflex_host_override, eye_drive,
+    readout_reflex_requires_the_block, reflex_throttle_is_none,
 };
 
 // The v2 event-driven LIF reference. Kept separate from the rate model so the CPU

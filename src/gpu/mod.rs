@@ -77,8 +77,8 @@ pub mod retina;
 pub mod retina_encoding;
 pub mod retina_resource;
 pub use retina::RetinaGpu;
-pub use retina_encoding::{legacy_encoding, Pixel, Pose, BEING_MATERIAL};
-pub use retina_resource::{world_signature, RetinaGpuRes};
+pub use retina_encoding::{BEING_MATERIAL, Pixel, Pose, legacy_encoding};
+pub use retina_resource::{RetinaGpuRes, world_signature};
 
 /// Column count in one binocular retinal row.
 pub const COLS: usize = crate::config::iara::vision::RETINA_COLS;
@@ -119,8 +119,8 @@ pub mod taxi_routes;
 pub mod school;
 
 #[cfg(test)]
-mod school_tests;
-#[cfg(test)]
 mod organism_feedback_tests;
+#[cfg(test)]
+mod school_tests;
 #[cfg(test)]
 mod taxi_progress_tests;

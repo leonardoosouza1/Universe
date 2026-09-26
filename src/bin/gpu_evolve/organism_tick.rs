@@ -95,7 +95,11 @@ impl GpuCtx {
             .ok_or("missing resident action")?;
         let taxi = self.taxi.as_ref().ok_or("missing resident taxi")?;
         if first_resident_tick {
-            if let Some(school) = self.school.as_ref().filter(|s| s.prepared_start || s.cross_city) {
+            if let Some(school) = self
+                .school
+                .as_ref()
+                .filter(|s| s.prepared_start || s.cross_city)
+            {
                 school.initialize(
                     &self.device,
                     &mut enc,
@@ -278,7 +282,11 @@ impl GpuCtx {
             FLAG_ALLOW_LOW_SPEED_BRAKE | FLAG_EXCLUSIVE_PEDALS
         };
         let flags = pedal_flags
-            | if crate::statics::organism_brake_priority() { FLAG_BRAKE_PRIORITY } else { 0 }
+            | if crate::statics::organism_brake_priority() {
+                FLAG_BRAKE_PRIORITY
+            } else {
+                0
+            }
             | if motor_head_linear() || self.taxi_witness.is_some() {
                 FLAG_LINEAR_HEAD
             } else {

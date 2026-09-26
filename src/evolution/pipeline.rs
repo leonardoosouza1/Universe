@@ -1,12 +1,12 @@
+use crate::SimulationEntity;
 use crate::config::UniverseConfig;
 use crate::environment::EnvironmentalState;
 use crate::simulation::Racer;
 use crate::world::{VoxelWorld, VoxelWorldResource};
-use crate::SimulationEntity;
 use bevy::prelude::*;
 use iara_genesis::codec::semantic::BehaviorFingerprint;
 
-use super::dna_genesis::{apply_catastrophic_scars, decay_scars, EliteDna};
+use super::dna_genesis::{EliteDna, apply_catastrophic_scars, decay_scars};
 
 // Fitness-sharing niching threshold: parents/elites with Hamming distance
 // > NICHE_DISTANCE on their 64-bit BehaviorFingerprint are considered
@@ -836,13 +836,7 @@ pub(super) fn evolution_pipeline(
                 .iter()
                 .map(|(_, r, _, _)| calc_fitness(r, track_w, &lab))
                 .collect();
-            let median = |v: &[f32]| -> f32 {
-                if v.is_empty() {
-                    0.0
-                } else {
-                    v[v.len() / 2]
-                }
-            };
+            let median = |v: &[f32]| -> f32 { if v.is_empty() { 0.0 } else { v[v.len() / 2] } };
             let p90 = |v: &[f32]| -> f32 {
                 if v.is_empty() {
                     0.0
@@ -980,13 +974,7 @@ pub(super) fn evolution_pipeline(
                     agg_fit_sum += f;
                 }
             }
-            let safe = |s: f32, n: usize| -> f32 {
-                if n == 0 {
-                    0.0
-                } else {
-                    s / n as f32
-                }
-            };
+            let safe = |s: f32, n: usize| -> f32 { if n == 0 { 0.0 } else { s / n as f32 } };
             let _ = writeln!(
                 file,
                 "Niche — DEF n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0} | AGG n={} wall_mean={:.2}s speed_mean={:.1} fit_mean={:.0}",
@@ -1287,7 +1275,7 @@ pub(super) fn evolution_pipeline(
             if should_crown {
                 race.champion_distance = this_gen_best_dist; // Update the champion threshold
                 race.gens_since_crown = 0; // Reset the deadlock counter
-                                           // Stores the champion's path to visualize in the next generation.
+                // Stores the champion's path to visualize in the next generation.
                 race.champion_path = best.path.clone();
                 race.champion_net_dist = this_gen_best_dist;
                 let weights = best.engine.instinct_layer.weights.clone();
@@ -1562,18 +1550,18 @@ pub(super) fn evolution_pipeline(
         // Floor: never narrower than base_width (the user-specified width).
         let base_width = next_track.track_width;
         let full_width = base_width + 4.0; // match main.rs convention
-                                           // NARROWING BY THE POPULATION, not by the champion.
-                                           //
-                                           // It was `champion_laps * 0.5`, with `champion_laps = champion_distance / lap_distance`.
-                                           // Same flaw as the environment curriculum, in a second mechanism: one car that did
-                                           // 1.93 laps narrowed 0.96 m for all 60. Measured before this fix: the track went from
-                                           // 18.0 to 17.1 m between gen 1 and 2, and the lap-completing fraction fell from 39%
-                                           // to 7%.
-                                           //
-                                           // Now the target comes from the FRACTION of the population that closes a lap, with the
-                                           // same dead zone as the environment curriculum (nothing below FRACAO_PARA_SUBIR), and
-                                           // the narrowing moves at most 0.25 m per generation — in BOTH directions, so it can
-                                           // widen back when the population cannot sustain it.
+        // NARROWING BY THE POPULATION, not by the champion.
+        //
+        // It was `champion_laps * 0.5`, with `champion_laps = champion_distance / lap_distance`.
+        // Same flaw as the environment curriculum, in a second mechanism: one car that did
+        // 1.93 laps narrowed 0.96 m for all 60. Measured before this fix: the track went from
+        // 18.0 to 17.1 m between gen 1 and 2, and the lap-completing fraction fell from 39%
+        // to 7%.
+        //
+        // Now the target comes from the FRACTION of the population that closes a lap, with the
+        // same dead zone as the environment curriculum (nothing below FRACAO_PARA_SUBIR), and
+        // the narrowing moves at most 0.25 m per generation — in BOTH directions, so it can
+        // widen back when the population cannot sustain it.
         let alvo = 4.0 * ((race.frac_completou_volta - FRACAO_PARA_SUBIR) / 0.50).clamp(0.0, 1.0);
         let passo = 0.25;
         race.estreitamento += (alvo - race.estreitamento).clamp(-passo, passo);
@@ -1761,7 +1749,7 @@ pub(super) fn evolution_pipeline(
 
 #[cfg(test)]
 mod tests {
-    use super::{bonus_de_volta, decide_next_env_level, limiar_de_nicho, NICHE_DISTANCE};
+    use super::{NICHE_DISTANCE, bonus_de_volta, decide_next_env_level, limiar_de_nicho};
 
     /// The fixed threshold of 8 erases the diversity we MEASURED to exist.
     ///
@@ -1929,7 +1917,7 @@ mod tests {
 
 #[cfg(test)]
 mod testes_curriculo_populacao {
-    use super::{decide_next_env_level_pop, FRACAO_PARA_DESCER, FRACAO_PARA_SUBIR};
+    use super::{FRACAO_PARA_DESCER, FRACAO_PARA_SUBIR, decide_next_env_level_pop};
 
     /// The real case that broke the training: one lucky car did 1.93 laps and dragged all 60
     /// to level 3, where grip drops to 0.33 and the required braking distance (130 m) exceeds

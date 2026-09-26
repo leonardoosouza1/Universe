@@ -6,3 +6,8 @@ race_reports.md
 
 # Derived data: semantic index is rebuilt locally (tools/semantic_index.py --build)
 /.semantic-index
+
+# Session and tool leftovers (never source)
+__pycache__/
+/artifacts
+/.claude/worktrees/

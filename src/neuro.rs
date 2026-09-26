@@ -62,8 +62,8 @@
 //! ./target/release/universe-lab --spec lab_specs/alocacao.json --gens 30
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The brain pathways that can be switched off independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

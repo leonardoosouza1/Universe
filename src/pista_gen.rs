@@ -244,7 +244,7 @@ pub fn gerar(
         }
     }
     let _ = melhor; // a mais próxima NÃO é devolvida: entregar quase-difícil como difícil
-                    // é exatamente o tipo de mentira silenciosa que este projeto evita
+    // é exatamente o tipo de mentira silenciosa que este projeto evita
     None
 }
 

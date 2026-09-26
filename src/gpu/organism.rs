@@ -381,7 +381,10 @@ pub(crate) fn validate_state(state: &OrganismState) -> Result<(), &'static str> 
     if v[28] != SCHEMA_VERSION as f32 || !(v[29] == 0.0 || v[29] == 1.0) {
         return Err("organism-taxi-v1: state schema or alive flag invalid");
     }
-    if v[30] as u32 & !(CONFIG_DISABLE_OLD_THERMAL | CONFIG_STATIC_REST) != 0 || v[30] < 0.0 || v[30].fract() != 0.0 {
+    if v[30] as u32 & !(CONFIG_DISABLE_OLD_THERMAL | CONFIG_STATIC_REST) != 0
+        || v[30] < 0.0
+        || v[30].fract() != 0.0
+    {
         return Err("organism-taxi-v1: state config flags invalid");
     }
     for &index in &[S_ENERGY_J, S_WATER_KG, S_MATERIAL_KG] {

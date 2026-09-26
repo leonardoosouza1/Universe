@@ -258,8 +258,8 @@ pub fn read_all(path: &str) -> std::io::Result<(Vec<f32>, Vec<[f32; 3]>, WaveCon
 #[cfg(test)]
 mod tests {
     use super::{
-        pack_wave_u32, read_all, write_header, write_row, WaveConfig, MAGIC, WAVE_CHANNELS,
-        WAVE_U32S,
+        MAGIC, WAVE_CHANNELS, WAVE_U32S, WaveConfig, pack_wave_u32, read_all, write_header,
+        write_row,
     };
     use std::io::Write as _;
 

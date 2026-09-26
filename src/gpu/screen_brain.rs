@@ -60,7 +60,7 @@ use crate::engine::SovereignEngine;
 use crate::gpu::brain::BrainGpu;
 use crate::gpu::evolution::Genome;
 use crate::gpu::slow_brain::SlowBrainGpu;
-use crate::gpu::wave_record::{pack_wave_u32, WAVE_U32S};
+use crate::gpu::wave_record::{WAVE_U32S, pack_wave_u32};
 
 /// Length of `Genome::gates_w` when the M4 conductor block is present on disk (4
 /// gates × (3 slow-brain outputs + bias) = 16 — see `Genome::gates_w`'s own doc).

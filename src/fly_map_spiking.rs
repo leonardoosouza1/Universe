@@ -575,7 +575,7 @@ fn hash_uniform(neuron: u32, being: u32, step: u32, seed: u64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fly_map::{pack_selection, FlyLayout};
+    use crate::fly_map::{FlyLayout, pack_selection};
 
     #[test]
     fn poisson_probability_is_exact_and_bounded() {

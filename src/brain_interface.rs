@@ -84,11 +84,13 @@ mod tests {
         };
         assert_eq!(command.as_array(), [0.25, -0.5, 1.0]);
         assert!(command.is_finite());
-        assert!(!MotorCommand {
-            steer: f32::NAN,
-            ..command
-        }
-        .is_finite());
+        assert!(
+            !MotorCommand {
+                steer: f32::NAN,
+                ..command
+            }
+            .is_finite()
+        );
     }
 
     #[test]

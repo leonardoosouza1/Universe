@@ -2,7 +2,7 @@
 //! Sources are embedded from production shaders so formula excerpts retain provenance.
 //! Formula excerpts containing local variables are deliberately not presented as a
 //! complete physical conversion: inspect the linked producer for its definitions.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 const SPATIAL: &str = include_str!("gpu/perception.wgsl");
 const TEMPORAL: &str = include_str!("gpu/perception_temporal.wgsl");
 const MOTION: &str = include_str!("gpu/perception_motion.wgsl");
@@ -74,15 +74,29 @@ pub fn channel_manifest(navigation_observation: u32) -> Value {
             _ => crate::perception::channels::name_for(ch).to_string(),
         };
         let normalization = match ch {
-            0..=15|128..=159 => "max pool of legacy_encoding(material,distance); spatial retina bins; perif_real changes HD angular coverage",
-            16..=19 => "0 if no wall; otherwise i32(clamp(127*(wall_range-distance)/wall_range,1,127)); hereditary wall_range",
-            20 => "i32(clamp(energy_J/max(1,capacity_J)*127,0,127)); explicitly replaces earlier spatial byte",
-            21..=27|98 => "i32(clamp(sum_columns(abs(current_distance-previous_distance))/MOTION_NORM*127,0,127))",
+            0..=15 | 128..=159 => {
+                "max pool of legacy_encoding(material,distance); spatial retina bins; perif_real changes HD angular coverage"
+            }
+            16..=19 => {
+                "0 if no wall; otherwise i32(clamp(127*(wall_range-distance)/wall_range,1,127)); hereditary wall_range"
+            }
+            20 => {
+                "i32(clamp(energy_J/max(1,capacity_J)*127,0,127)); explicitly replaces earlier spatial byte"
+            }
+            21..=27 | 98 => {
+                "i32(clamp(sum_columns(abs(current_distance-previous_distance))/MOTION_NORM*127,0,127))"
+            }
             28..=31 => "i32(clamp(sum(abs(lateral_probe_offset) where wall_or_hole)/6*127,0,127))",
-            32..=39 => "i32(clamp(cross(forward,local_flow)*127,-127,127)); resident path has no host curve overwrite",
-            40..=47 => "i32(clamp(surface_code*(0.5+length(flow)*0.5),-127,127)); Road60 Grass-60 Wall127 Hole-127",
+            32..=39 => {
+                "i32(clamp(cross(forward,local_flow)*127,-127,127)); resident path has no host curve overwrite"
+            }
+            40..=47 => {
+                "i32(clamp(surface_code*(0.5+length(flow)*0.5),-127,127)); Road60 Grass-60 Wall127 Hole-127"
+            }
             56..=59 => "Road0 Grass64 Wall100 Hole-127",
-            60..=63 => "i32(clamp(escape_norm*127,-127,127)); exact run center calculation in producer",
+            60..=63 => {
+                "i32(clamp(escape_norm*127,-127,127)); exact run center calculation in producer"
+            }
             65 => "i32(clamp(speed_m_s*2,0,127))",
             66 => "i32(clamp(lateral_velocity_m_s*10,-127,127))",
             67 => "i32(clamp(integrity*alive*127,0,127))",
@@ -92,14 +106,22 @@ pub fn channel_manifest(navigation_observation: u32) -> Value {
             73 => "grass=-128; otherwise0",
             75 => "i32(min(stationary_seconds,1)*127); reset when speed>=0.5m/s",
             89 => "actual gear0 ->127, otherwise0; no host reversing controller",
-            99|100 => "previous-tick retina_digest extra edge6/edge7 through resident bridge; i32(clamp(edge*127,0,127))",
-            102..=104 => "i32(clamp((previous_probe_m-current_probe_m)/(1/64)/30*127,-127,127)); temporal kernel uses fixed1/64s",
-            106|107 => "i32(clamp((previous_probe_m-current_probe_m)/(1/64)/15*64,-127,127))",
+            99 | 100 => {
+                "previous-tick retina_digest extra edge6/edge7 through resident bridge; i32(clamp(edge*127,0,127))"
+            }
+            102..=104 => {
+                "i32(clamp((previous_probe_m-current_probe_m)/(1/64)/30*127,-127,127)); temporal kernel uses fixed1/64s"
+            }
+            106 | 107 => "i32(clamp((previous_probe_m-current_probe_m)/(1/64)/15*64,-127,127))",
             120 => "i32(clamp(previous brain intent[0],0,1)*127); not CfC hidden state",
             125 => "social enabled: nearby<40m=>0.5, ahead<20m=>1; otherwise0; byte=feature*127",
-            126 => "clamp(delivery_delta-2*integrity_loss+0.2*positive_energy_delta/capacity,-1,1)*127 since feedback baseline",
+            126 => {
+                "clamp(delivery_delta-2*integrity_loss+0.2*positive_energy_delta/capacity,-1,1)*127 since feedback baseline"
+            }
             127 => "positive-consequence consecutive_seconds/5 clamped0..1, then*127",
-            _ => "literal writer expression below; local-variable physical conversion not expanded here",
+            _ => {
+                "literal writer expression below; local-variable physical conversion not expanded here"
+            }
         };
         channels.push(json!({"index":ch,"name":name,"normalization":normalization,
             "unit":"encoded i8; physical feature described in normalization/source",
@@ -195,24 +217,76 @@ pub fn channel_manifest(navigation_observation: u32) -> Value {
     ];
     let v3 = matches!(navigation_observation, 3 | 4 | 5);
     if v3 {
-        body_task[18] = ("TaskDirectionForward", "dot(unit(target-position), forward); 0 without task", "cos");
-        body_task[19] = ("TaskDirectionLateral", "dot(unit(target-position), lateral); 0 without task", "sin");
-        body_task[23] = ("TaskDistance", "d/(d+100) with d=|target-position| m; 1 without task", "fraction");
-        body_task[24] = ("ServiceDirectionForward", "dot(unit(nearest_service-position), forward)", "cos");
-        body_task[25] = ("ServiceDirectionLateral", "dot(unit(nearest_service-position), lateral)", "sin");
-        body_task[26] = ("ServiceDistance", "d/(d+100) with d=|nearest_service-position| m", "fraction");
-        body_task[27] = ("StationStockMinFraction", "min(energy,water,material stock/capacity) of nearest station", "fraction");
-        body_task[28] = ("TaskRefusal", "refusal_code/6; code7unfundedbirth saturates", "enum");
+        body_task[18] = (
+            "TaskDirectionForward",
+            "dot(unit(target-position), forward); 0 without task",
+            "cos",
+        );
+        body_task[19] = (
+            "TaskDirectionLateral",
+            "dot(unit(target-position), lateral); 0 without task",
+            "sin",
+        );
+        body_task[23] = (
+            "TaskDistance",
+            "d/(d+100) with d=|target-position| m; 1 without task",
+            "fraction",
+        );
+        body_task[24] = (
+            "ServiceDirectionForward",
+            "dot(unit(nearest_service-position), forward)",
+            "cos",
+        );
+        body_task[25] = (
+            "ServiceDirectionLateral",
+            "dot(unit(nearest_service-position), lateral)",
+            "sin",
+        );
+        body_task[26] = (
+            "ServiceDistance",
+            "d/(d+100) with d=|nearest_service-position| m",
+            "fraction",
+        );
+        body_task[27] = (
+            "StationStockMinFraction",
+            "min(energy,water,material stock/capacity) of nearest station",
+            "fraction",
+        );
+        body_task[28] = (
+            "TaskRefusal",
+            "refusal_code/6; code7unfundedbirth saturates",
+            "enum",
+        );
         body_task[30] = ("PassengerFare", "fare/100", "currency");
     }
     if matches!(navigation_observation, 4 | 5) {
-        body_task[18] = ("TaskRouteDirectionForward", "dot(cardinal_road_descent, forward), exact station direction within4m; 0 if route absent", "cos");
-        body_task[19] = ("TaskRouteDirectionLateral", "dot(cardinal_road_descent, lateral), exact station direction within4m; 0 if route absent", "sin");
-        body_task[23] = ("TaskRouteDistance", "road_distance_m/(road_distance_m+100); 1 if route absent", "fraction");
+        body_task[18] = (
+            "TaskRouteDirectionForward",
+            "dot(cardinal_road_descent, forward), exact station direction within4m; 0 if route absent",
+            "cos",
+        );
+        body_task[19] = (
+            "TaskRouteDirectionLateral",
+            "dot(cardinal_road_descent, lateral), exact station direction within4m; 0 if route absent",
+            "sin",
+        );
+        body_task[23] = (
+            "TaskRouteDistance",
+            "road_distance_m/(road_distance_m+100); 1 if route absent",
+            "fraction",
+        );
     }
     if navigation_observation == 5 {
-        body_task[18] = ("TaskRoutePreviewForward", "dot(unit(preview_waypoint-position), forward); preview clamp(6+1.5*speed_mps,18,48)m, at most16 road steps; exact station within4m", "cos");
-        body_task[19] = ("TaskRoutePreviewLateral", "dot(unit(preview_waypoint-position), lateral); same descending road field, no steering override; 0 if route absent", "sin");
+        body_task[18] = (
+            "TaskRoutePreviewForward",
+            "dot(unit(preview_waypoint-position), forward); preview clamp(6+1.5*speed_mps,18,48)m, at most16 road steps; exact station within4m",
+            "cos",
+        );
+        body_task[19] = (
+            "TaskRoutePreviewLateral",
+            "dot(unit(preview_waypoint-position), lateral); same descending road field, no steering override; 0 if route absent",
+            "sin",
+        );
     }
     for (offset, (name, normalization, unit)) in body_task.iter().enumerate() {
         let ch = 160 + offset;
@@ -223,11 +297,17 @@ pub fn channel_manifest(navigation_observation: u32) -> Value {
             "producer":if traffic{"src/gpu/traffic.wgsl::senses"}else if route{"src/gpu/taxi.wgsl::route_senses"}else{"src/gpu/taxi.wgsl::senses"},
             "active":true,"status":"written","upstream":if traffic{"resident physics input + immutable stop lines + absolute tick"}else{"previous completed organism/taxi post state"}}));
     }
-    let mut execution_order = vec!["resident sensors -> temporal extras","retina","perception clear -> spatial -> temporal -> motion","retina_digest -> separate extra buffer only","taxi senses overwrites160..191"];
+    let mut execution_order = vec![
+        "resident sensors -> temporal extras",
+        "retina",
+        "perception clear -> spatial -> temporal -> motion",
+        "retina_digest -> separate extra buffer only",
+        "taxi senses overwrites160..191",
+    ];
     if matches!(navigation_observation, 4 | 5) {
         execution_order.push("taxi route_senses overwrites178,179,183");
     }
-    execution_order.extend(["traffic senses overwrites172,173,182,191","brain"]);
+    execution_order.extend(["traffic senses overwrites172,173,182,191", "brain"]);
     json!({"schema":crate::organism_scenario::observation_id(navigation_observation),"navigation_observation":navigation_observation,"channel_count":192,
         "encoding":"48 u32 words per being; four two's-complement i8 bytes per word, least-significant byte first",
         "execution_order":execution_order,
@@ -287,16 +367,23 @@ mod tests {
 
 /// Explicit observation overlay: old DNA must be evaluated under its declared profile.
 pub fn channel_manifest_with_powertrain(navigation: u32, enabled: bool) -> Value {
-    let mut manifest=channel_manifest(navigation);
+    let mut manifest = channel_manifest(navigation);
     if enabled {
-        manifest["schema"]=json!(crate::organism_scenario::observation_id_with_powertrain(navigation,true));
-        manifest["powertrain_overlay"]=json!("engine-state78-80-v2");
-        for (index,name,unit,normalization) in [
-            (78,"EngineOff","boolean","off*127"),
-            (79,"StarterProgress","second","clamp(seconds,0,1)*127"),
-            (80,"ShiftProgress","fraction","clamp(remaining_seconds/0.35,0,1)*127"),
+        manifest["schema"] = json!(crate::organism_scenario::observation_id_with_powertrain(
+            navigation, true
+        ));
+        manifest["powertrain_overlay"] = json!("engine-state78-80-v2");
+        for (index, name, unit, normalization) in [
+            (78, "EngineOff", "boolean", "off*127"),
+            (79, "StarterProgress", "second", "clamp(seconds,0,1)*127"),
+            (
+                80,
+                "ShiftProgress",
+                "fraction",
+                "clamp(remaining_seconds/0.35,0,1)*127",
+            ),
         ] {
-            manifest["channels"][index]=json!({"index":index,"name":name,"unit":unit,"normalization":normalization,
+            manifest["channels"][index] = json!({"index":index,"name":name,"unit":unit,"normalization":normalization,
                 "active":true,"status":"written","producer":"organism_sensors.wgsl::geometry -> perception_temporal.wgsl",
                 "phase":"previous completed physics tick","encoding":"signed i8"});
         }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::FlySpikingGpu;
 use crate::fly_map::spiking::{EyeMode, SpikingParams, SpikingState};
-use crate::fly_map::{pack_selection, FlyLayout, FlyMap, PresynapticCsr, NONE, OUT_SLOTS};
+use crate::fly_map::{FlyLayout, FlyMap, NONE, OUT_SLOTS, PresynapticCsr, pack_selection};
 
 const N_TICKS: usize = 24;
 const TOL: f32 = 2e-5;

@@ -1,7 +1,7 @@
 //! Standalone retinal compute renderer and explicit readback API.
 //! The integrated evolution loop records its resident retina on the shared device.
 use super::core::{storage_entry, uniform_entry};
-use super::retina_encoding::{legacy_encoding, Pixel, Pose};
+use super::retina_encoding::{Pixel, Pose, legacy_encoding};
 use crate::config::iara::vision::{RETINA_COLS, RETINA_ROWS, RETINA_TOTAL};
 use crate::world::VoxelWorld;
 use std::borrow::Cow;
@@ -193,7 +193,11 @@ impl RetinaGpu {
             fov_half: (crate::visao::fov_deg() / 2.0).to_radians(),
             pitches,
             beings_on: beings_on as u32,
-            _pad0: if road_range.is_some() { 1 } else { crate::visao::retina_geometry_mode() },
+            _pad0: if road_range.is_some() {
+                1
+            } else {
+                crate::visao::retina_geometry_mode()
+            },
             _pad1: 0,
             _pad2: 0,
         };

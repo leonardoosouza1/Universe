@@ -10,8 +10,8 @@
 use serde_json::json;
 
 use super::{
-    finish_plan, CityLayout, Junction, RoadPiece, SeededRng, CityPlanResult,
-    MAX_ARC_RADIUS_M, MIN_ARC_RADIUS_M, MIN_STATION_SEGMENT_M,
+    CityLayout, CityPlanResult, Junction, MAX_ARC_RADIUS_M, MIN_ARC_RADIUS_M,
+    MIN_STATION_SEGMENT_M, RoadPiece, SeededRng, finish_plan,
 };
 use crate::world::VoxelWorld;
 
@@ -36,17 +36,29 @@ pub const MAP_MARGIN_M: f32 = 45.0;
 pub fn layout(world: &VoxelWorld, seed: u64) -> Result<CityLayout, String> {
     let map_m = (world.size as f32 - 1.0) * world.cell_size;
     if map_m < SIDE_MIN_M + 2.0 * MAP_MARGIN_M {
-        return Err(format!("ring city needs a map of at least {} m; got {map_m:.0} m", SIDE_MIN_M + 2.0 * MAP_MARGIN_M));
+        return Err(format!(
+            "ring city needs a map of at least {} m; got {map_m:.0} m",
+            SIDE_MIN_M + 2.0 * MAP_MARGIN_M
+        ));
     }
     let mut rng = SeededRng::new(seed ^ 0x52494E47);
     let side_max = SIDE_MAX_M.min(map_m - 2.0 * MAP_MARGIN_M);
     let width = snap(rng.range(SIDE_MIN_M, side_max), world.cell_size);
     let height = snap(rng.range(SIDE_MIN_M, side_max), world.cell_size);
-    let radius = snap(rng.range(MIN_ARC_RADIUS_M, MAX_ARC_RADIUS_M), world.cell_size);
+    let radius = snap(
+        rng.range(MIN_ARC_RADIUS_M, MAX_ARC_RADIUS_M),
+        world.cell_size,
+    );
     let slack_x = map_m - 2.0 * MAP_MARGIN_M - width;
     let slack_z = map_m - 2.0 * MAP_MARGIN_M - height;
-    let min_x = snap(MAP_MARGIN_M + rng.range(0.0, slack_x.max(0.0)), world.cell_size);
-    let min_z = snap(MAP_MARGIN_M + rng.range(0.0, slack_z.max(0.0)), world.cell_size);
+    let min_x = snap(
+        MAP_MARGIN_M + rng.range(0.0, slack_x.max(0.0)),
+        world.cell_size,
+    );
+    let min_z = snap(
+        MAP_MARGIN_M + rng.range(0.0, slack_z.max(0.0)),
+        world.cell_size,
+    );
     let max_x = min_x + width;
     let max_z = min_z + height;
 
@@ -57,21 +69,32 @@ pub fn layout(world: &VoxelWorld, seed: u64) -> Result<CityLayout, String> {
     for k in 0..chord_count {
         let vertical = k % 2 == 0;
         let (low, high) = if vertical {
-            (min_x + radius + CHORD_ARC_MARGIN_M, max_x - radius - CHORD_ARC_MARGIN_M)
+            (
+                min_x + radius + CHORD_ARC_MARGIN_M,
+                max_x - radius - CHORD_ARC_MARGIN_M,
+            )
         } else {
-            (min_z + radius + CHORD_ARC_MARGIN_M, max_z - radius - CHORD_ARC_MARGIN_M)
+            (
+                min_z + radius + CHORD_ARC_MARGIN_M,
+                max_z - radius - CHORD_ARC_MARGIN_M,
+            )
         };
         let existing = if vertical { &vertical_x } else { &horizontal_z };
         let mut placed = None;
         for _ in 0..64 {
             let candidate = snap(rng.range(low, high), world.cell_size);
-            if existing.iter().all(|c| (c - candidate).abs() >= CHORD_SEPARATION_M) {
+            if existing
+                .iter()
+                .all(|c| (c - candidate).abs() >= CHORD_SEPARATION_M)
+            {
                 placed = Some(candidate);
                 break;
             }
         }
         let Some(position) = placed else {
-            return Err(format!("ring seed {seed}: no room for chord {k} between {low:.0} and {high:.0} m"));
+            return Err(format!(
+                "ring seed {seed}: no room for chord {k} between {low:.0} and {high:.0} m"
+            ));
         };
         if vertical {
             vertical_x.push(position);
@@ -84,42 +107,131 @@ pub fn layout(world: &VoxelWorld, seed: u64) -> Result<CityLayout, String> {
 
     use std::f32::consts::{FRAC_PI_2, PI};
     let mut pieces: Vec<(String, RoadPiece)> = vec![
-        ("ring-north".into(), RoadPiece::Straight { a: [min_x + radius, min_z], b: [max_x - radius, min_z] }),
-        ("ring-east".into(), RoadPiece::Straight { a: [max_x, min_z + radius], b: [max_x, max_z - radius] }),
-        ("ring-south".into(), RoadPiece::Straight { a: [max_x - radius, max_z], b: [min_x + radius, max_z] }),
-        ("ring-west".into(), RoadPiece::Straight { a: [min_x, max_z - radius], b: [min_x, min_z + radius] }),
-        ("corner-nw".into(), RoadPiece::Arc { centre: [min_x + radius, min_z + radius], radius, start_rad: PI, sweep_rad: FRAC_PI_2 }),
-        ("corner-ne".into(), RoadPiece::Arc { centre: [max_x - radius, min_z + radius], radius, start_rad: 3.0 * FRAC_PI_2, sweep_rad: FRAC_PI_2 }),
-        ("corner-se".into(), RoadPiece::Arc { centre: [max_x - radius, max_z - radius], radius, start_rad: 0.0, sweep_rad: FRAC_PI_2 }),
-        ("corner-sw".into(), RoadPiece::Arc { centre: [min_x + radius, max_z - radius], radius, start_rad: FRAC_PI_2, sweep_rad: FRAC_PI_2 }),
+        (
+            "ring-north".into(),
+            RoadPiece::Straight {
+                a: [min_x + radius, min_z],
+                b: [max_x - radius, min_z],
+            },
+        ),
+        (
+            "ring-east".into(),
+            RoadPiece::Straight {
+                a: [max_x, min_z + radius],
+                b: [max_x, max_z - radius],
+            },
+        ),
+        (
+            "ring-south".into(),
+            RoadPiece::Straight {
+                a: [max_x - radius, max_z],
+                b: [min_x + radius, max_z],
+            },
+        ),
+        (
+            "ring-west".into(),
+            RoadPiece::Straight {
+                a: [min_x, max_z - radius],
+                b: [min_x, min_z + radius],
+            },
+        ),
+        (
+            "corner-nw".into(),
+            RoadPiece::Arc {
+                centre: [min_x + radius, min_z + radius],
+                radius,
+                start_rad: PI,
+                sweep_rad: FRAC_PI_2,
+            },
+        ),
+        (
+            "corner-ne".into(),
+            RoadPiece::Arc {
+                centre: [max_x - radius, min_z + radius],
+                radius,
+                start_rad: 3.0 * FRAC_PI_2,
+                sweep_rad: FRAC_PI_2,
+            },
+        ),
+        (
+            "corner-se".into(),
+            RoadPiece::Arc {
+                centre: [max_x - radius, max_z - radius],
+                radius,
+                start_rad: 0.0,
+                sweep_rad: FRAC_PI_2,
+            },
+        ),
+        (
+            "corner-sw".into(),
+            RoadPiece::Arc {
+                centre: [min_x + radius, max_z - radius],
+                radius,
+                start_rad: FRAC_PI_2,
+                sweep_rad: FRAC_PI_2,
+            },
+        ),
     ];
     for (k, x) in vertical_x.iter().enumerate() {
-        pieces.push((format!("chord-v{k}"), RoadPiece::Straight { a: [*x, min_z], b: [*x, max_z] }));
+        pieces.push((
+            format!("chord-v{k}"),
+            RoadPiece::Straight {
+                a: [*x, min_z],
+                b: [*x, max_z],
+            },
+        ));
     }
     for (k, z) in horizontal_z.iter().enumerate() {
-        pieces.push((format!("chord-h{k}"), RoadPiece::Straight { a: [min_x, *z], b: [max_x, *z] }));
+        pieces.push((
+            format!("chord-h{k}"),
+            RoadPiece::Straight {
+                a: [min_x, *z],
+                b: [max_x, *z],
+            },
+        ));
     }
 
     let mut junctions: Vec<Junction> = Vec::new();
     for x in &vertical_x {
         // arms: +x, +z, -x, -z
-        junctions.push(Junction { centre: [*x, min_z], arms: [true, true, true, false] });
-        junctions.push(Junction { centre: [*x, max_z], arms: [true, false, true, true] });
+        junctions.push(Junction {
+            centre: [*x, min_z],
+            arms: [true, true, true, false],
+        });
+        junctions.push(Junction {
+            centre: [*x, max_z],
+            arms: [true, false, true, true],
+        });
         for z in &horizontal_z {
-            junctions.push(Junction { centre: [*x, *z], arms: [true, true, true, true] });
+            junctions.push(Junction {
+                centre: [*x, *z],
+                arms: [true, true, true, true],
+            });
         }
     }
     for z in &horizontal_z {
-        junctions.push(Junction { centre: [min_x, *z], arms: [true, true, false, true] });
-        junctions.push(Junction { centre: [max_x, *z], arms: [false, true, true, true] });
+        junctions.push(Junction {
+            centre: [min_x, *z],
+            arms: [true, true, false, true],
+        });
+        junctions.push(Junction {
+            centre: [max_x, *z],
+            arms: [false, true, true, true],
+        });
     }
-    junctions.sort_by(|a, b| a.centre[1].total_cmp(&b.centre[1]).then(a.centre[0].total_cmp(&b.centre[0])));
+    junctions.sort_by(|a, b| {
+        a.centre[1]
+            .total_cmp(&b.centre[1])
+            .then(a.centre[0].total_cmp(&b.centre[0]))
+    });
 
     // Stations: midpoints of straight sub-segments between junctions or arc
     // tangent points, long enough for a 60 m straight approach on both sides.
     let mut segments: Vec<([f32; 2], [f32; 2])> = Vec::new();
     for (_, piece) in &pieces {
-        let RoadPiece::Straight { a, b } = *piece else { continue };
+        let RoadPiece::Straight { a, b } = *piece else {
+            continue;
+        };
         let along = [b[0] - a[0], b[1] - a[1]];
         let len = along[0].hypot(along[1]);
         let dir = [along[0] / len, along[1] / len];
@@ -145,7 +257,10 @@ pub fn layout(world: &VoxelWorld, seed: u64) -> Result<CityLayout, String> {
         }
     }
     if segments.len() < 2 {
-        return Err(format!("ring seed {seed}: only {} straight segments of {MIN_STATION_SEGMENT_M} m for stations", segments.len()));
+        return Err(format!(
+            "ring seed {seed}: only {} straight segments of {MIN_STATION_SEGMENT_M} m for stations",
+            segments.len()
+        ));
     }
     let mut order: Vec<usize> = (0..segments.len()).collect();
     for i in (1..order.len()).rev() {
@@ -157,14 +272,25 @@ pub fn layout(world: &VoxelWorld, seed: u64) -> Result<CityLayout, String> {
         .take(STATION_COUNT)
         .map(|&i| {
             let (a, b) = segments[i];
-            [snap((a[0] + b[0]) * 0.5, world.cell_size), snap((a[1] + b[1]) * 0.5, world.cell_size)]
+            [
+                snap((a[0] + b[0]) * 0.5, world.cell_size),
+                snap((a[1] + b[1]) * 0.5, world.cell_size),
+            ]
         })
         .collect();
 
     let signature = format!(
         "ring:{seed:016x}:{width:.0}x{height:.0}:r{radius:.0}:v{}:h{}",
-        vertical_x.iter().map(|v| format!("{v:.0}")).collect::<Vec<_>>().join("/"),
-        horizontal_z.iter().map(|v| format!("{v:.0}")).collect::<Vec<_>>().join("/"),
+        vertical_x
+            .iter()
+            .map(|v| format!("{v:.0}"))
+            .collect::<Vec<_>>()
+            .join("/"),
+        horizontal_z
+            .iter()
+            .map(|v| format!("{v:.0}"))
+            .collect::<Vec<_>>()
+            .join("/"),
     );
     Ok(CityLayout {
         family: "ring",

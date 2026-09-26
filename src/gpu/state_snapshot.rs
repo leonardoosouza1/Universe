@@ -291,11 +291,13 @@ mod tests {
     }
     #[test]
     fn bounds_reject_empty_and_oversized_buffers() {
-        assert!(validate_bundle(&SnapshotBundle {
-            version: FORMAT_VERSION,
-            buffers: vec![]
-        })
-        .is_err());
+        assert!(
+            validate_bundle(&SnapshotBundle {
+                version: FORMAT_VERSION,
+                buffers: vec![]
+            })
+            .is_err()
+        );
         assert!(validate_names_and_sizes(vec![("x", MAX_BUFFER_BYTES + 1)]).is_err());
     }
 }

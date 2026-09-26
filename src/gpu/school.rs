@@ -483,13 +483,29 @@ impl SchoolGpu {
         if lessons.is_empty() || lessons.len() > self.capacity {
             return Err("school: lesson count exceeds capacity");
         }
-        if self.cross_city && (!self.bench || !self.service_v2 || self.prepared_start || self.prepared_delivery || lessons.iter().any(|g|g.lesson != Lesson::Delivery)) {
+        if self.cross_city
+            && (!self.bench
+                || !self.service_v2
+                || self.prepared_start
+                || self.prepared_delivery
+                || lessons.iter().any(|g| g.lesson != Lesson::Delivery))
+        {
             return Err("cross-city requires an empty-start service-v2 delivery bench");
         }
-        if self.prepared_start && (!self.bench || !self.service_v2 || lessons.iter().any(|g| !matches!(g.lesson, Lesson::Pickup | Lesson::Delivery))) {
+        if self.prepared_start
+            && (!self.bench
+                || !self.service_v2
+                || lessons
+                    .iter()
+                    .any(|g| !matches!(g.lesson, Lesson::Pickup | Lesson::Delivery)))
+        {
             return Err("prepared start requires a service-v2 pickup/delivery bench");
         }
-        if self.prepared_delivery && (!self.bench || !self.service_v2 || lessons.iter().any(|g| g.lesson != Lesson::Delivery)) {
+        if self.prepared_delivery
+            && (!self.bench
+                || !self.service_v2
+                || lessons.iter().any(|g| g.lesson != Lesson::Delivery))
+        {
             return Err("prepared delivery requires a service-v2 delivery bench");
         }
         let mut rows = vec![0.0f32; self.capacity * SCHOOL_STRIDE_F32];
@@ -515,16 +531,41 @@ impl SchoolGpu {
         n: usize,
         tick: u32,
     ) -> Result<(), &'static str> {
-        self.encode_phase(device, encoder, physics_input, physics_output, body, intent, n, tick, false)
+        self.encode_phase(
+            device,
+            encoder,
+            physics_input,
+            physics_output,
+            body,
+            intent,
+            n,
+            tick,
+            false,
+        )
     }
 
     /// GPU initialization only: no judgement, elapsed ticks or fabricated events.
     pub fn initialize(
-        &self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder,
-        physics_input: &wgpu::Buffer, physics_output: &wgpu::Buffer,
-        body: &wgpu::Buffer, intent: &wgpu::Buffer, n: usize,
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        physics_input: &wgpu::Buffer,
+        physics_output: &wgpu::Buffer,
+        body: &wgpu::Buffer,
+        intent: &wgpu::Buffer,
+        n: usize,
     ) -> Result<(), &'static str> {
-        self.encode_phase(device, encoder, physics_input, physics_output, body, intent, n, 0, true)
+        self.encode_phase(
+            device,
+            encoder,
+            physics_input,
+            physics_output,
+            body,
+            intent,
+            n,
+            0,
+            true,
+        )
     }
 
     fn encode_phase(
@@ -561,7 +602,13 @@ impl SchoolGpu {
                 n: n as u32,
                 tick,
                 horizon: self.horizon_ticks,
-                flags: self.bench as u32 | (self.stop_shaping as u32) << 1 | (self.stop_envelope as u32) << 2 | (self.service_v2 as u32) << 3 | (self.prepared_delivery as u32) << 4 | (initialize as u32) << 5 | (self.cross_city as u32) << 6,
+                flags: self.bench as u32
+                    | (self.stop_shaping as u32) << 1
+                    | (self.stop_envelope as u32) << 2
+                    | (self.service_v2 as u32) << 3
+                    | (self.prepared_delivery as u32) << 4
+                    | (initialize as u32) << 5
+                    | (self.cross_city as u32) << 6,
                 goal_radius: c.goal_radius_m,
                 area_radius: c.area_radius_m,
                 v_min: c.v_min_mps,
@@ -714,9 +761,10 @@ pub fn record_json(
         "service_refusal_code": r[R_REFUSAL_CODE], "passenger_id": r[R_PASSENGER_ID],
         "delivery_start": r[R_DELIVERY_START], "delivery_delta": r[R_DELIVERY_DELTA],
     });
-    value["engine_off_events"]=serde_json::json!(r[R_ENGINE_OFF_EVENTS]);
-    value["starter_paid_j"]=serde_json::json!(r[R_STARTER_PAID_J]);
-    value["powertrain_penalty"]=serde_json::json!(5.0*r[R_ENGINE_OFF_EVENTS]+r[R_STARTER_PAID_J]/1500.0);
+    value["engine_off_events"] = serde_json::json!(r[R_ENGINE_OFF_EVENTS]);
+    value["starter_paid_j"] = serde_json::json!(r[R_STARTER_PAID_J]);
+    value["powertrain_penalty"] =
+        serde_json::json!(5.0 * r[R_ENGINE_OFF_EVENTS] + r[R_STARTER_PAID_J] / 1500.0);
     // Schema v3 envelope fields (kept out of the macro above: json! hits its recursion limit).
     let approached = r[R_ENV_MIN_SPEED_APPROACH] < 1.0e8;
     let envelope = serde_json::json!({
@@ -742,14 +790,32 @@ mod tests {
     #[test]
     fn schema_v5_stride_and_slots_are_frozen() {
         assert_eq!(SCHOOL_SCHEMA_VERSION, 5);
-        assert_eq!([R_ENGINE_OFF_EVENTS,R_STARTER_PAID_J,R_SERVICE_READINESS,R_BLOCKED_SECONDS],[38,39,54,55]);
+        assert_eq!(
+            [
+                R_ENGINE_OFF_EVENTS,
+                R_STARTER_PAID_J,
+                R_SERVICE_READINESS,
+                R_BLOCKED_SECONDS
+            ],
+            [38, 39, 54, 55]
+        );
         assert_eq!(SCHOOL_STRIDE_F32, 56);
         assert_eq!(
-            [R_ENV_ZONE_TICKS, R_ENV_CONFORM_TICKS, R_ENV_EXCESS_INTEGRAL, R_ENV_ENTRY_SPEED,
-             R_ENV_MIN_SPEED_APPROACH, R_ENV_DIST_AT_MIN_SPEED],
+            [
+                R_ENV_ZONE_TICKS,
+                R_ENV_CONFORM_TICKS,
+                R_ENV_EXCESS_INTEGRAL,
+                R_ENV_ENTRY_SPEED,
+                R_ENV_MIN_SPEED_APPROACH,
+                R_ENV_DIST_AT_MIN_SPEED
+            ],
             [48, 49, 50, 51, 52, 53]
         );
-        assert_eq!(std::mem::size_of::<Params>(), 24 * 4, "Params must stay 96 bytes (host/shader mirror, 16-aligned)");
+        assert_eq!(
+            std::mem::size_of::<Params>(),
+            24 * 4,
+            "Params must stay 96 bytes (host/shader mirror, 16-aligned)"
+        );
         assert_eq!(fail_code_name(16), "open_at_deadline");
         assert_eq!(fail_code_name(17), "zone_entry_slow");
         assert_eq!(fail_code_name(18), "blocked_without_progress");
@@ -783,7 +849,10 @@ mod tests {
         r[R_ENV_ENTRY_SPEED] = 1e9;
         r[R_ENV_MIN_SPEED_APPROACH] = 1e9;
         let v = record_json(&r, 0.0, 0.0);
-        assert!(v["envelope_conform_ratio"].is_null(), "no zone ticks -> no ratio");
+        assert!(
+            v["envelope_conform_ratio"].is_null(),
+            "no zone ticks -> no ratio"
+        );
         assert!(v["envelope_entry_speed_mps"].is_null());
         assert!(v["approach_min_speed_mps"].is_null());
         assert_eq!(v["envelope_zone_ticks"], 0.0);

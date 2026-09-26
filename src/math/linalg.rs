@@ -204,7 +204,7 @@ pub fn spectral_radius(w_rec: &[f32], n: usize, max_iter: usize) -> f32 {
             return 0.0; // null matrix or orthogonal to the vector
         }
         eigenvalue = norm; // estimate of the largest eigenvalue in modulus
-                           // Normalizes for the next iteration
+        // Normalizes for the next iteration
         for (vi, &wi) in v.iter_mut().zip(w.iter()) {
             *vi = wi / norm;
         }

@@ -1920,5 +1920,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path="perception_fuel_test.rs"]
+#[path = "perception_fuel_test.rs"]
 mod perception_fuel_test;

@@ -526,11 +526,13 @@ mod checkpoint_tests {
         let encoded = serde_json::to_vec(&accepted).unwrap();
         let restored: Ecology = serde_json::from_slice(&encoded).unwrap();
         restored.validate_checkpoint().unwrap();
-        assert!(restored
-            .propose_at(128, &snapshots, &[true, false])
-            .unwrap()
-            .1
-            .is_empty());
+        assert!(
+            restored
+                .propose_at(128, &snapshots, &[true, false])
+                .unwrap()
+                .1
+                .is_empty()
+        );
         assert_eq!(
             restored
                 .propose_at(192, &snapshots, &[true, false])

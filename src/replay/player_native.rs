@@ -5,7 +5,7 @@
 //! Runtime gates, fatigue and pruning can change effective signal flow, so the payload
 //! calls them parameters rather than observed propagation.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io;
 use std::path::Path;
 

@@ -322,7 +322,8 @@ impl OrganismActionGpu {
                 | FLAG_SIGNED_THROTTLE
                 | FLAG_ALLOW_LOW_SPEED_BRAKE
                 | FLAG_EXCLUSIVE_PEDALS
-                | FLAG_SIGNED_BRAKE | FLAG_BRAKE_PRIORITY)
+                | FLAG_SIGNED_BRAKE
+                | FLAG_BRAKE_PRIORITY)
             != 0
         {
             return Err("organism-action: unknown flags");
@@ -335,7 +336,9 @@ impl OrganismActionGpu {
                 != (FLAG_EXCLUSIVE_PEDALS | FLAG_ALLOW_LOW_SPEED_BRAKE)
                 || params.flags & FLAG_SIGNED_BRAKE != 0)
         {
-            return Err("organism-action: brake priority requires exclusive low-speed pedals and unsigned brake");
+            return Err(
+                "organism-action: brake priority requires exclusive low-speed pedals and unsigned brake",
+            );
         }
         queue.write_buffer(
             &self.params,

@@ -1,18 +1,23 @@
 //! Metadata document, plan assembly and the static contract every family city
 //! must pass before a generation starts on it. Host geometry only.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{
-    detect_junctions, rasterize, road_at, route_stats, spawn_slots_generic, station_records,
-    traffic_lights, CityLayout, RoadPiece, RouteStats, CITY_FAMILY_SCHEMA_VERSION, ROAD_WIDTH_CELLS,
-    ARM_NAMES, seed_split,
+    ARM_NAMES, CITY_FAMILY_SCHEMA_VERSION, CityLayout, ROAD_WIDTH_CELLS, RoadPiece, RouteStats,
+    detect_junctions, rasterize, road_at, route_stats, seed_split, spawn_slots_generic,
+    station_records, traffic_lights,
 };
 use crate::organism_city::CityPlan;
 use crate::world::VoxelWorld;
 
 /// Build the shared metadata document for a rasterised layout.
-pub fn metadata(world: &VoxelWorld, layout: &CityLayout, light_metadata: Vec<Value>, stats: &RouteStats) -> Value {
+pub fn metadata(
+    world: &VoxelWorld,
+    layout: &CityLayout,
+    light_metadata: Vec<Value>,
+    stats: &RouteStats,
+) -> Value {
     let cell = world.cell_size;
     let half_cells = ROAD_WIDTH_CELLS / 2;
     let roads = layout
@@ -23,7 +28,12 @@ pub fn metadata(world: &VoxelWorld, layout: &CityLayout, light_metadata: Vec<Val
                 "id": id, "kind": "straight", "from_m": a, "to_m": b,
                 "length_m": piece.length_m(), "width_m": ROAD_WIDTH_CELLS as f32 * cell, "lanes": 2
             }),
-            RoadPiece::Arc { centre, radius, start_rad, sweep_rad } => json!({
+            RoadPiece::Arc {
+                centre,
+                radius,
+                start_rad,
+                sweep_rad,
+            } => json!({
                 "id": id, "kind": "arc", "centre_m": centre, "radius_m": radius,
                 "start_rad": start_rad, "sweep_rad": sweep_rad, "from_m": piece.start_point(),
                 "to_m": piece.end_point(), "length_m": piece.length_m(),
@@ -50,8 +60,10 @@ pub fn metadata(world: &VoxelWorld, layout: &CityLayout, light_metadata: Vec<Val
         .stations
         .iter()
         .enumerate()
-        .map(|(index, s)| json!({"id": format!("station-{index}"), "x_m": s[0], "z_m": s[1],
-            "role": if index == 0 { "depot" } else { "station" }}))
+        .map(|(index, s)| {
+            json!({"id": format!("station-{index}"), "x_m": s[0], "z_m": s[1],
+            "role": if index == 0 { "depot" } else { "station" }})
+        })
         .collect::<Vec<_>>();
     json!({
         "schema_version": CITY_FAMILY_SCHEMA_VERSION,
@@ -94,7 +106,10 @@ pub fn finish_plan(world: &mut VoxelWorld, layout: &CityLayout) -> Result<CityPl
     let (lights, light_metadata) = traffic_lights(layout);
     let stats = route_stats(world, &stations)?;
     if stats.unreachable_pairs > 0 {
-        return Err(format!("{} station pairs are unreachable by road", stats.unreachable_pairs));
+        return Err(format!(
+            "{} station pairs are unreachable by road",
+            stats.unreachable_pairs
+        ));
     }
     let metadata = metadata(world, layout, light_metadata, &stats);
     Ok(CityPlan::from_parts(stations, lights, metadata))
@@ -108,15 +123,24 @@ pub fn validate(world: &VoxelWorld, plan: &CityPlan, n: usize) -> Result<(), Str
         return Err("family city metadata has the wrong schema version".into());
     }
     if crate::organism_city::is_orthogonal_grid_city(world) {
-        return Err("family city rasterised into an orthogonal grid; the grid path owns that geometry".into());
+        return Err(
+            "family city rasterised into an orthogonal grid; the grid path owns that geometry"
+                .into(),
+        );
     }
     crate::organism_scenario::validate_city(world, &plan.stations)?;
     let stats = route_stats(world, &plan.stations)?;
     if stats.unreachable_pairs > 0 {
-        return Err(format!("{} station pairs unreachable", stats.unreachable_pairs));
+        return Err(format!(
+            "{} station pairs unreachable",
+            stats.unreachable_pairs
+        ));
     }
     if stats.min_pair_road_m < 60.0 {
-        return Err(format!("station pair road distance {:.1} m below the 60 m service minimum", stats.min_pair_road_m));
+        return Err(format!(
+            "station pair road distance {:.1} m below the 60 m service minimum",
+            stats.min_pair_road_m
+        ));
     }
     let declared = metadata
         .get("junctions")
@@ -132,26 +156,51 @@ pub fn validate(world: &VoxelWorld, plan: &CityPlan, n: usize) -> Result<(), Str
     }
     let mut expected_lights = 0usize;
     for (j, d) in detected.iter().zip(declared.iter()) {
-        let x = d.get("x_m").and_then(Value::as_f64).ok_or("junction without x_m")? as f32;
-        let z = d.get("z_m").and_then(Value::as_f64).ok_or("junction without z_m")? as f32;
+        let x = d
+            .get("x_m")
+            .and_then(Value::as_f64)
+            .ok_or("junction without x_m")? as f32;
+        let z = d
+            .get("z_m")
+            .and_then(Value::as_f64)
+            .ok_or("junction without z_m")? as f32;
         if (j.centre[0] - x).abs() > world.cell_size || (j.centre[1] - z).abs() > world.cell_size {
-            return Err(format!("junction at ({x:.1}, {z:.1}) not recovered from road cells: detected ({:.1}, {:.1})", j.centre[0], j.centre[1]));
+            return Err(format!(
+                "junction at ({x:.1}, {z:.1}) not recovered from road cells: detected ({:.1}, {:.1})",
+                j.centre[0], j.centre[1]
+            ));
         }
-        let arms = d.get("arms").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0);
+        let arms = d
+            .get("arms")
+            .and_then(Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0);
         if arms != j.arm_count() {
-            return Err(format!("junction at ({x:.1}, {z:.1}) declares {arms} arms; road cells show {}", j.arm_count()));
+            return Err(format!(
+                "junction at ({x:.1}, {z:.1}) declares {arms} arms; road cells show {}",
+                j.arm_count()
+            ));
         }
         expected_lights += arms;
     }
     let lights = plan.traffic_lights();
     if lights.len() != expected_lights {
-        return Err(format!("family city has {} traffic lights; expected {expected_lights}", lights.len()));
+        return Err(format!(
+            "family city has {} traffic lights; expected {expected_lights}",
+            lights.len()
+        ));
     }
     if lights.iter().any(|light| {
-        !light.position.iter().chain(light.approach.iter()).all(|v| v.is_finite())
+        !light
+            .position
+            .iter()
+            .chain(light.approach.iter())
+            .all(|v| v.is_finite())
             || !light.half_width.is_finite()
             || light.half_width <= 0.0
-            || (light.approach[0] * light.approach[0] + light.approach[1] * light.approach[1] - 1.0).abs() > 0.0001
+            || (light.approach[0] * light.approach[0] + light.approach[1] * light.approach[1] - 1.0)
+                .abs()
+                > 0.0001
             || light.green_ticks == 0
             || light.yellow_ticks == 0
     }) {
@@ -162,7 +211,9 @@ pub fn validate(world: &VoxelWorld, plan: &CityPlan, n: usize) -> Result<(), Str
         let row = (station[1] / world.cell_size).round() as i32;
         let footprint = (-1..=1).all(|dr| (-1..=1).all(|dc| road_at(world, col + dc, row + dr)));
         if !footprint {
-            return Err(format!("station {index} does not have a 3×3 road footprint"));
+            return Err(format!(
+                "station {index} does not have a 3×3 road footprint"
+            ));
         }
     }
     spawn_slots_generic(world, &plan.stations, n)

@@ -5,7 +5,7 @@
 //! the UI; no vehicle dynamics or controller policy lives here.
 
 use bevy::prelude::{Vec2, Vec3};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::world::{VoxelType, VoxelWorld};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -113,7 +113,11 @@ impl CityPlan {
         traffic_lights: Vec<crate::gpu::traffic::TrafficLight>,
         metadata: Value,
     ) -> Self {
-        Self { stations, traffic_lights, metadata }
+        Self {
+            stations,
+            traffic_lights,
+            metadata,
+        }
     }
 
     pub fn metadata(&self) -> &Value {
@@ -164,7 +168,11 @@ fn line_centers(world: &VoxelWorld, horizontal: bool) -> Vec<i32> {
         .map(|line| {
             (0..size)
                 .filter(|other| {
-                    let (row, col) = if horizontal { (line, *other) } else { (*other, line) };
+                    let (row, col) = if horizontal {
+                        (line, *other)
+                    } else {
+                        (*other, line)
+                    };
                     world.grid[(row * size + col) as usize] == VoxelType::Road
                 })
                 .count() as i32
@@ -202,8 +210,11 @@ pub fn is_orthogonal_grid_city(world: &VoxelWorld) -> bool {
     let extent_max = columns[columns.len() - 1] + half;
     for row in 0..size {
         for col in 0..size {
-            let in_extent = (extent_min..=extent_max).contains(&row) && (extent_min..=extent_max).contains(&col);
-            let on_street = columns.iter().any(|c| (col - *c).abs() <= half || (row - *c).abs() <= half);
+            let in_extent = (extent_min..=extent_max).contains(&row)
+                && (extent_min..=extent_max).contains(&col);
+            let on_street = columns
+                .iter()
+                .any(|c| (col - *c).abs() <= half || (row - *c).abs() <= half);
             let expected_road = in_extent && on_street;
             let is_road = world.grid[(row * size + col) as usize] == VoxelType::Road;
             if expected_road != is_road {
@@ -244,7 +255,9 @@ fn variant_centers(size: i32, seed: u64, family: CityFamily) -> Result<Vec<i32>,
         CityFamily::Grid => [0.10, 0.30, 0.50, 0.70, 0.90],
         CityFamily::Compact => [0.20, 0.35, 0.50, 0.65, 0.80],
         CityFamily::Wide => [0.06, 0.28, 0.50, 0.72, 0.94],
-        CityFamily::Ring => return Err("ring family is built by city_family::ring, not by street centres".into()),
+        CityFamily::Ring => {
+            return Err("ring family is built by city_family::ring, not by street centres".into());
+        }
     };
     let jitter = match family {
         CityFamily::Grid => 4,
@@ -266,9 +279,13 @@ fn variant_centers(size: i32, seed: u64, family: CityFamily) -> Result<Vec<i32>,
     if centers
         .iter()
         .any(|center| *center < 3 || *center >= size - 3)
-        || centers.windows(2).any(|pair| pair[1] - pair[0] <= ROAD_WIDTH_CELLS)
+        || centers
+            .windows(2)
+            .any(|pair| pair[1] - pair[0] <= ROAD_WIDTH_CELLS)
     {
-        return Err(format!("{family:?} seed {seed} does not fit a connected city grid of {size} cells"));
+        return Err(format!(
+            "{family:?} seed {seed} does not fit a connected city grid of {size} cells"
+        ));
     }
     Ok(centers)
 }
@@ -331,7 +348,11 @@ pub fn spawn_slots(
     for pair in centers.windows(2) {
         let (a, b) = (pair[0] as f32 * cell, pair[1] as f32 * cell);
         for lane in [-1.0f32, 1.0] {
-            let stagger = if lane < 0.0 { 0.0 } else { SPAWN_LANE_SPACING_M * 0.5 };
+            let stagger = if lane < 0.0 {
+                0.0
+            } else {
+                SPAWN_LANE_SPACING_M * 0.5
+            };
             let mut along = a + SPAWN_JUNCTION_MARGIN_M + stagger;
             while along <= b - SPAWN_JUNCTION_MARGIN_M {
                 for center in &centers {
@@ -416,7 +437,12 @@ pub fn build_city_variant(
         return crate::city_family::ring::build(world, seed);
     }
     let centers = variant_centers(world.size as i32, seed, family)?;
-    Ok(build_city_with_centers(world, centers, Some((seed, family)), lane_rule()))
+    Ok(build_city_with_centers(
+        world,
+        centers,
+        Some((seed, family)),
+        lane_rule(),
+    ))
 }
 
 /// Validate the static geometry contract before the first generation uses it.
@@ -467,10 +493,16 @@ pub fn validate_city_postconditions(
         ));
     }
     if lights.iter().any(|light| {
-        !light.position.iter().chain(light.approach.iter()).all(|value| value.is_finite())
+        !light
+            .position
+            .iter()
+            .chain(light.approach.iter())
+            .all(|value| value.is_finite())
             || !light.half_width.is_finite()
             || light.half_width <= 0.0
-            || (light.approach[0] * light.approach[0] + light.approach[1] * light.approach[1] - 1.0).abs() > 0.0001
+            || (light.approach[0] * light.approach[0] + light.approach[1] * light.approach[1] - 1.0)
+                .abs()
+                > 0.0001
             || light.green_ticks == 0
             || light.yellow_ticks == 0
     }) {
@@ -491,17 +523,19 @@ pub fn validate_city_postconditions(
         for (origin, station) in plan.stations.iter().enumerate() {
             let col = (station[0] / world.cell_size).round();
             let row = (station[1] / world.cell_size).round();
-            if !col.is_finite() || !row.is_finite() || col < 0.0 || row < 0.0
-                || col >= world.size as f32 || row >= world.size as f32
+            if !col.is_finite()
+                || !row.is_finite()
+                || col < 0.0
+                || row < 0.0
+                || col >= world.size as f32
+                || row >= world.size as f32
             {
                 return Err(format!("city station {origin} is outside route grid"));
             }
             let cell = row as usize * world.size + col as usize;
             let distance = packed[4 + destination * cells + cell];
             if !distance.is_finite() || distance < 0.0 {
-                return Err(format!(
-                    "city route {origin}->{destination} is unreachable"
-                ));
+                return Err(format!("city route {origin}->{destination} is unreachable"));
             }
         }
     }
@@ -543,7 +577,10 @@ fn build_city_with_centers(
                 || row == extent_max + 1
                 || col == extent_min - 1
                 || col == extent_max + 1;
-            if perimeter && (extent_min - 1..=extent_max + 1).contains(&row) && (extent_min - 1..=extent_max + 1).contains(&col) {
+            if perimeter
+                && (extent_min - 1..=extent_max + 1).contains(&row)
+                && (extent_min - 1..=extent_max + 1).contains(&col)
+            {
                 world.grid[index] = VoxelType::Wall;
                 world.min_dist_to_road[index] = 1.0;
             } else if vertical || horizontal {
@@ -563,11 +600,7 @@ fn build_city_with_centers(
                             LaneRule::Legacy => row <= center,
                             LaneRule::Consistent => row >= center,
                         };
-                        if east {
-                            Vec2::X
-                        } else {
-                            -Vec2::X
-                        }
+                        if east { Vec2::X } else { -Vec2::X }
                     }
                     (false, true) => {
                         let center = centers
@@ -579,17 +612,15 @@ fn build_city_with_centers(
                         let south = match rule {
                             LaneRule::Legacy | LaneRule::Consistent => col <= center,
                         };
-                        if south {
-                            Vec2::Y
-                        } else {
-                            -Vec2::Y
-                        }
+                        if south { Vec2::Y } else { -Vec2::Y }
                     }
                     (false, false) => Vec2::ZERO,
                 };
                 world.min_dist_to_road[index] = 0.0;
             } else {
-                if in_extent_row && in_extent_col { world.grid[index] = VoxelType::Wall; }
+                if in_extent_row && in_extent_col {
+                    world.grid[index] = VoxelType::Wall;
+                }
                 let distance_cells = centers
                     .iter()
                     .flat_map(|c| [(*c - col).abs(), (*c - row).abs()])
@@ -689,7 +720,13 @@ fn build_city_with_centers(
                 (-Vec2::Y, center + Vec2::Y * (half_width + cell)),
             ] {
                 // Perpendicular approaches must never share a green phase.
-                let approach_offset = (axis_offset + if approach.y != 0.0 { green_ticks + yellow_ticks } else { 0 }) % (2 * (green_ticks + yellow_ticks));
+                let approach_offset = (axis_offset
+                    + if approach.y != 0.0 {
+                        green_ticks + yellow_ticks
+                    } else {
+                        0
+                    })
+                    % (2 * (green_ticks + yellow_ticks));
                 traffic_lights.push(crate::gpu::traffic::TrafficLight {
                     position: [stop.x, stop.y],
                     approach: [approach.x, approach.y],
@@ -772,9 +809,18 @@ mod tests {
         assert_eq!(metadata["traffic_lights"][0]["yellow_ticks"], 128);
         let lights = plan.traffic_lights();
         for junction in lights.chunks_exact(4) {
-            assert_eq!(junction[0].phase_offset_ticks, junction[1].phase_offset_ticks);
-            assert_eq!(junction[2].phase_offset_ticks, junction[3].phase_offset_ticks);
-            assert_eq!((junction[2].phase_offset_ticks + 2048 - junction[0].phase_offset_ticks) % 2048, 1024);
+            assert_eq!(
+                junction[0].phase_offset_ticks,
+                junction[1].phase_offset_ticks
+            );
+            assert_eq!(
+                junction[2].phase_offset_ticks,
+                junction[3].phase_offset_ticks
+            );
+            assert_eq!(
+                (junction[2].phase_offset_ticks + 2048 - junction[0].phase_offset_ticks) % 2048,
+                1024
+            );
         }
     }
 
@@ -796,9 +842,15 @@ mod tests {
                 }
                 let horizontal = flow.x.abs() > 0.5;
                 let (line, centre) = if horizontal {
-                    (row, *centers.iter().min_by_key(|c| (row - **c).abs()).unwrap())
+                    (
+                        row,
+                        *centers.iter().min_by_key(|c| (row - **c).abs()).unwrap(),
+                    )
                 } else {
-                    (col, *centers.iter().min_by_key(|c| (col - **c).abs()).unwrap())
+                    (
+                        col,
+                        *centers.iter().min_by_key(|c| (col - **c).abs()).unwrap(),
+                    )
                 };
                 assert!((line - centre).abs() <= half);
                 // t = flow; l = (-t.z, t.x); offset = (col, row) - centre along l.
@@ -808,8 +860,10 @@ mod tests {
                     -((col - centre) as f32) * flow.y
                 };
                 // Off-centre lanes follow the ring side; the centre line keeps +t.
-                assert!(offset > 0.0 || (line == centre && (flow.x > 0.0 || flow.y > 0.0)),
-                    "cell ({row},{col}) flow {flow:?} sits on the wrong side of its centre {centre}");
+                assert!(
+                    offset > 0.0 || (line == centre && (flow.x > 0.0 || flow.y > 0.0)),
+                    "cell ({row},{col}) flow {flow:?} sits on the wrong side of its centre {centre}"
+                );
                 checked += 1;
             }
         }
@@ -830,10 +884,16 @@ mod tests {
             if a == b {
                 continue;
             }
-            assert!(a.x.abs() > 0.5 && (a.x + b.x).abs() < 1e-6 && a.y == b.y, "cell {i}: {a:?} vs {b:?}");
+            assert!(
+                a.x.abs() > 0.5 && (a.x + b.x).abs() < 1e-6 && a.y == b.y,
+                "cell {i}: {a:?} vs {b:?}"
+            );
             flipped += 1;
         }
-        assert!(flipped > 1_000, "flipped only {flipped} horizontal lane cells");
+        assert!(
+            flipped > 1_000,
+            "flipped only {flipped} horizontal lane cells"
+        );
     }
 
     #[test]
@@ -849,7 +909,11 @@ mod tests {
         for (k, slot) in slots.iter().enumerate() {
             let col = (slot.position[0] / cell).round() as i32;
             let row = (slot.position[2] / cell).round() as i32;
-            assert_eq!(world.grid[(row * size + col) as usize], VoxelType::Road, "slot {k} off road");
+            assert_eq!(
+                world.grid[(row * size + col) as usize],
+                VoxelType::Road,
+                "slot {k} off road"
+            );
             // Nearest wall cell centre at least two cells away: 4.5 m to its face.
             let mut nearest_wall = f32::MAX;
             for r in (row - 4).max(0)..(row + 5).min(size) {
@@ -861,13 +925,19 @@ mod tests {
                     }
                 }
             }
-            assert!(nearest_wall >= 2.0 * cell, "slot {k} hugs a wall: {nearest_wall} m");
+            assert!(
+                nearest_wall >= 2.0 * cell,
+                "slot {k} hugs a wall: {nearest_wall} m"
+            );
             let axis_aligned = (slot.forward[0].abs() - 1.0).abs() < 1e-6 && slot.forward[2] == 0.0
                 || (slot.forward[2].abs() - 1.0).abs() < 1e-6 && slot.forward[0] == 0.0;
             assert!(axis_aligned, "slot {k} heading {:?}", slot.forward);
             for station in &plan.stations {
                 let d = (station[0] - slot.position[0]).hypot(station[1] - slot.position[2]);
-                assert!(d >= SPAWN_STATION_CLEARANCE_M, "slot {k} within {d} m of a station");
+                assert!(
+                    d >= SPAWN_STATION_CLEARANCE_M,
+                    "slot {k} within {d} m of a station"
+                );
             }
             assert!(slot.depot_distance_m >= SPAWN_STATION_CLEARANCE_M);
         }
@@ -877,8 +947,16 @@ mod tests {
                 assert!(d >= SPAWN_MIN_SEPARATION_M, "slots overlap: {d} m");
             }
         }
-        assert!(slots.windows(2).all(|w| w[0].depot_distance_m <= w[1].depot_distance_m));
-        assert_eq!(spawn_slots(&world, &plan.stations, n).unwrap(), slots, "deterministic");
+        assert!(
+            slots
+                .windows(2)
+                .all(|w| w[0].depot_distance_m <= w[1].depot_distance_m)
+        );
+        assert_eq!(
+            spawn_slots(&world, &plan.stations, n).unwrap(),
+            slots,
+            "deterministic"
+        );
         assert!(spawn_slots(&world, &plan.stations, 100_000).is_err());
     }
 
@@ -891,7 +969,11 @@ mod tests {
             seen.insert(slot_rotation(generation, 77, n));
         }
         assert_eq!(seen.len(), n, "every slot is used within 200 generations");
-        assert_ne!(slot_rotation(1, 77, n), slot_rotation(1, 78, n) , "seed changes the map");
+        assert_ne!(
+            slot_rotation(1, 77, n),
+            slot_rotation(1, 78, n),
+            "seed changes the map"
+        );
         assert_eq!(slot_rotation(5, 1, 0), 0);
     }
 }

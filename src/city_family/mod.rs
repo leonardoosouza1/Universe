@@ -28,21 +28,23 @@
 //! - seeds with `seed % 10 == 9` are held-out evaluation seeds (`seed_split`).
 
 use bevy::prelude::{Vec2, Vec3};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::gpu::traffic::TrafficLight;
 use crate::organism_city::CityPlan;
 use crate::world::{VoxelType, VoxelWorld};
 
-pub mod ring;
 mod contract;
-mod topology;
+pub mod ring;
 #[cfg(test)]
 mod tests;
+mod topology;
 
 pub use contract::{finish_plan, metadata, validate};
-pub use topology::{detect_junctions, road_edge_distance, route_stats, spawn_slots_generic, RouteStats};
 pub(crate) use topology::road_at;
+pub use topology::{
+    RouteStats, detect_junctions, road_edge_distance, route_stats, spawn_slots_generic,
+};
 
 /// Result type shared by the family builders.
 pub type CityPlanResult = Result<CityPlan, String>;
@@ -73,11 +75,7 @@ pub const YELLOW_TICKS: u32 = 2 * 64;
 
 /// Held-out split by seed: one seed in ten is reserved for evaluation.
 pub fn seed_split(seed: u64) -> &'static str {
-    if seed % 10 == 9 {
-        "eval"
-    } else {
-        "train"
-    }
+    if seed % 10 == 9 { "eval" } else { "train" }
 }
 
 /// SplitMix64: deterministic, dependency-free, one stream per seed.
@@ -123,33 +121,57 @@ pub struct Nearest {
 /// convention of the x/z map frame; a sweep is at most a half turn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RoadPiece {
-    Straight { a: [f32; 2], b: [f32; 2] },
-    Arc { centre: [f32; 2], radius: f32, start_rad: f32, sweep_rad: f32 },
+    Straight {
+        a: [f32; 2],
+        b: [f32; 2],
+    },
+    Arc {
+        centre: [f32; 2],
+        radius: f32,
+        start_rad: f32,
+        sweep_rad: f32,
+    },
 }
 
 impl RoadPiece {
     pub fn length_m(&self) -> f32 {
         match *self {
             Self::Straight { a, b } => (b[0] - a[0]).hypot(b[1] - a[1]),
-            Self::Arc { radius, sweep_rad, .. } => radius * sweep_rad,
+            Self::Arc {
+                radius, sweep_rad, ..
+            } => radius * sweep_rad,
         }
     }
 
     pub fn start_point(&self) -> [f32; 2] {
         match *self {
             Self::Straight { a, .. } => a,
-            Self::Arc { centre, radius, start_rad, .. } => {
-                [centre[0] + radius * start_rad.cos(), centre[1] + radius * start_rad.sin()]
-            }
+            Self::Arc {
+                centre,
+                radius,
+                start_rad,
+                ..
+            } => [
+                centre[0] + radius * start_rad.cos(),
+                centre[1] + radius * start_rad.sin(),
+            ],
         }
     }
 
     pub fn end_point(&self) -> [f32; 2] {
         match *self {
             Self::Straight { b, .. } => b,
-            Self::Arc { centre, radius, start_rad, sweep_rad } => {
+            Self::Arc {
+                centre,
+                radius,
+                start_rad,
+                sweep_rad,
+            } => {
                 let angle = start_rad + sweep_rad;
-                [centre[0] + radius * angle.cos(), centre[1] + radius * angle.sin()]
+                [
+                    centre[0] + radius * angle.cos(),
+                    centre[1] + radius * angle.sin(),
+                ]
             }
         }
     }
@@ -172,7 +194,12 @@ impl RoadPiece {
                     tangent: [d[0] / len, d[1] / len],
                 }
             }
-            Self::Arc { centre, radius, start_rad, sweep_rad } => {
+            Self::Arc {
+                centre,
+                radius,
+                start_rad,
+                sweep_rad,
+            } => {
                 let v = [p[0] - centre[0], p[1] - centre[1]];
                 let r = v[0].hypot(v[1]);
                 let angle = v[1].atan2(v[0]);
@@ -193,7 +220,11 @@ impl RoadPiece {
                     for (point, at) in candidates {
                         let distance_m = (p[0] - point[0]).hypot(p[1] - point[1]);
                         if best.map_or(true, |b| distance_m < b.distance_m) {
-                            best = Some(Nearest { distance_m, foot: point, tangent: [-at.sin(), at.cos()] });
+                            best = Some(Nearest {
+                                distance_m,
+                                foot: point,
+                                tangent: [-at.sin(), at.cos()],
+                            });
                         }
                     }
                     best.expect("two arc endpoints")
@@ -273,7 +304,8 @@ impl CityLayout {
 
     pub fn inside_junction_box(&self, p: [f32; 2]) -> bool {
         self.junctions.iter().any(|j| {
-            (p[0] - j.centre[0]).abs() < JUNCTION_BOX_HALF_M && (p[1] - j.centre[1]).abs() < JUNCTION_BOX_HALF_M
+            (p[0] - j.centre[0]).abs() < JUNCTION_BOX_HALF_M
+                && (p[1] - j.centre[1]).abs() < JUNCTION_BOX_HALF_M
         })
     }
 
@@ -350,7 +382,9 @@ pub fn rasterize(world: &mut VoxelWorld, layout: &CityLayout) {
     world.waypoint_arcs.push(0.0);
     for pair in world.waypoints_world.windows(2) {
         let previous = *world.waypoint_arcs.last().unwrap();
-        world.waypoint_arcs.push(previous + pair[1].distance(pair[0]));
+        world
+            .waypoint_arcs
+            .push(previous + pair[1].distance(pair[0]));
     }
     world.lap_distance = *world.waypoint_arcs.last().unwrap_or(&0.0);
     let depot = layout.stations[0];
@@ -376,7 +410,11 @@ pub fn traffic_lights(layout: &CityLayout) -> (Vec<TrafficLight>, Vec<Value>) {
     let mut lights = Vec::new();
     let mut metadata = Vec::new();
     for (index, junction) in layout.junctions.iter().enumerate() {
-        let axis_offset = if index % 2 == 0 { 0 } else { GREEN_TICKS + YELLOW_TICKS };
+        let axis_offset = if index % 2 == 0 {
+            0
+        } else {
+            GREEN_TICKS + YELLOW_TICKS
+        };
         for (arm, dir) in ARM_DIRECTIONS.iter().enumerate() {
             // A vehicle approaching along `dir` arrives from the opposite arm.
             let from = (arm + 2) % 4;
@@ -387,7 +425,13 @@ pub fn traffic_lights(layout: &CityLayout) -> (Vec<TrafficLight>, Vec<Value>) {
                 junction.centre[0] - dir[0] * (ROAD_HALF_WIDTH_M + 3.0),
                 junction.centre[1] - dir[1] * (ROAD_HALF_WIDTH_M + 3.0),
             ];
-            let offset = (axis_offset + if dir[1] != 0.0 { GREEN_TICKS + YELLOW_TICKS } else { 0 }) % cycle;
+            let offset = (axis_offset
+                + if dir[1] != 0.0 {
+                    GREEN_TICKS + YELLOW_TICKS
+                } else {
+                    0
+                })
+                % cycle;
             lights.push(TrafficLight {
                 position: stop,
                 approach: *dir,

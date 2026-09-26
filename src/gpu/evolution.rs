@@ -129,11 +129,7 @@ fn apply_driving_reflex_birth(l1: &mut [f32], l2: &mut [f32]) {
 /// `1.0` — nothing to scale, and `0.0 × 1.0 = 0.0` stays null, not a division by
 /// near-zero blowing up the weight.
 fn spectral_rescale_factor(medido: f32, alvo: f32) -> f32 {
-    if medido > 1e-6 {
-        alvo / medido
-    } else {
-        1.0
-    }
+    if medido > 1e-6 { alvo / medido } else { 1.0 }
 }
 
 // ── Derived dimensions ────────────────────────────────────────────────────────
@@ -1446,7 +1442,11 @@ pub fn immutable_genome_sha256(genome: &Genome) -> [u8; 32] {
         }
         hasher.update((row as u64).to_le_bytes());
         let start = row * L1_NEURONS;
-        hash_f32_field(&mut hasher, b"l2-row", &genome.l2[start..start + L1_NEURONS]);
+        hash_f32_field(
+            &mut hasher,
+            b"l2-row",
+            &genome.l2[start..start + L1_NEURONS],
+        );
     }
     for knots in &genome.kan_knots {
         hash_f32_field(&mut hasher, b"kan-knots-row", knots);
@@ -1461,11 +1461,7 @@ pub fn immutable_genome_sha256(genome: &Genome) -> [u8; 32] {
         b"neuron-threshold-l1",
         &genome.neuron_threshold_l1,
     );
-    hash_f32_field(
-        &mut hasher,
-        b"neuron-activation",
-        &genome.neuron_activation,
-    );
+    hash_f32_field(&mut hasher, b"neuron-activation", &genome.neuron_activation);
     hash_f32_field(&mut hasher, b"gates-w", &genome.gates_w);
     hash_f32_field(&mut hasher, b"hip", &genome.hip);
     hash_f32_field(&mut hasher, b"fly", &genome.fly);
@@ -1482,17 +1478,13 @@ pub fn immutable_genome_sha256(genome: &Genome) -> [u8; 32] {
 /// infer output reachability. A matching hash proves inheritance of immutable
 /// genes, while `motor_behavior_frozen == false` records the shared-L2 coupling
 /// caveat for downstream JSON consumers.
-pub fn prove_mutation_ancestry(
-    parents: &[Genome],
-    offspring: &[Genome],
-) -> MutationAncestryProof {
+pub fn prove_mutation_ancestry(parents: &[Genome], offspring: &[Genome]) -> MutationAncestryProof {
     assert!(
         !parents.is_empty() || offspring.is_empty(),
         "cannot prove offspring ancestry against an empty parent set"
     );
     let parent_hashes: Vec<[u8; 32]> = parents.iter().map(immutable_genome_sha256).collect();
-    let offspring_hashes: Vec<[u8; 32]> =
-        offspring.iter().map(immutable_genome_sha256).collect();
+    let offspring_hashes: Vec<[u8; 32]> = offspring.iter().map(immutable_genome_sha256).collect();
     let mut parent_by_hash = std::collections::HashMap::with_capacity(parent_hashes.len());
     for (index, hash) in parent_hashes.iter().copied().enumerate() {
         parent_by_hash.entry(hash).or_insert(index);

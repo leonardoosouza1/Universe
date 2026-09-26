@@ -69,10 +69,10 @@ mod replay;
 mod report;
 
 pub use replay::{replay_open_loop, synthetic_wave};
-pub use report::{classify, GroupRow, SensitivityReport, Verdict};
+pub use report::{GroupRow, SensitivityReport, Verdict, classify};
 
 use crate::config::iara::brain::SENSORY_WAVE_SIZE;
-use crate::gpu::contribution::{contribution, BlockContribution};
+use crate::gpu::contribution::{BlockContribution, contribution};
 use crate::gpu::evolution::Genome;
 
 /// Mean `|Δ|` on a command above which a block counts as having moved it. The PRD's
@@ -330,8 +330,8 @@ pub fn run_gate(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify, groups, perturbed, run_gate, synthetic_wave, Reach, Verdict, DEFAULT_DELTAS,
-        SENSORY_WAVE_SIZE,
+        DEFAULT_DELTAS, Reach, SENSORY_WAVE_SIZE, Verdict, classify, groups, perturbed, run_gate,
+        synthetic_wave,
     };
     use crate::gpu::evolution::Genome;
 

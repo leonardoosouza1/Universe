@@ -4,7 +4,7 @@
 
 use super::ring;
 use super::*;
-use crate::organism_city::{build_city, is_orthogonal_grid_city, spawn_slots, CityFamily};
+use crate::organism_city::{CityFamily, build_city, is_orthogonal_grid_city, spawn_slots};
 use crate::world::{VoxelType, VoxelWorld};
 
 fn city_world() -> VoxelWorld {
@@ -39,18 +39,31 @@ fn seeded_rng_is_deterministic_and_bounded() {
 
 #[test]
 fn arc_nearest_matches_straight_geometry() {
-    let arc = RoadPiece::Arc { centre: [100.0, 100.0], radius: 60.0, start_rad: 0.0, sweep_rad: std::f32::consts::FRAC_PI_2 };
+    let arc = RoadPiece::Arc {
+        centre: [100.0, 100.0],
+        radius: 60.0,
+        start_rad: 0.0,
+        sweep_rad: std::f32::consts::FRAC_PI_2,
+    };
     // Point on the arc at 45 degrees.
     let p = [100.0 + 60.0 * 0.5f32.sqrt(), 100.0 + 60.0 * 0.5f32.sqrt()];
     let n = arc.nearest(p);
     assert!(n.distance_m < 1e-3, "{n:?}");
-    assert!((n.tangent[0] + 0.5f32.sqrt()).abs() < 1e-3 && (n.tangent[1] - 0.5f32.sqrt()).abs() < 1e-3);
+    assert!(
+        (n.tangent[0] + 0.5f32.sqrt()).abs() < 1e-3 && (n.tangent[1] - 0.5f32.sqrt()).abs() < 1e-3
+    );
     // Point outside the sweep snaps to the nearest endpoint.
     let q = [100.0, 40.0];
     let m = arc.nearest(q);
-    assert!((m.foot[0] - 160.0).abs() < 1e-3 && (m.foot[1] - 100.0).abs() < 1e-3, "{m:?}");
+    assert!(
+        (m.foot[0] - 160.0).abs() < 1e-3 && (m.foot[1] - 100.0).abs() < 1e-3,
+        "{m:?}"
+    );
     assert!((arc.length_m() - 60.0 * std::f32::consts::FRAC_PI_2).abs() < 1e-3);
-    let s = RoadPiece::Straight { a: [0.0, 0.0], b: [10.0, 0.0] };
+    let s = RoadPiece::Straight {
+        a: [0.0, 0.0],
+        b: [10.0, 0.0],
+    };
     let n = s.nearest([4.0, 3.0]);
     assert!((n.distance_m - 3.0).abs() < 1e-6 && n.foot == [4.0, 0.0] && n.tangent == [1.0, 0.0]);
 }
@@ -65,17 +78,33 @@ fn junction_detection_recovers_the_grid_city() {
     assert_eq!(junctions.len(), 25, "grid city has 5×5 crossings");
     // Streets end at the map border: 9 interior crossings are X, the 12 edge
     // crossings are T (3 arms) and the 4 corners have 2 arms.
-    let x_count = junctions.iter().filter(|j| j.kind() == JunctionKind::X).count();
+    let x_count = junctions
+        .iter()
+        .filter(|j| j.kind() == JunctionKind::X)
+        .count();
     assert_eq!(x_count, 9, "{junctions:?}");
-    assert!(junctions.iter().all(|j| j.arm_count() >= 2), "{junctions:?}");
+    assert!(
+        junctions.iter().all(|j| j.arm_count() >= 2),
+        "{junctions:?}"
+    );
     let declared: Vec<[f32; 2]> = plan.metadata()["intersections"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| [i["x_m"].as_f64().unwrap() as f32, i["z_m"].as_f64().unwrap() as f32])
+        .map(|i| {
+            [
+                i["x_m"].as_f64().unwrap() as f32,
+                i["z_m"].as_f64().unwrap() as f32,
+            ]
+        })
         .collect();
     for j in &junctions {
-        assert!(declared.iter().any(|d| (d[0] - j.centre[0]).abs() < 0.01 && (d[1] - j.centre[1]).abs() < 0.01), "{j:?}");
+        assert!(
+            declared
+                .iter()
+                .any(|d| (d[0] - j.centre[0]).abs() < 0.01 && (d[1] - j.centre[1]).abs() < 0.01),
+            "{j:?}"
+        );
     }
     // The generic spawn finder also works on the grid and stays on lanes.
     let slots = spawn_slots_generic(&world, &plan.stations, 32).unwrap();
@@ -123,20 +152,32 @@ fn ring_city_passes_the_family_contract_for_train_and_eval_seeds() {
         assert!(!junctions.is_empty());
         let arms: usize = junctions.iter().map(Junction::arm_count).sum();
         assert_eq!(plan.traffic_lights().len(), arms);
-        assert!(junctions.iter().all(|j| matches!(j.arm_count(), 3 | 4)), "{junctions:?}");
+        assert!(
+            junctions.iter().all(|j| matches!(j.arm_count(), 3 | 4)),
+            "{junctions:?}"
+        );
         // Layout junctions and detected junctions agree one to one.
         let layout = ring::layout(&world, seed).unwrap();
         assert_eq!(layout.junctions.len(), junctions.len());
         for (l, d) in layout.junctions.iter().zip(junctions.iter()) {
-            assert!((l.centre[0] - d.centre[0]).abs() <= world.cell_size && (l.centre[1] - d.centre[1]).abs() <= world.cell_size, "{l:?} vs {d:?}");
+            assert!(
+                (l.centre[0] - d.centre[0]).abs() <= world.cell_size
+                    && (l.centre[1] - d.centre[1]).abs() <= world.cell_size,
+                "{l:?} vs {d:?}"
+            );
             assert_eq!(l.arms, d.arms, "seed {seed} junction {l:?} vs {d:?}");
         }
         // The dispatching spawn finder takes the generic path on a ring city.
         let slots = spawn_slots(&world, &plan.stations, 32).unwrap();
-        assert_eq!(slots, spawn_slots_generic(&world, &plan.stations, 32).unwrap());
+        assert_eq!(
+            slots,
+            spawn_slots_generic(&world, &plan.stations, 32).unwrap()
+        );
         for slot in &slots {
             let flow = world.get_flow_at(slot.position[0], slot.position[2]);
-            assert!((flow.x - slot.forward[0]).abs() < 1e-6 && (flow.y - slot.forward[2]).abs() < 1e-6);
+            assert!(
+                (flow.x - slot.forward[0]).abs() < 1e-6 && (flow.y - slot.forward[2]).abs() < 1e-6
+            );
         }
     }
 }
@@ -158,17 +199,32 @@ fn ring_lane_flow_is_right_hand_and_zero_in_junction_boxes() {
     let south = world.get_flow_at(x, min_z + world.cell_size);
     let north = world.get_flow_at(x, min_z - world.cell_size);
     assert!(road(&world, x, min_z));
-    assert!((south.x - 1.0).abs() < 1e-6 && south.y.abs() < 1e-6, "{south:?}");
-    assert!((north.x + 1.0).abs() < 1e-6 && north.y.abs() < 1e-6, "{north:?}");
+    assert!(
+        (south.x - 1.0).abs() < 1e-6 && south.y.abs() < 1e-6,
+        "{south:?}"
+    );
+    assert!(
+        (north.x + 1.0).abs() < 1e-6 && north.y.abs() < 1e-6,
+        "{north:?}"
+    );
     // On the arc the flow follows the tangent and has unit length.
     let corner = [min_x + radius, min_z + radius];
     let angle = 1.25 * std::f32::consts::PI;
-    let p = [corner[0] + (radius + world.cell_size) * angle.cos(), corner[1] + (radius + world.cell_size) * angle.sin()];
+    let p = [
+        corner[0] + (radius + world.cell_size) * angle.cos(),
+        corner[1] + (radius + world.cell_size) * angle.sin(),
+    ];
     let f = world.get_flow_at(p[0], p[1]);
     assert!((f.length() - 1.0).abs() < 1e-3, "{f:?}");
-    assert!((f.x * (p[0] - corner[0]) + f.y * (p[1] - corner[1])).abs() < 0.05 * radius, "flow not tangent: {f:?}");
+    assert!(
+        (f.x * (p[0] - corner[0]) + f.y * (p[1] - corner[1])).abs() < 0.05 * radius,
+        "flow not tangent: {f:?}"
+    );
     for j in &layout.junctions {
-        assert_eq!(world.get_flow_at(j.centre[0], j.centre[1]).length_squared(), 0.0);
+        assert_eq!(
+            world.get_flow_at(j.centre[0], j.centre[1]).length_squared(),
+            0.0
+        );
     }
 }
 
@@ -199,7 +255,10 @@ fn reference_grid_city_is_unchanged_by_the_module() {
     let _quiet = crate::world::silence_map_diag();
     let mut world = city_world();
     let plan = build_city(&mut world);
-    assert_eq!(plan.metadata()["schema_version"], crate::organism_city::CITY_GEOMETRY_VERSION);
+    assert_eq!(
+        plan.metadata()["schema_version"],
+        crate::organism_city::CITY_GEOMETRY_VERSION
+    );
     assert_eq!(plan.traffic_lights().len(), 100);
     let road_cells = world.grid.iter().filter(|c| **c == VoxelType::Road).count();
     // 5 streets × 5 cells × 261 cells extent, each axis, minus 25 overlaps of 25 cells.

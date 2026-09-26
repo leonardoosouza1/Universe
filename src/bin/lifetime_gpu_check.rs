@@ -123,7 +123,13 @@ fn main() {
     brain.set_lifetime_flags(1 | 8);
     let mut frozen_last = None;
     for tick in 64..128 {
-        frozen_last = Some(dispatch(&mut brain, &device, &queue, &waves(tick), tick as u32));
+        frozen_last = Some(dispatch(
+            &mut brain,
+            &device,
+            &queue,
+            &waves(tick),
+            tick as u32,
+        ));
     }
     let frozen_last = frozen_last.expect("frozen loop has one sample");
     let frozen_p_constant = (0..N)
@@ -132,7 +138,9 @@ fn main() {
         <= 1e-8;
     let residual_expected = life.iter().any(|genes| genes.0[3] > 0.01);
     let frozen_residual_applied = !residual_expected
-        || (0..N).any(|slot| (0..3).any(|k| frozen_last.1[slot * LIFETIME_STRIDE + 375 + 9 + k].abs() > 1e-8));
+        || (0..N).any(|slot| {
+            (0..3).any(|k| frozen_last.1[slot * LIFETIME_STRIDE + 375 + 9 + k].abs() > 1e-8)
+        });
     brain.set_lifetime_flags(1);
 
     brain.upload_lifetime(&life, 1);

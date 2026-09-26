@@ -71,7 +71,10 @@ mod silence_tests {
         assert_eq!(pack_silence_range(ranges[0]), 16 << 16);
         assert_eq!(pack_silence_range(ranges[1]), 128 | (160 << 16));
         assert_eq!(pack_silence_range((0, 0)), 0, "empty range packs to none");
-        assert_eq!(parse_silence_channels("5-5").unwrap_err(), "silence range 5-5 must satisfy lo < hi <= 192");
+        assert_eq!(
+            parse_silence_channels("5-5").unwrap_err(),
+            "silence range 5-5 must satisfy lo < hi <= 192"
+        );
         assert!(parse_silence_channels("0-193").is_err());
         assert!(parse_silence_channels("0-1,2-3,4-5").is_err());
         assert!(parse_silence_channels("").is_err());
@@ -186,10 +189,18 @@ pub fn parse_silence_channels(text: &str) -> Result<[(u16, u16); 2], String> {
         let (lo, hi) = part
             .split_once('-')
             .ok_or_else(|| format!("silence range `{part}` must be lo-hi"))?;
-        let lo: u16 = lo.trim().parse().map_err(|_| format!("bad range start `{lo}`"))?;
-        let hi: u16 = hi.trim().parse().map_err(|_| format!("bad range end `{hi}`"))?;
+        let lo: u16 = lo
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad range start `{lo}`"))?;
+        let hi: u16 = hi
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad range end `{hi}`"))?;
         if lo >= hi || usize::from(hi) > SENSORY_WAVE_SIZE {
-            return Err(format!("silence range {lo}-{hi} must satisfy lo < hi <= {SENSORY_WAVE_SIZE}"));
+            return Err(format!(
+                "silence range {lo}-{hi} must satisfy lo < hi <= {SENSORY_WAVE_SIZE}"
+            ));
         }
         if count == 2 {
             return Err("at most two silence ranges".to_string());
