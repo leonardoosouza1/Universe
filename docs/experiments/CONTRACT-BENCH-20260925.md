@@ -616,3 +616,26 @@ then elites M and J on a 32-start pool (M held-out 16, J held-out 24).
 Prediction: M ≥ 20/32 with held-out ≥ 9/16; J on 32 ≈ 18/32 (60%, as on 20).
 If M's held-out rate is not above J's, eight starts already saturate and the
 judge cost should stay at 8.
+
+#### Arm L — retina silenced (`--silence-channels 0-16,128-160`), fixed 8 (21:48)
+
+| | gen 3 | gen 11 | gen 23 | elite pool 20 (silenced) | elite pool 20 (sighted) |
+|---|---|---|---|---|---|
+| L silenced | pop 1/256, elite 0/8 | 7, 2/8 | 34, 3/8 | 5/20 (trained 3/8, held-out 2/12) | **0/20**, all code 16, v_max 0.7–4.9 |
+| J control | 41, 4/8 | 64, 5/8 | 64, 6/8 | 12/20 (6/8, 6/12) | – |
+
+Binary control: the arm-J elite on the rebuilt binary reproduces its 20-start
+evaluation to the digit (12/20, same codes, same speeds), so the mask is
+byte-neutral when unset.
+
+Verdict: the "scenery shortcut" reading is refuted as the explanation of the
+memorisation. Without the retina the population learns slower, not faster, and
+its elite drives at 11–13 m/s into code 1 (contact) on 4 of 20 starts: the
+retina is where the lane geometry lives once ch20–27 have overwritten the
+right half of the wall fan. The being was not memorising scenery instead of
+reading distance; it needs the retina to keep the lane at all, and the 4-start
+judge simply did not pay for a generic stop. A brain evolved blind also cannot
+be handed its eyes back (0/20 sighted, crawling): the input distribution
+shift is total.
+
+Cost: 24 gens × 256 replicas, 2:29 min, plus two 7-s evaluations.
