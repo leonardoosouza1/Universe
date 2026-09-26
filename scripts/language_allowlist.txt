@@ -77,7 +77,6 @@ src/brain/format.rs
 src/math/cfc_perception.rs
 src/math/stats.rs
 src/simulation/motor.rs
-tests/wgsl_validation.rs
 docs/arquivo/dirs/iara_agi/src/memory.rs
 docs/arquivo/dirs/iara_agi/src/reality.rs
 docs/arquivo/dirs/iara_agi/src/repominer.rs

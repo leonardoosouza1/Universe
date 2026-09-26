@@ -14,7 +14,8 @@
 #   * No step runs on a GPU. The only test that opens a real device is `#[ignore]`d
 #     (see the test step) and `cargo test` skips it by default.
 #
-# Last measured against the tree on 2026-09-25 (fmt clean, lib 579 tests pass, bin 144 pass).
+# Last measured against the tree on 2026-09-25 (fmt clean, lib 587 tests pass, bin 144 pass,
+# taxi-world 94 pass; clippy --lib --bin gpu_evolve: 322 warnings, 0 errors).
 
 name: CI
 
