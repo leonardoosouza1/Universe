@@ -9,3 +9,4 @@
 15c388cf6503a961c83d4b95d1e8cdace801ef3b
 # style: finish the format pass (rustfmt was stalling on ui.rs)
 fa418a0c4b05ccfff924a4234b096ce54b63d371
+9d4a02b7b0e58fcd1f3b3cc61350471b4ac8c4c9  # 2026-09-25 cargo fmt -p universe, formatting only

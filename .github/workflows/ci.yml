@@ -3,18 +3,18 @@
 # Two jobs, deliberately split by what they need:
 #
 #   language — pure bash, no Rust toolchain, no GPU. Runs on any clone, always.
-#   rust     — needs the out-of-tree `iara-runtime` crates (see the job's first step).
+#   rust     — needs the Rust toolchain and Bevy's Linux libraries; no GPU.
 #
 # Honesty notes, so nobody reads this file as a claim that the tree is clean:
 #
-#   * `cargo fmt` and `cargo clippy` are NON-BLOCKING today. Both fail on the current
-#     tree; the measurements are recorded on each step. They are wired up now so the
-#     debt is visible and so they can be flipped to blocking in one line each once it
-#     is paid. Do not delete them, and do not pretend they pass.
+#   * `cargo fmt` is BLOCKING (tree formatted on 2026-08-17 and again on 2026-09-25,
+#     both commits in .git-blame-ignore-revs). `cargo clippy` is NON-BLOCKING: the
+#     style warnings are real debt; the step records them. Do not delete it, and do
+#     not pretend it passes.
 #   * No step runs on a GPU. The only test that opens a real device is `#[ignore]`d
 #     (see the test step) and `cargo test` skips it by default.
 #
-# Last measured against the tree on 2026-08-17.
+# Last measured against the tree on 2026-09-25 (fmt clean, lib 579 tests pass, bin 144 pass).
 
 name: CI
 
@@ -90,58 +90,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      # The repository is checked out into a SUBDIRECTORY on purpose: Cargo.toml
-      # points at `../iara-runtime/...`, so the sibling crates have to sit next to
-      # the checkout, not inside it.
-      #
-      #   $GITHUB_WORKSPACE/
-      #   ├── Universe/       ← this repository
-      #   └── iara-runtime/   ← fetched by the next step
+      # Checked out into a subdirectory (a leftover of the out-of-tree runtime crates
+      # layout); every later step uses working-directory: Universe.
       - name: Check out Universe
         uses: actions/checkout@v4
         with:
           path: Universe
 
-      # KNOWN BLOCKER — see CONTRIBUTING.md § "the repository does not build from a
-      # fresh clone yet". `iara-perception` and `iara-cfc` are path dependencies on a
-      # directory that is not in this repository and is not a submodule. Measured on
-      # 2026-08-17, an untouched export of HEAD cannot even resolve its manifest:
-      #
-      #   $ git archive HEAD | tar -x -C /tmp/clonetest && cd /tmp/clonetest
-      #   $ cargo metadata --format-version 1 --no-deps
-      #   error: failed to load manifest for dependency `iara-cfc`
-      #   Caused by: failed to read `/tmp/iara-runtime/iara-cfc/Cargo.toml`
-      #   Caused by: No such file or directory (os error 2)
-      #
-      # This step therefore FAILS LOUDLY instead of skipping the build and reporting
-      # a green run that never happened.
-      #
-      # TODO (maintainer): pick one and this whole step becomes a no-op —
-      #   (a) publish iara-runtime and set the `IARA_RUNTIME_REPO` repository variable
-      #       (Settings → Secrets and variables → Actions → Variables), optionally with
-      #       `IARA_RUNTIME_REF` to pin a branch or tag;
-      #   (b) add it as a git submodule and enable `submodules: recursive` above;
-      #   (c) vendor the two crates into this tree and drop the `../` paths.
-      - name: Fetch the out-of-tree path dependencies (iara-runtime)
-        env:
-          IARA_RUNTIME_REPO: ${{ vars.IARA_RUNTIME_REPO }}
-          IARA_RUNTIME_REF: ${{ vars.IARA_RUNTIME_REF }}
-        run: |
-          set -euo pipefail
-          if [ -z "${IARA_RUNTIME_REPO}" ]; then
-            echo "::error::Cargo.toml depends on ../iara-runtime/iara-perception and"
-            echo "::error::../iara-runtime/iara-cfc, which are NOT part of this repository."
-            echo "::error::A clone of this repo cannot resolve its own manifest, so there"
-            echo "::error::is nothing here to build."
-            echo "::error::Fix: set the IARA_RUNTIME_REPO repository variable to the URL of"
-            echo "::error::the iara-runtime repository, or vendor the crates in-tree, or add"
-            echo "::error::a submodule. See CONTRIBUTING.md."
-            exit 1
-          fi
-          git clone --depth 1 ${IARA_RUNTIME_REF:+--branch "$IARA_RUNTIME_REF"} \
-            "$IARA_RUNTIME_REPO" iara-runtime
-          test -f iara-runtime/iara-cfc/Cargo.toml
-          test -f iara-runtime/iara-perception/Cargo.toml
+      # The runtime crates (iara-perception, iara-cfc) are vendored under vendor/ since
+      # commit 53ee0f4 (2026-08-17); a fresh clone resolves its own manifest. The
+      # former "fetch ../iara-runtime" step, which exited 1 unless a repository
+      # variable was set, was removed on 2026-09-25 after it had blocked every run.
 
       # Bevy is built here with default-features = false (see Cargo.toml), but the
       # enabled set still includes bevy_winit + x11, which link against system

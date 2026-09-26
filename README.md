@@ -137,7 +137,7 @@ Useful extras:
 | `--n-elite <n>` / `--tourney <k>` | elitism size and tournament size (both default 3) |
 | `--fitness <mode>` | `checkpoint` (default), `prog`, `dist`, `centro` |
 | `--pistas "9001,9002"` | rotate a set of training track seeds, deterministically by generation |
-| `--pista-held-out <seed>` / `--held-out-cada <k>` | measure generalisation on a track selection never optimises against |
+| `--track-held-out <seed>` / `--held-out-every <k>` | measure generalisation on a track selection never optimises against (legacy aliases `--pista-held-out`, `--held-out-cada` still accepted) | <!-- check-language: allow -->
 | `--ativacao` / `--ativacao-n <n>` / `--regioes` | L1/L2 activation statistics, sampled every n ticks, optionally split by track curvature |
 | `--painel` / `--painel-porta <n>` | live HTTP dashboard (default port 3200); no thread is spawned without the flag |
 

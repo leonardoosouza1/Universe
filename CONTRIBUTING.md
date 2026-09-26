@@ -22,56 +22,14 @@ the migration runs (see [Language policy](#language-policy)).
 
 ---
 
-## Before you start: the repository does not build from a fresh clone yet
+## Before you start: a fresh clone builds
 
-**Known blocker. Fix this before opening a PR, and do not be surprised by it.**
-
-`Cargo.toml` declares two dependencies by relative path to a sibling directory that is *not*
-part of this repository:
-
-```toml
-iara-perception = { path = "../iara-runtime/iara-perception" }
-iara-cfc        = { path = "../iara-runtime/iara-cfc" }
-```
-
-`../iara-runtime` is not tracked here and is not a git submodule, so a clone of this
-repository cannot even resolve its own manifest:
-
-```console
-$ git archive HEAD | tar -x -C /tmp/clonetest && cd /tmp/clonetest
-$ cargo metadata --format-version 1 --no-deps
-error: failed to load manifest for workspace member `/tmp/clonetest/.`
-
-Caused by:
-  failed to load manifest for dependency `iara-cfc`
-
-Caused by:
-  failed to read `/tmp/iara-runtime/iara-cfc/Cargo.toml`
-
-Caused by:
-  No such file or directory (os error 2)
-```
-
-Both crates are genuinely used — `src/math/cfc_perception.rs` re-exports `iara_cfc::CfcCell`
-and `src/perception/retina.rs` builds on `iara_perception::PerceptionPipeline` — so they
-cannot simply be dropped.
-
-Until the maintainer publishes or vendors `iara-runtime`, you need it checked out as a
-**sibling of this repository**:
-
-```
-some-parent/
-├── Universe/       ← this repository
-└── iara-runtime/   ← the crates above
-```
-
-CI has the same problem and does not hide it: the `deps` job fails with an explicit message
-rather than reporting a green build it never performed. See
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-
-> **TODO (maintainer):** publish `iara-runtime` and set the `IARA_RUNTIME_REPO` repository
-> variable, add it as a git submodule, or vendor the two crates into this tree. Any of the
-> three unblocks CI and outside contributors in one commit.
+The two runtime crates this tree depends on, `iara-perception` and `iara-cfc`, are
+vendored under `vendor/` since commit `53ee0f4` (2026-08-17); `Cargo.toml` points at
+them by in-tree path, so `cargo metadata --no-deps` resolves on an untouched export of
+`HEAD`. `scripts/check_vendor.sh` checks that the vendored copies are byte-identical to
+upstream. Build only the target you need (`nice -n 10 env CARGO_BUILD_JOBS=1 cargo
+build --bin gpu_evolve`): a bare `cargo build` links 41 binaries of ~0.7 GB each.
 
 ---
 
@@ -98,7 +56,9 @@ revoked on **2026-08-17**.
 The tree is mid-migration. Measured on 2026-08-17:
 
 ```console
+<!-- check-language: off -->
 $ grep -rlE '(//|///|//!).*\b(não|também|porque|quando|pra|para|com|que|isso|cérebro|pista|geração|mundo|é)\b' \
+<!-- check-language: on -->
     --include=*.rs src/ tests/ benches/ | wc -l
 109
 $ find src tests benches -name '*.rs' | wc -l
@@ -180,7 +140,9 @@ The regression tests that catch it live in `src/bin/gpu_evolve/tests.rs`:
 - `genoma_sobrevive_ida_e_volta_no_disco` — writes a `Genome` with sentinel values in every
   block, reads it back, compares field by field. The sentinels exist so that "passed" cannot
   mean "both sides fell into the same default".
+<!-- check-language: off -->
 - `genoma_v2_com_cabecalho_sobrevive_ida_e_volta` — same, for the v2 header format.
+<!-- check-language: on -->
 
 Run them with:
 
@@ -201,7 +163,9 @@ device, and it is `#[ignore]`d for that reason:
 ```rust
 // src/gpu/retina_digest_parity_test.rs:143
 #[ignore = "abre GPU real — rodar manualmente: cargo test --release --lib -- --ignored retina_digest_parity"]
+<!-- check-language: off -->
 fn retina_digest_bate_com_cpu_ao_longo_de_varios_ticks() {
+<!-- check-language: on -->
 ```
 
 `cargo test` skips `#[ignore]`d tests by default, so CI never touches a GPU. If you have one,
@@ -228,16 +192,16 @@ warning: `universe` (lib) generated 186 warnings
 error: could not compile `universe` (lib) due to 9 previous errors; 186 warnings emitted
 ```
 
-121 of 127 files disagree with `rustfmt`, and clippy currently reports 9 deny-by-default
-errors in the library (`erasing_op`, `absurd_extreme_comparisons`, `approx_constant`,
-`never_loop`). CI therefore runs both **non-blocking**, with the numbers recorded in the
-workflow so nobody mistakes yellow for green.
+The tree was formatted on 2026-08-17 and again on 2026-09-25 (85 files had drifted;
+both formatting-only commits are in `.git-blame-ignore-revs`), so `cargo fmt -p universe
+--check` is **blocking** in CI. The deny-by-default clippy errors are gone since
+2026-08-17; the ~185 style warnings remain, so the clippy step stays **non-blocking**
+with the count recorded in the workflow so nobody mistakes yellow for green.
 
 What this means for you:
 
-- **Format the code you write.** `cargo fmt -p universe` reformats the whole package, which
-  would bury your change under thousands of unrelated lines — don't. Format your own hunks
-  (most editors can format a selection with `rustfmt`).
+- **Format the code you write.** The tree is fmt-clean, so `cargo fmt -p universe` touches
+  only your own files; run it before committing.
 - **Do not add new clippy errors.** Check your own files:
   `cargo clippy --release -p universe 2>&1 | grep -A5 'your_file.rs'`.
 - A PR that is *only* "run `cargo fmt` on everything" is welcome, but it must be exactly that
@@ -263,7 +227,9 @@ Two flags already in `src/bin/gpu_evolve/main.rs` are the template:
 of the fovea and start looking at the edges of the retina. The static defaults to `false`
 (`src/gpu/perception.rs:108`), and the comment above the flag states the reason in one line:
 
+<!-- check-language: off -->
 > `Off por padrão — muda a DISTRIBUIÇÃO de entrada, então campeão antigo precisa de A/B pareado, não de fé.`
+<!-- check-language: on -->
 > ("Off by default — it changes the input DISTRIBUTION, so an old champion needs a paired
 > A/B, not faith.")
 
