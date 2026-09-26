@@ -9,8 +9,8 @@
 //! integration test (`tests/*.rs`) can only link a package's LIBRARY target,
 //! never another binary target — so `run` is `pub` here and `src/bin/
 //! taxi_evolve.rs` is a thin wrapper calling straight into it, which is what
-//! lets `tests/evolve_smoke.rs` drive the full CLI "em código, não
-//! subprocesso" (this task's own acceptance-test wording).
+//! lets `tests/evolve_smoke.rs` drive the full CLI "in code, not
+//! a subprocess" (this task's own acceptance-test wording).
 //!
 //! ```text
 //! taxi_evolve --cenario <cenario.json> --mapa <traco_ref.json | dir/> \
@@ -222,7 +222,7 @@ pub fn run(args: &[String]) -> Result<PathBuf, String> {
 /// cenario asks for that this crate structurally cannot honour (a different
 /// `NPX`, `custo_gene != 0`, a non-`'vida'` ruler, `pax_cidade`, `ponto != 0`,
 /// `jardim_comum`) is reported as a warning STRING, never silently dropped —
-/// this task's own doctrine ("declare o negativo com o mecanismo").
+/// this task's own doctrine ("declare the negative with the mechanism").
 fn build_config(cenario: &Value) -> (Config, Vec<String>) {
     let mut cfg = Config::default();
     let mut warnings = Vec::new();
@@ -232,7 +232,7 @@ fn build_config(cenario: &Value) -> (Config, Vec<String>) {
             if regua != "vida" {
                 warnings.push(format!(
                     "mundo.regua = '{regua}' is not supported -- this crate implements ONLY the \
-                     'vida' ruler (judge.rs's own doc comment: \"Só a régua vida\"); running with 'vida' regardless"
+                     'vida' ruler (judge.rs's own doc comment: \"only the life ruler\"); running with 'vida' regardless"
                 ));
             }
         }
@@ -339,7 +339,7 @@ fn warn_about_unsupported_bracos(cenario: &Value) {
             .unwrap_or("<unnamed>");
         if name != "linear" {
             eprintln!(
-                "[aviso] ignoring braço '{name}': this v0 CPU port implements only the 'linear' \
+                "[warning] ignoring arm '{name}': this v0 CPU port implements only the 'linear' \
                  brain (no non-Linear brain exists in this crate yet)"
             );
         }

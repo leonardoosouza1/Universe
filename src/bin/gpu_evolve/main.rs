@@ -7949,7 +7949,7 @@ fn main() {
             );
         }
 
-        let sem_vida = states
+        let lifeless = states
             .iter()
             .take(n_seres)
             .filter(|s| s.life_left <= 0.0)
@@ -8053,15 +8053,15 @@ fn main() {
                     .iter()
                     .map(|s| s.values[101] as u64)
                     .sum::<u64>(),
-                sem_vida,
+                lifeless,
                 n_seres
             );
         } else {
             println!(
-                "  [parede] {:.1}% dos ticks colado (<{:.0} m) | sem vida: {}/{} | custo={:.0} m/s",
+                "  [wall] {:.1}% of ticks glued (<{:.0} m) | lifeless: {}/{} | cost={:.0} m/s",
                 100.0 * wall_frac,
                 WALL_NEAR_M,
-                sem_vida,
+                lifeless,
                 n_seres,
                 wall_cost
             );
@@ -8567,9 +8567,9 @@ fn main() {
                 // precisar de nenhum código de "restaurar" aqui.
                 ctx.reload_world(&world);
 
-                // MEDIANA dos vivos (item 3 da TAREFA) — mesmo critério "vivo"
-                // (`life_left > 0.0`) usado no resto do relatório desta geração
-                // (ex.: bloco `sem_vida` logo abaixo).
+                // MEDIAN of the living (task item 3) — the same "alive" criterion
+                // (`life_left > 0.0`) used in the rest of this generation's report
+                // (e.g. the `lifeless` block right below).
                 let treino_vivos: Vec<f64> = (0..n_seres)
                     .filter(|&i| states[i].life_left > 0.0)
                     .map(|i| fitness[i])

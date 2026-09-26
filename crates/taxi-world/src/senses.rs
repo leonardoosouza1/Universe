@@ -10,8 +10,8 @@
 //!
 //! This module does NOT depend on T2's `Beings` (`beings.rs`, written in parallel
 //! by another implementer) — `SensesInput` below is this task's own minimal,
-//! borrowed read interface, built to the plan's brief ("defina uma struct de
-//! entrada própria... documentada, para que T5 ligue os dois sem redesenho").
+//! borrowed read interface, built to the plan's brief ("define your own documented
+//! input struct... so that T5 can wire the two without a redesign").
 //!
 //! **Not touched by this module, on purpose:** `physics.rs`, `passengers.rs`
 //! (T2/T4's files).
@@ -120,12 +120,12 @@ pub struct SensesInput<'a> {
     /// Ticks since the last pickup (SPEC §1 `t_ult`), read by `e_espera`.
     pub since_pickup: &'a [f32],
     /// Which `World` (index into the `w: &[World]` slice `observe` receives)
-    /// this being is on (SPEC §3.1 "Índice do lote", `map_idx[b] = c`).
+    /// this being is on (SPEC §3.1 "batch index", `map_idx[b] = c`).
     pub map_idx: &'a [u32],
 }
 
-/// Per-map running offset into a flat `price_mul` slice (SPEC §3.1 "Índice do
-/// lote" applied to T2's per-map `physics::update_daily_prices`, which takes ONE
+/// Per-map running offset into a flat `price_mul` slice (SPEC §3.1 "batch
+/// index" applied to T2's per-map `physics::update_daily_prices`, which takes ONE
 /// `&World` at a time): map `m`'s `K` district prices occupy `price_mul[offset(m)
 /// .. offset(m) + w[m].tax.len()]`. Exposed so T5's driver lays its
 /// `price_mul: Vec<f32>` out the same way it calls `update_daily_prices` once per
@@ -159,7 +159,7 @@ pub fn map_price_offsets(w: &[World]) -> Vec<usize> {
 /// `target`, when `Some`, is `alvo_por_tique[t]` straight from the reference
 /// trace — the identity-gate hook (SPEC §7.2, plan §T3 "Interface"), flat length
 /// `n * 2`, `[being][xy]`. `alvo()` reads a passenger slot ignoring `px_ok` (SPEC
-/// §4 "Quirk que deve ser reproduzido" — see `compute_target` below), exactly the
+/// §4 "quirk that must be reproduced" — see `compute_target` below), exactly the
 /// kind of RNG-adjacent state where a float mismatch could otherwise diverge the
 /// whole trajectory. `None` computes `alvo()` from `input.px`/`input.carrying`/
 /// `input.dest_*` instead — the path a real battery (T6) uses.
@@ -321,7 +321,7 @@ fn perceived_distance(dist: f32, cfg: &Config) -> f32 {
 
 /// SPEC §4 `alvo()` (`campo.py:256-259`): the destination if carrying a
 /// passenger, else the nearest passenger slot — **ignoring `px_ok`** (SPEC §4
-/// "Quirk que deve ser reproduzido": a being that has used every slot still
+/// "quirk that must be reproduced": a being that has used every slot still
 /// "sees" a phantom passenger in `d_alvo`; SPEC is explicit this must NOT be
 /// fixed in v0, it would break the identity gate). Ties broken by first
 /// occurrence, matching `torch.argmin`.
@@ -591,8 +591,8 @@ mod tests {
         }
     }
 
-    // The identity gate against the real `traco_ref.json` (SPEC §11, "o portão
-    // que vale ouro") lives in `tests/gate_tick_zero.rs`, NOT here — it is
+    // The identity gate against the real `traco_ref.json` (SPEC §11, "the gate
+    // worth gold") lives in `tests/gate_tick_zero.rs`, NOT here — it is
     // `#[ignore]`d and only exercises `observe`/`SensesInput`/`NearestCache`'s
     // PUBLIC surface, and moving it out is what keeps this file under
     // `docs/STYLE.md`'s 600-line cap. Run it with `TAXI_TRACO_REF=/path/to/

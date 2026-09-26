@@ -18,7 +18,7 @@
 //! [`Simulador::avaliar`] mirrors `campo.avaliar` (`campo.py:605-607`) exactly:
 //! `fit.view(P, NC*R).mean(1)`, i.e. ONE fitness value per genome, averaged over
 //! that genome's `mapas.len() * r` beings. The batch layout a real implementation
-//! MUST use is SPEC §10's "índice do lote" (plan §3.1, armadilha 8):
+//! MUST use is SPEC §10's "batch index" (plan §3.1, trap 8):
 //!
 //! ```text
 //! b = p * (NC * R) + c * R + r        // p = genome index, c = map index, r = replica
@@ -32,8 +32,8 @@
 //! expose).
 //!
 //! The GA's own RNG does not need to be bit-identical to torch's Philox — SPEC §10
-//! says so explicitly ("O RNG do GA... não precisa ser bit-igual... o que precisa
-//! bater é a distribuição do resultado"). This module reuses `passengers::TaxiRng`
+//! says so explicitly ("the GA's RNG... does not need to be bit-identical... what has to
+//! match is the distribution of the result"). This module reuses `passengers::TaxiRng`
 //! (a crate-local xorshift64*) rather than adding `rand`/`rand_chacha`, per this
 //! task's hard rule against new dependencies, plus a small Box-Muller wrapper for
 //! `N(0, sigma)` draws.
@@ -76,7 +76,7 @@ pub struct GaParams {
     pub elite_frac: f32,
     pub clamp: f32,
     pub ticks: usize,
-    /// `W0` (SPEC §10 "Inicialização"): `None` seeds the population `~ N(0,
+    /// `W0` (SPEC §10 "initialisation"): `None` seeds the population `~ N(0,
     /// 0.8²)` (today's only behaviour); `Some(champion)` seeds it
     /// `champion + N(0, SIGMA_ESPINHA²)` instead — every individual starts a
     /// small mutation away from a known-good genome rather than from scratch.
@@ -138,7 +138,7 @@ pub struct Champion {
 pub enum ChampionMode {
     /// `campeao='ultimo'` (today's only behaviour, and the default): the
     /// argmax of the LAST generation, `populations[si][0]` verbatim. SPEC §10's
-    /// own note on this mode: "maldição do vencedor com SNR .72" — a noisy
+    /// own note on this mode: "winner's curse with SNR .72" — a noisy
     /// last-generation fitness estimate biases the argmax toward genomes that
     /// got a lucky world draw, not necessarily the best genome.
     #[default]
@@ -153,7 +153,7 @@ pub enum ChampionMode {
     Reevaluated,
 }
 
-/// σ of the champion-seeded population's noise (SPEC §10 "Inicialização",
+/// σ of the champion-seeded population's noise (SPEC §10 "initialisation",
 /// `sigma_espinha`). Not a `GaParams` field: this crate's `Genome` is always
 /// exactly `NP` weights with no genes "beyond the spine" (see `judge.rs`'s doc
 /// comment on `DOF_V0`), so SPEC §10's OTHER seeding constant, `sigma0` (noise
@@ -194,7 +194,7 @@ pub fn evolve(
     }
 
     let mut rngs: Vec<TaxiRng> = p.seeds.iter().map(|&sd| TaxiRng::new(sd)).collect();
-    // SPEC §10 "Inicialização": no W0 -> W ~ N(0, 0.8^2), shape (P, NP), one
+    // SPEC §10 "initialisation": no W0 -> W ~ N(0, 0.8^2), shape (P, NP), one
     // Generator per seed (`lab.py:1722`). With W0 (`p.seed_from`, T7): every
     // individual starts `champion + N(0, SIGMA_ESPINHA^2)` instead
     // (`lab.py:1724-1729`'s "sigma_espinha" branch — `sigma0`, the OTHER half of
@@ -838,7 +838,7 @@ mod tests {
         //     the naive argmax (ChampionMode::Last would report A).
         //   reeval (fresh world, REEVAL_SEED): A scores 0.0, B scores 10.0.
         //   averages: A = (5.0+0.0)/2 = 2.5; B = (1.0+10.0)/2 = 5.5 -> B must win
-        //     under ChampionMode::Reevaluated — the "maldição do vencedor"
+        //     under ChampionMode::Reevaluated — the "winner's curse"
         //     correction SPEC §10 describes.
         struct Scripted {
             call: usize,

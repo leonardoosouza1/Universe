@@ -22,7 +22,7 @@
 //! # The birth state this module generates (SPEC §1, §7.1)
 //!
 //! T5's `beings::Beings::from_trace` only ever reads a birth state off a trace
-//! (SPEC §1: "no v0 o Rust NÃO gera esses valores — ele os LÊ"). A GA battery has
+//! (SPEC §1: "in v0 Rust does NOT generate these values — it READS them"). A GA battery has
 //! no trace to read from — `gerar_mapa`'s birth sampling is exactly what SPEC §7.1
 //! describes (`_perto`/`_destino`, `campo.py:154-172, 222-235`), and this module
 //! reproduces it directly: uniform position on the map, the fixed SPEC §1 body
@@ -160,8 +160,8 @@ impl LifeSampler for SimCpu {
 }
 
 /// Runs ONE genome's `NC*r`-being batch to `t_max` ticks (or until every being
-/// is dead, checked once per simulated day — SPEC §8: "roda até `T_max` ou até
-/// a fração de vivos cair a `corte_vivos`... checado 1x por dia simulado, `t %
+/// is dead, checked once per simulated day — SPEC §8: "run until `T_max` or until
+/// the alive fraction drops to `corte_vivos`... checked once per simulated day, `t %
 /// 240 == 239`"; `corte_vivos = 0` here, i.e. only a FULLY dead batch stops
 /// early). Battery mode throughout (`rng: Some`, SPEC §11.3): passengers
 /// respawn, unlike the identity gate's `rng: None`.
@@ -216,7 +216,7 @@ fn all_dead(life: &[f32]) -> bool {
 /// One being's SPEC §1/§7.1 birth: a uniform position on the map, plus its
 /// `NPX` passenger slots (see [`spawn_slot`]). Computed once per `(map,
 /// replica)` pair (SPEC §1: `fase` is per MAP, but position/passengers are per
-/// BEING — T7's own instruction pins them to `(seed, mapa, réplica)`, i.e. every
+/// BEING — T7's own instruction pins them to `(seed, map, replica)`, i.e. every
 /// GENOME sharing that `(map, replica)` slot is born in the exact same place
 /// with the exact same passengers waiting, common-random-numbers style — the
 /// same spirit as SPEC §10's `crn`/"jardim comum" batching, just applied to the

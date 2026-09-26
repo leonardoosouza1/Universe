@@ -138,9 +138,9 @@ use super::settings::{DevSettings, RaceSettings};
 /// Mutates `gens_until_validation` and `is_validation_gen` in a pure/testable way.
 /// Returns (level, is_validation_gen_flag).
 /// Fraction of the population that must complete a lap for the curriculum to ADVANCE.
-pub const FRACAO_PARA_SUBIR: f32 = 0.30;
+pub const FRACTION_TO_RISE: f32 = 0.30;
 /// Below this fraction the curriculum RETREATS — the current level is out of reach.
-pub const FRACAO_PARA_DESCER: f32 = 0.05;
+pub const FRACTION_TO_FALL: f32 = 0.05;
 
 pub fn decide_next_env_level(
     gens_until_validation: &mut u32,
@@ -181,8 +181,8 @@ pub fn decide_next_env_level(
 ///
 /// # The two fixes
 ///
-/// 1. **Advance by the population.** Only goes up if at least [`FRACAO_PARA_SUBIR`] complete
-///    a lap; retreats if fewer than [`FRACAO_PARA_DESCER`] manage. With hysteresis between
+/// 1. **Advance by the population.** Only goes up if at least [`FRACTION_TO_RISE`] complete
+///    a lap; retreats if fewer than [`FRACTION_TO_FALL`] manage. With hysteresis between
 ///    the two, to avoid oscillating.
 /// 2. **Retreating is possible.** Before, the level only went up; one lucky generation
 ///    trapped the population in an environment it could not sustain, with no way back.
@@ -208,10 +208,10 @@ pub fn decide_next_env_level_pop(
         return (target.min(current_level.saturating_add(1)), false);
     };
 
-    let proximo = if frac >= FRACAO_PARA_SUBIR {
+    let proximo = if frac >= FRACTION_TO_RISE {
         // the population consolidated this level: one step up, never two
         current_level.saturating_add(1).min(3)
-    } else if frac < FRACAO_PARA_DESCER {
+    } else if frac < FRACTION_TO_FALL {
         // nobody sustains it: retreat to where something can be learned
         current_level.saturating_sub(1).max(1)
     } else {
@@ -1559,10 +1559,10 @@ pub(super) fn evolution_pipeline(
         // to 7%.
         //
         // Now the target comes from the FRACTION of the population that closes a lap, with the
-        // same dead zone as the environment curriculum (nothing below FRACAO_PARA_SUBIR), and
+        // same dead zone as the environment curriculum (nothing below FRACTION_TO_RISE), and
         // the narrowing moves at most 0.25 m per generation — in BOTH directions, so it can
         // widen back when the population cannot sustain it.
-        let alvo = 4.0 * ((race.frac_completou_volta - FRACAO_PARA_SUBIR) / 0.50).clamp(0.0, 1.0);
+        let alvo = 4.0 * ((race.frac_completou_volta - FRACTION_TO_RISE) / 0.50).clamp(0.0, 1.0);
         let passo = 0.25;
         race.estreitamento += (alvo - race.estreitamento).clamp(-passo, passo);
         let narrowing = race.estreitamento.clamp(0.0, 4.0);
@@ -1917,7 +1917,7 @@ mod tests {
 
 #[cfg(test)]
 mod testes_curriculo_populacao {
-    use super::{FRACAO_PARA_DESCER, FRACAO_PARA_SUBIR, decide_next_env_level_pop};
+    use super::{FRACTION_TO_FALL, FRACTION_TO_RISE, decide_next_env_level_pop};
 
     /// The real case that broke the training: one lucky car did 1.93 laps and dragged all 60
     /// to level 3, where grip drops to 0.33 and the required braking distance (130 m) exceeds
@@ -1934,7 +1934,7 @@ mod testes_curriculo_populacao {
     fn sobe_so_quando_a_populacao_consolida() {
         let mut val = 5;
         let (n, _) =
-            decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1, Some(FRACAO_PARA_SUBIR + 0.05));
+            decide_next_env_level_pop(&mut val, 0.0, 1658.0, 1, Some(FRACTION_TO_RISE + 0.05));
         assert_eq!(
             n, 2,
             "with the fraction above the threshold, climb one step"
@@ -1952,7 +1952,7 @@ mod testes_curriculo_populacao {
     fn recua_quando_ninguem_sustenta() {
         let mut val = 5;
         let (n, _) =
-            decide_next_env_level_pop(&mut val, 3198.0, 1658.0, 3, Some(FRACAO_PARA_DESCER / 2.0));
+            decide_next_env_level_pop(&mut val, 3198.0, 1658.0, 3, Some(FRACTION_TO_FALL / 2.0));
         assert_eq!(n, 2, "with nobody completing a lap, the level must retreat");
     }
 
@@ -1960,7 +1960,7 @@ mod testes_curriculo_populacao {
     fn ha_histerese_entre_subir_e_descer() {
         // in the middle band it stays put: without this the level would oscillate every
         // generation and the population would never consolidate anything
-        let meio = (FRACAO_PARA_DESCER + FRACAO_PARA_SUBIR) / 2.0;
+        let meio = (FRACTION_TO_FALL + FRACTION_TO_RISE) / 2.0;
         let mut val = 5;
         let (n, _) = decide_next_env_level_pop(&mut val, 0.0, 1658.0, 2, Some(meio));
         assert_eq!(n, 2);
@@ -1987,11 +1987,11 @@ mod testes_curriculo_populacao {
 
 #[cfg(test)]
 mod testes_largura_populacao {
-    use super::FRACAO_PARA_SUBIR;
+    use super::FRACTION_TO_RISE;
 
     /// Replica of the `pipeline.rs` logic so it can be tested without building the whole world.
     fn passo_largura(estreitamento: &mut f32, frac: f32) -> f32 {
-        let alvo = 4.0 * ((frac - FRACAO_PARA_SUBIR) / 0.50).clamp(0.0, 1.0);
+        let alvo = 4.0 * ((frac - FRACTION_TO_RISE) / 0.50).clamp(0.0, 1.0);
         *estreitamento += (alvo - *estreitamento).clamp(-0.25, 0.25);
         estreitamento.clamp(0.0, 4.0)
     }

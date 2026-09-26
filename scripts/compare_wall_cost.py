@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LAST_N = 3
 
 GEN_LINE = re.compile(r"gen\s+(\d+)\s*\|\s*med=\s*([\d.]+)m.*?max=\s*([\d.]+)m.*?≥1V=(\d+).*?morto=\s*([\d.]+)%")
-WALL_LINE = re.compile(r"\[parede\]\s+([\d.]+)% dos ticks colado")
+WALL_LINE = re.compile(r"\[(?:parede|wall)\]\s+([\d.]+)% (?:dos ticks colado|of ticks glued)")  # log line renamed 2026-09-25
 
 
 def read_run(path: Path):

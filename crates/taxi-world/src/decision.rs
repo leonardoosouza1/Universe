@@ -39,10 +39,10 @@ use crate::genome::Genome;
 ///   (SPEC §11), which records exactly this vector every tick
 ///   (`campo.py:484`, `m.nota_t[m.t] = tudo`).
 ///
-/// **Reduction order (SPEC §5 "Ordem de redução").** The dot product sums
+/// **Reduction order (SPEC §5 "reduction order").** The dot product sums
 /// `f = 0..NF` sequentially in `f32`, matching the plan's explicit instruction —
 /// NOT an `f64` accumulator, which would change the f32 tie distribution the
-/// identity gate measures (SPEC §5: "não acumular em f64 no v0").
+/// identity gate measures (SPEC §5: "do not accumulate in f64 in v0").
 #[allow(clippy::too_many_arguments)] // the arity is the plan's own T3 interface (docs/plano-mundo-taxi.md §T3)
 pub fn decide(
     f: &[f32],

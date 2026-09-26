@@ -1,5 +1,5 @@
-//! The "vida" fitness ruler and the judge (SPEC §8 "Morte, t_vida, réguas" and §9
-//! "Juiz", `campo.py:583-591` `_fit`'s `'vida'` branch and `campo.py:612-625`
+//! The "vida" fitness ruler and the judge (SPEC §8 "death, t_vida, rulers" and §9
+//! "judge", `campo.py:583-591` `_fit`'s `'vida'` branch and `campo.py:612-625`
 //! `medidas`) — plan §T6 "judge.rs". See `docs/plano-mundo-taxi.md` §T6.
 //!
 //! # Why `judge` needs a second trait, not just `evolution::Simulador`
@@ -37,9 +37,9 @@ use crate::evolution::{Champion, GaParams};
 use crate::genome::Genome;
 use crate::world::World;
 
-/// SPEC §9: "128 cópias do MESMO genoma, semente do mundo 7777, R = 1".
+/// SPEC §9: "128 copies of the SAME genome, world seed 7777, R = 1".
 pub const JUDGE_SEED: u64 = 7777;
-/// SPEC §9: "128 cópias".
+/// SPEC §9: "128 copies".
 pub const JUDGE_COPIES: u32 = 128;
 /// `dof_de` on this crate's fixed-length `Genome` (SPEC §9, see this module's doc
 /// comment): always 0, there is no "beyond the spine" gene dimension in v0.
@@ -54,7 +54,7 @@ pub const W_TRAB: f32 = 1.0;
 /// The "vida" ruler (SPEC §8): `fit = t_vida/240 + w_trab * rec/300`. The 240 and
 /// 300 are literal SPEC constants, not `cfg.day_ticks` — `campo.py:591` writes them
 /// as bare numbers, not `cfg`-derived. This is the ONLY fitness formula this crate
-/// implements ("Só a régua vida", plan §T6); a real `Simulador`/`LifeSampler`
+/// implements ("only the life ruler", plan §T6); a real `Simulador`/`LifeSampler`
 /// wired to T5's `tick::step` should use this SAME function so `evolve`'s and
 /// `judge`'s notion of "fit" never drifts apart.
 pub fn life_fitness(alive_ticks: f32, revenue: f32) -> f32 {

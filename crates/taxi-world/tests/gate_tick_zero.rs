@@ -1,6 +1,6 @@
 //! T3's identity-gate rehearsal (SPEC §11, plan §T3 "Testes de aceite" brief):
 //! `senses::observe`'s `F` at tick 0, compared column-by-column against the real
-//! `traco_ref.json`'s `F_primeiros_50[0]` — "o portão que vale ouro" (this task's
+//! `traco_ref.json`'s `F_primeiros_50[0]` — "the gate worth gold" (this task's
 //! brief). An integration test (not `senses.rs`'s own `#[cfg(test)] mod tests`)
 //! purely to keep `senses.rs` under `docs/STYLE.md`'s 600-line cap; it exercises
 //! only `senses.rs`'s PUBLIC surface (`taxi_world::senses::{observe, SensesInput,
@@ -72,7 +72,7 @@ fn the_first_tick_f_matches_the_python_reference_trace() {
         hunger: &trace.inicial.fome,
         fatigue: &trace.inicial.fad,
         heat: &trace.inicial.calor,
-        life: &trace.inicial.vida,
+        life: &trace.inicial.vida, // check-language: allow (field names of traco_ref.json)
         money: &trace.inicial.dinh,
         reserve: &trace.inicial.res,
         consumption: &consumption,

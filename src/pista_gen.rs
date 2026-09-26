@@ -243,8 +243,8 @@ pub fn gerar(
             melhor = Some((wps, d));
         }
     }
-    let _ = melhor; // a mais próxima NÃO é devolvida: entregar quase-difícil como difícil
-    // é exatamente o tipo de mentira silenciosa que este projeto evita
+    let _ = melhor; // the closest one is NOT returned: handing over almost-hard as hard
+    // is exactly the kind of silent lie this project avoids
     None
 }
 

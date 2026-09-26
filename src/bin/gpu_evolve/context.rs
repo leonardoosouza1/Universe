@@ -1447,25 +1447,25 @@ impl GpuCtx {
                 let voxel = voxel_at_cpu(p.pos[0], p.pos[2]);
                 let on_grass = if voxel == 0 { 1.0_f32 } else { 0.0 };
                 self.lap_grass[i] = voxel == 0; // C0: same voxel, no second lookup
-                // ── PROPRIOCEPÇÃO: quatro slots eram CONSTANTES ────────────────
+                // ── PROPRIOCEPTION: four slots used to be CONSTANT ──────────────
                 //
-                // `prop[3]=1.0` (HP sempre cheio), `prop[7]=0`, `prop[8]=0`, `prop[11]=0`
-                // viravam os canais 67, 71, 72 e 75 cravados — 4 dos 12 proprioceptivos
-                // que a auditoria de visão pegou saturados em 127. Canal constante é peso
-                // morto em L1 e, pior, é um estado corporal que o cérebro NÃO sente.
+                // `prop[3]=1.0` (HP always full), `prop[7]=0`, `prop[8]=0`, `prop[11]=0`
+                // pinned channels 67, 71, 72 and 75 — 4 of the 12 proprioceptive channels
+                // the vision audit found saturated at 127. A constant channel is dead
+                // weight in L1 and, worse, a body state the brain does NOT feel.
                 //
-                // Isso importa além da limpeza: medimos que neuromodulação só tem teto de
-                // ganho quando existe corpo ACOPLADO — estado interno lento que faz o ótimo
-                // de comportamento variar. Sem acoplamento o ganho é zero. Os estados abaixo
-                // já eram calculados e simplesmente não chegavam a lugar nenhum.
+                // This matters beyond tidiness: we measured that neuromodulation only has
+                // a gain ceiling when there is a COUPLED body — a slow internal state that
+                // moves the behavioural optimum. Without coupling the gain is zero. The
+                // states below were already computed and simply reached nowhere.
                 //
-                //   67 ← vida restante   (era HP fixo em 1,0): o ser morre sem saber que vai
-                //   71 ← temperatura do motor: acima de 105 °C a potência cai
-                //        (physics.wgsl:402) — muda o ótimo de acelerar, τ ≈ 500-1000 ticks
+                //   67 ← remaining life   (was HP fixed at 1.0): the being died without knowing
+                //   71 ← engine temperature: above 105 °C power drops
+                //        (physics.wgsl:402) — shifts the throttle optimum, τ ≈ 500-1000 ticks
                 //   72 ← LATERAL ACCELERATION DEMAND: v²|κ|/(mu*g). This combines body speed
                 //        with the mean racing-line curvature over the next 30m. It says how
                 //        much grip the current trajectory would demand; it never chooses brake.
-                //   75 ← estagnação: quantos ticks sem avançar
+                //   75 ← stagnation: ticks without forward progress
                 // Channel 67 is the remaining survival reserve: the smaller of
                 // time/energy life and mechanical integrity. A collision therefore
                 // becomes an observable bodily consequence on the next tick.
