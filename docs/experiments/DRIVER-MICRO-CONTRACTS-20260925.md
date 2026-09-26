@@ -1,6 +1,8 @@
 # Driver micro-contract investigation — 2026-09-25
 
-Status: OPEN. Owner: Codex. No city-delivery or learned competence claim.
+Status: SUPERSEDED — executed the same day as `CONTRACT-BENCH-20260925.md`
+(diagnose-all form, input contracts added, judge-shape arms A–O). Kept for the
+registered budget and the review below. No city-delivery or learned competence claim.
 
 ## Question and registered budget
 
@@ -62,5 +64,5 @@ transfer test, not a comparison with an unchanged city observation distribution.
 
 ## Results
 
-Pending execution. Mechanism, learned skills and judge incentives must be reported
+See `CONTRACT-BENCH-20260925.md` (executed 2026-09-25 21:05–21:56). Mechanism, learned skills and judge incentives must be reported
 separately. Failure is an actionable result, not a reason to loosen acceptance.

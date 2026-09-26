@@ -40,7 +40,7 @@
 // # map_async → poll → recv (mandatory order)
 //
 // Deadlock documented in this project: poll(Wait) BEFORE map_async does not serve the
-// callback. The poll must come AFTER the mapping request. See brain.rs:710
+// callback. The poll must come AFTER the mapping request. See brain/mod.rs:1075-1078
 // for the history. Every readback here follows the order: map_async → poll → recv.
 
 use std::borrow::Cow;
@@ -504,7 +504,7 @@ impl SlowBrainGpu {
     /// and `device.poll(Wait)` returned. Follows the mandatory order:
     ///   map_async → poll(Wait) → recv → get_mapped_range
     ///
-    /// (poll BEFORE map_async is the silent deadlock documented in brain.rs:710)
+    /// (poll BEFORE map_async is the silent deadlock documented in brain/mod.rs:1075-1078)
     pub fn read_outputs(&self, n_beings: usize) -> Vec<[f32; OUTPUT_DIM]> {
         let Some(ticket) = self.request_output_read(n_beings) else {
             return Vec::new();

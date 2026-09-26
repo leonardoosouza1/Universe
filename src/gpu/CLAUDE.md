@@ -14,7 +14,7 @@ touching anything here.
 Each `*.rs` is the host for the `.wgsl` of the same name: `mod.rs` (retina + the context
 that survives between ticks), `core.rs` (shared device/buffer manager — per-tick byte
 budget in its header), `perception.rs` (packs the 192 sensory channels),
-`retina_digest.rs`, `brain.rs` (L1 192→96, L2 96→48, KAN), `slow_brain.rs`,
+`retina_digest.rs`, `brain/mod.rs` (L1 192→96, L2 96→48, KAN), `slow_brain.rs`,
 `physics.rs`, `cortex_sheet.rs`. Two have no kernel: `evolution.rs` (`Genome`, tournament
 selection, mutation, elitism — selection runs on the CPU, once per generation) and
 `genome_io.rs` (**the** genome serializer). Full responsibilities: `ARCHITECTURE.md` §3.
@@ -84,7 +84,7 @@ locals. Merging them back reintroduces the driver crash. The slow brain is split
 same reason (`slow_brain.rs:5-16`).
 
 **Readback order is `map_async` → `poll` → `recv`.** Polling before `map_async` is a
-silent deadlock (`brain.rs:706-708`, `slow_brain.rs:402-405`).
+silent deadlock (`brain/mod.rs:1075-1078`, `slow_brain.rs:43`).
 
 ## Commands
 

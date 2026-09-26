@@ -46,8 +46,9 @@ may need a window to run.
 
 ## Traps
 
-- `SENSORY_WAVE_SIZE` is **computed** in `config.rs:309`, not written down. Several
-  comments still quote the old value 223 (`gpu/brain.rs:37` says `223 × 96 = 21.408`;
+- `SENSORY_WAVE_SIZE` is **computed** in `config.rs:331`, not written down. Comments
+  used to quote the old value 223 (`gpu/brain.rs:37` said `223 × 96 = 21.408`, corrected
+  at `gpu/brain/mod.rs:94` when the file became a directory;
   the real product is `192 × 96 = 18 432`). Read the constant, not the comment.
 - `rng.rs` is the one deterministic generator. Its header records the sign bug that
   motivated it: an initialiser that came out 100% negative, copied across 7 fields,

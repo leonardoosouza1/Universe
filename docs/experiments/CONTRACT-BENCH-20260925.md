@@ -1,6 +1,6 @@
 # Contract bench — frozen genomes on pre-built scenarios (2026-09-25)
 
-Status: EXECUTED 21:05–21:12 (30 GPU runs, 7–20 s each). Owner: Claude (Codex offline since 20:36; his
+Status: EXECUTED 21:05–21:56 (first table 21:05–21:12, 30 GPU runs of 7–20 s; judge-shape arms A–O until the owner stopped GPU work at 21:54; script reviewed 22:15). Owner: Claude (Codex offline since 20:36; his
 `DRIVER-MICRO-CONTRACTS-20260925.md` asks the same question and stays "pending
 execution" — this record executes it in diagnose-all form and adds input contracts).
 No city-delivery or learned-competence claim.
@@ -52,8 +52,8 @@ Inputs, on the observed being (replica 0), records every 16 ticks, i8 channels:
 |---|---|---|
 | I1 | has_task ch180 at start | ≥ 120 |
 | I2 | route/sub-goal straight ahead at start, ch178 (cos in body frame) | ≥ 100 |
-| I3 | front rays open at start, ch19/ch20 (60 m before a junction, street continues) | both ≤ 20 |
-| I4 | side rays hit and differ (lane offset 3 m: left/right walls 4.5 m vs 10.5 m), ch16/ch23 | both > 0 and differ ≥ 10 |
+| I3 | near wall ray hits within 15 m, ch16 (as committed in the script; the first draft read ch19/ch20 ≤ 20 and was rewritten mid-session, see findings) | ≥ 95 |
+| I4 | centre ray open at start, ch19 (first draft: ch16/ch23 differ ≥ 10 — ch23 is overwritten by per-row motion, so no lane-offset contract exists) | ≤ 40 |
 | I5 | distance ch183 = 127·d/(d+100) with d from taxi.target_dx/dz | max err ≤ 8 (i8) |
 | I6 | speed ch65 = 2·speed | max err ≤ 1 m/s |
 | I7 | (turn lessons) lateral cue appears after the box, peak |ch179| | ≥ 60 |
@@ -692,3 +692,31 @@ prediction is NOT MEASURED. Code 6 (wrong arm) dominates the early elite, code
 16 (deadline) the late one: the being learns not to take the wrong arm before
 it learns to arrive. No result for O. Resume with the same script
 (`arms_lane7.sh`, DONE12 already present) when the GPU is released.
+
+
+## Script review 22:15 (GPU stopped by the owner; host only)
+
+A read-only audit of `scripts/contract_bench.py` against its writers
+(`taxi.wgsl`, `perception*.wgsl`, `school.rs`, `driving_diagnostics.rs`) found
+seven defects; all are fixed in the same commit as this note.
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | `move_v4` control never ran: `gpu_evolve` exits 2 on v4 with a motor lesson | row removed; docstring says why |
+| 2 | I5 expected `127·d/(d+100)` with straight-line `d` on v4 lessons, where `route_senses` writes the road-field distance | I5 is `info` on v4 lessons, graded only on v3 |
+| 3 | `--only a,b` was a union filter (a genome AND every lesson) | `genome/lesson` selects a pair; bare names still match either |
+| 4 | `stop_hold_ticks` had `pass: True` — a contract that cannot fail | rendered `info`, never graded |
+| 5 | O5 on service lessons duplicated O1 (`succ == n`) | O5 graded only on motor lessons, `info` elsewhere |
+| 6 | I5/I6 both vacuously PASS on a run that never had a task | I6 over every sample; I5 fails without a task sample |
+| 7 | `outcome_tick or judged_ticks` treated a close at tick 0 as open | uses `status` (`success`/`failed`) |
+
+Also: the default binary was the 19:32 build without the lane-rule or silence
+flags; the script now defaults to the repository's `target/debug/gpu_evolve`,
+writes `binary.json` (sha256 + `--build-provenance`) into the run root and puts
+that line at the top of `CONTRACTS.md`. Default starts per run raised from 4 to
+16 (`--starts`), after arms J/M showed a 4-start judge certifies 3/16 unseen
+starts and a 16-start judge 14/16. The existing run root was re-reported with the
+new script (values unchanged; v4 rows now read `info` where they were graded).
+Re-running the bench on the current binary is queued behind the mechanism gate
+(`check_native_flow_gpu.py`): the last passed receipt is for source
+`69c28213…`, the tree is `e034d826…`.

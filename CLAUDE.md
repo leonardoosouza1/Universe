@@ -78,7 +78,7 @@ env -u DISPLAY ./target/debug/gpu_evolve --gens 2 --beings 12 --ticks 600 \
 Every per-generation manifest carries `provenance` (git commit, dirty flag, argv, seed)
 since 2026-09-24; a battery directory still needs its `run_battery.sh` and `commit.txt`.
 
-`--out` defaults to `.` (`src/bin/gpu_evolve/main.rs:395`), so always pass your own
+`--out` defaults to `.` (`src/bin/gpu_evolve/main.rs:912`), so always pass your own
 directory — see rule 5.
 
 ---
@@ -104,11 +104,11 @@ cause before concluding anything.
 
 ### 3. New physics or perception enters behind a flag that is off by default, with a paired A/B
 
-The code already says it, at `src/bin/gpu_evolve/main.rs:715-718` for
-`--visao-periferica-real`: *off by default — it changes the input distribution, so an
+The code already says it, at `src/bin/gpu_evolve/cli_flags.rs:247` for
+`--real-peripheral-vision` (alias `--visao-periferica-real`): *off by default — it changes the input distribution, so an
 old champion needs a paired A/B, not faith.* Paired means same seeds, `--same-start`,
 one arm per flag state. Ablate by silencing the signal, not by deleting the organ
-(`src/bin/gpu_evolve/statics.rs:41-48`): removing the organ changes two things at once.
+(`--silence-channels`, `src/gpu/brain/mod.rs:185`): removing the organ changes two things at once.
 
 ### 4. Compute the ceiling of the metric before you evolve against it
 
@@ -125,9 +125,10 @@ middle and last generation.
 
 ### 6. A code comment is not evidence — open the `file:line`
 
-Verified example: `src/gpu/brain.rs:37` says `// 223 × 96 = 21.408`, but
-`SENSORY_WAVE_SIZE` is 192 (`src/config.rs:309`), so the real figure is 18 432. The
-constant is computed, so the code is right and only the comment lies. The same rule
+Verified example (historical): `src/gpu/brain.rs:37` said `// 223 × 96 = 21.408`, but
+`SENSORY_WAVE_SIZE` is 192 (`src/config.rs:331`), so the real figure is 18 432. The
+constant is computed, so the code was right and only the comment lied; the corrected
+comment now lives at `src/gpu/brain/mod.rs:94` (the file was split into a directory). The same rule
 applies to another agent's report: it is a hypothesis until you open the line and read it.
 
 ### Also, before announcing a result
@@ -181,9 +182,9 @@ itself once hit 100% with 803 MB left.
   recorded) and check it fits without breaking the target.
 
 No production code path depends on that partition. Two hardcoded `/media/llm-data` paths
-remain, both inside a `#[cfg(test)]` block (`src/bin/gpu_evolve/piloto_forja.rs:366-367`),
+remain, both inside a `#[cfg(test)]` block (`src/bin/gpu_evolve/piloto_forja.rs:430-431`),
 and that test states honestly that without the partition mounted it does not run — which
-is not a PASS (`piloto_forja.rs:518`).
+is not a PASS (`piloto_forja.rs:700`).
 
 **Continuity (owner's standing instruction).** When the owner says he is stepping away,
 writing a report is not stopping — the shift ends when he is back. Never report with the
