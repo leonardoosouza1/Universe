@@ -583,3 +583,36 @@ needs code and waits. Two judge shapes that exist today:
 
 Both elites are then frozen on the 20-start pool (J's held-out = starts 9–20;
 K saw starts 0–23 mod count once each).
+
+#### Arms J and K results (21:43) — the ceiling was the bench
+
+| arm | gen 3 | gen 11 | gen 23 | elite on pool 20 | trained | held-out |
+|---|---|---|---|---|---|---|
+| J fixed 8 | elite 4/8, pop 41/256 | 5/8, 64/256 | **6/8**, 64/256 | **12/20** | 6/8 | **6/12** |
+| K shared rotate, K = 1 | 0/1 | 0/1 | 0/1 | 6/20 | 1/8 | 5/12 |
+| H fixed 4 (for reference) | 2/4 | 3/4 | – | 7/20 | 4/4 | 3/16 |
+| I pool 12, 4 per genome | – | 2/4 | 1/4 | 5/20 | 5/12 | 0/8 |
+
+Prediction "J plateaus at 4/8 (capacity)": FAIL, and the correction matters.
+With eight simultaneous starts per genome the elite holds four at generation 3
+(more than the fixed-4 arms ever reach) and six at generation 23, and half of
+the twelve unseen starts pass. The "three geometries" ceiling of arms C–H was
+a property of judging on four fixed starts, not of the brain: with four starts
+the cheapest score gain is one start-specific stop at a time; with eight, a
+start-generic stop pays more than any single memorised one. Prediction
+"K ≤ 4/20": FAIL (6/20), but K never produces an elite that stops on its own
+generation's start — a single moving start per generation is noise, as bet.
+
+Cost: J 24 gens × 256 replicas in 2:33 min; K 24 gens × 32 replicas in 2:12.
+
+**Judge-v3 shape, measured:** fixed batch of ≥ 8 starts shared by every genome
+(`--school-eval-starts 8 --school-start-pool 8`), mean selection, stop shaping,
+consistent lane rule; held-out pool of 20 as the report. Open: does 16 beat 8
+(arm M, queued), and does silencing the retina (arm L, running) change the
+held-out rate — the retina is the only input that differs between starts.
+
+Pre-registered arm M (`arms_lane6.sh`, 21:45): fixed 16, same flags, 24 gens;
+then elites M and J on a 32-start pool (M held-out 16, J held-out 24).
+Prediction: M ≥ 20/32 with held-out ≥ 9/16; J on 32 ≈ 18/32 (60%, as on 20).
+If M's held-out rate is not above J's, eight starts already saturate and the
+judge cost should stay at 8.
