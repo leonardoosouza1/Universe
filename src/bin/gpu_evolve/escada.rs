@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(e.ativo, 0);
         assert!(
             matches!(e.plano[0], Degrau::FuelK(_)),
-            "escada começa pelo combustível"
+            "the ladder starts with fuel"
         );
         assert!(
             matches!(e.plano.last().unwrap(), Degrau::SensorCost(_)),
@@ -437,15 +437,12 @@ mod tests {
         for d in &e.plano {
             match d {
                 Degrau::FuelK(k) => {
-                    assert!(
-                        *k < ult_fuel,
-                        "combustível tem de apertar: {k} não é < {ult_fuel}"
-                    );
+                    assert!(*k < ult_fuel, "fuel must tighten: {k} is not < {ult_fuel}");
                     ult_fuel = *k;
                     n_fuel += 1;
                 }
                 Degrau::Ruido(x) => {
-                    assert!(*x > ult_ruido, "ruído tem de subir");
+                    assert!(*x > ult_ruido, "noise must rise");
                     ult_ruido = *x;
                     n_ruido += 1;
                 }
@@ -455,7 +452,7 @@ mod tests {
                     n_dano += 1;
                 }
                 Degrau::Clima(mu) => {
-                    assert!(*mu < ult_clima, "aderência tem de cair");
+                    assert!(*mu < ult_clima, "grip must fall");
                     ult_clima = *mu;
                     n_clima += 1;
                 }
@@ -492,7 +489,7 @@ mod tests {
         // de ceder a vez — a lição das 34 gerações com mortalidade 0%.
         for (nome, n) in [
             ("fuel", n_fuel),
-            ("ruído", n_ruido),
+            ("noise", n_ruido),
             ("dano", n_dano),
             ("clima", n_clima),
             ("resource", n_recurso),
@@ -500,7 +497,7 @@ mod tests {
         ] {
             assert!(
                 n >= 3,
-                "mecanismo {nome} com só {n} degrau(s): aperta pouco antes de passar adiante"
+                "mechanism {nome} with only {n} rung(s): tightens too little before handing off"
             );
         }
     }
@@ -602,7 +599,7 @@ mod tests {
             assert_eq!(
                 v,
                 Veredito::Mantem,
-                "já no primeiro degrau, não há pra onde recuar"
+                "already on the first rung, there is nowhere to retreat to"
             );
         }
         assert_eq!(e.ativo, 0);

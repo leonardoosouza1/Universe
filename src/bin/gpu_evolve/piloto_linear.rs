@@ -376,10 +376,13 @@ mod tests {
             pl.thr_abster
         );
         assert!(
-            pl.agir_com_portao(&[0.2, 0.0]).is_some(),
+            pl.agir_com_portao(&[0.2, 0.0]).is_some(), // check-language: allow
             "near the reference: decides"
         );
-        assert!(pl.agir_com_portao(&[9.0, 9.0]).is_none(), "far: abstains");
+        assert!(
+            pl.agir_com_portao(&[9.0, 9.0]).is_none(), // check-language: allow
+            "far: abstains"
+        );
         assert_eq!((pl.decisoes, pl.abstencoes), (1, 1));
     }
 

@@ -42,7 +42,7 @@ use universe::world::{VoxelType, VoxelWorld};
 ///
 /// Kept here (rather than imported) because the original lives in WGSL: any divergence
 /// between the two is precisely the kind of bug this tool exists to expose. If someone
-/// touches the shader and forgets this copy, the test `encoding_bate_com_o_shader` breaks.
+/// touches the shader and forgets this copy, the test `encoding_matches_shader` breaks.
 fn legacy_encoding(d: f32, mat: VoxelType) -> i32 {
     let depth_fade = (d / 1200.0).clamp(0.0, 1.0);
     let v = match mat {
@@ -263,7 +263,7 @@ mod tests {
     /// Anchors the numbers of the encoding table. If someone touches `legacy_encoding` in
     /// the shader and not here, this test reports the divergence.
     #[test]
-    fn encoding_bate_com_o_shader() {
+    fn encoding_matches_shader() {
         assert_eq!(legacy_encoding(0.0, VoxelType::Wall), 127);
         assert_eq!(legacy_encoding(0.0, VoxelType::Hole), 90);
         assert_eq!(legacy_encoding(50.0, VoxelType::Hole), 60);

@@ -1171,7 +1171,7 @@ impl GpuCtx {
         self.queue
             .write_buffer(&self.buf_poses_retina, 0, bytemuck::cast_slice(&pose_raw));
 
-        // ── Poses percepção ───────────────────────────────────────────────────
+        // ── Perception poses ──────────────────────────────────────────────────
         let poses_percept: Vec<PosePerception> = (0..n)
             .map(|i| {
                 let p = &states[i].phys;
@@ -1230,7 +1230,7 @@ impl GpuCtx {
                     continue;
                 }
                 let (perp_x, perp_z) = (-fz, fx);
-                let mut dist_l = 40.0_f32; // default = livre (sem parede em 40m)
+                let mut dist_l = 40.0_f32; // default = clear (no wall within 40m)
                 for &sd in &lat_samp {
                     if voxel_at(px - perp_x * sd, pz - perp_z * sd) == 2 {
                         dist_l = sd;
@@ -1287,7 +1287,7 @@ impl GpuCtx {
             );
             assert!(
                 Channel::LineOffsetDeriv.index() == 109,
-                "rv[1] = 0.0 (derivada, ainda não implementada)"
+                "rv[1] = 0.0 (derivative, not implemented yet)"
             );
             assert!(Channel::LineLookAheadRL.index() == 110, "rv[2] = la_norm");
             assert!(Channel::FwdDistNorm.index() == 118, "rv[3] = cpu_fwd_norm");
@@ -1620,7 +1620,7 @@ impl GpuCtx {
                             (states[i].post_reverse_lockout - dt).max(0.0);
                     }
 
-                    // Trigger de ré: parede frontal <4m E speed baixa E estagnado E sem lockout.
+                    // Reverse trigger: front wall <4m AND low speed AND stagnant AND no lockout.
                     {
                         let rev = states[i].reverse_timer;
                         let stag = states[i].stagnation_ticks;
@@ -1642,7 +1642,7 @@ impl GpuCtx {
                         }
                         states[i].re_desde_saida += dt;
                     }
-                    // Decremento e saída de ré.
+                    // Decrement and exit from reverse.
                     {
                         let rev = states[i].reverse_timer;
                         if rev > 0.0 {
@@ -2375,7 +2375,7 @@ impl GpuCtx {
             static AVISADO: AtomicBool = AtomicBool::new(false);
             if slow_out.len() != n && !AVISADO.swap(true, Ordering::Relaxed) {
                 eprintln!(
-                    "[lento] AVISO: read_outputs devolveu {} de {} seres — órgão inerte",
+                    "[slow] WARNING: read_outputs returned {} of {} beings — organ inert",
                     slow_out.len(),
                     n
                 );
@@ -2430,13 +2430,13 @@ impl GpuCtx {
                 if self.organism.is_none() {
                     if min_wall_ahead < WALL_NEAR_M && states[i].life_left > 0.0 {
                         states[i].wall_ticks += 1;
-                        // Custo em TEMPO: cada tick colado consome vida extra. Evitar a
-                        // parede compra oportunidade de andar, em vez de disputar com ela.
+                        // Cost in TIME: each stuck tick consumes extra life. Avoiding the
+                        // wall buys the opportunity to move, instead of fighting it.
                         states[i].life_left -= WALL_LIFE_DRAIN.load(Ordering::Relaxed) as f64;
                     }
-                    // FÍSICA 1 — custo de RPM alto (ver doc de CUSTO_RPM em statics.rs):
-                    // acima de 90% do giro, cada tick queima vida proporcional ao excesso.
-                    // Dá à marcha um MOTIVO além da velocidade: girar menos = viver mais.
+                    // PHYSICS 1 — high-RPM cost (see CUSTO_RPM doc in statics.rs): above
+                    // 90% of the rev range, each tick burns life proportional to the excess.
+                    // Gives the gear a REASON beyond speed: revving less = living longer.
                     let custo_rpm = CUSTO_RPM.load(Ordering::Relaxed);
                     if custo_rpm > 0.0 && states[i].life_left > 0.0 {
                         let rpm_frac = states[i].phys.current_rpm / states[i].phys.max_rpm.max(1.0);
@@ -2445,8 +2445,8 @@ impl GpuCtx {
                             states[i].life_left -= (custo_rpm * excesso) as f64;
                         }
                     }
-                    // E-REG1 — custo de fiação (ver CUSTO_FIACAO em statics.rs): dreno
-                    // constante por tick proporcional ao fio "longo" do genoma do ser.
+                    // E-REG1 — wiring cost (see CUSTO_FIACAO in statics.rs): constant
+                    // drain per tick proportional to the being's genome "long" wire.
                     if !self.fiacao_custo.is_empty() && states[i].life_left > 0.0 {
                         states[i].life_left -=
                             self.fiacao_custo[i.min(self.fiacao_custo.len() - 1)] as f64;
@@ -2465,18 +2465,19 @@ impl GpuCtx {
                         states[i].life_left -=
                             self.sensor_cost[i.min(self.sensor_cost.len() - 1)] as f64;
                     }
-                    // Custo de estagnação: parar sem avançar QUEIMA VIDA (Conserto 1, 2026-08-12).
-                    // Sintoma medido: ser para em 272 m com life=3010 ticks e fica ESTÁTICO até
-                    // hp=0 (tick 4020), sem tentar sair. Com life-earn, parar é de graça porque a
-                    // vida acumulada ao andar é gasta só 1/tick — o ser tem 47 s de "folga". Esse
-                    // dreno torna a paralisia fatal e força o cérebro a continuar tentando.
-                    // Threshold 128 ticks = 2 s: evita penalizar quem apenas reduz speed na curva
-                    // (esses têm stagnation=0 pois speed≥1.5 m/s). Análogo ao wall_drain.
+                    // Stagnation cost: stopping without advancing BURNS LIFE (Fix 1, 2026-08-12).
+                    // Measured symptom: being stops at 272 m with life=3010 ticks and stays STATIC
+                    // until hp=0 (tick 4020), without trying to get out. With life-earn, stopping
+                    // is free because the life accumulated while moving is spent only 1/tick — the
+                    // being has 47 s of "slack". This drain makes paralysis fatal and forces the
+                    // brain to keep trying. Threshold 128 ticks = 2 s: avoids penalizing whoever
+                    // merely reduces speed in a curve (those have stagnation=0 since speed≥1.5
+                    // m/s). Analogous to wall_drain.
                     if states[i].stagnation_ticks > 128 && states[i].life_left > 0.0 {
                         states[i].life_left -= STAG_LIFE_DRAIN.load(Ordering::Relaxed) as f64;
                     }
-                    // Combustível: consumo proporcional ao acelerador ao quadrado, como nas
-                    // branches que davam voltas. Só morde quando ligado (`--fuel`).
+                    // Fuel: consumption proportional to the throttle squared, like in the
+                    // branches that did laps. Only bites when enabled (`--fuel`).
                     if FUEL_ON.load(Ordering::Relaxed) && states[i].fuel > 0.0 {
                         let thr = states[i].phys.throttle.abs() as f64;
                         let engine_cost = universe::gpu::body::fuel_load_scale(&states[i].phys);
@@ -2634,15 +2635,16 @@ impl GpuCtx {
             .map(|i| {
                 let mut s = states[i].phys;
                 let intent = &intents[i];
-                // ── Modulação da metade LENTA (System 2) ──────────────────────────
-                // Mesmos três papéis de `motor.rs`: agressão soma ao acelerador, o teto
-                // limita o acelerador e o viés desloca o volante. As magnitudes (0,5 / 0,8
-                // / 0,20) são as de lá — não é ajuste novo, é o mesmo contrato.
+                // ── SLOW half modulation (System 2) ─────────────────────────────
+                // Same three roles as `motor.rs`: aggression adds to the throttle, the cap
+                // limits the throttle and the bias shifts the steering. The magnitudes (0.5 /
+                // 0.8 / 0.20) are the same as there — this isn't a new tweak, it's the same
+                // contract.
                 //
-                // Nota medida: `throttle_cap` esteve travado em 1,0 durante toda a vida do
-                // projeto porque `slow[1]` nunca era positivo (init com 100% dos pesos
-                // negativos). Só agora ele pode agir.
-                // Sem vida: o ser para. Não é penalidade de pontos — é o fim do tempo dele.
+                // Measured note: `throttle_cap` stayed locked at 1.0 for the whole life of the
+                // project because `slow[1]` was never positive (init with 100% negative
+                // weights). Only now can it act.
+                // No life: the being stops. It isn't a points penalty — it's the end of its time.
                 if states[i].life_left <= 0.0 {
                     s.throttle = 0.0;
                     s.brake_cmd = 1.0;
@@ -2669,13 +2671,14 @@ impl GpuCtx {
                 } else {
                     slow_out.get(i).copied().unwrap_or([0.0; 3])
                 };
-                // Autoridade do lento sobre o volante, parametrizável.
+                // Slow brain's authority over the steering, parametrizable.
                 //
-                // Era ±0,20 fixo — fraco demais para o problema medido: o volante ELEITO pela
-                // seleção crava em +0,63, e ±0,20 não solta. O lento é a única parte do cérebro
-                // com memória temporal (o estado que sabe "já estou na curva"). Se, com
-                // autoridade real, ele soltar o volante, o teto era a arquitetura sufocando a
-                // memória; se não soltar mesmo com autoridade, o teto é o cérebro pequeno.
+                // It used to be a fixed ±0.20 — too weak for the measured problem: the steering
+                // ELECTED by selection locks at +0.63, and ±0.20 doesn't release it. The slow half
+                // is the only part of the brain with temporal memory (the state that knows "I'm
+                // already in the curve"). If, with real authority, it releases the steering, the
+                // cap was the architecture suffocating the memory; if it still doesn't release
+                // even with authority, the cap is the small brain.
 
                 // ── C1: SECTOR HIPPOCAMPUS (docs/PRD-CEREBRO-NEUROMOD.md §C1) ────
                 //
@@ -2692,13 +2695,13 @@ impl GpuCtx {
                 // `[0, 0, 0]` when the organ is off, so these three lines are a no-op on
                 // the default path — see `hippocampus_bias`.
                 let hip_bias = self.hippocampus_bias(i);
-                // Alisamento do volante: `prev*(1-α) + novo*α`.
+                // Steering smoothing: `prev*(1-α) + new*α`.
                 //
-                // Com α=0,50 o comando leva ~4 ticks para chegar a 90% de um alvo novo, o que
-                // é histerese suficiente para SUSTENTAR um volante cravado mesmo que o cérebro
-                // já esteja pedindo para soltar. Medido: o ser vira à direita em 74% dos
-                // quadros (média +0,40) e roda em círculo dentro da pista, travando o progresso
-                // em 265 m. Como parâmetro dá para separar culpa do cérebro de culpa do filtro.
+                // With α=0.50 the command takes ~4 ticks to reach 90% of a new target, which is
+                // enough hysteresis to SUSTAIN a locked steering even when the brain is already
+                // asking to release it. Measured: the being turns right in 74% of the frames
+                // (mean +0.40) and circles inside the track, stalling progress at 265 m. As a
+                // parameter it lets us separate the brain's fault from the filter's fault.
                 let is_reversing = states[i].reverse_timer > 0.0;
                 let in_lockout = states[i].post_reverse_lockout > 0.0;
                 let speed_now = (s.vel[0].powi(2) + s.vel[2].powi(2)).sqrt();
@@ -2727,9 +2730,9 @@ impl GpuCtx {
                 let mut override_cause = OverrideCause::None;
 
                 if is_reversing {
-                    // Ré ativa: override completo, pedal fixo 0.75, gear=0.
-                    // Volante ALTERNA de lado a cada ré re-disparada (re_falhas ímpar =
-                    // esquerda) — sair reto devolvia o carro ao MESMO canto (medido).
+                    // Reverse active: full override, pedal fixed at 0.75, gear=0.
+                    // Steering ALTERNATES side on each re-triggered reverse (re_falhas odd =
+                    // left) — exiting straight sent the car back to the SAME corner (measured).
                     s.throttle = universe::config::iara::reverse_maneuver::PEDAL;
                     s.steer = if states[i].re_falhas == 0 {
                         0.0
@@ -2742,7 +2745,7 @@ impl GpuCtx {
                     s.current_gear = 0;
                     override_cause = OverrideCause::Reverse;
                 } else if in_lockout {
-                    // Pós-ré: throttle capeado em 0.8.
+                    // Post-reverse: throttle capped at 0.8.
                     s.throttle = mapped.command.throttle.min(0.8);
                     s.steer = mapped.command.steer;
                     s.brake_cmd = mapped.command.brake;
@@ -2751,21 +2754,21 @@ impl GpuCtx {
                         s.current_gear = 2;
                     }
                 } else {
-                    // Modo normal: intent neural completo. SEM muletas.
+                    // Normal mode: full neural intent. NO crutches.
                     s.throttle = mapped.command.throttle;
                     s.steer = mapped.command.steer;
                     s.brake_cmd = mapped.command.brake;
-                    // PILOTO FANTASMA (pilots.rs): sobrepõe tudo. Não é muleta de produção —
-                    // é instrumento de diagnóstico, ligado só por flag, para responder "o
-                    // corpo consegue?".
+                    // PHANTOM PILOT (pilots.rs): overrides everything. It isn't a production crutch
+                    // — it's a diagnostic instrument, enabled only by flag, to answer "can the body
+                    // do it?".
                     let pg = PILOTO_GANHO.load(Ordering::Relaxed);
                     if pg != 0.0 {
                         let pos2d = bevy::math::Vec2::new(s.pos[0], s.pos[2]);
-                        // Pure-pursuit controller: aponta para um ponto L metros à frente na
-                        // racing line e corrige pelo heading, não pelo desvio lateral. Evita o
-                        // bug de `lookahead_offset` que mistura erro longitudinal com lateral
-                        // quando o carro está atrás do ponto de antecipação. L adaptativo: mais
-                        // distância em alta velocidade para suavizar.
+                        // Pure-pursuit controller: aims at a point L meters ahead on the
+                        // racing line and corrects by heading, not by lateral deviation. Avoids the
+                        // `lookahead_offset` bug that mixes longitudinal error with lateral error
+                        // when the car is behind the lookahead point. Adaptive L: more
+                        // distance at high speed to smooth it out.
                         let l_lookahead = (speed_now * 2.5).clamp(20.0, 45.0);
                         let tgt = self.racing_line.lookahead_point(pos2d, l_lookahead);
                         let thr_base = PILOTO_THR.load(Ordering::Relaxed);
@@ -2793,10 +2796,11 @@ impl GpuCtx {
                         s.current_gear -= 1;
                     }
                 }
-                // ── D4: DANO OCULTO (ver DANO_ESCALA em statics.rs) ───────────────
-                // Acumula por giro alto e parede; degrada acelerador e direção. Aplicado
-                // DEPOIS dos ramos de comando (afeta o que chega à física, inclusive na
-                // ré) e ANTES do câmbio (rpm de leitura não muda no mesmo tick).
+                // ── D4: HIDDEN DAMAGE (see DANO_ESCALA in statics.rs) ─────────────
+                // Accumulates from high revs and walls; degrades throttle and steering. Applied
+                // AFTER the command branches (affects what reaches the physics, including in
+                // reverse) and BEFORE the gearbox (the RPM reading doesn't change in the same
+                // tick).
                 let dano_escala = DANO_ESCALA.load(Ordering::Relaxed);
                 if self.organism.is_none() && dano_escala > 0.0 && states[i].life_left > 0.0 {
                     let rpm_frac = states[i].phys.current_rpm / states[i].phys.max_rpm.max(1.0);
@@ -2823,20 +2827,20 @@ impl GpuCtx {
                         override_cause = OverrideCause::Damage;
                     }
                 }
-                // ── CÂMBIO (paridade com motor.rs:2451-2494) ──────────────────────
-                // A física deste pipeline SEMPRE teve caixa de 6 marchas (gear_ratio em
-                // physics_power_*.wgsl move a força), mas nada aqui subia de marcha: só o
-                // piso "≥2" e a queda <3 m/s acima. Teto físico da marcha 2:
-                // v_max = (8500+250)rpm ÷ (3,8×3,7) × 0,33 m = 21,5 m/s — e o pico real
-                // medido da população era 21,9 m/s, cravado no limitador. O Bevy resolve
-                // com auto-shift por RPM + override neural; portado aqui atrás de
-                // `--cambio auto|neural` (padrão travado até o A/B validar).
+                // ── GEARBOX (parity with motor.rs:2451-2494) ───────────────────────
+                // This pipeline's physics ALWAYS had a 6-gear box (gear_ratio in
+                // physics_power_*.wgsl moves the force), but nothing here shifted up: only the
+                // "≥2" floor and the <3 m/s drop above. Gear 2's physical ceiling:
+                // v_max = (8500+250)rpm ÷ (3.8×3.7) × 0.33 m = 21.5 m/s — and the real peak
+                // measured from the population was 21.9 m/s, pinned at the limiter. Bevy solves
+                // it with RPM auto-shift + neural override; ported here behind
+                // `--cambio auto|neural` (default locked until the A/B validates it).
                 let modo_cambio = CAMBIO_MODO.load(Ordering::Relaxed);
                 if modo_cambio > 0 && !is_reversing {
                     let rpm = states[i].phys.current_rpm;
                     let max_rpm = states[i].phys.max_rpm.max(1.0);
-                    // Embreagem colada ≈ marcha ≥2 e v > 3,5 m/s. Bevy usa wheel_rpm>1200,
-                    // que em marcha 2 (ratio 12) é v > 3,33 — aproximação de mesma ordem.
+                    // Clutch engaged ≈ gear ≥2 and v > 3.5 m/s. Bevy uses wheel_rpm>1200,
+                    // which at gear 2 (ratio 12) is v > 3.33 — same-order approximation.
                     let engaged = s.current_gear >= 2 && speed_now > 3.5;
                     states[i].shift_cooldown = (states[i].shift_cooldown - dt).max(0.0);
                     if states[i].shift_cooldown <= 0.0 {
@@ -2847,8 +2851,8 @@ impl GpuCtx {
                         } else if engaged && rpm < max_rpm * 0.30 && s.current_gear > 2 {
                             req = -1; // auto-downshift (motor.rs:2480)
                         } else if modo_cambio == 2 && engaged {
-                            // Override neural por BORDA (motor.rs:2484-2487): intent[3] sobe,
-                            // intent[4] desce — as duas primeiras linhas cegas de L2 ganham função.
+                            // Neural EDGE override (motor.rs:2484-2487): intent[3] rises,
+                            // intent[4] falls — the first two blind L2 lines gain a function.
                             if intent[3] > 0.5
                                 && states[i].shift_up_prev <= 0.5
                                 && s.current_gear < teto
@@ -2866,28 +2870,28 @@ impl GpuCtx {
                                 (s.current_gear as i32 + req).clamp(2, teto as i32) as u32;
                             states[i].shift_cooldown = 0.35;
                         }
-                        // prev SÓ atualiza quando a troca era possível (cooldown zerado,
-                        // fora da ré): borda que sobe DURANTE cooldown/ré fica "pendente"
-                        // e dispara na primeira janela válida. Atualizar sempre engolia a
-                        // borda (prev virava 1 antes da janela abrir) — achado da bateria
-                        // de validação P1.9, dois sítios (cooldown e pós-ré).
+                        // prev ONLY updates when the shift was actually possible (cooldown zeroed,
+                        // outside reverse): an edge that rises DURING cooldown/reverse stays
+                        // "pending" and fires on the first valid window. Always updating used to
+                        // swallow the edge (prev turned 1 before the window opened) — found in the
+                        // P1.9 validation battery, two sites (cooldown and post-reverse).
                         states[i].shift_up_prev = intent[3];
                         states[i].shift_down_prev = intent[4];
                     }
                 }
-                // Telemetria de pico (prova de vida do câmbio — ver statics.rs).
+                // Peak telemetry (proof of life for the gearbox — see statics.rs).
                 if speed_now > VEL_PICO.load(Ordering::Relaxed) {
                     VEL_PICO.store(speed_now, Ordering::Relaxed);
                 }
                 if s.current_gear > MARCHA_PICO.load(Ordering::Relaxed) {
                     MARCHA_PICO.store(s.current_gear, Ordering::Relaxed);
                 }
-                // ── OVERRIDE BRUTO, o último da cadeia ────────────────────────────
-                // Vem depois de TODOS os ramos (normal, ré, lockout, piloto fantasma) porque a
-                // pergunta que ele responde é sobre o CORPO: dado este comando exato chegando
-                // à física, o carro vira? Qualquer coisa entre o valor e o `PhysicsStateGpu`
-                // seria mais uma variável a suspeitar.
-                // Piloto sensorial: sobrepõe o cérebro inteiro.
+                // ── RAW OVERRIDE, the last in the chain ───────────────────────
+                // Comes after ALL the branches (normal, reverse, lockout, phantom pilot) because
+                // the question it answers is about the BODY: given this exact command reaching
+                // the physics, does the car turn? Anything between the value and the
+                // `PhysicsStateGpu` would be one more variable to suspect.
+                // Sensory pilot: overrides the whole brain.
                 if PILOTO_SENSOR.load(Ordering::Relaxed) != 0.0 {
                     s.steer = states[i].sensor_steer;
                     s.throttle = states[i].sensor_thr;
@@ -3228,7 +3232,7 @@ impl GpuCtx {
                 states[i].phys.fwd[2] = fwd[0] * sin_t + fwd[2] * cos_t;
                 states[i].phys.lat[0] = lat[0] * cos_t - lat[2] * sin_t;
                 states[i].phys.lat[2] = lat[0] * sin_t + lat[2] * cos_t;
-                // Normaliza para evitar deriva numérica acumulada.
+                // Normalize to avoid accumulated numerical drift.
                 let fn_ = (states[i].phys.fwd[0].powi(2) + states[i].phys.fwd[2].powi(2))
                     .sqrt()
                     .max(1e-6);
@@ -3398,11 +3402,11 @@ impl GpuCtx {
     pub fn reload_world(&mut self, world: &VoxelWorld) {
         debug_assert_eq!(
             world.size as u32, self.grid_size,
-            "reload_world: pista nova tem grade de tamanho diferente — buffer não realoca"
+            "reload_world: new track has a grid of a different size — buffer does not reallocate"
         );
         debug_assert!(
             (world.cell_size - self.cell_size).abs() < 1e-6,
-            "reload_world: pista nova tem cell_size diferente — buffer não realoca"
+            "reload_world: new track has a different cell_size — buffer does not reallocate"
         );
 
         let grid_u32: Vec<u32> = world.grid.iter().map(|v| *v as u32).collect();
@@ -3449,23 +3453,23 @@ mod testes_ordem {
     #[test]
     fn piloto_entra_antes_da_fisica() {
         let fonte = include_str!("context.rs");
-        // As marcas são montadas em RUNTIME: escritas literalmente aqui, o
-        // `include_str!` do próprio teste casaria consigo mesmo (o teste passou a
-        // contar 3 ocorrências de si próprio na primeira tentativa).
+        // The markers are assembled at RUNTIME: written literally here, the
+        // test's own `include_str!` would match itself (the test started
+        // counting 3 occurrences of itself on the first attempt).
         let m_piloto = format!("MARCA-{}-PILOTO", "ORDEM");
         let m_phys = format!("MARCA-{}-FISICA", "ORDEM");
-        let i_piloto = fonte.find(&m_piloto).expect("marca do piloto sumiu");
-        let i_phys = fonte.find(&m_phys).expect("marca da física sumiu");
+        let i_piloto = fonte.find(&m_piloto).expect("pilot marker missing");
+        let i_phys = fonte.find(&m_phys).expect("physics marker missing");
         assert!(
             i_piloto < i_phys,
-            "REGRESSÃO: o override do piloto (byte {i_piloto}) está DEPOIS da \
-             montagem de phys_states (byte {i_phys}) — a fórmula não chega ao motor."
+            "REGRESSION: the pilot override (byte {i_piloto}) is AFTER the \
+             phys_states assembly (byte {i_phys}) — the formula doesn't reach the motor."
         );
-        // E só pode existir UM bloco de override (havia dois durante o conserto).
+        // And there can only be ONE override block (there were two during the fix).
         assert_eq!(
             fonte.matches(&m_piloto).count(),
             1,
-            "marca do piloto duplicada no código"
+            "pilot marker duplicated in the code"
         );
     }
 }

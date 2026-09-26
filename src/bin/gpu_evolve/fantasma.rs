@@ -1,5 +1,5 @@
-//! D6 of the difficulty ladder — CHAMPION'S GHOST (see `docs/ESCADA_DIFICULDADE.md`,
-//! line `| D6 | fantasma do campeão anterior na pista | --fantasma | spec |`).
+//! D6 of the difficulty ladder — CHAMPION'S GHOST (see `docs/ESCADA_DIFICULDADE.md`, line
+//! `| D6 | fantasma do campeão anterior na pista | --fantasma | spec |`). // check-language: allow
 //!
 //! Live per-sector time pressure, **without physical contact**: the previous
 //! generation's champion is not drawn on the track and collides with no one — it becomes
@@ -32,8 +32,8 @@
 //! For a sector it never reached, comparing time makes no sense (there is no T
 //! to compare against) — in that case the being that gets there is, by definition,
 //! going beyond where the best of the past generation got. We treat this as a
-//! FIXED advantage (`VANTAGEM_SETOR_NAO_ALCANCADO`, +5.0 s), large enough to
-//! saturate `bonus_vida` at the cap (it does not need to be exact — it only needs to
+//! FIXED advantage (`VANTAGEM_SETOR_NAO_ALCANCADO`, +5.0 s), large // check-language: allow
+//! enough to saturate `bonus_vida` at the cap (it does not need to be exact — it only needs to
 //! be "clearly ahead" without relying on a real infinity reaching later arithmetic).
 //!
 //! ## Life cycle (same process, no disk)
@@ -118,8 +118,8 @@ impl Fantasma {
     /// where `T` is the tick at which the ghost reached `setor_atual`.
     ///
     /// If the ghost never reached `setor_atual` (or the index is outside what was
-    /// recorded), returns the fixed advantage `VANTAGEM_SETOR_NAO_ALCANCADO` — see
-    /// the module comment.
+    /// recorded), returns the fixed advantage
+    /// `VANTAGEM_SETOR_NAO_ALCANCADO` — see the module comment. // check-language: allow
     pub fn vantagem(&self, setor_atual: u32, tick_atual: u32) -> f32 {
         let t_fantasma = self
             .tempos_setor

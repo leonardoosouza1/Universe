@@ -52,6 +52,22 @@
 //! | `PERFIL_KERNEL` | `main()` (flag `--kernel-profile <N>`) | `context.rs::tick()` (gates the per-N-tick GPU kernel timing printout). The `GpuTimer` itself is NOT here — it owns a `QuerySet` and buffers, which is device-backed state, not a CLI knob, so it lives on `GpuCtx` (`src/gpu/timing.rs`) |
 //! | `RETINA_BEINGS_ON` | `main()` (flag `--retina-beings`) | `context.rs::tick()` (sets the retina kernel's `beings_on` uniform field, `docs/RETINA-BEINGS.md` §2) |
 //! | `SOCIAL_SENSORS_ON` | `main()` (flag `--social-sensors`) | `context.rs::tick()` (allows population-relative proximity on channel 125) |
+//! | `SLOW_CANONICAL_KINEMATICS` | `main()` (flag `--slow-kinematics legacy\|canonical`, default canonical) | `slow_canonical_kinematics()` from `context.rs::tick()` (slow-brain kinematic contract) |
+//! | `CONTINUOUS_WALL_PROBES` | `main()` (flag `--wall-probes legacy\|continuous`, default continuous) | `continuous_wall_probes()` from `context.rs::tick()` and `driving_diagnostics.rs` |
+//! | `CAMBIO_MODO` | `main()` (production default 1 at start-up, then flag `--gearbox`) | `context.rs::tick()` (gear selection) and `organism_tick.rs` (`gearbox_mode` of the resident taxi body) |
+//! | `CAMBIO_TETO` | `main()` (production default 3, flag `--gearbox-ceiling`; `--gearbox-curriculum` resets it to 2 and raises it per rung) | `context.rs::tick()` (gear cap) and `organism_tick.rs` (`gear_cap`) |
+//! | `CAMBIO_CURRICULO`, `CAMBIO_TETO_MAX` | `main()` (flag `--gearbox-curriculum`; the max is the `--gearbox-ceiling` value captured before the curriculum lowers the live cap) | `main()` (generation loop, curriculum rung advance) |
+//! | `VEL_PICO`, `MARCHA_PICO` | `context.rs::tick()` (running max of speed and gear over the generation); `main()` resets both to 0 after the generation report | `main()` (generation report line) |
+//! | `ORGANISM_LEGACY_TIRE_FRAME` | `main()` (flag `--organism-legacy-tire-frame`) | `organism_legacy_tire_frame()` (resident taxi body flag: historical front-wheel force transform) |
+//! | `ORGANISM_POWERTRAIN_V2` | `main()` (flag `--organism-powertrain-v2`) | `organism_powertrain_v2()` (resident taxi body flag: explicit numerical powertrain profile) |
+//! | `ORGANISM_STABLE_WHEELS` | `main()` (flag `--organism-stable-wheels`) | `organism_stable_wheels()` (resident taxi body flag) |
+//! | `ORGANISM_BRAKE_PRIORITY` | `main()` (flag `--organism-brake-priority`) | `organism_brake_priority()` (resident taxi: brake wins over throttle in the pedal net) |
+//! | `CUSTO_RPM` | `main()` (flag `--rpm-cost`) | `context.rs::tick()` (life burnt per tick above 90 % of max rpm) |
+//! | `CUSTO_FIACAO`, `FIACAO_CAUDA` | `main()` (flags `--wiring-cost`, `--wiring-tail`) | `main()` (wiring-length fitness cost over the tail of the weight distribution) |
+//! | `NEUROMOD_REGIOES` | `main()` (default off at start-up, flag `--neuromod-regions`) | `context.rs::tick()` (regional gate) and `driving_diagnostics.rs` (`regional_gating` field) |
+//! | `FUEL_AUTO_K` | `main()` (flag `--fuel-auto <k>`; tank = lap length x k, recomputed at every track change) | `main()` (generation loop, fuel mechanics) |
+//! | `DANO_ESCALA` | `main()` (production default 1.0 at start-up, flag `--damage-scale`) | `context.rs::tick()` (hidden damage accumulation, D4) and the generation report |
+//! | `FLY_REFLEX_ALPHA`, `FLY_REFLEX_GAIN` | `main()` (flags `--fly-reflex-alpha`, `--fly-reflex-gain`, finite-checked) | `fly_reflex_alpha()` / `fly_reflex_gain()` from `context.rs::tick()` (fly-map steering reflex) |
 //!
 //! State, as opposed to dose, is deliberately NOT here: the station charges, the
 //! predator pose, the per-being tyre temperature and the per-being subscription all

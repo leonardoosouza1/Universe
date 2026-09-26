@@ -96,17 +96,18 @@ Finish a file, delete its line from the allowlist and tick it off in
 ## 2. File size: 600 lines for `.rs`, 400 for `.wgsl`
 
 These caps are not imported from a style blog. They are where this project already
-is, measured on 2026-08-17 over the tracked tree:
+was when the rule was written (2026-08-17: 158 `.rs` files, 27 over 600; 22 `.wgsl`,
+4 over 400). Re-measured on 2026-09-25 with `bash scripts/file_size_meter.sh` over the
+tracked `src/` and `crates/` tree:
 
-| | files | total lines | median | over cap |
-|---|---|---|---|---|
-| `.rs` | 158 | 60,254 | 236 | **27 (17%)** over 600 |
-| `.wgsl` | 22 | 7,761 | ~270 | **4 (18%)** over 400 |
+| | files | total lines | over cap |
+|---|---|---|---|
+| `.rs` | 272 | 130,589 | **52 (19%)** over 600 |
+| `.wgsl` | 38 | 10,980 | **7 (18%)** over 400 |
 
-So 83% of the Rust files and 82% of the shaders already comply. The cap ratifies the
-project's own normal practice and names the outliers, rather than imposing a foreign
-number. The median Rust file is 236 lines; the largest, `src/simulation/motor.rs`, is
-**3,382 — fourteen times the median.**
+The share over the cap has not moved in five weeks while the tree doubled, which is
+the point of the rule: the cap ratifies the project's normal practice and names the
+outliers. The largest file, `src/bin/gpu_evolve/main.rs`, is **8 887 lines**.
 
 Why 600 and not "whatever fits":
 
@@ -120,29 +121,43 @@ split before the first commit, not after.
 
 ### The split queue
 
-These files exceed the cap today. They are the standing backlog — picking one up is a
-welcome contribution, and each should be its own PR.
+These files exceed the cap today (regenerate with
+`bash scripts/file_size_meter.sh --table`; hand-maintained copies of this table went
+stale within weeks). They are the standing backlog — picking one up is a welcome
+contribution, and each should be its own PR.
 
 | File | Lines | | File | Lines |
 |---|---:|---|---|---:|
-| `src/simulation/motor.rs` | 3382 | | `src/evolution/dna_genesis.rs` | 1063 |
-| `src/bin/gpu_evolve/main.rs` | 2582 | | `src/evolution/spawn.rs` | 991 |
-| `src/bin/gpu_report.rs` | 2139 | | `src/gpu/physics.rs` | 908 |
-| `src/bin/cortex_evolve.rs` | 1682 | | `src/gpu/cortex_sheet.rs` | 828 |
-| `src/gpu/evolution.rs` | 1561 | | `src/bin/fisica_bisect.rs` | 811 |
-| `src/evolution/pipeline.rs` | 1535 | | `src/physics.rs` | 769 |
-| `src/bin/gpu_validate.rs` | 1525 | | `src/evolution/dna.rs` | 705 |
-| `src/world.rs` | 1519 | | `src/neuro.rs` | 680 |
-| `src/bin/gpu_loop.rs` | 1494 | | `src/gpu/core.rs` | 671 |
-| `src/bin/gpu_evolve/context.rs` | 1457 | | `src/bin/cortex_map.rs` | 669 |
-| `src/gpu/perception.rs` | 1421 | | `src/bin/replay_mapa.rs` | 650 |
-| `src/perception/channels.rs` | 1151 | | `src/engine.rs` | 609 |
-| `src/gpu/brain.rs` | 1139 | | `src/replay.rs` | 604 |
+| `src/bin/gpu_evolve/main.rs` | 8887 | | `src/gpu/school.rs` | 860 |
+| `src/simulation/motor.rs` | 3850 | | `src/evolution/dna.rs` | 859 |
+| `src/bin/gpu_evolve/context.rs` | 3651 | | `src/bin/cortex_map.rs` | 819 |
+| `src/gpu/evolution.rs` | 3227 | | `src/bin/replay_mapa.rs` | 803 |
+| `src/bin/gpu_report.rs` | 2767 | | `crates/taxi-world/src/taxi_evolve_cli.rs` | 791 |
+| `src/world.rs` | 2145 | | `src/gpu/slow_brain.rs` | 789 |
+| `src/bin/gpu_validate.rs` | 2136 | | `src/gpu/organism_action.rs` | 789 |
+| `src/bin/cortex_evolve.rs` | 2116 | | `src/gpu/brain/flow_contract_tests.rs` | 786 |
+| `src/evolution/pipeline.rs` | 2054 | | `src/bin/gpu_evolve/piloto_forja.rs` | 777 |
+| `src/gpu/perception.rs` | 1924 | | `src/bin/gpu_evolve/competence_archive.rs` | 773 |
+| `src/gpu/brain/mod.rs` | 1822 | | `src/bin/gpu_evolve/tests.rs` | 756 |
+| `src/bin/gpu_loop.rs` | 1711 | | `src/neuro.rs` | 751 |
+| `src/gpu/physics.rs` | 1649 | | `src/bin/replay_obs.rs` | 736 |
+| `src/perception/channels.rs` | 1629 | | `src/gpu/core.rs` | 712 |
+| `src/gpu/school_tests.rs` | 1535 | | `src/fly_map_spiking.rs` | 704 |
+| `src/evolution/dna_genesis.rs` | 1333 | | `src/engine.rs` | 697 |
+| `src/gpu/taxi.rs` | 1327 | | `src/bin/gpu_evolve/ecology_runtime.rs` | 697 |
+| `src/evolution/spawn.rs` | 1248 | | `src/gpu/fly_map/mod.rs` | 682 |
+| `src/gpu/fly_map/spiking.rs` | 1077 | | `src/bin/gpu_evolve/statics.rs` | 672 |
+| `src/bin/fisica_bisect.rs` | 1003 | | `src/fly_map.rs` | 655 |
+| `src/organism_city.rs` | 979 | | `src/bin/gpu_evolve/escada.rs` | 648 |
+| `crates/taxi-world/src/evolution.rs` | 943 | | `src/bin/sensor_audit.rs` | 634 |
+| `src/gpu/cortex_sheet.rs` | 924 | | `src/replay/player.rs` | 619 |
+| `src/organism_school.rs` | 906 | | `src/tire_thermal.rs` | 609 |
+| `src/bin/gpu_evolve/driving_diagnostics.rs` | 899 | | `crates/taxi-world/src/tick.rs` | 604 |
+| `src/physics.rs` | 862 | | `crates/taxi-world/src/senses.rs` | 601 |
 
-Shaders over 400: `src/gpu/brain.wgsl` (1028), `src/gpu/perception.wgsl` (996),
-`src/gpu/physics.wgsl` (756), `src/gpu/perception_temporal.wgsl` (470).
+Shaders over 400: `src/gpu/brain.wgsl` (1369), `src/gpu/perception.wgsl` (956), `src/gpu/physics.wgsl` (764), `src/gpu/perception_temporal.wgsl` (503), `src/gpu/taxi.wgsl` (421), `src/gpu/school.wgsl` (416), `src/gpu/physics_b.wgsl` (411).
 
-`docs/arquivo/dirs/iara_genesis/src/universal.rs` (637) is also over, but it belongs
+`docs/arquivo/dirs/iara_genesis/src/universal.rs` (717) is also over, but it belongs
 to the archived `iara_genesis` crate that `Cargo.toml` still lists as a workspace
 member. Where that crate should live is a separate question — TODO, not decided here.
 

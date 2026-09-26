@@ -26,7 +26,8 @@
 //!   - If every being shows the SAME numeric value, the report DENOUNCES the fact:
 //!     it may be an injected value/bug, not real heterogeneity.
 //!   - Beings with distance < 1 m are marked as PARADO — not as "moving slowly".
-//!   - NÃO MEDIDO (not measured) is written where there is a real gap (e.g. arc-length when racing_line is empty).
+//!   - NOT MEASURED is written where there is a real gap (e.g. arc-length when
+//!     racing_line is empty).
 //!   - NEVER prints a verdict without the number that backs it.
 
 use std::borrow::Cow;
@@ -1384,10 +1385,10 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
         "being", "dist_l", "dist_r", "dist_f", "int[0]", "int[1]", "int[2]"
     ));
 
-    let mut n_ve_parede = 0usize;
-    let mut n_reage = 0usize;
-    let mut n_nao_ve = 0usize;
-    let mut n_ve_nao_reage = 0usize;
+    let mut n_sees_wall = 0usize;
+    let mut n_reacts = 0usize;
+    let mut n_does_not_see = 0usize;
+    let mut n_sees_but_no_react = 0usize;
 
     for snap in snapshots {
         let thr = snap.intent.get(0).cloned().unwrap_or(0.0);
@@ -1399,14 +1400,14 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
         ));
 
         if snap.dist_f < 5.0 {
-            n_ve_parede += 1;
+            n_sees_wall += 1;
             if brk > 0.3 || thr < 0.3 || str_.abs() > 0.5 {
-                n_reage += 1;
+                n_reacts += 1;
             } else {
-                n_ve_nao_reage += 1;
+                n_sees_but_no_react += 1;
             }
         } else {
-            n_nao_ve += 1;
+            n_does_not_see += 1;
         }
     }
 
@@ -1414,42 +1415,42 @@ fn analyze_stuck_brain(snapshots: &[StuckBrainSnapshot], n_canais: usize) -> Vec
     lines.push(format!("  === SENSORY VERDICT ({} beings) ===", n));
     lines.push(format!(
         "  Sees wall (dist_f<5m): {}/{} ({:.0}%)",
-        n_ve_parede,
+        n_sees_wall,
         n,
-        100.0 * n_ve_parede as f32 / n as f32
+        100.0 * n_sees_wall as f32 / n as f32
     ));
-    if n_ve_parede > 0 {
+    if n_sees_wall > 0 {
         lines.push(format!(
             "    -> Reacts (brakes/steers/lifts throttle): {}/{} ({:.0}%)  — does NOT react: {}/{}",
-            n_reage,
-            n_ve_parede,
-            100.0 * n_reage as f32 / n_ve_parede as f32,
-            n_ve_nao_reage,
-            n_ve_parede
+            n_reacts,
+            n_sees_wall,
+            100.0 * n_reacts as f32 / n_sees_wall as f32,
+            n_sees_but_no_react,
+            n_sees_wall
         ));
     }
     lines.push(format!(
         "  Does NOT see wall (dist_f>=5m but stuck): {}/{} ({:.0}%)",
-        n_nao_ve,
+        n_does_not_see,
         n,
-        100.0 * n_nao_ve as f32 / n as f32
+        100.0 * n_does_not_see as f32 / n as f32
     ));
 
     // Final verdict
-    if n_ve_parede > 0 && n_ve_nao_reage > n_reage {
+    if n_sees_wall > 0 && n_sees_but_no_react > n_reacts {
         lines.push(format!(
             "  *** DIAGNOSIS: being SEES the wall ({} cases) but does NOT react ({} non-react vs {} react) -> control/intent failure. ***",
-            n_ve_parede, n_ve_nao_reage, n_reage
+            n_sees_wall, n_sees_but_no_react, n_reacts
         ));
-    } else if n_nao_ve > n_ve_parede {
+    } else if n_does_not_see > n_sees_wall {
         lines.push(format!(
             "  *** DIAGNOSIS: being does NOT SEE the wall ({} vs {} that see it) -> limited sensor range or steering saturates first. ***",
-            n_nao_ve, n_ve_parede
+            n_does_not_see, n_sees_wall
         ));
-    } else if n_ve_parede > 0 && n_reage >= n_ve_nao_reage {
+    } else if n_sees_wall > 0 && n_reacts >= n_sees_but_no_react {
         lines.push(format!(
             "  *** DIAGNOSIS: being sees ({}) AND reacts ({}) but stalls — possible inertia/physics. ***",
-            n_ve_parede, n_reage
+            n_sees_wall, n_reacts
         ));
     } else {
         lines.push("  *** DIAGNOSIS: mixed pattern — analyze individually above. ***".to_string());
@@ -1785,7 +1786,7 @@ fn load_and_print_replay(path: &str, ser_target: usize) {
             notas.push("FREANDO");
         }
         if d_step < 0.1 && i > 0 {
-            notas.push("NAO_MOVEU");
+            notas.push("DID_NOT_MOVE");
         }
         if !notas.is_empty() {
             println!("         -> {}", notas.join(" | "));
@@ -2514,7 +2515,7 @@ fn main() {
         };
         let arc = arc_progress(&world.racing_line, pos_final[i]);
         let arc_str = if arc < 0.0 {
-            "NÃO MEDIDO".to_string()
+            "NOT MEASURED".to_string()
         } else {
             format!("{:.1}", arc)
         };

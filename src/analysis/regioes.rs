@@ -419,11 +419,12 @@ mod tests {
         let n = 80;
         let contexto = contexto_alternado(n);
         // Neurons 0 and 1: specialized in curves AND coupled — always TOGETHER when
-        // they fire, but not in EVERY curve (otherwise both end up with marginal 1.0 inside
-        // the curve subset and co-activation becomes identical to independence —
-        // 1.0×1.0=1.0 —, exactly the case that `ganho_temporal_zero_quando_tudo_sempre_ativo`
-        // in contextual.rs already covers for persistence; here VARIATION within
-        // the curve is needed for cohesion to have something to detect, just like
+        // they fire, but not in EVERY curve (otherwise both end up with marginal 1.0
+        // inside the curve subset and co-activation becomes identical to independence
+        // — 1.0×1.0=1.0 —, exactly the case that
+        // `ganho_temporal_zero_quando_tudo_sempre_ativo` in contextual.rs // check-language: allow
+        // already covers for persistence; here VARIATION within the curve is needed
+        // for cohesion to have something to detect, just like
         // `coativacao_detecta_par_acoplado`). Every 4 curve ticks, 1 goes "cold".
         let mut cnt_curva = 0usize;
         let amostras: Vec<Vec<f32>> = (0..n)

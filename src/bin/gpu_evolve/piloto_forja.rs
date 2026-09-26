@@ -56,9 +56,10 @@
 //!   is **19.07** and the largest `|center|` is **17.63** — 1e3 is 50× above everything
 //!   that exists.
 //! - `soma_phi` is "I am inside what I saw" telemetry: across the whole dump it ranges
-//!   from **287.9 to 936.7** (p1 = 375.9; tick 17000 = 402.4). `agir_com_portao` abstains
-//!   when it falls below `thr_phi` — off by default (`thr_phi = 0`), because turning it
-//!   on without measuring would change the validated behaviour.
+//!   from **287.9 to 936.7** (p1 = 375.9; tick 17000 = 402.4).
+//!   `agir_com_portao` abstains when it falls below `thr_phi` — off by // check-language: allow
+//!   default (`thr_phi = 0`), because turning it on without measuring would change
+//!   the validated behaviour.
 
 use std::io::Read;
 
@@ -101,7 +102,8 @@ pub struct PilotoForja {
     pub saturacoes_z: u64,
     pub abstencoes: u64,
     pub decisoes: u64,
-    /// Σφ threshold below which `agir_com_portao` abstains. 0 = gate off.
+    /// Σφ threshold below which `agir_com_portao` abstains; 0 = gate // check-language: allow
+    /// off.
     pub thr_phi: f32,
     /// Indices with degenerate `sd` (< 1e-6): channels the solve saw as constant.
     pub canais_degenerados: Vec<usize>,
@@ -403,7 +405,7 @@ impl PilotoForja {
 
     /// Like `agir`, but with a Σφ GATE: returns `None` when the state lit up no lens
     /// (`Σφ < thr_phi`), and then the brain decides the tick — same contract as
-    /// `PilotoLinear::agir_com_portao`.
+    /// `PilotoLinear::agir_com_portao`. // check-language: allow
     ///
     /// Σφ measured across the whole dump (20 001 ticks): min **287.9**, p1 **375.9**,
     /// median 724.7, max 936.7 (tick 17000 = 402.4). `thr_phi` comes from the JSON when

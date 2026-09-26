@@ -243,7 +243,7 @@ scan_added_lines() {
 #   a `... | while read` loop runs in a subshell, so any counter it increments is
 #   lost and the check reports OK while printing violations. That exact bug was
 #   in the first draft of this script.
-MAX_LINES_PER_FILE=20
+MAX_LINES_PER_FILE=${MAX_LINES_PER_FILE:-20}
 check_one() {
     local path="$1" mode="$2" label="$3" out line n=0
 

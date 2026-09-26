@@ -212,3 +212,21 @@ fn the_tau_bank_values_of_the_queue_still_resolve() {
         assert_eq!(canonical_value("--tracks", old), None);
     }
 }
+
+/// `--build-provenance` is answered before the argument loop (`main.rs`, first
+/// statement of `main()`), so experiment scripts can query a binary without a GPU.
+/// It is therefore invisible to `parser_arms()` and deliberately absent from the
+/// registry; this test keeps that exemption explicit instead of silent.
+#[test]
+fn the_build_provenance_query_is_handled_before_the_parser() {
+    let src = include_str!("main.rs");
+    assert!(
+        src.contains("std::env::args().nth(1).as_deref() == Some(\"--build-provenance\")"),
+        "main.rs must answer --build-provenance before parsing any other flag"
+    );
+    assert!(
+        canonical("--build-provenance").is_none(),
+        "--build-provenance is handled outside the parser; registering it would make \
+         every_registry_row_is_matched_by_the_parser fail for a flag no arm matches"
+    );
+}

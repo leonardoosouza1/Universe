@@ -2,7 +2,7 @@
 //!
 //! A channel is APPROVED if and only if:
 //!   (a) it varies over TIME (σ_temporal > 2.0 across ticks)
-//!   (b) it varies BETWEEN BEINGS at the last tick (σ_entre > 2.0 with beings spread out)
+//!   (b) it varies BETWEEN BEINGS at the last tick (σ_between > 2.0 with beings spread out)
 //!   (c) it has a documented SOURCE (some WGSL kernel writes that index)
 //!
 //! The previous version measured (b) a single time at tick 0, when the beings are still
@@ -34,7 +34,7 @@ struct AuditAcum {
     ///
     /// Original criterion (b): "last tick of the race". Problem: if everyone dies, the
     /// last tick has beings frozen in an identical state (brake=1, throttle=0) →
-    /// σ_entre≈0 → the channel fails unfairly. Replaced by "last tick with ≥4 alive",
+    /// σ_between≈0 → the channel fails unfairly. Replaced by "last tick with ≥4 alive",
     /// which guarantees the population is still moving and differentiated.
     ultimo_tick_4vivos: Vec<[i8; N_CH]>,
     n_ticks: usize,
@@ -80,7 +80,7 @@ pub fn auditoria_acumular(ondas: &[[i8; N_CH]], n: usize, ser_vivo: usize, n_viv
     g.hist_ser0.push(ondas[ser_vivo.min(n - 1)]);
     // Snapshot of the current tick only if ≥4 beings are alive.
     // New criterion (b): "last tick with ≥4 alive" instead of "last tick of the race".
-    // If everyone dies, the last tick has frozen beings (brake=1) → σ_entre≈0 → false failure.
+    // If everyone dies, the last tick has frozen beings (brake=1) → σ_between≈0 → false failure.
     // With ≥4 the population is still differentiated and the variance measures the channel,
     // not the death mechanism.
     if n_vivos >= 4 {
@@ -118,17 +118,17 @@ pub fn auditoria_relatorio() {
     // ── (b) Between-beings variance: standard deviation at the last tick with ≥4 alive ─
     //
     // Previous criterion: "last tick of the race". If everyone dies, the last tick
-    // has beings frozen at (brake=1, throttle=0) → σ_entre≈0 → false failure.
+    // has beings frozen at (brake=1, throttle=0) → σ_between≈0 → false failure.
     // New criterion: "last tick with ≥4 alive beings", where the population is still
     // differentiated and the variance measures the channel, not the death mechanism.
-    let mut sigma_entre = [0.0f32; N_CH];
+    let mut sigma_between = [0.0f32; N_CH];
     if !g.ultimo_tick_4vivos.is_empty() {
         let n = g.ultimo_tick_4vivos.len() as f32;
         for ch in 0..N_CH {
             let vals: Vec<f32> = g.ultimo_tick_4vivos.iter().map(|f| f[ch] as f32).collect();
             let m = vals.iter().sum::<f32>() / n;
             let var = vals.iter().map(|v| (v - m).powi(2)).sum::<f32>() / n;
-            sigma_entre[ch] = var.sqrt();
+            sigma_between[ch] = var.sqrt();
         }
     }
 
@@ -137,18 +137,18 @@ pub fn auditoria_relatorio() {
     let thr = 2.0_f32; // minimum σ to consider "varies"
     let mut aprovados: Vec<usize> = Vec::new();
     let mut falha_temporal: Vec<usize> = Vec::new();
-    let mut falha_entre: Vec<usize> = Vec::new();
+    let mut falha_between: Vec<usize> = Vec::new();
     let mut falha_fonte: Vec<usize> = Vec::new();
     let mut falha_multi: Vec<usize> = Vec::new(); // multiple failures
 
     for ch in 0..N_CH {
         let ok_t = sigma_temporal[ch] >= thr;
-        let ok_e = sigma_entre[ch] >= thr;
+        let ok_e = sigma_between[ch] >= thr;
         let ok_f = canal_tem_fonte(ch) != "sem_fonte";
         match (ok_t, ok_e, ok_f) {
             (true, true, true) => aprovados.push(ch),
             (false, true, true) => falha_temporal.push(ch),
-            (true, false, true) => falha_entre.push(ch),
+            (true, false, true) => falha_between.push(ch),
             (true, true, false) => falha_fonte.push(ch),
             _ if !ok_f => falha_fonte.push(ch),
             _ => falha_multi.push(ch),
@@ -158,7 +158,7 @@ pub fn auditoria_relatorio() {
     println!("║");
     println!("║ Approval criteria:");
     println!("║   (a) σ_temporal ≥ {thr:.0} (varies across ticks, being 0)");
-    println!("║   (b) σ_entre    ≥ {thr:.0} (varies between beings — last tick with ≥4 alive)");
+    println!("║   (b) σ_between  ≥ {thr:.0} (varies between beings — last tick with ≥4 alive)");
     println!("║   (c) source     = a WGSL kernel documents a write to the channel");
     println!("║");
     println!("║ APPROVED: {}/{N_CH}", aprovados.len());
@@ -193,36 +193,36 @@ pub fn auditoria_relatorio() {
                 println!(
                     "║     ch{a:3}  σ_t={:.1} σ_e={:.1}  source={}",
                     sigma_temporal[*a],
-                    sigma_entre[*a],
+                    sigma_between[*a],
                     canal_tem_fonte(*a)
                 );
             } else {
                 println!(
                     "║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1})",
-                    sigma_temporal[*a], sigma_entre[*a]
+                    sigma_temporal[*a], sigma_between[*a]
                 );
             }
         }
     }
 
-    if !falha_entre.is_empty() {
+    if !falha_between.is_empty() {
         println!(
             "║   [no variance between beings at the last tick] {} channels:",
-            falha_entre.len()
+            falha_between.len()
         );
-        let faixas = faixas_contiguas(&falha_entre);
+        let faixas = faixas_contiguas(&falha_between);
         for (a, b) in &faixas {
             if a == b {
                 println!(
                     "║     ch{a:3}  σ_t={:.1} σ_e={:.1}  source={}",
                     sigma_temporal[*a],
-                    sigma_entre[*a],
+                    sigma_between[*a],
                     canal_tem_fonte(*a)
                 );
             } else {
                 println!(
                     "║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1})",
-                    sigma_temporal[*a], sigma_entre[*a]
+                    sigma_temporal[*a], sigma_between[*a]
                 );
             }
         }
@@ -234,7 +234,7 @@ pub fn auditoria_relatorio() {
             println!(
                 "║     ch{ch:3}  σ_t={:.1} σ_e={:.1}  source={}",
                 sigma_temporal[ch],
-                sigma_entre[ch],
+                sigma_between[ch],
                 canal_tem_fonte(ch)
             );
         }
@@ -248,14 +248,14 @@ pub fn auditoria_relatorio() {
                 println!(
                     "║     ch{a:3}  σ_t={:.1} σ_e={:.1}  source={}",
                     sigma_temporal[*a],
-                    sigma_entre[*a],
+                    sigma_between[*a],
                     canal_tem_fonte(*a)
                 );
             } else {
                 println!(
                     "║     ch{a:3}..{b:3}  (ex: σ_t={:.1}  σ_e={:.1}  source={})",
                     sigma_temporal[*a],
-                    sigma_entre[*a],
+                    sigma_between[*a],
                     canal_tem_fonte(*a)
                 );
             }

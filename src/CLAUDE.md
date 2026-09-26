@@ -41,8 +41,6 @@ may need a window to run.
    device stays shared; a second device forbids sharing buffers between subsystems.
 5. **Not Bevy or `wgpu` imports inside `math/`.** That module exists precisely so the
    numeric core can be tested without a GPU, and `analysis/` depends on that.
-6. **Not in `perception_old_backup.rs`.** It is not in `lib.rs` and nothing references
-   it — a leftover, not a module. Do not extend it; deleting it is a fine PR.
 
 ## Traps
 

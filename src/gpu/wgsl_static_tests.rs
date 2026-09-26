@@ -272,3 +272,76 @@ fn every_legacy_encoding_copy_handles_the_being_material() {
         "the Rust reference must encode Being as -29"
     );
 }
+
+/// WGSL cannot import Rust constants, so the brain and perception kernels each
+/// redeclare the wave width and layer sizes as literals. `src/CLAUDE.md` records
+/// the stale-comment incident this guards against (`223 x 96` when the wave was
+/// already 192). Whitespace inside the declaration is irrelevant to WGSL, so the
+/// comparison collapses runs of spaces.
+#[test]
+fn wgsl_dimension_literals_match_config() {
+    use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
+    assert_eq!(
+        (SENSORY_WAVE_SIZE, L1_NEURONS, L2_NEURONS),
+        (192, 96, 48),
+        "config.rs dimensions changed: update every WGSL literal listed in this test"
+    );
+    let wave_u32s = SENSORY_WAVE_SIZE.div_ceil(4);
+    let expect: &[(&str, &str, &[String])] = &[
+        (
+            "brain.wgsl",
+            include_str!("brain.wgsl"),
+            &[
+                format!("const WAVE: u32 = {SENSORY_WAVE_SIZE}u;"),
+                format!("const WAVE_U32S: u32 = {wave_u32s}u;"),
+                format!("const L1_OUT: u32 = {L1_NEURONS}u;"),
+                format!("const L2_OUT: u32 = {L2_NEURONS}u;"),
+                format!(
+                    "const NEURON_META_PER_BEING: u32 = {}u;",
+                    super::brain::NEURON_META_PER_BEING
+                ),
+                format!(
+                    "const NEURON_MEM_PER_BEING: u32 = {}u;",
+                    super::brain::NEURON_MEM_PER_BEING
+                ),
+            ],
+        ),
+        (
+            "perception.wgsl",
+            include_str!("perception.wgsl"),
+            &[
+                format!("const WAVE_SIZE: u32 = {SENSORY_WAVE_SIZE}u;"),
+                format!("const WAVE_U32S: u32 = {wave_u32s}u;"),
+            ],
+        ),
+        (
+            "perception_motion.wgsl",
+            include_str!("perception_motion.wgsl"),
+            &[format!("const WAVE_U32S: u32 = {wave_u32s}u;")],
+        ),
+        (
+            "perception_temporal.wgsl",
+            include_str!("perception_temporal.wgsl"),
+            &[format!("const WAVE_U32S: u32 = {wave_u32s}u;")],
+        ),
+        (
+            "retina_digest.wgsl",
+            include_str!("retina_digest.wgsl"),
+            &[format!("const WAVE_U32S: u32 = {wave_u32s}u;")],
+        ),
+        (
+            "slow_gather.wgsl",
+            include_str!("slow_gather.wgsl"),
+            &[format!("const WAVE_U32S: u32 = {wave_u32s}u;")],
+        ),
+    ];
+    for (name, source, literals) in expect {
+        let collapsed: String = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        for literal in literals.iter() {
+            assert!(
+                collapsed.contains(literal.as_str()),
+                "{name} no longer declares `{literal}`; the Rust constant it mirrors changed or the shader was edited"
+            );
+        }
+    }
+}

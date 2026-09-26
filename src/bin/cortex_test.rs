@@ -159,8 +159,8 @@ fn main() {
                 // max-min > 0.05: there is real spread, not a constant
                 // |mean| > 0: non-zero signal (spontaneous wave arrived)
                 let heterogeneo = std > &0.01 && (mx - mn) > 0.05;
-                let nao_zero = mean.abs() > 1e-6;
-                let ok = heterogeneo && nao_zero;
+                let non_zero = mean.abs() > 1e-6;
+                let ok = heterogeneo && non_zero;
                 if !ok {
                     all_pass = false;
                 }
@@ -179,8 +179,8 @@ fn main() {
             let motors = cortex.read_motor(n_seres);
             println!("\n── Motor output (tick {}) ──", tick);
             for (ser, m) in motors.iter().enumerate() {
-                let nao_zero = m[0].abs() + m[1].abs() + m[2].abs() > 1e-6;
-                if !nao_zero {
+                let non_zero = m[0].abs() + m[1].abs() + m[2].abs() > 1e-6;
+                if !non_zero {
                     all_pass = false;
                 }
                 println!(
@@ -189,7 +189,7 @@ fn main() {
                     m[0],
                     m[1],
                     m[2],
-                    if nao_zero { "PASS" } else { "FAIL (zero)" }
+                    if non_zero { "PASS" } else { "FAIL (zero)" }
                 );
             }
 
