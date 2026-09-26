@@ -1025,6 +1025,7 @@ fn main() {
     let mut research_distance_stages: Vec<Option<research_contract::StartDistanceMetres>> =
         Vec::new();
     let mut research_linear = false;
+    let mut silence_channels: [(u16, u16); 2] = [(0, 0); 2];
     let mut research_city_family = None;
     let mut research_city_seed: Option<u64> = None;
     let mut research_body: Option<String> = None;
@@ -1291,6 +1292,20 @@ fn main() {
                                 std::process::exit(2)
                             }),
                     );
+                }
+                "--silence-channels" => {
+                    i += 1;
+                    silence_channels = match args.get(i).map(|t| universe::gpu::brain::parse_silence_channels(t)) {
+                        Some(Ok(ranges)) => ranges,
+                        Some(Err(err)) => {
+                            eprintln!("--silence-channels: {err}");
+                            std::process::exit(2)
+                        }
+                        None => {
+                            eprintln!("--silence-channels requires lo-hi[,lo-hi]");
+                            std::process::exit(2)
+                        }
+                    };
                 }
                 "--research-controller" => {
                     i += 1;
@@ -4245,6 +4260,7 @@ fn main() {
         LIFE_CAP_TICKS.store(n_ticks.max(1) as i64, Ordering::Relaxed);
     }
     ctx.brain.linear_wave = research_linear;
+    ctx.brain.silence_channels = silence_channels;
     ctx.brain.out_beta = out_beta;
     ctx.brain.out_gain = ganho_saida;
     ctx.brain.norm_l2_by_std = norm_l2_por_desvio;
@@ -5043,6 +5059,11 @@ fn main() {
                 } else {
                     "explicit-v1-instant-tcs"
                 });
+            metadata["silence_channels"] = serde_json::json!(silence_channels
+                .iter()
+                .filter(|(lo, hi)| hi > lo)
+                .map(|(lo, hi)| format!("{lo}-{hi}"))
+                .collect::<Vec<_>>());
             metadata["research"] = research_contract::configuration(
                 research_start_distance,
                 research_linear,

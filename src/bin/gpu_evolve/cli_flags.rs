@@ -78,6 +78,7 @@ pub const FLAGS: &[Flag] = &[
     flag("--school-service-course", &[], VALUE, "complete short delivery course, trip distance 12..96 metres in 3m cells; service-v2 bench only"),
     flag("--school-cross-city", &[], SWITCH, "four deterministic empty-pickup long delivery tasks; service-v2 bench, navigation v4/v5 only"),
     flag("--research-controller", &[], VALUE, "controller ablation: native (default) or linear sensory wave; GPU only"),
+    flag("--silence-channels", &[], VALUE, "sensory channels read as 0 by the brain, up to two lo-hi ranges (end exclusive), e.g. 0-16,128-160 = retina pools + HD retina"),
     flag("--school-retain-skills", &[], VALUE, "reserve 1..16 offspring slots for proven archived skills; fresh school bench only"),
     flag("--driving-diagnostics", &[], SWITCH, "record contacts and selected sensory/brain snapshots"),
     flag("--slow-kinematics", &[], VALUE, "slow-brain input mapping: canonical (default) | legacy"),

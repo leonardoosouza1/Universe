@@ -265,8 +265,19 @@ struct Params {
     // bit 0 = ablation enabled; bits 1..31 = observed being + 1 (zero = disabled)
     control_flags:     u32,
     lifetime_reserved0:u32,
+    // Sensory silence ranges (`--silence-channels`): channels [lo, hi) read as 0 after
+    // the sensor noise stage. Packed lo | (hi << 16); 0 = no range. Two ranges.
     lifetime_reserved1:u32,
     lifetime_reserved2:u32,
+}
+
+// True when channel `ch` falls in one of the two packed silence ranges.
+fn channel_silenced(ch: u32) -> bool {
+    let a = params.lifetime_reserved1;
+    let b = params.lifetime_reserved2;
+    let in_a = a != 0u && ch >= (a & 0xFFFFu) && ch < (a >> 16u);
+    let in_b = b != 0u && ch >= (b & 0xFFFFu) && ch < (b >> 16u);
+    return in_a || in_b;
 }
 
 // ── BINDINGS ──────────────────────────────────────────────────────────────────
@@ -799,6 +810,9 @@ fn main(
         // D3: sensor noise + channel failure, BEFORE the KAN. A no-op when
         // noise_sigma==0 and dropout_prob==0 (the historical behaviour).
         raw_i32 = apply_sensor_noise(raw_i32, being, ch, sensor_counter);
+        if channel_silenced(ch) {
+            raw_i32 = 0;
+        }
         w_kan[ch] = kan_filter_int(raw_i32, kan_base + ch * KAN_KNOTS);
     }
     // Pass 2: channels 128..191 (64 channels, so threads 64..127 do nothing)
@@ -816,6 +830,9 @@ fn main(
             }
             // D3: same treatment as Pass 1 — see the comment above.
             raw_i32 = apply_sensor_noise(raw_i32, being, ch, sensor_counter);
+            if channel_silenced(ch) {
+                raw_i32 = 0;
+            }
             w_kan[ch] = kan_filter_int(raw_i32, kan_base + ch * KAN_KNOTS);
         }
     }

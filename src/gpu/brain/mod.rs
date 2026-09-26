@@ -60,6 +60,25 @@ mod observation_tests;
 #[cfg(test)]
 mod flow_contract_tests;
 
+#[cfg(test)]
+mod silence_tests {
+    use super::{pack_silence_range, parse_silence_channels};
+
+    #[test]
+    fn silence_ranges_parse_and_pack_end_exclusive() {
+        let ranges = parse_silence_channels("0-16,128-160").unwrap();
+        assert_eq!(ranges, [(0, 16), (128, 160)]);
+        assert_eq!(pack_silence_range(ranges[0]), 16 << 16);
+        assert_eq!(pack_silence_range(ranges[1]), 128 | (160 << 16));
+        assert_eq!(pack_silence_range((0, 0)), 0, "empty range packs to none");
+        assert_eq!(parse_silence_channels("5-5").unwrap_err(), "silence range 5-5 must satisfy lo < hi <= 192");
+        assert!(parse_silence_channels("0-193").is_err());
+        assert!(parse_silence_channels("0-1,2-3,4-5").is_err());
+        assert!(parse_silence_channels("").is_err());
+        assert_eq!(parse_silence_channels("16-24").unwrap(), [(16, 24), (0, 0)]);
+    }
+}
+
 // ── CONSTANTS DERIVED FROM THE BRAIN DIMENSIONS ──────────────────────────────
 
 /// KAN knots per sensory channel (`kan.rs`: `spline_coeffs: [f32; 16]`).
@@ -149,11 +168,42 @@ const INTENT_DIM: usize = L1_NEURONS; // 96
 
 // ── #[repr(C)] STRUCT FOR THE UNIFORM ────────────────────────────────────────
 
-/// Global parameters passed in as a uniform buffer.
-///
-/// `#[repr(C)]` guarantees a predictable layout. `bytemuck::Pod` requires every field
-/// to be a primitive with no implicit padding — this struct sits right on that edge:
-/// 16 fields of 4 bytes = 64 bytes, a multiple of the 16-byte WGSL uniform alignment.
+/// `lo | (hi << 16)`; an empty range packs to 0, which the kernel treats as "none".
+pub fn pack_silence_range((lo, hi): (u16, u16)) -> u32 {
+    if hi <= lo {
+        0
+    } else {
+        u32::from(lo) | (u32::from(hi) << 16)
+    }
+}
+
+/// Parses `--silence-channels` text such as `0-16,128-160` (end exclusive) into at
+/// most two ranges inside the sensory wave.
+pub fn parse_silence_channels(text: &str) -> Result<[(u16, u16); 2], String> {
+    let mut ranges = [(0u16, 0u16); 2];
+    let mut count = 0;
+    for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (lo, hi) = part
+            .split_once('-')
+            .ok_or_else(|| format!("silence range `{part}` must be lo-hi"))?;
+        let lo: u16 = lo.trim().parse().map_err(|_| format!("bad range start `{lo}`"))?;
+        let hi: u16 = hi.trim().parse().map_err(|_| format!("bad range end `{hi}`"))?;
+        if lo >= hi || usize::from(hi) > SENSORY_WAVE_SIZE {
+            return Err(format!("silence range {lo}-{hi} must satisfy lo < hi <= {SENSORY_WAVE_SIZE}"));
+        }
+        if count == 2 {
+            return Err("at most two silence ranges".to_string());
+        }
+        ranges[count] = (lo, hi);
+        count += 1;
+    }
+    if count == 0 {
+        return Err("--silence-channels needs at least one lo-hi range".to_string());
+    }
+    Ok(ranges)
+}
+
+/// Global parameters passed as a uniform; C layout must match the WGSL fields.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BrainParams {
@@ -341,6 +391,10 @@ pub struct BrainGpu {
 
     /// Experimental stateless linear wave policy; uses L1 rows 0..9, no native neural trace.
     pub linear_wave: bool,
+    /// Sensory channels read as zero after the noise stage (`--silence-channels`):
+    /// up to two `[lo, hi)` ranges, packed `lo | (hi << 16)` into the two spare
+    /// uniform slots. Default empty, byte-identical to the historical behaviour.
+    pub silence_channels: [(u16, u16); 2],
 
     /// Optional lifetime mechanisms. Bit 0 = plasticity, bit 1 = development
     /// masks, bit 2 = deterministic topology masks. Zero is the control arm.
@@ -644,6 +698,7 @@ impl BrainGpu {
             dropout_prob: 0.0,
             lifetime_flags: 0,
             linear_wave: false,
+            silence_channels: [(0, 0); 2],
             mem_off: false,
             period_off: false,
             threshold_off: false,
@@ -1466,8 +1521,8 @@ impl BrainGpu {
             control_flags: brain_control_word(self.ablation_enabled, self.observed_being),
             lifetime_flags: self.lifetime_flags,
             lifetime_reserved0: u32::from(self.linear_wave),
-            lifetime_reserved1: 0,
-            lifetime_reserved2: 0,
+            lifetime_reserved1: pack_silence_range(self.silence_channels[0]),
+            lifetime_reserved2: pack_silence_range(self.silence_channels[1]),
         };
         let buf_params = self
             .device
