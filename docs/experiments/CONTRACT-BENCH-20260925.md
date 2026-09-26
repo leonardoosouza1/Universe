@@ -518,3 +518,68 @@ by H). Predictions: I's elite ≥ 8/20; H's elite ≤ 4/20 (its 4 trained starts
 plus luck). If I ≤ 4/20 too, rotation alone does not buy generalisation and
 the judge needs a different signal (e.g. speed-envelope conformity over the
 whole approach, not the area).
+
+#### Evo H — consistent rule, mean + shaping, 12 gens (21:34)
+
+| gen | succ/128 | elite | −X successes /32 | −Z /64 | +Z /32 |
+|---|---|---|---|---|---|
+| 2 | 18 | 2/4 | 2 | 8 | 8 |
+| 7 | 25 | 2/4 | 7 | 15 | 3 |
+| 10 | 36 | 3/4 | 10 | 18 | 8 |
+| 11 | 33 | 3/4 | **13** | 14 | 6 |
+
+Elite at gen 11: (99,156) −Z stop at 4.22 m/s; (156,93) −X **stop** at 4.74;
+(93,228) +Z stop at 3.14; (99,348) −Z **fails** (crawl 2.08 m/s, code 16).
+
+Prediction "4/4 by gen 8 if the mirror hypothesis holds": FAIL, and the
+failure is informative. The horizontal start is now as learnable as the
+vertical ones (13/32 of the population stop there, against 0–1/32 in every
+legacy arm), so the lane mirror was what made that street unlearnable. But the
+elite still holds three geometries: to gain the −X start it dropped (99,348),
+a start the legacy elite D had. Same 3/4 ceiling, different missing start —
+capacity, not geometry. Arm I (rotating pool of 12) tests whether the ceiling
+moves when no fixed 4-start batch can be memorised.
+
+#### Arm I and the 20-start evaluations (21:37)
+
+Arm I (consistent, mean + shaping, `--school-start-pool 12 --school-eval-starts 4`,
+24 gens): population successes 7 → 21 → 18 → 27 of 128 at gens 5/11/17/23; the
+elite's own count oscillates 0, 2, 2, 1 — with each genome judged on a
+different batch of 4, the elite of one generation is often a lucky draw.
+
+| elite | trained starts | held-out starts | total /20 |
+|---|---|---|---|
+| I (pool 12) | 5/12 | 0/8 | 5 |
+| H (fixed 4) | 4/4 | 3/16 (starts 13, 15, 19) | 7 |
+
+Predictions "I ≥ 8/20, H ≤ 4/20": both FAIL, in the direction opposite to the
+bet. Rotating the batch per genome did not buy generalisation in 24
+generations; it lowered the selection signal (the score of a genome now
+depends on which 4 of 12 starts it drew) and the fixed-batch elite generalises
+better (3 of 16 unseen starts) than the rotated one (0 of 8).
+
+Reading. The policy the population finds is scene-keyed: a witness pilot that
+reads only ch183 (distance to target) and ch65 (speed) stops 4/4 anywhere,
+but evolution from this champion finds start-specific stops first, three at a
+time, and a noisier judge just slows that down. The judge-v3 gate therefore
+needs two things the bench can measure: (1) the same batch for every genome
+in a generation, rotating across generations (`--school-shared-start rotate`
+semantics, extended to K starts), so scores are comparable; (2) a held-out
+pool in the report every generation, so the plateau is visible as it forms.
+Whether the 3-geometry ceiling is brain capacity or a scenery shortcut is the
+next intervention: silence the retina during the stop lesson and see whether
+the population is forced onto ch183/ch65.
+
+#### Pre-registered arms J and K (`arms_lane4.sh`, 21:39)
+
+No flag silences the retina (only `--ablate cfc/l1/l2` output masks and the
+`--research-controller linear` controller swap exist), so the retina control
+needs code and waits. Two judge shapes that exist today:
+
+| arm | shape | prediction |
+|---|---|---|
+| J | fixed batch of 8 starts for every genome, every generation, 24 gens | elite plateaus at 4/8 (capacity ≈ 3–4 geometries); if it reaches ≥ 6/8 the ceiling was the 4-start bench, not capacity |
+| K | `--school-shared-start rotate`, K = 1: one start per generation, the whole population on it, 24 gens | elite on pool 20 ≤ 4/20; moving target with a single sample per genome never settles |
+
+Both elites are then frozen on the 20-start pool (J's held-out = starts 9–20;
+K saw starts 0–23 mod count once each).
