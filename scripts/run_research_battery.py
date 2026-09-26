@@ -10,6 +10,8 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# Every executed run, gate receipt and publication lives below this partition.
+RUNS_ROOT = Path("/media/llm-data/universe-runs")
 ENV = dict(WGPU_BACKEND="vulkan", VK_ICD_FILENAMES="/usr/share/vulkan/icd.d/radeon_icd.json",
            MESA_VK_VERSION_OVERRIDE="1.3", RAYON_NUM_THREADS="1", CARGO_BUILD_JOBS="1")
 
@@ -549,13 +551,17 @@ def main():
     except (OSError, ValueError, KeyError) as error:
         p.error(str(error))
     out = a.out.resolve()
-    if not out.is_relative_to(Path("/media/llm-data/universe-runs")):
-        p.error("executed runs must be on /media/llm-data/universe-runs")
+    if not out.is_relative_to(RUNS_ROOT):
+        p.error(f"executed runs must be on {RUNS_ROOT}")
     if out.exists():
         p.error("output must be a new directory; evidence is never overwritten")
     out.mkdir(parents=True)
     binary = out/"gpu_evolve"
     shutil.copy2(a.binary, binary)
+    # The receipt was checked against the path above; the copy is what runs, so
+    # a rebuild between the two checks must not slip through.
+    if sha(binary) != receipt["binary_sha256"]:
+        raise ValueError("binary changed between the gate-receipt check and the evidence copy")
     plan.update(binary_sha256=sha(binary), source_sha256=source_hash(),
                 runner_sha256=runner_hash_at_entry,
                 base_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),

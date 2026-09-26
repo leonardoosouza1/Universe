@@ -13,7 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from run_research_battery import ROOT, ENV, sha, source_hash, read_build_provenance
+from run_research_battery import ROOT, ENV, sha, source_hash, read_build_provenance, RUNS_ROOT
 
 FLOW = "gpu::brain::flow_contract_tests::native_brain_action_body_flow_contract"
 ROTATION = "gpu::brain::flow_contract_tests::native_motor_physics_is_equivalent_in_four_headings"
@@ -65,8 +65,8 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     out = args.out.resolve()
-    if not out.is_relative_to(Path("/media/llm-data/universe-runs")) or out.exists():
-        parser.error("--out must be a new directory below /media/llm-data/universe-runs")
+    if not out.is_relative_to(RUNS_ROOT) or out.exists():
+        parser.error(f"--out must be a new directory below {RUNS_ROOT}")
     out.mkdir(parents=True)
     env = dict(os.environ, **ENV)
     env.pop("DISPLAY", None)

@@ -16,12 +16,21 @@ def audit(directory, require_all_starts=False):
     controllers = set()
     command_file = directory / 'command.json'
     command = json.loads(command_file.read_text()) if command_file.exists() else None
+    if command is None:
+        # Batteries launched from a shell script have no command.json; since
+        # 2026-09-24 every per-generation manifest carries the argv the binary
+        # itself ran under, which is the same declaration from a better witness.
+        first = directory / 'organism_gen0000.json'
+        if first.exists():
+            command = json.loads(first.read_text()).get('provenance', {}).get('argv')
+            if not isinstance(command, list):
+                command = None
     expected_generations = None
     if command is not None and '--gens' in command:
         expected_generations = int(command[command.index('--gens') + 1])
     files = sorted(directory.glob('school_result_gen*.json'))
     if expected_generations is None:
-        raise ValueError('missing declared generation count in command.json; cannot certify a complete battery')
+        raise ValueError('missing declared generation count (no command.json and no provenance.argv in organism_gen0000.json); cannot certify a complete battery')
     if len(files) != expected_generations:
         raise ValueError(f'incomplete battery: {len(files)} / {expected_generations} generations')
     previous_generation = None
@@ -152,6 +161,8 @@ def main():
         parser.error(str(error))
     text = json.dumps(report, indent=2)
     if args.out:
+        if not args.out.resolve().is_relative_to(Path('/media/llm-data')):
+            parser.error('--out must be below /media/llm-data (storage policy)')
         if args.out.exists():
             parser.error('refusing to overwrite prior evidence')
         args.out.write_text(text + '\n')

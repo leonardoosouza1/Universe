@@ -33,6 +33,18 @@ class EvidenceContract(unittest.TestCase):
     def test_complete_learned_attempt(self):
         self.assertEqual(audit(self.path)['status'], 'passed_recorded_attempt')
 
+    def test_generation_count_falls_back_to_the_manifest_argv(self):
+        # Shell-launched batteries have no command.json; the binary's own
+        # provenance.argv in organism_gen0000.json is the same declaration.
+        (self.path / 'command.json').unlink()
+        self.mutate('organism_gen0000.json', lambda m: m.update(provenance=dict(argv=['gpu_evolve', '--gens', '1'])))
+        self.assertEqual(audit(self.path)['status'], 'passed_recorded_attempt')
+
+    def test_no_declared_generation_count_fails_closed(self):
+        (self.path / 'command.json').unlink()
+        with self.assertRaises(ValueError):
+            audit(self.path)
+
     def test_all_starts_cannot_pool_different_genotypes(self):
         school = json.loads((self.path / 'school_result_gen0000.json').read_text())
         template = school['beings'][0]

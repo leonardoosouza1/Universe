@@ -18,10 +18,12 @@ Outputs land under <root>/<genome>/<lesson>/ (school_result, observation.jsonl,
 driving.csv, run.log, exit.json); the report writes <root>/contracts.json and
 <root>/CONTRACTS.md.
 """
-import argparse, csv, hashlib, json, math, os, shutil, subprocess, sys, time
+import argparse, csv, json, math, os, shutil, subprocess, sys, time
 from pathlib import Path
 
-RUNS = "/media/llm-data/universe-runs"
+from run_research_battery import ENV, ROOT, RUNS_ROOT, read_build_provenance, sha, source_hash
+
+RUNS = str(RUNS_ROOT)
 GENOMES = {
     "witness": None,  # scripted reference controller, positive control
     "founder": f"{RUNS}/cross-city-forward-learning-20260925/founder/genome_input.bin",
@@ -47,12 +49,6 @@ LESSONS = {
 }
 LESSON_FLAG = {"delivery48": "delivery"}
 V4_LESSONS = {"approach_passenger", "pickup", "delivery48"}
-ENV = {
-    "WGPU_BACKEND": "vulkan",
-    "VK_ICD_FILENAMES": "/usr/share/vulkan/icd.d/radeon_icd.json",
-    "MESA_VK_VERSION_OVERRIDE": "1.3",
-    "RAYON_NUM_THREADS": "1",
-}
 
 
 def command(binary, genome, lesson, out, starts):
@@ -98,13 +94,22 @@ def bind_binary(args, root):
             os.chmod(binary, 0o755)
     record = root / "binary.json"
     if not record.exists():
-        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+        digest = sha(binary)
         try:
-            prov = json.loads(subprocess.check_output([str(binary), "--build-provenance"], text=True))
-        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as err:
+            prov = read_build_provenance(binary)
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError, ValueError) as err:
             prov = {"error": str(err)}
+        # The binary reports the source it was built from; the tree may have moved
+        # on. Recorded, not enforced: benching an older champion binary is legitimate,
+        # but a bench that claims to validate the current tree must show a match here.
+        tree = source_hash()
+        matches = prov.get("source_sha256") == tree
+        if not matches:
+            print(f"warning: binary source {str(prov.get('source_sha256'))[:12]} != tree {tree[:12]}; "
+                  "the bench measures the binary, not the working tree", file=sys.stderr)
         record.write_text(json.dumps({"source": str(args.binary), "sha256": digest,
-                                      "build_provenance": prov, "starts": args.starts}, indent=1))
+                                      "build_provenance": prov, "tree_source_sha256": tree,
+                                      "binary_matches_tree": matches, "starts": args.starts}, indent=1))
     return binary
 
 
@@ -133,9 +138,15 @@ def run(args):
             env.pop("DISPLAY", None)
             t0 = time.time()
             with open(out / "run.log", "w") as rl:
-                rc = subprocess.call(["nice", "-n", "10", *cmd], stdout=rl, stderr=subprocess.STDOUT, env=env)
+                try:
+                    rc = subprocess.call(["nice", "-n", "10", *cmd], stdout=rl, stderr=subprocess.STDOUT,
+                                         env=env, timeout=args.timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    # A stalled driver must not hold the whole genome x lesson loop.
+                    rc = "timeout"
             dt = time.time() - t0
-            (out / "exit.json").write_text(json.dumps({"exit_code": rc, "seconds": dt}))
+            (out / "exit.json").write_text(json.dumps({"exit_code": rc, "seconds": dt,
+                                                       "timeout_seconds": args.timeout_seconds}))
             log.write(f"{time.strftime('%H:%M:%S')} {genome}/{lesson} exit={rc} {dt:.1f}s\n")
             log.flush()
     log.write("DONE\n")
@@ -280,12 +291,14 @@ def report(args):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run"); r.add_argument("--root", required=True)
-    r.add_argument("--binary", default=str(Path(__file__).resolve().parents[1] / "target/debug/gpu_evolve"),
+    r.add_argument("--binary", default=str(ROOT / "target/debug/gpu_evolve"),
                    help="gpu_evolve to bind (hard-linked when on the same partition as --root, else copied)")
     r.add_argument("--starts", type=int, default=16, help="fixed shared lesson starts per run (default 16)")
+    r.add_argument("--timeout-seconds", type=int, default=1800,
+                   help="kill one genome x lesson run after this long and record exit_code \"timeout\" (default 1800)")
     r.add_argument("--only", default="", help="comma-separated selectors: genome/lesson pairs or bare names")
     r.add_argument("--genome", action="append", default=[], help="extra name=path genome (repeatable)")
     p = sub.add_parser("report"); p.add_argument("--root", required=True)
