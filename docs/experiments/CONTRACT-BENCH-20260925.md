@@ -639,3 +639,35 @@ be handed its eyes back (0/20 sighted, crawling): the input distribution
 shift is total.
 
 Cost: 24 gens × 256 replicas, 2:29 min, plus two 7-s evaluations.
+
+#### Pre-registered arms N and O (`arms_lane7.sh`, 21:52) — the T-turn rung with the stop judge shape
+
+turn_near (N) and turn_far (O) from the same champion, fixed 8 shared starts,
+mean selection, consistent rule, 2560-tick horizon, 24 gens; elites on pool 20.
+Predictions: N elite ≥ 3/8 by gen 24 and pool-20 ≥ 6/20 (near turn is a tight
+arc after a junction box the being already crosses at low speed); O elite
+≤ 2/8 (the far lane needs a wider arc across the box, code 7 wrong gate
+dominant). Population code mix at gen 23 reported: 6 drove through, 7 wrong
+gate, 16 deadline.
+
+#### Arm M — fixed 16 starts (21:52)
+
+| | gen 3 | gen 11 | gen 23 | elite on pool 32 | trained | held-out |
+|---|---|---|---|---|---|---|
+| M fixed 16 | pop 94/512, elite **8/16** | 101, 9/16 | 120, **11/16** | **25/32** | 11/16 | **14/16** |
+| J fixed 8 | 41/256, 4/8 | 64, 5/8 | 64, 6/8 | 17/32 | 6/8 | 11/24 |
+
+Predictions "M ≥ 20/32, held-out ≥ 9/16; J ≈ 18/32": PASS (25/32, 14/16;
+17/32). Every failure of the M elite is code 16 (deadline: arrived but did not
+hold, or too slow); no overshoot, no contact, v_max 5.0 m/s. The elite at
+generation 3 already holds 8 of 16 starts, more than any 4-start arm reached
+in 24 generations: the number of simultaneous starts is the lever, and it acts
+from the first generation, not through longer evolution.
+
+Held-out rate by judge width: 4 starts 19% (3/16), 8 starts 46% (11/24), 16
+starts 88% (14/16). Cost at 16: 24 gens × 512 replicas in 3:12 min — still
+under the 4-start arms' 12-gen budget per useful result.
+
+**Judge v3 = 16 shared starts, mean, shaping, consistent rule.** Next: the
+same elite through the whole contract bench (move, stop, turns, approach) to
+see what the stop skill costs elsewhere, and the turn rung with 16 starts.
