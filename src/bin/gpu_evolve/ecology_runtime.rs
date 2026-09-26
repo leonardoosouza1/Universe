@@ -315,7 +315,13 @@ impl EcologyRuntime {
                 universe::gpu::organism::CONFIG_DISABLE_OLD_THERMAL,
             )
             .map_err(EcologyRuntimeError::UnsupportedState)?;
-            let spawned = spawn_state(slot, parent, &child);
+            let mut spawned = spawn_state(slot, parent, &child);
+            // Initial resident setup is not rerun after a birth. Preserve its
+            // numerical/contact profile while expressing the child's own body.
+            universe::gpu::physics::inherit_resident_profile(
+                &states[parent].phys,
+                &mut spawned.physics,
+            );
             if spawned.physics.validate_contract().is_err()
                 || ctx.organism_action.is_none()
                 || ctx.organism_sensors.is_none()
@@ -603,7 +609,9 @@ fn reset_cpu_slot(state: &mut BeingState) {
 }
 
 fn reset_gpu_slot(ctx: &mut GpuCtx, slot: usize) {
-    if let Some(traffic) = &ctx.traffic { traffic.reset_slot(&ctx.queue, slot); }
+    if let Some(traffic) = &ctx.traffic {
+        traffic.reset_slot(&ctx.queue, slot);
+    }
     ctx.clear_physical_retina_slot(slot);
     ctx.retina_digest.reset_slot(&ctx.queue, slot);
     ctx.percept

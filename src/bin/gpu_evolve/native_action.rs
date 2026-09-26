@@ -101,6 +101,7 @@ pub enum BrakeSuppression {
     None,
     NonpositiveAfterModulation,
     LowSpeedGate,
+    ThrottleCancellation,
     ReverseOverride,
 }
 

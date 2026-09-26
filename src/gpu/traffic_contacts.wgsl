@@ -35,9 +35,10 @@ fn contacts(@builtin(global_invocation_id) gid:vec3<u32>){
  let corrected=position(b)-normal*max(0.0,3.0-d)*(inv/(inv+inv_other));
  let next_v=v-normal*impulse*inv;
  output[o]=next_v.x;output[o+2u]=next_v.y;output[o+36u]=corrected.x;output[o+38u]=corrected.y;
+ // Contact is geometric overlap, including stationary piles. Impact requires
+ // closing speed and is accounted separately; static contact adds no energy.
+ output[o+39u]=f32(u32(max(snapshot[o+39u],0.0))|16u);
  if(closing>0.0){
-  // Slot 39 is a numeric bit mask (physics_c writes f32(mask)); bit 16 = taxi contact.
-  output[o+39u]=f32(u32(max(snapshot[o+39u],0.0))|16u);
   output[o+43u]=max(snapshot[o+43u],closing);output[o+47u]=snapshot[o+47u]+impulse;
   output[o+55u]=snapshot[o+55u]+0.25*reduced*(1.0-0.05*0.05)*closing*closing;
  }

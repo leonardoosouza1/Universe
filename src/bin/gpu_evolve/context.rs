@@ -9,8 +9,8 @@
 use crate::brain_backend::BrainBackend;
 use crate::{brain_backend, driving_diagnostics, visual_telemetry};
 use std::borrow::Cow;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use wgpu::util::DeviceExt;
 
@@ -34,10 +34,10 @@ use universe::world::VoxelWorld;
 
 use crate::audit::auditoria_acumular;
 use crate::native_action::{
-    map_native_action, MotorCommandValue, MotorHead, MotorTrace, NativeActionInput, OverrideCause,
-    ThrottleArbitration,
+    MotorCommandValue, MotorHead, MotorTrace, NativeActionInput, OverrideCause,
+    ThrottleArbitration, map_native_action,
 };
-use crate::reverse_controller::{step_v2, ReverseInput, ReverseState};
+use crate::reverse_controller::{ReverseInput, ReverseState, step_v2};
 use crate::statics::*;
 use crate::types::BeingState;
 use universe::brain_interface::MotorCommand;
@@ -402,7 +402,9 @@ impl GpuCtx {
             || self.wave_writer.is_some()
             || self.visual_telemetry.is_some()
         {
-            return Err("organism resident scenario requires native recurrent memory and driving-diagnostics; legacy hippocampus/raw capture are unsupported");
+            return Err(
+                "organism resident scenario requires native recurrent memory and driving-diagnostics; legacy hippocampus/raw capture are unsupported",
+            );
         }
         if PILOTO_GANHO.load(Ordering::Relaxed) != 0.0
             || PILOTO_SENSOR.load(Ordering::Relaxed) != 0.0
@@ -422,12 +424,8 @@ impl GpuCtx {
             &self.queue,
             &genomes.iter().map(|g| g.organism).collect::<Vec<_>>(),
         )?;
-        let mut taxi = universe::gpu::taxi::TaxiGpu::new(
-            &self.device,
-            &self.queue,
-            self.capacity,
-            stations,
-        );
+        let mut taxi =
+            universe::gpu::taxi::TaxiGpu::new(&self.device, &self.queue, self.capacity, stations);
         taxi.set_observation_version(NAVIGATION_OBSERVATION.load(Ordering::Relaxed));
         // Must be selected before `encode_birth`: the school bench supplies isolated
         // reserves, while the production taxi world transfers them from station stock.
@@ -855,7 +853,7 @@ impl GpuCtx {
     /// Upload the full sensory genome and retain only its curvature horizons on
     /// the host. The host copy is generation state, never a CPU/GPU tick transfer.
     pub fn upload_sensors(&mut self, sensors: &[f32], n: usize) {
-        use universe::gpu::evolution::{sensor_idx, N_SENSOR_GENES};
+        use universe::gpu::evolution::{N_SENSOR_GENES, sensor_idx};
         self.percept.upload_sensors(&self.queue, sensors, n);
         assert_eq!(sensors.len(), n * N_SENSOR_GENES);
         self.sensor_curve_ranges.resize(n, [0.0; 3]);
@@ -1449,28 +1447,28 @@ impl GpuCtx {
                 let voxel = voxel_at_cpu(p.pos[0], p.pos[2]);
                 let on_grass = if voxel == 0 { 1.0_f32 } else { 0.0 };
                 self.lap_grass[i] = voxel == 0; // C0: same voxel, no second lookup
-                                                // ── PROPRIOCEPÇÃO: quatro slots eram CONSTANTES ────────────────
-                                                //
-                                                // `prop[3]=1.0` (HP sempre cheio), `prop[7]=0`, `prop[8]=0`, `prop[11]=0`
-                                                // viravam os canais 67, 71, 72 e 75 cravados — 4 dos 12 proprioceptivos
-                                                // que a auditoria de visão pegou saturados em 127. Canal constante é peso
-                                                // morto em L1 e, pior, é um estado corporal que o cérebro NÃO sente.
-                                                //
-                                                // Isso importa além da limpeza: medimos que neuromodulação só tem teto de
-                                                // ganho quando existe corpo ACOPLADO — estado interno lento que faz o ótimo
-                                                // de comportamento variar. Sem acoplamento o ganho é zero. Os estados abaixo
-                                                // já eram calculados e simplesmente não chegavam a lugar nenhum.
-                                                //
-                                                //   67 ← vida restante   (era HP fixo em 1,0): o ser morre sem saber que vai
-                                                //   71 ← temperatura do motor: acima de 105 °C a potência cai
-                                                //        (physics.wgsl:402) — muda o ótimo de acelerar, τ ≈ 500-1000 ticks
-                                                //   72 ← LATERAL ACCELERATION DEMAND: v²|κ|/(mu*g). This combines body speed
-                                                //        with the mean racing-line curvature over the next 30m. It says how
-                                                //        much grip the current trajectory would demand; it never chooses brake.
-                                                //   75 ← estagnação: quantos ticks sem avançar
-                                                // Channel 67 is the remaining survival reserve: the smaller of
-                                                // time/energy life and mechanical integrity. A collision therefore
-                                                // becomes an observable bodily consequence on the next tick.
+                // ── PROPRIOCEPÇÃO: quatro slots eram CONSTANTES ────────────────
+                //
+                // `prop[3]=1.0` (HP sempre cheio), `prop[7]=0`, `prop[8]=0`, `prop[11]=0`
+                // viravam os canais 67, 71, 72 e 75 cravados — 4 dos 12 proprioceptivos
+                // que a auditoria de visão pegou saturados em 127. Canal constante é peso
+                // morto em L1 e, pior, é um estado corporal que o cérebro NÃO sente.
+                //
+                // Isso importa além da limpeza: medimos que neuromodulação só tem teto de
+                // ganho quando existe corpo ACOPLADO — estado interno lento que faz o ótimo
+                // de comportamento variar. Sem acoplamento o ganho é zero. Os estados abaixo
+                // já eram calculados e simplesmente não chegavam a lugar nenhum.
+                //
+                //   67 ← vida restante   (era HP fixo em 1,0): o ser morre sem saber que vai
+                //   71 ← temperatura do motor: acima de 105 °C a potência cai
+                //        (physics.wgsl:402) — muda o ótimo de acelerar, τ ≈ 500-1000 ticks
+                //   72 ← LATERAL ACCELERATION DEMAND: v²|κ|/(mu*g). This combines body speed
+                //        with the mean racing-line curvature over the next 30m. It says how
+                //        much grip the current trajectory would demand; it never chooses brake.
+                //   75 ← estagnação: quantos ticks sem avançar
+                // Channel 67 is the remaining survival reserve: the smaller of
+                // time/energy life and mechanical integrity. A collision therefore
+                // becomes an observable bodily consequence on the next tick.
                 let time_life =
                     (states[i].life_left as f32 / life_cap().max(1) as f32).clamp(0.0, 1.0);
                 let vida_frac = time_life.min(1.0 - states[i].dano.clamp(0.0, 1.0));

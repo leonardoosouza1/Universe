@@ -22,7 +22,8 @@ use universe::gpu::{
     state_snapshot::{self, NamedBuffer, SnapshotBundle},
 };
 
-const FORMAT_VERSION: u32 = 3;
+// v5 versions input83 starter authorization and the powertrain observation/action contract.
+const FORMAT_VERSION: u32 = 5;
 const MAX_BEINGS: usize = 4096;
 const MAX_HIP_MEM: usize = 4096;
 
@@ -76,7 +77,12 @@ pub fn resident_implementation_sha256() -> String {
         include_bytes!("../../gpu/organism_feedback.wgsl").as_slice(),
         include_bytes!("../../gpu/organism_reproduction.rs").as_slice(),
         include_bytes!("../../gpu/organism_reproduction.wgsl").as_slice(),
+        include_bytes!("../../gpu/organism.rs").as_slice(),
+        include_bytes!("../../gpu/organism.wgsl").as_slice(),
         include_bytes!("../../gpu/physics.rs").as_slice(),
+        include_bytes!("../../gpu/physics_a.wgsl").as_slice(),
+        include_bytes!("../../gpu/physics_b.wgsl").as_slice(),
+        include_bytes!("../../gpu/physics_c.wgsl").as_slice(),
         include_bytes!("../../gpu/perception.rs").as_slice(),
         include_bytes!("../../gpu/perception.wgsl").as_slice(),
         include_bytes!("../../gpu/perception_temporal.wgsl").as_slice(),
@@ -97,6 +103,7 @@ pub fn resident_implementation_sha256() -> String {
         include_bytes!("../../gpu/traffic_contacts.wgsl").as_slice(),
         include_bytes!("../../organism_city.rs").as_slice(),
         include_bytes!("../../gpu/brain/mod.rs").as_slice(),
+        include_bytes!("../../gpu/brain.wgsl").as_slice(),
     ] {
         hash.update((source.len() as u64).to_le_bytes());
         hash.update(source);
@@ -189,7 +196,13 @@ fn native_buffers(ctx: &GpuCtx) -> Result<Vec<NamedBuffer<'_>>, String> {
     out.extend(ctx.retina_digest.snapshot_buffers());
     out.push(("organism.state", &ctx.organism.as_ref().unwrap().buf_state));
     out.push(("taxi.world", &ctx.taxi.as_ref().unwrap().buf_world));
-    out.push(("traffic.state", &ctx.traffic.as_ref().ok_or("checkpoint: missing traffic")?.buf_state));
+    out.push((
+        "traffic.state",
+        &ctx.traffic
+            .as_ref()
+            .ok_or("checkpoint: missing traffic")?
+            .buf_state,
+    ));
     out.push(("retina.current", &ctx.buf_retina_out));
     Ok(out)
 }

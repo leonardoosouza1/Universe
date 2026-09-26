@@ -121,7 +121,8 @@ pub static FUEL_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 pub static REFUEL_LAPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 /// organism-taxi-v1 navigation observation schema (2 or 3); written once by `main()`
 /// from `--navigation-observation`, read by `context.rs::start_organism`.
-pub static NAVIGATION_OBSERVATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
+pub static NAVIGATION_OBSERVATION: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(2);
 /// Tamanho do tanque. 1,0 é o original da `f1-world`.
 ///
 /// Com consumo `(0,002 + acel²·0,004)/s`, um tanque de 1,0 dura de 166 s (pé no fundo) a
@@ -192,6 +193,24 @@ pub static ORGANISM_LEGACY_PEDALS: std::sync::atomic::AtomicBool =
 pub fn organism_legacy_pedals() -> bool {
     ORGANISM_LEGACY_PEDALS.load(Ordering::Relaxed)
 }
+/// Reproduce the historical, non-power-conjugate front-wheel force transform.
+/// Corrected taxi runs use the v2 transform; race runs keep their existing flags.
+pub static ORGANISM_LEGACY_TIRE_FRAME: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub fn organism_legacy_tire_frame() -> bool {
+    ORGANISM_LEGACY_TIRE_FRAME.load(Ordering::Relaxed)
+}
+/// Explicit numerical profile; old checkpoints retain their original dynamics.
+pub static ORGANISM_POWERTRAIN_V2: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub fn organism_powertrain_v2() -> bool {
+    ORGANISM_POWERTRAIN_V2.load(Ordering::Relaxed)
+}
+pub static ORGANISM_STABLE_WHEELS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub fn organism_stable_wheels() -> bool {
+    ORGANISM_STABLE_WHEELS.load(Ordering::Relaxed)
+}
 /// `--organism-signed-brake`: the negative half of the fast brake logit is pushed into
 /// the exclusive net as drive instead of being clipped (the clip left the brake row on a
 /// dead zone with no selection gradient; docs/SCHOOL-STOP-CONTRACT-AB-20260924.md).
@@ -201,6 +220,11 @@ pub static ORGANISM_SIGNED_BRAKE: std::sync::atomic::AtomicBool =
 #[inline]
 pub fn organism_signed_brake() -> bool {
     ORGANISM_SIGNED_BRAKE.load(Ordering::Relaxed)
+}
+pub static ORGANISM_BRAKE_PRIORITY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub fn organism_brake_priority() -> bool {
+    ORGANISM_BRAKE_PRIORITY.load(Ordering::Relaxed)
 }
 /// Enables the corrected reverse state machine. Off preserves the historical inline path.
 pub static REVERSE_CONTROLLER_V2: std::sync::atomic::AtomicBool =

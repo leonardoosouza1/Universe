@@ -12,11 +12,32 @@ impl GpuCtx {
         dt: f32,
         tick: usize,
     ) -> Result<(), &'static str> {
-        if !self.organism_resident_ready {
+        let first_resident_tick = !self.organism_resident_ready;
+        if first_resident_tick {
             for state in states.iter_mut() {
                 state.phys.dt = dt;
                 state.phys.engine_temp = 20.0;
                 state.phys.oil_temp = 20.0;
+                if crate::statics::organism_powertrain_v2() {
+                    state.phys.config_flags |= universe::gpu::physics::POWERTRAIN_V2_FLAG;
+                    state.phys.current_gear = 2;
+                    state.phys.current_rpm = 800.0;
+                    state.phys.is_stalled = 0;
+                    state.phys.starter_timer = 0.0;
+                    state.phys.shift_timer = 0.0;
+                    state.phys._pad_wind = 0.0;
+                }
+                let stable_flags = universe::gpu::physics::STABLE_WHEEL_FLAGS;
+                state.phys.config_flags &= !stable_flags;
+                if crate::statics::organism_stable_wheels() {
+                    state.phys.config_flags |= stable_flags;
+                }
+                let tire_flag = universe::gpu::physics::POWER_CONSISTENT_STEERING_FLAG;
+                if crate::statics::organism_legacy_tire_frame() {
+                    state.phys.config_flags &= !tire_flag;
+                } else {
+                    state.phys.config_flags |= tire_flag;
+                }
                 // Static friction is a property of the resident taxi body, not a
                 // privilege of the scripted feasibility witness.  Keeping this flag on
                 // only for the witness meant an evolved controller could command zero
@@ -73,6 +94,19 @@ impl GpuCtx {
             .as_ref()
             .ok_or("missing resident action")?;
         let taxi = self.taxi.as_ref().ok_or("missing resident taxi")?;
+        if first_resident_tick {
+            if let Some(school) = self.school.as_ref().filter(|s| s.prepared_start || s.cross_city) {
+                school.initialize(
+                    &self.device,
+                    &mut enc,
+                    self.phys_gpu.input_buffer(),
+                    self.phys_gpu.output_buffer(),
+                    &body.buf_state,
+                    self.brain.buf_intent(),
+                    n,
+                )?;
+            }
+        }
         let orientation = self
             .organism_orientation
             .as_ref()
@@ -106,7 +140,7 @@ impl GpuCtx {
             fov_half: (universe::visao::fov_deg() / 2.0).to_radians(),
             pitches,
             beings_on: retina_beings_on() as u32,
-            _pad0: universe::visao::road_view_enabled() as u32,
+            _pad0: universe::visao::retina_geometry_mode(),
             _pad1: 0,
             _pad2: 0,
         };
@@ -244,6 +278,7 @@ impl GpuCtx {
             FLAG_ALLOW_LOW_SPEED_BRAKE | FLAG_EXCLUSIVE_PEDALS
         };
         let flags = pedal_flags
+            | if crate::statics::organism_brake_priority() { FLAG_BRAKE_PRIORITY } else { 0 }
             | if motor_head_linear() || self.taxi_witness.is_some() {
                 FLAG_LINEAR_HEAD
             } else {
@@ -441,7 +476,11 @@ impl GpuCtx {
                 let selected = self.driving_diagnostics.as_ref().unwrap().selected;
                 let state = &states[selected].phys;
                 motor_trace = Some(crate::native_action::MotorTrace {
-                    source: if self.taxi_witness.is_some() { "resident_reference_action_v1" } else { "resident_native_action_v1" },
+                    source: if self.taxi_witness.is_some() {
+                        "resident_reference_action_v1"
+                    } else {
+                        "resident_native_action_v1"
+                    },
                     phase: "pre_physics_command_assembly",
                     pre_physics_speed_mps: trace[6],
                     raw_intent: if self.taxi_witness.is_some() {
@@ -460,12 +499,18 @@ impl GpuCtx {
                         "legacy"
                     },
                     after_head: trace[..3].try_into().unwrap(),
-                    slow_output: if self.taxi_witness.is_some() { [0.0;3] } else { slow[selected] },
+                    slow_output: if self.taxi_witness.is_some() {
+                        [0.0; 3]
+                    } else {
+                        slow[selected]
+                    },
                     hip_bias: [0.0; 3],
                     after_modulation: trace[3..6].try_into().unwrap(),
                     steering_filtered: trace[7],
                     brake_suppression: if trace[8] > 0.5 {
                         crate::native_action::BrakeSuppression::LowSpeedGate
+                    } else if trace[11] > 0.000001 {
+                        crate::native_action::BrakeSuppression::ThrottleCancellation
                     } else if trace[5] <= 0.0 {
                         crate::native_action::BrakeSuppression::NonpositiveAfterModulation
                     } else {
@@ -492,7 +537,9 @@ impl GpuCtx {
                 );
             }
             if let Some(diagnostics) = self.driving_diagnostics.as_mut() {
-                if let Some(traffic) = self.traffic_samples.get(diagnostics.selected) { diagnostics.attach_traffic(traffic); }
+                if let Some(traffic) = self.traffic_samples.get(diagnostics.selected) {
+                    diagnostics.attach_traffic(traffic);
+                }
                 let alive = states.iter().map(|s| s.life_left > 0.0).collect::<Vec<_>>();
                 diagnostics
                     .after_physics_resident(
@@ -508,7 +555,10 @@ impl GpuCtx {
             }
         }
         if profile {
-            println!("[resident-profile] tick={tick} simulation_submit=1 sampled={sample} host_wall_ms={:.3} numerical_host_steps=0",started.elapsed().as_secs_f64()*1000.0);
+            println!(
+                "[resident-profile] tick={tick} simulation_submit=1 sampled={sample} host_wall_ms={:.3} numerical_host_steps=0",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
         }
         Ok(())
     }

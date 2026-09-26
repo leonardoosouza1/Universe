@@ -28,6 +28,20 @@ fn encode_pre(@builtin(global_invocation_id) gid: vec3<u32>) {
   let g = b * GENE_STRIDE;
   io[iidx(b, 87u)] = bitcast<f32>(bitcast<u32>(io[iidx(b, 87u)]) | p.config_flags | 64u);
   state[s+57u]=io[iidx(b,51u)];state[s+58u]=io[iidx(b,53u)];state[s+59u]=io[iidx(b,52u)];state[s+60u]=1.0;
+  let powertrain_v2 = (bitcast<u32>(io[iidx(b,87u)]) & 8192u) != 0u;
+  if (powertrain_v2) {
+    let request = io[iidx(b,83u)] > 0.5;
+    io[iidx(b,83u)] = 0.0;
+    let stopped = length(vec2<f32>(io[iidx(b,0u)],io[iidx(b,2u)])) < 0.5;
+    let eligible = bitcast<u32>(io[iidx(b,57u)]) == 1u && bitcast<u32>(io[iidx(b,55u)]) <= 2u && io[iidx(b,56u)]<=0.0;
+    let starter_cost_j = 1500.0 * p.dt;
+    // Reserve basal metabolism first. Aborted crank intervals remain paid.
+    let basal_reserve_j = 120.0 * max(0.25,state[s+24u]) * p.dt;
+    if (request && stopped && eligible && state[s+29u] > 0.5 && state[s] >= starter_cost_j + basal_reserve_j) {
+      state[s] -= starter_cost_j;
+      io[iidx(b,83u)] = 1.0;
+    }
+  }
   if (state[s + 29u] < 0.5) {
     // A dead body cannot continue to power the legacy physics path.
     io[iidx(b, 48u)] = 0.0;

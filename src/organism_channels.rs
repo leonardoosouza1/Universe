@@ -193,7 +193,7 @@ pub fn channel_manifest(navigation_observation: u32) -> Value {
             "fraction",
         ),
     ];
-    let v3 = navigation_observation == crate::gpu::taxi::NAVIGATION_OBSERVATION_V3;
+    let v3 = matches!(navigation_observation, 3 | 4 | 5);
     if v3 {
         body_task[18] = ("TaskDirectionForward", "dot(unit(target-position), forward); 0 without task", "cos");
         body_task[19] = ("TaskDirectionLateral", "dot(unit(target-position), lateral); 0 without task", "sin");
@@ -205,17 +205,32 @@ pub fn channel_manifest(navigation_observation: u32) -> Value {
         body_task[28] = ("TaskRefusal", "refusal_code/6; code7unfundedbirth saturates", "enum");
         body_task[30] = ("PassengerFare", "fare/100", "currency");
     }
+    if matches!(navigation_observation, 4 | 5) {
+        body_task[18] = ("TaskRouteDirectionForward", "dot(cardinal_road_descent, forward), exact station direction within4m; 0 if route absent", "cos");
+        body_task[19] = ("TaskRouteDirectionLateral", "dot(cardinal_road_descent, lateral), exact station direction within4m; 0 if route absent", "sin");
+        body_task[23] = ("TaskRouteDistance", "road_distance_m/(road_distance_m+100); 1 if route absent", "fraction");
+    }
+    if navigation_observation == 5 {
+        body_task[18] = ("TaskRoutePreviewForward", "dot(unit(preview_waypoint-position), forward); preview clamp(6+1.5*speed_mps,18,48)m, at most16 road steps; exact station within4m", "cos");
+        body_task[19] = ("TaskRoutePreviewLateral", "dot(unit(preview_waypoint-position), lateral); same descending road field, no steering override; 0 if route absent", "sin");
+    }
     for (offset, (name, normalization, unit)) in body_task.iter().enumerate() {
         let ch = 160 + offset;
         let traffic = matches!(ch, 172 | 173 | 182 | 191);
+        let route = matches!(navigation_observation, 4 | 5) && matches!(ch, 178 | 179 | 183);
         channels.push(json!({"index":ch,"name":name,"normalization":normalization,"unit":unit,
             "quantization":"round(clamp(feature,-1,1)*127), signed i8",
-            "producer":if traffic{"src/gpu/traffic.wgsl::senses"}else{"src/gpu/taxi.wgsl::senses"},
+            "producer":if traffic{"src/gpu/traffic.wgsl::senses"}else if route{"src/gpu/taxi.wgsl::route_senses"}else{"src/gpu/taxi.wgsl::senses"},
             "active":true,"status":"written","upstream":if traffic{"resident physics input + immutable stop lines + absolute tick"}else{"previous completed organism/taxi post state"}}));
     }
+    let mut execution_order = vec!["resident sensors -> temporal extras","retina","perception clear -> spatial -> temporal -> motion","retina_digest -> separate extra buffer only","taxi senses overwrites160..191"];
+    if matches!(navigation_observation, 4 | 5) {
+        execution_order.push("taxi route_senses overwrites178,179,183");
+    }
+    execution_order.extend(["traffic senses overwrites172,173,182,191","brain"]);
     json!({"schema":crate::organism_scenario::observation_id(navigation_observation),"navigation_observation":navigation_observation,"channel_count":192,
         "encoding":"48 u32 words per being; four two's-complement i8 bytes per word, least-significant byte first",
-        "execution_order":["resident sensors -> temporal extras","retina","perception clear -> spatial -> temporal -> motion","retina_digest -> separate extra buffer only","taxi senses overwrites160..191","traffic senses overwrites172,173,182,191","brain"],
+        "execution_order":execution_order,
         "scope":"organism resident city only; legacy BODY remap disabled; static producer map; unresolved rows explicitly marked; no channels192..207",
         "retina_digest":"CfC hidden exposures live in separate19-float extra buffer, not extra brain input dimensions; edge extras enter99/100 next tick",
         "channels":channels})
@@ -268,4 +283,23 @@ mod tests {
             assert_eq!(b[index]["producer"], "src/gpu/traffic.wgsl::senses");
         }
     }
+}
+
+/// Explicit observation overlay: old DNA must be evaluated under its declared profile.
+pub fn channel_manifest_with_powertrain(navigation: u32, enabled: bool) -> Value {
+    let mut manifest=channel_manifest(navigation);
+    if enabled {
+        manifest["schema"]=json!(crate::organism_scenario::observation_id_with_powertrain(navigation,true));
+        manifest["powertrain_overlay"]=json!("engine-state78-80-v2");
+        for (index,name,unit,normalization) in [
+            (78,"EngineOff","boolean","off*127"),
+            (79,"StarterProgress","second","clamp(seconds,0,1)*127"),
+            (80,"ShiftProgress","fraction","clamp(remaining_seconds/0.35,0,1)*127"),
+        ] {
+            manifest["channels"][index]=json!({"index":index,"name":name,"unit":unit,"normalization":normalization,
+                "active":true,"status":"written","producer":"organism_sensors.wgsl::geometry -> perception_temporal.wgsl",
+                "phase":"previous completed physics tick","encoding":"signed i8"});
+        }
+    }
+    manifest
 }

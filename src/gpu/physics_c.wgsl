@@ -74,7 +74,8 @@ struct MidState {
     _pad_f:          f32,
     torques_y:       f32,
     yaw_inertia:     f32,
-    _pad2:           vec2<f32>,
+    tcs_fraction: f32, // acquired controller gain, owned by kernel A
+    tcs_initialized: u32,
 }
 
 // Kernel B's buffer — tyre forces + omegas + slip

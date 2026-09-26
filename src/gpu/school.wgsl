@@ -18,7 +18,8 @@
 // record there closes as failure 16 instead of truncation 3 (docs/GAP-SWEEP-20260924.md).
 // Params.flags: bit 0 bench (host-only), bit 1 stop-score shaping
 // (docs/SCHOOL-STOP-SHAPING-20260922.md), bit 2 stop braking envelope
-// (docs/SCHOOL-STOP-ENVELOPE-20260923.md). a_ref is the envelope's reference
+// (docs/SCHOOL-STOP-ENVELOPE-20260923.md), bit 3 service-contract-v2.
+// a_ref is the envelope's reference
 // deceleration (m/s^2), measured on the GPU and passed by the host. shaping_ref is
 // the speed at which the slowing term of the shaping starts to pay (host default
 // v_min; `--school-stop-shaping-ref-mps` raises it so slowing while still fast pays).
@@ -43,6 +44,9 @@ struct Params {
 
 const PI:u32=92u; const PO:u32=56u; const BS:u32=128u; const IS:u32=96u; const SS:u32=56u;
 const DT:f32=1.0/64.0;
+const ENGINE_OFF_EVENTS:u32=38u; const STARTER_PAID_J:u32=39u;
+const SERVICE_READINESS:u32=54u; const BLOCKED_SECONDS:u32=55u;
+fn service_v2()->bool { return (p.flags&8u)!=0u; }
 // School record slots (see src/gpu/school.rs for the host mirror).
 const LESSON:u32=0u; const PHASE:u32=1u; const STATUS:u32=2u; const FAIL_CODE:u32=3u;
 const P0X:u32=4u; const P0Z:u32=5u; const F0X:u32=6u; const F0Z:u32=7u;
@@ -102,6 +106,23 @@ fn close(k:u32, s:u32, status:f32, code:f32) {
     // earns the 1,000 point terminal bonus. STATUS remains an independent gate.
     school[k+SCORE]=school[k+PROGRESS]+1000.0*school[k+DELIVERY_DELTA]
                      -200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive);
+    if(service_v2()){
+      // Failed attempts pay the whole budget: crashing early cannot save time cost.
+      let budget=select(f32(p.horizon),min(f32(p.horizon),p.deadline),p.deadline>0.5);
+      let seconds=select(budget,school[k+ELAPSED],status==1.0)*DT;
+      let physical_penalty=min(school[k+COLLISION_J]/1000.0,200.0);
+      // Invalid identity/phase transitions never earn a delivery bonus.
+      let accepted_delivery=success*clamp(school[k+DELIVERY_DELTA],0.0,1.0);
+      // Bank at most one approach-readiness bonus when a complete delivery
+      // actually accepts its pickup. Clearing readiness for the destination
+      // must not make a legal pickup worse than waiting forever at the origin.
+      // Prepared onboard starts have no accepted pickup and earn no such credit.
+      let completed_pickup=select(0.0,1.0,school[k+LESSON]>=7.5 && school[k+ACCEPTED_PICKUP_TICK]>=0.0);
+      school[k+SCORE]=school[k+PROGRESS]+1000.0*accepted_delivery
+                      +200.0*(school[k+SERVICE_READINESS]+completed_pickup)+500.0*success
+                      -200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive)
+                      -seconds-physical_penalty-5.0*school[k+ENGINE_OFF_EVENTS]-school[k+STARTER_PAID_J]/1500.0;
+    }
   } else {
     school[k+SCORE]=1000.0*success+500.0*school[k+PROGRESS]-200.0*failed-100.0*(1.0-integrity)-100.0*(1.0-alive)+shaping;
   }
@@ -132,17 +153,32 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
       body[s+70u]=goal.x;body[s+71u]=goal.y;
       body[s+72u]=passenger_id;
       body[s+73u]=10.0+0.02*distance(goal,exit);
-      let starts_onboard=lesson>=6.5 && lesson<7.5;
+      let starts_onboard=(lesson>=6.5 && lesson<7.5) || ((p.flags&16u)!=0u && lesson>=7.5);
+      if(starts_onboard && lesson>=7.5){school[k+PHASE]=2.0;}
       body[s+65u]=select(0.0,1.0,starts_onboard);
       body[s+90u]=select(1.0,0.0,starts_onboard);
     }
     body[s+66u]=exit.x;body[s+67u]=exit.y;
     body[s+70u]=goal.x;body[s+71u]=goal.y;
+    if((p.flags&32u)!=0u){
+      let initial_pos=vec2<f32>(physics_in[i+36u],physics_in[i+38u]);
+      let initial_goal=select(goal,exit,body[s+65u]>0.5);
+      body[s+80u]=initial_goal.x-initial_pos.x;body[s+81u]=initial_goal.y-initial_pos.y;
+      return;
+    }
+    // Keep task observations coherent while the physical episode continues,
+    // but freeze ALL evidence at the judged outcome, including service events.
+    // A later taxi event cannot retroactively become part of a failed attempt.
+    if(school[k+STATUS]>0.5){
+      let observed_goal=select(goal,exit,body[s+65u]>0.5);
+      body[s+80u]=observed_goal.x-pos.x;body[s+81u]=observed_goal.y-pos.y;
+      return;
+    }
     let request_base=b*IS;
     if(intent[request_base+6u]>0.5){school[k+PICKUP_REQUESTS]+=1.0;}
     if(intent[request_base+7u]>0.5){school[k+DROPOFF_REQUESTS]+=1.0;}
     school[k+REFUSAL_CODE]=body[s+69u];
-    if(lesson<6.5 || lesson>=7.5){
+    if(lesson<6.5 || (lesson>=7.5 && (p.flags&16u)==0u)){
       if(school[k+ACCEPTED_PICKUP_TICK]<0.0 && body[s+65u]>0.5){
         school[k+ACCEPTED_PICKUP_TICK]=f32(p.tick);
       }
@@ -156,7 +192,6 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
     if(school[k+DELIVERY_DELTA]>0.0){body[s+90u]=0.0;}
     body[s+80u]=subgoal.x-pos.x;body[s+81u]=subgoal.y-pos.y;
 
-    if(school[k+STATUS]>0.5){return;}
     let speed=length(vec2<f32>(physics_out[o],physics_out[o+2u]));
     let rel=pos-p0; let along=dot(rel,f0); let lat=dot(rel,l0);
     let inside_passenger=distance(pos,goal)<=p.goal_radius;
@@ -173,6 +208,13 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
       school[k+BEST_REMAINING]=distance(pos,subgoal);
       school[k+MIN_SPEED_INSIDE]=1.0e9;
     }
+    if ((bitcast<u32>(physics_in[i+87u]) & 8192u)!=0u) {
+      // Compare pre/post in this tick: charge transitions once, not every off tick.
+      if (bitcast<u32>(physics_in[i+57u])==0u && bitcast<u32>(physics_out[o+51u])==1u) {
+        school[k+ENGINE_OFF_EVENTS]+=1.0;
+      }
+      school[k+STARTER_PAID_J]+=physics_in[i+83u]*1500.0*DT;
+    }
     school[k+ELAPSED]+=1.0;
     school[k+MAX_SPEED]=max(school[k+MAX_SPEED],speed);
     school[k+MAX_LAT]=max(school[k+MAX_LAT],abs(lat));
@@ -180,25 +222,38 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
     if(physics_in[i+51u]>=0.1 && speed>=0.5){school[k+PROPELLED]+=1.0;}
     // taxi.wgsl owns the phase-aware road score in body[127]. The judge only
     // keeps its monotonic best; it never fabricates progress from Euclidean range.
-    school[k+PROGRESS]=max(school[k+PROGRESS],clamp(body[s+127u],0.0,200.0));
+    let previous_progress=school[k+PROGRESS];
+    school[k+PROGRESS]=max(previous_progress,clamp(body[s+127u],0.0,200.0));
+    if(service_v2()){
+      let goal_distance=distance(pos,subgoal);
+      // A one-time maximum, not a per-tick reward: dwelling cannot farm readiness.
+      let proximity=clamp(1.0-max(goal_distance-p.goal_radius,0.0)/15.0,0.0,1.0);
+      let slowing=clamp(1.0-speed/max(p.v_min,0.001),0.0,1.0);
+      if(school[k+PROPELLED]>=p.propelled_min){
+        school[k+SERVICE_READINESS]=max(school[k+SERVICE_READINESS],proximity*slowing);
+      }
+      if(school[k+PROGRESS]>previous_progress+0.001 || school[k+ACCEPTED_PICKUP_TICK]==f32(p.tick) || school[k+ACCEPTED_DROPOFF_TICK]==f32(p.tick)){
+        school[k+BLOCKED_SECONDS]=0.0;
+      }else{school[k+BLOCKED_SECONDS]+=DT;}
+    }
     school[k+BEST_REMAINING]=min(school[k+BEST_REMAINING],distance(pos,subgoal));
 
     if(body[s+29u]<0.5){close(k,s,2.0,2.0);return;}
     let mask=u32(max(physics_out[o+39u],0.0));
     if(mask!=0u){
       school[k+CONTACT_TICKS]+=1.0; school[k+COLLISION_J]+=max(0.0,physics_out[o+55u]);
-      close(k,s,2.0,1.0);return;
+      if(!service_v2()){close(k,s,2.0,1.0);return;}
     }
     // The approach corridor applies only while seeking the passenger. Once the
     // passenger is onboard, the production road graph (body[127]) is authoritative.
     let seeking_passenger=lesson<6.5 || (lesson>=7.5 && school[k+PHASE]<1.5);
-    if(seeking_passenger && !onboard && school[k+DELIVERY_DELTA]<0.5 &&
-       (abs(lat)>p.corridor_half || along<-5.0)){
+    if((p.flags&64u)==0u && seeking_passenger && !onboard && school[k+DELIVERY_DELTA]<0.5 &&
+       (abs(lat)>select(p.corridor_half,30.0,service_v2()) || along<select(-5.0,-30.0,service_v2()))){
       close(k,s,2.0,3.0);return;
     }
-    if(pickup_request && body[s+69u]>1.5){close(k,s,2.0,15.0);return;}
-    if(pickup_request && body[s+69u]>0.5 && body[s+69u]<1.5){close(k,s,2.0,10.0);return;}
-    if(dropoff_request && body[s+69u]>1.5){close(k,s,2.0,12.0);return;}
+    if(!service_v2() && pickup_request && body[s+69u]>1.5){close(k,s,2.0,15.0);return;}
+    if(!service_v2() && pickup_request && body[s+69u]>0.5 && body[s+69u]<1.5){close(k,s,2.0,10.0);return;}
+    if(!service_v2() && dropoff_request && body[s+69u]>1.5){close(k,s,2.0,12.0);return;}
     if(onboard && abs(body[s+72u]-passenger_id)>0.25){close(k,s,2.0,13.0);return;}
     if(school[k+DELIVERY_DELTA]>0.0 && abs(body[s+75u]-passenger_id)>0.25){close(k,s,2.0,13.0);return;}
 
@@ -214,7 +269,7 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
       school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
       if(school[k+DWELL]>=service_hold && school[k+PROPELLED]>=p.propelled_min){school[k+PHASE]=1.0;}
       if(onboard){
-        if(school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
+        if(!service_v2() && school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
         if(abs(body[s+72u]-passenger_id)>0.25){close(k,s,2.0,13.0);return;}
         close(k,s,1.0,0.0);return;
       }
@@ -232,12 +287,13 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
         school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
         if(school[k+DWELL]>=service_hold && school[k+PROPELLED]>=p.propelled_min){school[k+PHASE]=1.0;}
         if(onboard){
-          if(school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
+          if(!service_v2() && school[k+PHASE]<0.5){close(k,s,2.0,10.0);return;}
           school[k+PHASE]=2.0; school[k+DWELL]=0.0;
+          if(service_v2()){school[k+SERVICE_READINESS]=0.0;}
         }
       } else {
         if(school[k+DELIVERY_DELTA]>0.0){
-          if(school[k+PHASE]<2.5 || school[k+DWELL]<service_hold){close(k,s,2.0,14.0);return;}
+          if(!service_v2() && (school[k+PHASE]<2.5 || school[k+DWELL]<service_hold)){close(k,s,2.0,14.0);return;}
           close(k,s,1.0,0.0);return;
         }
         if(!onboard){close(k,s,2.0,11.0);return;}
@@ -246,12 +302,18 @@ fn judge(@builtin(global_invocation_id) id:vec3<u32>) {
         school[k+MAX_DWELL]=max(school[k+MAX_DWELL],school[k+DWELL]);
       }
     }
+    // Reaching a station without performing its service is still blocked.
+    // Short training episodes need an effective timeout; preserve a 20-second
+    // exploration grace and cap the long-episode wait at 180 simulated seconds.
+    let episode_budget=select(f32(p.horizon),min(f32(p.horizon),p.deadline),p.deadline>0.5);
+    let blocked_limit=max(20.0,min(180.0,0.5*episode_budget*DT));
+    if(service_v2() && school[k+BLOCKED_SECONDS]>=blocked_limit){close(k,s,2.0,18.0);return;}
     let deadline_hit=p.deadline>0.5 && school[k+ELAPSED]>=p.deadline;
     if(school[k+ELAPSED]>=f32(p.horizon) || deadline_hit){
       if(school[k+PROPELLED]<0.5){close(k,s,2.0,9.0);}
       else if(school[k+MAX_DWELL]<service_hold &&
               (inside_passenger || inside_destination)){close(k,s,2.0,14.0);}
-      else if(deadline_hit){close(k,s,2.0,16.0);}
+      else if(deadline_hit || service_v2()){close(k,s,2.0,16.0);}
       else{close(k,s,3.0,0.0);}
     }
     return;

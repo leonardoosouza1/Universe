@@ -694,6 +694,29 @@ fn main(
     // More workgroups than living beings: the standard guard (the dispatch is not rounded).
     if being >= params.n_beings { return; }
 
+    // Linear-wave-v2: an explicitly different learned controller, same resident
+    // sensory input and intent/action ABI. No CfC/L2/trace values are fabricated.
+    // Host rejects native neural tracing and lifetime/ablation for this experiment.
+    if params.lifetime_reserved0 == 1u {
+        if tid < L1_OUT {
+            var value = 0.0;
+            if tid < 9u {
+                for (var ch = 0u; ch < WAVE; ch++) {
+                    var raw: i32;
+                    if params.use_percept_direct == 1u {
+                        let byte = (buf_percept[being*WAVE_U32S+ch/4u] >> ((ch%4u)*8u)) & 255u;
+                        raw = select(i32(byte), i32(byte)-256, byte>=128u);
+                    } else { raw = buf_wave[being*WAVE+ch]; }
+                    let sensed = apply_sensor_noise(raw, being, ch, params.world_tick);
+                    value += buf_l1w[being*L1_OUT*WAVE+tid*WAVE+ch] * f32(sensed)/127.0;
+                }
+                value = tanh(value);
+            }
+            buf_intent[being*L1_OUT+tid] = value;
+        }
+        return;
+    }
+
     // `world_tick` advances even when the host skips a brain dispatch.  Consume the
     // elapsed tick span here so age and eligibility use physical time rather than the
     // number of neural dispatches.  The runtime slots are touched only when a lifetime

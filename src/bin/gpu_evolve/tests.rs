@@ -738,7 +738,10 @@ fn service_transition_detector_preserves_an_immediate_passenger_handoff() {
     };
     let events = detect_service_events(Some(&onboard_one), &onboard_three, 7000, 0);
     assert_eq!(
-        events.iter().map(|event| event.event.as_str()).collect::<Vec<_>>(),
+        events
+            .iter()
+            .map(|event| event.event.as_str())
+            .collect::<Vec<_>>(),
         [
             "dropoff_accepted",
             "delivery_incremented",

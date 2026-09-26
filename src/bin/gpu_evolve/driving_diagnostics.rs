@@ -150,9 +150,7 @@ pub(crate) fn detect_service_events(
         events.push(event("passenger_issued", current));
     }
     let accepted_new_passenger = current.onboard
-        && previous.is_none_or(|old| {
-            !old.onboard || (passenger_id(old) != passenger_id(current))
-        });
+        && previous.is_none_or(|old| !old.onboard || (passenger_id(old) != passenger_id(current)));
     if accepted_new_passenger {
         // In an immediate handoff there is no externally visible waiting state.
         // Still expose issuance before pickup so each passenger has a complete,
@@ -217,6 +215,7 @@ impl DrivingDiagnostics {
         selected: usize,
         every: usize,
         organism_scenario: bool,
+        reference_witness: bool,
         ablation: Option<&universe::gpu::brain::AblationPlan>,
     ) -> io::Result<Self> {
         if selected >= beings || every == 0 {
@@ -247,7 +246,7 @@ impl DrivingDiagnostics {
         let mut metadata = json!({"schema_version":2,"observation_schema":2,"contact_energy_version":2,"tick_rate":64,"window_ticks":64,
             "eye_offset_m":universe::visao::ALTURA_OLHO,"eye_height_m":universe::visao::ALTURA_OLHO,
             "road_view_calibration_version":2,"reference_eye_height_m":universe::visao::ROAD_VIEW_REFERENCE_EYE_HEIGHT_M,"retina_road_view_m":universe::visao::road_view_range(),
-            "retina_geometry":if universe::visao::road_view_enabled(){"physical-v1"}else{"legacy"},
+            "retina_geometry":universe::visao::retina_geometry_name(),
             "fov_degrees":universe::visao::fov_deg(),"retina_pitch_radians":(0..RETINA_ROWS).map(universe::visao::pitch).collect::<Vec<_>>(),
             "selected_being":selected,"sample_every":every,"retina_rows":RETINA_ROWS,
             "retina_cols":RETINA_COLS,"retina_encoding":"u32: material low byte, distance_mm upper 24 bits",
@@ -255,6 +254,7 @@ impl DrivingDiagnostics {
             "sample_phase":"retina/perception pre-physics; fast state post-brain; body post-physics",
             "motor_trace_source":if organism_scenario {"resident_native_action_v1"} else {"native_action_mapper_v1"},
             "scenario":if organism_scenario {"organism-taxi-v1"} else {"race-v1"},
+            "tire_force_frame":if organism_scenario && !crate::statics::organism_legacy_tire_frame() {"power_conjugate_v2"} else {"legacy_v1"},
             "fast_state_stage":"sensory_cfc_pre_l1",
             "brain_runtime":{"output_gain":brain.out_gain,"output_fatigue_beta":brain.out_beta,
                 "l2_normalisation_by_std":brain.norm_l2_by_std,
@@ -265,7 +265,10 @@ impl DrivingDiagnostics {
             "slow_kinematics":if slow_canonical_kinematics(){"canonical"}else{"legacy"},
             "wall_probes":if continuous_wall_probes(){"continuous"}else{"legacy"},
             "motor_trace_phase":"pre_physics_command_assembly",
-            "motor_head":if motor_head_linear(){"linear"}else{"spline"},
+            "motor_head":if motor_head_linear() || reference_witness {"linear"}else{"spline"},
+            "intent_producer":if reference_witness {"taxi_witness"} else {"brain"},
+            "neural_stages_drive_action":!reference_witness,
+            "learning_evidence":!reference_witness,
             "throttle_arbitration":if throttle_arbitration_signed(){"signed"}else{"legacy"},
             "reverse_controller":if reverse_controller_v2(){"v2"}else{"legacy"},
             "contact_semantics":"four physical probes in wall voxels; impact requires positive inward velocity",
@@ -401,12 +404,38 @@ impl DrivingDiagnostics {
                 "rpm_fraction":p.current_rpm / p.max_rpm.max(1.0),"gear":p.current_gear,
                 "drive_torque_nm":p.drive_torque_out,"mass_kg":p.mass,"engine_max_torque_nm":p.max_torque,
                 "brake_max_torque_nm":p.brake_torque_max,
+                "physics_config_flags":p.config_flags,
+                "tire_force_frame":if p.config_flags & universe::gpu::physics::POWER_CONSISTENT_STEERING_FLAG != 0 {"power_conjugate_v2"} else {"legacy_v1"},
                 "fuel_load_scale":universe::gpu::body::fuel_load_scale(p),
                 "tyre_temperature_native":tyre_temperature_native,"tyre_temperature_model":states[i].tire_temp,
                 "terrain_grip":p.terrain_grip,"environment_grip":p.env_grip,
                 "slip_ratio_peak":slip_ratio_peak,"slip_angle_peak_rad":slip_angle_peak,
                 "joy":states[i].joy_tick,"joy_streak_s":states[i].joy_streak,
                 "stagnation_ticks":states[i].stagnation_ticks,"hole_hits":states[i].hole_hits});
+            let powertrain = p.config_flags & universe::gpu::physics::POWERTRAIN_V2_FLAG != 0;
+            sample["body"]["engine_off"] = json!(p.is_stalled != 0);
+            sample["body"]["starter_progress_s"] = json!(p.starter_timer);
+            sample["body"]["shift_remaining_s"] = json!(p.shift_timer);
+            sample["body"]["starter_requested"] = json!(powertrain.then_some(raw[i][9] > 0.5));
+            sample["body"]["starter_authorized"] = json!(powertrain.then_some(p._pad_wind == 1.0));
+            sample["body"]["starter_paid_this_tick_j"] =
+                json!(powertrain.then_some(p._pad_wind * 1500.0 * p.dt));
+            sample["body"]["wheel_integration"] = json!(if p.config_flags
+                & universe::gpu::physics::IMPLICIT_WHEEL_FLAG
+                != 0
+            {
+                "implicit_2stage_v2"
+            } else {
+                "explicit_v1"
+            });
+            sample["body"]["tcs_recovery_ms"] = json!(if p.config_flags
+                & universe::gpu::physics::BOUNDED_TCS_FLAG
+                != 0
+            {
+                100
+            } else {
+                0
+            });
             if resident {
                 sample["body"]["joy"] = serde_json::Value::Null;
                 sample["body"]["joy_streak_s"] = serde_json::Value::Null;

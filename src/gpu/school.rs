@@ -1,6 +1,6 @@
 //! GPU judge for the organism school (Stage 2, `docs/SCHOOL-LESSONS-20260922.md`).
 //!
-//! One 32-float record per being, resident on the device, written only by
+//! One 56-float record per being, resident on the device, written only by
 //! `school.wgsl::judge` after the taxi post pass. The host declares the lesson
 //! geometry once per generation (`reset`) and reads the records back only at the
 //! generation boundary (`download`). No controller, pilot or steering assistance
@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
 pub const SCHOOL_ID: &str = "organism-school-v1";
-pub const SCHOOL_SCHEMA_VERSION: u32 = 3;
+pub const SCHOOL_SCHEMA_VERSION: u32 = 5;
 pub const SCHOOL_STRIDE_F32: usize = 56;
 pub const PHYSICS_INPUT_STRIDE: usize = 92;
 pub const PHYSICS_OUTPUT_STRIDE: usize = 56;
@@ -71,6 +71,12 @@ pub const R_ENV_EXCESS_INTEGRAL: usize = 50;
 pub const R_ENV_ENTRY_SPEED: usize = 51;
 pub const R_ENV_MIN_SPEED_APPROACH: usize = 52;
 pub const R_ENV_DIST_AT_MIN_SPEED: usize = 53;
+/// Service-v2 readiness (dimensionless) and seconds without new route progress.
+pub const R_SERVICE_READINESS: usize = 54;
+pub const R_BLOCKED_SECONDS: usize = 55;
+/// Previously reserved slots; accumulated only under the powertrain-v2 profile.
+pub const R_ENGINE_OFF_EVENTS: usize = 38;
+pub const R_STARTER_PAID_J: usize = 39;
 /// Reference deceleration of the envelope `v_allow(d) = sqrt(v_stop^2 + 2 a_ref (d - r_goal))`.
 /// Measured on the real GPU from per-tick replays (2026-09-23): the body brakes at
 /// 2.2 m/s^2 median with the pedal pressed (reference witness), evolved controllers coast at
@@ -186,6 +192,7 @@ pub fn fail_code_name(code: u32) -> &'static str {
         15 => "pickup_outside_passenger_radius",
         16 => "open_at_deadline",
         17 => "zone_entry_slow",
+        18 => "blocked_without_progress",
         _ => "unknown",
     }
 }
@@ -331,6 +338,14 @@ pub struct SchoolGpu {
     pub horizon_ticks: u32,
     /// Bench mode: taxi–taxi contacts off, passengers off.
     pub bench: bool,
+    /// Versioned service judge; false reproduces service-v1 scoring and termination.
+    pub service_v2: bool,
+    /// Cross-city service routes may turn before pickup; no straight approach corridor.
+    pub cross_city: bool,
+    /// Experimental delivery curriculum starts onboard; never fabricate pickup evidence.
+    pub prepared_delivery: bool,
+    /// Install experimental service state before the first sensory sample.
+    pub prepared_start: bool,
     /// Stop lesson: the score also pays for slowing inside the area and holding (flags bit 1).
     pub stop_shaping: bool,
     /// Stop lesson: the score also pays for conforming to the braking envelope (flags bit 2).
@@ -443,6 +458,10 @@ impl SchoolGpu {
             contract,
             horizon_ticks,
             bench,
+            service_v2: true,
+            cross_city: false,
+            prepared_delivery: false,
+            prepared_start: false,
             stop_shaping,
             stop_envelope,
             stop_envelope_excess_clamp_m: STOP_ENVELOPE_EXCESS_CLAMP_M,
@@ -463,6 +482,15 @@ impl SchoolGpu {
     ) -> Result<(), &'static str> {
         if lessons.is_empty() || lessons.len() > self.capacity {
             return Err("school: lesson count exceeds capacity");
+        }
+        if self.cross_city && (!self.bench || !self.service_v2 || self.prepared_start || self.prepared_delivery || lessons.iter().any(|g|g.lesson != Lesson::Delivery)) {
+            return Err("cross-city requires an empty-start service-v2 delivery bench");
+        }
+        if self.prepared_start && (!self.bench || !self.service_v2 || lessons.iter().any(|g| !matches!(g.lesson, Lesson::Pickup | Lesson::Delivery))) {
+            return Err("prepared start requires a service-v2 pickup/delivery bench");
+        }
+        if self.prepared_delivery && (!self.bench || !self.service_v2 || lessons.iter().any(|g| g.lesson != Lesson::Delivery)) {
+            return Err("prepared delivery requires a service-v2 delivery bench");
         }
         let mut rows = vec![0.0f32; self.capacity * SCHOOL_STRIDE_F32];
         for (slot, lesson) in lessons.iter().enumerate() {
@@ -487,6 +515,30 @@ impl SchoolGpu {
         n: usize,
         tick: u32,
     ) -> Result<(), &'static str> {
+        self.encode_phase(device, encoder, physics_input, physics_output, body, intent, n, tick, false)
+    }
+
+    /// GPU initialization only: no judgement, elapsed ticks or fabricated events.
+    pub fn initialize(
+        &self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder,
+        physics_input: &wgpu::Buffer, physics_output: &wgpu::Buffer,
+        body: &wgpu::Buffer, intent: &wgpu::Buffer, n: usize,
+    ) -> Result<(), &'static str> {
+        self.encode_phase(device, encoder, physics_input, physics_output, body, intent, n, 0, true)
+    }
+
+    fn encode_phase(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        physics_input: &wgpu::Buffer,
+        physics_output: &wgpu::Buffer,
+        body: &wgpu::Buffer,
+        intent: &wgpu::Buffer,
+        n: usize,
+        tick: u32,
+        initialize: bool,
+    ) -> Result<(), &'static str> {
         if n == 0 || n > self.capacity {
             return Err("school: invalid count");
         }
@@ -509,7 +561,7 @@ impl SchoolGpu {
                 n: n as u32,
                 tick,
                 horizon: self.horizon_ticks,
-                flags: self.bench as u32 | (self.stop_shaping as u32) << 1 | (self.stop_envelope as u32) << 2,
+                flags: self.bench as u32 | (self.stop_shaping as u32) << 1 | (self.stop_envelope as u32) << 2 | (self.service_v2 as u32) << 3 | (self.prepared_delivery as u32) << 4 | (initialize as u32) << 5 | (self.cross_city as u32) << 6,
                 goal_radius: c.goal_radius_m,
                 area_radius: c.area_radius_m,
                 v_min: c.v_min_mps,
@@ -642,6 +694,7 @@ pub fn record_json(
         "progress": r[R_PROGRESS], "best_remaining_m": r[R_BEST_REMAINING],
         "initial_remaining_m": r[R_INITIAL_REMAINING],
         "dwell_ticks": r[R_DWELL], "propelled_ticks": r[R_PROPELLED],
+        "service_readiness": r[R_SERVICE_READINESS], "blocked_seconds": r[R_BLOCKED_SECONDS],
         "judged_ticks": r[R_ELAPSED], "outcome_tick": r[R_OUTCOME_TICK],
         "max_speed_mps": r[R_MAX_SPEED], "entry_speed_mps": r[R_ENTRY_SPEED],
         "max_lateral_m": r[R_MAX_LAT], "max_along_m": r[R_MAX_ALONG],
@@ -661,6 +714,9 @@ pub fn record_json(
         "service_refusal_code": r[R_REFUSAL_CODE], "passenger_id": r[R_PASSENGER_ID],
         "delivery_start": r[R_DELIVERY_START], "delivery_delta": r[R_DELIVERY_DELTA],
     });
+    value["engine_off_events"]=serde_json::json!(r[R_ENGINE_OFF_EVENTS]);
+    value["starter_paid_j"]=serde_json::json!(r[R_STARTER_PAID_J]);
+    value["powertrain_penalty"]=serde_json::json!(5.0*r[R_ENGINE_OFF_EVENTS]+r[R_STARTER_PAID_J]/1500.0);
     // Schema v3 envelope fields (kept out of the macro above: json! hits its recursion limit).
     let approached = r[R_ENV_MIN_SPEED_APPROACH] < 1.0e8;
     let envelope = serde_json::json!({
@@ -684,8 +740,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_v3_stride_and_slots_are_frozen() {
-        assert_eq!(SCHOOL_SCHEMA_VERSION, 3);
+    fn schema_v5_stride_and_slots_are_frozen() {
+        assert_eq!(SCHOOL_SCHEMA_VERSION, 5);
+        assert_eq!([R_ENGINE_OFF_EVENTS,R_STARTER_PAID_J,R_SERVICE_READINESS,R_BLOCKED_SECONDS],[38,39,54,55]);
         assert_eq!(SCHOOL_STRIDE_F32, 56);
         assert_eq!(
             [R_ENV_ZONE_TICKS, R_ENV_CONFORM_TICKS, R_ENV_EXCESS_INTEGRAL, R_ENV_ENTRY_SPEED,
@@ -695,7 +752,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<Params>(), 24 * 4, "Params must stay 96 bytes (host/shader mirror, 16-aligned)");
         assert_eq!(fail_code_name(16), "open_at_deadline");
         assert_eq!(fail_code_name(17), "zone_entry_slow");
-        assert_eq!(fail_code_name(18), "unknown");
+        assert_eq!(fail_code_name(18), "blocked_without_progress");
     }
 
     #[test]

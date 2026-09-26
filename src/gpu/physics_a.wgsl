@@ -83,7 +83,8 @@ struct MidState {
     // Yaw torque accumulator (tires will add more in Kernel B)
     torques_y:       f32,
     yaw_inertia:     f32,
-    _pad2:           vec2<f32>,
+    tcs_fraction: f32, // acquired controller gain, owned by kernel A
+    tcs_initialized: u32,
 }
 
 struct WorldParams {
@@ -201,20 +202,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var engine_temp   = c.engine_temp;
     var oil_temp      = c.oil_temp;
 
-    // Omegas — may be zeroed by the starter
+    let powertrain_v2 = flag(c.config_flags,13u);
+    // Legacy restart resets wheels; v2 preserves their physical momentum.
     var om0=c.wheels[0].x; var om1=c.wheels[2].x;
     var om2=c.wheels[4].x; var om3=c.wheels[6].x;
 
     if (is_stalled!=0u && flag(c.config_flags,0u)) {
-        if (c.current_gear<=2u && c.throttle>0.5) {
+        let authorized = select(c.throttle>0.5, c._pad_wind>0.5 && speed<0.5 && c.shift_timer<=0.0, powertrain_v2);
+        if (c.current_gear<=2u && authorized) {
             starter_timer += dt_safe;
             if (starter_timer>=1.0) {
                 is_stalled=0u; starter_timer=0.0; current_rpm=800.0;
-                om0=0.0; om1=0.0; om2=0.0; om3=0.0;
+                if (!powertrain_v2) {om0=0.0; om1=0.0; om2=0.0; om3=0.0;}
             }
         } else { starter_timer=0.0; }
     }
-    if (shift_timer>0.0) { shift_timer-=dt_safe; }
+    if (shift_timer>0.0) { shift_timer=max(0.0,shift_timer-dt_safe); }
 
     var doa: f32;
     switch c.drivetrain {
@@ -228,6 +231,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (c.current_gear==1u)        { cb=0.0; }
     else if (wrpm<1500.0)          { cb=clamp(wrpm/1500.0,0.0,1.0); }
     else                           { cb=1.0; }
+    // Bounded automatic launch clutch in first/reverse; higher forward gears
+    // couple the engine to the wheels. This is not a calibrated clutch model.
+    if (powertrain_v2 && c.current_gear>=3u) {cb=1.0;}
     var raw = frpm*(1.0-cb)+wrpm*cb;
     let cslip = cb < 0.95;
     if (shift_timer>0.0) {
@@ -237,6 +243,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         is_stalled=1u; starter_timer=0.0;
     }
 
+    // No usable energy/capacity means engine-off, not a free idling engine.
+    if (powertrain_v2 && c.max_torque<=0.0) {is_stalled=1u; starter_timer=0.0;}
     if (!flag(c.config_flags,8u)) {
     if (is_stalled==0u && flag(c.config_flags,1u)) {
         let rr=current_rpm/c.max_rpm;
@@ -258,6 +266,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     var dtq: f32; var dto: f32;
+    var stored_tcs=1.0;
     if (is_stalled!=0u) {
         current_rpm=0.0; dtq=0.0; dto=0.0;
     } else {
@@ -272,6 +281,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let sa=(max(c.wheels[4].y,0.0)+max(c.wheels[6].y,0.0))*0.5;
             if (sa>0.15) { tcs=1.0-clamp((sa-0.15)*5.0,0.0,0.9); }
         }
+        if (flag(c.config_flags,12u) && flag(c.config_flags,4u) && c.drivetrain==1u) {
+            // Filter only the traction-control gain, never the pedal request.
+            // Zero-initialized/reset state means no prior traction intervention.
+            let previous=select(1.0,clamp(mid[being].tcs_fraction,0.1,1.0),mid[being].tcs_initialized==1u);
+            let recovery=1.0-exp(-dt_safe/0.1);
+            tcs=min(tcs,previous+(tcs-previous)*recovery);
+        }
+        stored_tcs=tcs;
         let ce=select(0.0,1.0,shift_timer<=0.0);
         dtq=c.max_torque*tm*c.throttle*tcs*total_ratio*ce*tp;
         dto=dtq;
@@ -316,6 +333,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     m._pad_f       = 0.0;
     m.torques_y    = 0.0;  // tires will add in Kernel B
     m.yaw_inertia  = yaw_inertia;
-    m._pad2        = vec2<f32>(0.0,0.0);
+    m.tcs_fraction = stored_tcs;
+    m.tcs_initialized = 1u;
     mid[being] = m;
 }

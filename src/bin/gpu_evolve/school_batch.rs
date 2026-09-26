@@ -40,6 +40,21 @@ pub struct SchoolAggregate {
     pub starts: usize,
 }
 
+/// A life-mode school observer must not replace the production objective.
+/// CLI validation permits replicated starts only in bench mode.
+pub fn selection_scores(
+    production: &[f64],
+    school: Option<&[SchoolAggregate]>,
+    bench: bool,
+) -> Vec<f64> {
+    if bench {
+        if let Some(aggregates) = school {
+            return aggregates.iter().map(|aggregate| aggregate.score).collect();
+        }
+    }
+    production.to_vec()
+}
+
 pub fn aggregate_school_batch(
     replica_records: &[Vec<f32>],
     genome_count: usize,
@@ -172,6 +187,32 @@ pub fn start_index(
 mod tests {
     use super::*;
 
+    #[test]
+    fn life_observation_cannot_replace_the_production_ranking() {
+        // Deliberately opposite rankings: a lesson specialist is not necessarily
+        // the best taxi. Only an explicit bench may select by the lesson.
+        let school = aggregate_school_batch(
+            &[
+                record(1000.0, STATUS_SUCCESS, 0),
+                record(-200.0, STATUS_FAILED, 1),
+            ],
+            2,
+            1,
+            SchoolSelection::Mean,
+        );
+        let production = [-40.0, 1200.0];
+        assert_eq!(
+            selection_scores(&production, Some(&school), false),
+            production
+        );
+        assert_eq!(
+            selection_scores(&production, Some(&school), true),
+            [1000.0, -200.0]
+        );
+        assert_eq!(selection_scores(&production, None, false), production);
+        assert_eq!(selection_scores(&production, None, true), production);
+    }
+
     fn record(score: f32, status: u32, fail_code: u32) -> Vec<f32> {
         let mut row = vec![0.0; universe::gpu::school::SCHOOL_STRIDE_F32];
         row[R_SCORE] = score;
@@ -239,8 +280,16 @@ mod tests {
     /// overshooter (300 - 200 each start, none truncated) wins.
     #[test]
     fn worst_selection_denies_a_single_start_specialist() {
-        let specialist = vec![record(2102.0, 1, 0), record(176.0, 3, 0), record(264.0, 3, 0)];
-        let overshooter = vec![record(100.0, 2, 5), record(100.0, 2, 5), record(100.0, 2, 5)];
+        let specialist = vec![
+            record(2102.0, 1, 0),
+            record(176.0, 3, 0),
+            record(264.0, 3, 0),
+        ];
+        let overshooter = vec![
+            record(100.0, 2, 5),
+            record(100.0, 2, 5),
+            record(100.0, 2, 5),
+        ];
         let rows: Vec<Vec<f32>> = specialist.into_iter().chain(overshooter).collect();
         let mean = aggregate_school_batch(&rows, 2, 3, SchoolSelection::Mean);
         assert!((mean[0].score - 847.333).abs() < 0.01, "{:?}", mean[0]);
@@ -249,8 +298,15 @@ mod tests {
         let worst = aggregate_school_batch(&rows, 2, 3, SchoolSelection::Worst);
         assert_eq!(worst[0].score, 176.0);
         assert_eq!(worst[1].score, 100.0);
-        assert!(worst[0].score > worst[1].score, "a truncated crawler still beats a failed mover on score alone; the deadline flag is what turns truncation into failure");
-        let crawler_under_deadline = vec![record(2102.0, 1, 0), record(-24.0, 2, 16), record(64.0, 2, 16)];
+        assert!(
+            worst[0].score > worst[1].score,
+            "a truncated crawler still beats a failed mover on score alone; the deadline flag is what turns truncation into failure"
+        );
+        let crawler_under_deadline = vec![
+            record(2102.0, 1, 0),
+            record(-24.0, 2, 16),
+            record(64.0, 2, 16),
+        ];
         let worst = aggregate_school_batch(&crawler_under_deadline, 1, 3, SchoolSelection::Worst);
         assert_eq!(worst[0].score, -24.0);
         assert_eq!(worst[0].failures, 2);
@@ -269,16 +325,66 @@ mod tests {
     #[test]
     fn start_pool_makes_the_generation_rotation_real() {
         let fixed: Vec<Vec<usize>> = (0..4)
-            .map(|generation| (0..3).map(|slot| start_index(slot, 3, 3, generation * 3)).collect())
+            .map(|generation| {
+                (0..3)
+                    .map(|slot| start_index(slot, 3, 3, generation * 3))
+                    .collect()
+            })
             .collect();
         assert!(fixed.iter().all(|g| *g == vec![0, 1, 2]), "{fixed:?}");
         let rotating: Vec<Vec<usize>> = (0..4)
-            .map(|generation| (0..3).map(|slot| start_index(slot, 3, 9, generation * 3)).collect())
+            .map(|generation| {
+                (0..3)
+                    .map(|slot| start_index(slot, 3, 9, generation * 3))
+                    .collect()
+            })
             .collect();
-        assert_eq!(rotating, vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8], vec![0, 1, 2]]);
+        assert_eq!(
+            rotating,
+            vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8], vec![0, 1, 2]]
+        );
         assert_eq!(required_start_pool(6, 3, 0), 3);
         assert_eq!(required_start_pool(6, 3, 9), 9);
-        assert_eq!(required_start_pool(6, 3, 2), 3, "a pool below K is raised to K");
+        assert_eq!(
+            required_start_pool(6, 3, 2),
+            3,
+            "a pool below K is raised to K"
+        );
         assert_eq!(required_start_pool(6, 1, 9), 6, "K = 1 ignores the pool");
+    }
+}
+
+/// Population evidence over a complete pool window, not a frozen-policy test.
+/// A specialist cannot promote a lesson while any observed start has zero success.
+#[derive(Default)]
+pub struct CoverageWindow {
+    counts: Vec<(usize, usize)>,
+}
+impl CoverageWindow {
+    pub fn observe(&mut self, pool: usize, rows: &[(usize, bool)]) -> Option<f64> {
+        if self.counts.len() != pool {
+            self.counts = vec![(0, 0); pool];
+        }
+        for &(start, success) in rows {
+            let count = self
+                .counts
+                .get_mut(start)
+                .expect("start index outside pool");
+            count.0 += usize::from(success);
+            count.1 += 1;
+        }
+        if pool == 0 || self.counts.iter().any(|(_, total)| *total == 0) {
+            return None;
+        }
+        let minimum = self
+            .counts
+            .iter()
+            .map(|(success, total)| *success as f64 / *total as f64)
+            .fold(1.0, f64::min);
+        self.counts.fill((0, 0));
+        Some(minimum)
+    }
+    pub fn clear(&mut self) {
+        self.counts.clear();
     }
 }

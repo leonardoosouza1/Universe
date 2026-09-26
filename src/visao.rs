@@ -69,6 +69,25 @@ impl Default for Params {
 
 static PARAMS: OnceLock<Params> = OnceLock::new();
 static ROAD_VIEW_RANGE: OnceLock<f32> = OnceLock::new();
+static CENTERED_LEGACY_GRID: OnceLock<()> = OnceLock::new();
+
+/// Repair cell registration without changing legacy pitches or wall-range encoding.
+/// This diagnostic profile isolates geometry from a new visual sampling profile.
+pub fn set_centered_legacy_grid() {
+    let _ = CENTERED_LEGACY_GRID.set(());
+}
+
+pub fn retina_geometry_mode() -> u32 {
+    if road_view_enabled() { 1 } else if CENTERED_LEGACY_GRID.get().is_some() { 2 } else { 0 }
+}
+
+pub fn retina_geometry_name() -> &'static str {
+    match retina_geometry_mode() {
+        1 => "physical-v1",
+        2 => "legacy-centered-grid-v1",
+        _ => "legacy",
+    }
+}
 
 /// Opt-in road optics: log-spaced ground samples, without scaling other sensors.
 pub fn set_road_view(range_m: f32) -> Result<(), &'static str> {

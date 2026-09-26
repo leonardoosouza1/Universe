@@ -143,6 +143,28 @@ fn gpu_traffic_crossings_and_pair_conservation() {
     assert_eq!(actual[112 + 36], 20.);
     assert_eq!(actual[112], 0.);
     assert_eq!(actual[112 + 55], 0.);
+    drop(mapped);
+    staging.unmap();
+    // Repeat the same overlap with zero relative velocity: contact, no impact.
+    outputs[0] = 0.0;
+    outputs[56] = 0.0;
+    queue.write_buffer(&output, 0, bytemuck::cast_slice(&outputs));
+    let mut e = device.create_command_encoder(&Default::default());
+    traffic.encode_contacts(&device, &mut e, &input, &output, &body, 3).unwrap();
+    e.copy_buffer_to_buffer(&output, 0, &staging, 0, 3 * 224);
+    queue.submit(Some(e.finish()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    staging.slice(..).map_async(wgpu::MapMode::Read, move |r| { tx.send(r).unwrap(); });
+    device.poll(wgpu::Maintain::Wait);
+    rx.recv().unwrap().unwrap();
+    let mapped = staging.slice(..).get_mapped_range();
+    let actual: &[f32] = bytemuck::cast_slice(&mapped);
+    assert_eq!(actual[39], 16.0);
+    assert_eq!(actual[56 + 39], 16.0);
+    assert_eq!(actual[55] + actual[56 + 55], 0.0);
+    assert_eq!(actual[47] + actual[56 + 47], 0.0);
+    assert_eq!(actual[112 + 39], 0.0);
+
 }
 
 /// Contact mask contract: physics_c writes the numeric value f32(mask); traffic

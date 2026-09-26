@@ -1,5 +1,11 @@
 # Universe
 
+> **Agents and contributors:** start with the current
+> [validation workflow](docs/VALIDATION-WORKFLOW.md) and [AGENTS.md](AGENTS.md).
+> They index the taxi runtime, required evidence and GPU-only validation policy.
+> The racing overview and commands below include historical context; they are
+> not evidence of current taxi competence or permission to run CPU validators.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/Rust-1.85%2B%20(edition%202024)-orange.svg)](Cargo.toml)
 [![GPU: wgpu / WGSL](https://img.shields.io/badge/GPU-wgpu%2024%20%C2%B7%20WGSL-brightgreen.svg)](src/gpu)

@@ -38,6 +38,147 @@ fn route_distance(pos:vec2<f32>, destination:vec2<f32>)->f32 {
   return routes[4u+target_station*size*size+u32(grid.y)*size+u32(grid.x)];
 }
 
+// Strict v4 route lookup. Unlike route_distance, this never falls back to a
+// straight line: an absent field, off-road cell, unknown station, or
+// unreachable cell is an explicit missing navigation observation.
+fn route_station_for(destination:vec2<f32>)->u32 {
+  for(var j=0u;j<p.stations;j++){
+    let w=station(j);
+    if(distance(destination,vec2<f32>(world[w],world[w+1u]))<0.01){return j;}
+  }
+  return p.stations;
+}
+
+fn finite_v4(value:f32)->bool {
+  return value==value && abs(value)<1e30;
+}
+
+fn finite_vec2_v4(value:vec2<f32>)->bool {
+  return finite_v4(value.x) && finite_v4(value.y);
+}
+
+// Returns body-frame direction cos/sin, compressed remaining road distance,
+// and validity. The local descent is cardinal and road-field-only; at equal
+// distance choices, the candidate most aligned with current forward wins, then
+// the fixed cardinal order below supplies a stable final tie break. This is a
+// one-cell lookahead (at most routes[1] metres), so it has no turn anticipation:
+// a corner is selected when the next legal cell descends. The field is a
+// cell-centre graph and does not model body footprint, wall clearance, or
+// curvature/steering limits; v4 is a navigation hint, not a collision-free
+// trajectory guarantee. A legal-road width of 5 cells at 3 m/cell leaves
+// nominal room for the approximately 4.5 m body only when the pose stays
+// centred, which this observation cannot enforce.
+fn route_frame_v4(
+  pos:vec2<f32>,
+  destination_point:vec2<f32>,
+  fwd:vec2<f32>,
+  lat:vec2<f32>,
+  speed:f32
+)->vec4<f32> {
+  let missing=vec4<f32>(0.0,0.0,1.0,0.0);
+  if(!finite_v4(routes[0]) || routes[0]<=0.0){return missing;}
+  let size=u32(routes[0]);let cell=routes[1];
+  if(size==0u || !finite_v4(cell) || cell<=0.0
+    || !finite_vec2_v4(pos) || !finite_vec2_v4(destination_point)
+    || !finite_vec2_v4(fwd) || !finite_vec2_v4(lat)){return missing;}
+  let grid=cell_index(pos/cell);
+  if(any(grid<vec2<i32>(0)) || any(grid>=vec2<i32>(i32(size)))){return missing;}
+  let target_station=route_station_for(destination_point);
+  if(target_station==p.stations){return missing;}
+  let stride=size*size;
+  let base=4u+target_station*stride;
+  let current=routes[base+u32(grid.y)*size+u32(grid.x)];
+  if(!finite_v4(current) || current<0.0){return missing;}
+
+  let target_delta=destination_point-pos;
+  let target_distance=length(target_delta);
+  let f=fwd/max(length(fwd),0.0001);
+  let l=lat/max(length(lat),0.0001);
+  let remaining=current/(current+100.0);
+  // A station cell has no lower neighbour. Preserve the near-station point
+  // direction so pickup/dropoff can settle on the exact interaction centre.
+  if(target_distance<=4.0){
+    if(target_distance<0.001){return vec4<f32>(0.0,0.0,remaining,1.0);}
+    let direct=target_delta/target_distance;
+    return vec4<f32>(dot(direct,f),dot(direct,l),remaining,1.0);
+  }
+  if(current<=0.0){return missing;}
+
+  if(p.observation==5u){
+    if(!finite_v4(speed)){return missing;}
+    let preview_m=clamp(6.0+1.5*speed,18.0,48.0);
+    let steps=min(16u,max(1u,u32(ceil(preview_m/cell))));
+    var cursor=grid;
+    var remaining_at_cursor=current;
+    var heading=f;
+    var travelled=0u;
+    for(var step=0u;step<16u;step++){
+      if(step>=steps || remaining_at_cursor<=0.0){break;}
+      var best_offset=vec2<i32>(0,0);
+      var best_distance=1e30;
+      var best_alignment=-2.0;
+      var found=false;
+      for(var k=0u;k<4u;k++){
+        var offset=vec2<i32>(1,0);
+        switch k {
+          case 1u: {offset=vec2<i32>(0,1);}
+          case 2u: {offset=vec2<i32>(-1,0);}
+          case 3u: {offset=vec2<i32>(0,-1);}
+          default: {}
+        }
+        let next=cursor+offset;
+        if(any(next<vec2<i32>(0)) || any(next>=vec2<i32>(i32(size)))){continue;}
+        let d=routes[base+u32(next.y)*size+u32(next.x)];
+        if(!finite_v4(d) || d<0.0 || d>=remaining_at_cursor){continue;}
+        let alignment=dot(vec2<f32>(offset),heading);
+        if(!found || d<best_distance || (d==best_distance && alignment>best_alignment)){
+          found=true;best_offset=offset;best_distance=d;best_alignment=alignment;
+        }
+      }
+      if(!found){return missing;}
+      cursor+=best_offset;
+      heading=vec2<f32>(best_offset);
+      remaining_at_cursor=best_distance;
+      travelled+=1u;
+    }
+    if(travelled==0u){return missing;}
+    let delta=vec2<f32>(cursor)*cell-pos;
+    let direction=delta/max(length(delta),0.0001);
+    return vec4<f32>(dot(direction,f),dot(direction,l),remaining,1.0);
+  }
+
+  var best=vec2<f32>(0.0,0.0);
+  var best_distance=1e30;
+  var best_alignment=-2.0;
+  var found=false;
+  for(var k=0u;k<4u;k++){
+    var offset=vec2<i32>(1,0);
+    switch k {
+      case 1u: {offset=vec2<i32>(0,1);}
+      case 2u: {offset=vec2<i32>(-1,0);}
+      case 3u: {offset=vec2<i32>(0,-1);}
+      default: {}
+    }
+    let next=grid+offset;
+    if(any(next<vec2<i32>(0)) || any(next>=vec2<i32>(i32(size)))){continue;}
+    let candidate_distance=routes[base+u32(next.y)*size+u32(next.x)];
+    if(!finite_v4(candidate_distance) || candidate_distance<0.0
+      || candidate_distance>=current){continue;}
+    let step=vec2<f32>(f32(offset.x),f32(offset.y));
+    let alignment=dot(step,f);
+    if(!found || candidate_distance<best_distance
+      || (candidate_distance==best_distance && alignment>best_alignment)){
+      found=true;
+      best=step;
+      best_distance=candidate_distance;
+      best_alignment=alignment;
+    }
+  }
+  if(!found){return missing;}
+  let direction=best/max(length(best),0.0001);
+  return vec4<f32>(dot(direction,f),dot(direction,l),remaining,1.0);
+}
+
 // Explicit genesis adapter, called once AFTER organism reset, never on ordinaryticks.
 // Desired birth reserves are transferred from station slot%station_count. Body
 // construction first consumes0.01kg per kg of expressed baseline1350kg*massscale.
@@ -174,10 +315,10 @@ fn post() {
     // Task progress (127) is phase-aware with best-distance memory in body slots 31
     // (key), 61 (best remaining, m) and 62 (initial remaining, m). Phase A: approaching
     // the nearest waiting passenger pays 0..100 for road distance closed since that
-    // passenger became the target. Phase B: carrying pays 100 plus 0..100 toward the
+    // passenger became the destination_point. Phase B: carrying pays 100 plus 0..100 toward the
     // destination. key = passenger_id*2 + phase; any change resets the memory at the
-    // current distance, so a swapped target, a return trip or oscillation earns nothing
-    // new, a target already within 8 m earns no approach credit, and an unreachable
+    // current distance, so a swapped destination_point, a return trip or oscillation earns nothing
+    // new, a destination_point already within 8 m earns no approach credit, and an unreachable
     // start (route -1) earns none for that key. Dead beings skip this block above.
     var key=0.0; var goal=vec2<f32>(0.0,0.0);
     if(body[s+65u]>0.5){key=body[s+72u]*2.0+1.0;goal=vec2<f32>(body[s+66u],body[s+67u]);}
@@ -218,6 +359,11 @@ fn pack4(a:f32,b:f32,c:f32,d:f32)->u32 {
 // (forward, lateral axes of the physics pose), 183 = d/(d+100) (1 when no task);
 // 184/185/186 the same for the nearest service; 187 min station stock fraction;
 // 188 refusal/6; 190 fare/100. 182 and 191 belong to traffic.wgsl in both versions.
+// v4 (p.observation==4): 178/179 = body-frame direction of the local legal-road
+// route descent (near a station, the exact station-point direction), 183 =
+// remaining legal-road distance/(distance+100). Missing route field, off-road
+// position, unreachable destination_point, unknown destination_point, and no task encode direction 0
+// and distance 1. Other v3 channels retain their meanings.
 // Senses read the physics INPUT record (stride 92: pos36/38, fwd40/42, lat44/46),
 // which holds the initial pose at tick 0 and the fed-back pose afterwards.
 fn body_frame(delta:vec2<f32>, fwd:vec2<f32>, lat:vec2<f32>)->vec3<f32> {
@@ -235,7 +381,7 @@ fn senses(@builtin(global_invocation_id) gid:vec3<u32>){
  wave[words+42u]=pack4(body[s+4u],body[s+3u]/7200.0,body[s+32u]/max(body[s+16u],0.000001),body[s+33u]/max(body[s+17u],0.000001));
  wave[words+43u]=pack4(body[s+42u],body[s+43u],body[s+46u],body[s+29u]);
  let base=words+44u;
- if(p.observation==3u){
+ if(p.observation==3u || p.observation==4u || p.observation==5u){
   let i=b*92u;
   let fwd=vec2<f32>(physics[i+40u],physics[i+42u]);
   let lat=vec2<f32>(physics[i+44u],physics[i+46u]);
@@ -254,4 +400,22 @@ fn senses(@builtin(global_invocation_id) gid:vec3<u32>){
  wave[base+1u]=pack4(body[s+90u],body[s+74u]/300.0,body[s+68u]/100.0,body[s+69u]/6.0);
  wave[base+2u]=pack4(body[s+85u]/100.0,body[s+86u]/100.0,body[s+87u],body[s+88u]);
  wave[base+3u]=pack4(body[s+89u],body[s+83u],body[s+73u]/100.0,body[s+29u]);
+}
+
+// A separate route pass keeps route search out of the dense body/service packer.
+// On RADV NAVI22, compiling both in a single senses entry caused a driver crash.
+// Sequential GPU passes preserve every non-route byte without host readback.
+@compute @workgroup_size(64)
+fn route_senses(@builtin(global_invocation_id) gid:vec3<u32>){
+ let b=gid.x;if(b>=p.n){return;}let s=b*128u;let i=b*92u;
+ var task=vec4<f32>(0.0,0.0,1.0,0.0);
+ if(body[s+65u]>0.5 || body[s+90u]>0.5){
+  let destination_point=select(vec2<f32>(body[s+70u],body[s+71u]),vec2<f32>(body[s+66u],body[s+67u]),body[s+65u]>0.5);
+  task=route_frame_v4(vec2<f32>(physics[i+36u],physics[i+38u]),destination_point,
+    vec2<f32>(physics[i+40u],physics[i+42u]),vec2<f32>(physics[i+44u],physics[i+46u]),
+    length(vec2<f32>(physics[i],physics[i+2u])));
+ }
+ let base=b*p.wave_words+44u;
+ wave[base]=(wave[base]&0x0000ffffu)|(pack4(0.0,0.0,task.x,task.y)&0xffff0000u);
+ wave[base+1u]=(wave[base+1u]&0x00ffffffu)|(pack4(0.0,0.0,0.0,task.z)&0xff000000u);
 }

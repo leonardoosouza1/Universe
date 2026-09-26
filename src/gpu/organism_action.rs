@@ -26,6 +26,9 @@ pub const FLAG_EXCLUSIVE_PEDALS: u32 = 8;
 /// (docs/SCHOOL-STOP-CONTRACT-AB-20260924.md, signed-brake battery). Requires
 /// `FLAG_EXCLUSIVE_PEDALS`; the slow inhibition path stays rectified.
 pub const FLAG_SIGNED_BRAKE: u32 = 16;
+/// Preserve positive brake authority instead of subtracting requested throttle.
+/// Requires exclusive pedals and low-speed braking; incompatible with signed brake.
+pub const FLAG_BRAKE_PRIORITY: u32 = 32;
 pub const GEARBOX_OFF: u32 = 0;
 pub const GEARBOX_AUTO: u32 = 1;
 pub const GEARBOX_NEURAL: u32 = 2;
@@ -319,13 +322,20 @@ impl OrganismActionGpu {
                 | FLAG_SIGNED_THROTTLE
                 | FLAG_ALLOW_LOW_SPEED_BRAKE
                 | FLAG_EXCLUSIVE_PEDALS
-                | FLAG_SIGNED_BRAKE)
+                | FLAG_SIGNED_BRAKE | FLAG_BRAKE_PRIORITY)
             != 0
         {
             return Err("organism-action: unknown flags");
         }
         if params.flags & FLAG_SIGNED_BRAKE != 0 && params.flags & FLAG_EXCLUSIVE_PEDALS == 0 {
             return Err("organism-action: signed brake requires exclusive pedals");
+        }
+        if params.flags & FLAG_BRAKE_PRIORITY != 0
+            && (params.flags & (FLAG_EXCLUSIVE_PEDALS | FLAG_ALLOW_LOW_SPEED_BRAKE)
+                != (FLAG_EXCLUSIVE_PEDALS | FLAG_ALLOW_LOW_SPEED_BRAKE)
+                || params.flags & FLAG_SIGNED_BRAKE != 0)
+        {
+            return Err("organism-action: brake priority requires exclusive low-speed pedals and unsigned brake");
         }
         queue.write_buffer(
             &self.params,

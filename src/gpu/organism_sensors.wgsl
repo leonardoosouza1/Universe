@@ -70,6 +70,13 @@ fn geometry(@builtin(global_invocation_id) id:vec3<u32>){
   risk=clamp(speed*speed*abs(curve(ss,heading,30.0)*1.5707963267948966/30.0)/(0.9*9.81),0.0,1.0);
  }
  temporal[t+28u]=risk;
+ // Explicit powertrain-v2 observation overlay, no racing-line reinterpretation
+ // in legacy runs. Published channel manifest declares the changed semantics.
+ if ((bitcast<u32>(physical[i+87u]) & 8192u)!=0u) {
+   temporal[t+66u]=f32(bitcast<u32>(physical[i+57u]));
+   temporal[t+67u]=clamp(physical[i+58u],0.0,1.0);
+   temporal[t+68u]=clamp(physical[i+56u]/0.35,0.0,1.0);
+ }
 }
 
 @compute @workgroup_size(64)

@@ -80,6 +80,7 @@ pub struct HeadlessMode {
 }
 
 pub mod organism_city;
+pub mod city_family;
 pub mod organism_scenario;
 
 pub mod organism_channels;

@@ -57,6 +57,9 @@ pub use crate::gpu::lifetime::{
 #[cfg(test)]
 mod observation_tests;
 
+#[cfg(test)]
+mod flow_contract_tests;
+
 // ── CONSTANTS DERIVED FROM THE BRAIN DIMENSIONS ──────────────────────────────
 
 /// KAN knots per sensory channel (`kan.rs`: `spline_coeffs: [f32; 16]`).
@@ -335,6 +338,9 @@ pub struct BrainGpu {
     /// `BrainParams::dropout_prob`. Defaults to `0.0`, identical to the historical
     /// behaviour (no channel fails). Same contract as `noise_sigma` above.
     pub dropout_prob: f32,
+
+    /// Experimental stateless linear wave policy; uses L1 rows 0..9, no native neural trace.
+    pub linear_wave: bool,
 
     /// Optional lifetime mechanisms. Bit 0 = plasticity, bit 1 = development
     /// masks, bit 2 = deterministic topology masks. Zero is the control arm.
@@ -637,6 +643,7 @@ impl BrainGpu {
             noise_sigma: 0.0,
             dropout_prob: 0.0,
             lifetime_flags: 0,
+            linear_wave: false,
             mem_off: false,
             period_off: false,
             threshold_off: false,
@@ -1458,7 +1465,7 @@ impl BrainGpu {
             ablation_from_tick: self.ablation_from_tick,
             control_flags: brain_control_word(self.ablation_enabled, self.observed_being),
             lifetime_flags: self.lifetime_flags,
-            lifetime_reserved0: 0,
+            lifetime_reserved0: u32::from(self.linear_wave),
             lifetime_reserved1: 0,
             lifetime_reserved2: 0,
         };

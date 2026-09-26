@@ -296,6 +296,38 @@ pub fn lesson_starts_fold(
     Ok(candidates)
 }
 
+/// Bounded pool for replicated evaluation. Approach/pickup identity excludes the
+/// unused destination; identical physical exams cannot cross folds or count twice.
+/// Legacy callers keep `lesson_starts_fold` and its original candidate numbering.
+pub fn lesson_start_pool(
+    world: &VoxelWorld,
+    stations: &[[f32; 8]],
+    lesson: Lesson,
+    contract: &LessonContract,
+    requested: usize,
+    fold: LessonFold,
+) -> Result<Vec<LessonGeometry>, String> {
+    let approach_only = matches!(lesson, Lesson::ApproachPassenger | Lesson::Pickup);
+    let mut seen = std::collections::HashSet::new();
+    let mut pool = Vec::new();
+    for (index, geometry) in lesson_start_candidates(world, stations, lesson, contract).into_iter().enumerate() {
+        let identity = [geometry.start[0].to_bits(), geometry.start[1].to_bits(),
+            geometry.forward[0].to_bits(), geometry.forward[1].to_bits()];
+        let fold_index = if approach_only {
+            if !seen.insert(identity) { continue; }
+            // Stable integer mixing; independent of list order and destination.
+            let hash = identity.iter().fold(2166136261u32, |hash, value| {
+                value.to_le_bytes().iter().fold(hash, |h, byte| (h ^ *byte as u32).wrapping_mul(16777619))
+            });
+            hash as usize
+        } else { candidate_fold_index(stations, lesson, index, &geometry) };
+        if fold.keeps(fold_index) { pool.push(geometry); }
+    }
+    if pool.is_empty() { return Err(format!("no distinct starts for {} in {}", lesson.name(), fold.name())); }
+    pool.truncate(requested.max(1));
+    Ok(pool)
+}
+
 /// How the lesson starts of one generation are assigned (`--school-shared-start`).
 /// Default (`None` at the call site): one candidate per slot, slots rotated by hash, so
 /// one genome is judged on a different approach every generation and its score swings

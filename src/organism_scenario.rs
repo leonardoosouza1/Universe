@@ -8,12 +8,22 @@ pub const SCENARIO_ID: &str = "organism-taxi-v1";
 pub const OBSERVATION_ID: &str = crate::gpu::traffic::TRAFFIC_OBSERVATION_ID;
 /// Navigation channels 178/179/183..188/190 change meaning in v3 (see taxi.wgsl).
 pub const OBSERVATION_ID_V3: &str = "organism-city-observation-v3";
+pub const OBSERVATION_ID_V4: &str = "organism-city-observation-v4";
 pub fn observation_id(navigation_observation: u32) -> &'static str {
-    if navigation_observation == crate::gpu::taxi::NAVIGATION_OBSERVATION_V3 {
+    if navigation_observation == 5 {
+        "organism-city-observation-v5"
+    } else if navigation_observation == 4 {
+        OBSERVATION_ID_V4
+    } else if navigation_observation == crate::gpu::taxi::NAVIGATION_OBSERVATION_V3 {
         OBSERVATION_ID_V3
     } else {
         OBSERVATION_ID
     }
+}
+/// Different sensory meanings must have different externally visible identifiers.
+pub fn observation_id_with_powertrain(navigation: u32, enabled: bool) -> String {
+    let base=observation_id(navigation);
+    if enabled {format!("{base}+powertrain-v2")} else {base.to_string()}
 }
 /// Motor 0..2, shift 3..4, service 5, pickup 6, dropoff 7, near-stop reverse request 8.
 pub const ACTION_ID: &str = "vehicle-taxi-intent96-active9-v1";

@@ -8,10 +8,97 @@ use bevy::prelude::{Vec2, Vec3};
 use serde_json::{json, Value};
 
 use crate::world::{VoxelType, VoxelWorld};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 pub const CITY_GEOMETRY_VERSION: &str = "organism-city-v1";
 const ROAD_WIDTH_CELLS: i32 = 5;
 const STREET_CENTERS: [i32; 5] = [32, 96, 160, 224, 288];
+
+/// Lane-side convention of the grid family.
+///
+/// `Legacy` is the v1 rule: horizontal streets flow +X on the `row <= centre`
+/// side and vertical streets flow +Z on the `col <= centre` side. Along the lane
+/// frame `l = (-t.z, t.x)` that puts horizontal traffic at `-3 m` and vertical
+/// traffic at `+3 m`, so a being sees the mirror image of the street depending on
+/// its axis (finding F1; measured on 2026-09-25 as 1.2-4.6 m/s on vertical streets
+/// against 4.4-10.3 m/s on horizontal ones for the same genome,
+/// `docs/experiments/CONTRACT-BENCH-20260925.md`). `Consistent` applies the ring
+/// family rule on every street: offset along `(-t.z, t.x) > 0` flows `+t`.
+/// The default stays `Legacy` so recorded champions keep their world; the choice
+/// is exported in the city metadata as `lane_rule`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneRule {
+    Legacy = 0,
+    Consistent = 1,
+}
+
+impl LaneRule {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "legacy" => Some(Self::Legacy),
+            "consistent" => Some(Self::Consistent),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Consistent => "consistent",
+        }
+    }
+}
+
+static LANE_RULE: AtomicU8 = AtomicU8::new(LaneRule::Legacy as u8);
+
+/// Process-wide lane rule used by `build_city` (set once from the CLI).
+pub fn set_lane_rule(rule: LaneRule) {
+    LANE_RULE.store(rule as u8, Ordering::SeqCst);
+}
+
+pub fn lane_rule() -> LaneRule {
+    if LANE_RULE.load(Ordering::SeqCst) == LaneRule::Consistent as u8 {
+        LaneRule::Consistent
+    } else {
+        LaneRule::Legacy
+    }
+}
+
+/// Supported deterministic city families.
+///
+/// Families vary only the spacing of the connected orthogonal grid. They do not
+/// claim to reproduce a block grammar, curves, ramps, or MetaDrive's generator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CityFamily {
+    Grid,
+    Compact,
+    Wide,
+    /// Rounded loop with cardinal chords; built by `crate::city_family::ring`.
+    Ring,
+}
+
+impl CityFamily {
+    /// Stable metadata name used by callers and experiment manifests.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Compact => "compact",
+            Self::Wide => "wide",
+            Self::Ring => "ring",
+        }
+    }
+
+    /// Parse the stable family name used by configuration layers.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "grid" => Some(Self::Grid),
+            "compact" => Some(Self::Compact),
+            "wide" => Some(Self::Wide),
+            "ring" => Some(Self::Ring),
+            _ => None,
+        }
+    }
+}
 
 pub struct CityPlan {
     pub stations: Vec<[f32; 8]>,
@@ -20,6 +107,15 @@ pub struct CityPlan {
 }
 
 impl CityPlan {
+    /// Assemble a plan from a family builder outside this module.
+    pub fn from_parts(
+        stations: Vec<[f32; 8]>,
+        traffic_lights: Vec<crate::gpu::traffic::TrafficLight>,
+        metadata: Value,
+    ) -> Self {
+        Self { stations, traffic_lights, metadata }
+    }
+
     pub fn metadata(&self) -> &Value {
         &self.metadata
     }
@@ -48,7 +144,7 @@ const SPAWN_LANE_SPACING_M: f32 = 12.0;
 
 /// Street centre lines in metres, the same filter `build_city` applies.
 pub fn street_centres_m(world: &VoxelWorld) -> Vec<f32> {
-    street_centers(world.size as i32)
+    street_centers_for_world(world)
         .into_iter()
         .map(|c| c as f32 * world.cell_size)
         .collect()
@@ -60,6 +156,121 @@ fn street_centers(size: i32) -> Vec<i32> {
         .copied()
         .filter(|v| *v >= 3 && *v < size - 3)
         .collect()
+}
+
+fn line_centers(world: &VoxelWorld, horizontal: bool) -> Vec<i32> {
+    let size = world.size as i32;
+    let counts = (0..size)
+        .map(|line| {
+            (0..size)
+                .filter(|other| {
+                    let (row, col) = if horizontal { (line, *other) } else { (*other, line) };
+                    world.grid[(row * size + col) as usize] == VoxelType::Road
+                })
+                .count() as i32
+        })
+        .collect::<Vec<_>>();
+    let threshold = (size / 3).max(ROAD_WIDTH_CELLS * 2);
+    let mut centers = Vec::new();
+    let mut run_start = None;
+    for (line, count) in counts.into_iter().enumerate() {
+        if count >= threshold {
+            run_start.get_or_insert(line as i32);
+        } else if let Some(start) = run_start.take() {
+            centers.push((start + line as i32 - 1) / 2);
+        }
+    }
+    if let Some(start) = run_start {
+        centers.push((start + size - 1) / 2);
+    }
+    centers
+}
+
+/// True when the road cells are exactly the grid this module paints for the
+/// recovered street centres. A family city (`crate::city_family`) has arcs or
+/// missing streets and fails this test even when its rows and columns happen
+/// to line up; a non-city world fails it too.
+pub fn is_orthogonal_grid_city(world: &VoxelWorld) -> bool {
+    let columns = line_centers(world, false);
+    let rows = line_centers(world, true);
+    if columns.len() < 3 || columns != rows {
+        return false;
+    }
+    let size = world.size as i32;
+    let half = ROAD_WIDTH_CELLS / 2;
+    let extent_min = columns[0] - half;
+    let extent_max = columns[columns.len() - 1] + half;
+    for row in 0..size {
+        for col in 0..size {
+            let in_extent = (extent_min..=extent_max).contains(&row) && (extent_min..=extent_max).contains(&col);
+            let on_street = columns.iter().any(|c| (col - *c).abs() <= half || (row - *c).abs() <= half);
+            let expected_road = in_extent && on_street;
+            let is_road = world.grid[(row * size + col) as usize] == VoxelType::Road;
+            if expected_road != is_road {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Recover street centres from the road bands written into `world`.
+///
+/// This keeps school geometry tied to the actual city instance without a global
+/// variant or thread-local override. Non-city worlds retain the legacy centres.
+fn street_centers_for_world(world: &VoxelWorld) -> Vec<i32> {
+    let columns = line_centers(world, false);
+    let rows = line_centers(world, true);
+    if columns.len() >= 3 && columns == rows {
+        columns
+    } else {
+        street_centers(world.size as i32)
+    }
+}
+
+fn mix_seed(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn variant_centers(size: i32, seed: u64, family: CityFamily) -> Result<Vec<i32>, String> {
+    if size < 24 {
+        return Err(format!("city grid requires at least 24 cells; got {size}"));
+    }
+    let ratios: [f32; 5] = match family {
+        CityFamily::Grid => [0.10, 0.30, 0.50, 0.70, 0.90],
+        CityFamily::Compact => [0.20, 0.35, 0.50, 0.65, 0.80],
+        CityFamily::Wide => [0.06, 0.28, 0.50, 0.72, 0.94],
+        CityFamily::Ring => return Err("ring family is built by city_family::ring, not by street centres".into()),
+    };
+    let jitter = match family {
+        CityFamily::Grid => 4,
+        CityFamily::Compact => 3,
+        CityFamily::Wide => 5,
+        CityFamily::Ring => 0,
+    };
+    let mut centers = ratios
+        .into_iter()
+        .enumerate()
+        .map(|(index, ratio)| {
+            let base = ((size - 1) as f32 * ratio).round() as i32;
+            let span = (jitter * 2 + 1) as u64;
+            let offset = (mix_seed(seed.wrapping_add(index as u64)) % span) as i32 - jitter;
+            base + offset
+        })
+        .collect::<Vec<_>>();
+    centers.sort_unstable();
+    if centers
+        .iter()
+        .any(|center| *center < 3 || *center >= size - 3)
+        || centers.windows(2).any(|pair| pair[1] - pair[0] <= ROAD_WIDTH_CELLS)
+    {
+        return Err(format!("{family:?} seed {seed} does not fit a connected city grid of {size} cells"));
+    }
+    Ok(centers)
 }
 
 /// Deterministic birth slots on lane centres.
@@ -80,9 +291,12 @@ pub fn spawn_slots(
     if n == 0 {
         return Ok(Vec::new());
     }
+    if !is_orthogonal_grid_city(world) {
+        return crate::city_family::spawn_slots_generic(world, stations, n);
+    }
     let cell = world.cell_size;
     let size = world.size as i32;
-    let centers = street_centers(size);
+    let centers = street_centers_for_world(world);
     let depot = world.start_pos;
     let mut candidates: Vec<CitySpawn> = Vec::new();
     let mut consider = |x_m: f32, z_m: f32| {
@@ -172,13 +386,138 @@ pub fn slot_rotation(generation: u64, seed: u64, n: usize) -> usize {
 
 /// Replace the legacy cross overlay with a connected orthogonal city grid.
 pub fn build_city(world: &mut VoxelWorld) -> CityPlan {
+    let centers = street_centers(world.size as i32);
+    assert!(
+        centers.len() >= 3,
+        "city grid requires at least three streets"
+    );
+    build_city_with_centers(world, centers, None, lane_rule())
+}
+
+/// `build_city` with an explicit lane rule; tests use it so that they never
+/// touch the process-wide setting.
+pub fn build_city_with_lane_rule(world: &mut VoxelWorld, rule: LaneRule) -> CityPlan {
+    let centers = street_centers(world.size as i32);
+    build_city_with_centers(world, centers, None, rule)
+}
+
+/// Build a deterministic seeded grid variant and return its geometry contract.
+///
+/// The seed affects only the integer centre-line jitter within the selected
+/// spacing family. The returned plan updates the world before deriving stations,
+/// traffic lights, waypoints, spawn capacity, and lesson candidates. Families are
+/// axis-aligned grid spacing variants; this is not a full MetaDrive-style generator.
+pub fn build_city_variant(
+    world: &mut VoxelWorld,
+    seed: u64,
+    family: CityFamily,
+) -> Result<CityPlan, String> {
+    if family == CityFamily::Ring {
+        return crate::city_family::ring::build(world, seed);
+    }
+    let centers = variant_centers(world.size as i32, seed, family)?;
+    Ok(build_city_with_centers(world, centers, Some((seed, family)), lane_rule()))
+}
+
+/// Validate the static geometry contract before the first generation uses it.
+///
+/// This checks that recovered road-band centres agree with the metadata emitted
+/// by the builder, all stations are connected, every station pair has a finite
+/// road route, and n beings have separated lane slots. It performs only host
+/// geometry preprocessing; it does not tick a vehicle or run a model.
+pub fn validate_city_postconditions(
+    world: &VoxelWorld,
+    plan: &CityPlan,
+    n: usize,
+) -> Result<(), String> {
+    if plan.metadata.get("schema_version").and_then(Value::as_str)
+        == Some(crate::city_family::CITY_FAMILY_SCHEMA_VERSION)
+    {
+        return crate::city_family::validate(world, plan, n);
+    }
+    let recovered = street_centers_for_world(world);
+    let streets = plan
+        .metadata
+        .get("streets")
+        .and_then(Value::as_array)
+        .ok_or("city metadata is missing streets")?;
+    let mut metadata_centers = Vec::new();
+    for street in streets {
+        let center = street
+            .get("center_cell")
+            .and_then(Value::as_i64)
+            .ok_or("city metadata has a street without center_cell")?;
+        let center = i32::try_from(center).map_err(|_| "city street center is out of range")?;
+        if !metadata_centers.contains(&center) {
+            metadata_centers.push(center);
+        }
+    }
+    metadata_centers.sort_unstable();
+    if recovered != metadata_centers || recovered.len() < 3 {
+        return Err(format!(
+            "city street centres are not recoverable from roads: metadata={metadata_centers:?}, recovered={recovered:?}"
+        ));
+    }
+    let lights = plan.traffic_lights();
+    let expected_lights = recovered.len() * recovered.len() * 4;
+    if lights.len() != expected_lights {
+        return Err(format!(
+            "city has {} traffic lights; expected {expected_lights}",
+            lights.len()
+        ));
+    }
+    if lights.iter().any(|light| {
+        !light.position.iter().chain(light.approach.iter()).all(|value| value.is_finite())
+            || !light.half_width.is_finite()
+            || light.half_width <= 0.0
+            || (light.approach[0] * light.approach[0] + light.approach[1] * light.approach[1] - 1.0).abs() > 0.0001
+            || light.green_ticks == 0
+            || light.yellow_ticks == 0
+    }) {
+        return Err("city contains an invalid traffic light".to_string());
+    }
+    crate::organism_scenario::validate_city(world, &plan.stations)?;
+    let packed = crate::gpu::taxi_routes::pack_distance_fields(world, &plan.stations)
+        .map_err(|error| format!("city route preprocessing failed: {error}"))?;
+    let cells = world.size * world.size;
+    let expected_route_values = 4 + plan.stations.len() * cells;
+    if packed.len() != expected_route_values {
+        return Err(format!(
+            "city route preprocessing returned {} values; expected {expected_route_values}",
+            packed.len()
+        ));
+    }
+    for destination in 0..plan.stations.len() {
+        for (origin, station) in plan.stations.iter().enumerate() {
+            let col = (station[0] / world.cell_size).round();
+            let row = (station[1] / world.cell_size).round();
+            if !col.is_finite() || !row.is_finite() || col < 0.0 || row < 0.0
+                || col >= world.size as f32 || row >= world.size as f32
+            {
+                return Err(format!("city station {origin} is outside route grid"));
+            }
+            let cell = row as usize * world.size + col as usize;
+            let distance = packed[4 + destination * cells + cell];
+            if !distance.is_finite() || distance < 0.0 {
+                return Err(format!(
+                    "city route {origin}->{destination} is unreachable"
+                ));
+            }
+        }
+    }
+    spawn_slots(world, &plan.stations, n)
+        .map(|_| ())
+        .map_err(|error| format!("city spawn contract failed: {error}"))
+}
+
+fn build_city_with_centers(
+    world: &mut VoxelWorld,
+    centers: Vec<i32>,
+    variant: Option<(u64, CityFamily)>,
+    rule: LaneRule,
+) -> CityPlan {
     let size = world.size as i32;
     let cell = world.cell_size;
-    let centers = STREET_CENTERS
-        .iter()
-        .copied()
-        .filter(|v| *v >= 3 && *v < size - 3)
-        .collect::<Vec<_>>();
     assert!(
         centers.len() >= 3,
         "city grid requires at least three streets"
@@ -217,7 +556,12 @@ pub fn build_city(world: &mut VoxelWorld) -> CityPlan {
                             .min_by_key(|c| (row - **c).abs())
                             .copied()
                             .unwrap_or(row);
-                        if row <= center {
+                        // Consistent: t = +X, l = (0, 1); offset along l = row - centre.
+                        let east = match rule {
+                            LaneRule::Legacy => row <= center,
+                            LaneRule::Consistent => row > center,
+                        };
+                        if east {
                             Vec2::X
                         } else {
                             -Vec2::X
@@ -229,7 +573,12 @@ pub fn build_city(world: &mut VoxelWorld) -> CityPlan {
                             .min_by_key(|c| (col - **c).abs())
                             .copied()
                             .unwrap_or(col);
-                        if col <= center {
+                        // Consistent: t = +Z, l = (-1, 0); offset along l = centre - col.
+                        let south = match rule {
+                            LaneRule::Legacy => col <= center,
+                            LaneRule::Consistent => col < center,
+                        };
+                        if south {
                             Vec2::Y
                         } else {
                             -Vec2::Y
@@ -369,12 +718,26 @@ pub fn build_city(world: &mut VoxelWorld) -> CityPlan {
             })
         })
         .collect::<Vec<_>>();
-    let metadata = json!({"schema_version":CITY_GEOMETRY_VERSION,"size":world.size,
+    let mut metadata = json!({"schema_version":CITY_GEOMETRY_VERSION,"size":world.size,
         "cell_size_m":cell,"road_width_cells":ROAD_WIDTH_CELLS,
         "extent_cells":[extent_min,extent_max+1],"streets":streets,
         "blocks":blocks,"intersections":intersections,"traffic_lights":traffic_metadata,
         "lane_axes":{"x":"east_west","z":"north_south"},
+        "lane_rule":rule.name(),
         "spawn":{"x_m":world.start_pos.x,"z_m":world.start_pos.z,"safe":true}});
+    if let Some((seed, family)) = variant {
+        let center_signature = centers
+            .iter()
+            .map(|center| center.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        metadata["variant"] = json!({
+            "family": family.name(),
+            "seed": seed,
+            "signature": format!("{}:{seed:016x}:{center_signature}", family.name()),
+            "limitations": "axis-aligned grid spacing variation only; no curves, ramps, block grammar, or MetaDrive-style procedural city",
+        });
+    }
 
     CityPlan {
         stations,
@@ -412,6 +775,52 @@ mod tests {
             assert_eq!(junction[2].phase_offset_ticks, junction[3].phase_offset_ticks);
             assert_eq!((junction[2].phase_offset_ticks + 2048 - junction[0].phase_offset_ticks) % 2048, 1024);
         }
+    }
+
+    #[test]
+    fn consistent_lane_rule_puts_every_street_on_the_ring_side() {
+        // Ring convention (city_family): offset along (-t.z, t.x) > 0 => flow +t.
+        let mut world = VoxelWorld::new(1, 20.0);
+        let plan = build_city_with_lane_rule(&mut world, LaneRule::Consistent);
+        assert_eq!(plan.metadata["lane_rule"], "consistent");
+        let size = world.size as i32;
+        let centers = street_centers(size);
+        let half = ROAD_WIDTH_CELLS / 2;
+        let mut checked = 0;
+        for row in 0..size {
+            for col in 0..size {
+                let flow = world.flow[(row * size + col) as usize];
+                if flow.length_squared() < 0.5 {
+                    continue;
+                }
+                let horizontal = flow.x.abs() > 0.5;
+                let (line, centre) = if horizontal {
+                    (row, *centers.iter().min_by_key(|c| (row - **c).abs()).unwrap())
+                } else {
+                    (col, *centers.iter().min_by_key(|c| (col - **c).abs()).unwrap())
+                };
+                assert!((line - centre).abs() <= half);
+                // t = flow; l = (-t.z, t.x); offset = (col, row) - centre along l.
+                let offset = if horizontal {
+                    (row - centre) as f32 * flow.x
+                } else {
+                    -((col - centre) as f32) * flow.y
+                };
+                assert!(offset > 0.0 || (offset == 0.0 && (flow.x < 0.0 || flow.y < 0.0)),
+                    "cell ({row},{col}) flow {flow:?} sits on the wrong side of its centre {centre}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 10_000, "checked only {checked} lane cells");
+        // The legacy rule mirrors horizontal streets: same cell, opposite flow.
+        let mut legacy = VoxelWorld::new(1, 20.0);
+        build_city_with_lane_rule(&mut legacy, LaneRule::Legacy);
+        let probe = (STREET_CENTERS[1] - 1) * size + STREET_CENTERS[1] + 20; // horizontal lane, row < centre
+        assert_eq!(legacy.flow[probe as usize].x, 1.0);
+        assert_eq!(world.flow[probe as usize].x, -1.0);
+        let probe_v = (STREET_CENTERS[1] + 20) * size + STREET_CENTERS[1] - 1; // vertical lane, col < centre
+        assert_eq!(legacy.flow[probe_v as usize].y, 1.0);
+        assert_eq!(world.flow[probe_v as usize].y, 1.0);
     }
 
     #[test]

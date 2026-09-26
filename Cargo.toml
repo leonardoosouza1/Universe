@@ -52,6 +52,9 @@ serde_json = "1.0"
 bevy_atmosphere = "0.13.0"
 bevy_hanabi = "0.16.0"
 
+[build-dependencies]
+sha2 = "0.10.9"
+
 [features]
 default = ["survival_pressure", "simple_elitism", "trinity_swarm"]
 # Trinity swarm + Tesla-style safety. Cortex+Reflex+Sentinel via MoE Gate.

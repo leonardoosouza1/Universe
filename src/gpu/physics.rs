@@ -93,6 +93,35 @@ pub const CONTACT_DIAGNOSTICS_FLAG: u32 = 1 << 6;
 /// Static-friction rest constraint. Off for legacy race runs; organism-taxi-v1 sets it
 /// unconditionally (src/bin/gpu_evolve/organism_tick.rs:27), with no CLI switch.
 pub const STATIC_REST_FLAG: u32 = 1 << 9;
+/// Power-conjugate wheel/body force transform. Legacy race physics leaves this
+/// clear; resident taxi physics declares the corrected frame in its manifest.
+pub const POWER_CONSISTENT_STEERING_FLAG: u32 = 1 << 10;
+/// Opt-in implicit wheel angular step; preserves the existing tyre force law.
+pub const IMPLICIT_WHEEL_FLAG: u32 = 1 << 11;
+/// Opt-in immediate TCS cut with a 100 ms torque recovery timescale.
+pub const BOUNDED_TCS_FLAG: u32 = 1 << 12;
+/// Versioned resident stall, paid starter and gearbox contract. Input83 is starter authorization.
+pub const POWERTRAIN_V2_FLAG: u32 = 1 << 13;
+pub const STABLE_WHEEL_FLAGS: u32 = IMPLICIT_WHEEL_FLAG | BOUNDED_TCS_FLAG;
+
+/// World/runtime properties inherited at ecological birth, not body genes or
+/// acquired motion/controller state. Keep morphology bit 7 with the newborn.
+pub fn inherit_resident_profile(parent: &PhysicsStateGpu, newborn: &mut PhysicsStateGpu) {
+    const PROFILE_MASK: u32 = CONTACT_DIAGNOSTICS_FLAG | (1 << 8) | STATIC_REST_FLAG
+        | POWER_CONSISTENT_STEERING_FLAG | STABLE_WHEEL_FLAGS | POWERTRAIN_V2_FLAG;
+    newborn.config_flags = (newborn.config_flags & !PROFILE_MASK) | (parent.config_flags & PROFILE_MASK);
+    if parent.config_flags & POWERTRAIN_V2_FLAG != 0 {
+        newborn.current_gear = 2;
+        newborn.current_rpm = 800.0;
+        newborn.is_stalled = 0;
+        newborn.starter_timer = 0.0;
+        newborn.shift_timer = 0.0;
+        newborn._pad_wind = 0.0;
+    }
+    newborn.dt = parent.dt;
+    newborn.engine_temp = 20.0;
+    newborn.oil_temp = 20.0;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContactDiagnostics {
@@ -271,6 +300,12 @@ impl PhysicsStateGpu {
                 expected: "0 or 1",
             });
         }
+        if self.current_gear > 6 {
+            return Err(crate::contracts::ContractError {field: "physics.input.gear", expected: "raw gear code 0..6"});
+        }
+        if self.config_flags & POWERTRAIN_V2_FLAG != 0 && (self._pad_wind != 0.0 && self._pad_wind != 1.0) {
+            return Err(crate::contracts::ContractError {field: "physics.input.starter_authorized", expected: "exact 0 or 1"});
+        }
         TemperatureC::new(self.engine_temp)?;
         TemperatureC::new(self.oil_temp)?;
         for (field, value) in [
@@ -423,7 +458,8 @@ struct MidState {
     _pad_f: f32,            //  4
     torques_y: f32,         //  4
     yaw_inertia: f32,       //  4
-    _pad2: [f32; 2],        //  8
+    tcs_fraction: f32,      //  4: acquired TCS gain, kernel A owns it
+    tcs_initialized: u32,   //  4: reset marker
                             // Total: 128 bytes — multiple of 16, stride = 128
 }
 
@@ -740,7 +776,7 @@ impl PhysicsGpu {
         let buf_mid = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("physics-mid"),
             size: bytes_mid,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         // buf_mid2: written by B, read by C
@@ -862,6 +898,7 @@ impl PhysicsGpu {
         if !state.is_empty() {
             self.queue
                 .write_buffer(&self.buf_input, 0, &serialize_input(state));
+            self.queue.write_buffer(&self.buf_mid, 0, &vec![0u8; state.len() * std::mem::size_of::<MidState>()]);
         }
         Ok(())
     }
@@ -913,6 +950,7 @@ impl PhysicsGpu {
         vec![
             ("physics.input", &self.buf_input),
             ("physics.output", &self.buf_output),
+            ("physics.mid", &self.buf_mid), // includes the acquired TCS gain
         ]
     }
 
@@ -930,6 +968,8 @@ impl PhysicsGpu {
             (slot * INPUT_WGSL_STRIDE) as u64,
             &serialize_input(std::slice::from_ref(state)),
         );
+        self.queue.write_buffer(&self.buf_mid, (slot * std::mem::size_of::<MidState>()) as u64,
+            bytemuck::bytes_of(&MidState::zeroed()));
         Ok(())
     }
 

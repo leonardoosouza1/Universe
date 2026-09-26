@@ -79,7 +79,8 @@ struct MidState {
     _pad_f:          f32,        //  4
     torques_y:       f32,        //  4
     yaw_inertia:     f32,        //  4
-    _pad2:           vec2<f32>,  //  8
+    tcs_fraction: f32, // acquired controller gain, owned by kernel A
+    tcs_initialized: u32,  //  8
     // Total: 128 bytes
 }
 
@@ -114,6 +115,48 @@ struct WorldParams {
 @group(0) @binding(5) var<storage, read_write> mid2:   array<MidState2>;
 
 fn flag(flags: u32, bit: u32) -> bool { return (flags>>bit&1u)!=0u; }
+
+// Opt-in backward Euler solve of the stiff wheel angular equation. The chassis
+// velocity and normal load remain fixed during this tyre solve. Return force in
+// the rolling/lateral frame and the slip used by that same force evaluation.
+fn tyre_at(omega:f32, cf:f32, lateral:f32, radius:f32, capacity:f32)->vec3<f32> {
+    let rolling=omega*radius;
+    let slip=clamp((rolling-cf)/max(abs(rolling),max(abs(cf),0.5)),-1.0,1.0);
+    let longitudinal=capacity*sin(1.5*atan(10.0*slip));
+    let scale=min(1.0,capacity/max(length(vec2<f32>(longitudinal,lateral)),0.001));
+    return vec3<f32>(longitudinal*scale,lateral*scale,slip);
+}
+
+fn implicit_wheel_stage(omega:f32, drive:f32, brake:f32, cf:f32, lateral:f32,
+                  radius:f32, inertia:f32, capacity:f32, dt:f32)->vec4<f32> {
+    let h=dt/max(inertia,0.001);
+    let at_zero=tyre_at(0.0,cf,lateral,radius,capacity);
+    let free_at_zero=omega+h*(drive-radius*at_zero.x);
+    // Coulomb brake impulse may hold zero; it cannot reverse a wheel by itself.
+    if(abs(free_at_zero)<=h*brake) {
+        return vec4<f32>(0.0,at_zero);
+    }
+    let direction=sign(free_at_zero);
+    let bound=abs(omega)+h*(abs(drive)+radius*capacity+brake)+0.001;
+    var lo=select(-bound,0.0,direction>0.0);
+    var hi=select(0.0,bound,direction>0.0);
+    for(var iteration=0u;iteration<20u;iteration++) {
+        let trial=(lo+hi)*0.5;
+        let force=tyre_at(trial,cf,lateral,radius,capacity);
+        let residual=trial-omega-h*(drive-radius*force.x-brake*direction);
+        if(residual>0.0){hi=trial;}else{lo=trial;}
+    }
+    let next=(lo+hi)*0.5;
+    return vec4<f32>(next,tyre_at(next,cf,lateral,radius,capacity));
+}
+
+fn implicit_wheel(omega:f32, drive:f32, brake:f32, cf:f32, lateral:f32,
+                  radius:f32, inertia:f32, capacity:f32, dt:f32)->vec4<f32> {
+    let first=implicit_wheel_stage(omega,drive,brake,cf,lateral,radius,inertia,capacity,dt*0.5);
+    let second=implicit_wheel_stage(first.x,drive,brake,cf,lateral,radius,inertia,capacity,dt*0.5);
+    // Integrate the transmitted impulse, not just the final substep force.
+    return vec4<f32>(second.x,(first.yz+second.yz)*0.5,second.w);
+}
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -213,10 +256,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (flag(c.config_flags,5u)){ab=min(brk,st);}else{ab=brk;}
             if (no>0.0){no-=(ab/c.wheel_inertia)*dt_safe;}else if (no<0.0){no+=(ab/c.wheel_inertia)*dt_safe;}
         }
+        var recorded_slip = slr;
+        if (flag(c.config_flags,11u)) {
+            let solved=implicit_wheel(om[i],wt[i],brk,cf,fla,c.wheel_radius,c.wheel_inertia,mf,dt_safe);
+            no=solved.x;fll=solved.y;flal=solved.z;recorded_slip=solved.w;
+        }
         om[i] = no;
-        sr4[i] = slr; sa4[i] = sa;
-        let chl  = fll*cs - flal*ss;
-        let chla = fll*ss + flal*cs;
+        sr4[i] = recorded_slip; sa4[i] = sa;
+        // Velocity is R(-steer)*v_body. Lateral force opposes slip, so
+        // R(steer)*[fll,-flal] must be the inverse transform. The legacy
+        // sine signs let lateral drag add forward work while coasting.
+        let chl = select(fll*cs - flal*ss, fll*cs + flal*ss, flag(c.config_flags,10u));
+        let chla = select(fll*ss + flal*cs, flal*cs - fll*ss, flag(c.config_flags,10u));
         forces    += fwd*chl*aqua - c.lat*chla*aqua;
         torques_y += chla*wlp[i]*aqua + chl*wtp[i]*0.005*lsd_gate;
     }
@@ -252,10 +303,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (flag(c.config_flags,5u)){ab=min(brk,st);}else{ab=brk;}
             if (no>0.0){no-=(ab/c.wheel_inertia)*dt_safe;}else if (no<0.0){no+=(ab/c.wheel_inertia)*dt_safe;}
         }
+        var recorded_slip = slr;
+        if (flag(c.config_flags,11u)) {
+            let solved=implicit_wheel(om[i],wt[i],brk,cf,fla,c.wheel_radius,c.wheel_inertia,mf,dt_safe);
+            no=solved.x;fll=solved.y;flal=solved.z;recorded_slip=solved.w;
+        }
         om[i] = no;
-        sr4[i] = slr; sa4[i] = sa;
-        let chl  = fll*cs - flal*ss;
-        let chla = fll*ss + flal*cs;
+        sr4[i] = recorded_slip; sa4[i] = sa;
+        let chl = select(fll*cs - flal*ss, fll*cs + flal*ss, flag(c.config_flags,10u));
+        let chla = select(fll*ss + flal*cs, flal*cs - fll*ss, flag(c.config_flags,10u));
         forces    += fwd*chl*aqua - c.lat*chla*aqua;
         torques_y += chla*wlp[i]*aqua + chl*wtp[i]*0.005*lsd_gate;
     }
@@ -290,8 +346,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (flag(c.config_flags,5u)){ab=min(brk,st);}else{ab=brk;}
             if (no>0.0){no-=(ab/c.wheel_inertia)*dt_safe;}else if (no<0.0){no+=(ab/c.wheel_inertia)*dt_safe;}
         }
+        var recorded_slip = slr;
+        if (flag(c.config_flags,11u)) {
+            let solved=implicit_wheel(om[i],wt[i],brk,cf,fla,c.wheel_radius,c.wheel_inertia,mf,dt_safe);
+            no=solved.x;fll=solved.y;flal=solved.z;recorded_slip=solved.w;
+        }
         om[i] = no;
-        sr4[i] = slr; sa4[i] = sa;
+        sr4[i] = recorded_slip; sa4[i] = sa;
         // cs=1, ss=0 → chl=fll, chla=flal
         forces    += fwd*fll*aqua - c.lat*flal*aqua;
         torques_y += flal*wlp[i]*aqua + fll*wtp[i]*0.005*lsd_gate;
@@ -327,8 +388,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (flag(c.config_flags,5u)){ab=min(brk,st);}else{ab=brk;}
             if (no>0.0){no-=(ab/c.wheel_inertia)*dt_safe;}else if (no<0.0){no+=(ab/c.wheel_inertia)*dt_safe;}
         }
+        var recorded_slip = slr;
+        if (flag(c.config_flags,11u)) {
+            let solved=implicit_wheel(om[i],wt[i],brk,cf,fla,c.wheel_radius,c.wheel_inertia,mf,dt_safe);
+            no=solved.x;fll=solved.y;flal=solved.z;recorded_slip=solved.w;
+        }
         om[i] = no;
-        sr4[i] = slr; sa4[i] = sa;
+        sr4[i] = recorded_slip; sa4[i] = sa;
         // cs=1, ss=0 → chl=fll, chla=flal
         forces    += fwd*fll*aqua - c.lat*flal*aqua;
         torques_y += flal*wlp[i]*aqua + fll*wtp[i]*0.005*lsd_gate;

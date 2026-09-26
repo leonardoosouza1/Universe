@@ -369,3 +369,23 @@ street at 8.6 m/s and never brakes. Judge changes cannot buy the fourth start;
 the lane-rule fix can (prediction for the paired legacy/consistent bench, below).
 
 Cost: D 12 gens 1:32 min, E 24 gens 2:18 min (bench.log 21:20:04 → 21:24:54).
+
+### Paired lane-rule bench (pre-registered 21:29, binary rebuilt with the flag)
+
+Script `arms_lane.sh` in the bench directory. One binary for every arm (the
+rebuilt tree, which also carries Codex's uncommitted numerical edits — so arm G
+repeats arm D on the new binary as the control for that). Stop lesson, 4 starts,
+seed 11, same flags as arms A–E.
+
+| arm | genome | rule | gens | prediction |
+|---|---|---|---|---|
+| eval-eliteD-legacy | arm D elite (3/4) | legacy | frozen | 3/4, −X start overshoots (replicates D gen 11 if Codex's edits are neutral) |
+| eval-eliteD-consistent | arm D elite | consistent | frozen | 4/4: the horizontal start is no longer a mirror image; vertical starts unchanged |
+| eval-champ-legacy | base champion | legacy | frozen | 0/4 (arm C gen 0) |
+| eval-champ-consistent | base champion | consistent | frozen | 0/4; speed on the horizontal start rises toward the vertical ones (4–5 m/s) |
+| evo-F consistent, mean+shaping | base champion | consistent | 12 | elite 4/4 by generation 8; −X population successes > 8/32 |
+| evo-G legacy, mean+shaping, new binary | base champion | legacy | 12 | replicates arm D (3/4 at gen 7, −X 0/32); a different number flags Codex's edits |
+
+If eval-eliteD-consistent is still 3/4 with the −X start overshooting, the
+mirror hypothesis is refuted and the horizontal-street failure lives elsewhere
+(start cell geometry or the traffic light at 10.5 m).

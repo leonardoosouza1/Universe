@@ -41,7 +41,7 @@ struct Params {
     // host's `RetinaParamsGpu` (`src/gpu/retina_types.rs`) — see the struct layout trap
     // documented in `src/gpu/CLAUDE.md`.
     beings_on:  u32,
-    _pad0:      u32, // 1 = opt-in physical road-view geometry; layout stays 96 bytes
+    _pad0:      u32, // 0 legacy, 1 physical road-view, 2 centered legacy grid; 96B ABI
     _pad1:      u32,
     _pad2:      u32,
 }
@@ -142,14 +142,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var hit_voxel: u32 = 1u;   // Road
     var hit_dist: f32 = 1200.0;
-    if (params._pad0 != 0u) {
+    if (params._pad0 == 1u) {
         let surface = trace_surface(eye, vec3<f32>(dir_x, dir_y, dir_z));
         hit_dist = surface.x;
         hit_voxel = u32(surface.y);
     } else {
     let dist_to_ground = select(1000.0, -eye.y / dir_y, dir_y < -0.001);
 
-    let ray_start = vec2<f32>(eye.x / params.cell_size, eye.z / params.cell_size);
+    // Translate grid queries only: being occlusion must retain the real eye origin.
+    // Keep legacy pitches, horizontal wall ranges and materials to isolate this fix.
+    let grid_shift = select(0.0, params.cell_size * 0.5, params._pad0 == 2u);
+    let ray_start = vec2<f32>((eye.x + grid_shift) / params.cell_size, (eye.z + grid_shift) / params.cell_size);
     var ray_dir = vec2<f32>(dir_x, dir_z);
     let comp = length(ray_dir);
     if (comp > 1e-9) { ray_dir = ray_dir / comp; } else { ray_dir = vec2<f32>(0.0, 0.0); }
@@ -195,13 +198,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Still holds, because it is GEOMETRY, not salience judgment.
         if (dir_y < -0.001 && d > dist_to_ground) {
             hit_dist = dist_to_ground;
-            hit_voxel = ground_voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);
+            hit_voxel = ground_voxel_at(eye.x + dir_x * hit_dist + grid_shift, eye.z + dir_z * hit_dist + grid_shift);
         } else {
             hit_dist = d;
         }
     } else if (dir_y < -0.001 && dist_to_ground <= 1200.0) {
         hit_dist = dist_to_ground;
-        hit_voxel = ground_voxel_at(eye.x + dir_x * hit_dist, eye.z + dir_z * hit_dist);
+        hit_voxel = ground_voxel_at(eye.x + dir_x * hit_dist + grid_shift, eye.z + dir_z * hit_dist + grid_shift);
     }
 
     }

@@ -50,7 +50,10 @@ mod brain_backend;
 mod cli_flags;
 #[cfg(test)]
 mod cli_flags_tests;
+mod competence_archive;
 mod context;
+mod cross_city_course;
+mod diagnostic_candidates;
 mod driving_diagnostics;
 mod ecology_runtime;
 mod escada;
@@ -68,8 +71,10 @@ mod piloto_forja;
 mod piloto_linear;
 mod pilots;
 mod pistas;
+mod research_contract;
 mod reverse_controller;
 mod school_batch;
+mod service_course;
 mod starting_grid;
 mod statics;
 mod survival;
@@ -88,7 +93,7 @@ use types::BeingState;
 
 use universe::engine::SovereignEngine;
 use universe::evolution::dna_genesis::default_kan_knots;
-use universe::gpu::evolution::{EvoParams, GenResult, Genome, evolve, gen_stats, linear_slope};
+use universe::gpu::evolution::{EvoParams, GenResult, Genome, gen_stats, linear_slope};
 use universe::gpu::taxi::TaxiMode;
 use universe::world::VoxelWorld;
 
@@ -258,14 +263,24 @@ fn avaliar_held_out(
     // Held-out ticks must never enter the training replay observation stream.
     let saved_diagnostics = ctx.driving_diagnostics.take();
     let organism_taxi = ctx.organism.is_some();
-    let organism_saved = (ctx.organism.take(), ctx.taxi.take(), ctx.organism_feedback.take(), std::mem::take(&mut ctx.organism_samples), ctx.traffic.take(), std::mem::take(&mut ctx.traffic_samples));
+    let organism_saved = (
+        ctx.organism.take(),
+        ctx.taxi.take(),
+        ctx.organism_feedback.take(),
+        std::mem::take(&mut ctx.organism_samples),
+        ctx.traffic.take(),
+        std::mem::take(&mut ctx.traffic_samples),
+    );
     let mut world_ho = VoxelWorld::new(held_out_seed, track_width);
     let held_city = organism_taxi.then(|| universe::organism_city::build_city(&mut world_ho));
     let held_stations = if organism_taxi {
         let stations = held_city.as_ref().unwrap().stations.clone();
-        universe::organism_scenario::validate_city(&world_ho, &stations).expect("held-out taxi topology");
+        universe::organism_scenario::validate_city(&world_ho, &stations)
+            .expect("held-out taxi topology");
         stations
-    } else { Vec::new() };
+    } else {
+        Vec::new()
+    };
     // Troca a geometria na GPU (grade/fluxo/alturas/heightmap) sem recriar device
     // nem pipeline — ver `GpuCtx::reload_world`. Reseta o estado recorrente (CfC)
     // para que os seres cheguem na pista reservada sem memória da pista de treino
@@ -275,7 +290,9 @@ fn avaliar_held_out(
     ctx.reset_cfc(n_seres);
     for i in 0..n_seres {
         ctx.brain.reset_cfc(i);
-        if organism_taxi { ctx.brain.reset_lifetime(i); }
+        if organism_taxi {
+            ctx.brain.reset_lifetime(i);
+        }
     }
     // ── HOSTILE WORLD: suspended for the held-out run (BODY PHASE) ────────────
     //
@@ -339,7 +356,10 @@ fn avaliar_held_out(
     };
     // Held-out evaluation keeps the slot map fixed (rotation 0): it compares genomes
     // on one identical layout, and the layout itself is recorded by the manifest.
-    let city_spawns = organism_taxi.then(|| universe::organism_city::spawn_slots(&world_ho, &held_stations, n_seres).expect("held-out city spawn capacity"));
+    let city_spawns = organism_taxi.then(|| {
+        universe::organism_city::spawn_slots(&world_ho, &held_stations, n_seres)
+            .expect("held-out city spawn capacity")
+    });
     let mut states: Vec<BeingState> = (0..n_seres)
         .map(|i| {
             let (pos, fwd) = if let Some(spawns) = &city_spawns {
@@ -418,11 +438,26 @@ fn avaliar_held_out(
     // Tick de aquecimento — mesmo contrato do laço de treino (JIT/compilação
     // descartada, não entra na fitness).
     if organism_taxi {
-        ctx.start_organism(genomes, &held_stations, &held_city.as_ref().unwrap().traffic_lights(), n_seres, TaxiMode::Production).expect("held-out organism birth");
-        ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world_ho, &held_stations).expect("held-out road routes");
-        ctx.sample_organism(&mut states).expect("held-out initial state");
+        ctx.start_organism(
+            genomes,
+            &held_stations,
+            &held_city.as_ref().unwrap().traffic_lights(),
+            n_seres,
+            TaxiMode::Production,
+        )
+        .expect("held-out organism birth");
+        ctx.taxi
+            .as_mut()
+            .unwrap()
+            .configure_routes(&ctx.device, &world_ho, &held_stations)
+            .expect("held-out road routes");
+        ctx.sample_organism(&mut states)
+            .expect("held-out initial state");
     } else {
-        assert!(ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, kan_knots), "held-out warmup failed");
+        assert!(
+            ctx.tick(&mut states, n_seres, 1.0 / 64.0, 0, kan_knots),
+            "held-out warmup failed"
+        );
     }
 
     let dt = 1.0_f32 / 64.0;
@@ -431,7 +466,9 @@ fn avaliar_held_out(
         if !ctx.tick(&mut states, n_seres, dt, tick_i + 1, kan_knots) {
             panic!("held-out failed at tick {tick_i}; partial results are invalid");
         }
-        if organism_taxi { continue; }
+        if organism_taxi {
+            continue;
+        }
         // `ctx.tick()` já decrementa `life_left`/incrementa `ticks_alive` por conta
         // própria (mesmo caminho usado no treino) — este laço só ACUMULA fitness,
         // não mexe em vida.
@@ -537,8 +574,13 @@ fn avaliar_held_out(
     };
 
     if organism_taxi {
-        ctx.sample_organism(&mut states).expect("held-out final state");
-        fitness_ho = ctx.organism_samples.iter().map(universe::organism_scenario::fitness).collect();
+        ctx.sample_organism(&mut states)
+            .expect("held-out final state");
+        fitness_ho = ctx
+            .organism_samples
+            .iter()
+            .map(universe::organism_scenario::fitness)
+            .collect();
     }
     ctx.organism = organism_saved.0;
     ctx.taxi = organism_saved.1;
@@ -796,7 +838,22 @@ fn resolve_world(
 }
 
 fn main() {
-    // Production body defaults. The automatic gearbox is limited to third gear until
+    // This read-only query must stay before GPU/scene setup so experiment tools
+    // can reject a stale executable without allocating a simulation device.
+    if std::env::args().nth(1).as_deref() == Some("--build-provenance") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version":1,
+                "source_sha256":option_env!("UNIVERSE_SOURCE_SHA256").unwrap_or("unknown"),
+                "git_commit":env!("UNIVERSE_GIT_COMMIT"),
+                "git_dirty":env!("UNIVERSE_GIT_DIRTY")
+            })
+        );
+        return;
+    }
+    // Production body defaults. Raw code3 is SECOND forward gear (0=R,1=N).
+    // The automatic gearbox is limited to second gear until
     // the curriculum proves that perception/control can safely use a higher ceiling.
     CAMBIO_MODO.store(1, Ordering::Relaxed);
     CAMBIO_TETO.store(3, Ordering::Relaxed);
@@ -961,6 +1018,18 @@ fn main() {
     let mut school_bench = true;
     // Stop-score shaping (docs/SCHOOL-STOP-SHAPING-20260922.md); off by default.
     let mut school_stop_shaping = false;
+    let mut school_service_legacy = false;
+    let mut research_start_distance = None;
+    let mut research_service_course: Option<f32> = None;
+    let mut school_cross_city = false;
+    let mut research_distance_stages: Vec<Option<research_contract::StartDistanceMetres>> =
+        Vec::new();
+    let mut research_linear = false;
+    let mut research_city_family = None;
+    let mut research_city_seed: Option<u64> = None;
+    let mut research_body: Option<String> = None;
+    let mut research_retention: usize = 0;
+    let mut research_mutation = universe::gpu::evolution::MutationProfile::legacy();
     let mut school_stop_envelope = false;
     // `Some` only when the flag was given; the default clamp lives in the library.
     let mut school_stop_envelope_clamp_m: Option<f32> = None;
@@ -1047,6 +1116,7 @@ fn main() {
     // memory could know that perception does not already deliver. Shortening the
     // horizon is what puts information beyond it.
     let mut road_view_range_m: Option<f32> = None;
+    let mut retina_centered_grid = false;
     let mut retina_range_m: f32 = universe::visao::ALCANCE_PADRAO;
     let mut portal_curva = false;
     let mut slow_steer_auth: f32 = 0.20;
@@ -1146,6 +1216,117 @@ fn main() {
                 "--driving-diagnostics" => {
                     driving_diagnostics_on = true;
                 }
+                "--school-start-curriculum" => {
+                    i += 1;
+                    research_distance_stages = args
+                        .get(i)
+                        .ok_or_else(|| "missing curriculum".to_owned())
+                        .and_then(|v| research_contract::parse_curriculum(v))
+                        .unwrap_or_else(|e| {
+                            eprintln!("ERROR: {e}");
+                            std::process::exit(2)
+                        });
+                }
+                "--school-service-course" => {
+                    i += 1;
+                    research_service_course = Some(args.get(i).and_then(|v| v.parse::<f32>().ok())
+                        .filter(|v| v.is_finite() && (12.0..=96.0).contains(v) && (*v / 3.0).fract() == 0.0)
+                        .unwrap_or_else(|| {eprintln!("--school-service-course requires a whole number of 3m cells in 12..=96 metres"); std::process::exit(2)}));
+                }
+                "--school-cross-city" => {
+                    school_cross_city = true;
+                }
+                "--school-start-distance-m" => {
+                    i += 1;
+                    research_start_distance = Some(
+                        args.get(i)
+                            .ok_or_else(|| "missing start distance".to_owned())
+                            .and_then(|v| research_contract::StartDistanceMetres::parse(v))
+                            .unwrap_or_else(|e| {
+                                eprintln!("ERROR: {e}");
+                                std::process::exit(2)
+                            }),
+                    );
+                }
+                "--city-family" => {
+                    i += 1;
+                    research_city_family = Some(
+                        args.get(i)
+                            .and_then(|v| universe::organism_city::CityFamily::parse(v))
+                            .unwrap_or_else(|| {
+                                eprintln!("--city-family requires grid, compact or wide");
+                                std::process::exit(2)
+                            }),
+                    );
+                }
+                "--city-lane-rule" => {
+                    i += 1;
+                    match args.get(i).and_then(|v| universe::organism_city::LaneRule::parse(v)) {
+                        Some(rule) => universe::organism_city::set_lane_rule(rule),
+                        None => {
+                            eprintln!("--city-lane-rule requires legacy or consistent");
+                            std::process::exit(2)
+                        }
+                    }
+                }
+                "--city-seed" => {
+                    i += 1;
+                    research_city_seed = Some(
+                        args.get(i)
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .unwrap_or_else(|| {
+                                eprintln!("--city-seed requires an explicit u64 environment seed");
+                                std::process::exit(2)
+                            }),
+                    );
+                }
+                "--research-body" => {
+                    i += 1;
+                    research_body = Some(
+                        args.get(i)
+                            .filter(|v| matches!(v.as_str(), "fixed" | "random" | "evolved"))
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                eprintln!("--research-body requires fixed, random or evolved");
+                                std::process::exit(2)
+                            }),
+                    );
+                }
+                "--research-controller" => {
+                    i += 1;
+                    research_linear = match args.get(i).map(String::as_str) {
+                        Some("native") => false,
+                        Some("linear") => true,
+                        _ => {
+                            eprintln!("--research-controller requires native or linear");
+                            std::process::exit(2)
+                        }
+                    };
+                }
+                "--mutation-profile" => {
+                    i += 1;
+                    research_mutation = args
+                        .get(i)
+                        .and_then(|v| universe::gpu::evolution::MutationProfile::parse(v).ok())
+                        .unwrap_or_else(|| {
+                            eprintln!("--mutation-profile requires legacy or head-only");
+                            std::process::exit(2)
+                        });
+                }
+                "--school-retain-skills" => {
+                    i += 1;
+                    research_retention = args
+                        .get(i)
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|v| (1..=16).contains(v))
+                        .unwrap_or_else(|| {
+                            eprintln!("--school-retain-skills requires 1..=16 slots");
+                            std::process::exit(2)
+                        });
+                }
+                "--school-service-legacy" => {
+                    school_service_legacy = true;
+                }
                 "--school-stop-shaping" => {
                     school_stop_shaping = true;
                 }
@@ -1154,10 +1335,17 @@ fn main() {
                 }
                 "--school-stop-shaping-ref-mps" => {
                     i += 1;
-                    school_stop_shaping_ref_mps = Some(args.get(i).and_then(|a| a.parse::<f32>().ok()).filter(|v| *v > 0.0).unwrap_or_else(|| {
-                        eprintln!("--school-stop-shaping-ref-mps requires a positive speed in m/s");
-                        std::process::exit(2);
-                    }));
+                    school_stop_shaping_ref_mps = Some(
+                        args.get(i)
+                            .and_then(|a| a.parse::<f32>().ok())
+                            .filter(|v| *v > 0.0)
+                            .unwrap_or_else(|| {
+                                eprintln!(
+                                    "--school-stop-shaping-ref-mps requires a positive speed in m/s"
+                                );
+                                std::process::exit(2);
+                            }),
+                    );
                 }
                 "--school-stop-zone-entry-min-mps" => {
                     i += 1;
@@ -1182,27 +1370,53 @@ fn main() {
                 }
                 "--school-select" => {
                     i += 1;
-                    school_select = args.get(i).and_then(|a| school_batch::SchoolSelection::parse(a)).unwrap_or_else(|| {
-                        eprintln!("--school-select requires mean or worst");
-                        std::process::exit(2);
-                    });
+                    school_select = args
+                        .get(i)
+                        .and_then(|a| school_batch::SchoolSelection::parse(a))
+                        .unwrap_or_else(|| {
+                            eprintln!("--school-select requires mean or worst");
+                            std::process::exit(2);
+                        });
                 }
                 "--school-start-pool" => {
                     i += 1;
-                    school_start_pool = args.get(i).and_then(|a| a.parse().ok()).filter(|n| *n > 0).unwrap_or_else(|| {
-                        eprintln!("--school-start-pool requires a positive candidate count");
-                        std::process::exit(2);
-                    });
+                    school_start_pool = args
+                        .get(i)
+                        .and_then(|a| a.parse().ok())
+                        .filter(|n| *n > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!("--school-start-pool requires a positive candidate count");
+                            std::process::exit(2);
+                        });
+                }
+                "--organism-legacy-tire-frame" => {
+                    statics::ORGANISM_LEGACY_TIRE_FRAME
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                "--organism-powertrain-v2" => {
+                    statics::ORGANISM_POWERTRAIN_V2
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                "--organism-stable-wheels" => {
+                    statics::ORGANISM_STABLE_WHEELS
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 "--organism-legacy-pedals" => {
-                    statics::ORGANISM_LEGACY_PEDALS.store(true, std::sync::atomic::Ordering::Relaxed);
+                    statics::ORGANISM_LEGACY_PEDALS
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                "--organism-brake-priority" => {
+                    statics::ORGANISM_BRAKE_PRIORITY.store(true, Ordering::Relaxed);
                 }
                 "--organism-signed-brake" => {
-                    statics::ORGANISM_SIGNED_BRAKE.store(true, std::sync::atomic::Ordering::Relaxed);
+                    statics::ORGANISM_SIGNED_BRAKE
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 "--school-shared-start" => {
                     i += 1;
-                    school_shared_start = args.get(i).and_then(|a| universe::organism_school::SharedStart::parse(a));
+                    school_shared_start = args
+                        .get(i)
+                        .and_then(|a| universe::organism_school::SharedStart::parse(a));
                     if school_shared_start.is_none() {
                         eprintln!("--school-shared-start requires rotate or fixed");
                         std::process::exit(2);
@@ -1701,7 +1915,12 @@ fn main() {
                     i += 1;
                     school_lessons = args
                         .get(i)
-                        .map(|list| list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+                        .map(|list| {
+                            list.split(',')
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .collect::<Vec<_>>()
+                        })
                         .unwrap_or_default()
                         .iter()
                         .map(|name| {
@@ -1718,24 +1937,37 @@ fn main() {
                 }
                 "--school-advance-p" => {
                     i += 1;
-                    school_advance_p = args.get(i).and_then(|a| a.parse().ok()).filter(|p: &f64| (0.0..=1.0).contains(p)).unwrap_or_else(|| {
-                        eprintln!("--school-advance-p requires a probability in 0..=1");
-                        std::process::exit(2);
-                    });
+                    school_advance_p = args
+                        .get(i)
+                        .and_then(|a| a.parse().ok())
+                        .filter(|p: &f64| (0.0..=1.0).contains(p))
+                        .unwrap_or_else(|| {
+                            eprintln!("--school-advance-p requires a probability in 0..=1");
+                            std::process::exit(2);
+                        });
                 }
                 "--school-advance-gens" => {
                     i += 1;
-                    school_advance_gens = args.get(i).and_then(|a| a.parse().ok()).filter(|g| *g > 0).unwrap_or_else(|| {
-                        eprintln!("--school-advance-gens requires a positive generation count");
-                        std::process::exit(2);
-                    });
+                    school_advance_gens = args
+                        .get(i)
+                        .and_then(|a| a.parse().ok())
+                        .filter(|g| *g > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!("--school-advance-gens requires a positive generation count");
+                            std::process::exit(2);
+                        });
                 }
                 "--school-start-fold" => {
                     i += 1;
-                    school_start_fold = args.get(i).and_then(|a| universe::organism_school::LessonFold::parse(a)).unwrap_or_else(|| {
-                        eprintln!("--school-start-fold requires all, train, validation or test");
-                        std::process::exit(2);
-                    });
+                    school_start_fold = args
+                        .get(i)
+                        .and_then(|a| universe::organism_school::LessonFold::parse(a))
+                        .unwrap_or_else(|| {
+                            eprintln!(
+                                "--school-start-fold requires all, train, validation or test"
+                            );
+                            std::process::exit(2);
+                        });
                 }
                 "--feedback-mode" => {
                     i += 1;
@@ -1751,17 +1983,23 @@ fn main() {
                 }
                 "--plasticity-freeze-after" => {
                     i += 1;
-                    plasticity_freeze_after = Some(args.get(i).and_then(|a| a.parse().ok()).unwrap_or_else(|| {
-                        eprintln!("--plasticity-freeze-after requires a tick index");
-                        std::process::exit(2);
-                    }));
+                    plasticity_freeze_after =
+                        Some(args.get(i).and_then(|a| a.parse().ok()).unwrap_or_else(|| {
+                            eprintln!("--plasticity-freeze-after requires a tick index");
+                            std::process::exit(2);
+                        }));
                 }
                 "--school-horizon" => {
                     i += 1;
-                    school_horizon = Some(args.get(i).and_then(|a| a.parse().ok()).filter(|h| *h > 0).unwrap_or_else(|| {
-                        eprintln!("--school-horizon requires a positive tick count");
-                        std::process::exit(2);
-                    }));
+                    school_horizon = Some(
+                        args.get(i)
+                            .and_then(|a| a.parse().ok())
+                            .filter(|h| *h > 0)
+                            .unwrap_or_else(|| {
+                                eprintln!("--school-horizon requires a positive tick count");
+                                std::process::exit(2);
+                            }),
+                    );
                 }
                 "--school-eval-starts" => {
                     i += 1;
@@ -1779,8 +2017,10 @@ fn main() {
                     navigation_observation = match args.get(i).map(String::as_str) {
                         Some("v2") => 2,
                         Some("v3") => 3,
+                        Some("v4") => 4,
+                        Some("v5") => 5,
                         _ => {
-                            eprintln!("--navigation-observation requires v2 or v3");
+                            eprintln!("--navigation-observation requires v2, v3, v4 or v5");
                             std::process::exit(2);
                         }
                     };
@@ -2111,6 +2351,9 @@ fn main() {
                 // Perceptual horizon, metres. A value <= 0 (or unparseable) keeps the
                 // default rather than blinding the run: `visao::pitch_at` would clamp a
                 // zero to 1 m anyway, and a silent 1 m retina is not a control arm.
+                "--retina-centered-grid" => {
+                    retina_centered_grid = true;
+                }
                 "--retina-road-view" => {
                     i += 1;
                     let value = args
@@ -2819,12 +3062,24 @@ fn main() {
             "fully random motor pathways (control arm)"
         }
     );
-    if taxi_reference_witness && (!organism_taxi || n_gens != 1 || n_seres != 1 || ecology_on || resume_state.is_some() || snapshot_every > 0 || !driving_diagnostics_on) {
-        eprintln!("--taxi-reference-witness requires organism-taxi-v1, one being, one generation, --driving-diagnostics, no ecology/resume/snapshots; never an evolution arm");
+    if taxi_reference_witness
+        && (!organism_taxi
+            || n_gens != 1
+            || n_seres != 1
+            || ecology_on
+            || resume_state.is_some()
+            || snapshot_every > 0
+            || !driving_diagnostics_on)
+    {
+        eprintln!(
+            "--taxi-reference-witness requires organism-taxi-v1, one being, one generation, --driving-diagnostics, no ecology/resume/snapshots; never an evolution arm"
+        );
         std::process::exit(2);
     }
     if school_lesson.is_some() && (!organism_taxi || ecology_on || resume_state.is_some()) {
-        eprintln!("--school requires --scenario organism-taxi-v1 and no ecology or --resume-state (population --resume is allowed)");
+        eprintln!(
+            "--school requires --scenario organism-taxi-v1 and no ecology or --resume-state (population --resume is allowed)"
+        );
         std::process::exit(2);
     }
     if school_curriculum.is_some() {
@@ -2842,11 +3097,26 @@ fn main() {
         std::process::exit(2);
     }
     if school_curriculum.is_some() && (!organism_taxi || ecology_on || resume_state.is_some()) {
-        eprintln!("--school-curriculum requires --scenario organism-taxi-v1 and no ecology or --resume-state (population --resume is allowed)");
+        eprintln!(
+            "--school-curriculum requires --scenario organism-taxi-v1 and no ecology or --resume-state (population --resume is allowed)"
+        );
         std::process::exit(2);
     }
     if school_start_fold != universe::organism_school::LessonFold::All && school_lesson.is_none() {
         eprintln!("--school-start-fold requires --school or --school-curriculum");
+        std::process::exit(2);
+    }
+    if school_service_legacy && school_lesson.is_none() {
+        eprintln!("--school-service-legacy requires a school lesson or curriculum");
+        std::process::exit(2);
+    }
+    if !school_service_legacy
+        && school_curriculum == Some("adaptive")
+        && school_shared_start.is_some()
+    {
+        eprintln!(
+            "adaptive coverage requires --school-eval-starts and a start pool, not --school-shared-start"
+        );
         std::process::exit(2);
     }
     if school_stop_shaping && school_lesson.is_none() {
@@ -2879,12 +3149,42 @@ fn main() {
         eprintln!("--school-start-pool must be >= --school-eval-starts");
         std::process::exit(2);
     }
+    if statics::organism_legacy_tire_frame() && !organism_taxi {
+        eprintln!("--organism-legacy-tire-frame requires the organism-taxi-v1 scenario");
+        std::process::exit(2);
+    }
+    if statics::organism_powertrain_v2()
+        && (!organism_taxi
+            || research_linear
+            || taxi_reference_witness
+            || fly_brain()
+            || fly_spiking())
+    {
+        eprintln!(
+            "--organism-powertrain-v2 requires the native organism-taxi-v1 controller (10 active intents)"
+        );
+        std::process::exit(2);
+    }
+    if statics::organism_stable_wheels()
+        && (!organism_taxi || statics::organism_legacy_tire_frame())
+    {
+        eprintln!(
+            "--organism-stable-wheels requires organism-taxi-v1 with the corrected tire frame"
+        );
+        std::process::exit(2);
+    }
     if statics::organism_legacy_pedals() && !organism_taxi {
         eprintln!("--organism-legacy-pedals requires the organism-taxi-v1 scenario");
         std::process::exit(2);
     }
     if statics::organism_signed_brake() && !organism_taxi {
         eprintln!("--organism-signed-brake requires the organism-taxi-v1 scenario");
+        std::process::exit(2);
+    }
+    if statics::organism_brake_priority()
+        && (!organism_taxi || statics::organism_legacy_pedals() || statics::organism_signed_brake() || taxi_reference_witness)
+    {
+        eprintln!("--organism-brake-priority requires native taxi exclusive unsigned pedals; no witness");
         std::process::exit(2);
     }
     if statics::organism_signed_brake() && statics::organism_legacy_pedals() {
@@ -2895,10 +3195,15 @@ fn main() {
     let provenance = serde_json::json!({
         "git_commit": option_env!("UNIVERSE_GIT_COMMIT").unwrap_or("unknown"),
         "git_dirty": option_env!("UNIVERSE_GIT_DIRTY").unwrap_or("unknown"),
+        "source_sha256": option_env!("UNIVERSE_SOURCE_SHA256").unwrap_or("unknown"),
         "argv": std::env::args().collect::<Vec<_>>(),
         "seed": pop_seed,
         "legacy_pedals": statics::organism_legacy_pedals(),
+        "legacy_tire_frame": statics::organism_legacy_tire_frame(),
+        "powertrain_v2": statics::organism_powertrain_v2(),
+        "stable_wheels": statics::organism_stable_wheels(),
         "signed_brake": statics::organism_signed_brake(),
+        "brake_priority": statics::organism_brake_priority(),
     });
     if school_stop_envelope && school_lesson.is_none() {
         eprintln!("--school-stop-envelope requires --school or --school-curriculum");
@@ -2917,11 +3222,15 @@ fn main() {
         std::process::exit(2);
     }
     if school_eval_starts > 1 && school_shared_start.is_some() {
-        eprintln!("--school-eval-starts greater than 1 conflicts with --school-shared-start; a batch must contain distinct starts");
+        eprintln!(
+            "--school-eval-starts greater than 1 conflicts with --school-shared-start; a batch must contain distinct starts"
+        );
         std::process::exit(2);
     }
     if school_eval_starts > 1 && !school_bench {
-        eprintln!("--school-eval-starts greater than 1 requires --school-mode bench so the aggregate has one declared objective");
+        eprintln!(
+            "--school-eval-starts greater than 1 requires --school-mode bench so the aggregate has one declared objective"
+        );
         std::process::exit(2);
     }
     if let Some(freeze_at) = plasticity_freeze_after {
@@ -2934,25 +3243,45 @@ fn main() {
             std::process::exit(2);
         }
     }
+    // v4 distance fields are station-indexed. Motor lessons publish arbitrary
+    // subgoals, which v4 would silently overwrite with the missing-route vector.
+    if matches!(navigation_observation, 4 | 5)
+        && (school_lesson.is_some_and(|lesson| !lesson.is_service())
+            || school_lessons.iter().any(|lesson| !lesson.is_service()))
+    {
+        eprintln!(
+            "navigation v4/v5 requires station-based service lessons; use --navigation-observation v3 for motor lessons and the full school curriculum"
+        );
+        std::process::exit(2);
+    }
     let school_contract = universe::gpu::school::LessonContract::default();
     let school_horizon_ticks = school_horizon.unwrap_or(n_ticks as u32);
     if school_lesson.is_some() && school_horizon_ticks as usize > n_ticks {
-        eprintln!("--school-horizon {} exceeds --ticks {n_ticks}", school_horizon_ticks);
+        eprintln!(
+            "--school-horizon {} exceeds --ticks {n_ticks}",
+            school_horizon_ticks
+        );
         std::process::exit(2);
     }
     let genome_count = n_seres;
     if school_eval_starts > 1 {
-        n_seres = genome_count.checked_mul(school_eval_starts).unwrap_or_else(|| {
-            eprintln!("school replica population overflows usize");
-            std::process::exit(2);
-        });
+        n_seres = genome_count
+            .checked_mul(school_eval_starts)
+            .unwrap_or_else(|| {
+                eprintln!("school replica population overflows usize");
+                std::process::exit(2);
+            });
         println!(
             "  [school-batch] {genome_count} genomes × {school_eval_starts} starts = {n_seres} GPU slots"
         );
     }
-    if organism_taxi && !args.iter().any(|a| a == "--ecology-min-progress") { ecology_progress = 1.0; }
+    if organism_taxi && !args.iter().any(|a| a == "--ecology-min-progress") {
+        ecology_progress = 1.0;
+    }
     if organism_taxi && ecology_on && n_gens != 1 {
-        eprintln!("ERROR continuous organism ecology requires --gens 1; use --ticks for the lifetime horizon");
+        eprintln!(
+            "ERROR continuous organism ecology requires --gens 1; use --ticks for the lifetime horizon"
+        );
         std::process::exit(2);
     }
     if (snapshot_every > 0 || resume_state.is_some()) && !organism_taxi {
@@ -3112,6 +3441,164 @@ fn main() {
         }
     }
 
+    if !research_distance_stages.is_empty() {
+        if research_start_distance.is_some()
+            || school_shared_start.is_some()
+            || retomar
+            || resume_state.is_some()
+        {
+            eprintln!(
+                "distance curriculum requires a fresh run, distinct starts and no fixed-distance override"
+            );
+            std::process::exit(2);
+        }
+        research_start_distance = research_distance_stages[0];
+    }
+    if research_service_course.is_some()
+        && (!organism_taxi
+            || !school_bench
+            || school_service_legacy
+            || school_lesson != Some(universe::gpu::school::Lesson::Delivery)
+            || school_curriculum.is_some()
+            || research_start_distance.is_some()
+            || !research_distance_stages.is_empty()
+            || school_shared_start.is_some()
+            || school_start_fold != universe::organism_school::LessonFold::All
+            || ecology_on
+            || resume_state.is_some()
+            || research_city_family.is_some()
+            || !pistas.is_empty()
+            || !mundos.is_empty()
+            || trocar_ao_completar != 0
+            || pista_held_out.is_some())
+    {
+        eprintln!(
+            "short full-service course requires taxi delivery service-v2 bench, all course starts, fixed city, no prepared dropoff/lesson curriculum/ecology/runtime resume"
+        );
+        std::process::exit(2);
+    }
+    if school_cross_city
+        && (research_service_course.is_some()
+            || research_start_distance.is_some()
+            || !organism_taxi
+            || !school_bench
+            || school_service_legacy
+            || school_lesson != Some(universe::gpu::school::Lesson::Delivery)
+            || school_curriculum.is_some()
+            || !matches!(navigation_observation, 4 | 5)
+            || school_shared_start.is_some()
+            || school_start_fold != universe::organism_school::LessonFold::All
+            || ecology_on
+            || resume_state.is_some()
+            || school_eval_starts != 4
+            || research_city_family.is_some()
+            || !pistas.is_empty()
+            || !mundos.is_empty()
+            || trocar_ao_completar != 0
+            || pista_held_out.is_some())
+    {
+        eprintln!(
+            "cross-city course requires exactly four service-v2 bench delivery starts, navigation v4/v5, fixed city, no short/prepared/curriculum/resume flags"
+        );
+        std::process::exit(2);
+    }
+    let research_head_only =
+        research_mutation.scope() == universe::gpu::evolution::MutationScope::ServiceHeadOnly;
+    if research_head_only
+        && (!organism_taxi
+            || research_linear
+            || ecology_on
+            || evolving_body
+            || research_body.as_deref() != Some("fixed")
+            || lifetime_flags != 0
+            || evolve_learning)
+    {
+        eprintln!(
+            "head-only mutation requires native episodic taxi with fixed body and no lifetime learning; it freezes every other genome block"
+        );
+        std::process::exit(2);
+    }
+    if research_city_family.is_some() != research_city_seed.is_some()
+        || research_city_family.is_some()
+            && (!organism_taxi
+                || pista_held_out.is_some()
+                || !pistas.is_empty()
+                || !mundos.is_empty()
+                || trocar_ao_completar != 0)
+    {
+        eprintln!(
+            "city variants require taxi, both --city-family and --city-seed, and external frozen-policy evaluation instead of legacy track-held-out"
+        );
+        std::process::exit(2);
+    }
+    if research_body.is_some() {
+        if !organism_taxi || ecology_on || resume_state.is_some() {
+            eprintln!("body comparison requires episodic taxi, no ecology or runtime resume");
+            std::process::exit(2);
+        }
+        evolving_body = research_body.as_deref() != Some("fixed");
+    }
+    if research_start_distance.is_some()
+        && (!organism_taxi
+            || !school_bench
+            || school_service_legacy
+            || school_curriculum.is_some()
+            || !matches!(
+                school_lesson,
+                Some(
+                    universe::gpu::school::Lesson::Pickup | universe::gpu::school::Lesson::Delivery
+                )
+            ))
+    {
+        eprintln!("prepared starts require a fixed pickup/delivery service-v2 bench");
+        std::process::exit(2);
+    }
+    if research_retention > 0
+        && (escada_on
+            || school_eval_starts < 2
+            || research_head_only
+            || research_body.as_deref() == Some("random")
+            || !organism_taxi
+            || school_lesson.is_none() && school_curriculum.is_none()
+            || !school_bench
+            || retomar
+            || resume_state.is_some()
+            || research_retention + evo_n_elite >= n_seres / school_eval_starts)
+    {
+        eprintln!(
+            "skill retention requires K>=2 common starts, no head-only/random-body, fresh school bench and free offspring slots"
+        );
+        std::process::exit(2);
+    }
+    if research_linear
+        && (mascara_regioes
+            || motor_head_mode != 0
+            || !SLOW_ABLATED.load(Ordering::Relaxed)
+            || !organism_taxi
+            || brain_control_direct
+            || fly_brain()
+            || fly_spiking()
+            || lifetime_flags != 0
+            || hippocampus_on()
+            || observar_path.is_some()
+            || driving_diagnostics_on
+            || ablation_plan.is_some()
+            || ativacao_on
+            || taxi_reference_witness
+            || piloto != 0.0
+            || piloto_thr != 0.0
+            || piloto_sensor != 0.0
+            || piloto_formula_path.is_some()
+            || piloto_forja_path.is_some()
+            || steer_fixo != 0.0
+            || steer_escala != 0.0
+            || thr_fixo != 0.0)
+    {
+        eprintln!(
+            "linear controller requires --no-region-mask, --no-slow and native taxi buffers, no lifetime/hip/fly/ablation or native neural trace; use replay and school metrics"
+        );
+        std::process::exit(2);
+    }
     // ── Mundo ─────────────────────────────────────────────────────────────────
     // Seed = a pista de TREINO da primeira geração que este processo vai rodar
     // (`gen_offset` != 0 ao retomar). Sem `--pistas` (lista vazia), `pista_da_gen`
@@ -3126,26 +3613,70 @@ fn main() {
     } else {
         resolve_world(&pistas, &mundos, gen_offset, track_width)
     };
-    let mut organism_city = organism_taxi.then(|| universe::organism_city::build_city(&mut world));
+    let mut organism_city = organism_taxi.then(|| match research_city_family {
+        Some(family) => universe::organism_city::build_city_variant(
+            &mut world,
+            research_city_seed.unwrap(),
+            family,
+        )
+        .expect("city variant contract"),
+        None => universe::organism_city::build_city(&mut world),
+    });
     let mut organism_stations = if organism_taxi {
         let stations = organism_city.as_ref().unwrap().stations.clone();
         universe::organism_scenario::validate_city(&world, &stations).expect("invalid taxi city");
+        if research_city_family.is_some() {
+            universe::organism_city::validate_city_postconditions(
+                &world,
+                organism_city.as_ref().unwrap(),
+                n_seres,
+            )
+            .expect("city geometry postconditions");
+        }
         stations
     } else {
         Vec::new()
     };
+    let service_course = if school_cross_city {
+        Some(
+            cross_city_course::build(&world, &organism_stations).unwrap_or_else(|e| {
+                eprintln!("ERROR: {e}");
+                std::process::exit(2)
+            }),
+        )
+    } else {
+        research_service_course.map(|distance| {
+            service_course::build(&world, distance).unwrap_or_else(|e| {
+                eprintln!("ERROR: {e}");
+                std::process::exit(2)
+            })
+        })
+    };
+    if let Some(course) = &service_course {
+        organism_stations = course.stations.clone();
+        universe::organism_scenario::validate_city(&world, &organism_stations)
+            .expect("service course roads and stations");
+    }
     let mut lap_dist = world.lap_distance as f64;
     if organism_taxi {
         println!(
             "city: {}×{} cells · {} road-axis waypoints · {} stations [{:.0}ms] · seed={}",
-            world.size, world.size, world.waypoints_world.len(), organism_stations.len(),
-            t0.elapsed().as_secs_f64() * 1000.0, world_seed_atual
+            world.size,
+            world.size,
+            world.waypoints_world.len(),
+            organism_stations.len(),
+            t0.elapsed().as_secs_f64() * 1000.0,
+            world_seed_atual
         );
     } else {
         println!(
             "mundo: {}×{} · {} wp · volta={:.0}m  [{:.0}ms] · pista inicial seed={}",
-            world.size, world.size, world.waypoints_world.len(), lap_dist,
-            t0.elapsed().as_secs_f64() * 1000.0, world_seed_atual
+            world.size,
+            world.size,
+            world.waypoints_world.len(),
+            lap_dist,
+            t0.elapsed().as_secs_f64() * 1000.0,
+            world_seed_atual
         );
     }
     // ── Perceptual horizon (`--retina-range`) ─────────────────────────────────
@@ -3157,6 +3688,18 @@ fn main() {
     // horizon you cannot read off the log is an unlabelled experiment. The four sensor
     // numbers on the line are the BIRTH values (`SENSOR_DEFAULTS`) after scaling; under
     // `--evolving-sensors` each being carries its own, scaled by the same factor.
+    if retina_centered_grid && road_view_range_m.is_some() {
+        eprintln!(
+            "--retina-centered-grid and --retina-road-view are separate geometry profiles; select one"
+        );
+        std::process::exit(2);
+    }
+    if retina_centered_grid {
+        universe::visao::set_centered_legacy_grid();
+        println!(
+            "   [retina-centered-grid] legacy-centered-grid-v1; inherited pitch/range encoding retained"
+        );
+    }
     if let Some(range) = road_view_range_m {
         universe::visao::set_road_view(range).expect("validated road-view range");
         println!(
@@ -3321,7 +3864,11 @@ fn main() {
     let schema = universe::brain_interface::OBSERVATION_SCHEMA_V1;
     println!(
         "  [brain-interface] model={} mode={} retina={} wave={} motor_channels=3",
-        selected_brain.name(),
+        if research_linear {
+            "linear-wave-v2"
+        } else {
+            selected_brain.name()
+        },
         if brain_control_direct {
             "direct"
         } else {
@@ -3697,6 +4244,7 @@ fn main() {
         // at 1.0 through most long episodes and hid the organism's real remaining life.
         LIFE_CAP_TICKS.store(n_ticks.max(1) as i64, Ordering::Relaxed);
     }
+    ctx.brain.linear_wave = research_linear;
     ctx.brain.out_beta = out_beta;
     ctx.brain.out_gain = ganho_saida;
     ctx.brain.norm_l2_by_std = norm_l2_por_desvio;
@@ -3721,6 +4269,7 @@ fn main() {
                 vision_being,
                 vision_every,
                 organism_taxi,
+                taxi_reference_witness,
                 ablation_plan.as_ref(),
             )
             .unwrap_or_else(|error| {
@@ -4009,23 +4558,49 @@ fn main() {
     while arg_index < args.len() {
         if ["--out", "--resume-state", "--snapshot-every"].contains(&args[arg_index].as_str()) {
             arg_index += 2;
-        } else { checkpoint_args.push(args[arg_index].clone()); arg_index += 1; }
+        } else {
+            checkpoint_args.push(args[arg_index].clone());
+            arg_index += 1;
+        }
     }
     use sha2::{Digest, Sha256};
-    let mut model_hash = Sha256::new();
-    for source in [include_bytes!("main.rs").as_slice(), include_bytes!("context.rs").as_slice(),
-        include_bytes!("../../gpu/organism.wgsl").as_slice(), include_bytes!("../../gpu/organism.rs").as_slice(),
-        include_bytes!("../../gpu/taxi.wgsl").as_slice(), include_bytes!("../../gpu/brain.wgsl").as_slice(),
-        include_bytes!("../../gpu/physics_a.wgsl").as_slice(), include_bytes!("../../gpu/physics_b.wgsl").as_slice(),
-        include_bytes!("../../gpu/physics_c.wgsl").as_slice(), include_bytes!("../../gpu/organism_reproduction.wgsl").as_slice()] { model_hash.update(source); }
+    // Hash the actual executable, not an incomplete source allowlist. Use the
+    // optimized system utility: hashing a debug binary in debug Rust was costly.
+    let executable = std::env::current_exe().expect("running executable identity");
+    let hash_output = std::process::Command::new("sha256sum")
+        .arg(&executable)
+        .output()
+        .expect("sha256sum is required for executable provenance");
+    assert!(
+        hash_output.status.success(),
+        "cannot hash running executable"
+    );
+    let implementation_sha256 = String::from_utf8(hash_output.stdout)
+        .expect("hash encoding")
+        .split_whitespace()
+        .next()
+        .expect("missing executable hash")
+        .to_owned();
+    assert!(
+        implementation_sha256.len() == 64
+            && implementation_sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid executable hash"
+    );
     let checkpoint_config = serde_json::json!({"scenario":"organism-taxi-v1", "arguments":checkpoint_args,
-        "beings":n_seres, "tick_rate":64,"implementation_sha256":format!("{:x}",model_hash.finalize())});
+        "beings":n_seres, "tick_rate":64,"implementation_identity":"executable-sha256-v1","implementation_sha256":implementation_sha256});
     if let Some(path) = resume_state.as_ref() {
-        if retomar { panic!("--resume-state and DNA --resume are distinct and mutually exclusive"); }
-        let (_, generation, saved_config) = organism_checkpoint::load_metadata(std::path::Path::new(path))
-            .expect("checkpoint manifest invalid");
-        assert_eq!(saved_config, checkpoint_config, "checkpoint configuration mismatch");
-        genomes = organism_checkpoint::load_genomes(std::path::Path::new(path)).expect("checkpoint DNA invalid");
+        if retomar {
+            panic!("--resume-state and DNA --resume are distinct and mutually exclusive");
+        }
+        let (_, generation, saved_config) =
+            organism_checkpoint::load_metadata(std::path::Path::new(path))
+                .expect("checkpoint manifest invalid");
+        assert_eq!(
+            saved_config, checkpoint_config,
+            "checkpoint configuration mismatch"
+        );
+        genomes = organism_checkpoint::load_genomes(std::path::Path::new(path))
+            .expect("checkpoint DNA invalid");
         assert_eq!(genomes.len(), n_seres, "checkpoint population mismatch");
         gen_offset = generation;
     }
@@ -4047,7 +4622,11 @@ fn main() {
         // 5 linhas lidas só quando o câmbio neural dá leitor ao intent[3]/[4];
         // travado/auto: 3 (throttle/steer/brake).
         l2_linhas_lidas: if organism_taxi {
-            9
+            if statics::organism_powertrain_v2() {
+                10
+            } else {
+                9
+            }
         } else if CAMBIO_MODO.load(Ordering::Relaxed) == 2 {
             5
         } else {
@@ -4120,27 +4699,61 @@ fn main() {
         None
     };
     // School curriculum state (Stage 3): the adaptive arm advances to the next lesson
-    // after `school_advance_gens` consecutive generations with p_hat >= school_advance_p;
+    // after `school_advance_gens` complete competent coverage windows (legacy: generations);
     // the uniform arm cycles the lesson list. Both see the same generation budget.
+    let mut research_distance_index = 0usize;
+    let mut research_distance_streak = 0usize;
     let mut school_lesson_index = 0usize;
     let mut school_streak = 0usize;
     let mut school_last_p_hat: Option<f64> = None;
+    let mut school_coverage = school_batch::CoverageWindow::default();
+    let mut skill_archive = (research_retention > 0)
+        .then(|| competence_archive::Archive::new(research_retention).expect("archive capacity"));
     for generation_idx in 0..n_gens {
         // gen_abs = número absoluto da geração (para relatório e arquivo de save).
         let gen_abs = gen_offset + generation_idx;
+        if !research_distance_stages.is_empty() {
+            if let Some(rate) = school_last_p_hat.take() {
+                research_distance_streak = if rate >= school_advance_p {
+                    research_distance_streak + 1
+                } else {
+                    0
+                };
+                if research_distance_streak >= school_advance_gens
+                    && research_distance_index + 1 < research_distance_stages.len()
+                {
+                    research_distance_index += 1;
+                    research_start_distance = research_distance_stages[research_distance_index];
+                    research_distance_streak = 0;
+                    school_coverage.clear();
+                }
+            }
+            println!(
+                "[start-curriculum] stage={research_distance_index} distance_m={:?} streak={research_distance_streak}",
+                research_start_distance.map(|d| d.get())
+            );
+        }
         if let Some(mode) = school_curriculum {
             let mut advanced = false;
             if mode == "adaptive" {
                 if let Some(p_hat) = school_last_p_hat.take() {
-                    if p_hat >= school_advance_p { school_streak += 1 } else { school_streak = 0 }
-                    if school_streak >= school_advance_gens && school_lesson_index + 1 < school_lessons.len() {
+                    if p_hat >= school_advance_p {
+                        school_streak += 1
+                    } else {
+                        school_streak = 0
+                    }
+                    if school_streak >= school_advance_gens
+                        && school_lesson_index + 1 < school_lessons.len()
+                    {
                         school_lesson_index += 1;
+                        school_coverage.clear();
                         school_streak = 0;
                         advanced = true;
                     }
                 }
             } else {
                 school_lesson_index = generation_idx % school_lessons.len();
+                school_coverage.clear();
             }
             school_lesson = Some(school_lessons[school_lesson_index]);
             println!(
@@ -4149,9 +4762,18 @@ fn main() {
                 school_lessons.len()
             );
         }
+        if let Some(mode) = research_body.as_deref() {
+            body_evolution::apply_research_control(
+                &mut genomes,
+                school_eval_starts,
+                mode,
+                gen_abs,
+                pop_seed,
+            );
+        }
         let genome_diversity = genome_diagnostics::measure(&genomes);
         println!(
-            "  [genome] fast hashes {}/{} · RMS(slot0) {:.6} | brake-row hashes {}/{} · RMS(slot0) {:.6}",
+            "  [genome] fast hashes {}/{} · mean RMS delta from slot0 {:.6} | brake-row hashes {}/{} · mean RMS delta from slot0 {:.6}",
             genome_diversity.distinct_fast_hashes,
             n_seres,
             genome_diversity.fast_rms_from_slot0,
@@ -4213,9 +4835,26 @@ fn main() {
             };
             world = world_novo;
             if organism_taxi {
-                organism_city = Some(universe::organism_city::build_city(&mut world));
+                organism_city = Some(match research_city_family {
+                    Some(family) => universe::organism_city::build_city_variant(
+                        &mut world,
+                        research_city_seed.unwrap(),
+                        family,
+                    )
+                    .expect("city variant contract"),
+                    None => universe::organism_city::build_city(&mut world),
+                });
                 organism_stations = organism_city.as_ref().unwrap().stations.clone();
-                universe::organism_scenario::validate_city(&world, &organism_stations).expect("disconnected taxi city");
+                universe::organism_scenario::validate_city(&world, &organism_stations)
+                    .expect("disconnected taxi city");
+                if research_city_family.is_some() {
+                    universe::organism_city::validate_city_postconditions(
+                        &world,
+                        organism_city.as_ref().unwrap(),
+                        n_seres,
+                    )
+                    .expect("city geometry postconditions");
+                }
             }
             ctx.reload_world(&world);
             world_seed_atual = seed_novo;
@@ -4275,8 +4914,14 @@ fn main() {
         let replay_path = std::path::PathBuf::from(&out_dir)
             .join(format!("gen{gen_num:04}.replay", gen_num = gen_abs));
         let _ = std::fs::create_dir_all(&out_dir);
-        body_evolution::record(&out_dir, gen_abs, &genomes, evolving_body)
-            .expect("write body population provenance");
+        body_evolution::record_with_control(
+            &out_dir,
+            gen_abs,
+            &genomes,
+            evolving_body,
+            research_body.as_deref(),
+        )
+        .expect("write body population provenance");
         // C1 — `hip_gen<N>.f32`: being 0's memory and bias, one row per tick. Opened here
         // so it lands in `--out` with the replay, never next to the source (rule 5 of this
         // project's CLAUDE.md). Small: 13 f32 × ticks ≈ 1 MB at 20 000 ticks.
@@ -4327,10 +4972,19 @@ fn main() {
             let metadata_path = replay_path.with_extension("meta.json");
             // organism-taxi-v1: context.rs::sample_organism maps body[29] alive to 1/0;
             // the legacy tick budget never exists there, so the replay says so.
-            let (replay_life_capacity_meta, life_semantics_meta, life_model_meta) = if organism_taxi {
-                (1.0, "alive_flag", "organism-alive-flag: body[29]>0.5 -> 1 else 0")
+            let (replay_life_capacity_meta, life_semantics_meta, life_model_meta) = if organism_taxi
+            {
+                (
+                    1.0,
+                    "alive_flag",
+                    "organism-alive-flag: body[29]>0.5 -> 1 else 0",
+                )
             } else {
-                (replay_life_capacity, "remaining_tick_budget", "legacy-remaining-tick-budget")
+                (
+                    replay_life_capacity,
+                    "remaining_tick_budget",
+                    "legacy-remaining-tick-budget",
+                )
             };
             let navigation_observation_meta = organism_taxi.then_some(navigation_observation);
             let mut metadata = serde_json::json!({
@@ -4355,9 +5009,9 @@ fn main() {
                 "driving_diagnostics": driving_diagnostics_on,
                 "fast_memory_erased_each_decision": erase_fast_memory,
                 "frame_tick_semantics": "tick4_post_physics_brain64_to_body64",
-                "brain_model": if fly_spiking() { "fly_spiking" } else if fly_brain() { "fly_rate" } else { "native" },
+                "brain_model": if research_linear { "linear-wave-v2" } else if fly_spiking() { "fly_spiking" } else if fly_brain() { "fly_rate" } else { "native" },
                 "brain_control": if brain_control_direct { "direct" } else { "legacy" },
-                "controller_kind": if taxi_reference_witness { "diagnostic_pilot" } else if piloto != 0.0 || piloto_sensor != 0.0 || ctx.piloto_formula.is_some() || ctx.piloto_forja.is_some() { "diagnostic_pilot" } else { "neural" },
+                "controller_kind": if taxi_reference_witness { "diagnostic_pilot" } else if piloto != 0.0 || piloto_sensor != 0.0 || ctx.piloto_formula.is_some() || ctx.piloto_forja.is_some() { "diagnostic_pilot" } else if research_linear { "learned_linear_wave_with_spline_motor" } else { "neural" },
                 "planned_ticks": n_ticks,
                 "population_seed": pop_seed,
                 "checkpoint_loaded": elite_carregado_do_checkpoint,
@@ -4381,6 +5035,29 @@ fn main() {
                 "laps_recorded": true,
                 "raw_intents_recorded": replay_this_gen,
             });
+            metadata["retina_geometry"] =
+                serde_json::json!(universe::visao::retina_geometry_name());
+            metadata["wheel_integration"] =
+                serde_json::json!(if statics::organism_stable_wheels() {
+                    "implicit-2stage-v2-tcs-gain-100ms"
+                } else {
+                    "explicit-v1-instant-tcs"
+                });
+            metadata["research"] = research_contract::configuration(
+                research_start_distance,
+                research_linear,
+                research_retention,
+                taxi_reference_witness,
+                motor_head_linear(),
+            );
+            metadata["research"]["noise_sigma_i8"] = serde_json::json!(ruido_sigma);
+            metadata["research"]["dropout_probability"] = serde_json::json!(ruido_drop);
+            metadata["research"]["prepared_delivery_starts_onboard"] = serde_json::json!(
+                research_start_distance.is_some()
+                    && school_lesson == Some(universe::gpu::school::Lesson::Delivery)
+            );
+            metadata["research"]["service_course"] =
+                serde_json::json!(service_course.as_ref().map(|c| &c.metadata));
             metadata["body_evolution_enabled"] = serde_json::json!(evolving_body);
             metadata["life_model"] = serde_json::json!(life_model_meta);
             metadata["navigation_observation"] = serde_json::json!(navigation_observation_meta);
@@ -4411,11 +5088,12 @@ fn main() {
                 } else {
                     tau_semeado || tau_hetero
                 });
-            metadata["motor_head"] = serde_json::json!(if motor_head_linear() {
-                "linear"
-            } else {
-                "spline"
-            });
+            metadata["motor_head"] =
+                serde_json::json!(if motor_head_linear() || taxi_reference_witness {
+                    "linear"
+                } else {
+                    "spline"
+                });
             metadata["slow_kinematics"] = serde_json::json!(if slow_canonical_kinematics() {
                 "canonical"
             } else {
@@ -4773,7 +5451,8 @@ fn main() {
         } else {
             None
         };
-        let canonical = if !organism_taxi && same_start && formation.is_none() && !largada_aleatoria {
+        let canonical = if !organism_taxi && same_start && formation.is_none() && !largada_aleatoria
+        {
             Some(canonical_start(&world).unwrap_or_else(|error| {
                 panic!("invalid canonical start: {error}");
             }))
@@ -4804,7 +5483,9 @@ fn main() {
         // School: each being starts on its own junction approach; the lesson geometry
         // is rotated with the same rule as the taxi spawn slots.
         school_shared_pick = None;
-        let school_starts = school_lesson.map(|lesson| match school_shared_start {
+        let mut school_starts = school_lesson.map(|lesson| if let Some(course) = &service_course {
+            course.starts.clone()
+        } else { match school_shared_start {
             Some(mode) => {
                 let (starts, index, count) = universe::organism_school::lesson_shared_start_fold(
                     &world,
@@ -4829,6 +5510,11 @@ fn main() {
                 }
                 starts
             }
+            None if school_eval_starts > 1 && !school_service_legacy => universe::organism_school::lesson_start_pool(
+                &world, &organism_stations, lesson, &school_contract,
+                school_batch::required_start_pool(n_seres, school_eval_starts, school_start_pool),
+                school_start_fold,
+            ).expect("distinct school start pool"),
             None => universe::organism_school::lesson_starts_fold(
                 &world,
                 &organism_stations,
@@ -4838,7 +5524,45 @@ fn main() {
                 school_start_fold,
             )
                 .expect("city lesson approach capacity"),
-        });
+        }});
+        if let (Some(distance), Some(starts)) = (research_start_distance, school_starts.as_mut()) {
+            research_contract::prepare_starts(&world, starts, distance).unwrap_or_else(|e| {
+                eprintln!("ERROR: {e}");
+                std::process::exit(2)
+            });
+        }
+        if !school_service_legacy
+            && school_shared_start.is_none()
+            && school_starts
+                .as_ref()
+                .is_some_and(|starts| school_eval_starts > starts.len())
+        {
+            eprintln!(
+                "--school-eval-starts exceeds the distinct pool; reduce K to avoid duplicate exam weighting"
+            );
+            std::process::exit(2);
+        }
+        let research_context = if research_retention > 0 {
+            let shape = serde_json::json!({"service":if school_service_legacy {1}else{2},
+                "horizon":school_horizon_ticks,"controller":research_linear,"start_distance":research_start_distance.map(|d|d.get()),
+                "city":organism_city.as_ref().map(|c|c.metadata()),"fold":school_start_fold.name(),
+                "batch":if school_eval_starts>1 {(generation_idx*school_eval_starts)%school_starts.as_ref().unwrap().len()} else {gen_abs},
+                "lesson":school_lesson.unwrap().name(), "service_course":if school_cross_city {
+                    serde_json::json!(service_course.as_ref().map(|course| &course.metadata))
+                } else {
+                    serde_json::json!(research_service_course)
+                }});
+            // Stable FNV identity within this run; source/config SHA is recorded separately.
+            let hash = shape
+                .to_string()
+                .bytes()
+                .fold(0xcbf29ce484222325u64, |h, b| {
+                    (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+                });
+            format!("school-context-v1-{hash:016x}")
+        } else {
+            String::new()
+        };
         let city_spawns = organism_taxi.then(|| {
             if let Some(starts) = school_starts.as_ref() {
                 (0..n_seres)
@@ -4855,14 +5579,15 @@ fn main() {
                         };
                         let g = &starts[start_index];
                         universe::organism_city::CitySpawn {
-                        position: [g.start[0], 0.5, g.start[1]],
-                        forward: [g.forward[0], 0.0, g.forward[1]],
-                        depot_distance_m: g.depot_distance_m,
+                            position: [g.start[0], 0.5, g.start[1]],
+                            forward: [g.forward[0], 0.0, g.forward[1]],
+                            depot_distance_m: g.depot_distance_m,
                         }
                     })
                     .collect::<Vec<_>>()
             } else {
-                universe::organism_city::spawn_slots(&world, &organism_stations, n_seres).expect("city spawn capacity")
+                universe::organism_city::spawn_slots(&world, &organism_stations, n_seres)
+                    .expect("city spawn capacity")
             }
         });
         // Rotate the being -> slot map each generation unless explicitly fixed, so no
@@ -4882,7 +5607,10 @@ fn main() {
                 (0..n_seres.min(4))
                     .map(|i| {
                         let slot = &spawns[(i + spawn_rotation) % spawns.len()];
-                        format!("{i}->({:.0},{:.0}) {:.0}m", slot.position[0], slot.position[2], slot.depot_distance_m)
+                        format!(
+                            "{i}->({:.0},{:.0}) {:.0}m",
+                            slot.position[0], slot.position[2], slot.depot_distance_m
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join(" ")
@@ -5098,7 +5826,11 @@ fn main() {
             .map(|s| (s.phys.pos, s.phys.fwd, s.wp_near))
             .collect();
         let mut ecology = if ecology_on {
-            let base_tank = if organism_taxi { 5_000_000.0 } else { FUEL_TANK.load(Ordering::Relaxed) as f64 };
+            let base_tank = if organism_taxi {
+                5_000_000.0
+            } else {
+                FUEL_TANK.load(Ordering::Relaxed) as f64
+            };
             for state in states.iter_mut().skip(ecology_founders.unwrap_or(n_seres)) {
                 state.life_left = 0.0;
                 state.fuel = 0.0;
@@ -5118,7 +5850,11 @@ fn main() {
                 n_seres,
             )
             .expect("valid ecology configuration");
-            let observer_factory = if resume_state.is_some() { ecology_runtime::GenotypeBirthObserver::resume } else { ecology_runtime::GenotypeBirthObserver::create };
+            let observer_factory = if resume_state.is_some() {
+                ecology_runtime::GenotypeBirthObserver::resume
+            } else {
+                ecology_runtime::GenotypeBirthObserver::create
+            };
             let observer = observer_factory(
                 format!("{out_dir}/lineage_gen{gen_abs:04}.jsonl"),
                 format!("{out_dir}/births_gen{gen_abs:04}"),
@@ -5209,15 +5945,26 @@ fn main() {
             // `school_bench` is the default mode *when a school lesson exists*.
             // Passing it unconditionally makes the ordinary taxi world look like
             // a bench and disables passenger issuance in `taxi.wgsl`.
-            let taxi_mode = if school_bench && school_lesson.is_some_and(|lesson| lesson.is_service()) {
-                TaxiMode::ServiceBench
-            } else if school_lesson.is_some() && school_bench {
-                TaxiMode::MotorBench
-            } else {
-                TaxiMode::Production
-            };
-            ctx.start_organism(&genomes, &organism_stations, &organism_city.as_ref().unwrap().traffic_lights(), if ecology_on { ecology_founders.unwrap_or(n_seres) } else { n_seres }, taxi_mode)
-                .expect("organism initialization failed");
+            let taxi_mode =
+                if school_bench && school_lesson.is_some_and(|lesson| lesson.is_service()) {
+                    TaxiMode::ServiceBench
+                } else if school_lesson.is_some() && school_bench {
+                    TaxiMode::MotorBench
+                } else {
+                    TaxiMode::Production
+                };
+            ctx.start_organism(
+                &genomes,
+                &organism_stations,
+                &organism_city.as_ref().unwrap().traffic_lights(),
+                if ecology_on {
+                    ecology_founders.unwrap_or(n_seres)
+                } else {
+                    n_seres
+                },
+                taxi_mode,
+            )
+            .expect("organism initialization failed");
             if taxi_reference_witness {
                 ctx.taxi_witness = Some(universe::gpu::taxi_witness::TaxiWitnessGpu::new(
                     &ctx.device,
@@ -5225,18 +5972,22 @@ fn main() {
                     school_lesson.map_or(0, |lesson| lesson.id()),
                 ));
             }
-            ctx.taxi.as_mut().unwrap().configure_routes(&ctx.device, &world, &organism_stations).expect("organism road routes");
+            ctx.taxi
+                .as_mut()
+                .unwrap()
+                .configure_routes(&ctx.device, &world, &organism_stations)
+                .expect("organism road routes");
             if let Some(starts) = school_starts.as_ref() {
                 // Bench: passengers off (the judge owns the task slots). Life: passengers on.
-                ctx.taxi.as_mut().unwrap().set_mode(if school_bench
-                    && school_lesson.is_some_and(|lesson| lesson.is_service())
-                {
-                    TaxiMode::ServiceBench
-                } else if school_bench {
-                    TaxiMode::MotorBench
-                } else {
-                    TaxiMode::Production
-                });
+                ctx.taxi.as_mut().unwrap().set_mode(
+                    if school_bench && school_lesson.is_some_and(|lesson| lesson.is_service()) {
+                        TaxiMode::ServiceBench
+                    } else if school_bench {
+                        TaxiMode::MotorBench
+                    } else {
+                        TaxiMode::Production
+                    },
+                );
                 if ctx.school.is_none() {
                     ctx.school = Some(universe::gpu::school::SchoolGpu::new(
                         &ctx.device,
@@ -5249,9 +6000,15 @@ fn main() {
                     ));
                     if let Some(school) = ctx.school.as_mut() {
                         school.stop_envelope_excess_clamp_m = school_stop_envelope_clamp_m;
+                        school.service_v2 = !school_service_legacy;
+                        school.prepared_delivery = research_start_distance.is_some()
+                            && school_lesson == Some(universe::gpu::school::Lesson::Delivery);
                         if let Some(reference) = school_stop_shaping_ref_mps {
                             if reference < school.contract.v_min_mps {
-                                eprintln!("--school-stop-shaping-ref-mps must not be below the contract's v_min ({})", school.contract.v_min_mps);
+                                eprintln!(
+                                    "--school-stop-shaping-ref-mps must not be below the contract's v_min ({})",
+                                    school.contract.v_min_mps
+                                );
                                 std::process::exit(2);
                             }
                             school.stop_shaping_ref_mps = reference;
@@ -5259,10 +6016,16 @@ fn main() {
                         if let Some(gate) = school_stop_zone_entry_min_mps {
                             school.stop_zone_entry_min_mps = gate;
                         }
-                        school.deadline_ticks = school_deadline_frac
-                            .map_or(0, |f| (f * school.horizon_ticks as f32).round().max(1.0) as u32);
+                        school.deadline_ticks = school_deadline_frac.map_or(0, |f| {
+                            (f * school.horizon_ticks as f32).round().max(1.0) as u32
+                        });
                     }
                 }
+                ctx.school.as_mut().unwrap().prepared_start = research_start_distance.is_some()
+                    || service_course.is_some() && !school_cross_city;
+                ctx.school.as_mut().unwrap().cross_city = school_cross_city;
+                ctx.school.as_mut().unwrap().prepared_delivery = research_start_distance.is_some()
+                    && school_lesson == Some(universe::gpu::school::Lesson::Delivery);
                 let rotated: Vec<_> = (0..n_seres)
                     .map(|slot| {
                         let index = if school_eval_starts > 1 {
@@ -5278,9 +6041,14 @@ fn main() {
                         starts[index]
                     })
                     .collect();
-                ctx.school.as_ref().unwrap().reset(&ctx.queue, &rotated).expect("school lesson reset");
+                ctx.school
+                    .as_ref()
+                    .unwrap()
+                    .reset(&ctx.queue, &rotated)
+                    .expect("school lesson reset");
             }
-            ctx.sample_organism(&mut states).expect("invalid organism genesis");
+            ctx.sample_organism(&mut states)
+                .expect("invalid organism genesis");
             let spawn_slots_json = city_spawns.as_ref().map(|slots| {
                 slots
                     .iter()
@@ -5299,39 +6067,107 @@ fn main() {
             });
             let manifest = serde_json::json!({
                 "scenario": universe::organism_scenario::SCENARIO_ID,
-                "observation": universe::organism_scenario::observation_id(navigation_observation),
+                "observation": universe::organism_scenario::observation_id_with_powertrain(navigation_observation,statics::organism_powertrain_v2()),
                 "navigation_observation": navigation_observation,
                 "spawn_slots": spawn_slots_json,
                 "spawn_assignment": spawn_assignment_json,
-                "action": universe::organism_scenario::ACTION_ID,
+                "action": if statics::organism_powertrain_v2() {"vehicle-taxi-intent96-active10-powertrain-v2"} else {universe::organism_scenario::ACTION_ID},
                 "task_potential": universe::gpu::taxi_routes::ROAD_POTENTIAL_VERSION,
-                "controller": if taxi_reference_witness {universe::gpu::taxi_witness::TAXI_WITNESS_ID} else {"evolved-native"},
+                "controller": if taxi_reference_witness {universe::gpu::taxi_witness::TAXI_WITNESS_ID} else if research_linear {"evolved-linear-wave-v2"} else {"evolved-native"},
                 "learning_evidence": !taxi_reference_witness,
                 "generation": gen_abs, "tick_rate": 64, "stations": organism_stations,
                 "geometry": universe::organism_scenario::export_world_geometry(&world),
                 "city": organism_city.as_ref().unwrap().metadata(),
-                "sensory_channels": universe::organism_channels::channel_manifest(navigation_observation),
+                "sensory_channels": universe::organism_channels::channel_manifest_with_powertrain(navigation_observation,statics::organism_powertrain_v2()),
                 "traffic_observation": {"schema":universe::gpu::traffic::TRAFFIC_OBSERVATION_ID,"wave_channels":{"present":172,"distance_fraction_100m":173,"phase":182,"time_remaining_fraction":191}},
                 "body_state_owner": "GPU", "body_sample_stride": 64,
                 "sensor_extras": "organism-resident-extras-v1",
                 "action_channels": ["throttle", "steer", "brake", "gear_up", "gear_down", "service", "pickup", "dropoff", "reverse"],
                 "action_stride": 96, "active_action_channels": 9,
-                "pedal_arbitration": if statics::organism_legacy_pedals() { "legacy_signed_net_no_exclusive_no_low_speed_brake" } else if statics::organism_signed_brake() { "exclusive_signed_net_v1_signed_brake" } else { "exclusive_signed_net_v1" },
+                "pedal_arbitration": if statics::organism_brake_priority() { "exclusive_brake_priority_v1_epsilon_1e-6" } else if statics::organism_legacy_pedals() { "legacy_signed_net_no_exclusive_no_low_speed_brake" } else if statics::organism_signed_brake() { "exclusive_signed_net_v1_signed_brake" } else { "exclusive_signed_net_v1" },
                 "static_rest": if statics::organism_legacy_pedals() { "off" } else { "bounded_contact_v1" },
+                "tire_force_frame": if statics::organism_legacy_tire_frame() { "legacy_v1" } else { "power_conjugate_v2" },
                 "simulation_transfer": "resident GPU; host observation on sampling boundaries",
                 "fitness": "1000*deliveries + bounded_task_progress + money + 0.001*age_seconds + 10*alive - 100*(1-integrity) - 100*(1-alive)",
                 "motor_controller": if taxi_reference_witness {"reference GPU controller"} else {"evolved policy"}, "resource_units": "joules,kilograms",
-                "sensory_remap": if navigation_observation == 3 {"160..175 interoception;176..191 taxi v3: body-frame direction cos/sin + d/(d+100) for task and service"} else {"160..175 interoception;176..191 taxi;explicit GPS destination"}});
+                "sensory_remap": if navigation_observation == 5 {"160..175 interoception;176..191 taxi v5: road preview bearing in body frame + compressed route distance; no steering override"} else if navigation_observation == 4 {"160..175 interoception;176..191 taxi v4: legal-road route direction in body frame + compressed route distance; no steering override"} else if navigation_observation == 3 {"160..175 interoception;176..191 taxi v3: body-frame direction cos/sin + d/(d+100) for task and service"} else {"160..175 interoception;176..191 taxi;explicit GPS destination"}});
             let mut manifest = manifest;
-            manifest["feedback_mode"] = serde_json::json!(match feedback_mode { 1 => "symmetric", 2 => "progress", _ => "legacy" });
-            manifest["online_reward"] = serde_json::json!(match feedback_mode {
-                1 => "clamp(delivered - 2*damage + 0.01*energy_change + 0.01*min(0, money_change/25), -1, 1)",
-                2 => "clamp(delivered - 2*damage + 0.01*energy_change + 0.01*min(0, money_change/25) + 0.01*max(0, same-key task progress gain), -1, 1)",
-                _ => "clamp(delivered - 2*damage + 0.2*max(0,energy_change) + 0.01*min(0,energy_change), -1, 1)",
+            manifest["retina_geometry"] =
+                serde_json::json!(universe::visao::retina_geometry_name());
+            manifest["powertrain_score"] = serde_json::json!(if statics::organism_powertrain_v2() {Some("service-v2 subtracts 5 per engine running->off event and starter_paid_j/1500; ecology fitness unchanged")} else {None});
+            manifest["powertrain"] = serde_json::json!(if statics::organism_powertrain_v2() {
+                "paid-start-load-stall-v2"
+            } else {
+                "legacy-v1"
             });
+            if statics::organism_powertrain_v2() {
+                manifest["action_channels"] = serde_json::json!([
+                    "throttle",
+                    "steer",
+                    "brake",
+                    "gear_up",
+                    "gear_down",
+                    "service",
+                    "pickup",
+                    "dropoff",
+                    "reverse",
+                    "start"
+                ]);
+                manifest["active_action_channels"] = serde_json::json!(10);
+            }
+            manifest["wheel_integration"] =
+                serde_json::json!(if statics::organism_stable_wheels() {
+                    "implicit-2stage-v2-tcs-gain-100ms"
+                } else {
+                    "explicit-v1-instant-tcs"
+                });
+            manifest["feedback_mode"] = serde_json::json!(match feedback_mode {
+                1 => "symmetric",
+                2 => "progress",
+                _ => "legacy",
+            });
+            manifest["online_reward"] = serde_json::json!(match feedback_mode {
+                1 =>
+                    "clamp(delivered - 2*damage + 0.01*energy_change + 0.01*min(0, money_change/25), -1, 1)",
+                2 =>
+                    "clamp(delivered - 2*damage + 0.01*energy_change + 0.01*min(0, money_change/25) + 0.01*max(0, same-key task progress gain), -1, 1)",
+                _ =>
+                    "clamp(delivered - 2*damage + 0.2*max(0,energy_change) + 0.01*min(0,energy_change), -1, 1)",
+            });
+            manifest["research"] = research_contract::configuration(
+                research_start_distance,
+                research_linear,
+                research_retention,
+                taxi_reference_witness,
+                motor_head_linear(),
+            );
+            manifest["research"]["noise_sigma_i8"] = serde_json::json!(ruido_sigma);
+            manifest["research"]["dropout_probability"] = serde_json::json!(ruido_drop);
+            manifest["research"]["curriculum_stage"] = serde_json::json!(research_distance_index);
+            manifest["research"]["curriculum_distances_m"] = serde_json::json!(
+                research_distance_stages
+                    .iter()
+                    .map(|s| s.map(|d| d.get()))
+                    .collect::<Vec<_>>()
+            );
+            manifest["research"]["prepared_delivery_starts_onboard"] = serde_json::json!(
+                research_start_distance.is_some()
+                    && school_lesson == Some(universe::gpu::school::Lesson::Delivery)
+            );
+            manifest["research"]["mutation_profile"] = serde_json::json!({"scope":format!("{:?}",research_mutation.scope()),
+                "service_rows":research_mutation.metadata().service_head_rows,
+                "p_mutate":research_mutation.service_head_dose().p_mutate,"sigma":research_mutation.service_head_dose().sigma});
+            manifest["research"]["body_control"] = serde_json::json!(research_body);
+            manifest["research"]["service_course"] =
+                serde_json::json!(service_course.as_ref().map(|c| &c.metadata));
+            manifest["research"]["environment_seed"] = serde_json::json!(research_city_seed);
+            manifest["research"]["city_family"] =
+                serde_json::json!(research_city_family.map(|v| v.name()));
             manifest["plasticity_flags"] = serde_json::json!(lifetime_flags);
             manifest["plasticity_freeze_after"] = serde_json::json!(plasticity_freeze_after);
-            manifest["task_progress"] = serde_json::json!("phase-aware: approach 0..100 on best road distance closed toward the nearest waiting passenger (key=id*2), carrying 100 + 0..100 toward the destination (key=id*2+1); memory in body 31/61/62");
+            manifest["task_progress"] = serde_json::json!(
+                "phase-aware: approach 0..100 on best road distance closed toward the nearest waiting passenger (key=id*2), carrying 100 + 0..100 toward the destination (key=id*2+1); memory in body 31/61/62"
+            );
             if let (Some(lesson), Some(starts)) = (school_lesson, school_starts.as_ref()) {
                 let rotated: Vec<_> = (0..n_seres)
                     .map(|slot| {
@@ -5359,13 +6195,14 @@ fn main() {
                     "tolerances": school_contract.to_json(),
                     "success": {"move": "dist(pos,target)<=goal_radius and propelled_ticks>=propelled_min", "stop": "speed>=v_min before the area, then speed<=v_stop inside for hold_ticks while alive", "turn": "entered the junction box, then dist(pos,exit)<=gate_radius with dot(heading,exit_dir)>=align_min"},
                     "failure_codes": {"1": "contact", "2": "death", "3": "corridor", "4": "born_inside_target", "5": "overshoot", "6": "drove_through_junction", "7": "wrong_exit", "8": "no_approach_speed"},
-                    "truncation": if school_deadline_frac.is_some() { "status 2 code 16 at the deadline, progress kept" } else { "status 3 at horizon, progress kept" },
+                    "truncation": if lesson.is_service() && !school_service_legacy { "unfinished service-v2 attempts fail at deadline or horizon (code16, or more specific no-movement/stop code)" } else if school_deadline_frac.is_some() { "status 2 code 16 at the deadline, progress kept" } else { "status 3 at horizon, progress kept" },
                     "deadline_ticks": school_deadline_frac.map(|f| (f * school_horizon_ticks as f32).round().max(1.0) as u32),
                     "selection": school_select.name(),
-                    "start_pool": school_start_pool.max(school_eval_starts),
                     "score": format!("1000*success + 500*progress - 200*failed - 100*(1-integrity) - 100*(1-alive){}{}",
                         if school_stop_shaping { " + stop: 300*clamp(1 - min_speed_inside/stop_shaping_ref_mps) + 200*clamp(max_near_stop_dwell/hold_ticks), near-stop=2*v_stop; success remains v_stop" } else { "" },
                         if school_stop_envelope { " + stop: 200*clamp(envelope_conform_ticks/envelope_zone_ticks) - 100*clamp(envelope_excess_integral_m/stop_envelope_excess_clamp_m), v_allow(d)=sqrt(v_stop^2+2*a_ref*(d-r_goal)); success remains v_stop" } else { "" }),
+                });
+                let school_options = serde_json::json!({
                     "stop_shaping": school_stop_shaping,
                     "stop_shaping_ref_mps": school_stop_shaping_ref_mps.unwrap_or(school_contract.v_min_mps),
                     "stop_envelope": school_stop_envelope,
@@ -5383,10 +6220,55 @@ fn main() {
                     "eval_starts_per_genome": school_eval_starts,
                     "genome_count": genome_count,
                     "physical_slots": n_seres,
-                    "start_candidates": universe::organism_school::lesson_start_candidates(&world, &organism_stations, lesson, &school_contract).len(),
+                    "start_candidates": service_course.as_ref().map_or_else(|| universe::organism_school::lesson_start_candidates(&world, &organism_stations, lesson, &school_contract).len(), |c| c.starts.len()),
                 });
+                manifest["school"]
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(school_options.as_object().unwrap().clone());
+                manifest["school"]["start_pool"] =
+                    serde_json::json!(school_starts.as_ref().map_or(0, |starts| starts.len()));
+                manifest["school"]["service_contract_version"] =
+                    serde_json::json!(if school_service_legacy { 1 } else { 2 });
+                manifest["school"]["judge_revision"] =
+                    serde_json::json!(if school_service_legacy {
+                        "legacy-with-frozen-evidence-v1"
+                    } else {
+                        if school_cross_city {"service-v2-cross-city-v1"} else if statics::organism_powertrain_v2() {"service-v2-powertrain-v2"} else {"service-v2-banked-pickup-frozen-evidence-v1"}
+                    });
+                manifest["school"]["service_score_v2"] = serde_json::json!(
+                    "progress + 1000*success*clamp(delivery_delta,0,1) + 200*(best_readiness + accepted_pickup_in_full_delivery) + 500*success - 200*failed - 100*damage - 100*dead - charged_seconds - min(collision_j/1000,200)"
+                );
+                manifest["school"]["cross_city"] = serde_json::json!(school_cross_city);
+                manifest["school"]["powertrain_penalty_active"] = serde_json::json!(statics::organism_powertrain_v2() && !school_service_legacy);
+                if statics::organism_powertrain_v2() {
+                    let formula=manifest["school"]["service_score_v2"].as_str().unwrap().to_owned();
+                    manifest["school"]["service_score_v2"]=serde_json::json!(format!("{formula} - 5*engine_off_events - starter_paid_j/1500"));
+                }
+                manifest["school"]["start_pool_requested"] =
+                    serde_json::json!(school_start_pool.max(school_eval_starts));
+                if lesson.is_service() {
+                    manifest["school"]["score"] = if school_service_legacy {
+                        serde_json::json!(
+                            "progress + 1000*delivery_delta - 200*failed - 100*damage - 100*dead"
+                        )
+                    } else {
+                        manifest["school"]["service_score_v2"].clone()
+                    };
+                }
+                manifest["school"]["failure_codes"] = serde_json::Value::Object(
+                    (1..=18)
+                        .map(|code| {
+                            (
+                                code.to_string(),
+                                serde_json::json!(universe::gpu::school::fail_code_name(code)),
+                            )
+                        })
+                        .collect(),
+                );
                 if school_bench {
-                    manifest["fitness"] = serde_json::Value::String("school score (see school)".to_string());
+                    manifest["fitness"] =
+                        serde_json::Value::String("school score (see school)".to_string());
                 }
                 manifest["provenance"] = provenance.clone();
             }
@@ -5404,28 +6286,52 @@ fn main() {
         let mut first_tick = 0;
         if generation_idx == 0 {
             if let Some(path) = resume_state.as_ref() {
-                let (tick, generation, aux) = organism_checkpoint::load(&mut ctx, &mut states,
-                    std::path::Path::new(path), &checkpoint_config).expect("checkpoint restore failed");
+                let (tick, generation, aux) = organism_checkpoint::load(
+                    &mut ctx,
+                    &mut states,
+                    std::path::Path::new(path),
+                    &checkpoint_config,
+                )
+                .expect("checkpoint restore failed");
                 assert_eq!(generation, gen_abs);
                 assert!(tick <= n_ticks, "checkpoint beyond requested horizon");
                 first_tick = tick;
-                macro_rules! restore_vector { ($name:ident) => {
-                    $name = serde_json::from_value(aux[stringify!($name)].clone()).expect("checkpoint episode vector");
-                    assert_eq!($name.len(), n_seres, "checkpoint episode length");
-                }; }
-                restore_vector!(dist_acum); restore_vector!(prog_acum); restore_vector!(prog_prev);
-                restore_vector!(pos_prev); restore_vector!(checkpoint); restore_vector!(voltas_reais);
+                macro_rules! restore_vector {
+                    ($name:ident) => {
+                        $name = serde_json::from_value(aux[stringify!($name)].clone())
+                            .expect("checkpoint episode vector");
+                        assert_eq!($name.len(), n_seres, "checkpoint episode length");
+                    };
+                }
+                restore_vector!(dist_acum);
+                restore_vector!(prog_acum);
+                restore_vector!(prog_prev);
+                restore_vector!(pos_prev);
+                restore_vector!(checkpoint);
+                restore_vector!(voltas_reais);
                 restore_vector!(life_progress_max);
                 restore_vector!(cruzamentos);
-                lap_tracker = serde_json::from_value(aux["lap_tracker"].clone()).expect("checkpoint lap tracker");
+                lap_tracker = serde_json::from_value(aux["lap_tracker"].clone())
+                    .expect("checkpoint lap tracker");
                 if let Some(runtime) = ecology.as_mut() {
-                    runtime.restore_checkpoint(serde_json::from_value(aux["ecology"].clone()).expect("checkpoint ecology")).expect("invalid ecology state");
+                    runtime
+                        .restore_checkpoint(
+                            serde_json::from_value(aux["ecology"].clone())
+                                .expect("checkpoint ecology"),
+                        )
+                        .expect("invalid ecology state");
                 }
-                ctx.sample_organism(&mut states).expect("restored organism invalid");
+                ctx.sample_organism(&mut states)
+                    .expect("restored organism invalid");
                 if let Some(diagnostics) = ctx.driving_diagnostics.as_mut() {
-                    let ids: Vec<u64> = ecology.as_ref().map(|e| e.lineage_ids().to_vec()).unwrap_or_else(|| (1..=n_seres as u64).collect());
+                    let ids: Vec<u64> = ecology
+                        .as_ref()
+                        .map(|e| e.lineage_ids().to_vec())
+                        .unwrap_or_else(|| (1..=n_seres as u64).collect());
                     let positions: Vec<_> = states.iter().map(|s| s.phys.pos).collect();
-                    diagnostics.resume_identity(tick, &ids, &genomes, &positions).expect("resume trace identity");
+                    diagnostics
+                        .resume_identity(tick, &ids, &genomes, &positions)
+                        .expect("resume trace identity");
                 }
             }
         }
@@ -5434,12 +6340,16 @@ fn main() {
         let mut executed_ticks = first_tick;
         let mut episode_end_reason = "horizon";
         for tick_i in first_tick..n_ticks {
-            ctx.force_organism_sample = tick_i + 1 == n_ticks || (snapshot_every > 0 && (tick_i + 1) % snapshot_every == 0);
+            ctx.force_organism_sample =
+                tick_i + 1 == n_ticks || (snapshot_every > 0 && (tick_i + 1) % snapshot_every == 0);
             if plasticity_freeze_after == Some(tick_i) {
                 // From this dispatch on the residual P is applied but never updated;
                 // `upload_lifetime` at the next generation restores the learning flags.
                 ctx.brain.set_lifetime_flags(lifetime_flags | 8);
-                println!("  [plasticity] gen {gen_abs} frozen at tick {tick_i}: flags {}", ctx.brain.lifetime_flags());
+                println!(
+                    "  [plasticity] gen {gen_abs} frozen at tick {tick_i}: flags {}",
+                    ctx.brain.lifetime_flags()
+                );
             }
             let ok = ctx.tick(&mut states, n_seres, dt, tick_i + 1, &kan_knots_global);
             if !ok {
@@ -5819,47 +6729,80 @@ fn main() {
                 let mutation_flags = (if evolve_learning { 1 } else { 0 }) | (lifetime_flags & 6);
                 let births = if organism_taxi {
                     if (tick_i + 1) % 64 == 0 {
-                        let poses: Vec<_> = states.iter().map(|s| (s.phys.pos, s.phys.fwd, s.wp_near)).collect();
-                        let task_progress: Vec<_> = ctx.organism_samples.iter().map(|s| s.values[68] as f64).collect();
-                        ecology.step_organism(&mut ctx, &mut states, &mut genomes, &mut engines,
-                            &task_progress, &evo_params, evolving_body, mutation_flags, (tick_i + 1) as u64,
-                            |_slot, parent, genome| {
-                                let (pos, fwd, wp_near) = poses[parent];
+                        let poses: Vec<_> = states
+                            .iter()
+                            .map(|s| (s.phys.pos, s.phys.fwd, s.wp_near))
+                            .collect();
+                        let task_progress: Vec<_> = ctx
+                            .organism_samples
+                            .iter()
+                            .map(|s| s.values[68] as f64)
+                            .collect();
+                        ecology
+                            .step_organism(
+                                &mut ctx,
+                                &mut states,
+                                &mut genomes,
+                                &mut engines,
+                                &task_progress,
+                                &evo_params,
+                                evolving_body,
+                                mutation_flags,
+                                (tick_i + 1) as u64,
+                                |_slot, parent, genome| {
+                                    let (pos, fwd, wp_near) = poses[parent];
+                                    ecology_runtime::SpawnState {
+                                        physics: body_evolution::at_birth(
+                                            genome,
+                                            evolving_body,
+                                            pos,
+                                            fwd,
+                                        ),
+                                        fuel_capacity: 5_000_000.0,
+                                        life_ticks: 1.0,
+                                        wp_near,
+                                    }
+                                },
+                            )
+                            .unwrap_or_else(|e| panic!("organism ecological birth: {e:?}"))
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    ecology
+                        .step(
+                            &mut ctx,
+                            &mut states,
+                            &mut genomes,
+                            &mut engines,
+                            &prog_acum,
+                            &evo_params,
+                            evolving_body,
+                            mutation_flags,
+                            |slot, genome| {
+                                let (pos, fwd, wp_near) = birth_positions[slot];
                                 ecology_runtime::SpawnState {
-                                    physics: body_evolution::at_birth(genome, evolving_body, pos, fwd),
-                                    fuel_capacity: 5_000_000.0,
-                                    life_ticks: 1.0, wp_near,
+                                    physics: body_evolution::at_birth(
+                                        genome,
+                                        evolving_body,
+                                        pos,
+                                        fwd,
+                                    ),
+                                    fuel_capacity: body_evolution::tank_capacity(
+                                        genome,
+                                        evolving_body,
+                                        FUEL_TANK.load(Ordering::Relaxed),
+                                    ),
+                                    life_ticks: birth_life,
+                                    wp_near,
                                 }
-                            }).unwrap_or_else(|e| panic!("organism ecological birth: {e:?}"))
-                    } else { Vec::new() }
-                } else { ecology
-                    .step(
-                        &mut ctx,
-                        &mut states,
-                        &mut genomes,
-                        &mut engines,
-                        &prog_acum,
-                        &evo_params,
-                        evolving_body,
-                        mutation_flags,
-                        |slot, genome| {
-                            let (pos, fwd, wp_near) = birth_positions[slot];
-                            ecology_runtime::SpawnState {
-                                physics: body_evolution::at_birth(genome, evolving_body, pos, fwd),
-                                fuel_capacity: body_evolution::tank_capacity(
-                                    genome,
-                                    evolving_body,
-                                    FUEL_TANK.load(Ordering::Relaxed),
-                                ),
-                                life_ticks: birth_life,
-                                wp_near,
-                            }
-                        },
-                    )
-                    .unwrap_or_else(|e| {
-                        eprintln!("ERROR ecological birth: {e:?}");
-                        std::process::exit(1)
-                    }) };
+                            },
+                        )
+                        .unwrap_or_else(|e| {
+                            eprintln!("ERROR ecological birth: {e:?}");
+                            std::process::exit(1)
+                        })
+                };
                 for birth in births {
                     let slot = birth.slot;
                     dist_acum[slot] = 0.0;
@@ -5926,15 +6869,30 @@ fn main() {
                 }
             }
             if organism_taxi && snapshot_every > 0 && (tick_i + 1) % snapshot_every == 0 {
-                let path = std::path::PathBuf::from(format!("{out_dir}/state-gen{gen_abs:04}-tick{:08}",tick_i+1));
+                let path = std::path::PathBuf::from(format!(
+                    "{out_dir}/state-gen{gen_abs:04}-tick{:08}",
+                    tick_i + 1
+                ));
                 let aux = serde_json::json!({"dist_acum":dist_acum,"prog_acum":prog_acum,"prog_prev":prog_prev,
                     "pos_prev":pos_prev,"checkpoint":checkpoint,"voltas_reais":voltas_reais,"life_progress_max":life_progress_max,
                     "cruzamentos":cruzamentos,"lap_tracker":lap_tracker,"ecology":ecology.as_ref().map(|e| e.checkpoint())});
-                organism_checkpoint::save(&ctx, &states, &genomes, &path, tick_i+1, gen_abs,
-                    checkpoint_config.clone(), aux).expect("runtime checkpoint save failed");
+                organism_checkpoint::save(
+                    &ctx,
+                    &states,
+                    &genomes,
+                    &path,
+                    tick_i + 1,
+                    gen_abs,
+                    checkpoint_config.clone(),
+                    aux,
+                )
+                .expect("runtime checkpoint save failed");
             }
             executed_ticks = tick_i + 1;
-            if organism_taxi && executed_ticks % 64 == 0 && ctx.organism_samples.iter().all(|s| s.values[29] == 0.0) {
+            if organism_taxi
+                && executed_ticks % 64 == 0
+                && ctx.organism_samples.iter().all(|s| s.values[29] == 0.0)
+            {
                 episode_end_reason = "extinction";
                 break;
             }
@@ -6070,7 +7028,9 @@ fn main() {
                 .collect();
             if let (Some(lesson), Some(school)) = (school_lesson, ctx.school.as_ref()) {
                 use universe::gpu::school::*;
-                let records = school.download(&ctx.device, &ctx.queue, n_seres).expect("school records");
+                let records = school
+                    .download(&ctx.device, &ctx.queue, n_seres)
+                    .expect("school records");
                 let rows: Vec<_> = records
                     .iter()
                     .enumerate()
@@ -6086,7 +7046,8 @@ fn main() {
                         row["collision_energy_lifetime_j"] = serde_json::json!(v[100]);
                         row["refusal_code"] = serde_json::json!(v[69]);
                         row["contact_ticks_lifetime"] = serde_json::json!(v[99]);
-                        row["elite_same_genome"] = serde_json::json!(slot == 0 && generation_idx > 0);
+                        row["elite_same_genome"] =
+                            serde_json::json!(slot == 0 && generation_idx > 0);
                         if let Some(starts) = school_starts.as_ref() {
                             let start_index = if school_eval_starts > 1 {
                                 school_batch::start_index(
@@ -6106,7 +7067,18 @@ fn main() {
                         row
                     })
                     .collect();
-                let record_vectors: Vec<Vec<f32>> = records.iter().map(|record| record.to_vec()).collect();
+                if driving_diagnostics_on {
+                    diagnostic_candidates::save(
+                        std::path::Path::new(&out_dir),
+                        gen_abs,
+                        &genomes,
+                        &records,
+                        &rows,
+                    )
+                    .expect("diagnostic candidate checkpoints");
+                }
+                let record_vectors: Vec<Vec<f32>> =
+                    records.iter().map(|record| record.to_vec()).collect();
                 let aggregates = school_batch::aggregate_school_batch(
                     &record_vectors,
                     genome_count,
@@ -6117,7 +7089,9 @@ fn main() {
                     .iter()
                     .map(|aggregate| serde_json::json!({
                         "genome": aggregate.genome,
-                        "selection_score": aggregate.score,
+                        "selection_score": if school_bench { aggregate.score } else { fitness[aggregate.genome] },
+                        "selection_objective": if school_bench { "school_bench" } else { "taxi_production" },
+                        "school_score": aggregate.score,
                         "mean_score": aggregate.mean_score,
                         "worst_score": aggregate.worst_score,
                         "worst_failure_penalty": aggregate.worst_failure_penalty,
@@ -6127,20 +7101,36 @@ fn main() {
                         "starts": aggregate.starts,
                     }))
                     .collect();
-                let count = |status: u32| records.iter().filter(|r| r[R_STATUS] as u32 == status).count();
+                let count = |status: u32| {
+                    records
+                        .iter()
+                        .filter(|r| r[R_STATUS] as u32 == status)
+                        .count()
+                };
                 let attempts = n_seres;
                 let successes = count(STATUS_SUCCESS);
                 let mut by_code = serde_json::Map::new();
-                for code in 1..=15u32 {
-                    let k = records.iter().filter(|r| r[R_STATUS] as u32 == STATUS_FAILED && r[R_FAIL_CODE] as u32 == code).count();
-                    if k > 0 { by_code.insert(fail_code_name(code).to_string(), serde_json::json!(k)); }
+                for code in 1..=18u32 {
+                    let k = records
+                        .iter()
+                        .filter(|r| {
+                            r[R_STATUS] as u32 == STATUS_FAILED && r[R_FAIL_CODE] as u32 == code
+                        })
+                        .count();
+                    if k > 0 {
+                        by_code.insert(fail_code_name(code).to_string(), serde_json::json!(k));
+                    }
                 }
                 let mut progress: Vec<f32> = records.iter().map(|r| r[R_PROGRESS]).collect();
                 progress.sort_by(|a, b| a.total_cmp(b));
                 let mut scores: Vec<f32> = records.iter().map(|r| r[R_SCORE]).collect();
                 scores.sort_by(|a, b| a.total_cmp(b));
-                let deaths = ctx.organism_samples.iter().filter(|b| b.values[29] <= 0.5).count();
-                let summary = serde_json::json!({
+                let deaths = ctx
+                    .organism_samples
+                    .iter()
+                    .filter(|b| b.values[29] <= 0.5)
+                    .count();
+                let mut summary = serde_json::json!({
                     "generation": gen_abs, "lesson": lesson.name(), "horizon_ticks": school_horizon_ticks,
                     "attempts": attempts, "successes": successes, "failures": count(STATUS_FAILED),
                     "truncated": count(STATUS_TRUNCATED), "running": count(STATUS_RUNNING),
@@ -6161,7 +7151,67 @@ fn main() {
                     "aggregates": aggregate_rows,
                     "beings": rows,
                 });
-                school_last_p_hat = Some((successes as f64 + 1.0) / (attempts as f64 + 2.0));
+                school_last_p_hat = if school_service_legacy {
+                    Some((successes as f64 + 1.0) / (attempts as f64 + 2.0))
+                } else if school_shared_start.is_none() {
+                    let evidence: Vec<_> = summary["beings"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|row| {
+                            (
+                                row["start_index"].as_u64().expect("recorded start index") as usize,
+                                row["success"].as_bool().unwrap_or(false),
+                            )
+                        })
+                        .collect();
+                    school_coverage.observe(school_starts.as_ref().unwrap().len(), &evidence)
+                } else {
+                    None
+                };
+                let mut per_start = std::collections::BTreeMap::<u64, (usize, usize)>::new();
+                for row in summary["beings"].as_array().unwrap() {
+                    if let Some(index) = row["start_index"].as_u64() {
+                        let count = per_start.entry(index).or_default();
+                        count.0 += usize::from(row["success"].as_bool().unwrap_or(false));
+                        count.1 += 1;
+                    }
+                }
+                summary["per_start_outcomes"] = serde_json::json!(per_start.iter().map(|(index, (passed, total))|
+                    serde_json::json!({"start_index": index, "successes": passed, "attempts": total})).collect::<Vec<_>>());
+                summary["research"] = research_contract::configuration(
+                    research_start_distance,
+                    research_linear,
+                    research_retention,
+                    taxi_reference_witness,
+                    motor_head_linear(),
+                );
+                summary["cross_city"] = serde_json::json!(school_cross_city);
+                summary["powertrain_penalty_active"] = serde_json::json!(statics::organism_powertrain_v2() && !school_service_legacy);
+                summary["event_span"] = serde_json::json!("judged_attempt_frozen_at_outcome_v1");
+                summary["judge_revision"] = serde_json::json!(if school_service_legacy {
+                    "legacy-with-frozen-evidence-v1"
+                } else {
+                    if school_cross_city {"service-v2-cross-city-v1"} else if statics::organism_powertrain_v2() {"service-v2-powertrain-v2"} else {"service-v2-banked-pickup-frozen-evidence-v1"}
+                });
+                summary["research"]["service_course"] =
+                    serde_json::json!(service_course.as_ref().map(|c| &c.metadata));
+                summary["research"]["blocked_policy"] = serde_json::json!(
+                    "no-route-or-service-progress-v2; limit_s=max(20,min(180,0.5*budget_ticks/64))"
+                );
+                summary["research"]["noise_sigma_i8"] = serde_json::json!(ruido_sigma);
+                summary["research"]["dropout_probability"] = serde_json::json!(ruido_drop);
+                summary["research"]["curriculum_stage"] =
+                    serde_json::json!(research_distance_index);
+                summary["research"]["prepared_delivery_starts_onboard"] = serde_json::json!(
+                    research_start_distance.is_some() && lesson == Lesson::Delivery
+                );
+                summary["promotion_window_min_success_rate"] = serde_json::json!(school_last_p_hat);
+                summary["promotion_basis"] = serde_json::json!(if school_service_legacy {
+                    "legacy_population_mean"
+                } else {
+                    "minimum_per_start_over_complete_population_window"
+                });
                 std::fs::write(
                     format!("{out_dir}/school_result_gen{gen_abs:04}.json"),
                     serde_json::to_vec_pretty(&summary).unwrap(),
@@ -6170,32 +7220,102 @@ fn main() {
                 if school_bench {
                     fitness = records.iter().map(|r| r[R_SCORE] as f64).collect();
                 }
+                if let Some(archive) = skill_archive.as_mut() {
+                    let candidates = school_batch::representatives(&genomes, school_eval_starts);
+                    let scores: Vec<_> = aggregates.iter().map(|a| a.score).collect();
+                    let passed: Vec<_> = aggregates.iter().map(|a| a.successes).collect();
+                    archive
+                        .observe(
+                            &research_context,
+                            lesson.name(),
+                            &candidates,
+                            &scores,
+                            &passed,
+                            school_eval_starts,
+                            gen_abs,
+                        )
+                        .expect("competence archive contract");
+                    let dir = std::path::Path::new(&out_dir).join("skills");
+                    std::fs::create_dir_all(&dir).expect("skill checkpoint directory");
+                    let entries: Vec<_> = archive.entries().enumerate().map(|(index, entry)| {
+                        let path = dir.join(format!("gen{gen_abs:04}-skill{index:02}.bin"));
+                        save_genome(entry.genome(), path.to_str().expect("UTF-8 skill path")).expect("skill checkpoint");
+                        serde_json::json!({"file":path,"genome_sha256":format!("{:x}",Sha256::digest(std::fs::read(&path).expect("skill identity"))),"context":entry.context(),"lesson":entry.lesson(),
+                            "generation":entry.generation(),"score":entry.score(),"successes":entry.successes(),"starts":entry.starts()})
+                    }).collect();
+                    std::fs::write(dir.join(format!("archive_gen{gen_abs:04}.json")),
+                        serde_json::to_vec_pretty(&serde_json::json!({"schema_version":1,"entries":entries,"implementation_sha256":checkpoint_config["implementation_sha256"],"configuration_sha256":format!("{:x}",Sha256::digest(serde_json::to_vec(&checkpoint_config).unwrap())),
+                            "claim":"complete success on this batch; not frozen-policy generalization"})).unwrap()).expect("archive manifest");
+                }
                 school_aggregates = Some(aggregates);
-                let pickup_requests = records.iter().map(|r| r[R_PICKUP_REQUESTS] as u64).sum::<u64>();
-                let dropoff_requests = records.iter().map(|r| r[R_DROPOFF_REQUESTS] as u64).sum::<u64>();
+                let pickup_requests = records
+                    .iter()
+                    .map(|r| r[R_PICKUP_REQUESTS] as u64)
+                    .sum::<u64>();
+                let dropoff_requests = records
+                    .iter()
+                    .map(|r| r[R_DROPOFF_REQUESTS] as u64)
+                    .sum::<u64>();
                 let refusals = records.iter().filter(|r| r[R_REFUSAL_CODE] > 0.5).count();
                 println!(
                     "  [school] generation={gen_abs} lesson={} success={successes}/{attempts} failed={} truncated={} deaths={deaths} pickup_requests={pickup_requests} dropoff_requests={dropoff_requests} refusals={refusals} p_hat={:.3} progress_median={:.3} score_median={:.1} score_max={:.1} codes={}",
-                    lesson.name(), count(STATUS_FAILED), count(STATUS_TRUNCATED),
+                    lesson.name(),
+                    count(STATUS_FAILED),
+                    count(STATUS_TRUNCATED),
                     (successes as f64 + 1.0) / (attempts as f64 + 2.0),
-                    progress[progress.len() / 2], scores[scores.len() / 2], scores[scores.len() - 1],
+                    progress[progress.len() / 2],
+                    scores[scores.len() / 2],
+                    scores[scores.len() - 1],
                     serde_json::Value::Object(by_code.clone())
                 );
             }
             let sample_count = ctx.organism_samples.len().max(1) as f64;
-            println!("{}", driving_diagnostics::taxi_generation_summary(
-                gen_abs,
-                ctx.organism_samples.iter().filter(|b| b.values[29] > 0.5).count(),
-                n_seres,
-                ctx.organism_samples.iter().filter(|b| b.values[90] > 0.5).count(),
-                ctx.organism_samples.iter().filter(|b| b.values[65] > 0.5).count(),
-                ctx.organism_samples.iter().map(|b| b.values[68] as u64).sum::<u64>(),
-                ctx.organism_samples.iter().filter(|b| b.values[69] > 0.5).count(),
-                ctx.organism_samples.iter().map(|b| b.values[101].max(0.0) as u64).sum(),
-                ctx.organism_samples.iter().map(|b| b.values[127] as f64).sum::<f64>() / sample_count,
-                ctx.organism_samples.iter().map(|b| b.values[0] as f64).sum::<f64>() / sample_count,
-                ctx.organism_samples.iter().map(|b| b.values[1] as f64).sum::<f64>() / sample_count,
-            ));
+            println!(
+                "{}",
+                driving_diagnostics::taxi_generation_summary(
+                    gen_abs,
+                    ctx.organism_samples
+                        .iter()
+                        .filter(|b| b.values[29] > 0.5)
+                        .count(),
+                    n_seres,
+                    ctx.organism_samples
+                        .iter()
+                        .filter(|b| b.values[90] > 0.5)
+                        .count(),
+                    ctx.organism_samples
+                        .iter()
+                        .filter(|b| b.values[65] > 0.5)
+                        .count(),
+                    ctx.organism_samples
+                        .iter()
+                        .map(|b| b.values[68] as u64)
+                        .sum::<u64>(),
+                    ctx.organism_samples
+                        .iter()
+                        .filter(|b| b.values[69] > 0.5)
+                        .count(),
+                    ctx.organism_samples
+                        .iter()
+                        .map(|b| b.values[101].max(0.0) as u64)
+                        .sum(),
+                    ctx.organism_samples
+                        .iter()
+                        .map(|b| b.values[127] as f64)
+                        .sum::<f64>()
+                        / sample_count,
+                    ctx.organism_samples
+                        .iter()
+                        .map(|b| b.values[0] as f64)
+                        .sum::<f64>()
+                        / sample_count,
+                    ctx.organism_samples
+                        .iter()
+                        .map(|b| b.values[1] as f64)
+                        .sum::<f64>()
+                        / sample_count,
+                )
+            );
         }
 
         // Safety discounts useful progress instead of subtracting into a zero floor.
@@ -6237,10 +7357,24 @@ fn main() {
                 );
             }
         }
-        let selection_fitness: Vec<f64> = school_aggregates
-            .as_ref()
-            .map(|aggregates| aggregates.iter().map(|aggregate| aggregate.score).collect())
-            .unwrap_or_else(|| fitness.clone());
+        let selection_fitness =
+            school_batch::selection_scores(&fitness, school_aggregates.as_deref(), school_bench);
+        if organism_taxi {
+            std::fs::write(
+                format!("{out_dir}/selection_gen{gen_abs:04}.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "schema_version": 1,
+                    "objective": if school_bench && school_aggregates.is_some() {
+                        "school_bench"
+                    } else { "taxi_production" },
+                    "scores": selection_fitness,
+                    "genome_count": genome_count,
+                    "replicas_per_genome": school_eval_starts,
+                }))
+                .expect("serialize selection evidence"),
+            )
+            .expect("write selection evidence");
+        }
 
         // ── O campeão se REPRODUZ? ─────────────────────────────────────────────
         //
@@ -6315,7 +7449,11 @@ fn main() {
         // As VOLTAS mostradas têm de vir do progresso real na pista, não da fitness.
         let mut r = gen_stats(
             gen_abs,
-            &if organism_taxi {dist_acum.clone()} else {prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>()},
+            &if organism_taxi {
+                dist_acum.clone()
+            } else {
+                prog_acum.iter().map(|p| p.max(0.0)).collect::<Vec<_>>()
+            },
             lap_dist,
         );
         let t_gen_s = t_gen.elapsed().as_secs_f64();
@@ -6556,8 +7694,14 @@ fn main() {
         r.n_ge2v = v2;
         if let Some(curriculum) = adaptive.as_mut() {
             let score = if organism_taxi {
-                ctx.organism_samples.iter().filter(|s| s.values[68] >= 1.0 && s.values[29] > 0.5).count() as f64 / n_seres.max(1) as f64
-            } else { v1 as f64 / n_seres.max(1) as f64 };
+                ctx.organism_samples
+                    .iter()
+                    .filter(|s| s.values[68] >= 1.0 && s.values[29] > 0.5)
+                    .count() as f64
+                    / n_seres.max(1) as f64
+            } else {
+                v1 as f64 / n_seres.max(1) as f64
+            };
             let event = curriculum
                 .observe(score)
                 .expect("valid training success fraction");
@@ -6590,8 +7734,14 @@ fn main() {
         if !organism_taxi {
             println!(
                 "  [setores] mediana {}/{} ({:.1}% da volta) · melhor {}/{} ({:.1}%) · voltas reais: {} seres ≥1, {} ≥2",
-                cp_med, n_portais, 100.0 * cp_med as f32 / n_portais.max(1) as f32,
-                cp_max, n_portais, 100.0 * cp_max as f32 / n_portais.max(1) as f32, v1, v2
+                cp_med,
+                n_portais,
+                100.0 * cp_med as f32 / n_portais.max(1) as f32,
+                cp_max,
+                n_portais,
+                100.0 * cp_max as f32 / n_portais.max(1) as f32,
+                v1,
+                v2
             );
             let lap_records = lap_tracker.finish();
             let lap_summary = laps::summary(&lap_records);
@@ -6724,19 +7874,18 @@ fn main() {
         if organism_taxi {
             println!("  [taxi-runtime] generation={gen_abs} elapsed_seconds={t_gen_s:.1}");
         } else {
-        println!(
-            "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} low_progress={:.0}% | {:.1}s",
-            gen_abs,
-            r.dist_med,
-            r.dist_med / lap_dist,
-            r.dist_max,
-            r.dist_max / lap_dist,
-            r.n_ge1v,
-            r.n_ge2v,
-            r.mortality * 100.0,
-            t_gen_s,
-        );
-
+            println!(
+                "gen {:4} | med={:7.0}m ({:.2}V) max={:7.0}m ({:.2}V) | ≥1V={} ≥2V={} low_progress={:.0}% | {:.1}s",
+                gen_abs,
+                r.dist_med,
+                r.dist_med / lap_dist,
+                r.dist_max,
+                r.dist_max / lap_dist,
+                r.n_ge1v,
+                r.n_ge2v,
+                r.mortality * 100.0,
+                t_gen_s,
+            );
         }
 
         let sem_vida = states
@@ -6833,37 +7982,46 @@ fn main() {
             MARCHA_PICO.store(0, Ordering::Relaxed);
         }
         if organism_taxi {
-            println!("  [organism-contact] energy_j={:.3} impact_ticks={} dead={}/{}",
-                ctx.organism_samples.iter().map(|s| s.values[100] as f64).sum::<f64>(),
-                ctx.organism_samples.iter().map(|s| s.values[101] as u64).sum::<u64>(), sem_vida,n_seres);
-        } else {
-        println!(
-            "  [parede] {:.1}% dos ticks colado (<{:.0} m) | sem vida: {}/{} | custo={:.0} m/s",
-            100.0 * wall_frac,
-            WALL_NEAR_M,
-            sem_vida,
-            n_seres,
-            wall_cost
-        );
-        if impact_cost > 0.0 {
-            let total_energy_j: f64 = states.iter().map(|state| state.collision_energy_j).sum();
-            let total_impacts: u64 = states
-                .iter()
-                .map(|state| u64::from(state.impact_count))
-                .sum();
             println!(
-                "  [impact] {:.1} kJ/being · {} impact steps · cost={:.3} m/kJ",
-                total_energy_j / 1000.0 / n_seres as f64,
-                total_impacts,
-                impact_cost,
+                "  [organism-contact] energy_j={:.3} impact_ticks={} dead={}/{}",
+                ctx.organism_samples
+                    .iter()
+                    .map(|s| s.values[100] as f64)
+                    .sum::<f64>(),
+                ctx.organism_samples
+                    .iter()
+                    .map(|s| s.values[101] as u64)
+                    .sum::<u64>(),
+                sem_vida,
+                n_seres
             );
-        }
-        let hole_hits: u64 = states.iter().map(|state| u64::from(state.hole_hits)).sum();
-        println!(
-            "  [survival] hole contact episodes={} · fuel dry beings={}",
-            hole_hits, ctx.tel_dry_beings
-        );
-
+        } else {
+            println!(
+                "  [parede] {:.1}% dos ticks colado (<{:.0} m) | sem vida: {}/{} | custo={:.0} m/s",
+                100.0 * wall_frac,
+                WALL_NEAR_M,
+                sem_vida,
+                n_seres,
+                wall_cost
+            );
+            if impact_cost > 0.0 {
+                let total_energy_j: f64 = states.iter().map(|state| state.collision_energy_j).sum();
+                let total_impacts: u64 = states
+                    .iter()
+                    .map(|state| u64::from(state.impact_count))
+                    .sum();
+                println!(
+                    "  [impact] {:.1} kJ/being · {} impact steps · cost={:.3} m/kJ",
+                    total_energy_j / 1000.0 / n_seres as f64,
+                    total_impacts,
+                    impact_cost,
+                );
+            }
+            let hole_hits: u64 = states.iter().map(|state| u64::from(state.hole_hits)).sum();
+            println!(
+                "  [survival] hole contact episodes={} · fuel dry beings={}",
+                hole_hits, ctx.tel_dry_beings
+            );
         }
 
         // ── O lento merece existir? ────────────────────────────────────────────
@@ -6944,8 +8102,7 @@ fn main() {
                 // superou o melhor da anterior; `disp` = desvio da fitness na populacao,
                 // que e a escala do ruido contra a qual o ganho e comparado.
                 let ganho_fitness_geracao: Option<f32> =
-                    elite_fitness_anterior
-                        .map(|ant| (selection_fitness[0] - ant).max(0.0) as f32);
+                    elite_fitness_anterior.map(|ant| (selection_fitness[0] - ant).max(0.0) as f32);
                 let disp_fitness: f32 = {
                     let vals: Vec<f32> = fitness.iter().map(|f| *f as f32).collect();
                     universe::math::stats::std_dev(&vals)
@@ -7375,18 +8532,20 @@ fn main() {
                 println!(
                     "  [generalizacao] gen={:4} treino={:.3}{} held={:.3}{} razao={:.3}  \
                      (pista treino=seed {} · held-out=seed {})",
-                    gen_abs, treino_med, if organism_taxi {" score"} else {"m"}, held_med, if organism_taxi {" score"} else {"m"}, razao, seed_gen, ho_seed,
+                    gen_abs,
+                    treino_med,
+                    if organism_taxi { " score" } else { "m" },
+                    held_med,
+                    if organism_taxi { " score" } else { "m" },
+                    razao,
+                    seed_gen,
+                    ho_seed,
                 );
             }
         }
 
         // O genoma que vai para o slot 0 da próxima geração é o melhor DESTA.
-        elite_fitness_anterior = Some(
-            selection_fitness
-                .iter()
-                .cloned()
-                .fold(f64::MIN, f64::max),
-        );
+        elite_fitness_anterior = Some(selection_fitness.iter().cloned().fold(f64::MIN, f64::max));
         elite_fitness_anterior_pista = Some(seed_gen);
 
         hist_results.push(r);
@@ -7400,14 +8559,45 @@ fn main() {
             // e `--fitness prog` saíam idênticas ao dígito — e eu quase registrei isso
             // como "a fitness não importa". Ela nunca tinha mudado.
             let selection_genomes = school_batch::representatives(&genomes, school_eval_starts);
-            genomes = evolve(
-                &selection_genomes,
-                &selection_fitness,
-                &evo_params,
-                gen_abs,
-                pop_seed,
-            );
-            if organism_taxi {
+            genomes = if research_head_only {
+                universe::gpu::evolution::evolve_with_profile(
+                    &selection_genomes,
+                    &selection_fitness,
+                    &evo_params,
+                    gen_abs,
+                    pop_seed,
+                    research_mutation,
+                )
+            } else {
+                universe::gpu::evolution::evolve(
+                    &selection_genomes,
+                    &selection_fitness,
+                    &evo_params,
+                    gen_abs,
+                    pop_seed,
+                )
+            };
+            if research_head_only {
+                use universe::gpu::evolution::{
+                    SERVICE_HEAD_ROWS, mutation_hash_hex, prove_mutation_ancestry,
+                };
+                let proof = prove_mutation_ancestry(&selection_genomes, &genomes);
+                assert!(
+                    proof.all_offspring_match(),
+                    "head-only mutation changed immutable genes"
+                );
+                let rows: Vec<_> = proof.parent_indices.iter().enumerate().map(|(i,parent)| {
+                    let parent = parent.unwrap();
+                    let changed = SERVICE_HEAD_ROWS.iter().flat_map(|r| r*96..(r+1)*96)
+                        .filter(|&k| genomes[i].l2[k].to_bits()!=selection_genomes[parent].l2[k].to_bits()).count();
+                    serde_json::json!({"offspring":i,"matching_parent":parent,"immutable_sha256":mutation_hash_hex(&proof.offspring_hashes[i]),"service_weights_different_from_matching_parent":changed})
+                }).collect();
+                std::fs::write(format!("{out_dir}/mutation_proof_gen{gen_abs:04}.json"),
+                    serde_json::to_vec_pretty(&serde_json::json!({"schema_version":1,"all_match":true,
+                        "parent_hashes":proof.parent_hashes.iter().map(mutation_hash_hex).collect::<Vec<_>>(),
+                        "motor_behavior_frozen":false,"reason":"shared L2 normalization couples service and motor outputs", "offspring":rows})).unwrap()).expect("mutation proof artifact");
+            }
+            if organism_taxi && research_body.is_none() && !research_head_only {
                 universe::gpu::body::mutate_organism_population(
                     &mut genomes,
                     evo_params.n_elite,
@@ -7415,7 +8605,7 @@ fn main() {
                     pop_seed,
                 );
             }
-            if evolving_body {
+            if evolving_body && research_body.as_deref() != Some("random") && !research_head_only {
                 universe::gpu::body::mutate_population(
                     &mut genomes,
                     evo_params.n_elite,
@@ -7424,13 +8614,47 @@ fn main() {
                 );
             }
             let mutation_flags = (if evolve_learning { 1 } else { 0 }) | (lifetime_flags & 6);
-            if mutation_flags != 0 {
+            if mutation_flags != 0 && !research_head_only {
                 for (i, genome) in genomes.iter_mut().enumerate().skip(evo_params.n_elite) {
                     let seed = pop_seed
                         ^ (gen_abs as u64).wrapping_mul(0x9e3779b97f4a7c15)
                         ^ (i as u64).wrapping_mul(0xbf58476d1ce4e5b9);
                     genome.lifetime = genome.lifetime.mutated(seed, mutation_flags);
                 }
+            }
+            if let Some(archive) = skill_archive.as_ref() {
+                let tail = genomes.len() - research_retention;
+                let contexts: std::collections::BTreeSet<_> =
+                    archive.entries().map(|e| e.context()).collect();
+                let chosen = contexts
+                    .iter()
+                    .nth(gen_abs % contexts.len().max(1))
+                    .copied();
+                let provenance = match chosen {
+                    Some(context) => archive
+                        .reinject_best(
+                            &mut genomes,
+                            tail,
+                            competence_archive::SourceFilter::Context { context },
+                        )
+                        .expect("skill reinjection contract"),
+                    None => Vec::new(),
+                };
+                let rows: Vec<_> = provenance.iter().map(|p| {
+                    let copied = format!("{out_dir}/skills/reinjected-gen{gen_abs:04}-slot{:04}.bin",p.destination_index);
+                    save_genome(&genomes[p.destination_index], &copied).expect("reinjected genotype evidence");
+                    serde_json::json!({"destination":p.destination_index,"file":copied,
+                    "genome_sha256":format!("{:x}",Sha256::digest(std::fs::read(&copied).expect("reinjected genotype identity"))),
+                    "context":p.source_context,"lesson":p.source_lesson,"generation":p.source_generation,
+                    "score":p.source_score,"successes":p.source_successes,"starts":p.source_starts})}).collect();
+                std::fs::write(
+                    format!("{out_dir}/skill_reinjection_gen{gen_abs:04}.json"),
+                    serde_json::to_vec_pretty(
+                        &serde_json::json!({"schema_version":1,"sources":rows}),
+                    )
+                    .unwrap(),
+                )
+                .expect("skill provenance");
             }
             if school_eval_starts > 1 {
                 genomes = school_batch::expand_replicas(&genomes, school_eval_starts);
@@ -7440,7 +8664,9 @@ fn main() {
 
     let total_s = t_total.elapsed().as_secs_f64();
     if organism_taxi {
-        println!("=== ORGANISM GPU RUN COMPLETE: {n_gens} generations, {n_seres} beings, {total_s:.1}s ===");
+        println!(
+            "=== ORGANISM GPU RUN COMPLETE: {n_gens} generations, {n_seres} beings, {total_s:.1}s ==="
+        );
         println!("Task outcomes and resource budgets: {out_dir}/organism_result_gen*.json");
         println!("Execution success is not evidence of learned delivery or generalization.");
         return;

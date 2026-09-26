@@ -51,6 +51,7 @@ use crate::config::iara::brain::{L1_NEURONS, L2_NEURONS, SENSORY_WAVE_SIZE};
 use crate::engine::SovereignEngine;
 use crate::kan::KAN_OUT_KNOTS;
 use crate::math::{linalg, thresholds};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Turns L1 spectral initialization (P0.5) on/off in `Genome::random`.
@@ -977,6 +978,134 @@ pub fn sensory_tau_range(channel: usize) -> (f32, f32) {
     }
 }
 
+/// L2 rows consumed by the organism-taxi service interaction ABI.
+///
+/// `brain.wgsl` writes L2 row `j` to `final_intent[j]`. The service witness and
+/// taxi kernel consume rows 5 (service), 6 (pickup), and 7 (dropoff). These are
+/// deliberately kept separate from the three motor rows (0..3), because changing
+/// their mutation dose must not change the driving backbone.
+pub const SERVICE_HEAD_ROWS: [usize; 3] = [5, 6, 7];
+
+/// Conservative starting dose for the opt-in service-head preset.
+///
+/// This is a reproducible starting point for a rare-output calibration, not a
+/// measured optimum. Use [`MutationProfile::head_only`] to provide a study-specific
+/// dose after recording the service-event prevalence and desired genotype effect size.
+pub const SERVICE_HEAD_PRESET_P_MUTATE: f32 = 0.05;
+pub const SERVICE_HEAD_PRESET_SIGMA: f32 = 0.05;
+
+/// A validated mutation dose for a module.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MutationDose {
+    pub p_mutate: f32,
+    pub sigma: f32,
+}
+
+impl MutationDose {
+    pub fn new(p_mutate: f32, sigma: f32) -> Result<Self, MutationProfileError> {
+        if !p_mutate.is_finite() {
+            return Err(MutationProfileError::NonFiniteProbability);
+        }
+        if !(0.0..=1.0).contains(&p_mutate) {
+            return Err(MutationProfileError::ProbabilityOutOfRange);
+        }
+        if !sigma.is_finite() {
+            return Err(MutationProfileError::NonFiniteSigma);
+        }
+        if sigma < 0.0 {
+            return Err(MutationProfileError::NegativeSigma);
+        }
+        Ok(Self { p_mutate, sigma })
+    }
+}
+
+/// Which mutation contract is applied to offspring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MutationScope {
+    /// The historical operator, including its exact draw order.
+    Legacy,
+    /// Mutate only [`SERVICE_HEAD_ROWS`]; every other genome block is frozen.
+    ServiceHeadOnly,
+}
+
+/// Invalid mutation-profile input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MutationProfileError {
+    NonFiniteProbability,
+    ProbabilityOutOfRange,
+    NonFiniteSigma,
+    NegativeSigma,
+    UnknownPreset,
+}
+
+/// Opt-in module-calibrated mutation contract.
+///
+/// The fields are private so callers can only create a validated profile through
+/// the constructors or parser. This prevents a malformed dose from silently
+/// changing a study's mutation stream. The profile is about genotype mutation;
+/// it is not an output-gradient or "safe mutations" operator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MutationProfile {
+    scope: MutationScope,
+    service_head: MutationDose,
+}
+
+impl MutationProfile {
+    /// Historical behavior. This path is intentionally delegated to the existing
+    /// operator so its random draws and emitted genomes remain byte-for-byte stable.
+    pub const fn legacy() -> Self {
+        Self {
+            scope: MutationScope::Legacy,
+            service_head: MutationDose {
+                p_mutate: 0.0,
+                sigma: 0.0,
+            },
+        }
+    }
+
+    /// Freeze the backbone and mutate only service rows 5, 6 and 7.
+    pub fn head_only(p_mutate: f32, sigma: f32) -> Result<Self, MutationProfileError> {
+        Ok(Self {
+            scope: MutationScope::ServiceHeadOnly,
+            service_head: MutationDose::new(p_mutate, sigma)?,
+        })
+    }
+
+    /// Parse the small stable preset vocabulary used by experiment metadata.
+    pub fn parse(spec: &str) -> Result<Self, MutationProfileError> {
+        match spec.trim() {
+            "legacy" => Ok(Self::legacy()),
+            "head-only" => Self::head_only(SERVICE_HEAD_PRESET_P_MUTATE, SERVICE_HEAD_PRESET_SIGMA),
+            _ => Err(MutationProfileError::UnknownPreset),
+        }
+    }
+
+    pub const fn scope(self) -> MutationScope {
+        self.scope
+    }
+
+    pub const fn service_head_dose(self) -> MutationDose {
+        self.service_head
+    }
+
+    /// Additive metadata suitable for a run manifest or offspring record.
+    pub const fn metadata(self) -> MutationMetadata {
+        MutationMetadata {
+            scope: self.scope,
+            service_head_rows: SERVICE_HEAD_ROWS,
+            service_head: self.service_head,
+        }
+    }
+}
+
+/// Typed provenance for offspring emitted under a [`MutationProfile`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MutationMetadata {
+    pub scope: MutationScope,
+    pub service_head_rows: [usize; 3],
+    pub service_head: MutationDose,
+}
+
 /// Evolutionary algorithm parameters.
 #[derive(Clone, Debug)]
 pub struct EvoParams {
@@ -1108,7 +1237,380 @@ pub struct GenResult {
 /// md5sum in pos-auditoria-s{77,31}, gens 0/5/10/15/18/19). `pop_seed=0`
 /// reproduces the old stream exactly (the term cancels out) — old batteries
 /// remain reproducible.
+/// Preserves the historical mutation API and its exact default stream.
 pub fn evolve(
+    genomes: &[Genome],
+    fitnesses: &[f64],
+    params: &EvoParams,
+    generation: usize,
+    pop_seed: u64,
+) -> Vec<Genome> {
+    evolve_legacy(genomes, fitnesses, params, generation, pop_seed)
+}
+
+/// Evolves a population under an explicit, validated mutation contract.
+///
+/// `MutationProfile::legacy()` delegates to the unchanged historical operator.
+/// `MutationScope::ServiceHeadOnly` uses a separate stream and mutates only the
+/// service interaction rows, making the frozen-backbone control explicit.
+pub fn evolve_with_profile(
+    genomes: &[Genome],
+    fitnesses: &[f64],
+    params: &EvoParams,
+    generation: usize,
+    pop_seed: u64,
+    profile: MutationProfile,
+) -> Vec<Genome> {
+    assert_profile_inputs(genomes, fitnesses, params);
+    match profile.scope() {
+        MutationScope::Legacy => evolve_legacy(genomes, fitnesses, params, generation, pop_seed),
+        MutationScope::ServiceHeadOnly => {
+            evolve_service_head_only(genomes, fitnesses, params, generation, pop_seed, profile)
+        }
+    }
+}
+
+/// Reject malformed profile inputs before selection can emit a partial child.
+///
+/// `evolve()` intentionally does not call this helper: its historical behavior,
+/// including its permissive edge cases, is part of the legacy stream contract.
+fn assert_profile_inputs(genomes: &[Genome], fitnesses: &[f64], params: &EvoParams) {
+    let n = genomes.len();
+    assert_eq!(
+        fitnesses.len(),
+        n,
+        "fitnesses and genomes must have the same size"
+    );
+    assert!(n > 0, "profile evolution requires a non-empty population");
+    assert!(
+        params.n_elite <= n,
+        "n_elite ({}) cannot exceed population size ({n})",
+        params.n_elite
+    );
+    assert!(
+        params.tournament_k > 0 && params.tournament_k <= n,
+        "tournament_k ({}) must be in 1..={n}",
+        params.tournament_k
+    );
+    for (index, fitness) in fitnesses.iter().enumerate() {
+        assert!(
+            fitness.is_finite(),
+            "nonfinite fitness at index {index}: {fitness:?}"
+        );
+    }
+
+    for (index, genome) in genomes.iter().enumerate() {
+        assert_genome_shape_and_finite(index, genome);
+    }
+}
+
+fn expected_fly_block_len() -> usize {
+    crate::fly_map::layout()
+        .map(|layout| layout.block_len())
+        .unwrap_or(0)
+}
+
+fn assert_genome_shape_and_finite(index: usize, genome: &Genome) {
+    let dimensions = [
+        ("l1", genome.l1.len(), N_L1_WEIGHTS),
+        ("l2", genome.l2.len(), N_L2_WEIGHTS),
+        (
+            "slow",
+            genome.slow.len(),
+            crate::engine::SlowBrain::new().all_weights().len(),
+        ),
+        ("tau", genome.tau.len(), N_CFC_CHANNELS),
+        ("sensors", genome.sensors.len(), N_SENSOR_GENES),
+        (
+            "neuron_alpha",
+            genome.neuron_alpha.len(),
+            N_L1_NEURONS + N_L2_NEURONS,
+        ),
+        (
+            "neuron_period_l1",
+            genome.neuron_period_l1.len(),
+            N_L1_NEURONS,
+        ),
+        (
+            "neuron_threshold_l1",
+            genome.neuron_threshold_l1.len(),
+            N_L1_NEURONS,
+        ),
+        (
+            "neuron_activation",
+            genome.neuron_activation.len(),
+            N_L1_NEURONS + N_L2_NEURONS,
+        ),
+        ("gates_w", genome.gates_w.len(), 16),
+        (
+            "hip",
+            genome.hip.len(),
+            crate::gpu::hippocampus::N_HIP_GENES,
+        ),
+        ("fly", genome.fly.len(), expected_fly_block_len()),
+    ];
+    for (field, actual, expected) in dimensions {
+        assert_eq!(
+            actual, expected,
+            "genome {index} field {field} has length {actual}, expected {expected}"
+        );
+    }
+
+    let finite_blocks = [
+        ("l1", genome.l1.as_slice()),
+        ("l2", genome.l2.as_slice()),
+        ("slow", genome.slow.as_slice()),
+        ("tau", genome.tau.as_slice()),
+        ("sensors", genome.sensors.as_slice()),
+        ("neuron_alpha", genome.neuron_alpha.as_slice()),
+        ("neuron_period_l1", genome.neuron_period_l1.as_slice()),
+        ("neuron_threshold_l1", genome.neuron_threshold_l1.as_slice()),
+        ("neuron_activation", genome.neuron_activation.as_slice()),
+        ("gates_w", genome.gates_w.as_slice()),
+        ("hip", genome.hip.as_slice()),
+        ("fly", genome.fly.as_slice()),
+        ("body", genome.body.0.as_slice()),
+        ("organs", genome.organs.0.as_slice()),
+        ("lifetime", genome.lifetime.0.as_slice()),
+        ("organism", genome.organism.as_slice()),
+    ];
+    for (field, values) in finite_blocks {
+        if let Some(offset) = values.iter().position(|value| !value.is_finite()) {
+            panic!("genome {index} field {field} contains nonfinite value at offset {offset}");
+        }
+    }
+    if let Some(offset) = genome
+        .kan_knots
+        .iter()
+        .flatten()
+        .position(|value| !value.is_finite())
+    {
+        panic!("genome {index} field kan_knots contains nonfinite value at offset {offset}");
+    }
+}
+
+const MUTATION_ANCESTRY_HASH_SCHEMA: &[u8] = b"Universe/mutation-ancestry/v1";
+
+/// Compact proof that records immutable-genotype hashes and parent matches.
+///
+/// `parent_indices[i]` is the index of a parent whose immutable hash equals
+/// `offspring_hashes[i]`; `None` means that offspring has no ancestry match.
+/// Service L2 rows 5..7 are intentionally excluded from these hashes. The
+/// `motor_behavior_frozen` flag is always false because the brain's shared L2
+/// normalization couples those rows to motor outputs at runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MutationAncestryProof {
+    pub parent_hashes: Vec<[u8; 32]>,
+    pub offspring_hashes: Vec<[u8; 32]>,
+    pub parent_indices: Vec<Option<usize>>,
+    pub service_head_rows: [usize; 3],
+    pub shared_l2_normalization: bool,
+    pub motor_behavior_frozen: bool,
+}
+
+impl MutationAncestryProof {
+    pub fn all_offspring_match(&self) -> bool {
+        self.parent_indices.iter().all(Option::is_some)
+    }
+}
+
+/// Formats one ancestry digest for JSON or a text manifest.
+pub fn mutation_hash_hex(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hash_f32_field(hasher: &mut Sha256, field: &[u8], values: &[f32]) {
+    hasher.update((field.len() as u64).to_le_bytes());
+    hasher.update(field);
+    hasher.update((values.len() as u64).to_le_bytes());
+    for value in values {
+        hasher.update(value.to_le_bytes());
+    }
+}
+
+/// SHA-256 of all genotype fields except service interaction L2 rows 5..7.
+///
+/// The byte contract is versioned, length-delimited, little-endian f32, and
+/// includes field names and row indices. Malformed or nonfinite genomes are
+/// rejected before a digest is produced.
+pub fn immutable_genome_sha256(genome: &Genome) -> [u8; 32] {
+    assert_genome_shape_and_finite(0, genome);
+    let mut hasher = Sha256::new();
+    hasher.update(MUTATION_ANCESTRY_HASH_SCHEMA);
+    hash_f32_field(&mut hasher, b"l1", &genome.l1);
+    hasher.update(b"l2-excluding-service");
+    hasher.update((N_L2_NEURONS as u64).to_le_bytes());
+    for row in 0..N_L2_NEURONS {
+        if SERVICE_HEAD_ROWS.contains(&row) {
+            continue;
+        }
+        hasher.update((row as u64).to_le_bytes());
+        let start = row * L1_NEURONS;
+        hash_f32_field(&mut hasher, b"l2-row", &genome.l2[start..start + L1_NEURONS]);
+    }
+    for knots in &genome.kan_knots {
+        hash_f32_field(&mut hasher, b"kan-knots-row", knots);
+    }
+    hash_f32_field(&mut hasher, b"slow", &genome.slow);
+    hash_f32_field(&mut hasher, b"tau", &genome.tau);
+    hash_f32_field(&mut hasher, b"sensors", &genome.sensors);
+    hash_f32_field(&mut hasher, b"neuron-alpha", &genome.neuron_alpha);
+    hash_f32_field(&mut hasher, b"neuron-period-l1", &genome.neuron_period_l1);
+    hash_f32_field(
+        &mut hasher,
+        b"neuron-threshold-l1",
+        &genome.neuron_threshold_l1,
+    );
+    hash_f32_field(
+        &mut hasher,
+        b"neuron-activation",
+        &genome.neuron_activation,
+    );
+    hash_f32_field(&mut hasher, b"gates-w", &genome.gates_w);
+    hash_f32_field(&mut hasher, b"hip", &genome.hip);
+    hash_f32_field(&mut hasher, b"fly", &genome.fly);
+    hash_f32_field(&mut hasher, b"body", &genome.body.0);
+    hash_f32_field(&mut hasher, b"organs", &genome.organs.0);
+    hash_f32_field(&mut hasher, b"lifetime", &genome.lifetime.0);
+    hash_f32_field(&mut hasher, b"organism", &genome.organism);
+    hasher.finalize().into()
+}
+
+/// Proves which offspring retain an immutable genotype from a parent set.
+///
+/// This is host-side byte bookkeeping only. It does not simulate the brain or
+/// infer output reachability. A matching hash proves inheritance of immutable
+/// genes, while `motor_behavior_frozen == false` records the shared-L2 coupling
+/// caveat for downstream JSON consumers.
+pub fn prove_mutation_ancestry(
+    parents: &[Genome],
+    offspring: &[Genome],
+) -> MutationAncestryProof {
+    assert!(
+        !parents.is_empty() || offspring.is_empty(),
+        "cannot prove offspring ancestry against an empty parent set"
+    );
+    let parent_hashes: Vec<[u8; 32]> = parents.iter().map(immutable_genome_sha256).collect();
+    let offspring_hashes: Vec<[u8; 32]> =
+        offspring.iter().map(immutable_genome_sha256).collect();
+    let mut parent_by_hash = std::collections::HashMap::with_capacity(parent_hashes.len());
+    for (index, hash) in parent_hashes.iter().copied().enumerate() {
+        parent_by_hash.entry(hash).or_insert(index);
+    }
+    let parent_indices = offspring_hashes
+        .iter()
+        .map(|hash| parent_by_hash.get(hash).copied())
+        .collect();
+    MutationAncestryProof {
+        parent_hashes,
+        offspring_hashes,
+        parent_indices,
+        service_head_rows: SERVICE_HEAD_ROWS,
+        shared_l2_normalization: true,
+        motor_behavior_frozen: false,
+    }
+}
+
+/// Selection plus service-head-only mutation. No RNG draw is taken for any
+/// frozen genome block; only tournament selection and service-head weights consume
+/// this profile's stream.
+fn evolve_service_head_only(
+    genomes: &[Genome],
+    fitnesses: &[f64],
+    params: &EvoParams,
+    generation: usize,
+    pop_seed: u64,
+    profile: MutationProfile,
+) -> Vec<Genome> {
+    let n = genomes.len();
+    assert_eq!(
+        fitnesses.len(),
+        n,
+        "fitnesses and genomes must have the same size"
+    );
+
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        fitnesses[b]
+            .partial_cmp(&fitnesses[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut nova: Vec<Genome> = Vec::with_capacity(n);
+    for &idx in order.iter().take(params.n_elite) {
+        nova.push(genomes[idx].clone());
+    }
+
+    struct Rng {
+        state: u64,
+        spare: Option<f32>,
+    }
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self {
+                state: seed,
+                spare: None,
+            }
+        }
+        fn u64(&mut self) -> u64 {
+            self.state = self
+                .state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.state
+        }
+        fn f32(&mut self) -> f32 {
+            ((self.u64() >> 11) as f32) / (1u64 << 53) as f32
+        }
+        fn gauss(&mut self) -> f32 {
+            if let Some(v) = self.spare.take() {
+                return v;
+            }
+            let u1 = self.f32().max(1e-7_f32);
+            let u2 = self.f32();
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = std::f32::consts::TAU * u2;
+            self.spare = Some(r * theta.sin());
+            r * theta.cos()
+        }
+    }
+
+    let seed = (generation as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add(0xCAFE_BABE_DEAD_BEEF)
+        .wrapping_add(pop_seed.wrapping_mul(0xD6E8_FEB8_6659_FD93));
+    let mut rng = Rng::new(seed);
+    let dose = profile.service_head_dose();
+
+    while nova.len() < n {
+        let parent_idx = {
+            let mut best = rng.u64() as usize % n;
+            for _ in 1..params.tournament_k {
+                let cand = rng.u64() as usize % n;
+                if fitnesses[cand] > fitnesses[best] {
+                    best = cand;
+                }
+            }
+            best
+        };
+
+        let mut filho = genomes[parent_idx].clone();
+        for &row in &SERVICE_HEAD_ROWS {
+            let start = row * L1_NEURONS;
+            let end = start + L1_NEURONS;
+            for weight in &mut filho.l2[start..end] {
+                if rng.f32() < dose.p_mutate {
+                    *weight = (*weight + rng.gauss() * dose.sigma).clamp(-2.0, 2.0);
+                }
+            }
+        }
+        nova.push(filho);
+    }
+
+    nova
+}
+
+fn evolve_legacy(
     genomes: &[Genome],
     fitnesses: &[f64],
     params: &EvoParams,
@@ -1550,6 +2052,106 @@ pub fn linear_slope(ys: &[f64]) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_genome_equal(left: &Genome, right: &Genome) {
+        assert_eq!(left.l1, right.l1);
+        assert_eq!(left.l2, right.l2);
+        assert_eq!(left.kan_knots, right.kan_knots);
+        assert_eq!(left.slow, right.slow);
+        assert_eq!(left.tau, right.tau);
+        assert_eq!(left.sensors, right.sensors);
+        assert_eq!(left.neuron_alpha, right.neuron_alpha);
+        assert_eq!(left.neuron_period_l1, right.neuron_period_l1);
+        assert_eq!(left.neuron_threshold_l1, right.neuron_threshold_l1);
+        assert_eq!(left.neuron_activation, right.neuron_activation);
+        assert_eq!(left.gates_w, right.gates_w);
+        assert_eq!(left.hip, right.hip);
+        assert_eq!(left.fly, right.fly);
+        assert_eq!(left.body, right.body);
+        assert_eq!(left.organs, right.organs);
+        assert_eq!(left.lifetime, right.lifetime);
+        assert_eq!(left.organism, right.organism);
+    }
+
+    #[test]
+    fn legacy_profile_delegation_preserves_emitted_genomes() {
+        let genomes: Vec<Genome> = (0..4).map(Genome::random).collect();
+        let fitnesses = [0.0, 2.0, 1.0, 3.0];
+        let params = EvoParams::default();
+        let legacy = evolve(&genomes, &fitnesses, &params, 4, 77);
+        let profiled = evolve_with_profile(
+            &genomes,
+            &fitnesses,
+            &params,
+            4,
+            77,
+            MutationProfile::legacy(),
+        );
+
+        assert_eq!(legacy.len(), profiled.len());
+        for (left, right) in legacy.iter().zip(profiled.iter()) {
+            assert_genome_equal(left, right);
+        }
+    }
+
+    #[test]
+    fn service_head_profile_freezes_every_non_service_block() {
+        let parent = Genome::random(11);
+        let params = EvoParams {
+            n_elite: 0,
+            tournament_k: 1,
+            ..EvoParams::default()
+        };
+        let profile = MutationProfile::head_only(1.0, 0.1).expect("valid endpoint dose");
+        let child =
+            evolve_with_profile(&[parent.clone()], &[1.0], &params, 1, 77, profile)[0].clone();
+
+        assert_eq!(child.l1, parent.l1);
+        assert_eq!(child.slow, parent.slow);
+        assert_eq!(child.tau, parent.tau);
+        assert_eq!(child.sensors, parent.sensors);
+        assert_eq!(child.neuron_alpha, parent.neuron_alpha);
+        assert_eq!(child.neuron_period_l1, parent.neuron_period_l1);
+        assert_eq!(child.neuron_threshold_l1, parent.neuron_threshold_l1);
+        assert_eq!(child.neuron_activation, parent.neuron_activation);
+        assert_eq!(child.gates_w, parent.gates_w);
+        assert_eq!(child.hip, parent.hip);
+        assert_eq!(child.fly, parent.fly);
+        assert_eq!(child.body, parent.body);
+        assert_eq!(child.organs, parent.organs);
+        assert_eq!(child.lifetime, parent.lifetime);
+        assert_eq!(child.organism, parent.organism);
+        for (idx, (before, after)) in parent.l2.iter().zip(child.l2.iter()).enumerate() {
+            if SERVICE_HEAD_ROWS
+                .iter()
+                .any(|&row| (row * L1_NEURONS..(row + 1) * L1_NEURONS).contains(&idx))
+            {
+                continue;
+            }
+            assert_eq!(before, after, "non-service L2 weight {idx} changed");
+        }
+        assert!(SERVICE_HEAD_ROWS.iter().any(|&row| {
+            let range = row * L1_NEURONS..(row + 1) * L1_NEURONS;
+            parent.l2[range.clone()]
+                .iter()
+                .zip(child.l2[range].iter())
+                .any(|(before, after)| before != after)
+        }));
+    }
+
+    #[test]
+    fn mutation_profile_validates_precision_endpoints() {
+        assert!(MutationProfile::head_only(0.0, 0.0).is_ok());
+        assert!(MutationProfile::head_only(1.0, f32::MAX).is_ok());
+        assert!(MutationProfile::head_only(-f32::EPSILON, 0.1).is_err());
+        assert!(MutationProfile::head_only(1.0 + f32::EPSILON, 0.1).is_err());
+        assert!(MutationProfile::head_only(0.5, -f32::EPSILON).is_err());
+        assert_eq!(
+            MutationProfile::parse("legacy"),
+            Ok(MutationProfile::legacy())
+        );
+        assert!(MutationProfile::parse("unknown").is_err());
+    }
 
     #[test]
     fn driving_reflex_birth_is_sparse_regional_and_evolvable() {

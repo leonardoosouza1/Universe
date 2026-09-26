@@ -193,7 +193,7 @@ impl RetinaGpu {
             fov_half: (crate::visao::fov_deg() / 2.0).to_radians(),
             pitches,
             beings_on: beings_on as u32,
-            _pad0: road_range.is_some() as u32,
+            _pad0: if road_range.is_some() { 1 } else { crate::visao::retina_geometry_mode() },
             _pad1: 0,
             _pad2: 0,
         };
@@ -364,7 +364,7 @@ impl RetinaGpu {
             // the Bevy visualizer's GPU chain) — off, same as this field's absence before
             // it existed. See `render_with_beings` for the path that does turn it on.
             beings_on: 0,
-            _pad0: crate::visao::road_view_enabled() as u32,
+            _pad0: crate::visao::retina_geometry_mode(),
             _pad1: 0,
             _pad2: 0,
         };

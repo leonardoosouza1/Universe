@@ -193,8 +193,10 @@ impl Fixture {
         let output = make(PHYSICS_OUTPUT_STRIDE);
         let body = make(BODY_STRIDE);
         let intent = make(96);
-        let school =
+        let mut school =
             SchoolGpu::new(&device, 1, CONTRACT, horizon, true, stop_shaping, stop_envelope);
+        // Historical fixtures explicitly retain v1; v2 fixtures opt in below.
+        school.service_v2 = false;
         school.reset(&queue, &[geometry]).unwrap();
         Self {
             device,
@@ -336,6 +338,7 @@ fn service_lessons_initialize_task_state_and_record_transitions() {
     // state transitions; it never synthesizes pickup or delivery itself.
     let geometry = service(Lesson::Delivery);
     let mut fixture = Fixture::new(geometry, 256);
+    fixture.school.service_v2 = true; // Canonical pickup needs no legacy hidden hold.
     fixture.step(Step::at(geometry.start, [0.0, 0.0]).throttle(0.0));
     let passenger_id = fixture.record()[R_PASSENGER_ID];
     fixture.step_with_body(
@@ -361,6 +364,7 @@ fn service_lessons_initialize_task_state_and_record_transitions() {
     let record = fixture.record();
     assert_eq!(record[R_PICKUP_REQUESTS], 1.0);
     assert_eq!(record[R_ACCEPTED_PICKUP_TICK], 1.0);
+    assert_eq!(status(&record), (STATUS_RUNNING, 0));
 
     fixture.step_with_body(
         Step::at(geometry.target, [0.0, 0.0])
@@ -373,6 +377,7 @@ fn service_lessons_initialize_task_state_and_record_transitions() {
         },
     );
     assert_eq!(fixture.record()[R_REFUSAL_CODE], 2.0);
+    assert_eq!(status(&fixture.record()), (STATUS_RUNNING, 0));
     fixture.step_with_body(
         Step::at(geometry.exit, [0.0, 0.0]).dropoff().throttle(0.0),
         |body| {
@@ -1258,4 +1263,271 @@ fn stop_zone_entry_gate_fails_a_coast_in_and_keeps_a_braked_entry() {
     assert_eq!(status(&r), (STATUS_SUCCESS, 0), "{r:?}");
     assert!(r[R_ENV_ENTRY_SPEED] > 3.5, "{r:?}");
     assert!(r[R_SCORE] > 1000.0, "{r:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_v2_accepts_canonical_pickup_without_hidden_hold() {
+    let g = service(Lesson::Pickup);
+    let mut f = Fixture::new(g, 512);
+    f.school.service_v2 = true;
+    let id = init_service(&mut f, g);
+    service_drive(&mut f, g, false, id, 95.0);
+    f.step_with_body(Step::at(g.target, [0.0, 0.4]).pickup(), |body| {
+        body[65] = 1.0; body[72] = id; body[127] = 100.0;
+    });
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0));
+    assert_eq!(r[R_DWELL], 0.0, "production pickup needs no hidden school dwell");
+    assert!(r[R_SCORE] >= 590.0);
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_v2_preserves_exploration_and_contact_recovery() {
+    let g = service(Lesson::ApproachPassenger);
+    let mut f = Fixture::new(g, 512);
+    f.school.service_v2 = true;
+    init_service(&mut f, g);
+    f.step_with_body(Step::at(g.start, [0.0, 1.0]).pickup().mask(4.0), |body| {
+        body[69] = 1.0;
+    });
+    assert_eq!(status(&f.record()), (STATUS_RUNNING, 0));
+    assert_eq!(f.record()[R_CONTACT_TICKS], 1.0);
+    assert_eq!(f.record()[R_COLLISION_J], 500.0);
+    f.step(Step::at([g.start[0]+31.0, g.start[1]], [0.0, 0.0]));
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 3));
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_v2_scores_stopped_progress_above_fast_drive_through() {
+    let g = service(Lesson::Pickup);
+    let score = |speed: f32| {
+        let mut f = Fixture::new(g, 20);
+        f.school.service_v2 = true;
+        f.school.deadline_ticks = 20;
+        let id = init_service(&mut f, g);
+        service_drive(&mut f, g, false, id, 95.0);
+        for _ in 0..3 {
+            f.step_with_body(Step::at(g.target, [0.0, speed]), |body| body[127] = 100.0);
+        }
+        let r = f.record();
+        assert_ne!(r[R_STATUS], STATUS_SUCCESS as f32, "no pickup was accepted");
+        r[R_SCORE]
+    };
+    assert!(score(0.0) > score(10.0) + 190.0);
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_v2_blocked_timeout_is_seconds_and_does_not_kill_body() {
+    let g = service(Lesson::Pickup);
+    let mut f = Fixture::new(g, 20000);
+    f.school.service_v2 = true;
+    init_service(&mut f, g);
+    // Seed an accumulated timer; the actual threshold decision executes on GPU.
+    f.queue.write_buffer(&f.school.buf_state, (R_BLOCKED_SECONDS * 4) as u64,
+        bytemuck::bytes_of(&179.99f32));
+    f.step(Step::at(g.start, [0.0, 0.0]).throttle(0.0));
+    assert_eq!(status(&f.record()), (STATUS_FAILED, 18));
+    assert_eq!(f.body()[29], 1.0);
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_v2_invalid_delivery_cannot_earn_terminal_credit() {
+    let g = service(Lesson::Delivery);
+    let mut f = Fixture::new(g, 512);
+    f.school.service_v2 = true;
+    let id = init_service(&mut f, g);
+    f.step_with_body(Step::at(g.exit, [0.0, 0.0]), |body| {
+        body[68] = 1.0;
+        body[75] = id + 1.0;
+        body[127] = 200.0;
+    });
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_FAILED, 13));
+    assert!(r[R_SCORE] <= 0.0, "invalid delivery must not profit: {r:?}");
+}
+
+#[test]
+#[ignore = "real GPU"]
+fn service_v2_accepts_canonical_delivery_without_hidden_hold() {
+    let g = service(Lesson::Delivery);
+    let mut f = Fixture::new(g, 512);
+    f.school.service_v2 = true;
+    let id = init_service(&mut f, g);
+    service_drive(&mut f, g, false, id, 95.0);
+    f.step_with_body(Step::at(g.target, [0.0, 0.4]).pickup(), |body| {
+        body[65] = 1.0; body[72] = id; body[127] = 100.0;
+    });
+    assert_eq!(status(&f.record()), (STATUS_RUNNING, 0));
+    assert_eq!(f.record()[R_PHASE], 2.0);
+    f.step_with_body(Step::at(g.exit, [0.0, 0.4]).dropoff(), |body| {
+        body[68] = 1.0; body[75] = id; body[127] = 200.0;
+    });
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_SUCCESS, 0));
+    assert_eq!(r[R_DELIVERY_DELTA], 1.0);
+    assert!(r[R_SCORE] > 1600.0);
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn prepared_delivery_does_not_fabricate_pickup() {
+    let mut g = service(Lesson::Delivery);
+    g.start = g.exit;
+    let mut f = Fixture::new(g, 64);
+    f.school.service_v2 = true;
+    f.school.prepared_delivery = true;
+    f.school.reset(&f.queue, &[g]).unwrap();
+    f.step(Step::at(g.exit, [0.0, 0.0]));
+    let initial = f.school.download(&f.device, &f.queue, 1).unwrap()[0];
+    assert_eq!(initial[R_ACCEPTED_PICKUP_TICK], -1.0);
+    assert_eq!(initial[R_PHASE], 3.0); // First judged tick is already inside destination.
+    f.step_with_body(Step::at(g.exit, [0.0, 0.0]).dropoff(), |body| {
+        body[68] = 1.0;
+        body[75] = 1.0; // Canonical completed passenger identity.
+    });
+    let final_record = f.school.download(&f.device, &f.queue, 1).unwrap()[0];
+    assert_eq!(final_record[R_STATUS], STATUS_SUCCESS as f32);
+    assert_eq!(final_record[R_DELIVERY_DELTA], 1.0);
+    assert_eq!(final_record[R_ACCEPTED_PICKUP_TICK], -1.0);
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn prepared_initialization_precedes_first_service_and_has_no_events() {
+    let mut g = service(Lesson::Delivery);
+    g.start = g.exit;
+    let mut f = Fixture::new(g, 64);
+    f.school.service_v2 = true;
+    f.school.prepared_start = true;
+    f.school.prepared_delivery = true;
+    f.school.reset(&f.queue, &[g]).unwrap();
+    let mut input = [0.0f32; PHYSICS_INPUT_STRIDE];
+    input[36] = g.start[0]; input[38] = g.start[1];
+    f.queue.write_buffer(&f.input, 0, bytemuck::cast_slice(&input));
+    let mut encoder = f.device.create_command_encoder(&Default::default());
+    f.school.initialize(&f.device, &mut encoder, &f.input, &f.output, &f.body, &f.intent, 1).unwrap();
+    f.queue.submit(Some(encoder.finish()));
+    let initial = f.record();
+    assert_eq!(initial[R_ELAPSED], 0.0);
+    assert_eq!(initial[R_PHASE], 2.0);
+    assert_eq!(initial[R_ACCEPTED_PICKUP_TICK], -1.0);
+    assert_eq!(initial[R_ACCEPTED_DROPOFF_TICK], -1.0);
+    assert_eq!(initial[R_PICKUP_REQUESTS], 0.0);
+    let body = f.body();
+    assert_eq!(body[65], 1.0);
+    assert_eq!(body[80], 0.0); assert_eq!(body[81], 0.0);
+    // A first-tick canonical dropoff is accepted without requiring an extra judge tick.
+    f.step_with_body(Step::at(g.exit, [0.0, 0.0]).dropoff(), |body| {
+        body[68] = 1.0; body[75] = 1.0;
+    });
+    assert_eq!(f.record()[R_STATUS], STATUS_SUCCESS as f32);
+    assert_eq!(f.record()[R_ACCEPTED_PICKUP_TICK], -1.0);
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn service_v2_idle_at_station_times_out_without_a_service_event() {
+    let mut g = service(Lesson::Pickup);
+    g.start = g.target;
+    let mut f = Fixture::new(g, 4096); // 64-second episode, 32-second stall limit.
+    f.school.service_v2 = true;
+    init_service(&mut f, g);
+    f.queue.write_buffer(&f.school.buf_state, (R_BLOCKED_SECONDS * 4) as u64,
+        bytemuck::bytes_of(&31.99f32));
+    f.step(Step::at(g.target, [0.0, 0.0]).throttle(0.0));
+    let r = f.record();
+    assert_eq!(status(&r), (STATUS_FAILED, 18));
+    assert!(r[R_BLOCKED_SECONDS] >= 32.0);
+    assert_eq!(r[R_ACCEPTED_PICKUP_TICK], -1.0);
+    assert_eq!(f.body()[29], 1.0, "episode failure is not physical death");
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn service_evidence_freezes_at_success_and_failure() {
+    for succeed in [false, true] {
+        let g = service(Lesson::Pickup);
+        let mut f = Fixture::new(g, 4096);
+        f.school.service_v2 = true;
+        let id = init_service(&mut f, g);
+        if succeed {
+            f.step_with_body(Step::at(g.target, [0.0, 0.0]).pickup(), |body| {
+                body[65] = 1.0; body[72] = id;
+            });
+        } else {
+            f.queue.write_buffer(&f.school.buf_state, (R_BLOCKED_SECONDS * 4) as u64,
+                bytemuck::bytes_of(&31.99f32));
+            f.step(Step::at(g.start, [0.0, 0.0]).throttle(0.0));
+        }
+        let closed = f.record();
+        assert_eq!(closed[R_STATUS], if succeed { STATUS_SUCCESS as f32 } else { STATUS_FAILED as f32 });
+        f.step_with_body(Step::at(g.exit, [0.0, 0.0]).pickup().dropoff(), |body| {
+            body[65] = 1.0; body[72] = id; body[68] = 7.0; body[75] = id;
+            body[69] = 5.0;
+        });
+        assert_eq!(f.record(), closed, "closed attempt must ignore later requests/events");
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn delivery_pickup_does_not_lose_banked_approach_credit() {
+    let mut scores = Vec::new();
+    for pickup in [false, true] {
+        let g = service(Lesson::Delivery);
+        let mut f = Fixture::new(g, 32);
+        f.school.service_v2 = true;
+        let id = init_service(&mut f, g);
+        for (field, value) in [(R_ELAPSED,31.0f32),(R_PROGRESS,99.0),(R_SERVICE_READINESS,1.0),(R_PROPELLED,16.0)] {
+            f.queue.write_buffer(&f.school.buf_state, (field*4) as u64, bytemuck::bytes_of(&value));
+        }
+        let mut step = Step::at(g.target, [0.0, 0.2]);
+        if pickup { step = step.pickup(); }
+        f.step_with_body(step, |body| {
+            body[65] = if pickup {1.0} else {0.0};
+            body[72] = id;
+            body[127] = if pickup {100.0} else {99.0};
+        });
+        let r = f.record();
+        assert_eq!(r[R_STATUS], STATUS_FAILED as f32, "both attempts exhaust the same budget");
+        assert_eq!(r[R_DELIVERY_DELTA], 0.0, "pickup is not a delivery");
+        scores.push(r[R_SCORE]);
+    }
+    assert!(scores[1] >= scores[0], "accepted pickup must not lose completed readiness: {scores:?}");
+}
+
+#[test]
+#[ignore = "physical GPU only; diagnostic counterexample, not a desirable reward contract"]
+fn service_v2_banked_progress_counterexample() {
+    // Both attempts exhaust the same budget with no accepted service. One keeps
+    // 80 points of current route progress; the other retreats to its starting
+    // position. This isolates the judge from controller, physics and geometry.
+    // Passing reproduces the v2 defect; it does NOT approve the incentive.
+    let mut scores = Vec::new();
+    for current_progress in [80.0f32, 0.0] {
+        let g = service(Lesson::Pickup);
+        let mut f = Fixture::new(g, 64);
+        f.school.service_v2 = true;
+        init_service(&mut f, g);
+        for (field, value) in [(R_ELAPSED, 63.0f32), (R_PROGRESS, 80.0),
+            (R_PROPELLED, 16.0), (R_SERVICE_READINESS, 0.0)] {
+            f.queue.write_buffer(&f.school.buf_state, (field * 4) as u64,
+                bytemuck::bytes_of(&value));
+        }
+        let pos = if current_progress > 0.0 { [93.0, 84.0] } else { g.start };
+        f.step_with_body(Step::at(pos, [0.0, 1.0]), |body| body[127] = current_progress);
+        let r = f.record();
+        assert_eq!(r[R_STATUS], STATUS_FAILED as f32);
+        assert_eq!(r[R_ACCEPTED_PICKUP_TICK], -1.0);
+        assert_eq!(r[R_SERVICE_READINESS], 0.0);
+        assert_eq!(r[R_PROGRESS], 80.0);
+        scores.push(r[R_SCORE]);
+    }
+    assert!((scores[0] - scores[1]).abs() < 1e-5);
+    eprintln!("JUDGE INCENTIVE FAIL (reproduced): keep_progress={} retreat_to_start={}; no service in either arm", scores[0], scores[1]);
 }

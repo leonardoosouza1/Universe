@@ -20,6 +20,8 @@
 //! Explicit observation schema `organism-taxi-observation-v1`: organism160..175,
 //! taxi176..191 (see shader, which also publishes body160..175); these replace the legacy raw horizon for this scenario.
 //! Positions/destination/nearestservice are disclosed map observations. They do not steer.
+//! Observation v4 keeps the v3 packing but replaces task direction/distance with
+//! a legal-road route-field gradient and compressed remaining route distance.
 use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
@@ -61,6 +63,10 @@ pub enum TaxiMode {
 /// Taxi channel schema selected by `--navigation-observation`.
 pub const NAVIGATION_OBSERVATION_V2: u32 = 2;
 pub const NAVIGATION_OBSERVATION_V3: u32 = 3;
+/// Route-gradient navigation: legal-road direction and remaining route distance.
+pub const NAVIGATION_OBSERVATION_V4: u32 = 4;
+/// Bearing to a speed-dependent preview waypoint on the same immutable route field.
+pub const NAVIGATION_OBSERVATION_V5: u32 = 5;
 
 pub struct TaxiGpu {
     pub buf_world: wgpu::Buffer,
@@ -76,6 +82,7 @@ pub struct TaxiGpu {
     post_pipeline: wgpu::ComputePipeline,
     birth_pipeline: wgpu::ComputePipeline,
     senses_pipeline: wgpu::ComputePipeline,
+    route_senses_pipeline: wgpu::ComputePipeline,
 }
 fn storage(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -168,7 +175,14 @@ impl TaxiGpu {
         });
         let senses_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("taxi-senses-layout"),
-            entries: &[uniform(), storage(1, false), storage(3, true), storage(5, false)],
+            entries: &[
+                uniform(),
+                storage(1, false),
+                storage(2, false),
+                storage(3, true),
+                storage(5, false),
+                storage(6, true),
+            ],
         });
         let pipeline = |layout: &wgpu::BindGroupLayout, name: &str| {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -188,6 +202,7 @@ impl TaxiGpu {
         let post_pipeline = pipeline(&post_layout, "post");
         let birth_pipeline = pipeline(&birth_layout, "birth");
         let senses_pipeline = pipeline(&senses_layout, "senses");
+        let route_senses_pipeline = pipeline(&senses_layout, "route_senses");
         let buf_routes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("taxi-no-road-field"), contents: bytemuck::cast_slice(&[0.0f32; 4]),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
@@ -206,12 +221,16 @@ impl TaxiGpu {
             post_pipeline,
             birth_pipeline,
             senses_pipeline,
+            route_senses_pipeline,
         }
     }
     /// Select the taxi channel schema before the first tick; never mid-run.
     pub fn set_observation_version(&mut self, version: u32) {
         assert!(
-            matches!(version, NAVIGATION_OBSERVATION_V2 | NAVIGATION_OBSERVATION_V3),
+            matches!(
+                version,
+                NAVIGATION_OBSERVATION_V2 | NAVIGATION_OBSERVATION_V3 | NAVIGATION_OBSERVATION_V4 | NAVIGATION_OBSERVATION_V5
+            ),
             "unknown navigation observation version {version}"
         );
         self.observation_version = version;
@@ -400,12 +419,20 @@ impl TaxiGpu {
                     resource: bodybuf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.buf_world.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
                     binding: 3,
                     resource: physics_input.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: packed_wave.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.buf_routes.as_entire_binding(),
                 },
             ],
         });
@@ -416,6 +443,15 @@ impl TaxiGpu {
         pass.set_pipeline(&self.senses_pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups((n as u32).div_ceil(64), 1, 1);
+        drop(pass);
+        if matches!(self.observation_version, NAVIGATION_OBSERVATION_V4 | NAVIGATION_OBSERVATION_V5) {
+            let mut route = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("taxi-route-observation"), timestamp_writes: None,
+            });
+            route.set_pipeline(&self.route_senses_pipeline);
+            route.set_bind_group(0, &group, &[]);
+            route.dispatch_workgroups((n as u32).div_ceil(64), 1, 1);
+        }
     }
 }
 
@@ -849,5 +885,237 @@ mod tests {
         queue.write_buffer(&body, 0, bytemuck::cast_slice(&bodies));
         let idle = run(&taxi);
         assert_eq!((byte(idle[44], 2), byte(idle[44], 3), byte(idle[45], 3)), (0, 0, 127));
+    }
+
+    #[test]
+    #[ignore = "exclusive real GPU; route-gradient navigation fixture"]
+    fn taxi_gpu_navigation_v4_follows_legal_route_gradient() {
+        let v3 = crate::organism_channels::channel_manifest(3);
+        let v4 = crate::organism_channels::channel_manifest(4);
+        assert_eq!(v4["schema"], "organism-city-observation-v4");
+        for channel in 0..192 {
+            assert_eq!(v3["channels"][channel] != v4["channels"][channel], matches!(channel,178|179|183));
+        }
+        for channel in [172usize,173,182,191] {
+            assert_eq!(v4["channels"][channel]["producer"], "src/gpu/traffic.wgsl::senses");
+        }
+        use super::*;
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("real GPU adapter required; no CPU fallback");
+        assert_ne!(adapter.get_info().device_type, wgpu::DeviceType::Cpu);
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("taxi v4 navigation fixture"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+            },
+            None,
+        ))
+        .expect("GPU device");
+        let stations = [
+            [0.0, 0.0, 10000.0, 10.0, 10.0, 0.0, 0.0, 0.0],
+            [30.0, 30.0, 10000.0, 10.0, 10.0, 0.0, 0.0, 0.0],
+        ];
+        let buffer = |data: &[f32]| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("taxi v4 navigation fixture"),
+                contents: bytemuck::cast_slice(data),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            })
+        };
+        let size = 16usize;
+        let cell = 3.0f32;
+        let mut routes = vec![size as f32, cell, 2.0, 1.0];
+        // A 3 m/cell legal-road field with an L-shaped route and a tied branch:
+        // row 0 from x=0..10, column 10 to y=10, plus column 5 to y=5 and
+        // row 5 to x=10. The direct diagonal crosses -1 off-road cells.
+        for target in [(0i32, 0i32), (10i32, 10i32)] {
+            for row in 0..size {
+                for col in 0..size {
+                    let legal = (row == 0 && col <= 10)
+                        || (col == 10 && row <= 10)
+                        || (col == 5 && row <= 5)
+                        || (row == 5 && col >= 5 && col <= 10);
+                    let distance = if legal {
+                        if target == (0, 0) {
+                            if row == 0 {
+                                col as i32
+                            } else if col == 10 {
+                                row as i32 + 10
+                            } else if col == 5 {
+                                row as i32 + 5
+                            } else {
+                                col as i32 + 5
+                            }
+                        } else if row == 0 {
+                            20 - col as i32
+                        } else if col == 10 {
+                            10 - row as i32
+                        } else if col == 5 {
+                            15 - row as i32
+                        } else {
+                            15 - col as i32
+                        }
+                    } else {
+                        -1
+                    };
+                    routes.push(distance as f32 * cell);
+                }
+            }
+        }
+        let mut taxi = TaxiGpu::new(&device, &queue, 4, &stations);
+        taxi.buf_routes = buffer(&routes);
+        taxi.set_observation_version(NAVIGATION_OBSERVATION_V4);
+        let mut bodies = vec![0.0f32; 4 * 128];
+        let mut physics = vec![0.0f32; 4 * 92];
+        for (being, position) in [(0.0, 0.0), (15.0, 15.0), (30.0, 27.0), (30.0, 30.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let s = being * 128;
+            bodies[s + 29] = 1.0;
+            bodies[s + 65] = 1.0;
+            bodies[s + 66] = 30.0;
+            bodies[s + 67] = 30.0;
+            bodies[s + 84] = 1.0;
+            physics[being * 92 + 36] = position.0;
+            physics[being * 92 + 38] = position.1;
+            physics[being * 92 + 40] = 1.0;
+            physics[being * 92 + 46] = 1.0;
+        }
+        let body = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("taxi v4 body"),
+            contents: bytemuck::cast_slice(&bodies),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+        });
+        let input = buffer(&physics);
+        let wave = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("taxi v4 wave"),
+            contents: bytemuck::cast_slice(&vec![0u32; 4 * 48]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+        let read = |source: &wgpu::Buffer, words: usize| -> Vec<u32> {
+            let staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (words * 4) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_buffer_to_buffer(source, 0, &staging, 0, (words * 4) as u64);
+            queue.submit(Some(encoder.finish()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            staging.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                tx.send(result).unwrap();
+            });
+            device.poll(wgpu::Maintain::Wait);
+            rx.recv().unwrap().unwrap();
+            let out =
+                bytemuck::cast_slice::<u8, u32>(&staging.slice(..).get_mapped_range()).to_vec();
+            staging.unmap();
+            out
+        };
+        let run = || {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            taxi.encode_senses(&device, &mut encoder, &body, &input, &wave, 4);
+            queue.submit(Some(encoder.finish()));
+            read(&wave, 4 * 48)
+        };
+        let output = run();
+        let byte = |word: u32, lane: usize| -> i32 {
+            let raw = ((word >> (lane * 8)) & 255) as i32;
+            if raw > 127 { raw - 256 } else { raw }
+        };
+        let channel = |being: usize, channel: usize| {
+            byte(output[being * 48 + channel / 4], channel % 4)
+        };
+        assert_eq!((channel(0, 178), channel(0, 179)), (127, 0));
+        assert_eq!((channel(1, 178), channel(1, 179)), (127, 0), "forward tie wins");
+        assert_eq!((channel(2, 178), channel(2, 179)), (0, 127), "near station point");
+        assert_eq!((channel(3, 178), channel(3, 179), channel(3, 183)), (0, 0, 0));
+        assert_eq!(channel(0, 183), 48);
+        assert_eq!(channel(1, 183), 29);
+        assert_eq!(channel(2, 183), 4);
+        physics[36] = 5000.0;
+        queue.write_buffer(&input, 0, bytemuck::cast_slice(&physics));
+        let offroad = run();
+        let offroad_channel = |channel: usize| {
+            byte(offroad[channel / 4], channel % 4)
+        };
+        assert_eq!((offroad_channel(178), offroad_channel(179), offroad_channel(183)), (0, 0, 127));
+        bodies[65] = 0.0;
+        physics[36] = 0.0;
+        queue.write_buffer(&body, 0, bytemuck::cast_slice(&bodies));
+        queue.write_buffer(&input, 0, bytemuck::cast_slice(&physics));
+        let idle = run();
+        let idle_channel = |channel: usize| byte(idle[channel / 4], channel % 4);
+        assert_eq!((idle_channel(178), idle_channel(179), idle_channel(183)), (0, 0, 127));
+        assert_eq!(
+            read(&body, bodies.len()),
+            bytemuck::cast_slice::<f32, u32>(&bodies).to_vec(),
+            "v4 senses must not mutate body state"
+        );
+        assert_eq!(
+            read(&input, physics.len()),
+            bytemuck::cast_slice::<f32, u32>(&physics).to_vec(),
+            "v4 senses must not mutate physics input"
+        );
+
+        // Same road field and physical poses, with preview as the only change.
+        for b in 0..4 {
+            bodies[b*128+65]=1.0;
+            physics[b*92+36]=18.0;physics[b*92+38]=0.0;
+            physics[b*92+40]=1.0;physics[b*92+42]=0.0;
+            physics[b*92+44]=0.0;physics[b*92+46]=1.0;
+        }
+        physics[92+40]=0.0;physics[92+42]=1.0;
+        physics[92+44]=-1.0;physics[92+46]=0.0;
+        physics[2*92+36]=30.0;physics[2*92+38]=27.0;
+        physics[3*92+36]=5000.0;
+        queue.write_buffer(&body,0,bytemuck::cast_slice(&bodies));
+        queue.write_buffer(&input,0,bytemuck::cast_slice(&physics));
+        let evaluate = |taxi: &TaxiGpu| {
+            let mut encoder=device.create_command_encoder(&Default::default());
+            taxi.encode_senses(&device,&mut encoder,&body,&input,&wave,4);
+            queue.submit(Some(encoder.finish()));read(&wave,4*48)
+        };
+        let local=evaluate(&taxi);
+        let preview_version=if std::env::var("UNIVERSE_CONTRACT_FAULT").as_deref()==Ok("no-navigation-preview") {
+            NAVIGATION_OBSERVATION_V4
+        } else {NAVIGATION_OBSERVATION_V5};
+        taxi.set_observation_version(preview_version);
+        let preview=evaluate(&taxi);
+        let get=|row:&[u32],b:usize,ch:usize|byte(row[b*48+ch/4],ch%4);
+        assert_eq!((get(&local,0,178),get(&local,0,179)),(127,0));
+        assert_eq!((get(&preview,0,178),get(&preview,0,179)),(114,57),
+            "preview must expose the turn before reaching the junction");
+        assert_eq!((get(&preview,1,178),get(&preview,1,179)),(57,-114),"preview bearing uses body frame");
+        assert_eq!((get(&preview,2,178),get(&preview,2,179)),(0,127),"near-station precision retained");
+        assert_eq!((get(&preview,3,178),get(&preview,3,179),get(&preview,3,183)),(0,0,127));
+        for b in 0..4 {for ch in 0..192 {if ch!=178 && ch!=179 {
+            assert_eq!(get(&local,b,ch),get(&preview,b,ch),"preview modified unrelated channel {ch}");
+        }}}
+        physics[0]=20.0;
+        queue.write_buffer(&input,0,bytemuck::cast_slice(&physics));
+        let fast=evaluate(&taxi);
+        assert_eq!((get(&fast,0,178),get(&fast,0,179)),(57,114),"faster approach needs longer preview");
+        assert_eq!(read(&body,bodies.len()),bytemuck::cast_slice::<f32,u32>(&bodies).to_vec());
+        assert_eq!(read(&input,physics.len()),bytemuck::cast_slice::<f32,u32>(&physics).to_vec(),"preview cannot write controls or pose");
+        let v5=crate::organism_channels::channel_manifest(5);
+        assert_eq!(v5["schema"],"organism-city-observation-v5");
+        for ch in 0..192 {assert_eq!(v4["channels"][ch]!=v5["channels"][ch],matches!(ch,178|179));}
     }
 }

@@ -2,7 +2,7 @@
 // KAN head -> slow/hip modulation -> arbitration/clamps -> steer smoothing.
 struct Params {
   n: u32,
-  flags: u32, // bit 0: linear head, bit 1: signed throttle arbitration, bit 2: low-speed brake, bit 3: exclusive pedals, bit 4: signed brake
+  flags: u32, // bits0..4: linear/signed throttle/low-speed brake/exclusive/signed brake; bit5: brake priority
   steering_alpha: f32,
   slow_steering_authority: f32,
   gearbox_mode: u32,
@@ -82,8 +82,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // Legacy callers retain the historical independent-pedal behaviour.
   let exclusive = (p.flags & FLAG_EXCLUSIVE_PEDALS) != 0u;
   let longitudinal = throttle_before_arbitration + drive_from_brake_head - brake_before_gate;
-  let throttle = select(throttle_before_arbitration, clamp(longitudinal, 0.0, throttle_cap), exclusive);
-  let brake_arbitrated = select(brake_before_gate, max(-longitudinal, 0.0), exclusive);
+  var throttle = select(throttle_before_arbitration, clamp(longitudinal, 0.0, throttle_cap), exclusive);
+  var brake_arbitrated = select(brake_before_gate, max(-longitudinal, 0.0), exclusive);
+  if ((p.flags & 32u) != 0u) {
+    // A request above numerical zero owns the longitudinal actuator. This
+    // epsilon excludes spline roundoff at zero, not a learned braking threshold.
+    let requested_brake = brake_before_gate > 0.000001;
+    throttle = select(throttle_before_arbitration, 0.0, requested_brake);
+    brake_arbitrated = select(0.0, brake_before_gate, requested_brake);
+  }
   let brake = select(brake_arbitrated, 0.0, brake_arbitrated <= 0.0 || suppress_low_speed);
   let filtered = clamp(previous_steer[b] * (1.0 - p.steering_alpha) + steer * p.steering_alpha, -1.0, 1.0);
   physics[pb + 51u] = throttle;
@@ -96,8 +103,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   trace[tr+6u]=speed;trace[tr+7u]=filtered;
   trace[tr+8u]=select(0.0,1.0,suppress_low_speed && brake_before_gate>0.0);
   for(var k=9u;k<16u;k++){trace[tr+k]=0.0;}
+  trace[tr+10u]=throttle_before_arbitration;
+  trace[tr+11u]=max(0.0,brake_before_gate-brake_arbitrated);
 
 
+  let powertrain_v2 = (bitcast<u32>(physics[pb+87u]) & 8192u) != 0u;
+  if (powertrain_v2) {
+    // Request is overwritten every tick; only body pre can authorize paid cranking.
+    physics[pb+83u] = select(0.0,1.0,intent[ib+9u]>0.5);
+    trace[tr+9u] = physics[pb+83u];
+  }
   // Resident gearbox state mirrors context.rs: automatic thresholds are 85%/30%
   // RPM, engagement requires >3.5 m/s, and each change locks the box for 0.35 s.
   // Neural rows 3/4 are edge-triggered. Action row 8 is the explicit near-stop
@@ -107,20 +122,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rpm = max(0.0, physics[pb + 49u]);
     let max_rpm = max(1.0, physics[pb + 50u]);
     let near_stop = speed < 0.5;
-    if (near_stop && intent[ib + 8u] > 0.5) {
+    let previous_gear = gs.gear;
+    let cranking = powertrain_v2 && physics[pb+58u] > 0.0;
+    if (near_stop && !cranking && intent[ib + 8u] > 0.5) {
       gs.gear = 0u;
-    } else if (near_stop && intent[ib + 8u] <= 0.5 && gs.gear == 0u) {
+    } else if (near_stop && !cranking && intent[ib + 8u] <= 0.5 && gs.gear == 0u) {
       gs.gear = 2u;
     }
     gs.cooldown = max(0.0, gs.cooldown - p.dt);
-    if (gs.cooldown <= 0.0 && !(near_stop && intent[ib + 8u] > 0.5)) {
+    if (gs.cooldown <= 0.0 && !cranking && !(near_stop && intent[ib + 8u] > 0.5)) {
       let engaged = gs.gear >= 2u && speed > 3.5;
       var request: i32 = 0;
-      if (engaged && rpm > max_rpm * 0.85 && gs.gear < p.gear_cap) {
+      let automatic = !powertrain_v2 || p.gearbox_mode == 1u;
+      if (automatic && engaged && rpm > max_rpm * 0.85 && gs.gear < p.gear_cap) {
         request = 1;
-      } else if (engaged && rpm < max_rpm * 0.30 && gs.gear > 2u) {
+      } else if (automatic && (engaged || powertrain_v2) && rpm < max_rpm * 0.30 && gs.gear > 2u) {
         request = -1;
-      } else if (p.gearbox_mode == 2u && engaged) {
+      } else if (p.gearbox_mode == 2u && (engaged || powertrain_v2)) {
         if (intent[ib + 3u] > 0.5 && gs.prev_up <= 0.5 && gs.gear < p.gear_cap) {
           request = 1;
         } else if (intent[ib + 4u] > 0.5 && gs.prev_down <= 0.5 && gs.gear > 2u) {
@@ -133,6 +151,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       }
       gs.prev_up = intent[ib + 3u];
       gs.prev_down = intent[ib + 4u];
+    }
+    if (powertrain_v2 && gs.gear != previous_gear) {
+      gs.cooldown = 0.35;
+      physics[pb+56u] = 0.35;
     }
     physics[pb + 55u] = bitcast<f32>(gs.gear);
     gear_state[b] = gs;

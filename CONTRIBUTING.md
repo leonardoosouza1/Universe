@@ -1,5 +1,11 @@
 # Contributing to Universe
 
+Current behavioral work must follow
+[VALIDATION-WORKFLOW.md](docs/VALIDATION-WORKFLOW.md): inspect the executed
+sensor→brain→action→body→task path, reproduce the failure on the real GPU, and
+validate the actual replay before claiming success. Use its evidence template.
+The owner's current GPU-only restriction overrides historical test commands.
+
 Universe is a neuroevolution simulator written in Rust. Beings with a layered brain
 (perception → KAN → CfC → BitLinear L1 → FloatLinear L2 → motor) drive procedural tracks and
 are selected by a genetic algorithm. The simulation tick runs on the GPU through `wgpu` and

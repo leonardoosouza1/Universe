@@ -1,5 +1,17 @@
 # Universe — working notes for agents
 
+## Required workflow: evidence before implementation and completion
+
+Read [AGENTS.md](AGENTS.md) and
+[VALIDATION-WORKFLOW.md](docs/VALIDATION-WORKFLOW.md) before diagnosing, editing,
+running or publishing results. Use its investigation template and source map.
+Trace the same being/tick from sensors through all brain/action/body stages to
+motion and task outcome. Inspect the actual supplied replay. Failed acceptance
+requires another bounded diagnosis/correction cycle, not a success claim based
+on fitness, peak speed, a short lesson, or an agent's report. This current workflow
+and the owner's GPU-only restriction take precedence over historical commands
+below; it does not authorize CPU numerical validators.
+
 ## Current execution limit — owner's instruction
 
 Leonardo reported a desktop freeze and requires **GPU-only numerical validation**
