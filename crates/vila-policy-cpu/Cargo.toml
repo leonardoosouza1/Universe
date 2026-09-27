@@ -1,0 +1,12 @@
+[package]
+name = "vila-policy-cpu"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Isolated from the GPU workspace and from the approved predictive shadow.
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
