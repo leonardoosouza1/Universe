@@ -1073,3 +1073,48 @@ Rejeitar veto de evento como solução de controle. Próximo ensaio, se
 justificado: adquirir lease antes da ordem e suspender o comportamento
 `MoveToTargetSink` inteiro de modo reversível, sem desativar o mob,
 testando caminho/movimento/saúde/retorno em cópia; manter flag veto off.
+Preregistro 27/09 ~21:05 UTC, próximo elo após veto falhar. No Paper
+1.21.4-232, `Brain.availableBehaviorsByPriority` contém sets de
+`BehaviorControl`; tanto start quanto tick/getRunningBehaviors percorrem
+esse mapa. `MoveToTargetSink.stop` para `PathNavigation`, logo cancelar
+seu evento não basta. Hipótese: remover **a única instância** de
+`MoveToTargetSink` do set do Brain do UUID selecionado ANTES de emitir
+`walk_to`, sem chamar `doStop` e sem `setAware(false)`, permitirá que o
+`Path` aceito progrida até<=0,25 bloco. Restaurar a mesma instância no
+mesmo set ao chegar ou até40 ticks, registrando status e identidade;
+falha de reflexão/topologia deve rejeitar comando sem mutar o Brain.
+Variável única: flag experimental `suspend_brain_move`, default false,
+na mesma fonte/UUID/alvo/velocidade/raio/seq de `writer-identity-2036`.
+Medir por tick rota/objeto/endpoint, velocidade, distância, saúde,
+sono, eventos Brain e retorno vanilla pós-lease; exit0/zero drops.
+Critérios separados: registry ausente durante lease e restaurado (mecanismo),
+chegada <=0,25 antes de40 ticks (motor), sem dano e vanilla volta
+(recuperação). Caso falhe, registrar primeiro ponto sem aumentar prazo,
+raio ou velocidade. Não implantar no principal nem chamar isso IA aprendida.
+Resultado ~21:11 UTC de `brain-move-lease-2105` (flag experimental
+`suspend_brain_move`, default false): o Brain v10/seq1 tinha uma única
+instância `MoveToTargetSink`, status STOPPED, removida do registro antes
+do `walk_to` e reinserida com a **mesma identidade** no tick13860
+(`restored=true`). Aware permaneceu true; nenhum pedido de caminho do
+`MoveToTargetSink` apareceu na janela. Path do piloto id1545862012
+persistiu até13822, com próximo nó já final, mas a API Paper passou a
+reportar caminho ausente no13823; o corpo parou a0,676 bloco do alvo,
+sem chegada<=0,25. Resultado `brain_move_lease_end` no13860,
+saúde20/exit0/zero drops. O ganho mecânico de evitar preempção PASS;
+chegada FAIL; retorno funcional vanilla após restaurar NOT MEASURED.
+Fonte/UUID/tempo/regra norte1 iguais, mas a posição inicial diferiu
+~0,153 bloco em X da cópia anterior; portanto não são trajetórias
+rigorosamente pareadas nem o alvo absoluto foi idêntico.
+
+Bytecode Paper esclarece uma hipótese rival ao `stop` externo:
+`PaperPathfinder.getCurrentPath()` retorna null se o NMS Path está null
+**ou isDone**. `PathNavigation.followThePath` avança o último nó quando
+o corpo fica dentro da tolerância por eixo em torno do centro do bloco.
+No13822 corpo(-499,529;-370,299) estava a(dx~0,029,dz~0,201) do
+centro do nó final(-499,5;-370,5), enquanto a0,678 do alvo contínuo.
+Assim, término natural do Path por tolerância é plausível; o trace
+atual não lê `Path.isDone` diretamente, então não descarta
+`PathNavigation.stop` por outro comportamento. Próximo teste mínimo:
+instrumentar **raw NMS Path/null/isDone** e causa de término sem mudar
+alvo, velocidade, raio ou recompensa; só então escolher correção motora
+precisa. O teste atual não valida M1 nem IA aprendida.
