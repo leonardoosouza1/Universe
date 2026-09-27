@@ -1038,3 +1038,38 @@ chama `PathNavigation.moveTo(this.path,speedModifier)`: neste fixture
 o Brain instala outra rota. Ainda não se mediu quem escreveu originalmente
 `WALK_TARGET`, nem se intervenção seletiva preserva locomoção.
 Nenhum deploy/peso alterado; M1 e ganho continuam não medidos.
+Preregistro 27/09 ~20:43 UTC, próximo experimento de propriedade da rota,
+antes de alterar Java. O traço `writer-identity-2036` identificou
+`MoveToTargetSink.tryComputePath` como fonte da rota substituta no13822.
+Hipótese: vetar **somente** `EntityPathfindEvent` desse comportamento para
+o UUID selecionado durante até40 ticks de uma ordem `walk_to` já aceita
+impedirá a substituição sem desligar `PathNavigation`/física. O bytecode
+Paper 1.21.4-232 mostra que evento cancelado remove o destino antes do
+pathfinder; porém `MoveToTargetSink` pode parar a navegação por outra via,
+portanto preservar a rota e mover são desfechos a medir, não assumir.
+Variável única: flag opt-in `veto_brain_pathfind`, default false. Comparar
+com a cópia `writer-identity-2036` de mesma fonte, UUID, alvo, velocidade,
+raio, comando e horizonte; registrar evento cancelado, identidade/final
+do Path a cada tick, WALK_TARGET, velocidade, distância, saúde, sono,
+motivo terminal, restauração pós-lease, drops/exit. Critério de mecanismo:
+sem rota substituta de `MoveToTargetSink`; critério motor separado:
+chegada <=0,25 bloco antes do prazo e saúde intacta. Se rota persistir
+mas corpo parar, classificar motor FAIL; se outro escritor substituir,
+propriedade FAIL. Não classificar isso como IA melhor ou executar M1 antes
+de um caminho livre chegar. Sem deploy/pesos, e a cópia deve encerrar.
+
+Resultado ~20:50 UTC: cópia `path-veto-2046`, mesma fonte/UUID/seq/
+alvo/raio, encerrou exit0/zero drops/saúde20, sem chegada. A ordem
+foi aplicada13820 e o Path do piloto (id358901963) persistiu em13821–13822;
+47 `EntityPathfindEvent` de `MoveToTargetSink` foram cancelados até13860.
+Porém no13823 o caminho ativo já era null; o corpo desacelerou e ficou
+~0,528 bloco distante do alvo até13860. No13861, fora da janela, o
+Brain instalou outra rota e o outcome fechou `path_replaced`, `arrived=false`.
+Portanto o veto bloqueou a rota substituta durante a janela, mas NÃO
+preservou navegação nem completou a ação. O bytecode de
+`MoveToTargetSink.stop` inclui `PathNavigation.stop`; não medimos essa
+chamada específica no tick13823, então atribuir o null a ela é hipótese.
+Rejeitar veto de evento como solução de controle. Próximo ensaio, se
+justificado: adquirir lease antes da ordem e suspender o comportamento
+`MoveToTargetSink` inteiro de modo reversível, sem desativar o mob,
+testando caminho/movimento/saúde/retorno em cópia; manter flag veto off.
