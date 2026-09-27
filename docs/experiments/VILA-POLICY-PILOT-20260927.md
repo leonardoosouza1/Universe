@@ -775,3 +775,136 @@ estado físico/claim atual não foi verificado. Próximo par em mundo
 consistente deve testar acesso físico vs controle intacto, medindo rota,
 profissão e trabalho; não adicionar postos em lote nem tratar correlação
 como causa.
+
+## Preregistro de diagnóstico do posto atual — 18:04 UTC
+
+Backup completo consistente `vila-data-20260927T175655Z.tar.gz` foi criado
+com Minecraft parado, índice tar verificado pelo script e principal religado.
+O RCON do principal confirmou `SMITHING_TABLE` física em (-501,85,-406)
+após o reinício; isso não prova POI livre/reivindicável. Uma fonte isolada
+`profession-source-1756` contém os três mundos extraídos do backup e os
+outros arquivos de servidor de um fixture anterior, sem episódios/segredos
+no Git. UUID selecionado v9 `08368130-915e-417a-aac3-5ca660220b56`.
+
+Primeiro teste **diagnóstico**, sem variante ambiental: em cópia com0,5CPU/
+3GiB/sem portas, verificar UUID e bancada por RCON, teleportar só ali v9 à
+posição histórica (-495.7,88,-403.7), ajustar manhã apenas na cópia e
+observar por1200 game ticks. O mesmo comando inicial seria dado aos dois
+braços de um par futuro. Medir profissão/JOB_SITE/CANT_REACH e Brain path
+em keyframes; saúde, resgates, drops e tick. Uma profissão adquirida no
+controle ou rota completa refuta bloqueio durável no novo snapshot; ausência
+de trabalho não prova geometria sem diagnóstico de clearance/POI. Só propor
+remoção de um bloco após identificá-lo e registrar mesmo início/horizonte
+para controle/intervenção. O teste não é política IA nem altera o principal.
+
+## Preregistro: disputa de navegação — 18:15 UTC
+
+Crítica externa revisada: `Pathfinder.moveTo` confirma início da navegação,
+não chegada nem persistência; `setAware(false)` desativa comportamento
+próprio e contamina a comparação. Hipótese principal: Brain vanilla
+substitui ou cancela rota piloto entre ticks. Alternativas: rota permanece
+mas corpo/colisão impedem avanço; cenário anterior não tem chão livre.
+O par de passo local anterior refuta apenas aquela integração no fixture.
+
+Implementar traço Java **opt-in** de no máximo40 ticks por ordem `walk_to`,
+com `getCurrentPath`/`hasPath`, ponto final e próximo índice, `WALK_TARGET`
+e behaviors do Brain lidos pelo Recorder, posição/velocidade/chão/sono,
+distância ao alvo, identidade seq/episódio/UUID/tick e motivo final.
+Capturar imediatamente após `moveTo` e em cada tick seguinte antes do
+refresh; não desativar Brain. Baseline controlado primeiro em chão livre,
+mesmo save/UUID/tick e alvo1 bloco, comparando nenhuma ordem vs uma
+ordem sem refresh; só depois local problemático e variante com refresh.
+Sucesso técnico = deslocamento dirigido além do controle sem dano, não
+`moveTo=true`; tarefa final `unstick` ainda exige sair da elegibilidade,
+retomar atividade útil e não recair/resgatar num horizonte definido.
+Traço não será implantado no principal sem gate.
+
+Auditar também o rótulo `fell`: `Rescue.tick` atual marca `fell` somente se
+Y < centroY-belowY; isso é altitude relativa, não prova queda ou dano.
+`lethal_fall` separado usa evento de dano fatal e é mais específico.
+Não treinar recompensa de prevenção sobre `fell` antes de redefinir
+resultado com trajetória vertical/dano/chão. Monitorar HP baixo e reserva
+de disco; fome principal continua desligada.
+
+O diagnóstico de profissão `profession-v9-diagnostic-1805` não será usado
+como par: `/time set 1000` na cópia reiniciou fullTime para1000, enquanto
+gameTime seguiu em11.418.652, e v9 voltou de imediato ao alvo HOME. Nenhum
+JOB_SITE apareceu em1200 game ticks; isso não testa acesso ao posto.
+Container exit0/zero drops e principal intacto. Corrigir harness com
+`time add` monotônico e início acordado se a tarefa de profissão voltar à
+prioridade, sem misturar este resultado ao baseline.
+
+### Resultado do primeiro traço e próximo gate — 18:24 UTC
+
+No fixture v10 isolado, `walk_to` para um bloco ao norte, sem refresh nos
+primeiros 40 ticks, retornou `moveTo=true` no tick 13820. O caminho ativo
+imediato terminava em (-500,95,-371); no tick 13822 já terminava em
+(-500,95,-370), enquanto `WALK_TARGET` vanilla apontava para
+(-500,96,-368). O caminho alternou presente/ausente repetidamente e o
+corpo ficou sem velocidade do tick 13837 ao 13860. Houve só 0,053 bloco de
+progresso norte no horizonte; 42 eventos de traço, episódio exit0/zero
+drops. Isso demonstra substituição/cancelamento da rota **nesta
+integração e neste fixture**; o logger amostra no callback do plugin, por
+isso não identifica sozinho o autor de cada escrita NMS.
+
+Próxima alteração limitada: encerrar uma ordem assim que o ponto final do
+caminho ativo divergir do final aceito em mais de meio bloco, com motivo
+`path_replaced`, sem refresh nem recompensa positiva. Reexecutar a mesma
+cópia para validar resultado correlacionado, e então um alvo em chão livre
+para separar disputa geral de obstáculo local. A alternativa de controle
+exclusivo via player bot será prototipada separadamente: ele não possui
+Brain de Villager, mas tampouco é Villager para profissões/reprodução.
+
+## Preregistro: piloto exclusivo solicitado pelo dono — 18:31 UTC
+
+O dono pediu isolamento: um aldeão selecionado deve ficar parado, sem
+decisões do Brain vanilla, até receber saída da política. Fazer **somente em
+cópia** com configuração opt-in padrão desligada. Usar `Mob.setAware(false)`
+como primeiro ensaio de exclusividade por uma janela limitada, registrar
+`aware` em cada traço e restaurar `true` ao encerrar; marcador persistente
+permite recuperar a entidade após reinício inesperado. O teste deve mostrar
+se `Pathfinder.moveTo` ainda produz deslocamento sob esse modo; a API pode
+desativar também parte da navegação. Se falhar, não forçar sucesso com
+teleportes ou chamar `moveTo=true` de movimento: experimentar um atuador de
+velocidade discreta com checagem de colisão, ou um player bot em processo
+separado. Nenhuma alteração no principal, no modelo aprovado ou na
+população. Medir caminho/posição/velocidade/saúde por40 ticks, resultado
+correlacionado e recuperação do `aware` no save após stop. Antes de
+qualquer comparativo de tarefa, separar controle motor de qualidade da
+política: esta ainda não escolheu a ação neste fixture.
+
+### Primeiro resultado exclusivo — 18:40 UTC
+
+No mesmo fixture v10, `aware=false` começou no tick 13773. `moveTo=true`
+no 13820 criou rota até (-500,95,-372); o ponto final ficou idêntico nos
+40 ticks seguintes, `WALK_TARGET` permaneceu null, mas posição e velocidade
+ficaram constantes. `progress=0`, saúde20, exit0/zero drops. No stop,
+`aware=true` foi emitido no tick13884. Portanto `setAware(false)` isola a
+decisão vanilla, mas **também paralisa o atuador Pathfinder neste ensaio**.
+Não declarar controle motor. Próximo teste discriminante: aplicar uma única
+velocidade horizontal norte de magnitude0,2, com `NudgeSafety` existente,
+sob o mesmo modo exclusivo, comparar deslocamento e saúde; se físico,
+projetar atuador contínuo com validação de cada passo. Não usar teleporte
+para mascarar imobilidade.
+
+### Pulso físico exclusivo — 18:46 UTC
+
+Com `aware=false` no v10, um comando `nudge` atômico seq1 (vx0,
+vz-0,2), autorizado pelo `NudgeSafety` no tick13820, deslocou 0,5223
+bloco exatamente ao norte até tick13860; lateral0, saúde20→20, zero drops,
+container exit0. O outcome traz episódio/UUID/v/seq e foi fechado por
+deadline; awareness foi devolvida no stop normal. Não houve chegada a uma
+meta útil, política Rust, `learn` ou superioridade sobre vanilla. O
+atuador de velocidade **funciona em uma aplicação** com Brain suprimido.
+Próximo gate: verificar save/restart com piloto desligado, depois definir
+contrato de pulsos curtos com observação/resultado a cada passo e comparar
+uma tarefa real contra vanilla e regra fixa. Se a física ou colisão mudar
+em outro terreno, abortar e restaurar; não extrapolar 0,52 bloco.
+
+No restart da **mesma cópia** com `ai_pilot.enabled=false`, a consulta
+RCON do UUID não encontrou `NoAI` nem `BukkitValues`; o segundo episódio
+fechou no tick14207, exit0/zero drops. Isso valida restauração no stop
+normal e persistência do estado aware nesse ensaio. O monitor de restart
+esperava um campo `NoAI:0b` explícito e foi interrompido após a consulta;
+o container foi parado limpo. Resultado manual está em
+`~/.local/state/vila-viva/exclusive-restart-check-20260927.json`.
