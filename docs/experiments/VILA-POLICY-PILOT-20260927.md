@@ -328,6 +328,29 @@ resgate, exit0/zero drops. O raio conserta o falso positivo de chegada,
 `WALK_TARGET`/navegação do Brain e testar mecanismo delimitado que mantenha
 ação sem dano, em caso realmente preso, contra vanilla e regra fixa.
 
+## Preregistro: relógio e tipo de `CANT_REACH` — 17:39 UTC
+
+Auditoria read-only do episódio Paper `survival-step-radius-1722` encontrou
+`brain_mem_cant_reach_walk_target_since="4939"` nos keyframes de v10,
+enquanto `vila-survival-observation/v1` publicava `cant_reach_since_tick:null`
+e `cant_reach_age_ticks:null`. Causa no produtor: `BrainReader.describe()`
+serializa memórias como texto e `SurvivalObservation` só aceita `Number`.
+No mundo principal, RCON `time query gametime`≈11.329.457 e `tick` do
+snapshot≈11.329.459; os valores de `CANT_REACH` são números nesse relógio,
+mas não devemos pressupor que `world.getFullTime()` é sempre igual a
+`world.getGameTime()` quando comandos de tempo são usados.
+
+Corrigir somente o plugin opt-in em contrato **v2**: expor `brain_game_time`
+via `World.getGameTime()`, converter memória decimal textual ou `Number` para
+inteiro não negativo finito, rejeitar formato inválido/futuro; publicar
+`cant_reach_since_game_tick` e `cant_reach_age_ticks` em unidades de game
+ticks. `tick` permanece `getFullTime()` para frescor do comando. Atualizar
+monitores de novas cópias para exigirem v2; v1 histórico permanece artefato
+da falha. Compilar e, em cópia Paper parada/UUID v10, exigir sinal numérico
+e idade coerente, sem ordem, exit0/zero drops. **Não** concluir que o ser
+está preso só pela presença da memória: testar persistência, movimento,
+alvo e benefício de ação em outro passo. Principal não muda.
+
 ## Ensaio preregistrado: evidência de estagnação antes de `return_home` — 14:57 UTC
 
 O par `policy-feedback-home-1434`/`policy-feedback-vanilla-1443` refutou ganho
@@ -728,3 +751,27 @@ estava bloqueada pela geometria e muda o baseline. O núcleo Rust de política
 continua desconectado, sem atualização por feedback real; não inferir
 superioridade de IA deste resultado. Próximo teste: candidato positivo e
 piloto opt-in em cópia já acessível, com comparação contra o novo vanilla.
+
+## Resultado do preregistro de relógio CANT_REACH — 17:46 UTC
+
+`shadowJar` offline passou. O teste isolado `survival-clock-v2-1742` partiu
+da mesma fonte parada e UUID v10, sem ordem, limite0,5 CPU/3GiB e sem porta
+publicada. Quatro snapshots em ticks fullTime13780/13800/13820/13840
+trouxeram gameTime4944/4964/4984/5004, since4939 e idades5/25/45/65:
+o desvio entre relógios foi **8.836 ticks** neste fixture, apesar de
+estarem próximos no principal. Episódio
+`A-6784215452709343147-20260927-174550` terminou exit0/zero drops,
+3/4 candidatos locais seguros, comida0/saciedade null. **PASS** para
+tipo/relógio/identidade em Paper; **FAIL** do v1 histórico; **NOT MEASURED**
+para `unstick` útil, Rust, recompensa ou vantagem. `CANT_REACH` presente
+não é sinônimo de resgate `stuck`.
+
+Auditoria read-only posterior do episódio principal fechado dia38: v9
+UUID08368130-915e-417a-aac3-5ca660220b56 teve `LOSING_JOB` no tick
+11308838. Antes, memórias `CANT_REACH` persistiram entre keyframes e
+o caminho para o job site `SMITHING_TABLE` (-501,85,-406) estava
+incompleto (`#4!`). Não há edição registrada desse bloco, porém seu
+estado físico/claim atual não foi verificado. Próximo par em mundo
+consistente deve testar acesso físico vs controle intacto, medindo rota,
+profissão e trabalho; não adicionar postos em lote nem tratar correlação
+como causa.
