@@ -1,5 +1,7 @@
 # Universe
 
+> **Pesquisa Minecraft / Vila Viva (27/09/2026):** [comece aqui](docs/MINECRAFT-AI-RESEARCH-20260927.md) para artigos, repositórios, diagnóstico e roteiro de análise no notebook.
+
 > **Agents and contributors:** start with the current
 > [validation workflow](docs/VALIDATION-WORKFLOW.md) and [AGENTS.md](AGENTS.md).
 > They index the taxi runtime, required evidence and GPU-only validation policy.
