@@ -935,3 +935,73 @@ snapshot real recusaram lease ausente, awareness vanilla, amostra antiga,
 UUID diferente, velocidade adulterada e replay. A hipótese de ponte
 comando/resultado passou; aprendizado e ganho de tarefa seguem abertos.
 Não alimentar o estado de cama com esse resultado.
+
+## Preregistro 27/09 19:29 UTC — cenário de stuck real, percepção do motor
+
+No episódio principal `...180123`, v0 UUID08368130-915e-417a-aac3-5ca660220b56
+foi resgatado por `stuck` no fullTime11799800, posição(-524.5,91,-370.7).
+Keyframes duráveis11797001–11799781 mostraram a mesma posição por2780
+ticks, acordado, saúde9, CANT_REACH presente e WALK_TARGET/HOME próximos
+de(-527,88,-371). A regra Rescue exige2400 ticks, imobilidade<1,5 bloco
+e CANT_REACH contínuo; Y91 não é `fell` (limiar Y80). O dado ainda não
+prova que um pulso local resolve a dificuldade vertical.
+
+Usar **cópia isolada** do backup consistente 17:56 (`profession-source-1756`),
+um UUID, sem portas, 0,5CPU/3GiB e limite explícito. Posicionar só nessa
+cópia o v0 na coordenada exata do evento (intervenção artificial marcada),
+com piloto desativado para ação e observação v3 ativa. Capturar blocos
+feet/head/support e `safe/reject_reason` dos quatro candidatos, HOME,
+WALK_TARGET, posição e estado corporal por pelo menos dois snapshots;
+encerrar e conferir zero drops. Hipótese: quatro pulsos cardeais planos
+não representam a descida de Y91 para HOME Y89; se o sensor disser seguro
+mas não oferecer redução vertical, o primeiro bloqueio é contrato de meta/
+terreno 3D, antes de treino ou controle contínuo. Não inferir baseline de
+resgate de uma entidade teleportada nem alterar o principal.
+
+Resultado 19:37 UTC: na cópia de mundo do backup, o v0 foi colocado
+somente ali em(-524.5,91,-370.7). Snapshots2240/2260 mantiveram posição,
+saúde9, HOME(-527,88,-371), pés/cabeça em AIR. Norte/sul eram seguros
+sob o gate plano; oeste (na direção da HOME) rejeitado por corredor
+inseguro, com SPRUCE_LOG/MOSSY_COBBLESTONE; leste rejeitado por folhas.
+No tick2280 o vanilla havia se deslocado para z-369.667 e CANT_REACH
+apareceu, reforçando que o teleporte reproduz geometria, não a trajetória
+pré-resgate. Container exit0/zero drops. Hipótese de limitação 3D passou:
+as quatro direções seguras não representam descida até HOME dois blocos
+abaixo; escolher norte por ordem fixa seria tarefa cega.
+
+Preregistro de contrato v4: estruturar HOME como deslocamento dx/dy/dz em
+blocos relativos ao corpo, preservar string antiga, e exigir no Rust motor
+que um pulso seguro reduza a distância horizontal com alinhamento mínimo
+e que |dy|<=1 bloco. Sem isso, decisão explícita de abstenção e nenhum
+comando. O caso do telhado deve abster-se; o primeiro caso plano validado
+antes pode continuar como baseline de pulso, mas não conta como tarefa
+concluída. Testar parser/ausência/frescor e saída offline agora; validar
+publicação Paper v4 e par de regra depois, sem deploy no principal.
+
+Resultado 19:49 UTC: Java v4 compilou e Rust motor v2 passou2/2 testes
+em Universe e espelho servidor. Em cópia isolada
+`stuck-v0-v4-exclusive-1941`, índice local v9/UUID original sob lease
+verdadeiro, Paper publicou HOME dx=-2/dy=-2/dz≈0,2 da posição imposta;
+Rust em observação3200/live3209 decidiu candidato null, motivo
+`vertical_route_unavailable`, sem pilot.json. Saúde9, sem deslocamento
+durante lease, zero drops/exit0; `pilot_exclusive_end` restaurou
+aware=true no tick3212. Esta é uma recusa correta da ação plana, não
+sucesso da tarefa. O próximo experimento deve ampliar sensores/ações
+para rota 3D e medir chegada segura vs vanilla/regra simples com fontes
+pareadas; não usar a estagnação causada por aware=false como rótulo.
+
+Auditoria do input antes de fechar o contrato: o snapshot exclusivo
+registrou `stationary_ticks=960`, gerados pelo próprio `aware=false`.
+Esse número é movimento observado do corpo, **não** duração de falha do
+Brain vanilla. Acrescentar `stationary_context` ao v4 (`controller_paused`
+ou `vanilla_motion`) e transportar ao registro Rust, sem usá-lo como
+gatilho ou recompensa até haver pré-lease confiável. Testar compilação e
+paridade; validação Paper do campo fica para o próximo ensaio isolado.
+
+Resultado do contrato aditivo ~19:55 UTC: Java v4 agora publica
+`stationary_context` segundo o lease; Rust motor v2 transporta esse
+contexto à decisão e rejeita `vanilla_motion` quando o snapshot afirma
+lease exclusivo. A duração não entra na seleção da ação. Build Java,
+Rust 2/2 testes nas duas árvores, paridade byte a byte e 15 testes Python
+passaram. Ainda **não** houve ensaio Paper do campo novo ou ação positiva
+v4: esses elos permanecem NOT MEASURED. Nenhum deploy/peso alterado.

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-const OBS_SCHEMA: &str = "vila-survival-observation/v3";
-const DECISION_SCHEMA: &str = "vila-motor-decision/v1";
+const OBS_SCHEMA: &str = "vila-survival-observation/v4";
+const DECISION_SCHEMA: &str = "vila-motor-decision/v2";
 const MAX_OBSERVATION_AGE: u64 = 20;
 const COMMAND_TTL: u64 = 40;
 
@@ -30,6 +30,10 @@ struct Observation {
     aware: bool,
     exclusive_lease: bool,
     stationary_ticks: u64,
+    stationary_context: Option<String>,
+    home_dx_blocks: Option<f64>,
+    home_dy_blocks: Option<f64>,
+    home_dz_blocks: Option<f64>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -71,9 +75,11 @@ struct Decision<'a> {
     observation_tick: u64,
     live_tick: u64,
     seq: u64,
-    candidate_id: &'a str,
+    candidate_id: Option<&'a str>,
+    reason: Option<&'static str>,
     policy: &'static str,
     stationary_ticks: u64,
+    stationary_context: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -105,11 +111,17 @@ fn cardinal_velocity(candidate: &Candidate) -> bool {
         && (candidate.vz - expected.1).abs() < 1e-9
 }
 
+#[derive(Clone, Copy)]
+enum Choice<'a> {
+    Action(&'a Candidate),
+    Abstain(&'static str),
+}
+
 fn choose<'a>(
     snapshot: &'a Snapshot,
     live: &Live,
     episode: &Episode,
-) -> Result<&'a Candidate, String> {
+) -> Result<Choice<'a>, String> {
     let o = &snapshot.observation;
     if snapshot.schema != OBS_SCHEMA
         || snapshot.duration_ms < 0.0
@@ -118,6 +130,9 @@ fn choose<'a>(
         || !episode.ai_pilot_enabled
         || !o.exclusive_lease
         || o.aware
+        || o.stationary_context
+            .as_deref()
+            .is_some_and(|v| v != "controller_paused")
         || !o.on_ground
         || o.sleeping
         || !o.health.is_finite()
@@ -157,14 +172,36 @@ fn choose<'a>(
             return Err("candidate_contract_invalid".into());
         }
     }
-    // Deliberately a fixed baseline until a task-level reward is measured.
-    // This code proves policy ownership and command transport, not learning.
-    snapshot
+    let goal = match (o.home_dx_blocks, o.home_dy_blocks, o.home_dz_blocks) {
+        (None, None, None) => return Ok(Choice::Abstain("home_unavailable")),
+        (Some(dx), Some(dy), Some(dz)) if [dx, dy, dz].iter().all(|v| v.is_finite()) => {
+            (dx, dy, dz)
+        }
+        _ => return Err("home_vector_invalid".into()),
+    };
+    let (dx, dy, dz) = goal;
+    if dy.abs() > 1.0 {
+        return Ok(Choice::Abstain("vertical_route_unavailable"));
+    }
+    let horizontal = dx.hypot(dz);
+    if horizontal < 0.25 {
+        return Ok(Choice::Abstain("home_horizontal_reached"));
+    }
+    if horizontal > 16.0 {
+        return Ok(Choice::Abstain("home_outside_local_horizon"));
+    }
+    // Task-aware fixed baseline. This is still a rule, not learned control.
+    let best = snapshot
         .candidates
         .iter()
-        .find(|c| c.id == "north" && c.safe)
-        .or_else(|| snapshot.candidates.iter().find(|c| c.safe))
-        .ok_or_else(|| "no_safe_candidate".into())
+        .filter(|c| c.safe)
+        .map(|c| (c, (dx * c.vx + dz * c.vz) / (horizontal * 0.2)))
+        .filter(|(_, alignment)| *alignment >= 0.5)
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    Ok(match best {
+        Some((candidate, _)) => Choice::Action(candidate),
+        None => Choice::Abstain("no_safe_goal_aligned_pulse"),
+    })
 }
 
 fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -191,7 +228,7 @@ fn run(args: &[String]) -> Result<(), String> {
     if seq == 0 || live.tick.checked_add(COMMAND_TTL).is_none() {
         return Err("invalid_seq_or_time".into());
     }
-    let candidate = choose(&snapshot, &live, &episode)?;
+    let choice = choose(&snapshot, &live, &episode)?;
     let o = &snapshot.observation;
     let decision = Decision {
         schema: DECISION_SCHEMA,
@@ -201,9 +238,25 @@ fn run(args: &[String]) -> Result<(), String> {
         observation_tick: o.tick,
         live_tick: live.tick,
         seq,
-        candidate_id: &candidate.id,
-        policy: "fixed-safe-baseline",
+        candidate_id: match &choice {
+            Choice::Action(c) => Some(&c.id),
+            Choice::Abstain(_) => None,
+        },
+        reason: match &choice {
+            Choice::Action(_) => None,
+            Choice::Abstain(reason) => Some(reason),
+        },
+        policy: "goal-alignment-baseline",
         stationary_ticks: o.stationary_ticks,
+        stationary_context: o.stationary_context.as_deref(),
+    };
+    let pilot_path = Path::new(&args[5]);
+    if let Choice::Abstain(_) = choice {
+        atomic_json(Path::new(&args[4]), &decision)?;
+        return Ok(());
+    }
+    let Choice::Action(candidate) = choice else {
+        unreachable!()
     };
     let command = Command {
         seq,
@@ -218,7 +271,6 @@ fn run(args: &[String]) -> Result<(), String> {
         source_v: o.v,
         source_tick: o.tick,
     };
-    let pilot_path = Path::new(&args[5]);
     if pilot_path.exists() {
         let prior: serde_json::Value =
             serde_json::from_slice(&fs::read(pilot_path).map_err(|e| e.to_string())?)
@@ -264,7 +316,7 @@ mod tests {
 
     #[test]
     fn rejects_stale_and_nonexclusive_snapshots() {
-        let raw = r#"{"schema":"vila-survival-observation/v3","observation":{"episode":"e","villager_uuid":"12345678-1234-1234-1234-123456789012","v":10,"tick":100,"health":20.0,"on_ground":true,"sleeping":false,"aware":false,"exclusive_lease":true,"stationary_ticks":20},"candidates":[{"id":"north","vx":0.0,"vz":-0.2,"safe":true,"reject_reason":null},{"id":"south","vx":0.0,"vz":0.2,"safe":false,"reject_reason":"blocked"},{"id":"east","vx":0.2,"vz":0.0,"safe":false,"reject_reason":"blocked"},{"id":"west","vx":-0.2,"vz":0.0,"safe":false,"reject_reason":"blocked"}],"candidate_count":4,"safe_count":1,"duration_ms":1.0}"#;
+        let raw = r#"{"schema":"vila-survival-observation/v4","observation":{"episode":"e","villager_uuid":"12345678-1234-1234-1234-123456789012","v":10,"tick":100,"health":20.0,"on_ground":true,"sleeping":false,"aware":false,"exclusive_lease":true,"stationary_ticks":20,"stationary_context":"controller_paused","home_dx_blocks":0.0,"home_dy_blocks":0.0,"home_dz_blocks":-3.0},"candidates":[{"id":"north","vx":0.0,"vz":-0.2,"safe":true,"reject_reason":null},{"id":"south","vx":0.0,"vz":0.2,"safe":false,"reject_reason":"blocked"},{"id":"east","vx":0.2,"vz":0.0,"safe":false,"reject_reason":"blocked"},{"id":"west","vx":-0.2,"vz":0.0,"safe":false,"reject_reason":"blocked"}],"candidate_count":4,"safe_count":1,"duration_ms":1.0}"#;
         let mut snapshot: Snapshot = serde_json::from_str(raw).unwrap();
         let episode = Episode {
             id: "e".into(),
@@ -280,11 +332,29 @@ mod tests {
                 on_ground: 1,
             }],
         };
-        assert_eq!(choose(&snapshot, &live, &episode).unwrap().id, "north");
+        assert!(
+            matches!(choose(&snapshot, &live, &episode).unwrap(), Choice::Action(c) if c.id == "north")
+        );
         live.tick = 121;
         assert!(choose(&snapshot, &live, &episode).is_err());
         live.tick = 100;
         snapshot.observation.exclusive_lease = false;
         assert!(choose(&snapshot, &live, &episode).is_err());
+        snapshot.observation.exclusive_lease = true;
+        snapshot.observation.stationary_context = Some("vanilla_motion".into());
+        assert!(choose(&snapshot, &live, &episode).is_err());
+        snapshot.observation.stationary_context = Some("controller_paused".into());
+        snapshot.observation.home_dy_blocks = Some(-2.0);
+        assert!(matches!(
+            choose(&snapshot, &live, &episode).unwrap(),
+            Choice::Abstain("vertical_route_unavailable")
+        ));
+        snapshot.observation.home_dy_blocks = Some(0.0);
+        snapshot.observation.home_dx_blocks = Some(-2.0);
+        snapshot.observation.home_dz_blocks = Some(0.2);
+        assert!(matches!(
+            choose(&snapshot, &live, &episode).unwrap(),
+            Choice::Abstain("no_safe_goal_aligned_pulse")
+        ));
     }
 }
