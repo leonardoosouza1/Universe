@@ -908,3 +908,30 @@ normal e persistência do estado aware nesse ensaio. O monitor de restart
 esperava um campo `NoAI:0b` explícito e foi interrompido após a consulta;
 o container foi parado limpo. Resultado manual está em
 `~/.local/state/vila-viva/exclusive-restart-check-20260927.json`.
+# Preregistro 27/09 19:08 UTC — contrato de motor exclusivo
+
+Primeiro bloqueio causal auditado independentemente: `vila-survival-observation/v2`
+não é aceito pelo despachante Rust `vila-bed-candidates/v3`; adaptar só o nome
+misturaria ações e estado de cama com motor. Criar contrato `vila-motor-policy/v1`
+separado para um Villager explicitamente `aware=false`, usando snapshot Paper
+com episódio/UUID/v/tick, solo/sono, candidatos cardeais seguros e sinal de
+estagnação. O comando deve escolher um candidato publicado sem inventar
+velocidade, carregar seq/TTL e ser recusado para snapshot antigo, identidade
+divergente ou ownership ausente. A hipótese testável é que um comando Rust
+gerado dessa observação moverá o v10 isolado em chão livre como o pulso manual
+anterior (progresso dirigido >0, sem dano), com evento de aplicação e outcome
+na mesma chave. Controle sem ordem deve permanecer parado. Esse primeiro teste
+**não** mede melhora de tarefa nem atualiza pesos. O aprendizado motor terá
+estado e ingestão separados, após resultado Paper correlacionado e comparação
+com vanilla/regra fixa. Nenhuma ativação no principal ou promoção automática.
+
+Resultado 19:17 UTC: produtor v3 e novo crate independente
+`vila-motor-policy-cpu` passaram build Java e 2 testes Rust em ambas as
+árvores byte-idênticas. Ensaio Paper `motor-policy-v10-1909` aplicou
+decisão Rust de regra fixa norte da amostra v10/tick13800 (live13813)
+no tick13820; outcome13860 reportou progresso dirigido0,52228198,
+lateral0, saúde20→20, exit0/zero drops. Testes negativos derivados do
+snapshot real recusaram lease ausente, awareness vanilla, amostra antiga,
+UUID diferente, velocidade adulterada e replay. A hipótese de ponte
+comando/resultado passou; aprendizado e ganho de tarefa seguem abertos.
+Não alimentar o estado de cama com esse resultado.
