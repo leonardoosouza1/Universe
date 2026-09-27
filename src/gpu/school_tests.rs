@@ -1520,7 +1520,9 @@ fn service_v2_banked_progress_counterexample() {
                 bytemuck::bytes_of(&value));
         }
         let pos = if current_progress > 0.0 { [93.0, 84.0] } else { g.start };
-        f.step_with_body(Step::at(pos, [0.0, 1.0]), |body| body[127] = current_progress);
+        // Above v_min the slowing factor is zero in both arms, isolating progress
+        // from the independent readiness bonus near the station.
+        f.step_with_body(Step::at(pos, [0.0, 4.0]), |body| body[127] = current_progress);
         let r = f.record();
         assert_eq!(r[R_STATUS], STATUS_FAILED as f32);
         assert_eq!(r[R_ACCEPTED_PICKUP_TICK], -1.0);

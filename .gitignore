@@ -1,5 +1,5 @@
-/target
-/iara_agi/target
+# Rust build outputs in the root and every standalone crate.
+target/
 /ffmpeg-7.0.2-amd64-static
 race_reports.md
 /telemetry
@@ -9,5 +9,27 @@ race_reports.md
 
 # Session and tool leftovers (never source)
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
 /artifacts
 /.claude/worktrees/
+
+# Local credentials and machine-specific configuration; keep templates versioned.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Local editor/OS leftovers.
+*.swp
+*.swo
+.DS_Store
+
+# Exported weights are shipped by the separate, approved server release.
+/crates/vila-shadow-cpu/cpu-model.json
