@@ -1005,3 +1005,36 @@ lease exclusivo. A duração não entra na seleção da ação. Build Java,
 Rust 2/2 testes nas duas árvores, paridade byte a byte e 15 testes Python
 passaram. Ainda **não** houve ensaio Paper do campo novo ou ação positiva
 v4: esses elos permanecem NOT MEASURED. Nenhum deploy/peso alterado.
+
+Preregistro ~20:32 UTC, motivado por
+`vila-viva-server/docs/AI-ACTION-FAILURE-20260927.md` e pesquisa nova:
+repetir a ordem `walk_to` de v10 em uma cópia parada da mesma fonte,
+sem mudar alvo/velocidade/raio/UUID, com trace opt-in de40 ticks.
+Acrescentar ao log o identificador do objeto NMS `Path` por trás do
+wrapper Paper (ou null se inacessível) e capturar
+`EntityPathfindEvent` desse UUID dentro da janela, inclusive destino
+e call stack NMS limitado. Hipótese A: outro `Path` é instalado entre
+13821–13822, possivelmente por `MoveToTargetSink` vanilla; hipótese B:
+o mesmo `Path` tem pontos/final modificados por progressão ou
+replanejamento. Se a API não emitir evento, classificar escritor como
+não medido; não inferi-lo só do endpoint. O trace permanece diagnóstico,
+não ação nova, sem mudança do principal. Sucesso do ensaio é classificar
+A/B com zero drops/exit0/UUID+seq/ticks, **não** chegar ao alvo nem
+provar benefício. Não alterar política/pesos ou chamar concorrência
+Brain de causa até identificar a fase que escreveu a rota.
+
+Resultado ~20:32 UTC: `writer-identity-2036` repetiu UUID v10,
+seq1, origem13800, aplicação13820, mesmo alvo/raio/velocidade em cópia
+limitada. Após `moveTo=true`, o `Path` NMS id379902552 persistiu até
+13821. O `EntityPathfindEvent` no13822 para(-500,97,-368) trouxe
+stack `MoveToTargetSink.tryComputePath → Behavior.tryStart → Brain.tick
+→ Villager.customServerAiStep`; o caminho ativo passou a
+id835786466/final(-500,95,-370), distinto do alvo aceito
+final(-500,95,-371). Outcome `path_replaced`, distância0,628>0,25,
+exit0/zero drops/saúde20. Eventos `BedCandidates.checkHomeRoute`
+ocorreram no13820, mas não mudaram o id ativo no13821. Bytecode Paper
+1.21.4-232 da própria cópia confirma que `MoveToTargetSink.start`
+chama `PathNavigation.moveTo(this.path,speedModifier)`: neste fixture
+o Brain instala outra rota. Ainda não se mediu quem escreveu originalmente
+`WALK_TARGET`, nem se intervenção seletiva preserva locomoção.
+Nenhum deploy/peso alterado; M1 e ganho continuam não medidos.
