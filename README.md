@@ -1,267 +1,238 @@
 # Universe
 
-> **Pesquisa Minecraft / Vila Viva (27/09/2026):** [comece aqui](docs/MINECRAFT-AI-RESEARCH-20260927.md) para artigos, repositórios, diagnóstico e roteiro de análise no notebook.
-
-> **Agents and contributors:** start with the current
-> [validation workflow](docs/VALIDATION-WORKFLOW.md) and [AGENTS.md](AGENTS.md).
-> They index the taxi runtime, required evidence and GPU-only validation policy.
-> The racing overview and commands below include historical context; they are
-> not evidence of current taxi competence or permission to run CPU validators.
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/Rust-1.85%2B%20(edition%202024)-orange.svg)](Cargo.toml)
 [![GPU: wgpu / WGSL](https://img.shields.io/badge/GPU-wgpu%2024%20%C2%B7%20WGSL-brightgreen.svg)](src/gpu)
 
-**Universe is a GPU-first neuroevolution simulator written in Rust.** Populations of
-creatures with a hybrid brain — a per-channel KAN pre-filter, a CfC recurrent stage, a
-fast `BitLinear` layer and a float cortex layer — drive vehicles around procedurally
-generated tracks. A genetic algorithm selects and mutates them between generations, and
-every run emits heavy telemetry (per-generation champion genomes, replays, activation
-statistics, ablation reports) because the point of the project is *measuring* what the
-brain actually allocates, not just watching it drive.
+**A GPU-first neuroevolution simulator in Rust.** Populations of creatures, each with a
+DNA genome and a hybrid recurrent brain, drive vehicles through procedurally generated
+worlds. A genetic algorithm selects and mutates them between generations. The whole
+per-tick loop (retina, perception, both brains, vehicle physics) runs as WGSL compute
+kernels on one headless `wgpu` device. The project's focus is **measurement**: every run
+records champion genomes, replays and activation statistics, so claims about what the
+brain learned can be checked against the replay of a single creature on a single tick.
+
+Status: research code, actively developed. The racing track is the mature scenario; the
+taxi/city scenario and body co-evolution are experimental (see [Status](#status)).
 
 ---
 
-## Why it is technically interesting
+## Highlights
 
-The whole per-tick loop — retina, perception, both brains, physics — runs in WGSL on a
-**single `wgpu` device, with no window, no surface and no swapchain**. That means the
-simulator runs headless under `env -u DISPLAY`, in cron, on a machine without a graphics
-session (`src/gpu/mod.rs`, module header). Bevy is still a build dependency — `wgpu` is
-pulled in through its tree, and `Cargo.toml` selects a trimmed feature set — but at runtime
-it is only a viewer over the compute core, never something the core has to go through.
+All numbers below were measured on the hardware listed further down. Each one comes
+with the baseline it was compared against.
 
-What the tick actually does, in order (`src/bin/gpu_evolve/context.rs`, `GpuCtx::tick`,
-one `CommandEncoder`, one `submit`):
+- **Full tick on the GPU: 0.63 ms per tick vs 6.25 ms on the CPU** for 60 creatures
+  (retina + perception + brain + physics, `gpu_loop` benchmark, 2026-08-03). Porting
+  the whole loop, not single kernels, is what paid: the submit/readback boundary was the
+  cost.
+- **GPU kernels checked against the CPU reference.** Fast brain max abs error 1.79e-7
+  (signal magnitude 3.94e-1), slow brain worst error 1.788e-7 over 9,600 comparisons,
+  retina 99.9965% of pixels identical (max difference 1 level). `gpu_validate` runs
+  these gates. Physics is tolerance-based, not bit identity.
+- **Bit-exact determinism.** Two 30-generation runs × 48 creatures × 12,000 ticks
+  produced byte-identical `driving.csv` files (md5). This is what makes paired A/B
+  comparisons valid.
+- **Driving learned from scratch.** From a random population (median 2.81 m, 100% of
+  creatures stationary) to 4,086 m (≈2.5 laps) by generation 29, with no hand-written
+  pilot. Braking emerged with training in 8/8 seeds: 4–10% of live ticks at gen 0 →
+  19–66% at gen 29, including runs with no braking incentive.
+- **Readback removed from the hot path.** Moving the retina digest onto the GPU cut a
+  340 KB/tick download and took a generation from 35.1 s to 19.2 s (1.83×).
+- **Cost model for scaling.** Tick time ≈ 0.86 ms + 0.032 ms × creatures (sweep at
+  12/96/384/768 creatures). The fixed term is launch latency, so one process with many
+  creatures beats many small processes (100 creatures in 1 process: 4.4 ms/tick vs
+  10 × 10: 11.6 ms/tick).
 
-| Stage | Kernel(s) | What it computes |
+---
+
+## How it works
+
+```
+ genome (DNA, TLV format)
+        │  decoded at birth
+        ▼
+ ┌──────────────────────────── one wgpu CommandEncoder, one submit per tick ─────────┐
+ │ retina.wgsl        14 × 126 DDA raymarches per creature                           │
+ │ perception*.wgsl   → 192-channel sensory wave                                     │
+ │ retina_digest.wgsl → wall distance, edge rows (replaces a 340 KB/tick readback)   │
+ │ brain.wgsl         KAN spline per channel → CfC → BitLinear 192→96 → FloatLinear  │
+ │ slow_brain.wgsl    CfC(64) → Dense 64→16 → 16→3 = [throttle, steer, brake], /8 tk │
+ │ physics_a/b/c      suspension + drivetrain → Pacejka tyres → collision/integrate  │
+ └───────────────────────────────────────────────────────────────────────────────────┘
+        │  ~2.6 kB/tick host↔device for 60 creatures (poses up, intent down)
+        ▼
+ evolution on the CPU, once per generation: tournament (k=3), Gaussian mutation,
+ elitism, spectral rescaling of L1 at birth
+```
+
+Details worth knowing, all measured:
+
+- **The retina is the hot spot, not the brain.** Over 2,440 PERF samples: retina 57.0%,
+  physics and the rest 26.9%, brain 14.3%, perception 1.9% (`src/gpu/mod.rs` header).
+- **Weights and recurrent state stay in VRAM** across ticks and come down only between
+  generations (`src/gpu/core.rs`).
+- **Physics is three kernels because one crashed the compiler.** The single 756-line
+  physics shader crashed the RADV/ACO compiler on NAVI22. Bisection
+  (`src/bin/fisica_bisect.rs`) isolated the Pacejka block, so the pipeline is split into
+  A → B → C (`src/gpu/physics.rs`).
+- **The brain is float, not ternary.** An early ternary cortex did not compose; the
+  runtime cortex is F32. Ternary `BitLinear` remains only where it measured well.
+
+---
+
+## Results
+
+| Experiment | Result | Baseline / control |
 |---|---|---|
-| Retina | `retina.wgsl` | 14 rows x 126 columns = 1 764 DDA raymarches **per creature** (`src/config.rs:255-257`) |
-| Perception | `perception.wgsl`, `perception_temporal.wgsl`, `perception_motion.wgsl` | packs the 192-channel `sensory_wave` (`src/config.rs:309`) |
-| Retina digest | `retina_digest.wgsl` | perception-CfC state, `min_wall_ahead`, edge rows — replaces a 340 KB/tick readback |
-| Fast brain | `brain.wgsl` | KAN spline per channel -> CfC -> `BitLinear` 192->96 -> tanh x127 -> i8 -> `FloatLinear` 96->48 -> `final_intent[96]` |
-| Slow brain | `slow_gather.wgsl`, `slow_brain.wgsl` | CfC(64) -> Dense 64->16 -> Dense 16->3 = `[throttle, steer, brake]`, fires every 8 ticks |
-| Physics | `physics_a/b/c.wgsl` | suspension + drivetrain, then the Pacejka tyre loop, then collision + integration |
+| Full tick on GPU (60 creatures) | 0.63 ms/tick | CPU 6.25 ms/tick |
+| Retina kernel alone | 31.7× | CPU reference, same pixels (99.996%) |
+| retina_digest on GPU | 19.2 s/generation | 35.1 s with readback |
+| Determinism | byte-identical over 30 gens × 48 × 12k ticks | repeated runs, 2 seeds |
+| Evolution from random population | 4,086 m (2.5 laps) at gen 29 | 2.81 m at gen 0 |
+| Braking emerges (B1 battery) | 19–66% of live ticks at gen 29, 8/8 seeds | 4–10% at gen 0 |
+| Single starting point (`--same-start`) | median 181 → 370 m, 4/4 seeds | per-creature start points (fitness measured the start, not the brain) |
+| Track-width unit bug fixed | track 3× too wide found and fixed | `pista_check`: 14 m free per side after fix |
+| Sensor audit | 49 of 192 channels dead, 13 with no source in any kernel | found by `--audit-vision`, then fixed |
+| FlyWire connectome wiring (`--fly-brain`) | sugar→MN9 72.4 ± 5.0 Hz, 30/30 trials | shuffled targets/weights: 0 Hz, 0/30 |
 
-Three details a newcomer will want to know, all of them measured rather than assumed:
-
-- **The retina is the hot spot, not the brain.** Over 2 440 PERF samples the split was
-  retina 57.0%, physics and the rest 26.9%, brain 14.3%, perception 1.9%
-  (`src/gpu/mod.rs` header). That is why the retina was the first thing ported.
-- **Host<->device traffic per tick is about 2.6 kB** for 60 creatures — poses up,
-  motor intent down. Weights and the CfC recurrent state stay resident in VRAM across
-  ticks and only come down between generations (`src/gpu/core.rs` header, byte budget).
-- **Physics is split into three kernels because it had to be.** The single 756-line
-  `physics.wgsl` crashed the RADV/ACO shader compiler on NAVI22; bisection
-  (`src/bin/fisica_bisect.rs`) isolated the Pacejka block as the trigger, so the pipeline
-  is A (suspension/power) -> B (tyres) -> C (collision/integration), each staying under
-  ~50 simultaneous local f32 (`src/gpu/physics.rs` header).
-
-The non-negotiable rule of the GPU port is that a kernel must produce the *same* result as
-the CPU reference. `gpu_validate` locks that down for five subsystems, and every GPU claim
-in `docs/` was produced by a run that passed it first.
-
-Evolution itself stays on the CPU, deliberately: it runs once per N ticks, so it is not on
-the hot path (`src/gpu/evolution.rs` header). Selection is tournament (k=3), mutation is
-Gaussian noise per weight, elitism carries the best `n_elite` genomes through unmutated,
-and L1 is spectrally re-scaled at birth so the sensory signal is not amplified before the
-first mutation.
+Most of the reports behind these rows are in [`docs/`](docs/) (still largely in
+Portuguese, being migrated). Good entry points:
+[validation workflow](docs/VALIDATION-WORKFLOW.md),
+[kernel timing](docs/KERNEL_TIMING.md), [math inventory](docs/MATH_INVENTORY.md),
+[body co-evolution validation](docs/BODY-COEVOLUTION-VALIDATION.md),
+[fly connectome results](docs/FLY-PROGRAM-RESULTS.md).
 
 ---
 
-## Quickstart
+## What didn't work (and why)
 
-### Requirements
+Negative results are kept on purpose. Each one changed what was tested next.
 
-- **Rust 1.85.0 or newer**, edition 2024 (`Cargo.toml`).
-- **A GPU with a working Vulkan driver.** The project talks to the GPU through `wgpu` 24,
-  so any Vulkan-capable adapter should work. ROCm is *not* required — it is simply what
-  the author happens to have installed alongside (AMD RX 6750 XT / RADV).
-- **Linux is the tested platform.** The graphical entry point needs X11; every GPU compute
-  tool is headless and runs fine with `env -u DISPLAY`.
-- On some AMD/Mesa setups the Vulkan loader picks the wrong ICD. Several binaries set
-  `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json` for you when it is unset
-  (for example `src/bin/gpu_validate.rs:102-108`); export it yourself if a tool cannot
-  find an adapter.
+- **No evolved population learned to complete a taxi delivery.** In the taxi "school"
+  curriculum, approach and stopping improved, but every evolved population delivered
+  zero passengers. The only deliveries came from a scripted witness pilot, which is
+  capped at two deliveries by design. That pilot is a viability control, not a learned
+  policy. The scenario was paused.
+- **Sector memory (a "hippocampus") cost laps.** Runs with ≥2 laps: 32/28/34 of 40 with
+  the memory organ vs 39/39/38 for the control. A paired ablation showed that *reading*
+  the memory was the cost. The track is fully observable, so memory had nothing to add.
+- **A neural gearbox broke a working population.** Turning on neural gear shifting in
+  the same population dropped lap finishers from 39 to 8 (2 seeds). Higher speed outran
+  the perception: the retina goes blind above ~28 m/s. The locked 2nd gear had been
+  protecting it by accident.
+- **Two AI-agent "proofs" were fabricated and caught.** A forced 0.3 throttle "panic
+  escape" accounted for the whole 2.7× gain (1,744 m with the crutch vs 650 m without),
+  and an injected initial speed gave six creatures identical distances to 4 decimals.
+  Both were discarded. Every GPU claim since then has to pass `gpu_validate` and a
+  replay check.
+- **An ablation number had to be requalified.** Removing the cortex dropped performance
+  by 94.7 ± 2.6% (5 reps), but this mixes the cortex's contribution with the disruption
+  of the parts that co-adapted to it (sentinel vetoes went 2,583 → 15,171). Ablation is
+  only clean when removing a part does not miscalibrate the rest.
 
-> **Known gap — a fresh clone does not build yet.** `Cargo.toml` declares two path
-> dependencies outside this repository, `iara-perception` and `iara-cfc` under
-> `../iara-runtime/`, and that directory is not tracked here and is not a submodule.
-> TODO: vendor those crates, publish them, or add them as a submodule so external
-> contributors can build. Until then the build only works on a machine that already has
-> the sibling `iara-runtime` tree.
+---
 
-### Build
+## Hardware and stack
+
+| | |
+|---|---|
+| GPU | AMD Radeon RX 6750 XT (12 GB, Navi22 / gfx1031), RADV Vulkan driver |
+| CPU | AMD Ryzen 7 5800X3D |
+| Language | Rust 1.85+, edition 2024 |
+| GPU API | `wgpu` 24 + WGSL compute shaders (any Vulkan adapter should work; ROCm is not required) |
+| Viewer | Bevy 0.16 (optional, graphical entry point only; compute runs headless) |
+
+---
+
+## Build and run
+
+Requirements: Rust 1.85+, a GPU with a working Vulkan driver, Linux (tested). The
+compute tools are headless and run under `env -u DISPLAY`. On some AMD/Mesa setups the
+Vulkan loader picks the wrong ICD; export
+`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json` if a tool cannot find an
+adapter. Local dependency crates are vendored under [`vendor/`](vendor/).
 
 ```bash
 cargo build --release
 ```
 
-### Check that the GPU kernels still match the CPU
-
-With no arguments `gpu_validate` runs all five subsystems; each flag restricts it to one
-(`src/bin/gpu_validate.rs:111-116`).
+**Check that GPU kernels still match the CPU reference** (no flag = all five subsystems):
 
 ```bash
-env -u DISPLAY ./target/release/gpu_validate              # retina + core + brain + physics + perception
-env -u DISPLAY ./target/release/gpu_validate --fisica     # physics only
+env -u DISPLAY ./target/release/gpu_validate            # retina + core + brain + physics + perception
+env -u DISPLAY ./target/release/gpu_validate --fisica   # physics only
 ```
 
-### Run an evolution
-
-`gpu_evolve` is the production path: N ticks on the GPU, evaluate, select, mutate, repeat.
+**Run an evolution** (`gpu_evolve` is the production path):
 
 ```bash
+./target/release/gpu_evolve --help    # full flag table
+
 env -u DISPLAY nice -n 5 ./target/release/gpu_evolve \
-    --seres 60 --ticks 8000 --gens 10 \
+    --beings 48 --ticks 12000 --gens 30 \
     --same-start --seed 1 \
-    --out /path/to/run_dir
+    --out runs/my-first-run
 ```
 
-- `--seres` population size (default 60), `--ticks` ticks per generation (default 8 000,
-  which is 125 s at 64 Hz), `--gens` number of generations (default 100).
-- `--same-start` puts every creature on the same starting waypoint. Without it each
-  creature is born somewhere different and fitness ends up measuring the *starting spot*
-  rather than the brain.
-- `--out` chooses where the run writes. **It defaults to `.`**, so pass it unless you want
-  `evolve_best_genNNNN.bin` and `genNNNN.replay` landing in your working directory.
-- `--retomar` resumes from the most recent `evolve_best_gen*.bin` checkpoint.
-- Unknown flags are **silently ignored** (`src/bin/gpu_evolve/main.rs:743`, the `_ => {}`
-  arm) and there is no `--help`. Check the `match` block at
-  `src/bin/gpu_evolve/main.rs:541-744` for the full, authoritative list before inventing a
-  flag name.
+- `--beings` population size (default 60), `--ticks` ticks per generation, `--gens`
+  number of generations.
+- `--same-start` puts every creature on the same starting point. Without it, fitness
+  partly measures where each creature was born.
+- `--out` is where checkpoints and replays go. It defaults to `.`, so always set it.
+- `--resume` continues from the checkpoint in `--out`; `--tracks 9001,9002` rotates
+  training tracks; `--track-held-out <seed>` measures generalisation on a track that
+  selection never sees. Older Portuguese flag names are still accepted as aliases.
 
-Useful extras:
-
-| Flag | Effect |
-|---|---|
-| `--sigma <f>` / `--p-mutate <f>` | mutation magnitude (default 0.05) and per-weight mutation probability (default 0.02) |
-| `--n-elite <n>` / `--tourney <k>` | elitism size and tournament size (both default 3) |
-| `--fitness <mode>` | `checkpoint` (default), `prog`, `dist`, `centro` |
-| `--pistas "9001,9002"` | rotate a set of training track seeds, deterministically by generation |
-| `--track-held-out <seed>` / `--held-out-every <k>` | measure generalisation on a track selection never optimises against (legacy aliases `--pista-held-out`, `--held-out-cada` still accepted) | <!-- check-language: allow -->
-| `--ativacao` / `--ativacao-n <n>` / `--regioes` | L1/L2 activation statistics, sampled every n ticks, optionally split by track curvature |
-| `--painel` / `--painel-porta <n>` | live HTTP dashboard (default port 3200); no thread is spawned without the flag |
-
-### Measure track difficulty (CPU only, no GPU needed)
+**Tests:**
 
 ```bash
-./target/release/pistas               # measured difficulty of each track seed
-./target/release/pistas --curriculo   # build a difficulty ramp from the measurements
+cargo test --release --bin gpu_evolve      # genome round-trip, track rotation, flags
+cargo test --release --lib wgsl_static     # parses and type-checks all WGSL, no GPU needed
+cargo test --release -p taxi-world         # taxi world crate
 ```
 
-### Tests
+Shaders are embedded with `include_str!`, so `cargo build` never sees a WGSL syntax
+error. Run `wgsl_static` after every shader change. CI (`.github/workflows/ci.yml`) runs
+fmt, build, the test suites above and an English-only language check.
 
-```bash
-cargo test --release --bin gpu_evolve       # genome round-trip, track rotation, pilot ordering
-cargo test --release --lib wgsl_static      # parses and type-checks the WGSL, no GPU required
-```
-
-`wgsl_static` (`src/gpu/wgsl_static_tests.rs`) is the one worth running on every change to `src/gpu/*.wgsl`: shaders are
-embedded with `include_str!`, so `cargo build` never sees a WGSL syntax error — without
-this test the first sign of trouble is a runtime failure on a real GPU.
-
-### One warning that has cost real training runs
-
-**Never run `./target/release/universe` from the repository root.** It reads *and
-overwrites* `CHAMPION.dna` in the working directory, so even a one-generation smoke test
-crowns a weak champion over a trained one. Use the wrapper, which copies the champion and
-the config into an isolated directory first:
-
-```bash
-scripts/rodar.sh <label> --headless --gens 1 --swarm 30
-```
+**Warning:** do not run `./target/release/universe` (the graphical binary) from the
+repository root. It reads and overwrites `CHAMPION.dna` in the working directory. Use
+`scripts/rodar.sh <label> ...`, which runs in an isolated directory.
 
 ---
 
 ## Repository map
 
-### Top level
-
 | Path | What lives there |
 |---|---|
-| `src/` | all Rust sources (library + binaries) |
-| `benches/` | Criterion micro-benchmarks (`bitlinear`) |
-| `tests/` | integration tests: ablation controls, Trinity wiring, WGSL static validation |
-| `scripts/` | shell and Python drivers for experiment batteries; `rodar.sh` is the safe launcher |
-| `tools/` | Python analysis helpers for battery output |
-| `docs/` | experiment reports, plans and archived crates (see the note below) |
-| `.claude/` | configuration for the AI agents that work in this repo |
-| `telemetry/`, `target/` | generated output, git-ignored |
+| `src/gpu/` | compute core: WGSL kernels and their `wgpu` host code |
+| `src/bin/` | command-line tools: `gpu_evolve`, `gpu_validate`, replay/genome/DNA inspectors, track tools |
+| `src/evolution/` | genetic algorithm, DNA serialisation (`dna_genesis.rs` is the source of truth) |
+| `src/math/`, `src/perception/`, `src/analysis/` | maths core, sensory channels, activation statistics |
+| `crates/taxi-world/` | Rust port of the taxi/city world from [neuromod-lab](https://github.com/leonardoosouza1/neuromod-lab) |
+| `vendor/` | vendored CfC, perception and helper crates |
+| `tests/`, `benches/` | integration tests, Criterion benchmarks |
+| `scripts/`, `tools/` | experiment drivers and analysis helpers |
+| `docs/` | experiment reports, specs and validation records |
 
-### `src/`
-
-| Path | What lives there |
-|---|---|
-| `src/gpu/` | the compute core: WGSL kernels plus their `wgpu` host code (retina, perception, both brains, physics, cortex sheet, genome I/O) |
-| `src/bin/` | 29 command-line tools — evolution drivers, validators, DNA inspectors, replay analysers |
-| `src/simulation/` | the per-tick engine used by the Bevy path (`motor.rs`) and the `Racer` component |
-| `src/evolution/` | genetic algorithm pipeline, DNA serialisation (`dna_genesis.rs` is the source of truth), spawn, telemetry |
-| `src/math/` | activations, linear algebra, statistics, quantisation, thresholds, and the measured "laws" the project relies on |
-| `src/perception/` | the sensory-channel dictionary and the CPU-side retina |
-| `src/analysis/` | activation, contextual and per-region statistics collected during runs |
-| `src/brain/` | brain file format |
-| `src/safety/` | the Sentinel emergency-brake layer |
-| `src/assets/` | the standalone HTML replay player |
-
-### Key root-level modules
-
-`config.rs` is the constants hub and the source of truth for architecture sizes;
-`layers.rs` (`BitLinear`), `float_layers.rs` (`FloatLinear`), `dense_layer.rs`,
-`cfc.rs` (`CfCCell`) and `kan.rs` are the brain's building blocks; `engine.rs` assembles
-them into `SovereignEngine` plus `SlowBrain`; `world.rs` and `pista_gen.rs` generate the
-voxel world and the tracks; `physics.rs` is the CPU reference the GPU kernels are validated
-against; `neuro.rs` holds the sensory-channel wiring and priming ablation.
-
-`ARQUITETURA.md` (Portuguese, being replaced by `ARCHITECTURE.md`) carries a deeper module
-map, the audited duplications, and the rules for not breaking the DNA format.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map and invariants,
+[CONTRIBUTING.md](CONTRIBUTING.md) and [docs/STYLE.md](docs/STYLE.md) for conventions.
 
 ---
 
-## Where the science lives
+## Status
 
-The interesting part of this repository is not the code, it is what was measured with it.
-`docs/` holds the experiment reports, and `LEIA_PRIMEIRO.md` is the entry-point summary of
-the neural-allocation battery (ablation over a trained champion: the gate hands 37% of its
-weight to the cortex, which carries 94.7% of the performance — a 22x mismatch between what
-the gate says and what actually matters).
+- **Stable:** racing scenario, GPU tick, `gpu_validate` parity gates, deterministic
+  evolution, replay and genome tooling.
+- **Experimental:** body co-evolution (engine/brake genes selected with the brain;
+  opt-in, validated as a first slice only), taxi/city scenario (`crates/taxi-world`,
+  school curriculum; no learned delivery yet), FlyWire connectome as a fixed brain.
+- **Ongoing:** translating `docs/` and remaining comments/flags to English.
 
-Other reports worth opening: `docs/PLANO_EVOLUCAO.md` (the evolution plan and its measured
-findings), `docs/REGIOES_CEREBRAIS.md` (brain regions), `docs/ESCADA_DIFICULDADE.md`
-(difficulty curriculum), `docs/MATH_INVENTORY.md` (every equation in the codebase and where
-it is used), `docs/CEREBRO_VIRTUAL.md` and `docs/DESTILABILIDADE.md`.
-
-> **`docs/` is still written in Portuguese and is being migrated to English.** So are many
-> in-code comments, some identifiers, and the `gpu_evolve` command-line flags themselves
-> (`--seres`, `--ticks`, `--pistas`, ...). The flag names in this README are the ones that
-> exist in the code today; they will be renamed as part of the migration, and this file
-> will be updated with them.
-
----
-
-## Contributing
-
-The project standard is **English everywhere** — identifiers, comments, doc-comments, log
-messages, test names and commit messages. This supersedes the older rule that kept comments
-and output strings in Portuguese (revoked 2026-08-17).
-
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to set up, what a good PR looks like, what to run
-  before opening one.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — module map, sources of truth, and the invariants you
-  must not break.
-- [docs/STYLE.md](docs/STYLE.md) — naming, comment and file-size conventions.
-
-Two habits this codebase cares about more than most:
-
-1. **Comments carry measurements.** Many of them record a real bug that cost GPU hours —
-   "the tank was sized per lap but refilled per sector", "76 of 96 neurons have period > 1".
-   When you touch such a comment, keep the number. Translate the prose, never delete the
-   evidence.
-2. **Claims come with the command that produced them.** If you state that something got
-   faster or drives further, say which run measured it and how many seeds it used.
-
----
+Contribution rule that matters most here: claims come with the command, seeds and
+artifact that produced them, and comments that record a measurement keep the number.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Leonardo Souza.
+MIT, see [LICENSE](LICENSE).
